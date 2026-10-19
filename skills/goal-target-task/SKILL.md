@@ -5,7 +5,7 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 # Goal / Target / Task 执行合同
 
 本合同是 CLI 主会话与 subagent 的共同来源。
-目标仓指南、固定版本 shared 合同、hooks、身份及 required gates 继续有效；读取本合同不授予角色、委派或发布权限。
+目标仓指南、固定版本的共享规则、hooks、身份及 required gates 继续有效；读取本合同不授予角色、委派或发布权限。
 明确且范围清楚的实现请求不重复索取相同授权；事实问答和诊断不自动变成实施。
 
 ## 三层定义
@@ -28,7 +28,7 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 
 | 合同角色 | 职责 |
 |---|---|
-| Goal 定义方 | 定义 Goal 和不做项；Goal 变更回 负责人 |
+| Goal 定义方 | 定义 Goal 和不做项；Goal 变更回负责人 |
 | Target 定义方 | 定义 Targets、Tasks、验收命令及修订（R1／R2／R5） |
 | 协调者 | 分配、依赖、新增 Targets（R4）及决定路由 |
 | Target 写者 | 每个 Target 唯一写者：实现、验证、commit、PR |
@@ -37,11 +37,11 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 
 ## 定义、冻结与缺口
 
-- **R1 定义权**：拿到定义 assignment 的人或 agent 可以编制三层定义，包括协调者／CLI 主会话、Target 定义方 或获宽范围 assignment 的原实现者；不按工作流划分定义权，新增 Target 仍遵守 R4。
+- **R1 定义权**：拿到定义 assignment 的人或 agent 可以编制三层定义，包括协调者／CLI 主会话、Target 定义方或获宽范围 assignment 的原实现者；不按工作流划分定义权，新增 Target 仍遵守 R4。
   保留已有决定和有效受审基线，只补真正未定的内容；Task-only 执行者不能补定义或扩权。
 - **R2 交出即冻结**：定义一经交给执行方即冻结；执行方严格按获分配的 Tasks 做，不增加文件、行为或内容，只有定义方能出新 revision，独立审查只看定义改动部分。
   进度、PR/head、验证证据及下一动作记入执行台账，不修改冻结定义或另设审批。
-- **R3 缺口另立**：缺口不扩大当前 Target；编译、CI 或依赖坏了，提议前置 Target，当前 Target 等它合法合并后继续；验收覆盖不全，由定义方按 R5 把缺项移到新 Target，当前 Target 仅按修订后已完成的范围交付；无关问题记 backlog，由定义方判断是否属于本 Goal；改变 Goal 回 负责人。
+- **R3 缺口另立**：缺口不扩大当前 Target；编译、CI 或依赖坏了，提议前置 Target，当前 Target 等它合法合并后继续；验收覆盖不全，由定义方按 R5 把缺项移到新 Target，当前 Target 仅按修订后已完成的范围交付；无关问题记 backlog，由定义方判断是否属于本 Goal；改变 Goal 回负责人。
   执行方提供失败命令、受影响验收及建议，不自行补适配／测试、删验收或宣称原范围已完成。
 - **R4 新增 Target 权**：只有协调者或负责人可以新增 Target；新 Target 不能改变 Goal，执行方只能附证据提议。
 - **R5 验收迁移**：验收项在 Targets 之间移动时，由定义方重映射 Goal／Target／Task 与验收命令并出新 revision，独立审查只看改动部分。
@@ -93,7 +93,10 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 独立验收：另开审查 subagent，不复用写者上下文，只读定义、diff 和命令证据。
 审查按 V1–V3 限定范围，写者自检不替代独立验收。
 
-嵌套（协调者实测，10-19）：Claude Code 的 subagent 不能再派 subagent，所以 Claude Code 下写者 subagent 不能再委派。
+交付：写者按目标仓流程推进 PR 合法合并，等待并修复 required checks；合并由负责人或目标仓授权的身份执行。
+主会话汇总台账，Goal 级验收另行取证。
+
+嵌套（2026-10-19 实测）：Claude Code 的 subagent 不能再派 subagent，所以 Claude Code 下写者 subagent 不能再委派。
 Codex CLI 0.163 在 danger-full-access 下 subagent 可再派一层，read-only sandbox 下第二层被拒（Operation not permitted）。
 R6 仍只允许写者委派一层；工具能力不扩大合同授权。
 
