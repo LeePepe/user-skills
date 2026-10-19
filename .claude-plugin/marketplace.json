@@ -1,0 +1,19 @@
+{
+  "name": "user-skills",
+  "owner": {
+    "name": "user-skills maintainers",
+    "url": "https://github.com/LeePepe/user-skills"
+  },
+  "metadata": {
+    "description": "面向 CLI agent 的公开通用 skills。",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "goal-target-task",
+      "source": "./skills/goal-target-task",
+      "category": "workflow",
+      "description": "使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
+    }
+  ]
+}
