@@ -30,7 +30,7 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 |---|---|
 | Goal 定义方 | 定义 Goal 和不做项；Goal 变更回负责人 |
 | Target 定义方 | 定义 Targets、Tasks、验收命令及修订（R1／R2／R5） |
-| 协调者 | 分配、依赖、新增 Targets（R4）及决定路由 |
+| 协调者 | 分配、依赖、新增 Targets（R4）及决定路由；不兼任 Target 写者或独立验收 |
 | Target 写者 | 每个 Target 唯一写者：实现、验证、commit、PR |
 | 独立验收 | 按 V1–V3 限定审查 |
 | 交付 | 推进 PR 合法合并 |
@@ -57,6 +57,8 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 
 角色来自可信调用来源和显式 assignment；独立 CLI 会话、可用工具或父级 Goal 上下文都不授予主 agent 权限。
 协调者分配、监督、路由决定和汇报证据；原执行者实现、验证、修复，独立 reviewer 验收，不自签自己的产物。
+协调者及 CLI 主会话不兼任 Target 写者或独立验收；只定义、分配、监督、路由决定和转述证据。
+实现、验证和验收结论由对应 agent 提供；协调者不推翻验收结论，有分歧按 V3 进入复审或交负责人。
 采用软行为隔离，保持工具可用；helper 权限不包含同级调度权，R6 委派自己的 Tasks 不属于同级调度；未知执行结果先对账，不派第二写者。
 
 交接携带本合同与目标仓指南、角色／来源／父级绑定、原始意图及已有决定、准确受审 revision 和授权来源、
@@ -84,19 +86,21 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 主会话担任定义方与协调者；用户是负责人。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
-小 Target：主会话自任写者，按 R6 把 Task 交给 subagent，自己整合提交。
+每个 Target 均派一个写者 agent；小 Target 可用一个写者 subagent。
 交接列明冻结 Task、owned paths、允许操作与验证命令，结果交回主会话。
 
 大或可并行的 Target：每个 Target 派一个写者 subagent，各用独立 worktree；主会话只协调。
 各写者实现、验证、commit、push、开 PR，并回报准确 head 与命令证据。
 
-独立验收：另开审查 subagent，不复用写者上下文，只读定义、diff 和命令证据。
+独立验收：每个 Target 另派一个未接触写者上下文且未参与实现的 agent，只读定义、diff 和命令证据。
 审查按 V1–V3 限定范围，写者自检不替代独立验收。
+主会话收集并转述写者证据与验收结论，在执行台账记录对应 agent 和会话 ID。
 
 交付：写者按目标仓流程推进 PR 合法合并，等待并修复 required checks；合并由负责人或目标仓授权的身份执行。
 主会话汇总台账，Goal 级验收另行取证。
 
-嵌套（2026-10-19 实测）：Claude Code 的 subagent 不能再派 subagent，所以 Claude Code 下写者 subagent 不能再委派。
+嵌套（2026-10-19 实测）：Claude Code 的写者 subagent 不能再委派。
+需要 R6 委派时，启动支持嵌套的写者 agent（如 `codex exec`），或由主会话并行派多个 Task subagent，指定唯一写者整合；在执行台账记录所选方式。
 Codex CLI 0.163 在 danger-full-access 下 subagent 可再派一层，read-only sandbox 下第二层被拒（Operation not permitted）。
 R6 仍只允许写者委派一层；工具能力不扩大合同授权。
 
