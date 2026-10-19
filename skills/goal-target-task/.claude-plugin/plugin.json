@@ -1,0 +1,5 @@
+{
+  "name": "goal-target-task",
+  "description": "使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。",
+  "category": "workflow"
+}
