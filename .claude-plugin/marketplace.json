@@ -38,6 +38,30 @@
       "source": "./skills/auto-review-merge",
       "category": "repo",
       "description": "Use when a user wants automated PR code review plus hands-off auto-merge on a GitHub repo — \"review my PRs automatically\", \"auto-merge when CI passes\", \"gate merges on a Claude review\", \"set up PR automation\". Installs a self-hosted-runner mechanism that runs a local subscription `claude` CLI as a deterministic merge gate (no ANTHROPIC_API_KEY), wires GitHub auto-merge, and codifies a branch ruleset. Framework/language-agnostic; the review dimensions are configurable per repo."
+    },
+    {
+      "name": "codebase-design",
+      "source": "./skills/codebase-design",
+      "category": "repo",
+      "description": "Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary."
+    },
+    {
+      "name": "domain-modeling",
+      "source": "./skills/domain-modeling",
+      "category": "repo",
+      "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR."
+    },
+    {
+      "name": "speckit",
+      "source": "./skills/speckit",
+      "category": "workflow",
+      "description": "Run a repository's native Spec Kit planning workflow. Use when Planner Lead must create, clarify, plan, task, analyze, or refine `spec.md`, `plan.md`, and `tasks.md` in a repository with `.specify`; do not use for implementation."
+    },
+    {
+      "name": "helix",
+      "source": "./skills/helix",
+      "category": "design",
+      "description": "Figma-to-code toolkit — compare designs vs code (fit-finish), generate code from Figma, and initialize design-system guides. Routes to the right workflow based on user intent."
     }
   ]
 }

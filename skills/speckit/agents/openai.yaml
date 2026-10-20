@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spec Kit"
+  short_description: "Run repository-native Spec Kit planning stages"
+  default_prompt: "Use $speckit to produce or refine the repository's Spec Kit planning artifacts."
