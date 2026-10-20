@@ -1,0 +1,5 @@
+{
+  "name": "auto-review-merge",
+  "description": "Use when a user wants automated PR code review plus hands-off auto-merge on a GitHub repo — \"review my PRs automatically\", \"auto-merge when CI passes\", \"gate merges on a Claude review\", \"set up PR automation\". Installs a self-hosted-runner mechanism that runs a local subscription `claude` CLI as a deterministic merge gate (no ANTHROPIC_API_KEY), wires GitHub auto-merge, and codifies a branch ruleset. Framework/language-agnostic; the review dimensions are configurable per repo.",
+  "category": "repo"
+}

@@ -14,6 +14,30 @@
       "source": "./skills/goal-target-task",
       "category": "workflow",
       "description": "使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
+    },
+    {
+      "name": "code-review",
+      "source": "./skills/code-review",
+      "category": "repo",
+      "description": "Review a branch, PR, worktree, or implementation handoff against both repository standards and feature intent. Use for implementer self-review or independent review when the target repo may contain Spec Kit artifacts and repo-kit files; preserves separate Standards and Spec axes, fans Standards review out by changed layer, checks cross-layer dependency direction, and reports cited findings without editing code."
+    },
+    {
+      "name": "xcode-cli",
+      "source": "./skills/xcode-cli",
+      "category": "repo",
+      "description": "Route Apple-platform builds, tests, simulator runs, and result inspection through Swift and Xcode command-line tools. Use when Codex needs to build or test a Swift package, Xcode project, or workspace; diagnose Apple build failures; run an iOS simulator; choose between swift build/test and xcodebuild; or parse xcresult output. Package-only changes stay on SwiftPM commands and escalate to xcodebuild only when the diff includes app/Xcode integration work or the user explicitly requests integration verification. Not for Xcode MCP or GUI automation."
+    },
+    {
+      "name": "deep-research",
+      "source": "./skills/deep-research",
+      "category": "research",
+      "description": "对任意主题做深度、多来源、经交叉核查的调研,产出带引用、按置信度分级的报告。五阶段流水线:把问题分解成 4-8 个子问题 → 跨渠道(web/github/news/academic)并行 fan-out 调研 → 对每个发现做对抗式核查(证伪而非确认,发现者≠核查者)→ 交叉验证+圆桌综合、标注分歧 → 输出 HIGH/MEDIUM/LOW/CONTESTED 分级的引用报告。Provider-agnostic:同一份 skill 在 Claude Code、Kimi(kimi -p)、Codex(codex exec)三端都成立;fan-out 与核查阶段可跨模型互查(claude 的发现让 codex/kimi 证伪,反之亦然),对方模型作独立第二视角。当用户想「深度调研 / deep research / 全面调研 / 多角度调研 / research roundtable / 帮我把某主题查透并给带引用的报告」时使用。调用前:若问题欠具体(如「买什么车」却无预算/用途/地区),先问 2-3 个澄清问题收窄范围,再把澄清结果织进 args。"
+    },
+    {
+      "name": "auto-review-merge",
+      "source": "./skills/auto-review-merge",
+      "category": "repo",
+      "description": "Use when a user wants automated PR code review plus hands-off auto-merge on a GitHub repo — \"review my PRs automatically\", \"auto-merge when CI passes\", \"gate merges on a Claude review\", \"set up PR automation\". Installs a self-hosted-runner mechanism that runs a local subscription `claude` CLI as a deterministic merge gate (no ANTHROPIC_API_KEY), wires GitHub auto-merge, and codifies a branch ruleset. Framework/language-agnostic; the review dimensions are configurable per repo."
     }
   ]
 }
