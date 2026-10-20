@@ -21,7 +21,8 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 Task 是分配和验收的单位，PR 是审查和合并的单位。
 依次判断：执行者不同、验收方式不同、可以并行、或中间结果要交给别人用，任一成立即拆 Task；其余只是步骤不同，由 Task 写者拆 PR，不另立 Task。
 使用 issue 跟踪时，Goal 是最高父 issue，Target 是它的子 issue，Task 是 Target 的子 issue；PR 关联所属 Task。
-小改动可在现有 issue／会话中定义一个 Target 和一个 Task，不另建规划目录或主管层。
+**Lite 档**：同时满足仅 1 个 Task 和 1 个写者、不改公共接口／红线路径／CI 门禁、改动不超过 5 个文件、不新增依赖时，可在现有 issue／会话中定义一个 Target 和一个 Task，不另建规划目录、台账或单独计划审查，与在途 PRs 路径不重叠时不进 R9 串行队列；PR 描述即台账与 R10 回执（Target／Task、验收命令与结果、准确 head、审查结论），验收为仓库 CI＋一次独立审查（V1–V5），R2 冻结与 V2／V3 照常。
+执行中任一条件不再满足，写者停止并回报，转完整流程（补 R7 与计划审查）后再继续。
 需要计划的工作先形成可审定义，按目标仓规则完成独立计划审查和执行确认；有效受审基线直接复用，不先实施再补审。
 
 ## 合同角色
@@ -30,9 +31,10 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 
 | 合同角色 | 职责 |
 |---|---|
-| Goal 定义方 | 定义 Goal 和不做项；评估 Target／Goal 变更，按 R4 交负责人批准 |
+| Goal 定义方 | 定义 Goal 和不做项；评估 Target／Goal 变更，按 R2 分级报批 |
 | Target 定义方 | 定义 Tasks 与验收命令；Task 增删改按 R2 获批后编制 revision（R1–R5） |
-| 协调者 | 分配、依赖、Target 变更评估（R4）与路由决定；不兼任 Task 写者或独立验收 |
+| 协调者 | 分配、依赖、Target 变更评估（R4）与路由决定，审定计划；不兼任 Task 写者或独立验收 |
+| Planner | 可由独立 agent 担任 Goal／Target 定义方，按 R1 编制定义与 revision，交协调者审定及独立计划审查 |
 | 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不写仓库、不提方案、不补定义 |
 | Task 写者 | 每个 Task 唯一写者：实现、验证、commit、PR；决定 Task 内 PR 划分 |
 | 独立验收 | 按 V1–V5 限定审查 |
@@ -44,13 +46,14 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   保留已有决定和有效受审基线，只补真正未定的内容；Task-only 执行者不能补定义或扩权。
 - **R2 交出即冻结**：定义一经交给执行方即冻结；执行方严格按获分配的 Task 做，不增加文件、行为或内容；Task 写者决定 Task 内 PR 划分，不因此取得修改冻结定义的权限。
   冻结后 Goal／Target／Task 范围变更须落盘结构化记录：改什么、原因、证据、对 Tasks 及验收的影响、规模等级。
-  小型澄清（限当前 Target，验收及文件不变）由协调者批准；Target 内 Task 增删改由协调者＋独立 reviewer 批准；Target／Goal 变更由负责人批准（R4）。
+  小型澄清（限当前 Target，验收及文件不变）由协调者批准；Target 内 Task 增删改由协调者＋独立 reviewer 批准；Target 变更在负责人预授权额度内（不改变 Goal 验收、净增删不超过 1 个 Task、不涉及红线／安全／隐私／数据）由协调者＋独立 reviewer 批准并报负责人备案，超额度或 Goal 变更由负责人批准（R4）。
+  等待批准只阻塞受影响 Tasks，其余 ready Tasks 继续派发；待负责人决定的事项按批汇总提交。
   按等级获批后，相应定义方编制 revision；独立审查只看定义改动部分；未备案扩张按 V2 阻塞。
   进度、PR/head、验证证据及下一动作记入执行台账，不修改冻结定义或另设审批。
 - **R3 缺口另立**：缺口不扩大当前 Target；编译、CI 或依赖坏了，提议前置 Target，当前 Target 等前置 Target 的所有 Task 完成交付且 Target 整体验收通过后继续；验收覆盖不全，由 Goal 定义方／协调者按 R5 提议把缺项移到新 Target，按 R2／R4 获批后由 Target 定义方编制 revision，当前 Target 仅按修订后已完成的范围交付；无关问题记 backlog，由 Goal 定义方／协调者判断是否属于本 Goal；改变 Goal 回负责人。
   执行方按 R2 提交结构化变更记录，附失败命令、受影响验收及建议，不自行补适配／测试、删验收或宣称原范围已完成。
-- **R4 Target 变更权**：Target 自身的范围、验收、增删改由 Goal 定义方／协调者评估并按 R2 交负责人批准；Target 定义方据此编制 revision；Target 变更不能改变 Goal，Goal 变更同样须负责人批准；执行方只能附证据提议。
-- **R5 验收迁移**：验收项在 Targets 之间移动时，由 Goal 定义方／协调者评估，按 R2／R4 交负责人批准；Target 定义方据此重映射 Goal／Target／Task 与验收命令并出新 revision，独立审查只看改动部分。
+- **R4 Target 变更权**：Target 自身的范围、验收、增删改由 Goal 定义方／协调者评估并按 R2 分级批准；Target 定义方据此编制 revision；Target 变更不能改变 Goal，Goal 变更须负责人批准；执行方只能附证据提议。
+- **R5 验收迁移**：验收项在 Targets 之间移动时，由 Goal 定义方／协调者评估，按 R2／R4 分级批准；Target 定义方据此重映射 Goal／Target／Task 与验收命令并出新 revision，独立审查只看改动部分。
   台账保留迁出／迁入位置、原因及未交付状态；迁移不等于 Goal 验收完成。
 - **R6 subagent 委派**：Task 写者可将所负责 Task 内的执行分片、独立验收可将审查分片交给 subagent；自行决定是否委派、数量及是否并行，无须另请批准。
   subagent 接收所属冻结 Task、执行分片、owned paths 子集及验证命令，只执行该分片，不新增正式 Task，缺口回报委派者。
@@ -63,9 +66,14 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
 - **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）；多 PR Task 的非最后一个 PR 获验收后可 in_review → in_progress。
   任意状态可转 blocked／cancelled，须记原因；解除阻塞后 blocked → ready，仍须满足就绪条件；只有全部依赖 done 且 R7 通过才可 ready，只派发 ready 的 Task。
-- **R9 漂移与合并队列**：规划记录基分支 SHA 及 owned／依赖文件的 revision；每次派发或恢复前核对当前基分支 SHA 和这些文件，owned／依赖路径有漂移即退回定义方按 R2 重规划，停止派发。
-  同一问题两轮审查仍失败（V3）、发现漂移、验收不可实现或依赖被取消，均将受影响 Tasks 置为 blocked 并退回定义方重规划；修订基线获审通过前不再派发受影响 Task。
-  协调者安排串行合并队列顺序，每次仅处理一个；写者轮到时按目标仓规则更新到最新基分支（rebase 或 merge），重跑 Task 验证，待准确 head 通过审查及仓库门禁后合法合并；失败不合并。
+  Target／Goal 状态：planning → frozen → in_progress → accepting → done，可转 blocked／cancelled 并记原因，修订期间回 planning；Target 在所含 Tasks 全部 done（或 cancelled 已备案）后进 accepting，按 V1 整体验收通过才 done；Goal 在必需 Targets 全部 done 后进 accepting，端到端证据齐全才 done。
+  租约：in_progress 的写者按协调者设定的周期更新心跳（回执或台账）；超时后协调者按 git 实际状态＋R10 回执对账，确认原写者已停止，记录交接（现场、head、未完成项）后改派新写者，同一时间仍只有一个写者。
+- **R9 漂移与合并队列**：规划记录基分支 SHA 及 owned／依赖文件的 revision；每次派发或恢复前核对当前基分支 SHA 和这些文件；同一 DAG 内上游 Tasks 按计划合并带来的变更不算漂移，只更新记录基线。
+  其他漂移先暂停派发受影响 Tasks，按 R11 由 Explorer 复核受影响引用；事实未变则更新基线后继续，事实已变才退回定义方按 R2 重规划。
+  同一问题两轮审查仍失败（V3）、经复核的事实漂移、验收不可实现或依赖被取消，均将受影响 Tasks 置为 blocked 并退回定义方重规划；修订基线获审通过前不再派发受影响 Task。
+  同一 Target 冻结后已修订 2 次仍需再修订时，不再自行重规划，交负责人决定缩小、拆分或取消。
+  owned paths 重叠或有依赖关系的 PRs 由协调者排入串行合并队列，每次仅处理一个；写者轮到时按目标仓规则更新到最新基分支（rebase 或 merge），重跑 Task 验证，待准确 head 通过审查及仓库门禁后合法合并；失败不合并。
+  与在途 PRs 路径不相交且无依赖的 PR 可直接走仓库原生 merge queue／自动合并，仍须准确 head 通过 Task 验证、审查及仓库门禁。
 - **R10 双 ID 回执**：每个 Task 完成／交回、每次审查及每次 R11 探查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA；探查回执以 Target／计划 ID 定位，记录基分支 SHA 及逐项事实与证据。
   协调者按回执＋git 实际状态对账，不以终端／pane 输出或 agent 自述代替证据；回执放目标仓允许或协调者指定的位置，台账链接对应文件。
 - **R11 只读探查**：定义方在规划前或规划中可派 Explorer，交接列明待核实问题清单（API／符号、文件、命令、文档及版本）和基分支 SHA；Explorer 无仓库写权限，不 edit／commit／push／开 PR，不运行会改变状态的命令。
@@ -76,14 +84,14 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 
 角色来自可信调用来源和显式 assignment；独立 CLI 会话、可用工具或父级 Goal 上下文都不授予主 agent 权限。
 协调者分配、监督、路由决定和汇报证据；原执行者实现、验证、修复，独立 reviewer 验收，不自签自己的产物。
-协调者及 CLI 主会话不兼任 Task 写者或独立验收；只定义、分配、监督、路由决定和转述证据。
+协调者及 CLI 主会话不兼任 Task 写者或独立验收；只定义或审定 Planner 的定义、分配、监督、路由决定和转述证据。
 实现、验证和验收结论由对应 agent 提供；协调者不推翻验收结论，有分歧按 V3 进入复审或交负责人。
 采用软行为隔离，保持工具可用；helper 权限不包含同级调度权，R6 委派 Task 内的执行分片不属于同级调度；未知执行结果先对账，不派第二写者。
 
 交接携带本合同与目标仓指南、角色／来源／父级绑定、原始意图及已有决定、准确受审 revision 和授权来源、
 Goal／Target／Tasks、owned paths、允许操作、唯一写者、验收命令、独立验收责任及预期回报；交给 subagent 的 Task 同样适用，不假定 skill 自动继承。
 交接与台账记录合同路径及 SHA、定义 revision/hash，并分别标明审查基准和执行时实际加载的版本。
-缺失或冲突沿原调用者回报，暂停依赖该缺口的动作；执行者不可用时保留角色和现场，不自行接管。
+缺失或冲突沿原调用者回报，暂停依赖该缺口的动作；执行者不可用时保留现场，按 R8 租约超时对账后改派新写者，协调者不自行接管写入。
 
 ## 限定审查
 
@@ -106,10 +114,11 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 
 ## CLI 用法
 
-主会话担任定义方与协调者；用户是负责人。
+主会话（TL）担任协调者：审定计划、分配与协调；定义方可由独立 Planner agent 担任，主会话也可兼任；用户是负责人。
+角色与模型、启动参数推荐见 [references/model-roles.md](references/model-roles.md)；本合同不绑定具体模型。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
-规划前或规划中按 R11 派只读 Explorer（低成本模型即可，如 `codex exec -s read-only -m gpt-5.6-luna` 或 `cursor-agent --mode ask --model composer-2.5`），回报落盘后由主会话写入计划。
+规划前或规划中按 R11 派只读 Explorer（低成本模型即可），回报落盘后由定义方写入计划。
 
 每个 Task 均派一个写者 agent；小 Task 可用一个写者 subagent。
 交接列明冻结 Task、owned paths、允许操作与验证命令，结果交回主会话。
@@ -122,7 +131,7 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 审查按 V1–V5 限定范围，写者自检不替代独立验收。
 主会话收集并转述写者证据与验收结论，在执行台账记录对应 agent 和会话 ID。
 
-交付：写者按目标仓流程及 R9 串行队列推进 PR 合法合并，仓库支持时启用自动合并，等待并修复 required checks，持续跟进直到真实读回 PR 已合并；卡住时按目标仓的监督机制处理。
+交付：写者按目标仓流程及 R9 合并规则推进 PR 合法合并，仓库支持时启用自动合并，等待并修复 required checks，持续跟进直到真实读回 PR 已合并；卡住时按目标仓的监督机制处理。
 主会话汇总台账，Goal 级验收另行取证。
 
 嵌套（2026-10-19 实测）：Claude Code 的写者 subagent 不能再委派。
