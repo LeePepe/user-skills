@@ -50,18 +50,6 @@
       "source": "./skills/domain-modeling",
       "category": "repo",
       "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR."
-    },
-    {
-      "name": "speckit",
-      "source": "./skills/speckit",
-      "category": "workflow",
-      "description": "Run a repository's native Spec Kit planning workflow. Use when Planner Lead must create, clarify, plan, task, analyze, or refine `spec.md`, `plan.md`, and `tasks.md` in a repository with `.specify`; do not use for implementation."
-    },
-    {
-      "name": "helix",
-      "source": "./skills/helix",
-      "category": "design",
-      "description": "Figma-to-code toolkit — compare designs vs code (fit-finish), generate code from Figma, and initialize design-system guides. Routes to the right workflow based on user intent."
     }
   ]
 }
