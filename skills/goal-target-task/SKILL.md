@@ -32,7 +32,8 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 |---|---|
 | Goal 定义方 | 定义 Goal 和不做项；评估 Target／Goal 变更，按 R4 交负责人批准 |
 | Target 定义方 | 定义 Tasks 与验收命令；Task 增删改按 R2 获批后编制 revision（R1–R5） |
-| 协调者 | 分配、依赖、Target 变更评估与路由（R4）及决定路由；不兼任 Task 写者或独立验收 |
+| 协调者 | 分配、依赖、Target 变更评估（R4）与路由决定；不兼任 Task 写者或独立验收 |
+| 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不写仓库、不提方案、不补定义 |
 | Task 写者 | 每个 Task 唯一写者：实现、验证、commit、PR；决定 Task 内 PR 划分 |
 | 独立验收 | 按 V1–V5 限定审查 |
 | 交付 | 推进 PR 合法合并 |
@@ -57,7 +58,7 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   并行 subagent 使用不重叠路径，或各用独立 worktree。
   委派仅一层，subagent 不再委派。
   subagent 检查计入委派者自检，不算独立审查，结论仍由委派者负责。
-- **R7 冻结前一致性**：Target／Task 计划冻结前逐项核对：每个 Task 的验收、文件／区域（owned paths）、依赖及验证命令齐全；引用的命令、API、文件已实际核实存在，不凭假设。
+- **R7 冻结前一致性**：Target／Task 计划冻结前逐项核对：每个 Task 的验收、文件／区域（owned paths）、依赖及验证命令齐全；引用的命令、API、符号、文件已实际核实存在，不凭假设；可用对应当前基分支 SHA 的 R11 探查证据满足。
   Tasks 之间命令不冲突；可并行（无依赖顺序）的 Tasks 的 owned paths 不重叠；依赖图无环；定义方输出不得含可编译的实现代码；任一失败即阻止冻结。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
 - **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）；多 PR Task 的非最后一个 PR 获验收后可 in_review → in_progress。
@@ -65,8 +66,11 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 - **R9 漂移与合并队列**：规划记录基分支 SHA 及 owned／依赖文件的 revision；每次派发或恢复前核对当前基分支 SHA 和这些文件，owned／依赖路径有漂移即退回定义方按 R2 重规划，停止派发。
   同一问题两轮审查仍失败（V3）、发现漂移、验收不可实现或依赖被取消，均将受影响 Tasks 置为 blocked 并退回定义方重规划；修订基线获审通过前不再派发受影响 Task。
   协调者安排串行合并队列顺序，每次仅处理一个；写者轮到时按目标仓规则更新到最新基分支（rebase 或 merge），重跑 Task 验证，待准确 head 通过审查及仓库门禁后合法合并；失败不合并。
-- **R10 双 ID 回执**：每个 Task 完成／交回及每次审查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA。
+- **R10 双 ID 回执**：每个 Task 完成／交回、每次审查及每次 R11 探查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA；探查回执以 Target／计划 ID 定位，记录基分支 SHA 及逐项事实与证据。
   协调者按回执＋git 实际状态对账，不以终端／pane 输出或 agent 自述代替证据；回执放目标仓允许或协调者指定的位置，台账链接对应文件。
+- **R11 只读探查**：定义方在规划前或规划中可派 Explorer，交接列明待核实问题清单（API／符号、文件、命令、文档及版本）和基分支 SHA；Explorer 无仓库写权限，不 edit／commit／push／开 PR，不运行会改变状态的命令。
+  逐项回报：存在／不存在／与假设不符，附 file:line、命令及输出或文档 URL／版本；不提实现方案、不补定义、不扩大问题清单，新发现的疑点回报定义方。
+  定义方只引用已核实的事实；基分支 SHA 变化后按 R9 复核受影响项。探查不算独立审查，计划审查仍按 V1 核对。
 
 ## 角色绑定与交接
 
@@ -104,6 +108,8 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 
 主会话担任定义方与协调者；用户是负责人。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
+
+规划前或规划中按 R11 派只读 Explorer（低成本模型即可，如 `codex exec -s read-only -m gpt-5.6-luna` 或 `cursor-agent --mode ask --model composer-2.5`），回报落盘后由主会话写入计划。
 
 每个 Task 均派一个写者 agent；小 Task 可用一个写者 subagent。
 交接列明冻结 Task、owned paths、允许操作与验证命令，结果交回主会话。
