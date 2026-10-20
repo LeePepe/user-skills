@@ -21,8 +21,8 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 Task 是分配和验收的单位，PR 是审查和合并的单位。
 依次判断：执行者不同、验收方式不同、可以并行、或中间结果要交给别人用，任一成立即拆 Task；其余只是步骤不同，由 Task 写者拆 PR，不另立 Task。
 使用 issue 跟踪时，Goal 是最高父 issue，Target 是它的子 issue，Task 是 Target 的子 issue；PR 关联所属 Task。
-**Lite 档**：同时满足仅 1 个 Task 和 1 个写者、不改公共接口／红线路径／CI 门禁、改动不超过 5 个文件、不新增依赖时，可在现有 issue／会话中定义一个 Target 和一个 Task，不另建规划目录、台账或单独计划审查，与在途 PRs 路径不重叠时不进 R9 串行队列；PR 描述即台账与 R10 回执（Target／Task、验收命令与结果、准确 head、审查结论），验收为仓库 CI＋一次独立审查（V1–V5），R2 冻结与 V2／V3 照常。
-执行中任一条件不再满足，写者停止并回报，转完整流程（补 R7 与计划审查）后再继续。
+**Lite 档**：同时满足仅 1 个 Task、1 个写者、1 个 PR、不改公共接口／红线路径／CI 门禁、改动不超过 5 个文件、不新增依赖时，可在现有 issue／会话中定义一个 Target 和一个 Task，不另建规划目录、台账或单独计划审查，但定义方仍须完成 R7 自检后才可 ready；与在途 PRs 路径不重叠时不进 R9 串行队列；PR 描述即台账与 R10 回执（Target／Task、验收命令与结果、准确 head、审查结论），验收为仓库 CI＋该 PR 的一次独立审查（V1–V5），同时覆盖 Task 与 Target 验收；R2 冻结与 V2／V3 照常。
+执行中任一条件不再满足，写者停止并回报，转完整流程（补独立计划审查）后再继续。
 需要计划的工作先形成可审定义，按目标仓规则完成独立计划审查和执行确认；有效受审基线直接复用，不先实施再补审。
 
 ## 合同角色
@@ -46,7 +46,7 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   保留已有决定和有效受审基线，只补真正未定的内容；Task-only 执行者不能补定义或扩权。
 - **R2 交出即冻结**：定义一经交给执行方即冻结；执行方严格按获分配的 Task 做，不增加文件、行为或内容；Task 写者决定 Task 内 PR 划分，不因此取得修改冻结定义的权限。
   冻结后 Goal／Target／Task 范围变更须落盘结构化记录：改什么、原因、证据、对 Tasks 及验收的影响、规模等级。
-  小型澄清（限当前 Target，验收及文件不变）由协调者批准；Target 内 Task 增删改由协调者＋独立 reviewer 批准；Target 变更在负责人预授权额度内（不改变 Goal 验收、净增删不超过 1 个 Task、不涉及红线／安全／隐私／数据）由协调者＋独立 reviewer 批准并报负责人备案，超额度或 Goal 变更由负责人批准（R4）。
+  小型澄清（限当前 Target，验收及文件不变）由协调者批准；Target 内 Task 增删改由协调者＋独立 reviewer 批准；Target 变更在负责人预授权额度内（不改变 Goal 验收、Task 增删合计不超过 1 个、不涉及红线／安全／隐私／数据）由协调者＋独立 reviewer 批准并报负责人备案（记录授权来源，同一 Target 累计计数），超额度或 Goal 变更由负责人批准（R4）。
   等待批准只阻塞受影响 Tasks，其余 ready Tasks 继续派发；待负责人决定的事项按批汇总提交。
   按等级获批后，相应定义方编制 revision；独立审查只看定义改动部分；未备案扩张按 V2 阻塞。
   进度、PR/head、验证证据及下一动作记入执行台账，不修改冻结定义或另设审批。
@@ -66,8 +66,8 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
 - **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）；多 PR Task 的非最后一个 PR 获验收后可 in_review → in_progress。
   任意状态可转 blocked／cancelled，须记原因；解除阻塞后 blocked → ready，仍须满足就绪条件；只有全部依赖 done 且 R7 通过才可 ready，只派发 ready 的 Task。
-  Target／Goal 状态：planning → frozen → in_progress → accepting → done，可转 blocked／cancelled 并记原因，修订期间回 planning；Target 在所含 Tasks 全部 done（或 cancelled 已备案）后进 accepting，按 V1 整体验收通过才 done；Goal 在必需 Targets 全部 done 后进 accepting，端到端证据齐全才 done。
-  租约：in_progress 的写者按协调者设定的周期更新心跳（回执或台账）；超时后协调者按 git 实际状态＋R10 回执对账，确认原写者已停止，记录交接（现场、head、未完成项）后改派新写者，同一时间仍只有一个写者。
+  Target／Goal 状态：planning → frozen → in_progress → accepting → done，可转 blocked／cancelled 并记原因，修订期间回 planning；阻塞解除经协调者核对原因已消除且定义无需修订时回阻塞前状态，否则回 planning；Target 在所含 Tasks 全部 done（或 cancelled 已备案）后进 accepting，按 V1 整体验收通过才 done；Goal 在必需 Targets 全部 done 后进 accepting，端到端证据齐全才 done。
+  租约：in_progress／changes_requested 的写者按协调者设定的周期更新心跳（回执或台账）；超时后协调者按 git 实际状态＋R10 回执对账，确认原写者及其 R6 subagent 均已停止，记录交接（现场、head、未完成项）后改派新写者，同一时间仍只有一个写者。
 - **R9 漂移与合并队列**：规划记录基分支 SHA 及 owned／依赖文件的 revision；每次派发或恢复前核对当前基分支 SHA 和这些文件；同一 DAG 内上游 Tasks 按计划合并带来的变更不算漂移，只更新记录基线。
   其他漂移先暂停派发受影响 Tasks，按 R11 由 Explorer 复核受影响引用；事实未变则更新基线后继续，事实已变才退回定义方按 R2 重规划。
   同一问题两轮审查仍失败（V3）、经复核的事实漂移、验收不可实现或依赖被取消，均将受影响 Tasks 置为 blocked 并退回定义方重规划；修订基线获审通过前不再派发受影响 Task。
@@ -106,7 +106,7 @@ Goal／Target／Tasks、owned paths、允许操作、唯一写者、验收命令
   复审携带原 findings、前后 revision、repair diff 和证据，逐项标记已修复／未修复并列出修复引入的回归；其余发现仍按 V2 判定阻塞或记入 backlog。
   新 SHA 需要该 SHA 的证据，但不扩大复审范围；定义改动仅审 R2／R5 的 delta。
 - **V4 CI 范围**：目标仓库的 CI 门禁照常有效；修改门禁本身是独立 Target，须负责人批准。
-- **V5 审查结论**：PASS＝通过；CONCERNS＝仅有非阻塞项，记 backlog，不返工；WAIVED＝阻塞项豁免至少须协调者＋提出该项的独立 reviewer 同意，涉及验收项、红线或安全／隐私／数据丢失的豁免还须负责人批准，记录原因及批准人，仓库 required gates 仍须通过；FAIL＝存在未获豁免的 V2 阻塞项，仅此结论触发修复，仍受 V3／R9 重规划约束；每次结论按 R10 落盘。
+- **V5 审查结论**：PASS＝通过；CONCERNS＝仅有非阻塞项，记 backlog，不返工；WAIVED＝阻塞项豁免至少须协调者＋提出该项的独立 reviewer 同意，涉及验收项、红线或安全／隐私／数据丢失的豁免还须负责人批准，记录原因及批准人，仓库 required gates 仍须通过；豁免不能替代 R2／R4 的分级批准，未获批的范围扩张只能按 R2 补批，不可 WAIVED；FAIL＝存在未获豁免的 V2 阻塞项，仅此结论触发修复，仍受 V3／R9 重规划约束；每次结论按 R10 落盘。
 
 复用已有、覆盖同一职责的独立审查，不堆叠重复全量审查；实现者现有完整 code-review 自检保留。
 实现者回报 Task 输出及限制，独立验收按 V1 分别确认 PR、Task 与 Target；PR URL／准确 head 的实现交接不等于合法合并。
@@ -118,12 +118,12 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 角色与模型、启动参数推荐见 [references/model-roles.md](references/model-roles.md)；本合同不绑定具体模型。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
-规划前或规划中按 R11 派只读 Explorer（低成本模型即可），回报落盘后由定义方写入计划。
+规划前或规划中按需（R11）派只读 Explorer（低成本模型即可），回报落盘后由定义方写入计划。
 
 每个 Task 均派一个写者 agent；小 Task 可用一个写者 subagent。
 交接列明冻结 Task、owned paths、允许操作与验证命令，结果交回主会话。
 
-同一 Target 的多个 Task 可并行，每个 Task 派一个写者 subagent，路径不重叠或各用独立 worktree；有依赖的 Tasks 按顺序，主会话只协调。
+同一 Target 的多个 Task 可并行，每个 Task 派一个写者 subagent，owned paths 不重叠（R7）并各用独立 worktree；有依赖的 Tasks 按顺序，主会话只协调。
 各写者实现、验证、commit、push、开 PR，并回报准确 head 与命令证据。
 
 独立验收：每个 PR 另派一个未接触写者上下文且未参与实现的 agent，只读定义、diff 和命令证据；Task 最后一个 PR 核对累计验收。
