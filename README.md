@@ -12,6 +12,12 @@
 
 [`auto-review-merge`](./skills/auto-review-merge/SKILL.md) 为 GitHub 仓库配置基于本地 Claude CLI 的 PR 审查门禁、自托管 runner 和自动合并流程。
 
+[`codebase-design`](./skills/codebase-design/SKILL.md) 提供深模块、接口、接缝和适配器的设计词汇与方法。
+
+[`domain-modeling`](./skills/domain-modeling/SKILL.md) 梳理领域术语，按需维护 `CONTEXT.md` 和架构决策记录。
+
+`codebase-design`、`domain-modeling` 衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；各目录附上原始版权与许可文本。
+
 ## 安装
 
 Claude Code 使用 plugin marketplace：
@@ -23,6 +29,8 @@ Claude Code 使用 plugin marketplace：
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
 /plugin install auto-review-merge@user-skills
+/plugin install codebase-design@user-skills
+/plugin install domain-modeling@user-skills
 ```
 
 Codex 使用内置 `skill-installer`，在会话中输入：
@@ -33,6 +41,8 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/auto-review-merge 安装 auto-review-merge。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/codebase-design 安装 codebase-design。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/domain-modeling 安装 domain-modeling。
 ```
 
 安装后重启 Codex，使新 skill 可被发现；规划或执行开发工作前加载 `goal-target-task`。
