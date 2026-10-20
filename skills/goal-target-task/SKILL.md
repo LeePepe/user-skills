@@ -32,7 +32,7 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 |---|---|
 | Goal 定义方 | 定义 Goal 和不做项；评估 Target／Goal 变更，按 R4 交负责人批准 |
 | Target 定义方 | 定义 Tasks 与验收命令；Task 增删改按 R2 获批后编制 revision（R1–R5） |
-| 协调者 | 分配、依赖、Target 变更（R4）及决定路由；不兼任 Task 写者或独立验收 |
+| 协调者 | 分配、依赖、Target 变更评估与路由（R4）及决定路由；不兼任 Task 写者或独立验收 |
 | Task 写者 | 每个 Task 唯一写者：实现、验证、commit、PR；决定 Task 内 PR 划分 |
 | 独立验收 | 按 V1–V5 限定审查 |
 | 交付 | 推进 PR 合法合并 |
@@ -58,15 +58,15 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   委派仅一层，subagent 不再委派。
   subagent 检查计入委派者自检，不算独立审查，结论仍由委派者负责。
 - **R7 冻结前一致性**：Target／Task 计划冻结前逐项核对：每个 Task 的验收、文件／区域（owned paths）、依赖及验证命令齐全；引用的命令、API、文件已实际核实存在，不凭假设。
-  Tasks 之间无冲突（含命令及 owned paths），依赖图无环；Planner 输出不得含可编译的实现代码；任一失败即阻止冻结。
+  Tasks 之间命令不冲突；可并行（无依赖顺序）的 Tasks 的 owned paths 不重叠；依赖图无环；定义方输出不得含可编译的实现代码；任一失败即阻止冻结。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
-- **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）。
+- **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）；多 PR Task 的非最后一个 PR 获验收后可 in_review → in_progress。
   任意状态可转 blocked／cancelled，须记原因；解除阻塞后 blocked → ready，仍须满足就绪条件；只有全部依赖 done 且 R7 通过才可 ready，只派发 ready 的 Task。
 - **R9 漂移与合并队列**：规划记录基分支 SHA 及 owned／依赖文件的 revision；每次派发或恢复前核对当前基分支 SHA 和这些文件，owned／依赖路径有漂移即退回定义方按 R2 重规划，停止派发。
-  同一问题两轮审查仍失败（V3）、发现漂移、验收不可实现或依赖被取消，也须退回定义方重规划，修订基线获审通过前不再派发受影响 Task。
-  合并进入串行队列，每次仅处理一个：rebase 到最新基分支，重跑 Task 验证，按仓库门禁审查准确 head 后合法合并；失败不合并。
-- **R10 双 ID 回执**：每个 Task 完成／交回及每次审查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、commit SHA／head、验证命令与结果、合同 SHA。
-  协调者按回执＋git 实际状态对账，不以终端／pane 输出或 agent 自述代替证据；回执放目标仓允许的位置，台账链接对应文件。
+  同一问题两轮审查仍失败（V3）、发现漂移、验收不可实现或依赖被取消，均将受影响 Tasks 置为 blocked 并退回定义方重规划；修订基线获审通过前不再派发受影响 Task。
+  协调者安排串行合并队列顺序，每次仅处理一个；写者轮到时按目标仓规则更新到最新基分支（rebase 或 merge），重跑 Task 验证，待准确 head 通过审查及仓库门禁后合法合并；失败不合并。
+- **R10 双 ID 回执**：每个 Task 完成／交回及每次审查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA。
+  协调者按回执＋git 实际状态对账，不以终端／pane 输出或 agent 自述代替证据；回执放目标仓允许或协调者指定的位置，台账链接对应文件。
 
 ## 角色绑定与交接
 
@@ -94,7 +94,7 @@ Goal／Target／Tasks、owned paths、允许操作、唯一写者、验收命令
   复审携带原 findings、前后 revision、repair diff 和证据，逐项标记已修复／未修复并列出修复引入的回归；其余发现仍按 V2 判定阻塞或记入 backlog。
   新 SHA 需要该 SHA 的证据，但不扩大复审范围；定义改动仅审 R2／R5 的 delta。
 - **V4 CI 范围**：目标仓库的 CI 门禁照常有效；修改门禁本身是独立 Target，须负责人批准。
-- **V5 审查结论**：PASS＝通过；CONCERNS＝仅有非阻塞项，记 backlog，不返工；WAIVED＝阻塞项按 R2 对应等级批准豁免，记录原因及批准人，仓库 required gates 仍须通过；FAIL＝存在未获豁免的 V2 阻塞项，仅此结论触发修复，仍受 V3／R9 重规划约束；每次结论按 R10 落盘。
+- **V5 审查结论**：PASS＝通过；CONCERNS＝仅有非阻塞项，记 backlog，不返工；WAIVED＝阻塞项豁免至少须协调者＋提出该项的独立 reviewer 同意，涉及验收项、红线或安全／隐私／数据丢失的豁免还须负责人批准，记录原因及批准人，仓库 required gates 仍须通过；FAIL＝存在未获豁免的 V2 阻塞项，仅此结论触发修复，仍受 V3／R9 重规划约束；每次结论按 R10 落盘。
 
 复用已有、覆盖同一职责的独立审查，不堆叠重复全量审查；实现者现有完整 code-review 自检保留。
 实现者回报 Task 输出及限制，独立验收按 V1 分别确认 PR、Task 与 Target；PR URL／准确 head 的实现交接不等于合法合并。
