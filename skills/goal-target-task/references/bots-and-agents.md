@@ -13,12 +13,13 @@
 
 | bot | 机器 | 在 GTT 中的身份 | 不做 |
 |---|---|---|---|
-| Hotty | Mac mini | 总监督：整体 plan 与跨 Goal 台账汇总，看卡点；Owner 问时从各 Goal 台账查超时/卡住事件 | 不接管具体 Goal 的协调，不做 Task 写者 |
+| Hotty | Mac mini | 总管：整体 plan 与跨 Goal 台账汇总，看卡点、协调各 bot 分工；Owner 问时从各 Goal 台账查超时/卡住事件 | 不接管具体 Goal 的协调，不做 Task 写者 |
 | Joy | MacBook | MacBook 上 Goal 的协调者 | 不操作 Mac mini |
-| Atlas | Mac mini | soe + AIDash 合并线的协调者 | |
-| 艺术家 | — | Strata 设计定义（设计方面的定义方/Owner 代理） | 不放行发布、合并 |
-| fonder | — | 合并执行，负责 01 的改动 | |
-| flower | — | 06 的周期维护 | |
+| Atlas | Mac mini | retro 相关工作；AIDash（数据与展示平台）及 soe + AIDash 合并线的协调者 | |
+| 艺术家 | Mac mini | Strata 设计定义（设计方面的定义方/Owner 代理） | 不放行发布、合并 |
+| fonder | Mac mini | 基础维护（环境、工具、CLI、herdr 等） | |
+| flower | Mac mini | workflow 相关工作：01 需求流程、03 PR 交付的整体流程、06 周期维护 | 不做 PR 状态的具体盯梢（另由监督者负责，方案调研中） |
+| pigger | Mac mini | Owner 的个人咨询顾问，不参与 GTT | 不接 GTT 任务 |
 
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
 - Owner（用户）是唯一能放行发布、合并和危险操作的人；bot 转述的授权不算放行，需在台账记 Owner 的原话或来源。
