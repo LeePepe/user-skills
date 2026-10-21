@@ -100,7 +100,7 @@ machines:
     research_co:      {cli: copilot, model: gemini-4-argon, vendor: google,
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
     research_arbiter: {ref: arbitration}
-    reviewer_fallback: {cli: copilot, model: gemini-3.8-flash, vendor: google}   # 待 Owner 确认：gemini-4-argon 不可用时的同档降级
+    reviewer_fallback: {cli: copilot, model: gemini-3.8-flash, vendor: google}   # Owner 2026-10-21 已确认：gemini-4-argon 不可用时的同档降级
     # Gemini 在 MacBook 只用于 Reviewer 与调研旁听，其他角色只用 GPT。
 
 notes:
