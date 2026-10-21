@@ -96,7 +96,8 @@ Goal／Target／Tasks、owned paths、允许操作、唯一写者、验收命令
 **任意层接手**：所有执行入口（CLI 会话或其他平台的团队）适用同一合同与合同角色，平台只决定由谁担任角色；新的协调者或执行团队可在任意时点接手同一 Goal：只有 Goal、已有 Targets，或已有 Tasks（含在途或需修改的 Task）。
 接手先按 R10 回执、台账与 git 实际状态对账，确认各层 R8 状态、合同 SHA 与定义 revision 并记录交接；从当前状态继续，不重新规划已冻结的定义。
 先看 Goal／Target：为 planning 时，定义方按 R1／R7 编制或补齐，按本合同完成计划审查（Lite 档按其规则以 R7 自检代替单独计划审查）后冻结；已冻结的不重新定义。
-再逐个按 Task 自身状态继续，不以父层状态代替：
+父层 Goal 或 Target 为 blocked、cancelled 或 done 时，其下 Task 一律不派发、不恢复，先按 R8 处理父层；父层为 blocked 时，其下 in_progress／changes_requested 的 Task 由协调者通知写者停止，确认原写者及其 R6 subagent 已停止后记录交接（现场、head、未完成项），Task 转 blocked。
+父层不处于上述状态时，逐个按 Task 自身状态继续，不以父层状态代替：
 - planned：满足 R7、全部依赖 done 并通过 R9 基线核对后转 ready；
 - ready：复用有效受审基线，分配写者；
 - in_progress／changes_requested：按 R8 租约对账，确认原写者及其 R6 subagent 已停止后改派，同一时间仅一个写者；
