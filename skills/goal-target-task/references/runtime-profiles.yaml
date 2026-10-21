@@ -64,10 +64,10 @@ machines:
                        flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}  # 不开 bypass permissions
     arbitration:      {cli: claude, model: opus, vendor: anthropic}
     planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: workspace-write, writes: handoff-only}
-    planner_reviewer: {cli: cursor-agent, model: gemini-4-argon-high, vendor: google, flags: "--model gemini-4-argon-high --mode ask"}  # 2026-10-21 Atlas 实测：Mac mini 的 Cursor 返回 "Gemini 4 Argon is not included in your weekly usage"，暂不可用；待 Owner 决定改走 copilot --model gemini-4-argon（只读参数）或加 Cursor 额度
+    planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
     code_reviewer:    # 写者是 openai，故不能用 GPT；二选一，回执写明
       - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}
-      - {cli: cursor-agent, model: gemini-4-argon-high, vendor: google, flags: "--model gemini-4-argon-high --mode ask"}  # 同上：Cursor 额度暂不含 Gemini 4 Argon，待 Owner 决定
+      - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 同上，Owner 2026-10-21 决定
     writer:
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write,
          flags: "-s workspace-write -a never --add-dir <主仓库>/.git"}   # 待验证：见下方 notes.writer_sandbox
