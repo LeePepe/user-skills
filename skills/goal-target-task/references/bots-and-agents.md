@@ -19,7 +19,7 @@
 | 艺术家 | Mac mini | Strata 设计定义（设计方面的定义方/Owner 代理） | 不放行发布、合并 |
 | fonder | Mac mini | 基础维护（环境、工具、CLI、herdr 等） | |
 | flower | Mac mini | workflow 相关工作：01 需求流程、03 PR 交付的整体流程、06 周期维护 | 不做 PR 状态的具体盯梢（另由监督者负责，方案调研中） |
-| pigger | Mac mini | Owner 的个人咨询顾问，不参与 GTT | 不接 GTT 任务 |
+| pigger | Mac mini | Owner 的个人咨询顾问；可按 GTT 做自己的咨询类工作 | 不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal） |
 
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
 - Owner（用户）是唯一能放行发布、合并和危险操作的人；bot 转述的授权不算放行，需在台账记 Owner 的原话或来源。
