@@ -19,6 +19,7 @@
 
 version: 1
 updated: 2026-10-22
+# Owner 2026-10-22（Hotty 转述 tianpei「就给 codex 所有 danger-full-access」）：Codex 用 -s danger-full-access，不列入 forbidden_flags。
 
 # 档位：合同和分工文档只引用这里的档位/角色名
 tiers:
@@ -46,7 +47,6 @@ common:
   forbidden_flags:
     - "--yolo"
     - "--force"                                     # cursor-agent，等同 --yolo
-    - "danger-full-access"                          # codex -s
     - "--dangerously-bypass-approvals-and-sandbox"  # codex
     - "--dangerously-skip-permissions"              # claude
     - "--allow-all-tools"                           # copilot
@@ -63,17 +63,17 @@ machines:
     team_lead:        {cli: claude, model: opus, vendor: anthropic,
                        flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}  # 不开 bypass permissions
     arbitration:      {cli: claude, model: opus, vendor: anthropic}
-    planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: workspace-write, writes: handoff-only}
+    planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
     planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
     code_reviewer:    # 写者是 openai，故不能用 GPT；默认 Copilot Gemini；Grok 仅非默认降级
       - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 默认；Owner 2026-10-22 决定 code Reviewer 不走 Grok，省 Cursor Grok 池
       - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}  # 非默认：仅 Gemini 不可用或 Owner 显式指定时用
     writer:
-      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write,
-         flags: "-s workspace-write -a never --add-dir <主仓库>/.git"}   # 待验证：见下方 notes.writer_sandbox
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
+         flags: "-s danger-full-access -a never"}
       - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}         # 降级
     explorer:
-      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write, writes: handoff-only}
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
       - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5 --mode ask"}
     mechanical:
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
@@ -93,7 +93,8 @@ machines:
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
     code_reviewer:    {cli: copilot, model: gemini-4-argon, vendor: google,
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
-    writer:           {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write}
+    writer:           {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
+                       flags: "-s danger-full-access -a never"}
     explorer:         {cli: codex, model: gpt-5.6-luna, vendor: openai, writes: handoff-only}
     mechanical:       {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
     research_primary: {cli: codex, model: gpt-6.1-sol, vendor: openai}
@@ -107,10 +108,8 @@ notes:
   code_reviewer_default: >
     Owner 2026-10-22（经 Hotty）：Mac mini code Reviewer 默认 Copilot gemini-4-argon，不用 cursor-agent Grok，以免耗尽 Cursor 周 Grok 额度。
   writer_sandbox: >
-    旧版 model-roles.md 记录：写者在 git worktree 内用 read-only/workspace-write 沙箱无法写 worktree 元数据
-    （<主仓库>/.git/worktrees/...），因此曾用 danger-full-access。现在 danger-full-access 已禁用，
-    改为 workspace-write 并用 --add-dir 放开主仓库 .git；首个试点 Task 前须实测 commit 可用，
-    不可用时写者报 TASK_BLOCKED，由 Owner 决定，不自行改回 danger-full-access。
+    Owner 2026-10-22（Hotty 转述）：所有 Codex 角色使用 -s danger-full-access（profile 中 sandbox: danger-full-access，
+    写者带 -s danger-full-access -a never）。此前 workspace-write + --add-dir <主仓库>/.git 试点已废止。
+    背景：worktree 写者需触及 <主仓库>/.git/worktrees/...，read-only/workspace-write 不足时曾依赖 danger-full-access。
   sandbox_nesting: >
-    Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；
-    workspace-write 下的嵌套能力待试点实测。R6 仍只允许一层委派。
+    Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；R6 仍只允许一层委派。

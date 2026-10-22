@@ -130,7 +130,7 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 
 主会话（TL）担任协调者：审定计划、分配与协调；定义方可由独立 Planner agent 担任，主会话也可兼任；用户是负责人。
 本合同不绑定具体模型；角色档位、模型、CLI 与启动参数只以 [references/runtime-profiles.yaml](references/runtime-profiles.yaml) 为源头，bot 分工与 CLI agent 生命周期见 [references/bots-and-agents.md](references/bots-and-agents.md)，台账与标准事件见 [references/ledger.md](references/ledger.md)。
-硬规则：Reviewer（含 Planner 的 Reviewer）与被审者使用不同家模型；启动显式指定模型，不依赖 CLI 默认值；降级只在同档内换可用模型并记入回执；不用 profile 列出的禁用参数（如 `--yolo`、`danger-full-access`、`--allow-all-*`）。
+硬规则：Reviewer（含 Planner 的 Reviewer）与被审者使用不同家模型；启动显式指定模型，不依赖 CLI 默认值；降级只在同档内换可用模型并记入回执；不用 profile 列出的禁用参数（如 `--yolo`、`--allow-all-*`）；Codex 沙箱按 profile 使用 `danger-full-access`（`-s danger-full-access`），不视为禁用项。
 所有 CLI agent（含 Reviewer、Explorer）经 herdr 启动并按 profile 命名，TL 在下属仍 working 时不得结束；每个 Goal 在台账头写明 Owner、协调者 bot、TL 与机器，事件只沿这条线传递；危险操作及明确 hold 例外只由 Owner 放行；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO，按仓库既定 auto-merge 条件合并（见 references/bots-and-agents.md）。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
