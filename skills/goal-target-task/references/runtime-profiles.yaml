@@ -1,0 +1,114 @@
+# GTT runtime profiles —— 角色 → 模型 / CLI / 启动参数的唯一源头
+#
+# 适用范围：本环境（Owner tianpei 的 Mac mini 与 MacBook）。换环境时复制本文件改机器节即可，
+# 合同（SKILL.md）与 bots-and-agents.md、ledger.md 只引用档位和角色名，不写具体模型。
+# 权限、审批与审查规则以 SKILL.md 为准；本文件里的工具能力不扩大合同授权。
+#
+# 硬规则（同时写在 SKILL.md「CLI 用法」）：
+#   1. Reviewer 必须与被审者使用不同家（vendor）的模型；Planner 的 Reviewer 尤其如此。
+#   2. 每次启动显式带模型参数（codex 用 -m；copilot 与 cursor-agent 用 --model，cursor-agent 不认 -m），不依赖 CLI 默认模型。
+#   3. 降级 = 同一档位、同一角色内换一个可用模型（仍须满足规则 1），并在 R10 回执写明原模型、新模型和原因。
+#   4. forbidden_flags 中的参数在 GTT 内一律不用。
+#
+# 核对记录：
+#   - Mac mini 2026-10-21：`cursor-agent --list-models`（cursor-agent 2026.10.19）列出
+#     gemini-4-argon-{low,medium,high}、grok-4.7-{low,medium,high,xhigh}[-fast]、kimi-k3-{low,high,max}、composer-2.5；
+#     cursor-agent 里没有不带后缀的 `gemini-4-argon`。codex-cli 0.163.0，Copilot CLI 1.0.100。
+#   - MacBook 2026-10-21（Joy 实测，Copilot CLI 1.0.101）：`gemini-4-argon`、`gemini-3.8-flash` 可用，
+#     `gemini-3.7-flash` 不可用；只读参数下退出码 0、无文件改动。
+
+version: 1
+updated: 2026-10-21
+
+# 档位：合同和分工文档只引用这里的档位/角色名
+tiers:
+  strong:   [team_lead, arbitration]          # 分配（TL）与裁决：Reviewer 分歧、调研下结论
+  mid:      [planner, planner_reviewer, code_reviewer]
+  worker:   [writer, explorer, mechanical]
+  research: [research_primary, research_co]   # 旁听（research_co）只在调研中作为正式成员参与，由 strong 档裁决；调研以外不设旁听
+
+vendors:            # 用于核对「Reviewer 不同家」
+  opus: anthropic
+  gpt-6.1-sol: openai
+  gpt-5.6-luna: openai
+  composer-2.5: cursor
+  gemini-4-argon: google
+  gemini-4-argon-high: google
+  gemini-3.8-flash: google
+  grok-4.7-high: xai
+  kimi-k3-high: moonshot
+
+common:
+  codex:
+    service_tier: default        # 写进 ~/.codex/config.toml；TUI Fast 模式发 priority 会被 Copilot/Raven 拒绝
+    always_pass_model: true      # codex 默认模型（gpt-6-luna）不在本表，禁止依赖
+  cursor_cli_binary: cursor-agent  # 不用裸 `agent`（可能解析到其他 CLI）
+  forbidden_flags:
+    - "--yolo"
+    - "--force"                                     # cursor-agent，等同 --yolo
+    - "danger-full-access"                          # codex -s
+    - "--dangerously-bypass-approvals-and-sandbox"  # codex
+    - "--dangerously-skip-permissions"              # claude
+    - "--allow-all-tools"                           # copilot
+    - "--allow-all-paths"                           # copilot
+    - "--allow-all"                                 # copilot
+  readonly_flags:
+    codex: "exec -s read-only"
+    cursor_agent: "--mode ask"          # 或 --mode plan；均为只读
+    copilot: "--deny-tool write --deny-tool shell --no-ask-user"
+
+machines:
+  mac-mini:
+    allowed_cli: [claude, codex, cursor-agent, copilot]
+    team_lead:        {cli: claude, model: opus, vendor: anthropic,
+                       flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}  # 不开 bypass permissions
+    arbitration:      {cli: claude, model: opus, vendor: anthropic}
+    planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: workspace-write, writes: handoff-only}
+    planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
+    code_reviewer:    # 写者是 openai，故不能用 GPT；二选一，回执写明
+      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}
+      - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 同上，Owner 2026-10-21 决定
+    writer:
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write,
+         flags: "-s workspace-write -a never --add-dir <主仓库>/.git"}   # 待验证：见下方 notes.writer_sandbox
+      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}         # 降级
+    explorer:
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write, writes: handoff-only}
+      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5 --mode ask"}
+    mechanical:
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
+      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}
+    research_primary: {cli: codex, model: gpt-6.1-sol, vendor: openai}
+    research_co:      # 旁听，正式参与调研；二选一或都上
+      - {cli: cursor-agent, model: kimi-k3-high, vendor: moonshot, flags: "--model kimi-k3-high --mode ask"}
+      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}
+    research_arbiter: {ref: arbitration}
+
+  macbook:
+    allowed_cli: [codex, copilot]        # codex 经 Raven；不使用 claude / cursor-agent / Kimi / Grok
+    team_lead:        {cli: codex, model: gpt-6.1-sol, vendor: openai}
+    arbitration:      {cli: codex, model: gpt-6.1-sol, vendor: openai}   # 与 TL 分开会话
+    planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, writes: handoff-only}
+    planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google,
+                       flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
+    code_reviewer:    {cli: copilot, model: gemini-4-argon, vendor: google,
+                       flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
+    writer:           {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write}
+    explorer:         {cli: codex, model: gpt-5.6-luna, vendor: openai, writes: handoff-only}
+    mechanical:       {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
+    research_primary: {cli: codex, model: gpt-6.1-sol, vendor: openai}
+    research_co:      {cli: copilot, model: gemini-4-argon, vendor: google,
+                       flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
+    research_arbiter: {ref: arbitration}
+    reviewer_fallback: {cli: copilot, model: gemini-3.8-flash, vendor: google}   # Owner 2026-10-21 已确认：gemini-4-argon 不可用时的同档降级
+    # Gemini 在 MacBook 只用于 Reviewer 与调研旁听，其他角色只用 GPT。
+
+notes:
+  writer_sandbox: >
+    旧版 model-roles.md 记录：写者在 git worktree 内用 read-only/workspace-write 沙箱无法写 worktree 元数据
+    （<主仓库>/.git/worktrees/...），因此曾用 danger-full-access。现在 danger-full-access 已禁用，
+    改为 workspace-write 并用 --add-dir 放开主仓库 .git；首个试点 Task 前须实测 commit 可用，
+    不可用时写者报 TASK_BLOCKED，由 Owner 决定，不自行改回 danger-full-access。
+  sandbox_nesting: >
+    Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；
+    workspace-write 下的嵌套能力待试点实测。R6 仍只允许一层委派。

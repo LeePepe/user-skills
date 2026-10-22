@@ -35,7 +35,7 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
 | Target 定义方 | 定义 Tasks 与验收命令；Task 增删改按 R2 获批后编制 revision（R1–R5） |
 | 协调者 | 分配、依赖、Target 变更评估（R4）与路由决定，审定计划；不兼任 Task 写者或独立验收 |
 | Planner | 可由独立 agent 担任 Goal／Target 定义方，按 R1 编制定义与 revision，交协调者审定及独立计划审查 |
-| 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不写仓库、不提方案、不补定义 |
+| 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不改代码、只把报告写到 handoff，不提方案、不补定义 |
 | Task 写者 | 每个 Task 唯一写者：实现、验证、commit、PR；决定 Task 内 PR 划分 |
 | 独立验收 | 按 V1–V5 限定审查 |
 | 交付 | 推进 PR 合法合并 |
@@ -61,7 +61,7 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   并行 subagent 使用不重叠路径，或各用独立 worktree。
   委派仅一层，subagent 不再委派。
   subagent 检查计入委派者自检，不算独立审查，结论仍由委派者负责。
-- **R7 冻结前一致性**：Target／Task 计划冻结前逐项核对：每个 Task 的验收、文件／区域（owned paths）、依赖及验证命令齐全；引用的命令、API、符号、文件已实际核实存在，不凭假设；可用对应当前基分支 SHA 的 R11 探查证据满足。
+- **R7 冻结前一致性**：Target／Task 计划冻结前逐项核对：每个 Task 的验收、文件／区域（owned paths）、依赖及验证命令齐全；引用的命令、API、符号、文件已实际核实存在，不凭假设；可用对应当前基分支 SHA 的 R11 探查证据满足；冻结前清单须列出 owned paths、引用的脚本（含其调用的嵌套检查器）与验收命令，并附其存在且可运行的证据。
   Tasks 之间命令不冲突；可并行（无依赖顺序）的 Tasks 的 owned paths 不重叠；依赖图无环；定义方输出不得含可编译的实现代码；任一失败即阻止冻结。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
 - **R8 DAG 与状态机**：Tasks 显式声明依赖 DAG；台账允许 planned → ready → in_progress → in_review → done，或 in_review → changes_requested → in_progress（仅 V5 的 FAIL 触发修复）；多 PR Task 的非最后一个 PR 获验收后可 in_review → in_progress。
@@ -74,9 +74,9 @@ Task 是分配和验收的单位，PR 是审查和合并的单位。
   同一 Target 冻结后已修订 2 次仍需再修订时，不再自行重规划，交负责人决定缩小、拆分或取消。
   owned paths 重叠或有依赖关系的 PRs 由协调者排入串行合并队列，每次仅处理一个；写者轮到时按目标仓规则更新到最新基分支（rebase 或 merge），重跑 Task 验证，待准确 head 通过审查及仓库门禁后合法合并；失败不合并。
   与在途 PRs 路径不相交且无依赖的 PR 可直接走仓库原生 merge queue／自动合并，仍须准确 head 通过 Task 验证、审查及仓库门禁。
-- **R10 双 ID 回执**：每个 Task 完成／交回、每次审查及每次 R11 探查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA；探查回执以 Target／计划 ID 定位，记录基分支 SHA 及逐项事实与证据。
+- **R10 双 ID 回执**：每个 Task 完成／交回、每次审查及每次 R11 探查均须落盘回执，以 Task ID＋run／agent ID 唯一定位；多轮审查保留各轮文件，记录状态、审查结论、commit SHA／head、验证命令与结果、合同 SHA、实际模型（降级注明原模型）、机器及大致 token；探查回执以 Target／计划 ID 定位，记录基分支 SHA 及逐项事实与证据。
   协调者按回执＋git 实际状态对账，不以终端／pane 输出或 agent 自述代替证据；回执放目标仓允许或协调者指定的位置，台账链接对应文件。
-- **R11 只读探查**：定义方在规划前或规划中可派 Explorer，交接列明待核实问题清单（API／符号、文件、命令、文档及版本）和基分支 SHA；Explorer 无仓库写权限，不 edit／commit／push／开 PR，不运行会改变状态的命令。
+- **R11 只读探查**：定义方在规划前或规划中可派 Explorer，交接列明待核实问题清单（API／符号、文件、命令、文档及版本）和基分支 SHA；Explorer 不改代码：不 edit 仓库文件、不 commit／push／开 PR，不运行会改变状态的命令；唯一允许的写入是把回执／报告写到 handoff 目录。
   逐项回报：存在／不存在／与假设不符，附 file:line、命令及输出或文档 URL／版本；不提实现方案、不补定义、不扩大问题清单，新发现的疑点回报定义方。
   定义方只引用已核实的事实；基分支 SHA 变化后按 R9 复核受影响项。探查不算独立审查，计划审查仍按 V1 核对。
 
@@ -129,7 +129,9 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 ## CLI 用法
 
 主会话（TL）担任协调者：审定计划、分配与协调；定义方可由独立 Planner agent 担任，主会话也可兼任；用户是负责人。
-角色与模型、启动参数推荐见 [references/model-roles.md](references/model-roles.md)；本合同不绑定具体模型。
+本合同不绑定具体模型；角色档位、模型、CLI 与启动参数只以 [references/runtime-profiles.yaml](references/runtime-profiles.yaml) 为源头，bot 分工与 CLI agent 生命周期见 [references/bots-and-agents.md](references/bots-and-agents.md)，台账与标准事件见 [references/ledger.md](references/ledger.md)。
+硬规则：Reviewer（含 Planner 的 Reviewer）与被审者使用不同家模型；启动显式指定模型，不依赖 CLI 默认值；降级只在同档内换可用模型并记入回执；不用 profile 列出的禁用参数（如 `--yolo`、`danger-full-access`、`--allow-all-*`）。
+所有 CLI agent（含 Reviewer、Explorer）经 herdr 启动并按 profile 命名，TL 在下属仍 working 时不得结束；每个 Goal 在台账头写明 Owner、协调者 bot、TL 与机器，事件只沿这条线传递；发布、危险操作及明确 hold 例外只由 Owner 放行；普通 PR 按仓库既定 auto-merge 条件合并（见 references/bots-and-agents.md）。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
 规划前或规划中按需（R11）派只读 Explorer（低成本模型即可），回报落盘后由定义方写入计划。
@@ -153,7 +155,7 @@ Goal 的发布、实机或真实消费验收分别取证，不能从 Task 勾选
 Codex CLI 0.163 在 danger-full-access 下 subagent 可再派一层，read-only sandbox 下第二层被拒（Operation not permitted）。
 R6 仍只允许写者委派一层；工具能力不扩大合同授权。
 
-台账存放在目标仓库允许的位置或 PR 描述，不改冻结定义；仅补进度或验证回执时，优先使用目标仓库已有、获准且不会重复触发 CI 的载体（台账或获准的评论），不为补回执编辑会触发 CI 的 PR 描述。
+台账为每个 Goal 一本只追加的 `~/Development/handoff/<goal>/ledger.md`（格式与事件见 [references/ledger.md](references/ledger.md)），goal.md 与看板只是派生视图；Lite 档仍以 PR 描述为台账；台账不改冻结定义；仅补进度或验证回执时，优先使用目标仓库已有、获准且不会重复触发 CI 的载体（台账或获准的评论），不为补回执编辑会触发 CI 的 PR 描述。
 实际行为、范围、测试说明和 PR 模板仍按仓库规则更新；回执保留准确 head、角色归属、结论和未完成项，评论仍须原有发布授权。
 状态列遵循 R8；验收证据另行区分内容批准、执行证据待齐、自动化验收通过、PR 已交接、合法合并并链接 R10 回执；done 须符合 Task 完成定义，发布与实机验收另行取证：
 
