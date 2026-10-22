@@ -18,7 +18,7 @@
 #     `gemini-3.7-flash` 不可用；只读参数下退出码 0、无文件改动。
 
 version: 1
-updated: 2026-10-21
+updated: 2026-10-22
 
 # 档位：合同和分工文档只引用这里的档位/角色名
 tiers:
@@ -65,9 +65,9 @@ machines:
     arbitration:      {cli: claude, model: opus, vendor: anthropic}
     planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: workspace-write, writes: handoff-only}
     planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
-    code_reviewer:    # 写者是 openai，故不能用 GPT；二选一，回执写明
-      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}
-      - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 同上，Owner 2026-10-21 决定
+    code_reviewer:    # 写者是 openai，故不能用 GPT；默认 Copilot Gemini；Grok 仅非默认降级
+      - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 默认；Owner 2026-10-22 决定 code Reviewer 不走 Grok，省 Cursor Grok 池
+      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}  # 非默认：仅 Gemini 不可用或 Owner 显式指定时用
     writer:
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: workspace-write,
          flags: "-s workspace-write -a never --add-dir <主仓库>/.git"}   # 待验证：见下方 notes.writer_sandbox
@@ -104,6 +104,8 @@ machines:
     # Gemini 在 MacBook 只用于 Reviewer 与调研旁听，其他角色只用 GPT。
 
 notes:
+  code_reviewer_default: >
+    Owner 2026-10-22（经 Hotty）：Mac mini code Reviewer 默认 Copilot gemini-4-argon，不用 cursor-agent Grok，以免耗尽 Cursor 周 Grok 额度。
   writer_sandbox: >
     旧版 model-roles.md 记录：写者在 git worktree 内用 read-only/workspace-write 沙箱无法写 worktree 元数据
     （<主仓库>/.git/worktrees/...），因此曾用 danger-full-access。现在 danger-full-access 已禁用，
