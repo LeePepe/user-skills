@@ -65,12 +65,12 @@ Targets／Tasks 状态表是快照，可改写（状态取值按 R8）；`## Eve
 | `CHANGE_REQUEST` | 需要改范围／合同 | 执行者／TL | TL → 协调者 | 按 R2／R4 分级；Goal 变更只有 Owner |
 | `REVIEW_PASS` | 审查通过（V5 PASS／CONCERNS） | Reviewer | TL | 记录 |
 | `REVIEW_FAIL` | 审查不通过 | Reviewer | TL | TL 按 V3 决定修复或回定义方 |
-| `NEED_GO` | 需要 Owner 放行：发布、危险操作或明确 hold 例外 | TL／协调者 | 协调者 → Owner | **只有 Owner** |
+| `NEED_GO` | 需要 Owner 放行：危险操作或明确 hold 例外 | TL／协调者 | 协调者 → Owner | **只有 Owner** |
 | `NEED_OWNER_DECISION` | 需要 Owner 拍板 | 协调者 | Owner | **只有 Owner** |
 | `DONE` | agent／Task 完成，回执已落盘 | 执行者／TL | TL | 记录 |
 | `RESOLVED` / `ACK` | 已处理／有人在跟 | 有决定权者 | — | 关闭同 id |
 
-- `NEED_GO`、`NEED_OWNER_DECISION` 只能由 Owner 的答复关闭，在 `note` 记 Owner 原话或消息来源；bot 转述不算放行。普通 PR 不因按既定 auto-merge 条件合并而新建 `NEED_GO`；此前有效的 Owner 授权可按其原始来源复用并记录，不因 bot 转述而产生新授权。
+- `NEED_GO`、`NEED_OWNER_DECISION` 只能由 Owner 的答复关闭，在 `note` 记 Owner 原话或消息来源；bot 转述不算放行。普通 PR 不因按既定 auto-merge 条件合并而新建 `NEED_GO`；普通合并与发布（04/tag/TestFlight）不因该原因新建 `NEED_GO`。此前有效的 Owner 授权可按其原始来源复用并记录，不因 bot 转述而产生新授权。
 - 同一 id 关闭后又追加需处理事件 = 重新打开。
 
 ## 超时提醒（暂不启用）

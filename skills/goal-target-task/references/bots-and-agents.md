@@ -18,11 +18,11 @@
 | Atlas | Mac mini | retro 相关工作；AIDash（数据与展示平台）及 soe + AIDash 合并线的协调者 | |
 | 艺术家 | Mac mini | Strata 设计定义（设计方面的定义方/Owner 代理） | 不放行发布、合并 |
 | fonder | Mac mini | 基础维护（环境、工具、CLI、herdr 等） | |
-| flower | Mac mini | workflow 相关工作：01 需求流程、03 PR 交付的整体流程、06 周期维护 | 具体盯梢由 stuck-PR bot + Mac mini 只读心跳负责；flower 负责每日摘要聊天与需要 Owner 决定的路由 |
+| flower | Mac mini | workflow 相关工作：01 需求流程、03 PR 交付的整体流程、06 周期维护 | 具体盯梢由 stuck-PR bot + Mac mini 只读心跳负责；flower 负责每日摘要聊天与危险操作或 hold 例外需 Owner 决定时的路由；可执行的卡住 PR 走 supervise-and-fix 而非默认 Owner |
 | pigger | Mac mini | Owner 的个人咨询顾问；可按 GTT 做自己的咨询类工作 | 不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal） |
 
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
-- Owner（用户）是发布、危险操作及明确 hold 例外的唯一放行人；普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，无需为每次普通合并新建 Owner 放行。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
+- Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，再读回合并结果。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
 
 ## 每个 Goal 的责任线
 
