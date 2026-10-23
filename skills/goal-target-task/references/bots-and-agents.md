@@ -33,7 +33,7 @@
 ```
 
 - 协调者 bot 每个 Goal 只有一个：开 TL、收 TL 事件、需要 Owner 决定时去问。
-- TL 拆 Target/Task，在 herdr 里开 Planner、Reviewer、写者；不兼任写者或独立验收（SKILL.md「角色绑定与交接」）。
+- TL 拆 Target/Task（Standard 档采用 `Goal -> Tasks` 垂直切片并写 `briefs/<task>.md`），按 **1-Hop Flat Tree** 在 herdr 里统一开 Explorer、Planner、Reviewer、写者（含 `writer_escalated`）；不兼任写者或独立验收（SKILL.md「角色绑定与交接」）。写者与 Reviewer 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`）。
 - Hotty 不在线上，只读台账汇总；线上没人接的事件由 Owner 问 Hotty 时查出。
 
 ## CLI agent 角色与档位
@@ -44,7 +44,8 @@
 | 裁决 | strong | TL / 协调者 | 一次裁决 |
 | Planner | mid | TL | 一轮计划 |
 | Planner 的 Reviewer、代码 Reviewer | mid，**与被审者不同家** | TL | 一次审查（每轮新会话） |
-| 写者 | worker | TL | 一个 Task |
+| 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
+| 升档写者（`writer_escalated`） | mid | TL | V3 第 2 轮修复升档或高复杂度／并发 Task（新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
