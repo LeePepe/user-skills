@@ -103,7 +103,26 @@ Expand → Migrate → Contract
 3. 可以并行：没有定义、数据、文件或契约依赖。
 4. 中间结果交给别人消费：契约、脚本、设计或证据需要交接。
 
-### 1.2 两档自适应分流
+### 1.2 设计驱动开发与项目《设计契约》闭环（`Explorer -> Designer -> Writer -> CI Design Gate`）
+
+设计类 Task 必须把“发现事实、形成设计、实现验证、门禁验收”拆成可交接的接口，避免设计角色因翻阅实现细节而越界，也避免 Writer 用临时色值或未定义状态绕过契约。
+
+#### 三层设计契约架构
+
+| 层 | 权威来源 | 约束与产出 |
+|---|---|---|
+| **上游全局词典** | `shared-design-system/ai/DESIGN-CONTRACT.md` | 定义跨项目可复用的 Design Token、语义映射、组件边界与全局设计语言。 |
+| **项目身份与状态白名单** | 项目内 `docs/design-contract.md` | 声明项目身份、允许消费的 Token／组件，以及 `populated/empty/loading/error` 四态和 `light/dark` 双外观的页面契约。 |
+| **静态质量门禁** | `shared-ci/scripts/context/design_contract.py` | 检查项目契约的必需章节，拦截实现中的裸 Hex／RGB 色值及其他契约缺口；失败即阻塞交付。 |
+
+#### 四角色解耦流水线
+
+1. **`Explorer`**：只读扫描业务仓现状与 `docs/design-contract.md`，以 `file:line` 事实回执交接，不写业务代码。
+2. **`Designer`**：只消费 Explorer 回执、项目契约和上游 `ai/DESIGN-CONTRACT.md`，以 `writes: handoff-only` 产出 `handoff/<goal>/design.md`；不得翻阅业务实现细节或写 Demo／实现代码。设计交付至少包含 Token 语义映射、四态矩阵、双外观与组件边界。
+3. **`Writer`**：在独立 Worktree 消费冻结的 `design.md`，实现可运行 Demo／代码，并提供四态、双外观的多态渲染截图和对应验证证据。
+4. **`CI + Reviewer`**：`design_contract.py` 先拦截裸色值与缺漏章节，再由跨厂商 Reviewer 按 V1–V5 双轴核对设计契约、实现范围、截图和命令证据。
+
+### 1.3 两档自适应分流
 
 | 模式 | 适用条件 | 定义与交接 | 完成门槛 |
 |---|---|---|---|
@@ -112,7 +131,7 @@ Expand → Migrate → Contract
 
 Lite 执行中若触碰任一升级条件，立即停止扩大范围，转 Standard，补齐台账、brief 与依赖审查。无论哪一档，Task 定义交出即冻结；范围变化须走 `EVT=RULING` 或 R2/R4/R5 变更记录。
 
-### 1.3 冻结、状态与证据
+### 1.4 冻结、状态与证据
 
 Task 状态：
 
@@ -140,7 +159,7 @@ EVT=RULING | decision=<...> | why=<...> | blast_radius=<...>
 
 改变验收、增删 Task、改变 Task 接口或触碰四条红线时，必须按 R2/R4/R5 重规划。第 1 轮审查失败由原写者修复；修复后复审仍失败，改派 `writer_escalated`，第二轮后仍失败则 `blocked`，不通过换名、换 SHA 或换 PR 重置计数。
 
-### 1.4 CLI/Herdr 7-step SOP
+### 1.5 CLI/Herdr 7-step SOP
 
 以下是可复制的七步标准命令流。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。
 
@@ -298,7 +317,7 @@ herdr pane close "$NEW_PANE_ID"
 
 删除 Worktree 前必须确认分支已推送、PR 已合法合并或现场已交接、`git status --short` 为空，且没有未保存回执。任一条件不满足就保留现场；不停止共享服务，不触碰其他 Goal 的窗格。
 
-### 1.5 6DQ 质量门禁与自动化发布读回
+### 1.6 6DQ 质量门禁与自动化发布读回
 
 6DQ 是组合门槛，不是五个可选建议：
 
