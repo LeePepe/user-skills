@@ -59,13 +59,11 @@
 
 ### 1.2 双层协同架构
 
+常驻 bot 的域、机器与边界只以 [bots-and-agents.md](bots-and-agents.md) 为准（Owner 2026-10-23：七域各一个主 bot）。本表不复制花名册。
+
 | 层 | 成员 | 主要职责 | 典型生命周期 | 不做什么 |
 |---|---|---|---|---|
-| 常驻 Bot 层 | `Hotty` | 跨 Goal 总管：看整体计划、台账和卡点 | 长期 | 不接管具体 Goal，不做 Task 写者 |
-| 常驻 Bot 层 | `Joy` | MacBook 上 Goal 的协调者 | 长期 | 不操作另一台机器 |
-| 常驻 Bot 层 | `Atlas` | Retro、AIDash 与相关合并线协调 | 长期 | 不把推断当事实 |
-| 常驻 Bot 层 | `flower` | Workflow 01/03/06：需求、PR 交付、周期维护 | 长期 | 不绕过既定交付监督 |
-| 常驻 Bot 层 | `fonder` | 环境、工具链、CLI、Herdr 基础维护 | 长期 | 不替具体 Goal 作业务决策 |
+| 常驻 Bot 层 | 域主 bot | 分工见 [bots-and-agents.md](bots-and-agents.md) | 长期 | 不在本手册另立花名册 |
 | Herdr 临时 CLI Agent 层 | `TL` | 审定定义、调度、协调、对账 | 一个 Goal | 不兼任写者或独立验收 |
 | Herdr 临时 CLI Agent 层 | `Explorer` | 只读核实文件、符号、命令和版本 | 一次探查 | 不改仓库、不补方案 |
 | Herdr 临时 CLI Agent 层 | `Planner` | 编制 Goal／Task DAG 定义和验收映射 | 一轮计划 | 不写可编译实现 |
