@@ -159,6 +159,24 @@ EVT=RULING | decision=<...> | why=<...> | blast_radius=<...>
 
 改变验收、增删 Task、改变 Task 接口或触碰四条红线时，必须按 R2/R4/R5 重规划。第 1 轮审查失败由原写者修复；修复后复审仍失败，改派 `writer_escalated`，第二轮后仍失败则 `blocked`，不通过换名、换 SHA 或换 PR 重置计数。
 
+### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
+
+`~/Development/handoff/<goal>/ledger.md`、`briefs/<task>.md` 与 Git 实际状态始终是跨进程唯一事实源（Single Source of Truth）；各 CLI 的原生 Goal／Todo 工具作为**进程内持续推进引擎（In-Process Continuation Engine）**挂载并同步，防止 TL 或 Subagent 提前停机或无限空转：
+
+- **Codex CLI（`goals = true` / `thread_goals`）**：
+  - Phase 1 启动时（TL）或 Task 启动时（Writer／Reviewer），首个动作调用 `create_goal(objective="...")`，绑定到 Goal `ledger.md` 或 Task `briefs/<task>.md`。
+  - **仅当**全部验收命令通过、PR 完成交接／合并且磁盘 R10 回执已落盘核实后，才允许调用 `update_goal(status="complete")`。
+  - 遇到 `TASK_BLOCKED`、`NEED_GO`、`NEED_OWNER_DECISION` 或 V3 两轮修复仍失败时，立即调用 `update_goal(status="blocked")`，**严禁留在活动态空转**。
+- **Copilot CLI（`sql` `todos` + `todo_deps`）**：
+  - TL 在 Phase 1 启动时将 Goal 的 `Tasks` 及依赖 DAG 边镜像写入会话 SQLite 的 `todos` 与 `todo_deps` 表，随 `ledger.md` 同步更新状态（`pending -> in_progress -> done | blocked`）。
+- **Claude Code（`TodoWrite` / `TaskCreate`）**：
+  - TL 将活动 `Tasks` 投影到 `TodoWrite` 以提供实时进度可见性，同时保持 `ledger.md` 为唯一权威状态源。
+
+### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+
+- **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
+- **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
+
 ### 1.5 CLI/Herdr 7-step SOP
 
 以下是可复制的七步标准命令流。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。
@@ -219,15 +237,15 @@ Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--fo
 
 ```sh
 herdr agent prompt "$WRITER_NAME" \
-  "Read $TASK_BRIEF; implement only Owned Paths; write the full R10 receipt to $R10_RECEIPT." \
+  "First call create_goal bound to $TASK_BRIEF; read $TASK_BRIEF; implement only Owned Paths; write the full R10 receipt to $R10_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")." \
   --wait --timeout 600000
 ```
 
 多个无依赖 Task 先派发，再等待：
 
 ```sh
-herdr agent prompt "$TASK_A_NAME" "Read $TASK_A_BRIEF; write $TASK_A_RECEIPT."
-herdr agent prompt "$TASK_B_NAME" "Read $TASK_B_BRIEF; write $TASK_B_RECEIPT."
+herdr agent prompt "$TASK_A_NAME" "First call create_goal bound to $TASK_A_BRIEF; read $TASK_A_BRIEF; write $TASK_A_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")."
+herdr agent prompt "$TASK_B_NAME" "First call create_goal bound to $TASK_B_BRIEF; read $TASK_B_BRIEF; write $TASK_B_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")."
 herdr agent wait "$TASK_A_NAME" --timeout 600000
 herdr agent wait "$TASK_B_NAME" --timeout 600000
 ```
