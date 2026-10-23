@@ -18,13 +18,13 @@
 #     `gemini-3.7-flash` 不可用；只读参数下退出码 0、无文件改动。
 
 version: 1
-updated: 2026-10-22
+updated: 2026-10-23
 # Owner 2026-10-22（Hotty 转述 tianpei「就给 codex 所有 danger-full-access」）：Codex 用 -s danger-full-access，不列入 forbidden_flags。
 
 # 档位：合同和分工文档只引用这里的档位/角色名
 tiers:
   strong:   [team_lead, arbitration]          # 分配（TL）与裁决：Reviewer 分歧、调研下结论
-  mid:      [planner, planner_reviewer, code_reviewer]
+  mid:      [planner, planner_reviewer, code_reviewer, writer_escalated]  # writer_escalated 用于复杂跨模块/并发任务或 V3 第 2 轮修复升档
   worker:   [writer, explorer, mechanical]
   research: [research_primary, research_co]   # 旁听（research_co）只在调研中作为正式成员参与，由 strong 档裁决；调研以外不设旁听
 
@@ -44,6 +44,10 @@ common:
     service_tier: default        # 写进 ~/.codex/config.toml；TUI Fast 模式发 priority 会被 Copilot/Raven 拒绝
     always_pass_model: true      # codex 默认模型（gpt-6-luna）不在本表，禁止依赖
   cursor_cli_binary: cursor-agent  # 不用裸 `agent`（可能解析到其他 CLI）
+  failure_escalation:
+    round_1_fail: same_writer              # V3 第 1 轮 FAIL 由原 writer 修复
+    round_2_fail: writer_escalated         # V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复），升档至 writer_escalated 带新鲜上下文接手
+    after_round_2_fail: replan_blocked     # 两轮修复仍不过，Task 置 blocked 并退回定义方重规划
   forbidden_flags:
     - "--yolo"
     - "--force"                                     # cursor-agent，等同 --yolo
@@ -65,14 +69,23 @@ machines:
     arbitration:      {cli: claude, model: opus, vendor: anthropic}
     planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
     planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
-    code_reviewer:    # 写者是 openai，故不能用 GPT；默认 Copilot Gemini；Grok 仅非默认降级
+    code_reviewer:    # 写者是 openai/anthropic，故默认用 google（Copilot Gemini）；Grok 仅非默认降级
       - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 默认；Owner 2026-10-22 决定 code Reviewer 不走 Grok，省 Cursor Grok 池
       - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}  # 非默认：仅 Gemini 不可用或 Owner 显式指定时用
     writer:
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
          flags: "-s danger-full-access -a never"}
       - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}         # 降级
+    writer_escalated: # V3 第 2 轮修复升档或高复杂度/并发切片
+      - {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access,
+         flags: "-s danger-full-access -a never"}
+      - {cli: claude, model: opus, vendor: anthropic,
+         flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}
     explorer:
+      - {cli: copilot, model: gemini-3.8-flash, vendor: google,
+         flags: "--model gemini-3.8-flash --deny-tool write --deny-tool shell --no-ask-user"}          # 快速/长上下文只读探查
+      - {cli: copilot, model: gemini-4-argon, vendor: google,
+         flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}            # 大规模代码库/文档长上下文只读探查
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
       - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5 --mode ask"}
     mechanical:
@@ -95,14 +108,21 @@ machines:
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
     writer:           {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
                        flags: "-s danger-full-access -a never"}
-    explorer:         {cli: codex, model: gpt-5.6-luna, vendor: openai, writes: handoff-only}
+    writer_escalated: {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access,
+                       flags: "-s danger-full-access -a never"}          # V3 第 2 轮修复升档或高复杂度/并发切片
+    explorer:
+      - {cli: copilot, model: gemini-3.8-flash, vendor: google,
+         flags: "--model gemini-3.8-flash --deny-tool write --deny-tool shell --no-ask-user"}          # 快速/长上下文只读探查
+      - {cli: copilot, model: gemini-4-argon, vendor: google,
+         flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}            # 大规模代码库/文档长上下文只读探查
+      - {cli: codex, model: gpt-5.6-luna, vendor: openai, writes: handoff-only}
     mechanical:       {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
     research_primary: {cli: codex, model: gpt-6.1-sol, vendor: openai}
     research_co:      {cli: copilot, model: gemini-4-argon, vendor: google,
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
     research_arbiter: {ref: arbitration}
     reviewer_fallback: {cli: copilot, model: gemini-3.8-flash, vendor: google}   # Owner 2026-10-21 已确认：gemini-4-argon 不可用时的同档降级
-    # Gemini 在 MacBook 只用于 Reviewer 与调研旁听，其他角色只用 GPT。
+    # Gemini 在 MacBook 用于只读角色（Reviewer、Explorer 只读探查与调研旁听），写入角色只用 GPT。
 
 notes:
   code_reviewer_default: >
@@ -111,5 +131,10 @@ notes:
     Owner 2026-10-22（Hotty 转述）：所有 Codex 角色使用 -s danger-full-access（profile 中 sandbox: danger-full-access，
     写者带 -s danger-full-access -a never）。此前 workspace-write + --add-dir <主仓库>/.git 试点已废止。
     背景：worktree 写者需触及 <主仓库>/.git/worktrees/...，read-only/workspace-write 不足时曾依赖 danger-full-access。
+  failure_escalation: >
+    V3 失败自动升档（Failure-Tier Escalation）：标准 writer（gpt-5.6-luna）在第 1 轮审查 FAIL 后自行修复一次；
+    若第 1 轮修复后复审仍 FAIL（进入第 2 轮修复），或遇到高复杂度跨模块/并发问题，由 TL 改派 writer_escalated
+    （codex gpt-6.1-sol 带 -s danger-full-access -a never，或 mac-mini 上的 claude opus）以新鲜上下文接手第 2 轮修复；
+    Reviewer 保持异构（google gemini-4-argon），满足跨厂商（cross-vendor）硬规则。
   sandbox_nesting: >
-    Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；R6 仍只允许一层委派。
+    Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；R6 默认采用 1-Hop Flat Tree，由 TL 统一扁平派发所有 subagent，写者与 Reviewer 默认不再递归派发下级 subagent。

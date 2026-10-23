@@ -4,10 +4,11 @@
 
 ## 位置
 
-- `~/Development/handoff/<goal>/ledger.md`，一个 Goal 一本，放 handoff，不放目标仓库。两台机器各放各自 Goal 的台账。
+- `~/Development/handoff/<goal>/ledger.md`，一个 Goal 一本，放 handoff，不放目标仓库。两台机器各放各自 Goal 的台账（Lite 档免独立台账，以 PR 描述兼作台账与 R10 回执）。
 - `<goal>` 目录名即 Goal 短名；以 `_` 开头的目录（如 `_watch`）不是 Goal。
+- **Task 磁盘文件指针简报（File-Pointer Briefs）**：`~/Development/handoff/<goal>/briefs/<task>.md`，存放每个 Task 的交接简报（含 1 句话背景、`Owned Paths`、`Interfaces: Consumes / Produces` 精确签名、允许操作与验收命令）；TL 派发 Subagent 时只传该文件指针路径，避免长 prompt 导致 Context Rot。
 - 跨机器输入放 `~/Development/handoff/<goal>/inputs/`，附清单和每个文件的 SHA-256；缺文件或 SHA 不符时记 `INPUT_BLOCKED`，不凭记忆补。
-- 回执（R10）放 `handoff/<goal>/` 下或目标仓允许的位置，台账只放路径。
+- 回执（R10）放 `handoff/<goal>/` 下或目标仓允许的位置，台账只放路径；Subagent 向主会话只返回 `<15` 行精简结论。
 
 ## 格式（v1）
 
@@ -41,6 +42,7 @@ Targets／Tasks 状态表是快照，可改写（状态取值按 R8）；`## Eve
 ```
 - 2026-10-21T15:00+08:00 | EVT=TASK_BLOCKED | id=E7 | task=TK1a | from=merge-tk1a-writer-r1 | to=merge-goal-tl-r1 | ref=handoff/merge/r1.md | note=缺 Figma 导出
 - 2026-10-21T15:12+08:00 | EVT=RESOLVED | id=E7 | from=merge-goal-tl-r1 | note=已放到 inputs/
+- 2026-10-23T11:30+08:00 | EVT=RULING | id=E8 | task=TK1b | from=merge-goal-tl-r1 | ref=handoff/merge/briefs/TK1b.md | note=decision=允许顺带更新 adapter.ts 签名; why=同目标内非公共适配文件漏列; blast_radius=仅 TK1b 单文件无红线影响
 ```
 
 | 字段 | 必填 | 说明 |
@@ -62,7 +64,8 @@ Targets／Tasks 状态表是快照，可改写（状态取值按 R8）；`## Eve
 | `READY` | Task 满足 R7 与依赖，可派 | TL | — | 记录 |
 | `TASK_BLOCKED` | 任务卡住 | 任何执行者 | TL → 协调者 | TL／协调者；涉及范围按 R2 |
 | `INPUT_BLOCKED` | 缺跨机器输入或 SHA 不符 | 任何执行者 | 协调者 | 协调者（补 inputs） |
-| `CHANGE_REQUEST` | 需要改范围／合同 | 执行者／TL | TL → 协调者 | 按 R2／R4 分级；Goal 变更只有 Owner |
+| `RULING` | 协调者内联裁决：写者回报 `NEEDS_RULING` 后，对不触碰 4 条硬红线的同目标顺带缺口（如漏列 1–2 个辅助／适配文件、非公共接口微调）当场放行，免重规划（`note` 含 `decision + why + blast_radius`） | TL／协调者 | 写者 | TL／协调者（仅限非红线顺带缺口） |
+| `CHANGE_REQUEST` | 超出 `RULING` 边界或触碰硬红线，需要改范围／合同 | 执行者／TL | TL → 协调者 | 按 R2／R4 分级；Goal 变更只有 Owner |
 | `REVIEW_PASS` | 审查通过（V5 PASS／CONCERNS） | Reviewer | TL | 记录 |
 | `REVIEW_FAIL` | 审查不通过 | Reviewer | TL | TL 按 V3 决定修复或回定义方 |
 | `NEED_GO` | 需要 Owner 放行：危险操作或明确 hold 例外 | TL／协调者 | 协调者 → Owner | **只有 Owner** |
