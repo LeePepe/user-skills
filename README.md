@@ -46,3 +46,12 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 ```
 
 安装后重启 Codex，使新 skill 可被发现；规划或执行开发工作前加载 `goal-task`（旧链接 `skills/goal-target-task` 继续保留兼容）。
+
+## 验证
+
+本地开发或提交前可启用仓库 Git hooks 并运行全量校验门禁：
+
+```bash
+git config core.hooksPath .githooks
+./scripts/verify --all
+```
