@@ -2,7 +2,7 @@
 
 面向 Claude Code、Codex 等 CLI agent 的公开通用 skills，可独立使用，不依赖特定项目。
 
-[`goal-task`](./skills/goal-task/SKILL.md)（兼容旧名 [`goal-target-task`](./skills/goal-target-task/SKILL.md)）是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板。
+[`goal-task`](./skills/goal-task/SKILL.md)（兼容旧名 [`goal-target-task`](./skills/goal-target-task/SKILL.md)）是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板；内附全景手册 [`playbook.md`](./skills/goal-task/references/playbook.md) 与交互式飞轮图 [`ai-native-flywheel.html`](./skills/goal-task/assets/ai-native-flywheel.html)。
 
 [`code-review`](./skills/code-review/SKILL.md) 审查分支、PR、工作树或实现交接，分别核对仓库规范与功能意图，支持实现者自检和独立审查。
 
