@@ -32,11 +32,8 @@ vendors:            # 用于核对「Reviewer 不同家」
   opus: anthropic
   gpt-6.1-sol: openai
   gpt-5.6-luna: openai
-  composer-2.5: cursor
   gemini-4-argon: google
-  gemini-4-argon-high: google
   gemini-3.8-flash: google
-  grok-4.7-high: xai
   kimi-k3-high: moonshot
 
 common:
@@ -69,43 +66,51 @@ common:
 machines:
   mac-mini:
     allowed_cli: [claude, codex, cursor-agent, copilot]
-    team_lead:        {cli: claude, model: opus, vendor: anthropic,
-                       flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}  # 不开 bypass permissions
-    arbitration:      {cli: claude, model: opus, vendor: anthropic}
+    team_lead:
+      - {cli: claude, model: opus, vendor: anthropic,
+         flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}  # 不开 bypass permissions
+      - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high,
+         context: long_context, context_window: 983k,
+         flags: "--model gemini-4-argon --reasoning-effort high --context long_context"}
+    arbitration:
+      - {cli: claude, model: opus, vendor: anthropic}
+      - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high,
+         context: long_context, context_window: 983k,
+         flags: "--model gemini-4-argon --reasoning-effort high --context long_context"}
     planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
     planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # Owner 2026-10-21 决定：Cursor 额度不含 Gemini 4 Argon，改走 copilot 只读
-    code_reviewer:    # 写者是 openai/anthropic，故默认用 google（Copilot Gemini）；Grok 仅非默认降级
-      - {cli: copilot, model: gemini-4-argon, vendor: google, flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}  # 默认；Owner 2026-10-22 决定 code Reviewer 不走 Grok，省 Cursor Grok 池
-      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}  # 非默认：仅 Gemini 不可用或 Owner 显式指定时用
-    writer:
-      - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
-         flags: "-s danger-full-access -a never"}
-      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}         # 降级
+    code_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google,
+                    flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
+    writer: {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access,
+             flags: "-s danger-full-access -a never"}
     writer_escalated: # V3 第 2 轮修复升档或高复杂度/并发切片
       - {cli: codex, model: gpt-6.1-sol, vendor: openai, sandbox: danger-full-access,
          flags: "-s danger-full-access -a never"}
-      - {cli: claude, model: opus, vendor: anthropic,
-         flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}
     explorer:
       - {cli: copilot, model: gemini-3.8-flash, vendor: google,
          flags: "--model gemini-3.8-flash --deny-tool write --deny-tool shell --no-ask-user"}          # 快速/长上下文只读探查
       - {cli: copilot, model: gemini-4-argon, vendor: google,
          flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}            # 大规模代码库/文档长上下文只读探查
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, sandbox: danger-full-access, writes: handoff-only}
-      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5 --mode ask"}
     mechanical:
       - {cli: codex, model: gpt-5.6-luna, vendor: openai, effort: low}
-      - {cli: cursor-agent, model: composer-2.5, vendor: cursor, flags: "--model composer-2.5"}
     research_primary: {cli: codex, model: gpt-6.1-sol, vendor: openai}
-    research_co:      # 旁听，正式参与调研；二选一或都上
-      - {cli: cursor-agent, model: kimi-k3-high, vendor: moonshot, flags: "--model kimi-k3-high --mode ask"}
-      - {cli: cursor-agent, model: grok-4.7-high, vendor: xai, flags: "--model grok-4.7-high --mode ask"}
+    research_co: {cli: cursor-agent, model: kimi-k3-high, vendor: moonshot,
+                  flags: "--model kimi-k3-high --mode ask"}
     research_arbiter: {ref: arbitration}
 
   macbook:
     allowed_cli: [codex, copilot]        # codex 经 Raven；不使用 claude / cursor-agent / Kimi / Grok
-    team_lead:        {cli: codex, model: gpt-6.1-sol, vendor: openai}
-    arbitration:      {cli: codex, model: gpt-6.1-sol, vendor: openai}   # 与 TL 分开会话
+    team_lead:
+      - {cli: codex, model: gpt-6.1-sol, vendor: openai}
+      - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high,
+         context: long_context, context_window: 983k,
+         flags: "--model gemini-4-argon --reasoning-effort high --context long_context"}
+    arbitration:
+      - {cli: codex, model: gpt-6.1-sol, vendor: openai}   # 与 TL 分开会话
+      - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high,
+         context: long_context, context_window: 983k,
+         flags: "--model gemini-4-argon --reasoning-effort high --context long_context"}
     planner:          {cli: codex, model: gpt-6.1-sol, vendor: openai, writes: handoff-only}
     planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google,
                        flags: "--model gemini-4-argon --deny-tool write --deny-tool shell --no-ask-user"}
@@ -130,8 +135,11 @@ machines:
     # Gemini 在 MacBook 用于只读角色（Reviewer、Explorer 只读探查与调研旁听），写入角色只用 GPT。
 
 notes:
+  owner_2026_10_23: >
+    Owner 2026-10-23 决定：strong 档两边均增加 copilot gemini-4-argon（high, 983k long_context）备选；
+    claude 仅用于 strong；删除非 research 的所有 cursor-agent，仅在 research_co 中保留 cursor-agent + kimi-k3-high。
   code_reviewer_default: >
-    Owner 2026-10-22（经 Hotty）：Mac mini code Reviewer 默认 Copilot gemini-4-argon，不用 cursor-agent Grok，以免耗尽 Cursor 周 Grok 额度。
+    Owner 2026-10-23：Mac mini code Reviewer 仅使用 Copilot gemini-4-argon。
   writer_sandbox: >
     Owner 2026-10-22（Hotty 转述）：所有 Codex 角色使用 -s danger-full-access（profile 中 sandbox: danger-full-access，
     写者带 -s danger-full-access -a never）。此前 workspace-write + --add-dir <主仓库>/.git 试点已废止。
@@ -139,7 +147,7 @@ notes:
   failure_escalation: >
     V3 失败自动升档（Failure-Tier Escalation）：标准 writer（gpt-5.6-luna）在第 1 轮审查 FAIL 后自行修复一次；
     若第 1 轮修复后复审仍 FAIL（进入第 2 轮修复），或遇到高复杂度跨模块/并发问题，由 TL 改派 writer_escalated
-    （codex gpt-6.1-sol 带 -s danger-full-access -a never，或 mac-mini 上的 claude opus）以新鲜上下文接手第 2 轮修复；
+    （codex gpt-6.1-sol 带 -s danger-full-access -a never）以新鲜上下文接手第 2 轮修复；
     Reviewer 保持异构（google gemini-4-argon），满足跨厂商（cross-vendor）硬规则。
   sandbox_nesting: >
     Codex CLI 0.163：danger-full-access 下 subagent 可再派一层，read-only 下第二层被拒；R6 默认采用 1-Hop Flat Tree，由 TL 统一扁平派发所有 subagent，写者与 Reviewer 默认不再递归派发下级 subagent。

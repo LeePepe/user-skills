@@ -153,7 +153,7 @@ Goal 处于 `accepting` 时交独立验收核对端到端整体验收；已冻�
   内容 reviewer 不重复执行或裁定 build/test/lint/hooks/CI；执行者和 CI 提供命令结果，缺必要证据不能算通过。
 - **V2 按引入来源判定阻塞**：按问题是否由本次 diff 引入区分，不按文件路径区分；本次 diff 引入的任何问题（不论影响哪个文件）、范围内验收失败、红线违规，以及任何安全／隐私／数据丢失问题都阻塞；除上述阻塞项外，本次 diff 未引入的原有问题仅记 backlog，不阻塞，协调者可按 R4 提议新 Task；修改声明范围外的文件且未获 `EVT=RULING` 或未按 R2 备案获批的范围扩张均阻塞。
 - **V3 复审与失败自动升档（Failure-Tier Escalation）**：复审核对上一轮的问题和本次修复 diff；修复引入的问题按 V2 阻塞，未改动代码不重新扫描。
-  **升档破局规则**：第 1 轮 FAIL 由原 Writer 修复；若第 1 轮修复后复审仍 FAIL（即进入第 2 轮修复），协调者触发 **Failure-Tier Escalation**——改派高一档模型（`writer_escalated`，如 `gpt-6.1-sol` 或 `opus`，见 [references/runtime-profiles.yaml](references/runtime-profiles.yaml)）带新鲜上下文（原简报、前序 diff、两轮 review findings 与验证日志路径）接手第 2 轮修复；两轮修复后复审仍不过才将受影响 Task 置为 `blocked` 并退回定义方重规划，不开第三轮修复；换 PR、SHA、agent、run 或任务名不重置历史；Goal 端到端整体验收另计两轮。
+  **升档破局规则**：第 1 轮 FAIL 由原 Writer 修复；若第 1 轮修复后复审仍 FAIL（即进入第 2 轮修复），协调者触发 **Failure-Tier Escalation**——改派高一档模型（`writer_escalated`，即 `gpt-6.1-sol`，见 [references/runtime-profiles.yaml](references/runtime-profiles.yaml)）带新鲜上下文（原简报、前序 diff、两轮 review findings 与验证日志路径）接手第 2 轮修复；两轮修复后复审仍不过才将受影响 Task 置为 `blocked` 并退回定义方重规划，不开第三轮修复；换 PR、SHA、agent、run 或任务名不重置历史；Goal 端到端整体验收另计两轮。
   复审携带原 findings、前后 revision、repair diff 和证据，逐项标记已修复／未修复并列出修复引入的回归；其余发现仍按 V2 判定阻塞或记入 backlog。
   新 SHA 需要该 SHA 的证据，但不扩大复审范围；定义改动仅审 R2／R4／R5 的 delta。
 - **V4 CI 范围**：目标仓库的 CI 门禁照常有效；修改门禁本身是独立 Task 且触碰硬红线，须负责人（Owner）批准。
