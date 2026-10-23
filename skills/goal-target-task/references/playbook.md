@@ -2,7 +2,7 @@
 
 > **用途**：把一次 Goal 从开发执行、证据复盘、规则进化到可公开叙事，串成一个可重复、可审查、可复制的闭环。
 >
-> **适用范围**：使用 `Goal -> Task` 两层合同（目录名兼容保留 `goal-target-task`，`1 Task = 1 Writer = 1 Worktree = 1 PR`）、Herdr 临时 CLI Agent、共享质量门禁或证据驱动复盘的工程任务。
+> **适用范围**：使用 `goal-task`（`Goal -> Task` 两层合同，目录兼容保留 `goal-target-task`，`1 Task = 1 Writer = 1 Worktree = 1 PR`）、Herdr 临时 CLI Agent、共享质量门禁或证据驱动复盘的工程任务。
 >
 > **阅读方式**：先看 §1 的全景，再按当前象限跳到 §2–§5；命令中的大写变量必须由当前协调者填入，禁止把个人路径、账号或密钥写进仓库。
 

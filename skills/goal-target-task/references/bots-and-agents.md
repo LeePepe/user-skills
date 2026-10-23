@@ -9,6 +9,24 @@
 | bot 层 | 有独立聊天的常驻 bot，各自固定一台机器 | Owner | 长期 |
 | CLI agent 层 | bot 或 TL 在 herdr 里启动的 CLI 会话（TL、Planner、Reviewer、写者、Explorer） | 协调者 bot / TL | 用完即关 |
 
+## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
+
+不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色：
+
+1. **Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）**
+   - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
+   - **允许动作**：
+     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gemini-3.8-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
+     - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
+     - **视觉与交互设计（UI/UX Design）**：涉及界面时调用设计域（`艺术家`／`shared-design-system`／`Strata`／原型预览）形成 `design.md` 或原型；
+     - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
+   - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
+2. **切换开关（Freeze / GO）**
+   - 当 Owner 明确拍板（如“按这个做／开始执行／做”），或初始请求本身就是范围清晰、无歧义的直接实现指令时，进入 **Phase 1（Autonomous TL Execution）**。
+3. **Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）**
+   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
+   - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
+
 ## bot 分工（唯一一处）
 
 Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册的唯一来源。

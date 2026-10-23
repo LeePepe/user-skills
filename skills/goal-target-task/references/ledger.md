@@ -24,7 +24,7 @@
 - 协调者 bot: <bot>
 - TL: <herdr 名> / 模型 <model>
 - 机器: Mac mini | MacBook
-- 合同版本: goal-target-task@<sha>
+- 合同版本: goal-task@<sha>（兼容 goal-target-task@<sha>）
 
 ## Tasks
 | ID | 依赖 | 标题 | 负责 | 状态 | PR/head |

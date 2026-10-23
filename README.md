@@ -2,7 +2,7 @@
 
 面向 Claude Code、Codex 等 CLI agent 的公开通用 skills，可独立使用，不依赖特定项目。
 
-[`goal-target-task`](./skills/goal-target-task/SKILL.md) 是规划或执行开发工作前加载的 Goal / Target / Task 执行合同，适用于单会话及 subagent 协作。它定义范围与验收、唯一写者、定义冻结、交接和独立审查，并提供 CLI 分工、嵌套限制及执行台账模板。
+[`goal-task`](./skills/goal-task/SKILL.md)（兼容旧名 [`goal-target-task`](./skills/goal-target-task/SKILL.md)）是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板。
 
 [`code-review`](./skills/code-review/SKILL.md) 审查分支、PR、工作树或实现交接，分别核对仓库规范与功能意图，支持实现者自检和独立审查。
 
@@ -24,7 +24,7 @@ Claude Code 使用 plugin marketplace：
 
 ```text
 /plugin marketplace add LeePepe/user-skills
-/plugin install goal-target-task@user-skills
+/plugin install goal-task@user-skills
 /plugin install code-review@user-skills
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
@@ -36,7 +36,7 @@ Claude Code 使用 plugin marketplace：
 Codex 使用内置 `skill-installer`，在会话中输入：
 
 ```text
-请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/goal-target-task 安装 goal-target-task。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/goal-task 安装 goal-task。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。
@@ -45,4 +45,4 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/domain-modeling 安装 domain-modeling。
 ```
 
-安装后重启 Codex，使新 skill 可被发现；规划或执行开发工作前加载 `goal-target-task`。
+安装后重启 Codex，使新 skill 可被发现；规划或执行开发工作前加载 `goal-task`（旧链接 `skills/goal-target-task` 继续保留兼容）。
