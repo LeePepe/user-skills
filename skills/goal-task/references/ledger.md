@@ -76,6 +76,22 @@
 - `NEED_GO`、`NEED_OWNER_DECISION` 只能由 Owner 的答复关闭，在 `note` 记 Owner 原话或消息来源；bot 转述不算放行。普通 PR 不因按既定 auto-merge 条件合并而新建 `NEED_GO`；普通合并与发布（04/tag/TestFlight）不因该原因新建 `NEED_GO`。此前有效的 Owner 授权可按其原始来源复用并记录，不因 bot 转述而产生新授权。
 - 同一 id 关闭后又追加需处理事件 = 重新打开。
 
+### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
+
+`ledger.md`、`briefs/<task>.md` 与 Git 实际状态是跨进程唯一事实源（Single Source of Truth）；各 CLI 的原生 Goal／Todo 引擎作为进程内持续推进引擎挂载，其状态必须与 `ledger.md` 的 `## Tasks` 表和 `## Events` 同步：
+
+| `ledger.md` R8 状态 / 事件 | Codex CLI（`create_goal` / `update_goal`） | Copilot CLI（`sql` `todos` + `todo_deps`） | Claude Code（`TodoWrite` / `TaskCreate`） |
+|---|---|---|---|
+| Phase 1 启动 / Task 派发（`EVT=DISPATCHED`） | 首个动作调用 `create_goal(objective="...")` 绑定 `ledger.md`（TL）或 `briefs/<task>.md`（Writer／Reviewer） | 将 `## Tasks` 与依赖 DAG 镜像写入 `todos`（`pending`/`in_progress`）与 `todo_deps` | 将活动 `Tasks` 投影到 `TodoWrite`（`pending`/`in_progress`） |
+| 执行与审查中（`in_progress` / `in_review` / `changes_requested`） | 保持 active goal 持续推进，不提前调用 `update_goal(status="complete")` | 同步更新对应行 `status = 'in_progress'` | 同步更新对应项 `in_progress` |
+| 完成交接并落盘回执（`done` / `EVT=DONE`） | 核实全部验收命令、PR 交接／合并及磁盘 R10 回执落盘后，调用 `update_goal(status="complete")` | 更新对应行 `status = 'done'` 并解锁下游依赖 Task | 更新对应项 `completed` |
+| 阻塞或需裁决（`blocked` / `EVT=TASK_BLOCKED` / `NEED_GO` / `NEED_OWNER_DECISION` / V3 2 轮失败） | 立即调用 `update_goal(status="blocked")` 释放循环，严禁留在活动态空转 | 更新对应行 `status = 'blocked'` | 保留未完成并标注阻塞原因 |
+
+### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+
+- 一旦会话进入 `goal-task` 或存在活动的 `~/Development/handoff/<goal>/ledger.md`，后续每轮用户追问或口语化 Bug 反馈（如 `"还是点不动"`、`"还没有找到原因吗"`、`"改一下配色"`）自动继承 `TL (Coordinator)` 约束，无需用户再次输入 `/goal-task`。
+- TL 在会话内最多执行 `≤3` 次只读探查定位受影响 Task 与文件路径；若需超过 3 次工具调用的深入逆向排查或**任何文件修改**（含 `handoff/` 原型、规格说明或仓库业务代码），TL 必须通过 `herdr` 派发 `Explorer` 或 `Writer`（`<goal>-<task>-writer-rN`），并在 `ledger.md` 追加 `EVT=DISPATCHED` 与后续 `EVT=DONE`／`EVT=TASK_BLOCKED` 记录，严禁在 TL 主会话内直接编辑文件。
+
 ## 超时提醒（暂不启用）
 
 - 现行做法：Owner 问时，由 Hotty 扫各 Goal 台账，列出未被 `RESOLVED`／`ACK` 关闭的 `TASK_BLOCKED`、`INPUT_BLOCKED`、`CHANGE_REQUEST`、`REVIEW_FAIL`、`NEED_GO`、`NEED_OWNER_DECISION` 及等待时长。

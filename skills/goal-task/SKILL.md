@@ -65,6 +65,21 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 - **设计驱动的 Phase 1 交接**：独立的 Demo/UI `Writer` 在专用 Worktree 中消费冻结的 `design.md`，实现可运行 Demo／代码并产出四态与双外观的多态渲染截图；随后由 `shared-ci` 的 `scripts/context/design_contract.py` 执行静态设计契约门禁，拦截裸 Hex／RGB 色值与缺漏章节，最后由跨厂商 `Reviewer` 按 V1–V5 双轴对账验收。
 
+### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+
+- **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
+- **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
+
+### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
+
+`~/Development/handoff/<goal>/ledger.md`、`briefs/<task>.md` 与 Git 实际状态始终是跨进程唯一事实源（Single Source of Truth）；各 CLI 的原生 Goal／Todo 工具作为**进程内持续推进引擎（In-Process Continuation Engine）**挂载并同步，防止 TL 或 Subagent 提前停机或无限空转：
+
+| CLI 运行时 | 原生引擎接口 | 挂载时机与绑定对象 | 状态映射（与 `ledger.md` R8 同步） | 完成与熔断释放守卫 |
+|---|---|---|---|---|
+| **Codex CLI**（`goals = true` / `thread_goals`） | `create_goal` / `update_goal` | Phase 1 启动（TL）绑定 `ledger.md`；Task 启动（Writer／Reviewer）首个动作调用 `create_goal(objective="...")` 绑定 `briefs/<task>.md` | `in_progress` → active goal；`done` → `update_goal(status="complete")`；`blocked` → `update_goal(status="blocked")` | **仅当**全部验收命令通过、PR 完成交接／合并且磁盘 R10 回执已落盘核实后，才可调用 `update_goal(status="complete")`；遇 `TASK_BLOCKED`／`NEED_GO`／`NEED_OWNER_DECISION`／V3 两轮失败立即调用 `update_goal(status="blocked")`，严禁留在活动态空转 |
+| **Copilot CLI** | `sql`（`todos` + `todo_deps`） | Phase 1 启动时 TL 将 Goal 的 `Tasks` 及 DAG 依赖边镜像写入会话 SQLite `todos` 与 `todo_deps` | `planned`/`ready` → `pending`；`in_progress`/`in_review`/`changes_requested` → `in_progress`；`done` → `done`；`blocked`/`cancelled` → `blocked` | 随 `ledger.md` 同步更新 `todos.status`，未解除前置依赖或 R10 未落盘前不得标 `done` |
+| **Claude Code** | `TodoWrite` / `TaskCreate` | Phase 1 启动及状态变更时 TL 将活动 `Tasks` 投影到 `TodoWrite` | `planned`/`ready` → `pending`；`in_progress`/`in_review` → `in_progress`；`done` → `completed` | 仅作实时进度可见性投影，`ledger.md` 保持唯一权威状态源 |
+
 ## 合同角色
 
 以下为常见角色绑定；定义权仍按 R1，含获宽范围 assignment 的原实现者。
@@ -172,7 +187,7 @@ Goal 的端到端、发布、实机或真实消费验收分别取证，不能从
 本合同不绑定具体模型；角色档位、模型、CLI 与启动参数只以 [references/runtime-profiles.yaml](references/runtime-profiles.yaml) 为源头，bot 分工与 CLI agent 生命周期见 [references/bots-and-agents.md](references/bots-and-agents.md)，台账与标准事件见 [references/ledger.md](references/ledger.md)。
 硬规则：Reviewer（含 Planner 的 Reviewer）与被审者使用不同家模型；启动显式指定模型，不依赖 CLI 默认值；降级只在同档内换可用模型并记入回执；不用 profile 列出的禁用参数（如 `--yolo`、`--allow-all-*`）；Codex 沙箱按 profile 使用 `danger-full-access`（`-s danger-full-access`），不视为禁用项。
 所有 CLI agent（含 Reviewer、Explorer）经 herdr 启动并按 profile 命名，TL 在下属仍 working 时不得结束；每个 Goal 在台账头写明 Owner、协调者 bot、TL 与机器，事件只沿这条线传递；危险操作及明确 hold 例外只由 Owner 放行；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO，按仓库既定 auto-merge 条件合并（见 references/bots-and-agents.md）。
-在 `HERDR_ENV=1` 且显式 ID 预检通过后，使用 `herdr pane split --pane "$HERDR_PANE_ID" --cwd "$TASK_WORKTREE" --no-focus` 创建绑定 worktree 的窗格，再按 `common.herdr_kind_map` 用 `herdr agent start <name> --kind <kind> --pane <pane_id> -- <profile_flags>` 启动跨厂商 Subagent；用 `herdr agent prompt <name> "<file-pointer>" --wait` 派发，完成后用 `herdr agent read <name> --source recent-unwrapped` 读取。禁止裸 `--current`，禁止在 `working` 时读 alternate-screen 历史；以 R10 回执和 Git 实际状态为唯一真值。完整预检、命名、等待、阻塞处理与清理模板见 [references/bots-and-agents.md](references/bots-and-agents.md)。
+在 `HERDR_ENV=1` 且显式 ID 预检通过后，使用 `herdr pane split --pane "$HERDR_PANE_ID" --cwd "$TASK_WORKTREE" --no-focus` 创建绑定 worktree 的窗格，再按 `common.herdr_kind_map` 用 `herdr agent start <name> --kind <kind> --pane <pane_id> -- <profile_flags>` 启动跨厂商 Subagent；用 `herdr agent prompt <name> "First call create_goal bound to briefs/<task>.md; read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>; then call update_goal(status=\"complete\"|\"blocked\")." --wait` 派发（Codex Subagent 必须在启动时绑定 `create_goal` 并在 R10 回执落盘后调用 `update_goal(status="complete"|"blocked")`），完成后用 `herdr agent read <name> --source recent-unwrapped` 读取。禁止裸 `--current`，禁止在 `working` 时读 alternate-screen 历史；以 R10 回执和 Git 实际状态为唯一真值。一旦会话进入 `goal-task` 或存在活动 `ledger.md`，后续每轮用户追问或 Bug 反馈自动继承 TL 约束（Sticky TL），TL 只读探查上限 ≤3 次，超限或需改任何文件（含 `handoff/` 原型／spec／业务代码）必须经 `herdr` 派发 `Explorer` 或 `Writer`。完整预检、命名、等待、阻塞处理与清理模板见 [references/bots-and-agents.md](references/bots-and-agents.md)。
 加载本合同后按可信调用来源和显式 assignment 绑定角色，复用已有决定与有效受审基线。
 
 规划前或规划中按需（R11）派只读 Explorer（快速／长上下文只读模型即可），回报落盘后由定义方写入计划。

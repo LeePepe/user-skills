@@ -27,6 +27,24 @@
    - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
    - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
+### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+
+- **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
+- **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
+
+### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
+
+`~/Development/handoff/<goal>/ledger.md`、`briefs/<task>.md` 与 Git 实际状态始终是跨进程唯一事实源（Single Source of Truth）；各 CLI 的原生 Goal／Todo 工具作为**进程内持续推进引擎（In-Process Continuation Engine）**挂载并同步，防止 TL 或 Subagent 提前停机或无限空转：
+
+- **Codex CLI（`goals = true` / `thread_goals`）**：
+  - Phase 1 启动时（TL）或 Task 启动时（Writer／Reviewer），首个动作调用 `create_goal(objective="...")`，将目标绑定到 Goal `ledger.md` 或 Task `briefs/<task>.md`。
+  - **仅当**全部验收命令通过、PR 完成交接／合并且磁盘 R10 回执已落盘核实后，才允许调用 `update_goal(status="complete")`。
+  - 遇到 `TASK_BLOCKED`、`NEED_GO`、`NEED_OWNER_DECISION` 或 V3 两轮修复仍失败时，立即调用 `update_goal(status="blocked")`，**严禁留在活动态空转**。
+- **Copilot CLI（`sql` `todos` + `todo_deps`）**：
+  - TL 在 Phase 1 启动时将 Goal 的 `Tasks` 及依赖 DAG 边镜像写入会话 SQLite 的 `todos` 与 `todo_deps` 表，随 `ledger.md` 同步更新状态（`pending -> in_progress -> done | blocked`）。
+- **Claude Code（`TodoWrite` / `TaskCreate`）**：
+  - TL 将活动 `Tasks` 投影到 `TodoWrite` 以提供实时进度可见性，同时保持 `ledger.md` 为唯一权威状态源。
+
 ## bot 分工（唯一一处）
 
 Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册的唯一来源。
@@ -120,11 +138,11 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
    ```
 
    `herdr agent start --timeout` 的单位是毫秒（3000–300000）；首次进入目录时处理 folder-trust；不接受 bypass-permissions 提示，改用 profile 中的受限参数。
-5. **文件指针派发与状态等待**：prompt 只携带 `briefs/<task>.md` 与 R10 回执路径等短指令，不粘贴长合同。单任务同步执行：
+5. **文件指针派发与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
    herdr agent prompt "$WRITER_NAME" \
-     "Read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>." \
+     "First call create_goal bound to briefs/<task>.md; read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>; then call update_goal(status=\"complete\"|\"blocked\")." \
      --wait --timeout 600000
    ```
 
