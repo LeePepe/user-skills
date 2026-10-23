@@ -1,140 +1,146 @@
-# AI-Native 工程飞轮全景手册
+## §0 Panorama & 4-Layer Product/Output Matrix
 
-> **用途**：把一次 Goal 从开发执行、证据复盘、规则进化到可公开叙事，串成一个可重复、可审查、可复制的闭环。
->
-> **适用范围**：使用 `goal-task`（`Goal -> Task` 两层合同，目录兼容保留 `goal-target-task`，`1 Task = 1 Writer = 1 Worktree = 1 PR`）、Herdr 临时 CLI Agent、共享质量门禁或证据驱动复盘的工程任务。
->
-> **阅读方式**：先看 §1 的全景，再按当前象限跳到 §2–§5；命令中的大写变量必须由当前协调者填入，禁止把个人路径、账号或密钥写进仓库。
+> 本手册把一次 Goal 从可验收的开发交付、证据驱动的双路复盘、规则与底座进化，推进到可复用的总结、抽取与公开叙事，再把反馈送回下一轮开发。四个层次描述产品与产出，三个主板块描述行动与回馈；两者不能互相替代。
 
-## 快速导航
-
-| 需要解决的问题 | 直接阅读 |
-|---|---|
-| 这套方法如何闭环、谁负责什么 | §1 |
-| 如何分流任务、启动 Agent、等待和回收 | §2.1–§2.2 |
-| 如何做 6DQ、契约同步和发布读回 | §2.3 |
-| 如何判断“为什么没交付”而不是凭感觉归因 | §3 |
-| 如何把教训变成不可回归的规则 | §4 |
-| 如何把工程事实脱敏为 Blog／故事集 | §5 |
-
----
-
-## §1 顶层全景视图：The 4-Stage Flywheel & Two-Layer Architecture
-
-### 1.1 四阶段飞轮
+### 0.1 三大板块闭环总图
 
 ```text
-                 ┌──────────────────────────────┐
-                 │  1. Build／开发执行            │
-                 │  定义、分流、派发、验证、交付    │
-                 └──────────────┬───────────────┘
-                                │ 产出代码、R10、Git/CI证据
+┌──────────────────────────────────────────────────────────────────────┐
+│ §1 Build & Ship：Goal → Task → CLI/Herdr → 6DQ → 发布读回             │
+│ 代码、测试、R10、Git/CI、版本与线上读回                               │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ 交付事实与可观察指标
                                 ▼
-                 ┌──────────────────────────────┐
-                 │  2. Retro／复盘取证            │
-                 │  锁边界、还原时间线、检验H1–H5  │
-                 └──────────────┬───────────────┘
-                                │ 产出最早承重分岔点与责任面
+┌──────────────────────────────────────────────────────────────────────┐
+│ §2 Retro & Dual Feedback Loop：项目回路 A ＋工程回路 B                 │
+│ Performance/Crash/体验发现；Workflow/PR/Infra 复盘；三道锁固化         │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ 可执行 Task、底座升级、回归锁与素材
                                 ▼
-                 ┌──────────────────────────────┐
-                 │  3. Evolve／反思进化           │
-                 │  把教训落到 Skill、Hook、CI     │
-                 └──────────────┬───────────────┘
-                                │ 产出可验证的规则与门禁
-                                ▼
-                 ┌──────────────────────────────┐
-                 │  4. Story／叙事外化            │
-                 │  脱敏、抽象、编排为 Blog/故事集 │
-                 └──────────────┬───────────────┘
-                                │ 公开反馈、反例、下一轮约束
-                                └───────────────► 回到 Build
+┌──────────────────────────────────────────────────────────────────────┐
+│ §3 Summarize, Extract & Narrate：抽取单 → 三种叙事 → 脱敏发布           │
+│ Story Series、Tech Deep-Dive Blog、Deck；公开反馈与反例                 │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ 新约束、新选题、新验收标准
+                                └──────────────────────► 回到 §1
 ```
 
-四阶段不是线性项目管理，而是一个有证据闭环的控制系统：
+**闭环规则**：
 
-1. **Build** 只承诺可验收的产出，不用“看起来在忙”替代交付。
-2. **Retro** 只接受可观察证据，不把模型行为、工具故障或人的意图当作未经检验的根因。
-3. **Evolve** 不允许以“下次注意”结案，必须产生至少一个可自动检查的规则、Hook 或门禁。
-4. **Story** 不泄露内部信息；把真实分岔点提炼成读者可复用的机制，再把外部反馈带回下一轮规则。
+1. §1 只以可验收产出证明进展；终端状态、口头承诺和“看起来很忙”不是交付证据。
+2. §2 只接受可定位的事实、时间线和反事实检验；每个结论必须转化为可执行 Task、底座升级或三锁之一。
+3. §3 不把内部信息直接外传；先保留量化证据，再去标识化、抽象机制，最后按发布门禁读回。
+4. 任一回路发现的缺口都通过 `Goal -> Task` 入口回流，不在叙事或复盘中另造未验收的工作单元。
 
-### 1.2 双层协同架构
+### 0.2 四层产品与产出矩阵
 
-常驻 bot 的域、机器与边界只以 [bots-and-agents.md](bots-and-agents.md) 为准（Owner 2026-10-23：七域各一个主 bot）。本表不复制花名册。
-
-| 层 | 成员 | 主要职责 | 典型生命周期 | 不做什么 |
+| 层 | 产品／系统范围 | 主要输入 | 核心产出 | 验收读回 |
 |---|---|---|---|---|
-| 常驻 Bot 层 | 域主 bot | 分工见 [bots-and-agents.md](bots-and-agents.md) | 长期 | 不在本手册另立花名册 |
-| Herdr 临时 CLI Agent 层 | `TL` | 审定定义、调度、协调、对账 | 一个 Goal | 不兼任写者或独立验收 |
-| Herdr 临时 CLI Agent 层 | `Explorer` | 只读核实文件、符号、命令和版本 | 一次探查 | 不改仓库、不补方案 |
-| Herdr 临时 CLI Agent 层 | `Planner` | 编制 Goal／Task DAG 定义和验收映射 | 一轮计划 | 不写可编译实现 |
-| Herdr 临时 CLI Agent 层 | `Writer` | 唯一 Task 写者：实现、验证、回执 | 一个 Task | 不递归派发 Agent |
-| Herdr 临时 CLI Agent 层 | `writer_escalated` | V3 第二轮或高复杂度场景的升档写者 | 一轮修复／高复杂度 Task | 不跳过原有审查证据 |
-| Herdr 临时 CLI Agent 层 | Cross-Vendor Reviewer | 按 V1–V5 独立验收 | 一轮审查 | 不替写者执行修复 |
+| **层 1：业务与产品应用层（Products & Apps）** | 原生与全栈应用：实时音频、健康运动、简报看板、财务管理、搜索、通知及核心业务场景 | 用户需求、设计 Token、客户端／服务端代码、真实用户旅程 | 功能切片、页面性能水位（PLT/FPS）、Crash-Free 率、关键交互成功率、用户体验指标 | 功能与 E2E 证据、PLT P50/P90/P99、FPS、Crash-Free、DSAT 趋势 |
+| **层 2：共享工程与设计底座（Shared Foundations & Kits）** | `shared-design-system` Basalt Web 与 Native SwiftUI DesignKit；`shared-telemetry` Loki/Grafana、SDK 与 `aidata`；`shared-ci` 6DQ 门禁与发布引擎；`AppleUITesting` | 跨产品复用需求、契约、遥测事件、质量规则、组件与测试夹具 | 跨端一致性、可观测性数据流、自动化门禁、零漂移契约、可复用组件与测试能力 | 契约检查、遥测链路完整性、组件快照／UI 测试、6DQ 结果、版本与摘要一致 |
+| **层 3：研发与协同工作流（Engineering Workflows `01–06` & `Goal -> Task`）** | 01 规划切片、02 CLI+Herdr 协同实现、03 PR 交付、04 自动发布、05 遥测分析、06 周期维护；两层任务合同 | Goal 定义、Task brief、依赖 DAG、R10 回执、Git／CI／发布证据 | 高吞吐 PR 交付链、准确 head、R10 证据回执、自愈流水线、可复盘的状态机 | `briefs/<task>.md`、R10、Git SHA、required checks、发布读回与状态对账 |
+| **层 4：知识复利与叙事产出（Knowledge & Narrative Outputs）** | 《带一群 AI 干活》系列故事、项目 Performance／Crash 技术 Blog、专题分享 Deck、结构化复盘档案 | 项目证据、工程复盘、量化前后对比、架构图、脱敏映射、读者问题 | 可复用工程认知、架构影响力、公开叙事作品、下一轮选题与约束 | 事实回指内部证据、隐私脱敏检查、构建产物、静态资源哈希与线上页面读回 |
 
-**责任线**：
+### 0.3 产品与产出如何互相映射
 
-```text
-Writer／Reviewer／Explorer → TL → 协调者 Bot → Owner
-```
-
-TL 结束前必须收齐下属 R10 回执；Herdr 的 `idle`、`done` 只是终端提示，不能替代磁盘回执和 Git 实际状态。
-
-### 1.3 四大权威源（SSOT）
-
-| SSOT | 负责什么 | 典型内容 | 变更后的回读 |
+| 观察问题 | 先定位的产品层 | 需要消费的产出 | 回流入口 |
 |---|---|---|---|
-| `user-skills` | GTT 执行合同与本 Playbook | R1–R11、V1–V5、复杂度路由、回执和边界 | 读回 Skill、相关 brief 和 R10 |
-| `agent-skills` | 01–06 工作流与团队角色 | 需求、实现、PR 接管、自动化发布、遥测、周期维护 | 按对应 workflow 的验证命令回读 |
-| `shared-ci` | 6DQ 门禁、契约同步、发布读回 | L1/L2/L3/G2/D1、`sync_contract.py`、`release_sync.py` | CI 绿、契约 check、线上版本与校验和一致 |
-| 站点故事集 | `ai-workflow` 对外叙事规范 | 01–08 已发布文章及脱敏风格 | 文章事实回指工程证据，公开稿不含内部标识 |
-
-冲突处理：先保留更高层 SSOT 的硬约束；无法判定时停止受影响动作，记录 `CHANGE_REQUEST` 或 `NEED_OWNER_DECISION`，不靠口头解释覆盖冻结定义。
+| 用户体验是否退化？ | 层 1，并核对层 2 遥测 | 性能／Crash／体验水位与版本区间 | 项目回路 A 的 Performance 或 Crash Task |
+| 多产品是否出现同类缺陷？ | 层 2 | 组件、契约、SDK、设计 Token 的共性证据 | 共享底座升级 Task 与三锁 |
+| 为什么交付链没有产生可用结果？ | 层 3 | brief、R10、事件、Git、PR、CI 的证据链 | 工程回路 B 的 Workflow／PR／Infra Task |
+| 哪个机制值得传播？ | 层 4，同时回看层 1–3 | 四元素抽取单与量化 Delta | 三种叙事模板及新一轮门禁 |
 
 ---
 
-## §2 第一象限：怎么开发（Build & Orchestrate — Macro & Micro SOP）
+## §1 Build & Ship — 从两层切片、CLI/Herdr 到 6DQ 发布读回（权重 1/3）
 
-### 2.1 两档自适应执行模式与任务拆分四谓词（`1 Task = 1 Writer = 1 Worktree = 1 PR`）
+本板块的完成定义是：一个冻结的 Goal 被拆成可验收的 Task，Task 在隔离 Worktree 中完成实现与证据留存，经 6DQ 和发布读回后，准确 head、R10 与线上事实可以相互对账。它不以作者数量、终端输出或 PR 创建代替完成。
 
-#### 两档执行模式（Adaptive Scaling by Task Count）
+### 1.1 `Goal -> Task` 两层模型
 
-| 模式 | 同时满足的条件 | 结构 | 交付方式 |
-|---|---|---|---|
-| **Lite / Single-Task Mode**（`1 Goal = 1 Task = 1 PR`） | 1 个 Task、1 个 Writer、1 个 PR、≤5 个文件；不改公共接口、红线路径、CI 门禁；不新增依赖 | 不设独立 `ledger.md` 台账与单独计划审查 | R7 自检后派 1 Writer + 1 Cross-Vendor Reviewer；PR 描述兼台账与 R10 回执 |
-| **Standard / Multi-Task DAG Mode**（`1 Goal = N Tasks = N PRs`） | 多文件特性、跨层改动或多 PR／跨仓工作 | 两层 `Goal → Tasks` DAG（`1 Task = 1 Writer = 1 Worktree = 1 PR`）；按垂直曳光弹切片 | 维护 `ledger.md` 与 `briefs/<task>.md`；每个 Task 对应 1 个 PR 单次审查（V1–V5），全部 `done` 后跑 Goal 端到端验收 |
+#### Goal：可观察的最终结果
 
-机械性大范围重构采用 `Expand → Migrate → Contract`：先扩展兼容接口，再迁移调用方，最后收缩旧接口（每个步骤作为 Goal DAG 中的独立 `Task` / `PR`）；不要把跨阶段风险压在一个不可回滚 PR 中。
-*旧版兼容说明：历史台账或 issue 中的 `Target` 条目直接映射为单个 `Task`（或同一 `Goal` 下的一组 `Tasks`）。*
+Goal 必须同时声明：
 
-#### 四谓词拆分检查
+- 最终用户或系统可观察的结果、整体范围和明确不做项。
+- 所有端到端验收命令，以及这些命令对应的 Task。
+- Task 依赖 DAG、基线 SHA、公共接口与红线路径。
+- 完成所需的 Git、CI、发布或线上读回证据。
 
-对候选边界依次问四个问题，**任意一个为“是”就拆成独立 Task（即独立 PR）**：
+Goal 状态为 `planning → in_progress → accepting → done`，也可以转为 `blocked` 或 `cancelled` 并记录原因。只有必需 Task 全部 `done`（或已备案取消），且端到端验收证据齐全，Goal 才能 `done`。
 
-1. **执行者不同？** 需要不同角色、机器或权限才能完成。
-2. **验收方式不同？** 例如代码测试与线上读回不能只靠同一个命令证明。
-3. **可以并行？** 没有数据、文件或定义依赖，拆开能减少等待。
-4. **中间结果交给别人消费？** 例如契约、脚本、设计或证据要交给另一个执行者。
+#### Task：一个垂直曳光弹切片、一个 PR
 
-不要使用“一个页面等于一个任务”作为偷懒规则。真正的 Task 边界应围绕接口和验收，而不是 UI 文件数量。拆分前必须区分：
-
-- **源码定位未穷尽**：继续在当前范围内查找，不扩大 Goal。
-- **R7 技术冻结前提**：补齐已声明范围内的文件、脚本、命令和依赖证据。
-- **真正的架构分叉**：会改变验收、公共接口、安全／隐私、CI 门禁或破坏性操作，按 R2/R4 升级给协调者或 Owner。
-
-每个 Task brief 至少声明：
+Task 是 Goal 下可独立交付的结果切片，遵循：
 
 ```text
-Background: 一句话说明为什么做
+1 Task = 1 Writer = 1 Worktree = 1 PR
+```
+
+每个 Task brief 至少记录：
+
+```text
+Background: 一句话背景
 Owned Paths: 允许修改的路径
-Interfaces: Consumes / Produces（精确签名、文件或命令）
-Dependencies: 前置 Tasks
-Acceptance: 可复制的验证命令与通过标准
+Interfaces: Consumes / Produces（精确文件、命令、契约或数据）
+Dependencies: 前置 Task
+Acceptance: 可复制命令与通过标准
 Handoff: R10 回执路径、准确 head、未完成项
 ```
 
-### 2.2 CLI + Herdr 操控全细节：七步标准 SOP
+按真实接口与验收切片，而不是按文件数量或 UI 页面机械拆分。优先使用 Vertical Tracer-Bullet Slice；大范围机械演进使用：
 
-以下 SOP 适用于所有 Herdr CLI Agent；变量只代表当前运行时值。禁止使用裸 `--current`，禁止把真实个人绝对路径、账号或令牌写入仓库。
+```text
+Expand → Migrate → Contract
+```
+
+四个拆分谓词依次判断，任一为“是”就拆成独立 Task：
+
+1. 执行者不同：需要不同角色、机器或权限。
+2. 验收方式不同：代码测试与线上读回不能由同一命令证明。
+3. 可以并行：没有定义、数据、文件或契约依赖。
+4. 中间结果交给别人消费：契约、脚本、设计或证据需要交接。
+
+### 1.2 两档自适应分流
+
+| 模式 | 适用条件 | 定义与交接 | 完成门槛 |
+|---|---|---|---|
+| **Lite / Single-Task Mode**（`1 Goal = 1 Task = 1 PR`） | 仅 1 Task、1 个 Writer、1 个 PR、改动不超过 5 个文件；不改公共接口、红线路径、CI 门禁；不新增依赖 | R7 自检后使用一个 PR 描述承载台账与 R10 回执；brief 可内联 | Task 验收、仓库 CI、一次 V1–V5 双轴独立审查、合法合并并读回 |
+| **Standard / Multi-Task DAG Mode**（`1 Goal = N Tasks = N PRs`） | 多文件、跨层、多 PR、跨仓、不同验收或存在并行切片 | 用 `ledger.md` 定义 DAG；每个 Task 使用 `briefs/<task>.md` 文件指针，声明 `Interfaces: Consumes / Produces` | 每个 Task 单一 PR 完成 V1–V5；全部 Task `done` 后执行 Goal 端到端验收 |
+
+Lite 执行中若触碰任一升级条件，立即停止扩大范围，转 Standard，补齐台账、brief 与依赖审查。无论哪一档，Task 定义交出即冻结；范围变化须走 `EVT=RULING` 或 R2/R4/R5 变更记录。
+
+### 1.3 冻结、状态与证据
+
+Task 状态：
+
+```text
+planned → ready → in_progress → in_review → done
+                         ↑             │
+                         └── changes_requested
+```
+
+只有前置 Task 全部 `done` 且 R7、R9 通过，Task 才能 `ready`。V5 `FAIL` 才能进入 `changes_requested`；任意状态可转 `blocked`／`cancelled`，必须说明原因。R10 回执是状态的持久证据，Herdr 的 `idle`／`done` 只是提示。
+
+冻结前逐项核对：
+
+- `Owned Paths` 不重叠，或已明确串行合并队列。
+- 依赖 DAG 无环，Task 的验收映射到 Goal。
+- 文件、脚本、API、符号和命令真实存在且可运行。
+- 记录基分支 SHA、受影响文件 revision、契约 SHA。
+- 计划不含可编译实现代码，且不改 Goal 验收。
+
+运行中发现同一目标内的辅助文件遗漏或非公共接口微调时，写者回报 `NEEDS_RULING`。协调者只有在不改变 Goal 验收、不触碰安全／隐私／数据丢失、不修改 CI 门禁／规则集、不做破坏性操作时，才能追加：
+
+```text
+EVT=RULING | decision=<...> | why=<...> | blast_radius=<...>
+```
+
+改变验收、增删 Task、改变 Task 接口或触碰四条红线时，必须按 R2/R4/R5 重规划。第 1 轮审查失败由原写者修复；修复后复审仍失败，改派 `writer_escalated`，第二轮后仍失败则 `blocked`，不通过换名、换 SHA 或换 PR 重置计数。
+
+### 1.4 CLI/Herdr 7-step SOP
+
+以下是可复制的七步标准命令流。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。
 
 #### Step 1 — 环境与显式 ID 预检
 
@@ -148,9 +154,9 @@ test "${HERDR_ENV:-}" = 1 &&
 herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 ```
 
-从输出核对控制器的精确 `pane_id`、`tab_id`、`workspace_id` 与环境变量一致；不一致就停止，不猜 ID。
+核对输出中的 `pane_id`、`tab_id`、`workspace_id` 与环境变量完全一致；不一致即停止，不猜 ID。
 
-#### Step 2 — 布局感知分屏并绑定专用 Worktree
+#### Step 2 — 布局感知分屏并绑定 Worktree
 
 ```sh
 herdr pane layout --pane "$HERDR_PANE_ID"
@@ -165,13 +171,11 @@ SPLIT_JSON="$(
 NEW_PANE_ID="$(printf '%s' "$SPLIT_JSON" | jq -er '.result.pane.pane_id')"
 ```
 
-宽窗格用 `right`，窄／高窗格用 `down`。始终使用返回 JSON 的 `pane_id`，不复用旧 pane，不触碰 Owner 手开的窗格。
+宽窗格用 `right`，窄或高窗格用 `down`；只使用返回 JSON 的新 `pane_id`，不复用旧窗格。
 
-#### Step 3 — 具名启动与 `common.herdr_kind_map`
+#### Step 3 — 具名启动并使用运行时映射
 
-命名格式：`<goal>-<task>-<role>-r<round>`，名称满足 `[a-z][a-z0-9_-]{0,31}`。`herdr --kind` 使用 `runtime-profiles.yaml` 的映射：`codex → codex`、`copilot → copilot`、`cursor-agent → cursor`。
-
-**Codex Writer 模板**（按当前 profile 替换模型）：
+命名格式为 `<goal>-<task>-<role>-r<round>`，满足 `[a-z][a-z0-9_-]{0,31}`。`herdr --kind` 必须采用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`，并显式指定模型：
 
 ```sh
 WRITER_NAME="${GOAL_SLUG}-${TASK_ID}-writer-r1"
@@ -179,11 +183,7 @@ herdr agent start "$WRITER_NAME" \
   --kind codex \
   --pane "$NEW_PANE_ID" \
   -- codex -m gpt-5.6-luna -s danger-full-access -a never
-```
 
-**Copilot Gemini Cross-Vendor Reviewer 模板**：
-
-```sh
 REVIEWER_NAME="${GOAL_SLUG}-${TASK_ID}-reviewer-r1"
 herdr agent start "$REVIEWER_NAME" \
   --kind copilot \
@@ -192,11 +192,9 @@ herdr agent start "$REVIEWER_NAME" \
     --deny-tool write --deny-tool shell --no-ask-user
 ```
 
-Reviewer 必须与被审者使用不同模型厂商；每次启动显式指定模型，不依赖 CLI 默认值。不得使用 `--yolo`、`--force`、`--allow-all-*` 或其他 profile 禁用参数。
+Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--force`、`--allow-all-*` 或 profile 禁止的参数。Writer 不递归派发下级执行者。
 
-#### Step 4 — 文件指针派发、等待与 Socket 零轮询监听
-
-单任务同步派发：
+#### Step 4 — 文件指针派发与 Socket 事件监听
 
 ```sh
 herdr agent prompt "$WRITER_NAME" \
@@ -204,18 +202,16 @@ herdr agent prompt "$WRITER_NAME" \
   --wait --timeout 600000
 ```
 
-多个无依赖 Task 先派发再等待：
+多个无依赖 Task 先派发，再等待：
 
 ```sh
 herdr agent prompt "$TASK_A_NAME" "Read $TASK_A_BRIEF; write $TASK_A_RECEIPT."
 herdr agent prompt "$TASK_B_NAME" "Read $TASK_B_BRIEF; write $TASK_B_RECEIPT."
-herdr agent get "$TASK_A_NAME"
-herdr agent get "$TASK_B_NAME"
 herdr agent wait "$TASK_A_NAME" --timeout 600000
 herdr agent wait "$TASK_B_NAME" --timeout 600000
 ```
 
-不要把长合同粘进 prompt；只传 brief 和回执指针。需要监听状态时，通过 Herdr socket 订阅事件，避免固定间隔轮询。以下 Node.js 片段只消费状态事件，收到终态后由协调者再按 R10/Git 对账：
+需要状态通知时，用 Node.js 通过 `events.subscribe` 订阅 `pane.agent_status_changed`，不要固定间隔轮询：
 
 ```js
 import net from "node:net";
@@ -231,9 +227,7 @@ const request = {
   id: 1,
   method: "events.subscribe",
   params: {
-    subscriptions: [
-      { type: "pane.agent_status_changed", pane_id: paneId },
-    ],
+    subscriptions: [{ type: "pane.agent_status_changed", pane_id: paneId }],
   },
 };
 
@@ -248,8 +242,7 @@ socket.on("data", (chunk) => {
     try {
       const event = JSON.parse(line);
       const status = event?.params?.status ?? event?.result?.status;
-      const agent = event?.params?.agent_name ?? event?.params?.agent;
-      if (status) console.log(`[herdr] ${agent ?? "agent"}: ${status}`);
+      if (status) console.log(`[herdr] status=${status}`);
     } catch {
       console.error("[herdr] ignored malformed event");
     }
@@ -261,31 +254,21 @@ socket.on("error", (error) => {
 });
 ```
 
-监听器不是完成证明；它只负责唤醒下一步。完成证明仍是 R10 回执、准确 Git SHA 和目标仓库 required checks。
+#### Step 5 — 执行中裁决与失败升档
 
-#### Step 5 — 执行中动态调控：RULING 与升档
-
-**`EVT=RULING` 内联裁决**：
-
-1. Writer 发现同目标内的 1–2 个辅助／适配文件漏列，或非公共接口微调缺口。
-2. Writer 回报 `NEEDS_RULING`，列出文件、原因、影响面和验证命令。
-3. TL 判断不触碰四条硬红线：改变 Goal 验收；安全／隐私／数据丢失；修改 CI 门禁／规则集；破坏性操作。
-4. 协调者在台账追加 `EVT=RULING | decision=... | why=... | blast_radius=...` 后放行。
-5. 触碰红线或改变范围时，不内联放行，走 `CHANGE_REQUEST` / R2 重规划。
-
-**V3 第二轮失败自动升档**：
+`NEEDS_RULING` 只处理同一 Goal 内的顺带缺口；协调者先判定四条红线，再追加 `EVT=RULING`。越出边界则冻结当前范围，提交结构化 `CHANGE_REQUEST`，不自行补范围外实现。
 
 ```text
-第 1 轮审查 FAIL → 原 Writer 修复
-修复后复审仍 FAIL → 改派 writer_escalated（gpt-6.1-sol 或 opus）
-第二轮修复后复审仍 FAIL → Task blocked，退回定义方重规划
+第 1 轮 V5 FAIL → 原 Writer 修复
+修复后复审仍 FAIL → writer_escalated 接手第二轮
+第二轮后仍 FAIL → Task blocked，退回定义方重规划
 ```
 
-升档上下文必须包含原 brief、前序 diff、两轮 findings 和验证日志路径；不因换 PR、SHA、agent 或任务名而重置失败计数。
+升档交接必须包括原 brief、前序 diff、两轮 findings、验证日志路径和最新准确 head。
 
-#### Step 6 — 安全读取、blocked 处理与 R10 真值对账
+#### Step 6 — 安全读取、阻塞处理与 R10 对账
 
-运行中只读可见画面：
+Working 时只读可见输出：
 
 ```sh
 herdr agent read "$WRITER_NAME" --source visible --lines 40
@@ -297,308 +280,582 @@ herdr agent read "$WRITER_NAME" --source visible --lines 40
 herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
 ```
 
-禁止在 `working` 时读取 alternate-screen 历史。若为 `blocked`：
+`blocked` 时先获取状态再读可见输出；只在确认需要终止当前输入时发送 `esc` 或 `ctrl+c`。固定判断顺序：
 
-```sh
-herdr agent get "$WRITER_NAME"
-herdr agent read "$WRITER_NAME" --source visible --lines 40
-herdr agent send-keys "$WRITER_NAME" esc
-# 仅在确认需要终止当前输入时：
-herdr agent send-keys "$WRITER_NAME" ctrl+c
+```text
+磁盘 R10 回执 → Git 实际 SHA／工作树 → CI／发布读回 → Herdr 状态
 ```
 
-判断顺序固定为：**磁盘 R10 回执 → Git 实际 SHA／工作树 → CI／发布读回 → Herdr 状态**。任何顺序相反都可能把终端提示误当作完成。
+#### Step 7 — 回收窗格并保护 Worktree
 
-#### Step 7 — 子窗格回收与 Worktree 保护清理
-
-收齐回执、确认 agent 不再 `working` 后，只关闭本轮创建的 pane：
+收齐回执、确认执行者不再 `working` 后，只关闭本轮创建的窗格：
 
 ```sh
 herdr pane close "$NEW_PANE_ID"
 ```
 
-Worktree 删除前逐项确认：分支已 push；PR 已合法合并或现场已交接；`git status --short` 为空；没有未保存的回执或输入。未满足任一项就保留 Worktree，不执行清理。不得停止共享 Herdr 服务，不得触碰其他 Goal 的 pane。
+删除 Worktree 前必须确认分支已推送、PR 已合法合并或现场已交接、`git status --short` 为空，且没有未保存回执。任一条件不满足就保留现场；不停止共享服务，不触碰其他 Goal 的窗格。
 
-### 2.3 仓库级 6DQ 质量门禁与发布读回
+### 1.5 6DQ 质量门禁与自动化发布读回
 
-#### 6DQ 五维矩阵
+6DQ 是组合门槛，不是五个可选建议：
 
-| 维度 | 检查目标 | 最低证据 | 常见失败 | 处置 |
-|---|---|---|---|---|
-| **L1** | 单测、四项覆盖率、静态检查 | 测试命令、覆盖率报告、lint/typecheck 输出 | 只测 happy path；覆盖率虚高 | 补边界与失败路径，拒绝伪测试 |
-| **L2** | 本地真实边界集成 | 使用真实序列化、存储、网络边界的集成结果 | 全部 mock，契约未穿透 | 选最小真实边界集，固定可重复夹具 |
-| **L3** | 端到端用户旅程 | 从入口到结果的 E2E 证据 | 只验证中间函数 | 选择一条关键旅程，记录环境与版本 |
-| **G2** | 安全与契约审计 | 权限、输入、输出、兼容性、秘密扫描 | 越权、注入、敏感信息泄漏、契约漂移 | 阻塞合并，修复后全量复验 |
-| **D1** | Worktree 与环境隔离 | 当前分支、路径、依赖、环境变量、清理记录 | 主目录改代码、串台、脏工作树 | 立即停写，对账并恢复隔离 |
+| 维度 | 检查目标 | 最低证据 | 失败处置 |
+|---|---|---|---|
+| **L1** | 单测、边界、覆盖率、静态检查 | 测试、覆盖率、lint/typecheck 输出 | 补失败路径与真实断言，拒绝伪测试 |
+| **L2** | 本地真实边界集成 | 序列化、存储、网络等最小真实集成 | 减少 mock，固定可重复夹具 |
+| **L3** | 端到端用户旅程 | 从入口到结果的一条关键 E2E | 记录环境、版本与旅程证据 |
+| **G2** | 安全与契约审计 | 输入、权限、输出、兼容性、秘密扫描 | 阻塞合并，修复后全量复验 |
+| **D1** | Worktree 与环境隔离 | 分支、路径、依赖、环境变量、清理记录 | 停止写入，对账并恢复隔离 |
 
-6DQ 是组合门槛，不是五个可随意选的建议。L1 绿不能推断 L3 绿；G2 或 D1 失败时，即使功能测试通过也不得交付。
+`L1` 通过不能推断 `L3` 通过；`G2` 或 `D1` 失败时，即使功能测试通过也不得交付。
 
-#### 多仓契约同步
-
-在包含共享契约的仓库根目录执行：
+多仓契约同步：
 
 ```sh
 python3 scripts/context/sync_contract.py --check
-```
-
-发现 drift 且本次变更应更新契约时：
-
-```sh
 python3 scripts/context/sync_contract.py --sync
 python3 scripts/context/sync_contract.py --check
 ```
 
-回执记录：检查范围、同步前后的摘要、生成或更新的文件、第二次 `--check` 的结果。`--sync` 不得代替人工确认；先确认变更属于当前 Goal，避免把无关仓库文件带入 Task。
+只有确认 drift 属于当前 Goal 才运行 `--sync`；回执记录同步前后摘要、生成文件和第二次 `--check` 结果。
 
-#### 跨语言发布读回
-
-发布候选版本时：
+跨语言版本与发布读回：
 
 ```sh
 python3 scripts/quality/release_sync.py version-sync
 python3 scripts/quality/release_sync.py readback
 ```
 
-`version-sync` 核对各语言／客户端版本；`readback` 必须同时核对：
+`readback` 必须同时确认：
 
-- `/api/live` 返回的版本、构建 SHA 与期望版本一致；
-- `SHA256SUMS` 中产物摘要与下载产物一致；
-- GitHub Release 的 tag、资产和摘要与本次准确 head 一致。
+- `/api/live` 的版本、构建 SHA 与期望值一致。
+- `SHA256SUMS` 的摘要与下载产物一致。
+- Release tag、资产、摘要与准确 head 一致。
+- TestFlight 构建版本、处理状态与目标 commit 可追溯。
 
-若读回不一致，状态为 `blocked`，记录哪个层次漂移、第一次发现的命令和最小修复范围；不得以“发布页面看起来正常”结案。
+任一不一致都标为 `blocked`，记录首次失败命令、漂移层次和最小修复范围，不以页面“看起来正常”结案。
 
 ---
 
-## §3 第二象限：怎么复盘（Retro — Evidence-Led Diagnosis SOP）
+## §2 Retro & Dual Feedback Loop — 项目 Telemetry/Crash 与工程 Workflow/PR/Infra（权重 1/3）
 
-### 3.1 触发条件与停止线
+复盘与反思进化属于同一个交付板块：先用证据解释发生了什么，再把解释变成下一次可执行的开发入口。两条回路平行运行，均必须返回 §1 的 Goal／Task；不能把“写了复盘”或“提出建议”当作闭环完成。
 
-以下任一情况触发 Retro：
-
-- Goal 结项，尤其是“完成”前有多次重试；
-- V3 升档、两轮 FAIL 或退回重规划；
-- 会话跑了多轮却产生 **0 个产品提交**；
-- CI 门禁、版本同步、发布读回或线上旅程事故；
-- 任何人提出“工具坏了”“模型失能”“只是偶发”作为结论。
-
-Retro 的停止线：没有证据就标记“未知”；不能为了形成漂亮故事而补写不存在的时间线、意图或因果。
-
-### 3.2 五步证据链诊断法（G-GTT-AUDIT）
-
-#### 1. 锁定证据边界
-
-建立只读证据包，至少包含：
+### 2.1 双路总览与共同停止线
 
 ```text
-ledger.md
-Task brief 与其 revision
-R10 receipts（Writer／Reviewer／Explorer）
-plan／contract 版本
-会话 rollout JSONL、Herdr 状态事件
-Git log、diff、CI／发布读回
+                    §1 交付事实／版本／R10／线上读回
+                               │
+             ┌─────────────────┴─────────────────┐
+             ▼                                   ▼
+  回路 A：项目与产品反馈                  回路 B：工程体系反馈
+  Telemetry → Performance Task             Workflow/PR/Infra → 规则与底座 Task
+  Crash → postmortem → Fix Task             证据链 → 三道物理防回归锁
+  体验审计 → 产品打磨 Task                  回流 Goal → 下一次交付
+             └─────────────────┬─────────────────┘
+                               ▼
+                新 Task、共享底座升级、门禁与素材
 ```
 
-对每一份输入计算 SHA-256，记录采集时间、来源、是否完整。原始证据只读保存；分析笔记另存，不能覆盖原始文件。
+共同触发条件：
 
-#### 2. 还原可观察时间线并找最早承重分岔点
+- Goal 结项前后出现重复重试、性能回退、Crash 新高、DSAT 聚类突增或体验投诉。
+- 交付链出现多轮空转、0 产品提交、stuck-PR、V3 两轮打回、契约或版本漂移。
+- 周期巡检发现设计 Token、组件、文档、发布或遥测的系统性偏差。
 
-按时间排序记录事实：命令、状态、文件变化、回执、审核结论。找出第一个同时满足以下条件的节点，称为 **Earliest Load-Bearing Fork（最早承重分岔点）**：
+共同停止线：
 
-1. 从此处开始，后续异常具有可观察的方向性；
-2. 如果改正该节点，至少一个后续失败或空转会被反事实地解除；
-3. 该节点在当时可由某个角色或门禁发现；
-4. 不是更早节点的纯粹重复表现。
+1. 先冻结证据边界：版本、准确 head、时间窗口、环境、相关 Task。
+2. 先描述可观察事实，再写假设；任何“模型偷懒”“某人疏忽”等意图判断都不得直接作为根因。
+3. 证据不足时输出 `unknown`、待查命令和责任面，不用叙事填空。
+4. 结论必须选择一个落点：项目修复 Task、Workflow／PR Task、共享底座 Task、CI／Hook 锁或明确 backlog。
 
-“最后一次报错”通常不是最早承重分岔点；“Agent 看起来很忙”也不是证据。
+### 2.2 回路 A：Project / Product Feedback Loop
 
-#### 3. 用 H1–H5 检验竞争假设
+#### A1. Telemetry 自动发现 Performance 与体验退化
 
-| 假设 | 关注面 | 若为真，应看到的预测证据 | 正证 | 反证／淘汰标准 |
-|---|---|---|---|---|
-| **H1 定义／路由缺陷** | Goal、Task 边界、复杂度分流 | brief 缺验收或 Owned Paths；四谓词本应拆分却被收束；R7 前提缺失 | 计划文本、diff 和失败验收相互吻合 | 定义完整、依赖清楚且写者仍未执行，则不能归 H1 |
-| **H2 交接／调度缺陷** | TL、Writer、Reviewer、R10 | prompt 未指向正确 brief；pane／worktree 串台；依赖未满足却派发；回执缺失 | Herdr 事件、Git 路径、回执时间线可复现 | 指针、路径、依赖和回执均正确，则排除 H2 |
-| **H3 工具／运行时缺陷** | CLI、Herdr、网络、沙箱 | 命令明确失败、socket 断连、权限拒绝，且同一输入在替代路径恢复 | 原始 stderr、状态事件、重试对照 | 失败前已有定义／交接缺口，或替代命令同样失败，则不得归因 H3 |
-| **H4 外部输入／环境缺陷** | 依赖、凭据、服务、版本、工作树 | 输入缺失／SHA 不符、依赖服务不可用、环境与 brief 声明不一致 | 输入清单、环境快照、服务响应 | 本地可复现且不依赖外部输入，则排除 H4 |
-| **H5 验收／产品错配** | 真实目标、测试、发布读回 | 测试全绿但真实旅程失败；验收命令未覆盖 Goal；发布读回漂移 | L3、release readback、用户旅程证据 | 真实旅程和发布读回均通过，则不得用 H5 解释功能空转 |
-
-检验顺序：先写每个假设的预测，再逐项找正反证；不能先选一个喜欢的根因，再挑证据。若多个假设同时成立，按“最早承重”排序，责任面可以重叠但修复动作必须有优先级。
-
-#### 4. 反事实门槛核对（Counterfactual Gate Check）
-
-一次只改变一个变量，问：
+数据链路：
 
 ```text
-如果在最早承重分岔点前增加这一条检查／指针／门禁，
-是否能让同一 Goal 在相同输入下继续走到可验收结果？
+客户端／服务端埋点
+      → shared-telemetry（SDK、Loki/Grafana）
+      → L0 聚合与 aidata 查询
+      → 基线比较与版本区间定位
+      → Performance／体验优化 Task
 ```
 
-可选单变量包括：补一个验收命令、锁定一个 `Owned Path`、改一个 prompt 指针、补一个 Herdr 状态检查、启用一个同步脚本。不能一次改变角色、模型、任务边界和测试，否则无法知道哪一项有效。
+自动检测至少覆盖：
 
-#### 5. 划分责任面与停止边界
-
-| 责任面 | 可以确认的事实 | 不应越界推断 |
+| 信号 | 对比方法 | 需要保留的事实 |
 |---|---|---|
-| 定义方 | 定义是否完整、验收是否可实现、路由是否符合四谓词 | 不凭结果倒推写者意图 |
-| TL | 是否按依赖、指针、状态和 R9/R10 调度 | 不把 pane 状态当完成 |
-| Explorer | 目标事实是否存在及其 file:line 证据 | 不给实现方案或替定义方做决定 |
-| Writer | 实际修改、命令结果、未完成项 | 不把局部绿灯宣称 Goal 完成 |
-| Reviewer | V1 双轴 findings 和 V5 结论 | 不替代 CI、发布或实机验收 |
-| 外部输入 | 服务、依赖、凭据、版本的可观察状态 | 不把不可观测意图写成根因 |
+| 页面加载耗时（PLT P50/P90/P99） | 当前版本与稳定基线、分端与分场景比较 | 版本、设备／网络分层、样本量、时间窗口 |
+| 首屏渲染与关键交互成功率 | 入口到结果的阶段耗时与失败比例 | 阶段边界、失败事件、用户旅程 |
+| FPS、卡顿、资源使用 | 关键页面和长任务分位数 | 设备层级、线程／内存／网络上下文 |
+| 用户 DSAT 聚类突增 | 同类反馈与版本、市场、设备的时间序列 | 原始分类、增幅、聚类样本和反例 |
 
-### 3.3 Retro 输出模板
+发现后必须生成一个带基线与目标阈值的 Performance Task，至少包含：
+
+- 退化版本区间、可疑模块和证据查询。
+- 可重复的基准测试、数据夹具、环境与预期阈值。
+- 优化前后同一指标的比较方式。
+- 上线后遥测读回时间窗、成功标准和回滚／阻塞条件。
+
+不得只写“优化性能”；没有基线、阈值或读回命令的条目不能进入 `ready`。
+
+#### A2. Crash 与线上异常自动诊断和修复
+
+诊断链路：
+
+```text
+Crash 堆栈符号化与聚簇
+      → 新增 Top 崩溃与版本区间
+      → postmortem 根因考古
+      → 必现／边界回归测试（RED）
+      → 最小手术式修复（GREEN）
+      → 审查、合并、发布
+      → Crash-Free 与 Top 崩溃读回
+```
+
+`postmortem` 必须逐项完成：
+
+1. 符号化调用栈与首次／最近出现版本。
+2. Git 近期变更和受影响状态、并发、生命周期条件比对。
+3. 最小复现路径、边界输入和竞态窗口还原。
+4. H1–H5 竞争假设检验，明确排除的伪根因。
+5. 修复前基线、目标阈值、发布版本和读回时间窗。
+
+Crash 修复 Task 的 Writer 先写必现与边界回归单测，完成 RED 后实施最小 GREEN 修复；不得用改测试断言、屏蔽错误或无证据重试伪装修复。发布后读回 Crash-Free、Top 崩溃排名与新增回归；未清零或出现新回归则保持 `blocked`，回到诊断而非直接结案。
+
+#### A3. 周期产品与设计一致性巡检
+
+周期比较设计 Token、Figma 规范、Basalt Web、Native SwiftUI DesignKit、实际页面和 `AppleUITesting` 结果，检查：
+
+- 视觉、间距、颜色、排版、交互状态是否偏移。
+- 废弃开关、未消费组件、文档与真实行为是否不一致。
+- 关键旅程的无障碍、错误态、加载态和空态是否覆盖。
+- 组件或 Token 的修复是否应该落在共享底座而非单个产品。
+
+每个发现必须带截图／快照或可复现路径、期望与实际差异、影响层级和验收方式，然后生成产品打磨 Task 或共享底座 Task。
+
+### 2.3 回路 B：Workflow / PR / Infra Feedback Loop
+
+#### B1. Workflow 与规划／调度复盘：五步证据链
+
+出现“多轮空转／0 产品提交／规划坍缩”时，按以下顺序诊断，禁止先写故事结论：
+
+**第一步：锁定证据边界。** 固定 `ledger.md`、Task brief、R10、JSONL／事件、Git SHA、PR、CI 和时间窗口；为每份文件记录摘要或 SHA-256，确保复盘期间证据不漂移。
+
+**第二步：还原时间线并找 Earliest Load-Bearing Fork。** 把 Goal 定义、首次派发、首次阻塞、首次范围变化、首次失败验收、审查退回和最终停止排序；找出第一个仍承载后续失败的分岔点，而不是最后一个可见错误。
+
+**第三步：用 H1–H5 可反驳假设检验。**
+
+| 假设 | 可观察预测 | 反证材料 | 判定 |
+|---|---|---|---|
+| H1：定义或验收不可实现 | 首次执行即无法运行或缺少真实接口 | R7 命令、文件、基线证据 | 支持／排除／未知 |
+| H2：依赖或基线漂移 | 上游变更后引用、契约或命令失效 | R9 revision、Git diff、CI 日志 | 支持／排除／未知 |
+| H3：调度或权限边界错误 | Task 被派给不匹配环境，状态无证据闭环 | pane、Worktree、R10、D1 证据 | 支持／排除／未知 |
+| H4：实现／测试缺陷 | 代码有提交但验收失败或审查反复指出同类问题 | diff、测试输出、V1 findings | 支持／排除／未知 |
+| H5：门禁／发布读回缺失 | 本地绿但 CI、契约、版本或线上不一致 | 6DQ、发布读回、准确 head | 支持／排除／未知 |
+
+**第四步：反事实门槛核对。** 对每个候选根因问：如果移除该因素，最早分岔点是否仍会出现？如果不会，是否已有更早证据支持它？如果会，记录它只是放大器而不是根因。
+
+**第五步：转化为规则补丁。** 将结论落为 `goal-target-task` 的拆分、调度、R10、R9 或验收规则；写明触发条件、自动检查、失败输出、责任路径和回滚方式。
+
+复盘输出必须包含：
+
+```text
+Evidence boundary
+Observable timeline
+Earliest Load-Bearing Fork
+H1–H5 verdict
+Counterfactual gate
+Responsibility and stop boundary
+Executable Task or lock
+```
+
+#### B2. PR 生命周期与代码审查复盘
+
+按 PR 生命周期分类阻塞，而不是把所有“卡住”归为执行慢：
+
+| 阻塞类 | 证据 | 复盘问题 | 回馈开发 |
+|---|---|---|---|
+| 定义不完整 | brief、R7、验收失败 | 是否缺真实接口、命令、依赖或停止线 | 补齐 brief／拆分 Task |
+| 实现未收敛 | diff、测试、R10 | 是否违反最小切片、是否缺 RED→GREEN | 测试模板、代码路径或 Task 边界 |
+| 审查反复打回 | V1/V5 findings、修复 diff | 哪类缺陷跨 PR 重复出现 | 双轴清单、静态检查或自动修复路由 |
+| CI／契约漂移 | 6DQ、`sync_contract.py` | 本地与门禁为何不一致 | 共享门禁、契约生成或基线校验 |
+| 发布／读回失败 | `release_sync.py`、线上响应 | 版本、摘要、资产、TestFlight 哪层失真 | 发布前阻断与读回 Task |
+
+高频问题要进入 `supervise-and-repair` 路由或等价的自动修复机制，但自动修复必须留下 diff、测试、准确 head 和 R10，不能以重新运行命令替代根因修复。
+
+#### B3. 基建、CI 门禁与共享库复盘
+
+所有工程结论映射到三道物理防回归锁：
+
+| 锁 | 作用位置 | 适合固化的结论 | 典型载体 |
+|---|---|---|---|
+| **锁 1：认知与工作流层** | `user-skills`／`agent-skills` | 任务拆分、状态机、证据格式、停止线、复盘法 | Goal/Task 合同、brief 模板、R10 模板、双轴清单 |
+| **锁 2：本地执行层** | `PreToolUse` Worktree 守卫、Herdr 回调器 | 路径隔离、显式 ID、事件唤醒、危险操作拦截 | Worktree／pane 检查、Socket 订阅、状态对账 |
+| **锁 3：跨仓 CI 与组件层** | `shared-ci` 6DQ、`sync_contract.py`、`release_sync.py`、共享设计与遥测库 | 契约、版本、质量、发布、组件和遥测不可回归 | CI 门禁、生成器、共享组件、线上读回 |
+
+物理锁的选择原则：
+
+1. 只靠记忆能再次发生，就至少落锁 1。
+2. 本地操作顺序错误能再次发生，就落锁 2。
+3. 多仓、多人或发布环境仍能发生，就落锁 3。
+4. 同一故障两次出现，至少增加一条不同层级的锁；只增加文字提醒不算完成。
+
+### 2.4 回路输出与回流契约
+
+每次 Retro 交付一份结构化记录，至少含：
+
+- 触发信号、时间窗、版本、准确 head 和证据摘要。
+- 回路 A 或 B、Earliest Load-Bearing Fork、H1–H5 结论和未知项。
+- 责任面与停止边界，避免把无关历史问题拉入本 Goal。
+- 一个或多个 `Goal -> Task`、共享底座升级或物理锁；每项都有 `Owned Paths`、Interfaces 和验收。
+- 线上读回或门禁读回的时间与结果。
+- 可供 §3 使用的四元素素材候选，但不得把脱敏前内部数据直接发布。
+
+回流后，新增 Task 与原 Goal 的依赖、验收映射和基线必须可追溯；如果改变 Goal 验收，回到定义方和负责人审批，不在 Retro 文档中隐式扩权。
+
+### 2.5 双路复盘执行模板与质量门
+
+#### 项目回路 A 记录模板
 
 ```markdown
-# Retro: <goal>
-## Evidence boundary
-- Inputs and SHA-256:
-- Collection time:
-- Missing evidence:
+# Project Feedback Record
 
-## Observable timeline
-| Time | Actor | Fact | Evidence |
-
-## Earliest Load-Bearing Fork
-- Node:
-- Why load-bearing:
-- Counterfactual:
-
-## H1–H5 verdict
-| Hypothesis | Status: confirmed / weakened / eliminated | Evidence |
-
-## Responsibility and stop boundary
-
-## Physical regression locks
-- Skill:
-- Hook:
-- CI:
-
-## Story candidate
-- Five-act spine:
-- Desensitization notes:
+Trigger:
+Product / version / environment:
+Telemetry query and evidence window:
+Baseline and target:
+Observed regression:
+Candidate module:
+Reproduction or diagnostic command:
+Performance / Crash / UX Task:
+Acceptance before release:
+Acceptance after release:
+Rollback or blocked condition:
 ```
 
----
+填写时遵循以下顺序：
 
-## §4 第三象限：怎么反思进化（Reflect — Distill into Rules, Hooks & Gates）
+1. 先复制原始指标和查询条件，再写摘要，避免摘要改变事实。
+2. 固定分层维度：版本、设备、网络、市场、旅程和样本量。
+3. 同时记录正向对照组与反例；只有异常样本不能证明全局退化。
+4. 将可疑模块写成待验证范围，不把它写成已确认根因。
+5. 将上线后读回命令写进 Task 验收，而不是留给发布后口头跟进。
 
-### 4.1 物理防回归铁律
+Performance Task 必须能回答“改善多少、在什么条件下改善、何时判定没有改善”。Crash Task 必须能回答“如何必现、如何证明修复、如何证明没有换成另一种崩溃”。体验巡检 Task 必须能回答“期望状态、实际状态、共享底座还是产品层负责”。
 
-Retro 不得以“下次注意”“加强沟通”“让 Agent 更聪明”收尾。每个已确认的分岔点至少落到一个**可执行、可验证、可回读**的改动。三道锁形成从软约束到硬门禁的梯度：
+#### 工程回路 B 记录模板
 
-| 锁 | 作用 | 适合拦截什么 | 输出与验证 |
-|---|---|---|---|
-| **Skill 锁** | 把认知规则写进合同、brief、角色和验收 | 规划／拆分／调度认知漏洞 | 更新 GTT 或 workflow 条款；读回引用、R7 检查和 R10 |
-| **Hook 锁** | 在动作发生前阻止越界 | 本地路径、工具、交接和危险操作 | `PreToolUse` 或 Herdr 自动化拒绝错误动作；验证正反例 |
-| **CI 锁** | 在合并／发布前自动阻断 | 质量、契约、版本、发布漂移 | 6DQ、`sync_contract.py`、`release_sync.py`；验证失败样例和绿灯样例 |
+```markdown
+# Engineering Feedback Record
 
-### 4.2 三锁演进映射
-
-| Retro 发现 | 首选 Skill 条款 | Hook／自动化 | CI／发布门禁 | 例子 |
-|---|---|---|---|---|
-| 任务被“一个页面=一个 Task”收束 | 增加四谓词、Vertical Slice 与 R7 检查 | brief 生成器拒绝空 `Interfaces` | 检查 Task 验收覆盖 | 页面、API、E2E 分开但保留依赖 |
-| 交接指针错误或 pane 串台 | 强化 File-Pointer Handoff 和 R9 | Herdr split 校验显式 pane／worktree | 检查回执路径与准确 head | 只允许当前 Worktree 写入 |
-| Writer 空转、0 产品提交 | 明确 Writer 交付定义与 R10 | `events.subscribe` 在终态唤醒对账 | 无提交或无验收证据不得完成 | 状态事件只触发对账，不宣称完成 |
-| Review 两轮失败仍重复修 | 固化 V3 Failure-Tier Escalation | 记录 round 与模型／厂商 | required checks 保持原门禁 | 第二轮换 `writer_escalated` |
-| 质量／版本／发布漂移 | 明确 6DQ、契约和读回要求 | 发布脚本拒绝未同步版本 | `sync_contract.py` + `release_sync.py` | `/api/live`、摘要和 Release 一致 |
-| 主目录直接改代码或秘密泄漏 | 强化 D1、G2 与红线 | `PreToolUse` 阻断路径／秘密模式 | secret scan、隔离检查 | 错误路径立即停写并对账 |
-
-落地顺序：
-
-1. **先锁事实**：引用 Retro 的证据和最早承重分岔点。
-2. **选最靠前的锁**：能在 Skill 阶段发现，就不要只等 CI；能在 Hook 阶段阻断，就不要只写说明。
-3. **补第二道兜底**：重要规则至少有一个运行前或合并前自动检查。
-4. **写失败样例**：验证门禁真的会阻断错误输入，而不是只在绿灯样例中通过。
-5. **回读并链接**：把文件、命令、输出和版本写入回执；没有回读不算进化完成。
-
----
-
-## §5 第四象限：怎么扩展外化（Storytelling — Blog &《带一群 AI 干活》故事集）
-
-### 5.1 一鱼两吃流水线
-
-同一个 Goal 的三类工程资产可以复用，但不能原样公开：
-
-```text
-ledger.md + R10 回执
-          + Retro 报告（H1–H5 与反事实）
-          + 防回归 PR diff
-          ↓ 事实抽取
-        内部工程资产（可追责、可复现）
-          ↓ 去身份化／去路径／去敏感字段／抽象组织名
-        对外技术故事（可理解、可复用、可验证）
+Trigger:
+Goal / Task / PR / release:
+Evidence boundary and hashes:
+Observable timeline:
+Earliest Load-Bearing Fork:
+H1:
+H2:
+H3:
+H4:
+H5:
+Counterfactual gate:
+Responsibility and stop boundary:
+Lock 1 / Lock 2 / Lock 3:
+Executable Task or backlog:
+Verification command:
+Owner decision required:
 ```
 
-内稿先完成事实核对，再做脱敏；不要为了故事顺滑而删掉关键反证。公开稿可以改变叙事顺序，但不能改变因果结论。
+工程回路的质量门：
 
-### 5.2 五段式叙事结构
+- 没有证据边界，不开始根因归因。
+- 没有 Earliest Load-Bearing Fork，不宣称“根因已找到”。
+- 没有反事实检验，不把相关性写成因果性。
+- 没有可执行 Task 或物理锁，不得标记复盘完成。
+- 没有验证命令，不得把规则补丁移入 `ready`。
 
-对齐《带一群 AI 干活》01–08 篇的节奏：
+#### 复盘结果分级
 
-1. **时间锚点与反常现象**：用具体但不敏感的时间切入，例如“某月某日晚上某点，终端里已经跑了很多轮，却没有一个产品提交”。
-2. **直觉／旧规则导致卡死**：展示当时合理但不够用的规则，例如把一个页面误当一个 Task，或把 `idle` 当完成。
-3. **翻开回执找到真正分岔点**：用 ledger、R10、事件流和 Git 对账，呈现 H1–H5 的排除过程。
-4. **砍繁文缛节换极简机制**：只保留一个能物理阻断复发的改变，例如四谓词、文件指针、Socket 订阅或三锁映射。
-5. **真实跑通与读回余味**：展示命令、准确 head、CI／发布读回和仍然未知的部分；不把一次成功包装成永久保证。
-
-每段至少有一个可回指的内部证据；对外只暴露抽象后的证据形状，不暴露原始标识。
-
-### 5.3 隐私脱敏硬红线
-
-| 原始信息 | 对外替换 | 绝不保留 |
+| 结果 | 含义 | 下一步 |
 |---|---|---|
-| 公司或组织名 | “某大厂”“某团队” | 法人、租户、内部组织树 |
-| 个人姓名、账号、bot 私名 | “同事”“TL”“Reviewer” | 用户名、邮箱、机器名 |
-| 内部项目／仓库 | `Project-<代号>` | 私有仓库 URL、Issue、PR、分支前缀 |
-| 私有管理平台 | “协作平台”“内部看板” | 租户 ID、工作区 ID、截图中的导航信息 |
-| 本机绝对路径 | `~/...` 或相对路径 | 任何用户目录绝对路径、家目录用户名、挂载点 |
-| 凭据、令牌、密钥 | “环境变量中的凭据” | 值、文件名、令牌路径、日志片段 |
-| 内部服务地址 | `/api/live` 等抽象接口名 | 域名、端口、内部 DNS、请求头 |
+| `confirmed` | 证据和反事实均支持，范围清楚 | 生成 Task／锁，进入 §1 验收 |
+| `probable` | 证据支持但仍缺关键反事实 | 保留未知项，生成诊断 Task，不直接修复 |
+| `unknown` | 证据不足或互相冲突 | 扩充证据边界，维持原问题 `blocked` |
+| `not-reproducible` | 当前环境无法重现 | 固定环境、扩大样本、保留线上监控，不关闭问题 |
+| `rejected` | 假设被证据排除 | 记录排除原因，避免下轮重复猜测 |
 
-公开工具名可以保留：Herdr、Codex CLI、Claude Code、GitHub Copilot、SwiftUI 等。保留工具不等于公开内部配置；命令中的模型、路径和身份仍应使用占位符。
+#### 复盘后的回流检查
 
-### 5.4 故事集构建与演进目录
-
-**第一季已发布脉络（01–08）**：按站点现有文章顺序回读主题、冲突、机制和读者可复用结论；若文章元数据发生变化，以站点目录为准，不在 Playbook 中复制内部链接或个人标识。
-
-**第二季素材映射**：
-
-| 篇章 | 工程素材 | 核心机制 | 必须保留的反常点 |
-|---|---|---|---|
-| 09《一个页面不等于一个任务》 | 四谓词、Vertical Slice、R7 | 用验收与接口拆 Task | 页面完成了，Goal 却没有端到端证据 |
-| 10《分屏里的指挥官》 | 七步 Herdr SOP、显式 pane、Socket 订阅 | 状态事件触发对账，非轮询猜测 | Agent 看似工作，真实 Worktree 没有产品提交 |
-| 11《裁决代替停工》 | `EVT=RULING`、四条硬红线、V3 升档 | 小缺口快速裁决，红线缺口重规划 | 不是每个发现都值得重开整个计划 |
-
-### 5.5 发布前故事验收清单
-
-- [ ] 时间线和因果都能回指内部证据，未知项明确标注。
-- [ ] 没有真实个人绝对路径、账号名、组织名、令牌或私有平台标识。
-- [ ] 至少有一个失败样例和一个可验证的新机制。
-- [ ] 五段结构完整，但没有把工具状态冒充产品结果。
-- [ ] 工程改动、Skill／Hook／CI 三锁和公开结论彼此一致。
-- [ ] 公开稿脱离内部上下文仍能让读者复制方法，而不是只能围观事故。
+```text
+是否生成了明确的 Goal/Task？
+  ├─ 否：保留为诊断素材或 backlog，不宣称闭环
+  └─ 是：是否写明 Owned Paths、Interfaces、Dependencies、Acceptance？
+          ├─ 否：回到定义与 R7
+          └─ 是：是否新增至少一条物理防回归锁？
+                  ├─ 否：说明为何已有锁足够，并附证据
+                  └─ 是：进入 §1 的 ready 检查
+```
 
 ---
 
-## 附录：一页式执行卡
+## §3 Summarize, Extract & Narrate — 从四元素抽取单到故事、Blog、Deck 与发布（权重 1/3）
+
+本板块把 §1 的交付事实和 §2 的双路结论压缩成可复用知识，但不牺牲证据。每篇作品只有一个核心母题；同一素材可按不同受众进入三种模板，但量化事实、隐私边界和发布读回必须共享同一来源。
+
+### 3.1 四元素《Story & Tech Extraction Sheet》
+
+每次从项目攻关（Performance／Crash／架构重构）或工程演进（Workflow／PR／基建）中抽取一张素材单。素材单先保存在受控内部位置，发布稿只消费脱敏后的副本。
+
+```markdown
+# Story & Tech Extraction Sheet
+
+## 0. Provenance
+- Source Goal / Task:
+- Evidence window:
+- Accurate head / release:
+- Internal evidence pointers:
+- Audience and candidate format:
+
+## 1. The Hook Scene
+- Exact date/time window and concrete scene:
+- What was visible, audible, or failing:
+- One detail that makes the problem reproducible:
+
+## 2. Quantitative Delta
+| Metric | Before | After | Baseline / target | Evidence |
+|---|---:|---:|---:|---|
+| PLT / Crash-Free / coverage / rounds / LOC | | | | |
+
+## 3. The Counter-Intuitive Pivot
+- Initial belief (A):
+- Evidence that challenged A:
+- Root mechanism found (B):
+- H1–H5 or equivalent rejected alternatives:
+
+## 4. The Takeaway Mechanism
+- Architecture diagram, code/config fragment, or one-line rule:
+- Why it generalizes:
+- Where it does not apply:
+- Next executable Task or physical lock:
+
+## 5. Desensitization
+- Internal identifiers replaced:
+- Public terms retained:
+- Evidence that must remain private:
+- Reviewer and publish checks:
+```
+
+四个必填要素的质量标准：
+
+1. **The Hook Scene：具象时间锚点与切入现场。** 用某年某月某日或明确时间窗的真实细节切入，例如一条 PLT 曲线翻倍、一次连续失败的构建或一次没有产出的巡检；不以“我们遇到挑战”开头。
+2. **Quantitative Delta：硬核量化证据包。** 给出耗时、Crash 率、覆盖率、代码行数、审查轮次或吞吐的前后对比、基线和样本；不能用“明显”“大幅”等模糊形容词替代。
+3. **The Counter-Intuitive Pivot：反直觉认知转折。** 清楚写出原本以为的 A、证据链如何排除 A、真凶或机制为何是 B；不把事后知识伪装成当时直觉。
+4. **The Takeaway Mechanism：可复用机制结晶。** 提供一张架构图、一段最小代码／配置或一条极简规则，并说明适用边界；故事没有机制不能作为工程素材结案。
+
+### 3.2 三种 Narrative Templates
+
+#### 模板一：Story Series — 工程故事集连载
+
+适用于有鲜明现场、曲折排查和人物可感知节奏的系列文章。可采用五段式：
+
+1. **具体时刻异常切入。** 读者先看到一个数字、错误、空窗或反常状态。
+2. **旧习惯／直觉碰壁。** 展示最合理但错误或不足的第一反应，保留限制与代价。
+3. **翻开日志／回执破案。** 用证据、时间线、分岔点和被排除的假设推进，而不是用旁白宣布答案。
+4. **换上极简新机制。** 只展示解决核心问题的 Task、规则、锁或架构变化。
+5. **真实跑通与读回余味。** 给出量化 Delta、限制、尚未解决的边界和下一轮反馈，不用口号收尾。
+
+连载规则：
+
+- 每篇一个现场和一个机制，不把整个组织或所有工具塞进一篇。
+- 系列前后篇共享术语与脱敏映射，数字必须可追溯。
+- 只写实际发生的阻塞、修复和读回；未知项要保留为未知。
+- 篇末给读者一条可复制的检查表或最小实验。
+
+#### 模板二：Tech Deep-Dive Blog — Performance／Crash／架构深潜
+
+适用于需要让工程读者复现、理解并迁移机制的长文：
+
+1. **线上现象与指标水位。** 定义用户影响、版本范围、基线、目标阈值和样本。
+2. **H1–H5 排查时间线与被排除的假象。** 逐项列证据、实验、结果与停止理由。
+3. **底层原理与根因解剖。** 解释调用、状态、并发、渲染、数据流或契约为何导致现象。
+4. **修复方案与压测／遥测读回对比。** 展示 RED→GREEN、关键 diff 概念、基准方法和线上结果。
+5. **防回归护栏。** 给出三锁映射、6DQ／CI／Hook、报警阈值和下一次失败时的入口。
+
+技术 Blog 的验收：
+
+- 每个结论有内部证据指针，公开稿删除内部标识但不删除可验证的逻辑。
+- 数字明确单位、分位数、样本量、时间窗和设备／环境。
+- 代码或配置只保留足以理解机制的最小片段，避免泄露私有实现。
+- 读者可以按文章复现诊断或验证方法，而不是只能接受结论。
+
+#### 模板三：Sharing / Deck — 体系化专题分享
+
+适用于跨项目、跨团队或管理与工程混合受众。推荐四幕结构：
+
+1. **痛点矩阵。** 用用户影响、交付影响、质量影响和维护成本呈现问题，不从工具清单开始。
+2. **架构演进代际图。** 对比旧流程、过渡阶段和当前机制，标出每一代新增的证据与锁。
+3. **关键设计取舍。** 解释为何采用两层 Goal/Task、事件订阅、6DQ、三锁或某个共享底座，说明放弃的选项。
+4. **实测收益。** 以吞吐、交付轮次、PLT、Crash-Free、覆盖率、漂移次数或读回成功率收尾，并说明适用边界。
+
+Deck 验收：
+
+- 每页有一个结论和一个可读证据，不用密集文字隐藏无结论的图表。
+- 架构图与实际流程一致，箭头标明输入、产出与回流。
+- 收益区分相关性与因果性；无法归因的指标标为观察结果。
+- 讲者备注保留风险、限制和 Q&A 可能追问的证据入口。
+
+### 3.3 去口号化、脱敏与发布流水线
+
+#### 叙事打磨五原则
+
+1. **具象代替抽象。** 用现场、命令、曲线、回执和版本替代“高效”“智能”“无缝”。
+2. **展示过程而非自夸结论。** 写出假设、失败、排除和证据如何改变行动。
+3. **保留真实曲折与限制。** 说明哪些没解决、哪些环境不适用、哪些数字仍需观察。
+4. **克制收尾。** 以读回事实、机制边界或下一步实验结束，不用口号升华。
+5. **一文一核心母题。** 其他发现进入选题池或链接，不让一篇文章承担全部体系。
+
+#### 隐私脱敏硬红线
+
+| 信息类别 | 内部稿可保留 | 公开稿处理 |
+|---|---|---|
+| 个人姓名、账号、机器名 | 仅在受控证据索引中保留 | 映射为“作者”“协调者”“Reviewer”“执行环境”等角色 |
+| 公司、组织、产品和项目代号 | 仅在发布审批范围内保留 | 使用经过批准的泛化名称或公开名称 |
+| 私有平台、内部域名、绝对路径、内部 ID | 用于事实定位 | 删除、泛化或替换为公开等价接口 |
+| API Key、令牌、Cookie、密钥、客户数据 | 不进入正文；单独受控保存 | 永不发布；发现即阻塞并旋转 |
+| 公开技术栈、通用协议、标准命令 | 可保留 | 保留公开语义，移除内部参数和上下文 |
+| 指标与日志片段 | 保留可验证的结构与必要数字 | 去除用户标识、时间精度和可反推的敏感维度 |
+
+脱敏不是改写事实。任何数字变化、时间泛化、图表裁剪或术语替换都要在内部稿记录理由，并确认不会制造错误因果。
+
+#### Desensitization & Publish Pipeline
 
 ```text
-BUILD
-  1. 选 Lite（1 Goal = 1 Task = 1 PR）或 Standard（1 Goal = N Tasks = N PRs）
-  2. 用四谓词划 Task（1 Task = 1 Writer = 1 Worktree = 1 PR），写清 Interfaces / Owned Paths / Acceptance
-  3. 按 Herdr 七步 SOP 启动、派发、监听、读取、回收
-  4. 跑 6DQ、契约同步、发布读回；以 R10 + Git + CI 为真值
-
-RETRO
-  5. 锁证据边界，算 SHA-256
-  6. 找 Earliest Load-Bearing Fork
-  7. 用 H1–H5 正反证检验，做单变量反事实
-
-EVOLVE
-  8. 把结论落到 Skill / Hook / CI 三道锁
-  9. 写失败样例并回读验证
-
-STORY
- 10. 从 ledger + Retro + diff 抽事实
- 11. 按五段式重排，执行隐私脱敏
- 12. 回指证据、保留未知、发布后收集反例
+内部证据与 Extraction Sheet
+        ↓
+选定母题与 Narrative Template
+        ↓
+内部初稿：事实回指、量化表、机制图
+        ↓
+脱敏映射：身份／项目／路径／密钥／用户数据
+        ↓
+双人内容与隐私检查
+        ↓
+Markdown 构建与链接／图表检查
+        ↓
+ai-workflow/lab/_build.py 双栏阅读器渲染
+        ↓
+Archify 配图交付、静态资源哈希校验
+        ↓
+线上页面、版本、摘要与回滚入口读回
+        ↓
+记录发布证据，向下一轮选题池与 Task 规则回流
 ```
+
+发布前清单：
+
+- [ ] 文章只有一个核心母题，并引用一张完整 Extraction Sheet。
+- [ ] Hook、Quantitative Delta、Counter-Intuitive Pivot、Takeaway Mechanism 四项齐全。
+- [ ] 所有事实可回指 Goal／Task、R10、Git、CI、Telemetry 或发布读回。
+- [ ] 已移除个人、账号、机器、内部域名、绝对路径、密钥和客户数据。
+- [ ] 代码、图表、架构图与公开上下文不泄露内部实现或可反推信息。
+- [ ] `ai-workflow/lab/_build.py` 构建通过，链接、图片、字体和静态资源完整。
+- [ ] 线上页面、静态资源哈希、版本与发布摘要已读回并记录。
+- [ ] 读者能复用机制，也能看到不适用边界与未完成项。
+
+### 3.4 跨项目与工程选题池矩阵
+
+| 母题 | 项目证据入口 | 工程证据入口 | 最合适体裁 | 预期回流 |
+|---|---|---|---|---|
+| 性能退化如何被发现与修复 | PLT、FPS、首屏、交互成功率、版本区间 | Telemetry SDK、查询、基线与阈值 | Tech Deep-Dive 或 Deck | Performance Task、报警与性能门禁 |
+| Crash 如何从堆栈走到清零 | 聚簇、符号化、Crash-Free、复现与发布读回 | postmortem、RED→GREEN、审查与三锁 | Story Series 或 Tech Deep-Dive | Crash Fix Task、回归测试、版本读回 |
+| 为什么交付链空转 | 0 产品提交、重复重试、未完成 Goal | brief、R10、事件、Git、V3、调度证据 | Story Series 或 Deck | 拆分／调度／R10 规则 Task |
+| stuck-PR 如何收敛 | 交付时间、审查轮次、测试漏检 | V1/V5、自动修复路由、准确 head | Tech Deep-Dive | 双轴清单、监督与修复锁 |
+| 共享底座如何避免漂移 | 跨端视觉、契约、版本、遥测一致性 | 6DQ、`sync_contract.py`、组件与 CI | Deck 或 Tech Deep-Dive | 共享库、契约、CI Task |
+| 发布为何必须读回 | 用户可见版本、资源摘要、TestFlight 状态 | `release_sync.py`、`/api/live`、`SHA256SUMS` | Deck 或 Story Series | 发布门禁与回滚 Task |
+
+选题池不是新的任务队列。只有经过 §2 证据确认并按 §1 定义了验收的条目，才可变成 Goal／Task；其余保留为素材候选，定期去重、脱敏和复核。
+
+### 3.5 一页式闭环验收卡
+
+```text
+§0：产品层、工程层、工作流层、知识层的映射是否清楚？
+§1：Goal/Task 是否冻结？是否符合 1 Task = 1 Writer = 1 Worktree = 1 PR？
+§1：CLI/Herdr 七步证据、6DQ、契约同步和发布读回是否齐全？
+§2：是否明确回路 A 或 B？是否找到了最早承重分岔点？
+§2：H1–H5、反事实门槛、Task 回流和三道物理锁是否记录？
+§3：四元素 Extraction Sheet 是否完整？
+§3：是否选定 Story Series、Tech Deep-Dive 或 Deck 模板？
+§3：是否完成脱敏、构建、哈希与线上读回？
+```
+
+当且仅当这张卡的每一项都有证据或明确 `blocked` 原因，闭环才可进入下一轮；任何缺项都回到对应板块，不用叙事质量掩盖交付或复盘缺口。
+
+### 3.6 作品验收、版本化与反馈回流
+
+#### 从证据到稿件的四次收敛
+
+| 收敛阶段 | 必须回答 | 禁止事项 | 产物 |
+|---|---|---|---|
+| **事实稿** | 发生了什么？何时发生？由什么证据证明？ | 用形容词替代数字；把猜测写成事实 | 带证据指针的内部稿 |
+| **机制稿** | 哪个机制导致现象？为何可迁移？边界是什么？ | 只展示成功结果；删除被排除的假设 | 架构图、最小代码／配置、适用边界 |
+| **叙事稿** | 读者从哪里进入？转折在哪里？如何复用？ | 一个段落塞多个母题；用工具名取代问题 | 选定模板的公开草稿 |
+| **发布稿** | 是否脱敏、可构建、可读回、可回滚？ | 未经检查直接发布；把构建绿当作线上成功 | 带发布证据的成稿 |
+
+每次向下一个阶段移动，都要保留上一阶段的版本号、审查人、变更摘要和回退指针。删掉事实、指标或限制时必须说明原因；不能因为文章变短而丢失关键证据。
+
+#### 内容与技术双轴审查
+
+| 轴 | 检查项 | 失败时 |
+|---|---|---|
+| **内容轴** | Hook 是否具体；转折是否真实；母题是否唯一；结尾是否克制 | 退回稿件重写，不进入构建 |
+| **技术轴** | 指标单位、样本、基线、代码片段、图表、链接和机制是否一致 | 退回证据源或技术段落，不用编辑措辞掩盖 |
+| **隐私轴** | 个人、账号、机器、内部域名、路径、密钥、客户数据是否全部处理 | 立即 `blocked`；移除并检查衍生资源 |
+| **发布轴** | 构建、哈希、页面、版本、摘要、回滚入口是否可读回 | 不发布；记录最小修复与重新读回命令 |
+
+技术轴不能替代隐私轴，内容轴也不能豁免发布轴。任何阻塞项修复后，只重审受影响部分，但必须重新执行完整的隐私扫描和构建读回。
+
+#### 版本与证据命名
+
+内部稿和公开稿使用可追溯但不含敏感信息的版本标识：
+
+```text
+<topic>-<format>-<revision>
+```
+
+版本记录至少包含：
+
+- 来源 Goal／Task 的非敏感标识和准确 head 摘要。
+- Extraction Sheet revision、证据时间窗和脱敏映射 revision。
+- 内容轴、技术轴、隐私轴、发布轴的结论。
+- 构建命令、产物摘要、线上页面读回时间和回滚入口。
+
+不要把内部绝对路径、账号、访问令牌或客户标识塞入文件名、图片元数据、静态资源名称、HTML 注释或发布日志。
+
+#### 公开反馈回流
+
+发布后的评论、错误报告、读者复现和指标异常分成三类：
+
+1. **事实纠错**：回到来源证据，修订公开稿和 Extraction Sheet，保留变更记录。
+2. **机制追问**：补充边界实验、图表或 FAQ；若暴露新工程问题，创建诊断 Task。
+3. **可迁移改进**：验证是否适用于其他产品或工作流；经 §2 证据确认后，生成共享底座、门禁或规则 Task。
+
+公开反馈不直接改变冻结的 Goal／Task。它先进入 §2 的证据边界，再按 H1–H5 或项目 Telemetry／Crash 回路确认；只有完成 §1 的定义、接口和验收，才进入交付队列。
+
+#### 发布完成定义
+
+```text
+Extraction Sheet 完整
+  → 事实、机制、叙事、发布四次收敛完成
+  → 内容／技术／隐私／发布四轴通过
+  → 构建产物与静态资源摘要固定
+  → 线上页面、版本与哈希读回一致
+  → 记录回滚入口与公开反馈路由
+  → 将新的可执行机制送回 §1 或 §2
+```
+
+没有线上读回，只能标记“已构建”；没有脱敏证据，只能标记“内部稿”；没有机制边界，只能标记“故事候选”；没有回流入口，不能标记为完整闭环。
