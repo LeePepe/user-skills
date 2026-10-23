@@ -2,7 +2,9 @@
 name: goal-target-task
 description: 使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。
 ---
-# Goal -> Task 执行合同（目录兼容名：`goal-target-task`）
+# Goal -> Task 执行合同（标准名：`goal-task`，兼容目录名：`goal-target-task`）
+
+> **兼容转发说明**：本技能已正式更名为 [`goal-task`](../goal-task/SKILL.md)；`skills/goal-target-task/` 作为向后兼容目录与固定锚点入口（如 `#定义冻结与缺口`、`#限定审查`）继续完整同步保留。
 
 本合同是 CLI 主会话与 subagent 的共同来源。
 目标仓指南、固定版本的共享规则、hooks、身份及 required gates 继续有效；读取本合同不授予角色、委派或发布权限。
@@ -33,6 +35,34 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
   无依赖的 `Tasks` 并行执行（各自在独立 worktree 由专属 Writer 负责），有依赖的 `Tasks` 按 DAG 拓扑顺序推进；每个 `Task` 在其唯一 PR 上完成一次独立审查（V1–V5）并合法合并；当所有必需 `Tasks` 均为 `done` 后，执行 Goal 端到端验收以关闭 Goal。
 
 需要计划的工作先形成可审定义，按目标仓规则完成独立计划审查和执行确认；有效受审基线直接复用，不先实施再补审。
+
+## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
+
+**核心区分原则**：不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色与动作边界。
+
+| 阶段 | 角色形态 | 触发信号 | 核心产出与边界 |
+|---|---|---|---|
+| **Phase 0：交互共创期**（Interactive Co-Design） | **Co-Design 顾问态**（常驻域主 Bot 或本地 CLI 主会话均可担任） | Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项 | 只读探查（R11）＋每次聚焦 1–2 个关键决策点与 Owner 对齐＋UI/UX 设计或原型 → 落盘 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`）；**严禁建业务代码 Worktree、严禁派 Writer 改业务代码** |
+| **Phase 1：自治执行期**（Autonomous TL Execution） | **TL 协调态**（Bot 拉起后台 `<goal>-goal-tl-r1` 或本地 CLI 原地转任 TL） | Owner 明确拍板（“按这个做／开始执行／做”），或初始请求本身即为范围清晰、无歧义的直接实现指令 | 冻结 `spec.md` → 按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与异构 `Reviewer`，跑通实现、双轴审查与 PR Auto-merge 读回；**TL 绝不亲自下场写多文件业务代码或自审** |
+
+### Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）
+
+- **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
+- **允许动作**：
+  1. **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gemini-3.8-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
+  2. **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
+  3. **视觉与交互设计（UI/UX Design）**：涉及界面时调用设计域（`艺术家`／`shared-design-system`／`Strata`／原型预览）形成 `design.md` 或原型；
+  4. **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
+- **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
+
+### 切换开关（Freeze / GO）
+
+- 当 Owner 明确拍板（如“按这个做／开始执行／做”），或初始请求本身就是范围清晰、无歧义的直接实现指令时，立即锁死 `spec.md` 范围并进入 **Phase 1（Autonomous TL Execution）**。
+
+### Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）
+
+- **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
+- **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
 ## 合同角色
 
