@@ -2,7 +2,7 @@
 
 > **用途**：把一次 Goal 从开发执行、证据复盘、规则进化到可公开叙事，串成一个可重复、可审查、可复制的闭环。
 >
-> **适用范围**：使用 Goal / Target / Task（GTT）合同、Herdr 临时 CLI Agent、共享质量门禁或证据驱动复盘的工程任务。
+> **适用范围**：使用 `Goal -> Task` 两层合同（目录名兼容保留 `goal-target-task`，`1 Task = 1 Writer = 1 Worktree = 1 PR`）、Herdr 临时 CLI Agent、共享质量门禁或证据驱动复盘的工程任务。
 >
 > **阅读方式**：先看 §1 的全景，再按当前象限跳到 §2–§5；命令中的大写变量必须由当前协调者填入，禁止把个人路径、账号或密钥写进仓库。
 
@@ -68,7 +68,7 @@
 | 常驻 Bot 层 | `fonder` | 环境、工具链、CLI、Herdr 基础维护 | 长期 | 不替具体 Goal 作业务决策 |
 | Herdr 临时 CLI Agent 层 | `TL` | 审定定义、调度、协调、对账 | 一个 Goal | 不兼任写者或独立验收 |
 | Herdr 临时 CLI Agent 层 | `Explorer` | 只读核实文件、符号、命令和版本 | 一次探查 | 不改仓库、不补方案 |
-| Herdr 临时 CLI Agent 层 | `Planner` | 编制 Goal／Target／Task 定义和验收映射 | 一轮计划 | 不写可编译实现 |
+| Herdr 临时 CLI Agent 层 | `Planner` | 编制 Goal／Task DAG 定义和验收映射 | 一轮计划 | 不写可编译实现 |
 | Herdr 临时 CLI Agent 层 | `Writer` | 唯一 Task 写者：实现、验证、回执 | 一个 Task | 不递归派发 Agent |
 | Herdr 临时 CLI Agent 层 | `writer_escalated` | V3 第二轮或高复杂度场景的升档写者 | 一轮修复／高复杂度 Task | 不跳过原有审查证据 |
 | Herdr 临时 CLI Agent 层 | Cross-Vendor Reviewer | 按 V1–V5 独立验收 | 一轮审查 | 不替写者执行修复 |
@@ -96,21 +96,21 @@ TL 结束前必须收齐下属 R10 回执；Herdr 的 `idle`、`done` 只是终�
 
 ## §2 第一象限：怎么开发（Build & Orchestrate — Macro & Micro SOP）
 
-### 2.1 复杂度三档自适应分流与任务拆分四谓词
+### 2.1 两档自适应执行模式与任务拆分四谓词（`1 Task = 1 Writer = 1 Worktree = 1 PR`）
 
-#### 三档路由
+#### 两档执行模式（Adaptive Scaling by Task Count）
 
-| 档位 | 同时满足的条件 | 结构 | 交付方式 |
+| 模式 | 同时满足的条件 | 结构 | 交付方式 |
 |---|---|---|---|
-| **Lite / Fast** | 1 个 Task、1 个 Writer、1 个 PR、≤5 个文件；不改公共接口、红线路径、CI 门禁；不新增依赖 | 不设独立 Target／台账 | PR 描述兼台账与 R10 回执；1 个异构 Reviewer |
-| **Standard** | 单 PR 或同仓紧密关联特性／修复／重构 | 两层扁平 `Goal → Tasks`；按垂直曳光弹切片 | 每个 Task 有 brief、Owned Paths、Interfaces、验收命令 |
-| **Epic** | 跨仓或多个独立可交付子目标 | 完整 `Goal → Target → Task`，配 `ledger.md` | 每个 Target 独立验收，依赖按 DAG 调度 |
+| **Lite / Single-Task Mode**（`1 Goal = 1 Task = 1 PR`） | 1 个 Task、1 个 Writer、1 个 PR、≤5 个文件；不改公共接口、红线路径、CI 门禁；不新增依赖 | 不设独立 `ledger.md` 台账与单独计划审查 | R7 自检后派 1 Writer + 1 Cross-Vendor Reviewer；PR 描述兼台账与 R10 回执 |
+| **Standard / Multi-Task DAG Mode**（`1 Goal = N Tasks = N PRs`） | 多文件特性、跨层改动或多 PR／跨仓工作 | 两层 `Goal → Tasks` DAG（`1 Task = 1 Writer = 1 Worktree = 1 PR`）；按垂直曳光弹切片 | 维护 `ledger.md` 与 `briefs/<task>.md`；每个 Task 对应 1 个 PR 单次审查（V1–V5），全部 `done` 后跑 Goal 端到端验收 |
 
-机械性大范围重构采用 `Expand → Migrate → Contract`：先扩展兼容接口，再迁移调用方，最后收缩旧接口；不要把跨阶段风险压在一个不可回滚 PR 中。
+机械性大范围重构采用 `Expand → Migrate → Contract`：先扩展兼容接口，再迁移调用方，最后收缩旧接口（每个步骤作为 Goal DAG 中的独立 `Task` / `PR`）；不要把跨阶段风险压在一个不可回滚 PR 中。
+*旧版兼容说明：历史台账或 issue 中的 `Target` 条目直接映射为单个 `Task`（或同一 `Goal` 下的一组 `Tasks`）。*
 
 #### 四谓词拆分检查
 
-对候选边界依次问四个问题，**任意一个为“是”就拆成独立 Task**：
+对候选边界依次问四个问题，**任意一个为“是”就拆成独立 Task（即独立 PR）**：
 
 1. **执行者不同？** 需要不同角色、机器或权限才能完成。
 2. **验收方式不同？** 例如代码测试与线上读回不能只靠同一个命令证明。
@@ -129,7 +129,7 @@ TL 结束前必须收齐下属 R10 回执；Herdr 的 `idle`、`done` 只是终�
 Background: 一句话说明为什么做
 Owned Paths: 允许修改的路径
 Interfaces: Consumes / Produces（精确签名、文件或命令）
-Dependencies: 前置 Task／Target
+Dependencies: 前置 Tasks
 Acceptance: 可复制的验证命令与通过标准
 Handoff: R10 回执路径、准确 head、未完成项
 ```
@@ -585,8 +585,8 @@ ledger.md + R10 回执
 
 ```text
 BUILD
-  1. 选 Lite / Standard / Epic
-  2. 用四谓词划 Task，写清 Interfaces / Owned Paths / Acceptance
+  1. 选 Lite（1 Goal = 1 Task = 1 PR）或 Standard（1 Goal = N Tasks = N PRs）
+  2. 用四谓词划 Task（1 Task = 1 Writer = 1 Worktree = 1 PR），写清 Interfaces / Owned Paths / Acceptance
   3. 按 Herdr 七步 SOP 启动、派发、监听、读取、回收
   4. 跑 6DQ、契约同步、发布读回；以 R10 + Git + CI 为真值
 

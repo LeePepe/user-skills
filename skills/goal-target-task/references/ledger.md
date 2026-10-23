@@ -26,14 +26,14 @@
 - 机器: Mac mini | MacBook
 - 合同版本: goal-target-task@<sha>
 
-## Targets / Tasks
-| ID | 类型 | 标题 | 负责 | 状态 |
-|---|---|---|---|---|
+## Tasks
+| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |
+|---|---|---|---|---|---|
 
 ## Events
 ```
 
-Targets／Tasks 状态表是快照，可改写（状态取值按 R8）；`## Events` 以下只追加。
+`## Tasks` 状态表是快照，可改写（状态取值按 R8，`1 Task = 1 Writer = 1 Worktree = 1 PR`；历史台账中的 `Target` 条目直接映射为 `Task`）；`## Events` 以下只追加。
 
 ### 事件行（机器可解析）
 
@@ -50,7 +50,7 @@ Targets／Tasks 状态表是快照，可改写（状态取值按 R8）；`## Eve
 | 时间 | 是 | ISO 8601，带时区（`+08:00` 或 `Z`） |
 | `EVT` | 是 | 事件类型，见下表 |
 | `id` | 是 | 台账内唯一事件号（`E1`…）；关闭用同一 id |
-| `task` | 建议 | Target／Task ID |
+| `task` | 建议 | Task ID（`1 Task = 1 PR`） |
 | `from` / `to` | 建议 | 发出者 / 该接的人（herdr 名或 bot 名） |
 | `ref` | 否 | 分支、PR、SHA、报告路径 |
 | `model` / `machine` / `contract` / `tokens` | 回执必填 | 实际模型（降级时写 `原→新`）、机器、合同 SHA、大致 token |
