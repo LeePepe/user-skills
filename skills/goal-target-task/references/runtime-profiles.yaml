@@ -40,6 +40,11 @@ vendors:            # 用于核对「Reviewer 不同家」
   kimi-k3-high: moonshot
 
 common:
+  herdr_kind_map:
+    claude: claude
+    codex: codex
+    copilot: copilot
+    cursor-agent: cursor       # herdr kind is cursor, not the cursor-agent binary name
   codex:
     service_tier: default        # 写进 ~/.codex/config.toml；TUI Fast 模式发 priority 会被 Copilot/Raven 拒绝
     always_pass_model: true      # codex 默认模型（gpt-6-luna）不在本表，禁止依赖
