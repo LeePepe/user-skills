@@ -78,6 +78,11 @@ diff -rq "$USER_SKILLS_ROOT/skills/goal-task/assets" "$USER_SKILLS_ROOT/skills/g
   - 每批记录基线 SHA、契约版本、变更范围、阻塞项、豁免和 `release_sync.py` 读回结果。
   - 交付：可重复的批次清单、失败重试策略和发布摘要对账证据。
 
+- **`T-DEV-4`：落地项目《设计契约》与设计解耦工作流**
+  - 在各 UI 业务仓（如 `VitalStride`、`VoxPocket`、`AIDash`、`demoUI`）落地 `docs/design-contract.md`，明确项目身份、Token／组件白名单、`populated/empty/loading/error` 四态和 `light/dark` 双外观。
+  - 接入 `shared-ci` 的 `design_contract.py` 静态门禁，拦截裸 Hex／RGB 色值与缺漏章节，推行 `Explorer -> Designer -> Writer` 解耦工作流。
+  - 交付：各项目契约、门禁验证证据，以及由 `Explorer` 事实回执、`Designer` handoff、`Writer` 多态截图组成的可追溯设计闭环。
+
 ### Track B：项目级与工程级双路复盘回馈
 
 **目标**：把可定位的性能、Crash、Workflow、PR 和基建事实转成下一轮可验收 Task，而不是停留在建议或叙事。
