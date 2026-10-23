@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: ./scripts/verify [--all]" >&2
+}
+
+if [[ $# -gt 1 ]]; then
+  usage
+  exit 2
+fi
+
+if [[ $# -eq 1 && "$1" != "--all" ]]; then
+  usage
+  exit 2
+fi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+git diff --check
+git diff --cached --check
+python3 -I -B -m unittest discover -s skills/code-review/scripts -p 'test_*.py'
+python3 -I -B -m unittest discover -s scripts -p 'test_*.py'
