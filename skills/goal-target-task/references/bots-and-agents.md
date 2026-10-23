@@ -51,12 +51,79 @@
 
 ## 生命周期（herdr）
 
+以下命令均在已进入 Herdr 的协调者 pane 中执行；变量只表示当前 Goal 的运行时值，不得写入个人路径、令牌或密钥。
+
 1. **全部进 herdr**：所有 CLI agent（含 Reviewer、Explorer、一次性 `codex exec`）都在 herdr 中启动，有可检索的名字；不留 herdr 外的临时进程。
-2. **命名**：`<goal>-<task>-<role>-r<round>`，例如 `merge-tk1a-writer-r1`、`merge-tk1a-reviewer-r2`；Goal 级角色用 `<goal>-goal-tl-r1`。
-3. **启动**：显式带 profile 里的模型和参数；`herdr agent start --timeout` 单位是毫秒（3000–300000）；首次进入目录时处理 folder-trust；不接受 bypass-permissions 提示，改用 profile 中的受限参数。
-4. **发 prompt**：等 agent `idle` 再发，发完读回确认 `working`；没变 `working` 视为未派发。
-5. **结束**：
-   - TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10）。
-   - 每个 agent 完成后写回执、在台账记 `DONE`，然后关闭其 herdr 工作区。
-   - worktree 不自动删：列清单（路径、分支、是否已合并）交 Owner 确认后再清理。
-6. **不碰**：Owner 手开的会话与工作区；herdr `w1`（shared-design-system）。
+2. **环境与显式 ID 预检**：先确认当前会话及所有控制器 ID，禁用裸 `--current`：
+
+   ```sh
+   test "${HERDR_ENV:-}" = 1 &&
+     test -n "${HERDR_SOCKET_PATH:-}" &&
+     test -n "${HERDR_WORKSPACE_ID:-}" &&
+     test -n "${HERDR_TAB_ID:-}" &&
+     test -n "${HERDR_PANE_ID:-}"
+   herdr pane list --workspace "$HERDR_WORKSPACE_ID"
+   ```
+
+   从 `pane list` 输出核实当前控制器的精确 `pane_id` 与 `HERDR_TAB_ID`、`HERDR_WORKSPACE_ID` 匹配后，才允许继续。多 tab／workspace 下对 `split`、`resize` 等操作始终传显式 pane ID，不依赖裸 `--current`。
+3. **命名与分屏绑定**：命名遵循 `<goal>-<task>-<role>-r<round>`，例如 `merge-tk1a-writer-r1`、`merge-tk1a-reviewer-r2`；Goal 级角色用 `<goal>-goal-tl-r1`。先看当前布局，再按宽窄选择方向：
+
+   ```sh
+   herdr pane layout --pane "$HERDR_PANE_ID"
+   # 宽窗格用 right；窄／高窗格用 down
+   SPLIT_JSON="$(
+     herdr pane split \
+       --pane "$HERDR_PANE_ID" \
+       --direction right \
+       --cwd "$TASK_WORKTREE" \
+       --no-focus
+   )"
+   NEW_PANE_ID="$(printf '%s' "$SPLIT_JSON" | jq -er '.result.pane.pane_id')"
+   ```
+
+   若布局判断为窄／高窗格，将 `--direction right` 改为 `--direction down`。`NEW_PANE_ID` 必须来自返回 JSON 的 `.result.pane.pane_id`，不可猜测或复用其他 pane。
+4. **按 profile 启动具名 Subagent**：显式带 profile 中的模型及沙箱／只读参数；`--kind` 使用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`（特别是 `cursor-agent` 必须传 `--kind cursor`，不能把 binary 名传给 Herdr）。名字需满足 `[a-z][a-z0-9_-]{0,31}`。例如：
+
+   ```sh
+   WRITER_NAME="merge-tk1a-writer-r1"
+   herdr agent start "$WRITER_NAME" \
+     --kind codex --pane "$NEW_PANE_ID" \
+     -- codex -m gpt-5.6-luna -s danger-full-access -a never
+
+   REVIEWER_NAME="merge-tk1a-reviewer-r1"
+   herdr agent start "$REVIEWER_NAME" \
+     --kind copilot --pane "$NEW_PANE_ID" \
+     -- copilot --model gemini-4-argon \
+       --deny-tool write --deny-tool shell --no-ask-user
+   ```
+
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；首次进入目录时处理 folder-trust；不接受 bypass-permissions 提示，改用 profile 中的受限参数。
+5. **文件指针派发与状态等待**：prompt 只携带 `briefs/<task>.md` 与 R10 回执路径等短指令，不粘贴长合同。单任务同步执行：
+
+   ```sh
+   herdr agent prompt "$WRITER_NAME" \
+     "Read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>." \
+     --wait --timeout 600000
+   ```
+
+   `--wait` 会在约 5 秒内核验是否真正进入 `working` 或 `blocked`；若返回 `agent_prompt_stalled`，先排查 agent 状态、pane 与审批界面，禁止盲目重发。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
+6. **输出读取、阻塞处理与 R10 对账**：`working` 状态禁止读取 alternate-screen 历史；运行中仅可探查：
+
+   ```sh
+   herdr agent read "$WRITER_NAME" --source visible --lines 40
+   ```
+
+   等 agent 进入 `idle`／`done` 后，才读取精简结论：
+
+   ```sh
+   herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
+   ```
+
+   若等待返回 `blocked` 或 `agent_blocked`，先用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面；必要时用 `herdr agent send-keys <name> esc` 或 `ctrl+c` 处理，严禁盲目重发 prompt。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
+7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再仅关闭本次创建的 pane：
+
+   ```sh
+   herdr pane close "$NEW_PANE_ID"
+   ```
+
+   worktree 不自动删：列清单（路径、分支、是否已合并）交 Owner 确认后再清理。不得碰 Owner 手开的会话与工作区、herdr `w1`（shared-design-system），也不得执行 `herdr server stop`。
