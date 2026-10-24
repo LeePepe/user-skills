@@ -51,7 +51,7 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 - **允许动作**：
   1. **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gemini-3.8-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
   2. **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
-  3. **视觉与交互设计（UI/UX Design）**：涉及界面时采用**探查与设计解耦（`Explorer -> Designer`）**：只读 `Explorer` 先扫描业务仓现状与项目《设计契约》（`docs/design-contract.md`），产出带 `file:line` 的事实回执；`Designer`（`艺术家` 或纯设计角色，`writes: handoff-only`）**不翻阅业务实现细节、不写任何业务或 Demo 代码**，仅依据 `Explorer` 回执、项目 `docs/design-contract.md` 与上游 `shared-design-system`（`ai/DESIGN-CONTRACT.md`）产出 `~/Development/handoff/<goal>/design.md`，其中必须包含 Token 语义映射、四态矩阵（`populated/empty/loading/error`）、双外观（`light/dark`）与组件边界；
+  3. **视觉与交互设计（UI/UX Design）**：涉及界面时采用**探查与设计解耦（`Explorer -> Designer`）**：只读 `Explorer` 先扫描业务仓现状与项目《设计契约》（`docs/design-contract.md`），产出带 `file:line` 的事实回执；`Designer`（`writes: handoff-only`）**不翻阅业务实现细节、不写任何业务或 Demo 代码**，仅依据 `Explorer` 回执、项目 `docs/design-contract.md` 与上游 `shared-design-system`（`ai/DESIGN-CONTRACT.md`）产出 `~/Development/handoff/<goal>/design.md`，其中必须包含 Token 语义映射、四态矩阵（`populated/empty/loading/error`）、双外观（`light/dark`）与组件边界。Bot 路径把设计需求交给 `艺术家`，CLI 路径由会话内 Designer 角色执行；详见 [references/bots-and-agents.md](references/bots-and-agents.md)。
   4. **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
 - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
 
@@ -63,7 +63,7 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 
 - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
 - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
-- **设计驱动的 Phase 1 交接**：独立的 Demo/UI `Writer` 在专用 Worktree 中消费冻结的 `design.md`，实现可运行 Demo／代码并产出四态与双外观的多态渲染截图；随后由 `shared-ci` 的 `scripts/context/design_contract.py` 执行静态设计契约门禁，拦截裸 Hex／RGB 色值与缺漏章节，最后由跨厂商 `Reviewer` 按 V1–V5 双轴对账验收。
+- **设计驱动的 Phase 1 交接**：独立的 Demo/UI `Writer` 在专用 Worktree 中消费冻结的 `design.md`，实现可运行 Demo／代码并产出四态与双外观的多态渲染截图；随后由 `shared-ci` 的 `scripts/context/design_contract.py` 执行静态设计契约门禁，拦截裸 Hex／RGB 色值与缺漏章节，最后由跨厂商 `Reviewer` 按 V1–V5 双轴对账验收。谁有权在本 Goal 内启动该交接，见 [references/bots-and-agents.md](references/bots-and-agents.md) 的 Bot／CLI 设计路由。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 

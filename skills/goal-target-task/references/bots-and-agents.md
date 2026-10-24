@@ -11,21 +11,32 @@
 
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
-不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色：
+不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色。设计流水线的启动权与设计总审另按下方「Bot 与 CLI 的设计路由（Owner 2026-10-24）」分流。
 
 1. **Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）**
    - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
    - **允许动作**：
      - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gemini-3.8-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
      - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
-     - **视觉与交互设计（UI/UX Design）**：涉及界面时调用设计域（`艺术家`／`shared-design-system`／`Strata`／原型预览）形成 `design.md` 或原型；
+     - **视觉与交互设计（UI/UX Design）**：涉及界面时按下方「Bot 与 CLI 的设计路由（Owner 2026-10-24）」启动设计流水线；设计依据仍是 `shared-design-system`、项目契约、`Strata` 与原型预览，产出 `design.md`；
      - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
    - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
 2. **切换开关（Freeze / GO）**
    - 当 Owner 明确拍板（如“按这个做／开始执行／做”），或初始请求本身就是范围清晰、无歧义的直接实现指令时，进入 **Phase 1（Autonomous TL Execution）**。
 3. **Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）**
-   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
-   - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
+   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。设计需求不在本域 TL 内跑，按下方设计路由交给 `艺术家`。
+   - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。设计流水线在本 Goal 内主动跑完，不转交 `艺术家`。
+
+### Bot 与 CLI 的设计路由（Owner 2026-10-24）
+
+讨论与执行仍按 Phase 0／Phase 1 切分。本节只规定**设计流水线由谁启动、由谁做设计总审**。流水线步骤与 [playbook.md](playbook.md) 的设计驱动开发、[SKILL.md](../SKILL.md) Phase 0／1 设计条款一致，顺序固定为：
+
+`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI，并交出四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。
+
+1. **CLI 入口**：以本地 CLI／TL 按 `goal-task` 运行时，当前 Goal 的 TL **在本 Goal 内主动跑完**上述流水线，不把设计转交 `艺术家`。`Designer` 是本会话内的纯设计角色（`writes: handoff-only`）：只依据 `Explorer` 回执、项目 `docs/design-contract.md` 与上游 `shared-design-system`（`ai/DESIGN-CONTRACT.md`）写 `design.md`；不翻阅业务实现细节，不写任何业务或 Demo 代码。`Writer`、CI Design Gate 与跨厂商 `Reviewer` 按 Phase 1 交接执行。
+2. **Bot 入口**：域主 Bot（`Atlas`／`flower`／`ana`／`笔者`／`Joy`／`Hotty`）的任何设计需求，必须交给 **`艺术家`（artist）**。`艺术家` 为该设计 Goal 在 `herdr` 中拉起 TL（`<goal>-goal-tl-r1`），由该 TL 派发同一条 `Explorer → Designer → Writer → CI Design Gate → 跨厂商 Reviewer` 流水线。`艺术家` 做**设计总审／门禁**：依据 `design.md`、项目契约、截图与 CI 结果接受或要求修改。`艺术家` 仍然只派发与审证据：不亲自写 `design.md`，不翻阅业务实现，不实现 Demo／UI。
+3. **其他域主 Bot 不得在自己的 Goal TL 内跑设计流水线**。`Atlas`／`flower`／`ana`／`笔者`／`Joy`／`Hotty` 不在本域 TL 内派发 `Explorer → Designer → Writer → CI Design Gate`。这些域上的非设计 Goal 仍由该域协调者按 Phase 1 开 TL。
+4. **花名册与总控边界不变**。七域分工表不因本路由改动。`Hotty` 仍不做具体 Goal 协调：设计需求只交给 `艺术家`，`Hotty` 不担任该设计 Goal 的协调者，也不做 Task 写者。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
@@ -63,6 +74,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 - pigger（Mac mini）在七域之外：Owner 的个人咨询顾问，可按 GTT 做自己的咨询类工作；不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal）。
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
 - Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，再读回合并结果。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
+- 设计流水线的启动权见上文「Bot 与 CLI 的设计路由（Owner 2026-10-24）」：CLI／TL 在本 Goal 内跑；`Atlas`／`flower`／`ana`／`笔者`／`Joy`／`Hotty` 的设计需求交给 `艺术家`。七域花名册不变，`Hotty` 仍不协调具体 Goal。
 
 ## 每个 Goal 的责任线
 
@@ -74,7 +86,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 
 - 协调者 bot 每个 Goal 只有一个：开 TL、收 TL 事件、需要 Owner 决定时去问。
 - TL 按 **`Goal -> Task` 两层模型（`1 Task = 1 Writer = 1 Worktree = 1 PR`）** 划分垂直切片并写 `briefs/<task>.md`（Lite 档单 Task 免独立台账），按 **1-Hop Flat Tree** 在 herdr 里统一开 Explorer、Planner、Reviewer、写者（含 `writer_escalated`）；不兼任写者或独立验收（SKILL.md「角色绑定与交接」）。写者与 Reviewer 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`）。
-- Hotty 只读台账做跨域摘要，不在具体 Goal 的协调线上；线上没人接的事件由 Owner 问 Hotty 时查出。
+- Hotty 只读台账做跨域摘要，不在具体 Goal 的协调线上；线上没人接的事件由 Owner 问 Hotty 时查出。设计 Goal 同样不由 `Hotty` 协调，按上文设计路由交给 `艺术家`。
 
 ## CLI agent 角色与档位
 
