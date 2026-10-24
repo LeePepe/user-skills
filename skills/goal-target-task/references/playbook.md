@@ -179,11 +179,12 @@ EVT=RULING | decision=<...> | why=<...> | blast_radius=<...>
 
 ### 1.5 CLI/Herdr 7-step SOP
 
-以下是可复制的七步标准命令流。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。
+以下是可复制的七步标准命令流（所有多步 Herdr 脚本段均开启 `set -euo pipefail` 并强制执行 `test -n "$NEW_PANE_ID"`；推荐直接调用内置 fail-closed 辅助脚本 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh) 一键完成 Step 2–4 的分屏、校验、启动与派发）。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。
 
 #### Step 1 — 环境与显式 ID 预检
 
 ```sh
+set -euo pipefail
 test "${HERDR_ENV:-}" = 1 &&
   test -n "${HERDR_SOCKET_PATH:-}" &&
   test -n "${HERDR_WORKSPACE_ID:-}" &&
@@ -195,9 +196,10 @@ herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 
 核对输出中的 `pane_id`、`tab_id`、`workspace_id` 与环境变量完全一致；不一致即停止，不猜 ID。
 
-#### Step 2 — 布局感知分屏并绑定 Worktree
+#### Step 2 — 布局感知分屏并绑定 Worktree（或调用 `scripts/herdr-dispatch.sh`）
 
 ```sh
+set -euo pipefail
 herdr pane layout --pane "$HERDR_PANE_ID"
 
 SPLIT_JSON="$(
@@ -208,26 +210,30 @@ SPLIT_JSON="$(
     --no-focus
 )"
 NEW_PANE_ID="$(printf '%s' "$SPLIT_JSON" | jq -er '.result.pane.pane_id')"
+test -n "$NEW_PANE_ID"
 ```
 
-宽窗格用 `right`，窄或高窗格用 `down`；只使用返回 JSON 的新 `pane_id`，不复用旧窗格。
+宽窗格用 `right`，窄或高窗格用 `down`（**严禁省略 `--direction`**）；只使用返回 JSON 的新 `pane_id` 并通过 `test -n "$NEW_PANE_ID"` 校验非空，不复用旧窗格。
 
 #### Step 3 — 具名启动并使用运行时映射
 
-命名格式为 `<goal>-<task>-<role>-r<round>`，满足 `[a-z][a-z0-9_-]{0,31}`。`herdr --kind` 必须采用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`，并显式指定模型：
+命名格式为 `<goal>-<task>-<role>-r<round>`，满足 `[a-z][a-z0-9_-]{0,31}`。`herdr --kind` 必须采用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`，并显式指定模型；`--` 之后**仅传 `[AGENT_ARG]...`**，**严禁在 `--` 后重复传 `codex`／`copilot` 二进制名**：
 
 ```sh
+set -euo pipefail
+test -n "$NEW_PANE_ID"
+
 WRITER_NAME="${GOAL_SLUG}-${TASK_ID}-writer-r1"
 herdr agent start "$WRITER_NAME" \
   --kind codex \
   --pane "$NEW_PANE_ID" \
-  -- codex -m gpt-5.6-luna -s danger-full-access -a never
+  -- -m gpt-5.6-luna -s danger-full-access -a never
 
 REVIEWER_NAME="${GOAL_SLUG}-${TASK_ID}-reviewer-r1"
 herdr agent start "$REVIEWER_NAME" \
   --kind copilot \
   --pane "$NEW_PANE_ID" \
-  -- copilot --model gemini-4-argon \
+  -- --model gemini-4-argon \
     --deny-tool write --deny-tool shell --no-ask-user
 ```
 
@@ -235,7 +241,25 @@ Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--fo
 
 #### Step 4 — 文件指针派发与 Socket 事件监听
 
+推荐直接通过 `scripts/herdr-dispatch.sh` 一次完成 Step 2–4：
+
 ```sh
+set -euo pipefail
+skills/goal-task/scripts/herdr-dispatch.sh \
+  --name "$WRITER_NAME" \
+  --kind codex \
+  --cwd "$TASK_WORKTREE" \
+  --direction right \
+  --prompt "First call create_goal bound to $TASK_BRIEF; read $TASK_BRIEF; implement only Owned Paths; write the full R10 receipt to $R10_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")." \
+  --wait --timeout 600000 \
+  -- -m gpt-5.6-luna -s danger-full-access -a never
+```
+
+若已按 Step 2–3 手动启动，则单任务同步派发：
+
+```sh
+set -euo pipefail
+test -n "$NEW_PANE_ID"
 herdr agent prompt "$WRITER_NAME" \
   "First call create_goal bound to $TASK_BRIEF; read $TASK_BRIEF; implement only Owned Paths; write the full R10 receipt to $R10_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")." \
   --wait --timeout 600000
@@ -244,6 +268,8 @@ herdr agent prompt "$WRITER_NAME" \
 多个无依赖 Task 先派发，再等待：
 
 ```sh
+set -euo pipefail
+test -n "$NEW_PANE_ID"
 herdr agent prompt "$TASK_A_NAME" "First call create_goal bound to $TASK_A_BRIEF; read $TASK_A_BRIEF; write $TASK_A_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")."
 herdr agent prompt "$TASK_B_NAME" "First call create_goal bound to $TASK_B_BRIEF; read $TASK_B_BRIEF; write $TASK_B_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")."
 herdr agent wait "$TASK_A_NAME" --timeout 600000

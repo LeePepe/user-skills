@@ -93,10 +93,24 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 
 以下命令均在已进入 Herdr 的协调者 pane 中执行；变量只表示当前 Goal 的运行时值，不得写入个人路径、令牌或密钥。
 
-1. **全部进 herdr**：所有 CLI agent（含 Reviewer、Explorer、一次性 `codex exec`）都在 herdr 中启动，有可检索的名字；不留 herdr 外的临时进程。
+1. **全部进 herdr（优先使用 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh)）**：所有 CLI agent（含 Reviewer、Explorer、一次性 `codex exec`）都在 herdr 中启动，有可检索的名字；不留 herdr 外的临时进程。优先直接调用 fail-closed 辅助脚本 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh) 一站式完成分屏、`NEW_PANE_ID` 校验、启动与 prompt 派发：
+
+   ```sh
+   set -euo pipefail
+   skills/goal-task/scripts/herdr-dispatch.sh \
+     --name "merge-tk1a-writer-r1" \
+     --kind codex \
+     --cwd "$TASK_WORKTREE" \
+     --direction right \
+     --prompt "First call create_goal bound to briefs/<task>.md; read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>; then call update_goal(status=\"complete\"|\"blocked\")." \
+     --wait --timeout 600000 \
+     -- -m gpt-5.6-luna -s danger-full-access -a never
+   ```
+
 2. **环境与显式 ID 预检**：先确认当前会话及所有控制器 ID，禁用裸 `--current`：
 
    ```sh
+   set -euo pipefail
    test "${HERDR_ENV:-}" = 1 &&
      test -n "${HERDR_SOCKET_PATH:-}" &&
      test -n "${HERDR_WORKSPACE_ID:-}" &&
@@ -106,9 +120,10 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
    ```
 
    从 `pane list` 输出核实当前控制器的精确 `pane_id` 与 `HERDR_TAB_ID`、`HERDR_WORKSPACE_ID` 匹配后，才允许继续。多 tab／workspace 下对 `split`、`resize` 等操作始终传显式 pane ID，不依赖裸 `--current`。
-3. **命名与分屏绑定**：命名遵循 `<goal>-<task>-<role>-r<round>`，例如 `merge-tk1a-writer-r1`、`merge-tk1a-reviewer-r2`；Goal 级角色用 `<goal>-goal-tl-r1`。先看当前布局，再按宽窄选择方向：
+3. **命名与分屏绑定**：命名遵循 `<goal>-<task>-<role>-r<round>`，例如 `merge-tk1a-writer-r1`、`merge-tk1a-reviewer-r2`；Goal 级角色用 `<goal>-goal-tl-r1`。先看当前布局，再按宽窄选择方向（**严禁省略 `--direction right|down`**）：
 
    ```sh
+   set -euo pipefail
    herdr pane layout --pane "$HERDR_PANE_ID"
    # 宽窗格用 right；窄／高窗格用 down
    SPLIT_JSON="$(
@@ -119,21 +134,25 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
        --no-focus
    )"
    NEW_PANE_ID="$(printf '%s' "$SPLIT_JSON" | jq -er '.result.pane.pane_id')"
+   test -n "$NEW_PANE_ID"
    ```
 
-   若布局判断为窄／高窗格，将 `--direction right` 改为 `--direction down`。`NEW_PANE_ID` 必须来自返回 JSON 的 `.result.pane.pane_id`，不可猜测或复用其他 pane。
-4. **按 profile 启动具名 Subagent**：显式带 profile 中的模型及沙箱／只读参数；`--kind` 使用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`（特别是 `cursor-agent` 必须传 `--kind cursor`，不能把 binary 名传给 Herdr）。名字需满足 `[a-z][a-z0-9_-]{0,31}`。例如：
+   若布局判断为窄／高窗格，将 `--direction right` 改为 `--direction down`。`NEW_PANE_ID` 必须来自返回 JSON 的 `.result.pane.pane_id` 且通过 `test -n "$NEW_PANE_ID"` 校验非空（若为空必须立即中止，严禁继续执行 `agent start`／`agent prompt`），不可猜测或复用其他 pane。
+4. **按 profile 启动具名 Subagent**：显式带 profile 中的模型及沙箱／只读参数；`--kind` 使用 `runtime-profiles.yaml` 的 `common.herdr_kind_map`（特别是 `cursor-agent` 必须传 `--kind cursor`，不能把 binary 名传给 Herdr）。`--` 之后**只传 `[AGENT_ARG]...`**，**严禁在 `--` 后重复传 `codex`／`copilot` 等二进制文件名**。名字需满足 `[a-z][a-z0-9_-]{0,31}`。例如：
 
    ```sh
+   set -euo pipefail
+   test -n "$NEW_PANE_ID"
+
    WRITER_NAME="merge-tk1a-writer-r1"
    herdr agent start "$WRITER_NAME" \
      --kind codex --pane "$NEW_PANE_ID" \
-     -- codex -m gpt-5.6-luna -s danger-full-access -a never
+     -- -m gpt-5.6-luna -s danger-full-access -a never
 
    REVIEWER_NAME="merge-tk1a-reviewer-r1"
    herdr agent start "$REVIEWER_NAME" \
      --kind copilot --pane "$NEW_PANE_ID" \
-     -- copilot --model gemini-4-argon \
+     -- --model gemini-4-argon \
        --deny-tool write --deny-tool shell --no-ask-user
    ```
 
@@ -141,6 +160,8 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 5. **文件指针派发与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
+   set -euo pipefail
+   test -n "$NEW_PANE_ID"
    herdr agent prompt "$WRITER_NAME" \
      "First call create_goal bound to briefs/<task>.md; read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>; then call update_goal(status=\"complete\"|\"blocked\")." \
      --wait --timeout 600000
