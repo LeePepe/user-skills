@@ -101,6 +101,40 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
+## Mac mini strong：Claude 周配额预检（team_lead / arbitration）
+
+**范围**：仅 `machines.mac-mini.strong` 的 `team_lead` 与 `arbitration`（首项为 `claude` + `opus`，备份为 `copilot` + `gemini-4-argon`）。Joy / MacBook 的 strong 档不使用 Claude，**不适用**本规则。
+
+**Owner 规则**：在 herdr 拉起 `<goal>-goal-tl-r1`（或 strong 档 `arbitration`）**之前**，若 Claude 订阅的 **周剩余用量 `weekly_remaining_pct` &lt; 20%**，协调者必须**直接**以备份档启动（`copilot` + `gemini-4-argon`），**不得**先起 Claude 等撞墙后再切换。合同字段见 [runtime-profiles.yaml](runtime-profiles.yaml) 中 `machines.mac-mini.strong.quota_precheck`（`threshold_lt: 20`、`action: use_next`、`on_measure_failure: use_next`）。
+
+**选择算法（herdr / bot 实现）**：
+
+1. 读取当前机器与角色的 profile 列表（`team_lead` 或 `arbitration`）。
+2. 若 `quota_precheck` 存在且 `list[0]` 匹配 `primary_match`（`cli: claude`），则测量 `weekly_remaining_pct`（见下节 Measurement）。
+3. 若 `weekly_remaining_pct < 20` **或**测量失败（未知），选用 `list[1]`（备份）作为**初始** `--kind` / `--` 参数；否则选用 `list[0]`。
+4. 在 `ledger.md` 头或 TL 启动回执中记一行：`TL_PROFILE=… | quota_precheck=pass|skip_low_quota|skip_unknown`。
+
+### Measurement（如何读取 `weekly_remaining_pct`）
+
+合同指标 **`weekly_remaining_pct`** = 100 − **`rate_limits.seven_day.used_percentage`**（Claude Code 7 日窗口**已用**百分比，0–100）。与交互式 `/usage` 中 “Current week (all models)” 的 **used** 一致。
+
+| 方式 | 用法 | 解析 |
+|---|---|---|
+| **缓存（推荐，预启动）** | Mac mini 上由 Claude Code **statusline** 脚本在每次 API 响应后写入 `~/.config/claude/gtt-weekly-remaining-pct.json`（见 [statusline 文档](https://code.claude.com/docs/en/statusline) 的 `rate_limits.seven_day`） | 若 `observed_at` 距今 ≤ `cache_max_age_seconds`（900），读 `weekly_remaining_pct`；否则视为过期，走下一行 |
+| **Statusline stdin JSON** | 从 statusline 收到的 JSON 取 `rate_limits.seven_day.used_percentage` | `weekly_remaining_pct=$((100 - USED))`（`USED` 为空则测量失败） |
+| **交互式核对** | 已有 Claude Code 会话中执行 `/usage` | 周窗口 **used** ≥ 80% 等价于 `weekly_remaining_pct` &lt; 20% |
+
+**失败模式（fail-closed）**：无法得到可信的 `weekly_remaining_pct`（字段缺失、缓存过期、非 Pro/Max 订阅无 `rate_limits`、命令非零退出等）→ 按 `on_measure_failure: use_next` **直接起备份** `copilot` + `gemini-4-argon`，避免意外撞周限额。不得在未测量且周余量可能不足时默认冒险使用 `claude`/`opus`。
+
+**Statusline 解析示例**（协调者脚本可内联；stdout 一行整数 0–100 即 `weekly_remaining_pct`）：
+
+```sh
+set -euo pipefail
+USED="$(jq -r '.rate_limits.seven_day.used_percentage // empty' <<<"$CLAUDE_STATUSLINE_JSON")"
+if [ -z "$USED" ]; then exit 1; fi
+echo $((100 - "${USED%.*}"))
+```
+
 ## 生命周期（herdr）
 
 以下命令均在已进入 Herdr 的协调者 pane 中执行；变量只表示当前 Goal 的运行时值，不得写入个人路径、令牌或密钥。
