@@ -65,6 +65,19 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 - **设计驱动的 Phase 1 交接**：独立的 Demo/UI `Writer` 在专用 Worktree 中消费冻结的 `design.md`，实现可运行 Demo／代码并产出四态与双外观的多态渲染截图；随后由 `shared-ci` 的 `scripts/context/design_contract.py` 执行静态设计契约门禁，拦截裸 Hex／RGB 色值与缺漏章节，最后由跨厂商 `Reviewer` 按 V1–V5 双轴对账验收。
 
+### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
+
+通过内置标准库队列脚本 [`scripts/goal-queue.py`](scripts/goal-queue.py)（基于 `~/Development/handoff/<goal>/.queue.lock` 的 `fcntl.flock` 排他锁，原子同步 `queue.json` 与 `ledger.md`），常驻域主 Bot（`Joy`／`Atlas`／`flower` 等）与 `TL` 统一支持以下两种任务收集与推进姿势：
+
+1. **姿势 1（Batch Mode 一次性塞多个任务）**：
+   - Owner 一次性向常驻 Bot 或 `TL` 下达多条任务时，调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json <json-string-or-file>`。
+   - 队列按 `(repo, paths)` 冲突矩阵自动分拣（`auto_dependencies`）：不同 `repo` 或同 `repo` 但 `Owned Paths` 互不相交且无显式 `--depends-on` 的任务保持 `depends_on = []`，归入**并行波次（Parallel Wave）**；同 `repo` 且 `paths` 存在前缀／通配符重叠（或同仓未指定 `paths` 默认按 `*` 通配）的任务自动挂接在前序未完成任务之后，归入**串行链（Sequential Chain）**，并同步写入 `ledger.md`（`EVT=READY`）。
+   - `TL` 循环调用 `skills/goal-task/scripts/goal-queue.py next-wave --handoff-dir ~/Development/handoff/<goal> --mark-in-progress` 原子领取当前无冲突波次并派发 Herdr Subagents，每个 Task 收口时调用 `set-status --status done`，直至返回 `"drained": true`。
+2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
+   - 当 `<goal>-goal-tl-r1` 已在运行中，Owner 向常驻域主 Bot（`Joy`／`Atlas`／`flower`）或直接在会话中追加新任务时，**Bot 绝不重复拉起第二个 TL**。
+   - Bot 直接调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --task-id <id> --title <title> --repo <repo> --paths <paths> --brief briefs/<id>.md`；脚本在 `.queue.lock` 文件锁下安全写入 `queue.json`，自动计算与在途 `in_progress`／待执行任务的并行或串行依赖边，并在 `ledger.md` 追加 `EVT=HOT_APPEND`。
+   - 若 `TL` 窗格当前处于 `idle`，Bot 通过 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；同时 `TL` 在每波任务收口退出前**必须**重跑一次 `goal-queue.py next-wave`，将运行期间热追加的任务自动接续清空（Drain to Zero）。
+
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。

@@ -177,6 +177,18 @@ EVT=RULING | decision=<...> | why=<...> | blast_radius=<...>
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
 - **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
 
+### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
+
+通过 [`scripts/goal-queue.py`](../scripts/goal-queue.py) 在 `~/Development/handoff/<goal>/.queue.lock` 排他文件锁下同步维护 `queue.json` 与 `ledger.md`，统一支撑两种任务入队与波次调度模式：
+
+1. **姿势 1（Batch Mode 一次性批量入队）**：
+   - Owner 一次性向 Bot 或 `TL` 给出多个任务时，执行 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json <json-string-or-file>`。
+   - 脚本对比既有非终态任务的 `(repo, paths)` 自动推导 `auto_dependencies`：不同 `repo` 或路径互不重叠的任务进入**并行波次（Parallel Wave）**，同 `repo` 且路径重叠（前缀／glob／单文件重叠或空路径 `*` 通配）的任务自动串入前序任务之后形成**串行链（Sequential Chain）**，同步 `ledger.md`（`EVT=READY`）。
+   - `TL` 循环调用 `skills/goal-task/scripts/goal-queue.py next-wave --handoff-dir ~/Development/handoff/<goal> --mark-in-progress` 领取无冲突波次并派发 Herdr Subagents，收口后调用 `set-status --status done`，直至 `drained: true`。
+2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
+   - 当 `TL` 正在执行中，Owner 向常驻域主 Bot（`Joy`／`Atlas`／`flower`）或 `TL` 追加新任务时，**Bot 绝不启动第二个重复 TL**，而是直接调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...`（通过 `.queue.lock` 安全写入 `queue.json`、计算与在途 `in_progress` 任务的并行／串行依赖并在 `ledger.md` 记 `EVT=HOT_APPEND`）。
+   - 若 `<goal>-goal-tl-r1` 窗格处于 `idle`，Bot 用 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；同时 `TL` 在任一波次退出前总是重跑一次 `goal-queue.py next-wave`，直到队列 `drained: true`。
+
 ### 1.5 CLI/Herdr 7-step SOP
 
 以下是可复制的七步标准命令流（所有多步 Herdr 脚本段均开启 `set -euo pipefail` 并强制执行 `test -n "$NEW_PANE_ID"`；推荐直接调用内置 fail-closed 辅助脚本 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh) 一键完成 Step 2–4 的分屏、校验、启动与派发）。变量必须由当前运行时填充；禁止裸 `--current`，禁止把真实个人路径、账号或令牌写进仓库。Socket 事件只负责唤醒下一步，不能代替 R10、Git、CI 或发布读回。

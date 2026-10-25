@@ -27,6 +27,18 @@
    - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
    - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
+### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
+
+常驻域主 Bot（`Joy`／`Atlas`／`flower` 等）与 `TL` 通过 [`scripts/goal-queue.py`](../scripts/goal-queue.py)（基于 `~/Development/handoff/<goal>/.queue.lock` 的 `fcntl.flock` 文件锁，原子同步 `queue.json` 与 `ledger.md`）协同处理批量输入与运行中热追加：
+
+1. **姿势 1（Batch Mode 一次性塞多个任务）**：
+   - Owner 一次性向 Bot 或 `TL` 提供多条任务时，调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json <json-string-or-file>`。
+   - 脚本自动按 `(repo, paths)` 冲突检测计算 `auto_dependencies`：跨仓或同仓路径不相交的任务进入**并行波次（Parallel Wave）**，同仓且路径重叠（含前缀／glob 重叠或空路径 `*` 通配）的任务自动串入前序未完成任务之后形成**串行链（Sequential Chain）**，并在 `ledger.md` 记录 `EVT=READY`。
+   - `TL` 循环调用 `skills/goal-task/scripts/goal-queue.py next-wave --handoff-dir ~/Development/handoff/<goal> --mark-in-progress` 派发每波无冲突任务，待任务完成调用 `set-status --status done`，直至 `drained: true`。
+2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
+   - 当 `TL` 已在运行中，Owner 向常驻 Bot（`Joy`／`Atlas`／`flower`）或 `TL` 发送新任务时，**Bot 绝不重复拉起第二个 TL**，而是直接运行 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...`（获取 `.queue.lock`、对照在途任务自动计算并行／串行依赖边、在 `ledger.md` 记录 `EVT=HOT_APPEND`）。
+   - 若 `<goal>-goal-tl-r1` 窗格处于 `idle`，Bot 执行 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；`TL` 在任一波次收口退出前固定重跑一次 `goal-queue.py next-wave`，确保热追加任务被彻底排空（Drain to Zero）。
+
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
