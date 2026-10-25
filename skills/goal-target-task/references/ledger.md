@@ -62,6 +62,7 @@
 |---|---|---|---|---|
 | `DISPATCHED` | 派发并确认 `working` | TL／协调者 | — | 记录 |
 | `READY` | Task 满足 R7 与依赖，可派 | TL | — | 记录 |
+| `HOT_APPEND` | TL 运行期间通过 `goal-queue.py enqueue` 热追加新 Task 并自动计算与在途任务的并行／串行依赖边 | 协调者 bot／TL | TL | 记录（TL 在波次收口前 `next-wave` 接续排空） |
 | `TASK_BLOCKED` | 任务卡住 | 任何执行者 | TL → 协调者 | TL／协调者；涉及范围按 R2 |
 | `INPUT_BLOCKED` | 缺跨机器输入或 SHA 不符 | 任何执行者 | 协调者 | 协调者（补 inputs） |
 | `RULING` | 协调者内联裁决：写者回报 `NEEDS_RULING` 后，对不触碰 4 条硬红线的同目标顺带缺口（如漏列 1–2 个辅助／适配文件、非公共接口微调）当场放行，免重规划（`note` 含 `decision + why + blast_radius`） | TL／协调者 | 写者 | TL／协调者（仅限非红线顺带缺口） |
@@ -91,6 +92,13 @@
 
 - 一旦会话进入 `goal-task` 或存在活动的 `~/Development/handoff/<goal>/ledger.md`，后续每轮用户追问或口语化 Bug 反馈（如 `"还是点不动"`、`"还没有找到原因吗"`、`"改一下配色"`）自动继承 `TL (Coordinator)` 约束，无需用户再次输入 `/goal-task`。
 - TL 在会话内最多执行 `≤3` 次只读探查定位受影响 Task 与文件路径；若需超过 3 次工具调用的深入逆向排查或**任何文件修改**（含 `handoff/` 原型、规格说明或仓库业务代码），TL 必须通过 `herdr` 派发 `Explorer` 或 `Writer`（`<goal>-<task>-writer-rN`），并在 `ledger.md` 追加 `EVT=DISPATCHED` 与后续 `EVT=DONE`／`EVT=TASK_BLOCKED` 记录，严禁在 TL 主会话内直接编辑文件。
+
+### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
+
+[`scripts/goal-queue.py`](../scripts/goal-queue.py) 以 `~/Development/handoff/<goal>/.queue.lock`（`fcntl.flock`）保护 `queue.json` 与 `ledger.md` 的原子同步：
+
+1. **姿势 1（Batch Mode）**：`goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json ...` 对照在途与待办任务的 `(repo, paths)` 自动推导冲突依赖（`auto_dependencies`），将跨仓／路径不相交任务分入**并行波次（Parallel Wave）**，同仓路径重叠任务串入**串行链（Sequential Chain）**，更新 `## Tasks` 表并追加 `EVT=READY`；`TL` 循环执行 `goal-queue.py next-wave --mark-in-progress` 直至 `drained: true`。
+2. **姿势 3（Hot-Append Mode）**：当存在 `in_progress` 任务时，常驻域主 Bot（`Joy`／`Atlas`／`flower`）收到新任务**不另起重复 TL**，直接调用 `goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...` 写入 `queue.json` 并在 `ledger.md` 记录 `EVT=HOT_APPEND`；若 `TL` 处于 `idle`，Bot 用 `herdr agent prompt <goal>-goal-tl-r1 ...` 唤醒 `TL`，且 `TL` 在每波收口退出前必跑一次 `goal-queue.py next-wave`，确保热追加队列排空至零。
 
 ## 超时提醒（暂不启用）
 
