@@ -99,6 +99,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 | 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
 | 升档写者（`writer_escalated`） | mid | TL | V3 第 2 轮修复升档或高复杂度／并发 Task（新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
+| PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（禁止 TL 主会话内联轮询） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
 ## Mac mini strong：Claude 周配额预检（team_lead / arbitration）
@@ -198,12 +199,27 @@ echo $((100 - "${USED%.*}"))
    REVIEWER_NAME="merge-tk1a-reviewer-r1"
    herdr agent start "$REVIEWER_NAME" \
      --kind copilot --pane "$NEW_PANE_ID" \
-     -- --model gemini-4-argon \
-       --deny-tool write --deny-tool shell --no-ask-user
+     -- --model gemini-4-argon --reasoning-effort high --context long_context \
+       --allow-tool write --allow-tool url \
+       --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(env:*)' \
+       --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(rg:*)' --allow-tool 'shell(shasum:*)' \
+       --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+
+   PR_MONITOR_NAME="merge-tk1a-pr-monitor-r1"
+   herdr agent start "$PR_MONITOR_NAME" \
+     --kind copilot --pane "$NEW_PANE_ID" \
+     -- --model gemini-3.8-flash \
+       --allow-tool write --allow-tool url \
+       --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' \
+       --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
+       --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
+       --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
    ```
 
-   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；首次进入目录时处理 folder-trust；不接受 bypass-permissions 提示，改用 profile 中的受限参数。
-5. **文件指针派发与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 会在分屏前自动将 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca` 写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`），为 `copilot` 自动注入 `--allow-tool`／`--add-dir` 白名单，并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
+5. **文件指针派发、PR 状态监控委派（`pr_monitor`）与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
    set -euo pipefail
@@ -214,6 +230,26 @@ echo $((100 - "${USED%.*}"))
    ```
 
    `--wait` 会在约 5 秒内核验是否真正进入 `working` 或 `blocked`；若返回 `agent_prompt_stalled`，先排查 agent 状态、pane 与审批界面，禁止盲目重发。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
+   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`gemini-3.8-flash` → `mai-code-2-flash` → `gpt-5.6-luna`）：
+
+   ```sh
+   set -euo pipefail
+   skills/goal-task/scripts/herdr-dispatch.sh \
+     --name "merge-tk1a-pr-monitor-r1" \
+     --kind copilot \
+     --cwd "$TASK_WORKTREE" \
+     --direction down \
+     --prompt "Monitor PR #<num> in <owner/repo> until required checks finish and PR merges (or fails/conflicts). If any check fails, capture 'gh run view <run-id> --log-failed | tail -n 80'. Write the full R10 receipt to <receipt-path> and return <15 lines with PR_MERGED | PR_CHECKS_GREEN | PR_CHECK_FAILED | PR_CONFLICT." \
+     --wait --timeout 600000 \
+     -- --model gemini-3.8-flash \
+       --allow-tool write --allow-tool url \
+       --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' \
+       --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
+       --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
+       --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+   ```
+
 6. **输出读取、阻塞处理与 R10 对账**：`working` 状态禁止读取 alternate-screen 历史；运行中仅可探查：
 
    ```sh
@@ -226,7 +262,7 @@ echo $((100 - "${USED%.*}"))
    herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
    ```
 
-   若等待返回 `blocked` 或 `agent_blocked`，先用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面；必要时用 `herdr agent send-keys <name> esc` 或 `ctrl+c` 处理，严禁盲目重发 prompt。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
+   **严禁把 `blocked` 当成完成退出**：任何状态检查脚本一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面并解阻或重派，**严禁仅判断 `status != "working"` 就 `break` 退出循环并结束 TL 回合**。必要时用 `herdr agent send-keys <name> esc` 或 `ctrl+c` 处理，严禁盲目重发 prompt。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
 7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再仅关闭本次创建的 pane：
 
    ```sh

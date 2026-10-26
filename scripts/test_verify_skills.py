@@ -166,6 +166,15 @@ class VerifySkillsTests(unittest.TestCase):
         for section_key in ("  strong:", "  mid:", "  worker:", "  research:", "  mac-mini:", "  macbook:"):
             self.assertIn(f"\n{section_key}", content, f"Missing {section_key.strip()} in {profile_path}")
 
+        self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
+        self.assertIn("copilot_allowlist:", content)
+        self.assertGreaterEqual(content.count("pr_monitor:"), 2)
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- {cli: copilot,") or stripped.startswith("planner_reviewer: {cli: copilot,") or stripped.startswith("research_primary: {cli: copilot,") or stripped.startswith("team_lead: {cli: copilot,") or stripped.startswith("arbitration: {cli: copilot,"):
+                self.assertIn("--allow-tool", stripped, f"Missing --allow-tool on copilot profile line: {stripped}")
+                self.assertIn("--add-dir ~/Development", stripped, f"Missing --add-dir on copilot profile line: {stripped}")
+
     def test_relative_markdown_links_resolve(self) -> None:
         markdown_files = [
             REPO_ROOT / "README.md",
@@ -370,6 +379,11 @@ class VerifySkillsTests(unittest.TestCase):
                 "    print(json.dumps({'result': {'pane': {'pane_id': 'p99'}}}))\n"
                 "    sys.exit(0)\n"
                 "if args[:2] == ['agent', 'start']:\n"
+                "    busy_marker = os.environ.get('MOCK_BUSY_ONCE_FILE', '')\n"
+                "    if busy_marker and not os.path.exists(busy_marker):\n"
+                "        open(busy_marker, 'w', encoding='utf-8').write('1')\n"
+                "        sys.stderr.write(json.dumps({'error': {'code': 'agent_pane_busy', 'message': 'agent target pane p99 is not an available shell'}}) + '\\n')\n"
+                "        sys.exit(1)\n"
                 "    print(json.dumps({'ok': True}))\n"
                 "    sys.exit(0)\n"
                 "if args[:2] == ['agent', 'prompt']:\n"
@@ -526,6 +540,55 @@ class VerifySkillsTests(unittest.TestCase):
             ]
             self.assertEqual(len(empty_calls), 1)
             self.assertEqual(empty_calls[0][:2], ["pane", "split"])
+
+            # Verify copilot auto-allowlist injection + agent_pane_busy retry
+            log_file.write_text("", encoding="utf-8")
+            busy_marker = tmp_dir / "busy.once"
+            copilot_env = {
+                **base_env,
+                "MOCK_BUSY_ONCE_FILE": str(busy_marker),
+                "HERDR_DISPATCH_RETRY_SLEEP": "0",
+            }
+            copilot_res = subprocess.run(
+                [
+                    str(canonical_helper),
+                    "--name",
+                    "goal-tk4-pr-monitor-r1",
+                    "--kind",
+                    "copilot",
+                    "--cwd",
+                    str(tmp_dir),
+                    "--direction",
+                    "down",
+                    "--prompt",
+                    "Monitor PR status",
+                    "--",
+                    "--model",
+                    "gemini-3.8-flash",
+                ],
+                cwd=REPO_ROOT,
+                env=copilot_env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(
+                json.loads(copilot_res.stdout.strip()),
+                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-pr-monitor-r1"},
+            )
+            copilot_calls = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            # 1 pane split + 2 agent start (1st busy, 2nd ok) + 1 agent prompt = 4 calls
+            self.assertEqual(len(copilot_calls), 4)
+            self.assertEqual(copilot_calls[1][:2], ["agent", "start"])
+            self.assertEqual(copilot_calls[2][:2], ["agent", "start"])
+            self.assertIn("--allow-tool", copilot_calls[2])
+            self.assertIn("write", copilot_calls[2])
+            self.assertIn("--add-dir", copilot_calls[2])
+            self.assertIn("--no-ask-user", copilot_calls[2])
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
         canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
