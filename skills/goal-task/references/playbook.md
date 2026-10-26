@@ -237,9 +237,12 @@ test -n "$NEW_PANE_ID"
 
 WRITER_NAME="${GOAL_SLUG}-${TASK_ID}-writer-r1"
 herdr agent start "$WRITER_NAME" \
-  --kind codex \
+  --kind copilot \
   --pane "$NEW_PANE_ID" \
-  -- -m gpt-5.6-luna -s danger-full-access -a never
+  -- --model gpt-5.6-luna \
+    --allow-tool write --allow-tool shell --allow-tool url \
+    --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' \
+    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
 
 REVIEWER_NAME="${GOAL_SLUG}-${TASK_ID}-reviewer-r1"
 herdr agent start "$REVIEWER_NAME" \
@@ -256,7 +259,7 @@ PR_MONITOR_NAME="${GOAL_SLUG}-${TASK_ID}-pr-monitor-r1"
 herdr agent start "$PR_MONITOR_NAME" \
   --kind copilot \
   --pane "$NEW_PANE_ID" \
-  -- --model gemini-3.8-flash \
+  -- --model mai-code-2-flash \
     --allow-tool write --allow-tool url \
     --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' \
     --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
@@ -275,12 +278,12 @@ Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--fo
 set -euo pipefail
 skills/goal-task/scripts/herdr-dispatch.sh \
   --name "$WRITER_NAME" \
-  --kind codex \
+  --kind copilot \
   --cwd "$TASK_WORKTREE" \
   --direction right \
   --prompt "First call create_goal bound to $TASK_BRIEF; read $TASK_BRIEF; implement only Owned Paths; write the full R10 receipt to $R10_RECEIPT; then call update_goal(status=\"complete\"|\"blocked\")." \
   --wait --timeout 600000 \
-  -- -m gpt-5.6-luna -s danger-full-access -a never
+  -- --model gpt-5.6-luna
 ```
 
 若已按 Step 2–3 手动启动，则单任务同步派发：

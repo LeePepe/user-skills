@@ -16,7 +16,7 @@
 1. **Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）**
    - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
    - **允许动作**：
-     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gemini-3.8-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
+     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`mai-code-2-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
      - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
      - **视觉与交互设计（UI/UX Design）**：涉及界面时调用设计域（`艺术家`／`shared-design-system`／`Strata`／原型预览）形成 `design.md` 或原型；
      - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
@@ -97,7 +97,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 | Planner | mid | TL | 一轮计划 |
 | Planner 的 Reviewer、代码 Reviewer | mid，**与被审者不同家** | TL | 一次审查（每轮新会话） |
 | 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
-| 升档写者（`writer_escalated`） | mid | TL | V3 第 2 轮修复升档或高复杂度／并发 Task（新鲜上下文，不递归派 subagent） |
+| 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
 | PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（禁止 TL 主会话内联轮询） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
@@ -146,12 +146,12 @@ echo $((100 - "${USED%.*}"))
    set -euo pipefail
    skills/goal-task/scripts/herdr-dispatch.sh \
      --name "merge-tk1a-writer-r1" \
-     --kind codex \
+     --kind copilot \
      --cwd "$TASK_WORKTREE" \
      --direction right \
-     --prompt "First call create_goal bound to briefs/<task>.md; read briefs/<task>.md; implement only Owned Paths; write the full R10 receipt to <receipt-path>; then call update_goal(status=\"complete\"|\"blocked\")." \
+     --prompt "Read briefs/<task>.md; implement only Owned Paths; run verification commands; write the full R10 receipt to <receipt-path> and return <15 lines." \
      --wait --timeout 600000 \
-     -- -m gpt-5.6-luna -s danger-full-access -a never
+     -- --model gpt-5.6-luna
    ```
 
 2. **环境与显式 ID 预检**：先确认当前会话及所有控制器 ID，禁用裸 `--current`：
@@ -193,8 +193,11 @@ echo $((100 - "${USED%.*}"))
 
    WRITER_NAME="merge-tk1a-writer-r1"
    herdr agent start "$WRITER_NAME" \
-     --kind codex --pane "$NEW_PANE_ID" \
-     -- -m gpt-5.6-luna -s danger-full-access -a never
+     --kind copilot --pane "$NEW_PANE_ID" \
+     -- --model gpt-5.6-luna \
+       --allow-tool write --allow-tool shell --allow-tool url \
+       --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' \
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
 
    REVIEWER_NAME="merge-tk1a-reviewer-r1"
    herdr agent start "$REVIEWER_NAME" \
@@ -209,7 +212,7 @@ echo $((100 - "${USED%.*}"))
    PR_MONITOR_NAME="merge-tk1a-pr-monitor-r1"
    herdr agent start "$PR_MONITOR_NAME" \
      --kind copilot --pane "$NEW_PANE_ID" \
-     -- --model gemini-3.8-flash \
+     -- --model mai-code-2-flash \
        --allow-tool write --allow-tool url \
        --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' \
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
@@ -230,7 +233,7 @@ echo $((100 - "${USED%.*}"))
    ```
 
    `--wait` 会在约 5 秒内核验是否真正进入 `working` 或 `blocked`；若返回 `agent_prompt_stalled`，先排查 agent 状态、pane 与审批界面，禁止盲目重发。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
-   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`gemini-3.8-flash` → `mai-code-2-flash` → `gpt-5.6-luna`）：
+   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）：
 
    ```sh
    set -euo pipefail
@@ -241,7 +244,7 @@ echo $((100 - "${USED%.*}"))
      --direction down \
      --prompt "Monitor PR #<num> in <owner/repo> until required checks finish and PR merges (or fails/conflicts). If any check fails, capture 'gh run view <run-id> --log-failed | tail -n 80'. Write the full R10 receipt to <receipt-path> and return <15 lines with PR_MERGED | PR_CHECKS_GREEN | PR_CHECK_FAILED | PR_CONFLICT." \
      --wait --timeout 600000 \
-     -- --model gemini-3.8-flash \
+     -- --model mai-code-2-flash \
        --allow-tool write --allow-tool url \
        --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' \
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
