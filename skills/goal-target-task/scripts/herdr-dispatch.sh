@@ -119,7 +119,7 @@ fi
 # Pre-register folder trust for CWD & shared roots so headless panes never block on startup folder-trust dialogs.
 if [[ -z "${MOCK_HERDR_LOG:-}" && "${HERDR_DISPATCH_SKIP_TRUST:-0}" != "1" ]]; then
   python3 - "$KIND" "$CWD" <<'PY' || true
-import json, os, pathlib, sys
+import json, os, pathlib, re, sys
 
 kind, cwd_arg = sys.argv[1], sys.argv[2]
 home = pathlib.Path.home()
@@ -141,7 +141,9 @@ for raw in (
     if not raw:
         continue
     p = pathlib.Path(raw).expanduser()
-    candidates.append(str(p))
+    sp = str(p)
+    if sp not in candidates:
+        candidates.append(sp)
     try:
         r = str(p.resolve())
         if r not in candidates:
@@ -169,13 +171,31 @@ if kind == "copilot":
 elif kind == "codex":
     toml_path = home / ".codex" / "config.toml"
     if toml_path.is_file():
-        text = toml_path.read_text(encoding="utf-8")
+        raw_text = toml_path.read_text(encoding="utf-8")
+        # Drop adjacent duplicate [projects."..."] trust blocks before appending.
+        # Only the repeated header plus its trust_level line is removed, so a
+        # later unrelated table in the same split chunk is kept.
+        seen_hdrs = set()
+        cleaned_blocks = []
+        dup_trust = re.compile(
+            r'^\[projects\."[^"]+"\][ \t]*\r?\n(?:trust_level[ \t]*=[ \t]*"trusted"[ \t]*\r?\n)?'
+        )
+        for part in re.split(r'(?m)(?=^\[projects\."[^"]+"\][ \t]*$)', raw_text):
+            m = re.match(r'^(\[projects\."[^"]+"\])', part)
+            if m:
+                if m.group(1) in seen_hdrs:
+                    cleaned_blocks.append(dup_trust.sub("", part, count=1))
+                    continue
+                seen_hdrs.add(m.group(1))
+            cleaned_blocks.append(part)
+        text = "".join(cleaned_blocks)
         appended = []
         for item in candidates:
             hdr = f'[projects."{item}"]'
-            if item and hdr not in text:
+            if item and hdr not in seen_hdrs and hdr not in text:
+                seen_hdrs.add(hdr)
                 appended.append(f'\n{hdr}\ntrust_level = "trusted"\n')
-        if appended:
+        if appended or text != raw_text:
             toml_path.write_text(text + "".join(appended), encoding="utf-8")
 PY
 fi
@@ -218,7 +238,10 @@ if [[ "$KIND" == "copilot" ]]; then
   fi
   # Always keep the static baseline, then append caller --add-dir values and
   # colon-separated HERDR_EXTRA_ADD_DIRS. Exact-string dedupe preserves both
-  # symlink and /private literals (Copilot realpath-dedupes the pair later).
+  # symlink and /private literals (Copilot realpath-dedupes the pair later;
+  # the parent static scan still needs both). Do not drop /tmp+/private/tmp
+  # or /var/folders+/private/var/folders. PTY 1024B headroom is the omitted
+  # shell(env|jq|rg) entries on readonly_receipt_flags, not fewer temp roots.
   BASELINE_ADD_DIRS=(
     "$CWD"
     "$HOME/Development"
@@ -304,6 +327,75 @@ if [[ "$START_OK" -ne 1 ]]; then
   exit 1
 fi
 
+# herdr agent get → one scalar field (interactive_ready / agent_status).
+agent_json_field() {
+  local field="$1"
+  local raw
+  raw="$(herdr agent get "$NAME" 2>/dev/null || true)"
+  [[ -n "$raw" ]] || return 1
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+field = sys.argv[1]
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+
+def walk(node):
+    if isinstance(node, dict):
+        if field in node and not isinstance(node[field], (dict, list)):
+            return node[field]
+        for value in node.values():
+            found = walk(value)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = walk(value)
+            if found is not None:
+                return found
+    return None
+
+found = walk(data)
+if found is None:
+    sys.exit(1)
+if isinstance(found, bool):
+    print("true" if found else "false")
+else:
+    print(found)
+' "$field"
+}
+
+# TUI must be interactive before prompt, or the text sits in the composer.
+wait_for_interactive_ready() {
+  local attempt
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if [[ "$(agent_json_field interactive_ready || true)" == "true" ]]; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 20 ]]; then
+      sleep 0.5
+    fi
+  done
+  return 0
+}
+
+# One Enter submits a composer that prompt left unsent. Do not repeat.
+submit_prompt_enter() {
+  herdr agent send-keys "$NAME" enter >/dev/null 2>&1 \
+    || herdr pane send-keys --pane "$NEW_PANE_ID" Enter >/dev/null 2>&1 \
+    || herdr pane send-keys "$NEW_PANE_ID" enter >/dev/null 2>&1 \
+    || true
+}
+
+agent_is_idle() {
+  local status
+  status="$(agent_json_field agent_status || true)"
+  [[ "$status" == "idle" ]]
+}
+
+wait_for_interactive_ready
+
 PROMPT_CMD=(herdr agent prompt "$NAME" "$PROMPT")
 if [[ "$WAIT_FLAG" -eq 1 ]]; then
   PROMPT_CMD+=(--wait)
@@ -311,7 +403,27 @@ fi
 if [[ -n "$TIMEOUT_MS" ]]; then
   PROMPT_CMD+=(--timeout "$TIMEOUT_MS")
 fi
-"${PROMPT_CMD[@]}" >/dev/null
+if ! PROMPT_ERR="$("${PROMPT_CMD[@]}" 2>&1)"; then
+  # --wait's ~5s initial-state check false-positives as agent_prompt_stalled.
+  if [[ "$PROMPT_ERR" == *"agent_prompt_stalled"* ]]; then
+    submit_prompt_enter
+    if [[ "$WAIT_FLAG" -eq 1 ]]; then
+      WAIT_CMD=(herdr agent wait "$NAME")
+      if [[ -n "$TIMEOUT_MS" ]]; then
+        WAIT_CMD+=(--timeout "$TIMEOUT_MS")
+      fi
+      "${WAIT_CMD[@]}" >/dev/null
+    fi
+  else
+    printf '%s\n' "$PROMPT_ERR" >&2
+    exit 1
+  fi
+elif [[ "$WAIT_FLAG" -eq 0 ]]; then
+  sleep "${HERDR_PROMPT_IDLE_GRACE:-2}"
+  if agent_is_idle; then
+    submit_prompt_enter
+  fi
+fi
 
 python3 - "$NEW_PANE_ID" "$NAME" <<'PY'
 import json, sys
