@@ -11,15 +11,52 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import fnmatch
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import sys
 from typing import Any, Iterator, Sequence
+
+try:
+    from feedback_guard import (
+        FEEDBACK_VALIDATION_LEGACY,
+        FEEDBACK_VALIDATION_VERIFIED,
+        TRACKED_TASK_FIELDS,
+        attach_task_mapping,
+        mapping_pairs,
+        parse_json_argument,
+        validate_completion_evidence,
+        validate_feedback_manifest,
+        validate_manifest_preserves_original_entries,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "feedback_guard":
+        raise
+    _helper_spec = importlib.util.spec_from_file_location(
+        "_goal_queue_feedback_guard",
+        Path(__file__).with_name("feedback_guard.py"),
+    )
+    if _helper_spec is None or _helper_spec.loader is None:
+        raise ImportError("Unable to load sibling feedback_guard.py") from exc
+    _helper_module = importlib.util.module_from_spec(_helper_spec)
+    _helper_spec.loader.exec_module(_helper_module)
+    FEEDBACK_VALIDATION_LEGACY = _helper_module.FEEDBACK_VALIDATION_LEGACY
+    FEEDBACK_VALIDATION_VERIFIED = _helper_module.FEEDBACK_VALIDATION_VERIFIED
+    TRACKED_TASK_FIELDS = _helper_module.TRACKED_TASK_FIELDS
+    attach_task_mapping = _helper_module.attach_task_mapping
+    mapping_pairs = _helper_module.mapping_pairs
+    parse_json_argument = _helper_module.parse_json_argument
+    validate_completion_evidence = _helper_module.validate_completion_evidence
+    validate_feedback_manifest = _helper_module.validate_feedback_manifest
+    validate_manifest_preserves_original_entries = (
+        _helper_module.validate_manifest_preserves_original_entries
+    )
 
 
 VALID_STATUSES: tuple[str, ...] = (
@@ -37,6 +74,12 @@ PENDING_STATUSES: frozenset[str] = frozenset({"planned", "ready"})
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "cancelled"})
 EVENT_ID_RE: re.Pattern[str] = re.compile(r"\bid=E(\d+)\b")
 GLOB_META_RE: re.Pattern[str] = re.compile(r"[*?\[\]]")
+INPUT_SYSTEM_FIELDS: frozenset[str] = frozenset(
+    {"status", "pr", "note", "superseded_by", "auto_depends_on"}
+)
+FEEDBACK_INPUT_FIELDS: frozenset[str] = frozenset(
+    {"feedback_ids", "acceptance_mapping", "common_root_cause_evidence"}
+)
 
 
 def _now_iso() -> str:
@@ -241,6 +284,61 @@ def _load_queue(handoff_dir: Path) -> dict[str, Any]:
     return data
 
 
+def _feedback_validation(
+    queue_data: dict[str, Any],
+    tasks: Sequence[dict[str, Any]],
+) -> tuple[str, dict[str, dict[str, Any]] | None]:
+    has_task_metadata = any(
+        any(field in task for field in TRACKED_TASK_FIELDS)
+        for task in tasks
+    )
+    manifest_present = "feedback_manifest" in queue_data
+    manifest = queue_data.get("feedback_manifest")
+    if not manifest_present and not has_task_metadata:
+        return FEEDBACK_VALIDATION_LEGACY, None
+    if manifest is None:
+        raise ValueError("tracked feedback queue requires a non-null feedback_manifest")
+    mappings = validate_feedback_manifest(manifest, tasks)
+    return FEEDBACK_VALIDATION_VERIFIED, mappings
+
+
+def _dependency_satisfied(
+    task: dict[str, Any],
+    dependency_id: str,
+    tasks_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    dependency = tasks_by_id.get(dependency_id)
+    if dependency is None:
+        return False
+    status = str(dependency.get("status"))
+    if status == "done":
+        return True
+    if status != "cancelled":
+        return False
+    auto_dependencies = {
+        str(item)
+        for item in (task.get("auto_depends_on") or [])
+        if str(item).strip()
+    }
+    if dependency_id in auto_dependencies:
+        return True
+
+    visited: set[str] = set()
+    current = dependency
+    while str(current.get("status")) == "cancelled":
+        current_id = str(current.get("task_id"))
+        if current_id in visited:
+            return False
+        visited.add(current_id)
+        replacement_id = str(current.get("superseded_by") or "").strip()
+        if not replacement_id:
+            return False
+        current = tasks_by_id.get(replacement_id)
+        if current is None:
+            return False
+    return str(current.get("status")) == "done"
+
+
 def _save_queue(handoff_dir: Path, queue_data: dict[str, Any]) -> None:
     serialized = json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n"
     _atomic_write_text(handoff_dir, "queue.json", serialized)
@@ -339,13 +437,13 @@ def _sync_ledger(
 
 
 def _refresh_ready_statuses(tasks: list[dict[str, Any]]) -> None:
-    status_by_id = {str(t["task_id"]): str(t.get("status", "planned")) for t in tasks}
+    tasks_by_id = {str(t["task_id"]): t for t in tasks}
     for task in tasks:
         current_status = str(task.get("status", "planned"))
         if current_status not in PENDING_STATUSES:
             continue
         deps = [str(d) for d in (task.get("depends_on") or []) if str(d).strip()]
-        if all(status_by_id.get(dep) == "done" for dep in deps):
+        if all(_dependency_satisfied(task, dep, tasks_by_id) for dep in deps):
             task["status"] = "ready"
         else:
             task["status"] = "planned"
@@ -397,17 +495,32 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 "repo": args.repo or "",
                 "paths": _normalize_list(args.paths),
                 "depends_on": _normalize_list(args.depends_on),
+                "replacement_of": args.replacement_of or "",
                 "brief": args.brief or "",
                 "owner": args.owner or "",
             }
         )
     if not raw_specs:
         raise ValueError("enqueue requires either --task-id or --batch-json")
+    supplied_manifest = (
+        parse_json_argument(args.feedback_manifest, "--feedback-manifest")
+        if args.feedback_manifest
+        else None
+    )
 
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         tasks: list[dict[str, Any]] = queue_data["tasks"]
+        feedback_validation, existing_mappings = _feedback_validation(queue_data, tasks)
+        tracked = feedback_validation == FEEDBACK_VALIDATION_VERIFIED
+        if tracked and supplied_manifest is None:
+            raise ValueError(
+                "tracked feedback queue requires --feedback-manifest for every enqueue; "
+                "omitting it cannot downgrade validation"
+            )
         existing_ids = {str(t["task_id"]) for t in tasks}
+        existing_tasks = deepcopy(tasks)
+        existing_manifest = queue_data.get("feedback_manifest")
         has_active_tasks = any(str(t.get("status")) in ACTIVE_STATUSES for t in tasks)
 
         enqueued_tasks: list[dict[str, Any]] = []
@@ -415,6 +528,18 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
         new_events: list[dict[str, str]] = []
 
         for spec in raw_specs:
+            invalid_system_fields = sorted(INPUT_SYSTEM_FIELDS.intersection(spec))
+            if invalid_system_fields:
+                raise ValueError(
+                    "task input cannot set queue-managed field(s): "
+                    + ", ".join(invalid_system_fields)
+                )
+            invalid_feedback_fields = sorted(FEEDBACK_INPUT_FIELDS.intersection(spec))
+            if invalid_feedback_fields:
+                raise ValueError(
+                    "task feedback metadata must be supplied through --feedback-manifest: "
+                    + ", ".join(invalid_feedback_fields)
+                )
             task_id = str(spec.get("task_id") or spec.get("id") or "").strip()
             if not task_id:
                 raise ValueError("Task entry is missing required 'task_id'")
@@ -427,18 +552,48 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
             explicit_deps = _normalize_list(spec.get("depends_on"))
             brief = str(spec.get("brief") or f"briefs/{task_id}.md").strip()
             owner = str(spec.get("owner") or "—").strip()
+            replacement_of = str(spec.get("replacement_of") or "").strip()
+            if replacement_of:
+                if replacement_of not in existing_ids or replacement_of == task_id:
+                    raise ValueError("replacement_of must reference a different existing task")
+                if str(next(t for t in tasks if str(t["task_id"]) == replacement_of).get("status")) in {
+                    "done",
+                    "cancelled",
+                }:
+                    raise ValueError("replacement_of cannot target a terminal task")
 
             candidate: dict[str, Any] = {
+                key: value
+                for key, value in spec.items()
+                if key
+                not in {
+                    "id",
+                    "task_id",
+                    "title",
+                    "repo",
+                    "paths",
+                    "depends_on",
+                    "replacement_of",
+                    "brief",
+                    "owner",
+                }
+            }
+            candidate.update(
+                {
                 "task_id": task_id,
                 "title": title,
                 "repo": repo,
                 "paths": paths,
                 "depends_on": list(explicit_deps),
+                "auto_depends_on": [],
                 "brief": brief,
                 "owner": owner,
                 "status": "planned",
                 "pr": "—",
-            }
+                }
+            )
+            if replacement_of:
+                candidate["replacement_of"] = replacement_of
 
             auto_deps_for_task: list[str] = []
             for earlier in tasks:
@@ -449,8 +604,9 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 if _tasks_conflict(earlier, candidate):
                     if earlier_id not in candidate["depends_on"]:
                         candidate["depends_on"].append(earlier_id)
-                    if earlier_id not in auto_deps_for_task:
+                    if earlier_id not in explicit_deps and earlier_id not in auto_deps_for_task:
                         auto_deps_for_task.append(earlier_id)
+            candidate["auto_depends_on"] = list(auto_deps_for_task)
 
             tasks.append(candidate)
             existing_ids.add(task_id)
@@ -458,6 +614,30 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
             enqueued_tasks.append(candidate)
 
         _refresh_ready_statuses(tasks)
+        if supplied_manifest is not None:
+            pending_replacements = {
+                str(task["task_id"]): str(task["replacement_of"])
+                for task in enqueued_tasks
+                if str(task.get("replacement_of") or "")
+            }
+            if existing_manifest is not None:
+                validate_manifest_preserves_original_entries(existing_manifest, supplied_manifest)
+            mappings = validate_feedback_manifest(
+                supplied_manifest,
+                tasks,
+                pending_replacements=pending_replacements,
+            )
+            if existing_mappings is not None:
+                for existing_task in existing_tasks:
+                    task_id = str(existing_task["task_id"])
+                    if mapping_pairs(mappings[task_id]) != mapping_pairs(existing_mappings[task_id]):
+                        raise ValueError(
+                            f"hot-append cannot remap existing task '{task_id}'"
+                        )
+            queue_data["feedback_manifest"] = supplied_manifest
+            for task in tasks:
+                attach_task_mapping(task, mappings[str(task["task_id"])])
+            feedback_validation = FEEDBACK_VALIDATION_VERIFIED
 
         evt_name = "HOT_APPEND" if has_active_tasks else "READY"
         for item in enqueued_tasks:
@@ -490,6 +670,7 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
+        "feedback_validation": feedback_validation,
     }
 
 
@@ -498,9 +679,10 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         tasks: list[dict[str, Any]] = queue_data["tasks"]
+        feedback_validation, _ = _feedback_validation(queue_data, tasks)
         _refresh_ready_statuses(tasks)
 
-        status_by_id = {str(t["task_id"]): str(t.get("status", "planned")) for t in tasks}
+        tasks_by_id = {str(t["task_id"]): t for t in tasks}
         active_tasks = [t for t in tasks if str(t.get("status")) in ACTIVE_STATUSES]
 
         selected_wave: list[dict[str, Any]] = []
@@ -508,7 +690,7 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
             if str(task.get("status")) not in PENDING_STATUSES:
                 continue
             deps = [str(d) for d in (task.get("depends_on") or []) if str(d).strip()]
-            if not all(status_by_id.get(dep) == "done" for dep in deps):
+            if not all(_dependency_satisfied(task, dep, tasks_by_id) for dep in deps):
                 continue
             if any(_tasks_conflict(active, task) for active in active_tasks):
                 continue
@@ -553,6 +735,7 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
+        "feedback_validation": feedback_validation,
     }
 
 
@@ -560,26 +743,127 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
     if args.status not in VALID_STATUSES:
         raise ValueError(f"Unsupported status: {args.status}")
+    replacement_manifest = (
+        parse_json_argument(args.feedback_manifest, "--feedback-manifest")
+        if args.feedback_manifest
+        else None
+    )
 
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         tasks: list[dict[str, Any]] = queue_data["tasks"]
-        target_task: dict[str, Any] | None = None
-        for task in tasks:
-            if str(task.get("task_id")) == args.task_id:
-                target_task = task
-                break
-
-        if target_task is None:
+        feedback_validation, _ = _feedback_validation(queue_data, tasks)
+        target_index = next(
+            (
+                index
+                for index, task in enumerate(tasks)
+                if str(task.get("task_id")) == args.task_id
+            ),
+            None,
+        )
+        if target_index is None:
             raise ValueError(f"Task '{args.task_id}' not found in {handoff_dir / 'queue.json'}")
+
+        staged_tasks = deepcopy(tasks)
+        target_task = staged_tasks[target_index]
+        original_target = tasks[target_index]
+        completion_evidence: Any | None = None
+        if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
+            dependencies = [
+                str(dependency)
+                for dependency in (original_target.get("depends_on") or [])
+                if str(dependency).strip()
+            ]
+            tasks_by_id = {str(task["task_id"]): task for task in tasks}
+            if args.status in {"in_progress", "in_review", "done"} and not all(
+                _dependency_satisfied(original_target, dependency, tasks_by_id)
+                for dependency in dependencies
+            ):
+                raise ValueError("tracked task dependencies must be done before this status transition")
+            if args.status in TERMINAL_STATUSES:
+                if not args.evidence_json:
+                    raise ValueError(
+                        f"tracked status={args.status} requires --evidence-json for every acceptance"
+                    )
+                if args.status == "cancelled" and args.note and any(
+                    marker in args.note.lower()
+                    for marker in (
+                        "ci failure",
+                        "ci failed",
+                        "build failed",
+                        "pipeline failed",
+                        "check failed",
+                    )
+                ):
+                    raise ValueError("CI/build/check failures cannot be used as cancellation evidence")
+                completion_evidence = parse_json_argument(args.evidence_json, "--evidence-json")
+                if replacement_manifest is not None:
+                    if args.status != "cancelled" or not args.superseded_by:
+                        raise ValueError(
+                            "--feedback-manifest replacement updates require cancelled supersession"
+                        )
+                    validate_manifest_preserves_original_entries(
+                        queue_data["feedback_manifest"],
+                        replacement_manifest,
+                    )
+                if args.status == "cancelled":
+                    target_task["status"] = "cancelled"
+                    if args.superseded_by:
+                        target_task["superseded_by"] = args.superseded_by
+                        target_task.pop("cancellation_authorization", None)
+                    elif args.authorization:
+                        target_task["cancellation_authorization"] = args.authorization
+                        target_task.pop("superseded_by", None)
+                else:
+                    target_task.pop("superseded_by", None)
+                    target_task.pop("cancellation_authorization", None)
+                validate_completion_evidence(
+                    queue_data["feedback_manifest"],
+                    tasks,
+                    original_target,
+                    args.status,
+                    completion_evidence,
+                    superseded_by=args.superseded_by,
+                    authorization=args.authorization,
+                    replacement_manifest=replacement_manifest,
+                    replacement_tasks=staged_tasks,
+                )
+            elif args.evidence_json or args.superseded_by or args.authorization:
+                raise ValueError(
+                    "--evidence-json, --superseded-by, and --authorization are only valid for terminal tracked statuses"
+                )
+        elif args.evidence_json or args.superseded_by or args.authorization:
+            raise ValueError("feedback completion metadata requires a tracked feedback manifest")
+        elif replacement_manifest is not None:
+            raise ValueError("--feedback-manifest is only valid for tracked supersession")
 
         target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
         if args.note is not None:
             target_task["note"] = args.note
+        if args.status not in TERMINAL_STATUSES:
+            target_task.pop("superseded_by", None)
+            target_task.pop("cancellation_authorization", None)
+            target_task.pop("acceptance_evidence", None)
+        elif args.status == "done":
+            target_task.pop("superseded_by", None)
+            target_task.pop("cancellation_authorization", None)
+        if completion_evidence is not None:
+            target_task["acceptance_evidence"] = completion_evidence["acceptance"]
+        if replacement_manifest is not None:
+            queue_data["feedback_manifest"] = replacement_manifest
 
-        _refresh_ready_statuses(tasks)
+        if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
+            manifest = queue_data["feedback_manifest"]
+            mappings = validate_feedback_manifest(manifest, staged_tasks)
+            for task in staged_tasks:
+                attach_task_mapping(task, mappings[str(task["task_id"])])
+
+        _refresh_ready_statuses(staged_tasks)
+        queue_data["tasks"] = staged_tasks
+        if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
+            _feedback_validation(queue_data, staged_tasks)
 
         status_to_evt = {
             "done": "DONE",
@@ -600,8 +884,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         }
 
         _save_queue(handoff_dir, queue_data)
-        _sync_ledger(handoff_dir, tasks, [evt_entry])
-        in_progress_count, pending_count, drained = _queue_metrics(tasks)
+        _sync_ledger(handoff_dir, staged_tasks, [evt_entry])
+        in_progress_count, pending_count, drained = _queue_metrics(staged_tasks)
 
     return {
         "ok": True,
@@ -610,6 +894,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
+        "feedback_validation": feedback_validation,
     }
 
 
@@ -645,6 +930,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="JSON array/object string or path to JSON file for Posture 1 batch intake.",
     )
+    enqueue_parser.add_argument(
+        "--feedback-manifest",
+        default="",
+        help="Structured original-feedback manifest JSON string or file path.",
+    )
+    enqueue_parser.add_argument(
+        "--replacement-of",
+        default="",
+        help="Existing Task ID being replaced by this new Task.",
+    )
 
     wave_parser = subparsers.add_parser(
         "next-wave",
@@ -671,6 +966,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--pr", default=None, help="PR URL, number, or head SHA.")
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
+    status_parser.add_argument(
+        "--evidence-json",
+        default="",
+        help="Structured per-acceptance completion evidence JSON string or file path.",
+    )
+    status_parser.add_argument(
+        "--feedback-manifest",
+        default="",
+        help="Replacement feedback manifest JSON string or file path for supersession.",
+    )
+    status_parser.add_argument(
+        "--superseded-by",
+        default=None,
+        help="Replacement Task ID when cancelling a tracked task by supersession.",
+    )
+    status_parser.add_argument(
+        "--authorization",
+        default=None,
+        help="Explicit authorization reference for an intentional tracked cancellation.",
+    )
 
     return parser
 
