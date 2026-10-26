@@ -250,8 +250,8 @@ herdr agent start "$REVIEWER_NAME" \
   --pane "$NEW_PANE_ID" \
   -- --model gemini-4-argon --reasoning-effort high --context long_context \
     --allow-tool write --allow-tool url \
-    --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(env:*)' \
-    --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(rg:*)' --allow-tool 'shell(shasum:*)' \
+    --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' \
+    --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' \
     --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
     --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
@@ -268,7 +268,7 @@ herdr agent start "$PR_MONITOR_NAME" \
     --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 ```
 
-Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--force`、`--allow-all-*` 或 profile 禁止的参数，统一使用 `runtime-profiles.yaml`（`common.copilot_allowlist`）中的显式 `--allow-tool`／`--add-dir` 白名单。Writer 不递归派发下级执行者；**TL 严禁在主会话内直接轮询 PR 状态**，PR 开启后统一由 TL 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent 盯梢 CI checks 与 auto-merge 并落盘回执。
+Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--force`、`--allow-all-*` 或 profile 禁止的参数，统一使用 `runtime-profiles.yaml`（`common.copilot_allowlist`）中的显式 `--allow-tool`／`--add-dir` 白名单。`readonly_receipt_flags` 不再包含与内置工具重复的 `shell(env:*)`／`shell(jq:*)`／`shell(rg:*)`，为 `BASELINE_ADD_DIRS` 与 `HERDR_EXTRA_ADD_DIRS` 留出 macOS 1024B PTY 余量；`/tmp` 与 `/private/tmp`、`/var/folders` 与 `/private/var/folders` 两对字面量仍保留。Writer 不递归派发下级执行者，完成本地验证、`git push` 与 R10 后立即返回，**严禁** `gh run watch` 或 `sleep >= 30` 等待远端 CI。**TL 严禁在主会话内直接轮询 PR 状态**；PR 开启后由 `pr_monitor`（与 `Explorer` 同模型）做 Job 级 Fail-Fast，Run 未结束时用单 Job 日志 API，不用 `gh run view --log-failed`。
 
 #### Step 4 — 文件指针派发与 Socket 事件监听
 

@@ -368,9 +368,10 @@ class VerifySkillsTests(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "import json, os, sys\n"
                 "args = sys.argv[1:]\n"
-                "log_path = os.environ['MOCK_HERDR_LOG']\n"
-                "with open(log_path, 'a', encoding='utf-8') as fh:\n"
-                "    fh.write(json.dumps(args) + '\\n')\n"
+                "log_path = os.environ.get('MOCK_HERDR_LOG')\n"
+                "if log_path:\n"
+                "    with open(log_path, 'a', encoding='utf-8') as fh:\n"
+                "        fh.write(json.dumps(args) + '\\n')\n"
                 "if args[:2] == ['pane', 'split']:\n"
                 "    if '--direction' not in args:\n"
                 "        sys.stderr.write('missing --direction\\n')\n"
@@ -391,8 +392,19 @@ class VerifySkillsTests(unittest.TestCase):
                 "        sys.exit(1)\n"
                 "    print(json.dumps({'ok': True}))\n"
                 "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'get']:\n"
+                "    print(json.dumps({\n"
+                "        'interactive_ready': True,\n"
+                "        'agent_status': os.environ.get('MOCK_AGENT_STATUS', 'working'),\n"
+                "    }))\n"
+                "    sys.exit(0)\n"
                 "if args[:2] == ['agent', 'prompt']:\n"
+                "    if os.environ.get('MOCK_PROMPT_STALL') == '1':\n"
+                "        sys.stderr.write('agent_prompt_stalled: initial state timeout 5000ms\\n')\n"
+                "        sys.exit(1)\n"
                 "    print(json.dumps({'ok': True}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'send-keys'] or args[:2] == ['pane', 'send-keys'] or args[:2] == ['agent', 'wait']:\n"
                 "    sys.exit(0)\n"
                 "sys.exit(1)\n",
                 encoding="utf-8",
@@ -404,6 +416,7 @@ class VerifySkillsTests(unittest.TestCase):
                 "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
                 "HERDR_ENV": "1",
                 "HERDR_PANE_ID": "p1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
                 "MOCK_HERDR_LOG": str(log_file),
             }
 
@@ -476,6 +489,7 @@ class VerifySkillsTests(unittest.TestCase):
                         "-a",
                         "never",
                     ],
+                    ["agent", "get", "goal-tk4-writer-r1"],
                     [
                         "agent",
                         "prompt",
@@ -586,19 +600,176 @@ class VerifySkillsTests(unittest.TestCase):
                 for line in log_file.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            # 1 pane split + 2 agent start (1st busy, 2nd ok) + 1 agent prompt = 4 calls
-            self.assertEqual(len(copilot_calls), 4)
+            # 1 pane split + 2 agent start (1st busy, 2nd ok) + get + prompt + idle get
+            self.assertEqual(len(copilot_calls), 6)
             self.assertEqual(copilot_calls[1][:2], ["agent", "start"])
             self.assertEqual(copilot_calls[2][:2], ["agent", "start"])
+            self.assertEqual(copilot_calls[3][:2], ["agent", "get"])
+            self.assertEqual(copilot_calls[4][:2], ["agent", "prompt"])
+            self.assertEqual(copilot_calls[5][:2], ["agent", "get"])
             self.assertIn("--allow-tool", copilot_calls[2])
             self.assertIn("write", copilot_calls[2])
             self.assertIn("--add-dir", copilot_calls[2])
             self.assertIn("--no-ask-user", copilot_calls[2])
+            self.assertNotIn(["agent", "send-keys", "goal-tk4-pr-monitor-r1", "enter"], copilot_calls)
+
+            log_file.write_text("", encoding="utf-8")
+            stall_env = {**base_env, "MOCK_PROMPT_STALL": "1"}
+            stall_res = subprocess.run(
+                [
+                    str(canonical_helper),
+                    "--name",
+                    "goal-tk4-writer-r1",
+                    "--kind",
+                    "codex",
+                    "--cwd",
+                    str(tmp_dir),
+                    "--prompt",
+                    "Submit the composer",
+                    "--wait",
+                    "--timeout",
+                    "600000",
+                ],
+                cwd=REPO_ROOT,
+                env=stall_env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(
+                json.loads(stall_res.stdout.strip()),
+                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-writer-r1"},
+            )
+            stall_calls = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(stall_calls[2][:2], ["agent", "get"])
+            self.assertEqual(stall_calls[3][:2], ["agent", "prompt"])
+            self.assertEqual(
+                stall_calls[4],
+                ["agent", "send-keys", "goal-tk4-writer-r1", "enter"],
+            )
+            self.assertEqual(
+                stall_calls[5],
+                ["agent", "wait", "goal-tk4-writer-r1", "--timeout", "600000"],
+            )
+
+            log_file.write_text("", encoding="utf-8")
+            idle_env = {**base_env, "MOCK_AGENT_STATUS": "idle"}
+            idle_res = subprocess.run(
+                [
+                    str(canonical_helper),
+                    "--name",
+                    "goal-tk4-writer-r1",
+                    "--kind",
+                    "codex",
+                    "--cwd",
+                    str(tmp_dir),
+                    "--prompt",
+                    "Needs enter",
+                ],
+                cwd=REPO_ROOT,
+                env=idle_env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(idle_res.stdout.strip())["ok"], True)
+            idle_calls = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn(
+                ["agent", "send-keys", "goal-tk4-writer-r1", "enter"],
+                idle_calls,
+            )
+            self.assertFalse(any(call[:2] == ["agent", "wait"] for call in idle_calls))
 
         bots_and_agents_text = (
             SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
         self.assertNotIn("高复杂度／并发 Task", bots_and_agents_text)
+
+    def test_codex_trust_dedupes_adjacent_project_blocks(self) -> None:
+        helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            home = tmp_dir / "home"
+            codex_dir = home / ".codex"
+            codex_dir.mkdir(parents=True)
+            config_path = codex_dir / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'model = "keep-me"',
+                        "",
+                        '[projects."/tmp"]',
+                        'trust_level = "trusted"',
+                        "",
+                        '[projects."/tmp"]',
+                        'trust_level = "trusted"',
+                        "",
+                        "[notice]",
+                        "hide = true",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            bin_dir = tmp_dir / "bin"
+            bin_dir.mkdir()
+            mock_herdr = bin_dir / "herdr"
+            mock_herdr.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['pane', 'split']:\n"
+                "    print(json.dumps({'result': {'pane': {'pane_id': 'p99'}}}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'get']:\n"
+                "    print(json.dumps({'interactive_ready': True, 'agent_status': 'working'}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'start'] or args[:2] == ['agent', 'prompt']:\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            mock_herdr.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                "HOME": str(home),
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+            }
+            cmd = [
+                str(helper),
+                "--name",
+                "goal-tk4-writer-r1",
+                "--kind",
+                "codex",
+                "--cwd",
+                str(tmp_dir),
+                "--prompt",
+                "trust",
+                "--wait",
+            ]
+            first = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            text = config_path.read_text(encoding="utf-8")
+            self.assertEqual(text.count('[projects."/tmp"]'), 1)
+            self.assertIn('model = "keep-me"', text)
+            self.assertIn("[notice]", text)
+            self.assertIn("hide = true", text)
+            second = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            again = config_path.read_text(encoding="utf-8")
+            self.assertEqual(again.count('[projects."/tmp"]'), 1)
+            self.assertEqual(again, text)
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
         canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"

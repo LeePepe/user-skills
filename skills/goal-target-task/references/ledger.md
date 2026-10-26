@@ -6,7 +6,7 @@
 
 - `~/Development/handoff/<goal>/ledger.md`，一个 Goal 一本，放 handoff，不放目标仓库。两台机器各放各自 Goal 的台账（Lite 档免独立台账，以 PR 描述兼作台账与 R10 回执）。
 - `<goal>` 目录名即 Goal 短名；以 `_` 开头的目录（如 `_watch`）不是 Goal。
-- **Task 磁盘文件指针简报（File-Pointer Briefs）**：`~/Development/handoff/<goal>/briefs/<task>.md`，存放每个 Task 的交接简报（含 1 句话背景、`Owned Paths`、`Interfaces: Consumes / Produces` 精确签名、允许操作与验收命令）；TL 派发 Subagent 时只传该文件指针路径，避免长 prompt 导致 Context Rot。
+- **Task 磁盘文件指针简报（File-Pointer Briefs）**：`~/Development/handoff/<goal>/briefs/<task>.md`，存放每个 Task 的交接简报（含 1 句话背景、`Owned Paths`、`Interfaces: Consumes / Produces` 精确签名、允许操作与验收命令）；TL 派发 Subagent 时只传该文件指针路径，避免长 prompt 导致 Context Rot。Task 若修改 `.github/workflows/*`，简报默认提示 Writer 使用 `git push git@github.com:<owner>/<repo>.git HEAD:<branch>`，避免 `gh` OAuth token 缺少 `workflow` scope。
 - 跨机器输入放 `~/Development/handoff/<goal>/inputs/`，附清单和每个文件的 SHA-256；缺文件或 SHA 不符时记 `INPUT_BLOCKED`，不凭记忆补。
 - 回执（R10）放 `handoff/<goal>/` 下或目标仓允许的位置，台账只放路径；Subagent 向主会话只返回 `<15` 行精简结论。
 
@@ -40,21 +40,24 @@
 一行一条，以 `- ` 开头，字段用 ` | ` 分隔；第一个字段是带时区的 ISO 8601 时间，其余为 `key=value`：
 
 ```
-- 2026-10-21T15:00+08:00 | EVT=TASK_BLOCKED | id=E7 | task=TK1a | from=merge-tk1a-writer-r1 | to=merge-goal-tl-r1 | ref=handoff/merge/r1.md | note=缺 Figma 导出
-- 2026-10-21T15:12+08:00 | EVT=RESOLVED | id=E7 | from=merge-goal-tl-r1 | note=已放到 inputs/
-- 2026-10-23T11:30+08:00 | EVT=RULING | id=E8 | task=TK1b | from=merge-goal-tl-r1 | ref=handoff/merge/briefs/TK1b.md | note=decision=允许顺带更新 adapter.ts 签名; why=同目标内非公共适配文件漏列; blast_radius=仅 TK1b 单文件无红线影响
+- 2026-10-21T15:00:00+08:00 | EVT=TASK_BLOCKED | id=E7 | task=TK1a | from=merge-tk1a-writer-r1 | to=merge-goal-tl-r1 | ref=handoff/merge/r1.md | note=缺 Figma 导出
+- 2026-10-21T15:12:00+08:00 | EVT=RESOLVED | id=E7 | from=merge-goal-tl-r1 | note=已放到 inputs/
+- 2026-10-23T11:30:00+08:00 | EVT=RULING | id=E8 | task=TK1b | from=merge-goal-tl-r1 | ref=handoff/merge/briefs/TK1b.md | note=decision=允许顺带更新 adapter.ts 签名; why=同目标内非公共适配文件漏列; blast_radius=仅 TK1b 单文件无红线影响
+- 2026-10-26T22:55:00+08:00 | EVT=RESOLVED | id=B1 | from=joy | to=merge-goal-tl-r1 | note=旁路解卡：Allow path access on /tmp; send-keys enter
 ```
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| 时间 | 是 | ISO 8601，带时区（`+08:00` 或 `Z`） |
+| 时间 | 是 | 写入时刻的真实系统时钟，ISO 8601 带时区（`date -Iseconds` 或 `date '+%Y-%m-%dT%H:%M:%S%z'`；`+08:00` 或 `Z`）。严禁估算、顺延或回填 |
 | `EVT` | 是 | 事件类型，见下表 |
-| `id` | 是 | 台账内唯一事件号（`E1`…）；关闭用同一 id |
+| `id` | 是 | 命名空间内唯一。TL／`goal-queue.py` 任务事件用 `E1`…（脚本只扫描 `id=E<N>`）；协调者 Bot 旁路巡检／解卡用 `B1`… 或 `J1`…。关闭用同一 id |
 | `task` | 建议 | Task ID（`1 Task = 1 PR`） |
 | `from` / `to` | 建议 | 发出者 / 该接的人（herdr 名或 bot 名） |
 | `ref` | 否 | 分支、PR、SHA、报告路径 |
 | `model` / `machine` / `contract` / `tokens` | 回执必填 | 实际模型（降级时写 `原→新`）、机器、合同 SHA、大致 token |
 | `note` | 否 | 一句话，值中不出现 ` | ` |
+
+时间取写入当时的时钟，不事后补。TL 推进事件与 Bot 旁路事件分号段：`E*` 与 `B*`／`J*` 不要混用，避免 `E5` 与另一条 `E5` 撞号。Bot 事件不占用 `goal-queue.py` 的 `E*` 计数。
 
 ## 标准事件与决定权
 

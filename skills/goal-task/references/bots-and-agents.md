@@ -99,7 +99,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 | 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
 | 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
-| PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（禁止 TL 主会话内联轮询） |
+| PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
 ## 诊断类 Goal 的 TL（仅此类；Owner 2026-10-26，Joy → Hotty → flower）
@@ -215,8 +215,8 @@ echo $((100 - "${USED%.*}"))
      --kind copilot --pane "$NEW_PANE_ID" \
      -- --model gemini-4-argon --reasoning-effort high --context long_context \
        --allow-tool write --allow-tool url \
-       --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(env:*)' \
-       --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(rg:*)' --allow-tool 'shell(shasum:*)' \
+       --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' \
+       --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
        --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
@@ -232,7 +232,7 @@ echo $((100 - "${USED%.*}"))
        --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
-   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`；同一 `[projects."…"]` 只保留一块，并清掉文件里已有的相邻重复 trust 块）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
 5. **文件指针派发、PR 状态监控委派（`pr_monitor`）与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
@@ -243,8 +243,8 @@ echo $((100 - "${USED%.*}"))
      --wait --timeout 600000
    ```
 
-   `--wait` 会在约 5 秒内核验是否真正进入 `working` 或 `blocked`；若返回 `agent_prompt_stalled`，先排查 agent 状态、pane 与审批界面，禁止盲目重发。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
-   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）：
+   `herdr-dispatch.sh` 在 `agent start` 成功后轮询 `interactive_ready`（最多约 10s，间隔 0.5s）再 `agent prompt`。若返回 `agent_prompt_stalled`（`--wait` 约 5s 初态检测的假阳性）或发送后约 2s 仍为 `idle`，脚本自动发送一次 Enter（`herdr agent send-keys <name> enter`）提交输入框；指定了 `--wait` 时改走 `herdr agent wait`，不要把这次 5s stall 当成派发失败，也不要盲目重发整段 prompt。手写命令流同样只补一次 Enter 再 `agent wait`。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
+   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 与 Writer 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，Writer **严禁**在会话内执行 `gh run watch` 或 `sleep >= 30` 等待远端 CI（本地验证、`git push` 与 R10 回执落盘后立即返回）。必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）。`pr_monitor` 做 Job 级 Fail-Fast：轮询 `gh pr checks <pr> --json name,state,bucket,link` 或 `gh api repos/<owner>/<repo>/actions/runs/<run_id>/jobs`，**不得**只看 Workflow Run 顶层 `.conclusion`（同 Run 仍有 Job 在排队或运行时它恒为 `null`）。任一 required job 为 `failure`／`timed_out`／`action_required` 即停止轮询并回报。Run 仍 `in_progress` 时 `gh run view <run-id> --log-failed` 会报 `run is still in progress`，必须改用单 Job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`。
 
    ```sh
    set -euo pipefail
@@ -253,7 +253,7 @@ echo $((100 - "${USED%.*}"))
      --kind copilot \
      --cwd "$TASK_WORKTREE" \
      --direction down \
-     --prompt "Monitor PR #<num> in <owner/repo> until required checks finish and PR merges (or fails/conflicts). If any check fails, capture 'gh run view <run-id> --log-failed | tail -n 80'. Write the full R10 receipt to <receipt-path> and return <15 lines with PR_MERGED | PR_CHECKS_GREEN | PR_CHECK_FAILED | PR_CONFLICT." \
+     --prompt "Monitor PR #<num> in <owner/repo> until the PR merges or a required job fails. Poll job conclusions (gh pr checks or actions/runs/<run_id>/jobs). Do not wait on the workflow run .conclusion while sibling jobs are still queued. On failure, timed_out, or action_required, fetch that job with gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs (gh run view --log-failed errors while the run is in_progress). Write the full R10 receipt to <receipt-path> and return <15 lines with PR_MERGED | PR_CHECKS_GREEN | PR_CHECK_FAILED | PR_CONFLICT." \
      --wait --timeout 600000 \
      -- --model mai-code-2-flash \
        --allow-tool write --allow-tool url \
