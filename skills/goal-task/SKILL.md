@@ -21,6 +21,8 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 按可验收结果、真实接口和依赖划分 Task（**Vertical Tracer-Bullet Slices**——每个切片端到端穿过所需的接口、实现与测试，能独立编译与验证；大范围机械重构采用 `Expand -> Migrate -> Contract` 分步演进），允许跨层，不按 layer 数、文件数或行数机械拆分。
 **`1 Task = 1 Writer = 1 Worktree = 1 PR`**：Task 同时是分配、独立工作树隔离、PR 审查与合并的唯一原子单位；若某切片需要拆成多个 PR，必须在 Goal 的 DAG 中拆分为多个独立的 `Task`，不再存在“一个 Task 内拆多个 PR”。
 依次判断四谓词：执行者不同、验收方式不同、可以并行、或中间结果要交给别人消费，任一成立即拆为独立 Task。
+对原始反馈／缺陷输入，默认 **一个可独立验证的 bug 或 requested change 对应一个 Task／PR**；不得按页面、文件、layer、批次、集成便利或 CI 失败合并。只有多个原始反馈明确由同一变更解决、且任务简报携带结构化 common-root-cause evidence 时才可合并；机器只校验声明结构，不判断语义上的根因等价。
+同一个 bug 所需的 storage、UI、文档和 regression test 属于同一垂直 Task；不同 bug 即使触碰同一 owned path 仍保持独立，并由队列串行化。
 使用 issue 跟踪时，Goal 是父 issue，Task 是其子 issue，每个 Task 对应 1 个 PR。
 *旧版兼容说明：既有台账或 issue 中遗留的 `Target` 条目，直接映射为单个 `Task`（或同一 `Goal` 下的一组 `Tasks`）。*
 
@@ -78,6 +80,43 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
    - Bot 直接调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --task-id <id> --title <title> --repo <repo> --paths <paths> --brief briefs/<id>.md`；脚本在 `.queue.lock` 文件锁下安全写入 `queue.json`，自动计算与在途 `in_progress`／待执行任务的并行或串行依赖边，并在 `ledger.md` 追加 `EVT=HOT_APPEND`。
    - 若 `TL` 窗格当前处于 `idle`，Bot 通过 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；同时 `TL` 在每波任务收口退出前**必须**重跑一次 `goal-queue.py next-wave`，将运行期间热追加的任务自动接续清空（Drain to Zero）。
 
+#### Tracked feedback manifest (schema 1)
+
+For a feedback-tracked Goal, every enqueue must include `--feedback-manifest <json-string-or-file>`. The manifest is stored in `queue.json` and is validated again by `enqueue`, `next-wave`, and `set-status`; omission cannot fall back to legacy validation.
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "feedback_id": "FB-001",
+      "acceptance": [
+        {"acceptance_id": "FB-001-A1", "text": "Synthetic acceptance criterion"}
+      ]
+    }
+  ],
+  "task_mappings": [
+    {
+      "task_id": "TK1",
+      "feedback_ids": ["FB-001"],
+      "acceptance_mapping": [
+        {"feedback_id": "FB-001", "acceptance_ids": ["FB-001-A1"]}
+      ],
+      "common_root_cause_evidence": {
+        "summary": "Required only when multiple feedback IDs share a Task",
+        "references": ["test://synthetic/root-cause"]
+      }
+    }
+  ]
+}
+```
+
+`entries` and `task_mappings` must cover every queued Task and acceptance exactly once. Duplicate terminal ownership is resolved through the full `superseded_by` chain independent of manifest order; cycles, invalid links, and a chain with no active owner are rejected unless its terminal cancellation has explicit authorization. A multi-feedback mapping requires `common_root_cause_evidence`, which is structural evidence only and does not establish semantic common-root-cause truth. Existing queues without a manifest remain usable and report `feedback_validation=unverified_legacy`; a null or stripped manifest on a queue containing tracked task fields is rejected and must not downgrade to legacy.
+
+Create a 1:1 replacement with `enqueue --replacement-of <Task ID>`, using the same original feedback ID(s) and every original acceptance ID/text. Later manifests may not delete, rewrite, or remap existing entries or another Task's acceptance. Automatic path-serialization edges are recorded as `auto_depends_on` and may unblock after cancellation; explicit functional dependencies remain blocked until the dependency or its completed replacement is delivered. Reopening a Task clears stale supersession, cancellation, and acceptance-evidence metadata.
+
+For tracked terminal transitions use `set-status --status done|cancelled --evidence-json <json-string-or-file>`. Evidence is an object containing `acceptance`, with one item per mapped acceptance: `feedback_id`, `acceptance_id`, `status` (`passed`, `replaced`, or `cancelled`), and a non-empty `evidence` array. `done` requires every item to be `passed`. Supersession additionally requires `--superseded-by <task-id>`, `status=replaced`, matching `replacement_task_id` on every item, and a replacement manifest mapping the original acceptance; intentional cancellation instead requires `--authorization <reference>` and `status=cancelled`. These are local structure/evidence assertions only: the queue does not verify GitHub remotely, merge state, or semantic root-cause truth.
+
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
@@ -117,16 +156,19 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
   等待批准只阻塞受影响 Tasks，其余 ready Tasks 继续派发；待负责人决定的事项按批汇总提交。
   按等级获批后，定义方编制 revision；独立审查只看定义改动部分；未获 `RULING` 或未备案的范围扩张按 V2 阻塞。
   进度、PR/head、验证证据及下一动作记入执行台账，不修改冻结定义或另设审批。
+  原始反馈 ID 与 acceptance mapping 是冻结契约；不得因 supersession、CI failure、重试或任务取消而静默删除、降级或改写 acceptance。显式授权 cancellation 与成功 delivery 是不同结果，未完成 acceptance 不能以 `done` 关闭。
 - **R3 缺口分流（Rulings vs. 重规划）**：发现缺口时先按 R2 判断是否属于可由协调者内联裁决（`EVT=RULING`）的顺带缺口；若属于且不触碰 4 条硬红线，由 TL 记 `EVT=RULING` 当场放行，不暂停重规划。
   超出 `RULING` 边界或破坏性缺口不扩大当前 Task，走 R2／R4／R5 重规划：若上游编译、CI 或依赖坏了，在 Goal DAG 中插入前置 `Task`，当前 Task 等前置 Task 完成交付（`done`）后继续；若验收覆盖不全或需拆分新切片，按 R4／R5 把缺项拆入新 `Task`，当前 Task 仅按修订后的范围交付；与当前 Goal 无关的既有问题记入 backlog，由定义方／协调者判断是否属于本 Goal；改变 Goal 回负责人。
   对超出 `RULING` 边界的缺口，执行方按 R2 提交结构化变更记录，附失败命令、受影响验收及建议，不自行补范围外适配／测试、删验收或宣称原范围已完成。
 - **R4 Task DAG 变更权**：Task DAG 的增删改、Task 边界调整与接口修订由定义方／协调者评估并按 R2 分级批准（预授权额度内由 TL＋Reviewer 批准并备案，超额度或改变 Goal 由 Owner 批准）；定义方据此编制 revision；Task 变更不能改变 Goal 验收，Goal 变更须负责人批准；执行方只能附证据提议。
 - **R5 验收重映射**：验收项或接口契约在 Tasks 之间移动／拆分时，由定义方／协调者评估，按 R2／R4 分级批准；定义方据此重映射 Goal 与各 Task 的验收命令并出新 revision，独立审查只看改动部分。
   台账保留迁出／迁入 Task、原因及未交付状态；迁移不等于 Goal 验收完成。
+  supersession 必须保留原始 feedback ID 和每条 acceptance 的 replacement linkage；replacement Task 未覆盖全部原 acceptance 时不得关闭原 Task，CI／build 失败不得成为取消 scope 的替代理由。
 - **R6 1-Hop 扁平调度与磁盘文件指针交接（File-Pointer Handoff）**：
   **1-Hop Flat Tree 优先**：由顶层协调者（TL）统一派发所有 Subagent（Explorer、Planner、Writer、Reviewer）；Task 写者与 Reviewer 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`），从根源避免 Claude Code 单层 subagent 限制、Codex 只读沙箱嵌套被拒以及 Worker 私自派 Reviewer 重复自审的问题。若特殊场景需对同一 Task 拆分执行分片，由 TL 并行派发执行分片 subagent（使用不重叠路径或独立 worktree），仍由该 Task 唯一写者整合、commit、push、开 PR 并对验收负责；subagent 检查计入自检，不算独立审查。
   **File-Pointer Handoff（防 Context Rot）**：交接不再把冗长的合同条文或历史对话粘贴进 prompt，而是由协调者将任务简报写入 `~/Development/handoff/<goal>/briefs/<task>.md`（含 1 句话背景、`Owned Paths`、`Interfaces: Consumes / Produces` 精确签名、允许操作与验收命令），prompt 仅传该文件指针路径；Subagent 读文件执行，将完整验证日志写入 R10 回执文件，向主会话只返回 `<15` 行精简结论（状态、PR/head、关键命令结果、回执路径）。
 - **R7 冻结前一致性**：Goal／Task 计划冻结前逐项核对：每个 Task 的验收、`Owned Paths`、`Interfaces: Consumes / Produces`、前置依赖及验证命令齐全；引用的命令、API、符号、文件已实际核实存在，不凭假设；可用对应当前基分支 SHA 的 R11 探查证据满足；冻结前清单须列出 `Owned Paths`、引用的脚本（含其调用的嵌套检查器）与验收命令，并附其存在且可运行的证据。
+  对反馈跟踪 Goal 还必须逐项核对 `原始 feedback ID → 独立 Bug／request → Task／PR → 每条 acceptance` 的精确覆盖与唯一归属；多个 feedback ID 仅在有证据证明同一根因且由同一变更解决时可合并。缺失映射、重复归属、不当归组或证据不足均阻止冻结。
   Tasks 之间命令不冲突；可并行（无依赖顺序）的 Tasks 的 `Owned Paths` 互不重叠；Task 依赖 DAG 无环；定义方输出不得含可编译的实现代码；任一失败即阻止冻结。
   首轮独立计划审查须一次覆盖全部一致性项并集中给出 findings，不分轮追加本轮应发现的问题；按 R2 出新 revision 后复核受影响项。
 - **R8 单套清晰状态机**：
@@ -180,6 +222,7 @@ Goal 处于 `accepting` 时交独立验收核对端到端整体验收；已冻�
   不设“多 PR 累计 Task 审查”或“Target 中间层汇总审查”；当所有必需 `Tasks` 全部 `done` 后，仅剩 Goal 级端到端验收检查。
   计划审查核对相同字段与映射及 R7 全部一致性项；首轮覆盖当前 Goal 下 Task DAG 的完整候选和对应验收。
   reviewer 直接读准确 revision 的定义／简报、diff 和命令证据，不以执行者勾选代替确认；按双轴记录验收项、位置、证据及结论。
+  V1 必须对照原始 feedback manifest、Task brief 与实际 delivery；宽泛或错误的 brief 不能为 bundling 提供合法性。Reviewer 可核对结构化覆盖与证据存在性，但不把机器声明当作 common-root-cause 语义裁定或 GitHub merge 事实。
   内容 reviewer 不重复执行或裁定 build/test/lint/hooks/CI；执行者和 CI 提供命令结果，缺必要证据不能算通过。
 - **V2 按引入来源判定阻塞**：按问题是否由本次 diff 引入区分，不按文件路径区分；本次 diff 引入的任何问题（不论影响哪个文件）、范围内验收失败、红线违规，以及任何安全／隐私／数据丢失问题都阻塞；除上述阻塞项外，本次 diff 未引入的原有问题仅记 backlog，不阻塞，协调者可按 R4 提议新 Task；修改声明范围外的文件且未获 `EVT=RULING` 或未按 R2 备案获批的范围扩张均阻塞。
 - **V3 复审与失败自动升档（Failure-Tier Escalation）**：复审核对上一轮的问题和本次修复 diff；修复引入的问题按 V2 阻塞，未改动代码不重新扫描。

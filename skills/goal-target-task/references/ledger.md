@@ -101,6 +101,43 @@
 1. **姿势 1（Batch Mode）**：`goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json ...` 对照在途与待办任务的 `(repo, paths)` 自动推导冲突依赖（`auto_dependencies`），将跨仓／路径不相交任务分入**并行波次（Parallel Wave）**，同仓路径重叠任务串入**串行链（Sequential Chain）**，更新 `## Tasks` 表并追加 `EVT=READY`；`TL` 循环执行 `goal-queue.py next-wave --mark-in-progress` 直至 `drained: true`。
 2. **姿势 3（Hot-Append Mode）**：当存在 `in_progress` 任务时，常驻域主 Bot（`Joy`／`Atlas`／`flower`）收到新任务**不另起重复 TL**，直接调用 `goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...` 写入 `queue.json` 并在 `ledger.md` 记录 `EVT=HOT_APPEND`；若 `TL` 处于 `idle`，Bot 用 `herdr agent prompt <goal>-goal-tl-r1 ...` 唤醒 `TL`，且 `TL` 在每波收口退出前必跑一次 `goal-queue.py next-wave`，确保热追加队列排空至零。
 
+### Feedback-tracked queue contract
+
+反馈型 Goal 使用 `goal-queue.py enqueue --feedback-manifest <json-string-or-file>`。Manifest schema 1 的最小结构如下：
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "feedback_id": "FB-001",
+      "acceptance": [
+        {"acceptance_id": "FB-001-A1", "text": "Synthetic acceptance criterion"}
+      ]
+    }
+  ],
+  "task_mappings": [
+    {
+      "task_id": "TK1",
+      "feedback_ids": ["FB-001"],
+      "acceptance_mapping": [
+        {"feedback_id": "FB-001", "acceptance_ids": ["FB-001-A1"]}
+      ],
+      "common_root_cause_evidence": {
+        "summary": "Required for multiple feedback IDs in one Task",
+        "references": ["test://synthetic/root-cause"]
+      }
+    }
+  ]
+}
+```
+
+The queue validates exact Task, feedback, and acceptance coverage plus unique terminal ownership on every `enqueue`, `next-wave`, and `set-status` call. Supersession ownership is resolved through the complete `superseded_by` chain independent of manifest order; cycles, invalid links, and a chain with no active owner are rejected unless the terminal cancellation has explicit authorization. A multi-feedback Task requires declared grouping evidence; this is structural evidence only and does not establish semantic common-root-cause truth. A queue without `feedback_manifest` remains legacy-compatible and reports `feedback_validation=unverified_legacy`; a null or stripped manifest on a queue containing tracked task fields is rejected and must not be described as verified.
+
+Use `enqueue --replacement-of <Task ID>` for a new 1:1 replacement. The replacement must carry the same original feedback ID(s) and every original acceptance ID/text; later manifests may not delete, rewrite, or remap existing entries or another Task's acceptance. Automatic path-serialization edges are recorded as `auto_depends_on` and may unblock after cancellation; explicit functional dependencies remain blocked until the dependency or its completed replacement is delivered. Reopening a Task clears stale terminal metadata and acceptance evidence.
+
+Tracked `done` and `cancelled` transitions require `--evidence-json` with one structured item per original acceptance. `done` requires `status=passed` for all items. Supersession requires `--superseded-by`, `status=replaced`, matching `replacement_task_id` values, and a replacement manifest that carries every original acceptance. Authorized cancellation requires `--authorization` and `status=cancelled`. The local validator does not verify GitHub merge state or remote PR facts.
+
 ## 超时提醒（暂不启用）
 
 - 现行做法：Owner 问时，由 Hotty 扫各 Goal 台账，列出未被 `RESOLVED`／`ACK` 关闭的 `TASK_BLOCKED`、`INPUT_BLOCKED`、`CHANGE_REQUEST`、`REVIEW_FAIL`、`NEED_GO`、`NEED_OWNER_DECISION` 及等待时长。
