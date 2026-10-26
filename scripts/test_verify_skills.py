@@ -168,6 +168,11 @@ class VerifySkillsTests(unittest.TestCase):
 
         self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
         self.assertIn("copilot_allowlist:", content)
+        self.assertNotIn("gemini-3.8-flash", content)
+        self.assertNotIn("composer-2.5", content)
+        self.assertNotIn("kimi-k3-high", content)
+        self.assertIn("kimi: moonshot", content)
+        self.assertIn("model: kimi,", content)
         self.assertGreaterEqual(content.count("pr_monitor:"), 2)
         for line in content.splitlines():
             stripped = line.strip()
@@ -564,7 +569,7 @@ class VerifySkillsTests(unittest.TestCase):
                     "Monitor PR status",
                     "--",
                     "--model",
-                    "gemini-3.8-flash",
+                    "mai-code-2-flash",
                 ],
                 cwd=REPO_ROOT,
                 env=copilot_env,
@@ -589,6 +594,11 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("write", copilot_calls[2])
             self.assertIn("--add-dir", copilot_calls[2])
             self.assertIn("--no-ask-user", copilot_calls[2])
+
+        bots_and_agents_text = (
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("高复杂度／并发 Task", bots_and_agents_text)
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
         canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
