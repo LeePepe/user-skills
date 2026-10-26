@@ -162,3 +162,12 @@ notes:
     writer_escalated (codex gpt-6.1-sol) is strictly reserved for V3 Round 2 fix escalation and never used for Round 1 (r1) writer dispatches;
     pr_monitor shares the exact worker model order of explorer (mai-code-2-flash -> gpt-5.6-luna) so TL delegates PR/CI status watching instead of polling inline;
     research uses gemini-4-argon with copilot and kimi with cursor-agent.
+  diagnostic_goal_tl: >
+    Owner 2026-10-26 (Joy → Hotty → flower). Diagnostic Goals only — root cause
+    of CLI / goal-task / TL slowness, effectiveness, or which skill was used:
+    TL is copilot/gemini-4-argon on MacBook and on Mac mini. Do not use the
+    mac-mini strong tier (claude/opus) to brute-force that research, and do not
+    run quota_precheck for it. This does not replace day-to-day implementation
+    TL (MacBook team_lead stays gemini-4-argon; mac-mini strong stays claude/opus,
+    weekly_remaining_pct < 20 or unreadable → copilot/gemini-4-argon).
+    See bots-and-agents.md.
