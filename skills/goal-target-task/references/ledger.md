@@ -69,6 +69,7 @@
 | `CHANGE_REQUEST` | 超出 `RULING` 边界或触碰硬红线，需要改范围／合同 | 执行者／TL | TL → 协调者 | 按 R2／R4 分级；Goal 变更只有 Owner |
 | `REVIEW_PASS` | 审查通过（V5 PASS／CONCERNS） | Reviewer | TL | 记录 |
 | `REVIEW_FAIL` | 审查不通过 | Reviewer | TL | TL 按 V3 决定修复或回定义方 |
+| `PR_MONITOR` | `pr_monitor` Subagent 回报 PR CI／auto-merge 终态（`PR_MERGED`、`PR_CHECKS_GREEN`、`PR_CHECK_FAILED`、`PR_CONFLICT`）及 R10 回执 | `pr_monitor` | TL | `PR_MERGED`／`PR_CHECKS_GREEN` 记录收口；`PR_CHECK_FAILED`／`PR_CONFLICT` 由 TL 派 Writer 修复 |
 | `NEED_GO` | 需要 Owner 放行：危险操作或明确 hold 例外 | TL／协调者 | 协调者 → Owner | **只有 Owner** |
 | `NEED_OWNER_DECISION` | 需要 Owner 拍板 | 协调者 | Owner | **只有 Owner** |
 | `DONE` | agent／Task 完成，回执已落盘 | 执行者／TL | TL | 记录 |
