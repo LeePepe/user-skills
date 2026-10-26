@@ -102,6 +102,17 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 | PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（禁止 TL 主会话内联轮询） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
+## 诊断类 Goal 的 TL（仅此类；Owner 2026-10-26，Joy → Hotty → flower）
+
+**只适用于**以「为什么慢／效果如何／用了哪个 skill」为目的的诊断 Goal：调查 CLI、`goal-task` 或 TL 过慢、有效性，或 skill 选用回顾。不替换日常实现类 Goal 的 TL，也不改会话内 Bug 追问所继承的在途 TL。
+
+| 机器 | 诊断 Goal 的 TL |
+|---|---|
+| MacBook | `copilot` + `gemini-4-argon`（与该机日常 strong `team_lead` 相同） |
+| Mac mini | 同一类诊断对齐 gemini-4 档：`copilot` + `gemini-4-argon` |
+
+Mac mini 上此类诊断**不得**用 strong 档（`claude` + `opus`）硬扛调研，也**不**走下一节 Claude 周配额预检。日常实现 TL 不变：MacBook 仍是 `copilot`／`gemini-4-argon`；Mac mini strong 仍是 `claude`／`opus`，周剩余 `weekly_remaining_pct` &lt; 20%（或测不到）才改 `copilot`／`gemini-4-argon`。默认档位仍以 [runtime-profiles.yaml](runtime-profiles.yaml) 为准；本表不改那些默认项。
+
 ## Mac mini strong：Claude 周配额预检（team_lead / arbitration）
 
 **范围**：仅 `machines.mac-mini.strong` 的 `team_lead` 与 `arbitration`（首项为 `claude` + `opus`，备份为 `copilot` + `gemini-4-argon`）。Joy / MacBook 的 strong 档不使用 Claude，**不适用**本规则。
