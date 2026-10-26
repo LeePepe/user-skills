@@ -93,6 +93,12 @@ if [[ -z "$NAME" || -z "$KIND" || -z "$CWD" || -z "$PROMPT" ]]; then
   exit 2
 fi
 
+# Reject over-long names before pane split so a failed start cannot leave an orphan pane.
+if [[ ! "$NAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+  echo "Error: --name '$NAME' must match ^[a-z][a-z0-9_-]{0,31}$ (<=32 chars) before splitting pane" >&2
+  exit 2
+fi
+
 if [[ "$DIRECTION" != "right" && "$DIRECTION" != "down" ]]; then
   echo "Error: --direction must be 'right' or 'down' (got '$DIRECTION')" >&2
   exit 2
@@ -118,6 +124,7 @@ import json, os, pathlib, sys
 kind, cwd_arg = sys.argv[1], sys.argv[2]
 home = pathlib.Path.home()
 candidates = []
+extra_env = [p for p in os.environ.get("HERDR_EXTRA_ADD_DIRS", "").split(":") if p.strip()]
 for raw in (
     cwd_arg,
     str(home / "Development"),
@@ -125,6 +132,11 @@ for raw in (
     str(home / "Development" / "worktrees"),
     str(home / "orca"),
     str(home / "orca" / "workspaces"),
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+    *extra_env,
 ):
     if not raw:
         continue
@@ -168,18 +180,27 @@ elif kind == "codex":
 PY
 fi
 
-# For copilot subagents, auto-inject safe path & tool allowlists when omitted by caller so background panes do not block.
+# For copilot subagents, auto-inject safe path & tool allowlists (additively merging baseline + extra dirs) so background panes do not block.
 if [[ "$KIND" == "copilot" ]]; then
   HAS_ALLOW_OR_DENY=0
-  HAS_ADD_DIR=0
   HAS_NO_ASK=0
+  EXISTING_ADD_DIRS=()
+  prev_was_add_dir=0
   for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
+    if [[ "$prev_was_add_dir" -eq 1 ]]; then
+      EXISTING_ADD_DIRS+=("$arg")
+      prev_was_add_dir=0
+      continue
+    fi
     case "$arg" in
       --allow-tool|--allow-tool=*|--deny-tool|--deny-tool=*)
         HAS_ALLOW_OR_DENY=1
         ;;
-      --add-dir|--add-dir=*)
-        HAS_ADD_DIR=1
+      --add-dir)
+        prev_was_add_dir=1
+        ;;
+      --add-dir=*)
+        EXISTING_ADD_DIRS+=("${arg#--add-dir=}")
         ;;
       --no-ask-user)
         HAS_NO_ASK=1
@@ -195,16 +216,40 @@ if [[ "$KIND" == "copilot" ]]; then
       --deny-tool "shell(herdr server stop:*)"
     )
   fi
-  if [[ "$HAS_ADD_DIR" -eq 0 ]]; then
-    AGENT_ARGS+=(
-      --add-dir "$CWD"
-      --add-dir "$HOME/Development"
-      --add-dir "$HOME/.copilot"
-      --add-dir "$HOME/.agents"
-      --add-dir "$HOME/.codex"
-      --add-dir "$HOME/orca"
-    )
+  # Always keep the static baseline, then append caller --add-dir values and
+  # colon-separated HERDR_EXTRA_ADD_DIRS. Exact-string dedupe preserves both
+  # symlink and /private literals (Copilot realpath-dedupes the pair later).
+  BASELINE_ADD_DIRS=(
+    "$CWD"
+    "$HOME/Development"
+    "$HOME/.copilot"
+    "$HOME/.agents"
+    "$HOME/.codex"
+    "$HOME/orca"
+    "/tmp"
+    "/private/tmp"
+    "/var/folders"
+    "/private/var/folders"
+  )
+  if [[ -n "${HERDR_EXTRA_ADD_DIRS:-}" ]]; then
+    IFS=':' read -r -a EXTRA_DIRS_ARR <<< "$HERDR_EXTRA_ADD_DIRS"
+    for extra_d in "${EXTRA_DIRS_ARR[@]+"${EXTRA_DIRS_ARR[@]}"}"; do
+      [[ -n "$extra_d" ]] && BASELINE_ADD_DIRS+=("$extra_d")
+    done
   fi
+  for req_dir in "${BASELINE_ADD_DIRS[@]}"; do
+    already_present=0
+    for ex_dir in "${EXISTING_ADD_DIRS[@]+"${EXISTING_ADD_DIRS[@]}"}"; do
+      if [[ "$ex_dir" == "$req_dir" ]]; then
+        already_present=1
+        break
+      fi
+    done
+    if [[ "$already_present" -eq 0 ]]; then
+      AGENT_ARGS+=(--add-dir "$req_dir")
+      EXISTING_ADD_DIRS+=("$req_dir")
+    fi
+  done
   if [[ "$HAS_NO_ASK" -eq 0 ]]; then
     AGENT_ARGS+=(--no-ask-user)
   fi

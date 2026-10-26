@@ -24,7 +24,7 @@
 2. **切换开关（Freeze / GO）**
    - 当 Owner 明确拍板（如“按这个做／开始执行／做”），或初始请求本身就是范围清晰、无歧义的直接实现指令时，进入 **Phase 1（Autonomous TL Execution）**。
 3. **Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）**
-   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**，将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 仅监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件向 Owner 汇报。
+   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**（若 Goal 涉及 `~/Development` 与 `~/orca` 之外的合法路径如 `~/actions-runner-*`、`~/Library/LaunchAgents`、`~/Library/Logs`、`~/.local/*`，必须在 `briefs/goal.md` 头声明 Goal 级 `extra_add_dirs`，并在启动父 TL 时一并传入 `--add-dir`、导出冒号分隔的 `HERDR_EXTRA_ADD_DIRS`，满足**父 TL 白名单 ≥ 子 Subagent 白名单不变量**（Parent ≥ Child）），将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 除监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件外，须周期巡检 `herdr agent get <goal>-goal-tl-r1` 的 `agent_status`（防止 TL 卡在 CLI 权限弹窗无法写台账）。
    - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
@@ -197,7 +197,7 @@ echo $((100 - "${USED%.*}"))
      -- --model gpt-5.6-luna \
        --allow-tool write --allow-tool shell --allow-tool url \
        --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
    REVIEWER_NAME="merge-tk1a-reviewer-r1"
    herdr agent start "$REVIEWER_NAME" \
@@ -207,7 +207,7 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(env:*)' \
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(rg:*)' --allow-tool 'shell(shasum:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
    PR_MONITOR_NAME="merge-tk1a-pr-monitor-r1"
    herdr agent start "$PR_MONITOR_NAME" \
@@ -218,10 +218,10 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
        --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
-   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 会在分屏前自动将 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca` 写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`），为 `copilot` 自动注入 `--allow-tool`／`--add-dir` 白名单，并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
 5. **文件指针派发、PR 状态监控委派（`pr_monitor`）与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
@@ -250,7 +250,7 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
        --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
 6. **输出读取、阻塞处理与 R10 对账**：`working` 状态禁止读取 alternate-screen 历史；运行中仅可探查：
@@ -265,7 +265,7 @@ echo $((100 - "${USED%.*}"))
    herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
    ```
 
-   **严禁把 `blocked` 当成完成退出**：任何状态检查脚本一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面并解阻或重派，**严禁仅判断 `status != "working"` 就 `break` 退出循环并结束 TL 回合**。必要时用 `herdr agent send-keys <name> esc` 或 `ctrl+c` 处理，严禁盲目重发 prompt。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
+   **严禁把 `blocked` 当成完成退出（含 Bot 盯 TL 与 TL 盯 Subagent）**：任何状态检查或巡检一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面，**严禁仅判断 `status != "working"` 就 `break` 退出循环**。若弹窗为 `Allow path access` 且所列路径均属于临时目录（`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`）、基线白名单或当前 Goal/Task 简报已声明的 `extra_add_dirs` 目标路径，立即发送 `herdr agent send-keys <name> enter`（默认高亮项 `Yes, and remember these paths for this session`）解卡并确认转回 `working`；若涉及未声明的仓外／敏感路径或高危操作，严禁盲按 Enter，记 `EVT=NEED_GO` 上报 Owner 裁决。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
 7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再仅关闭本次创建的 pane：
 
    ```sh
