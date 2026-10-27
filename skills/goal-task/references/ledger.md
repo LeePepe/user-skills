@@ -141,6 +141,10 @@ Use `enqueue --replacement-of <Task ID>` for a new 1:1 replacement. The replacem
 
 Tracked `done` and `cancelled` transitions require `--evidence-json` with one structured item per original acceptance. `done` requires `status=passed` for all items. Supersession requires `--superseded-by`, `status=replaced`, matching `replacement_task_id` values, and a replacement manifest that carries every original acceptance. Authorized cancellation requires `--authorization` and `status=cancelled`. The local validator does not verify GitHub merge state or remote PR facts.
 
+- **TODO（延后按需修复，`--replacement-of` 边界）**：
+  1. **跨路径替代任务防提前派发**：当新任务通过 `enqueue --replacement-of <Task ID>` 入队且 `Owned Paths` 与原任务不重叠时，自动挂载对原任务的等待边，防止原任务尚未 `cancelled (--superseded-by)` 前替代任务被提前标为 `ready` 并派发。
+  2. **原任务未走替代时的悬空拦截**：若带 `replacement_of` 的任务入队后，原任务直接 `done` 或被其他任务替代，后续校验显式报错拦截，防止悬空替代任务残留在队列中。
+
 ## 超时提醒（暂不启用）
 
 - 现行做法：Owner 问时，由 Hotty 扫各 Goal 台账，列出未被 `RESOLVED`／`ACK` 关闭的 `TASK_BLOCKED`、`INPUT_BLOCKED`、`CHANGE_REQUEST`、`REVIEW_FAIL`、`NEED_GO`、`NEED_OWNER_DECISION` 及等待时长。
