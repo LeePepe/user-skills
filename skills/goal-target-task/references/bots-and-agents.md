@@ -27,6 +27,12 @@
    - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**（若 Goal 涉及 `~/Development` 与 `~/orca` 之外的合法路径如 `~/actions-runner-*`、`~/Library/LaunchAgents`、`~/Library/Logs`、`~/.local/*`，必须在 `briefs/goal.md` 头声明 Goal 级 `extra_add_dirs`，并在启动父 TL 时一并传入 `--add-dir`、导出冒号分隔的 `HERDR_EXTRA_ADD_DIRS`，满足**父 TL 白名单 ≥ 子 Subagent 白名单不变量**（Parent ≥ Child）），将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 除监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件外，须周期巡检 `herdr agent get <goal>-goal-tl-r1` 的 `agent_status`（防止 TL 卡在 CLI 权限弹窗无法写台账）。
    - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
+### Bot 与 CLI 的设计路由（Owner 2026-10-24）
+
+- **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。
+- **CLI 入口**：本地 CLI／TL 在本 Goal 内主动跑完该流水线，不转交 `艺术家`。
+- **Bot 入口**：`Atlas`／`flower`／`ana`／`笔者`／`Joy`／`Hotty` 的设计需求一律交给 **`艺术家`** 开 TL 跑同一流水线，由 **`艺术家` 做设计总审门禁**；其他域主 Bot 不在本域 Goal TL 内跑该流水线；七域花名册与 `Hotty` 不做具体 Goal 协调的边界不变。
+
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
 常驻域主 Bot（`Joy`／`Atlas`／`flower` 等）与 `TL` 通过 [`scripts/goal-queue.py`](../scripts/goal-queue.py)（基于 `~/Development/handoff/<goal>/.queue.lock` 的 `fcntl.flock` 文件锁，原子同步 `queue.json` 与 `ledger.md`）协同处理批量输入与运行中热追加：
@@ -81,6 +87,7 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 - pigger（Mac mini）在七域之外：Owner 的个人咨询顾问，可按 GTT 做自己的咨询类工作；不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal）。
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
 - Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，再读回合并结果。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
+- 设计需求的 Bot／CLI 路由与总审规则见上方 [Bot 与 CLI 的设计路由](#bot-与-cli-的设计路由-owner-2026-10-24)。
 
 ## 每个 Goal 的责任线
 
