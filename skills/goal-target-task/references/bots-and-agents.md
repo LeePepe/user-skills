@@ -1,6 +1,6 @@
 # Bot 与 CLI agent：分工与生命周期
 
-本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。
+本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。常驻域主 Bot 与 Goal-level TL 的开 TL、热追加、巡检解卡和完成回收另见 [`bot-tl-orchestration`](../../bot-tl-orchestration/SKILL.md)。
 
 ## 两层
 
@@ -38,6 +38,12 @@
 2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
    - 当 `TL` 已在运行中，Owner 向常驻 Bot（`Joy`／`Atlas`／`flower`）或 `TL` 发送新任务时，**Bot 绝不重复拉起第二个 TL**，而是直接运行 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...`（获取 `.queue.lock`、对照在途任务自动计算并行／串行依赖边、在 `ledger.md` 记录 `EVT=HOT_APPEND`）。
    - 若 `<goal>-goal-tl-r1` 窗格处于 `idle`，Bot 执行 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；`TL` 在任一波次收口退出前固定重跑一次 `goal-queue.py next-wave`，确保热追加任务被彻底排空（Drain to Zero）。
+
+### 两级完成与清理边界
+
+- `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
+- **Task / `PR_MERGED`**：TL 或清理 Subagent 收到准确合并读回与 R10 回执后，关闭任务 pane，清理 `__pycache__`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
+- **Goal / `GOAL_DONE`**：仅当所有 Task `done`、`drained: true` 且 ledger 记录 `EVT=GOAL_DONE` 时收口；TL 可延迟自闭 pane，Bot 再确认没有 `working`／`blocked` Agent 或合并 Worktree，必要时只关闭该 Goal 的 TL pane/workspace，不触碰 `w1`、Owner 会话或活动 Goal。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 

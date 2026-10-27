@@ -1,0 +1,5 @@
+{
+  "name": "bot-tl-orchestration",
+  "description": "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。",
+  "category": "workflow"
+}

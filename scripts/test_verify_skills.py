@@ -271,6 +271,45 @@ class VerifySkillsTests(unittest.TestCase):
                 f"Missing required heading {anchor_heading!r} in SKILL.md",
             )
 
+    def test_bot_tl_orchestration_shared_components_contract(self) -> None:
+        skill_dir = SKILLS_DIR / "bot-tl-orchestration"
+        skill_path = skill_dir / "SKILL.md"
+        manifest_path = skill_dir / ".claude-plugin" / "plugin.json"
+        skill_text = skill_path.read_text(encoding="utf-8")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest.get("name"), "bot-tl-orchestration")
+        self.assertEqual(
+            manifest.get("description"),
+            "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。",
+        )
+        self.assertEqual(manifest.get("category"), "workflow")
+        self.assertIn("bot-tl-orchestration", skill_text)
+
+        shared_targets = (
+            "../goal-task/references/runtime-profiles.yaml",
+            "../goal-task/references/bots-and-agents.md",
+            "../goal-task/references/ledger.md",
+            "../goal-task/scripts/goal-queue.py",
+            "../goal-task/scripts/herdr-dispatch.sh",
+        )
+        for target in shared_targets:
+            with self.subTest(target=target):
+                self.assertIn(f"]({target})", skill_text)
+                self.assertTrue((skill_path.parent / target).resolve().is_file())
+
+        for document in (
+            skill_path,
+            SKILLS_DIR / "goal-task" / "references" / "playbook.md",
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
+        ):
+            with self.subTest(document=str(document.relative_to(REPO_ROOT))):
+                text = document.read_text(encoding="utf-8")
+                self.assertIn("PR_MERGED", text)
+                self.assertIn("GOAL_DONE", text)
+                self.assertIn("git worktree remove", text)
+                self.assertIn("pr_monitor", text)
+
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (
