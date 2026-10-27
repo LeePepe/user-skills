@@ -251,7 +251,7 @@ echo $((100 - "${USED%.*}"))
    skills/goal-task/scripts/herdr-dispatch.sh \
      --name "merge-tk1a-pr-monitor-r1" \
      --kind copilot \
-     --cwd "$TASK_WORKTREE" \
+     --cwd "$GOAL_HANDOFF" \
      --direction down \
      --prompt "Monitor PR #<num> in <owner/repo> until the PR merges or a required job fails. Poll job conclusions (gh pr checks or actions/runs/<run_id>/jobs). Do not wait on the workflow run .conclusion while sibling jobs are still queued. On failure, timed_out, or action_required, fetch that job with gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs (gh run view --log-failed errors while the run is in_progress). Write the full R10 receipt to <receipt-path> and return <15 lines with PR_MERGED | PR_CHECKS_GREEN | PR_CHECK_FAILED | PR_CONFLICT." \
      --wait --timeout 600000 \
@@ -277,19 +277,23 @@ echo $((100 - "${USED%.*}"))
    ```
 
    **严禁把 `blocked` 当成完成退出（含 Bot 盯 TL 与 TL 盯 Subagent）**：任何状态检查或巡检一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面，**严禁仅判断 `status != "working"` 就 `break` 退出循环**。若弹窗为 `Allow path access` 且所列路径均属于临时目录（`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`）、基线白名单或当前 Goal/Task 简报已声明的 `extra_add_dirs` 目标路径，立即发送 `herdr agent send-keys <name> enter`（默认高亮项 `Yes, and remember these paths for this session`）解卡并确认转回 `working`；若涉及未声明的仓外／敏感路径或高危操作，严禁盲按 Enter，记 `EVT=NEED_GO` 上报 Owner 裁决。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
-7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再仅关闭本次创建的 pane：
+7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再关闭本次 Task 的 Writer、Reviewer 与 `pr_monitor` panes：
 
    ```sh
    herdr pane close "$NEW_PANE_ID"
    ```
 
-   **已合并（`PR_MERGED`）的 Task worktree 与分支自动清理**：当 Task PR 已读回确认 `MERGED`、R10 回执已落盘且绑定该 worktree 的 Subagent 窗格已关闭（`herdr pane close "$NEW_PANE_ID"`）后，TL 直接自动移除该已合并的 Task worktree 与对应本地／远端分支：
+   **已合并（`PR_MERGED`）的 Task 自动清理**：当 Task PR 已读回确认 `MERGED`、R10 回执已落盘且绑定该 worktree 的 Writer、Reviewer 与 `pr_monitor` panes 已关闭后，先清理 `__pycache__`、临时日志等临时产物，再由 TL 在主仓执行：
 
    ```sh
-   git worktree remove "$TASK_WORKTREE"
-   git worktree prune
-   git branch -D "$TASK_BRANCH"
+   # Equivalent cleanup command from the main-repository checkout:
+   # git worktree remove "$TASK_WORKTREE"
+   git -C "$MAIN_REPO" worktree remove "$TASK_WORKTREE"
+   git -C "$MAIN_REPO" worktree prune
+   git -C "$MAIN_REPO" branch -D "$TASK_BRANCH"
    git push origin --delete "$TASK_BRANCH" 2>/dev/null || true
    ```
 
-   并在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**未合并／暂停（HOLD）／含未提交改动的 worktree 不自动删**：保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。不得碰 Owner 手开的会话与工作区、herdr `w1`（shared-design-system），也不得执行 `herdr server stop`。
+   **Goal 自动清理**：仅当协调 Bot 已确认 `GOAL_DONE`、全部 R10 回执齐全、Task worktrees 已清理且该 Goal 没有 `working` 或 `blocked` agent 时，由协调 Bot（不是 TL 自关）关闭该 Goal 的 workspace 或 TL pane，例如 `herdr workspace close "$GOAL_WORKSPACE"`。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal。
+
+   并在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**未合并／暂停（HOLD）／含未提交业务改动的 worktree 不自动删**：保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。不得执行 `herdr server stop`。

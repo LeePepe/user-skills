@@ -382,15 +382,26 @@ herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
 磁盘 R10 回执 → Git 实际 SHA／工作树 → CI／发布读回 → Herdr 状态
 ```
 
-#### Step 7 — 回收窗格并保护 Worktree
+#### Step 7 — 回收窗格、Worktree 与 Goal Workspace
 
-收齐回执、确认执行者不再 `working` 后，只关闭本轮创建的窗格：
+收齐 R10 回执、确认执行者不再 `working` 后，关闭本轮 Task 的 Writer、Reviewer 与 `pr_monitor` panes：
 
 ```sh
 herdr pane close "$NEW_PANE_ID"
 ```
 
-删除 Worktree 前必须确认分支已推送、PR 已合法合并或现场已交接、`git status --short` 为空，且没有未保存回执。任一条件不满足就保留现场；不停止共享服务，不触碰其他 Goal 的窗格。
+Task PR 只有在 `PR_MERGED` 已读回、R10 已落盘且相关 panes 已关闭后才进入自动清理：先删除 `__pycache__`、临时日志等临时产物，再在主仓执行：
+
+```sh
+git -C "$MAIN_REPO" worktree remove "$TASK_WORKTREE"
+git -C "$MAIN_REPO" worktree prune
+git -C "$MAIN_REPO" branch -D "$TASK_BRANCH"
+git push origin --delete "$TASK_BRANCH" 2>/dev/null || true
+```
+
+删除前仍须确认分支已推送、PR 已合法合并、`git status --short` 为空且没有未保存回执。未合并、`HOLD` 或含未提交业务改动的 worktree 保留现场，列清单交 Owner 确认。
+
+Goal 只有在协调 Bot 已确认 `GOAL_DONE`、全部 R10 回执齐全、Task worktrees 已清理且该 Goal 无 `working`／`blocked` agent 时才收尾；由协调 Bot（不是 TL 自关）执行 `herdr workspace close "$GOAL_WORKSPACE"`，或关闭该 Goal 的 TL pane。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal，不停止共享服务。
 
 ### 1.6 6DQ 质量门禁与自动化发布读回
 
