@@ -283,4 +283,13 @@ echo $((100 - "${USED%.*}"))
    herdr pane close "$NEW_PANE_ID"
    ```
 
-   worktree 不自动删：列清单（路径、分支、是否已合并）交 Owner 确认后再清理。不得碰 Owner 手开的会话与工作区、herdr `w1`（shared-design-system），也不得执行 `herdr server stop`。
+   **已合并（`PR_MERGED`）的 Task worktree 与分支自动清理**：当 Task PR 已读回确认 `MERGED`、R10 回执已落盘且绑定该 worktree 的 Subagent 窗格已关闭（`herdr pane close "$NEW_PANE_ID"`）后，TL 直接自动移除该已合并的 Task worktree 与对应本地／远端分支：
+
+   ```sh
+   git worktree remove "$TASK_WORKTREE"
+   git worktree prune
+   git branch -D "$TASK_BRANCH"
+   git push origin --delete "$TASK_BRANCH" 2>/dev/null || true
+   ```
+
+   并在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**未合并／暂停（HOLD）／含未提交改动的 worktree 不自动删**：保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。不得碰 Owner 手开的会话与工作区、herdr `w1`（shared-design-system），也不得执行 `herdr server stop`。

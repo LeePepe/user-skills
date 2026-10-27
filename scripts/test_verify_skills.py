@@ -271,6 +271,18 @@ class VerifySkillsTests(unittest.TestCase):
                 f"Missing required heading {anchor_heading!r} in SKILL.md",
             )
 
+    def test_merged_worktree_cleanup_contract(self) -> None:
+        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text):
+            self.assertIn("PR_MERGED", text)
+            self.assertIn("git worktree remove", text)
+            self.assertIn("未合并／暂停（HOLD）", text)
+            self.assertIn("Owner", text)
+
     def test_tracked_files_do_not_leak_personal_paths_or_tokens(self) -> None:
         forbidden_patterns: dict[str, re.Pattern[str]] = {
             "macos_home_path": re.compile("/" + "Users" + "/"),
