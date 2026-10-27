@@ -30,7 +30,7 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`，状态为 `working` 或 `idle` 时绝不再开第二个
   TL；改用 [`goal-queue.py`](../goal-task/scripts/goal-queue.py) `enqueue`，记录
   `EVT=HOT_APPEND`，若 TL 为 `idle` 再用 `herdr agent prompt <goal>-goal-tl-r1` 唤醒。
-- 非设计域 Bot 遇 UI/UX 需求必须转给 `艺术家`，不要在本域开设计 Writer。
+- **Bot 入口 vs CLI 入口设计分流**：常驻域主 Bot（`Atlas`、`flower`、`ana`、`笔者`、`Joy`、`Hotty`）遇到任何 UI/UX 设计需求必须转交 **`艺术家`（artist）**，不在本域 Goal TL 内跑设计流水线；由 `艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`），派发 `Explorer → Designer (writes: handoff-only) → Writer → CI Design Gate (design_contract.py) → 跨厂商 Reviewer`，并由 **`艺术家` 依据 `design.md`、项目契约、四态/双外观截图与 CI 结果执行设计总审门禁**（`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码）。相反，从**本地 CLI 入口**直接按 `goal-task` 运行时，由当前 Goal 的 TL 在本会话内直接跑完上述流水线，不转交 `艺术家`。
 - 按 [`runtime-profiles.yaml`](../goal-task/references/runtime-profiles.yaml) 选择模型；
   Mac mini strong Claude 启动前检查 `weekly_remaining_pct`，小于 20% 或未知时使用
   `copilot` + `gemini-4-argon`。诊断 Goal 固定使用该组合。
