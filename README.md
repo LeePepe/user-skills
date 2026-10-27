@@ -4,6 +4,8 @@
 
 [`goal-task`](./skills/goal-task/SKILL.md)（兼容旧名 [`goal-target-task`](./skills/goal-target-task/SKILL.md)）是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板；内附全景手册 [`playbook.md`](./skills/goal-task/references/playbook.md) 与交互式飞轮图 [`ai-native-flywheel.html`](./skills/goal-task/assets/ai-native-flywheel.html)。
 
+[`bot-tl-orchestration`](./skills/bot-tl-orchestration/SKILL.md) 是常驻域主 Bot 与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `goal-task` 提供。
+
 [`code-review`](./skills/code-review/SKILL.md) 审查分支、PR、工作树或实现交接，分别核对仓库规范与功能意图，支持实现者自检和独立审查。
 
 [`xcode-cli`](./skills/xcode-cli/SKILL.md) 使用 Swift 与 Xcode 命令行工具进行 Apple 平台构建、测试、模拟器运行和结果检查。
@@ -26,6 +28,7 @@ Claude Code 使用 plugin marketplace：
 /plugin marketplace add LeePepe/user-skills
 /plugin install goal-task@user-skills
 /plugin install code-review@user-skills
+/plugin install bot-tl-orchestration@user-skills
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
 /plugin install auto-review-merge@user-skills
@@ -37,6 +40,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 
 ```text
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/goal-task 安装 goal-task。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/bot-tl-orchestration 安装 bot-tl-orchestration。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。

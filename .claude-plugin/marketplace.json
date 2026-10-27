@@ -22,6 +22,12 @@
       "description": "goal-task 的向后兼容入口：使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
     },
     {
+      "name": "bot-tl-orchestration",
+      "source": "./skills/bot-tl-orchestration",
+      "category": "workflow",
+      "description": "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
+    },
+    {
       "name": "code-review",
       "source": "./skills/code-review",
       "category": "repo",
