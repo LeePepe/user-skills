@@ -593,6 +593,9 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
             if replacement_of:
+                # TODO(deferred): auto-attach a wait edge on replacement_of even when Owned Paths
+                # do not overlap, so a replacement task cannot become ready before predecessor
+                # cancellation (--superseded-by).
                 candidate["replacement_of"] = replacement_of
 
             auto_deps_for_task: list[str] = []

@@ -347,6 +347,8 @@ def _is_pending_replacement(
     task_id: str,
     task_by_id: Mapping[str, dict[str, Any]],
 ) -> bool:
+    # TODO(deferred): reject dangling replacement_of tasks if original_task_id transitions
+    # to done or is superseded by a different task after enqueue.
     task = task_by_id[task_id]
     original_task_id = str(task.get("replacement_of") or "").strip()
     if not original_task_id:
