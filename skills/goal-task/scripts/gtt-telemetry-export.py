@@ -380,14 +380,14 @@ def _transport(state_dir: Path, account: str, container: str, table: str, prefix
         blob = state_dir / name
         commands.append(["az", "storage", "blob", "upload", "--account-name", account, "--container-name", container, "--name", batch, "--file", str(blob), "--auth-mode", "login", "--overwrite"])
         commands.append(["az", "storage", "table", "create", "--account-name", account, "--name", table, "--auth-mode", "login"])
-        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
+        commands.append(["az", "storage", "entity", "insert", "--if-exists", "replace", "--account-name", account, "--table-name", table,
                          "--entity", *_azure_entity_args({"PartitionKey": "DEVICE", "RowKey": device_id, **metadata}),
                          "--auth-mode", "login"])
         batch_metadata = {**metadata, "collectors": collectors, "Collectors": collectors,
                           "record_count": len(records), "RecordCount": len(records),
                           "blob_path": batch, "BlobPath": batch,
                           "content_sha256": digest, "ContentSha256": digest}
-        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
+        commands.append(["az", "storage", "entity", "insert", "--if-exists", "replace", "--account-name", account, "--table-name", table,
                          "--entity", *_azure_entity_args({"PartitionKey": f"BATCH_{device_id}", "RowKey": batch_id, **batch_metadata}),
                          "--auth-mode", "login"])
     if rsync_to:

@@ -197,6 +197,10 @@ class GttTelemetryExportTests(unittest.TestCase):
             ])
             for call in calls if "--entity" in call
         ]
+        entity_calls = [call for call in calls if "--entity" in call]
+        self.assertEqual(2, len(entity_calls))
+        for call in entity_calls:
+            self.assertEqual(["az", "storage", "entity", "insert", "--if-exists", "replace"], call[:6])
         device_entity = next(entity for entity in entities if entity["PartitionKey"] == "DEVICE")
         batch_entity = next(entity for entity in entities if entity["PartitionKey"].startswith("BATCH_"))
         self.assertIn("machine_alias", device_entity)
