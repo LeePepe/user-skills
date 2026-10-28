@@ -282,6 +282,10 @@ class VerifySkillsTests(unittest.TestCase):
                 self.assertIn("git worktree remove", text)
                 self.assertIn("pr_monitor", text)
 
+        self.assertIn("每次只沟通一层", skill_text)
+        self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
+        self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
+
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (
@@ -701,6 +705,37 @@ class VerifySkillsTests(unittest.TestCase):
                 idle_calls,
             )
             self.assertFalse(any(call[:2] == ["agent", "wait"] for call in idle_calls))
+
+            log_file.write_text("", encoding="utf-8")
+            done_env = {**base_env, "MOCK_AGENT_STATUS": "done"}
+            done_res = subprocess.run(
+                [
+                    str(canonical_helper),
+                    "--name",
+                    "goal-tk4-writer-r1",
+                    "--kind",
+                    "codex",
+                    "--cwd",
+                    str(tmp_dir),
+                    "--prompt",
+                    "Needs enter after done",
+                ],
+                cwd=REPO_ROOT,
+                env=done_env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(done_res.stdout.strip())["ok"], True)
+            done_calls = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn(
+                ["agent", "send-keys", "goal-tk4-writer-r1", "enter"],
+                done_calls,
+            )
 
         bots_and_agents_text = (
             SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"

@@ -79,7 +79,12 @@ description: 使用 CLI agent 规划或执行开发工作前加载，无论是�
 2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
    - 当 `<goal>-goal-tl-r1` 已在运行中，Owner 向常驻域主 Bot（`Joy`／`Atlas`／`flower`）或直接在会话中追加新任务时，**Bot 绝不重复拉起第二个 TL**。
    - Bot 直接调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --task-id <id> --title <title> --repo <repo> --paths <paths> --brief briefs/<id>.md`；脚本在 `.queue.lock` 文件锁下安全写入 `queue.json`，自动计算与在途 `in_progress`／待执行任务的并行或串行依赖边，并在 `ledger.md` 追加 `EVT=HOT_APPEND`。
-   - 若 `TL` 窗格当前处于 `idle`，Bot 通过 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；同时 `TL` 在每波任务收口退出前**必须**重跑一次 `goal-queue.py next-wave`，将运行期间热追加的任务自动接续清空（Drain to Zero）。
+   - 若 `TL` 窗格当前处于 `idle` 或 `done`，Bot 通过
+     `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒
+     `TL`；发送后等待 2 秒，读取 `agent_status`，若仍为 `idle` 或 `done`，仅补发一次
+     `herdr agent send-keys <goal>-goal-tl-r1 enter`，防止粘贴结束符吞掉回车而停在
+     `❯` 输入框。`TL` 在每波任务收口退出前**必须**重跑一次 `goal-queue.py next-wave`，
+     将运行期间热追加的任务自动接续清空（Drain to Zero）。
 
 #### Tracked feedback manifest (schema 1)
 
@@ -189,6 +194,12 @@ For tracked terminal transitions use `set-status --status done|cancelled --evide
   定义方只引用已核实的事实；基分支 SHA 变化后按 R9 复核受影响项。探查不算独立审查，计划审查仍按 V1 核对。
 
 ## 角色绑定与交接
+
+**1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
+Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时关闭
+该 TL 的 Goal pane/workspace；绝不越级创建、prompt 或关闭 TL 下属 Subagent。TL 全权
+负责下属 Subagent 的派发、更新与 Task／阶段完结关窗回收；Bot 不得将子 pane 留给自己
+清理。Bot 或本地 CLI 直接作为 TL 时，则由其直接管辖下属 Subagent。
 
 角色来自可信调用来源和显式 assignment；独立 CLI 会话、可用工具或父级 Goal 上下文都不授予主 agent 权限。
 协调者分配、监督、路由决定和汇报证据；原执行者实现、验证、修复，独立 reviewer 验收，不自签自己的产物。

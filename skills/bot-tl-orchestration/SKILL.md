@@ -27,9 +27,9 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 
 ## 1. 开 TL、热追加与路由
 
-- 先检查 Goal 是否已有 `<goal>-goal-tl-r1`，状态为 `working` 或 `idle` 时绝不再开第二个
+- 先检查 Goal 是否已有 `<goal>-goal-tl-r1`，状态为 `working`、`idle` 或 `done` 时绝不再开第二个
   TL；改用 [`goal-queue.py`](../goal-task/scripts/goal-queue.py) `enqueue`，记录
-  `EVT=HOT_APPEND`，若 TL 为 `idle` 再用 `herdr agent prompt <goal>-goal-tl-r1` 唤醒。
+  `EVT=HOT_APPEND`，若 TL 为 `idle` 或 `done` 再用 `herdr agent prompt <goal>-goal-tl-r1` 唤醒。
 - **设计路由按机器分流（Owner 2026-10-28，Hotty → flower）**：产品 UI/UX 设计流水线阶段与 [`goal-task`](../goal-task/SKILL.md) 相同，顺序为 `Explorer` → `Designer`（`writes: handoff-only`）→ `Writer` → CI Design Gate（`design_contract.py`）→ 跨厂商 `Reviewer`。谁开设计 TL、谁做设计总审以 [`bots-and-agents.md`](../goal-task/references/bots-and-agents.md) 为唯一事实源；模型档位仍只看 [`runtime-profiles.yaml`](../goal-task/references/runtime-profiles.yaml)。本段不复制花名册或模型表。
 - **Mac mini 常驻域（Bot → `艺术家` 终审）**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，遇到产品 UI/UX 设计 Goal 必须转交 **`艺术家`（artist）**，不在本域 Goal TL 内跑设计流水线。由 `艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`）并派发上述流水线，再依据 `design.md`、项目契约、四态/双外观截图与 CI 结果执行设计总审门禁。`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码。
 - **MacBook／`Joy`（本机设计流水线）**：设计不再经 `艺术家`。`Joy` 在 MacBook 本机、于 goal-task 内跑完同一流水线（`Explorer` → `Designer` → `Writer` → CI Design Gate，随后仍是跨厂商 `Reviewer`），不把设计 Goal 转交 Mac mini。
@@ -70,6 +70,13 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 
 ## 3. 两级完成与回收
 
+- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
+  Agent。常驻 Bot 若拉起独立的 `<goal>-goal-tl-r1`，最多沟通与更新到 TL 这一层：
+  唤醒、解卡并在 `GOAL_DONE` 时关闭 TL 所在的 Goal pane/workspace；绝不越级创建、
+  prompt 或关闭 TL 下属的 Explorer／Designer／Writer／Reviewer／`pr_monitor`。
+  TL 全权负责下属 Subagent 的派发、更新以及 Task／阶段完结时的关窗回收，不得将
+  子 pane 留给 Bot 清理。若 Bot 或本地 CLI 自己直接作为 TL，则自己直接管辖这些
+  下属 Subagent 的更新与关窗。
 - **Task / `PR_MERGED`**：由 TL 或清理 Subagent 启动 `pr_monitor`，其 cwd 使用主仓或
   `~/Development/handoff/<goal>`，不要占用 `$TASK_WORKTREE`。确认 `PR_MERGED` 与 R10
   回执后，关闭任务窗格，清理 `__pycache__`，执行
@@ -93,7 +100,7 @@ Bot 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收；T
 每次收到 Goal、追加反馈或恢复监督时，Bot 按以下顺序执行：
 
 1. 读取 Goal ledger，确认 `Owner`、协调者、TL 名称、合同版本和当前 Goal 状态。
-2. 读取 `herdr agent get`，把 `working`、`idle`、`blocked` 与 ledger 事件逐项对账。
+2. 读取 `herdr agent get`，把 `working`、`idle`、`done`、`blocked` 与 ledger 事件逐项对账。
 3. 需要新工作时先判断是否已有 live TL，再选择 `enqueue` 或开 TL；不得先开 pane 后补判断。
 4. 需要产品 UI/UX 设计时先按机器分流：Mac mini 常驻域停止本域实现路由，向 `艺术家` 交接设计输入和验收边界（Bot → `艺术家` 终审）；MacBook／`Joy` 不转交 `艺术家`，在本机 goal-task 内跑 `Explorer` → `Designer` → `Writer` → CI Design Gate。细则以 [`bots-and-agents.md`](../goal-task/references/bots-and-agents.md) 为准。
 5. 每次入队或热追加都保留 `task_id`、`repo`、`paths`、`brief` 与依赖结果。
@@ -176,11 +183,16 @@ herdr agent get "$GOAL-goal-tl-r1"
 ```
 
 入队成功记录 `EVT=HOT_APPEND`；`working` 交由既有 TL 在波次边界 drain，`blocked` 走 §2；
-仅 `idle` 时执行下列唤醒，TL 不存在则按 §1 启动，绝不开重复 TL：
+仅 `idle` 或 `done` 时执行下列唤醒，TL 不存在则按 §1 启动，绝不开重复 TL：
 
 ```bash
 herdr agent prompt "$GOAL-goal-tl-r1" \
   "Hot-append $TASK_ID; read $GOAL_HANDOFF/briefs/$TASK_ID.md; run goal-queue.py next-wave"
+sleep 2
+TL_STATUS=$(herdr agent get "$GOAL-goal-tl-r1" | jq -r '.. | .agent_status? // empty' | head -n1)
+if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then
+  herdr agent send-keys "$GOAL-goal-tl-r1" enter
+fi
 ```
 
 ### Reply + Resolve 最小闭环
