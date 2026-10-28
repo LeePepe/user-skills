@@ -2,9 +2,9 @@
 name: goal-task
 description: 使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。
 ---
-# Goal -> Task 执行合同（标准名：`goal-task`，兼容目录名：`goal-target-task`）
+# Goal -> Task 执行合同（`goal-task`）
 
-> **向后兼容说明**：[`skills/goal-target-task/SKILL.md`](../goal-target-task/SKILL.md) 与本文件保持完整同步，以兼容现有外部固定链接（如 `#定义冻结与缺口`、`#限定审查`）。
+> 唯一技能名是 `goal-task`。旧目录 `goal-target-task` 已移除，不再提供兼容安装路径或固定锚点。
 
 本合同是 CLI 主会话与 subagent 的共同来源。
 目标仓指南、固定版本的共享规则、hooks、身份及 required gates 继续有效；读取本合同不授予角色、委派或发布权限。

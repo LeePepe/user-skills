@@ -7,7 +7,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills/goal-task/scripts/gtt-telemetry-export.py"
-MIRROR = ROOT / "skills/goal-target-task/scripts/gtt-telemetry-export.py"
 spec = importlib.util.spec_from_file_location("gtt_telemetry_export", SCRIPT)
 exporter = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
@@ -74,9 +73,6 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.output.symlink_to(target)
         with self.assertRaises(ValueError):
             exporter.export([self.fixture], "m", self.output, self.state, True)
-
-    def test_mirror_is_byte_for_byte_identical(self):
-        self.assertEqual(SCRIPT.read_bytes(), MIRROR.read_bytes())
 
 
 if __name__ == "__main__":

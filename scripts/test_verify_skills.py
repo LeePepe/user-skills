@@ -205,65 +205,37 @@ class VerifySkillsTests(unittest.TestCase):
                         f"Broken relative link {raw_target!r} in {md_path.relative_to(REPO_ROOT)}",
                     )
 
-    def test_goal_task_and_goal_target_task_parity(self) -> None:
+    def test_goal_task_is_the_only_contract_skill(self) -> None:
+        self.assertFalse(
+            (SKILLS_DIR / "goal-target-task").exists(),
+            "skills/goal-target-task compatibility mirror must stay removed",
+        )
+        marketplace = json.loads(
+            (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+        )
+        plugin_names = {plugin.get("name") for plugin in marketplace.get("plugins", [])}
+        self.assertIn("goal-task", plugin_names)
+        self.assertNotIn("goal-target-task", plugin_names)
+
         canonical_dir = SKILLS_DIR / "goal-task"
-        compat_dir = SKILLS_DIR / "goal-target-task"
         canonical_refs = canonical_dir / "references"
-        compat_refs = compat_dir / "references"
-
         self.assertTrue(canonical_refs.is_dir())
-        self.assertTrue(compat_refs.is_dir())
-
-        canonical_files = {p.name: p for p in canonical_refs.iterdir() if p.is_file()}
-        compat_files = {p.name: p for p in compat_refs.iterdir() if p.is_file()}
-        self.assertEqual(set(canonical_files.keys()), set(compat_files.keys()))
+        canonical_files = [p for p in canonical_refs.iterdir() if p.is_file()]
         self.assertGreaterEqual(len(canonical_files), 1)
 
-        for filename, canonical_file in sorted(canonical_files.items()):
-            compat_file = compat_files[filename]
-            self.assertEqual(
-                canonical_file.read_bytes(),
-                compat_file.read_bytes(),
-                f"Reference drift detected between goal-task and goal-target-task in {filename}",
-            )
-
         canonical_scripts = canonical_dir / "scripts"
-        compat_scripts = compat_dir / "scripts"
         self.assertTrue(canonical_scripts.is_dir())
-        self.assertTrue(compat_scripts.is_dir())
         canonical_script_files = {p.name: p for p in canonical_scripts.iterdir() if p.is_file()}
-        compat_script_files = {p.name: p for p in compat_scripts.iterdir() if p.is_file()}
-        self.assertEqual(set(canonical_script_files.keys()), set(compat_script_files.keys()))
         self.assertIn("goal-queue.py", canonical_script_files)
-        for script_name, canonical_script in sorted(canonical_script_files.items()):
-            compat_script = compat_script_files[script_name]
-            self.assertTrue(os.access(canonical_script, os.X_OK), f"{canonical_script} is not executable")
-            self.assertTrue(os.access(compat_script, os.X_OK), f"{compat_script} is not executable")
-            self.assertEqual(
-                canonical_script.read_bytes(),
-                compat_script.read_bytes(),
-                f"Script drift detected between goal-task and goal-target-task in {script_name}",
-            )
+        for script_path in canonical_script_files.values():
+            self.assertTrue(os.access(script_path, os.X_OK), f"{script_path} is not executable")
 
         canonical_fm = parse_frontmatter(canonical_dir / "SKILL.md")
-        compat_fm = parse_frontmatter(compat_dir / "SKILL.md")
-        self.assertEqual(canonical_fm.fields.get("description"), compat_fm.fields.get("description"))
-
-        def strip_compat_banner(body_lines: tuple[str, ...]) -> tuple[str, ...]:
-            return tuple(
-                line
-                for line in body_lines
-                if not line.startswith("> **向后兼容说明**：")
-                and not line.startswith("> **兼容转发说明**：")
-            )
-
-        self.assertEqual(
-            strip_compat_banner(canonical_fm.body_lines),
-            strip_compat_banner(compat_fm.body_lines),
-            "SKILL.md body drift detected between skills/goal-task and skills/goal-target-task",
-        )
-
+        self.assertEqual(canonical_fm.fields.get("name"), "goal-task")
         canonical_body = "\n".join(canonical_fm.body_lines)
+        self.assertNotIn("../goal-target-task/", canonical_body)
+        self.assertNotIn("兼容目录名", canonical_body)
+        self.assertIn("唯一技能名是 `goal-task`", canonical_body)
         for anchor_heading in ("## 定义、冻结与缺口", "## 限定审查"):
             self.assertIn(
                 anchor_heading,
@@ -364,7 +336,6 @@ class VerifySkillsTests(unittest.TestCase):
     def test_herdr_cli_examples_and_dispatch_helper(self) -> None:
         md_files = [
             *sorted((SKILLS_DIR / "goal-task").rglob("*.md")),
-            *sorted((SKILLS_DIR / "goal-target-task").rglob("*.md")),
         ]
         self.assertGreaterEqual(len(md_files), 6)
 
@@ -395,19 +366,11 @@ class VerifySkillsTests(unittest.TestCase):
                 f"{dup_match.group(0) if dup_match else ''!r}",
             )
 
-        self.assertGreaterEqual(split_matches_total, 6)
+        self.assertGreaterEqual(split_matches_total, 4)
 
         canonical_helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
-        compat_helper = SKILLS_DIR / "goal-target-task" / "scripts" / "herdr-dispatch.sh"
         self.assertTrue(canonical_helper.is_file(), f"Missing {canonical_helper}")
-        self.assertTrue(compat_helper.is_file(), f"Missing {compat_helper}")
         self.assertTrue(os.access(canonical_helper, os.X_OK), f"{canonical_helper} is not executable")
-        self.assertTrue(os.access(compat_helper, os.X_OK), f"{compat_helper} is not executable")
-        self.assertEqual(
-            canonical_helper.read_bytes(),
-            compat_helper.read_bytes(),
-            "herdr-dispatch.sh drift between goal-task and goal-target-task",
-        )
 
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
@@ -824,12 +787,8 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
         canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
-        compat_queue = SKILLS_DIR / "goal-target-task" / "scripts" / "goal-queue.py"
         self.assertTrue(canonical_queue.is_file())
-        self.assertTrue(compat_queue.is_file())
         self.assertEqual(canonical_queue.stat().st_mode & 0o777, 0o755)
-        self.assertEqual(compat_queue.stat().st_mode & 0o777, 0o755)
-        self.assertEqual(canonical_queue.read_bytes(), compat_queue.read_bytes())
 
         for doc_rel in (
             "skills/goal-task/SKILL.md",
