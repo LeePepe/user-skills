@@ -192,17 +192,21 @@ class GttTelemetryExportTests(unittest.TestCase):
         with mock.patch.object(exporter.subprocess, "run", side_effect=lambda command, check: calls.append(command)):
             self.run_export([self.fixture], "m", self.output, None, True, sync, azure_account="acct")
         entities = [
-            json.loads(call[call.index("--entity") + 1])
+            dict(argument.split("=", 1) for argument in call[
+                call.index("--entity") + 1:call.index("--auth-mode")
+            ])
             for call in calls if "--entity" in call
         ]
         device_entity = next(entity for entity in entities if entity["PartitionKey"] == "DEVICE")
         batch_entity = next(entity for entity in entities if entity["PartitionKey"].startswith("BATCH_"))
         self.assertIn("machine_alias", device_entity)
         self.assertIn("updated_at", device_entity)
+        self.assertIn("collectors", batch_entity)
+        self.assertNotIn("{", " ".join(next(call for call in calls if "--entity" in call)))
         self.assertEqual(batch_entity["RowKey"] + ".jsonl", Path(next(
             call[call.index("--name") + 1] for call in calls if call[:4] == ["az", "storage", "blob", "upload"]
         )).name)
-        self.assertEqual(batch_entity["record_count"], len(self.records()))
+        self.assertEqual(int(batch_entity["record_count"]), len(self.records()))
         self.assertIn("content_sha256", batch_entity)
         blob_name = Path(next(
             call[call.index("--file") + 1] for call in calls if call[:4] == ["az", "storage", "blob", "upload"]

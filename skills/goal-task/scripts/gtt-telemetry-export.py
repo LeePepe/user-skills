@@ -261,6 +261,13 @@ def _normalized_payload(value: object) -> object:
     return value
 
 
+def _azure_entity_args(entity: dict[str, object]) -> list[str]:
+    return [
+        f"{key}={','.join(sorted(value)) if isinstance(value, list) else value}"
+        for key, value in entity.items()
+    ]
+
+
 def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir: Path,
              quota_precheck_path: Path | None = None) -> tuple[list[dict], dict]:
     records, cursors = [], {}
@@ -374,14 +381,14 @@ def _transport(state_dir: Path, account: str, container: str, table: str, prefix
         commands.append(["az", "storage", "blob", "upload", "--account-name", account, "--container-name", container, "--name", batch, "--file", str(blob), "--auth-mode", "login", "--overwrite"])
         commands.append(["az", "storage", "table", "create", "--account-name", account, "--name", table, "--auth-mode", "login"])
         commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
-                         "--entity", json.dumps({"PartitionKey": "DEVICE", "RowKey": device_id, **metadata}),
+                         "--entity", *_azure_entity_args({"PartitionKey": "DEVICE", "RowKey": device_id, **metadata}),
                          "--auth-mode", "login"])
         batch_metadata = {**metadata, "collectors": collectors, "Collectors": collectors,
                           "record_count": len(records), "RecordCount": len(records),
                           "blob_path": batch, "BlobPath": batch,
                           "content_sha256": digest, "ContentSha256": digest}
         commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
-                         "--entity", json.dumps({"PartitionKey": f"BATCH_{device_id}", "RowKey": batch_id, **batch_metadata}),
+                         "--entity", *_azure_entity_args({"PartitionKey": f"BATCH_{device_id}", "RowKey": batch_id, **batch_metadata}),
                          "--auth-mode", "login"])
     if rsync_to:
         commands.append(["rsync", "-az", str(outbox), rsync_to])
