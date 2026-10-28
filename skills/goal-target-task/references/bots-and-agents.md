@@ -18,7 +18,7 @@
    - **允许动作**：
      - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`mai-code-2-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
      - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
-     - **视觉与交互设计（UI/UX Design）**：涉及界面时按下方 [设计路由（按机器分流）](#design-routing-machine-split) 决定谁跑流水线。Mac mini 常驻域把产品 UI/UX 设计 Goal 交给 `艺术家` 做设计 TL 与终审；MacBook／`Joy` 与本地 CLI 在本机跑 `Explorer` → `Designer` → `Writer` → CI Design Gate。共享设计资产仍只引用 `shared-design-system`／`Strata`／原型预览，不另复制模型表或设计词典；
+     - **视觉与交互设计（UI/UX Design）**：涉及界面时调用设计域（`艺术家`／`shared-design-system`／`Strata`／原型预览）形成 `design.md` 或原型；
      - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
    - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
 2. **切换开关（Freeze / GO）**
@@ -27,18 +27,11 @@
    - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**（若 Goal 涉及 `~/Development` 与 `~/orca` 之外的合法路径如 `~/actions-runner-*`、`~/Library/LaunchAgents`、`~/Library/Logs`、`~/.local/*`，必须在 `briefs/goal.md` 头声明 Goal 级 `extra_add_dirs`，并在启动父 TL 时一并传入 `--add-dir`、导出冒号分隔的 `HERDR_EXTRA_ADD_DIRS`，满足**父 TL 白名单 ≥ 子 Subagent 白名单不变量**（Parent ≥ Child）），将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 除监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件外，须周期巡检 `herdr agent get <goal>-goal-tl-r1` 的 `agent_status`（防止 TL 卡在 CLI 权限弹窗无法写台账）。
    - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 
-<a id="design-routing-machine-split"></a>
-<a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
+### Bot 与 CLI 的设计路由（Owner 2026-10-24）
 
-### 设计路由（按机器分流；Owner 2026-10-28，Hotty → flower）
-
-产品 UI/UX 设计 Goal 的阶段与 CLI／`goal-task` 设计流相同。模型档位只以 [runtime-profiles.yaml](runtime-profiles.yaml) 为唯一来源；七域花名册只以本节「bot 分工」为唯一来源。本路由只决定谁开设计 TL、谁做设计总审，不复制模型表。
-
-- **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。`shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目 `docs/design-contract.md` 与既有 `Strata`／原型预览仍是共享设计资产的单一事实源，各机器只引用、不另存一份。
-- **Mac mini 常驻域（Bot → `艺术家` 终审）**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，其产品 UI/UX 设计 Goal 仍走既有 **Bot → `艺术家`** 路径，由 **`艺术家`** 开设计 TL 并做设计总审。`艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`），派发上述流水线，并依据 `design.md`、项目契约、四态／双外观截图与 CI 结果执行设计总审门禁。`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码。这些域主 Bot 不在本域 Goal TL 内跑该设计流水线。`Hotty` 不做具体 Goal 协调的边界不变。
-- **MacBook／`Joy`（本机设计流水线）**：设计不再经 `艺术家`。`Joy` 在 MacBook 上、于 goal-task 内本地跑完同一流水线：`Explorer` → `Designer` → `Writer` → CI Design Gate（随后仍是跨厂商 `Reviewer`，与 CLI／`goal-task` 设计流同阶段）。`Joy` 不把设计 Goal 转交 Mac mini 上的 `艺术家`，也不操作 Mac mini。
-- **CLI 入口**：本地 CLI／TL（不经常驻域主 Bot）在本 Goal 内主动跑完该流水线，不转交 `艺术家`。阶段与 MacBook／`Joy` 的本机流水线相同。
-- Owner 2026-10-24「常驻 Bot 的设计需求一律交 `艺术家`」由本决定按机器拆开：Mac mini 常驻域保持 Bot → `艺术家` 终审；MacBook／`Joy` 改为本机设计流水线。
+- **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。
+- **CLI 入口**：本地 CLI／TL 在本 Goal 内主动跑完该流水线，不转交 `艺术家`。
+- **Bot 入口**：`Atlas`／`flower`／`ana`／`笔者`／`Joy`／`Hotty` 的设计需求一律交给 **`艺术家`** 开 TL 跑同一流水线，由 **`艺术家` 做设计总审门禁**；其他域主 Bot 不在本域 Goal TL 内跑该流水线；七域花名册与 `Hotty` 不做具体 Goal 协调的边界不变。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -82,19 +75,19 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 
 | 域 | 主 bot | 机器 | 范围 | 不做 |
 |---|---|---|---|---|
-| 设计 | 艺术家（artist） | Mac mini | 设计域的定义方；Mac mini 常驻域产品 UI/UX 设计 Goal 的设计 TL 与终审 | 不放行发布、合并；不亲自写 `design.md` 或实现代码 |
+| 设计 | 艺术家（artist） | Mac mini | 设计域的定义方 | 不放行发布、合并 |
 | retro + 反思 | ana | Mac mini | retro 与反思 | |
 | 文章形成 | 笔者（writer） | Mac mini | 文章形成 | 与 CLI 层 Task 写者（`writer`）不是同一身份 |
 | 产品开发 | Atlas | Mac mini | 产品应用（VitalStride、VoxPocket 等） | |
 | 流程/方法（含基建） | flower | Mac mini | workflows 01–06、user-skills/GTT，以及 herdr、CLI、shared-ci、tooling | 具体盯梢由 stuck-PR bot + Mac mini 只读心跳负责；flower 负责每日摘要聊天与危险操作或 hold 例外需 Owner 决定时的路由；可执行的卡住 PR 走 supervise-and-fix 而非默认 Owner |
 | 总控 | Hotty | Mac mini | 七域矩阵与跨域摘要；Owner 问时从各 Goal 台账汇总超时与卡住事件 | 不做具体 Goal 协调，不做 Task 写者 |
-| MacBook | Joy | MacBook | MacBook 上 Goal 的协调者；本机产品 UI/UX 设计在 goal-task 内跑设计流水线 | 不操作 Mac mini；设计不转交 `艺术家` |
+| MacBook | Joy | MacBook | MacBook 上 Goal 的协调者 | 不操作 Mac mini |
 
 - fonder（Mac mini）只作为 flower 域下的可选帮手，不占域主。
 - pigger（Mac mini）在七域之外：Owner 的个人咨询顾问，可按 GTT 做自己的咨询类工作；不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal）。
 - 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
 - Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，再读回合并结果。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
-- 设计需求按机器分流：Mac mini 常驻域走 Bot → `艺术家` 终审，MacBook／`Joy` 与 CLI 走本机设计流水线。细则见上方 [设计路由（按机器分流；Owner 2026-10-28）](#design-routing-machine-split)。
+- 设计需求的 Bot／CLI 路由与总审规则见上方 [Bot 与 CLI 的设计路由](#bot-与-cli-的设计路由-owner-2026-10-24)。
 
 ## 每个 Goal 的责任线
 
