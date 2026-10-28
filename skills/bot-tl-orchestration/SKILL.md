@@ -30,7 +30,10 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`，状态为 `working` 或 `idle` 时绝不再开第二个
   TL；改用 [`goal-queue.py`](../goal-task/scripts/goal-queue.py) `enqueue`，记录
   `EVT=HOT_APPEND`，若 TL 为 `idle` 再用 `herdr agent prompt <goal>-goal-tl-r1` 唤醒。
-- **Bot 入口 vs CLI 入口设计分流**：常驻域主 Bot（`Atlas`、`flower`、`ana`、`笔者`、`Joy`、`Hotty`）遇到任何 UI/UX 设计需求必须转交 **`艺术家`（artist）**，不在本域 Goal TL 内跑设计流水线；由 `艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`），派发 `Explorer → Designer (writes: handoff-only) → Writer → CI Design Gate (design_contract.py) → 跨厂商 Reviewer`，并由 **`艺术家` 依据 `design.md`、项目契约、四态/双外观截图与 CI 结果执行设计总审门禁**（`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码）。相反，从**本地 CLI 入口**直接按 `goal-task` 运行时，由当前 Goal 的 TL 在本会话内直接跑完上述流水线，不转交 `艺术家`。
+- **设计路由按机器分流（Owner 2026-10-28，Hotty → flower）**：产品 UI/UX 设计流水线阶段与 [`goal-task`](../goal-task/SKILL.md) 相同，顺序为 `Explorer` → `Designer`（`writes: handoff-only`）→ `Writer` → CI Design Gate（`design_contract.py`）→ 跨厂商 `Reviewer`。谁开设计 TL、谁做设计总审以 [`bots-and-agents.md`](../goal-task/references/bots-and-agents.md) 为唯一事实源；模型档位仍只看 [`runtime-profiles.yaml`](../goal-task/references/runtime-profiles.yaml)。本段不复制花名册或模型表。
+- **Mac mini 常驻域（Bot → `艺术家` 终审）**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，遇到产品 UI/UX 设计 Goal 必须转交 **`艺术家`（artist）**，不在本域 Goal TL 内跑设计流水线。由 `艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`）并派发上述流水线，再依据 `design.md`、项目契约、四态/双外观截图与 CI 结果执行设计总审门禁。`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码。
+- **MacBook／`Joy`（本机设计流水线）**：设计不再经 `艺术家`。`Joy` 在 MacBook 本机、于 goal-task 内跑完同一流水线（`Explorer` → `Designer` → `Writer` → CI Design Gate，随后仍是跨厂商 `Reviewer`），不把设计 Goal 转交 Mac mini。
+- **本地 CLI 入口**：直接按 `goal-task` 运行时，由当前 Goal 的 TL 在本会话内跑完上述流水线，不转交 `艺术家`。阶段与 MacBook／`Joy` 相同。
 - 按 [`runtime-profiles.yaml`](../goal-task/references/runtime-profiles.yaml) 选择模型；
   Mac mini strong Claude 启动前检查 `weekly_remaining_pct`，小于 20% 或未知时使用
   `copilot` + `gemini-4-argon`。诊断 Goal 固定使用该组合。
@@ -77,7 +80,7 @@ Bot 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收；T
 1. 读取 Goal ledger，确认 `Owner`、协调者、TL 名称、合同版本和当前 Goal 状态。
 2. 读取 `herdr agent get`，把 `working`、`idle`、`blocked` 与 ledger 事件逐项对账。
 3. 需要新工作时先判断是否已有 live TL，再选择 `enqueue` 或开 TL；不得先开 pane 后补判断。
-4. 需要跨域设计时停止本域实现路由，向 `艺术家` 交接设计输入和验收边界。
+4. 需要产品 UI/UX 设计时先按机器分流：Mac mini 常驻域停止本域实现路由，向 `艺术家` 交接设计输入和验收边界（Bot → `艺术家` 终审）；MacBook／`Joy` 不转交 `艺术家`，在本机 goal-task 内跑 `Explorer` → `Designer` → `Writer` → CI Design Gate。细则以 [`bots-and-agents.md`](../goal-task/references/bots-and-agents.md) 为准。
 5. 每次入队或热追加都保留 `task_id`、`repo`、`paths`、`brief` 与依赖结果。
 6. 每次解卡、hold、完成或异常都写入 [`ledger.md`](../goal-task/references/ledger.md)，时间戳取真实系统时钟。
 7. 只有从磁盘回执、Git 状态和 Agent 状态都得到同一结论，才发送下一步提示。
