@@ -35,12 +35,12 @@ rsync -a "$USER_SKILLS_ROOT/skills/goal-task/" "$HOME/.copilot/skills/goal-task/
 rsync -a "$USER_SKILLS_ROOT/skills/goal-task/" "$HOME/.claude/skills/goal-task/"
 ```
 
-兼容旧名称的调用方可同步镜像：
+旧目录名 `goal-target-task` 已移除。若本机仍留有该目录，删除后再继续，只保留 `goal-task`：
 
 ```bash
-rsync -a "$USER_SKILLS_ROOT/skills/goal-target-task/" "$HOME/.codex/skills/goal-target-task/"
-rsync -a "$USER_SKILLS_ROOT/skills/goal-target-task/" "$HOME/.copilot/skills/goal-target-task/"
-rsync -a "$USER_SKILLS_ROOT/skills/goal-target-task/" "$HOME/.claude/skills/goal-target-task/"
+rm -rf "$HOME/.codex/skills/goal-target-task" \
+  "$HOME/.copilot/skills/goal-target-task" \
+  "$HOME/.claude/skills/goal-target-task"
 ```
 
 ### 1.3 同步后快速核验
@@ -49,11 +49,12 @@ rsync -a "$USER_SKILLS_ROOT/skills/goal-target-task/" "$HOME/.claude/skills/goal
 test -f "$HOME/.codex/skills/goal-task/SKILL.md"
 test -f "$HOME/.copilot/skills/goal-task/references/workflow-refine-roadmap.md"
 test -f "$HOME/.claude/skills/goal-task/assets/ai-native-flywheel.html"
-diff -rq "$USER_SKILLS_ROOT/skills/goal-task/references" "$USER_SKILLS_ROOT/skills/goal-target-task/references"
-diff -rq "$USER_SKILLS_ROOT/skills/goal-task/assets" "$USER_SKILLS_ROOT/skills/goal-target-task/assets"
+test ! -e "$HOME/.codex/skills/goal-target-task"
+test ! -e "$HOME/.copilot/skills/goal-target-task"
+test ! -e "$HOME/.claude/skills/goal-target-task"
 ```
 
-完成同步后，重启对应 CLI，使新增或更新的 skill 被重新发现。后续执行统一加载 `goal-task`；`goal-target-task` 仅作为兼容入口。
+完成同步后，重启对应 CLI，使新增或更新的 skill 被重新发现。后续执行只加载 `goal-task`。
 
 ## §2 全景三大板块落地路线图
 

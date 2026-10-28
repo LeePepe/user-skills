@@ -16,12 +16,6 @@
       "description": "使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
     },
     {
-      "name": "goal-target-task",
-      "source": "./skills/goal-target-task",
-      "category": "workflow",
-      "description": "goal-task 的向后兼容入口：使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
-    },
-    {
       "name": "bot-tl-orchestration",
       "source": "./skills/bot-tl-orchestration",
       "category": "workflow",

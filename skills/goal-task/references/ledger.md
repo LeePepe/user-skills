@@ -24,7 +24,7 @@
 - 协调者 bot: <bot>
 - TL: <herdr 名> / 模型 <model>
 - 机器: Mac mini | MacBook
-- 合同版本: goal-task@<sha>（兼容 goal-target-task@<sha>）
+- 合同版本: goal-task@<sha>
 
 ## Tasks
 | ID | 依赖 | 标题 | 负责 | 状态 | PR/head |
@@ -33,7 +33,7 @@
 ## Events
 ```
 
-`## Tasks` 状态表是快照，可改写（状态取值按 R8，`1 Task = 1 Writer = 1 Worktree = 1 PR`；历史台账中的 `Target` 条目直接映射为 `Task`）；`## Events` 以下只追加。
+`## Tasks` 状态表是快照，可改写（状态取值按 R8，`1 Task = 1 Writer = 1 Worktree = 1 PR`；历史台账中的 `Target` 条目直接映射为 `Task`）；`## Events` 以下只追加。新台账的合同版本只写 `goal-task@<sha>`。旧目录名 `goal-target-task` 已移除，新台账不再记录兼容别名。
 
 ### 事件行（机器可解析）
 
