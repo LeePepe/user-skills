@@ -120,6 +120,34 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.assertEqual(0, state.get("offset", 0))
         self.assertEqual(device["device_id"], json.loads((sync / "device.json").read_text())["device_id"])
 
+    def test_config_supplies_transport_defaults(self):
+        sync = self.fixture / "sync"
+        (sync).mkdir()
+        (sync / "config.json").write_text(json.dumps({
+            "azure_account": "test-account",
+            "azure_container": "test-container",
+            "azure_table": "test-table",
+            "azure_prefix": "test-prefix",
+        }), encoding="utf-8")
+        calls = []
+        with mock.patch.object(exporter.subprocess, "run", side_effect=lambda command, check: calls.append(command)):
+            exporter.export([self.fixture], "m", self.output, None, True, sync)
+            exporter.export([self.fixture], "m", self.output, None, True, sync)
+        self.assertTrue(any("test-account" in command for call in calls for command in call))
+        blob = next(call for call in calls if call[:4] == ["az", "storage", "blob", "upload"])
+        self.assertIn("test-container", blob)
+        self.assertTrue(any("test-prefix/" in command for command in blob))
+
+    def test_legacy_state_waits_for_transport_success(self):
+        sync = self.fixture / "sync"
+        legacy = self.fixture / "legacy-state.json"
+        legacy.write_text('{"old": "cursor"}\n', encoding="utf-8")
+        with mock.patch.object(exporter.subprocess, "run", side_effect=OSError("rsync unavailable")):
+            with self.assertRaises(ValueError):
+                exporter.export([self.fixture], "m", self.output, legacy, True, sync, rsync_to="remote:")
+        self.assertEqual('{"old": "cursor"}\n', legacy.read_text(encoding="utf-8"))
+        self.assertTrue((sync / "cursors.json").is_file())
+
     def test_notify_is_nonblocking_when_lock_is_held(self):
         sync = self.fixture / "sync"
         sync.mkdir()

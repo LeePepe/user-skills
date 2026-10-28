@@ -114,6 +114,21 @@ def _read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _sync_config(state_dir: Path | None, state_path: Path | None) -> dict:
+    candidates = []
+    if state_dir:
+        candidates.append(state_dir / "config.json")
+    if state_path:
+        candidates.append(state_path.parent / "config.json")
+    for path in candidates:
+        if path.is_file():
+            value = _read_json(path)
+            if not isinstance(value, dict):
+                fail(f"sync config must be an object: {path}")
+            return value
+    return {}
+
+
 def _goal_files(root: Path):
     if not root.is_dir():
         return
@@ -316,6 +331,15 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
     machine_id = normalized_machine_id(machine_id)
     state_dir = sync_state_dir or (state_path.parent if state_path else None)
     state_dir = state_dir.expanduser() if state_dir else None
+    config = _sync_config(state_dir, state_path)
+    if not azure_account:
+        azure_account = str(config.get("azure_account", ""))
+    if azure_container == "telemetry-raw":
+        azure_container = str(config.get("azure_container", azure_container))
+    if azure_table == "AidataSyncIndex":
+        azure_table = str(config.get("azure_table", azure_table))
+    if azure_prefix == "aidata-sync/v1":
+        azure_prefix = str(config.get("azure_prefix", azure_prefix))
     device = _device(state_dir, machine_id) if state_dir else {"device_id": machine_id, "machine_alias": machine_id}
     cursor_path = state_dir / "cursors.json" if state_dir else state_path
     old = json.loads(cursor_path.read_text()) if cursor_path and cursor_path.exists() else {}
@@ -336,11 +360,14 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
             with output.open("a" if incremental else "w", encoding="utf-8") as handle:
                 handle.write(lines)
         atomic_write(cursor_path, json.dumps(cursors, indent=2, sort_keys=True) + "\n", 0o600)
-        if state_path and state_path != cursor_path:
+        transport_requested = bool(azure_account or rsync_to)
+        if state_path and state_path != cursor_path and not transport_requested:
             atomic_write(state_path, json.dumps(cursors, indent=2, sort_keys=True) + "\n", 0o600)
-        if azure_account or rsync_to:
+        if transport_requested:
             if not _transport(state_dir, azure_account, azure_container, azure_table, azure_prefix, rsync_to):
                 fail("telemetry transport failed; outbox state was not advanced")
+            if state_path and state_path != cursor_path:
+                atomic_write(state_path, json.dumps(cursors, indent=2, sort_keys=True) + "\n", 0o600)
     elif output:
         if incremental:
             output.parent.mkdir(parents=True, exist_ok=True)
