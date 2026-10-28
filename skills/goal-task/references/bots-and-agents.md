@@ -50,10 +50,20 @@
    - `TL` 循环调用 `skills/goal-task/scripts/goal-queue.py next-wave --handoff-dir ~/Development/handoff/<goal> --mark-in-progress` 派发每波无冲突任务，待任务完成调用 `set-status --status done`，直至 `drained: true`。
 2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
    - 当 `TL` 已在运行中，Owner 向常驻 Bot（`Joy`／`Atlas`／`flower`）或 `TL` 发送新任务时，**Bot 绝不重复拉起第二个 TL**，而是直接运行 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...`（获取 `.queue.lock`、对照在途任务自动计算并行／串行依赖边、在 `ledger.md` 记录 `EVT=HOT_APPEND`）。
-   - 若 `<goal>-goal-tl-r1` 窗格处于 `idle`，Bot 执行 `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒 `TL`；`TL` 在任一波次收口退出前固定重跑一次 `goal-queue.py next-wave`，确保热追加任务被彻底排空（Drain to Zero）。
+   - 若 `<goal>-goal-tl-r1` 窗格处于 `idle` 或 `done`，Bot 执行
+     `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒
+     `TL`；发送后等待 2 秒，读取 `agent_status`，若仍为 `idle` 或 `done`，仅补发一次
+     `herdr agent send-keys <goal>-goal-tl-r1 enter`，防止粘贴结束符吞掉回车而停在
+     `❯` 输入框。`TL` 在任一波次收口退出前固定重跑一次 `goal-queue.py next-wave`，
+     确保热追加任务被彻底排空（Drain to Zero）。
 
 ### 两级完成与清理边界
 
+- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
+  Agent。独立 Goal TL 存在时，常驻 Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时回收
+  Goal TL pane/workspace；不得越级创建、prompt 或关闭 TL 下属的 Explorer／Designer／
+  Writer／Reviewer／`pr_monitor`。TL 独占这些 Subagent 的派发、更新、Task／阶段完结
+  关窗与回收。Bot 或本地 CLI 直接担任 TL 时，则由其直接管辖下属 Subagent。
 - `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
 - **Task / `PR_MERGED`**：TL 或清理 Subagent 收到准确合并读回与 R10 回执后，关闭任务 pane，清理 `__pycache__`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：仅当所有 Task `done`、`drained: true` 且 ledger 记录 `EVT=GOAL_DONE` 时收口；TL 可延迟自闭 pane，Bot 再确认没有 `working`／`blocked` Agent 或合并 Worktree，必要时只关闭该 Goal 的 TL pane/workspace，不触碰 `w1`、Owner 会话或活动 Goal。

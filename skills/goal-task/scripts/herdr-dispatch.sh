@@ -391,7 +391,7 @@ submit_prompt_enter() {
 agent_is_idle() {
   local status
   status="$(agent_json_field agent_status || true)"
-  [[ "$status" == "idle" ]]
+  [[ "$status" == "idle" || "$status" == "done" ]]
 }
 
 wait_for_interactive_ready
