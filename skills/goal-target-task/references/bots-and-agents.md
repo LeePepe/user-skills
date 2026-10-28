@@ -290,6 +290,8 @@ echo $((100 - "${USED%.*}"))
    ```
 
    **严禁把 `blocked` 当成完成退出（含 Bot 盯 TL 与 TL 盯 Subagent）**：任何状态检查或巡检一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面，**严禁仅判断 `status != "working"` 就 `break` 退出循环**。若弹窗为 `Allow path access` 且所列路径均属于临时目录（`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`）、基线白名单或当前 Goal/Task 简报已声明的 `extra_add_dirs` 目标路径，立即发送 `herdr agent send-keys <name> enter`（默认高亮项 `Yes, and remember these paths for this session`）解卡并确认转回 `working`；若涉及未声明的仓外／敏感路径或高危操作，严禁盲按 Enter，记 `EVT=NEED_GO` 上报 Owner 裁决。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
+
+   **Tier A′（`CMD_CONFIRM`）**：可见窗格出现 Copilot／CLI「Do you want to run this command?」或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项；仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／`reset`／`checkout` 及其它改写历史或工作区的子命令）、`python3`、`jq`、`herdr`（不含 `herdr server stop`），以及 Allow-path／herdr 操作已经允许的同类安全操作（例如 `shasum`、`date`、`sleep`、`env`）——才可按键解卡并记 `EVT=UNBLOCK`。当前高亮已是安全的运行项时发送 `herdr agent send-keys <name> enter`；界面若提供 don't-ask-again／remember，且记住范围仍限于这条已核对的白名单命令，用 Down+Enter（`herdr agent send-keys <name> down`，随后 `herdr agent send-keys <name> enter`，或本仓已建立的等效按键序列）选中该安全记住项。敏感、破坏性或未声明的命令保持 hold，记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter，不得把 blocked 当作完成。**`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**（即便启动参数带有该旗标，也不抑制这两类提示），不得靠它解卡；MacBook `team_lead` 故意不带 `--no-ask-user`（Owner 2026-10-26 对可选 B 暂不），不改 `runtime-profiles.yaml` 或 `herdr-dispatch.sh`，也不开启 `--yolo`。
 7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再关闭本次 Task 的 Writer、Reviewer 与 `pr_monitor` panes：
 
    ```sh
