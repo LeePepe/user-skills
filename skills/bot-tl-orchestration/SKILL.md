@@ -95,6 +95,10 @@ Bot 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收；T
 `Writer/Reviewer → TL → 协调者 Bot → Owner` 回报，真实 Git、ledger、R10 和 Herdr 状态
 必须相互对账。
 
+此处同步 **1-Hop Communication & Lifecycle Ownership**：当常驻 Bot 拉起独立的 Goal TL
+时，Bot 只与该 TL 沟通并负责 TL 层的生命周期清理；Bot 不得创建、prompt 或关闭 TL 的
+任何 Subagent。TL 全权拥有并负责这些 Subagent 的派发、沟通、生命周期与回收。
+
 ## 5. 固定操作顺序
 
 每次收到 Goal、追加反馈或恢复监督时，Bot 按以下顺序执行：
