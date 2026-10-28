@@ -118,6 +118,20 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 - TL 按 **`Goal -> Task` 两层模型（`1 Task = 1 Writer = 1 Worktree = 1 PR`）** 划分垂直切片并写 `briefs/<task>.md`（Lite 档单 Task 免独立台账），按 **1-Hop Flat Tree** 在 herdr 里统一开 Explorer、Planner、Reviewer、写者（含 `writer_escalated`）；不兼任写者或独立验收（SKILL.md「角色绑定与交接」）。写者与 Reviewer 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`）。
 - Hotty 只读台账做跨域摘要，不在具体 Goal 的协调线上；线上没人接的事件由 Owner 问 Hotty 时查出。
 
+### Writer / Designer 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
+
+TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_escalated`）与 `Designer` 时，必须在简报中声明按任务技术栈匹配的 `Required Skills`；执行者启动时先加载这些 Skills，再开始实现或设计。
+
+| 任务技术栈 | Required Skills |
+|---|---|
+| SwiftUI 图表与数据可视化 | `guide-swiftui-charts`（`Prisma-Labs-Dev/apple-skills`） + `dataviz`／`dataviz-principles` + `my-designer` |
+| SwiftUI 界面、布局与材质（iOS 26／macOS 26） | `swiftui` + `hig` + `ios-liquid-glass` + `guide-swiftui-ui-patterns` + `impeccable` |
+| UI 视觉现代化与客观评审 | `visual-design-modernization` + `apple-design-reviewer` |
+| Swift 6 严格并发（`@MainActor`／`Sendable`／Actor） | `guide-swift-concurrency` + `swift-concurrency` |
+| SwiftData 持久化与模型 | `guide-swiftdata` + `swiftdata` |
+| HealthKit／运动健康（`VitalStride`） | `healthkit` |
+| macOS SwiftPM 打包、测试与构建 | `guide-macos-spm-packaging` + `guide-swift-testing` + `swift-testing` + `xcode-cli` |
+
 ## CLI agent 角色与档位
 
 | 角色 | 档位（见 profile） | 谁开 | 生命周期 |

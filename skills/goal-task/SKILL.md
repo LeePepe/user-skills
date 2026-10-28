@@ -152,6 +152,20 @@ For tracked terminal transitions use `set-status --status done|cancelled --evide
 | PR 监控者（PR Monitor / `pr_monitor`） | 使用与 `Explorer` 相同的 `worker` 档位模型（`mai-code-2-flash` → `gpt-5.6-luna`）在独立 Herdr Subagent 窗格中监控 PR CI checks、auto-merge 与发布流水线状态，落盘 R10 监控回执并在绿灯合并或红灯失败时唤醒／回报 TL。Job 级 Fail-Fast：看 required job 的 `failure`／`timed_out`／`action_required`，不要只等 Workflow Run 顶层 `.conclusion`；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
 
+### Writer / Designer 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
+
+TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_escalated`）与 `Designer` 时，必须在简报中声明按任务技术栈匹配的 `Required Skills`；执行者启动时先加载这些 Skills，再开始实现或设计。
+
+| 任务技术栈 | Required Skills |
+|---|---|
+| SwiftUI 图表与数据可视化 | `guide-swiftui-charts`（`Prisma-Labs-Dev/apple-skills`） + `dataviz`／`dataviz-principles` + `my-designer` |
+| SwiftUI 界面、布局与材质（iOS 26／macOS 26） | `swiftui` + `hig` + `ios-liquid-glass` + `guide-swiftui-ui-patterns` + `impeccable` |
+| UI 视觉现代化与客观评审 | `visual-design-modernization` + `apple-design-reviewer` |
+| Swift 6 严格并发（`@MainActor`／`Sendable`／Actor） | `guide-swift-concurrency` + `swift-concurrency` |
+| SwiftData 持久化与模型 | `guide-swiftdata` + `swiftdata` |
+| HealthKit／运动健康（`VitalStride`） | `healthkit` |
+| macOS SwiftPM 打包、测试与构建 | `guide-macos-spm-packaging` + `guide-swift-testing` + `swift-testing` + `xcode-cli` |
+
 ## 定义、冻结与缺口
 
 - **R1 定义权**：拿到定义 assignment 的 Planner 或协调者（TL，含获宽范围 assignment 的原实现者）可以编制 `Goal` 与 `Tasks` 两层定义；不按工作流划分定义权，编制 revision 不等于决定变更，变更权限按 R2／R4／R5。
