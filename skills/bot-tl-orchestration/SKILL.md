@@ -44,6 +44,8 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 - 双源对账：同时读取 [`ledger.md`](../goal-task/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
   或 `id=J<N>`，不得撞用 TL 的 `id=E<N>`。
+- 若本 Goal 含 PR DAG 监督：每次巡检／解卡／sticky re-arm 还须执行 §7「每轮 Active Wave
+  硬清单」，同时判定 S1–S4；`pr_monitor` 只覆盖 CI／合并等待，**不**覆盖 S2 评论差集。
 - `agent_status == "blocked"` 时先执行 `herdr agent read <name> --source visible --lines 40`。
   Tier A（临时路径、基线路径或已声明 `extra_add_dirs` 的权限提示）才可
   `herdr agent send-keys <name> enter` 并记录 `EVT=UNBLOCK`。
@@ -81,6 +83,8 @@ Bot 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收；T
 5. 每次入队或热追加都保留 `task_id`、`repo`、`paths`、`brief` 与依赖结果。
 6. 每次解卡、hold、完成或异常都写入 [`ledger.md`](../goal-task/references/ledger.md)，时间戳取真实系统时钟。
 7. 只有从磁盘回执、Git 状态和 Agent 状态都得到同一结论，才发送下一步提示。
+8. 含 PR DAG 时，在派单或汇报前跑完 §7 Active Wave 硬清单（S1–S4 同检）；S2 差集非空须
+   先／并行 enqueue comments Task，不得只续 CI monitor。
 
 热追加的最小命令形态如下；若路径重叠，队列负责串行化，不得借“方便整合”把任务合并：
 
@@ -130,6 +134,47 @@ Bot 做有限快照巡检；持续 CI／auto-merge 等待仍交专属 `pr_monito
 轮询。分页读全 `reviewThreads` 及其 comments；`UNKNOWN`／未完成 checks 不是失败或成功。
 所有修复沿既有 `goal-task` Task-level 1-Hop 路由，不扩大允许路径、凭据或发布权限。
 
+#### 每轮 Active Wave 硬清单（不可拆）
+
+每轮 Active Wave／PR 监督快照、Dry-Run、sticky TL re-arm、或向 Owner 汇报在途状态时，
+对**每一个**仍 OPEN 的 Active Wave PR **同一次巡检必须同时判定**下列四项；漏扫任一项
+即合同违规，不得只报 CI：
+
+1. **S1 `CONFLICT`**：`mergeable == "CONFLICTING"` 且该 `headRefOid` 未在冲突水位。
+2. **S2 `UNRESOLVED_COMMENTS`**：分页读全 `reviewThreads`（含 Copilot 与人类）；凡
+   `isResolved == false` 的 thread，取其 comments 的 `databaseId`，与该 PR 的
+   `handled_comment_ids` 做差集。差集非空 = S2 命中。`outdated` 不免除处理。
+3. **S3 `CI_FAILURE`**：`statusCheckRollup` 或展开后的 required job 失败，且
+   `(headRefOid, CheckRun/ADO id)` 未处理。
+4. **S4 `PR_MERGED_ADVANCE_DAG`**：前置 PR 远端 `MERGED` 使下游依赖全部满足。
+
+**S2 命中后的硬闭环（不得用 CI monitor 顶替）：**
+
+- 必须落盘 `briefs/<task>-comments-rN.md`（含 thread node ID、评论 `databaseId`、根评论
+  ID、路径／行号／原文）→ `goal-queue.py enqueue` → 派 Writer（代码修复，或有依据的
+  不采纳 reply）→ 跨厂商 Reviewer 对新 head **V5 PASS** → 每条已处理评论 REST Reply
+  （含修复 SHA 或拒绝理由）→ GraphQL `resolveReviewThread` → 独立读回 `isResolved: true`
+  → 才把该 `databaseId` 写入 `handled_comment_ids`。
+- 禁止「只盯 S3／只跑 `pr_monitor`／只报 checks 绿」而把 unresolved threads 留到 Owner
+  点名。CI monitor、ADO 轮询、sticky「等绿」提示**不能替代**本轮 S2 判定与入队。
+- 若由单一 sticky TL 自盯 Active Wave，其每轮 checklist／Todo **仍必须含 S2**；把 TL
+  prompt 写成仅 `monitor CI` 视为漏检根因，须在 prompt 中显式枚举 S1–S4。
+
+**水位与漏检判定：**
+
+- `pr-watch-state.json` 的 `handled_comment_ids`（及可选 thread id 笔记）是 S2 唯一去重
+  源；新出现的 `databaseId` 不在该数组中 = **漏检**，必须当轮 enqueue，不得等下一轮
+  Owner 催问。
+- 仅更新 `last_handled_head_oid`／`handled_failed_check_ids` **不**清除 S2 义务；同 head
+  上后到的 Copilot／人类评论仍须单独处理。
+- 未完成 Reply＋Resolve 读回前，不得把该 `databaseId` 标 handled；失败保留 pending。
+
+**Fail-closed（监督完成宣称）：**
+
+- 只报 S3 绿、却仍存在 `isResolved == false` 且 `databaseId` 未 handled 的 threads 时，
+  **不得**宣称「可合」「监督完成」「Active Wave 无卡点」或关闭监督例程。
+- 状态汇报必须按 PR 列出 S1–S4 命中／未命中与水位对比；省略 S2 一行视为无效汇报。
+
 | 信号 | Bot 入队与 TL 闭环 |
 |---|---|
 | **S1 `CONFLICT`**：`mergeable == "CONFLICTING"`，该 head 未处理 | 入队 `<task>-conflict-rN`；Writer 在该 PR 专属 worktree `git fetch origin`、普通两父节点 `git merge origin/main`，跑单测与 strict lint，跨厂商 Reviewer 对准确 head 出具 **V5 PASS** 后普通 fast-forward push；读回新 head 的 `MERGEABLE` 才提交冲突水位。禁止 rebase／force-push。 |
@@ -140,7 +185,8 @@ Bot 做有限快照巡检；持续 CI／auto-merge 等待仍交专属 `pr_monito
 同一信号最多自动修复两轮；V3 升档仍由 TL 按 `goal-task` 决定。重复失败、无法无损收敛、
 无 Reply／Resolve 权限或缺少审查证据时，保留现场、记录 hold／`NEED_OWNER_DECISION`，
 不通过无限 `rN` 重试绕过 §2／§6。只有真实 `PR_MERGED` 才推进 DAG；Ready、绿色 CI、
-auto-merge 已启用或评论已清空都不能替代合并事实，Goal 完成仍遵守 §3／§5。
+auto-merge 已启用或「评论看起来少了」都不能替代合并事实，更不能在仍有 unresolved／未
+handled 的 `reviewThreads` 时宣称监督完成。Goal 完成仍遵守 §3／§5。
 
 ### 热追加与唤醒模板
 
