@@ -149,3 +149,16 @@ Tracked `done` and `cancelled` transitions require `--evidence-json` with one st
 
 - 现行做法：Owner 问时，由 Hotty 扫各 Goal 台账，列出未被 `RESOLVED`／`ACK` 关闭的 `TASK_BLOCKED`、`INPUT_BLOCKED`、`CHANGE_REQUEST`、`REVIEW_FAIL`、`NEED_GO`、`NEED_OWNER_DECISION` 及等待时长。
 - 自动巡检脚本已备在 `~/Development/handoff/_watch/`（规则：未关闭 ≥10 分钟提醒，同一事件最多 3 次、间隔 ≥30 分钟，23:00–08:00 Asia/Shanghai 不发），**未安装**；启用需 Owner 另行同意。
+
+## 跨机器 GTT 遥测导出
+
+使用标准库脚本将本机 `~/Development/handoff/<goal>/` 的台账、Goal、队列和 R10 回执导出为脱敏 JSONL Bundle，供 `aidata` 跨机器合入：
+
+```sh
+python3 skills/goal-task/scripts/gtt-telemetry-export.py \
+  --handoff-dir ~/Development/handoff \
+  --machine-id mac-mini \
+  --out ~/Development/handoff/_box-xfer/gtt-bundle-mac-mini.jsonl
+```
+
+添加 `--incremental --state-file <path>` 后只追加新增或变更记录；脚本会归一化 home 路径、脱敏常见密钥／URL 查询 token／邮箱，并拒绝 symlink 与路径穿越。需要直接发送到中心机时可附加 `--rsync-to <user@host:path>`。
