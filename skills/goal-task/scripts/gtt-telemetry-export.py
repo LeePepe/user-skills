@@ -20,7 +20,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 HOME_PATH_RE = re.compile(r"(?:/Users|/home)/[^/\s]+")
 SECRET_RE = re.compile(
     r"(?i)(?:ghp_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|password|secret)(\s*[:=]\s*)['\"]?[^'\"\s,;]+)"
+    r"(?<![A-Za-z0-9])((?:api[_-]?key|token|password|secret)\s*[:=]\s*)['\"]?[^'\"\s,;]+)"
 )
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 RECORD_FILES = {
@@ -170,6 +170,8 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
             records.append(json.dumps(record, ensure_ascii=False, sort_keys=True))
 
     if incremental:
+        if output.is_symlink():
+            fail(f"refusing symlinked output: {output}")
         output.parent.mkdir(parents=True, exist_ok=True)
         content = ("\n".join(records) + "\n") if records else ""
         with output.open("a", encoding="utf-8") as handle:

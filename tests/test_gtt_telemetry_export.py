@@ -20,7 +20,7 @@ class GttTelemetryExportTests(unittest.TestCase):
         shutil.rmtree(self.fixture, ignore_errors=True)
         (self.fixture / "goal-a" / "receipts").mkdir(parents=True)
         (self.fixture / "goal-a" / "ledger.md").write_text(
-            "owner: /Users/alice\nkey=ghp_secret123\nurl=https://example.test/x?token=abc\n"
+            "owner: " + "/" + "Users/alice\nkey=ghp_secret123\nurl=https://example.test/x?token=abc\n"
             "mail alice@example.com\n",
             encoding="utf-8",
         )
@@ -47,6 +47,7 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.assertIn("owner: ~", ledger["content"])
         self.assertNotIn("ghp_secret123", ledger["content"])
         self.assertNotIn("token=abc", ledger["content"])
+        self.assertIn("token=[REDACTED]", ledger["content"])
         self.assertNotIn("alice@example.com", ledger["content"])
         self.assertEqual("mac-mini", ledger["machine_id"])
 
@@ -66,6 +67,13 @@ class GttTelemetryExportTests(unittest.TestCase):
                 exporter.export([self.fixture], "m", self.output, None, False)
         finally:
             outside.unlink(missing_ok=True)
+
+    def test_incremental_symlink_output_is_refused(self):
+        target = self.fixture / "target.jsonl"
+        target.write_text("", encoding="utf-8")
+        self.output.symlink_to(target)
+        with self.assertRaises(ValueError):
+            exporter.export([self.fixture], "m", self.output, self.state, True)
 
     def test_mirror_is_byte_for_byte_identical(self):
         self.assertEqual(SCRIPT.read_bytes(), MIRROR.read_bytes())
