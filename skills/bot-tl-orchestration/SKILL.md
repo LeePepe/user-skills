@@ -50,6 +50,21 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 - `agent_status == "blocked"` 时先执行 `herdr agent read <name> --source visible --lines 40`。
   Tier A（临时路径、基线路径或已声明 `extra_add_dirs` 的权限提示）才可
   `herdr agent send-keys <name> enter` 并记录 `EVT=UNBLOCK`。
+- Tier A′（`CMD_CONFIRM`）：可见窗格出现 Copilot／CLI「Do you want to run this command?」
+  或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项。
+  仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／
+  `reset`／`checkout` 及其它改写历史或工作区的子命令）、`python3`、`jq`、`herdr`
+  （不含 `herdr server stop`），以及 Allow-path／herdr 操作已经允许的同类安全操作
+  （例如 `shasum`、`date`、`sleep`、`env`）——才可按键解卡并记录 `EVT=UNBLOCK`。
+  当前高亮已是安全的运行项时，`herdr agent send-keys <name> enter`；界面若提供
+  don't-ask-again／remember，且记住范围仍限于这条已核对的白名单命令，用 Down+Enter
+  （`herdr agent send-keys <name> down`，随后 `herdr agent send-keys <name> enter`，
+  或本仓已建立的等效按键序列）选中该安全记住项。敏感、破坏性或未声明的命令保持 hold，
+  记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter，不得把 blocked 当作完成。
+  **`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**：即便启动参数带有该旗标，
+  也不抑制这两类提示，不得靠它解卡。MacBook `team_lead` 故意不带 `--no-ask-user`
+  （Owner 2026-10-26 对可选 B 暂不）；本条不改 `runtime-profiles.yaml` 或
+  `herdr-dispatch.sh`，也不开启 `--yolo`。
 - Tier B（未声明外部路径、凭据或破坏性操作）保持 hold，记录 `EVT=NEED_GO` 或
   `NEED_OWNER_DECISION`，把确切请求交给 Owner；不得把 blocked 当作完成。
 

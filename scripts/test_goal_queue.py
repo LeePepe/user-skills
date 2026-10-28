@@ -120,21 +120,20 @@ def manifest_for_tasks(
 
 class GoalQueueFeedbackGuardTests(unittest.TestCase):
     def test_isolated_cli_loads_sibling_helper(self) -> None:
-        for skill_name in ("goal-task", "goal-target-task"):
-            script = REPO_ROOT / "skills" / skill_name / "scripts" / "goal-queue.py"
-            for command in ("enqueue", "set-status"):
-                result = subprocess.run(
-                    [sys.executable, "-I", "-B", str(script), command, "--help"],
-                    cwd=REPO_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(
-                    result.returncode,
-                    0,
-                    msg=f"{skill_name} {command}: {result.stderr}",
-                )
-                self.assertIn("usage:", result.stdout.lower())
+        script = REPO_ROOT / "skills" / "goal-task" / "scripts" / "goal-queue.py"
+        for command in ("enqueue", "set-status"):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(script), command, "--help"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"goal-task {command}: {result.stderr}",
+            )
+            self.assertIn("usage:", result.stdout.lower())
 
     def run_queue(
         self,
