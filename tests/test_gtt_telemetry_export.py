@@ -25,10 +25,14 @@ class GttTelemetryExportTests(unittest.TestCase):
             encoding="utf-8",
         )
         (self.fixture / "goal-a" / "goal.md").write_text("# Goal A\n", encoding="utf-8")
-        (self.fixture / "goal-a" / "queue.json").write_text("{}\n", encoding="utf-8")
+        (self.fixture / "goal-a" / "queue.json").write_text(
+            '{"note": "owner=' + "/" + 'Users/alice token=sk-secret alice@example.com"}\n',
+            encoding="utf-8",
+        )
         (self.fixture / "goal-a" / "receipts" / "r1.md").write_text("receipt\n", encoding="utf-8")
         self.output = self.fixture / "bundle.jsonl"
         self.state = self.fixture / "state.json"
+        self.quota = self.fixture / "quota.json"
 
     def tearDown(self):
         shutil.rmtree(self.fixture, ignore_errors=True)
@@ -36,10 +40,14 @@ class GttTelemetryExportTests(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.output.read_text(encoding="utf-8").splitlines()]
 
+    def run_export(self, *args, **kwargs):
+        kwargs["quota_precheck_path"] = self.quota
+        return exporter.export(*args, **kwargs)
+
     def test_full_export_redacts_and_normalizes(self):
         self.assertEqual(
             4,
-            exporter.export([self.fixture], "Mac Mini", self.output, None, False),
+            self.run_export([self.fixture], "Mac Mini", self.output, None, False),
         )
         records = self.records()
         self.assertEqual({"ledger", "goal", "queue", "receipt"}, {r["record_type"] for r in records})
@@ -50,12 +58,35 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.assertIn("token=[REDACTED]", ledger["content"])
         self.assertNotIn("alice@example.com", ledger["content"])
         self.assertEqual("mac-mini", ledger["machine_id"])
+        queue = next(r for r in records if r["record_type"] == "queue")
+        self.assertNotIn("/" + "Users/alice", json.dumps(queue["payload"]))
+        self.assertNotIn("sk-secret", json.dumps(queue["payload"]))
+        self.assertNotIn("alice@example.com", json.dumps(queue["payload"]))
+
+    def test_quota_and_bot_event_records(self):
+        quota = {"remaining_pct": 42, "path": "/" + "Users/alice"}
+        self.quota.write_text(json.dumps(quota), encoding="utf-8")
+        (self.fixture / "goal-a" / "ledger.md").write_text(
+            "TL_PROFILE=worker | id=B1 | note=Allow path access\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(6, self.run_export([self.fixture], "m", self.output, None, False))
+        records = self.records()
+        event = next(r for r in records if r["record_type"] == "bot_tl_event")
+        self.assertEqual("UNBLOCK_PATH", event["payload"]["action_kind"])
+        quota_record = next(r for r in records if r["record_type"] == "quota_precheck")
+        self.assertEqual(("bot_tl", "_global"), (quota_record["collector"], quota_record["scope_id"]))
+
+    def test_full_export_ignores_existing_prior_state(self):
+        self.assertEqual(4, self.run_export([self.fixture], "m", self.output, self.state, True))
+        self.output.unlink()
+        self.assertEqual(4, self.run_export([self.fixture], "m", self.output, self.state, False))
 
     def test_incremental_watermark_skips_then_emits_change(self):
-        self.assertEqual(4, exporter.export([self.fixture], "m", self.output, self.state, True))
-        self.assertEqual(0, exporter.export([self.fixture], "m", self.output, self.state, True))
+        self.assertEqual(4, self.run_export([self.fixture], "m", self.output, self.state, True))
+        self.assertEqual(0, self.run_export([self.fixture], "m", self.output, self.state, True))
         (self.fixture / "goal-a" / "goal.md").write_text("# Changed\n", encoding="utf-8")
-        self.assertEqual(1, exporter.export([self.fixture], "m", self.output, self.state, True))
+        self.assertEqual(1, self.run_export([self.fixture], "m", self.output, self.state, True))
         self.assertEqual(5, len(self.records()))
 
     def test_symlink_is_refused(self):
@@ -64,7 +95,7 @@ class GttTelemetryExportTests(unittest.TestCase):
         try:
             (self.fixture / "goal-a" / "receipts" / "bad.md").symlink_to(outside)
             with self.assertRaises(ValueError):
-                exporter.export([self.fixture], "m", self.output, None, False)
+                self.run_export([self.fixture], "m", self.output, None, False)
         finally:
             outside.unlink(missing_ok=True)
 
@@ -73,7 +104,24 @@ class GttTelemetryExportTests(unittest.TestCase):
         target.write_text("", encoding="utf-8")
         self.output.symlink_to(target)
         with self.assertRaises(ValueError):
-            exporter.export([self.fixture], "m", self.output, self.state, True)
+            self.run_export([self.fixture], "m", self.output, self.state, True)
+
+    def test_symlinked_collector_and_state_paths_are_refused(self):
+        outside = self.fixture.parent / "outside-gtt.json"
+        outside.write_text("{}", encoding="utf-8")
+        try:
+            (self.fixture / "goal-a" / "pr-dag.json").symlink_to(outside)
+            with self.assertRaises(ValueError):
+                self.run_export([self.fixture], "m", self.output, None, False)
+        finally:
+            outside.unlink(missing_ok=True)
+        sync = self.fixture / "sync"
+        sync.mkdir()
+        outbox_target = sync / "real-outbox.jsonl"
+        outbox_target.write_text("", encoding="utf-8")
+        (sync / "outbox.jsonl").symlink_to(outbox_target)
+        with self.assertRaises(ValueError):
+            self.run_export([self.fixture], "m", self.output, None, True, sync)
 
     def test_envelopes_collect_bot_tl_prmon_and_custom_offsets(self):
         (self.fixture / "goal-a" / "pr-dag.json").write_text('{"wave": 1}\n', encoding="utf-8")
@@ -95,7 +143,7 @@ class GttTelemetryExportTests(unittest.TestCase):
             "record_type": "event", "mode": "jsonl_offset"
         }), encoding="utf-8")
         sync = self.fixture / "sync"
-        count = exporter.export([self.fixture], "m", self.output, None, True, sync, descriptors)
+        count = self.run_export([self.fixture], "m", self.output, None, True, sync, descriptors)
         self.assertGreaterEqual(count, 4)
         records = [json.loads(line) for line in (sync / "outbox.jsonl").read_text().splitlines()]
         self.assertIn(("bot_tl", "pr_dag"), {(r["collector"], r["record_type"]) for r in records})
@@ -106,16 +154,16 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.assertEqual(custom.stat().st_size, cursor[custom_key]["offset"])
         with custom.open("a", encoding="utf-8") as handle:
             handle.write('{"event": "b"}\n')
-        self.assertEqual(1, exporter.export([self.fixture], "m", self.output, None, True, sync, descriptors))
+        self.assertEqual(1, self.run_export([self.fixture], "m", self.output, None, True, sync, descriptors))
 
     def test_device_is_stable_and_transport_failure_preserves_offset(self):
         sync = self.fixture / "sync"
-        exporter.export([self.fixture], "m", self.output, None, True, sync)
+        self.run_export([self.fixture], "m", self.output, None, True, sync)
         device = json.loads((sync / "device.json").read_text())
         self.assertEqual(0, json.loads((sync / "outbox.state.json").read_text()).get("offset", 0))
         with mock.patch.object(exporter.subprocess, "run", side_effect=OSError("az unavailable")):
             with self.assertRaises(ValueError):
-                exporter.export([self.fixture], "m", self.output, None, True, sync, azure_account="acct")
+                self.run_export([self.fixture], "m", self.output, None, True, sync, azure_account="acct")
         state = json.loads((sync / "outbox.state.json").read_text())
         self.assertEqual(0, state.get("offset", 0))
         self.assertEqual(device["device_id"], json.loads((sync / "device.json").read_text())["device_id"])
@@ -131,12 +179,35 @@ class GttTelemetryExportTests(unittest.TestCase):
         }), encoding="utf-8")
         calls = []
         with mock.patch.object(exporter.subprocess, "run", side_effect=lambda command, check: calls.append(command)):
-            exporter.export([self.fixture], "m", self.output, None, True, sync)
-            exporter.export([self.fixture], "m", self.output, None, True, sync)
+            self.run_export([self.fixture], "m", self.output, None, True, sync)
+            self.run_export([self.fixture], "m", self.output, None, True, sync)
         self.assertTrue(any("test-account" in command for call in calls for command in call))
         blob = next(call for call in calls if call[:4] == ["az", "storage", "blob", "upload"])
         self.assertIn("test-container", blob)
         self.assertTrue(any("test-prefix/" in command for command in blob))
+
+    def test_transport_metadata_uses_batch_id_and_removes_blob(self):
+        sync = self.fixture / "sync"
+        calls = []
+        with mock.patch.object(exporter.subprocess, "run", side_effect=lambda command, check: calls.append(command)):
+            self.run_export([self.fixture], "m", self.output, None, True, sync, azure_account="acct")
+        entities = [
+            json.loads(call[call.index("--entity") + 1])
+            for call in calls if "--entity" in call
+        ]
+        device_entity = next(entity for entity in entities if entity["PartitionKey"] == "DEVICE")
+        batch_entity = next(entity for entity in entities if entity["PartitionKey"].startswith("BATCH_"))
+        self.assertIn("machine_alias", device_entity)
+        self.assertIn("updated_at", device_entity)
+        self.assertEqual(batch_entity["RowKey"] + ".jsonl", Path(next(
+            call[call.index("--name") + 1] for call in calls if call[:4] == ["az", "storage", "blob", "upload"]
+        )).name)
+        self.assertEqual(batch_entity["record_count"], len(self.records()))
+        self.assertIn("content_sha256", batch_entity)
+        blob_name = Path(next(
+            call[call.index("--file") + 1] for call in calls if call[:4] == ["az", "storage", "blob", "upload"]
+        )).name
+        self.assertFalse((sync / blob_name).exists())
 
     def test_legacy_state_waits_for_transport_success(self):
         sync = self.fixture / "sync"
@@ -144,7 +215,7 @@ class GttTelemetryExportTests(unittest.TestCase):
         legacy.write_text('{"old": "cursor"}\n', encoding="utf-8")
         with mock.patch.object(exporter.subprocess, "run", side_effect=OSError("rsync unavailable")):
             with self.assertRaises(ValueError):
-                exporter.export([self.fixture], "m", self.output, legacy, True, sync, rsync_to="remote:")
+                self.run_export([self.fixture], "m", self.output, legacy, True, sync, rsync_to="remote:")
         self.assertEqual('{"old": "cursor"}\n', legacy.read_text(encoding="utf-8"))
         self.assertTrue((sync / "cursors.json").is_file())
 
@@ -159,6 +230,24 @@ class GttTelemetryExportTests(unittest.TestCase):
             self.assertTrue((sync / "notify.signal").exists())
         finally:
             lock.close()
+
+    def test_notify_repeats_when_signal_advances_during_export(self):
+        sync = self.fixture / "sync"
+        calls = []
+
+        def fake_export(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                signal = sync / "notify.signal"
+                signal.touch()
+                stat = signal.stat()
+                import os
+                os.utime(signal, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+            return 0
+
+        with mock.patch.object(exporter, "export", side_effect=fake_export):
+            self.assertEqual(0, exporter.notify(sync, [self.fixture], "m", self.output))
+        self.assertEqual(2, len(calls))
 
 
 if __name__ == "__main__":

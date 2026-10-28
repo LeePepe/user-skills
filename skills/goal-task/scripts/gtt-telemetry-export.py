@@ -99,6 +99,8 @@ def _iso(timestamp: float | None = None) -> str:
 
 def _device(state_dir: Path, alias: str) -> dict[str, str]:
     path = state_dir / "device.json"
+    if path.is_symlink():
+        fail(f"refusing symlinked state file: {path}")
     if path.exists():
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict) or not isinstance(value.get("device_id"), str):
@@ -133,7 +135,10 @@ def _goal_files(root: Path):
     if not root.is_dir():
         return
     for goal in sorted(root.iterdir()):
-        if goal.name.startswith("_") or not goal.is_dir():
+        if goal.name.startswith("_"):
+            continue
+        ensure_safe_file(goal, root)
+        if not goal.is_dir():
             continue
         for filename, record_type in RECORD_FILES.items():
             path = goal / filename
@@ -141,57 +146,77 @@ def _goal_files(root: Path):
                 ensure_safe_file(path, root)
                 if path.is_file():
                     yield path, record_type, goal.name
-        for path in sorted((goal / "receipts").glob("*.md")) if (goal / "receipts").is_dir() else []:
+        receipts = goal / "receipts"
+        if receipts.exists() or receipts.is_symlink():
+            ensure_safe_file(receipts, root)
+        for path in sorted(receipts.glob("*.md")) if receipts.is_dir() else []:
             ensure_safe_file(path, root)
             yield path, "receipt", goal.name
 
 
 def _extra_files(root: Path, collector: str):
     for goal in sorted(root.iterdir()) if root.is_dir() else []:
+        ensure_safe_file(goal, root)
         if goal.is_dir() and not goal.name.startswith("_"):
             for filename, record_type in (("pr-dag.json", "pr_dag"), ("pr-watch-state.json", "pr_watch_state")):
                 path = goal / filename
+                if path.exists() or path.is_symlink():
+                    ensure_safe_file(path, root)
                 if path.is_file():
                     yield path, record_type, goal.name
 
 
 def _bot_events(root: Path):
     for goal in sorted(root.iterdir()) if root.is_dir() else []:
+        ensure_safe_file(goal, root)
         ledger = goal / "ledger.md"
+        if ledger.exists() or ledger.is_symlink():
+            ensure_safe_file(ledger, root)
         if not goal.is_dir() or goal.name.startswith("_") or not ledger.is_file():
             continue
         for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines():
             if ("TL_PROFILE" in line or "quota_precheck" in line or re.search(r"\bid=[BJ]\d+\b", line)
                     or "EVT=HOT_APPEND" in line or "EVT=UNBLOCK" in line or "NEED_GO" in line):
-                action = "bot_tl_event"
+                action = "BOT_TL_EVENT"
                 if "Allow path" in line:
                     action = "UNBLOCK_PATH"
                 elif "CMD_CONFIRM" in line:
                     action = "UNBLOCK_CMD_CONFIRM"
                 elif "艺术家" in line:
                     action = "DESIGN_ROUTE_ARTIST"
-                yield ledger, action, goal.name, line
+                yield ledger, goal.name, line, action
 
 
 def _prmon_files(root: Path):
     base = root / "_watch" / "prmon"
+    if base.exists() or base.is_symlink():
+        ensure_safe_file(base, root)
     history = base / "heartbeat-history.jsonl"
+    if history.exists() or history.is_symlink():
+        ensure_safe_file(history, root)
     if history.is_file():
         yield history, "prmon_heartbeat", "_prmon", "jsonl"
     for name, kind in (("heartbeat.json", "prmon_heartbeat"), ("scheduler-state.json", "prmon_state")):
         path = base / name
+        if path.exists() or path.is_symlink():
+            ensure_safe_file(path, root)
         if path.is_file():
             yield path, kind, "_prmon", "snapshot"
     repair = base / "repair-queue"
+    if repair.exists() or repair.is_symlink():
+        ensure_safe_file(repair, root)
     if repair.is_dir():
         for path in sorted(repair.glob("*.json")):
+            ensure_safe_file(path, root)
             yield path, "prmon_repair", "_prmon", "snapshot"
 
 
 def _descriptor_files(directory: Path):
     if not directory.is_dir():
         return
+    descriptor_root = directory.resolve()
     for descriptor in sorted(directory.glob("*.json")):
+        ensure_safe_file(descriptor, descriptor_root)
         value = _read_json(descriptor)
         if not isinstance(value, dict) or not all(isinstance(value.get(k), str) for k in ("collector", "root", "glob", "record_type")):
             fail(f"invalid collector descriptor: {descriptor}")
@@ -200,6 +225,7 @@ def _descriptor_files(directory: Path):
             fail(f"invalid collector mode: {descriptor}")
         root = safe_root(value["root"])
         for path in sorted(root.glob(value["glob"])):
+            ensure_safe_file(path, root)
             if path.is_file():
                 yield path, value["collector"], value["record_type"], mode
 
@@ -214,17 +240,29 @@ def _envelope(path: Path, root: Path, collector: str, record_type: str, device: 
         "schema_version": 1, "collector": collector, "record_type": record_type,
         "device_id": device["device_id"], "machine_alias": device["machine_alias"],
         "machine_id": device["machine_alias"], "goal_id": scope, "scope_id": scope,
-        "rel_path": str(path.relative_to(root)).replace(os.sep, "/") if path.is_relative_to(root) else str(path),
+        "rel_path": (str(path.relative_to(root)).replace(os.sep, "/")
+                     if path.is_relative_to(root) else normalized_text(str(path))),
         "content_sha256": hashlib.sha256(redacted.encode()).hexdigest(),
         "mtime_iso": _iso(path.stat().st_mtime), "exported_at": _iso(), "observed_at": _iso(),
         "content": redacted,
     }
     if payload is not None:
-        value["payload"] = payload
+        value["payload"] = _normalized_payload(payload)
     return value
 
 
-def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir: Path) -> tuple[list[dict], dict]:
+def _normalized_payload(value: object) -> object:
+    if isinstance(value, str):
+        return normalized_text(value)
+    if isinstance(value, list):
+        return [_normalized_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {normalized_text(str(key)): _normalized_payload(item) for key, item in value.items()}
+    return value
+
+
+def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir: Path,
+             quota_precheck_path: Path | None = None) -> tuple[list[dict], dict]:
     records, cursors = [], {}
     def unchanged(key: str, digest: str) -> bool:
         previous = state.get(key, {})
@@ -244,11 +282,12 @@ def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir:
             cursors[key] = {"inode": path.stat().st_ino, "mtime_ns": path.stat().st_mtime_ns, "size": path.stat().st_size, "sha256": digest}
             if not unchanged(key, digest):
                 records.append(_envelope(path, root, "bot_tl", kind, device, scope, raw, _read_json(path)))
-        for path, kind, scope, line in _bot_events(root):
+        for path, scope, line, action in _bot_events(root):
             key = f"{_cursor_key(path, 'bot_tl:event')}:{hashlib.sha256(line.encode()).hexdigest()}"
             cursors[key] = {"sha256": hashlib.sha256(line.encode()).hexdigest()}
             if key not in state:
-                records.append(_envelope(path, root, "bot_tl", kind, device, scope, line, {"line": line}))
+                records.append(_envelope(path, root, "bot_tl", "bot_tl_event", device, scope, line,
+                                         {"line": line, "action_kind": action}))
         for path, kind, scope, mode in _prmon_files(root):
             key = _cursor_key(path, "prmon")
             stat = path.stat()
@@ -268,6 +307,18 @@ def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir:
                 cursors[key] = {"inode": stat.st_ino, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "sha256": digest}
                 if not unchanged(key, digest):
                     records.append(_envelope(path, root, "prmon", kind, device, scope, raw, _read_json(path)))
+    quota_path = quota_precheck_path or Path("~/.config/claude/gtt-weekly-remaining-pct.json").expanduser()
+    if quota_path.exists() or quota_path.is_symlink():
+        quota_root = quota_path.parent.resolve()
+        ensure_safe_file(quota_path, quota_root)
+        raw = quota_path.read_text(encoding="utf-8", errors="replace")
+        key = _cursor_key(quota_path, "bot_tl")
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        cursors[key] = {"inode": quota_path.stat().st_ino, "mtime_ns": quota_path.stat().st_mtime_ns,
+                        "size": quota_path.stat().st_size, "sha256": digest}
+        if not unchanged(key, digest):
+            records.append(_envelope(quota_path, quota_root, "bot_tl", "quota_precheck", device, "_global",
+                                     raw, _read_json(quota_path)))
     for path, collector, kind, mode in _descriptor_files(custom_dir):
         key = _cursor_key(path, collector)
         stat = path.stat()
@@ -292,6 +343,8 @@ def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir:
 def _transport(state_dir: Path, account: str, container: str, table: str, prefix: str, rsync_to: str | None) -> bool:
     outbox = state_dir / "outbox.jsonl"
     state_path = state_dir / "outbox.state.json"
+    if outbox.is_symlink() or state_path.is_symlink():
+        fail(f"refusing symlinked transport state: {outbox if outbox.is_symlink() else state_path}")
     if not outbox.exists():
         return True
     state = json.loads(state_path.read_text()) if state_path.exists() else {"offset": 0}
@@ -300,26 +353,49 @@ def _transport(state_dir: Path, account: str, container: str, table: str, prefix
     if not data:
         return True
     digest = hashlib.sha256(data).hexdigest()
-    stamp = datetime.now().strftime("%Y-%m-%d")
-    name = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}_{digest[:12]}.jsonl"
-    device_id = _device(state_dir, socket.gethostname())["device_id"]
+    now = datetime.now()
+    ts = now.strftime("%Y%m%dT%H%M%S")
+    batch_id = f"{ts}_{digest[:12]}"
+    name = f"{batch_id}.jsonl"
+    stamp = now.strftime("%Y-%m-%d")
+    device = _device(state_dir, socket.gethostname())
+    device_id = device["device_id"]
     batch = f"{prefix.strip('/')}/machines/{device_id}/batches/{stamp}/{name}"
     commands = []
+    blob = None
+    records = [json.loads(line) for line in data.decode("utf-8").splitlines()]
+    collectors = sorted({str(record.get("collector", "")) for record in records if record.get("collector")})
+    metadata = {
+        "machine_alias": device["machine_alias"], "MachineAlias": device["machine_alias"],
+        "updated_at": _iso(), "UpdatedAt": _iso(),
+    }
     if account:
         blob = state_dir / name
-        blob.write_bytes(data)
         commands.append(["az", "storage", "blob", "upload", "--account-name", account, "--container-name", container, "--name", batch, "--file", str(blob), "--auth-mode", "login", "--overwrite"])
         commands.append(["az", "storage", "table", "create", "--account-name", account, "--name", table, "--auth-mode", "login"])
-        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table, "--entity", json.dumps({"PartitionKey": "DEVICE", "RowKey": device_id}), "--auth-mode", "login"])
-        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table, "--entity", json.dumps({"PartitionKey": f"BATCH_{device_id}", "RowKey": name, "ContentSha256": digest}), "--auth-mode", "login"])
+        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
+                         "--entity", json.dumps({"PartitionKey": "DEVICE", "RowKey": device_id, **metadata}),
+                         "--auth-mode", "login"])
+        batch_metadata = {**metadata, "collectors": collectors, "Collectors": collectors,
+                          "record_count": len(records), "RecordCount": len(records),
+                          "blob_path": batch, "BlobPath": batch,
+                          "content_sha256": digest, "ContentSha256": digest}
+        commands.append(["az", "storage", "entity", "replace", "--account-name", account, "--table-name", table,
+                         "--entity", json.dumps({"PartitionKey": f"BATCH_{device_id}", "RowKey": batch_id, **batch_metadata}),
+                         "--auth-mode", "login"])
     if rsync_to:
         commands.append(["rsync", "-az", str(outbox), rsync_to])
     try:
+        if blob is not None:
+            blob.write_bytes(data)
         for command in commands:
             subprocess.run(command, check=True)
     except (OSError, subprocess.CalledProcessError):
         return False
-    state.update(offset=offset + len(data), last_batch_id=name, updated_at=_iso())
+    finally:
+        if blob is not None:
+            blob.unlink(missing_ok=True)
+    state.update(offset=offset + len(data), last_batch_id=batch_id, updated_at=_iso())
     atomic_write(state_path, json.dumps(state, indent=2) + "\n", 0o600)
     return True
 
@@ -327,10 +403,14 @@ def _transport(state_dir: Path, account: str, container: str, table: str, prefix
 def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | None, incremental: bool,
            sync_state_dir: Path | None = None, collectors_dir: Path | None = None,
            azure_account: str = "", azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
-           azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None) -> int:
+           azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None,
+           quota_precheck_path: Path | None = None, quota_path: Path | None = None) -> int:
     machine_id = normalized_machine_id(machine_id)
     state_dir = sync_state_dir or (state_path.parent if state_path else None)
     state_dir = state_dir.expanduser() if state_dir else None
+    for path in (state_dir, state_path, output):
+        if path is not None and path.is_symlink():
+            fail(f"refusing symlinked path: {path}")
     config = _sync_config(state_dir, state_path)
     if not azure_account:
         azure_account = str(config.get("azure_account", ""))
@@ -342,14 +422,25 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
         azure_prefix = str(config.get("azure_prefix", azure_prefix))
     device = _device(state_dir, machine_id) if state_dir else {"device_id": machine_id, "machine_alias": machine_id}
     cursor_path = state_dir / "cursors.json" if state_dir else state_path
-    old = json.loads(cursor_path.read_text()) if cursor_path and cursor_path.exists() else {}
-    records, cursors = _collect(roots, device, old, collectors_dir or (state_dir / "collectors.d" if state_dir else Path("~/.config/aidata-sync/collectors.d").expanduser()))
+    if cursor_path and cursor_path.is_symlink():
+        fail(f"refusing symlinked cursor state: {cursor_path}")
+    old = json.loads(cursor_path.read_text()) if incremental and cursor_path and cursor_path.exists() else {}
+    records, cursors = _collect(
+        roots, device, old,
+        collectors_dir or (state_dir / "collectors.d" if state_dir else Path("~/.config/aidata-sync/collectors.d").expanduser()),
+        quota_precheck_path or quota_path,
+    )
     lines = "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in records)
     if state_dir:
         outbox = state_dir / "outbox.jsonl"
+        if outbox.is_symlink():
+            fail(f"refusing symlinked outbox: {outbox}")
+        state_file = state_dir / "outbox.state.json"
+        if state_file.is_symlink():
+            fail(f"refusing symlinked outbox state: {state_file}")
         outbox.parent.mkdir(parents=True, exist_ok=True)
-        if not (state_dir / "outbox.state.json").exists():
-            atomic_write(state_dir / "outbox.state.json", json.dumps({"offset": 0}, indent=2) + "\n", 0o600)
+        if not state_file.exists():
+            atomic_write(state_file, json.dumps({"offset": 0}, indent=2) + "\n", 0o600)
         if lines:
             with outbox.open("ab") as handle:
                 handle.write(lines.encode())
@@ -369,6 +460,8 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
             if state_path and state_path != cursor_path:
                 atomic_write(state_path, json.dumps(cursors, indent=2, sort_keys=True) + "\n", 0o600)
     elif output:
+        if output.is_symlink():
+            fail(f"refusing symlinked output: {output}")
         if incremental:
             output.parent.mkdir(parents=True, exist_ok=True)
             with output.open("a", encoding="utf-8") as handle:
@@ -382,7 +475,11 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
     return len(records)
 
 
-def notify(sync_state_dir: Path) -> int:
+def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: str | None = None,
+           output: Path | None = None, state_path: Path | None = None, incremental: bool = True,
+           collectors_dir: Path | None = None, azure_account: str = "",
+           azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
+           azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None) -> int:
     sync_state_dir.mkdir(parents=True, exist_ok=True)
     signal = sync_state_dir / "notify.signal"
     signal.touch()
@@ -392,7 +489,16 @@ def notify(sync_state_dir: Path) -> int:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        signal.touch()
+        export_roots = roots or [safe_root("~/Development/handoff")]
+        export_output = output or (export_roots[0] / "_box-xfer" / f"gtt-bundle-{normalized_machine_id(machine_id or socket.gethostname())}.jsonl")
+        while True:
+            before = signal.stat().st_mtime_ns
+            export(export_roots, machine_id or socket.gethostname(), export_output, state_path, incremental,
+                   sync_state_dir, collectors_dir, quota_precheck_path=None,
+                   azure_account=azure_account, azure_container=azure_container, azure_table=azure_table,
+                   azure_prefix=azure_prefix, rsync_to=rsync_to)
+            if signal.stat().st_mtime_ns <= before:
+                break
         return 0
 
 
@@ -414,10 +520,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     roots = [safe_root(piece) for item in (args.handoff_dir or ["~/Development/handoff"]) for piece in item.split(":") if piece]
     sync_dir = Path(args.sync_state_dir).expanduser() if args.sync_state_dir else None
-    if args.notify:
-        return notify(sync_dir or Path("~/.config/aidata-sync").expanduser())
     output = Path(args.out).expanduser() if args.out else roots[0] / "_box-xfer" / f"gtt-bundle-{normalized_machine_id(args.machine_id)}.jsonl"
     state = Path(args.state_file).expanduser() if args.state_file else None
+    if args.notify:
+        return notify(sync_dir or Path("~/.config/aidata-sync").expanduser(), roots, args.machine_id,
+                      output, state, args.incremental,
+                      Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
+                      args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to)
     count = export(roots, args.machine_id, output, state, args.incremental, sync_dir,
                    Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
                    args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to)
