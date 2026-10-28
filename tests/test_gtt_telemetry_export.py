@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,63 @@ class GttTelemetryExportTests(unittest.TestCase):
         self.output.symlink_to(target)
         with self.assertRaises(ValueError):
             exporter.export([self.fixture], "m", self.output, self.state, True)
+
+    def test_envelopes_collect_bot_tl_prmon_and_custom_offsets(self):
+        (self.fixture / "goal-a" / "pr-dag.json").write_text('{"wave": 1}\n', encoding="utf-8")
+        (self.fixture / "goal-a" / "ledger.md").write_text(
+            "TL_PROFILE=worker | id=B1 | note=Allow path access\n", encoding="utf-8"
+        )
+        watch = self.fixture / "_watch" / "prmon"
+        watch.mkdir(parents=True)
+        history = watch / "heartbeat-history.jsonl"
+        history.write_text('{"checked": 1}\n', encoding="utf-8")
+        custom_root = self.fixture / "custom"
+        custom_root.mkdir()
+        custom = custom_root / "events.jsonl"
+        custom.write_text('{"event": "a"}\n', encoding="utf-8")
+        descriptors = self.fixture / "collectors.d"
+        descriptors.mkdir()
+        (descriptors / "custom.json").write_text(json.dumps({
+            "collector": "custom", "root": str(custom_root), "glob": "*.jsonl",
+            "record_type": "event", "mode": "jsonl_offset"
+        }), encoding="utf-8")
+        sync = self.fixture / "sync"
+        count = exporter.export([self.fixture], "m", self.output, None, True, sync, descriptors)
+        self.assertGreaterEqual(count, 4)
+        records = [json.loads(line) for line in (sync / "outbox.jsonl").read_text().splitlines()]
+        self.assertIn(("bot_tl", "pr_dag"), {(r["collector"], r["record_type"]) for r in records})
+        self.assertIn(("prmon", "prmon_heartbeat"), {(r["collector"], r["record_type"]) for r in records})
+        self.assertIn(("custom", "event"), {(r["collector"], r["record_type"]) for r in records})
+        cursor = json.loads((sync / "cursors.json").read_text())
+        custom_key = next(key for key in cursor if "events.jsonl" in key)
+        self.assertEqual(custom.stat().st_size, cursor[custom_key]["offset"])
+        with custom.open("a", encoding="utf-8") as handle:
+            handle.write('{"event": "b"}\n')
+        self.assertEqual(1, exporter.export([self.fixture], "m", self.output, None, True, sync, descriptors))
+
+    def test_device_is_stable_and_transport_failure_preserves_offset(self):
+        sync = self.fixture / "sync"
+        exporter.export([self.fixture], "m", self.output, None, True, sync)
+        device = json.loads((sync / "device.json").read_text())
+        self.assertEqual(0, json.loads((sync / "outbox.state.json").read_text()).get("offset", 0))
+        with mock.patch.object(exporter.subprocess, "run", side_effect=OSError("az unavailable")):
+            with self.assertRaises(ValueError):
+                exporter.export([self.fixture], "m", self.output, None, True, sync, azure_account="acct")
+        state = json.loads((sync / "outbox.state.json").read_text())
+        self.assertEqual(0, state.get("offset", 0))
+        self.assertEqual(device["device_id"], json.loads((sync / "device.json").read_text())["device_id"])
+
+    def test_notify_is_nonblocking_when_lock_is_held(self):
+        sync = self.fixture / "sync"
+        sync.mkdir()
+        lock = (sync / "sync.lock").open("a+")
+        try:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertEqual(0, exporter.notify(sync))
+            self.assertTrue((sync / "notify.signal").exists())
+        finally:
+            lock.close()
 
 
 if __name__ == "__main__":

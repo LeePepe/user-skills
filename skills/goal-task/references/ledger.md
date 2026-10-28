@@ -59,6 +59,14 @@
 
 时间取写入当时的时钟，不事后补。TL 推进事件与 Bot 旁路事件分号段：`E*` 与 `B*`／`J*` 不要混用，避免 `E5` 与另一条 `E5` 撞号。Bot 事件不占用 `goal-queue.py` 的 `E*` 计数。
 
+## Telemetry sync hooks
+
+`gtt-telemetry-export.py` emits `TelemetryEnvelope v1` records for the `gtt`,
+`bot_tl`, `prmon`, and descriptor-defined collectors. When enabled by
+`GTT_AUTO_NOTIFY=1` or `~/.config/aidata-sync/config.json`, queue transitions
+send a non-blocking `--notify` signal; the sync lock coalesces concurrent
+signals without delaying queue operations.
+
 ## 标准事件与决定权
 
 | EVT | 含义 | 谁发 | 接收者 | 谁有权决定／关闭 |
