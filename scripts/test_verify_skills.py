@@ -243,6 +243,24 @@ class VerifySkillsTests(unittest.TestCase):
                 f"Missing required heading {anchor_heading!r} in SKILL.md",
             )
 
+    def test_goal_task_design_role_and_inline_delegation_guards(self) -> None:
+        skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"
+        agents_path = skill_path.parent / "references" / "bots-and-agents.md"
+        skill_text = skill_path.read_text(encoding="utf-8")
+        agents_text = agents_path.read_text(encoding="utf-8")
+        description = parse_frontmatter(skill_path).fields["description"]
+
+        self.assertIn("设计", description)
+        for text in (skill_text, agents_text):
+            self.assertIn("Designer", text)
+            self.assertIn('skill("my-designer")', text)
+            self.assertIn("herdr-dispatch.sh", text)
+            self.assertIn("herdr pane close", text)
+            self.assertIn("blocked", text)
+            self.assertIn("R10", text)
+        self.assertIn("设计者（Designer）", skill_text)
+        self.assertIn("writes: handoff-only", agents_text)
+
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
         skill_dir = SKILLS_DIR / "bot-tl-orchestration"
         skill_path = skill_dir / "SKILL.md"
