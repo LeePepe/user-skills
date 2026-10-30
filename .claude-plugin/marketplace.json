@@ -13,7 +13,7 @@
       "name": "goal-task",
       "source": "./skills/goal-task",
       "category": "workflow",
-      "description": "使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。"
+      "description": "进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 1-Hop 子代理编排 Explorer -> Designer -> Writer -> Reviewer -> pr_monitor。"
     },
     {
       "name": "bot-tl-orchestration",

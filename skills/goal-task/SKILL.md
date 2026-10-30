@@ -1,6 +1,6 @@
 ---
 name: goal-task
-description: 使用 CLI agent 规划或执行开发工作前加载，无论是否使用 subagent。
+description: 进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 1-Hop 子代理编排 Explorer -> Designer -> Writer -> Reviewer -> pr_monitor。
 ---
 # Goal -> Task 执行合同（`goal-task`）
 
@@ -147,10 +147,17 @@ For tracked terminal transitions use `set-status --status done|cancelled --evide
 | Goal/Task 定义方（Planner / TL） | 定义 Goal、不做项、Task DAG 与各 Task 验收命令；评估 Goal／Task 变更，按 R2／R4／R5 分级报批并编制 revision |
 | 协调者（TL） | 审定计划、分配、依赖调度、内联裁决（`EVT=RULING`）与路由决定；不兼任 Task 写者或独立验收 |
 | 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不改代码、只把报告写到 handoff，不提方案、不补定义 |
+| 设计者（Designer） | 只写 handoff 的 `design.md`／`spec.md` 与 R10 回执；由 TL 通过 `herdr-dispatch.sh` 派发，在自己的子代理会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig` 等 Required Skills，不写业务或 Demo 代码 |
 | Task 写者（Writer / `writer_escalated`） | 每个 Task 唯一写者（1 Task = 1 Writer = 1 Worktree = 1 PR）：实现、验证、commit、push、开 PR；本地验证、`git push` 与 R10 回执落盘后立即结束，远端 CI 交 `pr_monitor`（严禁 `gh run watch` 或 `sleep >= 30` 等待远端 CI）；首轮（`r1`）必须使用 `worker.writer`（`copilot` `gpt-5.6-luna` → `mai-code-2-flash`），**严禁在 `r1` 首轮或 Planner 简报中直接指定 `writer_escalated`（`codex` `gpt-6.1-sol`）**，`writer_escalated` 仅在 V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复）时启用 |
 | 独立验收（Reviewer） | 按 V1–V5 对每个 Task 的 PR 执行双轴限定审查，并在全部 Task 完成后核验 Goal 端到端验收证据 |
 | PR 监控者（PR Monitor / `pr_monitor`） | 使用与 `Explorer` 相同的 `worker` 档位模型（`mai-code-2-flash` → `gpt-5.6-luna`）在独立 Herdr Subagent 窗格中监控 PR CI checks、auto-merge 与发布流水线状态，落盘 R10 监控回执并在绿灯合并或红灯失败时唤醒／回报 TL。Job 级 Fail-Fast：看 required job 的 `failure`／`timed_out`／`action_required`，不要只等 Workflow Run 顶层 `.conclusion`；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
+
+### Designer 派遣与反内联守卫
+
+`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等设计技能属于 `Designer`／`Writer` Subagent 的 Required Skills。Owner 首次提出 UI/UX 设计或要求重新设计界面、调整布局、增加展示指标时，TL 只与 Owner 对齐 1–2 个高层决策点，**严禁在 TL 主会话内调用 `skill("my-designer")`、自任 Designer、直接读取组件库源码亲自写设计方案**；必须通过 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。
+
+TL 编写的 `briefs/designer*.md` 只能包含目标范围、高层约束、探查回执路径、输出路径和 Required Skills；不得预写完整组件选型、布局尺寸表或视觉规格。Designer 必须在自己的子代理会话首步显式加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。等待任何 Subagent 时先检查 `agent_status` 和磁盘 R10 回执；`blocked` 必须按 Tier A/A′ 解卡或记 `NEED_GO`，**严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`**。
 
 ### Writer / Designer 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
 

@@ -35,6 +35,8 @@
 产品 UI/UX 设计 Goal 的阶段与 CLI／`goal-task` 设计流相同。模型档位只以 [runtime-profiles.yaml](runtime-profiles.yaml) 为唯一来源；七域花名册只以本节「bot 分工」为唯一来源。本路由只决定谁开设计 TL、谁做设计总审，不复制模型表。
 
 - **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。`shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目 `docs/design-contract.md` 与既有 `Strata`／原型预览仍是共享设计资产的单一事实源，各机器只引用、不另存一份。
+- **Designer 反内联守卫**：`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等属于 `Designer`／`Writer` Subagent 的 Required Skills。TL 严禁在主会话内调用 `skill("my-designer")`、自任 Designer 或直接读取组件库源码亲自写设计方案；必须经 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。Designer 在自己的子代理会话首步加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。
+- **Brief 与阻塞保护**：`briefs/designer*.md` 只传目标范围、高层约束、探查回执路径、输出路径和 Required Skills，不得预写完整组件选型、布局尺寸表或视觉规格。TL 等待任何 Subagent 时必须先检查 `agent_status` 与磁盘 R10 回执；`blocked` 按 Tier A/A′ 解卡或记 `NEED_GO`，严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`。
 - **Mac mini 常驻域（Bot → `艺术家` 终审）**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，其产品 UI/UX 设计 Goal 仍走既有 **Bot → `艺术家`** 路径，由 **`艺术家`** 开设计 TL 并做设计总审。`艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`），派发上述流水线，并依据 `design.md`、项目契约、四态／双外观截图与 CI 结果执行设计总审门禁。`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码。这些域主 Bot 不在本域 Goal TL 内跑该设计流水线。`Hotty` 不做具体 Goal 协调的边界不变。
 - **MacBook／`Joy`（本机设计流水线）**：设计不再经 `艺术家`。`Joy` 在 MacBook 上、于 goal-task 内本地跑完同一流水线：`Explorer` → `Designer` → `Writer` → CI Design Gate（随后仍是跨厂商 `Reviewer`，与 CLI／`goal-task` 设计流同阶段）。`Joy` 不把设计 Goal 转交 Mac mini 上的 `艺术家`，也不操作 Mac mini。
 - **CLI 入口**：本地 CLI／TL（不经常驻域主 Bot）在本 Goal 内主动跑完该流水线，不转交 `艺术家`。阶段与 MacBook／`Joy` 的本机流水线相同。
@@ -141,6 +143,7 @@ TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_esca
 | Planner | mid | TL | 一轮计划 |
 | Planner 的 Reviewer、代码 Reviewer | mid，**与被审者不同家** | TL | 一次审查（每轮新会话） |
 | 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
+| 设计者（`Designer`） | worker（`gpt-5.6-luna` -> `mai-code-2-flash`） | TL，经 `herdr-dispatch.sh` | `writes: handoff-only`；在自己的会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig`，输出 `design.md`／`spec.md` 与 `receipts/des-rN.md` |
 | 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
 | PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
