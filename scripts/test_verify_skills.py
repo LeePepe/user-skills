@@ -338,6 +338,36 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("Package.resolved", agents_text)
         self.assertIn(">15", skill_text)
 
+    def test_spec_first_obsolete_test_manifest_and_visual_harmony_gate_contract(self) -> None:
+        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text):
+            self.assertIn("Spec-First Requirement Change Rule", text)
+            self.assertIn("spec.md", text)
+            self.assertIn("design.md", text)
+            self.assertIn("Obsolete Test Manifest", text)
+            self.assertIn("Deprecated Test Clauses to Remove/Rewrite", text)
+            self.assertIn("Explorer", text)
+            self.assertIn("Planner Reviewer", text)
+            self.assertIn("Code Writer", text)
+            self.assertIn("Code/UI Reviewer", text)
+            self.assertIn("Anti-Gaming Visual Harmony Gate", text)
+            self.assertIn(".system(size: <11)", text)
+            self.assertIn("minimumScaleFactor < 0.85", text)
+            self.assertIn("1.8:1", text)
+            self.assertIn("4–6pt", text)
+            self.assertIn(">=6pt", text)
+            self.assertIn(">=4pt", text)
+            self.assertIn("0–1pt", text)
+            self.assertIn("34–36pt", text)
+            self.assertIn(">=44×44pt", text)
+            self.assertIn(".contentShape(Rectangle())", text)
+            self.assertIn("Card + Divider", text)
+            self.assertIn(".center", text)
+
     def test_goal_supervisor_scan_check_pins_and_telemetry(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
         self.assertTrue(supervisor.is_file())
