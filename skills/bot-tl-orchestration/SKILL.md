@@ -44,6 +44,14 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 
 ## 2. 监控与解卡
 
+跨多个并发 Goal 时运行 `goal-supervisor.py scan`，按角色 TTL（Explorer/
+pr_monitor 10m、Designer/Reviewer 15m、Writer 30m、TL 40m）处理
+`BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`；用 `check-pins` 检查
+upstream drift，并在 `GOAL_DONE` 通过 `telemetry --write` 生成
+`contract-telemetry.json`。子 Agent 等待必须拆成 30–60s slices，例如
+`herdr agent wait <name> --timeout 60000`，每次读取状态与 receipts。Copilot
+allowlist 同时包含 `/Applications/Xcode.app`，避免 Apple toolchain 路径卡住。
+
 - 双源对账：同时读取 [`ledger.md`](../goal-task/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
   或 `id=J<N>`，不得撞用 TL 的 `id=E<N>`。

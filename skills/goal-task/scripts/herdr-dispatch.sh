@@ -136,6 +136,7 @@ for raw in (
     "/private/tmp",
     "/var/folders",
     "/private/var/folders",
+    "/Applications/Xcode.app",
     *extra_env,
 ):
     if not raw:
@@ -249,6 +250,7 @@ if [[ "$KIND" == "copilot" ]]; then
     "$HOME/.agents"
     "$HOME/.codex"
     "$HOME/orca"
+    "/Applications/Xcode.app"
     "/tmp"
     "/private/tmp"
     "/var/folders"
