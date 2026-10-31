@@ -166,7 +166,7 @@ class VerifySkillsTests(unittest.TestCase):
         for section_key in ("  strong:", "  mid:", "  worker:", "  research:", "  mac-mini:", "  macbook:"):
             self.assertIn(f"\n{section_key}", content, f"Missing {section_key.strip()} in {profile_path}")
 
-        self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
+        self.assertIn("worker: [writer, designer, explorer, pr_monitor, mechanical]", content)
         self.assertIn("copilot_allowlist:", content)
         self.assertNotIn("gemini-3.8-flash", content)
         self.assertNotIn("composer-2.5", content)
@@ -174,6 +174,32 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("kimi: moonshot", content)
         self.assertIn("model: kimi,", content)
         self.assertGreaterEqual(content.count("pr_monitor:"), 2)
+        self.assertGreaterEqual(content.count("designer:"), 2)
+        code_reviewer_blocks = re.findall(
+            r"code_reviewer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(code_reviewer_blocks), 2)
+        for block in code_reviewer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models[2], "gpt-5.6-luna")
+
+        explorer_blocks = re.findall(
+            r"explorer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(explorer_blocks), 2)
+        for block in explorer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models, ["gpt-5.6-luna", "mai-code-2-flash"])
         for line in content.splitlines():
             stripped = line.strip()
             if stripped.startswith("- {cli: copilot,") or stripped.startswith("planner_reviewer: {cli: copilot,") or stripped.startswith("research_primary: {cli: copilot,") or stripped.startswith("team_lead: {cli: copilot,") or stripped.startswith("arbitration: {cli: copilot,"):
