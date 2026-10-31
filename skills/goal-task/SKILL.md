@@ -272,6 +272,18 @@ Goal 的端到端、发布、实机或真实消费验收分别取证，不能从
 
 ## CLI 用法
 
+### Multi-Goal Lease Watchdog and Contract Telemetry
+
+For concurrent Goals, `skills/goal-task/scripts/goal-supervisor.py scan` reconciles
+active ledgers with Herdr state and reports `BLOCKED_AGENT`, `ZOMBIE_LEASE`, and
+`ORPHAN_TL_WAIT`. Hard lease TTLs are Explorer/pr_monitor 10m, Designer/Reviewer
+15m, Writer 30m, and TL 40m. Use `check-pins` for cross-project upstream pin drift
+and `telemetry --handoff-dir <goal> --write` to persist `contract-telemetry.json`.
+When waiting on a child, use bounded 30–60s slices such as
+`herdr agent wait <name> --timeout 60000`, checking `herdr agent get <name>` and
+the Goal `receipts/` after each slice; never blind-wait for ten minutes. Copilot
+launches also allow `/Applications/Xcode.app` for Apple toolchain access.
+
 全景开发、复盘、反思与故事集飞轮见 [references/playbook.md](references/playbook.md)。
 
 主会话（TL）担任协调者：审定计划、分配与协调；定义方可由独立 Planner agent 担任，主会话也可兼任；用户是负责人。

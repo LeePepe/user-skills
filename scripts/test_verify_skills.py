@@ -338,6 +338,97 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("Package.resolved", agents_text)
         self.assertIn(">15", skill_text)
 
+    def test_goal_supervisor_scan_check_pins_and_telemetry(self) -> None:
+        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        self.assertTrue(supervisor.is_file())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handoff = root / "goal-a"
+            (handoff / "receipts").mkdir(parents=True)
+            (handoff / "ledger.md").write_text(
+                "Goal ID: goal-a TL: goal-a-goal-tl-r1\n"
+                "2026-10-31T00:00:00Z EVT=START\n"
+                "2026-10-31T00:01:00Z EVT=UNBLOCK\n"
+                "2026-10-31T00:02:00Z EVT=REVIEW_FAIL\n"
+                "2026-10-31T00:03:00Z EVT=PR_CHECK_FAILED\n",
+                encoding="utf-8",
+            )
+            (handoff / "receipts" / "goal-a-writer-r1.md").write_text("", encoding="utf-8")
+            agents = root / "agents.json"
+            agents.write_text(
+                json.dumps(
+                    {
+                        "result": {
+                            "agents": [
+                                {"name": "goal-a-goal-tl-r1", "agent_status": "working"},
+                                {"name": "goal-a-writer-r1", "agent_status": "blocked"},
+                                {"name": "goal-a-rev-r1", "agent_status": "idle"},
+                                {"name": "goal-a-exp-r1", "agent_status": "working"},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scan = subprocess.run(
+                [
+                    str(supervisor), "scan", "--handoff-root", str(root),
+                    "--herdr-json", str(agents), "--now", "2026-10-31T01:00:00Z", "--json",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            anomaly_types = {item["type"] for item in json.loads(scan.stdout)["anomalies"]}
+            self.assertEqual(anomaly_types, {"BLOCKED_AGENT", "ZOMBIE_LEASE", "ORPHAN_TL_WAIT"})
+
+            pins = root / "pins.json"
+            pins.write_text(
+                json.dumps(
+                    {
+                        "upstreams": {"shared-design-system": "bf31a035", "user-skills": "ce722ff6"},
+                        "consumers": [
+                            {"repo": "VitalStride", "pins": {"shared-design-system": "781c09de", "user-skills": "ce722ff6"}},
+                            {"repo": "AIDash", "pins": {"shared-design-system": "bf31a035", "user-skills": "ce722ff6"}},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pin_result = subprocess.run(
+                [str(supervisor), "check-pins", "--pins-file", str(pins), "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            pin_data = json.loads(pin_result.stdout)
+            self.assertEqual(pin_data["consumers"][0]["status"], "OUTDATED_PIN")
+            self.assertEqual(pin_data["consumers"][1]["status"], "UP_TO_DATE")
+
+            telemetry = subprocess.run(
+                [str(supervisor), "telemetry", "--handoff-dir", str(handoff), "--write", "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            telemetry_data = json.loads(telemetry.stdout)
+            self.assertEqual(telemetry_data["total_duration_sec"], 180)
+            self.assertEqual(telemetry_data["unblock_count"], 1)
+            self.assertEqual(telemetry_data["changes_requested_count"], 1)
+            self.assertEqual(telemetry_data["pr_check_failed_count"], 1)
+            self.assertTrue((handoff / "receipts" / "contract-telemetry.json").is_file())
+
+    def test_goal_supervisor_contract_and_xcode_allowlist(self) -> None:
+        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        self.assertTrue(supervisor.stat().st_mode & 0o111)
+        dispatch = (SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh").read_text()
+        profiles = (SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml").read_text()
+        self.assertIn("/Applications/Xcode.app", dispatch)
+        self.assertIn("/Applications/Xcode.app", profiles)
+        for path in (
+            SKILLS_DIR / "goal-task" / "SKILL.md",
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "bot-tl-orchestration" / "SKILL.md",
+        ):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("goal-supervisor.py", text)
+            self.assertIn("ZOMBIE_LEASE", text)
+            self.assertIn("30–60s", text)
+
     def test_tracked_files_do_not_leak_personal_paths_or_tokens(self) -> None:
         forbidden_patterns: dict[str, re.Pattern[str]] = {
             "macos_home_path": re.compile("/" + "Users" + "/"),

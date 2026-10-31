@@ -47,15 +47,16 @@ common:
       - "~/.agents"
       - "~/.codex"
       - "~/orca"
+      - "/Applications/Xcode.app"
       - "/tmp"
       - "/private/tmp"
       - "/var/folders"
       - "/private/var/folders"
-    write_flags: "--allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"
+    write_flags: "--allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Applications/Xcode.app --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"
     # shell(env|jq|rg) overlap built-ins. Omitting them keeps ~110B of macOS
     # 1024B PTY headroom when herdr-dispatch also appends BASELINE_ADD_DIRS
     # and HERDR_EXTRA_ADD_DIRS. Symlink and /private temp literals stay.
-    readonly_receipt_flags: "--allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"
+    readonly_receipt_flags: "--allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Applications/Xcode.app --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"
     pr_monitor_flags: "--allow-tool write --allow-tool url --allow-tool 'shell(gh:*)' --allow-tool 'shell(git:*)' --allow-tool 'shell(env:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"
   readonly_flags:
     codex: "exec -s read-only"

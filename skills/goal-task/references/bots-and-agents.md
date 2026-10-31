@@ -30,6 +30,17 @@
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
 
+### Multi-Goal Lease Watchdog and Contract Telemetry
+
+跨 Goal 监督使用 `skills/goal-task/scripts/goal-supervisor.py scan`；它按
+Explorer/pr_monitor 10m、Designer/Reviewer 15m、Writer 30m、TL 40m 的 R8
+lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
+`check-pins` 核对跨项目 upstream pins，使用 `telemetry --handoff-dir <goal> --write`
+写入 `contract-telemetry.json`。等待子 Agent 时只能用 30–60s 有界轮询（例如
+`herdr agent wait <name> --timeout 60000`），每片检查 `herdr agent get` 与
+`receipts/`，不得盲等十分钟；Apple 工具链路径 `/Applications/Xcode.app`
+必须包含在 Copilot trusted/add-dir allowlist 中。
+
 ### 设计路由（按机器分流；Owner 2026-10-28，Hotty → flower）
 
 产品 UI/UX 设计 Goal 的阶段与 CLI／`goal-task` 设计流相同。模型档位只以 [runtime-profiles.yaml](runtime-profiles.yaml) 为唯一来源；七域花名册只以本节「bot 分工」为唯一来源。本路由只决定谁开设计 TL、谁做设计总审，不复制模型表。
