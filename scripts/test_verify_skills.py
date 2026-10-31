@@ -175,8 +175,31 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("model: kimi,", content)
         self.assertGreaterEqual(content.count("pr_monitor:"), 2)
         self.assertGreaterEqual(content.count("designer:"), 2)
-        self.assertIn("code_reviewer:", content)
-        self.assertIn("model: gpt-5.6-luna", content)
+        code_reviewer_blocks = re.findall(
+            r"code_reviewer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(code_reviewer_blocks), 2)
+        for block in code_reviewer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models[2], "gpt-5.6-luna")
+
+        explorer_blocks = re.findall(
+            r"explorer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(explorer_blocks), 2)
+        for block in explorer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models, ["gpt-5.6-luna", "mai-code-2-flash"])
         for line in content.splitlines():
             stripped = line.strip()
             if stripped.startswith("- {cli: copilot,") or stripped.startswith("planner_reviewer: {cli: copilot,") or stripped.startswith("research_primary: {cli: copilot,") or stripped.startswith("team_lead: {cli: copilot,") or stripped.startswith("arbitration: {cli: copilot,"):
