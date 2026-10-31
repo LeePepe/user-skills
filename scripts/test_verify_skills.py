@@ -205,6 +205,7 @@ class VerifySkillsTests(unittest.TestCase):
             if stripped.startswith("- {cli: copilot,") or stripped.startswith("planner_reviewer: {cli: copilot,") or stripped.startswith("research_primary: {cli: copilot,") or stripped.startswith("team_lead: {cli: copilot,") or stripped.startswith("arbitration: {cli: copilot,"):
                 self.assertIn("--allow-tool", stripped, f"Missing --allow-tool on copilot profile line: {stripped}")
                 self.assertIn("--add-dir ~/Development", stripped, f"Missing --add-dir on copilot profile line: {stripped}")
+                self.assertIn("--add-dir /Volumes/SSD", stripped, f"Missing /Volumes/SSD on copilot profile line: {stripped}")
 
     def test_relative_markdown_links_resolve(self) -> None:
         markdown_files = [
@@ -468,6 +469,96 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(telemetry_data["pr_check_failed_count"], 1)
             self.assertTrue((handoff / "receipts" / "contract-telemetry.json").is_file())
 
+    def test_goal_supervisor_binds_shortened_names_and_cwd(self) -> None:
+        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "good-designer"
+            other_dir = root / "other-goal"
+            (goal_dir / "receipts").mkdir(parents=True)
+            other_dir.mkdir()
+            (goal_dir / "ledger.md").write_text(
+                "\n".join(
+                    [
+                        "# Goal: good-designer",
+                        "- TL: good-designer-goal-tl-r1 / 模型 gemini-4-argon",
+                        "- 2026-10-31T00:00:00Z | EVT=START | id=E1 | from=good-designer-goal-tl-r1",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (other_dir / "ledger.md").write_text(
+                "\n".join(
+                    [
+                        "# Goal: other-goal",
+                        "- TL: other-goal-goal-tl-r1 / 模型 gemini-4-argon",
+                        "- 2026-10-31T00:00:00Z | EVT=START | id=E1",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            agents = root / "agents.json"
+            agents.write_text(
+                json.dumps(
+                    {
+                        "result": {
+                            "agents": [
+                                {"name": "good-des-goal-tl-r1", "agent_status": "working"},
+                                {"name": "good-des-writer-r1", "agent_status": "blocked"},
+                                {
+                                    "name": "gd-e1-rev-r1",
+                                    "agent_status": "blocked",
+                                    "cwd": str(goal_dir),
+                                },
+                                {"name": "other-goal-writer-r1", "agent_status": "blocked"},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scan = subprocess.run(
+                [
+                    str(supervisor),
+                    "scan",
+                    "--handoff-root",
+                    str(root),
+                    "--herdr-json",
+                    str(agents),
+                    "--now",
+                    "2026-10-31T00:01:00Z",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            data = json.loads(scan.stdout)
+            by_goal = {item["goal_id"]: set(item["agents"]) for item in data["goals"]}
+            self.assertEqual(
+                by_goal["good-designer"],
+                {"good-des-goal-tl-r1", "good-des-writer-r1", "gd-e1-rev-r1"},
+            )
+            self.assertEqual(by_goal["other-goal"], {"other-goal-writer-r1"})
+            blocked = {
+                (item["goal_id"], item["agent"])
+                for item in data["anomalies"]
+                if item["type"] == "BLOCKED_AGENT"
+            }
+            self.assertIn(("good-designer", "good-des-writer-r1"), blocked)
+            self.assertIn(("good-designer", "gd-e1-rev-r1"), blocked)
+            self.assertNotIn(("good-designer", "other-goal-writer-r1"), blocked)
+            self.assertIn(
+                ("good-designer", "good-des-goal-tl-r1"),
+                {
+                    (item["goal_id"], item["agent"])
+                    for item in data["anomalies"]
+                    if item["type"] == "ORPHAN_TL_WAIT"
+                },
+            )
+
     def test_goal_supervisor_contract_and_xcode_allowlist(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
         self.assertTrue(supervisor.stat().st_mode & 0o111)
@@ -475,6 +566,8 @@ class VerifySkillsTests(unittest.TestCase):
         profiles = (SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml").read_text()
         self.assertIn("/Applications/Xcode.app", dispatch)
         self.assertIn("/Applications/Xcode.app", profiles)
+        self.assertIn('"/Volumes/SSD"', dispatch)
+        self.assertIn("/Volumes/SSD", profiles)
         for path in (
             SKILLS_DIR / "goal-task" / "SKILL.md",
             SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
@@ -484,6 +577,8 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("goal-supervisor.py", text)
             self.assertIn("ZOMBIE_LEASE", text)
             self.assertIn("30–60s", text)
+            self.assertIn("/Volumes/SSD", text)
+            self.assertIn("good-des", text)
 
     def test_tracked_files_do_not_leak_personal_paths_or_tokens(self) -> None:
         forbidden_patterns: dict[str, re.Pattern[str]] = {
@@ -815,6 +910,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("--allow-tool", copilot_calls[2])
             self.assertIn("write", copilot_calls[2])
             self.assertIn("--add-dir", copilot_calls[2])
+            self.assertIn("/Volumes/SSD", copilot_calls[2])
             self.assertIn("--no-ask-user", copilot_calls[2])
             self.assertNotIn(["agent", "send-keys", "goal-tk4-pr-monitor-r1", "enter"], copilot_calls)
 
@@ -1006,6 +1102,113 @@ class VerifySkillsTests(unittest.TestCase):
             again = config_path.read_text(encoding="utf-8")
             self.assertEqual(again.count('[projects."/tmp"]'), 1)
             self.assertEqual(again, text)
+
+    def test_copilot_ssd_baseline_covers_handoff_sibling_realpath(self) -> None:
+        helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            home = tmp_dir / "home"
+            copilot_dir = home / ".copilot"
+            copilot_dir.mkdir(parents=True)
+            config_path = copilot_dir / "config.json"
+            config_path.write_text('{"trustedFolders": []}\n', encoding="utf-8")
+            goal_dir = tmp_dir / "handoff" / "good-designer"
+            goal_dir.mkdir(parents=True)
+            bin_dir = tmp_dir / "bin"
+            bin_dir.mkdir()
+            log_file = tmp_dir / "herdr-calls.jsonl"
+            mock_herdr = bin_dir / "herdr"
+            mock_herdr.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "log_path = os.environ.get('MOCK_HERDR_LOG')\n"
+                "if log_path:\n"
+                "    with open(log_path, 'a', encoding='utf-8') as fh:\n"
+                "        fh.write(json.dumps(args) + '\\n')\n"
+                "if args[:2] == ['pane', 'split']:\n"
+                "    print(json.dumps({'result': {'pane': {'pane_id': 'p99'}}}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'get']:\n"
+                "    print(json.dumps({'interactive_ready': True, 'agent_status': 'working'}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'start'] or args[:2] == ['agent', 'prompt']:\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            mock_herdr.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                "HOME": str(home),
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+                "MOCK_HERDR_LOG": str(log_file),
+                "HERDR_DISPATCH_SKIP_TRUST": "0",
+            }
+            # MOCK_HERDR_LOG skips trust registration; run once without it for
+            # trustedFolders, then again with the log to read session --add-dir.
+            trust_env = {key: value for key, value in env.items() if key != "MOCK_HERDR_LOG"}
+            trust = subprocess.run(
+                [
+                    str(helper),
+                    "--name",
+                    "good-des-goal-tl-r1",
+                    "--kind",
+                    "copilot",
+                    "--cwd",
+                    str(goal_dir),
+                    "--prompt",
+                    "trust siblings",
+                ],
+                cwd=REPO_ROOT,
+                env=trust_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(trust.returncode, 0, trust.stderr)
+            trusted = json.loads(config_path.read_text(encoding="utf-8"))["trustedFolders"]
+            handoff_real = os.path.realpath(goal_dir.parent)
+            self.assertIn("/Volumes/SSD", trusted)
+            self.assertIn(handoff_real, trusted)
+            self.assertIn(str(goal_dir), trusted)
+
+            logged = subprocess.run(
+                [
+                    str(helper),
+                    "--name",
+                    "good-des-writer-r1",
+                    "--kind",
+                    "copilot",
+                    "--cwd",
+                    str(goal_dir),
+                    "--prompt",
+                    "allow siblings",
+                    "--",
+                    "--model",
+                    "gpt-5.6-luna",
+                    "--add-dir",
+                    str(goal_dir),
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(logged.returncode, 0, logged.stderr)
+            calls = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            start = next(call for call in calls if call[:2] == ["agent", "start"])
+            self.assertIn("/Volumes/SSD", start)
+            self.assertIn(handoff_real, start)
+            self.assertEqual(start.count(handoff_real), 1)
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
         canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"

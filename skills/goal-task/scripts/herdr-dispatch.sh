@@ -125,6 +125,21 @@ kind, cwd_arg = sys.argv[1], sys.argv[2]
 home = pathlib.Path.home()
 candidates = []
 extra_env = [p for p in os.environ.get("HERDR_EXTRA_ADD_DIRS", "").split(":") if p.strip()]
+
+def remember(raw: str) -> None:
+    if not raw:
+        return
+    p = pathlib.Path(raw).expanduser()
+    sp = str(p)
+    if sp not in candidates:
+        candidates.append(sp)
+    try:
+        r = str(p.resolve())
+        if r not in candidates:
+            candidates.append(r)
+    except Exception:
+        pass
+
 for raw in (
     cwd_arg,
     str(home / "Development"),
@@ -137,20 +152,22 @@ for raw in (
     "/var/folders",
     "/private/var/folders",
     "/Applications/Xcode.app",
+    "/Volumes/SSD",
     *extra_env,
 ):
-    if not raw:
-        continue
-    p = pathlib.Path(raw).expanduser()
-    sp = str(p)
-    if sp not in candidates:
-        candidates.append(sp)
-    try:
-        r = str(p.resolve())
-        if r not in candidates:
-            candidates.append(r)
-    except Exception:
-        pass
+    remember(raw)
+
+# Handoff sibling root. Trusting only .../handoff/<goal> does not cover
+# realpath'd siblings; session --add-dir still needs the ancestor
+# (/Volumes/SSD or ~/Development). Register the handoff directory itself.
+probe = pathlib.Path(cwd_arg).expanduser()
+for _ in range(8):
+    if probe.name == "handoff":
+        remember(str(probe))
+        break
+    if probe.parent == probe:
+        break
+    probe = probe.parent
 
 if kind == "copilot":
     cfg_path = home / ".copilot" / "config.json"
@@ -241,8 +258,11 @@ if [[ "$KIND" == "copilot" ]]; then
   # colon-separated HERDR_EXTRA_ADD_DIRS. Exact-string dedupe preserves both
   # symlink and /private literals (Copilot realpath-dedupes the pair later;
   # the parent static scan still needs both). Do not drop /tmp+/private/tmp
-  # or /var/folders+/private/var/folders. PTY 1024B headroom is the omitted
-  # shell(env|jq|rg) entries on readonly_receipt_flags, not fewer temp roots.
+  # or /var/folders+/private/var/folders. /Volumes/SSD is the Mac mini handoff
+  # volume: trustedFolders of the goal directory alone does not authorize
+  # realpath'd handoff siblings, so the session --add-dir list must include
+  # that ancestor. PTY 1024B headroom is the omitted shell(env|jq|rg) entries
+  # on readonly_receipt_flags, not fewer temp roots.
   BASELINE_ADD_DIRS=(
     "$CWD"
     "$HOME/Development"
@@ -250,6 +270,7 @@ if [[ "$KIND" == "copilot" ]]; then
     "$HOME/.agents"
     "$HOME/.codex"
     "$HOME/orca"
+    "/Volumes/SSD"
     "/Applications/Xcode.app"
     "/tmp"
     "/private/tmp"
@@ -261,6 +282,33 @@ if [[ "$KIND" == "copilot" ]]; then
     for extra_d in "${EXTRA_DIRS_ARR[@]+"${EXTRA_DIRS_ARR[@]}"}"; do
       [[ -n "$extra_d" ]] && BASELINE_ADD_DIRS+=("$extra_d")
     done
+  fi
+  # If cwd is .../handoff/<goal> and that handoff directory's realpath is not
+  # already under /Volumes/SSD, ~/Development, or ~/orca, add the realpath so
+  # sibling goal dirs are inside the session allowlist (Parent ≥ Child).
+  handoff_root=""
+  probe="$CWD"
+  for _ in 1 2 3 4 5 6 7 8; do
+    [[ "$(basename "$probe")" == "handoff" ]] && handoff_root="$probe" && break
+    next="$(dirname "$probe")"
+    [[ "$next" == "$probe" ]] && break
+    probe="$next"
+  done
+  if [[ -n "$handoff_root" ]]; then
+    handoff_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$handoff_root" 2>/dev/null || true)"
+    if [[ -n "$handoff_real" ]]; then
+      covered=0
+      for ancestor in "/Volumes/SSD" "$HOME/Development" "$HOME/orca"; do
+        anc_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ancestor" 2>/dev/null || true)"
+        if [[ -n "$anc_real" && ( "$handoff_real" == "$anc_real" || "$handoff_real" == "$anc_real"/* ) ]]; then
+          covered=1
+          break
+        fi
+      done
+      if [[ "$covered" -eq 0 ]]; then
+        BASELINE_ADD_DIRS+=("$handoff_real")
+      fi
+    fi
   fi
   for req_dir in "${BASELINE_ADD_DIRS[@]}"; do
     already_present=0

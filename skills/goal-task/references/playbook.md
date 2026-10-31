@@ -242,7 +242,7 @@ herdr agent start "$WRITER_NAME" \
   -- --model gpt-5.6-luna \
     --allow-tool write --allow-tool shell --allow-tool url \
     --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' \
-    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
 REVIEWER_NAME="${GOAL_SLUG}-${TASK_ID}-reviewer-r1"
 herdr agent start "$REVIEWER_NAME" \
@@ -253,7 +253,7 @@ herdr agent start "$REVIEWER_NAME" \
     --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' \
     --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' \
     --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
 PR_MONITOR_NAME="${GOAL_SLUG}-${TASK_ID}-pr-monitor-r1"
 herdr agent start "$PR_MONITOR_NAME" \
@@ -265,7 +265,7 @@ herdr agent start "$PR_MONITOR_NAME" \
     --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
     --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
     --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+    --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 ```
 
 Reviewer 必须与被审者使用不同模型厂商；不使用 `--yolo`、`--force`、`--allow-all-*` 或 profile 禁止的参数，统一使用 `runtime-profiles.yaml`（`common.copilot_allowlist`）中的显式 `--allow-tool`／`--add-dir` 白名单。`readonly_receipt_flags` 不再包含与内置工具重复的 `shell(env:*)`／`shell(jq:*)`／`shell(rg:*)`，为 `BASELINE_ADD_DIRS` 与 `HERDR_EXTRA_ADD_DIRS` 留出 macOS 1024B PTY 余量；`/tmp` 与 `/private/tmp`、`/var/folders` 与 `/private/var/folders` 两对字面量仍保留。Writer 不递归派发下级执行者，完成本地验证、`git push` 与 R10 后立即返回，**严禁** `gh run watch` 或 `sleep >= 30` 等待远端 CI。**TL 严禁在主会话内直接轮询 PR 状态**；PR 开启后由 `pr_monitor`（与 `Explorer` 同模型）做 Job 级 Fail-Fast，Run 未结束时用单 Job 日志 API，不用 `gh run view --log-failed`。

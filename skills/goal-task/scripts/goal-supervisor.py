@@ -106,33 +106,201 @@ def load_agents(path: Path | None) -> list[dict[str, Any]]:
         return []
 
 
+TL_MARKERS = ("-goal-tl-", "-team-lead-")
+_CWD_KEYS = ("cwd", "workdir", "work_dir", "working_directory", "pane_cwd")
+
+
+def agent_cwd(agent: dict[str, Any]) -> str:
+    for key in _CWD_KEYS:
+        value = agent.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    pane = agent.get("pane")
+    if isinstance(pane, dict):
+        for key in _CWD_KEYS:
+            value = pane.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def ledger_tl_name(text: str) -> str:
+    for line in text.splitlines():
+        if "TL:" in line:
+            token = line.split("TL:", 1)[1].strip().split()
+            return token[0] if token else ""
+    return ""
+
+
+def ledger_agent_names(text: str) -> set[str]:
+    names: set[str] = set()
+    tl_name = ledger_tl_name(text)
+    if tl_name:
+        names.add(tl_name)
+    for match in re.finditer(r"\b(?:from|to)=([a-z][a-z0-9_-]{0,31})\b", text):
+        token = match.group(1)
+        if "-" in token:
+            names.add(token)
+    return names
+
+
+def tl_stem(name: str) -> str:
+    for marker in TL_MARKERS:
+        index = name.find(marker)
+        if index > 0:
+            return name[:index]
+    return ""
+
+
+def hyphen_prefixed(name: str, prefix: str) -> bool:
+    return bool(prefix) and (name == prefix or name.startswith(prefix + "-"))
+
+
+def stem_matches_goal(stem: str, goal_name: str) -> bool:
+    """True when `stem` is the goal folder or a same-shape truncation of its last segment.
+
+    `good-des` matches folder `good-designer`. Dropping a whole segment (`good`)
+    does not, and a last-segment prefix shorter than 3 characters does not.
+    """
+    if not stem or not goal_name:
+        return False
+    if stem == goal_name:
+        return True
+    stem_parts = stem.split("-")
+    goal_parts = goal_name.split("-")
+    if len(stem_parts) != len(goal_parts) or stem_parts[:-1] != goal_parts[:-1]:
+        return False
+    last_stem, last_goal = stem_parts[-1], goal_parts[-1]
+    return len(last_stem) >= 3 and last_goal.startswith(last_stem)
+
+
+def cwd_within(cwd: str, goal: Path) -> bool:
+    if not cwd:
+        return False
+    try:
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        resolved_goal = goal.expanduser().resolve()
+    except OSError:
+        return False
+    return resolved_cwd == resolved_goal or resolved_goal in resolved_cwd.parents
+
+
+def unique_name(hits: list[str]) -> str:
+    if len(hits) == 1:
+        return hits[0]
+    return ""
+
+
+def choose_goal_name(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
+    """Bind one agent to one goal without using the folder name as the only key."""
+    cwd_hits = [goal["name"] for goal in goals if cwd_within(cwd, goal["path"])]
+    if len(cwd_hits) == 1:
+        return cwd_hits[0]
+    if len(cwd_hits) > 1:
+        return max(cwd_hits, key=len)
+    if not name:
+        return ""
+    exact = [
+        goal["name"]
+        for goal in goals
+        if name == goal["tl_name"] or name in goal["ledger_names"]
+    ]
+    chosen = unique_name(exact)
+    if chosen:
+        return chosen
+    stem_hits = [
+        goal["name"]
+        for goal in goals
+        if any(hyphen_prefixed(name, stem) for stem in goal["stems"])
+    ]
+    chosen = unique_name(stem_hits)
+    if chosen:
+        return chosen
+    prefix_hits = [goal["name"] for goal in goals if goal["name"] and name.startswith(goal["name"])]
+    if prefix_hits:
+        return max(prefix_hits, key=len)
+    return ""
+
+
+def bind_live_tl(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
+    """Attach a shortened `<stem>-goal-tl-*` agent to the Goal folder it abbreviates."""
+    stem = tl_stem(name)
+    if not stem:
+        return ""
+    exact_stem = [goal["name"] for goal in goals if goal["name"] == stem]
+    if len(exact_stem) == 1:
+        return exact_stem[0]
+    truncated = [goal["name"] for goal in goals if stem_matches_goal(stem, goal["name"])]
+    chosen = unique_name(truncated)
+    if chosen:
+        return chosen
+    return choose_goal_name(name, cwd, goals)
+
+
 def scan(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root).expanduser()
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
     agents = load_agents(Path(args.herdr_json) if args.herdr_json else None)
-    goals: list[dict[str, Any]] = []
-    anomalies: list[dict[str, Any]] = []
+    goals_meta: list[dict[str, Any]] = []
     for ledger in sorted(root.glob("*/ledger.md")):
         events = goal_events(ledger)
         if not events or any(event == "GOAL_DONE" for _, event in events):
             continue
-        goal = ledger.parent
-        latest = max(timestamp for timestamp, _ in events)
-        prefix = goal.name
-        goal_agents = [item for item in agents if agent_name(item).startswith(prefix)]
-        tl_name = next(
-            (
-                line.split("TL:", 1)[1].strip().split()[0]
-                for line in ledger.read_text(encoding="utf-8").splitlines()
-                if "TL:" in line
-            ),
-            "",
+        text = ledger.read_text(encoding="utf-8")
+        tl_name = ledger_tl_name(text)
+        stems: set[str] = set()
+        recorded_stem = tl_stem(tl_name)
+        if recorded_stem:
+            stems.add(recorded_stem)
+        goals_meta.append(
+            {
+                "path": ledger.parent,
+                "name": ledger.parent.name,
+                "tl_name": tl_name,
+                "ledger_names": ledger_agent_names(text),
+                "stems": stems,
+                "events": events,
+                "latest": max(timestamp for timestamp, _ in events),
+            }
         )
+
+    # Record shortened live TL stems (`good-des-goal-tl-r1` → folder `good-designer`)
+    # before binding siblings that share that stem (`good-des-*`).
+    tl_binding: dict[str, str] = {}
+    for item in agents:
+        name = agent_name(item)
+        chosen = bind_live_tl(name, agent_cwd(item), goals_meta)
+        if not chosen:
+            continue
+        tl_binding[name] = chosen
+        stem = tl_stem(name)
+        if stem:
+            for goal in goals_meta:
+                if goal["name"] == chosen:
+                    goal["stems"].add(stem)
+
+    assigned: dict[str, list[dict[str, Any]]] = {goal["name"]: [] for goal in goals_meta}
+    for item in agents:
+        name = agent_name(item)
+        if name in tl_binding:
+            assigned[tl_binding[name]].append(item)
+            continue
+        chosen = choose_goal_name(name, agent_cwd(item), goals_meta)
+        if chosen:
+            assigned[chosen].append(item)
+
+    goals: list[dict[str, Any]] = []
+    anomalies: list[dict[str, Any]] = []
+    for meta in goals_meta:
+        goal = meta["path"]
+        latest = meta["latest"]
+        tl_name = meta["tl_name"]
+        goal_agents = assigned[meta["name"]]
         goals.append(
             {
                 "goal_id": goal.name,
                 "latest_event_ts": latest.isoformat(),
-                "event_count": len(events),
+                "event_count": len(meta["events"]),
                 "tl": tl_name,
                 "agents": [agent_name(item) for item in goal_agents],
             }
@@ -154,10 +322,11 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
                         "ttl_sec": ROLE_TTL_SECONDS[role],
                     }
                 )
-            if tl_name and name == tl_name and status == "working":
+            is_tl = role == "team_lead" or (bool(tl_name) and name == tl_name)
+            if is_tl and status == "working":
                 child_attention = any(
                     other is not item
-                    and agent_name(other) != tl_name
+                    and agent_name(other) not in {name, tl_name}
                     and agent_status(other) in {"blocked", "done", "idle"}
                     for other in goal_agents
                 )

@@ -38,15 +38,25 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
   Mac mini strong Claude 启动前检查 `weekly_remaining_pct`，小于 20% 或未知时使用
   `copilot` + `gemini-4-argon`。诊断 Goal 固定使用该组合。
 - 启动父 TL 时满足 Parent ≥ Child Allowlist：传入基线
-  `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/tmp`、
-  `/private/tmp`、`/var/folders`、`/private/var/folders`，并合并 Goal 声明的
-  `extra_add_dirs`；不要让子 Agent 获得父 TL 未获准的路径。
+  `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、
+  `/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`，并合并 Goal 声明的
+  `extra_add_dirs`；不要让子 Agent 获得父 TL 未获准的路径。Mac mini 上 Goal handoff
+  若在 `/Volumes/SSD/.../handoff/<goal>`，只把该 Goal 目录写入 `trustedFolders`
+  盖不住 handoff 兄弟目录的 realpath：Copilot Allow-path 看会话 `--add-dir`。
+  父 TL 与 `herdr-dispatch.sh` 的 `BASELINE_ADD_DIRS` 都必须带上祖先 `/Volumes/SSD`。
+  当 handoff 父目录的 realpath 不在 `/Volumes/SSD`、`~/Development` 或 `~/orca` 之下时，
+  dispatch 再把该 realpath 补进 trust 候选与会话 `--add-dir`，兄弟目录才与子 Subagent
+  一起落在父白名单内。
 
 ## 2. 监控与解卡
 
 跨多个并发 Goal 时运行 `goal-supervisor.py scan`，按角色 TTL（Explorer/
 pr_monitor 10m、Designer/Reviewer 15m、Writer 30m、TL 40m）处理
-`BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`；用 `check-pins` 检查
+`BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。Agent 不单靠
+`name.startswith(<goal 目录名>)` 关联：`-goal-tl-` 短名（`good-des-goal-tl-r1`）、
+台账 `TL:`／`from`／`to`，以及 cwd 落在该 Goal handoff 目录下，都绑到目录
+`good-designer`（因此 `good-des-*` 与 cwd 在该目录内的 `gd-e1-*` 仍会计入
+`BLOCKED_AGENT`）。用 `check-pins` 检查
 upstream drift，并在 `GOAL_DONE` 通过 `telemetry --write` 生成
 `contract-telemetry.json`。子 Agent 等待必须拆成 30–60s slices，例如
 `herdr agent wait <name> --timeout 60000`，每次读取状态与 receipts。Copilot
@@ -56,7 +66,7 @@ allowlist 同时包含 `/Applications/Xcode.app`，避免 Apple toolchain 路径
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
   或 `id=J<N>`，不得撞用 TL 的 `id=E<N>`。
 - `agent_status == "blocked"` 时先执行 `herdr agent read <name> --source visible --lines 40`。
-  Tier A（临时路径、基线路径或已声明 `extra_add_dirs` 的权限提示）才可
+  Tier A（临时路径、基线路径——含 `/Volumes/SSD` 及其下 handoff 兄弟目录的 realpath——或已声明 `extra_add_dirs` 的权限提示）才可
   `herdr agent send-keys <name> enter` 并记录 `EVT=UNBLOCK`。
 - Tier A′（`CMD_CONFIRM`）：可见窗格出现 Copilot／CLI「Do you want to run this command?」
   或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项。
