@@ -37,6 +37,8 @@
 - **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。`shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目 `docs/design-contract.md` 与既有 `Strata`／原型预览仍是共享设计资产的单一事实源，各机器只引用、不另存一份。
 - **Designer 反内联守卫**：`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等属于 `Designer`／`Writer` Subagent 的 Required Skills。TL 严禁在主会话内调用 `skill("my-designer")`、自任 Designer 或直接读取组件库源码亲自写设计方案；必须经 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。Designer 在自己的子代理会话首步加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。
 - **Brief 与阻塞保护**：`briefs/designer*.md` 只传目标范围、高层约束、探查回执路径、输出路径和 Required Skills，不得预写完整组件选型、布局尺寸表或视觉规格。TL 等待任何 Subagent 时必须先检查 `agent_status` 与磁盘 R10 回执；`blocked` 按 Tier A/A′ 解卡或记 `NEED_GO`，严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`。
+- **Explorer／Designer parity 与预算契约**：涉及 UI 时，Explorer 必须核对目标仓 `shared-design-system`／`DesignKit` 的 `Package.resolved`／local package state 版本 parity，并 inventory 已有 upstream primitives。Designer 必须在 `design.md` 写明 container-driven width budget 与 3-tier text budget：compact schema labels 为 CJK ≤4、EN ≤6–8；metric readouts 有 deterministic format caps、`.layoutPriority(1)` 且 zero numeric truncation（零 `…`）；dynamic titles 隔离到 dedicated rows 或 `ViewThatFits`（`1-line -> 2-line`、`lineLimit(2)`）。还要完成 scenario → component & motion mapping（live telemetry、dense single-hand entry、expand/collapse sub-rows、bottom inset arbitration、filter/substitute sheets）。需要 reusable variant 或 >15 行 custom layout/chrome glue 且 upstream 缺失时，TL/Designer 先拆 `shared-design-system` upstream Task，回补 proven primitive 后再关闭 Goal，不得在 `AppUI` 先行修补。
+- **Reviewer V2 UI gate**：Reviewer 必须以 worst-case density fixtures 核验 `sips -g pixelWidth` == `W * scale`，并检查零 numeric truncation（`…`）、无 unexpected wrapping、Bento 卡片等高、无 duplicate unit placeholders（`lb lb`）及无 raw localization keys。任一项是 V2 P1 `FAIL`；不得以“followed the brief verbatim”降级为 `CONCERNS`，若 brief formula 导致 overflow/truncation，仍 `FAIL` 并报告 brief definition defect。
 - **Mac mini 常驻域（Bot → `艺术家` 终审）**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，其产品 UI/UX 设计 Goal 仍走既有 **Bot → `艺术家`** 路径，由 **`艺术家`** 开设计 TL 并做设计总审。`艺术家` 在 `herdr` 拉起该设计 Goal 的 TL（`<goal>-goal-tl-r1`），派发上述流水线，并依据 `design.md`、项目契约、四态／双外观截图与 CI 结果执行设计总审门禁。`艺术家` 仍只派发与审证据，不亲自写 `design.md` 或实现代码。这些域主 Bot 不在本域 Goal TL 内跑该设计流水线。`Hotty` 不做具体 Goal 协调的边界不变。
 - **MacBook／`Joy`（本机设计流水线）**：设计不再经 `艺术家`。`Joy` 在 MacBook 上、于 goal-task 内本地跑完同一流水线：`Explorer` → `Designer` → `Writer` → CI Design Gate（随后仍是跨厂商 `Reviewer`，与 CLI／`goal-task` 设计流同阶段）。`Joy` 不把设计 Goal 转交 Mac mini 上的 `艺术家`，也不操作 Mac mini。
 - **CLI 入口**：本地 CLI／TL（不经常驻域主 Bot）在本 Goal 内主动跑完该流水线，不转交 `艺术家`。阶段与 MacBook／`Joy` 的本机流水线相同。
@@ -255,7 +257,7 @@ echo $((100 - "${USED%.*}"))
      -- --model gpt-5.6-luna \
        --allow-tool write --allow-tool shell --allow-tool url \
        --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
    REVIEWER_NAME="merge-tk1a-reviewer-r1"
    herdr agent start "$REVIEWER_NAME" \
@@ -265,7 +267,7 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' \
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
 
    PR_MONITOR_NAME="merge-tk1a-pr-monitor-r1"
    herdr agent start "$PR_MONITOR_NAME" \
@@ -276,10 +278,10 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
        --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
-   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/worktrees`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`；同一 `[projects."…"]` 只保留一块，并清掉文件里已有的相邻重复 trust 块）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/artifacts`、`~/Development/workflow-evidence`、`~/Development/worktrees`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`；同一 `[projects."…"]` 只保留一块，并清掉文件里已有的相邻重复 trust 块）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
 5. **文件指针派发、PR 状态监控委派（`pr_monitor`）与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
@@ -308,7 +310,7 @@ echo $((100 - "${USED%.*}"))
        --allow-tool 'shell(python3:*)' --allow-tool 'shell(jq:*)' --allow-tool 'shell(sleep:*)' \
        --allow-tool 'shell(date:*)' --allow-tool 'shell(shasum:*)' --allow-tool 'shell(herdr:*)' \
        --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git reset:*)' \
-       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
+       --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
 6. **输出读取、阻塞处理与 R10 对账**：`working` 状态禁止读取 alternate-screen 历史；运行中仅可探查：

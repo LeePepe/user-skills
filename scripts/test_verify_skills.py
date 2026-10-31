@@ -316,6 +316,28 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("未合并／暂停（HOLD）", text)
             self.assertIn("Owner", text)
 
+    def test_design_budget_upstream_sync_and_v2_truncation_gate_contract(self) -> None:
+        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text):
+            self.assertIn("3-tier text", text)
+            self.assertIn("CJK ≤4", text)
+            self.assertIn("EN ≤6–8", text)
+            self.assertIn("ViewThatFits", text)
+            self.assertIn("scenario → component & motion mapping", text)
+            self.assertIn("shared-design-system", text)
+            self.assertIn("upstream", text)
+            self.assertIn("zero numeric", text.lower())
+            self.assertIn("…", text)
+            self.assertIn("followed the brief verbatim", text)
+            self.assertIn("V2 P1", text)
+        self.assertIn("sips -g pixelWidth", skill_text)
+        self.assertIn("Package.resolved", agents_text)
+        self.assertIn(">15", skill_text)
+
     def test_tracked_files_do_not_leak_personal_paths_or_tokens(self) -> None:
         forbidden_patterns: dict[str, re.Pattern[str]] = {
             "macos_home_path": re.compile("/" + "Users" + "/"),
