@@ -16,7 +16,7 @@
 1. **Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）**
    - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
    - **允许动作**：
-     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`mai-code-2-flash`／`gemini-4-argon` 或 Codex 只读）极速摸底代码事实（附 `file:line`）；
+     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gpt-5.6-luna`／`mai-code-2-flash` 或 `gemini-4-argon`／Codex 只读）极速摸底代码事实（附 `file:line`）；
      - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
      - **视觉与交互设计（UI/UX Design）**：涉及界面时按下方 [设计路由（按机器分流）](#design-routing-machine-split) 决定谁跑流水线。Mac mini 常驻域把产品 UI/UX 设计 Goal 交给 `艺术家` 做设计 TL 与终审；MacBook／`Joy` 与本地 CLI 在本机跑 `Explorer` → `Designer` → `Writer` → CI Design Gate。共享设计资产仍只引用 `shared-design-system`／`Strata`／原型预览，不另复制模型表或设计词典；
      - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
@@ -159,7 +159,7 @@ TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_esca
 | 设计者（`Designer`） | worker（`gpt-5.6-luna` -> `mai-code-2-flash`） | TL，经 `herdr-dispatch.sh` | `writes: handoff-only`；在自己的会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig`，输出 `design.md`／`spec.md` 与 `receipts/des-rN.md` |
 | 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
-| PR 监控者（`pr_monitor`） | worker（**与 `Explorer` 相同模型序列**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
+| PR 监控者（`pr_monitor`） | worker（**`pr_monitor` 顺序为 `mai-code-2-flash` → `gpt-5.6-luna`**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
 ## 诊断类 Goal 的 TL（仅此类；Owner 2026-10-26，Joy → Hotty → flower）
@@ -304,7 +304,7 @@ echo $((100 - "${USED%.*}"))
    ```
 
    `herdr-dispatch.sh` 在 `agent start` 成功后轮询 `interactive_ready`（最多约 10s，间隔 0.5s）再 `agent prompt`。若返回 `agent_prompt_stalled`（`--wait` 约 5s 初态检测的假阳性）或发送后约 2s 仍为 `idle`，脚本自动发送一次 Enter（`herdr agent send-keys <name> enter`）提交输入框；指定了 `--wait` 时改走 `herdr agent wait`，不要把这次 5s stall 当成派发失败，也不要盲目重发整段 prompt。手写命令流同样只补一次 Enter 再 `agent wait`。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
-   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 与 Writer 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，Writer **严禁**在会话内执行 `gh run watch` 或 `sleep >= 30` 等待远端 CI（本地验证、`git push` 与 R10 回执落盘后立即返回）。必须通过 `scripts/herdr-dispatch.sh` 派发与 `Explorer` 同档位同模型的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）。`pr_monitor` 做 Job 级 Fail-Fast：轮询 `gh pr checks <pr> --json name,state,bucket,link` 或 `gh api repos/<owner>/<repo>/actions/runs/<run_id>/jobs`，**不得**只看 Workflow Run 顶层 `.conclusion`（同 Run 仍有 Job 在排队或运行时它恒为 `null`）。任一 required job 为 `failure`／`timed_out`／`action_required` 即停止轮询并回报。Run 仍 `in_progress` 时 `gh run view <run-id> --log-failed` 会报 `run is still in progress`，必须改用单 Job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`。
+   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 与 Writer 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，Writer **严禁**在会话内执行 `gh run watch` 或 `sleep >= 30` 等待远端 CI（本地验证、`git push` 与 R10 回执落盘后立即返回）。必须通过 `scripts/herdr-dispatch.sh` 派发 `worker.pr_monitor` 模型序列的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）。`pr_monitor` 做 Job 级 Fail-Fast：轮询 `gh pr checks <pr> --json name,state,bucket,link` 或 `gh api repos/<owner>/<repo>/actions/runs/<run_id>/jobs`，**不得**只看 Workflow Run 顶层 `.conclusion`（同 Run 仍有 Job 在排队或运行时它恒为 `null`）。任一 required job 为 `failure`／`timed_out`／`action_required` 即停止轮询并回报。Run 仍 `in_progress` 时 `gh run view <run-id> --log-failed` 会报 `run is still in progress`，必须改用单 Job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`。
 
    ```sh
    set -euo pipefail
