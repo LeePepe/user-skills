@@ -408,13 +408,17 @@ running from the main repository.
 
 删除前仍须确认分支已推送、PR 已合法合并、`git status --short` 为空且没有未保存回执。未合并、`HOLD` 或含未提交业务改动的 worktree 保留现场，列清单交 Owner 确认。
 
-Goal 只有在全部 Task `done`、队列 `drained: true`、ledger 记录 `EVT=GOAL_DONE`、全部 R10 回执齐全、Task worktrees 已清理且该 Goal 无 `working`／`blocked` agent 时才收尾。TL 可延迟自闭自己的 pane：
+Goal 收尾在 ledger 记录 `EVT=GOAL_DONE`（全部 Task `done`、队列 `drained: true`、全部 R10 回执齐全）之后拆成两条独立验收。Worktree 是否删除见验收 B。
+
+**A. Pane／workspace 关闭（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空该 Goal 的 herdr workspace，例如 `herdr workspace close "$GOAL_WORKSPACE"`。TL SHOULD 延迟自闭自己的 pane：
 
 ```sh
 nohup sh -c 'sleep 2 && herdr pane close "$HERDR_PANE_ID"' >/dev/null 2>&1 &
 ```
 
-随后由协调 Bot 读回 `GOAL_DONE`，必要时执行 `herdr workspace close "$GOAL_WORKSPACE"` 或关闭该 Goal 的 TL pane。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal，不停止共享服务。
+若延迟自闭没有发生，协调 Bot MUST 回退关窗，即使 Worktree 已被 Owner Freeze 保留。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal，不停止共享服务。
+
+**B. Worktree 处置（与 A 正交）**：已合并 Task 的 Worktree 按上文 `PR_MERGED` 规则回收。Owner Freeze 可以保留 Worktree；未合并、`HOLD` 或含未提交业务改动的 worktree 仍保留现场，列清单交 Owner 确认。保留 Worktree MUST NOT 阻断 A。
 
 ### 1.6 6DQ 质量门禁与自动化发布读回
 

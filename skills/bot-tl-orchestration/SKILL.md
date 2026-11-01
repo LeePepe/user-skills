@@ -55,7 +55,7 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
 - **禁止“空口承诺巡检后裸退 Turn”（Mandatory Async Wakeup Watchdog）**：
   交互式 CLI 会话一旦结束当前 Turn 进入 `idle`，在没有后台附加进程完成通知的情况下**不具备自唤醒能力**。因此，协调者 Bot 拉起后台 TL 后，若需要向 Owner 先返回阶段性汇报，**必须在结束当前 Turn 前通过 `bash(mode="async")` 启动非分离式（attached）看门狗**：
   `python3 skills/goal-task/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`
-  一旦该 Goal 达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，`watch` 进程退出并由 CLI 运行时自动注入 `<system_notification>` 唤醒协调者会话执行解卡或完结回收汇报，严禁在没有任何活跃 `async` 唤醒源的情况下结束 Turn 并口头声称“我会持续巡检”。
+  一旦该 Goal 达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，`watch` 进程退出并由 CLI 运行时自动注入 `<system_notification>` 唤醒协调者会话执行解卡或完结回收汇报，严禁在没有任何活跃 `async` 唤醒源的情况下结束 Turn 并口头声称“我会持续巡检”。`GOAL_DONE` 唤醒后的完结动作是验收 A：协调 Bot MUST 执行 `herdr workspace close "$GOAL_WORKSPACE"`（或 `herdr pane close` 关闭该 Goal 的 TL pane）。Owner Freeze 保留 Worktree 不进入这条唤醒的关窗条件。
 
 - 双源对账：同时读取 [`ledger.md`](../goal-task/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
@@ -95,11 +95,11 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
   回执后，关闭任务窗格，清理 `__pycache__`，执行
   `git worktree remove "$TASK_WORKTREE"`、`git worktree prune`、`git branch -D
   "$TASK_BRANCH"`；未合并、hold 或 dirty 的现场必须保留并报告 Owner。
-- **Goal / `GOAL_DONE`**：只有全部 Task `done`、队列 `drained: true` 且 ledger 已记录
-  `EVT=GOAL_DONE` 才可结束。TL 可延迟自闭 pane：
-  `nohup sh -c 'sleep 2 && herdr pane close "$HERDR_PANE_ID"' >/dev/null 2>&1 &`。
-  Bot 随后确认没有 `working`/`blocked` Agent 或已合并 Worktree；若 TL 仍开着，只关闭该
-  Goal 的 TL pane/workspace，绝不触碰 `w1`、Owner 会话或其他活动 Goal，然后停止监督例程。
+- **Goal / `GOAL_DONE`**：协调 Bot 读到该 Goal 的 ledger `EVT=GOAL_DONE` 后，验收拆成两条互不阻塞的检查。全部 Task `done` 与队列 `drained: true` 仍是记 `EVT=GOAL_DONE` 的前提。Worktree 是否删除见验收 B。
+  - **A. Pane／workspace 关闭（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空该 Goal 的 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane：
+    `nohup sh -c 'sleep 2 && herdr pane close "$HERDR_PANE_ID"' >/dev/null 2>&1 &`。
+    若延迟自闭没有发生，协调 Bot 是 MUST 回退，仍只关闭该 Goal 的 TL pane/workspace。保留 Worktree（含 Owner Freeze）不得阻断本条。绝不触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal，然后停止监督例程。
+  - **B. Worktree 处置（与 A 正交）**：已合并 Task 按上文 `PR_MERGED` 规则回收 Worktree。Owner Freeze 可以保留 Worktree；未合并、hold 或 dirty 的现场必须保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
 ## 4. 交接边界
 
@@ -140,7 +140,7 @@ skills/goal-task/scripts/goal-queue.py enqueue \
 
 - 不用 Agent 的 `idle`、终端输出或口头确认替代 ledger、Git、R10 和 CI 证据。
 - 不因 Auto-review、权限弹窗、未声明路径或凭据请求而修改安全门禁或业务代码。
-- 不关闭未合并、dirty、hold 或仍被其他进程使用的 Worktree；把阻塞原因与所需 Owner 决策原样上报。
+- 不关闭未合并、dirty、hold 或仍被其他进程使用的 Worktree；把阻塞原因与所需 Owner 决策原样上报。Owner Freeze 保留 Worktree 与 `GOAL_DONE` 后的 pane／workspace 关闭是两条独立验收，保留现场不推迟关窗。
 - 不在 Bot 私有记忆中复制共享模型表、七域花名册或脚本规则；共享资产变化只改其唯一事实源。
 
 ## 7. PR DAG Supervision & Auto-Heal Loop
