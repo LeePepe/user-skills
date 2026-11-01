@@ -287,6 +287,36 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("设计者（Designer）", skill_text)
         self.assertIn("writes: handoff-only", agents_text)
 
+    def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
+        designer_dir = SKILLS_DIR / "my-designer"
+        modernization_dir = SKILLS_DIR / "visual-design-modernization"
+        designer_text = (designer_dir / "SKILL.md").read_text(encoding="utf-8")
+        craft_text = (designer_dir / "references" / "five-layer-craft.md").read_text(encoding="utf-8")
+        spec_text = (designer_dir / "references" / "agent-design-doc-v1.md").read_text(encoding="utf-8")
+        modernization_text = (modernization_dir / "SKILL.md").read_text(encoding="utf-8")
+        goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
+
+        for path in (
+            designer_dir / "SKILL.md",
+            designer_dir / "references" / "agent-design-doc-v1.md",
+            designer_dir / "references" / "five-layer-craft.md",
+            modernization_dir / "SKILL.md",
+        ):
+            with self.subTest(path=str(path)):
+                self.assertTrue(path.is_file())
+        for layer in ("L1", "L2", "L3", "L4", "L5"):
+            self.assertIn(layer, craft_text)
+        self.assertIn("schema: agent-design-doc/v1", spec_text)
+        self.assertIn("MUST", spec_text)
+        self.assertIn("NEVER", spec_text)
+        self.assertIn("handoff-only", designer_text)
+        self.assertIn("without requiring `艺术家` or any Grok Bot", goal_text)
+        self.assertIn("非门禁", goal_text)
+        self.assertIn("without requiring `艺术家` or any Grok Bot", agents_text)
+        self.assertIn("非门禁", agents_text)
+        self.assertIn("No Code Demo", modernization_text)
+
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
         skill_dir = SKILLS_DIR / "bot-tl-orchestration"
         skill_path = skill_dir / "SKILL.md"

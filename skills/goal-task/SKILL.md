@@ -155,6 +155,13 @@ For tracked terminal transitions use `set-status --status done|cancelled --evide
 
 ### Designer 派遣与反内联守卫
 
+**CLI design-pipeline rule:** The local CLI and `goal-task` entry always run
+`Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer`
+without requiring `艺术家` or any Grok Bot. On Mac mini, a resident Bot may
+optionally FYI `艺术家` for coordination or final review, but that is
+optional and **非门禁**: it never blocks the CLI pipeline or changes its
+acceptance criteria.
+
 `my-designer`、`impeccable`、`dataviz-principles`、`hig` 等设计技能属于 `Designer`／`Writer` Subagent 的 Required Skills。Owner 首次提出 UI/UX 设计或要求重新设计界面、调整布局、增加展示指标时，TL 只与 Owner 对齐 1–2 个高层决策点，**严禁在 TL 主会话内调用 `skill("my-designer")`、自任 Designer、直接读取组件库源码亲自写设计方案**；必须通过 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。
 
 TL 编写的 `briefs/designer*.md` 只能包含目标范围、高层约束、探查回执路径、输出路径和 Required Skills；不得预写完整组件选型、布局尺寸表或视觉规格。Designer 必须在自己的子代理会话首步显式加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。等待任何 Subagent 时先检查 `agent_status` 和磁盘 R10 回执；`blocked` 必须按 Tier A/A′ 解卡或记 `NEED_GO`，**严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`**。

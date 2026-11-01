@@ -43,6 +43,12 @@ lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
 
 ### 设计路由（按机器分流；Owner 2026-10-28，Hotty → flower）
 
+**CLI design-pipeline rule (normative):** The local CLI and `goal-task` entry
+run `Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer`
+without requiring `艺术家` or any Grok Bot. A Mac mini resident Bot may
+optionally FYI `艺术家` for coordination or final review only; this is
+optional and **非门禁**, never a blocking gate for the pipeline.
+
 产品 UI/UX 设计 Goal 的阶段与 CLI／`goal-task` 设计流相同。模型档位只以 [runtime-profiles.yaml](runtime-profiles.yaml) 为唯一来源；七域花名册只以本节「bot 分工」为唯一来源。本路由只决定谁开设计 TL、谁做设计总审，不复制模型表。
 
 - **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。`shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目 `docs/design-contract.md` 与既有 `Strata`／原型预览仍是共享设计资产的单一事实源，各机器只引用、不另存一份。
