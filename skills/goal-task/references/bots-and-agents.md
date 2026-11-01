@@ -39,7 +39,10 @@ lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
 写入 `contract-telemetry.json`。等待子 Agent 时只能用 30–60s 有界轮询（例如
 `herdr agent wait <name> --timeout 60000`），每片检查 `herdr agent get` 与
 `receipts/`，不得盲等十分钟；Apple 工具链路径 `/Applications/Xcode.app`
-必须包含在 Copilot trusted/add-dir allowlist 中。
+必须包含在 Copilot trusted/add-dir allowlist 中。监督关联不单靠
+`name.startswith(<goal 目录名>)`：`-goal-tl-` 短名（如 `good-des-goal-tl-r1`）、
+台账 `TL:`／`from`／`to`，以及 cwd 位于该 Goal handoff 目录内，都把
+`good-des-*` 与 `gd-e1-*` 绑到目录 `good-designer`，从而仍能报 `BLOCKED_AGENT`。
 
 ### 设计路由（按机器分流；Owner 2026-10-28，Hotty → flower）
 
@@ -300,7 +303,7 @@ echo $((100 - "${USED%.*}"))
        --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user
    ```
 
-   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/artifacts`、`~/Development/workflow-evidence`、`~/Development/worktrees`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`；同一 `[projects."…"]` 只保留一块，并清掉文件里已有的相邻重复 trust 块）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
+   `herdr agent start --timeout` 的单位是毫秒（3000–300000）；`scripts/herdr-dispatch.sh` 在 `herdr pane split --direction` 之前校验 `--name` 匹配 `^[a-z][a-z0-9_-]{0,31}$`（≤32 字符），并把 `$TASK_WORKTREE`、`~/Development`、`~/Development/handoff`、`~/Development/artifacts`、`~/Development/workflow-evidence`、`~/Development/worktrees`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 以及 `HERDR_EXTRA_ADD_DIRS`（冒号分隔，对应 `briefs/goal.md` 的 Goal 级 `extra_add_dirs`）写入 `~/.copilot/config.json`（`trustedFolders`）与 `~/.codex/config.toml`（`trust_level = "trusted"`；同一 `[projects."…"]` 只保留一块，并清掉文件里已有的相邻重复 trust 块）。对 `copilot`，`--add-dir` 改为叠加去重：无论调用方是否已传 `--add-dir`，始终补齐 `$CWD`、`~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 与 `HERDR_EXTRA_ADD_DIRS`，父 TL 白名单必须覆盖子 Subagent（Parent ≥ Child）。`/Volumes/SSD` 是基线祖先：Goal 放在 `/Volumes/SSD/.../handoff/<goal>` 时，只把该 Goal 目录写入 `trustedFolders` 盖不住 handoff 兄弟目录的 realpath，会话 `--add-dir` 必须包含 `/Volumes/SSD`（handoff 父目录 realpath 若不在 `/Volumes/SSD`、`~/Development` 或 `~/orca` 下，由 `herdr-dispatch.sh` 另行补上），父 TL 不得窄于子 Subagent。并对新分屏 shell 未就绪导致的 `agent_pane_busy` 自动退避重试（最多 5 次）；不接受 bypass-permissions 提示，改用 profile 中的显式白名单参数。
 5. **文件指针派发、PR 状态监控委派（`pr_monitor`）与状态等待**：prompt 只携带 `briefs/<task>.md`、R10 回执路径与 Codex 原生 `create_goal`／`update_goal` 绑定指令，不粘贴长合同。单任务同步执行：
 
    ```sh
@@ -344,7 +347,7 @@ echo $((100 - "${USED%.*}"))
    herdr agent read "$WRITER_NAME" --source recent-unwrapped --lines 80
    ```
 
-   **严禁把 `blocked` 当成完成退出（含 Bot 盯 TL 与 TL 盯 Subagent）**：任何状态检查或巡检一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面，**严禁仅判断 `status != "working"` 就 `break` 退出循环**。若弹窗为 `Allow path access` 且所列路径均属于临时目录（`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`）、基线白名单或当前 Goal/Task 简报已声明的 `extra_add_dirs` 目标路径，立即发送 `herdr agent send-keys <name> enter`（默认高亮项 `Yes, and remember these paths for this session`）解卡并确认转回 `working`；若涉及未声明的仓外／敏感路径或高危操作，严禁盲按 Enter，记 `EVT=NEED_GO` 上报 Owner 裁决。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
+   **严禁把 `blocked` 当成完成退出（含 Bot 盯 TL 与 TL 盯 Subagent）**：任何状态检查或巡检一旦发现 `agent_status == "blocked"`（或 `agent_blocked`），必须立即用 `herdr agent get <name>` 与 `herdr agent read <name> --source visible --lines 40` 检查审批／提问界面，**严禁仅判断 `status != "working"` 就 `break` 退出循环**。若弹窗为 `Allow path access` 且所列路径均属于临时目录（`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`）、基线白名单（含 `/Volumes/SSD` 及其下 handoff 兄弟目录的 realpath）或当前 Goal/Task 简报已声明的 `extra_add_dirs` 目标路径，立即发送 `herdr agent send-keys <name> enter`（默认高亮项 `Yes, and remember these paths for this session`）解卡并确认转回 `working`；若涉及未声明的仓外／敏感路径或高危操作，严禁盲按 Enter，记 `EVT=NEED_GO` 上报 Owner 裁决。Herdr 的 `idle`／`done` 只是终端就绪提示，不是完成证明；TL 必须以落盘的 R10 回执文件和 Git 实际 commit SHA／PR 状态对账为准。
 
    **Tier A′（`CMD_CONFIRM`）**：可见窗格出现 Copilot／CLI「Do you want to run this command?」或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项；仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／`reset`／`checkout` 及其它改写历史或工作区的子命令）、`python3`、`jq`、`herdr`（不含 `herdr server stop`），以及 Allow-path／herdr 操作已经允许的同类安全操作（例如 `shasum`、`date`、`sleep`、`env`）——才可按键解卡并记 `EVT=UNBLOCK`。当前高亮已是安全的运行项时发送 `herdr agent send-keys <name> enter`；界面若提供 don't-ask-again／remember，且记住范围仍限于这条已核对的白名单命令，用 Down+Enter（`herdr agent send-keys <name> down`，随后 `herdr agent send-keys <name> enter`，或本仓已建立的等效按键序列）选中该安全记住项。敏感、破坏性或未声明的命令保持 hold，记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter，不得把 blocked 当作完成。**`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**（即便启动参数带有该旗标，也不抑制这两类提示），不得靠它解卡；MacBook `team_lead` 故意不带 `--no-ask-user`（Owner 2026-10-26 对可选 B 暂不），不改 `runtime-profiles.yaml` 或 `herdr-dispatch.sh`，也不开启 `--yolo`。
 7. **结束与清理**：TL 在下属还有 `working` 时不得结束；先收齐下属回执（R10），在台账记 `DONE`，再关闭本次 Task 的 Writer、Reviewer 与 `pr_monitor` panes：
