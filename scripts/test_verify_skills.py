@@ -287,6 +287,59 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("设计者（Designer）", skill_text)
         self.assertIn("writes: handoff-only", agents_text)
 
+    def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
+        designer_dir = SKILLS_DIR / "my-designer"
+        modernization_dir = SKILLS_DIR / "visual-design-modernization"
+        designer_text = (designer_dir / "SKILL.md").read_text(encoding="utf-8")
+        craft_text = (designer_dir / "references" / "five-layer-craft.md").read_text(encoding="utf-8")
+        spec_text = (designer_dir / "references" / "agent-design-doc-v1.md").read_text(encoding="utf-8")
+        modernization_text = (modernization_dir / "SKILL.md").read_text(encoding="utf-8")
+        goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
+
+        for path in (
+            designer_dir / "SKILL.md",
+            designer_dir / "references" / "agent-design-doc-v1.md",
+            designer_dir / "references" / "five-layer-craft.md",
+            modernization_dir / "SKILL.md",
+        ):
+            with self.subTest(path=str(path)):
+                self.assertTrue(path.is_file())
+        for layer in ("L1", "L2", "L3", "L4", "L5"):
+            self.assertIn(layer, craft_text)
+        self.assertIn("schema: agent-design-doc/v1", spec_text)
+        self.assertIn("MUST", spec_text)
+        self.assertIn("NEVER", spec_text)
+        self.assertIn("handoff-only", designer_text)
+        self.assertIn("without requiring `艺术家` or any Grok Bot", goal_text)
+        self.assertIn("非门禁", goal_text)
+        self.assertIn("without requiring `艺术家` or any Grok Bot", agents_text)
+        self.assertIn("非门禁", agents_text)
+        self.assertIn("Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer", goal_text)
+        self.assertIn("Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer", agents_text)
+        self.assertNotIn("执行设计总审门禁", agents_text)
+        self.assertNotIn("Bot → `艺术家`", agents_text)
+        self.assertIn("Web Operate", craft_text)
+        self.assertIn(">=14px", craft_text)
+        self.assertIn(">=16px", craft_text)
+        self.assertIn("business charter", craft_text)
+        self.assertIn("stale/error", craft_text)
+        self.assertIn(".strataControlCenter", craft_text)
+        self.assertIn(".strataInputBaseline", craft_text)
+        self.assertIn("frame(minWidth: 44, minHeight: 44)", craft_text)
+        self.assertIn("StrataStickySectionHeader", designer_text)
+        self.assertIn("StrataExpandableTitleHeader", designer_text)
+        self.assertIn("lineLimit(1)", designer_text)
+        self.assertIn("44pt", designer_text)
+        self.assertIn("StrataMetricRow", designer_text)
+        self.assertIn("downstream `Writer`", designer_text)
+        self.assertIn("author the implementation-ready `design.md`/`spec.md` handoff and receipts", designer_text)
+        self.assertIn("the downstream `Writer` implements **directly in the product or `shared-design-system` code**", designer_text)
+        self.assertNotIn("Once the verbal spec is clear, implement **directly in the product or `shared-design-system` code**", designer_text)
+        self.assertNotIn("Direct Implementation:", designer_text)
+        self.assertNotIn("Implement directly in `shared-design-system` or product views", designer_text)
+        self.assertIn("No Code Demo", modernization_text)
+
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
         skill_dir = SKILLS_DIR / "bot-tl-orchestration"
         skill_path = skill_dir / "SKILL.md"
