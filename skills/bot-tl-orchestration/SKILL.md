@@ -50,7 +50,12 @@ pr_monitor 10m、Designer/Reviewer 15m、Writer 30m、TL 40m）处理
 upstream drift，并在 `GOAL_DONE` 通过 `telemetry --write` 生成
 `contract-telemetry.json`。子 Agent 等待必须拆成 30–60s slices，例如
 `herdr agent wait <name> --timeout 60000`，每次读取状态与 receipts。Copilot
-allowlist 同时包含 `/Applications/Xcode.app`，避免 Apple toolchain 路径卡住。
+allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根目录（如 `/Volumes/SSD/Development`），避免 Apple toolchain 与软链路径弹窗卡住。
+
+- **禁止“空口承诺巡检后裸退 Turn”（Mandatory Async Wakeup Watchdog）**：
+  交互式 CLI 会话一旦结束当前 Turn 进入 `idle`，在没有后台附加进程完成通知的情况下**不具备自唤醒能力**。因此，协调者 Bot 拉起后台 TL 后，若需要向 Owner 先返回阶段性汇报，**必须在结束当前 Turn 前通过 `bash(mode="async")` 启动非分离式（attached）看门狗**：
+  `python3 skills/goal-task/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`
+  一旦该 Goal 达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，`watch` 进程退出并由 CLI 运行时自动注入 `<system_notification>` 唤醒协调者会话执行解卡或完结回收汇报，严禁在没有任何活跃 `async` 唤醒源的情况下结束 Turn 并口头声称“我会持续巡检”。
 
 - 双源对账：同时读取 [`ledger.md`](../goal-task/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
