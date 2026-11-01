@@ -64,7 +64,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 ### Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）
 
 - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**（若 Goal 涉及仓外合法路径，须在 `briefs/goal.md` 头声明 `extra_add_dirs`，并在启动父 TL 时一并注入 `--add-dir` 与 `HERDR_EXTRA_ADD_DIRS`，满足**父 ≥ 子白名单不变量**（Parent ≥ Child）），将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 同时监听台账事件与 `herdr agent get <goal>-goal-tl-r1` 的 `agent_status`（遇计划内 `Allow path access` 自动 `send-keys enter` Remember 解卡，未授权路径记 `NEED_GO` 报 Owner）。
-- **Bot ↔ TL 编排入口**：常驻域主 Bot 的开 TL、热追加、巡检解卡与 Goal 完结回收遵循 [`bot-tl-orchestration`](../bot-tl-orchestration/SKILL.md)；本合同继续负责 TL ↔ Subagent 的 Task-level 1-Hop 执行。`PR_MERGED` 后按两级清理规则回收任务 Worktree，`GOAL_DONE` 后由 TL 延迟自闭 pane，Bot 再核对并清理 Goal TL pane/workspace。
+- **Bot ↔ TL 编排入口**：常驻域主 Bot 的开 TL、热追加、巡检解卡与 Goal 完结回收遵循 [`bot-tl-orchestration`](../bot-tl-orchestration/SKILL.md)；本合同继续负责 TL ↔ Subagent 的 Task-level 1-Hop 执行。`PR_MERGED` 后按两级清理规则回收已合并 Task 的 Worktree（Owner Freeze 可保留未合并现场，与关窗分开）。`GOAL_DONE` 后 TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 关闭该 Goal 的 TL pane/workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。保留 Worktree MUST NOT 阻断关窗。
 - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
 - **设计驱动的 Phase 1 交接**：独立的 Demo/UI `Writer` 在专用 Worktree 中消费冻结的 `design.md`，实现可运行 Demo／代码并产出四态与双外观的多态渲染截图；随后由 `shared-ci` 的 `scripts/context/design_contract.py` 执行静态设计契约门禁，拦截裸 Hex／RGB 色值与缺漏章节，最后由跨厂商 `Reviewer` 按 V1–V5 双轴对账验收。设计路由按机器分流（Owner 2026-10-28）：Mac mini 常驻域仍交 `艺术家` 做设计 TL 与终审；MacBook／`Joy` 与本地 CLI 在本 Goal 内跑同一 `Explorer` → `Designer` → `Writer` → CI Design Gate，不转交 `艺术家`。详见 [references/bots-and-agents.md](references/bots-and-agents.md)。
 
@@ -218,7 +218,7 @@ TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_esca
 
 **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
 Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时关闭
-该 TL 的 Goal pane/workspace；绝不越级创建、prompt 或关闭 TL 下属 Subagent。TL 全权
+该 TL 的 Goal pane/workspace（保留 Worktree 不阻断关窗）；绝不越级创建、prompt 或关闭 TL 下属 Subagent。TL 全权
 负责下属 Subagent 的派发、更新与 Task／阶段完结关窗回收；Bot 不得将子 pane 留给自己
 清理。Bot 或本地 CLI 直接作为 TL 时，则由其直接管辖下属 Subagent。
 
@@ -308,7 +308,7 @@ launches also allow `/Applications/Xcode.app` for Apple toolchain access.
 主会话收集并转述写者证据与验收结论，在执行台账记录对应 agent 和会话 ID。
 
 交付与 PR 状态监控委派（`pr_monitor` Subagent）：**严禁 TL 主会话或 Task Writer 直接内联运行 `gh pr checks`／`gh pr view`／`gh run watch`／长 `sleep` 循环轮询等待远端 CI 或合并**（Writer 完成本地验证与 `git push` 后必须立即落盘 R10 回执返回）。`pr_monitor` 的 cwd 只能是主仓、`$GOAL_HANDOFF` 或 `/tmp`，**禁止使用 `$TASK_WORKTREE`**。当 PR 开启、进入 CI／auto-merge 队列或触发发布流水线后，TL 必须通过 `scripts/herdr-dispatch.sh` 派发`worker.pr_monitor` 模型序列（`mai-code-2-flash` → `gpt-5.6-luna`）的独立 `<goal>-<task>-pr-monitor-r<round>`（或整波 `<goal>-wave<N>-pr-monitor-r1`）Subagent 负责监控：推进或核验 auto-merge、持续盯梢 required checks 直至真实读回 PR 已合并（`PR_MERGED`），或**一旦任一 required job 结论为 `failure`/`timed_out`/`action_required`（Job 级 Fail-Fast，严禁死等整轮 Workflow Run 顶层 `.conclusion` 完结）**／出现冲突，立即用单 Job 日志接口（`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs | tail -n 120`，因整轮 Run 未结束时 `gh run view --log-failed` 会报错拒绝）抓取失败日志落盘 `~/Development/handoff/<goal>/receipts/<task>-pr-monitor-r<round>.md` 并回报 `PR_CHECK_FAILED`／`PR_CONFLICT` 交由 TL 派写者修复。Task PR 确认 `PR_MERGED`、R10 回执已落盘且其 Subagent 窗格已关闭后，TL 自动清理该已合并 Task 的 worktree 与分支（`git worktree remove` 加分支清理）；未合并／暂停（HOLD）的 worktree 仍须 Owner 确认。
-补充收尾约束：Task PR 确认 `PR_MERGED`、R10 回执已落盘且其 Writer、Reviewer 与 `pr_monitor` panes 已关闭后，才可用 `git worktree remove` 清理 worktree；未合并／暂停（HOLD）／含未提交业务改动的 worktree 保留交 Owner。Goal 完成后仅由协调 Bot 在 `GOAL_DONE`、R10 齐全、worktrees 清理且无 `working`／`blocked` agent 时关闭 Goal workspace／TL pane，**严禁触碰共享 `w1`、Owner 手开或其他在途 Goal**。
+补充收尾约束：Task PR 确认 `PR_MERGED`、R10 回执已落盘且其 Writer、Reviewer 与 `pr_monitor` panes 已关闭后，才可用 `git worktree remove` 清理 worktree；未合并／暂停（HOLD）／含未提交业务改动的 worktree 保留交 Owner（Owner Freeze）。Goal 读到 `EVT=GOAL_DONE` 后关窗与 Worktree 分开：TL SHOULD 延迟自闭 pane，协调 Bot MUST 回退关闭该 Goal 的 workspace／TL pane（例如 `herdr workspace close "$GOAL_WORKSPACE"`），即使 Owner Freeze 保留 Worktree。保留 Worktree MUST NOT 阻断关窗。**严禁触碰共享 `w1`、Owner 手开或其他在途 Goal**。
 主会话汇总台账，Goal 级端到端验收另行取证。
 台账事件时间必须取自写入时刻的真实系统时钟（`date -Iseconds` 或 `date '+%Y-%m-%dT%H:%M:%S%z'`），严禁估算或回填时间戳；TL 事件使用 `id=E<N>`，协调者 Bot 旁路巡检／解卡事件使用 `id=B<N>` 或 `id=J<N>` 以防撞号。
 

@@ -83,7 +83,7 @@ lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
   关窗与回收。Bot 或本地 CLI 直接担任 TL 时，则由其直接管辖下属 Subagent。
 - `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
 - **Task / `PR_MERGED`**：TL 或清理 Subagent 收到准确合并读回与 R10 回执后，关闭任务 pane，清理 `__pycache__`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
-- **Goal / `GOAL_DONE`**：仅当所有 Task `done`、`drained: true` 且 ledger 记录 `EVT=GOAL_DONE` 时收口；TL 可延迟自闭 pane，Bot 再确认没有 `working`／`blocked` Agent 或合并 Worktree，必要时只关闭该 Goal 的 TL pane/workspace，不触碰 `w1`、Owner 会话或活动 Goal。
+- **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE`（全部 Task `done` 且 `drained: true`）后，关窗与 Worktree 处置分开验收。**A（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空其 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 回退关闭，即使 Worktree 已由 Owner Freeze 保留。不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：Owner Freeze 可以保留 Worktree；未合并、HOLD 或 dirty Worktree 保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
@@ -358,6 +358,12 @@ echo $((100 - "${USED%.*}"))
    git push origin --delete "$TASK_BRANCH" 2>/dev/null || true
    ```
 
-   **Goal 自动清理**：仅当协调 Bot 已确认 `GOAL_DONE`、全部 R10 回执齐全、Task worktrees 已清理且该 Goal 没有 `working` 或 `blocked` agent 时，由协调 Bot（不是 TL 自关）关闭该 Goal 的 workspace 或 TL pane，例如 `herdr workspace close "$GOAL_WORKSPACE"`。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal。
+   **Goal 窗格关闭（验收 A，与 Worktree 正交）**：协调 Bot 读到 `EVT=GOAL_DONE` 后，MUST 关闭该 Goal 的 workspace 或 TL pane，例如 `herdr workspace close "$GOAL_WORKSPACE"`。TL SHOULD 延迟自闭 pane：
 
-   并在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**未合并／暂停（HOLD）／含未提交业务改动的 worktree 不自动删**：保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。不得执行 `herdr server stop`。
+   ```sh
+   nohup sh -c 'sleep 2 && herdr pane close "$HERDR_PANE_ID"' >/dev/null 2>&1 &
+   ```
+
+   若延迟自闭没有发生，协调 Bot MUST 回退关窗，即使该 Goal 的 Worktree 仍被 Owner Freeze 保留。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal。
+
+   在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**Worktree 处置（验收 B）**：未合并／暂停（HOLD）／含未提交业务改动的 worktree 不自动删；Owner Freeze 可保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。保留 Worktree MUST NOT 阻断上面的 pane／workspace 关闭。不得执行 `herdr server stop`。
