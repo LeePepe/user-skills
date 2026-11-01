@@ -21,13 +21,15 @@ ROLE_TTL_SECONDS = {
     "team_lead": 2400,
 }
 EVENT_RE = re.compile(
-    r"(?P<timestamp>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d))"
+    r"(?P<timestamp>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d))"
     r".*?\bEVT=(?P<event>[A-Z0-9_]+)"
 )
 
 
 def parse_time(value: str) -> dt.datetime:
     value = value.strip().replace("Z", "+00:00")
+    if re.search(r"[+-]\d{4}$", value):
+        value = f"{value[:-2]}:{value[-2:]}"
     parsed = dt.datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
@@ -212,6 +214,32 @@ def telemetry(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def watch(args: argparse.Namespace) -> dict[str, Any]:
+    import time
+
+    handoff = Path(args.handoff_dir).expanduser()
+    interval = max(5, int(args.interval))
+    max_wait = max(interval, int(args.max_wait))
+    started = time.monotonic()
+    while True:
+        events = [event for _, event in goal_events(handoff / "ledger.md")]
+        if "GOAL_DONE" in events:
+            return {"goal_id": handoff.name, "reason": "GOAL_DONE", "events": len(events)}
+        scan_args = argparse.Namespace(
+            handoff_root=str(handoff.parent),
+            herdr_json=args.herdr_json,
+            now=None,
+            json=True,
+        )
+        scan_result = scan(scan_args)
+        goal_anomalies = [a for a in scan_result["anomalies"] if a.get("goal_id") == handoff.name]
+        if goal_anomalies:
+            return {"goal_id": handoff.name, "reason": "ANOMALY", "anomalies": goal_anomalies}
+        if time.monotonic() - started >= max_wait:
+            return {"goal_id": handoff.name, "reason": "WATCH_SLICE_TIMEOUT", "events": len(events)}
+        time.sleep(interval)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -227,11 +255,19 @@ def main() -> None:
     telemetry_parser.add_argument("--handoff-dir", required=True)
     telemetry_parser.add_argument("--write", action="store_true")
     telemetry_parser.add_argument("--json", action="store_true")
+    watch_parser = subparsers.add_parser("watch")
+    watch_parser.add_argument("--handoff-dir", required=True)
+    watch_parser.add_argument("--interval", type=int, default=30)
+    watch_parser.add_argument("--max-wait", type=int, default=2400)
+    watch_parser.add_argument("--herdr-json")
+    watch_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "scan":
         result = scan(args)
     elif args.command == "check-pins":
         result = check_pins(args)
+    elif args.command == "watch":
+        result = watch(args)
     else:
         result = telemetry(args)
     json_output(result, args.json)
