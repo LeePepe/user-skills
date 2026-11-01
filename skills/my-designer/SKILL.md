@@ -37,12 +37,12 @@ Infer platform and default mode from the repository (`shared-design-system` → 
 1. **One owner, one theme authority, explicit context propagation.**
    - On web, Basalt (or the chosen Mode D system) owns visual primitives and tokens; on native, `Strata` / `DesignTokens` (or the app's native `DesignKit`) owns them.
    - **Host boundary rule:** Detached hosts (`UITextField.inputView`, `UIHostingController`, sheets, popovers, widgets) MUST explicitly inject both the active `theme` and `.environment(\.colorScheme, ...)`—never let a sub-tree fall back to an uncalibrated default theme.
-2. **No code demos — verbal two-stage spec → direct product implementation.**
+2. **No code demos — verbal two-stage spec → downstream implementation handoff.**
    - **Never generate throwaway HTML demos or isolated `Prototype/` code directories.**
    - A "demo" is strictly a structured **verbal/text design brief** using the Two-Stage Workflow:
      - **Stage 1 (术语翻译):** Translate user complaints/intuition into precise design terms (e.g., *视觉动线、信息层级、拇指安全区、同心圆角、基线对齐、骨架屏、引导式空状态*).
      - **Stage 2 (参数级规则):** Lock exact tokens, font scales, spacing, corner radii, alignment anchors, and states in concise text/tables.
-   - Once the verbal spec is clear, implement **directly in the product or `shared-design-system` code** and iterate rapidly with real rendered screenshots.
+   - Once the verbal spec is clear, author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code**, renders real screenshots, and iterates against the handoff.
 3. **Micro-precision & alignment floor (fixed & aligned):**
    - **Surface-classified spacing:** Never apply one flat spacing value to every surface or squeeze with an unguarded `0pt` gap. Class A dense matrices use `4–6pt` gaps and `2–4pt` inner padding; Class B tabular entry rows use `6–8pt` inter-slot gaps (`>=6pt` floor), `4pt` inside input pills, and row padding of `8–10pt` horizontal / `4pt` vertical; Class C content cards use `10–12pt` grid gaps and `12–16pt` inner padding; Class D sticky headers use `6–8pt` gaps and `8–12pt` horizontal / `6pt` vertical padding.
    - **Grid & Spacing:** Use the `4/8pt` scale (`4, 8, 12, 16, 24, 32, 48`) where it fits the surface class. No off-grid magic padding literals or `0–1pt` entry-row gaps.
