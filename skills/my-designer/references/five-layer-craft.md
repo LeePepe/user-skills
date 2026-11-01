@@ -12,7 +12,7 @@ is a design decision and an implementation gate, not a decorative checklist.
 - Pair `interactiveAccent` with `onInteractiveAccent` at WCAG 2.2 AA
   (`>=4.5:1`); use `tabular-nums` or `.monospacedDigit()` for changing values.
 - Keep typography platform-aware: iOS body floors at `11pt`, macOS at `10pt`,
-  and Web `<input>` text at `>=16px` on mobile.
+  Web Operate text at `>=14px`, and Web mobile `<input>` text at `>=16px`.
 
 ## L2 — Platform ergonomics
 
@@ -29,10 +29,13 @@ is a design decision and an implementation gate, not a decorative checklist.
 - Every data-bearing surface defines `populated`, `empty`, `loading`, and
   `error`, in both `light` and `dark` appearances.
 - Loading preserves populated geometry (`CLS = 0`); empty states explain why
-  and expose one primary CTA; errors explain the cause and offer inline
-  recovery.
+  and expose one primary CTA aligned with the product's business charter
+  (for example, a read-only app guides users to the CLI/help path rather than
+  offering a generic write/create CTA); errors explain the cause and offer
+  inline recovery.
 - Include stale-with-error and permission-denied behavior where the product
-  can encounter them. Never replace a failed response with fake zero data.
+  can encounter them: preserve the last known data with a visible stale/error
+  state and retry path. Never replace a failed response with fake zero data.
 
 ## L4 — Deep modules
 
@@ -43,7 +46,14 @@ is a design decision and an implementation gate, not a decorative checklist.
   A reusable variant or larger seam is an upstream task, not app-local polish.
 - Separate the visual box from the hit-target layer: explicit
   `frame(minWidth: 44, minHeight: 44)` plus `.contentShape(Rectangle())` may
-  expand interaction without inflating the visual row.
+  expand interaction without inflating the visual row. Use explicit alignment
+  guides such as `.strataControlCenter` and `.strataInputBaseline` so labels,
+  controls, and validation copy share stable axes.
+- Header distinction is contractual: `StrataStickySectionHeader` is fixed at
+  `44pt`, single-line, and `.lineLimit(1)`; unbounded dynamic titles belong in
+  `StrataExpandableTitleHeader` or a dedicated `ViewThatFits` row that reflows
+  from one to two lines with `lineLimit(2)`. `StrataMetricRow` is availability-
+  sensitive and must be confirmed by Explorer before use.
 
 ## L5 — Anti-AI-slop review
 

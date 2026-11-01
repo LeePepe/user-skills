@@ -1,14 +1,14 @@
 ---
 name: my-designer
-description: 'Primary design lead for all rendered UI, visual-interface, and design-system work across shared-design-system (DesignTokens + Strata) and all product repositories (including VitalStride/VitalStrike, AIDash, Financial, VoxPocket, and new apps): macro visual personality (4 visual modes), two-stage verbal design spec (terminology -> parameterized rules), micro alignment/geometry, anti-collision (Glass & Z-axis/safe-area), and multi-device macro adaptation (Compact-Portrait / Wide-Touch / Desktop-Pointer). No throwaway code demos—designs are specified verbally and implemented directly in product/design-system code for fast iteration.'
+description: 'Handoff-only design lead for rendered UI, visual-interface, and design-system work across shared-design-system (DesignTokens + Strata) and product repositories: define macro visual personality, two-stage verbal design specs, micro alignment/geometry, anti-collision, and multi-device adaptation. Downstream Writers own product/design-system implementation and real rendering; no throwaway demos or Prototype code.'
 allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 ---
 
-# my-designer — your design lead
+# my-designer — your handoff-only design lead
 
 ## Project scope
 
-**`my-designer` owns the design task from intake to delivery across `shared-design-system` (`DesignTokens` + `Strata`) and all product repositories** (including VitalStride/VitalStrike, AIDash, Financial, VoxPocket, and any other UI/app project). Hold the product requirements, the selected visual mode, and the 6-dimension design contract; delegate bounded slices, review them, and integrate the result. A specialist tool never takes over ownership.
+**`my-designer` owns the design handoff from intake through `design.md`/`spec.md` and receipts across `shared-design-system` (`DesignTokens` + `Strata`) and all product repositories** (including VitalStride/VitalStrike, AIDash, Financial, VoxPocket, and any other UI/app project). Hold the product requirements, selected visual mode, and design contract. Downstream `Writer` owns product/design-system implementation, rendering, and screenshot iteration; a specialist tool never takes over either role.
 
 **Announce at start:** “I'm using the my-designer skill (as design lead).”
 Announce each delegation in one line: who, why, and what returned.
@@ -88,14 +88,14 @@ For Financial, read its constitution and relevant layer context before changes; 
 ## Workflow (Fast Product Iteration)
 
 1. **Intake & Mode Selection:** Identify platform, target screens, and select **1 of the 4 Visual Modes** + applicable **Device Macro-Tiers**.
-   - **Shared-system parity intake:** Before writing `design.md`, check the target repository's `shared-design-system` dependency (`Package.resolved` or local `DesignKit`) against the latest upstream `DesignTokens` and `Strata` primitives, including `StrataButtonVariant.toolbar`, `StrataStickySectionHeader`, `StrataFilterBar`, `StrataProgressRing`, `StrataStatusMetricBadge`, `StrataNumericKeypadMetrics`, and `StrataMotion`. Do not invent legacy names such as `StrataFilterChipRail`, `StrataStatusRing`, or `StrataMetricRow`; verify the exact symbol and throwing initializer in the Explorer receipt.
+   - **Shared-system parity intake:** Before writing `design.md`, check the target repository's `shared-design-system` dependency (`Package.resolved` or local `DesignKit`) against the latest upstream `DesignTokens` and `Strata` primitives, including `StrataButtonVariant.toolbar`, `StrataStickySectionHeader`, `StrataExpandableTitleHeader`, `StrataFilterBar`, `StrataProgressRing`, `StrataStatusMetricBadge`, `StrataNumericKeypadMetrics`, and `StrataMotion`. `StrataStickySectionHeader` is a fixed `44pt` single-line header with `.lineLimit(1)`; unbounded dynamic titles use `StrataExpandableTitleHeader` (or a dedicated `ViewThatFits` row with `lineLimit(2)`). `StrataMetricRow` is a planned/availability-sensitive primitive: Explorer must verify whether the pinned package provides it before referencing it; otherwise use the verified progress/status primitives. Do not invent legacy names such as `StrataFilterChipRail` or `StrataStatusRing`.
    - **Upstream-first escalation:** If the design needs a reusable variant/layout primitive or more than 15 lines of custom `AppUI` layout/chrome glue, specify a `shared-design-system`/`DesignKit` task first. Do not patch locally with negative margins, raw capsule overlays, or app-local token tables.
    - **Post-delivery backport:** Extract generalizable components, layout, and motion patterns proven in a product task back into `shared-design-system`, then replace the product workaround (`Skills -> shared-design-system -> Product App`).
 2. **Two-Stage Verbal Spec (No Code Demo):**
    - **Stage 1 (Terminology):** Translate user feedback into design terms and identify layout/collision faults.
    - **Stage 2 (Parameterized Brief):** Output a concise text table of tokens, radii (including collection/keypad small-radius rules), alignment anchors, Z-axis stack, and state coverage.
-3. **Direct Implementation:** Implement directly in `shared-design-system` or product views using real tokens and reusable components.
-4. **Render & Gate:** Build/test the affected layer; capture real simulator/app screenshots across light/dark and macro device tiers; run `design-reviewer` (/35 + P0/P1) and fix all P0s before delivery.
+3. **Writer handoff:** Write the implementation-ready `design.md`/`spec.md` with real tokens, reusable component boundaries, and acceptance criteria. The downstream `Writer` implements directly in `shared-design-system` or product views.
+4. **Writer render & gate:** The downstream `Writer` builds/tests the affected layer and captures real simulator/app screenshots across light/dark and macro device tiers; CI Design Gate and the Cross-Vendor Reviewer perform the implementation checks. Designer does not implement, render, or create `Prototype/` code.
 
 For canonical scenario-to-pattern, motion, and anti-pattern decisions, use the matrix in [five-layer-craft.md](references/five-layer-craft.md). It covers live telemetry, dense single-hand entry, dynamic sub-row insertion, bottom floating chrome conflicts, and multi-dimensional filter/substitute sheets. This skill is a handoff-only Designer role: it writes `design.md`/`spec.md` and receipts, never business code, demos, or `Prototype/` code.
 
