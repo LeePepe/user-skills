@@ -62,6 +62,16 @@ upstream drift，并在 `GOAL_DONE` 通过 `telemetry --write` 生成
 `herdr agent wait <name> --timeout 60000`，每次读取状态与 receipts。Copilot
 allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根目录（如 `/Volumes/SSD/Development`），避免 Apple toolchain 与软链路径弹窗卡住。
 
+**Blocked notify bridge（Channel A / B）**：主触发是 Herdr
+`pane.agent_status_changed` 且 `agent_status=blocked`；巡逻保底是
+`goal-supervisor.py scan --write-alerts` 发现 `BLOCKED_AGENT`。两者都写入
+`handoff/<goal_folder>/alerts/blocked-<agent>-<ts>.md`。Goal 的协调者 Bot
+（从 `ledger.md` 的 `协调者 bot:` 读取）MUST 在 `scan`/`watch` 巡逻或收到入站
+信号时读取该 alert，再检查可见提示并做 Tier A / Tier A′ 的人工／策略决定，
+或按 Tier B 记录 `NEED_GO`。**通知桥 ≠ 解卡**：桥只落盘通知，严禁
+auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
+**GOAL_DONE 关窗与 blocked alerts 两条独立**。
+
 - **禁止“空口承诺巡检后裸退 Turn”（Mandatory Async Wakeup Watchdog）**：
   交互式 CLI 会话一旦结束当前 Turn 进入 `idle`，在没有后台附加进程完成通知的情况下**不具备自唤醒能力**。因此，协调者 Bot 拉起后台 TL 后，若需要向 Owner 先返回阶段性汇报，**必须在结束当前 Turn 前通过 `bash(mode="async")` 启动非分离式（attached）看门狗**：
   `python3 skills/goal-task/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`
