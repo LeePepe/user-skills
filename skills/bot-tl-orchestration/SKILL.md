@@ -82,15 +82,17 @@ auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
   或 `id=J<N>`，不得撞用 TL 的 `id=E<N>`。
 - `agent_status == "blocked"` 时先执行 `herdr agent read <name> --source visible --lines 40`。
   Tier A（临时路径、基线路径——含 `/Volumes/SSD` 及其下 handoff 兄弟目录的 realpath——或已声明 `extra_add_dirs` 的权限提示）才可
-  由协调者人工确认并记录 `EVT=UNBLOCK`。
+  `herdr agent send-keys <name> enter` 并记录 `EVT=UNBLOCK`。
 - Tier A′（`CMD_CONFIRM`）：可见窗格出现 Copilot／CLI「Do you want to run this command?」
   或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项。
   仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／
   `reset`／`checkout` 及其它改写历史或工作区的子命令）、`python3`、`jq`、`herdr`
   （不含 `herdr server stop`），以及 Allow-path／herdr 操作已经允许的同类安全操作
   （例如 `shasum`、`date`、`sleep`、`env`）——才可按键解卡并记录 `EVT=UNBLOCK`。
-  当前高亮已是安全的运行项时，由人工确认；界面若提供
-  don't-ask-again／remember，也只能由人工在已核对范围内选择。敏感、破坏性或未声明的命令保持 hold，
+  当前高亮已是安全的运行项时，`herdr agent send-keys <name> enter`；界面若提供
+  don't-ask-again／remember，且记住范围仍限于这条已核对的白名单命令，用 Down+Enter
+  （`herdr agent send-keys <name> down`，随后 `herdr agent send-keys <name> enter`，
+  或本仓已建立的等效按键序列）选中该安全记住项。敏感、破坏性或未声明的命令保持 hold，
   记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter，不得把 blocked 当作完成。
   **`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**：即便启动参数带有该旗标，
   也不抑制这两类提示，不得靠它解卡。MacBook `team_lead` 故意不带 `--no-ask-user`
@@ -226,8 +228,7 @@ herdr agent prompt "$GOAL-goal-tl-r1" \
 sleep 2
 TL_STATUS=$(herdr agent get "$GOAL-goal-tl-r1" | jq -r '.. | .agent_status? // empty' | head -n1)
 if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then
-  # 仅提示协调者人工提交已核对的输入；通知桥不自动提交按键。
-  printf '%s\n' "TL requires a manual, policy-approved input submission"
+  herdr agent send-keys "$GOAL-goal-tl-r1" enter
 fi
 ```
 

@@ -382,8 +382,7 @@ class VerifySkillsTests(unittest.TestCase):
 
         self.assertIn("每次只沟通一层", skill_text)
         self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
-        self.assertIn("通知桥不自动提交按键", skill_text)
-        self.assertNotIn("send-keys", skill_text)
+        self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
 
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
@@ -695,6 +694,10 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("blocked-<agent>-<ts>.md", text)
             self.assertIn("通知桥 ≠ 解卡", text)
             self.assertIn("GOAL_DONE 关窗与 blocked alerts 两条独立", text)
+        supervisor_text = (
+            SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("send-keys", supervisor_text)
 
     def test_goal_supervisor_contract_and_xcode_allowlist(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"

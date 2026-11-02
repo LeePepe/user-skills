@@ -340,6 +340,22 @@ def visible_text(event: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True) if value is not None else ""
 
 
+def read_visible_from_herdr(agent_name_value: str) -> str:
+    if not agent_name_value:
+        return ""
+    try:
+        result = subprocess.run(
+            ["herdr", "agent", "read", agent_name_value, "--source", "visible", "--lines", "40"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
 def coordinator_bot(goal: Path) -> str:
     try:
         text = (goal / "ledger.md").read_text(encoding="utf-8")
@@ -460,6 +476,7 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
     goals = goal_metadata(root)
     for item in agents:
         item["_goal"] = associate_agent_to_goal(agent_name(item), agent_cwd(item), goals)
+    last_unmatched: dict[str, Any] | None = None
     for event in events:
         if not isinstance(event, dict) or not blocked_event(event):
             continue
@@ -475,10 +492,21 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
         if not goal_name and goal_hint:
             goal_name = goal_hint
         if not goal_name:
-            return {"written": False, "alert_path": "", "status": "blocked", "goal": "", "agent": agent["name"]}
+            last_unmatched = {
+                "written": False,
+                "alert_path": "",
+                "status": "blocked",
+                "goal": "",
+                "agent": agent["name"],
+            }
+            continue
         excerpt = args.visible_text if args.visible_text is not None else visible_text(event)
+        if not excerpt and not args.herdr_json:
+            excerpt = read_visible_from_herdr(agent["name"])
         path = write_blocked_alert(root, goal_name, agent, "pane.agent_status_changed", excerpt, now)
         return {"written": True, "alert_path": path, "status": "blocked", "goal": goal_name, "agent": agent["name"]}
+    if last_unmatched is not None:
+        return last_unmatched
     return {"written": False, "alert_path": "", "status": "", "goal": "", "agent": ""}
 
 
@@ -535,9 +563,12 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
             if status == "blocked":
                 anomaly: dict[str, Any] = {"type": "BLOCKED_AGENT", "goal_id": goal.name, "agent": name}
                 if getattr(args, "write_alerts", False):
+                    excerpt = str(item.get("visible") or item.get("visible_text") or "")
+                    if not excerpt and not args.herdr_json:
+                        excerpt = read_visible_from_herdr(name)
                     anomaly["alert_path"] = write_blocked_alert(
                         root, goal.name, item, "goal-supervisor.scan:BLOCKED_AGENT",
-                        str(item.get("visible") or item.get("visible_text") or ""), now,
+                        excerpt, now,
                     )
                 anomalies.append(anomaly)
             elapsed = (now - latest).total_seconds()
