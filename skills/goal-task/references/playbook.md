@@ -350,6 +350,13 @@ socket.on("error", (error) => {
 });
 ```
 
+对 `pane.agent_status_changed` 的落盘桥使用
+`goal-supervisor.py notify-bridge`；只有 `status == "blocked"` 才写入
+`handoff/<goal_folder>/alerts/blocked-<agent>-<ts>.md`，由 `ledger.md` 的
+`协调者 bot` 读取并人工判断。**通知桥 ≠ 解卡**：桥不自动提交按键，也不处理
+`working`／`idle`／`done`。**GOAL_DONE 关窗与 blocked alerts 两条独立**，
+不得把告警当完成或把 Goal 关窗当作告警处理。
+
 #### Step 5 — 执行中裁决与失败升档
 
 `NEEDS_RULING` 只处理同一 Goal 内的顺带缺口；协调者先判定四条红线，再追加 `EVT=RULING`。越出边界则冻结当前范围，提交结构化 `CHANGE_REQUEST`，不自行补范围外实现。

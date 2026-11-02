@@ -44,6 +44,14 @@ lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
 台账 `TL:`／`from`／`to`，以及 cwd 位于该 Goal handoff 目录内，都把
 `good-des-*` 与 `gd-e1-*` 绑到目录 `good-designer`，从而仍能报 `BLOCKED_AGENT`。
 
+**Blocked notify bridge**：主触发是 `pane.agent_status_changed` 且 `status=blocked`，
+巡逻保底是 `goal-supervisor.py scan --write-alerts` 的 `BLOCKED_AGENT`；两者写入
+`handoff/<goal_folder>/alerts/blocked-<agent>-<ts>.md`。`ledger.md` 的
+`协调者 bot` MUST 在巡逻或入站信号时读取 alert、检查 visible prompt，并作
+Tier A/A′ 人工／策略决定或 Tier B `NEED_GO`。**通知桥 ≠ 解卡**：桥只通知，
+严禁 auto-Enter、自动提交按键或把 `blocked` 当作完成。
+**GOAL_DONE 关窗与 blocked alerts 两条独立**。
+
 ### 设计路由（按机器分流；Owner 2026-10-28，Hotty → flower）
 
 **CLI design-pipeline rule (normative):** The local CLI and `goal-task` entry
