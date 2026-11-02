@@ -23,6 +23,16 @@ is a design decision and an implementation gate, not a decorative checklist.
 - Keep native gesture boundaries intact. Glass belongs to floating functional
   chrome; content cards, lists, forms, and keypads remain solid. Never stack
   glass-on-glass or add a second bezel inside system toolbar chrome.
+- **Container-Filling Hit-Target Parity:** Compact visual badges and inputs may
+  have a visual box below `44pt` when an independent outer hit-target layer
+  expands outward to `>=44x44pt`. A container-styled button or bar is different:
+  when its visible pill/card is the intended action and is `>=44pt` or
+  full-width, `100%` of that visible container must be inside the interactive
+  `Button` label with `.contentShape(Rectangle())`. Verify
+  `abs(effectiveHitFrame.width - visibleFrame.width) <= 1pt` and the same
+  height tolerance; do not rely solely on a background `GeometryReader` frame
+  probe attached outside the `Button` label. Test activation at the left edge,
+  center, and right edge.
 
 ## L3 — State completeness
 
@@ -59,7 +69,13 @@ is a design decision and an implementation gate, not a decorative checklist.
 
 Score rendered output on a seven-dimension `/35` rubric and apply hard fails
 for contrast below `4.5:1`, numeric ellipsis, duplicate units, double chrome,
-unequal sibling card heights, or localization-key leakage. A screenshot review
+unequal sibling card heights, localization-key leakage, or a container-filling
+hit-target parity violation. For full-width or container-bordered controls,
+reject any outer `Spacer()`, padding, background, border, or frame that leaves
+only a small centered label interactive; the full visible container must be
+inside the `Button` label and use `.contentShape(Rectangle())`. Require
+effective-versus-visible frame equality within `1pt` in both axes plus
+left-edge, center, and right-edge activation evidence. A screenshot review
 does not replace keyboard-focus, VoiceOver, or runtime performance checks.
 
 ## Required handoff
