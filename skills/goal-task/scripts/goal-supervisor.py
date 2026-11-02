@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
+import socket
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +227,11 @@ def choose_goal_name(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
     return ""
 
 
+def associate_agent_to_goal(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
+    """Use the supervisor's normal name/cwd association for bridge events."""
+    return choose_goal_name(name, cwd, goals)
+
+
 def bind_live_tl(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
     """Attach a shortened `<stem>-goal-tl-*` agent to the Goal folder it abbreviates."""
     stem = tl_stem(name)
@@ -239,11 +247,8 @@ def bind_live_tl(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
     return choose_goal_name(name, cwd, goals)
 
 
-def scan(args: argparse.Namespace) -> dict[str, Any]:
-    root = Path(args.handoff_root).expanduser()
-    now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
-    agents = load_agents(Path(args.herdr_json) if args.herdr_json else None)
-    goals_meta: list[dict[str, Any]] = []
+def goal_metadata(root: Path) -> list[dict[str, Any]]:
+    metadata: list[dict[str, Any]] = []
     for ledger in sorted(root.glob("*/ledger.md")):
         events = goal_events(ledger)
         if not events or any(event == "GOAL_DONE" for _, event in events):
@@ -254,7 +259,7 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
         recorded_stem = tl_stem(tl_name)
         if recorded_stem:
             stems.add(recorded_stem)
-        goals_meta.append(
+        metadata.append(
             {
                 "path": ledger.parent,
                 "name": ledger.parent.name,
@@ -265,6 +270,223 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
                 "latest": max(timestamp for timestamp, _ in events),
             }
         )
+    return metadata
+
+
+def nested_values(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    pending = [payload]
+    while pending:
+        current = pending.pop(0)
+        values.append(current)
+        for key in ("params", "result", "data", "agent", "pane"):
+            value = current.get(key)
+            if isinstance(value, dict):
+                pending.append(value)
+    return values
+
+
+def event_type(event: dict[str, Any]) -> str:
+    candidates: list[str] = []
+    for payload in nested_values(event):
+        for key in ("type", "event", "method"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                candidates.append(value)
+    if "pane.agent_status_changed" in candidates:
+        return "pane.agent_status_changed"
+    return candidates[0] if candidates else ""
+
+
+def event_value(event: dict[str, Any], *keys: str) -> Any:
+    for payload in nested_values(event):
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def event_agent_record(event: dict[str, Any]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for payload in nested_values(event):
+        for key in (
+            "name", "agent", "agent_name", "agent_status", "status",
+            "cwd", "workdir", "work_dir", "working_directory", "pane_cwd",
+            "pane_id", "workspace_id", "visible", "visible_text",
+        ):
+            if payload.get(key) not in (None, ""):
+                record[key] = payload[key]
+    pane = event_value(event, "pane")
+    if isinstance(pane, str):
+        record["pane_id"] = record.get("pane_id") or pane
+    elif isinstance(pane, dict):
+        record["pane_id"] = record.get("pane_id") or pane.get("id") or pane.get("pane_id")
+        record["workspace_id"] = record.get("workspace_id") or pane.get("workspace_id")
+        for key in _CWD_KEYS:
+            if pane.get(key):
+                record["cwd"] = pane[key]
+    record["name"] = str(record.get("name") or record.get("agent_name") or record.get("agent") or "")
+    record["agent_status"] = str(record.get("agent_status") or record.get("status") or "").lower()
+    record["cwd"] = str(record.get("cwd") or "")
+    record["pane_id"] = str(record.get("pane_id") or "")
+    return record
+
+
+def visible_text(event: dict[str, Any]) -> str:
+    value = event_value(event, "visible_text", "visible", "prompt_excerpt", "excerpt")
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True) if value is not None else ""
+
+
+def coordinator_bot(goal: Path) -> str:
+    try:
+        text = (goal / "ledger.md").read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    match = re.search(r"协调者\s*bot\s*[:：]\s*([^\s|]+)", text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"coordinator[_ ]bot\s*[:：]\s*([^\s|]+)", text, re.IGNORECASE)
+    return match.group(1) if match else "unknown"
+
+
+def compact_timestamp(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def write_blocked_alert(
+    handoff_root: Path,
+    goal_name: str,
+    agent: dict[str, Any],
+    trigger: str,
+    visible: str,
+    now: dt.datetime,
+) -> str:
+    goal = handoff_root / goal_name
+    name = str(agent.get("name") or "unknown")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "unknown"
+    timestamp = now.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    pane_value = agent.get("pane_id") or agent.get("pane")
+    pane = (
+        str(pane_value.get("id") or pane_value.get("pane_id") or "unknown")
+        if isinstance(pane_value, dict)
+        else str(pane_value or "unknown")
+    )
+    workspace_value = agent.get("workspace_id")
+    if not workspace_value and isinstance(pane_value, dict):
+        workspace_value = pane_value.get("workspace_id")
+    workspace = str(workspace_value or (pane.split(":", 1)[0] if ":" in pane else "unknown"))
+    cwd = str(agent.get("cwd") or "")
+    digest = hashlib.sha256(visible.encode("utf-8")).hexdigest()
+    destination = goal / "alerts" / f"blocked-{safe_name}-{compact_timestamp(now)}.md"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        f"# Blocked agent alert\n\n"
+        f"- agent: `{name}`\n- goal: `{goal_name}`\n"
+        f"- coordinator_bot: `{coordinator_bot(goal)}`\n- trigger: `{trigger}`\n"
+        f"- pane: `{pane}`\n- workspace: `{workspace}`\n- cwd: `{cwd}`\n"
+        f"- timestamp: `{timestamp}`\n- visible_sha256: `{digest}`\n\n"
+        "## Visible prompt excerpt\n\n```text\n"
+        f"{visible}\n```\n\n## Suggested commands\n\n"
+        f"- `herdr agent get {name}`\n"
+        f"- `herdr agent read {name} --source visible --lines 40`\n"
+        f"- `herdr workspace close {workspace}`\n\n"
+        "Notification only: the coordinator Bot must inspect this alert and make any "
+        "manual/policy decision. 通知桥 ≠ 解卡；严禁 auto-Enter。"
+        " GOAL_DONE 关窗与 blocked alerts 两条独立。\n",
+        encoding="utf-8",
+    )
+    return str(destination)
+
+
+def load_json_input(value: str) -> Any:
+    path = Path(value).expanduser()
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else json.loads(value)
+
+
+def blocked_event(event: dict[str, Any]) -> bool:
+    statuses = [
+        str(payload.get(key)).lower()
+        for payload in nested_values(event)
+        for key in ("status", "agent_status")
+        if payload.get(key) not in (None, "")
+    ]
+    return event_type(event) == "pane.agent_status_changed" and "blocked" in statuses
+
+
+def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = Path(args.handoff_dir).expanduser() if args.handoff_dir else None
+    goal_hint = handoff_dir.name if handoff_dir and (handoff_dir / "ledger.md").is_file() else ""
+    root = Path(args.handoff_root or (handoff_dir.parent if goal_hint else handoff_dir) or "~/Development/handoff").expanduser()
+    now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    events: list[dict[str, Any]] = []
+    if args.event_json:
+        payload = load_json_input(args.event_json)
+        events.extend(payload if isinstance(payload, list) else [payload])
+    if args.events_jsonl:
+        for line in Path(args.events_jsonl).expanduser().read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                payload = json.loads(line)
+                events.extend(payload if isinstance(payload, list) else [payload])
+    if args.socket:
+        request = {
+            "jsonrpc": "2.0", "id": 1, "method": "events.subscribe",
+            "params": {"subscriptions": [{"type": "pane.agent_status_changed"}]},
+        }
+        deadline = time.monotonic() + max(0.0, args.timeout)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(max(0.1, args.timeout))
+            connection.connect(args.socket)
+            connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            buffer = ""
+            while len(events) < args.max_events and time.monotonic() < deadline:
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8")
+                lines = buffer.split("\n")
+                buffer = lines.pop()
+                for line in lines:
+                    if line.strip():
+                        payload = json.loads(line)
+                        events.extend(payload if isinstance(payload, list) else [payload])
+                        if len(events) >= args.max_events:
+                            break
+    agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
+    goals = goal_metadata(root)
+    for item in agents:
+        item["_goal"] = associate_agent_to_goal(agent_name(item), agent_cwd(item), goals)
+    for event in events:
+        if not isinstance(event, dict) or not blocked_event(event):
+            continue
+        agent = event_agent_record(event)
+        matching = next((item for item in agents if agent["name"] == agent_name(item)), None)
+        if matching:
+            merged = dict(matching)
+            merged.update({key: value for key, value in agent.items() if value})
+            agent = merged
+        goal_name = associate_agent_to_goal(agent["name"], agent.get("cwd", ""), goals)
+        if not goal_name:
+            goal_name = next((str(item.get("_goal")) for item in agents if item.get("name") == agent["name"] and item.get("_goal")), "")
+        if not goal_name and goal_hint:
+            goal_name = goal_hint
+        if not goal_name:
+            return {"written": False, "alert_path": "", "status": "blocked", "goal": "", "agent": agent["name"]}
+        excerpt = args.visible_text if args.visible_text is not None else visible_text(event)
+        path = write_blocked_alert(root, goal_name, agent, "pane.agent_status_changed", excerpt, now)
+        return {"written": True, "alert_path": path, "status": "blocked", "goal": goal_name, "agent": agent["name"]}
+    return {"written": False, "alert_path": "", "status": "", "goal": "", "agent": ""}
+
+
+def scan(args: argparse.Namespace) -> dict[str, Any]:
+    root = Path(args.handoff_root).expanduser()
+    now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    agents = load_agents(Path(args.herdr_json) if args.herdr_json else None)
+    goals_meta = goal_metadata(root)
 
     # Record shortened live TL stems (`good-des-goal-tl-r1` → folder `good-designer`)
     # before binding siblings that share that stem (`good-des-*`).
@@ -311,7 +533,13 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
             name, status = agent_name(item), agent_status(item)
             role = role_for(name)
             if status == "blocked":
-                anomalies.append({"type": "BLOCKED_AGENT", "goal_id": goal.name, "agent": name})
+                anomaly: dict[str, Any] = {"type": "BLOCKED_AGENT", "goal_id": goal.name, "agent": name}
+                if getattr(args, "write_alerts", False):
+                    anomaly["alert_path"] = write_blocked_alert(
+                        root, goal.name, item, "goal-supervisor.scan:BLOCKED_AGENT",
+                        str(item.get("visible") or item.get("visible_text") or ""), now,
+                    )
+                anomalies.append(anomaly)
             elapsed = (now - latest).total_seconds()
             if status == "working" and elapsed > ROLE_TTL_SECONDS[role] and not receipt_exists(goal, name):
                 anomalies.append(
@@ -399,6 +627,7 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
             herdr_json=args.herdr_json,
             now=None,
             json=True,
+            write_alerts=getattr(args, "write_alerts", False),
         )
         scan_result = scan(scan_args)
         goal_anomalies = [a for a in scan_result["anomalies"] if a.get("goal_id") == handoff.name]
@@ -416,7 +645,20 @@ def main() -> None:
     scan_parser.add_argument("--handoff-root", default="~/Development/handoff")
     scan_parser.add_argument("--herdr-json")
     scan_parser.add_argument("--now")
+    scan_parser.add_argument("--write-alerts", action="store_true")
     scan_parser.add_argument("--json", action="store_true")
+    bridge_parser = subparsers.add_parser("notify-bridge")
+    bridge_parser.add_argument("--handoff-root")
+    bridge_parser.add_argument("--handoff-dir")
+    bridge_parser.add_argument("--herdr-json")
+    bridge_parser.add_argument("--event-json")
+    bridge_parser.add_argument("--events-jsonl")
+    bridge_parser.add_argument("--visible-text")
+    bridge_parser.add_argument("--now")
+    bridge_parser.add_argument("--socket")
+    bridge_parser.add_argument("--max-events", type=int, default=1)
+    bridge_parser.add_argument("--timeout", type=float, default=5.0)
+    bridge_parser.add_argument("--json", action="store_true")
     pins_parser = subparsers.add_parser("check-pins")
     pins_parser.add_argument("--pins-file", required=True)
     pins_parser.add_argument("--json", action="store_true")
@@ -429,10 +671,13 @@ def main() -> None:
     watch_parser.add_argument("--interval", type=int, default=30)
     watch_parser.add_argument("--max-wait", type=int, default=2400)
     watch_parser.add_argument("--herdr-json")
+    watch_parser.add_argument("--write-alerts", action="store_true")
     watch_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "scan":
         result = scan(args)
+    elif args.command == "notify-bridge":
+        result = notify_bridge(args)
     elif args.command == "check-pins":
         result = check_pins(args)
     elif args.command == "watch":

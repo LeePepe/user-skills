@@ -382,7 +382,8 @@ class VerifySkillsTests(unittest.TestCase):
 
         self.assertIn("每次只沟通一层", skill_text)
         self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
-        self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
+        self.assertIn("通知桥不自动提交按键", skill_text)
+        self.assertNotIn("send-keys", skill_text)
 
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
@@ -611,6 +612,89 @@ class VerifySkillsTests(unittest.TestCase):
                     if item["type"] == "ORPHAN_TL_WAIT"
                 },
             )
+
+    def test_goal_supervisor_notify_bridge_and_scan_alerts(self) -> None:
+        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            root = Path(tmp)
+            handoff = root / "goal-a"
+            handoff.mkdir()
+            (handoff / "ledger.md").write_text(
+                "# Goal: goal-a\n- Owner: owner · 协调者 bot: flower\n"
+                "- 2026-10-31T00:00:00Z EVT=START\n",
+                encoding="utf-8",
+            )
+            event = {
+                "params": {
+                    "type": "pane.agent_status_changed",
+                    "agent_name": "goal-a-writer-r1",
+                    "status": "blocked",
+                    "pane_id": "w2E:p2",
+                    "cwd": str(handoff),
+                    "visible": "blocked prompt",
+                }
+            }
+            event_path = root / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            result = subprocess.run(
+                [str(supervisor), "notify-bridge", "--handoff-root", str(root),
+                 "--event-json", str(event_path), "--now", "2026-11-02T08:06:45Z", "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            data = json.loads(result.stdout)
+            self.assertTrue(data["written"])
+            alert = Path(data["alert_path"])
+            self.assertTrue(alert.is_file())
+            text = alert.read_text(encoding="utf-8")
+            for expected in ("goal-a-writer-r1", "w2E:p2", str(handoff),
+                             "blocked prompt", "herdr agent get", "herdr workspace close"):
+                self.assertIn(expected, text)
+
+            for status in ("working", "idle", "done"):
+                event["params"]["status"] = status
+                event_path.write_text(json.dumps(event), encoding="utf-8")
+                ignored = subprocess.run(
+                    [str(supervisor), "notify-bridge", "--handoff-root", str(root),
+                     "--event-json", str(event_path), "--now", "2026-11-02T08:06:46Z", "--json"],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertFalse(json.loads(ignored.stdout)["written"])
+
+            event["params"]["status"] = "blocked"
+            event["params"]["type"] = "toast"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            ignored = subprocess.run(
+                [str(supervisor), "notify-bridge", "--handoff-root", str(root),
+                 "--event-json", str(event_path), "--now", "2026-11-02T08:06:47Z", "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertFalse(json.loads(ignored.stdout)["written"])
+
+            agents = root / "agents.json"
+            agents.write_text(json.dumps({"result": {"agents": [{
+                "name": "goal-a-writer-r1", "agent_status": "blocked",
+                "pane_id": "w2E:p2", "cwd": str(handoff), "visible": "scan prompt"
+            }]}}), encoding="utf-8")
+            scan = subprocess.run(
+                [str(supervisor), "scan", "--handoff-root", str(root),
+                 "--herdr-json", str(agents), "--write-alerts",
+                 "--now", "2026-11-02T08:06:45Z", "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            anomaly = next(item for item in json.loads(scan.stdout)["anomalies"]
+                           if item["type"] == "BLOCKED_AGENT")
+            self.assertTrue(Path(anomaly["alert_path"]).is_file())
+
+    def test_blocked_alert_contract_is_documented(self) -> None:
+        for path in (
+            SKILLS_DIR / "bot-tl-orchestration" / "SKILL.md",
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "goal-task" / "references" / "playbook.md",
+        ):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("blocked-<agent>-<ts>.md", text)
+            self.assertIn("通知桥 ≠ 解卡", text)
+            self.assertIn("GOAL_DONE 关窗与 blocked alerts 两条独立", text)
 
     def test_goal_supervisor_contract_and_xcode_allowlist(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
