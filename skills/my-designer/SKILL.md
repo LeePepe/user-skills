@@ -113,6 +113,7 @@ overrides this skill's default.
 | Existing UI modernization | `visual-design-modernization` / `redesign-skill`: diagnosis and iteration; retain Basalt on web, not their seed scaffold |
 | Chart design | `dataviz`: forms, labels and accessibility; implement web charts with Recharts/Basalt chart primitives |
 | Brand/marketing only | `taste-skill`: optional marketing direction, not owner of dashboard or data-table design |
+| Web/App motion choreography & Remotion video/cover studio | `motion-studio`: `Motion`/`Anime.js`/`Lottie`/`Three.js` gated by `surface_mode`, plus `Remotion` + `FFmpeg` animated covers, transitions, and promo videos consuming `DesignTokens`/`Basalt` |
 | Figma source exists | Available `figma:*` tools: inspect/implement the supplied source |
 | Team design-system sync requested | Available Claude Design/DesignSync: reconcile with the selected system |
 | Visual quality gate | `design-reviewer`: screenshot-based /35 + P0/P1 review |

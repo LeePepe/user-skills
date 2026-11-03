@@ -22,6 +22,8 @@
 
 [`visual-design-modernization`](./skills/visual-design-modernization/SKILL.md) 通过 verbal spec、直接产品实现和真实渲染复核推进视觉现代化。
 
+[`motion-studio`](./skills/motion-studio/SKILL.md) 统一 Web/App 微交互、落地页时间线、3D 动效，以及基于 Remotion 与 FFmpeg 的动画封面、转场和产品宣传视频流水线。
+
 `codebase-design`、`domain-modeling` 衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；各目录附上原始版权与许可文本。
 
 ## 安装
@@ -38,6 +40,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install auto-review-merge@user-skills
 /plugin install codebase-design@user-skills
 /plugin install domain-modeling@user-skills
+/plugin install motion-studio@user-skills
 ```
 
 Codex 使用内置 `skill-installer`，在会话中输入：
@@ -53,6 +56,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/domain-modeling 安装 domain-modeling。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/my-designer 安装 my-designer。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/visual-design-modernization 安装 visual-design-modernization。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/motion-studio 安装 motion-studio。
 ```
 
 安装后重启 Codex，使新 skill 可被发现；规划或执行开发工作前只加载 `goal-task`。旧目录名 `goal-target-task` 已删除，不再保留兼容安装路径。
