@@ -6,6 +6,29 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 
 > 唯一技能名是 `goal-task`。旧目录 `goal-target-task` 已移除，不再提供兼容安装路径或固定锚点。
 
+## Linear workflow integration
+
+The workflow uses Linear Team `TIA` as the active board: one Goal maps to one
+flat Linear Issue, while Tasks remain a Markdown checklist in that Issue's
+description. Before Phase 0, Resident Bots and CLI sessions may capture an
+Idea in `Triage` (or `Backlog` when `Triage` is unavailable):
+
+```sh
+python3 skills/goal-task/scripts/linear-sync.py idea \
+  --title "Short idea title" --description "Context"
+```
+
+At Goal start, `ensure-goal --handoff-dir <dir> [--issue TIA-xx]` binds an
+existing Idea or applies the default `auto_create` policy and records
+`- Linear: TIA-xx (<url>)` in `ledger.md`. `sync-ledger` maps R8 state to
+Linear (`Todo`, `In Progress`, `In Review`, `Done`, or `Canceled`), updates
+the `## Tasks` checklist, and posts deduplicated comments for blocking events
+and milestones. `goal-queue.py` invokes this hook non-blockingly after
+`enqueue`, `next-wave --mark-in-progress`, and `set-status`; set
+`GTT_LINEAR_SYNC=0` for isolated legacy tests. The script reads
+`LINEAR_API_KEY` from the environment, then `~/.zshenv`/`~/.zshrc`; it never
+stores credentials and `sync-ledger --quiet` fails open when unavailable.
+
 本合同是 CLI 主会话与 subagent 的共同来源。
 目标仓指南、固定版本的共享规则、hooks、身份及 required gates 继续有效；读取本合同不授予角色、委派或发布权限。
 明确且范围清楚的实现请求不重复索取相同授权；事实问答和诊断不自动变成实施。

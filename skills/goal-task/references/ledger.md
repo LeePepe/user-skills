@@ -24,6 +24,7 @@
 - 协调者 bot: <bot>
 - TL: <herdr 名> / 模型 <model>
 - 机器: Mac mini | MacBook
+- Linear: TIA-xx (<url>)
 - 合同版本: goal-task@<sha>
 
 ## Tasks
@@ -159,6 +160,17 @@ Tracked `done` and `cancelled` transitions require `--evidence-json` with one st
 - 自动巡检脚本已备在 `~/Development/handoff/_watch/`（规则：未关闭 ≥10 分钟提醒，同一事件最多 3 次、间隔 ≥30 分钟，23:00–08:00 Asia/Shanghai 不发），**未安装**；启用需 Owner 另行同意。
 
 ## 跨机器 GTT 遥测导出
+
+### Linear state and event sync
+
+`Linear: TIA-xx` is the Goal's external board binding. `linear-sync.py
+sync-ledger --handoff-dir <dir>` preserves notes above
+`<!-- GTT-LINEAR-SYNC:START -->`, then rewrites the generated Goal Summary and
+Task checklist. R8 task aggregation maps to `Todo`, `In Progress`, `In Review`,
+`Done`, or `Canceled`. `TASK_BLOCKED`, `INPUT_BLOCKED`, `REVIEW_FAIL`,
+`NEED_GO`, and `NEED_OWNER_DECISION` create one comment per `id=E<N>`; PR,
+`DONE`, and `GOAL_DONE` events create deduplicated milestone comments. The
+queue hook is intentionally non-blocking and uses `--quiet`.
 
 使用标准库脚本将本机 `~/Development/handoff/<goal>/` 的台账、Goal、队列和 R10 回执导出为脱敏 JSONL Bundle，供 `aidata` 跨机器合入：
 

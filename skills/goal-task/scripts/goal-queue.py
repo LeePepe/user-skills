@@ -108,6 +108,35 @@ def _maybe_notify(handoff_dir: Path) -> None:
         pass
 
 
+def _linear_key_configured() -> bool:
+    if os.environ.get("LINEAR_API_KEY", "").strip():
+        return True
+    key_pattern = re.compile(r"^\s*(?:export\s+)?LINEAR_API_KEY\s*=\s*['\"]?([^'\"#\s]+)", re.MULTILINE)
+    for path in (Path("~/.zshenv").expanduser(), Path("~/.zshrc").expanduser()):
+        try:
+            if key_pattern.search(path.read_text(encoding="utf-8")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _maybe_linear_sync(handoff_dir: Path) -> None:
+    if os.environ.get("GTT_LINEAR_SYNC") == "0" or not _linear_key_configured():
+        return
+    syncer = Path(__file__).with_name("linear-sync.py")
+    try:
+        subprocess.Popen(
+            [sys.executable, str(syncer), "sync-ledger", "--handoff-dir", str(handoff_dir), "--quiet"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -1032,6 +1061,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             raise ValueError(f"Unknown subcommand: {args.subcommand}")
         _maybe_notify(Path(args.handoff_dir))
+        _maybe_linear_sync(Path(args.handoff_dir))
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False) + "\n")
         return 2

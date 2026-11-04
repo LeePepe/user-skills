@@ -9,6 +9,24 @@
 | bot 层 | 有独立聊天的常驻 bot，各自固定一台机器 | Owner | 长期 |
 | CLI agent 层 | bot 或 TL 在 herdr 里启动的 CLI 会话（TL、Planner、Reviewer、写者、Explorer） | 协调者 bot / TL | 用完即关 |
 
+## Linear Idea capture and Goal binding
+
+Resident Bots and local CLI sessions capture ad-hoc ideas in Team `TIA` with:
+
+```sh
+python3 skills/goal-task/scripts/linear-sync.py idea --title "<title>" --state Triage
+```
+
+On Goal start, the coordinator runs
+`linear-sync.py ensure-goal --handoff-dir <dir> [--issue TIA-xx]`. This
+promotes an existing Idea or creates a Goal issue under `auto_create`, records
+the `TIA-xx` binding in `ledger.md`, and synchronizes the checklist. Queue
+`enqueue`, wave dispatch, and status transitions call `sync-ledger` in a
+non-blocking child process. Completion and cancellation map to Linear `Done`
+and `Canceled`; active work maps to `In Progress`/`In Review`. The local
+ledger remains authoritative, and no Bot or script may put a credential in
+repository or handoff content.
+
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
 不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色：

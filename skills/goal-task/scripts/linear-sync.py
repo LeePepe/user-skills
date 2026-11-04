@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+"""Synchronize goal-task handoffs with a Linear issue.
+
+The script deliberately uses only the Python standard library.  It is safe to
+run from queue hooks because ``sync-ledger --quiet`` is fail-open.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import sys
+from typing import Any, Callable, Iterator
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+API_URL = "https://api.linear.app/graphql"
+MARKER_START = "<!-- GTT-LINEAR-SYNC:START -->"
+MARKER_END = "<!-- GTT-LINEAR-SYNC:END -->"
+KEY_RE = re.compile(r"^\s*(?:export\s+)?LINEAR_API_KEY\s*=\s*(['\"]?)([^'\"#\s]+)\1\s*$", re.MULTILINE)
+ISSUE_RE = re.compile(r"(?m)^\s*-\s*Linear:\s*([A-Z][A-Z0-9]*-\d+)(?:\s+\(([^)]+)\))?")
+EVENT_RE = re.compile(r"(?m)^\s*-\s+[^|]+\s+\|\s+(.*)$")
+PR_RE = re.compile(r"(?:github\.com/.+/(?:pull|pulls)/\d+|PR(?:\s*#|=)\s*\d+)", re.IGNORECASE)
+
+
+class LinearSyncError(RuntimeError):
+    """Expected, user-facing Linear synchronization failure."""
+
+
+def _read_key_file(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = KEY_RE.search(text)
+    return match.group(2) if match else None
+
+
+def load_api_key() -> str | None:
+    """Read the key from the environment, then the standard zsh startup files."""
+    value = os.environ.get("LINEAR_API_KEY", "").strip()
+    if value:
+        return value
+    for path in (Path("~/.zshenv").expanduser(), Path("~/.zshrc").expanduser()):
+        value = _read_key_file(path)
+        if value:
+            return value
+    return None
+
+
+class GraphQLClient:
+    def __init__(
+        self,
+        api_key: str,
+        transport: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
+        self.transport = transport or self._request
+        self.api_key = api_key
+
+    def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = self.transport(query, variables or {})
+        if not isinstance(payload, dict):
+            raise LinearSyncError("Linear returned an invalid response")
+        errors = payload.get("errors")
+        if errors:
+            message = "; ".join(str(item.get("message", item)) for item in errors)
+            raise LinearSyncError(f"Linear GraphQL error: {message}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise LinearSyncError("Linear response did not contain data")
+        return data
+
+    def _request(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+        request = Request(
+            API_URL,
+            data=body,
+            headers={
+                "Authorization": self.api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = ""
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                detail = "; ".join(
+                    str(item.get("message", item)) for item in body.get("errors", [])
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            suffix = f": {detail}" if detail else ""
+            raise LinearSyncError(f"Linear request failed: HTTP {exc.code}{suffix}") from exc
+        except (URLError, TimeoutError, ValueError) as exc:
+            raise LinearSyncError(f"Linear request failed: {exc}") from exc
+
+    def team(self, key: str) -> dict[str, Any]:
+        data = self.execute(
+            """
+            query TeamMetadata($key: String!) {
+              teams(filter: {key: {eq: $key}}) {
+                nodes {
+                  id key name
+                  states { nodes { id name type } }
+                  labels { nodes { id name } }
+                }
+              }
+            }
+            """,
+            {"key": key},
+        )
+        nodes = data.get("teams", {}).get("nodes", [])
+        if not nodes:
+            raise LinearSyncError(f"Linear team '{key}' was not found")
+        return nodes[0]
+
+    def issue(self, identifier: str) -> dict[str, Any]:
+        data = self.execute(
+            """
+            query IssueByIdentifier {
+              issues(first: 100) {
+                nodes {
+                  id identifier url title description
+                  state { id name type }
+                  team { id key name }
+                  labels { nodes { id name } }
+                  comments { nodes { id body } }
+                }
+              }
+            }
+            """,
+            {"identifier": identifier},
+        )
+        nodes = data.get("issues", {}).get("nodes", [])
+        issue = next(
+            (node for node in nodes if str(node.get("identifier")) == identifier),
+            None,
+        )
+        if not issue:
+            raise LinearSyncError(f"Linear issue '{identifier}' was not found")
+        return issue
+
+    def create_issue(
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str,
+        state_id: str | None = None,
+        label_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        input_data: dict[str, Any] = {
+            "teamId": team_id,
+            "title": title,
+            "description": description,
+        }
+        if state_id:
+            input_data["stateId"] = state_id
+        if label_ids:
+            input_data["labelIds"] = label_ids
+        data = self.execute(
+            """
+            mutation CreateIssue($input: IssueCreateInput!) {
+              issueCreate(input: $input) {
+                success
+                issue {
+                  id identifier url title description
+                  state { id name type }
+                  team { id key name }
+                  labels { nodes { id name } }
+                  comments { nodes { id body } }
+                }
+              }
+            }
+            """,
+            {"input": input_data},
+        )
+        result = data.get("issueCreate", {})
+        if not result.get("success") or not result.get("issue"):
+            raise LinearSyncError("Linear did not create the issue")
+        return result["issue"]
+
+    def update_issue(
+        self,
+        issue_id: str,
+        *,
+        description: str | None = None,
+        state_id: str | None = None,
+        label_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        input_data: dict[str, Any] = {}
+        if description is not None:
+            input_data["description"] = description
+        if state_id is not None:
+            input_data["stateId"] = state_id
+        if label_ids is not None:
+            input_data["labelIds"] = label_ids
+        data = self.execute(
+            """
+            mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+              issueUpdate(id: $id, input: $input) {
+                success
+                issue {
+                  id identifier url title description
+                  state { id name type }
+                  team { id key name }
+                  labels { nodes { id name } }
+                  comments { nodes { id body } }
+                }
+              }
+            }
+            """,
+            {"id": issue_id, "input": input_data},
+        )
+        result = data.get("issueUpdate", {})
+        if not result.get("success") or not result.get("issue"):
+            raise LinearSyncError("Linear did not update the issue")
+        return result["issue"]
+
+    def create_comment(self, issue_id: str, body: str) -> None:
+        data = self.execute(
+            """
+            mutation CreateComment($input: CommentCreateInput!) {
+              commentCreate(input: $input) { success comment { id } }
+            }
+            """,
+            {"input": {"issueId": issue_id, "body": body}},
+        )
+        if not data.get("commentCreate", {}).get("success"):
+            raise LinearSyncError("Linear did not create the comment")
+
+
+def _state(team: dict[str, Any], name: str, fallback: str | None = None) -> dict[str, Any] | None:
+    states = team.get("states", {}).get("nodes", [])
+    wanted = name.casefold()
+    for state in states:
+        if str(state.get("name", "")).casefold() == wanted:
+            return state
+    if fallback:
+        return _state(team, fallback)
+    return None
+
+
+def _label(team: dict[str, Any], name: str) -> dict[str, Any] | None:
+    wanted = name.casefold()
+    for label in team.get("labels", {}).get("nodes", []):
+        if str(label.get("name", "")).casefold() == wanted:
+            return label
+    return None
+
+
+def _parse_events(text: str) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    for match in EVENT_RE.finditer(text):
+        fields: dict[str, str] = {}
+        for field in match.group(1).split(" | "):
+            if "=" in field:
+                key, value = field.split("=", 1)
+                fields[key.strip()] = value.strip()
+        if fields.get("EVT"):
+            events.append(fields)
+    return events
+
+
+def _parse_tasks(ledger_text: str, queue_data: dict[str, Any] | None) -> list[dict[str, str]]:
+    queue_by_id = {
+        str(task.get("task_id")): task
+        for task in (queue_data or {}).get("tasks", [])
+        if task.get("task_id")
+    }
+    tasks: list[dict[str, str]] = []
+    in_table = False
+    for line in ledger_text.splitlines():
+        if line.strip() == "## Tasks":
+            in_table = True
+            continue
+        if in_table and line.startswith("## "):
+            break
+        if not in_table or not line.startswith("|") or line.count("|") < 6:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells[0] in {"ID", "---"} or cells[0].startswith("---"):
+            continue
+        task_id, _, title, _, status, pr = (cells + [""] * 6)[:6]
+        if not re.match(r"^[A-Za-z0-9_.-]+$", task_id):
+            continue
+        queued = queue_by_id.get(task_id, {})
+        tasks.append(
+            {
+                "task_id": task_id,
+                "title": str(queued.get("title") or title),
+                "status": str(queued.get("status") or status),
+                "pr": str(queued.get("pr") or pr or ""),
+            }
+        )
+    return tasks
+
+
+def _load_handoff(handoff_dir: Path) -> tuple[str, list[dict[str, str]], list[dict[str, str]], dict[str, str]]:
+    ledger_path = handoff_dir / "ledger.md"
+    if not ledger_path.is_file():
+        raise LinearSyncError(f"Missing ledger: {ledger_path}")
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    queue_data: dict[str, Any] | None = None
+    queue_path = handoff_dir / "queue.json"
+    if queue_path.is_file():
+        try:
+            loaded = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue_data = loaded if isinstance(loaded, dict) else None
+        except (OSError, ValueError, json.JSONDecodeError):
+            queue_data = None
+    goal_match = re.search(r"(?m)^#\s*Goal:\s*(.+?)\s*$", ledger_text)
+    goal_name = goal_match.group(1).strip() if goal_match else handoff_dir.name
+    header: dict[str, str] = {}
+    for line in ledger_text.splitlines():
+        if line.startswith("- ") and ":" in line:
+            key, value = line[2:].split(":", 1)
+            header[key.strip().casefold()] = value.strip()
+    return goal_name, _parse_tasks(ledger_text, queue_data), _parse_events(ledger_text), header
+
+
+def _description_block(
+    goal_name: str,
+    ledger_text: str,
+    tasks: list[dict[str, str]],
+) -> str:
+    header_lines: list[str] = []
+    for line in ledger_text.splitlines():
+        if line.startswith("## Tasks"):
+            break
+        if line.startswith("- ") and ":" in line:
+            header_lines.append(line)
+    summary = "\n".join(header_lines) or f"- Goal: {goal_name}"
+    checklist: list[str] = []
+    for task in tasks:
+        status = task["status"]
+        checked = "x" if status == "done" else " "
+        suffix = status
+        if task["pr"] and task["pr"] not in {"—", "-"}:
+            suffix += f", {task['pr']}"
+        checklist.append(f"- [{checked}] {task['task_id']}: {task['title']} ({suffix})")
+    return (
+        MARKER_START
+        + "\n## Goal Summary\n"
+        + summary
+        + "\n\n## Tasks\n"
+        + ("\n".join(checklist) if checklist else "- [ ] No tasks recorded")
+        + "\n"
+        + MARKER_END
+    )
+
+
+def _updated_description(existing: str | None, block: str) -> str:
+    current = existing or ""
+    start = current.find(MARKER_START)
+    if start < 0:
+        return (current.rstrip() + "\n\n" + block).lstrip()
+    end = current.find(MARKER_END, start + len(MARKER_START))
+    if end < 0:
+        return current[:start].rstrip() + "\n\n" + block
+    end += len(MARKER_END)
+    return current[:start].rstrip() + "\n\n" + block + current[end:]
+
+
+def _aggregate_state(team: dict[str, Any], tasks: list[dict[str, str]], events: list[dict[str, str]], header: dict[str, str]) -> dict[str, Any] | None:
+    event_names = {event.get("EVT", "").upper() for event in events}
+    header_status = header.get("status", "").casefold()
+    if "GOAL_DONE" in event_names or (tasks and all(task["status"] in {"done", "cancelled"} for task in tasks) and any(task["status"] == "done" for task in tasks)):
+        return _state(team, "Done")
+    if header_status == "cancelled" or "GOAL_CANCELLED" in event_names or "CANCELLED" in event_names:
+        return _state(team, "Canceled")
+    statuses = [task["status"] for task in tasks]
+    if any(status in {"in_progress", "changes_requested", "blocked"} for status in statuses):
+        return _state(team, "In Progress")
+    if any(status == "in_review" for status in statuses) and all(status in {"in_review", "done", "cancelled"} for status in statuses):
+        return _state(team, "In Review", "In Progress")
+    if statuses and all(status in {"planned", "ready"} for status in statuses):
+        return _state(team, "Todo")
+    return _state(team, "Todo", "In Progress")
+
+
+def _issue_comment_bodies(issue: dict[str, Any]) -> list[str]:
+    return [str(node.get("body", "")) for node in issue.get("comments", {}).get("nodes", [])]
+
+
+def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, Any], handoff_dir: Path, *, event_note: str | None = None) -> dict[str, Any]:
+    ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+    goal_name, tasks, events, header = _load_handoff(handoff_dir)
+    description = _updated_description(
+        issue.get("description"),
+        _description_block(goal_name, ledger_text, tasks),
+    )
+    target_state = _aggregate_state(team, tasks, events, header)
+    labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
+    blocking = [
+        event
+        for event in events
+        if event.get("EVT", "").upper()
+        in {"TASK_BLOCKED", "INPUT_BLOCKED", "REVIEW_FAIL", "NEED_GO", "NEED_OWNER_DECISION"}
+    ]
+    blocked_label = _label(team, "Blocked") or _label(team, "NEED_GO")
+    if blocking and blocked_label and blocked_label.get("id") not in labels:
+        labels.append(str(blocked_label["id"]))
+    issue = client.update_issue(
+        str(issue["id"]),
+        description=description,
+        state_id=str(target_state["id"]) if target_state else None,
+        label_ids=labels,
+    )
+    existing_comments = _issue_comment_bodies(issue)
+    for event in blocking:
+        event_id = event.get("id", "")
+        marker = f"<!-- GTT-LINEAR-EVENT:{event_id} -->"
+        if event_id and not any(marker in body for body in existing_comments):
+            body = f"{marker}\n**{event.get('EVT')}** `{event_id}`"
+            if event.get("task"):
+                body += f" · Task `{event['task']}`"
+            if event.get("note"):
+                body += f"\n{event['note']}"
+            client.create_comment(str(issue["id"]), body)
+            existing_comments.append(body)
+    for event in events:
+        event_type = event.get("EVT", "").upper()
+        if event_type not in {"PR_CREATED", "DONE", "GOAL_DONE"} and not PR_RE.search(
+            f"{event.get('ref', '')} {event.get('note', '')}"
+        ):
+            continue
+        event_id = event.get("id", "")
+        marker = f"<!-- GTT-LINEAR-MILESTONE:{event_id} -->"
+        if event_id and not any(marker in body for body in existing_comments):
+            body = f"{marker}\n**{event_type}**"
+            if event.get("task"):
+                body += f" · Task `{event['task']}`"
+            if event.get("ref"):
+                body += f"\n{event['ref']}"
+            client.create_comment(str(issue["id"]), body)
+            existing_comments.append(body)
+    if event_note:
+        marker = f"<!-- GTT-LINEAR-NOTE:{event_note} -->"
+        if not any(marker in body for body in existing_comments):
+            client.create_comment(str(issue["id"]), f"{marker}\n{event_note}")
+            existing_comments.append(marker)
+    return issue
+
+
+def _bind_issue_line(handoff_dir: Path, identifier: str, url: str) -> None:
+    path = handoff_dir / "ledger.md"
+    text = path.read_text(encoding="utf-8")
+    binding = f"- Linear: {identifier}" + (f" ({url})" if url else "")
+    if ISSUE_RE.search(text):
+        text = ISSUE_RE.sub(binding, text, count=1)
+    else:
+        lines = text.splitlines()
+        insert_at = next((index for index, line in enumerate(lines) if line.startswith("## Tasks")), len(lines))
+        lines[insert_at:insert_at] = [binding, ""]
+        text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    path.write_text(text, encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _queue_lock(handoff_dir: Path) -> Iterator[None]:
+    lock_path = handoff_dir / ".queue.lock"
+    if lock_path.is_symlink():
+        raise LinearSyncError(f"Refusing symlinked lock: {lock_path}")
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _bound_issue(text: str) -> str | None:
+    match = ISSUE_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _client_or_fail() -> GraphQLClient:
+    key = load_api_key()
+    if not key:
+        raise LinearSyncError("LINEAR_API_KEY is not configured")
+    return GraphQLClient(key)
+
+
+def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
+    client = _client_or_fail()
+    team = client.team(args.team)
+    target_state = _state(team, args.state, "Backlog")
+    label = _label(team, args.label) if args.label else None
+    issue = client.create_issue(
+        team_id=str(team["id"]),
+        title=args.title,
+        description=args.description or "",
+        state_id=str(target_state["id"]) if target_state else None,
+        label_ids=[str(label["id"])] if label else None,
+    )
+    return {
+        "identifier": issue.get("identifier"),
+        "url": issue.get("url"),
+        "state": issue.get("state", {}).get("name"),
+        "id": issue.get("id"),
+    }
+
+
+def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = Path(args.handoff_dir).expanduser().resolve()
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    client = _client_or_fail()
+    with _queue_lock(handoff_dir):
+        ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+        identifier = args.issue or _bound_issue(ledger_text)
+        team = client.team(args.team)
+        if identifier:
+            issue = client.issue(identifier)
+            if args.issue and _bound_issue(ledger_text) != identifier:
+                _bind_issue_line(handoff_dir, identifier, str(issue.get("url") or ""))
+        else:
+            if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
+                raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
+            goal_name, _, _, _ = _load_handoff(handoff_dir)
+            todo = _state(team, "Todo", "In Progress")
+            issue = client.create_issue(
+                team_id=str(team["id"]),
+                title=f"[Goal] {goal_name}",
+                description="",
+                state_id=str(todo["id"]) if todo else None,
+            )
+            _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
+            identifier = str(issue["identifier"])
+        _sync_issue(client, issue, team, handoff_dir)
+    return {"ok": True, "identifier": identifier, "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
+
+
+def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = Path(args.handoff_dir).expanduser().resolve()
+    client = _client_or_fail()
+    ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+    identifier = _bound_issue(ledger_text)
+    team = client.team("TIA")
+    if not identifier:
+        if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
+            raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
+        goal_name, _, _, _ = _load_handoff(handoff_dir)
+        todo = _state(team, "Todo", "In Progress")
+        with _queue_lock(handoff_dir):
+            issue = client.create_issue(
+                team_id=str(team["id"]),
+                title=f"[Goal] {goal_name}",
+                description="",
+                state_id=str(todo["id"]) if todo else None,
+            )
+            _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
+            identifier = str(issue["identifier"])
+    else:
+        issue = client.issue(identifier)
+    issue = _sync_issue(client, issue, team, handoff_dir, event_note=args.event_note)
+    return {"ok": True, "identifier": issue.get("identifier"), "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="linear-sync.py", description="Sync goal-task ledgers with Linear.")
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    idea = subparsers.add_parser("idea", help="Capture an idea in the Linear team inbox.")
+    idea.add_argument("--title", required=True)
+    idea.add_argument("--description", default="")
+    idea.add_argument("--team", default="TIA")
+    idea.add_argument("--state", default="Triage")
+    idea.add_argument("--label", default="")
+
+    ensure = subparsers.add_parser("ensure-goal", help="Bind or create the Linear issue for a Goal.")
+    ensure.add_argument("--handoff-dir", required=True)
+    ensure.add_argument("--issue", default="")
+    ensure.add_argument("--team", default="TIA")
+
+    sync = subparsers.add_parser("sync-ledger", help="Synchronize a Goal ledger to its Linear issue.")
+    sync.add_argument("--handoff-dir", required=True)
+    sync.add_argument("--event-note", default="")
+    sync.add_argument("--quiet", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.subcommand == "idea":
+            payload = cmd_idea(args)
+        elif args.subcommand == "ensure-goal":
+            payload = cmd_ensure_goal(args)
+        elif args.subcommand == "sync-ledger":
+            payload = cmd_sync_ledger(args)
+        else:
+            raise LinearSyncError(f"Unknown subcommand: {args.subcommand}")
+    except LinearSyncError as exc:
+        if args.subcommand == "sync-ledger" and args.quiet:
+            return 0
+        sys.stderr.write(f"linear-sync: {exc}\n")
+        return 2
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

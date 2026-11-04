@@ -62,6 +62,18 @@
 
 #### Goal：可观察的最终结果
 
+#### Pre-Phase-0 Idea triage and Linear active board
+
+Ideas that are not yet Goals belong in Linear Team `TIA`'s `Triage` state
+(falling back to `Backlog`). Resident Bots or a local CLI can capture them with
+`linear-sync.py idea`. When the Owner promotes an Idea, Phase 1 calls
+`ensure-goal`, binds its `TIA-xx` identifier in the ledger, and fills the
+generated `## Tasks` checklist. A Goal without an existing issue uses the
+same command's `auto_create` policy. During execution, the Linear Issue is the
+active-board view of the Goal while `ledger.md` remains the local source of
+truth; queue transitions synchronize asynchronously and never block task
+delivery.
+
 Goal 必须同时声明：
 
 - 最终用户或系统可观察的结果、整体范围和明确不做项。
