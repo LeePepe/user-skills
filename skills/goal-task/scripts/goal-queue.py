@@ -123,8 +123,17 @@ def _linear_key_configured() -> bool:
 
 def _is_isolated_handoff_dir(handoff_dir: Path) -> bool:
     resolved = handoff_dir.expanduser().resolve()
-    isolated_roots = (Path("/tmp"), Path("/private/tmp"), Path("/var/folders"))
-    return any(resolved == root or root in resolved.parents for root in isolated_roots)
+    isolated_roots = (
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/var/folders"),
+        Path("/private/var/folders"),
+    )
+    if any(resolved == root or root in resolved.parents for root in isolated_roots):
+        return True
+    if any(part.lower().startswith(("tmp", ".tmp")) for part in resolved.parts):
+        return True
+    return resolved.parent.name != "handoff"
 
 
 def _maybe_linear_sync(handoff_dir: Path) -> None:

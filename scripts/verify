@@ -18,6 +18,8 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+export GTT_LINEAR_SYNC="${GTT_LINEAR_SYNC:-0}"
+
 git diff --check
 git diff --cached --check
 python3 -I -B -m unittest discover -s skills/code-review/scripts -p 'test_*.py'

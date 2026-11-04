@@ -12,6 +12,15 @@
 | 6. Delivery/Release | product and shared foundations | merged head、contracts、release inputs | published build、readback |
 | 7. Retro/Story | `retro-loop`、`story-craft` | telemetry、timeline、quantitative delta | locks、narrative、new Idea |
 
+## 自治脉搏：Cron / Clockwork 定时调度（Precheck-First, Wake-on-Actionable）
+
+Clockwork / `launchd` 以 `StartInterval=300` 等时间窗任务启动预检，运行结果写入
+`Results/<job_id>/runs/<run_id>/` 并保留最近 50 次。每次先运行 0 Token 的
+`precheck.py` 或 `goal-supervisor.py scan`：`pending == 0` 时直接退出且不唤醒
+LLM；只有 `pending > 0` 才通过 webhook 或 `herdr agent prompt` 精准唤醒对应
+Bot / Sticky TL。该心跳分别驱动环 5 的 PR 盯梢、环 3/4 的 Goal 租约巡检，以及
+环 7 → 环 1 的遥测反馈回流。
+
 ## Progressive 6DQ
 
 The ladder is intentionally progressive. **6DQ helps an Agent discover problems

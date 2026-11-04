@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -119,6 +120,35 @@ class LinearSyncTests(unittest.TestCase):
             linear_sync, "_read_key_file", side_effect=[None, "from-file"]
         ):
             self.assertEqual(linear_sync.load_api_key(), "from-file")
+
+    def test_repo_root_tempdir_is_isolated_and_skipped_unless_forced(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            handoff_dir = Path(temp_dir) / "chain"
+            handoff_dir.mkdir()
+            self.assertTrue(linear_sync._is_isolated_handoff_dir(handoff_dir))
+            args = type(
+                "Args",
+                (),
+                {"handoff_dir": str(handoff_dir), "event_note": "", "quiet": True},
+            )()
+            with mock.patch.object(linear_sync, "_client_or_fail") as client:
+                with mock.patch.dict(os.environ, {"GTT_LINEAR_SYNC": "0"}, clear=False):
+                    self.assertEqual(
+                        linear_sync.cmd_sync_ledger(args),
+                        {"ok": True, "skipped": "isolated_handoff_dir"},
+                    )
+                client.assert_not_called()
+                with mock.patch.dict(os.environ, {"GTT_LINEAR_SYNC": "1"}, clear=False):
+                    with mock.patch.object(linear_sync, "_client_or_fail", side_effect=linear_sync.LinearSyncError("forced")):
+                        with self.assertRaises(linear_sync.LinearSyncError):
+                            linear_sync.cmd_sync_ledger(args)
+
+    def test_canonical_handoff_path_is_not_isolated(self) -> None:
+        self.assertFalse(
+            linear_sync._is_isolated_handoff_dir(
+                Path("/") / "Users" / "example" / "Development" / "handoff" / "my-real-goal"
+            )
+        )
 
     def test_sync_updates_description_state_and_deduplicates_blocker(self) -> None:
         transport = FakeTransport()

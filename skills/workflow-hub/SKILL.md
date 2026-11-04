@@ -31,6 +31,32 @@ description: 总工作流 7 环中枢：把 Linear Idea、Phase 0 共创、Goal/
 7. **环 7 — `retro-loop` + `story-craft`**：将项目回路 A、工程回路 B、三道
    物理锁和脱敏叙事产出回流环 1，形成下一轮 Idea 或 Goal。
 
+## 自治脉搏：Cron / Clockwork 定时调度（Precheck-First, Wake-on-Actionable）
+
+### 核心原则（零 Token 确定性预检 → 按需唤醒）
+
+1. **Step 1 — 定时触发与时间窗守卫（Clockwork / `launchd`）**：通过
+   `~/Library/LaunchAgents/is.ian.clockwork.task.*.plist` 与
+   `~/Library/Application Support/Clockwork/Jobs/*.sh`（例如
+   `StartInterval=300`，门控工作日 `09:00–22:00 Asia/Shanghai`）启动；每次运行
+   落盘 `Results/<job_id>/runs/<run_id>/{started,stdout.log,stderr.log,exit,finished,event.json}`
+   并自动保留最近 50 次运行记录。
+2. **Step 2 — 确定性预检（Deterministic Precheck，0 Token）**：先运行纯
+   Python / Shell 预检（如 `precheck.py` 或 `goal-supervisor.py scan`）。若
+   `pending == 0`（无待审新 SHA、CI 失败/冲突或阻塞 Agent），直接 `exit 0`，
+   **不唤醒任何 LLM / Bot**。
+3. **Step 3 — 精准唤醒与环路派发（Targeted Wake）**：仅当 `pending > 0` 时，
+   通过 `wake-pr-sentry-webhook.sh` 或 `herdr agent prompt` 唤醒对应常驻 Bot /
+   Sticky TL，进入对应工作流环。
+
+### 三大定时回路与 7 环映射表
+
+| 定时回路 | 驱动环 | 触发与动作 |
+|---|---|---|
+| PR 自动审查与盯梢 | 环 5 | `local.pr-auto-review` 与 `local.my-pr-supervisor-precheck` 扫描 GHE / GitHub / ADO PR；未审 head SHA、CI 失败、评论或冲突时唤醒审查或 Sticky TL。 |
+| 多 Goal 租约与阻塞巡检 | 环 3 & 环 4 | `goal-supervisor.py scan --write-alerts` 扫描活动 `ledger.md` 与 Herdr 窗格；发现 `BLOCKED_AGENT` / `ZOMBIE_LEASE` / `ORPHAN_TL_WAIT` 时写告警并唤醒协调者。 |
+| 遥测/反馈巡检与任务回流 | 环 7 → 环 1 | 定时拉取性能、Crash、DSAT 与周期维护信号；退化时通过 `linear-board`（`linear-sync.py`）写入 `TIA` 看板，触发下一轮 Goal。 |
+
 ## 4-layer product/output matrix
 
 | 层 | 关注对象 | 代表输入 | 代表输出与读回 |

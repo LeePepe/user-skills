@@ -33,6 +33,21 @@ class LinearSyncError(RuntimeError):
     """Expected, user-facing Linear synchronization failure."""
 
 
+def _is_isolated_handoff_dir(handoff_dir: Path) -> bool:
+    resolved = handoff_dir.expanduser().resolve()
+    isolated_roots = (
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/var/folders"),
+        Path("/private/var/folders"),
+    )
+    if any(resolved == root or root in resolved.parents for root in isolated_roots):
+        return True
+    if any(part.lower().startswith(("tmp", ".tmp")) for part in resolved.parts):
+        return True
+    return resolved.parent.name != "handoff"
+
+
 def _read_key_file(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
@@ -594,6 +609,12 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = Path(args.handoff_dir).expanduser().resolve()
+    if (
+        getattr(args, "quiet", False)
+        and _is_isolated_handoff_dir(handoff_dir)
+        and os.environ.get("GTT_LINEAR_SYNC") != "1"
+    ):
+        return {"ok": True, "skipped": "isolated_handoff_dir"}
     client = _client_or_fail()
     with _queue_lock(handoff_dir):
         ledger_text = _read_ledger(handoff_dir)
