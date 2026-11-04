@@ -2,6 +2,13 @@
 
 这份路线图把全景飞轮图、`playbook.md` 的三大板块和后续执行切片连接起来。它只定义可交接的方向与启动方式；每个方向真正开始时，仍须由 CLI 主控（TL）按 `Goal -> Task` 合同冻结范围、接口、Owned Paths、验收命令和 R10 回执。
 
+总工作流入口是 [`workflow-hub`](../../workflow-hub/SKILL.md)，Idea/Goal 看板是
+[`linear-board`](../../linear-board/SKILL.md)，复盘与叙事分别由
+[`retro-loop`](../../retro-loop/SKILL.md) 和 [`story-craft`](../../story-craft/SKILL.md)
+承接。6DQ 在本路线图中采用 Progressive Discovery Ladder：先 D1 隔离轻检，
+再按 L1、L2、G2、L3 + Release Readback 逐步加深；**Not an upfront all-at-once constraint**，
+不在动工前一刀切阻塞 Agent。
+
 ## §1 跨机同步与一键加载指南
 
 以下命令适用于 Mac mini 与 MacBook。把 `<repository-url>` 替换为实际仓库地址；不要把本机绝对路径写进任务 brief、回执或仓库文档。

@@ -270,6 +270,91 @@ class VerifySkillsTests(unittest.TestCase):
                 f"Missing required heading {anchor_heading!r} in SKILL.md",
             )
 
+    def test_workflow_hub_seven_ring_contract(self) -> None:
+        expected_skills = {
+            "workflow-hub": {
+                "category": "workflow",
+                "required": (
+                    "7-Ring",
+                    "linear-board",
+                    "bot-tl-orchestration",
+                    "goal-task",
+                    "PR Review/Merge",
+                    "Product Delivery/Release",
+                    "retro-loop",
+                    "story-craft",
+                    "Progressive Discovery Ladder",
+                    "Not an upfront all-at-once constraint",
+                    "Stage 1",
+                    "Stage 5",
+                ),
+            },
+            "linear-board": {
+                "category": "workflow",
+                "required": (
+                    "Idea Inbox",
+                    "Global Goal Status Board",
+                    "1 Goal = 1 Issue",
+                    "Promote Idea -> Goal",
+                    "TIA",
+                ),
+            },
+            "retro-loop": {
+                "category": "workflow",
+                "required": (
+                    "Project Loop A",
+                    "Engineering Loop B",
+                    "H1–H5",
+                    "3 Physical Locks",
+                    "linear-board",
+                ),
+            },
+            "story-craft": {
+                "category": "workflow",
+                "required": (
+                    "4-Element Extraction Sheet",
+                    "Desensitization",
+                    "Story Series",
+                    "Tech Deep-Dive Blog",
+                    "Deck",
+                ),
+            },
+        }
+
+        marketplace = json.loads(
+            (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+        )
+        plugins = {plugin["name"]: plugin for plugin in marketplace["plugins"]}
+        for name, contract in expected_skills.items():
+            with self.subTest(skill=name):
+                skill_dir = SKILLS_DIR / name
+                skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                manifest = json.loads(
+                    (skill_dir / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+                )
+                self.assertIn(name, plugins)
+                self.assertEqual(plugins[name]["source"], f"./skills/{name}")
+                self.assertEqual(manifest["name"], name)
+                self.assertEqual(manifest["category"], contract["category"])
+                for phrase in contract["required"]:
+                    self.assertIn(phrase, skill_text)
+
+        linear_script = SKILLS_DIR / "linear-board" / "scripts" / "linear-sync.py"
+        self.assertTrue(linear_script.is_file())
+        self.assertEqual(linear_script.stat().st_mode & 0o777, 0o755)
+        self.assertIn("../goal-task/scripts/linear-sync.py", (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8"))
+
+        goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        playbook_text = (SKILLS_DIR / "goal-task" / "references" / "playbook.md").read_text(encoding="utf-8")
+        roadmap_text = (SKILLS_DIR / "goal-task" / "references" / "workflow-refine-roadmap.md").read_text(encoding="utf-8")
+        for target in ("../workflow-hub/SKILL.md", "../linear-board/SKILL.md", "../retro-loop/SKILL.md", "../story-craft/SKILL.md"):
+            self.assertIn(f"]({target})", goal_text)
+        for text in (playbook_text, roadmap_text):
+            self.assertIn("Progressive Discovery Ladder", text)
+            self.assertIn("Not an upfront all-at-once constraint", text)
+        self.assertIn("Stage 1", playbook_text)
+        self.assertIn("Stage 5", playbook_text)
+
     def test_goal_task_design_role_and_inline_delegation_guards(self) -> None:
         skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"
         agents_path = skill_path.parent / "references" / "bots-and-agents.md"

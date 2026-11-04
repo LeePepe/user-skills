@@ -1,5 +1,10 @@
 ## §0 Panorama & 4-Layer Product/Output Matrix
 
+本手册由 [`workflow-hub`](../../workflow-hub/SKILL.md) 统一编排；环 1 使用
+[`linear-board`](../../linear-board/SKILL.md)，环 7a 使用 [`retro-loop`](../../retro-loop/SKILL.md)，
+环 7b 使用 [`story-craft`](../../story-craft/SKILL.md)。本文件保留 goal-task
+开发、复盘与叙事所需的详细验收锚点。
+
 > 本手册把一次 Goal 从可验收的开发交付、证据驱动的双路复盘、规则与底座进化，推进到可复用的总结、抽取与公开叙事，再把反馈送回下一轮开发。四个层次描述产品与产出，三个主板块描述行动与回馈；两者不能互相替代。
 
 配套资产：[`交互式全景飞轮图`](../assets/ai-native-flywheel.html) · [`跨机推进路线图`](./workflow-refine-roadmap.md)
@@ -441,7 +446,25 @@ nohup sh -c 'sleep 2 && herdr pane close "$HERDR_PANE_ID"' >/dev/null 2>&1 &
 
 ### 1.6 6DQ 质量门禁与自动化发布读回
 
-6DQ 是组合门槛，不是五个可选建议：
+6DQ 是帮助 Agent 在开发过程中由浅入深、渐进式发现问题的诊断阶梯
+（**Progressive Discovery Ladder**），而不是在一开始就束缚 Agent 的前置一刀切
+教条（**Not an upfront all-at-once constraint**）。它按风险和交付阶段递进，
+不是五个在编码开始前必须一次性完成的检查：
+
+1. **Stage 1 — D1（动工轻检：环境与 Worktree 隔离）**：仅做秒级分支、路径、
+   依赖和环境确认，让 Agent 放心探索编码。
+2. **Stage 2 — L1（内环快反：单测与静态检查）**：完成最小代码切片后立刻跑局部
+   单测、语法和静态检查，第一时间暴露函数级逻辑错误。
+3. **Stage 3 — L2（边界探查：本地真实集成）**：L1 通过后逐步替换 mock，对接真实
+   序列化、本地存储和接口边界，发现单测掩盖的契约偏差。
+4. **Stage 4 — G2（交接扫描：安全与契约对齐）**：准备提 PR 时运行秘密扫描、
+   权限审计、`design_contract.py` 与 `sync_contract.py --check`。
+5. **Stage 5 — L3 + Release Readback（外环终验：端到端旅程与线上读回）**：合入与
+   发布阶段验证关键用户旅程 E2E、`release_sync.py readback`、`/api/live`、
+   `SHA256SUMS` 与 TestFlight/FlightBook 真实读回。
+
+通过较早阶段不能推断后续阶段已通过；每一阶段只在相关风险出现时追加其最小
+检查，失败时保留首次失败命令、证据和下一步修复范围：
 
 | 维度 | 检查目标 | 最低证据 | 失败处置 |
 |---|---|---|---|
