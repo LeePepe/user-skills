@@ -95,12 +95,18 @@ upstream_escalation:
 - **Single Focal Anchor**: <The single highest-weight element in the viewport; max 1 Primary CTA>
 - **Surface Spacing Class**: `Class A (High-Density Telemetry: 4–6pt row gap, 2–4pt cell pad)` | `Class B (Standard Productivity: 8–12pt row gap, 8–12pt card pad)` | `Class C (Editorial/Hero: 16–32pt gap)`
 
-| Sub-Surface / Region | DESIGN-CONTRACT Scenario Archetype | Upstream Component / Primitive (`import Strata` / `@nocoo/basalt`) | Explicit Variant & Props | StrataMotion Choreography | Forbidden Anti-Patterns (Hard Bans) |
+| Sub-Surface / Region | DESIGN-CONTRACT Scenario Archetype | Upstream Component / Primitive (`import Strata` / `@nocoo/basalt`) | Explicit Variant & Props | StrataMotion Choreography (motion-studio tier/pattern IDs allowed) | Forbidden Anti-Patterns (Hard Bans) |
 |---|---|---|---|---|---|
 | Navigation / Header | System Toolbar / Sticky Section | `StrataSectionHeader` / `StrataStickySectionHeader` | `maxHeight: 44pt`, vertical pad `<=4pt` | `fade` on Reduce Motion | Never wrap `.toolbar` item in custom `.background(..., in: Capsule())` (Rule 1 Double-Chrome) |
 | Primary Content Grid | Live Telemetry / Bento Summary | `StrataCard` + `StrataProgressRing` + `StrataStatusMetricBadge` | `style: .solid`, `cornerRadius: 16pt`, equal-height row lock | `snappy` (`0.28s, bounce 0.08`) + `.contentTransition(.numericText())` | No Glass-on-Glass; no nested card-in-card; no >1px colored left borders |
 | Data Entry / List | Dense Single-Hand Entry / Expandable Rows | `StrataList` / `StrataTextField` / `StrataSwitch` | `.strataInputBaseline` alignment, `44×44pt` hit target (`28×28pt` macOS) | Spring (`response: 0.30, damping: 0.84`), zero layout jump | Never repeat full-width recommendation banners per row (use inline placeholder/hint) |
 | Bottom Chrome | Bottom Inset Arbitration | Single `.safeAreaInset(edge: .bottom)` stack | Order: `Content -> Snackbar -> DockedBar -> SafeArea` | Slide + crossfade (`150ms`) | Never stack multiple `.overlay(alignment: .bottom)`; never hide inactive slot with `.opacity(0)` (Rule 6 & 12) |
+
+Use `motion-studio` tier IDs (`M1`/`M2` token springs, `.numericText()`,
+`layoutId`/`matchedGeometryEffect`) or catalog pattern IDs `MP-001`–`MP-006`
+in the **StrataMotion Choreography** column. Each reference must name its
+platform binding: Web Motion/Anime.js/CSS/SVG or Mobile-Native
+StrataMotion/SwiftUI/UIKit, with Shared state-machine semantics preserved.
 
 ---
 

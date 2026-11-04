@@ -14,6 +14,35 @@ handoff and selecting exactly one `surface_mode` (`Operate`, `Read`,
 Treat `DesignTokens`, `Strata`/`StrataMotion`, and `@nocoo/basalt` as token
 authorities; do not invent a parallel motion language.
 
+## Three-skill synergy and routing
+
+The handoff flows `my-designer` → `visual-design-modernization` →
+`motion-studio`. Consume the selected `visual_mode`, `surface_mode`, and
+`motion_tier`: M1 is Micro-Feedback, M2 is Spatial & Gesture Choreography, M3
+is Narrative/3D Hero, and M4 is Code-to-Video. Use
+`python3 skills/motion-studio/scripts/motion_catalog.py` to search and
+recommend catalog entries before implementation.
+
+The **Shared** layer owns physical state machines
+(`idle -> drag -> threshold -> commit/cancel -> spring settle`),
+DesignTokens/StrataMotion timing and spring semantics, Lottie, MCP for Blender
+GLTF/USDZ assets, and Remotion/FFmpeg promo outputs. The **Web** layer owns
+Motion, Anime.js, Three.js with Postprocessing/Three.quarks/Jolt Physics/GPU
+Pathtracer, and DEV-only Tweakpane. The **Mobile-Native** iOS/macOS SwiftUI
+layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
+`PhaseAnimator`, Canvas, `ShaderLibrary` Metal effects, `SensoryFeedback`, and
+`.contentTransition(.numericText())`.
+
+### Extensible catalog workflow
+
+1. Deduplicate a supplied prompt/tool with
+   `motion_catalog.py search --query "<prompt>"`.
+2. Normalize it into `state_machine`, web/mobile implementations, and
+   `token_guardrails`, then archive with `add-pattern` or `add-tool`.
+3. Select motion with `recommend --platform <web|mobile> --surface-mode <mode>`.
+4. Close the taste loop with `record-use --id <ID> --context "<repo/screen>"`,
+   recording `liked`, `neutral`, or `disliked` feedback.
+
 ## Track A · Product UI and landing-page motion
 
 ### Operate / Read
