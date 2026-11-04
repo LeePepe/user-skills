@@ -349,6 +349,16 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertTrue(linear_script.is_file())
         self.assertEqual(linear_script.stat().st_mode & 0o777, 0o755)
         self.assertIn("../goal-task/scripts/linear-sync.py", (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8"))
+        linear_board_text = (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8")
+        workflow_hub_text = (SKILLS_DIR / "workflow-hub" / "SKILL.md").read_text(encoding="utf-8")
+        for project_name in ("Agent Workflow", "Bing", "Personal project"):
+            self.assertIn(project_name, linear_board_text)
+        self.assertIn('--project "Agent Workflow"', linear_board_text)
+        self.assertIn("## 如何按需让 CLI / Agent 加载总 Workflow（On-Demand Invocation）", workflow_hub_text)
+        self.assertIn("/workflow-hub", workflow_hub_text)
+        self.assertIn("$workflow-hub", workflow_hub_text)
+        for skill_dir in ("~/.agents/skills", "~/.copilot/skills", "~/.codex/skills", "~/.claude/skills"):
+            self.assertIn(skill_dir, workflow_hub_text)
 
         goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
         playbook_text = (SKILLS_DIR / "goal-task" / "references" / "playbook.md").read_text(encoding="utf-8")
