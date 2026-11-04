@@ -10,6 +10,30 @@
   },
   "plugins": [
     {
+      "name": "workflow-hub",
+      "source": "./skills/workflow-hub",
+      "category": "workflow",
+      "description": "总工作流 7 环中枢：把 Idea、共创、Goal/Task 开发、PR、产品交付、复盘与叙事串成可验收闭环。"
+    },
+    {
+      "name": "linear-board",
+      "source": "./skills/linear-board",
+      "category": "workflow",
+      "description": "TIA Idea Inbox 与 Global Goal Status Board：收集想法、提升 Goal、同步状态与 Task checklist。"
+    },
+    {
+      "name": "retro-loop",
+      "source": "./skills/retro-loop",
+      "category": "workflow",
+      "description": "双路复盘与三道物理锁：把 Telemetry/Crash 与 Workflow/PR/Infra 证据转成可验收 Task。"
+    },
+    {
+      "name": "story-craft",
+      "source": "./skills/story-craft",
+      "category": "workflow",
+      "description": "四元素叙事素材抽取、脱敏与 Story Series/Tech Blog/Deck 发布读回。"
+    },
+    {
       "name": "goal-task",
       "source": "./skills/goal-task",
       "category": "workflow",

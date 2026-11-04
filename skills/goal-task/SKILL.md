@@ -6,6 +6,14 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 
 > 唯一技能名是 `goal-task`。旧目录 `goal-target-task` 已移除，不再提供兼容安装路径或固定锚点。
 
+## Workflow Hub links
+
+总工作流 7 环中枢见 [`workflow-hub`](../workflow-hub/SKILL.md)；
+环 1 Idea 与状态看板见 [`linear-board`](../linear-board/SKILL.md)；
+环 7a 双路复盘见 [`retro-loop`](../retro-loop/SKILL.md)；
+环 7b 叙事产出见 [`story-craft`](../story-craft/SKILL.md)。本合同只负责环 4
+开发切片执行，跨环交接使用精确接口、准确 head 和 R10 receipt。
+
 ## Linear workflow integration
 
 The workflow uses Linear Team `TIA` as the active board: one Goal maps to one
