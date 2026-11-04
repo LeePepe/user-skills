@@ -101,4 +101,6 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
   检查伪装成开发前置硬门槛。
 - 每次复盘和发布读回都必须能回指一个 Goal/Task 或新的 TIA Idea。
 
-Canonical companion: [`seven-rings-and-progressive-6dq.md`](references/seven-rings-and-progressive-6dq.md)
+Canonical companions:
+- [`seven-rings-and-progressive-6dq.md`](references/seven-rings-and-progressive-6dq.md)
+- [`his-fm-nocoo-study-and-roadmap.md`](references/his-fm-nocoo-study-and-roadmap.md)（his.fm EP.01 & `nocoo` 开源全家桶学习沉淀、`R01–R20` 个人 Workflow 演进路线图与 Wave 1–4 推进计划）
