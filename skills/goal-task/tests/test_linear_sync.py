@@ -39,6 +39,7 @@ class FakeTransport:
             "description": "Owner notes",
             "state": {"id": "todo", "name": "Todo", "type": "unstarted"},
             "team": {"id": "team-id", "key": "TIA", "name": "Tianpeili"},
+            "project": None,
             "labels": {"nodes": []},
             "comments": {"nodes": []},
         }
@@ -65,6 +66,13 @@ class FakeTransport:
                                     ]
                                 },
                                 "labels": {"nodes": [{"id": "blocked", "name": "Blocked"}]},
+                                "projects": {
+                                    "nodes": [
+                                        {"id": "agent-workflow", "name": "Agent Workflow"},
+                                        {"id": "bing", "name": "Bing"},
+                                        {"id": "personal", "name": "Personal project"},
+                                    ]
+                                },
                             }
                         ]
                     }
@@ -84,6 +92,11 @@ class FakeTransport:
                 **self.issue,
                 "description": variables["input"].get("description"),
                 "state": {"id": variables["input"].get("stateId"), "name": "In Progress", "type": "started"},
+                "project": (
+                    {"id": variables["input"]["projectId"], "name": variables["input"]["projectId"]}
+                    if variables["input"].get("projectId")
+                    else self.issue.get("project")
+                ),
                 "labels": labels,
             }
             return {"data": {"issueUpdate": {"success": True, "issue": self.issue}}}
@@ -149,6 +162,38 @@ class LinearSyncTests(unittest.TestCase):
                 Path("/") / "Users" / "example" / "Development" / "handoff" / "my-real-goal"
             )
         )
+
+    def test_infers_linear_project_from_domain_keywords(self) -> None:
+        self.assertEqual(linear_sync._infer_project_name(None, "workflow-hub goal-task"), "Agent Workflow")
+        self.assertEqual(linear_sync._infer_project_name(None, "Sapphire DSAT"), "Bing")
+        self.assertEqual(linear_sync._infer_project_name(None, "VitalStride health app"), "Personal project")
+        self.assertEqual(linear_sync._infer_project_name(" Custom ", "Bing"), "Custom")
+
+    def test_project_id_is_case_insensitive_and_missing_projects_are_safe(self) -> None:
+        team = FakeTransport()("query TeamMetadata", {})["data"]["teams"]["nodes"][0]
+        self.assertEqual(linear_sync._project_id(team, "agent workflow"), "agent-workflow")
+        self.assertIsNone(linear_sync._project_id(team, "Unknown"))
+
+    def test_sync_attaches_inferred_project(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        team = client.team("TIA")
+        result = linear_sync._sync_issue(client, client.issue("TIA-19"), team, self.work)
+        update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
+        self.assertEqual(update_calls[-1][1]["input"]["projectId"], "agent-workflow")
+        self.assertEqual(result["project"]["id"], "agent-workflow")
+
+    def test_create_issue_passes_project_id(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        client.create_issue(
+            team_id="team-id",
+            title="Workflow idea",
+            description="",
+            project_id="agent-workflow",
+        )
+        create_calls = [call for call in transport.calls if "CreateIssue" in call[0]]
+        self.assertEqual(create_calls[-1][1]["input"]["projectId"], "agent-workflow")
 
     def test_sync_updates_description_state_and_deduplicates_blocker(self) -> None:
         transport = FakeTransport()
@@ -293,7 +338,9 @@ class LinearSyncTests(unittest.TestCase):
     def test_help_parser_has_all_subcommands(self) -> None:
         parser = linear_sync.build_parser()
         self.assertEqual(parser.parse_args(["idea", "--title", "x"]).subcommand, "idea")
+        self.assertEqual(parser.parse_args(["idea", "--title", "x", "--project", "Bing"]).project, "Bing")
         self.assertEqual(parser.parse_args(["ensure-goal", "--handoff-dir", str(self.work)]).subcommand, "ensure-goal")
+        self.assertEqual(parser.parse_args(["ensure-goal", "--handoff-dir", str(self.work), "--project", "Bing"]).project, "Bing")
         self.assertTrue(parser.parse_args(["sync-ledger", "--handoff-dir", str(self.work), "--quiet"]).quiet)
 
 

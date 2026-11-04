@@ -11,8 +11,13 @@ description: 管理 Linear Team TIA 的 Idea Inbox 与 Global Goal Status Board�
 
 - 先把未成熟想法写入 Linear Team `TIA` 的 `Triage`；若不可用则写入
   `Backlog`。
-- 使用 `scripts/linear-sync.py idea --title ... --description ...`，不在仓库
-  或私有记忆中保存 API key。
+- Team `TIA` 的 Linear Projects 固定为 `Agent Workflow`、`Bing` 和
+  `Personal project`。使用 `scripts/linear-sync.py idea --title ...`
+  `--description ... --project "Agent Workflow"` 可显式指定；未指定时脚本会
+  按 ledger、Goal 文本和仓库关键词自动路由。
+- 所有 workflow、goal-task、skills、Linear board 和编排相关的 Idea/Goal 都归入
+  `Agent Workflow`，Bing/Sapphire/FlightBook 等产品工作归入 `Bing`，个人应用归入
+  `Personal project`。不在仓库或私有记忆中保存 API key。
 - Idea 只记录问题、背景、证据指针和下一步，不伪装成已批准 Task。
 
 ## Global Goal Status Board

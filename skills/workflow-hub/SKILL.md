@@ -8,6 +8,16 @@ description: 总工作流 7 环中枢：把 Linear Idea、Phase 0 共创、Goal/
 传递冻结的接口与证据，并把每一环的结果送到下一环；专项规则仍以各环 skill
 为唯一事实源。
 
+## 如何按需让 CLI / Agent 加载总 Workflow（On-Demand Invocation）
+
+`workflow-hub` 只在修改或审查总 Workflow 时按需加载；正常编码期间不会产生
+idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或输入
+“加载 workflow-hub ...”（`skill("workflow-hub")`）；Codex CLI 使用
+`$workflow-hub`，或输入 “use workflow-hub skill ...”。
+
+各 CLI 的 skill 目录保持同步：`~/.agents/skills`、`~/.copilot/skills`、
+`~/.codex/skills`、`~/.claude/skills`。
+
 ## 7-Ring lifecycle
 
 1. **环 1 — `linear-board`**：把想法放入 TIA `Triage`/`Backlog`，维护

@@ -119,7 +119,7 @@ class GraphQLClient:
         except (URLError, TimeoutError, ValueError) as exc:
             raise LinearSyncError(f"Linear request failed: {exc}") from exc
 
-    def team(self, key: str) -> dict[str, Any]:
+    def team_metadata(self, team_key: str) -> dict[str, Any]:
         data = self.execute(
             """
             query TeamMetadata($key: String!) {
@@ -128,22 +128,27 @@ class GraphQLClient:
                   id key name
                   states { nodes { id name type } }
                   labels { nodes { id name } }
+                  projects { nodes { id name } }
                 }
               }
             }
             """,
-            {"key": key},
+            {"key": team_key},
         )
         nodes = data.get("teams", {}).get("nodes", [])
         if not nodes:
-            raise LinearSyncError(f"Linear team '{key}' was not found")
+            raise LinearSyncError(f"Linear team '{team_key}' was not found")
         return nodes[0]
+
+    def team(self, key: str) -> dict[str, Any]:
+        return self.team_metadata(key)
 
     def issue(self, identifier: str) -> dict[str, Any]:
         fields = """
           id identifier url title description
           state { id name type }
           team { id key name }
+          project { id name }
           labels { nodes { id name } }
           comments { nodes { id body } }
         """
@@ -195,6 +200,7 @@ class GraphQLClient:
         description: str,
         state_id: str | None = None,
         label_ids: list[str] | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
             "teamId": team_id,
@@ -205,6 +211,8 @@ class GraphQLClient:
             input_data["stateId"] = state_id
         if label_ids:
             input_data["labelIds"] = label_ids
+        if project_id:
+            input_data["projectId"] = project_id
         data = self.execute(
             """
             mutation CreateIssue($input: IssueCreateInput!) {
@@ -214,6 +222,7 @@ class GraphQLClient:
                   id identifier url title description
                   state { id name type }
                   team { id key name }
+                  project { id name }
                   labels { nodes { id name } }
                   comments { nodes { id body } }
                 }
@@ -234,6 +243,7 @@ class GraphQLClient:
         description: str | None = None,
         state_id: str | None = None,
         label_ids: list[str] | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {}
         if description is not None:
@@ -242,6 +252,8 @@ class GraphQLClient:
             input_data["stateId"] = state_id
         if label_ids is not None:
             input_data["labelIds"] = label_ids
+        if project_id is not None:
+            input_data["projectId"] = project_id
         data = self.execute(
             """
             mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
@@ -251,6 +263,7 @@ class GraphQLClient:
                   id identifier url title description
                   state { id name type }
                   team { id key name }
+                  project { id name }
                   labels { nodes { id name } }
                   comments { nodes { id body } }
                 }
@@ -293,6 +306,40 @@ def _label(team: dict[str, Any], name: str) -> dict[str, Any] | None:
     for label in team.get("labels", {}).get("nodes", []):
         if str(label.get("name", "")).casefold() == wanted:
             return label
+    return None
+
+
+def _infer_project_name(explicit_project: str | None, text: str, repo_text: str = "") -> str:
+    if explicit_project and explicit_project.strip():
+        return explicit_project.strip()
+    ledger_project = re.search(r"(?mi)^\s*-\s*Project:\s*(\S.*?)\s*$", text)
+    if ledger_project:
+        return ledger_project.group(1).strip()
+    combined = f"{text} {repo_text}".casefold()
+    if any(keyword in combined for keyword in (
+        "bing", "sapphire", "flightbook", "oneauth", "serp", "fastlane",
+        "dsat", "cer", "msn", "san sa",
+    )):
+        return "Bing"
+    if any(keyword in combined for keyword in (
+        "user-skills", "workflow", "goal-task", "linear-board", "bot-tl",
+        "retro-loop", "story-craft", "herdr", "clockwork", "cron", "6dq",
+        "shared-ci", "skill",
+    )):
+        return "Agent Workflow"
+    if any(keyword in combined for keyword in ("vitalstride", "voxpocket", "aidash", "localis")):
+        return "Personal project"
+    return "Agent Workflow"
+
+
+def _project_id(team: dict[str, Any], project_name: str | None) -> str | None:
+    if not project_name:
+        return None
+    wanted = project_name.casefold()
+    for project in (team.get("projects") or {}).get("nodes") or []:
+        if str(project.get("name", "")).casefold() == wanted:
+            project_id = project.get("id")
+            return str(project_id) if project_id else None
     return None
 
 
@@ -461,9 +508,21 @@ def _read_ledger(handoff_dir: Path) -> str:
         raise LinearSyncError(f"Unable to read ledger: {ledger_path}: {exc}") from exc
 
 
-def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, Any], handoff_dir: Path, *, event_note: str | None = None) -> dict[str, Any]:
+def _sync_issue(
+    client: GraphQLClient,
+    issue: dict[str, Any],
+    team: dict[str, Any],
+    handoff_dir: Path,
+    *,
+    event_note: str | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
     ledger_text = _read_ledger(handoff_dir)
     goal_name, tasks, events, header = _load_handoff(handoff_dir)
+    inferred_project = _infer_project_name(project_name, ledger_text, str(handoff_dir))
+    project_id = _project_id(team, inferred_project)
+    current_project_id = str((issue.get("project") or {}).get("id") or "")
+    explicit_project = bool(project_name and project_name.strip())
     description = _updated_description(
         issue.get("description"),
         _description_block(goal_name, ledger_text, tasks),
@@ -481,6 +540,9 @@ def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, An
         description=description,
         state_id=str(target_state["id"]) if target_state else None,
         label_ids=labels,
+        project_id=project_id
+        if project_id and (explicit_project or not current_project_id) and project_id != current_project_id
+        else None,
     )
     existing_comments = _issue_comment_bodies(issue)
     for event in blocking:
@@ -561,6 +623,12 @@ def _client_or_fail() -> GraphQLClient:
 def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
     client = _client_or_fail()
     team = client.team(args.team)
+    project_name = _infer_project_name(
+        getattr(args, "project", ""),
+        f"{args.title} {args.description}",
+        getattr(args, "repo", ""),
+    )
+    project_id = _project_id(team, project_name)
     target_state = _state(team, args.state, "Backlog")
     label = _label(team, args.label) if args.label else None
     issue = client.create_issue(
@@ -569,12 +637,14 @@ def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
         description=args.description or "",
         state_id=str(target_state["id"]) if target_state else None,
         label_ids=[str(label["id"])] if label else None,
+        project_id=project_id,
     )
     return {
         "identifier": issue.get("identifier"),
         "url": issue.get("url"),
         "state": issue.get("state", {}).get("name"),
         "id": issue.get("id"),
+        "project": (issue.get("project") or {}).get("name") or (project_name if project_id else None),
     }
 
 
@@ -594,17 +664,31 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
             if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
                 raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
             goal_name, _, _, _ = _load_handoff(handoff_dir)
+            project_name = _infer_project_name(getattr(args, "project", ""), ledger_text, str(handoff_dir))
             todo = _state(team, "Todo", "In Progress")
             issue = client.create_issue(
                 team_id=str(team["id"]),
                 title=f"[Goal] {goal_name}",
                 description="",
                 state_id=str(todo["id"]) if todo else None,
+                project_id=_project_id(team, project_name),
             )
             _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
             identifier = str(issue["identifier"])
-        issue = _sync_issue(client, issue, team, handoff_dir)
-    return {"ok": True, "identifier": identifier, "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
+        issue = _sync_issue(
+            client,
+            issue,
+            team,
+            handoff_dir,
+            project_name=getattr(args, "project", ""),
+        )
+    return {
+        "ok": True,
+        "identifier": identifier,
+        "url": issue.get("url"),
+        "state": issue.get("state", {}).get("name"),
+        "project": (issue.get("project") or {}).get("name"),
+    }
 
 
 def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
@@ -624,19 +708,34 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
             if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
                 raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
             goal_name, _, _, _ = _load_handoff(handoff_dir)
+            project_name = _infer_project_name(getattr(args, "project", ""), ledger_text, str(handoff_dir))
             todo = _state(team, "Todo", "In Progress")
             issue = client.create_issue(
                 team_id=str(team["id"]),
                 title=f"[Goal] {goal_name}",
                 description="",
                 state_id=str(todo["id"]) if todo else None,
+                project_id=_project_id(team, project_name),
             )
             _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
             identifier = str(issue["identifier"])
         else:
             issue = client.issue(identifier)
-        issue = _sync_issue(client, issue, team, handoff_dir, event_note=args.event_note)
-    return {"ok": True, "identifier": issue.get("identifier"), "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
+        issue = _sync_issue(
+            client,
+            issue,
+            team,
+            handoff_dir,
+            event_note=args.event_note,
+            project_name=getattr(args, "project", ""),
+        )
+    return {
+        "ok": True,
+        "identifier": issue.get("identifier"),
+        "url": issue.get("url"),
+        "state": issue.get("state", {}).get("name"),
+        "project": (issue.get("project") or {}).get("name"),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -649,16 +748,19 @@ def build_parser() -> argparse.ArgumentParser:
     idea.add_argument("--team", default="TIA")
     idea.add_argument("--state", default="Triage")
     idea.add_argument("--label", default="")
+    idea.add_argument("--project", default="")
 
     ensure = subparsers.add_parser("ensure-goal", help="Bind or create the Linear issue for a Goal.")
     ensure.add_argument("--handoff-dir", required=True)
     ensure.add_argument("--issue", default="")
     ensure.add_argument("--team", default="TIA")
+    ensure.add_argument("--project", default="")
 
     sync = subparsers.add_parser("sync-ledger", help="Synchronize a Goal ledger to its Linear issue.")
     sync.add_argument("--handoff-dir", required=True)
     sync.add_argument("--event-note", default="")
     sync.add_argument("--quiet", action="store_true")
+    sync.add_argument("--project", default="")
     return parser
 
 
