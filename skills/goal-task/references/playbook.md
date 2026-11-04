@@ -9,6 +9,10 @@
 
 配套资产：[`交互式全景飞轮图`](../assets/ai-native-flywheel.html) · [`跨机推进路线图`](./workflow-refine-roadmap.md)
 
+自治调度遵循 [`workflow-hub` 的 Cron / Clockwork 心跳](../../workflow-hub/SKILL.md)：
+**Precheck-First, Wake-on-Actionable**，先做零 Token 确定性预检，只有发现可执行
+事件时才唤醒 Bot 或 Sticky TL，避免空闲 token 消耗。
+
 ### 0.1 三大板块闭环总图
 
 ```text

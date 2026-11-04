@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+
+os.environ.setdefault("GTT_LINEAR_SYNC", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUEUE = REPO_ROOT / "skills" / "goal-task" / "scripts" / "goal-queue.py"

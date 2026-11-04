@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import re
 import subprocess
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+
+os.environ.setdefault("GTT_LINEAR_SYNC", "0")
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 SKILLS_DIR: Path = REPO_ROOT / "skills"
@@ -287,6 +290,9 @@ class VerifySkillsTests(unittest.TestCase):
                     "Not an upfront all-at-once constraint",
                     "Stage 1",
                     "Stage 5",
+                    "自治脉搏：Cron / Clockwork 定时调度",
+                    "Precheck-First, Wake-on-Actionable",
+                    "pending == 0",
                 ),
             },
             "linear-board": {
@@ -354,6 +360,17 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Not an upfront all-at-once constraint", text)
         self.assertIn("Stage 1", playbook_text)
         self.assertIn("Stage 5", playbook_text)
+        queue_path = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
+        spec = importlib.util.spec_from_file_location("goal_queue_contract_test", queue_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        queue_module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(queue_module)
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            isolated = Path(tmp_dir) / "chain"
+            isolated.mkdir()
+            self.assertTrue(queue_module._is_isolated_handoff_dir(isolated))
 
     def test_goal_task_design_role_and_inline_delegation_guards(self) -> None:
         skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"

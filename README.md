@@ -8,6 +8,10 @@
 `story-craft`。它用 4-layer Product/Output Matrix 串起应用、共享底座、研发工作流
 和知识叙事，并把复盘结论回流到 TIA。
 
+自治调度采用 [`workflow-hub`](./skills/workflow-hub/SKILL.md) 的 Cron / Clockwork
+**Precheck-First, Wake-on-Actionable** 心跳：先做零 Token 预检，只有存在可执行
+事件时才唤醒对应 Bot 或 Sticky TL。
+
 [`goal-task`](./skills/goal-task/SKILL.md) 是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板；内附全景手册 [`playbook.md`](./skills/goal-task/references/playbook.md) 与交互式飞轮图 [`ai-native-flywheel.html`](./skills/goal-task/assets/ai-native-flywheel.html)。旧目录名 `goal-target-task` 已移除。
 
 [`linear-board`](./skills/linear-board/SKILL.md) 负责 TIA Idea Inbox、`1 Goal = 1 Issue`
