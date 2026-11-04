@@ -125,27 +125,49 @@ class GraphQLClient:
         return nodes[0]
 
     def issue(self, identifier: str) -> dict[str, Any]:
-        data = self.execute(
+        fields = """
+          id identifier url title description
+          state { id name type }
+          team { id key name }
+          labels { nodes { id name } }
+          comments { nodes { id body } }
+        """
+        direct_query = f"""
+            query IssueByIdentifier($id: String!) {{
+              issue(id: $id) {{
+                {fields}
+              }}
+            }}
             """
-            query IssueByIdentifier {
-              issues(first: 100) {
-                nodes {
-                  id identifier url title description
-                  state { id name type }
-                  team { id key name }
-                  labels { nodes { id name } }
-                  comments { nodes { id body } }
-                }
-              }
-            }
-            """,
-            {"identifier": identifier},
-        )
-        nodes = data.get("issues", {}).get("nodes", [])
-        issue = next(
-            (node for node in nodes if str(node.get("identifier")) == identifier),
-            None,
-        )
+        try:
+            data = self.execute(direct_query, {"id": identifier})
+            issue = data.get("issue")
+        except LinearSyncError as direct_error:
+            issue = None
+            direct_failure = direct_error
+        else:
+            direct_failure = None
+        if not isinstance(issue, dict):
+            fallback_query = f"""
+                query IssueByIdentifierFallback($identifier: String!) {{
+                  issues(filter: {{identifier: {{eq: $identifier}}}}, first: 1) {{
+                    nodes {{
+                      {fields}
+                    }}
+                  }}
+                }}
+                """
+            try:
+                fallback_data = self.execute(fallback_query, {"identifier": identifier})
+            except LinearSyncError:
+                if direct_failure is not None:
+                    raise direct_failure
+                raise
+            nodes = fallback_data.get("issues", {}).get("nodes", [])
+            issue = next(
+                (node for node in nodes if str(node.get("identifier")) == identifier),
+                None,
+            )
         if not issue:
             raise LinearSyncError(f"Linear issue '{identifier}' was not found")
         return issue
@@ -272,6 +294,29 @@ def _parse_events(text: str) -> list[dict[str, str]]:
     return events
 
 
+def _active_blocking_events(events: list[dict[str, str]]) -> list[dict[str, str]]:
+    blocking_types = {
+        "TASK_BLOCKED",
+        "INPUT_BLOCKED",
+        "REVIEW_FAIL",
+        "NEED_GO",
+        "NEED_OWNER_DECISION",
+    }
+    active: dict[str, dict[str, str]] = {}
+    unkeyed: list[dict[str, str]] = []
+    for event in events:
+        event_type = event.get("EVT", "").upper()
+        event_id = event.get("id", "")
+        if event_type in blocking_types:
+            if event_id:
+                active[event_id] = event
+            else:
+                unkeyed.append(event)
+        elif event_type in {"RESOLVED", "ACK"} and event_id:
+            active.pop(event_id, None)
+    return [*active.values(), *unkeyed]
+
+
 def _parse_tasks(ledger_text: str, queue_data: dict[str, Any] | None) -> list[dict[str, str]]:
     queue_by_id = {
         str(task.get("task_id")): task
@@ -310,7 +355,7 @@ def _load_handoff(handoff_dir: Path) -> tuple[str, list[dict[str, str]], list[di
     ledger_path = handoff_dir / "ledger.md"
     if not ledger_path.is_file():
         raise LinearSyncError(f"Missing ledger: {ledger_path}")
-    ledger_text = ledger_path.read_text(encoding="utf-8")
+    ledger_text = _read_ledger(handoff_dir)
     queue_data: dict[str, Any] | None = None
     queue_path = handoff_dir / "queue.json"
     if queue_path.is_file():
@@ -393,8 +438,16 @@ def _issue_comment_bodies(issue: dict[str, Any]) -> list[str]:
     return [str(node.get("body", "")) for node in issue.get("comments", {}).get("nodes", [])]
 
 
+def _read_ledger(handoff_dir: Path) -> str:
+    ledger_path = handoff_dir / "ledger.md"
+    try:
+        return ledger_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LinearSyncError(f"Unable to read ledger: {ledger_path}: {exc}") from exc
+
+
 def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, Any], handoff_dir: Path, *, event_note: str | None = None) -> dict[str, Any]:
-    ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+    ledger_text = _read_ledger(handoff_dir)
     goal_name, tasks, events, header = _load_handoff(handoff_dir)
     description = _updated_description(
         issue.get("description"),
@@ -402,15 +455,12 @@ def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, An
     )
     target_state = _aggregate_state(team, tasks, events, header)
     labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
-    blocking = [
-        event
-        for event in events
-        if event.get("EVT", "").upper()
-        in {"TASK_BLOCKED", "INPUT_BLOCKED", "REVIEW_FAIL", "NEED_GO", "NEED_OWNER_DECISION"}
-    ]
+    blocking = _active_blocking_events(events)
     blocked_label = _label(team, "Blocked") or _label(team, "NEED_GO")
     if blocking and blocked_label and blocked_label.get("id") not in labels:
         labels.append(str(blocked_label["id"]))
+    elif not blocking and blocked_label:
+        labels = [label_id for label_id in labels if label_id != str(blocked_label["id"])]
     issue = client.update_issue(
         str(issue["id"]),
         description=description,
@@ -455,7 +505,7 @@ def _sync_issue(client: GraphQLClient, issue: dict[str, Any], team: dict[str, An
 
 def _bind_issue_line(handoff_dir: Path, identifier: str, url: str) -> None:
     path = handoff_dir / "ledger.md"
-    text = path.read_text(encoding="utf-8")
+    text = _read_ledger(handoff_dir)
     binding = f"- Linear: {identifier}" + (f" ({url})" if url else "")
     if ISSUE_RE.search(text):
         text = ISSUE_RE.sub(binding, text, count=1)
@@ -518,7 +568,7 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir.mkdir(parents=True, exist_ok=True)
     client = _client_or_fail()
     with _queue_lock(handoff_dir):
-        ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+        ledger_text = _read_ledger(handoff_dir)
         identifier = args.issue or _bound_issue(ledger_text)
         team = client.team(args.team)
         if identifier:
@@ -538,22 +588,22 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
             )
             _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
             identifier = str(issue["identifier"])
-        _sync_issue(client, issue, team, handoff_dir)
+        issue = _sync_issue(client, issue, team, handoff_dir)
     return {"ok": True, "identifier": identifier, "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
 
 
 def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = Path(args.handoff_dir).expanduser().resolve()
     client = _client_or_fail()
-    ledger_text = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
-    identifier = _bound_issue(ledger_text)
-    team = client.team("TIA")
-    if not identifier:
-        if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
-            raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
-        goal_name, _, _, _ = _load_handoff(handoff_dir)
-        todo = _state(team, "Todo", "In Progress")
-        with _queue_lock(handoff_dir):
+    with _queue_lock(handoff_dir):
+        ledger_text = _read_ledger(handoff_dir)
+        identifier = _bound_issue(ledger_text)
+        team = client.team("TIA")
+        if not identifier:
+            if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
+                raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
+            goal_name, _, _, _ = _load_handoff(handoff_dir)
+            todo = _state(team, "Todo", "In Progress")
             issue = client.create_issue(
                 team_id=str(team["id"]),
                 title=f"[Goal] {goal_name}",
@@ -562,9 +612,9 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
             )
             _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
             identifier = str(issue["identifier"])
-    else:
-        issue = client.issue(identifier)
-    issue = _sync_issue(client, issue, team, handoff_dir, event_note=args.event_note)
+        else:
+            issue = client.issue(identifier)
+        issue = _sync_issue(client, issue, team, handoff_dir, event_note=args.event_note)
     return {"ok": True, "identifier": issue.get("identifier"), "url": issue.get("url"), "state": issue.get("state", {}).get("name")}
 
 
