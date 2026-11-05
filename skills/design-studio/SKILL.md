@@ -1,6 +1,6 @@
 ---
 name: design-studio
-description: 'Use when designing or implementing Web/App interactions, data-linkage patterns, micro-interactions, landing-page timeline choreography (Motion, Anime.js, Lottie, Three.js), or code-driven cover animations, transition templates, and product promo videos with Remotion and FFmpeg. Bridges DesignTokens/StrataMotion/Basalt tokens into interactive design and automated motion pipelines.'
+description: 'Use when designing or implementing Web/App interactions, data-linkage patterns, micro-interactions, landing-page timeline choreography (Motion, Anime.js, Lottie, Three.js), or code-driven cover animations, transition templates, and product promo videos with Remotion and FFmpeg. Grok Bot, Cindy, and local CLI users must call design_catalog.py ingest --text "..." to normalize and archive external design/interaction/motion/layout prompts. Bridges DesignTokens/StrataMotion/Basalt tokens into interactive design and automated motion pipelines.'
 allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 ---
 
@@ -36,10 +36,20 @@ layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
 
 ### Extensible catalog workflow
 
-1. Deduplicate a supplied prompt/tool with
-   `design_catalog.py search --query "<prompt>"`.
-2. Normalize it into `state_machine`, web/mobile implementations, and
-   `token_guardrails`, then archive with `add-pattern` or `add-tool`.
+1. **Grok Bot, Cindy, and local CLI users:** when an external design,
+   interaction, motion, or layout prompt should be normalized and archived,
+   call `python3 skills/design-studio/scripts/design_catalog.py ingest --text "..."`.
+   Use `--file <UTF-8-path>` instead of `--text` for a file.
+2. Inspect the JSON proposal with `--dry-run`: ingestion classifies the prompt
+   into an IP/MP category, assigns the next numeric ID, and fills the source,
+   canonical prompt, state machine, web/mobile implementations, and token
+   guardrails using deterministic local templates (no network or translation).
+   Override `--id`, `--category`, `--platforms`, `--surface-modes`, or
+   `--motion-tier` when needed. Similar patterns block with exit code 2 and
+   matching IDs; use `--force` only for an intentional variant. Without
+   `--dry-run`, ingestion saves the catalog and re-renders the matrix.
+   For manually authored entries or tools, retain `search`, `add-pattern`,
+   and `add-tool`.
 3. Select motion with `recommend --platform <web|mobile> --surface-mode <mode>`.
 4. Close the taste loop with `record-use --id <ID> --context "<repo/screen>"`,
    recording `liked`, `neutral`, or `disliked` feedback.

@@ -19,6 +19,72 @@ CATEGORIES = {
     "spatial-navigation", "micro-feedback-social", "drag-drop-choreography",
     "data-linkage", "filter-sort-recovery", "master-detail-flow", "layout-craft",
 }
+INGEST_PROFILES = {
+    "drag-drop-choreography": (
+        ("drag and drop", "drag-drop", "drop target", "拖放", "拖入", "拖拽", "文件夹"),
+        "idle -> drag -> target_preview -> drop_commit/cancel -> settle",
+        "Motion pointer drag with hit testing and a keyboard move action.",
+        "SwiftUI draggable/dropDestination with StrataMotion and an accessible move action.",
+        "Keep source data and counts unchanged until a valid drop commits.",
+    ),
+    "confirmation-safety": (
+        ("confirm", "confirmation", "destructive", "delete", "undo", "确认", "删除", "撤销"),
+        "idle -> intent -> confirmation -> commit/cancel -> recoverable_result",
+        "Explicit confirmation state with accessible buttons and pending/error recovery.",
+        "SwiftUI confirmationDialog with pending/error state and SensoryFeedback on commit.",
+        "Commit once after confirmation; never use motion as the sole safety signal.",
+    ),
+    "master-detail-flow": (
+        ("master-detail", "detail pane", "detail panel", "详情", "主从"),
+        "list_ready -> select_record -> detail_loading -> detail_ready/error -> list_ready",
+        "Stable selectedId and keyed master list with in-place detail loading/error states.",
+        "SwiftUI NavigationSplitView or compact detail sheet preserving selection and scroll.",
+        "Preserve list order, filters, and scroll; expose the selected record clearly.",
+    ),
+    "data-linkage": (
+        ("linked", "linkage", "cross-filter", "chart", "summary", "联动", "图表", "汇总", "统计"),
+        "ready -> update_shared_state -> recompute_views_and_metrics -> synced -> reset",
+        "Shared state with pure derived selectors for linked views and Basalt numeric readouts.",
+        "SwiftUI observable state with computed summaries and numericText transitions.",
+        "Use one source of truth; preserve independent query, sort, and selection context.",
+    ),
+    "filter-sort-recovery": (
+        ("filter", "sort", "search", "empty state", "no results", "筛选", "排序", "搜索", "无结果", "恢复"),
+        "ready -> filter_search_sort -> results/empty/error -> scoped_reset -> restored",
+        "Independent query/filter/sort state, derived results, and scoped reset controls.",
+        "SwiftUI searchable and sort descriptors with contextual ContentUnavailableView recovery.",
+        "Reset only the requested constraint; preserve other filters and sort order.",
+    ),
+    "spatial-navigation": (
+        ("navigation", "navigate", "toolbar", "scrub", "parallax", "导航", "工具栏", "滑选", "视差"),
+        "idle -> focus_preview -> destination_commit/cancel -> transition -> settled",
+        "Motion shared-layout focus and navigation transitions with keyboard navigation.",
+        "SwiftUI navigation state with matchedGeometryEffect and StrataMotion.",
+        "Keep focus and destination labels visible; preserve a clear return path.",
+    ),
+    "micro-feedback-social": (
+        ("reaction", "feedback", "like", "badge", "反馈", "表情", "点赞", "气泡", "徽标"),
+        "idle -> press -> feedback_preview -> commit/cancel -> acknowledged -> idle",
+        "Motion press feedback and Basalt semantic badges with accessible status announcements.",
+        "SwiftUI SensoryFeedback and StrataMotion with numericText for changing counts.",
+        "Keep counts derived from committed state; feedback must not depend on color alone.",
+    ),
+    "gesture-physical": (
+        ("gesture", "swipe", "peel", "spring", "drag", "pull", "手势", "滑动", "揭角", "拉绳", "弹簧", "拖动"),
+        "idle -> gesture -> threshold -> commit/cancel -> spring_settle -> idle",
+        "Motion pointer tracking with bounded transforms and tokenized spring settling.",
+        "SwiftUI DragGesture with StrataMotion and SensoryFeedback at the commit threshold.",
+        "Bound displacement and trigger once per gesture; provide a non-gesture alternative.",
+    ),
+    "layout-craft": (
+        ("layout", "grid", "spacing", "responsive", "alignment", "布局", "网格", "间距", "响应式", "对齐"),
+        "ready -> container_or_content_change -> measure -> reflow -> stable",
+        "Container queries and CSS grid/flex with Basalt spacing and typography tokens.",
+        "SwiftUI Layout/ViewThatFits with DesignTokens spacing and Dynamic Type support.",
+        "Use container-driven width budgets; prevent overlap and numeric truncation.",
+    ),
+}
+IP_CATEGORIES = {"data-linkage", "filter-sort-recovery", "master-detail-flow", "layout-craft"}
 
 
 def load(path):
@@ -130,6 +196,77 @@ def duplicate(catalog, candidate, collection, threshold=0.55):
     return None
 
 
+def classify_prompt(text):
+    def score(profile):
+        return sum(
+            bool(re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", text.casefold()))
+            if keyword.isascii() else keyword in text
+            for keyword in profile[0]
+        )
+
+    category = max(INGEST_PROFILES, key=lambda key: score(INGEST_PROFILES[key]))
+    return category if score(INGEST_PROFILES[category]) else "layout-craft"
+
+
+def ingest(args, catalog, catalog_path, markdown_path):
+    text = (args.text if args.text is not None else Path(args.file).read_text(encoding="utf-8")).strip()
+    if not text:
+        raise ValueError("input prompt must not be empty")
+    category = args.category or classify_prompt(text)
+    prefix = "IP" if category in IP_CATEGORIES else "MP"
+    numbers = [
+        int(match.group(1))
+        for item in catalog["patterns"]
+        if (match := re.fullmatch(rf"{prefix}-(\d+)", item["id"]))
+    ]
+    pattern_id = args.id or f"{prefix}-{max(numbers, default=0) + 1:03d}"
+    if not pattern_id.startswith(prefix + "-"):
+        raise ValueError(f"{category} requires an {prefix}- prefixed id")
+    if any(item["id"] == pattern_id for item in all_items(catalog)):
+        raise ValueError(f"catalog id already exists: {pattern_id}")
+    _, state, web, mobile, guardrails = INGEST_PROFILES[category]
+    normalized = " ".join(text.split())
+    item = {
+        "id": pattern_id, "name": normalized[:80], "aliases": [], "category": category,
+        "platforms": args.platforms, "surface_modes": args.surface_modes,
+        "motion_tier": args.motion_tier or ("M1" if prefix == "IP" else "M2"),
+        "source_prompt_zh": text, "canonical_prompt": normalized,
+        "state_machine": state, "web_implementation": web, "mobile_implementation": mobile,
+        "token_guardrails": (
+            f"{guardrails} Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, "
+            ">=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion."
+        ),
+        "usage_count": 0, "rating": "unrated", "last_used_at": None, "usage_history": [],
+    }
+    found = [
+        {"id": existing["id"], "name": existing["name"]}
+        for existing in catalog["patterns"]
+        if duplicate({"patterns": [existing]}, item, "patterns")
+    ]
+    blocked = bool(found) and not args.force
+    result = {
+        "pattern": item,
+        "classification": {"prefix": prefix, "category": category,
+                           "source": "override" if args.category else "automatic"},
+        "duplicate_matches": found,
+        "duplicate_decision": "blocked" if blocked else ("forced" if found else "unique"),
+        "dry_run": args.dry_run,
+        "created": False,
+        "paths": {"catalog": str(catalog_path), "markdown": str(markdown_path)},
+        "actions": [],
+    }
+    if not blocked:
+        catalog["patterns"].append(item)
+        validate(catalog)
+        if not args.dry_run:
+            save(catalog_path, catalog)
+            markdown_path.write_text(render(catalog), encoding="utf-8")
+            result["created"] = True
+            result["actions"] = ["write_catalog", "render_markdown"]
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 2 if blocked else 0
+
+
 def render(catalog):
     lines = [
         "# Design Studio Reference Catalog & Toolchain Matrix",
@@ -206,7 +343,9 @@ def catalog_paths(args):
 def command(args):
     catalog_path, markdown_path = catalog_paths(args)
     catalog = validate(load(catalog_path))
-    if args.command == "search":
+    if args.command == "ingest":
+        return ingest(args, catalog, catalog_path, markdown_path)
+    elif args.command == "search":
         print(json.dumps(matches(catalog, args.query, args.kind, args.platform,
                                  args.surface_mode, args.threshold), ensure_ascii=False, indent=2))
     elif args.command == "render":
@@ -269,12 +408,38 @@ def command(args):
     return 0
 
 
+def pattern_id(value):
+    if not re.fullmatch(r"(IP|MP)-[0-9]+", value):
+        raise argparse.ArgumentTypeError("id must be IP-<number> or MP-<number>")
+    return value
+
+
+def csv_choices(value, choices):
+    values = csv_values(value)
+    if not values or not set(values) <= choices:
+        raise argparse.ArgumentTypeError(f"expected comma-separated values from {', '.join(sorted(choices))}")
+    return values
+
+
 def parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     common.add_argument("--markdown", default=str(DEFAULT_MARKDOWN))
     root = argparse.ArgumentParser()
     sub = root.add_subparsers(dest="command", required=True)
+    intake = sub.add_parser("ingest", parents=[common])
+    source = intake.add_mutually_exclusive_group(required=True)
+    source.add_argument("--text")
+    source.add_argument("--file")
+    intake.add_argument("--id", type=pattern_id)
+    intake.add_argument("--category", choices=sorted(INGEST_PROFILES))
+    intake.add_argument("--platforms", type=lambda value: csv_choices(value, PLATFORMS),
+                        default="web,mobile,shared")
+    intake.add_argument("--surface-modes", type=lambda value: csv_choices(value, SURFACE_MODES),
+                        default="Operate,Read")
+    intake.add_argument("--motion-tier", choices=["M1", "M2", "M3", "M4"])
+    intake.add_argument("--force", action="store_true")
+    intake.add_argument("--dry-run", action="store_true")
     search = sub.add_parser("search", parents=[common])
     search.add_argument("--query", required=True)
     search.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
