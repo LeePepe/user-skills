@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HOME_PATH_RE = re.compile(r"(?:/" + "Users|/home)/[^/\\s]+")
@@ -26,6 +27,86 @@ SECRET_RE = re.compile(
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 RECORD_FILES = {"ledger.md": "ledger", "goal.md": "goal", "queue.json": "queue"}
 UTC = timezone.utc
+FACT_RECORD_TYPES = {"ledger", "receipt", "pr_dag", "prmon_repair", "bot_tl_event"}
+SNAPSHOT_RECORD_TYPES = {
+    "pr_watch_state", "prmon_heartbeat", "quota_precheck", "workspace_hygiene",
+    "goal", "queue",
+}
+
+
+def evidence_kind_for(record_type: str) -> str:
+    """Return the deterministic evidence class used in daily manifests."""
+    return "F" if record_type in FACT_RECORD_TYPES else "S" if record_type in SNAPSHOT_RECORD_TYPES else "F"
+
+
+def _record_datetime(record: dict[str, Any]) -> datetime:
+    for key in ("observed_at", "mtime_iso", "exported_at"):
+        value = record.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def assign_evidence_ids(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach stable Hxx-Fn/Hxx-Sn identifiers, preserving input order."""
+    indexed = sorted(enumerate(records), key=lambda item: (_record_datetime(item[1]), item[0]))
+    counters: dict[tuple[int, str], int] = {}
+    for _, record in indexed:
+        timestamp = _record_datetime(record).astimezone(timezone(timedelta(hours=8)))
+        kind = evidence_kind_for(str(record.get("record_type", "")))
+        bucket = (timestamp.hour, kind)
+        counters[bucket] = counters.get(bucket, 0) + 1
+        record["evidence_id"] = f"H{timestamp.hour:02d}-{kind}{counters[bucket]}"
+    return records
+
+
+def build_daily_evidence_manifest(
+    records: list[dict[str, Any]],
+    report_date: str | None = None,
+    hourly_budget_chars: int = 4000,
+    daily_budget_chars: int = 96000,
+) -> dict[str, Any]:
+    """Build the 24-hour eagle-daily-zh-v2 evidence manifest."""
+    assigned = assign_evidence_ids(records)
+    buckets = [{"hour": hour, "raw_count": 0, "retained_count": 0, "sampled": False, "records": []}
+               for hour in range(24)]
+    for record in assigned:
+        local_time = _record_datetime(record).astimezone(timezone(timedelta(hours=8)))
+        bucket = buckets[local_time.hour]
+        bucket["raw_count"] += 1
+        bucket["records"].append(record)
+    used = 0
+    for bucket in buckets:
+        retained = []
+        for record in bucket["records"]:
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True)
+            if retained and (used + len(encoded) > daily_budget_chars or
+                             sum(len(json.dumps(item, ensure_ascii=False, sort_keys=True))
+                                 for item in retained) + len(encoded) > hourly_budget_chars):
+                bucket["sampled"] = True
+                continue
+            if not retained and len(encoded) > hourly_budget_chars:
+                bucket["sampled"] = True
+                continue
+            retained.append(record)
+            used += len(encoded)
+        bucket["records"] = retained
+        bucket["retained_count"] = len(retained)
+    date_value = report_date or datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    return {
+        "schema_version": "eagle-daily-zh-v2-aidash",
+        "date": date_value,
+        "timezone": "Asia/Shanghai",
+        "cutoff": "23:59:00+08:00",
+        "hourly_budget_chars": hourly_budget_chars,
+        "daily_budget_chars": daily_budget_chars,
+        "buckets": buckets,
+    }
 
 
 def fail(message: str) -> "NoReturn":
@@ -353,7 +434,7 @@ def _collect(roots: list[Path], device: dict[str, str], state: dict, custom_dir:
             cursors[key] = {"inode": stat.st_ino, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "sha256": digest}
             if not unchanged(key, digest):
                 records.append(_envelope(path, path.parent, collector, kind, device, "_global", raw, _read_json(path) if path.suffix == ".json" else None))
-    return records, cursors
+    return assign_evidence_ids(records), cursors
 
 
 def _transport(state_dir: Path, account: str, container: str, table: str, prefix: str, rsync_to: str | None) -> bool:
@@ -420,7 +501,8 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
            sync_state_dir: Path | None = None, collectors_dir: Path | None = None,
            azure_account: str = "", azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
            azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None,
-           quota_precheck_path: Path | None = None, quota_path: Path | None = None) -> int:
+           quota_precheck_path: Path | None = None, quota_path: Path | None = None,
+           daily_evidence_out: Path | None = None) -> int:
     machine_id = normalized_machine_id(machine_id)
     state_dir = sync_state_dir or (state_path.parent if state_path else None)
     state_dir = state_dir.expanduser() if state_dir else None
@@ -443,9 +525,14 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
     old = json.loads(cursor_path.read_text()) if incremental and cursor_path and cursor_path.exists() else {}
     records, cursors = _collect(
         roots, device, old,
-        collectors_dir or (state_dir / "collectors.d" if state_dir else Path("~/.config/aidata-sync/collectors.d").expanduser()),
+        collectors_dir or (state_dir / "collectors.d" if state_dir else Path("__no_collectors__")),
         quota_precheck_path or quota_path,
     )
+    if daily_evidence_out is not None:
+        atomic_write(
+            daily_evidence_out,
+            json.dumps(build_daily_evidence_manifest(records), ensure_ascii=False, indent=2) + "\n",
+        )
     lines = "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in records)
     if state_dir:
         outbox = state_dir / "outbox.jsonl"
@@ -495,7 +582,8 @@ def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: st
            output: Path | None = None, state_path: Path | None = None, incremental: bool = True,
            collectors_dir: Path | None = None, azure_account: str = "",
            azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
-           azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None) -> int:
+           azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None,
+           daily_evidence_out: Path | None = None) -> int:
     sync_state_dir.mkdir(parents=True, exist_ok=True)
     signal = sync_state_dir / "notify.signal"
     signal.touch()
@@ -512,7 +600,7 @@ def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: st
             export(export_roots, machine_id or socket.gethostname(), export_output, state_path, incremental,
                    sync_state_dir, collectors_dir, quota_precheck_path=None,
                    azure_account=azure_account, azure_container=azure_container, azure_table=azure_table,
-                   azure_prefix=azure_prefix, rsync_to=rsync_to)
+                   azure_prefix=azure_prefix, rsync_to=rsync_to, daily_evidence_out=daily_evidence_out)
             if signal.stat().st_mtime_ns <= before:
                 break
         return 0
@@ -533,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--azure-prefix", default="aidata-sync/v1")
     parser.add_argument("--rsync-to")
     parser.add_argument("--notify", action="store_true")
+    parser.add_argument("--daily-evidence-out")
     args = parser.parse_args(argv)
     roots = [safe_root(piece) for item in (args.handoff_dir or ["~/Development/handoff"]) for piece in item.split(":") if piece]
     sync_dir = Path(args.sync_state_dir).expanduser() if args.sync_state_dir else None
@@ -542,10 +631,12 @@ def main(argv: list[str] | None = None) -> int:
         return notify(sync_dir or Path("~/.config/aidata-sync").expanduser(), roots, args.machine_id,
                       output, state, args.incremental,
                       Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
-                      args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to)
+                      args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to,
+                      daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None)
     count = export(roots, args.machine_id, output, state, args.incremental, sync_dir,
                    Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
-                   args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to)
+                   args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to,
+                   daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None)
     print(f"exported {count} record(s) to {output}")
     return 0
 
