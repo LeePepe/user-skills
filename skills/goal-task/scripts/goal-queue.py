@@ -15,6 +15,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
@@ -22,7 +23,8 @@ from pathlib import Path
 import re
 import sys
 import subprocess
-from typing import Any, Iterator, Sequence
+import time
+from typing import Any, Iterator, Mapping, Sequence
 
 try:
     from feedback_guard import (
@@ -59,6 +61,24 @@ except ModuleNotFoundError as exc:
         _helper_module.validate_manifest_preserves_original_entries
     )
 
+try:
+    from state_store import Later, connect as connect_state, enqueue_effect, sync_to_sqlite
+except ModuleNotFoundError as exc:
+    if exc.name != "state_store":
+        raise
+    _state_spec = importlib.util.spec_from_file_location(
+        "_goal_queue_state_store",
+        Path(__file__).with_name("state_store.py"),
+    )
+    if _state_spec is None or _state_spec.loader is None:
+        raise ImportError("Unable to load sibling state_store.py") from exc
+    _state_module = importlib.util.module_from_spec(_state_spec)
+    _state_spec.loader.exec_module(_state_module)
+    Later = _state_module.Later
+    connect_state = _state_module.connect
+    enqueue_effect = _state_module.enqueue_effect
+    sync_to_sqlite = _state_module.sync_to_sqlite
+
 
 VALID_STATUSES: tuple[str, ...] = (
     "planned",
@@ -66,17 +86,21 @@ VALID_STATUSES: tuple[str, ...] = (
     "in_progress",
     "in_review",
     "changes_requested",
+    "handback",
     "done",
     "blocked",
     "cancelled",
 )
-ACTIVE_STATUSES: frozenset[str] = frozenset({"in_progress", "in_review", "changes_requested"})
+ACTIVE_STATUSES: frozenset[str] = frozenset(
+    {"in_progress", "in_review", "changes_requested"}
+)
+LIVE_STEER_STATUSES: frozenset[str] = ACTIVE_STATUSES
 PENDING_STATUSES: frozenset[str] = frozenset({"planned", "ready"})
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "cancelled"})
 EVENT_ID_RE: re.Pattern[str] = re.compile(r"\bid=E(\d+)\b")
 GLOB_META_RE: re.Pattern[str] = re.compile(r"[*?\[\]]")
 INPUT_SYSTEM_FIELDS: frozenset[str] = frozenset(
-    {"status", "pr", "note", "superseded_by", "auto_depends_on"}
+    {"status", "pr", "note", "superseded_by", "auto_depends_on", "mandate"}
 )
 FEEDBACK_INPUT_FIELDS: frozenset[str] = frozenset(
     {"feedback_ids", "acceptance_mapping", "common_root_cause_evidence"}
@@ -168,6 +192,75 @@ def _maybe_linear_sync(handoff_dir: Path) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _sha256_file(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _mandate_for(handoff_dir: Path, task_id: str, brief: str, paths: Sequence[str], spec: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "mandate_id": f"md_{task_id.lower()}",
+        "strength": str(spec.get("strength") or "explicit"),
+        "spec_sha": _sha256_file(handoff_dir / "spec.md"),
+        "brief_sha": _sha256_file(handoff_dir / brief),
+        "owned_paths": list(paths),
+        "matched_rules": ["explicit_owner_request"],
+        "rulings": [],
+        "accepted_at": _now_iso(),
+    }
+
+
+def _revalidate_mandate(handoff_dir: Path, task: dict[str, Any]) -> tuple[bool, str]:
+    mandate = task.get("mandate")
+    if not isinstance(mandate, dict):
+        return True, ""
+    expected_spec = str(mandate.get("spec_sha") or "")
+    current_spec = _sha256_file(handoff_dir / "spec.md")
+    if expected_spec and current_spec != expected_spec:
+        return False, f"spec_sha drift detected ({expected_spec[:8]} -> {current_spec[:8]}); run ack-spec"
+    expected_brief = str(mandate.get("brief_sha") or "")
+    current_brief = _sha256_file(handoff_dir / str(task.get("brief") or ""))
+    if expected_brief and current_brief != expected_brief:
+        return False, f"brief_sha drift detected ({expected_brief[:8]} -> {current_brief[:8]}); run ack-spec"
+    return True, ""
+
+
+def _max_workers(queue_data: Mapping[str, Any], args: argparse.Namespace | None = None) -> int | None:
+    raw = getattr(args, "max_workers", None) if args is not None else None
+    if raw is None:
+        raw = queue_data.get("max_workers")
+    if raw is None:
+        raw = os.environ.get("GTT_MAX_WORKERS")
+    if raw in (None, "", 0):
+        return None
+    value = int(raw)
+    if value < 1:
+        raise ValueError("max-workers must be at least 1")
+    return value
+
+
+def _budget_exhausted(queue_data: Mapping[str, Any]) -> bool:
+    if queue_data.get("intent") != "evolve":
+        return False
+    budget = queue_data.get("budget")
+    if not isinstance(budget, dict):
+        return False
+    elapsed = int(budget.get("elapsed_sec") or 0)
+    consumed = int(budget.get("consumed_tokens") or 0)
+    max_sec = budget.get("max_sec")
+    max_tokens = budget.get("max_tokens")
+    return (
+        (max_sec is not None and elapsed >= int(max_sec))
+        or (max_tokens is not None and consumed >= int(max_tokens))
+        or int(budget.get("consecutive_discards") or 0) >= 2
+    )
 
 
 def _sanitize_field(value: str) -> str:
@@ -435,8 +528,8 @@ def _default_ledger_skeleton(goal_name: str) -> str:
         "- 验收: TBD\n"
         "- Owner: tianpei\n"
         "- 协调者 bot: joy\n"
-        f"- TL: {goal_name}-goal-tl-r1 / 模型 gpt-6.1-sol\n"
-        "- 机器: MacBook\n"
+        f"- TL: {goal_name}-goal-tl-r1 / 模型 group/steering (gemini-4-argon)\n"
+        f"- 机器: {os.environ.get('GTT_MACHINE', 'MacBook')}\n"
         "- 合同版本: goal-task@HEAD\n\n"
         "## Tasks\n"
         "| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
@@ -582,6 +675,7 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 "replacement_of": args.replacement_of or "",
                 "brief": args.brief or "",
                 "owner": args.owner or "",
+                "priority": args.priority,
             }
         )
     if not raw_specs:
@@ -660,6 +754,7 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                     "replacement_of",
                     "brief",
                     "owner",
+                    "priority",
                 }
             }
             candidate.update(
@@ -674,7 +769,17 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 "owner": owner,
                 "status": "planned",
                 "pr": "—",
+                "priority": str(spec.get("priority") or "normal"),
                 }
+            )
+            if candidate["priority"] not in {"normal", "human"}:
+                raise ValueError("priority must be normal or human")
+            candidate["mandate"] = _mandate_for(
+                handoff_dir,
+                task_id,
+                brief,
+                paths,
+                spec,
             )
             if replacement_of:
                 # TODO(deferred): auto-attach a wait edge on replacement_of even when Owned Paths
@@ -746,6 +851,7 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
 
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, tasks, new_events)
+        sync_to_sqlite(handoff_dir, queue_data, new_events)
         in_progress_count, pending_count, drained = _queue_metrics(tasks)
 
     return {
@@ -769,11 +875,62 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
         feedback_validation, _ = _feedback_validation(queue_data, tasks)
         _refresh_ready_statuses(tasks)
 
+        if _budget_exhausted(queue_data):
+            queue_data["status"] = "done"
+            _save_queue(handoff_dir, queue_data)
+            _sync_ledger(
+                handoff_dir,
+                tasks,
+                [{"evt": "GOAL_DONE", "note": "BUDGET_EXHAUSTED"}],
+            )
+            sync_to_sqlite(handoff_dir, queue_data, [{"evt": "GOAL_DONE", "note": "BUDGET_EXHAUSTED"}])
+            return {
+                "ok": True,
+                "wave": [],
+                "selected_wave": [],
+                "in_progress_count": sum(1 for t in tasks if str(t.get("status")) in ACTIVE_STATUSES),
+                "pending_count": sum(1 for t in tasks if str(t.get("status")) in PENDING_STATUSES),
+                "drained": True,
+                "budget_exhausted": True,
+                "stop_reason": "BUDGET_EXHAUSTED",
+                "feedback_validation": feedback_validation,
+            }
+
         tasks_by_id = {str(t["task_id"]): t for t in tasks}
         active_tasks = [t for t in tasks if str(t.get("status")) in ACTIVE_STATUSES]
+        new_events: list[dict[str, str]] = []
+        for task in tasks:
+            if str(task.get("status")) not in PENDING_STATUSES:
+                continue
+            valid, reason = _revalidate_mandate(handoff_dir, task)
+            if not valid:
+                task["status"] = "blocked"
+                task["block_reason"] = "spec_drift"
+                new_events.append(
+                    {
+                        "evt": "INPUT_BLOCKED",
+                        "task": str(task["task_id"]),
+                        "note": reason,
+                    }
+                )
+        if new_events:
+            active_tasks = [t for t in tasks if str(t.get("status")) in ACTIVE_STATUSES]
+
+        max_workers = _max_workers(queue_data, args)
+        normal_active = sum(
+            1 for task in active_tasks if str(task.get("priority") or "normal") == "normal"
+        )
+        human_active = sum(
+            1 for task in active_tasks if str(task.get("priority") or "normal") == "human"
+        )
+        human_slot_used = False
 
         selected_wave: list[dict[str, Any]] = []
-        for task in tasks:
+        candidates = sorted(
+            tasks,
+            key=lambda task: 0 if str(task.get("priority") or "normal") == "human" else 1,
+        )
+        for task in candidates:
             if str(task.get("status")) not in PENDING_STATUSES:
                 continue
             deps = [str(d) for d in (task.get("depends_on") or []) if str(d).strip()]
@@ -783,9 +940,27 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             if any(_tasks_conflict(chosen, task) for chosen in selected_wave):
                 continue
+            if max_workers is not None:
+                priority = str(task.get("priority") or "normal")
+                if priority == "normal" and normal_active >= max_workers:
+                    continue
+                if priority == "human":
+                    if human_active >= 1 or normal_active + human_active >= max_workers + 1:
+                        continue
+                    human_active += 1
+                    if normal_active + human_active > max_workers:
+                        human_slot_used = True
+                    selected_wave.append(task)
+                    continue
             selected_wave.append(task)
+            if max_workers is not None:
+                normal_active += 1
 
-        new_events: list[dict[str, str]] = []
+        if max_workers is not None:
+            human_slot_used = (
+                human_active > 0 and normal_active + human_active > max_workers
+            )
+
         if args.mark_in_progress and selected_wave:
             for task in selected_wave:
                 task["status"] = "in_progress"
@@ -801,6 +976,10 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
             _sync_ledger(handoff_dir, tasks, new_events)
         else:
             _save_queue(handoff_dir, queue_data)
+            if new_events:
+                _sync_ledger(handoff_dir, tasks, new_events)
+        if new_events or selected_wave:
+            sync_to_sqlite(handoff_dir, queue_data, new_events)
 
         in_progress_count, pending_count, drained = _queue_metrics(tasks)
         wave_payload = [
@@ -812,18 +991,30 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                 "depends_on": list(t.get("depends_on") or []),
                 "brief": str(t.get("brief") or ""),
                 "status": str(t.get("status") or "ready"),
+                "priority": str(t.get("priority") or "normal"),
             }
             for t in selected_wave
         ]
 
-    return {
+    payload = {
         "ok": True,
         "wave": wave_payload,
+        "selected_wave": wave_payload,
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
         "feedback_validation": feedback_validation,
     }
+    if max_workers is not None:
+        payload.update(
+            {
+                "max_workers": max_workers,
+                "normal_active_count": normal_active,
+                "human_active_count": human_active,
+                "human_slot_used": human_slot_used,
+            }
+        )
+    return payload
 
 
 def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -931,7 +1122,16 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         elif replacement_manifest is not None:
             raise ValueError("--feedback-manifest is only valid for tracked supersession")
 
-        target_task["status"] = args.status
+        if args.status == "handback":
+            handback = {
+                "trigger_id": str(args.trigger_id or "manual"),
+                "reason": str(args.note or "out of scope"),
+                "at": _now_iso(),
+            }
+            target_task.setdefault("handbacks", []).append(handback)
+            target_task["status"] = "in_progress" if args.keep_working else "handback"
+        else:
+            target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
         if args.note is not None:
@@ -968,6 +1168,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             "ready": "READY",
             "planned": "READY",
             "cancelled": "RESOLVED",
+            "handback": "HANDBACK",
         }
         evt_type = status_to_evt.get(args.status, "READY")
         evt_entry: dict[str, str] = {
@@ -979,17 +1180,353 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
 
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, staged_tasks, [evt_entry])
+        sync_to_sqlite(handoff_dir, queue_data, [evt_entry])
         in_progress_count, pending_count, drained = _queue_metrics(staged_tasks)
 
     return {
         "ok": True,
         "task_id": args.task_id,
-        "status": args.status,
+        "status": str(target_task.get("status") or args.status),
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
         "feedback_validation": feedback_validation,
     }
+
+
+def _path_is_owned(requested: str, owned: Sequence[str]) -> bool:
+    request = _normalize_path_pattern(requested)
+    for pattern in owned:
+        candidate = _normalize_path_pattern(pattern)
+        if candidate in ("*", "**") or fnmatch.fnmatchcase(request, candidate):
+            return True
+        if not GLOB_META_RE.search(candidate) and (
+            request == candidate or request.startswith(candidate.rstrip("/") + "/")
+        ):
+            return True
+    return False
+
+
+def _task_matches_paths(task: Mapping[str, Any], paths: Sequence[str]) -> bool:
+    owned = task.get("mandate", {}).get("owned_paths") if isinstance(task.get("mandate"), dict) else None
+    owned = owned or task.get("paths") or []
+    return all(_path_is_owned(path, owned) for path in paths)
+
+
+def _update_inbox_disposition(
+    handoff_dir: Path,
+    trigger_id: str,
+    disposition: Mapping[str, Any],
+) -> None:
+    connection = connect_state(handoff_dir)
+    try:
+        with connection:
+            connection.execute(
+                "UPDATE inbox_triggers SET disposition_json = ? WHERE trigger_id = ?",
+                (json.dumps(dict(disposition), ensure_ascii=False, sort_keys=True), trigger_id),
+            )
+    finally:
+        connection.close()
+
+
+def _enqueue_herdr_delivery(
+    handoff_dir: Path,
+    task: Mapping[str, Any],
+    trigger_id: str,
+    message: str,
+    action: str,
+) -> None:
+    connection = connect_state(handoff_dir)
+    try:
+        with connection:
+            enqueue_effect(
+                connection,
+                "herdr_deliver",
+                f"{task['task_id']}:{trigger_id}",
+                {
+                    "task_id": str(task["task_id"]),
+                    "trigger_id": trigger_id,
+                    "owner": task.get("owner"),
+                    "message": message,
+                    "action": action,
+                },
+            )
+    finally:
+        connection.close()
+
+
+def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        changed: list[str] = []
+        for task in queue_data["tasks"]:
+            if args.task_id and str(task.get("task_id")) != args.task_id:
+                continue
+            mandate = task.get("mandate")
+            if not isinstance(mandate, dict):
+                continue
+            mandate["spec_sha"] = _sha256_file(handoff_dir / "spec.md")
+            mandate["brief_sha"] = _sha256_file(handoff_dir / str(task.get("brief") or ""))
+            if str(task.get("status")) == "blocked" and task.get("block_reason") == "spec_drift":
+                task["status"] = "ready"
+                task.pop("block_reason", None)
+                changed.append(str(task["task_id"]))
+        _refresh_ready_statuses(queue_data["tasks"])
+        queue_data["tasks"] = queue_data["tasks"]
+        event = {"evt": "RESOLVED", "task": args.task_id or "", "note": "spec mandate acknowledged"}
+        _save_queue(handoff_dir, queue_data)
+        _sync_ledger(handoff_dir, queue_data["tasks"], [event])
+        sync_to_sqlite(handoff_dir, queue_data, [event])
+    return {"ok": True, "unblocked": changed}
+
+
+def cmd_ruling(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        task = next((item for item in queue_data["tasks"] if str(item.get("task_id")) == args.task_id), None)
+        if task is None:
+            raise ValueError(f"Task '{args.task_id}' not found")
+        mandate = task.setdefault("mandate", _mandate_for(
+            handoff_dir, args.task_id, str(task.get("brief") or ""), task.get("paths") or [], task
+        ))
+        add_paths = _normalize_list(args.add_paths)
+        task["paths"] = list(dict.fromkeys(list(task.get("paths") or []) + add_paths))
+        mandate["owned_paths"] = list(dict.fromkeys(list(mandate.get("owned_paths") or []) + add_paths))
+        mandate.setdefault("rulings", []).append(
+            {
+                "decision": args.decision,
+                "why": args.why,
+                "blast_radius": args.blast_radius,
+                "add_paths": add_paths,
+                "at": _now_iso(),
+            }
+        )
+        event = {"evt": "RULING", "task": args.task_id, "note": args.decision}
+        _save_queue(handoff_dir, queue_data)
+        _sync_ledger(handoff_dir, queue_data["tasks"], [event])
+        sync_to_sqlite(handoff_dir, queue_data, [event])
+    return {"ok": True, "task_id": args.task_id, "paths": task["paths"], "mandate": mandate}
+
+
+def cmd_steer(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    trigger_id = str(args.trigger_id or f"manual-{int(time.time() * 1000)}")
+    requested_paths = _normalize_list(args.paths)
+    if not args.task_id and not requested_paths:
+        return {
+            "ok": True,
+            "trigger_id": trigger_id,
+            "disposition": "needs_tl_eval",
+            "target_task_id": None,
+        }
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        target = None
+        for task in queue_data["tasks"]:
+            if str(task.get("status")) not in ACTIVE_STATUSES:
+                continue
+            if args.task_id and str(task.get("task_id")) != args.task_id:
+                continue
+            if requested_paths and not _task_matches_paths(task, requested_paths):
+                continue
+            if any(str(item.get("trigger_id")) == trigger_id for item in task.get("handbacks", [])):
+                continue
+            target = task
+            break
+        if target is None:
+            return {
+                "ok": True,
+                "trigger_id": trigger_id,
+                "disposition": "needs_tl_eval",
+                "target_task_id": None,
+            }
+        action = args.action if args.action != "auto" else "steer"
+        target.setdefault("inputs", []).append(
+            {"trigger_id": trigger_id, "message": args.message, "action": action, "at": _now_iso()}
+        )
+        event = {"evt": "STEERED", "task": str(target["task_id"]), "ref": trigger_id, "note": args.message}
+        _save_queue(handoff_dir, queue_data)
+        _sync_ledger(handoff_dir, queue_data["tasks"], [event])
+        sync_to_sqlite(handoff_dir, queue_data, [event])
+        _enqueue_herdr_delivery(handoff_dir, target, trigger_id, args.message, action)
+        if args.deliver_herdr and target.get("owner"):
+            subprocess.run(
+                ["herdr", "agent", "prompt", str(target["owner"]), f"[STEER trigger={trigger_id}] {args.message}"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        return {
+            "ok": True,
+            "trigger_id": trigger_id,
+            "disposition": "steered",
+            "target_task_id": str(target["task_id"]),
+            "target_agent": target.get("owner"),
+            "recipient_action": action,
+            "delivered_herdr": bool(args.deliver_herdr),
+            "mandate_valid": _revalidate_mandate(handoff_dir, target)[0],
+        }
+
+
+def cmd_init_goal(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        queue_data.update({"intent": args.intent, "readonly": bool(args.readonly), "status": queue_data.get("status", "planning")})
+        budget = dict(queue_data.get("budget") or {})
+        if args.budget_sec is not None:
+            budget["max_sec"] = args.budget_sec
+        if args.budget_tokens is not None:
+            budget["max_tokens"] = args.budget_tokens
+        if args.dimensions:
+            budget["dimensions"] = _normalize_list(args.dimensions)
+        if budget:
+            queue_data["budget"] = budget
+        if args.max_workers is not None:
+            queue_data["max_workers"] = args.max_workers
+        _save_queue(handoff_dir, queue_data)
+        sync_to_sqlite(handoff_dir, queue_data)
+    return {"ok": True, "intent": queue_data["intent"], "budget": queue_data.get("budget", {})}
+
+
+def cmd_budget(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        budget = {} if args.clear else dict(queue_data.get("budget") or {})
+        if args.set_total_sec is not None:
+            budget["max_sec"] = args.set_total_sec
+        elif args.extend_sec is not None:
+            budget["max_sec"] = int(budget.get("max_sec") or 0) + args.extend_sec
+        if args.add_tokens is not None:
+            budget["max_tokens"] = int(budget.get("max_tokens") or 0) + args.add_tokens
+        if args.consume_tokens is not None:
+            budget["consumed_tokens"] = int(budget.get("consumed_tokens") or 0) + args.consume_tokens
+        if args.elapsed_sec is not None:
+            budget["elapsed_sec"] = args.elapsed_sec
+        queue_data["budget"] = budget
+        _save_queue(handoff_dir, queue_data)
+        sync_to_sqlite(handoff_dir, queue_data)
+    return {"ok": True, "budget": budget}
+
+
+def cmd_experiment(args: argparse.Namespace) -> dict[str, Any]:
+    if args.decision not in {"keep", "discard"}:
+        raise ValueError("experiment decision must be keep or discard")
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    with _queue_lock(handoff_dir):
+        queue_data = _load_queue(handoff_dir)
+        experiment = {
+            "exp_id": f"{args.task_id}-{int(time.time() * 1000)}",
+            "task_id": args.task_id,
+            "decision": args.decision,
+            "baseline_metric": args.baseline_metric,
+            "observed_metric": args.observed_metric,
+            "evidence_ref": args.evidence_ref or "",
+            "at": _now_iso(),
+        }
+        queue_data.setdefault("experiments", []).append(experiment)
+        budget = queue_data.setdefault("budget", {})
+        budget["consecutive_discards"] = 0 if args.decision == "keep" else int(budget.get("consecutive_discards") or 0) + 1
+        _save_queue(handoff_dir, queue_data)
+        connection = connect_state(handoff_dir)
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO experiments(exp_id, task_id, decision, baseline_metric, observed_metric, evidence_ref, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    tuple(experiment.values()),
+                )
+        finally:
+            connection.close()
+        sync_to_sqlite(handoff_dir, queue_data)
+    return {"ok": True, "experiment": experiment}
+
+
+def cmd_receive(args: argparse.Namespace) -> dict[str, Any]:
+    if args.file == "-":
+        event = json.load(sys.stdin)
+    else:
+        event = json.loads(Path(args.file).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(event, dict):
+        raise ValueError("Inbox event must be a JSON object")
+    required = ("id", "source", "actor", "thread", "human", "addressed", "at", "text")
+    missing = [key for key in required if key not in event]
+    if missing:
+        raise ValueError("Inbox event missing: " + ", ".join(missing))
+    source = str(event["source"])
+    actor = str(event["actor"])
+    namespaced = actor if ":" in actor else f"{source}:{actor}"
+    allowed = _normalize_list(args.allowed_actors or "")
+    if not allowed:
+        queue_data = _load_queue(_ensure_safe_dir(args.handoff_dir))
+        allowed = _normalize_list(queue_data.get("allowed_actors"))
+    if allowed and namespaced not in allowed:
+        raise ValueError(f"Inbox actor is not allowed: {namespaced}")
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    connection = connect_state(handoff_dir)
+    try:
+        with connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO inbox_triggers(trigger_id, source, actor, thread, human, addressed, at, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(event["id"]), source, namespaced, str(event["thread"]), int(bool(event["human"])),
+                 str(event["addressed"]), str(event["at"]), str(event["text"])),
+            )
+    finally:
+        connection.close()
+    meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+    if meta.get("ambiguous_grey_zone"):
+        result = {"ok": True, "trigger_id": str(event["id"]), "disposition": "needs_owner_decision"}
+        with _queue_lock(handoff_dir):
+            queue_data = _load_queue(handoff_dir)
+            event_entry = {
+                "evt": "NEED_OWNER_DECISION",
+                "ref": str(event["id"]),
+                "note": str(event["text"]),
+            }
+            _sync_ledger(handoff_dir, queue_data["tasks"], [event_entry])
+            sync_to_sqlite(handoff_dir, queue_data, [event_entry])
+            _update_inbox_disposition(handoff_dir, str(event["id"]), result)
+        return result
+    steer_args = argparse.Namespace(
+        handoff_dir=str(handoff_dir),
+        message=str(event["text"]),
+        task_id="",
+        paths=",".join(_normalize_list(meta.get("paths"))),
+        trigger_id=str(event["id"]),
+        action="auto",
+        deliver_herdr=False,
+    )
+    if meta.get("paths"):
+        routed = cmd_steer(steer_args)
+        if routed.get("disposition") == "steered":
+            _update_inbox_disposition(handoff_dir, str(event["id"]), routed)
+            return routed
+    enqueue_args = argparse.Namespace(
+        handoff_dir=str(handoff_dir),
+        batch_json=json.dumps(
+            [{
+                "task_id": str(event["id"]),
+                "title": str(event["text"])[:120],
+                "repo": str(meta.get("repo") or ""),
+                "paths": _normalize_list(meta.get("paths")),
+                "brief": str(meta.get("brief") or ""),
+                "priority": "human" if bool(event["human"]) else "normal",
+            }]
+        ),
+        task_id="", title="", repo="", paths="", depends_on="", brief="", owner="",
+        priority="normal", feedback_manifest="", replacement_of="",
+    )
+    result = cmd_enqueue(enqueue_args)
+    disposition = {
+        "ok": True,
+        "trigger_id": str(event["id"]),
+        "disposition": "enqueued",
+        "enqueued_ids": result["enqueued_ids"],
+    }
+    _update_inbox_disposition(handoff_dir, str(event["id"]), disposition)
+    return disposition
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1034,6 +1571,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Existing Task ID being replaced by this new Task.",
     )
+    enqueue_parser.add_argument(
+        "--priority", choices=("normal", "human"), default="normal",
+        help="Scheduling priority for the task.",
+    )
 
     wave_parser = subparsers.add_parser(
         "next-wave",
@@ -1045,6 +1586,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Atomically mark selected wave tasks as in_progress and log EVT=DISPATCHED.",
     )
+    wave_parser.add_argument("--max-workers", type=int, default=None)
 
     status_parser = subparsers.add_parser(
         "set-status",
@@ -1085,6 +1627,60 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Run metrics JSON object/list to attach to the Task.",
     )
+    status_parser.add_argument("--trigger-id", default=None)
+    status_parser.add_argument("--keep-working", action="store_true")
+
+    ack_parser = subparsers.add_parser("ack-spec", help="Acknowledge current spec and brief hashes.")
+    ack_parser.add_argument("--handoff-dir", required=True)
+    ack_parser.add_argument("--task-id", default="")
+
+    ruling_parser = subparsers.add_parser("ruling", help="Record a TL ruling and expand owned paths.")
+    ruling_parser.add_argument("--handoff-dir", required=True)
+    ruling_parser.add_argument("--task-id", required=True)
+    ruling_parser.add_argument("--add-paths", default="")
+    ruling_parser.add_argument("--decision", required=True)
+    ruling_parser.add_argument("--why", required=True)
+    ruling_parser.add_argument("--blast-radius", required=True)
+
+    steer_parser = subparsers.add_parser("steer", help="Deliver an in-scope live steering input.")
+    steer_parser.add_argument("--handoff-dir", required=True)
+    steer_parser.add_argument("--message", required=True)
+    steer_parser.add_argument("--task-id", default="")
+    steer_parser.add_argument("--paths", default="")
+    steer_parser.add_argument("--trigger-id", default="")
+    steer_parser.add_argument("--action", choices=("auto", "steer", "after_run", "restart"), default="auto")
+    steer_parser.add_argument("--deliver-herdr", action="store_true")
+
+    init_parser = subparsers.add_parser("init-goal", help="Initialize goal intent and budget.")
+    init_parser.add_argument("--handoff-dir", required=True)
+    init_parser.add_argument("--intent", choices=("deliver", "explore", "evolve", "debate", "implement"), default="deliver")
+    init_parser.add_argument("--budget-sec", type=int, default=None)
+    init_parser.add_argument("--budget-tokens", type=int, default=None)
+    init_parser.add_argument("--dimensions", default="")
+    init_parser.add_argument("--max-workers", type=int, default=None)
+    init_parser.add_argument("--readonly", action="store_true")
+
+    budget_parser = subparsers.add_parser("budget", help="Adjust an evolve goal budget.")
+    budget_parser.add_argument("--handoff-dir", required=True)
+    budget_parser.add_argument("--extend-sec", type=int, default=None)
+    budget_parser.add_argument("--set-total-sec", type=int, default=None)
+    budget_parser.add_argument("--add-tokens", type=int, default=None)
+    budget_parser.add_argument("--consume-tokens", type=int, default=None)
+    budget_parser.add_argument("--elapsed-sec", type=int, default=None)
+    budget_parser.add_argument("--clear", action="store_true")
+
+    experiment_parser = subparsers.add_parser("experiment", help="Record keep/discard experiment results.")
+    experiment_parser.add_argument("--handoff-dir", required=True)
+    experiment_parser.add_argument("--task-id", required=True)
+    experiment_parser.add_argument("--decision", choices=("keep", "discard"), required=True)
+    experiment_parser.add_argument("--baseline-metric", required=True)
+    experiment_parser.add_argument("--observed-metric", required=True)
+    experiment_parser.add_argument("--evidence-ref", default="")
+
+    receive_parser = subparsers.add_parser("receive", help="Receive a standard JSON Inbox event.")
+    receive_parser.add_argument("--handoff-dir", required=True)
+    receive_parser.add_argument("--file", required=True)
+    receive_parser.add_argument("--allowed-actors", default="")
 
     return parser
 
@@ -1099,6 +1695,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = cmd_next_wave(args)
         elif args.subcommand == "set-status":
             payload = cmd_set_status(args)
+        elif args.subcommand == "ack-spec":
+            payload = cmd_ack_spec(args)
+        elif args.subcommand == "ruling":
+            payload = cmd_ruling(args)
+        elif args.subcommand == "steer":
+            payload = cmd_steer(args)
+        elif args.subcommand == "init-goal":
+            payload = cmd_init_goal(args)
+        elif args.subcommand == "budget":
+            payload = cmd_budget(args)
+        elif args.subcommand == "experiment":
+            payload = cmd_experiment(args)
+        elif args.subcommand == "receive":
+            payload = cmd_receive(args)
         else:
             raise ValueError(f"Unknown subcommand: {args.subcommand}")
         _maybe_notify(Path(args.handoff_dir))
