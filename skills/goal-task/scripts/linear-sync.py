@@ -574,6 +574,17 @@ def _load_handoff(handoff_dir: Path) -> tuple[str, list[dict[str, str]], list[di
     return goal_name, _parse_tasks(ledger_text, queue_data), _parse_events(ledger_text), header
 
 
+def _has_meaningful_attribution(meta: dict[str, Any] | None) -> bool:
+    if not meta:
+        return False
+    if any(meta.get(key) not in (None, "", "—") for key in ("tokens", "cost")):
+        return True
+    try:
+        return float(meta.get("duration_sec", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _description_block(
     goal_name: str,
     ledger_text: str,
@@ -581,11 +592,33 @@ def _description_block(
     handoff_dir: Path | None = None,
 ) -> str:
     header_lines: list[str] = []
+    machine_keys = {
+        "协调者 bot", "协调者", "tl", "机器", "machine", "合同 sha", "合同版本",
+        "contract", "contract sha", "linear", "linear issue", "状态", "status", "project",
+    }
+    found_goal = False
     for line in ledger_text.splitlines():
-        if line.startswith("## Tasks"):
+        stripped = line.lstrip()
+        if stripped.startswith("## Tasks") or stripped.startswith("## Events") or stripped.startswith("|"):
             break
-        if line.startswith("- ") and ":" in line:
-            header_lines.append(line)
+        match = re.match(r"^\s*[-*]\s+(.*?)\s*:\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key = match.group(1).strip().strip("*").strip()
+        value = match.group(2).strip()
+        if not value:
+            continue
+        if " | " in line and re.search(r"(?:EVT=|evt=|id=|ts=)", line):
+            continue
+        if re.match(r"^[-*]\s+(?:`?ts=|20\d\d-\d\d-\d\d)", line, re.IGNORECASE):
+            continue
+        if key.casefold() in machine_keys:
+            continue
+        found_goal = found_goal or key.casefold() in {"目标", "goal"}
+        header_lines.append(f"- {key}: {value}")
+    if not found_goal and tasks:
+        titles = [str(task.get("title", "")) for task in tasks[:3]]
+        header_lines.insert(0, f"- 目标: {'; '.join(titles) if len(tasks) > 1 else titles[0]}")
     summary = "\n".join(header_lines) or f"- Goal: {goal_name}"
     checklist: list[str] = []
     attribution = _collect_task_attribution(handoff_dir, ledger_text, tasks)
@@ -596,12 +629,12 @@ def _description_block(
         if task["pr"] and task["pr"] not in {"—", "-"}:
             suffix += f", {task['pr']}"
         meta = attribution.get(task["task_id"])
-        if meta:
+        if _has_meaningful_attribution(meta):
             suffix += f"; runs={meta['runs']}, duration={meta['duration_sec']}s, tokens={meta['tokens']}, cost={meta['cost']}"
         checklist.append(f"- [{checked}] {task['task_id']}: {task['title']} ({suffix})")
     attribution_block = ""
-    if attribution.get("__goal__"):
-        goal = attribution["__goal__"]
+    goal = attribution.get("__goal__")
+    if _has_meaningful_attribution(goal):
         attribution_block = (
             "\n\n## Execution & Cost Attribution\n"
             f"- runs: {goal['runs']}; duration: {goal['duration_sec']}s; "
@@ -775,16 +808,36 @@ def _collect_task_attribution(
     return output
 
 
+def _strip_duplicate_task_sections(prefix: str) -> str:
+    lines = prefix.splitlines(keepends=True)
+    index = 0
+    while index < len(lines):
+        if not re.match(r"^##\s+Tasks(?:\s+Checklist.*)?\s*$", lines[index].rstrip("\r\n"), re.IGNORECASE):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not re.match(r"^##\s+", lines[end]):
+            end += 1
+        body = [line.strip() for line in lines[index + 1:end] if line.strip()]
+        if body and all(re.match(r"^-\s+\[[ xX]\]", line) for line in body):
+            del lines[index:end]
+            continue
+        index = end
+    return "".join(lines)
+
+
 def _updated_description(existing: str | None, block: str) -> str:
     current = existing or ""
     start = current.find(MARKER_START)
     if start < 0:
-        return (current.rstrip() + "\n\n" + block).lstrip()
+        prefix = _strip_duplicate_task_sections(current)
+        return (prefix.rstrip() + "\n\n" + block).lstrip()
     end = current.find(MARKER_END, start + len(MARKER_START))
+    prefix = _strip_duplicate_task_sections(current[:start])
     if end < 0:
-        return current[:start].rstrip() + "\n\n" + block
+        return prefix.rstrip() + "\n\n" + block
     end += len(MARKER_END)
-    return current[:start].rstrip() + "\n\n" + block + current[end:]
+    return prefix.rstrip() + "\n\n" + block + current[end:]
 
 
 def _aggregate_state(team: dict[str, Any], tasks: list[dict[str, str]], events: list[dict[str, str]], header: dict[str, str]) -> dict[str, Any] | None:
@@ -896,7 +949,7 @@ def _sync_issue(
             if event.get("task"):
                 body += f" · Task `{event['task']}`"
                 meta = attribution.get(event["task"])
-                if meta:
+                if _has_meaningful_attribution(meta):
                     body += f"\nRun attribution: {meta['runs']} run(s), {meta['tokens']}, {meta['cost']}"
                     if meta.get("receipts"):
                         body += f" · receipt `{meta['receipts'][0]}`"
