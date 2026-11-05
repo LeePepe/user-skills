@@ -23,4 +23,5 @@ export GTT_LINEAR_SYNC="${GTT_LINEAR_SYNC:-0}"
 git diff --check
 git diff --cached --check
 python3 -I -B -m unittest discover -s skills/code-review/scripts -p 'test_*.py'
+python3 -I -B -m unittest discover -s skills/design-studio/scripts -p 'test_*.py'
 python3 -I -B -m unittest discover -s scripts -p 'test_*.py'

@@ -25,7 +25,7 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
    `Promote Idea -> Goal`。
 2. **环 2 — Phase 0 Co-Design**：用 `deep-research`、`domain-modeling`、
    `codebase-design`、`my-designer`、`visual-design-modernization`、
-   `motion-studio` 与 `archify` 收敛事实、领域、架构和视觉决策，冻结
+   `design-studio` 与 `archify` 收敛事实、领域、架构和视觉决策，冻结
    `spec.md`/`design.md`。
 3. **环 3 — `bot-tl-orchestration`**：Resident Bot（`Hotty`、`Joy`、
    `Atlas`、`flower`、`艺术家`、`ana`、`笔者`）与 Herdr Goal TL 之间只传
@@ -103,4 +103,4 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 
 Canonical companions:
 - [`seven-rings-and-progressive-6dq.md`](references/seven-rings-and-progressive-6dq.md)
-- [`his-fm-nocoo-study-and-roadmap.md`](references/his-fm-nocoo-study-and-roadmap.md)（his.fm EP.01 & `nocoo` 开源全家桶学习沉淀、`R01–R20` 个人 Workflow 演进路线图与 Wave 1–4 推进计划）
+- [`his-fm-nocoo-study-and-roadmap.md`](references/his-fm-nocoo-study-and-roadmap.md)（顶层 `workflow-hub` 架构演进总纲、his.fm & `nocoo`/Multica 全量资料对标，以及按 **Sub-Workflow 0–5** 拆分的接口适配规范与专项会话启动 Prompt）

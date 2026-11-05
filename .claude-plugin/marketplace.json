@@ -82,10 +82,10 @@
       "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR."
     },
     {
-      "name": "motion-studio",
-      "source": "./skills/motion-studio",
+      "name": "design-studio",
+      "source": "./skills/design-studio",
       "category": "design",
-      "description": "Design and implement Web/App motion choreography and code-driven covers, transitions, and promo videos with Motion, Anime.js, Lottie, Three.js, Remotion, and FFmpeg using DesignTokens, StrataMotion, and Basalt."
+      "description": "Design and implement Web/App interactions, data-linkage patterns, motion choreography, and code-driven covers, transitions, and promo videos with Motion, Anime.js, Lottie, Three.js, Remotion, and FFmpeg using DesignTokens, StrataMotion, and Basalt."
     }
   ]
 }
