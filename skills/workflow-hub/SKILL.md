@@ -104,3 +104,5 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 Canonical companions:
 - [`seven-rings-and-progressive-6dq.md`](references/seven-rings-and-progressive-6dq.md)
 - [`his-fm-nocoo-study-and-roadmap.md`](references/his-fm-nocoo-study-and-roadmap.md)（顶层 `workflow-hub` 架构演进总纲、his.fm & `nocoo`/Multica 全量资料对标，以及按 **Sub-Workflow 0–5** 拆分的接口适配规范与专项会话启动 Prompt）
+- [skills-drift-check.py](scripts/skills-drift-check.py)
+- [otter-workspace.template.json](references/otter-workspace.template.json)

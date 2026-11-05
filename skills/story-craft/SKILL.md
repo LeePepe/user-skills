@@ -46,3 +46,5 @@ API key、token、cookie、客户数据和未批准的内部标识永不进入�
 
 每篇只保留一个核心母题，公开稿删除内部身份但保留可验证机制。发布完成还要
 读回构建产物、摘要、版本和页面/平台状态，并将读者反馈回流 `linear-board`。
+
+提示槽配置：[prompt-slots.json](references/prompt-slots.json)。

@@ -46,3 +46,5 @@ H1–H5 verdict、Counterfactual gate、Responsibility/stop boundary，以及一
 
 已确认结论回流 `linear-board` 的 TIA Idea 或 `goal-task` 的 Goal/Task；证据不足
 时保留 `unknown`，不得静默修改冻结合同。
+
+实现入口：[retro_story_engine.py](scripts/retro_story_engine.py)。
