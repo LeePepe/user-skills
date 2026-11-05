@@ -1,5 +1,13 @@
 # Verification Protocol
 
+The upgraded finding citation record should include `source_id`,
+`url_or_path`, `published_at`, `source_type`, `section_locator`, and
+`verbatim_quote`. `jev_research_helper.py` runs R06 Step 0 before an
+independent verifier and records `VERIFIED`, `FABRICATED_QUOTE`,
+`SOURCE_UNAVAILABLE`, `CONTRADICTED`, `SCOPE_OR_NUMBER_DISTORTED`,
+`UNSUPPORTED`, or `INSUFFICIENT_EVIDENCE_ESCALATE`. R09 Phase 1.5 records the
+composite rerank score and T1-T6 action.
+
 对抗式核查的数据契约与判据。Phase 1 产出 finding,Phase 2 产出 verdict,Phase 3 按判据分级。
 
 ## finding schema(Phase 1 每个发现落盘成一个 finding)

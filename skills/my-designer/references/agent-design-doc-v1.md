@@ -1,5 +1,10 @@
 # Agent-Consumable Design Document Specification (`agent-design-doc-spec.md`)
 
+This `schema: agent-design-doc/v1` handoff participates in the four-tier
+`Global > Category Slot > Intent > Sources` prompt contract. `design.md` MUST
+carry `version` and `spec_sha`; `spec_gate.py` performs the optimistic lock,
+and `jev_visual_gate.py` supplies the R05 screenshot gate.
+
 > **Version**: `1.0.0` (`agent-design-doc/v1`)
 > **Authority Alignment**: `~/Development/shared-design-system/ai/DESIGN-CONTRACT.md` · `docs/strata-theme-v0.2.md` · `~/Development/demoUI/design/north-star.md` · `goal-task` (Phase 0 `Explorer -> Designer` & Phase 1 `Writer -> CI Gate -> Reviewer`)
 > **Target Consumers**: `Explorer` (read-only fact producer) · `Designer` (`handoff/<goal>/design.md` author) · `Writer` (code & snapshot implementer) · `shared-ci/scripts/context/design_contract.py` (static/visual linter) · `Reviewer` (cross-vendor V1–V5 verifier)
@@ -95,17 +100,22 @@ upstream_escalation:
 - **Single Focal Anchor**: <The single highest-weight element in the viewport; max 1 Primary CTA>
 - **Surface Spacing Class**: `Class A (High-Density Telemetry: 4–6pt row gap, 2–4pt cell pad)` | `Class B (Standard Productivity: 8–12pt row gap, 8–12pt card pad)` | `Class C (Editorial/Hero: 16–32pt gap)`
 
-| Sub-Surface / Region | DESIGN-CONTRACT Scenario Archetype | Upstream Component / Primitive (`import Strata` / `@nocoo/basalt`) | Explicit Variant & Props | StrataMotion Choreography (motion-studio tier/pattern IDs allowed) | Forbidden Anti-Patterns (Hard Bans) |
+| Sub-Surface / Region | DESIGN-CONTRACT Scenario Archetype | Upstream Component / Primitive (`import Strata` / `@nocoo/basalt`) | Explicit Variant & Props | Design Studio Choreography (`IP-*` / `MP-*` tier and pattern IDs allowed) | Forbidden Anti-Patterns (Hard Bans) |
 |---|---|---|---|---|---|
 | Navigation / Header | System Toolbar / Sticky Section | `StrataSectionHeader` / `StrataStickySectionHeader` | `maxHeight: 44pt`, vertical pad `<=4pt` | `fade` on Reduce Motion | Never wrap `.toolbar` item in custom `.background(..., in: Capsule())` (Rule 1 Double-Chrome) |
 | Primary Content Grid | Live Telemetry / Bento Summary | `StrataCard` + `StrataProgressRing` + `StrataStatusMetricBadge` | `style: .solid`, `cornerRadius: 16pt`, equal-height row lock | `snappy` (`0.28s, bounce 0.08`) + `.contentTransition(.numericText())` | No Glass-on-Glass; no nested card-in-card; no >1px colored left borders |
 | Data Entry / List | Dense Single-Hand Entry / Expandable Rows | `StrataList` / `StrataTextField` / `StrataSwitch` | `.strataInputBaseline` alignment, `44×44pt` hit target (`28×28pt` macOS) | Spring (`response: 0.30, damping: 0.84`), zero layout jump | Never repeat full-width recommendation banners per row (use inline placeholder/hint) |
 | Bottom Chrome | Bottom Inset Arbitration | Single `.safeAreaInset(edge: .bottom)` stack | Order: `Content -> Snackbar -> DockedBar -> SafeArea` | Slide + crossfade (`150ms`) | Never stack multiple `.overlay(alignment: .bottom)`; never hide inactive slot with `.opacity(0)` (Rule 6 & 12) |
 
-Use `motion-studio` tier IDs (`M1`/`M2` token springs, `.numericText()`,
-`layoutId`/`matchedGeometryEffect`) or catalog pattern IDs `MP-001`–`MP-006`
-in the **StrataMotion Choreography** column. Each reference must name its
-platform binding: Web Motion/Anime.js/CSS/SVG or Mobile-Native
+Use `design-studio` catalog entries: `IP-*` for interaction/data-linkage
+triggers, filters, master-detail selection, aggregation, and recovery; `MP-*`
+for motion choreography; and `M1`/`M2` token springs, `.numericText()`,
+`layoutId`/`matchedGeometryEffect` for the motion tier. `Designer` may query
+`design_catalog.py search` / `recommend` and adapt the reference while
+preserving floor rules, then records the chosen behavior in `design.md`.
+`Writer` must implement that frozen behavior exactly, including trigger,
+linkage, context-preservation, recovery, and motion rules. Each reference must
+name its platform binding: Web Motion/Anime.js/CSS/SVG or Mobile-Native
 StrataMotion/SwiftUI/UIKit, with Shared state-machine semantics preserved.
 
 ---

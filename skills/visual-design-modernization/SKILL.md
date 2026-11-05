@@ -47,9 +47,10 @@ Do not write demo code to explore directions. Translate the diagnosis into a con
    - Single primary focal point + 1 primary CTA per viewport.
    - All 4 states (`populated`, `loading` skeleton, `empty` with 1 CTA, `error` with inline retry).
    - Micro-feedback `120–150ms` (`scale(0.98)` press); spatial transitions with spring (`response: 0.32, dampingFraction: 0.82`); `Reduce Motion` crossfade fallback.
-   - Use the M1–M4 expressiveness ladder from `motion-studio`: M1/M2 for
+   - Use the M1–M4 expressiveness ladder from `design-studio`: M1/M2 for
      tactile Operate/Read polish, M3 for Persuade/Experience timelines or 3D,
-     and M4 for Remotion covers. Look up `MP-001`–`MP-006` by platform:
+     and M4 for Remotion covers. Look up `IP-*` interaction patterns and
+     `MP-001`–`MP-006` motion patterns by platform:
      Web uses Motion/Anime.js/CSS/SVG; Mobile-Native uses StrataMotion and
      SwiftUI/UIKit primitives; Shared preserves the physical state machine and
      token timing. Keep all choices subject to alignment, contrast, and
@@ -132,3 +133,8 @@ Two modes coexist on macOS: follow the system accent color, or pin a brand seed 
 - `references/color-system.md` — `makePrimaryPalette` + Radix slate / Tailwind neutral / Apple system color values.
 - `references/swiftui-preview-snapshot.md` — ImageRenderer snapshot recipe + gotchas.
 - `references/design-reviewer-rubric.md` — the 7-dimension scoring rubric (shared with the global `design-reviewer` agent).
+
+Use the four-tier Prompt Slots contract (`Global > Category Slot > Intent >
+Sources`) for handoffs, stamp `design.md` with `version` and `spec_sha`, and
+record screenshot findings through `jev_visual_gate.py` (`R05`). This remains a
+No Code Demo workflow.

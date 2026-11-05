@@ -152,6 +152,15 @@ def _goal_files(root: Path):
         for path in sorted(receipts.glob("*.md")) if receipts.is_dir() else []:
             ensure_safe_file(path, root)
             yield path, "receipt", goal.name
+        for filename, record_type in (
+            ("contract-telemetry.json", "contract_telemetry"),
+            ("linear-observe.jsonl", "linear_observe"),
+        ):
+            path = receipts / filename
+            if path.exists() or path.is_symlink():
+                ensure_safe_file(path, root)
+                if path.is_file():
+                    yield path, record_type, goal.name
 
 
 def _extra_files(root: Path, collector: str):

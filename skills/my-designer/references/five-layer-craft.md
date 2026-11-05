@@ -108,3 +108,7 @@ filter/substitute sheets.
 - Section headers share one `.center` alignment axis. Adjacent sections preserve
   Surface Plane Continuity (R28) and Single-Slot Sub-Row Identity (R29);
   sub-row identifiers stay in one sequence slot.
+
+Prompt context uses `Global > Category Slot > Intent > Sources`; `design.md`
+records `version` and `spec_sha`, and `jev_visual_gate.py` provides the R05
+screenshot gate.

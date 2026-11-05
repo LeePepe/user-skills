@@ -10,11 +10,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import getpass
 import json
 import os
 from pathlib import Path
 import re
 import sys
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -24,13 +26,109 @@ API_URL = "https://api.linear.app/graphql"
 MARKER_START = "<!-- GTT-LINEAR-SYNC:START -->"
 MARKER_END = "<!-- GTT-LINEAR-SYNC:END -->"
 KEY_RE = re.compile(r"^\s*(?:export\s+)?LINEAR_API_KEY\s*=\s*(['\"]?)([^'\"#\s]+)\1\s*$", re.MULTILINE)
-ISSUE_RE = re.compile(r"(?m)^\s*-\s*Linear:\s*([A-Z][A-Z0-9]*-\d+)(?:\s+\(([^)]+)\))?")
+ISSUE_RE = re.compile(r"(?mi)^\s*-\s*\**(?:Linear(?:\s+Issue)?)\**\s*:\s*([A-Z][A-Z0-9]*-\d+)(?:\s+\(([^)]+)\))?")
 EVENT_RE = re.compile(r"(?m)^\s*-\s+[^|]+\s+\|\s+(.*)$")
 PR_RE = re.compile(r"(?:github\.com/.+/(?:pull|pulls)/\d+|PR(?:\s*#|=)\s*\d+)", re.IGNORECASE)
+DEFAULT_MODEL_PRICES = {
+    "gpt-5.6-luna": {"input_per_mtok": 1.25, "output_per_mtok": 10.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
+    "gpt-5.6-sol": {"input_per_mtok": 1.25, "output_per_mtok": 10.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
+    "gemini-4-argon": {"input_per_mtok": 1.25, "output_per_mtok": 5.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
+    "mai-code-2-flash": {"input_per_mtok": 0.30, "output_per_mtok": 2.50, "cache_read_per_mtok": 0.03, "cache_write_per_mtok": 0.30},
+    "default": {"input_per_mtok": 1.0, "output_per_mtok": 4.0, "cache_read_per_mtok": 0.1, "cache_write_per_mtok": 1.0},
+}
 
 
 class LinearSyncError(RuntimeError):
     """Expected, user-facing Linear synchronization failure."""
+
+
+def mask_value(value: str) -> str:
+    return "****" if len(value) <= 4 else f"{value[:2]}****{value[-2:]}"
+
+
+def _credential_path() -> Path:
+    return Path(os.environ.get("GTT_LINEAR_CREDENTIALS_FILE", "~/.config/linear/credentials.json")).expanduser()
+
+
+def _clip_credential_path() -> Path:
+    return Path(os.environ.get("CLIP_HOME", "~/.clip")).expanduser() / "linear" / "credentials.json"
+
+
+def _has_symlink_component(path: Path) -> bool:
+    current = path
+    while True:
+        if current.is_symlink():
+            return True
+        if current == current.parent:
+            return False
+        current = current.parent
+
+
+def load_credential_info() -> tuple[str | None, str | None, Path | None]:
+    for path in (_credential_path(), _clip_credential_path()):
+        try:
+            if _has_symlink_component(path):
+                raise LinearSyncError(f"Refusing symlinked credential path: {path}")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                value = str(data.get("headerValue") or data.get("key") or "").strip()
+                if value:
+                    return value, "credentials", path
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    for path in (Path("~/.zshenv").expanduser(), Path("~/.zshrc").expanduser()):
+        value = _read_key_file(path)
+        if value:
+            return value, str(path), path
+    return None, None, None
+
+
+def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
+    if _has_symlink_component(path):
+        raise LinearSyncError(f"Refusing symlinked credential path: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(0o700)
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.write_text(text, encoding="utf-8")
+    temp.chmod(mode)
+    os.replace(temp, path)
+    path.chmod(mode)
+
+
+def save_credentials(key: str, header_name: str = "Authorization") -> Path:
+    path = _credential_path()
+    _atomic_write_text(path, json.dumps({
+        "type": "header", "headerName": header_name, "headerValue": key,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }) + "\n")
+    return path
+
+
+def resolve_mode(
+    explicit_mode: str | None,
+    *,
+    subcommand: str = "",
+    source: str = "",
+    handoff_dir: Path | None = None,
+    quiet: bool = False,
+) -> tuple[str, str | None]:
+    value = (explicit_mode or "").strip().lower()
+    if value:
+        if value not in {"off", "observe", "auto"}:
+            raise LinearSyncError(f"invalid mode: {value}")
+        return value, None
+    value = os.environ.get("GTT_LINEAR_MODE", "").strip().lower()
+    if value:
+        if value not in {"off", "observe", "auto"}:
+            raise LinearSyncError(f"invalid GTT_LINEAR_MODE: {value}")
+        return value, None
+    if handoff_dir and _is_isolated_handoff_dir(handoff_dir) and quiet and os.environ.get("GTT_LINEAR_SYNC") != "1":
+        return "off", "isolated_handoff_dir"
+    if os.environ.get("GTT_LINEAR_SYNC") == "0":
+        return "off", "env_disabled"
+    if subcommand == "idea" and source.strip().lower() in {"proactive", "retro", "retro-loop", "telemetry", "cron"}:
+        return "observe", None
+    return "auto", None
 
 
 def _is_isolated_handoff_dir(handoff_dir: Path) -> bool:
@@ -58,15 +156,11 @@ def _read_key_file(path: Path) -> str | None:
 
 
 def load_api_key() -> str | None:
-    """Read the key from the environment, then the standard zsh startup files."""
+    """Read credentials from env, protected files, then shell startup files."""
     value = os.environ.get("LINEAR_API_KEY", "").strip()
     if value:
         return value
-    for path in (Path("~/.zshenv").expanduser(), Path("~/.zshrc").expanduser()):
-        value = _read_key_file(path)
-        if value:
-            return value
-    return None
+    return load_credential_info()[0]
 
 
 class GraphQLClient:
@@ -289,6 +383,25 @@ class GraphQLClient:
         if not data.get("commentCreate", {}).get("success"):
             raise LinearSyncError("Linear did not create the comment")
 
+    def find_issue_by_dedup_marker(self, team_id: str, marker: str) -> dict[str, Any] | None:
+        data = self.execute(
+            """
+            query IssueByDedupMarker($teamId: ID!, $marker: String!) {
+              issues(filter: {team: {id: {eq: $teamId}}, description: {contains: $marker}}, first: 50) {
+                nodes {
+                  id identifier url state { id name type } project { name }
+                }
+              }
+            }
+            """,
+            {"teamId": team_id, "marker": marker},
+        )
+        for issue in data.get("issues", {}).get("nodes", []):
+            state = issue.get("state") or {}
+            if str(state.get("type", "")).casefold() not in {"completed", "canceled", "cancelled"}:
+                return issue
+        return None
+
 
 def _state(team: dict[str, Any], name: str, fallback: str | None = None) -> dict[str, Any] | None:
     states = team.get("states", {}).get("nodes", [])
@@ -387,18 +500,43 @@ def _parse_tasks(ledger_text: str, queue_data: dict[str, Any] | None) -> list[di
     }
     tasks: list[dict[str, str]] = []
     in_table = False
+    headers: dict[str, int] | None = None
+    aliases = {
+        "id": {"id", "task", "task id"},
+        "title": {"title", "标题"},
+        "status": {"status", "状态"},
+        "pr": {"pr", "pr/head", "pr / head"},
+        "owner": {"owner", "负责", "写者"},
+        "receipts": {"receipts", "验收证据／回执"},
+    }
     for line in ledger_text.splitlines():
         if line.strip() == "## Tasks":
             in_table = True
             continue
         if in_table and line.startswith("## "):
             break
-        if not in_table or not line.startswith("|") or line.count("|") < 6:
+        if not line.startswith("|") or line.count("|") < 2:
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if cells[0] in {"ID", "---"} or cells[0].startswith("---"):
+        normalized = [re.sub(r"\s+", " ", c.casefold()) for c in cells]
+        if normalized and all(set(c) <= {"-", ":"} for c in normalized):
             continue
-        task_id, _, title, _, status, pr = (cells + [""] * 6)[:6]
+        if normalized and any(normalized[0] == value for value in aliases["id"]):
+            in_table = True
+            headers = {}
+            for index, cell in enumerate(normalized):
+                for key, names in aliases.items():
+                    if cell in names:
+                        headers[key] = index
+                        break
+            continue
+        if not in_table:
+            continue
+        if headers:
+            get = lambda key: cells[headers[key]] if headers.get(key, 999) < len(cells) else ""
+            task_id, title, status, pr = get("id"), get("title"), get("status"), get("pr")
+        else:
+            task_id, _, title, _, status, pr = (cells + [""] * 6)[:6]
         if not re.match(r"^[A-Za-z0-9_.-]+$", task_id):
             continue
         queued = queue_by_id.get(task_id, {})
@@ -440,6 +578,7 @@ def _description_block(
     goal_name: str,
     ledger_text: str,
     tasks: list[dict[str, str]],
+    handoff_dir: Path | None = None,
 ) -> str:
     header_lines: list[str] = []
     for line in ledger_text.splitlines():
@@ -449,22 +588,191 @@ def _description_block(
             header_lines.append(line)
     summary = "\n".join(header_lines) or f"- Goal: {goal_name}"
     checklist: list[str] = []
+    attribution = _collect_task_attribution(handoff_dir, ledger_text, tasks)
     for task in tasks:
         status = task["status"]
         checked = "x" if status == "done" else " "
         suffix = status
         if task["pr"] and task["pr"] not in {"—", "-"}:
             suffix += f", {task['pr']}"
+        meta = attribution.get(task["task_id"])
+        if meta:
+            suffix += f"; runs={meta['runs']}, duration={meta['duration_sec']}s, tokens={meta['tokens']}, cost={meta['cost']}"
         checklist.append(f"- [{checked}] {task['task_id']}: {task['title']} ({suffix})")
+    attribution_block = ""
+    if attribution.get("__goal__"):
+        goal = attribution["__goal__"]
+        attribution_block = (
+            "\n\n## Execution & Cost Attribution\n"
+            f"- runs: {goal['runs']}; duration: {goal['duration_sec']}s; "
+            f"tokens: {goal['tokens']}; cost: {goal['cost']}\n"
+        )
     return (
         MARKER_START
         + "\n## Goal Summary\n"
         + summary
+        + attribution_block
         + "\n\n## Tasks\n"
         + ("\n".join(checklist) if checklist else "- [ ] No tasks recorded")
         + "\n"
         + MARKER_END
     )
+
+
+def _format_tokens(value: int, lower_bound: bool = False) -> str:
+    if not value:
+        return "—"
+    suffix = "K" if value >= 1000 else ""
+    number = value / 1000 if suffix else value
+    result = f"{number:.1f}{suffix}" if suffix else str(value)
+    return f"≥{result}" if lower_bound else result
+
+
+def _format_cost(value: float, lower_bound: bool = False) -> str:
+    if value <= 0:
+        return "—"
+    result = f"${value:.2f}"
+    return f"≥{result}" if lower_bound else result
+
+
+def _model_prices() -> dict[str, dict[str, float]]:
+    prices = {key: dict(value) for key, value in DEFAULT_MODEL_PRICES.items()}
+    csv_path = os.environ.get("GTT_MODEL_PRICES_CSV", "").strip()
+    if not csv_path:
+        return prices
+    try:
+        import csv
+        with Path(csv_path).expanduser().open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                model = str(row.get("model") or row.get("model_name") or "").strip()
+                if not model:
+                    continue
+                prices[model] = {
+                    key: float(row.get(key, 0) or 0)
+                    for key in ("input_per_mtok", "output_per_mtok", "cache_read_per_mtok", "cache_write_per_mtok")
+                }
+    except (OSError, ValueError, TypeError):
+        pass
+    return prices
+
+
+def _run_cost(run: dict[str, Any], prices: dict[str, dict[str, float]]) -> float:
+    if run.get("cost_usd") not in (None, ""):
+        return float(run.get("cost_usd") or 0)
+    model = str(run.get("model") or "default")
+    price = prices.get(model, prices["default"])
+    return sum(
+        float(run.get(token_key, 0) or 0) / 1_000_000 * price[price_key]
+        for token_key, price_key in (
+            ("input_tokens", "input_per_mtok"),
+            ("output_tokens", "output_per_mtok"),
+            ("cache_read_tokens", "cache_read_per_mtok"),
+            ("cache_write_tokens", "cache_write_per_mtok"),
+        )
+    )
+
+
+def _metric_runs(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        if any(key in value for key in ("input_tokens", "output_tokens", "cost_usd", "model", "duration_sec")):
+            return [value]
+        return [item for item in value.values() if isinstance(item, dict)]
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _receipt_field(text: str, field: str) -> str:
+    match = re.search(
+        rf"(?mi)^\s*-\s*\**{re.escape(field)}\**\s*:\s*`?([^`\r\n]+?)`?\s*$",
+        text,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _collect_task_attribution(
+    handoff_dir: Path | None, ledger_text: str, tasks: list[dict[str, str]]
+) -> dict[str, dict[str, Any]]:
+    metrics: dict[str, dict[str, Any]] = {}
+    task_ids = {task["task_id"] for task in tasks}
+    prices = _model_prices()
+
+    def item_for(task_id: str) -> dict[str, Any]:
+        return metrics.setdefault(task_id, {
+            "runs": 0, "metered": 0, "duration": 0.0, "tokens_raw": 0,
+            "cost_raw": 0.0, "v5_verdict": "", "receipts": [],
+        })
+
+    def add_run(task_id: str, run: dict[str, Any], receipt: str | None = None) -> None:
+        if task_id not in task_ids:
+            return
+        item = item_for(task_id)
+        item["runs"] += 1
+        token_count = sum(int(float(run.get(key, 0) or 0)) for key in (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "tokens",
+        ))
+        if token_count:
+            item["metered"] += 1
+            item["tokens_raw"] += token_count
+        item["duration"] += float(run.get("duration_sec", 0) or 0)
+        item["cost_raw"] += _run_cost(run, prices)
+        item["v5_verdict"] = str(run.get("v5_verdict") or item["v5_verdict"])
+        if receipt and receipt not in item["receipts"]:
+            item["receipts"].append(receipt)
+
+    for event in _parse_events(ledger_text):
+        task_id = event.get("task")
+        if task_id in task_ids and ("tokens" in event or "duration_sec" in event):
+            add_run(task_id, {"tokens": event.get("tokens", 0), "duration_sec": event.get("duration_sec", 0)})
+    if handoff_dir and handoff_dir.is_dir():
+        queue_path = handoff_dir / "queue.json"
+        try:
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+            for task in queue.get("tasks", []):
+                task_id = str(task.get("task_id", ""))
+                for run in _metric_runs(task.get("run_metrics")):
+                    add_run(task_id, run)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        receipts = handoff_dir / "receipts"
+        if receipts.is_dir():
+            for path in receipts.glob("*.md"):
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                match_task = re.search(r"(?mi)^\s*-\s*\**(?:Task|任务)\**\s*:\s*`?([A-Za-z0-9_.-]+)", text)
+                if not match_task or match_task.group(1) not in task_ids:
+                    continue
+                task_id = match_task.group(1)
+                run = {
+                    "tokens": _receipt_field(text, "Tokens").replace(",", ""),
+                    "duration_sec": _receipt_field(text, "Duration").split()[0] if _receipt_field(text, "Duration") else 0,
+                    "cost_usd": _receipt_field(text, "Cost").replace("$", ""),
+                    "model": _receipt_field(text, "Model"),
+                    "v5_verdict": _receipt_field(text, "V5 Verdict"),
+                }
+                add_run(task_id, run, str(path.relative_to(handoff_dir)))
+    if not metrics:
+        return {}
+    total_runs = sum(int(item["runs"]) for item in metrics.values())
+    total_metered = sum(int(item["metered"]) for item in metrics.values())
+    total_tokens = sum(int(item["tokens_raw"]) for item in metrics.values())
+    total_cost = sum(float(item["cost_raw"]) for item in metrics.values())
+    output: dict[str, dict[str, Any]] = {}
+    for task_id, item in metrics.items():
+        lower = item["runs"] > item["metered"] > 0
+        output[task_id] = {
+            "runs": item["runs"], "duration_sec": f"{item['duration']:.1f}",
+            "tokens": _format_tokens(item["tokens_raw"], lower),
+            "cost": _format_cost(item["cost_raw"], lower),
+            "receipts": item["receipts"],
+            "v5_verdict": item["v5_verdict"],
+        }
+    output["__goal__"] = {
+        "runs": total_runs, "duration_sec": f"{sum(float(i['duration']) for i in metrics.values()):.1f}",
+        "tokens": _format_tokens(total_tokens, total_runs > total_metered > 0),
+        "cost": _format_cost(total_cost, total_runs > total_metered > 0),
+    }
+    return output
 
 
 def _updated_description(existing: str | None, block: str) -> str:
@@ -516,16 +824,18 @@ def _sync_issue(
     *,
     event_note: str | None = None,
     project_name: str | None = None,
+    mode: str = "auto",
 ) -> dict[str, Any]:
     ledger_text = _read_ledger(handoff_dir)
     goal_name, tasks, events, header = _load_handoff(handoff_dir)
+    attribution = _collect_task_attribution(handoff_dir, ledger_text, tasks)
     inferred_project = _infer_project_name(project_name, ledger_text, str(handoff_dir))
     project_id = _project_id(team, inferred_project)
     current_project_id = str((issue.get("project") or {}).get("id") or "")
     explicit_project = bool(project_name and project_name.strip())
     description = _updated_description(
         issue.get("description"),
-        _description_block(goal_name, ledger_text, tasks),
+        _description_block(goal_name, ledger_text, tasks, handoff_dir),
     )
     target_state = _aggregate_state(team, tasks, events, header)
     labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
@@ -535,15 +845,30 @@ def _sync_issue(
         labels.append(str(blocked_label["id"]))
     elif not blocking and blocked_label:
         labels = [label_id for label_id in labels if label_id != str(blocked_label["id"])]
-    issue = client.update_issue(
-        str(issue["id"]),
-        description=description,
-        state_id=str(target_state["id"]) if target_state else None,
-        label_ids=labels,
-        project_id=project_id
-        if project_id and (explicit_project or not current_project_id) and project_id != current_project_id
-        else None,
-    )
+    target_project_id = project_id if project_id and (explicit_project or not current_project_id) else None
+    current_state_id = str((issue.get("state") or {}).get("id") or "")
+    current_labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
+    state_changed = bool(target_state and str(target_state.get("id") or "") != current_state_id)
+    labels_changed = set(labels) != set(current_labels)
+    project_changed = bool(target_project_id and target_project_id != current_project_id)
+    description_changed = description != str(issue.get("description") or "")
+    has_field_changes = description_changed or state_changed or labels_changed or project_changed
+    planned_mutations: list[dict[str, Any]] = []
+    if has_field_changes:
+        planned_mutations.append({"operation": "UpdateIssue", "graphql_operation_name": "UpdateIssue", "variables": {
+            "id": str(issue["id"]), "input": {
+                "description": description,
+                "stateId": str(target_state["id"]) if target_state else None,
+                "labelIds": labels,
+                **({"projectId": target_project_id} if target_project_id else {}),
+            },
+        }})
+    if mode == "auto" and has_field_changes:
+        issue = client.update_issue(
+            str(issue["id"]), description=description,
+            state_id=str(target_state["id"]) if target_state else None,
+            label_ids=labels, project_id=target_project_id,
+        )
     existing_comments = _issue_comment_bodies(issue)
     for event in blocking:
         event_id = event.get("id", "")
@@ -554,7 +879,9 @@ def _sync_issue(
                 body += f" · Task `{event['task']}`"
             if event.get("note"):
                 body += f"\n{event['note']}"
-            client.create_comment(str(issue["id"]), body)
+            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            if mode == "auto":
+                client.create_comment(str(issue["id"]), body)
             existing_comments.append(body)
     for event in events:
         event_type = event.get("EVT", "").upper()
@@ -568,15 +895,35 @@ def _sync_issue(
             body = f"{marker}\n**{event_type}**"
             if event.get("task"):
                 body += f" · Task `{event['task']}`"
+                meta = attribution.get(event["task"])
+                if meta:
+                    body += f"\nRun attribution: {meta['runs']} run(s), {meta['tokens']}, {meta['cost']}"
+                    if meta.get("receipts"):
+                        body += f" · receipt `{meta['receipts'][0]}`"
             if event.get("ref"):
                 body += f"\n{event['ref']}"
-            client.create_comment(str(issue["id"]), body)
+            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            if mode == "auto":
+                client.create_comment(str(issue["id"]), body)
             existing_comments.append(body)
     if event_note:
         marker = f"<!-- GTT-LINEAR-NOTE:{event_note} -->"
         if not any(marker in body for body in existing_comments):
-            client.create_comment(str(issue["id"]), f"{marker}\n{event_note}")
+            note_body = f"{marker}\n{event_note}"
+            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": note_body}})
+            if mode == "auto":
+                client.create_comment(str(issue["id"]), note_body)
             existing_comments.append(marker)
+    if mode == "observe":
+        return {
+            **issue,
+            "diff": {"has_changes": has_field_changes, "issue_create": False,
+                     "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed)) if changed],
+                     "comments_to_create": [m["variables"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
+                     "local_effects": []},
+            "planned_mutations": planned_mutations,
+        }
+    issue["_mutations_executed"] = len(planned_mutations) if mode == "auto" else 0
     return issue
 
 
@@ -591,7 +938,7 @@ def _bind_issue_line(handoff_dir: Path, identifier: str, url: str) -> None:
         insert_at = next((index for index, line in enumerate(lines) if line.startswith("## Tasks")), len(lines))
         lines[insert_at:insert_at] = [binding, ""]
         text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
-    path.write_text(text, encoding="utf-8")
+    _atomic_write_text(path, text, 0o600)
 
 
 @contextlib.contextmanager
@@ -620,9 +967,54 @@ def _client_or_fail() -> GraphQLClient:
     return GraphQLClient(key)
 
 
+def _offline_snapshot(value: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if not value:
+        return None
+    try:
+        path = Path(value)
+        raw = path.read_text(encoding="utf-8") if path.is_file() else value
+        data = json.loads(raw)
+        return data.get("team", {}), data.get("issue", {})
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise LinearSyncError(f"invalid offline snapshot: {exc}") from exc
+
+
+def _synthetic_team() -> dict[str, Any]:
+    return {"id": "offline-team", "key": "TIA", "name": "TIA", "states": {"nodes": [
+        {"id": "todo", "name": "Todo"}, {"id": "progress", "name": "In Progress"},
+        {"id": "backlog", "name": "Backlog"}, {"id": "done", "name": "Done"},
+    ]}, "labels": {"nodes": []}, "projects": {"nodes": []}}
+
+
+def _virtual_issue(identifier: str = "") -> dict[str, Any]:
+    return {
+        "id": "offline-issue",
+        "identifier": identifier,
+        "url": "",
+        "description": "",
+        "state": {},
+        "labels": {"nodes": []},
+        "comments": {"nodes": []},
+        "project": None,
+    }
+
+
+def _is_closed_issue(issue: dict[str, Any]) -> bool:
+    state = issue.get("state") or {}
+    return str(state.get("type") or state.get("name") or "").casefold() in {
+        "completed", "canceled", "cancelled", "done",
+    }
+
+
 def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
-    client = _client_or_fail()
-    team = client.team(args.team)
+    mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="idea", source=getattr(args, "source", ""))
+    if mode == "off":
+        return {"schema_version": 1, "ok": True, "command": "idea", "mode": "off",
+                "decision": "off (skipped)", "would_accept": False, "skipped": skipped or "mode_off",
+                "planned_mutations": []}
+    snapshot = _offline_snapshot(getattr(args, "offline_snapshot", ""))
+    client = None if snapshot else (_client_or_fail() if mode == "auto" or load_api_key() else None)
+    team = snapshot[0] if snapshot else (client.team(args.team) if client else _synthetic_team())
     project_name = _infer_project_name(
         getattr(args, "project", ""),
         f"{args.title} {args.description}",
@@ -631,14 +1023,50 @@ def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
     project_id = _project_id(team, project_name)
     target_state = _state(team, args.state, "Backlog")
     label = _label(team, args.label) if args.label else None
-    issue = client.create_issue(
-        team_id=str(team["id"]),
-        title=args.title,
-        description=args.description or "",
-        state_id=str(target_state["id"]) if target_state else None,
-        label_ids=[str(label["id"])] if label else None,
-        project_id=project_id,
-    )
+    description = args.description or ""
+    if getattr(args, "dedup_key", ""):
+        marker = f"<!-- GTT-LINEAR-DEDUP:{args.dedup_key} -->"
+        description += f"\n\n{marker}"
+        existing = None
+        if snapshot:
+            snapshot_issue = snapshot[1]
+            candidates = snapshot_issue.get("issues", []) if isinstance(snapshot_issue, dict) and isinstance(snapshot_issue.get("issues"), list) else (
+                snapshot_issue if isinstance(snapshot_issue, list) else [snapshot_issue]
+            )
+            existing = next(
+                (issue for issue in candidates if isinstance(issue, dict)
+                 and marker in str(issue.get("description") or "") and not _is_closed_issue(issue)),
+                None,
+            )
+        elif client:
+            try:
+                existing = client.find_issue_by_dedup_marker(str(team["id"]), marker)
+            except (LinearSyncError, AssertionError):
+                existing = None
+        if existing:
+            return {
+                "ok": True, "mode": mode, "decision": "no-op (duplicate)",
+                "would_accept": False, "duplicate_of": existing.get("identifier"),
+                "identifier": existing.get("identifier"), "url": existing.get("url"),
+                "state": (existing.get("state") or {}).get("name"),
+                "project": (existing.get("project") or {}).get("name"),
+                "planned_mutations": [],
+            }
+    mutation = {"operation": "CreateIssue", "graphql_operation_name": "CreateIssue", "variables": {"input": {
+        "teamId": str(team["id"]), "title": args.title, "description": description,
+        **({"stateId": str(target_state["id"])} if target_state else {}),
+        **({"labelIds": [str(label["id"])]} if label else {}),
+        **({"projectId": project_id} if project_id else {}),
+    }}}
+    if mode == "observe":
+        return {"ok": True, "mode": mode, "decision": "observe (would accept)",
+                "would_accept": True, "diff": {"has_changes": True, "issue_create": True, "fields": ["title", "description"]},
+                "planned_mutations": [mutation]}
+    if client is None:
+        raise LinearSyncError("LINEAR_API_KEY is not configured")
+    issue = client.create_issue(team_id=str(team["id"]), title=args.title, description=description,
+                                state_id=str(target_state["id"]) if target_state else None,
+                                label_ids=[str(label["id"])] if label else None, project_id=project_id)
     return {
         "identifier": issue.get("identifier"),
         "url": issue.get("url"),
@@ -650,8 +1078,58 @@ def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = Path(args.handoff_dir).expanduser().resolve()
-    handoff_dir.mkdir(parents=True, exist_ok=True)
+    mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="ensure-goal", handoff_dir=handoff_dir)
+    if mode == "off":
+        return {"schema_version": 1, "ok": True, "command": "ensure-goal", "mode": "off",
+                "decision": "off (skipped)", "would_accept": False, "skipped": skipped or "mode_off",
+                "planned_mutations": []}
+    snapshot = _offline_snapshot(getattr(args, "offline_snapshot", ""))
+    if mode == "observe":
+        if not handoff_dir.is_dir():
+            raise LinearSyncError(f"Missing handoff directory: {handoff_dir}")
+        team, issue = snapshot or (_synthetic_team(), {})
+        client = GraphQLClient("offline", lambda q, v: {"data": {}})
+        ledger_text = _read_ledger(handoff_dir)
+        identifier = args.issue or _bound_issue(ledger_text)
+        issue = issue or _virtual_issue(identifier)
+        if identifier and not issue.get("identifier"):
+            issue["identifier"] = identifier
+        goal_name, _, _, _ = _load_handoff(handoff_dir)
+        planned: list[dict[str, Any]] = []
+        local_effects: list[dict[str, Any]] = []
+        if args.issue and _bound_issue(ledger_text) != args.issue:
+            local_effects.append({"operation": "BindIssueLine", "identifier": args.issue, "path": str(handoff_dir / "ledger.md")})
+        if not identifier:
+            if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
+                raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
+            project_name = _infer_project_name(getattr(args, "project", ""), ledger_text, str(handoff_dir))
+            todo = _state(team, "Todo", "In Progress")
+            planned.append({"operation": "CreateIssue", "graphql_operation_name": "CreateIssue", "variables": {"input": {
+                "teamId": str(team["id"]), "title": f"[Goal] {goal_name}", "description": "",
+                **({"stateId": str(todo["id"])} if todo else {}),
+                **({"projectId": _project_id(team, project_name)} if _project_id(team, project_name) else {}),
+            }}})
+            local_effects.append({"operation": "BindIssueLine", "identifier": "<created issue>", "path": str(handoff_dir / "ledger.md")})
+            identifier = ""
+        result = _sync_issue(client, issue, team, handoff_dir, project_name=getattr(args, "project", ""), mode="observe")
+        planned = planned + result.get("planned_mutations", [])
+        result["planned_mutations"] = planned
+        result["diff"]["local_effects"] = local_effects
+        if getattr(args, "record_observe", False):
+            receipts = handoff_dir / "receipts"
+            receipts.mkdir(parents=True, exist_ok=True)
+            with (receipts / "linear-observe.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"command": "ensure-goal", "result": result["diff"]}) + "\n")
+        return {
+            "ok": True, "mode": mode,
+            "decision": "observe (would accept)" if planned or local_effects else "observe (no-op)",
+            "would_accept": bool(planned or local_effects), "identifier": identifier or None,
+            "url": issue.get("url"), "state": (issue.get("state") or {}).get("name"),
+            "project": (issue.get("project") or {}).get("name"),
+            "diff": result["diff"], "planned_mutations": planned,
+        }
     client = _client_or_fail()
+    handoff_dir.mkdir(parents=True, exist_ok=True)
     with _queue_lock(handoff_dir):
         ledger_text = _read_ledger(handoff_dir)
         identifier = args.issue or _bound_issue(ledger_text)
@@ -684,6 +1162,9 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
         )
     return {
         "ok": True,
+        "mode": mode,
+        "decision": "accept" if issue.get("_mutations_executed") else "no-op",
+        "would_accept": bool(issue.get("_mutations_executed")),
         "identifier": identifier,
         "url": issue.get("url"),
         "state": issue.get("state", {}).get("name"),
@@ -693,34 +1174,56 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = Path(args.handoff_dir).expanduser().resolve()
-    if (
-        getattr(args, "quiet", False)
-        and _is_isolated_handoff_dir(handoff_dir)
-        and os.environ.get("GTT_LINEAR_SYNC") != "1"
-    ):
-        return {"ok": True, "skipped": "isolated_handoff_dir"}
-    client = _client_or_fail()
-    with _queue_lock(handoff_dir):
+    mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="sync-ledger", handoff_dir=handoff_dir, quiet=getattr(args, "quiet", False))
+    if mode == "off":
+        if skipped == "isolated_handoff_dir" and not getattr(args, "mode", None) and not os.environ.get("GTT_LINEAR_MODE"):
+            return {"ok": True, "skipped": skipped}
+        return {"schema_version": 1, "ok": True, "command": "sync-ledger", "mode": "off",
+                "decision": "off (skipped)", "would_accept": False, "skipped": skipped or "mode_off",
+                "planned_mutations": []}
+    snapshot = _offline_snapshot(getattr(args, "offline_snapshot", ""))
+    if mode == "observe" and not snapshot:
+        client = GraphQLClient("offline", lambda q, v: {"data": {}})
+        team, issue = _synthetic_team(), {}
+    elif snapshot:
+        client = GraphQLClient("offline", lambda q, v: {"data": {}})
+        team, issue = snapshot
+    else:
+        client = _client_or_fail()
+    lock = contextlib.nullcontext() if mode == "observe" else _queue_lock(handoff_dir)
+    with lock:
         ledger_text = _read_ledger(handoff_dir)
         identifier = _bound_issue(ledger_text)
-        team = client.team("TIA")
+        if mode != "observe" and not snapshot:
+            team = client.team("TIA")
         if not identifier:
             if os.environ.get("GTT_LINEAR_AUTO_CREATE", "1") == "0":
                 raise LinearSyncError("No Linear issue is bound and auto_create is disabled")
             goal_name, _, _, _ = _load_handoff(handoff_dir)
             project_name = _infer_project_name(getattr(args, "project", ""), ledger_text, str(handoff_dir))
             todo = _state(team, "Todo", "In Progress")
-            issue = client.create_issue(
-                team_id=str(team["id"]),
-                title=f"[Goal] {goal_name}",
-                description="",
-                state_id=str(todo["id"]) if todo else None,
-                project_id=_project_id(team, project_name),
-            )
-            _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
-            identifier = str(issue["identifier"])
-        else:
+            create_mutation = {"operation": "CreateIssue", "graphql_operation_name": "CreateIssue", "variables": {"input": {
+                "teamId": str(team["id"]), "title": f"[Goal] {goal_name}", "description": "",
+                **({"stateId": str(todo["id"])} if todo else {}),
+                **({"projectId": _project_id(team, project_name)} if _project_id(team, project_name) else {}),
+            }}}
+            if mode == "observe":
+                issue = _virtual_issue()
+                planned_create = create_mutation
+            else:
+                issue = client.create_issue(
+                    team_id=str(team["id"]),
+                    title=f"[Goal] {goal_name}",
+                    description="",
+                    state_id=str(todo["id"]) if todo else None,
+                    project_id=_project_id(team, project_name),
+                )
+                _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
+                identifier = str(issue["identifier"])
+        elif not snapshot and mode != "observe":
             issue = client.issue(identifier)
+        if (snapshot or mode == "observe") and not issue:
+            issue = _virtual_issue(identifier or "TIA-OFFLINE")
         issue = _sync_issue(
             client,
             issue,
@@ -728,9 +1231,24 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
             handoff_dir,
             event_note=args.event_note,
             project_name=getattr(args, "project", ""),
+            mode=mode,
         )
+        if mode == "observe" and not identifier:
+            issue.setdefault("planned_mutations", []).insert(0, planned_create)
+            issue.setdefault("diff", {}).setdefault("local_effects", []).append(
+                {"operation": "BindIssueLine", "identifier": "<created issue>", "path": str(handoff_dir / "ledger.md")}
+            )
+    if mode == "observe" and (handoff_dir.joinpath("receipts").is_dir() or getattr(args, "record_observe", False)):
+        handoff_dir.joinpath("receipts").mkdir(parents=True, exist_ok=True)
+        path = handoff_dir / "receipts" / "linear-observe.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"command": "sync-ledger", "result": issue.get("diff", {})}, ensure_ascii=False) + "\n")
     return {
         "ok": True,
+        "mode": mode,
+        "decision": "observe (would accept)" if mode == "observe" and (issue.get("planned_mutations") or issue.get("diff", {}).get("local_effects")) else ("observe (no-op)" if mode == "observe" else ("accept" if issue.get("_mutations_executed") else "no-op")),
+        "would_accept": bool(issue.get("planned_mutations") or issue.get("diff", {}).get("local_effects")) if mode == "observe" else bool(issue.get("_mutations_executed")),
+        **({"diff": issue.get("diff"), "planned_mutations": issue.get("planned_mutations", [])} if mode == "observe" else {}),
         "identifier": issue.get("identifier"),
         "url": issue.get("url"),
         "state": issue.get("state", {}).get("name"),
@@ -749,18 +1267,38 @@ def build_parser() -> argparse.ArgumentParser:
     idea.add_argument("--state", default="Triage")
     idea.add_argument("--label", default="")
     idea.add_argument("--project", default="")
+    idea.add_argument("--mode", choices=("off", "observe", "auto"))
+    idea.add_argument("--source", default="")
+    idea.add_argument("--dedup-key", default="")
+    idea.add_argument("--repo", default="")
+    idea.add_argument("--offline-snapshot", default="")
 
     ensure = subparsers.add_parser("ensure-goal", help="Bind or create the Linear issue for a Goal.")
     ensure.add_argument("--handoff-dir", required=True)
     ensure.add_argument("--issue", default="")
     ensure.add_argument("--team", default="TIA")
     ensure.add_argument("--project", default="")
+    ensure.add_argument("--mode", choices=("off", "observe", "auto"))
+    ensure.add_argument("--offline-snapshot", default="")
+    ensure.add_argument("--record-observe", action="store_true")
 
     sync = subparsers.add_parser("sync-ledger", help="Synchronize a Goal ledger to its Linear issue.")
     sync.add_argument("--handoff-dir", required=True)
     sync.add_argument("--event-note", default="")
     sync.add_argument("--quiet", action="store_true")
     sync.add_argument("--project", default="")
+    sync.add_argument("--mode", choices=("off", "observe", "auto"))
+    sync.add_argument("--offline-snapshot", default="")
+    sync.add_argument("--record-observe", action="store_true")
+
+    auth = subparsers.add_parser("auth", help="Manage Linear credentials.")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    auth_set = auth_sub.add_parser("set")
+    auth_set.add_argument("--key-stdin", action="store_true")
+    auth_set.add_argument("--header", default="Authorization")
+    auth_sub.add_parser("show")
+    auth_remove = auth_sub.add_parser("remove")
+    auth_remove.add_argument("--force", action="store_true")
     return parser
 
 
@@ -774,6 +1312,25 @@ def main(argv: list[str] | None = None) -> int:
             payload = cmd_ensure_goal(args)
         elif args.subcommand == "sync-ledger":
             payload = cmd_sync_ledger(args)
+        elif args.subcommand == "auth":
+            path = _credential_path()
+            if args.auth_command == "set":
+                key = sys.stdin.readline().strip() if args.key_stdin or not sys.stdin.isatty() else getpass.getpass("Linear API key: ")
+                saved = save_credentials(key, args.header)
+                payload = {"ok": True, "command": "auth set", "path": str(saved), "mode": "0600", "masked_key": mask_value(key)}
+            elif args.auth_command == "show":
+                key, source, source_path = load_credential_info()
+                payload = {"ok": True, "command": "auth show", "configured": bool(key),
+                           "source": source, "path": str(source_path or path), "masked_key": mask_value(key or ""),
+                           "mode": oct((source_path or path).stat().st_mode & 0o777)[2:].zfill(4) if (source_path or path).exists() else None}
+            else:
+                removed = False
+                if _has_symlink_component(path):
+                    raise LinearSyncError(f"Refusing symlinked credential path: {path}")
+                if path.exists():
+                    path.unlink()
+                    removed = True
+                payload = {"ok": True, "command": "auth remove", "removed": removed}
         else:
             raise LinearSyncError(f"Unknown subcommand: {args.subcommand}")
     except LinearSyncError as exc:

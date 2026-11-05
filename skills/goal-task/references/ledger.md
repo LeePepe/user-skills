@@ -182,3 +182,12 @@ python3 skills/goal-task/scripts/gtt-telemetry-export.py \
 ```
 
 添加 `--incremental --state-file <path>` 后只追加新增或变更记录；脚本会归一化 home 路径、脱敏常见密钥／URL 查询 token／邮箱，并拒绝 symlink 与路径穿越。需要直接发送到中心机时可附加 `--rsync-to <user@host:path>`。
+# Linear sync and attribution
+
+Queue hooks honor `GTT_LINEAR_MODE=off|observe|auto`. Observe mode is
+side-effect free and records planned changes in `receipts/linear-observe.jsonl`;
+auto mode applies only non-empty diffs. R10 receipts and `run_metrics` are
+aggregated into `## Execution & Cost Attribution`, including duration, token
+usage, and lower-bound cost figures when runs are unreported. Linear
+credentials use `~/.config/linear/credentials.json` (`0700` directory,
+`0600` file) and are managed with `auth set|show|remove`.

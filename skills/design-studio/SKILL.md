@@ -1,27 +1,28 @@
 ---
-name: motion-studio
-description: 'Use when designing or implementing Web/App UI micro-interactions, landing-page timeline choreography (Motion, Anime.js, Lottie, Three.js), or code-driven cover animations, transition templates, and product promo videos with Remotion and FFmpeg. Bridges DesignTokens/StrataMotion/Basalt tokens into interactive motion and automated video pipelines.'
+name: design-studio
+description: 'Use when designing or implementing Web/App interactions, data-linkage patterns, micro-interactions, landing-page timeline choreography (Motion, Anime.js, Lottie, Three.js), or code-driven cover animations, transition templates, and product promo videos with Remotion and FFmpeg. Bridges DesignTokens/StrataMotion/Basalt tokens into interactive design and automated motion pipelines.'
 allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 ---
 
-# motion-studio
+# design-studio
 
-Use this skill when motion is part of the product surface or when a rendered
-asset must be reproducible from code. Start by reading the `my-designer`
-handoff and selecting exactly one `surface_mode` (`Operate`, `Read`,
-`Persuade`, or `Experience`) and one `visual_mode`
+Use this skill when an interaction, data linkage, motion choreography, or
+rendered asset is part of the product surface. Start by reading the
+`my-designer` handoff and selecting exactly one `surface_mode` (`Operate`,
+`Read`, `Persuade`, or `Experience`) and one `visual_mode`
 (`Strata-Core`, `Strata-Glass`, `Independent-Glass`, or `Independent-Custom`).
 Treat `DesignTokens`, `Strata`/`StrataMotion`, and `@nocoo/basalt` as token
-authorities; do not invent a parallel motion language.
+authorities; do not invent a parallel interaction or motion language.
 
 ## Three-skill synergy and routing
 
 The handoff flows `my-designer` → `visual-design-modernization` →
-`motion-studio`. Consume the selected `visual_mode`, `surface_mode`, and
+`design-studio`. Consume the selected `visual_mode`, `surface_mode`, and
 `motion_tier`: M1 is Micro-Feedback, M2 is Spatial & Gesture Choreography, M3
 is Narrative/3D Hero, and M4 is Code-to-Video. Use
-`python3 skills/motion-studio/scripts/motion_catalog.py` to search and
-recommend catalog entries before implementation.
+`python3 skills/design-studio/scripts/design_catalog.py` to search and
+recommend catalog entries before implementation. The catalog stores `IP-*`
+Interaction/Data-Linkage Patterns, `MP-*` Motion Patterns, and `T-*` Tools.
 
 The **Shared** layer owns physical state machines
 (`idle -> drag -> threshold -> commit/cancel -> spring settle`),
@@ -36,12 +37,18 @@ layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
 ### Extensible catalog workflow
 
 1. Deduplicate a supplied prompt/tool with
-   `motion_catalog.py search --query "<prompt>"`.
+   `design_catalog.py search --query "<prompt>"`.
 2. Normalize it into `state_machine`, web/mobile implementations, and
    `token_guardrails`, then archive with `add-pattern` or `add-tool`.
 3. Select motion with `recommend --platform <web|mobile> --surface-mode <mode>`.
 4. Close the taste loop with `record-use --id <ID> --context "<repo/screen>"`,
    recording `liked`, `neutral`, or `disliked` feedback.
+
+For Dashboard, data-workspace, and interactive-list scenarios, search for
+`IP-*` patterns before choosing a design. Preserve the selected trigger,
+linkage, context-preservation, and recovery behavior in `design.md`; the
+catalog is a continuously growing reference library, not a rigid visual
+template.
 
 ## Track A · Product UI and landing-page motion
 

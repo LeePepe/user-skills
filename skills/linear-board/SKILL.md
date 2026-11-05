@@ -39,3 +39,13 @@ Active Goal；不传 `--issue` 时按 `auto_create` 策略创建 Goal Issue。�
 Canonical implementation: [`scripts/linear-sync.py`](scripts/linear-sync.py)。它是
 `goal-task` canonical script 的共享入口；真正的实现仍在
 [`../goal-task/scripts/linear-sync.py`](../goal-task/scripts/linear-sync.py)。
+# Linear synchronization modes
+
+`linear-sync.py` supports `--mode off|observe|auto` (or `GTT_LINEAR_MODE`).
+`off` performs no network or file mutations; `observe` emits planned mutations
+and may append `receipts/linear-observe.jsonl`; `auto` applies the diff.
+Goal descriptions may include an `## Execution & Cost Attribution` section
+summarizing R10 receipts, run metrics, duration, tokens, and honest lower-bound
+costs. Credentials are stored in `~/.config/linear/credentials.json` with
+directory mode `0700` and file mode `0600`; use `linear-sync.py auth set`,
+`auth show`, or `auth remove`.
