@@ -93,7 +93,7 @@ def iter_markdown_links(markdown_text: str) -> Sequence[str]:
 
 def markdown_anchors(path: Path) -> set[str]:
     """Return GitHub-style heading anchors and explicit HTML ids."""
-    text = path.read_text(encoding="utf-8")
+    text = FENCED_CODE_RE.sub("", path.read_text(encoding="utf-8"))
     anchors = set(re.findall(r"<a\s+id=[\"']([^\"']+)[\"']", text, re.IGNORECASE))
     counts: dict[str, int] = {}
     for heading in re.findall(r"^#{1,6}\s+(.+?)\s*$", text, re.MULTILINE):
