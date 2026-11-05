@@ -132,3 +132,8 @@ Two modes coexist on macOS: follow the system accent color, or pin a brand seed 
 - `references/color-system.md` — `makePrimaryPalette` + Radix slate / Tailwind neutral / Apple system color values.
 - `references/swiftui-preview-snapshot.md` — ImageRenderer snapshot recipe + gotchas.
 - `references/design-reviewer-rubric.md` — the 7-dimension scoring rubric (shared with the global `design-reviewer` agent).
+
+Use the four-tier Prompt Slots contract (`Global > Category Slot > Intent >
+Sources`) for handoffs, stamp `design.md` with `version` and `spec_sha`, and
+record screenshot findings through `jev_visual_gate.py` (`R05`). This remains a
+No Code Demo workflow.

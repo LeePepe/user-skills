@@ -1,5 +1,10 @@
 # Agent-Consumable Design Document Specification (`agent-design-doc-spec.md`)
 
+This `schema: agent-design-doc/v1` handoff participates in the four-tier
+`Global > Category Slot > Intent > Sources` prompt contract. `design.md` MUST
+carry `version` and `spec_sha`; `spec_gate.py` performs the optimistic lock,
+and `jev_visual_gate.py` supplies the R05 screenshot gate.
+
 > **Version**: `1.0.0` (`agent-design-doc/v1`)
 > **Authority Alignment**: `~/Development/shared-design-system/ai/DESIGN-CONTRACT.md` · `docs/strata-theme-v0.2.md` · `~/Development/demoUI/design/north-star.md` · `goal-task` (Phase 0 `Explorer -> Designer` & Phase 1 `Writer -> CI Gate -> Reviewer`)
 > **Target Consumers**: `Explorer` (read-only fact producer) · `Designer` (`handoff/<goal>/design.md` author) · `Writer` (code & snapshot implementer) · `shared-ci/scripts/context/design_contract.py` (static/visual linter) · `Reviewer` (cross-vendor V1–V5 verifier)
