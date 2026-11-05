@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -214,8 +216,35 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(result.returncode, expected, result.stderr)
         self.assertEqual(self.snapshot(), before)
 
+    def test_mixed_and_all_duplicate_batch_codes(self):
+        existing = json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"][0]
+        mixed = self.ingest("--text", f"- {existing['source_prompt_zh']}\n- brand-new mixed batch", "--no-jev")
+        self.assertEqual(mixed.returncode, 0, mixed.stderr)
+        mixed_data = json.loads(mixed.stdout)
+        self.assertEqual(len(mixed_data["created_items"]), 1)
+        self.assertEqual(len(mixed_data["duplicate_items"]), 1)
+        self.assertEqual(mixed_data["duplicate_items"][0]["id"], existing["id"])
+        all_duplicate = self.ingest("--text", f"- {existing['source_prompt_zh']}\n- {existing['source_prompt_zh']}", "--no-jev")
+        self.assertEqual(all_duplicate.returncode, 2, all_duplicate.stderr)
+        self.assertEqual(len(json.loads(all_duplicate.stdout)["created_items"]), 0)
+
+    def test_image_cli_routing_and_input_validation(self):
+        args = DESIGN_CATALOG.parser().parse_args([
+            "ingest", "--image", "mock.png", "--no-jev", "--catalog", str(self.catalog),
+            "--markdown", str(self.markdown), "--dry-run"])
+        original = DESIGN_CATALOG.ocr_image
+        try:
+            DESIGN_CATALOG.ocr_image = lambda path: "OCR routed prompt"
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(DESIGN_CATALOG.command(args), 0)
+            self.assertIn("OCR routed prompt", output.getvalue())
+        finally:
+            DESIGN_CATALOG.ocr_image = original
+        self.assertEqual(self.ingest("--text", "text", "--image", "image.png").returncode, 2)
+        self.assertEqual(run("ingest").returncode, 2)
+
     def test_split_and_no_split_batch_compact(self):
-        prompt = "Context before\n- first linked chart\n2、second filter\n③ third detail\n(4) fourth layout\n**Fifth**: fifth gesture\nContext after"
+        prompt = "Context before\n• first linked chart\n2、second filter\n③ third detail\n(4) fourth layout\n**Fifth**: fifth gesture\nContext after"
         result = self.ingest("--text", prompt, "--no-jev", "--compact")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 5)

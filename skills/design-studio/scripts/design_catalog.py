@@ -211,7 +211,7 @@ def classify_prompt(text):
     return category if score(INGEST_PROFILES[category]) else "layout-craft"
 
 
-ITEM_START = re.compile(r"^\s*(?:[-*+]\s+|(?:\d{1,3}[.)、]|[①②③④⑤⑥⑦⑧⑨⑩]|\(\d{1,3}\))\s*)(.+)$")
+ITEM_START = re.compile(r"^\s*(?:[-*+•]\s+|(?:\d{1,3}[.)、]|[①②③④⑤⑥⑦⑧⑨⑩]|\(\d{1,3}\))\s*)(.+)$")
 BOLD_ITEM = re.compile(r"^\s*\*\*(.+?)\*\*\s*[:：]\s*(.+?)\s*$", re.DOTALL)
 
 
@@ -269,7 +269,8 @@ def classify_segment(text, args):
         category_confidence, motion_confidence = float(category_confidence), float(motion_confidence)
     except (TypeError, ValueError):
         category_confidence = motion_confidence = 0
-    if category_confidence >= 0.60 and result.get("category") in CATEGORIES:
+    if (not args.category and category_confidence >= 0.55
+            and result.get("category") in INGEST_PROFILES):
         category = result["category"]
     motion = args.motion_tier or ("M1" if category in IP_CATEGORIES else "M2")
     if not args.motion_tier and motion_confidence >= 0.60 and result.get("motion_tier") in {"M1", "M2", "M3", "M4"}:
@@ -317,7 +318,7 @@ let url = URL(fileURLWithPath: CommandLine.arguments[1])
 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { exit(2) }
 let request = VNRecognizeTextRequest()
 request.recognitionLevel = .accurate
-request.recognitionLanguages = ["zh-Hans", "en-US"]
+request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
 let handler = VNImageRequestHandler(cgImage: image, options: [:])
 try handler.perform([request])
 for observation in request.results ?? [] { if let candidate = observation.topCandidates(1).first { print(candidate.string) } }
@@ -346,6 +347,7 @@ def ingest(args, catalog, catalog_path, markdown_path):
     if args.id and len(segments) != 1:
         raise ValueError("--id requires a single ingest segment")
     created_items, duplicate_items, skipped_items, reserved = [], [], [], set()
+    forced_matches = []
     working = {"patterns": list(catalog["patterns"])}
     for segment in segments:
         classified = classify_segment(segment, args)
@@ -354,22 +356,24 @@ def ingest(args, catalog, catalog_path, markdown_path):
             continue
         category, motion, jev = classified
         prefix = "IP" if category in IP_CATEGORIES else "MP"
-        pattern_id = args.id or next_pattern_id(catalog, category, reserved)
-        if not pattern_id.startswith(prefix + "-"):
+        candidate_id = args.id or next_pattern_id(catalog, category, reserved)
+        if not candidate_id.startswith(prefix + "-"):
             raise ValueError(f"{category} requires an {prefix}- prefixed id")
-        if any(item["id"] == pattern_id for item in all_items(catalog)):
-            raise ValueError(f"catalog id already exists: {pattern_id}")
-        reserved.add(pattern_id)
-        item = make_pattern(segment, category, motion, pattern_id, args)
+        if any(item["id"] == candidate_id for item in all_items(catalog)):
+            raise ValueError(f"catalog id already exists: {candidate_id}")
+        item = make_pattern(segment, category, motion, candidate_id, args)
         found = [{"id": existing["id"], "name": existing["name"]}
                  for existing in working["patterns"] if duplicate({"patterns": [existing]}, item, "patterns")]
-        entry = {"id": item["id"], "name": item["name"], "category": category,
-                 "motion_tier": motion, "duplicate_matches": found, "jev": jev}
         if found and not args.force:
-            duplicate_items.append(entry)
+            duplicate_items.append({"id": found[0]["id"], "name": found[0]["name"],
+                                     "category": category, "motion_tier": motion,
+                                     "duplicate_matches": found, "jev": jev})
         else:
+            reserved.add(candidate_id)
             created_items.append(item)
             working["patterns"].append(item)
+            if found:
+                forced_matches = found
     if created_items and not args.dry_run:
         catalog["patterns"].extend(created_items)
         validate(catalog)
@@ -382,8 +386,8 @@ def ingest(args, catalog, catalog_path, markdown_path):
         result = {"pattern": item or {"id": dup["id"], "name": dup["name"], "category": dup["category"], "motion_tier": dup["motion_tier"]},
                   "classification": {"prefix": (item or dup)["id"].split("-", 1)[0], "category": (item or dup)["category"],
                                      "source": "override" if args.category else "automatic"},
-                  "duplicate_matches": (dup or {}).get("duplicate_matches", []),
-                  "duplicate_decision": "blocked" if dup else ("forced" if item and (item["id"] in reserved and any(duplicate({"patterns": [old]}, item, "patterns") for old in catalog["patterns"])) else "unique"),
+                  "duplicate_matches": (dup or {}).get("duplicate_matches", forced_matches),
+                  "duplicate_decision": "blocked" if dup else ("forced" if forced_matches else "unique"),
                   "dry_run": args.dry_run, "created": bool(item) and not args.dry_run,
                   "paths": {"catalog": str(catalog_path), "markdown": str(markdown_path)},
                   "actions": (["write_catalog", "render_markdown"] if item and not args.dry_run else [])}
