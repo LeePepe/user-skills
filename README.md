@@ -2,11 +2,11 @@
 
 面向 Claude Code、Codex 等 CLI agent 的公开通用 skills，可独立使用，不依赖特定项目。
 
-[`workflow-hub`](./skills/workflow-hub/SKILL.md) 是 1-Hub + 7-Ring 总工作流：
-`linear-board`（环 1 Idea 与状态看板）→ Phase 0 Co-Design → `bot-tl-orchestration`
-→ `goal-task` → PR Review/Merge → Product Delivery/Release → `retro-loop` +
-`story-craft`。它用 4-layer Product/Output Matrix 串起应用、共享底座、研发工作流
-和知识叙事，并把复盘结论回流到 TIA。
+[`workflow-hub`](./skills/workflow-hub/SKILL.md) 是 1-Hub + Open Capability Graph：
+当前挂载 `linear-board`、Phase 0 Co-Design、Autonomous Build, Review & Merge、
+Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点。节点按
+证据和状态任意直连，不要求固定顺序；它用 4-layer Product/Output Matrix 串起应用、
+共享底座、研发工作流和知识叙事，并把复盘结论回流到 TIA。
 
 自治调度采用 [`workflow-hub`](./skills/workflow-hub/SKILL.md) 的 Cron / Clockwork
 **Precheck-First, Wake-on-Actionable** 心跳：先做零 Token 预检，只有存在可执行
