@@ -1,11 +1,19 @@
+import contextlib
+import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
+
 SCRIPT = Path(__file__).with_name("design_catalog.py")
+SPEC = importlib.util.spec_from_file_location("design_catalog", SCRIPT)
+DESIGN_CATALOG = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(DESIGN_CATALOG)
 CATALOG = SCRIPT.parents[1] / "references" / "catalog.json"
 MARKDOWN = SCRIPT.parents[1] / "references" / "toolchain-20-matrix.md"
 TEMP_DIR_ROOT = SCRIPT.parents[3]
@@ -207,6 +215,66 @@ class IngestTests(unittest.TestCase):
             result = self.ingest("--text", text, "--dry-run")
             self.assertEqual(result.returncode, expected, result.stderr)
         self.assertEqual(self.snapshot(), before)
+
+    def test_mixed_and_all_duplicate_batch_codes(self):
+        existing = json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"][0]
+        mixed = self.ingest("--text", f"- {existing['source_prompt_zh']}\n- brand-new mixed batch", "--no-jev")
+        self.assertEqual(mixed.returncode, 0, mixed.stderr)
+        mixed_data = json.loads(mixed.stdout)
+        self.assertEqual(len(mixed_data["created_items"]), 1)
+        self.assertEqual(len(mixed_data["duplicate_items"]), 1)
+        self.assertEqual(mixed_data["duplicate_items"][0]["id"], existing["id"])
+        all_duplicate = self.ingest("--text", f"- {existing['source_prompt_zh']}\n- {existing['source_prompt_zh']}", "--no-jev")
+        self.assertEqual(all_duplicate.returncode, 2, all_duplicate.stderr)
+        self.assertEqual(len(json.loads(all_duplicate.stdout)["created_items"]), 0)
+
+    def test_image_cli_routing_and_input_validation(self):
+        args = DESIGN_CATALOG.parser().parse_args([
+            "ingest", "--image", "mock.png", "--no-jev", "--catalog", str(self.catalog),
+            "--markdown", str(self.markdown), "--dry-run"])
+        original = DESIGN_CATALOG.ocr_image
+        try:
+            DESIGN_CATALOG.ocr_image = lambda path: "OCR routed prompt"
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(DESIGN_CATALOG.command(args), 0)
+            self.assertIn("OCR routed prompt", output.getvalue())
+        finally:
+            DESIGN_CATALOG.ocr_image = original
+        self.assertEqual(self.ingest("--text", "text", "--image", "image.png").returncode, 2)
+        self.assertEqual(run("ingest").returncode, 2)
+
+    def test_split_and_no_split_batch_compact(self):
+        prompt = "Context before\n• first linked chart\n2、second filter\n③ third detail\n(4) fourth layout\n**Fifth**: fifth gesture\nContext after"
+        result = self.ingest("--text", prompt, "--no-jev", "--compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 5)
+        self.assertEqual(len(json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"]), 16)
+        single = self.ingest("--text", "- first\n- second", "--no-split", "--no-jev", "--dry-run")
+        self.assertEqual(single.returncode, 0, single.stderr)
+        self.assertEqual(json.loads(single.stdout)["pattern"]["source_prompt_zh"], "- first\n- second")
+
+    def test_mocked_jev_filter_category_and_motion(self):
+        args = types.SimpleNamespace(no_jev=False, jev_url="http://unused", category=None, motion_tier=None)
+        original = DESIGN_CATALOG.jev_result
+        try:
+            DESIGN_CATALOG.jev_result = lambda text, args: {
+                "noul": 0.9, "is_design_pattern": True, "category": "data-linkage",
+                "category_confidence": 0.9, "motion_tier": "M3", "motion_confidence": 0.9,
+            }
+            result = DESIGN_CATALOG.classify_segment("chart linkage", args)
+            self.assertEqual(result[:2], ("data-linkage", "M3"))
+            DESIGN_CATALOG.jev_result = lambda text, args: {"noul": 0.1, "is_design_pattern": True}
+            self.assertIsNone(DESIGN_CATALOG.classify_segment("prose", args))
+        finally:
+            DESIGN_CATALOG.jev_result = original
+
+    def test_image_ocr_injection_and_empty_error(self):
+        completed = type("Completed", (), {"stdout": "中文 heading\nEnglish prompt\n"})()
+        self.assertEqual(DESIGN_CATALOG.ocr_image("image.png", lambda *a, **k: completed),
+                         "中文 heading\nEnglish prompt")
+        empty = type("Completed", (), {"stdout": "  "})()
+        with self.assertRaises(ValueError):
+            DESIGN_CATALOG.ocr_image("image.png", lambda *a, **k: empty)
 
     def test_file_input_and_overrides(self):
         prompt = self.directory / "prompt.txt"

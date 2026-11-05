@@ -39,15 +39,26 @@ layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
 1. **Grok Bot, Cindy, and local CLI users:** when an external design,
    interaction, motion, or layout prompt should be normalized and archived,
    call `python3 skills/design-studio/scripts/design_catalog.py ingest --text "..."`.
-   Use `--file <UTF-8-path>` instead of `--text` for a file.
-2. Inspect the JSON proposal with `--dry-run`: ingestion classifies the prompt
-   into an IP/MP category, assigns the next numeric ID, and fills the source,
-   canonical prompt, state machine, web/mobile implementations, and token
-   guardrails using deterministic local templates (no network or translation).
-   Override `--id`, `--category`, `--platforms`, `--surface-modes`, or
-   `--motion-tier` when needed. Similar patterns block with exit code 2 and
-   matching IDs; use `--force` only for an intentional variant. Without
-   `--dry-run`, ingestion saves the catalog and re-renders the matrix.
+   Use `--file <UTF-8-path>` instead of `--text` for a file, or
+   `--image <path>` for text-only local macOS Vision OCR (Chinese/English;
+   no network or token-bearing OCR service). These inputs are mutually
+   exclusive. Markdown bullets,
+   numbered items (`1.`, `1、`, `①`, `(1)`), and `**title**: description`
+   paragraphs are split in source order; surrounding prose is context and is
+   excluded. Use `--no-split` to force one segment.
+2. Inspect the JSON proposal with `--dry-run`: ingestion classifies each
+   segment into an IP/MP category, assigns successive numeric IDs, and fills
+   the source, canonical prompt, state machine, web/mobile implementations,
+   and token guardrails using deterministic local templates. Jev is queried at
+   `http://127.0.0.1:19823/v1/systemone` by default; use `--jev-url` to
+   override or `--no-jev` for deterministic offline fallback. Jev noise and
+   malformed/unreachable responses never fail ingest. Override `--id`,
+   `--category`, `--platforms`, `--surface-modes`, or `--motion-tier` when
+   needed. Similar patterns block with exit code 2 and matching IDs; mixed
+   created/duplicate batches return 0, while an all-duplicate batch returns 2.
+   Use `--force` only for an intentional variant. `--compact` prints one line
+   per created or duplicate result. Without `--dry-run`, ingestion saves the
+   catalog and re-renders the matrix once.
    For manually authored entries or tools, retain `search`, `add-pattern`,
    and `add-tool`.
 3. Select motion with `recommend --platform <web|mobile> --surface-mode <mode>`.

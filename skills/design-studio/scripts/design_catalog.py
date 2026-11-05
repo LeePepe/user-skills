@@ -5,7 +5,10 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -208,63 +211,198 @@ def classify_prompt(text):
     return category if score(INGEST_PROFILES[category]) else "layout-craft"
 
 
-def ingest(args, catalog, catalog_path, markdown_path):
-    text = (args.text if args.text is not None else Path(args.file).read_text(encoding="utf-8")).strip()
-    if not text:
-        raise ValueError("input prompt must not be empty")
+ITEM_START = re.compile(r"^\s*(?:[-*+•]\s+|(?:\d{1,3}[.)、]|[①②③④⑤⑥⑦⑧⑨⑩]|\(\d{1,3}\))\s*)(.+)$")
+BOLD_ITEM = re.compile(r"^\s*\*\*(.+?)\*\*\s*[:：]\s*(.+?)\s*$", re.DOTALL)
+
+
+def split_segments(text):
+    """Split itemized prompts while dropping prose before and after the list."""
+    lines = text.splitlines()
+    segments = []
+    current = None
+    for line in lines:
+        match = ITEM_START.match(line)
+        bold = BOLD_ITEM.match(line)
+        if match:
+            if current:
+                segments.append(" ".join(current).strip())
+            current = [match.group(1).strip()]
+        elif bold:
+            if current:
+                segments.append(" ".join(current).strip())
+            current = [f"{bold.group(1).strip()}: {bold.group(2).strip()}"]
+        elif current and line[:1].isspace() and line.strip():
+            current.append(line.strip())
+    if current:
+        segments.append(" ".join(current).strip())
+    return [segment for segment in segments if segment]
+
+
+def jev_result(text, args):
+    if args.no_jev:
+        return {}
+    payload = json.dumps({"text": text, "task": "design_catalog_ingest"}).encode("utf-8")
+    request = urllib.request.Request(args.jev_url, data=payload,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            value = json.loads(response.read().decode("utf-8"))
+        if isinstance(value, dict):
+            value = value.get("result", value.get("data", value))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+        return {}
+
+
+def classify_segment(text, args):
+    result = jev_result(text, args)
+    noul = result.get("noul", 1.0)
+    try:
+        if float(noul) < 0.40 or result.get("is_design_pattern") is False:
+            return None
+    except (TypeError, ValueError):
+        pass
     category = args.category or classify_prompt(text)
+    category_confidence = result.get("category_confidence", result.get("categoryConfidence", 0))
+    motion_confidence = result.get("motion_confidence", result.get("motionConfidence", 0))
+    try:
+        category_confidence, motion_confidence = float(category_confidence), float(motion_confidence)
+    except (TypeError, ValueError):
+        category_confidence = motion_confidence = 0
+    if (not args.category and category_confidence >= 0.55
+            and result.get("category") in INGEST_PROFILES):
+        category = result["category"]
+    motion = args.motion_tier or ("M1" if category in IP_CATEGORIES else "M2")
+    if not args.motion_tier and motion_confidence >= 0.60 and result.get("motion_tier") in {"M1", "M2", "M3", "M4"}:
+        motion = result["motion_tier"]
+    return category, motion, result
+
+
+def next_pattern_id(catalog, category, reserved=None):
     prefix = "IP" if category in IP_CATEGORIES else "MP"
-    numbers = [
-        int(match.group(1))
-        for item in catalog["patterns"]
-        if (match := re.fullmatch(rf"{prefix}-(\d+)", item["id"]))
-    ]
-    pattern_id = args.id or f"{prefix}-{max(numbers, default=0) + 1:03d}"
-    if not pattern_id.startswith(prefix + "-"):
-        raise ValueError(f"{category} requires an {prefix}- prefixed id")
-    if any(item["id"] == pattern_id for item in all_items(catalog)):
-        raise ValueError(f"catalog id already exists: {pattern_id}")
+    reserved = reserved or set()
+    numbers = [int(match.group(1)) for item in catalog["patterns"]
+               if (match := re.fullmatch(rf"{prefix}-(\d+)", item["id"]))]
+    number = max(numbers, default=0) + 1
+    while f"{prefix}-{number:03d}" in reserved:
+        number += 1
+    return f"{prefix}-{number:03d}"
+
+
+def make_pattern(text, category, motion, pattern_id, args):
     _, state, web, mobile, guardrails = INGEST_PROFILES[category]
     normalized = " ".join(text.split())
-    item = {
+    prefix = pattern_id.split("-", 1)[0]
+    return {
         "id": pattern_id, "name": normalized[:80], "aliases": [], "category": category,
-        "platforms": args.platforms, "surface_modes": args.surface_modes,
-        "motion_tier": args.motion_tier or ("M1" if prefix == "IP" else "M2"),
-        "source_prompt_zh": text, "canonical_prompt": normalized,
-        "state_machine": state, "web_implementation": web, "mobile_implementation": mobile,
-        "token_guardrails": (
-            f"{guardrails} Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, "
-            ">=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion."
-        ),
+        "platforms": args.platforms, "surface_modes": args.surface_modes, "motion_tier": motion,
+        "source_prompt_zh": text, "canonical_prompt": normalized, "state_machine": state,
+        "web_implementation": web, "mobile_implementation": mobile,
+        "token_guardrails": (f"{guardrails} Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, "
+                              ">=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion."),
         "usage_count": 0, "rating": "unrated", "last_used_at": None, "usage_history": [],
     }
-    found = [
-        {"id": existing["id"], "name": existing["name"]}
-        for existing in catalog["patterns"]
-        if duplicate({"patterns": [existing]}, item, "patterns")
-    ]
-    blocked = bool(found) and not args.force
-    result = {
-        "pattern": item,
-        "classification": {"prefix": prefix, "category": category,
-                           "source": "override" if args.category else "automatic"},
-        "duplicate_matches": found,
-        "duplicate_decision": "blocked" if blocked else ("forced" if found else "unique"),
-        "dry_run": args.dry_run,
-        "created": False,
-        "paths": {"catalog": str(catalog_path), "markdown": str(markdown_path)},
-        "actions": [],
-    }
-    if not blocked:
-        catalog["patterns"].append(item)
+
+
+def compact_line(kind, item):
+    return f"{kind}: {item['id']} [{item['category']}/{item['motion_tier']}] {item['name']}"
+
+
+def ocr_image(path, runner=None):
+    """Extract Chinese/English text locally with macOS Vision; runner is injectable."""
+    runner = runner or subprocess.run
+    script = r'''import Foundation
+import Vision
+import ImageIO
+let url = URL(fileURLWithPath: CommandLine.arguments[1])
+guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { exit(2) }
+let request = VNRecognizeTextRequest()
+request.recognitionLevel = .accurate
+request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+let handler = VNImageRequestHandler(cgImage: image, options: [:])
+try handler.perform([request])
+for observation in request.results ?? [] { if let candidate = observation.topCandidates(1).first { print(candidate.string) } }
+'''
+    try:
+        completed = runner(["swift", "-e", script, str(path)], check=True,
+                           capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"OCR failed for image: {path}") from error
+    extracted = completed.stdout.strip()
+    if not extracted:
+        raise ValueError(f"OCR returned no text for image: {path}")
+    return extracted
+
+
+def ingest(args, catalog, catalog_path, markdown_path):
+    if args.text is not None:
+        text = args.text.strip()
+    elif args.file is not None:
+        text = Path(args.file).read_text(encoding="utf-8").strip()
+    else:
+        text = ocr_image(args.image).strip()
+    if not text:
+        raise ValueError("input prompt must not be empty")
+    segments = [text] if args.no_split else (split_segments(text) or [text])
+    if args.id and len(segments) != 1:
+        raise ValueError("--id requires a single ingest segment")
+    created_items, duplicate_items, skipped_items, reserved = [], [], [], set()
+    forced_matches = []
+    working = {"patterns": list(catalog["patterns"])}
+    for segment in segments:
+        classified = classify_segment(segment, args)
+        if classified is None:
+            skipped_items.append({"text": segment, "reason": "jev_noise"})
+            continue
+        category, motion, jev = classified
+        prefix = "IP" if category in IP_CATEGORIES else "MP"
+        candidate_id = args.id or next_pattern_id(catalog, category, reserved)
+        if not candidate_id.startswith(prefix + "-"):
+            raise ValueError(f"{category} requires an {prefix}- prefixed id")
+        if any(item["id"] == candidate_id for item in all_items(catalog)):
+            raise ValueError(f"catalog id already exists: {candidate_id}")
+        item = make_pattern(segment, category, motion, candidate_id, args)
+        found = [{"id": existing["id"], "name": existing["name"]}
+                 for existing in working["patterns"] if duplicate({"patterns": [existing]}, item, "patterns")]
+        if found and not args.force:
+            duplicate_items.append({"id": found[0]["id"], "name": found[0]["name"],
+                                     "category": category, "motion_tier": motion,
+                                     "duplicate_matches": found, "jev": jev})
+        else:
+            reserved.add(candidate_id)
+            created_items.append(item)
+            working["patterns"].append(item)
+            if found:
+                forced_matches = found
+    if created_items and not args.dry_run:
+        catalog["patterns"].extend(created_items)
         validate(catalog)
-        if not args.dry_run:
-            save(catalog_path, catalog)
-            markdown_path.write_text(render(catalog), encoding="utf-8")
-            result["created"] = True
-            result["actions"] = ["write_catalog", "render_markdown"]
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 2 if blocked else 0
+        save(catalog_path, catalog)
+        markdown_path.write_text(render(catalog), encoding="utf-8")
+    single = len(segments) == 1 and not skipped_items
+    if single:
+        item = created_items[0] if created_items else None
+        dup = duplicate_items[0] if duplicate_items else None
+        result = {"pattern": item or {"id": dup["id"], "name": dup["name"], "category": dup["category"], "motion_tier": dup["motion_tier"]},
+                  "classification": {"prefix": (item or dup)["id"].split("-", 1)[0], "category": (item or dup)["category"],
+                                     "source": "override" if args.category else "automatic"},
+                  "duplicate_matches": (dup or {}).get("duplicate_matches", forced_matches),
+                  "duplicate_decision": "blocked" if dup else ("forced" if forced_matches else "unique"),
+                  "dry_run": args.dry_run, "created": bool(item) and not args.dry_run,
+                  "paths": {"catalog": str(catalog_path), "markdown": str(markdown_path)},
+                  "actions": (["write_catalog", "render_markdown"] if item and not args.dry_run else [])}
+    else:
+        result = {"created_items": [{"id": item["id"], "name": item["name"], "category": item["category"], "motion_tier": item["motion_tier"]} for item in created_items],
+                  "duplicate_items": duplicate_items, "skipped_items": skipped_items, "dry_run": args.dry_run,
+                  "paths": {"catalog": str(catalog_path), "markdown": str(markdown_path)},
+                  "actions": (["write_catalog", "render_markdown"] if created_items and not args.dry_run else [])}
+    if args.compact:
+        for item in result.get("created_items", []): print(compact_line("created", item))
+        for item in result.get("duplicate_items", []): print(compact_line("duplicate", item))
+        if single: print(compact_line("created" if created_items else "duplicate", item or dup))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 2 if duplicate_items and not created_items else 0
 
 
 def render(catalog):
@@ -431,6 +569,7 @@ def parser():
     source = intake.add_mutually_exclusive_group(required=True)
     source.add_argument("--text")
     source.add_argument("--file")
+    source.add_argument("--image")
     intake.add_argument("--id", type=pattern_id)
     intake.add_argument("--category", choices=sorted(INGEST_PROFILES))
     intake.add_argument("--platforms", type=lambda value: csv_choices(value, PLATFORMS),
@@ -440,6 +579,10 @@ def parser():
     intake.add_argument("--motion-tier", choices=["M1", "M2", "M3", "M4"])
     intake.add_argument("--force", action="store_true")
     intake.add_argument("--dry-run", action="store_true")
+    intake.add_argument("--no-split", action="store_true")
+    intake.add_argument("--jev-url", default="http://127.0.0.1:19823/v1/systemone")
+    intake.add_argument("--no-jev", action="store_true")
+    intake.add_argument("--compact", action="store_true")
     search = sub.add_parser("search", parents=[common])
     search.add_argument("--query", required=True)
     search.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
