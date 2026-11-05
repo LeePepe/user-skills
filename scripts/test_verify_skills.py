@@ -22,6 +22,30 @@ SKILLS_DIR: Path = REPO_ROOT / "skills"
 FENCED_CODE_RE: re.Pattern[str] = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE: re.Pattern[str] = re.compile(r"`[^`\n]+`")
 MARKDOWN_LINK_RE: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
+    "skills/workflow-hub/SKILL.md": 12 * 1024,
+    "skills/goal-task/SKILL.md": 36 * 1024,
+    "skills/bot-tl-orchestration/SKILL.md": 24 * 1024,
+    "skills/linear-board/SKILL.md": 16 * 1024,
+    "skills/retro-loop/SKILL.md": 16 * 1024,
+    "skills/story-craft/SKILL.md": 16 * 1024,
+    "skills/my-designer/SKILL.md": 28 * 1024,
+    "skills/goal-task/references/bots-and-agents.md": 38 * 1024,
+    "skills/goal-task/references/ledger.md": 18 * 1024,
+    "skills/goal-task/references/runtime-profiles.yaml": 34 * 1024,
+    "skills/goal-task/references/playbook.md": 58 * 1024,
+}
+BANNED_SURFACE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("../goal-target-task/", ("skills/",)),
+    ("执行设计总审门禁", ("skills/",)),
+    ("Bot → `艺术家`", ("skills/",)),
+    ("遇到产品 UI/UX 设计 Goal 必须转交", ("skills/",)),
+    ("gemini-3.8-flash", ("skills/",)),
+    ("composer-2.5", ("skills/",)),
+    ("kimi-k3-high", ("skills/",)),
+    ("[总 45 kg]", ("skills/goal-task/SKILL.md", "skills/goal-task/references/bots-and-agents.md")),
+    ("+ 添加动作", ("skills/goal-task/SKILL.md", "skills/goal-task/references/bots-and-agents.md")),
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +89,21 @@ def iter_markdown_links(markdown_text: str) -> Sequence[str]:
     without_fences = FENCED_CODE_RE.sub("", markdown_text)
     without_inline = INLINE_CODE_RE.sub("", without_fences)
     return tuple(match.group(1).strip() for match in MARKDOWN_LINK_RE.finditer(without_inline))
+
+
+def markdown_anchors(path: Path) -> set[str]:
+    """Return GitHub-style heading anchors and explicit HTML ids."""
+    text = path.read_text(encoding="utf-8")
+    anchors = set(re.findall(r"<a\s+id=[\"']([^\"']+)[\"']", text, re.IGNORECASE))
+    counts: dict[str, int] = {}
+    for heading in re.findall(r"^#{1,6}\s+(.+?)\s*$", text, re.MULTILINE):
+        slug = re.sub(r"<[^>]+>", "", heading).lower()
+        slug = re.sub(r"[^\w\s-]", "", slug, flags=re.UNICODE)
+        slug = re.sub(r"\s+", "-", slug).strip("-")
+        count = counts.get(slug, 0)
+        counts[slug] = count + 1
+        anchors.add(slug if count == 0 else f"{slug}-{count}")
+    return anchors
 
 
 def tracked_and_candidate_files() -> tuple[Path, ...]:
@@ -234,6 +273,33 @@ class VerifySkillsTests(unittest.TestCase):
                         resolved.exists(),
                         f"Broken relative link {raw_target!r} in {md_path.relative_to(REPO_ROOT)}",
                     )
+                    anchor = target.split("#", 1)[1] if "#" in target else ""
+                    if anchor and resolved.suffix.lower() == ".md":
+                        self.assertIn(
+                            anchor,
+                            markdown_anchors(resolved),
+                            f"Broken heading anchor {raw_target!r} in {md_path.relative_to(REPO_ROOT)}",
+                        )
+
+    def test_model_surface_budget_and_topology(self) -> None:
+        for rel_path, budget in MODEL_SURFACE_BYTE_BUDGETS.items():
+            path = REPO_ROOT / rel_path
+            self.assertTrue(path.is_file(), f"Missing model-surface path: {rel_path}")
+            self.assertLessEqual(path.stat().st_size, budget, f"{rel_path} exceeds {budget} bytes")
+
+        for phrase, scopes in BANNED_SURFACE_PHRASES:
+            for scope in scopes:
+                paths = sorted(SKILLS_DIR.rglob("*.md")) if scope == "skills/" else [REPO_ROOT / scope]
+                for path in paths:
+                    self.assertNotIn(phrase, path.read_text(encoding="utf-8"), f"{phrase!r} in {path}")
+
+        path_re = re.compile(r"`(skills/[a-z0-9_-]+/(?:scripts|references|assets)/[A-Za-z0-9_./-]+)`")
+        for rel_path in ("skills/goal-task/SKILL.md", "skills/bot-tl-orchestration/SKILL.md"):
+            text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+            for match in path_re.findall(text):
+                self.assertNotIn("*", match)
+                self.assertNotIn("<", match)
+                self.assertTrue((REPO_ROOT / match).is_file(), f"Missing referenced path {match}")
 
     def test_goal_task_is_the_only_contract_skill(self) -> None:
         self.assertFalse(
@@ -513,13 +579,11 @@ class VerifySkillsTests(unittest.TestCase):
         agents_text = (
             SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
+        craft_text = (
+            SKILLS_DIR / "my-designer" / "references" / "five-layer-craft.md"
+        ).read_text(encoding="utf-8")
 
         for text in (skill_text, agents_text):
-            self.assertIn("3-tier text", text)
-            self.assertIn("CJK ≤4", text)
-            self.assertIn("EN ≤6–8", text)
-            self.assertIn("ViewThatFits", text)
-            self.assertIn("scenario → component & motion mapping", text)
             self.assertIn("shared-design-system", text)
             self.assertIn("upstream", text)
             self.assertIn("zero numeric", text.lower())
@@ -529,6 +593,9 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("sips -g pixelWidth", skill_text)
         self.assertIn("Package.resolved", agents_text)
         self.assertIn(">15", skill_text)
+        for token in ("3-tier text", "CJK ≤4", "EN ≤6–8", "ViewThatFits",
+                      "scenario → component & motion mapping"):
+            self.assertIn(token, craft_text)
 
     def test_spec_first_obsolete_test_manifest_and_visual_harmony_gate_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
@@ -546,19 +613,13 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Planner Reviewer", text)
             self.assertIn("Code Writer", text)
             self.assertIn("Code/UI Reviewer", text)
-            self.assertIn("Anti-Gaming Visual Harmony Gate", text)
-            self.assertIn(".system(size: <11)", text)
-            self.assertIn("minimumScaleFactor < 0.85", text)
-            self.assertIn("1.8:1", text)
-            self.assertIn("4–6pt", text)
-            self.assertIn(">=6pt", text)
-            self.assertIn(">=4pt", text)
-            self.assertIn("0–1pt", text)
-            self.assertIn("34–36pt", text)
-            self.assertIn(">=44×44pt", text)
-            self.assertIn(".contentShape(Rectangle())", text)
-            self.assertIn("Card + Divider", text)
-            self.assertIn(".center", text)
+            self.assertIn("shared-design-system", text)
+        craft_text = (SKILLS_DIR / "my-designer" / "references" / "five-layer-craft.md").read_text(encoding="utf-8")
+        for token in ("Anti-Gaming Visual Harmony Gate", ".system(size: <11)",
+                      "minimumScaleFactor < 0.85", "1.8:1", "4–6pt", ">=6pt",
+                      ">=4pt", "0–1pt", "34–36pt", ">=44×44pt",
+                      ".contentShape(Rectangle())", "Card + Divider", ".center"):
+            self.assertIn(token, craft_text)
 
     def test_goal_supervisor_scan_check_pins_and_telemetry(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
