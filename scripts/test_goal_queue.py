@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -827,11 +829,211 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             wave = json.loads(
                 self.run_queue(handoff_dir, "next-wave", "--max-workers", "2", "--mark-in-progress").stdout
             )
-            self.assertEqual(len(wave["wave"]), 2)
+            self.assertEqual(len(wave["wave"]), 3)
+            self.assertEqual(wave["normal_active_count"], 2)
+            self.assertEqual(wave["human_active_count"], 1)
+            self.assertTrue(wave["human_slot_used"])
             self.run_queue(handoff_dir, "init-goal", "--intent", "evolve", "--budget-sec", "1")
             self.run_queue(handoff_dir, "budget", "--elapsed-sec", "1")
             stopped = json.loads(self.run_queue(handoff_dir, "next-wave").stdout)
             self.assertTrue(stopped["budget_exhausted"])
+
+    def test_steer_handback_and_herdr_effect(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "steer"
+            self.enqueue(handoff_dir, ["TK1"], paths="src/a")
+            self.run_queue(handoff_dir, "next-wave", "--mark-in-progress")
+            steered = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "steer",
+                    "--task-id", "TK1",
+                    "--trigger-id", "tr-1",
+                    "--message", "update the active task",
+                ).stdout
+            )
+            self.assertEqual(steered["disposition"], "steered")
+            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+                effect = db.execute(
+                    "SELECT kind, key, value_json FROM effects WHERE kind='herdr_deliver'"
+                ).fetchone()
+                self.assertIsNotNone(effect)
+                self.assertEqual(effect[1], "TK1:tr-1")
+                self.assertIn("update the active task", effect[2])
+
+            self.run_queue(
+                handoff_dir,
+                "set-status",
+                "--task-id", "TK1",
+                "--status", "handback",
+                "--trigger-id", "tr-2",
+            )
+            rejected = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "steer",
+                    "--paths", "src/a",
+                    "--trigger-id", "tr-2",
+                    "--message", "do not re-steer",
+                ).stdout
+            )
+            self.assertEqual(rejected["disposition"], "needs_tl_eval")
+
+            self.run_queue(
+                handoff_dir,
+                "set-status",
+                "--task-id", "TK1",
+                "--status", "handback",
+                "--trigger-id", "tr-3",
+                "--keep-working",
+            )
+            kept = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "steer",
+                    "--task-id", "TK1",
+                    "--trigger-id", "tr-4",
+                    "--message", "continue",
+                ).stdout
+            )
+            self.assertEqual(kept["disposition"], "steered")
+
+            missing_selector = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "steer",
+                    "--message", "needs owner evaluation",
+                ).stdout
+            )
+            self.assertEqual(missing_selector["disposition"], "needs_tl_eval")
+
+    def test_state_sqlite_tables_effect_coalescing_and_later(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "state"
+            self.enqueue(handoff_dir, ["TK1"])
+            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+                tables = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertTrue({"goal_state", "tasks", "events", "effects"} <= tables)
+                first = db.execute(
+                    "SELECT generation FROM effects WHERE kind='linear_sync'"
+                ).fetchone()[0]
+                db.execute(
+                    "UPDATE effects SET status='done' WHERE kind='linear_sync'"
+                )
+                db.commit()
+                db.execute(
+                    "INSERT INTO effects(kind,key,value_json,seq,due_epoch_ms,since) "
+                    "VALUES ('herdr_deliver','same','{}',99,0,'0')"
+                )
+                db.commit()
+                db.execute(
+                    "INSERT INTO effects(kind,key,value_json,seq,due_epoch_ms,since) "
+                    "VALUES ('telemetry_notify','retry','{}',100,0,'0')"
+                )
+                db.commit()
+                self.assertGreaterEqual(first, 1)
+
+            state_module_path = REPO_ROOT / "skills" / "goal-task" / "scripts" / "state_store.py"
+            spec = importlib.util.spec_from_file_location("state_store_test", state_module_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            connection = module.connect(handoff_dir)
+            try:
+                with module.transaction(connection):
+                    module.enqueue_effect(connection, "herdr_deliver", "same", {"v": 2}, 10)
+                    row = connection.execute(
+                        "SELECT generation, status FROM effects WHERE kind='herdr_deliver' AND key='same'"
+                    ).fetchone()
+                    self.assertEqual(row["generation"], 2)
+                    self.assertEqual(row["status"], "pending")
+                    module.record_effect_result(
+                        connection, "herdr_deliver", "same", error=module.Later(20)
+                    )
+                row = connection.execute(
+                    "SELECT attempts, due_epoch_ms FROM effects WHERE kind='herdr_deliver' AND key='same'"
+                ).fetchone()
+                self.assertEqual(row["attempts"], 0)
+                self.assertEqual(row["due_epoch_ms"], 20)
+            finally:
+                connection.close()
+
+    def test_experiment_keep_discard_and_budget_exhaustion(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "experiment"
+            self.enqueue(handoff_dir, ["TK1"])
+            self.run_queue(handoff_dir, "init-goal", "--intent", "evolve")
+            self.run_queue(
+                handoff_dir,
+                "experiment", "--task-id", "TK1", "--decision", "discard",
+                "--baseline-metric", "1", "--observed-metric", "0",
+            )
+            self.run_queue(
+                handoff_dir,
+                "experiment", "--task-id", "TK1", "--decision", "keep",
+                "--baseline-metric", "1", "--observed-metric", "1",
+            )
+            self.run_queue(
+                handoff_dir,
+                "experiment", "--task-id", "TK1", "--decision", "discard",
+                "--baseline-metric", "1", "--observed-metric", "0",
+            )
+            self.run_queue(
+                handoff_dir,
+                "experiment", "--task-id", "TK1", "--decision", "discard",
+                "--baseline-metric", "1", "--observed-metric", "0",
+            )
+            stopped = json.loads(self.run_queue(handoff_dir, "next-wave").stdout)
+            self.assertTrue(stopped["budget_exhausted"])
+            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM experiments").fetchone()[0], 4)
+
+    def test_receive_routes_and_bootstrap_fixture_defects(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "receive"
+            self.enqueue(handoff_dir, ["TK1"], paths="src/a")
+            self.run_queue(handoff_dir, "next-wave", "--mark-in-progress")
+
+            def receive(event_id: str, *, paths: list[str] | None = None, grey: bool = False) -> dict[str, Any]:
+                event = {
+                    "id": event_id, "source": "owner", "actor": "lee", "thread": "t",
+                    "human": True, "addressed": "", "at": "2026-11-05T00:00:00Z",
+                    "text": event_id, "meta": {"paths": paths or [], "ambiguous_grey_zone": grey},
+                }
+                path = handoff_dir / f"{event_id}.json"
+                path.write_text(json.dumps(event), encoding="utf-8")
+                return json.loads(self.run_queue(handoff_dir, "receive", "--file", str(path)).stdout)
+
+            self.assertEqual(receive("steer-1", paths=["src/a"])["disposition"], "steered")
+            self.assertEqual(receive("grey-1", grey=True)["disposition"], "needs_owner_decision")
+            self.assertEqual(receive("enqueue-1")["disposition"], "enqueued")
+            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+                disposition = db.execute(
+                    "SELECT disposition_json FROM inbox_triggers WHERE trigger_id='grey-1'"
+                ).fetchone()[0]
+                self.assertIn("needs_owner_decision", disposition)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT COUNT(*) FROM events WHERE evt='NEED_OWNER_DECISION'"
+                    ).fetchone()[0],
+                    1,
+                )
+
+            fixture = REPO_ROOT / "skills" / "goal-task" / "tests" / "fixtures" / "bootstrap_ledger_target"
+            spec = importlib.util.spec_from_file_location("ledger_fixture", fixture / "ledger_app.py")
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            rows = module.read_transactions(fixture / "sample_txns.csv")
+            self.assertEqual(module.month_total(rows, 2026, 2), 41)
+            self.assertEqual(module.category_total(rows, "travel"), 25)
+            with self.assertRaises(module.AmbiguousDatePolicyError):
+                module.read_transactions(fixture / "sample_txns.csv", strict_audit=True)
 
 
 if __name__ == "__main__":

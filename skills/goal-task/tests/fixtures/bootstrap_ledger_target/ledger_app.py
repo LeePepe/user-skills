@@ -66,7 +66,7 @@ def month_total(rows: list[dict[str, object]], year: int, month: int) -> Decimal
 def category_total(rows: list[dict[str, object]], category: str) -> Decimal:
     return sum(
         (
-            abs(row["amount"])
+            row["amount"]
             for row in rows
             if row["category"] == category and row["kind"] in {"expense", "refund"}
         ),

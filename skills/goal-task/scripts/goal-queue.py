@@ -92,8 +92,9 @@ VALID_STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 ACTIVE_STATUSES: frozenset[str] = frozenset(
-    {"in_progress", "in_review", "changes_requested", "handback"}
+    {"in_progress", "in_review", "changes_requested"}
 )
+LIVE_STEER_STATUSES: frozenset[str] = ACTIVE_STATUSES
 PENDING_STATUSES: frozenset[str] = frozenset({"planned", "ready"})
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "cancelled"})
 EVENT_ID_RE: re.Pattern[str] = re.compile(r"\bid=E(\d+)\b")
@@ -936,16 +937,19 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                 if priority == "human":
                     if human_active >= 1 or normal_active + human_active >= max_workers + 1:
                         continue
-                    if normal_active >= max_workers:
-                        human_slot_used = True
-                    else:
-                        normal_active += 1
                     human_active += 1
+                    if normal_active + human_active > max_workers:
+                        human_slot_used = True
                     selected_wave.append(task)
                     continue
             selected_wave.append(task)
             if max_workers is not None:
                 normal_active += 1
+
+        if max_workers is not None:
+            human_slot_used = (
+                human_active > 0 and normal_active + human_active > max_workers
+            )
 
         if args.mark_in_progress and selected_wave:
             for task in selected_wave:
@@ -1192,6 +1196,48 @@ def _task_matches_paths(task: Mapping[str, Any], paths: Sequence[str]) -> bool:
     return all(_path_is_owned(path, owned) for path in paths)
 
 
+def _update_inbox_disposition(
+    handoff_dir: Path,
+    trigger_id: str,
+    disposition: Mapping[str, Any],
+) -> None:
+    connection = connect_state(handoff_dir)
+    try:
+        with connection:
+            connection.execute(
+                "UPDATE inbox_triggers SET disposition_json = ? WHERE trigger_id = ?",
+                (json.dumps(dict(disposition), ensure_ascii=False, sort_keys=True), trigger_id),
+            )
+    finally:
+        connection.close()
+
+
+def _enqueue_herdr_delivery(
+    handoff_dir: Path,
+    task: Mapping[str, Any],
+    trigger_id: str,
+    message: str,
+    action: str,
+) -> None:
+    connection = connect_state(handoff_dir)
+    try:
+        with connection:
+            enqueue_effect(
+                connection,
+                "herdr_deliver",
+                f"{task['task_id']}:{trigger_id}",
+                {
+                    "task_id": str(task["task_id"]),
+                    "trigger_id": trigger_id,
+                    "owner": task.get("owner"),
+                    "message": message,
+                    "action": action,
+                },
+            )
+    finally:
+        connection.close()
+
+
 def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
     with _queue_lock(handoff_dir):
@@ -1251,6 +1297,13 @@ def cmd_steer(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
     trigger_id = str(args.trigger_id or f"manual-{int(time.time() * 1000)}")
     requested_paths = _normalize_list(args.paths)
+    if not args.task_id and not requested_paths:
+        return {
+            "ok": True,
+            "trigger_id": trigger_id,
+            "disposition": "needs_tl_eval",
+            "target_task_id": None,
+        }
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         target = None
@@ -1280,6 +1333,7 @@ def cmd_steer(args: argparse.Namespace) -> dict[str, Any]:
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
         sync_to_sqlite(handoff_dir, queue_data, [event])
+        _enqueue_herdr_delivery(handoff_dir, target, trigger_id, args.message, action)
         if args.deliver_herdr and target.get("owner"):
             subprocess.run(
                 ["herdr", "agent", "prompt", str(target["owner"]), f"[STEER trigger={trigger_id}] {args.message}"],
@@ -1361,11 +1415,14 @@ def cmd_experiment(args: argparse.Namespace) -> dict[str, Any]:
         budget["consecutive_discards"] = 0 if args.decision == "keep" else int(budget.get("consecutive_discards") or 0) + 1
         _save_queue(handoff_dir, queue_data)
         connection = connect_state(handoff_dir)
-        with connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO experiments(exp_id, task_id, decision, baseline_metric, observed_metric, evidence_ref, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                tuple(experiment.values()),
-            )
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO experiments(exp_id, task_id, decision, baseline_metric, observed_metric, evidence_ref, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    tuple(experiment.values()),
+                )
+        finally:
+            connection.close()
         sync_to_sqlite(handoff_dir, queue_data)
     return {"ok": True, "experiment": experiment}
 
@@ -1392,18 +1449,28 @@ def cmd_receive(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"Inbox actor is not allowed: {namespaced}")
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
     connection = connect_state(handoff_dir)
-    with connection:
-        connection.execute(
-            "INSERT OR REPLACE INTO inbox_triggers(trigger_id, source, actor, thread, human, addressed, at, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(event["id"]), source, namespaced, str(event["thread"]), int(bool(event["human"])),
-             str(event["addressed"]), str(event["at"]), str(event["text"])),
-        )
+    try:
+        with connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO inbox_triggers(trigger_id, source, actor, thread, human, addressed, at, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(event["id"]), source, namespaced, str(event["thread"]), int(bool(event["human"])),
+                 str(event["addressed"]), str(event["at"]), str(event["text"])),
+            )
+    finally:
+        connection.close()
     meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
     if meta.get("ambiguous_grey_zone"):
         result = {"ok": True, "trigger_id": str(event["id"]), "disposition": "needs_owner_decision"}
         with _queue_lock(handoff_dir):
             queue_data = _load_queue(handoff_dir)
-            _sync_ledger(handoff_dir, queue_data["tasks"], [{"evt": "NEED_OWNER_DECISION", "ref": str(event["id"]), "note": str(event["text"])}])
+            event_entry = {
+                "evt": "NEED_OWNER_DECISION",
+                "ref": str(event["id"]),
+                "note": str(event["text"]),
+            }
+            _sync_ledger(handoff_dir, queue_data["tasks"], [event_entry])
+            sync_to_sqlite(handoff_dir, queue_data, [event_entry])
+            _update_inbox_disposition(handoff_dir, str(event["id"]), result)
         return result
     steer_args = argparse.Namespace(
         handoff_dir=str(handoff_dir),
@@ -1417,6 +1484,7 @@ def cmd_receive(args: argparse.Namespace) -> dict[str, Any]:
     if meta.get("paths"):
         routed = cmd_steer(steer_args)
         if routed.get("disposition") == "steered":
+            _update_inbox_disposition(handoff_dir, str(event["id"]), routed)
             return routed
     enqueue_args = argparse.Namespace(
         handoff_dir=str(handoff_dir),
@@ -1434,7 +1502,14 @@ def cmd_receive(args: argparse.Namespace) -> dict[str, Any]:
         priority="normal", feedback_manifest="", replacement_of="",
     )
     result = cmd_enqueue(enqueue_args)
-    return {"ok": True, "trigger_id": str(event["id"]), "disposition": "enqueued", "enqueued_ids": result["enqueued_ids"]}
+    disposition = {
+        "ok": True,
+        "trigger_id": str(event["id"]),
+        "disposition": "enqueued",
+        "enqueued_ids": result["enqueued_ids"],
+    }
+    _update_inbox_disposition(handoff_dir, str(event["id"]), disposition)
+    return disposition
 
 
 def build_parser() -> argparse.ArgumentParser:

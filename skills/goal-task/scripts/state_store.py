@@ -113,7 +113,7 @@ def _initialize(connection: sqlite3.Connection) -> None:
             pr_ref TEXT NOT NULL DEFAULT '—',
             value_json TEXT NOT NULL,
             is_active INTEGER GENERATED ALWAYS AS (
-                CASE WHEN status IN ('in_progress','in_review','changes_requested','handback') THEN 1 ELSE 0 END
+                CASE WHEN status IN ('in_progress','in_review','changes_requested') THEN 1 ELSE 0 END
             ) VIRTUAL,
             is_pending INTEGER GENERATED ALWAYS AS (
                 CASE WHEN status IN ('planned','ready') THEN 1 ELSE 0 END
@@ -122,7 +122,7 @@ def _initialize(connection: sqlite3.Connection) -> None:
         ) STRICT;
         CREATE INDEX IF NOT EXISTS idx_tasks_active
             ON tasks(status)
-            WHERE status IN ('in_progress','in_review','changes_requested','handback');
+            WHERE status IN ('in_progress','in_review','changes_requested');
         CREATE INDEX IF NOT EXISTS idx_tasks_pending
             ON tasks(status)
             WHERE status IN ('planned','ready');
