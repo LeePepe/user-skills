@@ -29,7 +29,7 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
-    "skills/my-designer/SKILL.md": 28 * 1024,
+    "skills/my-designer/SKILL.md": 12 * 1024,
     "skills/goal-task/references/bots-and-agents.md": 38 * 1024,
     "skills/goal-task/references/ledger.md": 18 * 1024,
     "skills/goal-task/references/runtime-profiles.yaml": 34 * 1024,
