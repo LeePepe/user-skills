@@ -47,9 +47,10 @@ Do not write demo code to explore directions. Translate the diagnosis into a con
    - Single primary focal point + 1 primary CTA per viewport.
    - All 4 states (`populated`, `loading` skeleton, `empty` with 1 CTA, `error` with inline retry).
    - Micro-feedback `120–150ms` (`scale(0.98)` press); spatial transitions with spring (`response: 0.32, dampingFraction: 0.82`); `Reduce Motion` crossfade fallback.
-   - Use the M1–M4 expressiveness ladder from `motion-studio`: M1/M2 for
+   - Use the M1–M4 expressiveness ladder from `design-studio`: M1/M2 for
      tactile Operate/Read polish, M3 for Persuade/Experience timelines or 3D,
-     and M4 for Remotion covers. Look up `MP-001`–`MP-006` by platform:
+     and M4 for Remotion covers. Look up `IP-*` interaction patterns and
+     `MP-001`–`MP-006` motion patterns by platform:
      Web uses Motion/Anime.js/CSS/SVG; Mobile-Native uses StrataMotion and
      SwiftUI/UIKit primitives; Shared preserves the physical state machine and
      token timing. Keep all choices subject to alignment, contrast, and

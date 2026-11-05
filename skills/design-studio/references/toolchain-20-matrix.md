@@ -1,6 +1,6 @@
-# Motion Studio toolchain matrix
+# Design Studio Reference Catalog & Toolchain Matrix
 
-This matrix is generated from `catalog.json`; use `motion_catalog.py` to search,
+This matrix is generated from `catalog.json`; use `design_catalog.py` to search,
 extend, rate, and re-render the catalog.
 
 ## M1–M4 Expressiveness Decision Table
@@ -45,7 +45,7 @@ extend, rate, and re-render the catalog.
 | T-019 | OBS Studio | asset-export | web, mobile, shared | Video/Offline | M4 | human-gui-only |
 | T-020 | LosslessCut | asset-export | web, mobile, shared | Video/Offline | M4 | human-gui-only |
 
-## Interactive Motion Pattern Catalog
+## Interactive Pattern Catalog
 
 | ID | Pattern | Category | Platforms | Tier | State machine |
 |---|---|---|---|---|---|
@@ -55,6 +55,11 @@ extend, rate, and re-render the catalog.
 | MP-004 | 滑动工具栏 (Magnification Scrubbing Toolbar) | spatial-navigation | web, mobile, shared | M2 | `idle -> hover/drag -> focus_magnify -> neighbor_reflow -> release -> commit -> settle` |
 | MP-005 | 消息气泡反馈 (Long-Press Bubble Reaction) | micro-feedback-social | web, mobile, shared | M2 | `idle -> long_press -> lifted_dimmed -> reaction_menu -> select -> arc_commit/cancel -> settle` |
 | MP-006 | 文件拖入文件夹 (Spring-Loaded Folder Drop) | drag-drop-choreography | web, mobile, shared | M2 | `idle -> drag -> near_target -> folder_open -> hover -> commit/cancel -> settle` |
+| IP-001 | 图表联动筛选 (Chart Cross-Filtering) | data-linkage | web, mobile, shared | M1 | `all_items -> select_category(X) -> filtered_list_and_kpi(X) -> tap_same_category(X) -> all_items` |
+| IP-002 | 组合筛选与排序 (Combined Filter & Orthogonal Sort) | filter-sort-recovery | web, mobile, shared | M1 | `idle -> apply_filter(category, keyword) -> toggle_sort(asc|desc) -> reorder_subset_preserving_filters` |
+| IP-003 | 列表联动详情 (In-Place Master-Detail Linkage) | master-detail-flow | web, mobile, shared | M1 | `list_ready -> select_row(id) -> detail_updated_in_place(id) [master_order_and_scroll_preserved]` |
+| IP-004 | 无结果与局部恢复 (Scoped Empty State & Context-Preserving Recovery) | filter-sort-recovery | web, mobile, shared | M1 | `filtered(category) -> keyword_no_match -> contextual_empty_state -> clear_keyword_only -> restored(category)` |
+| IP-005 | 状态联动汇总 (Live Status-to-Summary Aggregation) | data-linkage | web, mobile, shared | M1 | `item_status_change(old -> new) -> recompute_summary_counts_and_semantic_tokens -> UI_sync` |
 
 ### Pattern details
 
@@ -100,6 +105,41 @@ extend, rate, and re-render the catalog.
 - Mobile: SwiftUI DragGesture/drop delegate, matchedGeometryEffect tuck, numericText count, and SensoryFeedback.
 - Guardrails: Visible target and hit parity; count changes only on commit; 44x44pt targets; Reduce Motion crossfade.
 
+#### IP-001 · 图表联动筛选 (Chart Cross-Filtering)
+- Prompt: 点图表里的分类，下方列表和统计数字跟着变，再点一下全部恢复。
+- Canonical: Click a chart category/segment to highlight it and cross-filter the list and summary metrics below; click the same category again to reset to all items.
+- Web: Derive list and KPIs from a shared activeCategory state; highlight active Recharts/Basalt segment, dim unselected segments, and toggle off on repeat click.
+- Mobile: SwiftUI Charts selection binding filtering the shared query state with .contentTransition(.numericText()) on summary readouts and tap-to-deselect.
+- Guardrails: tabular-nums / monospacedDigit for changing metrics; preserve active search keyword and sort order; >=4.5:1 active/inactive contrast.
+
+#### IP-002 · 组合筛选与排序 (Combined Filter & Orthogonal Sort)
+- Prompt: 选好类别搜关键词，还能按数量升降序排，而且排序不会清空之前的筛选条件。
+- Canonical: Compose category filter, keyword search, and ascending/descending sort orthogonally; toggling sort order reorders the filtered subset without clearing active filters.
+- Web: Pure derived selector: filter(items, category, keyword) then sort(field, dir); keep filter and sort controls in independent state slices.
+- Mobile: SwiftUIsearchable + category filter tokens + Menu/Picker sort descriptor operating on the filtered collection without resetting filter state.
+- Guardrails: Sorting never clears filter/search state; provide clear active indicators and reset options.
+
+#### IP-003 · 列表联动详情 (In-Place Master-Detail Linkage)
+- Prompt: 点左侧记录，右侧详情直接更新，不用跳页面，列表顺序也不变。
+- Canonical: Select a record in the master list to update the detail pane in-place without page navigation, preserving the master list's sort order, filters, and scroll position.
+- Web: Two-column master-detail layout with selectedId state; render detail panel in-place and keep master list key/scroll stable.
+- Mobile: NavigationSplitView on iPad/macOS or in-place detail card/sheet on compact screens, preserving list scroll and ordering.
+- Guardrails: CLS = 0 on selection; master list order and scroll offset remain unchanged; clear selected row state.
+
+#### IP-004 · 无结果与局部恢复 (Scoped Empty State & Context-Preserving Recovery)
+- Prompt: 搜不到时显示空状态，清空关键词后数据恢复，其他筛选条件还得保留。
+- Canonical: Show a contextual empty state when keyword search yields zero matches; clearing the keyword restores matching data while keeping other active filters intact.
+- Web: Empty state names the active query/filter and offers a 'Clear keyword' action that resets only searchQuery while preserving category and sort state.
+- Mobile: ContentUnavailableView.search(text:) or custom Strata empty state whose reset action clears search text without wiping selected category pills.
+- Guardrails: Empty state explains why and provides a 1-click partial recovery CTA; non-keyword filters remain preserved.
+
+#### IP-005 · 状态联动汇总 (Live Status-to-Summary Aggregation)
+- Prompt: 卡片状态一变，下方的分类数量和颜色也得跟着同步更新。
+- Canonical: When an item's status changes, synchronously recompute summary category counts, ratios, and semantic status colors from the same single source of truth.
+- Web: Derive summary badges, counts, and semantic color tokens directly from the items array rather than separate static counters.
+- Mobile: Computed properties on @Observable / SwiftData model collections driving summary badges and semantic tokens with .numericText() transition.
+- Guardrails: Single source of truth for item status and summary counters; semantic tokens calibrated for both Light and Dark mode.
+
 ## Usage & Preference Ledger
 
 | ID | Usage count | Rating | Last used |
@@ -130,11 +170,16 @@ extend, rate, and re-render the catalog.
 | MP-004 | 0 | unrated | — |
 | MP-005 | 0 | unrated | — |
 | MP-006 | 0 | unrated | — |
+| IP-001 | 0 | unrated | — |
+| IP-002 | 0 | unrated | — |
+| IP-003 | 0 | unrated | — |
+| IP-004 | 0 | unrated | — |
+| IP-005 | 0 | unrated | — |
 
 ## Code / CLI Recipes
 
 ```bash
-python3 skills/motion-studio/scripts/motion_catalog.py search --query "滑动确认"
-python3 skills/motion-studio/scripts/motion_catalog.py recommend --platform web --surface-mode Operate
-python3 skills/motion-studio/scripts/motion_catalog.py record-use --id MP-002 --context "checkout" --rating liked
+python3 skills/design-studio/scripts/design_catalog.py search --query "滑动确认"
+python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface-mode Operate
+python3 skills/design-studio/scripts/design_catalog.py record-use --id MP-002 --context "checkout" --rating liked
 ```
