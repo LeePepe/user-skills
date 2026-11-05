@@ -5,7 +5,9 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   herdr-dispatch.sh --name <agent-name> --kind <kind> --cwd <worktree-or-dir> --prompt <text> \
-    [--pane <source-pane-id>] [--direction right|down] [--wait] [--timeout <ms>] [-- <agent-args>...]
+    [--pane <source-pane-id>] [--direction right|down] [--role <role>] \
+    [--exclude-vendor <vendor>] [--gateway-mode auto|magpie|direct] \
+    [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
 }
 
@@ -17,6 +19,9 @@ SRC_PANE="${HERDR_PANE_ID:-}"
 DIRECTION="right"
 WAIT_FLAG=0
 TIMEOUT_MS=""
+ROLE=""
+EXCLUDE_VENDOR=""
+GATEWAY_MODE="${HERDR_GATEWAY_MODE:-auto}"
 AGENT_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +65,21 @@ while [[ $# -gt 0 ]]; do
       TIMEOUT_MS="$2"
       shift 2
       ;;
+    --role)
+      [[ $# -ge 2 ]] || { echo "Error: --role requires a value" >&2; exit 2; }
+      ROLE="$2"
+      shift 2
+      ;;
+    --exclude-vendor)
+      [[ $# -ge 2 ]] || { echo "Error: --exclude-vendor requires a value" >&2; exit 2; }
+      EXCLUDE_VENDOR="$2"
+      shift 2
+      ;;
+    --gateway-mode)
+      [[ $# -ge 2 ]] || { echo "Error: --gateway-mode requires a value" >&2; exit 2; }
+      GATEWAY_MODE="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -76,6 +96,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$GATEWAY_MODE" != "auto" && "$GATEWAY_MODE" != "magpie" && "$GATEWAY_MODE" != "direct" ]]; then
+  echo "Error: --gateway-mode must be 'auto', 'magpie', or 'direct' (got '$GATEWAY_MODE')" >&2
+  exit 2
+fi
 
 if [[ "${HERDR_ENV:-}" != "1" ]]; then
   echo "Error: HERDR_ENV=1 is required to run herdr-dispatch.sh" >&2
@@ -114,6 +139,118 @@ if [[ ${#AGENT_ARGS[@]} -gt 0 ]]; then
       AGENT_ARGS=("${AGENT_ARGS[@]:1}")
       ;;
   esac
+fi
+
+ROLE_ROUTE=0
+LOGICAL_GROUP=""
+REQUESTED_MODEL=""
+MODEL_INDEX=-1
+MODEL_PREFIX=""
+GATEWAY_ONLINE=0
+for ((i = 0; i < ${#AGENT_ARGS[@]}; i++)); do
+  case "${AGENT_ARGS[$i]}" in
+    -m|--model)
+      if [[ $((i + 1)) -lt ${#AGENT_ARGS[@]} ]]; then
+        REQUESTED_MODEL="${AGENT_ARGS[$((i + 1))]}"
+        MODEL_INDEX=$((i + 1))
+      fi
+      ;;
+    --model=*)
+      REQUESTED_MODEL="${AGENT_ARGS[$i]#--model=}"
+      MODEL_INDEX=$i
+      MODEL_PREFIX="--model="
+      ;;
+  esac
+done
+
+case "$ROLE" in
+  "") ;;
+  team_lead|arbitration|planner|research_arbiter) LOGICAL_GROUP="group/steering" ;;
+  planner_reviewer|code_reviewer|research_primary|research_co)
+    LOGICAL_GROUP="group/reviewing"
+    [[ "$EXCLUDE_VENDOR" == "google" ]] && LOGICAL_GROUP="group/reviewing-openai"
+    ;;
+  writer|designer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
+  writer_escalated) LOGICAL_GROUP="group/coding-escalated" ;;
+  *) echo "Error: unsupported --role '$ROLE'" >&2; exit 2 ;;
+esac
+
+if [[ "$ROLE" == "writer_escalated" || "$REQUESTED_MODEL" == "group/coding-escalated" || "$REQUESTED_MODEL" == "magpie/group/coding-escalated" ]]; then
+  if [[ "$NAME" =~ -r1$ ]]; then
+    echo "Error: writer_escalated is strictly reserved for V3 Round 2+ fix escalation and cannot be dispatched on Round 1 ($NAME)" >&2
+    exit 2
+  fi
+fi
+
+if [[ "$REQUESTED_MODEL" == group/* || "$REQUESTED_MODEL" == magpie/group/* ]]; then
+  LOGICAL_GROUP="${REQUESTED_MODEL#magpie/}"
+fi
+
+if [[ -n "$LOGICAL_GROUP" ]]; then
+  ROLE_ROUTE=1
+  if [[ "$GATEWAY_MODE" == "magpie" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "1" ]]; then
+    GATEWAY_ONLINE=1
+  elif [[ "$GATEWAY_MODE" == "direct" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "0" ]]; then
+    GATEWAY_ONLINE=0
+  elif curl -fsS --max-time 0.2 "${HERDR_MAGPIE_HEALTH_URL:-http://127.0.0.1:3425/api/hello}" >/dev/null 2>&1; then
+    GATEWAY_ONLINE=1
+  else
+    GATEWAY_ONLINE=0
+  fi
+
+  FALLBACK_MODEL=""
+  case "$LOGICAL_GROUP" in
+    group/steering)
+      case "$KIND" in claude) FALLBACK_MODEL="opus" ;; copilot) FALLBACK_MODEL="gemini-4-argon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
+    group/reviewing-openai)
+      case "$KIND" in copilot) FALLBACK_MODEL="gpt-5.6-luna" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
+    group/reviewing)
+      case "$KIND" in copilot) FALLBACK_MODEL="gemini-4-argon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; cursor) FALLBACK_MODEL="kimi" ;; esac ;;
+    group/coding)
+      if [[ "$ROLE" == "pr_monitor" ]]; then
+        [[ "$KIND" == "copilot" ]] && FALLBACK_MODEL="mai-code-2-flash"
+      else
+        case "$KIND" in copilot|codex) FALLBACK_MODEL="gpt-5.6-luna" ;; esac
+      fi
+      ;;
+    group/coding-escalated)
+      [[ "$KIND" == "codex" ]] && FALLBACK_MODEL="gpt-6.1-sol"
+      ;;
+  esac
+  [[ -n "$FALLBACK_MODEL" ]] || FALLBACK_MODEL="$REQUESTED_MODEL"
+
+  if [[ "$MODEL_INDEX" -ge 0 ]]; then
+    if [[ "$REQUESTED_MODEL" == group/* || "$REQUESTED_MODEL" == magpie/group/* ]]; then
+      if [[ "$MODEL_PREFIX" == "--model=" ]]; then
+        AGENT_ARGS[$MODEL_INDEX]="--model=$([[ "$GATEWAY_ONLINE" -eq 1 ]] && printf '%s' "$LOGICAL_GROUP" || printf '%s' "$FALLBACK_MODEL")"
+      else
+        AGENT_ARGS[$MODEL_INDEX]="$([[ "$GATEWAY_ONLINE" -eq 1 ]] && printf '%s' "$LOGICAL_GROUP" || printf '%s' "$FALLBACK_MODEL")"
+      fi
+    fi
+  elif [[ "$GATEWAY_ONLINE" -eq 1 ]]; then
+    case "$KIND" in
+      codex) AGENT_ARGS+=(-c 'model_provider="magpie"' -m "$LOGICAL_GROUP") ;;
+      claude) AGENT_ARGS+=(--model "$LOGICAL_GROUP") ;;
+      copilot)
+        if [[ -f "$HOME/.copilot/providers.json" || "${HERDR_COPILOT_MAGPIE_BYOK:-0}" == "1" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "1" ]]; then
+          AGENT_ARGS+=(--model "magpie/$LOGICAL_GROUP")
+        else
+          AGENT_ARGS+=(--model "$FALLBACK_MODEL")
+          GATEWAY_ONLINE=0
+        fi
+        ;;
+    esac
+  else
+    case "$KIND" in copilot|codex|claude|cursor) AGENT_ARGS+=(--model "$FALLBACK_MODEL") ;; esac
+  fi
+  RESOLVED_MODEL="$FALLBACK_MODEL"
+  if [[ "$MODEL_INDEX" -ge 0 && "$REQUESTED_MODEL" != group/* && "$REQUESTED_MODEL" != magpie/group/* ]]; then
+    RESOLVED_MODEL="$REQUESTED_MODEL"
+  fi
+  [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" != "copilot" ]] && RESOLVED_MODEL="$LOGICAL_GROUP"
+  [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" == "copilot" && "${AGENT_ARGS[*]}" == *"magpie/$LOGICAL_GROUP"* ]] && RESOLVED_MODEL="magpie/$LOGICAL_GROUP"
+else
+  RESOLVED_MODEL="$REQUESTED_MODEL"
 fi
 
 # Pre-register folder trust for CWD & shared roots so headless panes never block on startup folder-trust dialogs.
@@ -475,7 +612,14 @@ elif [[ "$WAIT_FLAG" -eq 0 ]]; then
   fi
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" <<'PY'
 import json, sys
-print(json.dumps({"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}))
+payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
+if sys.argv[3] == "1" or sys.argv[7] == "1":
+    payload.update({
+        "logical_group": sys.argv[4],
+        "resolved_model": sys.argv[5],
+        "gateway_mode": "magpie" if sys.argv[6] == "1" else "direct_fallback",
+    })
+print(json.dumps(payload))
 PY

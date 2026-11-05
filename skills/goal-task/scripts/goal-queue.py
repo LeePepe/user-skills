@@ -135,6 +135,12 @@ def _maybe_notify(handoff_dir: Path) -> None:
 def _linear_key_configured() -> bool:
     if os.environ.get("LINEAR_API_KEY", "").strip():
         return True
+    for path in (
+        Path(os.environ.get("GTT_LINEAR_CREDENTIALS_FILE", "~/.config/linear/credentials.json")).expanduser(),
+        Path(os.environ.get("CLIP_HOME", "~/.clip")).expanduser() / "linear" / "credentials.json",
+    ):
+        if path.is_file() and not path.is_symlink() and not path.parent.is_symlink():
+            return True
     key_pattern = re.compile(r"^\s*(?:export\s+)?LINEAR_API_KEY\s*=\s*['\"]?([^'\"#\s]+)", re.MULTILINE)
     for path in (Path("~/.zshenv").expanduser(), Path("~/.zshrc").expanduser()):
         try:
@@ -161,16 +167,20 @@ def _is_isolated_handoff_dir(handoff_dir: Path) -> bool:
 
 
 def _maybe_linear_sync(handoff_dir: Path) -> None:
-    if os.environ.get("GTT_LINEAR_SYNC") == "0":
+    mode = os.environ.get("GTT_LINEAR_MODE", "").strip().lower()
+    if mode == "off" or os.environ.get("GTT_LINEAR_SYNC") == "0":
         return
-    if _is_isolated_handoff_dir(handoff_dir) and os.environ.get("GTT_LINEAR_SYNC") != "1":
+    if _is_isolated_handoff_dir(handoff_dir) and os.environ.get("GTT_LINEAR_SYNC") != "1" and mode not in {"observe", "auto"}:
         return
-    if not _linear_key_configured():
+    if mode != "observe" and not _linear_key_configured():
         return
     syncer = Path(__file__).with_name("linear-sync.py")
+    command = [sys.executable, str(syncer), "sync-ledger", "--handoff-dir", str(handoff_dir), "--quiet"]
+    if mode in {"observe", "auto"}:
+        command.extend(["--mode", mode])
     try:
         subprocess.Popen(
-            [sys.executable, str(syncer), "sync-ledger", "--handoff-dir", str(handoff_dir), "--quiet"],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1035,6 +1045,13 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         staged_tasks = deepcopy(tasks)
         target_task = staged_tasks[target_index]
         original_target = tasks[target_index]
+        if getattr(args, "run_metrics_json", ""):
+            metrics = parse_json_argument(args.run_metrics_json, "--run-metrics-json")
+            if isinstance(metrics, dict):
+                metrics = [metrics]
+            if not isinstance(metrics, list):
+                raise ValueError("--run-metrics-json must be an object or array")
+            target_task["run_metrics"] = [*(target_task.get("run_metrics") or []), *metrics]
         completion_evidence: Any | None = None
         if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
             dependencies = [
@@ -1604,6 +1621,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--authorization",
         default=None,
         help="Explicit authorization reference for an intentional tracked cancellation.",
+    )
+    status_parser.add_argument(
+        "--run-metrics-json",
+        default="",
+        help="Run metrics JSON object/list to attach to the Task.",
     )
     status_parser.add_argument("--trigger-id", default=None)
     status_parser.add_argument("--keep-working", action="store_true")

@@ -74,3 +74,7 @@ Only offer to create an ADR when all three are true:
 3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
 
 If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](references/ADR-FORMAT.md).
+
+When a term or model choice qualifies for an ADR, link the decision from the
+Phase 0 [Proposal -> Checkpoint -> Pop](../codebase-design/references/PHASE0-PROPOSAL-CHECKPOINT.md)
+record and use `spec_gate.py` for the version/spec_sha lock.

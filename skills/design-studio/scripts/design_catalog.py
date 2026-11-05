@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage the motion-studio tool and interaction-pattern catalog."""
+"""Manage the design-studio tool and interaction-pattern catalog."""
 
 import argparse
 import datetime as dt
@@ -17,6 +17,7 @@ CATEGORIES = {
     "code-to-video", "core-ui-motion", "3d-physics", "audio-beat",
     "asset-export", "gesture-physical", "confirmation-safety",
     "spatial-navigation", "micro-feedback-social", "drag-drop-choreography",
+    "data-linkage", "filter-sort-recovery", "master-detail-flow", "layout-craft",
 }
 
 
@@ -63,7 +64,7 @@ def searchable(item):
 def validate(catalog):
     if not isinstance(catalog, dict) or catalog.get("schema_version") != 1:
         raise ValueError("catalog must be an object with schema_version 1")
-    for collection, prefix in (("tools", "T-"), ("patterns", "MP-")):
+    for collection, prefix in (("tools", "T-"), ("patterns", ("MP-", "IP-"))):
         if not isinstance(catalog.get(collection), list):
             raise ValueError(f"{collection} must be a list")
         for item in catalog[collection]:
@@ -72,7 +73,8 @@ def validate(catalog):
             missing = required - item.keys()
             if missing:
                 raise ValueError(f"{item.get('id', '?')} missing {sorted(missing)}")
-            if not str(item["id"]).startswith(prefix):
+            valid_prefix = prefix if isinstance(prefix, tuple) else (prefix,)
+            if not str(item["id"]).startswith(valid_prefix):
                 raise ValueError(f"invalid {collection} id: {item['id']}")
             if not set(item["platforms"]) <= PLATFORMS:
                 raise ValueError(f"invalid platforms for {item['id']}")
@@ -130,9 +132,9 @@ def duplicate(catalog, candidate, collection, threshold=0.55):
 
 def render(catalog):
     lines = [
-        "# Motion Studio toolchain matrix",
+        "# Design Studio Reference Catalog & Toolchain Matrix",
         "",
-        "This matrix is generated from `catalog.json`; use `motion_catalog.py` to search,",
+        "This matrix is generated from `catalog.json`; use `design_catalog.py` to search,",
         "extend, rate, and re-render the catalog.",
         "",
         "## M1–M4 Expressiveness Decision Table",
@@ -162,7 +164,7 @@ def render(catalog):
             id=item["id"], name=item["name"], category=item["category"],
             platforms=", ".join(item["platforms"]), surface_modes=", ".join(item["surface_modes"]),
             tier=item["motion_tier"], automation=item["automation_mode"]))
-    lines += ["", "## Interactive Motion Pattern Catalog", "",
+    lines += ["", "## Interactive Pattern Catalog", "",
               "| ID | Pattern | Category | Platforms | Tier | State machine |",
               "|---|---|---|---|---|---|"]
     for item in catalog["patterns"]:
@@ -189,9 +191,9 @@ def render(catalog):
     lines += [
         "", "## Code / CLI Recipes", "",
         "```bash",
-        'python3 skills/motion-studio/scripts/motion_catalog.py search --query "滑动确认"',
-        "python3 skills/motion-studio/scripts/motion_catalog.py recommend --platform web --surface-mode Operate",
-        'python3 skills/motion-studio/scripts/motion_catalog.py record-use --id MP-002 --context "checkout" --rating liked',
+        'python3 skills/design-studio/scripts/design_catalog.py search --query "滑动确认"',
+        "python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface-mode Operate",
+        'python3 skills/design-studio/scripts/design_catalog.py record-use --id MP-002 --context "checkout" --rating liked',
         "```", "",
     ]
     return "\n".join(lines)

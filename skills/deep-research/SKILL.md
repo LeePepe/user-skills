@@ -104,6 +104,17 @@ user-invocable: true
 
 ## Phase 3 — 交叉验证 + 圆桌
 
+### Phase 1.5 — R09 reranking and Phase 2 Step 0 — R06 citation check
+
+After fan-out, `jev_research_helper.py` can run R09 with one `Noul` and one
+four-level `Score` per candidate. The deterministic composite score is
+`0.65 * p_direct + 0.35 * (s_tier / 3.0)`, with stable input order on ties.
+T1-T6 classify candidates as primary, expanded, supporting, buffered, or
+noise. Before adversarial review, R06 performs Layer 0 quote normalization and
+matching, then Jev `Choice(relation)` plus `Noul(addresses_claim,
+quant_and_scope_intact)`. FABRICATED_QUOTE and CONTRADICTED are hard stops;
+SOURCE_UNAVAILABLE is not treated as false and caps confidence at MEDIUM.
+
 所有核查完成后,主 agent 综合:
 
 1. **交叉验证**
