@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import importlib.util
 import os
 import sqlite3
@@ -853,7 +854,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 ).stdout
             )
             self.assertEqual(steered["disposition"], "steered")
-            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+            with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
                 effect = db.execute(
                     "SELECT kind, key, value_json FROM effects WHERE kind='herdr_deliver'"
                 ).fetchone()
@@ -911,7 +912,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
             handoff_dir = Path(tmp_dir) / "state"
             self.enqueue(handoff_dir, ["TK1"])
-            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+            with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
                 tables = {
                     row[0]
                     for row in db.execute(
@@ -990,7 +991,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             )
             stopped = json.loads(self.run_queue(handoff_dir, "next-wave").stdout)
             self.assertTrue(stopped["budget_exhausted"])
-            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+            with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM experiments").fetchone()[0], 4)
 
     def test_receive_routes_and_bootstrap_fixture_defects(self) -> None:
@@ -1012,7 +1013,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(receive("steer-1", paths=["src/a"])["disposition"], "steered")
             self.assertEqual(receive("grey-1", grey=True)["disposition"], "needs_owner_decision")
             self.assertEqual(receive("enqueue-1")["disposition"], "enqueued")
-            with sqlite3.connect(handoff_dir / "state.sqlite") as db:
+            with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
                 disposition = db.execute(
                     "SELECT disposition_json FROM inbox_triggers WHERE trigger_id='grey-1'"
                 ).fetchone()[0]
