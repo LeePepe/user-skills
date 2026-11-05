@@ -14,6 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "skills/goal-task/scripts/linear-sync.py"
 QUEUE_SCRIPT = ROOT / "skills/goal-task/scripts/goal-queue.py"
+TELEMETRY_SCRIPT = ROOT / "skills/goal-task/scripts/gtt-telemetry-export.py"
 
 
 def load_module(path: Path, name: str):
@@ -26,6 +27,7 @@ def load_module(path: Path, name: str):
 
 linear_sync = load_module(SCRIPT, "linear_sync_test")
 goal_queue = load_module(QUEUE_SCRIPT, "goal_queue_test")
+telemetry_export = load_module(TELEMETRY_SCRIPT, "telemetry_export_test")
 
 
 class FakeTransport:
@@ -342,6 +344,116 @@ class LinearSyncTests(unittest.TestCase):
         self.assertEqual(parser.parse_args(["ensure-goal", "--handoff-dir", str(self.work)]).subcommand, "ensure-goal")
         self.assertEqual(parser.parse_args(["ensure-goal", "--handoff-dir", str(self.work), "--project", "Bing"]).project, "Bing")
         self.assertTrue(parser.parse_args(["sync-ledger", "--handoff-dir", str(self.work), "--quiet"]).quiet)
+
+    def test_mode_off_skips_without_client_or_network(self) -> None:
+        args = linear_sync.build_parser().parse_args(
+            ["idea", "--title", "offline", "--mode", "off"]
+        )
+        with mock.patch.object(linear_sync, "_client_or_fail") as client:
+            payload = linear_sync.cmd_idea(args)
+        client.assert_not_called()
+        self.assertEqual(payload["decision"], "off (skipped)")
+        self.assertEqual(payload["planned_mutations"], [])
+
+    def test_observe_plans_mutations_from_offline_snapshot(self) -> None:
+        snapshot = json.dumps({
+            "team": {
+                "id": "team-id",
+                "states": {"nodes": [{"id": "triage", "name": "Triage"}]},
+                "labels": {"nodes": []},
+                "projects": {"nodes": []},
+            },
+            "issue": {},
+        })
+        args = linear_sync.build_parser().parse_args([
+            "idea", "--title", "observed", "--mode", "observe",
+            "--offline-snapshot", snapshot,
+        ])
+        payload = linear_sync.cmd_idea(args)
+        self.assertEqual(payload["decision"], "observe (would accept)")
+        self.assertTrue(payload["would_accept"])
+        self.assertEqual(payload["planned_mutations"][0]["operation"], "CreateIssue")
+
+    def test_auto_sync_skips_update_when_issue_is_already_current(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        team = client.team("TIA")
+        first = linear_sync._sync_issue(client, client.issue("TIA-19"), team, self.work)
+        transport.calls.clear()
+        linear_sync._sync_issue(client, first, team, self.work)
+        self.assertEqual(
+            [call for call in transport.calls if "UpdateIssue" in call[0]],
+            [],
+        )
+
+    def test_idea_dedup_key_is_embedded_in_description(self) -> None:
+        args = linear_sync.build_parser().parse_args([
+            "idea", "--title", "retro", "--mode", "observe",
+            "--dedup-key", "retro-2026-11-05",
+        ])
+        payload = linear_sync.cmd_idea(args)
+        description = payload["planned_mutations"][0]["variables"]["input"]["description"]
+        self.assertIn("<!-- GTT-LINEAR-DEDUP:retro-2026-11-05 -->", description)
+        self.assertEqual(
+            linear_sync.resolve_mode(None, subcommand="idea", source="retro-loop"),
+            ("observe", None),
+        )
+
+    def test_execution_cost_attribution_uses_lower_bound_and_section(self) -> None:
+        queue = {
+            "tasks": [{
+                "task_id": "TK1",
+                "title": "Build it",
+                "status": "done",
+                "run_metrics": [
+                    {"input_tokens": 1000, "output_tokens": 500, "duration_sec": 12, "cost_usd": 0.10},
+                    {"duration_sec": 8},
+                ],
+            }]
+        }
+        (self.work / "queue.json").write_text(json.dumps(queue), encoding="utf-8")
+        text = linear_sync._description_block(
+            "demo",
+            (self.work / "ledger.md").read_text(encoding="utf-8"),
+            [{"task_id": "TK1", "title": "Build it", "status": "done", "pr": ""}],
+            self.work,
+        )
+        self.assertIn("## Execution & Cost Attribution", text)
+        self.assertIn("≥", text)
+        self.assertIn("TK1", text)
+
+    def test_auth_set_show_remove_enforces_private_file_mode(self) -> None:
+        credentials = self.work / "config" / "linear" / "credentials.json"
+        with mock.patch.dict(os.environ, {"GTT_LINEAR_CREDENTIALS_FILE": str(credentials)}, clear=False), \
+             mock.patch("sys.stdin", mock.Mock(isatty=lambda: False, readline=lambda: "lin_api_secret\n")):
+            self.assertEqual(linear_sync.main(["auth", "set", "--key-stdin"]), 0)
+            self.assertEqual(credentials.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(credentials.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(linear_sync.main(["auth", "show"]), 0)
+            self.assertEqual(linear_sync.main(["auth", "remove"]), 0)
+        self.assertFalse(credentials.exists())
+
+    def test_parse_tasks_dynamic_headers_and_issue_re(self) -> None:
+        ledger = (
+            "- **Linear Issue**: TIA-85 (https://linear.app/tianpei/issue/TIA-85)\n\n"
+            "| Task | 写者 | 状态 | PR/head | 验收证据／回执 |\n"
+            "|---|---|---|---|---|\n"
+            "| TK9 | writer | in_review | PR #9 | receipts/tk9.md |\n"
+        )
+        tasks = linear_sync._parse_tasks(ledger, None)
+        self.assertEqual(tasks[0]["task_id"], "TK9")
+        self.assertEqual(tasks[0]["status"], "in_review")
+        self.assertEqual(linear_sync._bound_issue(ledger), "TIA-85")
+
+    def test_telemetry_export_collects_contract_and_observe_records(self) -> None:
+        receipts = self.work / "receipts"
+        receipts.mkdir()
+        (receipts / "contract-telemetry.json").write_text("{}", encoding="utf-8")
+        (receipts / "linear-observe.jsonl").write_text("{}\n", encoding="utf-8")
+        records = list(telemetry_export._goal_files(self.work.parent))
+        record_types = {record_type for path, record_type, goal in records if goal == self.work.name}
+        self.assertIn("contract_telemetry", record_types)
+        self.assertIn("linear_observe", record_types)
 
 
 if __name__ == "__main__":
