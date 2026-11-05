@@ -1,11 +1,11 @@
 ---
 name: workflow-hub
-description: 总工作流 7 环中枢：把 Linear Idea、Phase 0 共创、Goal/Task 开发、PR 交付、产品发布、双路复盘与叙事产出串成可验收闭环。
+description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创、Goal/Task 开发、PR 交付、产品发布、双路复盘与叙事产出连接成可验收闭环。
 ---
 # Workflow Hub
 
-`workflow-hub` 是总工作流中枢，不替代任何环的专项合同。它负责选择入口、
-传递冻结的接口与证据，并把每一环的结果送到下一环；专项规则仍以各环 skill
+`workflow-hub` 是总工作流中枢，不替代任何能力节点的专项合同。它负责选择入口、
+传递冻结的接口与证据，并把节点结果送给下一个需要它的节点；专项规则仍以各 skill
 为唯一事实源。
 
 ## 如何按需让 CLI / Agent 加载总 Workflow（On-Demand Invocation）
@@ -18,28 +18,27 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 各 CLI 的 skill 目录保持同步：`~/.agents/skills`、`~/.copilot/skills`、
 `~/.codex/skills`、`~/.claude/skills`。
 
-## 7-Ring lifecycle
+## 开放式能力节点与按需直连图谱（Open Capability Graph）
 
-1. **环 1 — `linear-board`**：把想法放入 TIA `Triage`/`Backlog`，维护
-   `1 Goal = 1 Issue` 的全局状态看板、Task checklist、阻塞评论与
-   `Promote Idea -> Goal`。
-2. **环 2 — Phase 0 Co-Design**：用 `deep-research`、`domain-modeling`、
-   `codebase-design`、`my-designer`、`visual-design-modernization`、
-   `design-studio` 与 `archify` 收敛事实、领域、架构和视觉决策，冻结
-   `spec.md`/`design.md`。
-3. **环 3 — `bot-tl-orchestration`**：Resident Bot（`Hotty`、`Joy`、
-   `Atlas`、`flower`、`艺术家`、`ana`、`笔者`）与 Herdr Goal TL 之间只传
-   Goal 生命周期、队列、解卡和收尾状态。
-4. **环 4 — `goal-task`**：执行纯开发切片，遵守
-   `1 Task = 1 Writer = 1 Worktree = 1 PR`、R1–R11 和 V1–V5。
-5. **环 5 — PR Review/Merge**：用 `code-review`、`pr-auto-review`、
-   `my-pr-supervisor`、`auto-review-merge` 与 `pr_monitor` 完成审查、Job-level
-   Fail-Fast 盯梢和合法自动合并。
-6. **环 6 — Product Delivery/Release**：按 Layer 1/2 产品与共享底座交付，
-   使用 `sync_contract.py`、`design_contract.py`、`release_sync.py readback`、
-   TestFlight 与 FlightBook 五面读回。
-7. **环 7 — `retro-loop` + `story-craft`**：将项目回路 A、工程回路 B、三道
-   物理锁和脱敏叙事产出回流环 1，形成下一轮 Idea 或 Goal。
+图谱不规定固定数量或串行顺序；当前挂载的能力节点包括：
+
+- **Idea & Goal State** — `linear-board`：TIA `Triage`/`Backlog`、`1 Goal = 1 Issue`、
+  Task checklist 与 `Promote Idea -> Goal`。
+- **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、
+  `my-designer`、`visual-design-modernization`、`design-studio`：收敛事实、领域、
+  架构与视觉决策，冻结 `spec.md`/`design.md`。
+- **Autonomous Build, Review & Merge** — `bot-tl-orchestration`、`goal-task`、
+  `code-review`、`auto-review-merge` 与 `pr_monitor`：执行 `1 Task = 1 Writer =
+  1 Worktree = 1 PR`，完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
+- **Product Delivery & Release** — 产品／共享底座交付及真实发布读回。
+- **Learning & Narrative** — `retro-loop` 与 `story-craft`：把项目／工程证据和脱敏
+  叙事回流为下一轮 Idea 或 Goal。
+
+节点可以按证据和状态任意直连，例如 `linear-board -> domain-modeling -> goal-task`、
+`goal-task -> code-review -> auto-review-merge`，或
+`goal-task -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类
+标准合同：冻结决策使用 `spec.md`/`design.md`，执行状态使用 `ledger.md`，交接证据使用
+`receipts/*-rN.md`，Goal／Task 绑定使用 Linear `TIA-xx`。
 
 ## 自治脉搏：Cron / Clockwork 定时调度（Precheck-First, Wake-on-Actionable）
 
@@ -57,11 +56,11 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
    **不唤醒任何 LLM / Bot**。
 3. **Step 3 — 精准唤醒与环路派发（Targeted Wake）**：仅当 `pending > 0` 时，
    通过 `wake-pr-sentry-webhook.sh` 或 `herdr agent prompt` 唤醒对应常驻 Bot /
-   Sticky TL，进入对应工作流环。
+   Sticky TL，进入对应工作流节点。
 
-### 三大定时回路与 7 环映射表
+### 定时回路与能力图谱映射
 
-| 定时回路 | 驱动环 | 触发与动作 |
+| 定时回路 | 驱动节点 | 触发与动作 |
 |---|---|---|
 | PR 自动审查与盯梢 | 环 5 | `local.pr-auto-review` 与 `local.my-pr-supervisor-precheck` 扫描 GHE / GitHub / ADO PR；未审 head SHA、CI 失败、评论或冲突时唤醒审查或 Sticky TL。 |
 | 多 Goal 租约与阻塞巡检 | 环 3 & 环 4 | `goal-supervisor.py scan --write-alerts` 扫描活动 `ledger.md` 与 Herdr 窗格；发现 `BLOCKED_AGENT` / `ZOMBIE_LEASE` / `ORPHAN_TL_WAIT` 时写告警并唤醒协调者。 |

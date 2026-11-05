@@ -339,17 +339,27 @@ class VerifySkillsTests(unittest.TestCase):
                 f"Missing required heading {anchor_heading!r} in SKILL.md",
             )
 
-    def test_workflow_hub_seven_ring_contract(self) -> None:
+    def test_workflow_hub_open_capability_graph_contract(self) -> None:
         expected_skills = {
             "workflow-hub": {
                 "category": "workflow",
                 "required": (
-                    "7-Ring",
+                    "Open Capability Graph",
+                    "开放式能力节点与按需直连图谱",
+                    "Idea & Goal State",
+                    "Co-Design",
+                    "Autonomous Build, Review & Merge",
+                    "Product Delivery & Release",
+                    "Learning & Narrative",
+                    "spec.md`/`design.md",
+                    "ledger.md",
+                    "receipts/*-rN.md",
+                    "TIA-xx",
+                    "linear-board -> domain-modeling -> goal-task",
+                    "goal-task -> code-review -> auto-review-merge",
                     "linear-board",
                     "bot-tl-orchestration",
                     "goal-task",
-                    "PR Review/Merge",
-                    "Product Delivery/Release",
                     "retro-loop",
                     "story-craft",
                     "Progressive Discovery Ladder",
@@ -410,6 +420,8 @@ class VerifySkillsTests(unittest.TestCase):
                 self.assertEqual(manifest["category"], contract["category"])
                 for phrase in contract["required"]:
                     self.assertIn(phrase, skill_text)
+                self.assertNotIn("7-Ring lifecycle", skill_text)
+                self.assertNotIn("7 环", skill_text)
 
         linear_script = SKILLS_DIR / "linear-board" / "scripts" / "linear-sync.py"
         self.assertTrue(linear_script.is_file())
