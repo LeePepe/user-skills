@@ -784,6 +784,55 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertNotIn("cancellation_authorization", task)
             self.assertNotIn("superseded_by", task)
 
+    def test_mandate_drift_ack_and_ruling(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "mandate"
+            (handoff_dir / "briefs").mkdir(parents=True)
+            (handoff_dir / "spec.md").write_text("v1", encoding="utf-8")
+            (handoff_dir / "briefs" / "TK1.md").write_text("brief", encoding="utf-8")
+            self.run_queue(
+                handoff_dir,
+                "enqueue",
+                "--task-id", "TK1",
+                "--paths", "src/a",
+                "--brief", "briefs/TK1.md",
+            )
+            (handoff_dir / "spec.md").write_text("v2", encoding="utf-8")
+            drift = json.loads(self.run_queue(handoff_dir, "next-wave").stdout)
+            self.assertEqual(drift["wave"], [])
+            task = json.loads((handoff_dir / "queue.json").read_text())["tasks"][0]
+            self.assertEqual(task["status"], "blocked")
+            self.run_queue(handoff_dir, "ack-spec", "--task-id", "TK1")
+            self.run_queue(
+                handoff_dir, "ruling", "--task-id", "TK1", "--add-paths", "src/b",
+                "--decision", "expand", "--why", "adapter required", "--blast-radius", "local",
+            )
+            task = json.loads((handoff_dir / "queue.json").read_text())["tasks"][0]
+            self.assertEqual(task["paths"], ["src/a", "src/b"])
+            self.assertEqual(task["mandate"]["owned_paths"], ["src/a", "src/b"])
+
+    def test_human_priority_slot_and_evolve_budget(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "evolve"
+            self.run_queue(
+                handoff_dir,
+                "enqueue",
+                "--batch-json",
+                json.dumps([
+                    {"task_id": "N1", "repo": "r", "paths": ["a"]},
+                    {"task_id": "N2", "repo": "r", "paths": ["b"]},
+                    {"task_id": "H1", "repo": "r", "paths": ["c"], "priority": "human"},
+                ]),
+            )
+            wave = json.loads(
+                self.run_queue(handoff_dir, "next-wave", "--max-workers", "2", "--mark-in-progress").stdout
+            )
+            self.assertEqual(len(wave["wave"]), 2)
+            self.run_queue(handoff_dir, "init-goal", "--intent", "evolve", "--budget-sec", "1")
+            self.run_queue(handoff_dir, "budget", "--elapsed-sec", "1")
+            stopped = json.loads(self.run_queue(handoff_dir, "next-wave").stdout)
+            self.assertTrue(stopped["budget_exhausted"])
+
 
 if __name__ == "__main__":
     unittest.main()
