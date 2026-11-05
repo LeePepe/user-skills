@@ -421,6 +421,38 @@ class LinearSyncTests(unittest.TestCase):
         self.assertEqual(payload["decision"], "no-op (duplicate)")
         self.assertEqual(payload["duplicate_of"], "TIA-77")
 
+    def test_description_filters_machine_metadata_events_and_empty_attribution(self) -> None:
+        ledger = (
+            "# Goal: demo\n"
+            "- **目标**: Clean summary\n"
+            "- Owner: tianpei\n"
+            "- TL: bot\n"
+            "- 状态: in_progress\n"
+            "- 验收:\n"
+            "- 2026-11-04T14:00:00+08:00 | EVT=DONE | id=E7\n"
+            "| ID | 标题 |\n"
+            "## Tasks\n"
+        )
+        block = linear_sync._description_block(
+            "demo", ledger,
+            [{"task_id": "TK1", "title": "Build it", "status": "in_progress", "pr": ""}],
+            None,
+        )
+        self.assertIn("Owner: tianpei", block)
+        self.assertNotIn("TL: bot", block)
+        self.assertNotIn("in_progress |", block)
+        self.assertNotIn("runs=", block)
+        self.assertNotIn("Execution & Cost Attribution", block)
+
+    def test_updated_description_removes_duplicate_task_checklist(self) -> None:
+        existing = "Intro\n\n## Tasks Checklist\n- [ ] Old task\n\n## Details\nDetails"
+        block = "<!-- GTT-LINEAR-SYNC:START -->\nnew\n<!-- GTT-LINEAR-SYNC:END -->"
+        updated = linear_sync._updated_description(existing, block)
+        self.assertNotIn("Old task", updated)
+        self.assertEqual(updated.count("## Tasks"), 0)
+        self.assertIn("Intro", updated)
+        self.assertIn("new", updated)
+
     def test_attribution_supports_dict_metrics_bulleted_receipts_and_pricing(self) -> None:
         (self.work / "queue.json").write_text(json.dumps({
             "tasks": [{"task_id": "TK1", "run_metrics": {
