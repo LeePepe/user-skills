@@ -85,6 +85,30 @@ business code, demos, or `Prototype/` code. Use
 `references/agent-design-doc-v1.md` for the YAML schema, deterministic layout,
 width arithmetic, state matrix, and Writer/Reviewer gates.
 
+## Category Slot: iOS / macOS Dense Single-Hand Entry & Telemetry Surfaces
+
+This category slot carries dense-entry and telemetry guidance, not the global
+Goal -> Task contract. Use container-driven width budgets and `3-tier text`
+rules: compact schema labels are `CJK ≤4` or `EN ≤6–8`; dynamic titles use
+`ViewThatFits`, dedicated rows, and `lineLimit(2)`. Record a
+`scenario → component & motion mapping` for live telemetry, dense single-hand
+entry, expand/collapse sub-rows, bottom inset arbitration, and
+filter/substitute sheets.
+
+### Anti-Gaming Visual Harmony Gate
+
+- Never use `.system(size: <11)` or `minimumScaleFactor < 0.85` to evade layout
+  checks. Large Mode inline units remain proportionate to primary digits at
+  `1.8:1` or less.
+- Classify spacing by surface: keypad matrix `4–6pt`, entry-row inter-slot gap
+  `>=6pt`, intra-pill gap `>=4pt`; never squeeze to `0–1pt`.
+- Keep the input pill visual box at `34–36pt` while an outer
+  `.contentShape(Rectangle())` hit target is `>=44×44pt`. Keep visual and hit
+  layers separate; do not use `Card + Divider` double containment.
+- Section headers share one `.center` alignment axis. Adjacent sections preserve
+  Surface Plane Continuity (R28) and Single-Slot Sub-Row Identity (R29);
+  sub-row identifiers stay in one sequence slot.
+
 Prompt context uses `Global > Category Slot > Intent > Sources`; `design.md`
 records `version` and `spec_sha`, and `jev_visual_gate.py` provides the R05
 screenshot gate.

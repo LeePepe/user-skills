@@ -11,56 +11,32 @@
 
 ## Linear Idea capture and Goal binding
 
-Resident Bots and local CLI sessions capture ad-hoc ideas in Team `TIA` with:
-
-```sh
-python3 skills/goal-task/scripts/linear-sync.py idea --title "<title>" --state Triage
-```
-
-On Goal start, the coordinator runs
-`linear-sync.py ensure-goal --handoff-dir <dir> [--issue TIA-xx]`. This
-promotes an existing Idea or creates a Goal issue under `auto_create`, records
-the `TIA-xx` binding in `ledger.md`, and synchronizes the checklist. Queue
-`enqueue`, wave dispatch, and status transitions call `sync-ledger` in a
-non-blocking child process. Completion and cancellation map to Linear `Done`
-and `Canceled`; active work maps to `In Progress`/`In Review`. The local
-ledger remains authoritative, and no Bot or script may put a credential in
-repository or handoff content.
+Linear `TIA` Idea capture, Goal binding, and status synchronization are
+implemented by `linear-sync.py`; the local `ledger.md` remains authoritative.
+See [`linear-board`](../../linear-board/SKILL.md) and [`ledger.md`](ledger.md)
+for the command contract and event mapping.
 
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
-不按“你是常驻 Bot 还是本地 CLI”死板切分讨论与执行，而是按 **所处阶段（Phase 0 vs. Phase 1）** 切换角色：
-
-1. **Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）**
-   - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
-   - **允许动作**：
-     - **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gpt-5.6-luna`／`mai-code-2-flash` 或 `gemini-4-argon`／Codex 只读）极速摸底代码事实（附 `file:line`）；
-     - **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
-     - **视觉与交互设计（UI/UX Design）**：涉及界面时按下方 [设计路由（按机器分流）](#design-routing-machine-split) 跑同一条 `Explorer` → `Designer` → `Writer` → CI Design Gate → Cross-Vendor Reviewer 流水线，不要求 `艺术家` 或任何 Grok Bot。Mac mini 常驻 Bot 仅可选择性 FYI `艺术家` 做协调／终审，`可选协调/终审，非门禁`；共享设计资产仍只引用 `shared-design-system`／`Strata`／原型预览，不另复制模型表或设计词典；
-     - **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
-   - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
-2. **切换开关（Freeze / GO）**
-   - 当 Owner 明确拍板（如“按这个做／开始执行／做”），或初始请求本身就是范围清晰、无歧义的直接实现指令时，进入 **Phase 1（Autonomous TL Execution）**。
-3. **Phase 1：自治执行期（Autonomous TL Execution —— Bot 入口 vs. CLI 入口无缝衔接）**
-   - **从常驻 Bot 入口启动时**：常驻 Bot 保持自身会话轻量，建好 `~/Development/handoff/<goal>/ledger.md` 后，在 `herdr` 中拉起后台独立的 **`<goal>-goal-tl-r1` CLI 会话**（若 Goal 涉及 `~/Development` 与 `~/orca` 之外的合法路径如 `~/actions-runner-*`、`~/Library/LaunchAgents`、`~/Library/Logs`、`~/.local/*`，必须在 `briefs/goal.md` 头声明 Goal 级 `extra_add_dirs`，并在启动父 TL 时一并传入 `--add-dir`、导出冒号分隔的 `HERDR_EXTRA_ADD_DIRS`，满足**父 TL 白名单 ≥ 子 Subagent 白名单不变量**（Parent ≥ Child）），将 `spec.md` 交给 `TL` 自治跑完 `Task 拆分 → Writer 实现 → Reviewer 双轴审查 → PR Auto-merge 读回`；常驻 Bot 除监听台账的 `NEED_GO`／`NEED_OWNER_DECISION`／`DONE` 事件外，须周期巡检 `herdr agent get <goal>-goal-tl-r1` 的 `agent_status`（防止 TL 卡在 CLI 权限弹窗无法写台账）。
-   - **从本地 CLI 入口启动时**：当前 CLI 主会话直接原地切换为 **`TL (Coordinator)`**（或者当 Owner 希望腾出当前终端时，由当前 CLI 在 `herdr` 拉起后台 `<goal>-goal-tl-r1`），按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与跨厂商 `Reviewer` Subagent，当前 CLI 主会话自身绝不直接下场写多文件业务代码或自审。
+Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务
+Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 由常驻 Bot
+通过 herdr 拉起 Goal TL，或由本地 CLI 原地担任 TL，按 Lite／Standard
+和 1-Hop 合同派发 Writer 与跨厂商 Reviewer；机器、白名单和设计路由
+分别以 [`bot-tl-orchestration`](../../bot-tl-orchestration/SKILL.md)、
+[`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
 
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
 
 ### Multi-Goal Lease Watchdog and Contract Telemetry
 
-跨 Goal 监督使用 `skills/goal-task/scripts/goal-supervisor.py scan`；它按
-Explorer/pr_monitor 10m、Designer/Reviewer 15m、Writer 30m、TL 40m 的 R8
-lease TTL 检测 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。使用
-`check-pins` 核对跨项目 upstream pins，使用 `telemetry --handoff-dir <goal> --write`
-写入 `contract-telemetry.json`。等待子 Agent 时只能用 30–60s 有界轮询（例如
-`herdr agent wait <name> --timeout 60000`），每片检查 `herdr agent get` 与
-`receipts/`，不得盲等十分钟；Apple 工具链路径 `/Applications/Xcode.app`
-必须包含在 Copilot trusted/add-dir allowlist 中。监督关联不单靠
-`name.startswith(<goal 目录名>)`：`-goal-tl-` 短名（如 `good-des-goal-tl-r1`）、
-台账 `TL:`／`from`／`to`，以及 cwd 位于该 Goal handoff 目录内，都把
-`good-des-*` 与 `gd-e1-*` 绑到目录 `good-designer`，从而仍能报 `BLOCKED_AGENT`。
+跨 Goal 监督使用 `goal-supervisor.py scan`，按角色 TTL 检测
+`BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`；`check-pins` 与
+`telemetry --write` 负责 upstream drift 和合同遥测。等待子 Agent 只用
+30–60s 有界轮询（例如 `herdr agent wait <name> --timeout 60000`），并以
+`ledger.md`、agent 状态和 `receipts/` 对账。监督关联同时考虑
+`-goal-tl-` 短名、台账身份和 Goal handoff cwd（例如 `good-des-*`／
+`gd-e1-*` → `good-designer`）；`/Applications/Xcode.app` 必须在 allowlist。
 
 **Blocked notify bridge**：主触发是 `pane.agent_status_changed` 且 `status=blocked`，
 巡逻保底是 `goal-supervisor.py scan --write-alerts` 的 `BLOCKED_AGENT`；两者写入
@@ -84,9 +60,17 @@ optional and **非门禁**, never a blocking gate for the pipeline.
 - **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。固定顺序为 **`Explorer` → `Designer`/`Planner` → `Planner Reviewer` → `Code Writer` → `Code/UI Reviewer`**：`Explorer`（R11）必须同时映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**；`Designer`／`Planner`（`writes: handoff/docs/specs only`，不同于 `Code Writer`）先更新规格，并附 **Deprecated Test Clauses to Remove/Rewrite** 表，授权移除／改写与新规格冲突的旧断言（如 inline AI suggestion chips、full-row sub-set footer buttons、microscopic font sizes）；跨厂商 `Planner Reviewer` 冻结前核验 Owner 要求与 manifest，随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，保留非 deprecated regression tests。
 - **Designer 反内联守卫**：`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等属于 `Designer`／`Writer` Subagent 的 Required Skills。TL 严禁在主会话内调用 `skill("my-designer")`、自任 Designer 或直接读取组件库源码亲自写设计方案；必须经 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。Designer 在自己的子代理会话首步加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。
 - **Brief 与阻塞保护**：`briefs/designer*.md` 只传目标范围、高层约束、探查回执路径、输出路径和 Required Skills，不得预写完整组件选型、布局尺寸表或视觉规格。TL 等待任何 Subagent 时必须先检查 `agent_status` 与磁盘 R10 回执；`blocked` 按 Tier A/A′ 解卡或记 `NEED_GO`，严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`。
-- **Explorer／Designer parity 与预算契约**：涉及 UI 时，Explorer 必须核对目标仓 `shared-design-system`／`DesignKit` 的 `Package.resolved`／local package state 版本 parity，并 inventory 已有 upstream primitives。Designer 必须在 `design.md` 写明 container-driven width budget 与 3-tier text budget：compact schema labels 为 CJK ≤4、EN ≤6–8；metric readouts 有 deterministic format caps、`.layoutPriority(1)` 且 zero numeric truncation（零 `…`）；dynamic titles 隔离到 dedicated rows 或 `ViewThatFits`（`1-line -> 2-line`、`lineLimit(2)`）。还要完成 scenario → component & motion mapping（live telemetry、dense single-hand entry、expand/collapse sub-rows、bottom inset arbitration、filter/substitute sheets）。需要 reusable variant 或 >15 行 custom layout/chrome glue 且 upstream 缺失时，TL/Designer 先拆 `shared-design-system` upstream Task，回补 proven primitive 后再关闭 Goal，不得在 `AppUI` 先行修补。
-- **Reviewer V2 UI gate**：Reviewer 必须以 worst-case density fixtures 核验 `sips -g pixelWidth` == `W * scale`，并检查零 numeric truncation（`…`）、无 unexpected wrapping、Bento 卡片等高、无 duplicate unit placeholders（`lb lb`）及无 raw localization keys。任一项是 V2 P1 `FAIL`；不得以“followed the brief verbatim”降级为 `CONCERNS`，若 brief formula 导致 overflow/truncation，仍 `FAIL` 并报告 brief definition defect。
-- **Anti-Gaming Visual Harmony Gate**：Writer 任何仅为通过 literal width／ellipsis checks 却破坏 visual harmony 的 workaround 都是 V2 P1 `FAIL`。禁止 `.system(size: <11)`（含 `7.5pt`／`8pt`）与 `minimumScaleFactor < 0.85`；Large Mode 的 inline units／prefixes 必须与 primary digits 按比例缩放，ratio ≤ `1.8:1`。按 surface class 分类间距：keypad matrix `4–6pt`、entry row inter-slot gap `>=6pt`、intra-pill gap `>=4pt`，禁止 `0–1pt` squeeze。Designer visual box（input pill `34–36pt`）与 Developer hit-target layer（外层 `.contentShape(Rectangle())`，`>=44×44pt`）必须分离并只共享一层 vertical padding；禁止 `Card + Divider` double containment。section header 的 badges、wrapped titles、counts、action buttons 必须保持单一 `.center` alignment axis。
+- **Explorer／Designer parity 与预算契约**：涉及 UI 时，Explorer 核对
+  `shared-design-system`／`DesignKit` 的 `Package.resolved` 与 upstream
+  primitives；Designer 在 `design.md` 声明 container-driven width budget、
+  3-tier text 防截断策略、scenario → component & motion mapping，以及
+  `shared-design-system` 复用边界。需要 >15 行 custom layout/chrome glue 且
+  upstream 缺失时，先拆上游 Task，不得在 `AppUI` 先行修补。
+- **Reviewer V2 UI gate**：Reviewer 必须以 worst-case density fixtures 核验 `sips -g pixelWidth` == `W * scale`，并检查 zero numeric truncation（`…`）、无 unexpected wrapping、Bento 卡片等高、无 duplicate unit placeholders（`lb lb`）及无 raw localization keys。任一项是 V2 P1 `FAIL`；不得以“followed the brief verbatim”降级为 `CONCERNS`，若 brief formula 导致 overflow/truncation，仍 `FAIL` 并报告 brief definition defect。
+- **Anti-Gaming Visual Harmony Gate**：Writer 不得用仅通过 literal width／
+  ellipsis checks 的 workaround 破坏 visual harmony；具体字号、间距、组件
+  几何与 hit-target 规则由 `my-designer` Category Slot 维护，Reviewer 仍按
+  V2 P1 判定真实截断、溢出与可访问性回归。
 - **Mac mini 常驻域**：`flower`／`Atlas`／`艺术家`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，均可直接按固定流水线运行产品 UI/UX 设计 Goal：`Explorer` → `Designer` → `Writer` → CI Design Gate → Cross-Vendor Reviewer，不要求 `艺术家` 或任何 Grok Bot。常驻 Bot 仅可选择性 FYI `艺术家` 做协调／终审，`可选协调/终审，非门禁`，不得阻塞流水线或改变验收标准；`Hotty` 不做具体 Goal 协调的边界不变。
 - **MacBook／`Joy`（本机设计流水线）**：`Joy` 在 MacBook 上、于 goal-task 内运行同一固定流水线，不转交 `艺术家`，也不操作 Mac mini。
 - **CLI 入口**：本地 CLI／TL 在本 Goal 内主动运行同一固定流水线，不转交 `艺术家`。
@@ -94,49 +78,40 @@ optional and **非门禁**, never a blocking gate for the pipeline.
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
-常驻域主 Bot（`Joy`／`Atlas`／`flower` 等）与 `TL` 通过 [`scripts/goal-queue.py`](../scripts/goal-queue.py)（基于 `~/Development/handoff/<goal>/.queue.lock` 的 `fcntl.flock` 文件锁，原子同步 `queue.json` 与 `ledger.md`）协同处理批量输入与运行中热追加：
+常驻域主 Bot 与 `TL` 通过 [`scripts/goal-queue.py`](../scripts/goal-queue.py)
+协同处理批量输入与运行中热追加；队列以 `.queue.lock` 原子更新
+`queue.json`／`ledger.md`，按 `(repo, paths)` 冲突矩阵自动形成并行或串行波次。
 
-1. **姿势 1（Batch Mode 一次性塞多个任务）**：
-   - Owner 一次性向 Bot 或 `TL` 提供多条任务时，调用 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> --batch-json <json-string-or-file>`。
-   - 脚本自动按 `(repo, paths)` 冲突检测计算 `auto_dependencies`：跨仓或同仓路径不相交的任务进入**并行波次（Parallel Wave）**，同仓且路径重叠（含前缀／glob 重叠或空路径 `*` 通配）的任务自动串入前序未完成任务之后形成**串行链（Sequential Chain）**，并在 `ledger.md` 记录 `EVT=READY`。
-   - `TL` 循环调用 `skills/goal-task/scripts/goal-queue.py next-wave --handoff-dir ~/Development/handoff/<goal> --mark-in-progress` 派发每波无冲突任务，待任务完成调用 `set-status --status done`，直至 `drained: true`。
-2. **姿势 3（Hot-Append Mode 运行中随时热追加）**：
-   - 当 `TL` 已在运行中，Owner 向常驻 Bot（`Joy`／`Atlas`／`flower`）或 `TL` 发送新任务时，**Bot 绝不重复拉起第二个 TL**，而是直接运行 `skills/goal-task/scripts/goal-queue.py enqueue --handoff-dir ~/Development/handoff/<goal> ...`（获取 `.queue.lock`、对照在途任务自动计算并行／串行依赖边、在 `ledger.md` 记录 `EVT=HOT_APPEND`）。
-   - 若 `<goal>-goal-tl-r1` 窗格处于 `idle` 或 `done`，Bot 执行
-     `herdr agent prompt <goal>-goal-tl-r1 "Hot-append task <id>; run goal-queue.py next-wave"` 唤醒
-     `TL`；发送后等待 2 秒，读取 `agent_status`，若仍为 `idle` 或 `done`，仅补发一次
-     `herdr agent send-keys <goal>-goal-tl-r1 enter`，防止粘贴结束符吞掉回车而停在
-     `❯` 输入框。`TL` 在任一波次收口退出前固定重跑一次 `goal-queue.py next-wave`，
-     确保热追加任务被彻底排空（Drain to Zero）。
+1. **Batch Mode**：使用 `enqueue --batch-json`，再由 TL 循环
+   `next-wave --mark-in-progress`，任务收口用 `set-status --status done`，
+   直到返回 `drained: true`。
+2. **Hot-Append Mode**：已有 TL 时绝不重复开 TL；使用 `enqueue` 记录
+   `EVT=HOT_APPEND`。TL 为 `idle`／`done` 时，prompt 唤醒后若仍未工作，
+   仅补一次 `herdr agent send-keys "$GOAL-goal-tl-r1" enter`，并在波次收口
+   前重跑 `next-wave`。
 
 ### 两级完成与清理边界
 
-- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
-  Agent。独立 Goal TL 存在时，常驻 Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时回收
-  Goal TL pane/workspace；不得越级创建、prompt 或关闭 TL 下属的 Explorer／Designer／
-  Writer／Reviewer／`pr_monitor`。TL 独占这些 Subagent 的派发、更新、Task／阶段完结
-  关窗与回收。Bot 或本地 CLI 直接担任 TL 时，则由其直接管辖下属 Subagent。
+- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：独立 Goal TL
+   存在时，Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时回收 TL pane/workspace；
+   TL 独占下属 Subagent 的派发、更新与回收。Bot 或本地 CLI 直接担任 TL 时，
+   由其直接管辖下属。
 - `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
 - **Task / `PR_MERGED`**：TL 或清理 Subagent 收到准确合并读回与 R10 回执后，关闭任务 pane，清理 `__pycache__`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE`（全部 Task `done` 且 `drained: true`）后，关窗与 Worktree 处置分开验收。**A（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空其 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 回退关闭，即使 Worktree 已由 Owner Freeze 保留。不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：Owner Freeze 可以保留 Worktree；未合并、HOLD 或 dirty Worktree 保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
 
-- **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
-- **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
+进入 `goal-task` 或存在活动 ledger 后，会话追问继续继承 TL 合同。
+诊断最多做 2–3 次只读探查；超过上限或需要任何文件修改，必须经
+`herdr` 派发 Explorer／Writer 并记入 ledger，TL 不内联调试或编辑。
 
 ### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
 
-`~/Development/handoff/<goal>/ledger.md`、`briefs/<task>.md` 与 Git 实际状态始终是跨进程唯一事实源（Single Source of Truth）；各 CLI 的原生 Goal／Todo 工具作为**进程内持续推进引擎（In-Process Continuation Engine）**挂载并同步，防止 TL 或 Subagent 提前停机或无限空转：
-
-- **Codex CLI（`goals = true` / `thread_goals`）**：
-  - Phase 1 启动时（TL）或 Task 启动时（Writer／Reviewer），首个动作调用 `create_goal(objective="...")`，将目标绑定到 Goal `ledger.md` 或 Task `briefs/<task>.md`。
-  - **仅当**全部验收命令通过、PR 完成交接／合并且磁盘 R10 回执已落盘核实后，才允许调用 `update_goal(status="complete")`。
-  - 遇到 `TASK_BLOCKED`、`NEED_GO`、`NEED_OWNER_DECISION` 或 V3 两轮修复仍失败时，立即调用 `update_goal(status="blocked")`，**严禁留在活动态空转**。
-- **Copilot CLI（`sql` `todos` + `todo_deps`）**：
-  - TL 在 Phase 1 启动时将 Goal 的 `Tasks` 及依赖 DAG 边镜像写入会话 SQLite 的 `todos` 与 `todo_deps` 表，随 `ledger.md` 同步更新状态（`pending -> in_progress -> done | blocked`）。
-- **Claude Code（`TodoWrite` / `TaskCreate`）**：
-  - TL 将活动 `Tasks` 投影到 `TodoWrite` 以提供实时进度可见性，同时保持 `ledger.md` 为唯一权威状态源。
+`ledger.md`、`briefs/<task>.md` 与 Git 是跨进程唯一事实源；Codex
+`create_goal`／`update_goal`、Copilot `sql` 的 `todos`／`todo_deps`、
+以及 Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complete；
+`TASK_BLOCKED`、`NEED_GO`、`NEED_OWNER_DECISION` 或 V3 两轮失败立即标 blocked。
 
 ## bot 分工（唯一一处）
 
