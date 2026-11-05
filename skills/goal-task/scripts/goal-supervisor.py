@@ -7,12 +7,18 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+import sys
+sys.path.insert(0, str(SCRIPT_DIR))
+from jev_client import jev_decide  # noqa: E402
 
 
 ROLE_TTL_SECONDS = {
@@ -23,10 +29,19 @@ ROLE_TTL_SECONDS = {
     "writer": 1800,
     "team_lead": 2400,
 }
+VALID_MODES = {"off", "observe", "auto"}
 EVENT_RE = re.compile(
     r"(?P<timestamp>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d))"
     r".*?\bEVT=(?P<event>[A-Z0-9_]+)"
 )
+UNRESOLVED_EVENT_TYPES = {
+    "NEED_GO": "decision",
+    "NEED_OWNER_DECISION": "decision",
+    "TASK_BLOCKED": "blocked",
+    "INPUT_BLOCKED": "blocked",
+    "REVIEW_FAIL": "review",
+    "HANDBACK": "handback",
+}
 
 
 def parse_time(value: str) -> dt.datetime:
@@ -421,6 +436,127 @@ def load_json_input(value: str) -> Any:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else json.loads(value)
 
 
+def resolve_supervisor_mode(
+    explicit_mode: str | None,
+    write_alerts: bool = False,
+    default: str = "observe",
+) -> str:
+    value = explicit_mode
+    if value is None:
+        value = os.environ.get("GTT_SUPERVISOR_MODE", "").strip().lower() or None
+    if value is None:
+        value = "auto" if write_alerts else default
+    if value not in VALID_MODES:
+        raise ValueError(f"invalid supervisor mode: {value}")
+    return value
+
+
+def _alert_target(root: Path, goal_name: str, agent: dict[str, Any], now: dt.datetime) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(agent.get("name") or "unknown")).strip("-") or "unknown"
+    return str(root / goal_name / "alerts" / f"blocked-{name}-{compact_timestamp(now)}.md")
+
+
+def _decorate_anomaly(
+    anomaly: dict[str, Any],
+    *,
+    mode: str,
+    write_alerts: bool,
+    root: Path,
+    now: dt.datetime,
+    agent: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = dict(anomaly)
+    kind = str(result.get("type", "")).lower()
+    result.update({"strength": "inferred", "matched_rule": f"supervisor.{kind}"})
+    goal_name = str(result.get("goal_id") or "")
+    if mode == "observe":
+        result.update(
+            {
+                "decision": "observe (would accept)",
+                "would_accept": True,
+                "alert_path": "",
+                "proposed_action": {
+                    "kind": "write_blocked_alert" if result.get("type") == "BLOCKED_AGENT" else "notify_tl",
+                    "coordinator_bot": coordinator_bot(root / goal_name),
+                },
+            }
+        )
+        if agent is not None:
+            result["proposed_action"]["target_path"] = _alert_target(root, goal_name, agent, now)
+            result["proposed_action"]["suggested_command"] = (
+                f"herdr agent read {agent.get('name', 'unknown')} --source visible --lines 40"
+            )
+        return result
+    result.update({"decision": "accept", "would_accept": True})
+    return result
+
+
+def _number_from_answer(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for key in ("noul", "probability", "confidence", "score"):
+            if isinstance(value.get(key), (int, float)):
+                return float(value[key])
+    return 0.0
+
+
+def evaluate_stuck_loop(
+    agent_name_value: str,
+    role: str,
+    visible: str,
+    *,
+    jev_override: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    lines = [line.strip() for line in visible.splitlines() if line.strip()]
+    explicit = bool(re.search(r"\b(?:stuck|looping|repeating identical failure)\b", visible, re.I))
+    repeated = any(lines[index] == lines[index - 1] == lines[index - 2] for index in range(2, len(lines)))
+    failure_re = re.compile(r"(?:error|failed|failure|traceback|command not found|exit code [1-9])", re.I)
+    repeated_failure = repeated and sum(bool(failure_re.search(line)) for line in lines[-5:]) >= 3
+    if explicit or repeated_failure:
+        return {
+            "type": "STUCK_LOOP",
+            "goal_id": "",
+            "agent": agent_name_value,
+            "role": role,
+            "repeating_prob": 1.0,
+            "progress_prob": 0.0,
+        }
+    answers = jev_override
+    if answers is None:
+        answers = jev_decide(
+            visible,
+            {
+                "repeating_identical_failure": {"type": "noul"},
+                "making_forward_progress": {"type": "noul"},
+                "violating_role_boundary": {"type": "noul"},
+            },
+            agent_role=role,
+        ) or {}
+    repeat_prob = _number_from_answer(answers.get("repeating_identical_failure"))
+    progress_prob = _number_from_answer(answers.get("making_forward_progress"))
+    boundary_prob = _number_from_answer(answers.get("violating_role_boundary"))
+    if boundary_prob >= 0.85:
+        return {
+            "type": "BOUNDARY_VIOLATION",
+            "goal_id": "",
+            "agent": agent_name_value,
+            "role": role,
+            "repeating_prob": repeat_prob,
+            "progress_prob": progress_prob,
+        }
+    if repeat_prob >= 0.80 and progress_prob < 0.25:
+        return {
+            "type": "STUCK_LOOP",
+            "goal_id": "",
+            "agent": agent_name_value,
+            "role": role,
+            "repeating_prob": max(repeat_prob, 1.0 if repeated_failure or explicit else 0.0),
+            "progress_prob": progress_prob,
+        }
+    return None
+
+
 def blocked_event(event: dict[str, Any]) -> bool:
     statuses = [
         str(payload.get(key)).lower()
@@ -436,6 +572,12 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
     goal_hint = handoff_dir.name if handoff_dir and (handoff_dir / "ledger.md").is_file() else ""
     root = Path(args.handoff_root or (handoff_dir.parent if goal_hint else handoff_dir) or "~/Development/handoff").expanduser()
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    mode = resolve_supervisor_mode(getattr(args, "mode", None), default="auto")
+    if mode == "off":
+        return {
+            "written": False, "mode": "off", "decision": "off (skipped)",
+            "would_accept": False, "alert_path": "", "status": "", "goal": "", "agent": "",
+        }
     events: list[dict[str, Any]] = []
     if args.event_json:
         payload = load_json_input(args.event_json)
@@ -498,23 +640,65 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "blocked",
                 "goal": "",
                 "agent": agent["name"],
+                "mode": mode,
             }
             continue
         excerpt = args.visible_text if args.visible_text is not None else visible_text(event)
         if not excerpt and not args.herdr_json:
             excerpt = read_visible_from_herdr(agent["name"])
+        if mode == "observe":
+            return {
+                "written": False,
+                "mode": "observe",
+                "decision": "observe (would accept)",
+                "would_accept": True,
+                "proposed_alert_path": _alert_target(root, goal_name, agent, now),
+                "status": "blocked",
+                "goal": goal_name,
+                "agent": agent["name"],
+            }
         path = write_blocked_alert(root, goal_name, agent, "pane.agent_status_changed", excerpt, now)
-        return {"written": True, "alert_path": path, "status": "blocked", "goal": goal_name, "agent": agent["name"]}
+        return {
+            "written": True, "mode": mode, "decision": "accept", "would_accept": True,
+            "alert_path": path, "status": "blocked", "goal": goal_name, "agent": agent["name"],
+        }
     if last_unmatched is not None:
         return last_unmatched
-    return {"written": False, "alert_path": "", "status": "", "goal": "", "agent": ""}
+    return {"written": False, "mode": mode, "alert_path": "", "status": "", "goal": "", "agent": ""}
 
 
 def scan(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root).expanduser()
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    mode = resolve_supervisor_mode(
+        getattr(args, "mode", None), getattr(args, "write_alerts", False)
+    )
+    transcripts: dict[str, Any] = {}
+    if getattr(args, "transcripts_json", None):
+        payload = load_json_input(args.transcripts_json)
+        transcripts = payload if isinstance(payload, dict) else {}
+    jev_response: dict[str, Any] = {}
+    if getattr(args, "jev_response_json", None):
+        payload = load_json_input(args.jev_response_json)
+        jev_response = payload if isinstance(payload, dict) else {}
     agents = load_agents(Path(args.herdr_json) if args.herdr_json else None)
     goals_meta = goal_metadata(root)
+    if mode == "off":
+        return {
+            "mode": mode,
+            "goals": [
+                {
+                    "goal_id": item["name"],
+                    "latest_event_ts": item["latest"].isoformat(),
+                    "event_count": len(item["events"]),
+                    "tl": item["tl_name"],
+                    "agents": [],
+                }
+                for item in goals_meta
+            ],
+            "anomalies": [],
+            "healthy": True,
+        }
 
     # Record shortened live TL stems (`good-des-goal-tl-r1` → folder `good-designer`)
     # before binding siblings that share that stem (`good-des-*`).
@@ -562,7 +746,7 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
             role = role_for(name)
             if status == "blocked":
                 anomaly: dict[str, Any] = {"type": "BLOCKED_AGENT", "goal_id": goal.name, "agent": name}
-                if getattr(args, "write_alerts", False):
+                if mode == "auto" and getattr(args, "write_alerts", False):
                     excerpt = str(item.get("visible") or item.get("visible_text") or "")
                     if not excerpt and not args.herdr_json:
                         excerpt = read_visible_from_herdr(name)
@@ -570,19 +754,20 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
                         root, goal.name, item, "goal-supervisor.scan:BLOCKED_AGENT",
                         excerpt, now,
                     )
-                anomalies.append(anomaly)
+                anomalies.append(_decorate_anomaly(
+                    anomaly, mode=mode, write_alerts=getattr(args, "write_alerts", False),
+                    root=root, now=now, agent=item,
+                ))
             elapsed = (now - latest).total_seconds()
             if status == "working" and elapsed > ROLE_TTL_SECONDS[role] and not receipt_exists(goal, name):
-                anomalies.append(
+                anomalies.append(_decorate_anomaly(
                     {
-                        "type": "ZOMBIE_LEASE",
-                        "goal_id": goal.name,
-                        "agent": name,
-                        "role": role,
-                        "elapsed_sec": int(elapsed),
-                        "ttl_sec": ROLE_TTL_SECONDS[role],
-                    }
-                )
+                        "type": "ZOMBIE_LEASE", "goal_id": goal.name, "agent": name,
+                        "role": role, "elapsed_sec": int(elapsed), "ttl_sec": ROLE_TTL_SECONDS[role],
+                    },
+                    mode=mode, write_alerts=getattr(args, "write_alerts", False),
+                    root=root, now=now, agent=item,
+                ))
             is_tl = role == "team_lead" or (bool(tl_name) and name == tl_name)
             if is_tl and status == "working":
                 child_attention = any(
@@ -592,8 +777,31 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
                     for other in goal_agents
                 )
                 if child_attention:
-                    anomalies.append({"type": "ORPHAN_TL_WAIT", "goal_id": goal.name, "agent": name})
-    return {"goals": goals, "anomalies": anomalies, "healthy": not anomalies}
+                    anomalies.append(_decorate_anomaly(
+                        {"type": "ORPHAN_TL_WAIT", "goal_id": goal.name, "agent": name},
+                        mode=mode, write_alerts=getattr(args, "write_alerts", False),
+                        root=root, now=now, agent=item,
+                    ))
+            transcript = transcripts.get(name, {})
+            if isinstance(transcript, dict):
+                visible = str(transcript.get("visible") or transcript.get("visible_text") or "")
+                override = transcript.get("jev") or jev_response.get(name) or jev_response
+            else:
+                visible = str(transcript)
+                override = jev_response.get(name) or jev_response
+            if not visible:
+                visible = str(item.get("visible") or item.get("visible_text") or "")
+            if not visible and not args.herdr_json:
+                visible = read_visible_from_herdr(name)
+            if status == "working" and (visible or override):
+                stuck = evaluate_stuck_loop(name, role, visible, jev_override=override)
+                if stuck:
+                    stuck["goal_id"] = goal.name
+                    anomalies.append(_decorate_anomaly(
+                        stuck, mode=mode, write_alerts=getattr(args, "write_alerts", False),
+                        root=root, now=now, agent=item,
+                    ))
+    return {"mode": mode, "goals": goals, "anomalies": anomalies, "healthy": not anomalies}
 
 
 def check_pins(args: argparse.Namespace) -> dict[str, Any]:
@@ -642,6 +850,180 @@ def telemetry(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def _ledger_attention(goal: Path, now: dt.datetime) -> list[dict[str, Any]]:
+    ledger = goal / "ledger.md"
+    if not ledger.is_file():
+        return []
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    closed: set[str] = set()
+    parsed: list[dict[str, Any]] = []
+    for line in lines:
+        event_match = re.search(r"\bEVT=([A-Z0-9_]+)", line)
+        if not event_match:
+            continue
+        event = event_match.group(1)
+        event_id_match = re.search(r"\bid=([EB]\d+)\b", line)
+        event_id = event_id_match.group(1) if event_id_match else ""
+        if event in {"RESOLVED", "ACK"} and event_id:
+            closed.add(event_id)
+            continue
+        if event not in UNRESOLVED_EVENT_TYPES or (event_id and event_id in closed):
+            continue
+        timestamp_match = EVENT_RE.search(line)
+        timestamp = parse_time(timestamp_match.group("timestamp")) if timestamp_match else now
+        task_match = re.search(r"\b(?:task|task_id)=([^\s|]+)", line)
+        note_match = re.search(r"\bnote=([^|]+)", line)
+        note = note_match.group(1).strip() if note_match else line.strip()
+        parsed.append(
+            {
+                "event": event, "event_id": event_id, "task_id": task_match.group(1) if task_match else "",
+                "timestamp": timestamp, "note": note,
+            }
+        )
+    return [item for item in parsed if not item["event_id"] or item["event_id"] not in closed]
+
+
+def _queue_tasks(goal: Path) -> list[dict[str, Any]]:
+    queue = goal / "queue.json"
+    if not queue.is_file():
+        return []
+    try:
+        payload = json.loads(queue.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    tasks = payload.get("tasks", payload) if isinstance(payload, dict) else payload
+    return [item for item in tasks if isinstance(item, dict)] if isinstance(tasks, list) else []
+
+
+def _attention_item(
+    action: str, goal: Path, task_id: str, waits_for: str, summary: str, age_sec: int
+) -> dict[str, Any]:
+    return {
+        "action": action, "goal_id": goal.name, "task_id": task_id, "waits_for": waits_for,
+        "summary": summary, "age_sec": max(0, int(age_sec)), "handoff_dir": str(goal),
+    }
+
+
+def status(args: argparse.Namespace) -> dict[str, Any]:
+    root = Path(args.handoff_root).expanduser()
+    now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    mode = resolve_supervisor_mode(getattr(args, "mode", None), default="observe")
+    agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
+    scan_result = scan(argparse.Namespace(
+        handoff_root=str(root), herdr_json=args.herdr_json, now=args.now, write_alerts=False,
+        mode=mode, transcripts_json=None, jev_response_json=None,
+    ))
+    needs: list[dict[str, Any]] = []
+    goals = goal_metadata(root)
+    for goal in goals:
+        tl = goal["tl_name"] or "tl"
+        events = _ledger_attention(goal["path"], now)
+        for item in events:
+            action = UNRESOLVED_EVENT_TYPES[item["event"]]
+            waits_for = "owner" if action == "decision" else (tl if action in {"handback", "review"} else coordinator_bot(goal["path"]))
+            needs.append(_attention_item(
+                action, goal["path"], item["task_id"], waits_for, item["note"],
+                int((now - item["timestamp"]).total_seconds()),
+            ))
+        for task in _queue_tasks(goal["path"]):
+            task_status = str(task.get("status", ""))
+            if task_status not in {"blocked", "handback"}:
+                continue
+            action = task_status
+            needs.append(_attention_item(
+                action, goal["path"], str(task.get("task_id") or task.get("id") or ""),
+                tl if action == "handback" else coordinator_bot(goal["path"]),
+                str(task.get("note") or task.get("title") or f"{action} task"),
+                0,
+            ))
+        queue_tasks = _queue_tasks(goal["path"])
+        if queue_tasks and all(str(task.get("status", "")) == "done" for task in queue_tasks):
+            needs.append(_attention_item(
+                "review", goal["path"], "", tl,
+                "queue drained; review and record GOAL_DONE", 0,
+            ))
+    for anomaly in scan_result["anomalies"]:
+        if anomaly.get("type") not in {"BLOCKED_AGENT", "ZOMBIE_LEASE", "ORPHAN_TL_WAIT", "STUCK_LOOP"}:
+            continue
+        goal = root / str(anomaly.get("goal_id", ""))
+        action = "blocked" if anomaly["type"] == "BLOCKED_AGENT" else "stale"
+        needs.append(_attention_item(
+            action, goal, "", str(anomaly.get("agent") or "tl"),
+            f"{anomaly['type'].lower()} for {anomaly.get('agent', 'unknown')}",
+            int(anomaly.get("elapsed_sec", 0)),
+        ))
+    priority = {"decision": 0, "blocked": 1, "handback": 2, "review": 3, "stale": 4}
+    needs.sort(key=lambda item: (priority.get(item["action"], 99), -item["age_sec"], item["goal_id"]))
+    running_workers = sum(
+        agent_status(item) == "working" and role_for(agent_name(item)) != "team_lead" for item in agents
+    )
+    queued = sum(
+        sum(str(task.get("status")) in {"ready", "queued", "in_progress"} for task in _queue_tasks(goal["path"]))
+        for goal in goals
+    )
+    handbacks = sum(
+        sum(str(task.get("status")) == "handback" for task in _queue_tasks(goal["path"]))
+        for goal in goals
+    )
+    system = {
+        "active_goals_count": len(goals),
+        "healthy_goals_count": max(0, len(goals) - len({item["goal_id"] for item in needs})),
+        "running_workers": running_workers,
+        "max_workers": int(args.max_workers),
+        "human_slot_free": running_workers < int(args.max_workers) + 1,
+        "queued_tasks": queued,
+        "handback_tasks": handbacks,
+        "blocked_agents": sum(item.get("type") == "BLOCKED_AGENT" for item in scan_result["anomalies"]),
+        "zombie_leases": sum(item.get("type") == "ZOMBIE_LEASE" for item in scan_result["anomalies"]),
+        "orphan_tl_waits": sum(item.get("type") == "ORPHAN_TL_WAIT" for item in scan_result["anomalies"]),
+    }
+    return {
+        "command": "status", "mode": mode, "needs_a_person_count": len(needs),
+        "needs_a_person": needs, "system": system, "healthy": not needs,
+    }
+
+
+def observe(args: argparse.Namespace) -> dict[str, Any]:
+    goal = Path(args.handoff_dir).expanduser()
+    now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
+    result = scan(argparse.Namespace(
+        handoff_root=str(goal.parent), herdr_json=args.herdr_json, now=args.now,
+        write_alerts=False, mode="observe", transcripts_json=None, jev_response_json=None,
+    ))
+    goal_agents = [item for item in agents if choose_goal_name(
+        agent_name(item), agent_cwd(item), goal_metadata(goal.parent)
+    ) == goal.name]
+    queue = _queue_tasks(goal)
+    counts: dict[str, int] = {}
+    for task in queue:
+        key = str(task.get("status", "unknown"))
+        counts[key] = counts.get(key, 0) + 1
+    active_agents = []
+    latest = max((timestamp for timestamp, _ in goal_events(goal / "ledger.md")), default=now)
+    for item in goal_agents:
+        name = agent_name(item)
+        role = role_for(name)
+        active_agents.append({
+            "name": name, "role": role, "status": agent_status(item),
+            "elapsed_sec": max(0, int((now - latest).total_seconds())),
+            "ttl_sec": ROLE_TTL_SECONDS[role], "receipt_exists": receipt_exists(goal, name),
+        })
+    unresolved = _ledger_attention(goal, now)
+    for item in unresolved:
+        item["timestamp"] = item["timestamp"].isoformat()
+    return {
+        "goal_id": goal.name,
+        "tl": ledger_tl_name((goal / "ledger.md").read_text(encoding="utf-8")) if (goal / "ledger.md").is_file() else "",
+        "coordinator_bot": coordinator_bot(goal),
+        "spec_sha": hashlib.sha256((goal / "spec.md").read_bytes()).hexdigest() if (goal / "spec.md").is_file() else "",
+        "queue_summary": {"counts": counts, "mandate_valid": [bool(task.get("mandate")) for task in queue]},
+        "active_agents": active_agents,
+        "unresolved_events": unresolved,
+        "anomalies": [item for item in result["anomalies"] if item.get("goal_id") == goal.name],
+    }
+
+
 def watch(args: argparse.Namespace) -> dict[str, Any]:
     import time
 
@@ -659,6 +1041,9 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
             now=None,
             json=True,
             write_alerts=getattr(args, "write_alerts", False),
+            mode=getattr(args, "mode", None),
+            transcripts_json=None,
+            jev_response_json=None,
         )
         scan_result = scan(scan_args)
         goal_anomalies = [a for a in scan_result["anomalies"] if a.get("goal_id") == handoff.name]
@@ -669,6 +1054,32 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
         time.sleep(interval)
 
 
+def print_status_human(result: dict[str, Any]) -> None:
+    print(f"needs a person ({result['needs_a_person_count']})")
+    for item in result["needs_a_person"]:
+        print(
+            f"  {item['action']:<9} {item['goal_id']:<24} {item['task_id']:<12} "
+            f"{item['waits_for']}: {item['summary']} ({item['age_sec']}s ago)"
+        )
+    system = result["system"]
+    print("\nsystem")
+    print(
+        f"  goals     {system['active_goals_count']} active · "
+        f"{system['healthy_goals_count']} healthy"
+    )
+    print(
+        f"  workers   {system['running_workers']} running of {system['max_workers']} "
+        f"(human slot: {'free' if system['human_slot_free'] else 'busy'})"
+    )
+    print(
+        f"  queues    {system['queued_tasks']} queued · {system['handback_tasks']} handback"
+    )
+    print(
+        f"  leases    {system['blocked_agents']} blocked · {system['zombie_leases']} zombie · "
+        f"{system['orphan_tl_waits']} orphan_tl"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -677,6 +1088,9 @@ def main() -> None:
     scan_parser.add_argument("--herdr-json")
     scan_parser.add_argument("--now")
     scan_parser.add_argument("--write-alerts", action="store_true")
+    scan_parser.add_argument("--mode", choices=sorted(VALID_MODES))
+    scan_parser.add_argument("--transcripts-json")
+    scan_parser.add_argument("--jev-response-json")
     scan_parser.add_argument("--json", action="store_true")
     bridge_parser = subparsers.add_parser("notify-bridge")
     bridge_parser.add_argument("--handoff-root")
@@ -689,6 +1103,7 @@ def main() -> None:
     bridge_parser.add_argument("--socket")
     bridge_parser.add_argument("--max-events", type=int, default=1)
     bridge_parser.add_argument("--timeout", type=float, default=5.0)
+    bridge_parser.add_argument("--mode", choices=sorted(VALID_MODES))
     bridge_parser.add_argument("--json", action="store_true")
     pins_parser = subparsers.add_parser("check-pins")
     pins_parser.add_argument("--pins-file", required=True)
@@ -703,7 +1118,21 @@ def main() -> None:
     watch_parser.add_argument("--max-wait", type=int, default=2400)
     watch_parser.add_argument("--herdr-json")
     watch_parser.add_argument("--write-alerts", action="store_true")
+    watch_parser.add_argument("--mode", choices=sorted(VALID_MODES))
     watch_parser.add_argument("--json", action="store_true")
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    status_parser.add_argument("--herdr-json")
+    status_parser.add_argument("--now")
+    status_parser.add_argument("--mode", choices=sorted(VALID_MODES))
+    status_parser.add_argument("--max-workers", type=int, default=3)
+    status_parser.add_argument("--check", action="store_true")
+    status_parser.add_argument("--json", action="store_true")
+    observe_parser = subparsers.add_parser("observe")
+    observe_parser.add_argument("--handoff-dir", required=True)
+    observe_parser.add_argument("--herdr-json")
+    observe_parser.add_argument("--now")
+    observe_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "scan":
         result = scan(args)
@@ -713,6 +1142,17 @@ def main() -> None:
         result = check_pins(args)
     elif args.command == "watch":
         result = watch(args)
+    elif args.command == "status":
+        result = status(args)
+        if args.json:
+            json_output(result, True)
+        else:
+            print_status_human(result)
+        if args.check and result["needs_a_person_count"] > 0:
+            raise SystemExit(1)
+        return
+    elif args.command == "observe":
+        result = observe(args)
     else:
         result = telemetry(args)
     json_output(result, args.json)
