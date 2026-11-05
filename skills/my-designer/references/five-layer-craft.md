@@ -84,3 +84,7 @@ The Designer writes handoff documents only. The Designer does not write
 business code, demos, or `Prototype/` code. Use
 `references/agent-design-doc-v1.md` for the YAML schema, deterministic layout,
 width arithmetic, state matrix, and Writer/Reviewer gates.
+
+Prompt context uses `Global > Category Slot > Intent > Sources`; `design.md`
+records `version` and `spec_sha`, and `jev_visual_gate.py` provides the R05
+screenshot gate.

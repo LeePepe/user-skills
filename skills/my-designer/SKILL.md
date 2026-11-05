@@ -138,3 +138,11 @@ template claims.
 When editing platform routing, ownership or gate rules, use
 [agent-design-doc-v1.md](references/agent-design-doc-v1.md) to test observable decisions, including
 native and legacy restraint cases.
+
+### Four-tier Prompt Slots and optimistic locks
+
+Compose Designer context as `Global > Category Slot > Intent > Sources` using
+[`prompt-slots.md`](references/prompt-slots.md) and `design_slots.py`. A frozen
+`design.md` records `version` and `spec_sha`; use `spec_gate.py` for optimistic
+locking. The visual Jev gate is `jev_visual_gate.py` (`R05`). The downstream
+`Writer` implements **directly in the product or `shared-design-system` code**.
