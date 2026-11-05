@@ -374,6 +374,107 @@ class LinearSyncTests(unittest.TestCase):
         self.assertTrue(payload["would_accept"])
         self.assertEqual(payload["planned_mutations"][0]["operation"], "CreateIssue")
 
+    def test_observe_ensure_and_sync_are_offline_and_do_not_bind(self) -> None:
+        before = (self.work / "ledger.md").read_bytes()
+        ensure_args = linear_sync.build_parser().parse_args([
+            "ensure-goal", "--handoff-dir", str(self.work), "--mode", "observe",
+        ])
+        sync_args = linear_sync.build_parser().parse_args([
+            "sync-ledger", "--handoff-dir", str(self.work), "--mode", "observe",
+            "--record-observe",
+        ])
+        with mock.patch.object(linear_sync, "_client_or_fail", side_effect=AssertionError("network")):
+            ensure = linear_sync.cmd_ensure_goal(ensure_args)
+            sync = linear_sync.cmd_sync_ledger(sync_args)
+        self.assertEqual(ensure["mode"], "observe")
+        self.assertTrue(ensure["planned_mutations"])
+        self.assertTrue(sync["planned_mutations"])
+        self.assertEqual(before, (self.work / "ledger.md").read_bytes())
+        self.assertTrue((self.work / "receipts" / "linear-observe.jsonl").is_file())
+
+    def test_observe_noop_and_auto_noop_when_issue_is_current(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("x", transport)
+        team = client.team("TIA")
+        first = linear_sync._sync_issue(client, client.issue("TIA-19"), team, self.work)
+        first["comments"] = {"nodes": [{"body": "<!-- GTT-LINEAR-EVENT:E7 -->"}]}
+        second = linear_sync._sync_issue(client, first, team, self.work)
+        self.assertEqual(second["_mutations_executed"], 0)
+        observed = linear_sync._sync_issue(
+            linear_sync.GraphQLClient("offline", lambda q, v: {"data": {}}),
+            first, team, self.work, mode="observe",
+        )
+        self.assertEqual(observed["diff"]["local_effects"], [])
+
+    def test_idea_dedup_snapshot_returns_duplicate_noop(self) -> None:
+        snapshot = json.dumps({
+            "team": {"id": "team-id", "states": {"nodes": []}, "labels": {"nodes": []}, "projects": {"nodes": []}},
+            "issue": {"identifier": "TIA-77", "url": "https://linear.app/TIA-77",
+                      "description": "<!-- GTT-LINEAR-DEDUP:retro-x -->",
+                      "state": {"name": "Backlog", "type": "backlog"}, "project": {"name": "Agent Workflow"}},
+        })
+        args = linear_sync.build_parser().parse_args([
+            "idea", "--title", "retro", "--mode", "observe", "--dedup-key", "retro-x",
+            "--offline-snapshot", snapshot,
+        ])
+        payload = linear_sync.cmd_idea(args)
+        self.assertEqual(payload["decision"], "no-op (duplicate)")
+        self.assertEqual(payload["duplicate_of"], "TIA-77")
+
+    def test_attribution_supports_dict_metrics_bulleted_receipts_and_pricing(self) -> None:
+        (self.work / "queue.json").write_text(json.dumps({
+            "tasks": [{"task_id": "TK1", "run_metrics": {
+                "terminal": {"model": "test-model", "input_tokens": 1_000_000, "output_tokens": 500_000, "duration_sec": 4}
+            }}]
+        }), encoding="utf-8")
+        receipts = self.work / "receipts"
+        receipts.mkdir()
+        (receipts / "tk1.md").write_text(
+            "- **Task**: `TK1`\n- **Tokens**: 100\n- **Duration**: 2 sec\n- **Model**: test-model\n- **V5 Verdict**: PASS\n",
+            encoding="utf-8",
+        )
+        prices = self.work / "prices.csv"
+        prices.write_text("model,input_per_mtok,output_per_mtok,cache_read_per_mtok,cache_write_per_mtok\n"
+                          "test-model,2,4,0,0\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"GTT_MODEL_PRICES_CSV": str(prices)}, clear=False):
+            block = linear_sync._description_block(
+                "demo", (self.work / "ledger.md").read_text(encoding="utf-8"),
+                [{"task_id": "TK1", "title": "Build it", "status": "done", "pr": ""}], self.work,
+            )
+        self.assertIn("$4.00", block)
+        self.assertIn("## Execution & Cost Attribution", block)
+
+    def test_milestone_comment_has_cost_attribution(self) -> None:
+        (self.work / "queue.json").write_text(json.dumps({
+            "tasks": [{"task_id": "TK1", "run_metrics": [{"input_tokens": 100, "cost_usd": 0.02}]}]
+        }), encoding="utf-8")
+        (self.work / "ledger.md").write_text(
+            (self.work / "ledger.md").read_text(encoding="utf-8")
+            + "- 2026-11-04T14:02:00+08:00 | EVT=DONE | id=E8 | task=TK1 | ref=PR #8\n",
+            encoding="utf-8",
+        )
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("x", transport)
+        linear_sync._sync_issue(client, client.issue("TIA-19"), client.team("TIA"), self.work)
+        comments = [v["input"]["body"] for q, v in transport.calls if "CreateComment" in q]
+        self.assertTrue(any("Run attribution" in body for body in comments))
+
+    def test_symlinked_credential_path_is_rejected(self) -> None:
+        target = self.work / "real.json"
+        target.write_text(json.dumps({"headerValue": "secret"}), encoding="utf-8")
+        link = self.work / "credentials.json"
+        link.symlink_to(target)
+        with mock.patch.dict(os.environ, {"GTT_LINEAR_CREDENTIALS_FILE": str(link)}, clear=False):
+            with self.assertRaises(linear_sync.LinearSyncError):
+                linear_sync.load_credential_info()
+        real_dir = self.work / "real-dir"
+        real_dir.mkdir()
+        parent_link = self.work / "linked-dir"
+        parent_link.symlink_to(real_dir, target_is_directory=True)
+        with mock.patch.dict(os.environ, {"GTT_LINEAR_CREDENTIALS_FILE": str(parent_link / "credentials.json")}, clear=False):
+            with self.assertRaises(linear_sync.LinearSyncError):
+                linear_sync.load_credential_info()
+
     def test_auto_sync_skips_update_when_issue_is_already_current(self) -> None:
         transport = FakeTransport()
         client = linear_sync.GraphQLClient("not-a-secret", transport)
