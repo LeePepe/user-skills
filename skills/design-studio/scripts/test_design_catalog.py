@@ -89,5 +89,176 @@ class DesignCatalogTests(unittest.TestCase):
             self.assertNotIn("MP-002", ids)
 
 
+class IngestTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT)
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.catalog = self.directory / "catalog.json"
+        self.markdown = self.directory / "matrix.md"
+        self.catalog.write_bytes(CATALOG.read_bytes())
+        self.markdown.write_bytes(MARKDOWN.read_bytes())
+
+    def ingest(self, *args):
+        return run("ingest", *args, "--catalog", str(self.catalog),
+                   "--markdown", str(self.markdown))
+
+    def snapshot(self):
+        return self.catalog.read_bytes(), self.markdown.read_bytes()
+
+    def test_classification_and_dry_run(self):
+        before = self.snapshot()
+        for text, category, prefix in (
+            ("Link chart segments with a summary", "data-linkage", "IP"),
+            ("图表联动统计", "data-linkage", "IP"),
+            ("Search and sort with scoped recovery", "filter-sort-recovery", "IP"),
+            ("搜索无结果时保留排序", "filter-sort-recovery", "IP"),
+            ("Select a record for the detail pane", "master-detail-flow", "IP"),
+            ("主从详情保持位置", "master-detail-flow", "IP"),
+            ("Responsive grid spacing and alignment", "layout-craft", "IP"),
+            ("容器布局间距对齐", "layout-craft", "IP"),
+            ("Swipe a spring-loaded card", "gesture-physical", "MP"),
+            ("揭角手势带弹簧回位", "gesture-physical", "MP"),
+            ("Confirm destructive changes with undo", "confirmation-safety", "MP"),
+            ("删除前确认并可撤销", "confirmation-safety", "MP"),
+            ("Scrub the navigation toolbar", "spatial-navigation", "MP"),
+            ("工具栏滑选导航", "spatial-navigation", "MP"),
+            ("Like reaction badge feedback", "micro-feedback-social", "MP"),
+            ("点赞表情反馈", "micro-feedback-social", "MP"),
+            ("Drag and drop files on a drop target", "drag-drop-choreography", "MP"),
+            ("拖入文件夹时显示拖放落点", "drag-drop-choreography", "MP"),
+            ("An unrecognized visual idea", "layout-craft", "IP"),
+        ):
+            with self.subTest(text=text):
+                result = self.ingest("--text", text, "--dry-run", "--force")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                self.assertEqual(data["classification"]["category"], category)
+                self.assertEqual(data["classification"]["prefix"], prefix)
+                self.assertEqual(data["pattern"]["id"], "IP-006" if prefix == "IP" else "MP-007")
+                self.assertEqual(data["pattern"]["motion_tier"], "M1" if prefix == "IP" else "M2")
+                self.assertTrue(data["dry_run"])
+                self.assertFalse(data["created"])
+                self.assertEqual(data["actions"], [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_numbering_uses_maximum_per_prefix_and_persists_render(self):
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        extra = dict(catalog["patterns"][-1], id="IP-042")
+        catalog["patterns"].insert(0, extra)
+        self.catalog.write_text(json.dumps(catalog), encoding="utf-8")
+        for text, expected in (("Responsive editorial grid", "IP-043"),
+                               ("Swipe an elastic paper edge", "MP-007"),
+                               ("Align a compact calendar layout", "IP-044")):
+            with self.subTest(expected=expected):
+                result = self.ingest("--text", text)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                self.assertTrue(data["created"])
+                self.assertFalse(data["dry_run"])
+                self.assertEqual(data["duplicate_decision"], "unique")
+                self.assertEqual(data["actions"], ["write_catalog", "render_markdown"])
+                stored = json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"][-1]
+                self.assertEqual(stored, data["pattern"])
+                self.assertEqual(stored["id"], expected)
+                for field in ("source_prompt_zh", "canonical_prompt", "state_machine",
+                              "web_implementation", "mobile_implementation", "token_guardrails"):
+                    self.assertTrue(stored[field], field)
+                self.assertIn(expected, self.markdown.read_text(encoding="utf-8"))
+                check = run("render", "--check", "--catalog", str(self.catalog),
+                            "--markdown", str(self.markdown))
+                self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_duplicate_lists_all_matches_and_force(self):
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        existing = next(item for item in catalog["patterns"] if item["id"] == "IP-001")
+        catalog["patterns"].append(dict(existing, id="IP-099"))
+        self.catalog.write_text(json.dumps(catalog), encoding="utf-8")
+        before = self.snapshot()
+        for flags in ([], ["--dry-run"]):
+            blocked = self.ingest("--text", existing["source_prompt_zh"], *flags)
+            self.assertEqual(blocked.returncode, 2, blocked.stderr)
+            data = json.loads(blocked.stdout)
+            self.assertEqual(data["duplicate_decision"], "blocked")
+            self.assertEqual({item["id"] for item in data["duplicate_matches"]}, {"IP-001", "IP-099"})
+            self.assertFalse(data["created"])
+            self.assertEqual(self.snapshot(), before)
+        preview = self.ingest("--text", existing["source_prompt_zh"], "--force", "--dry-run")
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(json.loads(preview.stdout)["duplicate_decision"], "forced")
+        self.assertEqual(self.snapshot(), before)
+        forced = self.ingest("--text", existing["source_prompt_zh"], "--force")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        data = json.loads(forced.stdout)
+        self.assertEqual(data["duplicate_decision"], "forced")
+        self.assertEqual(data["pattern"]["id"], "IP-100")
+        self.assertTrue(data["created"])
+
+    def test_duplicate_similarity_threshold(self):
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        base = catalog["patterns"][0]
+        catalog["patterns"] = [dict(base, name="different name", aliases=[],
+                                    source_prompt_zh="alpha beta gamma delta epsilon zeta",
+                                    canonical_prompt="different canonical prompt")]
+        self.catalog.write_text(json.dumps(catalog), encoding="utf-8")
+        before = self.snapshot()
+        for text, expected in (("alpha beta gamma delta epsilon theta", 2),
+                               ("alpha eta beta theta gamma delta", 0)):
+            result = self.ingest("--text", text, "--dry-run")
+            self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_file_input_and_overrides(self):
+        prompt = self.directory / "prompt.txt"
+        text = "  面板布局\n  保留完整的需求与层级。  \n"
+        prompt.write_text(text, encoding="utf-8")
+        result = self.ingest("--file", str(prompt), "--id", "IP-123", "--category", "layout-craft",
+                             "--platforms", " web, mobile ", "--surface-modes", "Read,Experience",
+                             "--motion-tier", "M3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["classification"]["source"], "override")
+        item = data["pattern"]
+        self.assertEqual(item["id"], "IP-123")
+        self.assertEqual(item["source_prompt_zh"], text.strip())
+        self.assertEqual(item["canonical_prompt"], "面板布局 保留完整的需求与层级。")
+        self.assertEqual(item["platforms"], ["web", "mobile"])
+        self.assertEqual(item["surface_modes"], ["Read", "Experience"])
+        self.assertEqual(item["motion_tier"], "M3")
+        self.assertEqual(data["paths"], {"catalog": str(self.catalog), "markdown": str(self.markdown)})
+        self.assertTrue(data["created"])
+
+    def test_invalid_input_and_overrides_never_write(self):
+        before = self.snapshot()
+        for args in (
+            [], ["--text", "one", "--file", "other"],
+            ["--text", "grid", "--category", "code-to-video"],
+            ["--text", "grid", "--platforms", "desktop"],
+            ["--text", "grid", "--platforms", ""],
+            ["--text", "grid", "--surface-modes", "Unknown"],
+            ["--text", "grid", "--motion-tier", "M5"],
+            ["--text", "grid", "--id", "T-001"],
+            ["--text", "grid", "--id", "IP-not-numeric"],
+        ):
+            with self.subTest(args=args):
+                result = self.ingest(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("error:", result.stderr)
+        for args in (
+            ["--text", " \n "],
+            ["--file", str(self.directory / "missing.txt")],
+            ["--text", "grid", "--id", "MP-123"],
+            ["--text", "grid", "--id", "IP-001", "--force"],
+        ):
+            with self.subTest(args=args):
+                result = self.ingest(*args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("error:", result.stderr)
+        empty = self.directory / "empty.txt"
+        empty.write_text("", encoding="utf-8")
+        self.assertEqual(self.ingest("--file", str(empty)).returncode, 1)
+        self.assertEqual(self.snapshot(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
