@@ -36,7 +36,10 @@ Active Goal；不传 `--issue` 时按 `auto_create` 策略创建 Goal Issue。�
 `sync-ledger` 将 `ledger.md` 的 R8 状态、Task checklist 和去重后的里程碑评论
 同步回 Linear。
 
-Canonical implementation: [`scripts/linear-sync.py`](scripts/linear-sync.py)。它是
+Linear MCP 已禁用。所有 Linear 看板读写（`idea`、`ensure-goal`、`sync-ledger`、
+`list-issues`、`get-issue`、`update-issue`、`comment`）一律通过
+[`scripts/linear-sync.py`](scripts/linear-sync.py) 执行，并使用
+`~/.config/linear/credentials.json` 中的 Bot OAuth App 身份。它是
 `goal-task` canonical script 的共享入口；真正的实现仍在
 [`../goal-task/scripts/linear-sync.py`](../goal-task/scripts/linear-sync.py)。
 # Linear synchronization modes
