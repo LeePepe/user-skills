@@ -591,6 +591,39 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("设计者（Designer）", skill_text)
         self.assertIn("writes: handoff-only", agents_text)
 
+    def test_elastic_role_routing_and_designer_tier_upgrade(self) -> None:
+        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (
+            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+        profiles_text = (
+            SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml"
+        ).read_text(encoding="utf-8")
+
+        for text in (skill_text, agents_text):
+            self.assertIn("never spawns a second `Steering`", text)
+            self.assertIn("≤8", text)
+            self.assertIn("Context-Noise Threshold", text)
+            self.assertIn("herdr-dispatch.sh", text)
+            self.assertIn("Explorer", text)
+            self.assertIn("Designer", text)
+        self.assertIn('skill("my-designer")', skill_text)
+        self.assertIn("重型 UI 重设计", skill_text)
+        self.assertIn(
+            'role_fallback_overrides: {designer: "gemini-4-argon"',
+            profiles_text,
+        )
+        designer_blocks = re.findall(
+            r"(?ms)^      designer:\n((?:        - \{[^\n]+\}\n)+)", profiles_text
+        )
+        self.assertEqual(len(designer_blocks), 2)
+        for designer_block in designer_blocks:
+            self.assertIn("model: gemini-4-argon", designer_block)
+            self.assertIn("effort: high", designer_block)
+            self.assertIn("context: long_context", designer_block)
+            self.assertIn("model: gpt-5.6-luna", designer_block)
+            self.assertNotIn("mai-code-2-flash", designer_block)
+
     def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
         designer_dir = SKILLS_DIR / "my-designer"
         modernization_dir = SKILLS_DIR / "visual-design-modernization"

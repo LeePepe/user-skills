@@ -25,6 +25,11 @@ Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 由常驻 B
 分别以 [`bot-tl-orchestration`](../../bot-tl-orchestration/SKILL.md)、
 [`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
 
+**Local CLI Steering rule:** the local CLI main session is the sole `Steering`
+(TL) and never spawns a second `Steering` or standalone `Planner` subagent.
+Only a resident Bot entry starts one `<goal>-goal-tl-r1` in Herdr; that Steering
+then dispatches leaf `Explorer`／`Designer`／`Writer`／`Reviewer` agents as needed.
+
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
 
@@ -58,7 +63,7 @@ optional and **非门禁**, never a blocking gate for the pipeline.
 
 - **流水线固定顺序**：`Explorer`（只读事实，附 `file:line`）→ `Designer`（`writes: handoff-only`，只写 `~/Development/handoff/<goal>/design.md`）→ `Writer`（Demo／UI + 四态 `populated/empty/loading/error` 与双外观 `light/dark` 截图）→ CI Design Gate（`shared-ci` 的 `scripts/context/design_contract.py`）→ 跨厂商 `Reviewer`。`shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目 `docs/design-contract.md` 与既有 `Strata`／原型预览仍是共享设计资产的单一事实源，各机器只引用、不另存一份。
 - **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。固定顺序为 **`Explorer` → `Designer`/`Planner` → `Planner Reviewer` → `Code Writer` → `Code/UI Reviewer`**：`Explorer`（R11）必须同时映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**；`Designer`／`Planner`（`writes: handoff/docs/specs only`，不同于 `Code Writer`）先更新规格，并附 **Deprecated Test Clauses to Remove/Rewrite** 表，授权移除／改写与新规格冲突的旧断言（如 inline AI suggestion chips、full-row sub-set footer buttons、microscopic font sizes）；跨厂商 `Planner Reviewer` 冻结前核验 Owner 要求与 manifest，随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，保留非 deprecated regression tests。
-- **Designer 反内联守卫**：`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等属于 `Designer`／`Writer` Subagent 的 Required Skills。TL 严禁在主会话内调用 `skill("my-designer")`、自任 Designer 或直接读取组件库源码亲自写设计方案；必须经 `herdr-dispatch.sh` 派发 `Explorer` → `Designer`。Designer 在自己的子代理会话首步加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`。
+- **Designer 上下文隔离守卫**：`my-designer`、`impeccable`、`dataviz-principles`、`hig` 等属于 `Designer`／`Writer` Subagent 的 Required Skills。轻量单组件调整时，Steering 可直接调用 `skill("my-designer")` Category Slot 并 author `design.md`／`spec.md`；重型 UI 重设计、多状态新屏或跨设备布局时，Steering 必须经 `herdr-dispatch.sh` 派发隔离上下文的 `Designer`。Designer 在自己的子代理会话首步加载 Required Skills，并输出 `design.md`／`spec.md` 与 `receipts/des-rN.md`；`writes: handoff-only` 始终有效。
 - **Brief 与阻塞保护**：`briefs/designer*.md` 只传目标范围、高层约束、探查回执路径、输出路径和 Required Skills，不得预写完整组件选型、布局尺寸表或视觉规格。TL 等待任何 Subagent 时必须先检查 `agent_status` 与磁盘 R10 回执；`blocked` 按 Tier A/A′ 解卡或记 `NEED_GO`，严禁将 `herdr agent wait` 与 `herdr pane close` 无条件串联，也严禁 TL 代跑探查脚本或代写 `receipts/explore-*.md`／`receipts/des-*.md`。
 - **Explorer／Designer parity 与预算契约**：涉及 UI 时，Explorer 核对
   `shared-design-system`／`DesignKit` 的 `Package.resolved` 与 upstream
@@ -100,11 +105,16 @@ optional and **非门禁**, never a blocking gate for the pipeline.
 - **Task / `PR_MERGED`**：按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）**，Writer 在开 PR、写 R10 回执后保持 `idle`，等待 Cross-Vendor Reviewer `V5 PASS`；通过后由 Writer（或 fallback `pr_monitor` Worker）从主仓 cwd 运行 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`，再关闭自己的任务 pane。Steering TL 只规划、派发、仲裁（`EVT=RULING`）并读回执，不内联执行 CI 监控或清理。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE`（全部 Task `done` 且 `drained: true`）后，关窗与 Worktree 处置分开验收。**A（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空其 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 回退关闭，即使 Worktree 已由 Owner Freeze 保留。不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：Owner Freeze 可以保留 Worktree；未合并、HOLD 或 dirty Worktree 保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
-### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+### 会话内追问与 Bug 反馈守卫（Sticky TL & Context-Noise Threshold）
 
 进入 `goal-task` 或存在活动 ledger 后，会话追问继续继承 TL 合同。
-诊断最多做 2–3 次只读探查；超过上限或需要任何文件修改，必须经
-`herdr` 派发 Explorer／Writer 并记入 ledger，TL 不内联调试或编辑。
+已知模块或中小改动（`≤8` 个文件）由 Steering 直接读取、诊断根因并写
+`spec.md`／`briefs/<task>.md`，无需派发 `Explorer` 或 `Planner Reviewer`；
+跨仓大海捞针、全量盘点 `Obsolete Test Manifest` 或长日志分析超过 8 个文件时，
+通过 `herdr-dispatch.sh` 按需派发只读 `Explorer`，接收 `<15` 行摘要与 R10 receipt。
+重型 UI 重设计、多状态新屏或跨设备布局则派发隔离上下文的 `Designer`；轻量单组件
+调整可由 Steering 直接加载 `skill("my-designer")`。Phase 1 产品代码仍由隔离
+worktree 的 Writer 修改，Steering 不内联改产品代码。
 
 ### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
 

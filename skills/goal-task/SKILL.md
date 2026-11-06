@@ -62,22 +62,28 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 | **Phase 0：交互共创期**（Interactive Co-Design） | **Co-Design 顾问态**（常驻域主 Bot 或本地 CLI 主会话均可担任） | Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项 | 只读探查（R11）＋每次聚焦 1–2 个关键决策点与 Owner 对齐＋UI/UX 设计或原型 → 落盘 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`）；**严禁建业务代码 Worktree、严禁派 Writer 改业务代码** |
 | **Phase 1：自治执行期**（Autonomous TL Execution） | **TL 协调态**（Bot 拉起后台 `<goal>-goal-tl-r1` 或本地 CLI 原地转任 TL） | Owner 明确拍板（“按这个做／开始执行／做”），或初始请求本身即为范围清晰、无歧义的直接实现指令 | 冻结 `spec.md` → 按 `Lite`（单 Task）或 `Standard`（多 Task DAG）1-Hop 派发 `Writer` 与异构 `Reviewer`，跑通实现、双轴审查与 PR Auto-merge 读回；**TL 绝不亲自下场写多文件业务代码或自审** |
 
+本地 CLI 主会话是唯一的 `Steering`（TL），**never spawns a second `Steering`**
+或独立 `Planner`；仅常驻 Bot 入口启动一个 `<goal>-goal-tl-r1`，再由其派发叶子
+`Explorer`／`Designer`／`Writer`／`Reviewer`。
+
 ### Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）
 
 - **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
 - **允许动作**：
-  1. **只读探查（R11）**：按需派 1 个只读 `Explorer`（`gpt-5.6-luna`／`mai-code-2-flash` 或 `gemini-4-argon`／Codex 只读）极速摸底代码事实（附 `file:line`）。涉及 UI 时，Explorer 还必须核对目标仓库的 `shared-design-system`／`DesignKit` 版本 parity（`Package.resolved`／本地 package state），并盘点已有 upstream primitives，避免 Designer／Writer 在 `AppUI` 重造组件；
-  2. **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 每次聚焦 1–2 个关键决策点与 Owner 交互；
-  3. **视觉与交互设计（UI/UX Design）**：采用 **Explorer → Designer**
-     解耦；Designer 仅写 `design.md`／`spec.md`（`writes: handoff-only`），
-     声明 Token、四态、双外观、container-driven width budget、3-tier text
-     rules、zero numeric truncation、scenario → component & motion mapping，
-     并复用 `shared-design-system` 的 upstream primitives。超过 `>15` 行
-     custom layout/chrome glue 且 upstream 缺失时，先拆上游 Task；不得在
-     `AppUI` 打补丁。固定流水线为 **Explorer → Designer → Writer → CI Design
-     Gate → Cross-Vendor Reviewer**，不要求 `艺术家` 或任何 Grok Bot，`非门禁`；
-     详规见 [references/bots-and-agents.md](references/bots-and-agents.md)。
-  4. **产出冻结候选**：将讨论确认的结论落盘为 `~/Development/handoff/<goal>/spec.md`（或目标仓 `specs/`），复杂架构可派异构 `planner_reviewer` 预审盲区。
+  1. **只读探查（R11）**：按需派只读 `Explorer`（`gpt-5.6-luna`／`mai-code-2-flash` 或 `gemini-4-argon`／Codex 只读）摸底代码事实（附 `file:line`）。涉及 UI 时核对目标仓库的 `shared-design-system`／`DesignKit` parity（`Package.resolved`／本地 package state）及 upstream primitives，避免 Designer／Writer 在 `AppUI` 重造组件；
+  2. **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 聚焦关键决策点与 Owner 交互；
+  3. **视觉与交互设计（UI/UX Design）**：按上下文污染度弹性分流。轻量单组件
+     调整可由 `Steering` 直接加载 `skill("my-designer")` Category Slot 并写
+     `design.md`／`spec.md`；重型 UI 重设计、多状态新屏或跨设备布局则通过
+     `herdr-dispatch.sh` 派发隔离上下文的 `Designer`，由其加载
+     `my-designer`／`hig`／`impeccable`，仅写 `design.md`／`spec.md`
+     （`writes: handoff-only`）与 R10；沿用 Token、四态、双外观、width budget、
+     3-tier text、zero numeric truncation 与 upstream primitives。超过 `>15` 行 custom
+     layout/chrome glue 且 upstream 缺失时先拆上游 Task，不得在 `AppUI` 打补丁。流水线为
+     **Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer**，
+     不要求 `艺术家` 或任何 Grok Bot，`非门禁`；详规见
+     [references/bots-and-agents.md](references/bots-and-agents.md)。
+  4. **产出冻结候选**：将结论落盘为 `~/Development/handoff/<goal>/spec.md`；可派 `planner_reviewer` 预审。
 - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
 
 ### 切换开关（Freeze / GO）
@@ -117,10 +123,14 @@ mapping, and terminal evidence; supersession preserves every original acceptance
 The canonical schema, replacement/cancellation rules, and `set-status` evidence
 contract live in [`ledger.md`](references/ledger.md).
 
-### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
+### 会话内追问与 Bug 反馈守卫（Sticky TL & Context-Noise Threshold）
 
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
-- **只读诊断上限（Read-Only Diagnostic Cap，≤3 次直接探查）**：收到用户 Bug 反馈或追问时，TL 最多执行 **2–3 次快速只读检查**以定位受影响的 Task 与文件路径；若排查需要深入的多文件／二进制逆向分析（`>3` 次工具调用）或**任何文件修改**（包括修改 `handoff/` 原型、规格说明 `spec.md`／`design.md` 或仓库业务代码），TL **必须**通过 `herdr` 派发 `Explorer` 或 `Writer` Subagent（`<goal>-<task>-writer-rN`）并记入 `ledger.md`，**严禁在 TL 主会话内直接内联调试或编辑文件**。
+- **上下文污染度弹性分流（Context-Noise Threshold）**：已知模块或中小改动（`≤8` 个文件）
+  由 `Steering` 直接读取、诊断并写 `spec.md`／`briefs/<task>.md`，无需派发
+  `Explorer` 或 `Planner Reviewer`；跨仓搜索、全量 `Obsolete Test Manifest` 或长日志
+  超过 8 个文件时，才经 `herdr-dispatch.sh` 按需派发只读 `Explorer`，接收 `<15` 行摘要
+  与 R10 receipt。Phase 1 产品代码仍由隔离 worktree 的 `Writer` 修改。
 
 ### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
 
@@ -145,14 +155,17 @@ Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complet
 | PR 监控者（PR Monitor / `pr_monitor`） | 默认先在后台运行 `python3 skills/goal-task/scripts/ci-monitor.py workflow|pr`（Layer 0、0 Token）监控发布流水线、PR CI 与 auto-merge；仅在失败需 LLM 诊断或特殊复杂场景时回退 `worker.pr_monitor`。脚本按 Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，落盘 R10 回执；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
 
-### Designer 派遣与反内联守卫
+### Designer 派遣与上下文隔离守卫
 
 `Designer`／`Writer` 的 Required Skills 与设计路由以
-`bots-and-agents.md` 为准。TL 不在主会话调用 `skill("my-designer")`、自任
-Designer 或读取组件源码写方案；必须经 `herdr-dispatch.sh` 派发 Explorer →
-Designer，并由 Designer 产出 `design.md`／`spec.md` 与 R10 receipt。
+`bots-and-agents.md` 为准。轻量单组件调整时，Steering 可直接调用
+`skill("my-designer")` Category Slot 并写 handoff；重型 UI 重设计、多状态新屏或
+跨设备布局时，必须经 `herdr-dispatch.sh` 派发隔离上下文的 `Designer`，并由
+Designer 产出 `design.md`／`spec.md` 与 R10 receipt。
 CLI pipeline remains `Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer`
 without requiring `艺术家` or any Grok Bot；该路由为 `非门禁` FYI，不改变验收。
+`Planner Reviewer` 仅在高风险多仓架构或 `Spec-First Requirement Change Rule`
+要求核验 `Obsolete Test Manifest` 时可选，非例行强制门禁。
 
 ### Writer / Designer 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
 
