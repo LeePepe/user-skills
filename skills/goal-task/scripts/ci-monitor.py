@@ -108,6 +108,7 @@ def _receipt(
         "last_released_tag_sha",
         "merge_commit_sha",
         "url",
+        "gc_result",
         "execution_layer",
     ):
         if key in fields:
@@ -232,7 +233,7 @@ def monitor_pr(
         view = _json_command(
             run,
             ["gh", "pr", "view", str(args.pr), "--repo", args.repo,
-             "--json", "number,state,mergedAt,mergeCommit,mergeStateStatus,headRefOid,statusCheckRollup,url"],
+             "--json", "number,state,mergedAt,mergeCommit,mergeStateStatus,headRefOid,headRefName,statusCheckRollup,url"],
         )
         head = view.get("headRefOid")
         if args.head_sha and head != args.head_sha:
@@ -241,10 +242,12 @@ def monitor_pr(
             return result, 1
         if view.get("state") == "MERGED" or view.get("mergedAt"):
             merge_commit = view.get("mergeCommit") or {}
+            gc_result = _maybe_gc(args, view)
             fields = {
                 "status": "PR_MERGED", "conclusion": "success", "pr": args.pr, "repo": args.repo,
                 "merge_commit_sha": merge_commit.get("oid", "n/a") if isinstance(merge_commit, dict) else merge_commit,
                 "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)",
+                "gc_result": gc_result,
             }
             _receipt(args.receipt, fields)
             _notify(args.notify_agent, fields["status"], str(args.pr), "success", args.receipt)
@@ -279,6 +282,34 @@ def monitor_pr(
         sleep(args.interval)
 
 
+def _maybe_gc(args: argparse.Namespace, view: dict[str, Any]) -> dict[str, Any] | None:
+    if os.environ.get("GTT_WORKTREE_GC") == "0":
+        return None
+    worktree_arg = getattr(args, "worktree", None)
+    branch_arg = getattr(args, "branch", None)
+    if not (worktree_arg or branch_arg or os.environ.get("GTT_WORKTREE_GC") != "0"):
+        return None
+    script = Path(__file__).with_name("git-gc.py")
+    command = [sys.executable, str(script), "task-clean", "--repo", args.repo, "--pr", str(args.pr)]
+    worktree = worktree_arg
+    branch = branch_arg or view.get("headRefName")
+    if worktree:
+        command.extend(["--worktree", worktree])
+    if branch:
+        command.extend(["--branch", str(branch)])
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        try:
+            payload = json.loads(completed.stdout)
+        except (ValueError, json.JSONDecodeError):
+            payload = {"ok": False, "error": completed.stderr.strip() or "invalid gc output"}
+        if completed.returncode:
+            payload.setdefault("ok", False)
+        return payload
+    except OSError as error:
+        return {"ok": False, "error": str(error)}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -298,6 +329,8 @@ def _parser() -> argparse.ArgumentParser:
     pr.add_argument("--repo", required=True)
     pr.add_argument("--pr", required=True, type=int)
     pr.add_argument("--head-sha")
+    pr.add_argument("--worktree")
+    pr.add_argument("--branch")
     pr.add_argument("--interval", type=float, default=20)
     pr.add_argument("--timeout", type=float, default=1800)
     pr.add_argument("--receipt", required=True)
