@@ -88,6 +88,12 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 - 常驻 Bot 通过 `herdr` 拉起 `<goal>-goal-tl-r1`，把冻结 `spec.md` 交给 TL；
   `extra_add_dirs` 与 Parent ≥ Child allowlist 必须随 brief 注入。
+- **Space 优先**：绝不占用／阻塞用户当前交互 CLI Space，保持可交互；后台 TL／Subagent
+  可复用同一 Space 分屏，或创建 1 个／多个 Space。分屏用 `git worktree add` +
+  `herdr pane split --direction right|down`（经 `herdr-dispatch.sh`）；创建用
+  `herdr workspace create`／`herdr worktree create`，其 `--cwd`（`identity_cwd`）须传目标
+  Git 仓根／worktree，或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`，
+  严禁传每次不同的 `/Volumes/SSD/Development/handoff/<goal>` 子目录，以统一归组。
 - 本地 CLI 可原地担任 TL；两种入口都按 Lite／Standard 1-Hop 派发 Writer 与
   跨厂商 Reviewer，主会话不兼任 Task Writer 或独立验收。
 - Bot ↔ TL 的开 TL、热追加、巡检、`PR_MERGED`／`GOAL_DONE` 回收遵循
