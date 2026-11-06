@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ SCRIPTS = ROOT / "skills" / "goal-task" / "scripts"
 SUPERVISOR = SCRIPTS / "goal-supervisor.py"
 ROUTER = SCRIPTS / "jev-skill-router.py"
 COMPACT = SCRIPTS / "jev-compact.py"
+JEV_CLIENT = SCRIPTS / "jev_client.py"
 
 
 def load_supervisor():
@@ -20,7 +22,38 @@ def load_supervisor():
     return module
 
 
+def load_jev_client():
+    spec = importlib.util.spec_from_file_location("jev_client", JEV_CLIENT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class GoalSupervisorAndJevTests(unittest.TestCase):
+    def test_jev_resolves_skill_keyed_falcon_source_key(self):
+        jev_client = load_jev_client()
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            falcon_dir = home / ".config" / "falcon"
+            falcon_dir.mkdir(parents=True)
+            (falcon_dir / "source-keys.json").write_text(
+                json.dumps({"goal-task": "flk_goal_task"}),
+                encoding="utf-8",
+            )
+            with patch.object(jev_client.Path, "home", return_value=home), patch.dict(
+                jev_client.os.environ,
+                {
+                    "FALCON_API_KEY": "",
+                    "FALCON_SOURCE_KEY": "",
+                    "JEV_API_KEY": "",
+                },
+                clear=False,
+            ):
+                self.assertEqual(
+                    jev_client._resolve_auth_token("http://127.0.0.1:19823"),
+                    ("flk_goal_task", "flk_goal_task"),
+                )
+
     def test_mode_resolution_and_watchdog(self):
         supervisor = load_supervisor()
         self.assertEqual(supervisor.resolve_supervisor_mode("off"), "off")
