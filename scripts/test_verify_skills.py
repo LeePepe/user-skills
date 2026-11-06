@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import importlib.util
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -120,6 +122,117 @@ def tracked_and_candidate_files() -> tuple[Path, ...]:
 
 class VerifySkillsTests(unittest.TestCase):
     """Contract and integrity checks for skills, metadata, links, and hygiene."""
+
+    def _load_ci_monitor(self):
+        path = SKILLS_DIR / "goal-task" / "scripts" / "ci-monitor.py"
+        spec = importlib.util.spec_from_file_location("ci_monitor_test", path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_ci_monitor_cli_and_layer_zero_contract(self) -> None:
+        script = SKILLS_DIR / "goal-task" / "scripts" / "ci-monitor.py"
+        self.assertTrue(script.is_file())
+        self.assertEqual(script.stat().st_mode & 0o777, 0o755)
+        for command in ("workflow", "pr"):
+            result = subprocess.run(
+                [sys.executable, str(script), command, "--help"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn("usage:", result.stdout)
+        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
+        for text in (skill_text, agents_text):
+            self.assertIn("ci-monitor.py", text)
+            self.assertIn("Layer 0", text)
+            self.assertIn("0 Token", text)
+            self.assertIn("pr_monitor", text)
+        self.assertIn("不为纯状态轮询启动 LLM", skill_text)
+        self.assertIn("默认走 Layer 0", agents_text)
+
+    def test_ci_monitor_workflow_receipts_and_job_fail_fast(self) -> None:
+        module = self._load_ci_monitor()
+        with tempfile.TemporaryDirectory() as tmp:
+            success_receipt = Path(tmp) / "workflow-success.md"
+            args = argparse.Namespace(
+                repo="LeePepe/app", workflow="testflight.yml", run_id="42", trigger=False,
+                force=False, ref="main", marker_tag="testflight/last-released", interval=0,
+                timeout=10, receipt=str(success_receipt), notify_agent=None,
+            )
+
+            def success_run(command):
+                if command[:3] == ["gh", "run", "view"]:
+                    return json.dumps({"status": "completed", "conclusion": "success", "headSha": "abc",
+                                       "url": "https://example/run/42", "jobs": [{"databaseId": 7, "conclusion": "success"}]})
+                if command[:3] == ["gh", "api", "repos/LeePepe/app/actions/jobs/7/logs"]:
+                    return "Latest upload succeeded with build 123\n"
+                if command[:2] == ["git", "ls-remote"]:
+                    return "deadbeef\trefs/tags/testflight/last-released\n"
+                raise AssertionError(command)
+
+            result, code = module.monitor_workflow(args, run=success_run, sleep=lambda _: None, now=lambda: 0)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "WORKFLOW_SUCCESS")
+            receipt = success_receipt.read_text(encoding="utf-8")
+            self.assertIn("build_number`: 123", receipt)
+            self.assertIn("last_released_tag_sha`: deadbeef", receipt)
+
+            failed_receipt = Path(tmp) / "workflow-failed.md"
+            args.receipt = str(failed_receipt)
+
+            def failed_run(command):
+                if command[:3] == ["gh", "run", "view"]:
+                    return json.dumps({"status": "in_progress", "conclusion": None, "headSha": "abc",
+                                       "url": "https://example/run/42", "jobs": [{"databaseId": 8, "conclusion": "failure"}]})
+                if command[:3] == ["gh", "api", "repos/LeePepe/app/actions/jobs/8/logs"]:
+                    return "failure line\n"
+                raise AssertionError(command)
+
+            result, code = module.monitor_workflow(args, run=failed_run, sleep=lambda _: None, now=lambda: 0)
+            self.assertEqual(code, 1)
+            self.assertEqual(result["status"], "WORKFLOW_FAILED")
+            self.assertIn("failure line", failed_receipt.read_text(encoding="utf-8"))
+
+    def test_ci_monitor_pr_receipts_and_job_fail_fast(self) -> None:
+        module = self._load_ci_monitor()
+        with tempfile.TemporaryDirectory() as tmp:
+            merged_receipt = Path(tmp) / "pr-merged.md"
+            args = argparse.Namespace(repo="LeePepe/app", pr=9, head_sha="abc", interval=0,
+                                      timeout=10, receipt=str(merged_receipt), notify_agent=None, exit_on_green=False)
+
+            def merged_run(command):
+                self.assertEqual(command[:3], ["gh", "pr", "view"])
+                return json.dumps({"state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z",
+                                   "mergeCommit": {"oid": "fedcba"}, "headRefOid": "abc",
+                                   "statusCheckRollup": [], "url": "https://example/pr/9"})
+
+            result, code = module.monitor_pr(args, run=merged_run, sleep=lambda _: None, now=lambda: 0)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "PR_MERGED")
+            self.assertIn("merge_commit_sha`: fedcba", merged_receipt.read_text(encoding="utf-8"))
+
+            failed_receipt = Path(tmp) / "pr-failed.md"
+            args.receipt = str(failed_receipt)
+
+            def failed_run(command):
+                if command[:3] == ["gh", "pr", "view"]:
+                    return json.dumps({"state": "OPEN", "headRefOid": "abc", "statusCheckRollup": [
+                        {"conclusion": "FAILURE", "detailsUrl": "https://github.com/LeePepe/app/actions/runs/1/job/88"}
+                    ], "url": "https://example/pr/9"})
+                if command[:3] == ["gh", "api", "repos/LeePepe/app/actions/jobs/88/logs"]:
+                    return "job failed\n"
+                raise AssertionError(command)
+
+            result, code = module.monitor_pr(args, run=failed_run, sleep=lambda _: None, now=lambda: 0)
+            self.assertEqual(code, 1)
+            self.assertEqual(result["status"], "PR_CHECK_FAILED")
+            self.assertIn("job failed", failed_receipt.read_text(encoding="utf-8"))
 
     def test_json_files_valid_and_plugin_manifests_consistent(self) -> None:
         json_files = [

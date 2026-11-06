@@ -142,7 +142,7 @@ Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complet
 | 设计者（Designer） | 只写 handoff 的 `design.md`／`spec.md` 与 R10 回执；由 TL 通过 `herdr-dispatch.sh` 派发，在自己的子代理会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig` 等 Required Skills，不写业务或 Demo 代码 |
 | Task 写者（Writer / `writer_escalated`） | 每个 Task 唯一写者（1 Task = 1 Writer = 1 Worktree = 1 PR）：实现、验证、commit、push、开 PR；本地验证、`git push` 与 R10 回执落盘后立即结束，远端 CI 交 `pr_monitor`（严禁 `gh run watch` 或 `sleep >= 30` 等待远端 CI）；首轮（`r1`）必须使用 `worker.writer`（`copilot` `gpt-5.6-luna` → `mai-code-2-flash`），**严禁在 `r1` 首轮或 Planner 简报中直接指定 `writer_escalated`（`codex` `gpt-6.1-sol`）**，`writer_escalated` 仅在 V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复）时启用 |
 | 独立验收（Reviewer） | 按 V1–V5 对每个 Task 的 PR 执行双轴限定审查，并在全部 Task 完成后核验 Goal 端到端验收证据 |
-| PR 监控者（PR Monitor / `pr_monitor`） | 使用 `worker.pr_monitor` 的模型顺序（`mai-code-2-flash` → `gpt-5.6-luna`）在独立 Herdr Subagent 窗格中监控 PR CI checks、auto-merge 与发布流水线状态，落盘 R10 监控回执并在绿灯合并或红灯失败时唤醒／回报 TL。Job 级 Fail-Fast：看 required job 的 `failure`／`timed_out`／`action_required`，不要只等 Workflow Run 顶层 `.conclusion`；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
+| PR 监控者（PR Monitor / `pr_monitor`） | 默认先在后台运行 `python3 skills/goal-task/scripts/ci-monitor.py workflow|pr`（Layer 0、0 Token）监控发布流水线、PR CI 与 auto-merge；仅在失败需 LLM 诊断或特殊复杂场景时回退 `worker.pr_monitor`。脚本按 Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，落盘 R10 回执；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
 
 ### Designer 派遣与反内联守卫
@@ -274,7 +274,9 @@ Goal 处于 `accepting` 时交独立验收核对端到端整体验收；已冻�
   allowlist、`--direction right|down` 与 Parent ≥ Child 白名单派发；
   不使用裸 `--current`，不在 Writer／TL 内联等待远端 CI。
   手写分屏示例：`herdr pane split --pane "$HERDR_PANE_ID" --direction down --cwd "$TASK_WORKTREE" --no-focus`。
-- `pr_monitor` 按 `worker.pr_monitor` 做 Job 级 Fail-Fast；Run 仍
+- Layer 0 默认使用 `python3 skills/goal-task/scripts/ci-monitor.py workflow` 或
+  `python3 skills/goal-task/scripts/ci-monitor.py pr`，直接异步启动，不为纯状态轮询启动 LLM
+  Subagent；仅失败诊断或特殊复杂场景才回退 `pr_monitor`。脚本按 Job 级 Fail-Fast；Run 仍
   `in_progress` 时使用 `actions/jobs/<failed_job_id>/logs`，不要使用
   `gh run view --log-failed`。
 - 只有真实 `PR_MERGED`、R10 回执与 required checks 齐全后清理已合并

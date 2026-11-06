@@ -171,7 +171,7 @@ TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_esca
 | 设计者（`Designer`） | worker（`gpt-5.6-luna` -> `mai-code-2-flash`） | TL，经 `herdr-dispatch.sh` | `writes: handoff-only`；在自己的会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig`，输出 `design.md`／`spec.md` 与 `receipts/des-rN.md` |
 | 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
 | Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
-| PR 监控者（`pr_monitor`） | worker（**`pr_monitor` 顺序为 `mai-code-2-flash` → `gpt-5.6-luna`**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
+| PR 监控者（`pr_monitor`） | 默认由 Layer 0 `ci-monitor.py`（0 Token）处理；失败诊断或特殊复杂场景才用 worker（**`pr_monitor` 顺序为 `mai-code-2-flash` → `gpt-5.6-luna`**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
 | 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
 
 ## 诊断类 Goal 的 TL（仅此类；Owner 2026-10-26，Joy → Hotty → flower）
@@ -316,7 +316,7 @@ echo $((100 - "${USED%.*}"))
    ```
 
    `herdr-dispatch.sh` 在 `agent start` 成功后轮询 `interactive_ready`（最多约 10s，间隔 0.5s）再 `agent prompt`。若返回 `agent_prompt_stalled`（`--wait` 约 5s 初态检测的假阳性）或发送后约 2s 仍为 `idle`，脚本自动发送一次 Enter（`herdr agent send-keys <name> enter`）提交输入框；指定了 `--wait` 时改走 `herdr agent wait`，不要把这次 5s stall 当成派发失败，也不要盲目重发整段 prompt。手写命令流同样只补一次 Enter 再 `agent wait`。多个无依赖 Task 并行时，依次使用不带 `--wait` 的 `agent prompt`，再用 `herdr agent get <name>` 确认各自进入 `working`，随后分别执行 `herdr agent wait <name> --timeout 600000`。长任务可在完成边界通过 `herdr agent prompt <tl-name> "DONE <task>: receipt at <path>"` 反向唤醒 TL pane。
-   **PR 状态监控必须派发 `pr_monitor` Subagent（严禁 TL 与 Writer 内联轮询）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL **严禁**在主会话内跑 `for/while ... gh pr checks / sleep` 循环，Writer **严禁**在会话内执行 `gh run watch` 或 `sleep >= 30` 等待远端 CI（本地验证、`git push` 与 R10 回执落盘后立即返回）。必须通过 `scripts/herdr-dispatch.sh` 派发 `worker.pr_monitor` 模型序列的 `pr_monitor` Subagent（`mai-code-2-flash` → `gpt-5.6-luna`）。`pr_monitor` 做 Job 级 Fail-Fast：轮询 `gh pr checks <pr> --json name,state,bucket,link` 或 `gh api repos/<owner>/<repo>/actions/runs/<run_id>/jobs`，**不得**只看 Workflow Run 顶层 `.conclusion`（同 Run 仍有 Job 在排队或运行时它恒为 `null`）。任一 required job 为 `failure`／`timed_out`／`action_required` 即停止轮询并回报。Run 仍 `in_progress` 时 `gh run view <run-id> --log-failed` 会报 `run is still in progress`，必须改用单 Job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`。
+   **PR 状态监控默认走 Layer 0（0 Token）**：当 PR 已创建或进入 CI／auto-merge／发布流程时，TL 直接后台异步启动 `python3 skills/goal-task/scripts/ci-monitor.py workflow|pr ...`，不为纯状态轮询启动 LLM Subagent；仅流水线失败需 LLM 诊断或特殊复杂场景才通过 `scripts/herdr-dispatch.sh` 回退派发 `worker.pr_monitor`。Writer **严禁**在会话内执行 `gh run watch` 或 `sleep >= 30` 等待远端 CI（本地验证、`git push` 与 R10 回执落盘后立即返回）。脚本与回退 `pr_monitor` 都做 Job 级 Fail-Fast：不得只看 Workflow Run 顶层 `.conclusion`（同 Run 仍有 Job 在排队或运行时它恒为 `null`）。任一 required job 为 `failure`／`timed_out`／`action_required` 即停止并回报；Run 仍 `in_progress` 时 `gh run view <run-id> --log-failed` 会报 `run is still in progress`，必须改用单 Job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`。
 
    ```sh
    set -euo pipefail
