@@ -374,12 +374,10 @@ if [[ "$KIND" == "copilot" ]]; then
     case "$arg" in
       --allow-tool|--allow-tool=*|--deny-tool|--deny-tool=*)
         HAS_ALLOW_OR_DENY=1
+        SANITIZED_AGENT_ARGS+=("$arg")
         ;;
       --add-dir)
         prev_was_add_dir=1
-        if [[ -n "${MOCK_HERDR_LOG:-}" ]]; then
-          SANITIZED_AGENT_ARGS+=("$arg")
-        fi
         ;;
       --add-dir=*)
         caller_dir="${arg#--add-dir=}"

@@ -20,6 +20,8 @@ args = sys.argv[1:]
 if args[:2] == ["pane", "split"]:
     print(json.dumps({"result": {"pane": {"pane_id": "p99"}}}))
 elif args[:2] == ["agent", "start"]:
+    with open(os.environ["TEST_CAPTURE"], "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args) + "\\n")
     print(json.dumps({"ok": True}))
 elif args[:2] == ["agent", "get"]:
     print(json.dumps({"interactive_ready": True, "agent_status": "working"}))
@@ -27,7 +29,10 @@ elif args[:2] == ["agent", "prompt"]:
     print(json.dumps({"ok": True}))
 """
 
-    def run_dispatch(self, role, kind="copilot", extra=(), name="goal-tk1-writer-r2", online="0"):
+    def run_dispatch(
+        self, role, kind="copilot", extra=(), agent_args=(), name="goal-tk1-writer-r2",
+        online="0", mock_log=True,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             herdr = tmp / "herdr"
@@ -40,15 +45,18 @@ elif args[:2] == ["agent", "prompt"]:
                 "HERDR_PANE_ID": "p1",
                 "HERDR_MOCK_MAGPIE_ONLINE": online,
                 "HERDR_PROMPT_IDLE_GRACE": "0",
-                "MOCK_HERDR_LOG": str(tmp / "calls"),
+                **({"MOCK_HERDR_LOG": str(tmp / "calls")} if mock_log else {}),
+                "TEST_CAPTURE": str(tmp / "calls"),
             }
-            return subprocess.run(
+            result = subprocess.run(
                 [
                     str(DISPATCH), "--name", name, "--kind", kind, "--cwd", str(tmp),
-                    "--prompt", "test", "--role", role, *extra,
+                    "--prompt", "test", "--role", role, *extra, *(("--", *agent_args) if agent_args else ()),
                 ],
                 env=env, capture_output=True, text=True,
             )
+            result.mock_log = (tmp / "calls").read_text(encoding="utf-8") if (tmp / "calls").exists() else ""
+            return result
 
     def test_gateway_groups_and_cross_vendor_mapping(self):
         text = PROFILES.read_text(encoding="utf-8")
@@ -83,6 +91,23 @@ elif args[:2] == ["agent", "prompt"]:
         self.assertIn("strictly reserved", result.stderr)
         result = self.run_dispatch("writer_escalated")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_caller_allow_tool_is_preserved(self):
+        result = self.run_dispatch("writer", agent_args=("--allow-tool=url",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--allow-tool=url", result.mock_log)
+
+    def test_add_dir_pairs_are_filtered_as_pairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            valid = Path(tmp) / "valid"
+            valid.mkdir()
+            result = self.run_dispatch(
+                "writer", agent_args=("--add-dir", str(valid), "--add-dir", str(valid / "missing")),
+                mock_log=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(valid), result.mock_log)
+            self.assertNotIn(str(valid / "missing"), result.mock_log)
 
 
 if __name__ == "__main__":
