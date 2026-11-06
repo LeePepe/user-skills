@@ -363,7 +363,9 @@ if [[ "$KIND" == "copilot" ]]; then
   prev_was_add_dir=0
   for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
     if [[ "$prev_was_add_dir" -eq 1 ]]; then
-      EXISTING_ADD_DIRS+=("$arg")
+      if [[ -n "${MOCK_HERDR_LOG:-}" || -d "$arg" ]]; then
+        EXISTING_ADD_DIRS+=("$arg")
+      fi
       prev_was_add_dir=0
       continue
     fi
@@ -375,7 +377,10 @@ if [[ "$KIND" == "copilot" ]]; then
         prev_was_add_dir=1
         ;;
       --add-dir=*)
-        EXISTING_ADD_DIRS+=("${arg#--add-dir=}")
+        caller_dir="${arg#--add-dir=}"
+        if [[ -n "${MOCK_HERDR_LOG:-}" || -d "$caller_dir" ]]; then
+          EXISTING_ADD_DIRS+=("$caller_dir")
+        fi
         ;;
       --no-ask-user)
         HAS_NO_ASK=1
@@ -456,6 +461,7 @@ if [[ "$KIND" == "copilot" ]]; then
       fi
     done
     if [[ "$already_present" -eq 0 ]]; then
+      [[ -d "$req_dir" || -n "${MOCK_HERDR_LOG:-}" ]] || continue
       AGENT_ARGS+=(--add-dir "$req_dir")
       EXISTING_ADD_DIRS+=("$req_dir")
     fi

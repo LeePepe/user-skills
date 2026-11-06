@@ -62,7 +62,7 @@ except ModuleNotFoundError as exc:
     )
 
 try:
-    from state_store import Later, connect as connect_state, enqueue_effect, sync_to_sqlite
+    from state_store import Later, connect as connect_state, enqueue_effect, sync_to_sqlite, transaction as state_transaction
 except ModuleNotFoundError as exc:
     if exc.name != "state_store":
         raise
@@ -78,6 +78,7 @@ except ModuleNotFoundError as exc:
     connect_state = _state_module.connect
     enqueue_effect = _state_module.enqueue_effect
     sync_to_sqlite = _state_module.sync_to_sqlite
+    state_transaction = _state_module.transaction
 
 
 VALID_STATUSES: tuple[str, ...] = (
@@ -185,6 +186,35 @@ def _maybe_linear_sync(handoff_dir: Path) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def _maybe_gc_task(handoff_dir: Path, task: Mapping[str, Any]) -> None:
+    if os.environ.get("GTT_WORKTREE_GC") == "0":
+        return
+    if _is_isolated_handoff_dir(handoff_dir) and os.environ.get("GTT_WORKTREE_GC") != "1":
+        return
+    repo = str(task.get("repo") or "").strip()
+    worktree = str(task.get("worktree") or "").strip()
+    branch = str(task.get("branch") or "").strip()
+    pr = str(task.get("pr") or "").strip()
+    if not repo or not any((worktree, branch, pr)):
+        return
+    script = Path(__file__).with_name("git-gc.py")
+    command = [sys.executable, str(script), "task-clean", "--repo", repo, "--handoff-dir", str(handoff_dir),
+               "--task-id", str(task.get("task_id") or "")]
+    if worktree:
+        command.extend(["--worktree", worktree])
+    if branch:
+        command.extend(["--branch", branch])
+    if pr:
+        command.extend(["--pr", pr])
+    try:
+        subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except OSError:
         pass
@@ -1181,6 +1211,25 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, staged_tasks, [evt_entry])
         sync_to_sqlite(handoff_dir, queue_data, [evt_entry])
+        if args.status == "done":
+            connection = connect_state(handoff_dir)
+            try:
+                with state_transaction(connection):
+                    enqueue_effect(
+                        connection,
+                        "worktree_gc",
+                        str(args.task_id),
+                        {
+                            "task_id": args.task_id,
+                            "repo": target_task.get("repo", ""),
+                            "worktree": target_task.get("worktree", ""),
+                            "branch": target_task.get("branch", ""),
+                            "pr": target_task.get("pr", ""),
+                        },
+                    )
+            finally:
+                connection.close()
+            _maybe_gc_task(handoff_dir, target_task)
         in_progress_count, pending_count, drained = _queue_metrics(staged_tasks)
 
     return {

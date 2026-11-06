@@ -22,6 +22,7 @@ EFFECT_KINDS = {
     "herdr_launch",
     "herdr_deliver",
     "alert_write",
+    "worktree_gc",
 }
 
 
