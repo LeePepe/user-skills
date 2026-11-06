@@ -27,6 +27,7 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 
 ## 1. 开 TL、热追加与路由
 
+- **Space 优先**：绝不占用／阻塞用户当前交互 CLI Space，保持可用；后台 TL／Subagent 可建 1 或多个 Space，`herdr workspace create`／`herdr worktree create` 的 `--cwd`（`identity_cwd`）须传 Git 仓根／worktree，或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`；禁传 `handoff/<goal>`，以统一归组。
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`，状态为 `working`、`idle` 或 `done` 时绝不再开第二个
   TL；改用 [`goal-queue.py`](../goal-task/scripts/goal-queue.py) `enqueue`，记录
   `EVT=HOT_APPEND`，若 TL 为 `idle` 或 `done` 再用 `herdr agent prompt <goal>-goal-tl-r1` 唤醒。
