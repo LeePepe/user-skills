@@ -1,6 +1,6 @@
 ---
 name: goal-task
-description: 进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 1-Hop 子代理编排 Explorer -> Designer -> Writer -> Reviewer -> pr_monitor。
+description: 进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 Steering -> Writer -> Reviewer + ci-monitor.py 编排。
 ---
 # Goal -> Task 执行合同（`goal-task`）
 
@@ -64,26 +64,25 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 本地 CLI 主会话是唯一的 `Steering`（TL），**never spawns a second `Steering`**
 或独立 `Planner`；仅常驻 Bot 入口启动一个 `<goal>-goal-tl-r1`，再由其派发叶子
-`Explorer`／`Designer`／`Writer`／`Reviewer`。
+`Writer`／`Reviewer`，并运行 Layer-0 `ci-monitor.py`。
 
 ### Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）
 
-- **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 如 `Joy`／`Atlas`／`艺术家`／`flower`，还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
+- **触发条件**：当 Owner 提出探讨性问题（“怎么设计比较好”、“先讨论方案”、“先出设计”），或需求存在明显的产品／交互／架构未决项时，当前对话窗口（无论是常驻域主 Bot 还是 Owner 直接打开的本地 CLI 会话）处于 **Co-Design 顾问态**。
 - **允许动作**：
-  1. **只读探查（R11）**：按需派只读 `Explorer`（`gpt-5.6-luna`／`mai-code-2-flash` 或 `gemini-4-argon`／Codex 只读）摸底代码事实（附 `file:line`）。涉及 UI 时核对目标仓库的 `shared-design-system`／`DesignKit` parity（`Package.resolved`／本地 package state）及 upstream primitives，避免 Designer／Writer 在 `AppUI` 重造组件；
-  2. **需求对齐与收敛（Grill / Spec）**：结合 `grill-me`／`to-spec`／`codebase-design` 聚焦关键决策点与 Owner 交互；
-  3. **视觉与交互设计（UI/UX Design）**：按上下文污染度弹性分流。轻量单组件
-     调整可由 `Steering` 直接加载 `skill("my-designer")` Category Slot 并写
-     `design.md`／`spec.md`；重型 UI 重设计、多状态新屏或跨设备布局则通过
-     `herdr-dispatch.sh` 派发隔离上下文的 `Designer`，由其加载
-     `my-designer`／`hig`／`impeccable`，仅写 `design.md`／`spec.md`
+  1. **只读探查（R11）**：Steering 直接读取有界代码；仅在跨仓或高噪声搜索超过
+     8 个文件时按需派只读 `Explorer`（附 `file:line`）摸底代码事实。涉及 UI 时核对
+     目标仓库的 `shared-design-system`／`DesignKit` parity（`Package.resolved`／本地
+     package state）及 upstream primitives，避免 Writer 在 `AppUI` 重造组件；
+  2. **需求对齐与收敛（Grill / Spec）**：Steering 结合 `grill-me`／`to-spec`／
+     `codebase-design`／`domain-modeling` 聚焦关键决策点与 Owner 交互；
+  3. **视觉与交互设计（UI/UX Design）**：Steering 按需直接加载
+     `skill("my-designer")`、`hig` 或 `impeccable`，author `design.md`／`spec.md`
      （`writes: handoff-only`）与 R10；沿用 Token、四态、双外观、width budget、
-     3-tier text、zero numeric truncation 与 upstream primitives。超过 `>15` 行 custom
-     layout/chrome glue 且 upstream 缺失时先拆上游 Task，不得在 `AppUI` 打补丁。流水线为
-     **Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer**，
-     不要求 `艺术家` 或任何 Grok Bot，`非门禁`；详规见
-     [references/bots-and-agents.md](references/bots-and-agents.md)。
-  4. **产出冻结候选**：将结论落盘为 `~/Development/handoff/<goal>/spec.md`；可派 `planner_reviewer` 预审。
+     3-tier text、zero numeric truncation 与 upstream primitives。超过 `>15` 行
+     custom layout/chrome glue 且 upstream 缺失时先拆上游 Task，不得在 `AppUI` 打补丁；
+  4. **产出冻结候选**：将结论落盘为 `~/Development/handoff/<goal>/spec.md`；
+     按需写 `briefs/<task>.md`。
 - **Phase 0 禁令**：在 Owner 给出明确执行信号前，**严禁创建业务代码 Worktree、严禁派发 Writer 修改业务代码**。
 
 ### 切换开关（Freeze / GO）
@@ -104,8 +103,8 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
   跨厂商 Reviewer，主会话不兼任 Task Writer 或独立验收。
 - Bot ↔ TL 的开 TL、热追加、巡检、`PR_MERGED`／`GOAL_DONE` 回收遵循
   [`bot-tl-orchestration`](../bot-tl-orchestration/SKILL.md)；保留 Worktree 不阻断关窗。
-- UI Task 固定走 `Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer`，
-  不要求 `艺术家` 或任何 Grok Bot，`非门禁`；详规见 `bots-and-agents.md`。
+- UI Task 由 Steering 设计、Writer 实现、CI Design Gate 与 Cross-Vendor Reviewer
+  验证；详规见 `bots-and-agents.md`。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -128,7 +127,7 @@ contract live in [`ledger.md`](references/ledger.md).
 - **会话粘性（Sticky TL Rule）**：一旦当前会话已进入 `goal-task`（或存在活动的 `~/Development/handoff/<goal>/ledger.md`），**该会话后续每一轮用户追问或反馈都自动继承 `TL (Coordinator)` 合同约束——即使 Owner 没有再次输入 `/goal-task`**（例如口语化 Bug 反馈与追问：`"还是点不动呀"`、`"还没有找到原因吗"`、`"改一下配色"`）。
 - **上下文污染度弹性分流（Context-Noise Threshold）**：已知模块或中小改动（`≤8` 个文件）
   由 `Steering` 直接读取、诊断并写 `spec.md`／`briefs/<task>.md`，无需派发
-  `Explorer` 或 `Planner Reviewer`；跨仓搜索、全量 `Obsolete Test Manifest` 或长日志
+  `Explorer`；跨仓搜索、全量 `Obsolete Test Manifest` 或长日志
   超过 8 个文件时，才经 `herdr-dispatch.sh` 按需派发只读 `Explorer`，接收 `<15` 行摘要
   与 R10 receipt。Phase 1 产品代码仍由隔离 worktree 的 `Writer` 修改。
 
@@ -146,28 +145,14 @@ Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complet
 
 | 合同角色 | 职责 |
 |---|---|
-| Goal/Task 定义方（Planner / TL） | 定义 Goal、不做项、Task DAG 与各 Task 验收命令；评估 Goal／Task 变更，按 R2／R4／R5 分级报批并编制 revision |
-| 协调者（TL） | 审定计划、分配、依赖调度、内联裁决（`EVT=RULING`）与路由决定；不兼任 Task 写者或独立验收 |
+| Steering / 协调与规划主控（TL / `group/steering`） | 定义与审定 Goal／Task、分配与依赖调度、内联裁决（`EVT=RULING`）及路由决定；不兼任 Task 写者或独立验收 |
 | 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不改代码、只把报告写到 handoff，不提方案、不补定义 |
-| 设计者（Designer） | 只写 handoff 的 `design.md`／`spec.md` 与 R10 回执；由 TL 通过 `herdr-dispatch.sh` 派发，在自己的子代理会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig` 等 Required Skills，不写业务或 Demo 代码 |
 | Task 写者（Writer / `writer_escalated`） | 每个 Task 唯一写者（1 Task = 1 Writer = 1 Worktree = 1 PR）：实现、验证、commit、push、开 PR 并写 R10 回执；按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）** 保持 `idle` 等待 Cross-Vendor Reviewer `V5 PASS`，再由 Writer（或 fallback `pr_monitor` Worker）运行 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`，清理自己的 Worktree／branch 后退出；严禁 `gh run watch` 或 `sleep >= 30` 等待远端 CI；首轮（`r1`）必须使用 `worker.writer`（`copilot` `gpt-5.6-luna` → `mai-code-2-flash`），**严禁在 `r1` 首轮或 Planner 简报中直接指定 `writer_escalated`（`codex` `gpt-6.1-sol`）**，`writer_escalated` 仅在 V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复）时启用 |
 | 独立验收（Reviewer） | 按 V1–V5 对每个 Task 的 PR 执行双轴限定审查，并在全部 Task 完成后核验 Goal 端到端验收证据 |
 | PR 监控者（PR Monitor / `pr_monitor`） | 默认先在后台运行 `python3 skills/goal-task/scripts/ci-monitor.py workflow|pr`（Layer 0、0 Token）监控发布流水线、PR CI 与 auto-merge；仅在失败需 LLM 诊断或特殊复杂场景时回退 `worker.pr_monitor`。脚本按 Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，落盘 R10 回执；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
 
-### Designer 派遣与上下文隔离守卫
-
-`Designer`／`Writer` 的 Required Skills 与设计路由以
-`bots-and-agents.md` 为准。轻量单组件调整时，Steering 可直接调用
-`skill("my-designer")` Category Slot 并写 handoff；重型 UI 重设计、多状态新屏或
-跨设备布局时，必须经 `herdr-dispatch.sh` 派发隔离上下文的 `Designer`，并由
-Designer 产出 `design.md`／`spec.md` 与 R10 receipt。
-CLI pipeline remains `Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer`
-without requiring `艺术家` or any Grok Bot；该路由为 `非门禁` FYI，不改变验收。
-`Planner Reviewer` 仅在高风险多仓架构或 `Spec-First Requirement Change Rule`
-要求核验 `Obsolete Test Manifest` 时可选，非例行强制门禁。
-
-### Writer / Designer 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
+### 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
 
 技术栈到 Required Skills 的唯一事实源是
 [`bots-and-agents.md`](references/bots-and-agents.md)；模型与启动参数只看
@@ -251,9 +236,9 @@ Goal 处于 `accepting` 时交独立验收核对端到端整体验收；已冻�
 
 - **Spec-First Requirement Change Rule**：已有代码／测试的需求或 UI/UX 变更以
   `spec.md`／`design.md`（及 `specs/`、`docs/design-contract.md`）为唯一上游；
-  `Explorer` 产出带 `file:line` 的 **Obsolete Test Manifest**，
-  `Designer`／`Planner` 产出 **Deprecated Test Clauses to Remove/Rewrite**，
-  `Planner Reviewer` 冻结后由 `Code Writer` 先迁移获授权旧断言，再实现，
+  `Steering`（或按需 `Explorer`）识别冲突的 legacy test assertions，产出带
+  `file:line` 的 **Obsolete Test Manifest**，并在 `spec.md`／`design.md` 记录
+  **Deprecated Test Clauses to Remove/Rewrite**；冻结后由 `Code Writer` 先迁移获授权旧断言，再实现，
   `Code/UI Reviewer` 保留非 deprecated regression tests。
 - **V1 双轴**：每个 `Task = 1 PR` 单次独立审查；Axis 1 核对 brief／Interfaces／Owned
   Paths／范围，Axis 2 核对测试真实性、质量、验证证据与安全红线。

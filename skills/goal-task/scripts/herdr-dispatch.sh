@@ -170,7 +170,7 @@ case "$ROLE" in
     LOGICAL_GROUP="group/reviewing"
     [[ "$EXCLUDE_VENDOR" == "google" ]] && LOGICAL_GROUP="group/reviewing-openai"
     ;;
-  writer|designer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
+  writer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
   writer_escalated) LOGICAL_GROUP="group/coding-escalated" ;;
   *) echo "Error: unsupported --role '$ROLE'" >&2; exit 2 ;;
 esac

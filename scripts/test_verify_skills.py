@@ -321,7 +321,7 @@ class VerifySkillsTests(unittest.TestCase):
         for section_key in ("  strong:", "  mid:", "  worker:", "  research:", "  mac-mini:", "  macbook:"):
             self.assertIn(f"\n{section_key}", content, f"Missing {section_key.strip()} in {profile_path}")
 
-        self.assertIn("worker: [writer, designer, explorer, pr_monitor, mechanical]", content)
+        self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
         self.assertIn("copilot_allowlist:", content)
         self.assertNotIn("gemini-3.8-flash", content)
         self.assertNotIn("composer-2.5", content)
@@ -329,7 +329,6 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("kimi: moonshot", content)
         self.assertIn("model: kimi,", content)
         self.assertGreaterEqual(content.count("pr_monitor:"), 2)
-        self.assertGreaterEqual(content.count("designer:"), 2)
         code_reviewer_blocks = re.findall(
             r"code_reviewer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
             content,
@@ -573,56 +572,24 @@ class VerifySkillsTests(unittest.TestCase):
             isolated.mkdir()
             self.assertTrue(queue_module._is_isolated_handoff_dir(isolated))
 
-    def test_goal_task_design_role_and_inline_delegation_guards(self) -> None:
+    def test_thin_three_group_role_routing_without_designer_subagent(self) -> None:
         skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"
         agents_path = skill_path.parent / "references" / "bots-and-agents.md"
         skill_text = skill_path.read_text(encoding="utf-8")
         agents_text = agents_path.read_text(encoding="utf-8")
-        description = parse_frontmatter(skill_path).fields["description"]
-
-        self.assertIn("设计", description)
         for text in (skill_text, agents_text):
-            self.assertIn("Designer", text)
-            self.assertIn('skill("my-designer")', text)
+            self.assertIn("never spawns a second `Steering`", text)
+            self.assertIn("Context-Noise Threshold", text)
+            self.assertIn("≤8", text)
             self.assertIn("herdr-dispatch.sh", text)
             self.assertIn("herdr pane close", text)
             self.assertIn("blocked", text)
             self.assertIn("R10", text)
-        self.assertIn("设计者（Designer）", skill_text)
-        self.assertIn("writes: handoff-only", agents_text)
-
-    def test_elastic_role_routing_and_designer_tier_upgrade(self) -> None:
-        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
-        agents_text = (
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
-        ).read_text(encoding="utf-8")
-        profiles_text = (
-            SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml"
-        ).read_text(encoding="utf-8")
-
-        for text in (skill_text, agents_text):
-            self.assertIn("never spawns a second `Steering`", text)
-            self.assertIn("≤8", text)
-            self.assertIn("Context-Noise Threshold", text)
-            self.assertIn("herdr-dispatch.sh", text)
+            self.assertIn('my-designer', text)
             self.assertIn("Explorer", text)
-            self.assertIn("Designer", text)
-        self.assertIn('skill("my-designer")', skill_text)
-        self.assertIn("重型 UI 重设计", skill_text)
-        self.assertIn(
-            'role_fallback_overrides: {designer: "gemini-4-argon"',
-            profiles_text,
-        )
-        designer_blocks = re.findall(
-            r"(?ms)^      designer:\n((?:        - \{[^\n]+\}\n)+)", profiles_text
-        )
-        self.assertEqual(len(designer_blocks), 2)
-        for designer_block in designer_blocks:
-            self.assertIn("model: gemini-4-argon", designer_block)
-            self.assertIn("effort: high", designer_block)
-            self.assertIn("context: long_context", designer_block)
-            self.assertIn("model: gpt-5.6-luna", designer_block)
-            self.assertNotIn("mai-code-2-flash", designer_block)
+            self.assertNotIn("设计者（Designer）", text)
+            self.assertNotIn("Designer 派遣与反内联守卫", text)
+            self.assertNotIn("艺术家", text)
 
     def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
         designer_dir = SKILLS_DIR / "my-designer"
@@ -648,12 +615,8 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("MUST", spec_text)
         self.assertIn("NEVER", spec_text)
         self.assertIn("handoff-only", designer_text)
-        self.assertIn("without requiring `艺术家` or any Grok Bot", goal_text)
-        self.assertIn("非门禁", goal_text)
-        self.assertIn("without requiring `艺术家` or any Grok Bot", agents_text)
-        self.assertIn("非门禁", agents_text)
-        self.assertIn("Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer", goal_text)
-        self.assertIn("Explorer → Designer → Writer → CI Design Gate → Cross-Vendor Reviewer", agents_text)
+        self.assertNotIn("艺术家", goal_text)
+        self.assertNotIn("艺术家", agents_text)
         self.assertNotIn("执行设计总审门禁", agents_text)
         self.assertNotIn("Bot → `艺术家`", agents_text)
         self.assertIn("Web Operate", craft_text)
@@ -768,7 +731,6 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Obsolete Test Manifest", text)
             self.assertIn("Deprecated Test Clauses to Remove/Rewrite", text)
             self.assertIn("Explorer", text)
-            self.assertIn("Planner Reviewer", text)
             self.assertIn("Code Writer", text)
             self.assertIn("Code/UI Reviewer", text)
             self.assertIn("shared-design-system", text)
