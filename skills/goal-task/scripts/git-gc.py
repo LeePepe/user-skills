@@ -6,16 +6,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from urllib.parse import quote
+from urllib.request import urlopen
 
 
 NOISE_NAMES = {".DS_Store", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", ".build"}
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+GITHUB_SLUG = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 
 
 def _run(command: Sequence[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -73,14 +77,40 @@ def has_active_herdr_pane(worktree: Path, *, runner: Callable[..., subprocess.Co
     )
 
 
+def _github_slug(repo: Path | str, *, runner: Runner = _run) -> str | None:
+    value = str(repo)
+    if re.fullmatch(GITHUB_SLUG, value) and not Path(value).expanduser().exists():
+        return value
+    try:
+        result = runner(["git", "-C", value, "remote", "get-url", "origin"])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    remote = result.stdout.strip()
+    match = re.search(r"github\.com[/:]([^/:\s]+/[^/\s]+?)(?:\.git)?$", remote)
+    return match.group(1) if match else None
+
+
+def _rest_json(url: str) -> Any:
+    with urlopen(url) as response:
+        return json.load(response)
+
+
 def _pr_state(repo: Path, pr: str, *, runner: Runner = _run) -> str | None:
     value = str(pr)
+    slug = _github_slug(repo, runner=runner)
     try:
-        result = runner(["gh", "pr", "view", value, "--repo", str(repo), "--json", "state,mergedAt"])
+        result = runner(["gh", "pr", "view", value, "--repo", slug or str(repo), "--json", "state,mergedAt"])
         payload = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
-        return None
+        if not slug:
+            return None
+        try:
+            payload = _rest_json(f"https://api.github.com/repos/{slug}/pulls/{quote(value, safe='')}")
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
     if payload.get("mergedAt") or str(payload.get("state", "")).upper() == "MERGED":
+        return "MERGED"
+    if payload.get("merged_at") or str(payload.get("state", "")).upper() == "MERGED":
         return "MERGED"
     return str(payload.get("state") or "").upper() or None
 
@@ -90,9 +120,10 @@ def is_merged(repo: Path, *, branch: str | None = None, pr: str | None = None, r
     if pr:
         return _pr_state(repo, pr, runner=runner) == "MERGED"
     if branch:
+        slug = _github_slug(repo, runner=runner)
         try:
             result = runner([
-                "gh", "pr", "list", "--repo", str(repo), "--state", "all",
+                "gh", "pr", "list", "--repo", slug or str(repo), "--state", "all",
                 "--head", branch, "--limit", "20", "--json", "number,state,mergedAt",
             ])
             rows = json.loads(result.stdout)
@@ -102,7 +133,20 @@ def is_merged(repo: Path, *, branch: str | None = None, pr: str | None = None, r
                 if any(row.get("mergedAt") or str(row.get("state", "")).upper() == "MERGED" for row in rows):
                     return True
         except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
-            pass
+            if slug:
+                try:
+                    owner, _ = slug.split("/", 1)
+                    rows = _rest_json(
+                        f"https://api.github.com/repos/{slug}/pulls?state=all&head="
+                        f"{quote(owner + ':' + branch, safe=':')}&per_page=20"
+                    )
+                    if isinstance(rows, list):
+                        if any(str(row.get("state", "")).upper() == "OPEN" for row in rows):
+                            return False
+                        if any(row.get("merged_at") or str(row.get("state", "")).upper() == "MERGED" for row in rows):
+                            return True
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
         # A local ancestor is useful for non-GitHub repositories, but is not
         # allowed to override an explicit OPEN/CLOSED PR result.
         try:
@@ -188,6 +232,7 @@ def task_clean(
     companions: list[Path] = []
     if worktree:
         companion = Path(f"{worktree}-data")
+        clean_noise(companion)
         if companion.is_dir() and not _dirty(companion, runner=runner):
             companions.append(companion)
     if not dry_run:
@@ -211,11 +256,50 @@ def task_clean(
     return result
 
 
-def _pr_rows(repo: str) -> list[dict[str, Any]]:
-    result = _run(["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", "500",
-                   "--json", "number,state,headRefName,mergedAt,closedAt"])
-    payload = json.loads(result.stdout)
-    return payload if isinstance(payload, list) else []
+def _pr_rows(repo: str, *, runner: Runner = _run) -> list[dict[str, Any]]:
+    slug = _github_slug(repo, runner=runner) or repo
+    try:
+        result = runner(["gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "500",
+                         "--json", "number,state,headRefName,mergedAt,closedAt"])
+        payload = json.loads(result.stdout)
+        return payload if isinstance(payload, list) else []
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        if not slug or not re.fullmatch(GITHUB_SLUG, slug):
+            return []
+        try:
+            payload = _rest_json(f"https://api.github.com/repos/{slug}/pulls?state=all&per_page=100")
+        except (OSError, ValueError, json.JSONDecodeError):
+            return []
+        rows = []
+        for item in payload if isinstance(payload, list) else []:
+            head = item.get("head") or {}
+            rows.append({
+                "number": item.get("number"),
+                "state": str(item.get("state") or "").upper(),
+                "headRefName": head.get("ref"),
+                "mergedAt": item.get("merged_at"),
+                "closedAt": item.get("closed_at"),
+            })
+        return rows
+
+
+def _remote_branches(remote: str, *, runner: Runner = _run) -> set[str]:
+    try:
+        result = runner(["gh", "api", f"repos/{remote}/branches", "--paginate", "--jq", ".[].name"])
+        if result.returncode == 0:
+            return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        result = runner(["git", "ls-remote", "--heads", f"https://github.com/{remote}.git"], check=False)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    branches = set()
+    for line in result.stdout.splitlines():
+        _, _, ref = line.partition("\trefs/heads/")
+        if ref:
+            branches.add(ref.strip())
+    return branches
 
 
 def sweep(args: argparse.Namespace) -> dict[str, Any]:
@@ -228,7 +312,9 @@ def sweep(args: argparse.Namespace) -> dict[str, Any]:
     for repo in sorted(dev_root.iterdir()) if dev_root.is_dir() else []:
         if not (repo / ".git").exists() or (selected and repo.name not in selected and str(repo) not in selected):
             continue
-        for item in _worktrees(repo):
+        worktree_items = _worktrees(repo)
+        checked_out = {item.get("branch") for item in worktree_items if item.get("branch")}
+        for item in worktree_items:
             path = Path(item["worktree"])
             if path == repo or not path.exists():
                 continue
@@ -244,24 +330,50 @@ def sweep(args: argparse.Namespace) -> dict[str, Any]:
             elif merged and not _dirty(path) and args.apply_tier1:
                 entry["gc_result"] = task_clean(repo=repo, worktree=path, branch=branch, dry_run=False)
             rows.append(entry)
-    for remote in filter(None, (item.strip() for item in args.remote_repos.split(","))):
-        for pr in _pr_rows(remote):
-            state = str(pr.get("state", "")).upper()
-            if state not in {"MERGED", "CLOSED"} or pr.get("headRefName") in {"main", "master"}:
+        branch_result = _run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"])
+        for branch in (line.strip() for line in branch_result.stdout.splitlines()):
+            if not branch or branch in {"main", "master"} or branch in checked_out:
                 continue
-            merged = state == "MERGED" and bool(pr.get("mergedAt"))
+            merged = is_merged(repo, branch=branch)
+            if merged:
+                entry = {"kind": "local_branch", "repo": str(repo), "branch": branch,
+                         "merged": True, "reason": "merged"}
+                if args.apply_tier1:
+                    completed = _run(["git", "-C", str(repo), "branch", "-D", branch], check=False)
+                    entry["gc_result"] = {"ok": completed.returncode == 0, "branch": branch}
+                rows.append(entry)
+                continue
+            pr_rows = [pr for pr in _pr_rows(str(repo)) if pr.get("headRefName") == branch]
+            if any(str(pr.get("state", "")).upper() == "OPEN" for pr in pr_rows):
+                continue
+            reason = "closed" if any(str(pr.get("state", "")).upper() == "CLOSED" for pr in pr_rows) else "no_pr"
+            rows.append({"kind": "local_branch", "repo": str(repo), "branch": branch,
+                         "merged": False, "reason": reason})
+    for remote in filter(None, (item.strip() for item in args.remote_repos.split(","))):
+        pr_by_branch: dict[str, list[dict[str, Any]]] = {}
+        for pr in _pr_rows(remote):
+            branch = str(pr.get("headRefName") or "")
+            if branch:
+                pr_by_branch.setdefault(branch, []).append(pr)
+        for branch in sorted(_remote_branches(remote)):
+            if branch in {"main", "master"}:
+                continue
+            prs = pr_by_branch.get(branch, [])
+            if any(str(pr.get("state", "")).upper() == "OPEN" for pr in prs):
+                continue
+            merged = any(str(pr.get("state", "")).upper() == "MERGED" and pr.get("mergedAt") for pr in prs)
             entry = {
-                "kind": "remote_branch", "repo": remote, "branch": pr.get("headRefName"),
-                "merged": merged, "reason": "merged" if merged else "closed",
+                "kind": "remote_branch", "repo": remote, "branch": branch,
+                "merged": merged, "reason": "merged" if merged else (
+                    "closed" if any(str(pr.get("state", "")).upper() == "CLOSED" for pr in prs) else "no_pr"
+                ),
             }
             if merged and args.apply_tier1:
-                branch = str(pr.get("headRefName") or "")
-                if branch:
-                    completed = _run(
-                        ["gh", "api", "-X", "DELETE", f"repos/{remote}/git/refs/heads/{branch}"],
-                        check=False,
-                    )
-                    entry["gc_result"] = {"ok": completed.returncode == 0, "branch": branch}
+                completed = _run(
+                    ["gh", "api", "-X", "DELETE", f"repos/{remote}/git/refs/heads/{branch}"],
+                    check=False,
+                )
+                entry["gc_result"] = {"ok": completed.returncode == 0, "branch": branch}
             rows.append(entry)
     tier2 = [row for row in rows if row.get("reason") != "merged" and "gc_result" not in row]
     payload = {"ok": True, "tier1": [row for row in rows if row.get("reason") == "merged"], "tier2": tier2, "count": len(rows)}
@@ -283,8 +395,12 @@ def approve_tier2(args: argparse.Namespace) -> dict[str, Any]:
     report = json.loads(Path(args.report_file).read_text(encoding="utf-8"))
     cleaned = []
     for row in report.get("tier2", []):
-        if row.get("reason") == "dirty" or (row.get("reason") == "closed" and not args.include_closed_pr) or (
-            row.get("kind") == "remote_branch" and not args.include_no_pr
+        reason = row.get("reason")
+        if reason == "dirty" or (reason == "closed" and not args.include_closed_pr) or (
+            reason == "no_pr" and not args.include_no_pr
+        ) or (
+            (reason == "companion_data" or str(row.get("worktree", "")).endswith("-data"))
+            and not args.include_companion_data
         ):
             continue
         if row.get("kind") == "worktree" and row.get("worktree"):
@@ -292,6 +408,13 @@ def approve_tier2(args: argparse.Namespace) -> dict[str, Any]:
                 repo=Path(row["repo"]), worktree=Path(row["worktree"]), branch=row.get("branch"),
                 dry_run=args.dry_run, allow_unmerged=True,
             ))
+        elif row.get("kind") == "local_branch" and row.get("branch"):
+            command = ["git", "-C", row["repo"], "branch", "-D", row["branch"]]
+            if args.dry_run:
+                cleaned.append({"ok": True, "dry_run": True, "branch": row["branch"]})
+            else:
+                completed = _run(command, check=False)
+                cleaned.append({"ok": completed.returncode == 0, "branch": row["branch"]})
         elif row.get("kind") == "remote_branch" and row.get("branch"):
             command = ["gh", "api", "-X", "DELETE", f"repos/{row['repo']}/git/refs/heads/{row['branch']}"]
             if args.dry_run:

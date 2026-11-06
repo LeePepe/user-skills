@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +95,30 @@ class GitGcTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertTrue(json.loads(result.stdout)["ok"])
+
+    def test_github_slug_uses_slug_or_origin(self) -> None:
+        self.assertEqual(git_gc._github_slug("LeePepe/user-skills"), "LeePepe/user-skills")
+        result = subprocess.CompletedProcess([], 0, "git@github.com:LeePepe/user-skills.git\n", "")
+        self.assertEqual(git_gc._github_slug(Path("/tmp/repo"), runner=lambda *_args, **_kwargs: result),
+                         "LeePepe/user-skills")
+
+    def test_pr_state_falls_back_to_rest(self) -> None:
+        result = subprocess.CompletedProcess([], 1, "", "unauthorized")
+        with mock.patch.object(git_gc, "_rest_json", return_value={"state": "closed", "merged_at": None}):
+            self.assertEqual(git_gc._pr_state("LeePepe/user-skills", "12",
+                                              runner=lambda *_args, **_kwargs: result), "CLOSED")
+
+    def test_approve_tier2_gates_no_pr_and_local_branch(self) -> None:
+        holder, repo, _ = self.make_repo()
+        self.addCleanup(holder.cleanup)
+        report = repo / "report.json"
+        report.write_text(json.dumps({"tier2": [
+            {"kind": "local_branch", "repo": str(repo), "branch": "feature", "reason": "no_pr"},
+        ]}), encoding="utf-8")
+        args = git_gc._parser().parse_args(["approve-tier2", "--report-file", str(report), "--dry-run"])
+        self.assertEqual(git_gc.approve_tier2(args)["cleaned"], [])
+        args.include_no_pr = True
+        self.assertEqual(git_gc.approve_tier2(args)["cleaned"][0]["branch"], "feature")
 
 
 if __name__ == "__main__":

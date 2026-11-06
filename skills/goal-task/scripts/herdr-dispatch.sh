@@ -360,11 +360,13 @@ if [[ "$KIND" == "copilot" ]]; then
   HAS_ALLOW_OR_DENY=0
   HAS_NO_ASK=0
   EXISTING_ADD_DIRS=()
+  SANITIZED_AGENT_ARGS=()
   prev_was_add_dir=0
   for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
     if [[ "$prev_was_add_dir" -eq 1 ]]; then
       if [[ -n "${MOCK_HERDR_LOG:-}" || -d "$arg" ]]; then
         EXISTING_ADD_DIRS+=("$arg")
+        SANITIZED_AGENT_ARGS+=("$arg")
       fi
       prev_was_add_dir=0
       continue
@@ -375,18 +377,25 @@ if [[ "$KIND" == "copilot" ]]; then
         ;;
       --add-dir)
         prev_was_add_dir=1
+        if [[ -n "${MOCK_HERDR_LOG:-}" ]]; then
+          SANITIZED_AGENT_ARGS+=("$arg")
+        fi
         ;;
       --add-dir=*)
         caller_dir="${arg#--add-dir=}"
         if [[ -n "${MOCK_HERDR_LOG:-}" || -d "$caller_dir" ]]; then
           EXISTING_ADD_DIRS+=("$caller_dir")
+          SANITIZED_AGENT_ARGS+=("$arg")
         fi
         ;;
       --no-ask-user)
         HAS_NO_ASK=1
+        SANITIZED_AGENT_ARGS+=("$arg")
         ;;
+      *) SANITIZED_AGENT_ARGS+=("$arg") ;;
     esac
   done
+  AGENT_ARGS=("${SANITIZED_AGENT_ARGS[@]+"${SANITIZED_AGENT_ARGS[@]}"}")
   if [[ "$HAS_ALLOW_OR_DENY" -eq 0 ]]; then
     AGENT_ARGS+=(
       --allow-tool write
