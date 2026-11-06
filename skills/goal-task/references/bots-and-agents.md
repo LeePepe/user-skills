@@ -97,7 +97,7 @@ optional and **非门禁**, never a blocking gate for the pipeline.
    TL 独占下属 Subagent 的派发、更新与回收。Bot 或本地 CLI 直接担任 TL 时，
    由其直接管辖下属。
 - `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
-- **Task / `PR_MERGED`**：TL 或清理 Subagent 收到准确合并读回与 R10 回执后，关闭任务 pane，清理 `__pycache__`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
+- **Task / `PR_MERGED`**：按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）**，Writer 在开 PR、写 R10 回执后保持 `idle`，等待 Cross-Vendor Reviewer `V5 PASS`；通过后由 Writer（或 fallback `pr_monitor` Worker）从主仓 cwd 运行 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`，再关闭自己的任务 pane。Steering TL 只规划、派发、仲裁（`EVT=RULING`）并读回执，不内联执行 CI 监控或清理。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE`（全部 Task `done` 且 `drained: true`）后，关窗与 Worktree 处置分开验收。**A（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空其 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 回退关闭，即使 Worktree 已由 Owner Freeze 保留。不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：Owner Freeze 可以保留 Worktree；未合并、HOLD 或 dirty Worktree 保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
 ### 会话内追问与 Bug 反馈守卫（Sticky TL & 3-Probe Diagnostic Cap）
@@ -357,7 +357,7 @@ echo $((100 - "${USED%.*}"))
    herdr pane close "$NEW_PANE_ID"
    ```
 
-   **已合并（`PR_MERGED`）的 Task 自动清理**：当 Task PR 已读回确认 `MERGED`、R10 回执已落盘且绑定该 worktree 的 Writer、Reviewer 与 `pr_monitor` panes 已关闭后，先清理 `__pycache__`、临时日志等临时产物，再由 TL 在主仓执行：
+   **已合并（`PR_MERGED`）的 Task 自动清理**：当 Task PR 已读回确认 `MERGED`、R10 回执已落盘且 Cross-Vendor Reviewer 已记录 `V5 PASS` 后，Writer（或 fallback `pr_monitor` Worker）先清理 `__pycache__`、临时日志等临时产物，再从主仓执行：
 
    ```sh
    # Equivalent cleanup command from the main-repository checkout:

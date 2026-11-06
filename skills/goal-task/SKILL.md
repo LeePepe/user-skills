@@ -140,7 +140,7 @@ Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complet
 | 协调者（TL） | 审定计划、分配、依赖调度、内联裁决（`EVT=RULING`）与路由决定；不兼任 Task 写者或独立验收 |
 | 探查者（Explorer） | 只读核实代码库、API／符号、文件、命令与文档是否实际存在，附 file:line 证据回报事实（R11）；不改代码、只把报告写到 handoff，不提方案、不补定义 |
 | 设计者（Designer） | 只写 handoff 的 `design.md`／`spec.md` 与 R10 回执；由 TL 通过 `herdr-dispatch.sh` 派发，在自己的子代理会话首步加载 `my-designer`／`impeccable`／`dataviz-principles`／`hig` 等 Required Skills，不写业务或 Demo 代码 |
-| Task 写者（Writer / `writer_escalated`） | 每个 Task 唯一写者（1 Task = 1 Writer = 1 Worktree = 1 PR）：实现、验证、commit、push、开 PR；本地验证、`git push` 与 R10 回执落盘后立即结束，远端 CI 交 `pr_monitor`（严禁 `gh run watch` 或 `sleep >= 30` 等待远端 CI）；首轮（`r1`）必须使用 `worker.writer`（`copilot` `gpt-5.6-luna` → `mai-code-2-flash`），**严禁在 `r1` 首轮或 Planner 简报中直接指定 `writer_escalated`（`codex` `gpt-6.1-sol`）**，`writer_escalated` 仅在 V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复）时启用 |
+| Task 写者（Writer / `writer_escalated`） | 每个 Task 唯一写者（1 Task = 1 Writer = 1 Worktree = 1 PR）：实现、验证、commit、push、开 PR 并写 R10 回执；按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）** 保持 `idle` 等待 Cross-Vendor Reviewer `V5 PASS`，再由 Writer（或 fallback `pr_monitor` Worker）运行 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`，清理自己的 Worktree／branch 后退出；严禁 `gh run watch` 或 `sleep >= 30` 等待远端 CI；首轮（`r1`）必须使用 `worker.writer`（`copilot` `gpt-5.6-luna` → `mai-code-2-flash`），**严禁在 `r1` 首轮或 Planner 简报中直接指定 `writer_escalated`（`codex` `gpt-6.1-sol`）**，`writer_escalated` 仅在 V3 第 1 轮修复后复审仍 FAIL（进入第 2 轮修复）时启用 |
 | 独立验收（Reviewer） | 按 V1–V5 对每个 Task 的 PR 执行双轴限定审查，并在全部 Task 完成后核验 Goal 端到端验收证据 |
 | PR 监控者（PR Monitor / `pr_monitor`） | 默认先在后台运行 `python3 skills/goal-task/scripts/ci-monitor.py workflow|pr`（Layer 0、0 Token）监控发布流水线、PR CI 与 auto-merge；仅在失败需 LLM 诊断或特殊复杂场景时回退 `worker.pr_monitor`。脚本按 Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，落盘 R10 回执；Run 仍 `in_progress` 时用 `actions/jobs/<id>/logs`，不用 `gh run view --log-failed`。**严禁 TL 主会话或 Writer 内联 `gh run watch`／长 `sleep` 等待远端 CI** |
 | 交付 | 推进 PR 合法合并与发布读回 |
@@ -280,8 +280,13 @@ Goal 处于 `accepting` 时交独立验收核对端到端整体验收；已冻�
   `in_progress` 时使用 `actions/jobs/<failed_job_id>/logs`，不要使用
   `gh run view --log-failed`。
 - 只有真实 `PR_MERGED`、R10 回执与 required checks 齐全后清理已合并
-  Worktree（`git worktree remove`）；`GOAL_DONE` 时关闭 Goal pane/workspace，
-  未合并／暂停（HOLD）现场保留并报告 `Owner`。
+  Worktree；但按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）**，
+  Writer（或 fallback `pr_monitor` Worker）在 `V5 PASS` 后从主仓 cwd 运行
+  `python3 skills/goal-task/scripts/ci-monitor.py pr` 与
+  `python3 skills/goal-task/scripts/git-gc.py task-clean`（含
+  `git worktree remove`／`git worktree prune`／`git branch -D`）清理自己的
+  Worktree／branch；`GOAL_DONE` 时关闭 Goal pane/workspace，未合并／暂停（HOLD）
+  现场保留并报告 `Owner`。
 - 详细启动、Tier A/A′ 解卡、Reply/Resolve、队列和生命周期规则分别见
   [`bots-and-agents.md`](references/bots-and-agents.md)、
   [`bot-tl-orchestration`](../bot-tl-orchestration/SKILL.md)、
