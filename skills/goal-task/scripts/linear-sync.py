@@ -97,7 +97,13 @@ def _credential_record() -> dict[str, Any]:
 def _oauth_app_enabled() -> bool:
     record = _credential_record()
     header_value = str(record.get("headerValue") or "")
-    return str(record.get("actor") or "").casefold() == "app" or header_value.startswith("******")
+    return (
+        str(record.get("actor") or "").casefold() == "app"
+        or (
+            header_value.startswith("Bearer ")
+            and bool(header_value[len("Bearer "):].strip())
+        )
+    )
 
 
 def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
@@ -925,6 +931,17 @@ def _issue_comment_bodies(issue: dict[str, Any]) -> list[str]:
     return [str(node.get("body", "")) for node in issue.get("comments", {}).get("nodes", [])]
 
 
+def _comment_mutation(issue_id: str, body: str, create_as_user: str | None) -> dict[str, Any]:
+    input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
+    if create_as_user and _oauth_app_enabled():
+        input_data["createAsUser"] = create_as_user
+    return {
+        "operation": "CreateComment",
+        "graphql_operation_name": "CreateComment",
+        "variables": {"input": input_data},
+    }
+
+
 def _read_ledger(handoff_dir: Path) -> str:
     ledger_path = handoff_dir / "ledger.md"
     try:
@@ -1002,7 +1019,7 @@ def _sync_issue(
                 body += f" · Task `{event['task']}`"
             if event.get("note"):
                 body += f"\n{event['note']}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), body, create_as_user))
             if mode == "auto":
                 client.create_comment(str(issue["id"]), body, create_as_user)
             existing_comments.append(body)
@@ -1025,7 +1042,7 @@ def _sync_issue(
                         body += f" · receipt `{meta['receipts'][0]}`"
             if event.get("ref"):
                 body += f"\n{event['ref']}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), body, create_as_user))
             if mode == "auto":
                 client.create_comment(str(issue["id"]), body, create_as_user)
             existing_comments.append(body)
@@ -1033,7 +1050,7 @@ def _sync_issue(
         marker = f"<!-- GTT-LINEAR-NOTE:{event_note} -->"
         if not any(marker in body for body in existing_comments):
             note_body = f"{marker}\n{event_note}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": note_body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), note_body, create_as_user))
             if mode == "auto":
                 client.create_comment(str(issue["id"]), note_body, create_as_user)
             existing_comments.append(marker)
@@ -1042,7 +1059,7 @@ def _sync_issue(
             **issue,
             "diff": {"has_changes": has_field_changes, "issue_create": False,
                      "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed)) if changed],
-                     "comments_to_create": [m["variables"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
+                     "comments_to_create": [m["variables"]["input"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
                      "local_effects": []},
             "planned_mutations": planned_mutations,
         }
@@ -1183,7 +1200,15 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
             "title": args.title, "description": args.description, "priority": args.priority,
         }.items() if value is not None
     }
-    if args.state or args.project or args.add_label:
+    if mode == "observe":
+        if args.state:
+            requested["stateId"] = args.state
+        if args.project:
+            requested["projectId"] = args.project
+        if args.add_label:
+            requested["labelIds"] = list(args.add_label)
+        issue = {"id": args.id, "identifier": args.id}
+    elif args.state or args.project or args.add_label:
         client = _client_or_fail()
         issue = client.issue(args.id)
         team = client.team(str((issue.get("team") or {}).get("key") or "TIA"))
@@ -1228,11 +1253,7 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     mode, skipped = resolve_mode(args.mode, subcommand="comment")
-    input_data: dict[str, Any] = {"issueId": args.id, "body": args.body}
-    if args.create_as_user and _oauth_app_enabled():
-        input_data["createAsUser"] = args.create_as_user
-    mutation = {"operation": "CreateComment", "graphql_operation_name": "CreateComment",
-                "variables": {"input": input_data}}
+    mutation = _comment_mutation(args.id, args.body, args.create_as_user)
     if mode == "off":
         return {"ok": True, "command": "comment", "mode": "off", "decision": "off (skipped)",
                 "skipped": skipped or "mode_off", "planned_mutations": []}
