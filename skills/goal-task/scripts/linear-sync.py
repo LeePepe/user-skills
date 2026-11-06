@@ -83,6 +83,29 @@ def load_credential_info() -> tuple[str | None, str | None, Path | None]:
     return None, None, None
 
 
+def _credential_record() -> dict[str, Any]:
+    path = _credential_path()
+    try:
+        if _has_symlink_component(path):
+            raise LinearSyncError(f"Refusing symlinked credential path: {path}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _oauth_app_enabled() -> bool:
+    record = _credential_record()
+    header_value = str(record.get("headerValue") or "")
+    return (
+        str(record.get("actor") or "").casefold() == "app"
+        or (
+            header_value.startswith("Bearer ")
+            and bool(header_value[len("Bearer "):].strip())
+        )
+    )
+
+
 def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
     if _has_symlink_component(path):
         raise LinearSyncError(f"Refusing symlinked credential path: {path}")
@@ -95,12 +118,15 @@ def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
     path.chmod(mode)
 
 
-def save_credentials(key: str, header_name: str = "Authorization") -> Path:
-    path = _credential_path()
-    _atomic_write_text(path, json.dumps({
+def save_credentials(key: str, header_name: str = "Authorization", actor: str | None = None) -> Path:
+    payload: dict[str, Any] = {
         "type": "header", "headerName": header_name, "headerValue": key,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }) + "\n")
+    }
+    if actor:
+        payload["actor"] = actor
+    path = _credential_path()
+    _atomic_write_text(path, json.dumps(payload) + "\n")
     return path
 
 
@@ -239,12 +265,13 @@ class GraphQLClient:
 
     def issue(self, identifier: str) -> dict[str, Any]:
         fields = """
-          id identifier url title description
+          id identifier url title description priority updatedAt
           state { id name type }
           team { id key name }
           project { id name }
           labels { nodes { id name } }
           comments { nodes { id body } }
+          history { nodes { id createdAt fieldName fromValue toValue } }
         """
         direct_query = f"""
             query IssueByIdentifier($id: String!) {{
@@ -295,6 +322,7 @@ class GraphQLClient:
         state_id: str | None = None,
         label_ids: list[str] | None = None,
         project_id: str | None = None,
+        create_as_user: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
             "teamId": team_id,
@@ -307,18 +335,21 @@ class GraphQLClient:
             input_data["labelIds"] = label_ids
         if project_id:
             input_data["projectId"] = project_id
+        if create_as_user and _oauth_app_enabled():
+            input_data["createAsUser"] = create_as_user
         data = self.execute(
             """
             mutation CreateIssue($input: IssueCreateInput!) {
               issueCreate(input: $input) {
                 success
                 issue {
-                  id identifier url title description
+                  id identifier url title description priority updatedAt
                   state { id name type }
                   team { id key name }
                   project { id name }
                   labels { nodes { id name } }
                   comments { nodes { id body } }
+                  history { nodes { id createdAt fieldName fromValue toValue } }
                 }
               }
             }
@@ -338,28 +369,35 @@ class GraphQLClient:
         state_id: str | None = None,
         label_ids: list[str] | None = None,
         project_id: str | None = None,
+        title: str | None = None,
+        priority: int | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {}
         if description is not None:
             input_data["description"] = description
+        if title is not None:
+            input_data["title"] = title
         if state_id is not None:
             input_data["stateId"] = state_id
         if label_ids is not None:
             input_data["labelIds"] = label_ids
         if project_id is not None:
             input_data["projectId"] = project_id
+        if priority is not None:
+            input_data["priority"] = priority
         data = self.execute(
             """
             mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
               issueUpdate(id: $id, input: $input) {
                 success
                 issue {
-                  id identifier url title description
+                  id identifier url title description priority updatedAt
                   state { id name type }
                   team { id key name }
                   project { id name }
                   labels { nodes { id name } }
                   comments { nodes { id body } }
+                  history { nodes { id createdAt fieldName fromValue toValue } }
                 }
               }
             }
@@ -371,17 +409,49 @@ class GraphQLClient:
             raise LinearSyncError("Linear did not update the issue")
         return result["issue"]
 
-    def create_comment(self, issue_id: str, body: str) -> None:
+    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None) -> None:
+        input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
+        if create_as_user and _oauth_app_enabled():
+            input_data["createAsUser"] = create_as_user
         data = self.execute(
             """
             mutation CreateComment($input: CommentCreateInput!) {
               commentCreate(input: $input) { success comment { id } }
             }
             """,
-            {"input": {"issueId": issue_id, "body": body}},
+            {"input": input_data},
         )
         if not data.get("commentCreate", {}).get("success"):
             raise LinearSyncError("Linear did not create the comment")
+
+    def list_issues(
+        self, team_key: str, *, state: str = "", project: str = "",
+        query: str = "", limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        data = self.execute(
+            """
+            query ListIssues($team: String!, $first: Int!) {
+              issues(filter: {team: {key: {eq: $team}}}, first: $first, orderBy: updatedAt) {
+                nodes {
+                  id identifier title url description priority updatedAt
+                  state { id name type } project { id name }
+                  labels { nodes { id name } }
+                }
+              }
+            }
+            """,
+            {"team": team_key, "first": limit},
+        )
+        issues = data.get("issues", {}).get("nodes", [])
+        def matches(issue: dict[str, Any]) -> bool:
+            state_value = issue.get("state") or {}
+            project_value = issue.get("project") or {}
+            return (
+                (not state or state.casefold() in {str(state_value.get("name", "")).casefold(), str(state_value.get("type", "")).casefold()})
+                and (not project or project.casefold() == str(project_value.get("name", "")).casefold())
+                and (not query or query.casefold() in f"{issue.get('identifier', '')} {issue.get('title', '')} {issue.get('description', '')}".casefold())
+            )
+        return [issue for issue in issues if isinstance(issue, dict) and matches(issue)]
 
     def find_issue_by_dedup_marker(self, team_id: str, marker: str) -> dict[str, Any] | None:
         data = self.execute(
@@ -861,12 +931,28 @@ def _issue_comment_bodies(issue: dict[str, Any]) -> list[str]:
     return [str(node.get("body", "")) for node in issue.get("comments", {}).get("nodes", [])]
 
 
+def _comment_mutation(issue_id: str, body: str, create_as_user: str | None) -> dict[str, Any]:
+    input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
+    if create_as_user and _oauth_app_enabled():
+        input_data["createAsUser"] = create_as_user
+    return {
+        "operation": "CreateComment",
+        "graphql_operation_name": "CreateComment",
+        "variables": {"input": input_data},
+    }
+
+
 def _read_ledger(handoff_dir: Path) -> str:
     ledger_path = handoff_dir / "ledger.md"
     try:
         return ledger_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LinearSyncError(f"Unable to read ledger: {ledger_path}: {exc}") from exc
+
+
+def _ledger_tl(text: str) -> str | None:
+    match = re.search(r"(?mi)^\s*-\s*TL:\s*(\S.*?)\s*$", text)
+    return match.group(1).strip() if match and match.group(1).strip() else None
 
 
 def _sync_issue(
@@ -878,6 +964,7 @@ def _sync_issue(
     event_note: str | None = None,
     project_name: str | None = None,
     mode: str = "auto",
+    create_as_user: str | None = None,
 ) -> dict[str, Any]:
     ledger_text = _read_ledger(handoff_dir)
     goal_name, tasks, events, header = _load_handoff(handoff_dir)
@@ -932,9 +1019,9 @@ def _sync_issue(
                 body += f" · Task `{event['task']}`"
             if event.get("note"):
                 body += f"\n{event['note']}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), body, create_as_user))
             if mode == "auto":
-                client.create_comment(str(issue["id"]), body)
+                client.create_comment(str(issue["id"]), body, create_as_user)
             existing_comments.append(body)
     for event in events:
         event_type = event.get("EVT", "").upper()
@@ -955,24 +1042,24 @@ def _sync_issue(
                         body += f" · receipt `{meta['receipts'][0]}`"
             if event.get("ref"):
                 body += f"\n{event['ref']}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), body, create_as_user))
             if mode == "auto":
-                client.create_comment(str(issue["id"]), body)
+                client.create_comment(str(issue["id"]), body, create_as_user)
             existing_comments.append(body)
     if event_note:
         marker = f"<!-- GTT-LINEAR-NOTE:{event_note} -->"
         if not any(marker in body for body in existing_comments):
             note_body = f"{marker}\n{event_note}"
-            planned_mutations.append({"operation": "CreateComment", "graphql_operation_name": "CreateComment", "variables": {"issueId": str(issue["id"]), "body": note_body}})
+            planned_mutations.append(_comment_mutation(str(issue["id"]), note_body, create_as_user))
             if mode == "auto":
-                client.create_comment(str(issue["id"]), note_body)
+                client.create_comment(str(issue["id"]), note_body, create_as_user)
             existing_comments.append(marker)
     if mode == "observe":
         return {
             **issue,
             "diff": {"has_changes": has_field_changes, "issue_create": False,
                      "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed)) if changed],
-                     "comments_to_create": [m["variables"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
+                     "comments_to_create": [m["variables"]["input"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
                      "local_effects": []},
             "planned_mutations": planned_mutations,
         }
@@ -1059,6 +1146,125 @@ def _is_closed_issue(issue: dict[str, Any]) -> bool:
     }
 
 
+def _issue_summary(issue: dict[str, Any]) -> dict[str, Any]:
+    state = issue.get("state") or {}
+    project = issue.get("project") or {}
+    return {
+        "identifier": issue.get("identifier"),
+        "title": issue.get("title"),
+        "state": state.get("name") or state.get("type"),
+        "project": project.get("name") if project else None,
+        "priority": issue.get("priority"),
+        "url": issue.get("url"),
+        "updatedAt": issue.get("updatedAt"),
+    }
+
+
+def _issue_detail(issue: dict[str, Any]) -> dict[str, Any]:
+    result = _issue_summary(issue)
+    result.update({
+        "description": issue.get("description"),
+        "labels": [node.get("name") for node in (issue.get("labels") or {}).get("nodes", [])],
+        "comments": (issue.get("comments") or {}).get("nodes", []),
+        "history": (issue.get("history") or {}).get("nodes", []),
+    })
+    return result
+
+
+def cmd_list_issues(args: argparse.Namespace) -> dict[str, Any]:
+    client = _client_or_fail()
+    issues = client.list_issues(
+        args.team, state=args.state, project=args.project, query=args.query, limit=args.limit,
+    )
+    return {"ok": True, "command": "list-issues", "team": args.team, "issues": [_issue_summary(issue) for issue in issues]}
+
+
+def cmd_get_issue(args: argparse.Namespace) -> dict[str, Any]:
+    return {"ok": True, "command": "get-issue", "issue": _issue_detail(_client_or_fail().issue(args.id))}
+
+
+def _update_mutation(issue: dict[str, Any], input_data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "operation": "UpdateIssue", "graphql_operation_name": "UpdateIssue",
+        "variables": {"id": str(issue.get("id") or issue.get("identifier")), "input": input_data},
+    }
+
+
+def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
+    mode, skipped = resolve_mode(args.mode, subcommand="update-issue")
+    if mode == "off":
+        return {"ok": True, "command": "update-issue", "mode": "off", "decision": "off (skipped)",
+                "skipped": skipped or "mode_off", "planned_mutations": []}
+    requested = {
+        key: value for key, value in {
+            "title": args.title, "description": args.description, "priority": args.priority,
+        }.items() if value is not None
+    }
+    if mode == "observe":
+        if args.state:
+            requested["stateId"] = args.state
+        if args.project:
+            requested["projectId"] = args.project
+        if args.add_label:
+            requested["labelIds"] = list(args.add_label)
+        issue = {"id": args.id, "identifier": args.id}
+    elif args.state or args.project or args.add_label:
+        client = _client_or_fail()
+        issue = client.issue(args.id)
+        team = client.team(str((issue.get("team") or {}).get("key") or "TIA"))
+        if args.state:
+            state = _state(team, args.state)
+            if not state:
+                raise LinearSyncError(f"Linear state '{args.state}' was not found")
+            requested["stateId"] = str(state["id"])
+        if args.project:
+            project_id = _project_id(team, args.project)
+            if not project_id:
+                raise LinearSyncError(f"Linear project '{args.project}' was not found")
+            requested["projectId"] = project_id
+        if args.add_label:
+            labels = [str(node["id"]) for node in (issue.get("labels") or {}).get("nodes", []) if node.get("id")]
+            for name in args.add_label:
+                label = _label(team, name)
+                if not label:
+                    raise LinearSyncError(f"Linear label '{name}' was not found")
+                if str(label["id"]) not in labels:
+                    labels.append(str(label["id"]))
+            requested["labelIds"] = labels
+    else:
+        issue = {"id": args.id, "identifier": args.id}
+    if not requested:
+        raise LinearSyncError("update-issue requires at least one update option")
+    mutation = _update_mutation(issue, requested)
+    if mode == "observe":
+        return {"ok": True, "command": "update-issue", "mode": mode,
+                "decision": "observe (would accept)", "would_accept": True,
+                "planned_mutations": [mutation]}
+    client = locals().get("client") or _client_or_fail()
+    updated = client.update_issue(
+        str(issue.get("id") or issue["identifier"]),
+        title=requested.get("title"), description=requested.get("description"),
+        state_id=requested.get("stateId"), project_id=requested.get("projectId"),
+        priority=requested.get("priority"), label_ids=requested.get("labelIds"),
+    )
+    return {"ok": True, "command": "update-issue", "mode": mode, "decision": "accept",
+            "issue": _issue_detail(updated)}
+
+
+def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
+    mode, skipped = resolve_mode(args.mode, subcommand="comment")
+    mutation = _comment_mutation(args.id, args.body, args.create_as_user)
+    if mode == "off":
+        return {"ok": True, "command": "comment", "mode": "off", "decision": "off (skipped)",
+                "skipped": skipped or "mode_off", "planned_mutations": []}
+    if mode == "observe":
+        return {"ok": True, "command": "comment", "mode": mode, "decision": "observe (would accept)",
+                "would_accept": True, "planned_mutations": [mutation]}
+    _client_or_fail().create_comment(args.id, args.body, args.create_as_user)
+    return {"ok": True, "command": "comment", "mode": mode, "decision": "accept",
+            "identifier": args.id}
+
+
 def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
     mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="idea", source=getattr(args, "source", ""))
     if mode == "off":
@@ -1137,12 +1343,14 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
                 "decision": "off (skipped)", "would_accept": False, "skipped": skipped or "mode_off",
                 "planned_mutations": []}
     snapshot = _offline_snapshot(getattr(args, "offline_snapshot", ""))
+    create_as_user = getattr(args, "create_as_user", False)
     if mode == "observe":
         if not handoff_dir.is_dir():
             raise LinearSyncError(f"Missing handoff directory: {handoff_dir}")
         team, issue = snapshot or (_synthetic_team(), {})
         client = GraphQLClient("offline", lambda q, v: {"data": {}})
         ledger_text = _read_ledger(handoff_dir)
+        actor_name = create_as_user and _ledger_tl(ledger_text) or None
         identifier = args.issue or _bound_issue(ledger_text)
         issue = issue or _virtual_issue(identifier)
         if identifier and not issue.get("identifier"):
@@ -1161,10 +1369,14 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
                 "teamId": str(team["id"]), "title": f"[Goal] {goal_name}", "description": "",
                 **({"stateId": str(todo["id"])} if todo else {}),
                 **({"projectId": _project_id(team, project_name)} if _project_id(team, project_name) else {}),
+                **({"createAsUser": actor_name} if actor_name and _oauth_app_enabled() else {}),
             }}})
             local_effects.append({"operation": "BindIssueLine", "identifier": "<created issue>", "path": str(handoff_dir / "ledger.md")})
             identifier = ""
-        result = _sync_issue(client, issue, team, handoff_dir, project_name=getattr(args, "project", ""), mode="observe")
+        result = _sync_issue(
+            client, issue, team, handoff_dir, project_name=getattr(args, "project", ""),
+            mode="observe", create_as_user=actor_name,
+        )
         planned = planned + result.get("planned_mutations", [])
         result["planned_mutations"] = planned
         result["diff"]["local_effects"] = local_effects
@@ -1185,6 +1397,7 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir.mkdir(parents=True, exist_ok=True)
     with _queue_lock(handoff_dir):
         ledger_text = _read_ledger(handoff_dir)
+        actor_name = create_as_user and _ledger_tl(ledger_text) or None
         identifier = args.issue or _bound_issue(ledger_text)
         team = client.team(args.team)
         if identifier:
@@ -1203,6 +1416,7 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
                 description="",
                 state_id=str(todo["id"]) if todo else None,
                 project_id=_project_id(team, project_name),
+                create_as_user=actor_name,
             )
             _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
             identifier = str(issue["identifier"])
@@ -1212,6 +1426,7 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
             team,
             handoff_dir,
             project_name=getattr(args, "project", ""),
+            create_as_user=actor_name,
         )
     return {
         "ok": True,
@@ -1235,6 +1450,7 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
                 "decision": "off (skipped)", "would_accept": False, "skipped": skipped or "mode_off",
                 "planned_mutations": []}
     snapshot = _offline_snapshot(getattr(args, "offline_snapshot", ""))
+    create_as_user = getattr(args, "create_as_user", False)
     if mode == "observe" and not snapshot:
         client = GraphQLClient("offline", lambda q, v: {"data": {}})
         team, issue = _synthetic_team(), {}
@@ -1246,6 +1462,7 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
     lock = contextlib.nullcontext() if mode == "observe" else _queue_lock(handoff_dir)
     with lock:
         ledger_text = _read_ledger(handoff_dir)
+        actor_name = create_as_user and _ledger_tl(ledger_text) or None
         identifier = _bound_issue(ledger_text)
         if mode != "observe" and not snapshot:
             team = client.team("TIA")
@@ -1259,6 +1476,7 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
                 "teamId": str(team["id"]), "title": f"[Goal] {goal_name}", "description": "",
                 **({"stateId": str(todo["id"])} if todo else {}),
                 **({"projectId": _project_id(team, project_name)} if _project_id(team, project_name) else {}),
+                **({"createAsUser": actor_name} if actor_name and _oauth_app_enabled() else {}),
             }}}
             if mode == "observe":
                 issue = _virtual_issue()
@@ -1270,6 +1488,7 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
                     description="",
                     state_id=str(todo["id"]) if todo else None,
                     project_id=_project_id(team, project_name),
+                    create_as_user=actor_name,
                 )
                 _bind_issue_line(handoff_dir, str(issue["identifier"]), str(issue.get("url") or ""))
                 identifier = str(issue["identifier"])
@@ -1285,6 +1504,7 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
             event_note=args.event_note,
             project_name=getattr(args, "project", ""),
             mode=mode,
+            create_as_user=actor_name,
         )
         if mode == "observe" and not identifier:
             issue.setdefault("planned_mutations", []).insert(0, planned_create)
@@ -1334,6 +1554,7 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--mode", choices=("off", "observe", "auto"))
     ensure.add_argument("--offline-snapshot", default="")
     ensure.add_argument("--record-observe", action="store_true")
+    ensure.add_argument("--create-as-user", action="store_true")
 
     sync = subparsers.add_parser("sync-ledger", help="Synchronize a Goal ledger to its Linear issue.")
     sync.add_argument("--handoff-dir", required=True)
@@ -1343,12 +1564,42 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--mode", choices=("off", "observe", "auto"))
     sync.add_argument("--offline-snapshot", default="")
     sync.add_argument("--record-observe", action="store_true")
+    sync.add_argument("--create-as-user", action="store_true")
+
+    list_issues = subparsers.add_parser("list-issues", help="List issues on a Linear team.")
+    list_issues.add_argument("--team", default="TIA")
+    list_issues.add_argument("--state", default="")
+    list_issues.add_argument("--project", default="")
+    list_issues.add_argument("--query", default="")
+    list_issues.add_argument("--limit", type=int, default=25)
+
+    get_issue = subparsers.add_parser("get-issue", help="Show a Linear issue.")
+    get_issue.add_argument("--id", required=True)
+
+    update = subparsers.add_parser("update-issue", help="Update a Linear issue.")
+    update.add_argument("--id", required=True)
+    update.add_argument("--title")
+    update.add_argument("--description")
+    update.add_argument("--state")
+    update.add_argument("--project")
+    update.add_argument("--priority", type=int, choices=range(5))
+    update.add_argument("--add-label", action="append", default=[])
+    update.add_argument("--mode", choices=("off", "observe", "auto"))
+
+    comment = subparsers.add_parser("comment", help="Comment on a Linear issue.")
+    comment.add_argument("--id", required=True)
+    comment.add_argument("--body", required=True)
+    comment.add_argument("--create-as-user")
+    comment.add_argument("--mode", choices=("off", "observe", "auto"))
 
     auth = subparsers.add_parser("auth", help="Manage Linear credentials.")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_set = auth_sub.add_parser("set")
     auth_set.add_argument("--key-stdin", action="store_true")
     auth_set.add_argument("--header", default="Authorization")
+    oauth_app = auth_sub.add_parser("oauth-app")
+    oauth_app.add_argument("--key-stdin", action="store_true")
+    oauth_app.add_argument("--header", default="Authorization")
     auth_sub.add_parser("show")
     auth_remove = auth_sub.add_parser("remove")
     auth_remove.add_argument("--force", action="store_true")
@@ -1365,16 +1616,26 @@ def main(argv: list[str] | None = None) -> int:
             payload = cmd_ensure_goal(args)
         elif args.subcommand == "sync-ledger":
             payload = cmd_sync_ledger(args)
+        elif args.subcommand == "list-issues":
+            payload = cmd_list_issues(args)
+        elif args.subcommand == "get-issue":
+            payload = cmd_get_issue(args)
+        elif args.subcommand == "update-issue":
+            payload = cmd_update_issue(args)
+        elif args.subcommand == "comment":
+            payload = cmd_comment(args)
         elif args.subcommand == "auth":
             path = _credential_path()
-            if args.auth_command == "set":
+            if args.auth_command in {"set", "oauth-app"}:
                 key = sys.stdin.readline().strip() if args.key_stdin or not sys.stdin.isatty() else getpass.getpass("Linear API key: ")
-                saved = save_credentials(key, args.header)
-                payload = {"ok": True, "command": "auth set", "path": str(saved), "mode": "0600", "masked_key": mask_value(key)}
+                actor = "app" if args.auth_command == "oauth-app" else None
+                saved = save_credentials(key, args.header, actor=actor)
+                payload = {"ok": True, "command": f"auth {args.auth_command}", "path": str(saved), "mode": "0600", "masked_key": mask_value(key), **({"actor": actor} if actor else {})}
             elif args.auth_command == "show":
                 key, source, source_path = load_credential_info()
                 payload = {"ok": True, "command": "auth show", "configured": bool(key),
                            "source": source, "path": str(source_path or path), "masked_key": mask_value(key or ""),
+                           **({"actor": _credential_record()["actor"]} if _credential_record().get("actor") else {}),
                            "mode": oct((source_path or path).stat().st_mode & 0o777)[2:].zfill(4) if (source_path or path).exists() else None}
             else:
                 removed = False

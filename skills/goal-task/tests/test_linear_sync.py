@@ -80,6 +80,8 @@ class FakeTransport:
                     }
                 }
             }
+        if "ListIssues" in query:
+            return {"data": {"issues": {"nodes": [self.issue]}}}
         if "issue(id: $id)" in query:
             return {"data": {"issue": self.issue}}
         if "IssueByIdentifierFallback" in query:
@@ -133,7 +135,8 @@ class LinearSyncTests(unittest.TestCase):
     def test_key_falls_back_to_zsh_file(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
             linear_sync, "_read_key_file", side_effect=[None, "from-file"]
-        ):
+        ), mock.patch.object(linear_sync, "_credential_path", return_value=self.work / "missing.json"), \
+             mock.patch.object(linear_sync, "_clip_credential_path", return_value=self.work / "missing-clip.json"):
             self.assertEqual(linear_sync.load_api_key(), "from-file")
 
     def test_repo_root_tempdir_is_isolated_and_skipped_unless_forced(self) -> None:
@@ -196,6 +199,86 @@ class LinearSyncTests(unittest.TestCase):
         )
         create_calls = [call for call in transport.calls if "CreateIssue" in call[0]]
         self.assertEqual(create_calls[-1][1]["input"]["projectId"], "agent-workflow")
+
+    def test_board_read_commands_return_structured_issue_fields(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        with mock.patch.object(linear_sync, "_client_or_fail", return_value=client):
+            listed = linear_sync.cmd_list_issues(linear_sync.build_parser().parse_args(["list-issues"]))
+            detail = linear_sync.cmd_get_issue(linear_sync.build_parser().parse_args(["get-issue", "--id", "TIA-19"]))
+        self.assertEqual(listed["issues"][0]["identifier"], "TIA-19")
+        self.assertEqual(detail["issue"]["description"], "Owner notes")
+        self.assertIn("comments", detail["issue"])
+        self.assertIn("history", detail["issue"])
+
+    def test_update_and_comment_modes_are_side_effect_safe(self) -> None:
+        update_args = linear_sync.build_parser().parse_args([
+            "update-issue", "--id", "TIA-19", "--title", "New title", "--mode", "observe",
+        ])
+        comment_args = linear_sync.build_parser().parse_args([
+            "comment", "--id", "TIA-19", "--body", "hello", "--mode", "off",
+        ])
+        with mock.patch.object(linear_sync, "_client_or_fail") as client:
+            update = linear_sync.cmd_update_issue(update_args)
+            comment = linear_sync.cmd_comment(comment_args)
+        client.assert_not_called()
+        self.assertEqual(update["planned_mutations"][0]["variables"]["input"]["title"], "New title")
+        self.assertEqual(comment["decision"], "off (skipped)")
+
+    def test_oauth_app_create_as_user_is_added_to_issue_and_comment_inputs(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("oauth", transport)
+        with mock.patch.object(linear_sync, "_oauth_app_enabled", return_value=True):
+            client.create_issue(team_id="team-id", title="Goal", description="", create_as_user="Bot")
+            client.create_comment("issue-id", "hello", "Bot")
+        create = next(values for query, values in transport.calls if "CreateIssue" in query)
+        comment = next(values for query, values in transport.calls if "CreateComment" in query)
+        self.assertEqual(create["input"]["createAsUser"], "Bot")
+        self.assertEqual(comment["input"]["createAsUser"], "Bot")
+
+    def test_oauth_app_detection_requires_bearer_token_or_exact_app_actor(self) -> None:
+        credentials = self.work / "config" / "linear" / "credentials.json"
+        with mock.patch.dict(os.environ, {"GTT_LINEAR_CREDENTIALS_FILE": str(credentials)}, clear=False):
+            linear_sync.save_credentials("Bearer lin_oauth_token")
+            self.assertTrue(linear_sync._oauth_app_enabled())
+            linear_sync.save_credentials("Bearer ")
+            self.assertFalse(linear_sync._oauth_app_enabled())
+            linear_sync.save_credentials("lin_api_token")
+            self.assertFalse(linear_sync._oauth_app_enabled())
+            linear_sync.save_credentials("lin_api_token", actor="app")
+            self.assertTrue(linear_sync._oauth_app_enabled())
+            linear_sync.save_credentials("lin_api_token", actor="application")
+            self.assertFalse(linear_sync._oauth_app_enabled())
+
+    def test_update_observe_plans_named_fields_without_network_calls(self) -> None:
+        args = linear_sync.build_parser().parse_args([
+            "update-issue", "--id", "TIA-19", "--state", "In Progress",
+            "--project", "Agent Workflow", "--add-label", "Blocked", "--mode", "observe",
+        ])
+        with mock.patch.object(linear_sync, "_client_or_fail") as client:
+            result = linear_sync.cmd_update_issue(args)
+        client.assert_not_called()
+        input_data = result["planned_mutations"][0]["variables"]["input"]
+        self.assertEqual(input_data["stateId"], "In Progress")
+        self.assertEqual(input_data["projectId"], "Agent Workflow")
+        self.assertEqual(input_data["labelIds"], ["Blocked"])
+
+    def test_observe_sync_comment_mutations_match_create_as_user_input(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("oauth", transport)
+        team = client.team("TIA")
+        with mock.patch.object(linear_sync, "_oauth_app_enabled", return_value=True):
+            result = linear_sync._sync_issue(
+                client, client.issue("TIA-19"), team, self.work,
+                mode="observe", create_as_user="Bot",
+            )
+        comments = [
+            mutation for mutation in result["planned_mutations"]
+            if mutation["operation"] == "CreateComment"
+        ]
+        self.assertTrue(comments)
+        for mutation in comments:
+            self.assertEqual(mutation["variables"]["input"]["createAsUser"], "Bot")
 
     def test_sync_updates_description_state_and_deduplicates_blocker(self) -> None:
         transport = FakeTransport()
@@ -565,6 +648,12 @@ class LinearSyncTests(unittest.TestCase):
             self.assertEqual(linear_sync.main(["auth", "show"]), 0)
             self.assertEqual(linear_sync.main(["auth", "remove"]), 0)
         self.assertFalse(credentials.exists())
+
+    def test_oauth_app_credentials_preserve_actor(self) -> None:
+        credentials = self.work / "config" / "linear" / "credentials.json"
+        with mock.patch.dict(os.environ, {"GTT_LINEAR_CREDENTIALS_FILE": str(credentials)}, clear=False):
+            linear_sync.save_credentials("oauth-token", actor="app")
+            self.assertEqual(linear_sync._credential_record()["actor"], "app")
 
     def test_parse_tasks_dynamic_headers_and_issue_re(self) -> None:
         ledger = (
