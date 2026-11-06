@@ -82,8 +82,20 @@ def _read_local_auth_values(directory: Path) -> dict[str, str]:
     return values
 
 
+def _read_skill_source_key(directory: Path, agent_role: str) -> str | None:
+    path = directory / "source-keys.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get(agent_role)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _resolve_auth_token(
-    base_url: str, source_key: str | None = None
+    base_url: str, source_key: str | None = None, *, agent_role: str = "goal-task"
 ) -> tuple[str | None, str | None]:
     """Resolve local Jev credentials without embedding secrets in the repository."""
     host_port = base_url.lower()
@@ -92,9 +104,11 @@ def _resolve_auth_token(
     if is_falcon:
         token = next((env.get(name) for name in ("FALCON_API_KEY", "JEV_API_KEY") if env.get(name)), None)
         resolved_source_key = source_key or env.get("FALCON_SOURCE_KEY")
-        values = _read_local_auth_values(Path.home() / ".config" / "falcon")
+        falcon_dir = Path.home() / ".config" / "falcon"
+        values = _read_local_auth_values(falcon_dir)
         token = token or values.get("api_key") or values.get("apikey") or values.get("token")
         resolved_source_key = resolved_source_key or values.get("source_key")
+        resolved_source_key = resolved_source_key or _read_skill_source_key(falcon_dir, agent_role)
         token = token or resolved_source_key
         return token, resolved_source_key
 
@@ -170,7 +184,9 @@ def jev_decide(
     )
     for base in bases:
         try:
-            token, resolved_source_key = _resolve_auth_token(base, source_key)
+            token, resolved_source_key = _resolve_auth_token(
+                base, source_key, agent_role=agent_role
+            )
             if not token:
                 continue
             request_headers = dict(headers)
