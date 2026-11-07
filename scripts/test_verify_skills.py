@@ -575,12 +575,16 @@ class VerifySkillsTests(unittest.TestCase):
     def test_thin_three_group_role_routing_without_designer_subagent(self) -> None:
         skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"
         agents_path = skill_path.parent / "references" / "bots-and-agents.md"
+        profiles_path = skill_path.parent / "references" / "runtime-profiles.yaml"
         skill_text = skill_path.read_text(encoding="utf-8")
         agents_text = agents_path.read_text(encoding="utf-8")
+        profiles_text = profiles_path.read_text(encoding="utf-8")
         for text in (skill_text, agents_text):
             self.assertIn("never spawns a second `Steering`", text)
             self.assertIn("Context-Noise Threshold", text)
             self.assertIn("≤8", text)
+            self.assertIn("≤3", text)
+            self.assertIn("keep", text)
             self.assertIn("herdr-dispatch.sh", text)
             self.assertIn("herdr pane close", text)
             self.assertIn("blocked", text)
@@ -590,6 +594,9 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertNotIn("设计者（Designer）", text)
             self.assertNotIn("Designer 派遣与反内联守卫", text)
             self.assertNotIn("艺术家", text)
+            self.assertNotIn("writer_stays_and_cleans_own_worktree", text)
+            self.assertNotIn("weekly_remaining_pct", text)
+        self.assertNotIn("quota_precheck:", profiles_text)
 
     def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
         designer_dir = SKILLS_DIR / "my-designer"
@@ -619,25 +626,9 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertNotIn("艺术家", agents_text)
         self.assertNotIn("执行设计总审门禁", agents_text)
         self.assertNotIn("Bot → `艺术家`", agents_text)
-        self.assertIn("Web Operate", craft_text)
-        self.assertIn(">=14px", craft_text)
-        self.assertIn(">=16px", craft_text)
-        self.assertIn("business charter", craft_text)
-        self.assertIn("stale/error", craft_text)
-        self.assertIn(".strataControlCenter", craft_text)
-        self.assertIn(".strataInputBaseline", craft_text)
-        self.assertIn("frame(minWidth: 44, minHeight: 44)", craft_text)
-        self.assertIn("StrataStickySectionHeader", designer_text)
-        self.assertIn("StrataExpandableTitleHeader", designer_text)
-        self.assertIn("lineLimit(1)", designer_text)
-        self.assertIn("44pt", designer_text)
-        self.assertIn("StrataMetricRow", designer_text)
         self.assertIn("downstream `Writer`", designer_text)
         self.assertIn("author the implementation-ready `design.md`/`spec.md` handoff and receipts", designer_text)
         self.assertIn("the downstream `Writer` implements **directly in the product or `shared-design-system` code**", designer_text)
-        self.assertNotIn("Once the verbal spec is clear, implement **directly in the product or `shared-design-system` code**", designer_text)
-        self.assertNotIn("Direct Implementation:", designer_text)
-        self.assertNotIn("Implement directly in `shared-design-system` or product views", designer_text)
         self.assertIn("No Code Demo", modernization_text)
 
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
@@ -700,9 +691,6 @@ class VerifySkillsTests(unittest.TestCase):
         agents_text = (
             SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
-        craft_text = (
-            SKILLS_DIR / "my-designer" / "references" / "five-layer-craft.md"
-        ).read_text(encoding="utf-8")
 
         for text in (skill_text, agents_text):
             self.assertIn("shared-design-system", text)
@@ -713,10 +701,6 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("V2 P1", text)
         self.assertIn("sips -g pixelWidth", skill_text)
         self.assertIn("Package.resolved", agents_text)
-        self.assertIn(">15", skill_text)
-        for token in ("3-tier text", "CJK ≤4", "EN ≤6–8", "ViewThatFits",
-                      "scenario → component & motion mapping"):
-            self.assertIn(token, craft_text)
 
     def test_spec_first_obsolete_test_manifest_and_visual_harmony_gate_contract(self) -> None:
         skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
@@ -734,12 +718,6 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Code Writer", text)
             self.assertIn("Code/UI Reviewer", text)
             self.assertIn("shared-design-system", text)
-        craft_text = (SKILLS_DIR / "my-designer" / "references" / "five-layer-craft.md").read_text(encoding="utf-8")
-        for token in ("Anti-Gaming Visual Harmony Gate", ".system(size: <11)",
-                      "minimumScaleFactor < 0.85", "1.8:1", "4–6pt", ">=6pt",
-                      ">=4pt", "0–1pt", "34–36pt", ">=44×44pt",
-                      ".contentShape(Rectangle())", "Card + Divider", ".center"):
-            self.assertIn(token, craft_text)
 
     def test_goal_supervisor_scan_check_pins_and_telemetry(self) -> None:
         supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"

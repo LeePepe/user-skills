@@ -108,31 +108,8 @@ common:
 machines:
   mac-mini:
     allowed_cli: [claude, codex, cursor-agent, copilot]
-    # Strong-tier Claude weekly quota precheck (team_lead + arbitration only).
-    # Consumers resolve the role's profile list, then BEFORE herdr agent start:
-    #   1) If list[0] matches quota_precheck.primary_match (cli: claude), measure weekly_remaining_pct.
-    #   2) If weekly_remaining_pct < threshold_lt OR measurement fails (on_measure_failure), skip list[0]
-    #      and start on list[1] (use_next) — do not start Claude and fail over later.
-    # MacBook strong profiles do not use Claude; no precheck there.
+    # Quota routing and model failover are managed by Magpie (:3425) group/steering (routing=pace).
     strong:
-      quota_precheck:
-        roles: [team_lead, arbitration]
-        primary_match: {cli: claude}
-        metric: weekly_remaining_pct
-        threshold_lt: 20
-        action: use_next
-        on_measure_failure: use_next
-        backup_entry: {cli: copilot, model: gemini-4-argon}
-        measurement:
-          weekly_remaining_pct: "100 - rate_limits.seven_day.used_percentage"
-          statusline_field: rate_limits.seven_day.used_percentage
-          interactive_command: /usage
-          interactive_note: "Current week (all models) shows used %; weekly_remaining_pct = 100 - used"
-          cache_file: ~/.config/claude/gtt-weekly-remaining-pct.json
-          cache_max_age_seconds: 900
-          cache_schema:
-            weekly_remaining_pct: integer
-            observed_at: unix_epoch_seconds
       team_lead:
         - {cli: claude, model: opus, vendor: anthropic, flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}
         - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders"}
