@@ -8,12 +8,17 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
 STATES = ("draft", "brief_review", "scripting", "script_review", "production", "final_review", "ready")
 _RANK = {state: index for index, state in enumerate(STATES)}
+DEFAULT_AIDATA_DIR = Path.home() / "Development" / "AIDash" / "aidata"
+DEFAULT_PROPOSALS_PATH = DEFAULT_AIDATA_DIR / "L5_apps" / "digest" / "state" / "proposals.jsonl"
+DEFAULT_WAREHOUSE_DB = DEFAULT_AIDATA_DIR / "L3_merge" / "warehouse.db"
+DEFAULT_RETRO_QUERIES_DIR = DEFAULT_AIDATA_DIR / "L4_serve" / "queries" / "retro"
 
 
 class OptimisticLockError(RuntimeError):
@@ -178,6 +183,36 @@ def compose_prompt(category: str, intent: dict[str, Any], sources: dict[str, Any
     return "\n".join(lines)
 
 
+def discover_aidata_signals(
+    warehouse_db: Path | None = None,
+    queries_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run aidata L4 retro queries against warehouse.db to discover anomalies."""
+    db_path = warehouse_db or DEFAULT_WAREHOUSE_DB
+    q_dir = queries_dir or DEFAULT_RETRO_QUERIES_DIR
+    findings: list[dict[str, Any]] = []
+    if not db_path.is_file() or not q_dir.is_dir():
+        return {"ok": True, "degraded": True, "findings": findings}
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        for sql_file in sorted(q_dir.glob("*.sql")):
+            query_name = f"retro/{sql_file.stem}"
+            sql_text = "\n".join(
+                line for line in sql_file.read_text(encoding="utf-8").splitlines()
+                if not line.strip().startswith("--")
+            ).strip()
+            if not sql_text:
+                continue
+            try:
+                cur = conn.execute(sql_text)
+                cols = [d[0] for d in (cur.description or [])]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()[:10]]
+                if rows:
+                    findings.append({"query": query_name, "count": len(rows), "sample": rows[:3]})
+            except sqlite3.Error:
+                continue
+    return {"ok": True, "degraded": False, "findings": findings}
+
+
 def route_retro_candidate(
     candidate: dict[str, Any],
     mode: str = "observe",
@@ -185,10 +220,12 @@ def route_retro_candidate(
     proposals_path: Path | None = None,
     linear_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
+    raw_prio = str(candidate.get("priority", "high")).strip().lower()
+    norm_prio = raw_prio if raw_prio in {"high", "medium", "low"} else "high"
     proposal = {
         "id": candidate["id"], "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "agent": "retro-loop", "title": candidate.get("title", ""), "detail": candidate.get("detail", ""),
-        "priority": candidate.get("priority", "normal"), "status": "pending",
+        "priority": norm_prio, "status": "pending",
     }
     if mode == "observe" and not starred:
         if proposals_path is None:
@@ -196,7 +233,7 @@ def route_retro_candidate(
         proposals_path.parent.mkdir(parents=True, exist_ok=True)
         with proposals_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(proposal, ensure_ascii=False) + "\n")
-        return {"decision": "observe (queued_to_aidash)", "promoted": False}
+        return {"decision": "observe (queued_to_aidash)", "promoted": False, "proposal": proposal}
     if linear_runner is None:
         raise ValueError("linear_runner is required for promotion")
     linear_runner(proposal)
@@ -207,14 +244,45 @@ def route_retro_candidate(
 route_retro_Candidate = route_retro_candidate
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    import sys
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "discover":
+        p = argparse.ArgumentParser(prog="retro_story_engine.py discover")
+        p.add_argument("--warehouse-db", type=Path, default=DEFAULT_WAREHOUSE_DB)
+        p.add_argument("--queries-dir", type=Path, default=DEFAULT_RETRO_QUERIES_DIR)
+        ns = p.parse_args(args_list[1:])
+        print(json.dumps(discover_aidata_signals(ns.warehouse_db, ns.queries_dir), ensure_ascii=False, indent=2))
+        return 0
+    if args_list and args_list[0] == "propose":
+        p = argparse.ArgumentParser(prog="retro_story_engine.py propose")
+        p.add_argument("--id", required=True)
+        p.add_argument("--title", required=True)
+        p.add_argument("--detail", default="")
+        p.add_argument("--priority", default="high", choices=("high", "medium", "low"))
+        p.add_argument("--mode", default="observe", choices=("observe", "auto"))
+        p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        ns = p.parse_args(args_list[1:])
+        res = route_retro_candidate(
+            {"id": ns.id, "title": ns.title, "detail": ns.detail, "priority": ns.priority},
+            mode=ns.mode,
+            proposals_path=ns.proposals_path,
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+
     parser = argparse.ArgumentParser()
     parser.add_argument("state_path", type=Path)
     parser.add_argument("target_state", choices=STATES)
     parser.add_argument("expected_version", type=int)
-    args = parser.parse_args()
+    args = parser.parse_args(args_list)
     try:
         print(json.dumps(transition_state(args.state_path, args.target_state, args.expected_version)))
+        return 0
     except OptimisticLockError as exc:
         print(json.dumps({"code": exc.code, "error": str(exc)}))
         raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

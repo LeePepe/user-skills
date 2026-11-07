@@ -1,50 +1,78 @@
 ---
 name: retro-loop
-description: 双路复盘与 3 Physical Locks：以项目 Telemetry/Crash 和工程 Workflow/PR/Infra 证据定位最早承重分岔点，并回流 Goal/Task。
+description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定位 H1–H5 根因与 3 Physical Locks，写入 proposals.jsonl 展示在 AIDash 上，并通过 Star/Done 事件回流 Linear TIA。
 ---
-# Retro Loop
+# Retro Loop（`aidata` 发现 ➔ 提出问题 ➔ `AIDash` 展示 ➔ `Linear` 回流）
 
-`retro-loop` 是 workflow-hub 的环 7a，抽取自 `team-lead` playbook §2。它不把
-复盘文字当作完成，而是把可反驳的事实转成 Task、共享底座升级或物理锁。
+`retro-loop` 是个人工作流的环 7a。它不写空洞的口头总结，而是直接对接本机 `~/Development/AIDash/aidata` 星型数仓与 `AIDash.app`，跑通 **「发现问题 ➔ 提出问题 ➔ 展示在 AIDash ➔ 拍板回流 Linear / 落物理锁」** 的完整闭环。
 
-## Project Loop A
+## 端到端数据流（End-to-End Flow）
 
-1. **Telemetry / Performance**：比较 PLT P50/P90/P99、FPS、首屏、交互成功率、
-   DSAT、版本、设备、市场、网络和样本窗口，输出带基线、阈值与读回时间窗的
-   Performance Task。
-2. **Crash clustering**：符号化并聚簇堆栈，固定首次/最近版本和最小复现，经过
-   `postmortem`、RED regression、GREEN 修复、发布和 Crash-Free 读回。
-3. **Product/UX audit**：对照 Token、组件、四态、双外观和真实旅程，生成产品层
-   或共享底座 Task。
+```text
+【1. 发现问题：aidata L1–L4 自动采集与异常检测】
+  │  • L1–L3：采集 Goal 台账 (gtt_ledger)、回执 (gtt_receipt)、网关账单 (raven)、
+  │           CI 运行 (ci_github)、Worktree 卫生与会话轨迹 → 合入 L3 warehouse.db
+  │  • L4 具名复盘查询 (`aidata/L4_serve/queries/retro/*.sql` + `cost/` + `behavior/`)：
+  │      ├─ `retro/gtt_scorecard.sql`          (Goal 阻塞、返工率、台账状态漂移)
+  │      ├─ `retro/bot_tl_operations.sql`      (Steering/Writer 超时、解卡、配额异常)
+  │      ├─ `retro/ci_health_and_noise.sql`    (CI 失败与空跑配置噪音)
+  │      ├─ `retro/workspace_hygiene_reclaim.sql` (已合并未清理的残留 Worktree)
+  │      └─ `retro/tf_release_deliveries.sql`  (个人 App TestFlight 交付与异常)
+  ▼
+【2. 提出问题：retro-loop 根因归因 + 写入 `proposals.jsonl`】
+  │  • 按 Project Loop A（个人 App 体验/UI/构建）与 Engineering Loop B（H1–H5 工作流分岔点）归因；
+  │  • 调用 `retro_story_engine.py propose` 将可执行改进提案写入：
+  │    `~/Development/AIDash/aidata/L5_apps/digest/state/proposals.jsonl` (`status: "pending"`)
+  ▼
+【3. 展示在 AIDash：L5 `inbox.py` -> `aidash` CLI -> XPC -> `AIDash.app`】
+  │  • `aidata/L5_apps/digest/inbox.py` 聚合 4 个桶：
+  │      ├─ `待决策`：读取 `proposals.jsonl` 中的 `pending` 提案（`ref = "proposal://<id>"`）
+  │      ├─ `卡顿`  ：`retro/gtt_scorecard` 阻塞 Goal、卡住 PR 与近期错误日志
+  │      ├─ `发现`  ：CI 配置噪音、可回收 Worktree、高价模型琐碎输出浪费
+  │      └─ `计划`  ：在途待办项
+  │  • 经 `aidash` CLI XPC 推送到 macOS 菜单栏/主窗口与 iPhone 的「今日规划 / Needs a Person」卡片。
+  ▼
+【4. 拍板与回流：`AIDash` 交互 -> `event_bridge.py` -> `linear-board` / 3 Physical Locks】
+     • 你在 `AIDash` 上对提案卡片点 **⭐ Star（批准）**：
+       `event_bridge.py` 自动调用 `skills/team-lead/scripts/linear-sync.py idea --mode auto`
+       在 **Linear Team `TIA`** 创建 Issue，并将 `proposals.jsonl` 标记为 `approved`；
+     • 你在 `AIDash` 上点 **✓ Done（忽略/已处理）**：
+       `event_bridge.py` 自动将提案标记为 `dismissed` 消警。
+```
 
-## Engineering Loop B
+## Project Loop A & Engineering Loop B
 
-按 H1–H5 诊断 Workflow/PR/Infra：
+- **Project Loop A（个人产品与 UI 质量）**：针对 `AIDash`、`VitalStride`、`VoxPocket`、`Financial` 的构建/运行异常、TestFlight 交付（`tf_release_deliveries`）与 UI 视觉缺陷，生成产品修复提案或通过 `verify_design_cases.py register-case` 沉淀进 `my-designer` Plan C 缺陷库。
+- **Engineering Loop B（AI 团队工作流 H1–H5 诊断）**：
+  - **H1** 定义或验收不可实现；
+  - **H2** 依赖或基线漂移；
+  - **H3** 调度或权限边界错误；
+  - **H4** 实现或测试缺陷；
+  - **H5** 门禁、发布或读回缺失。
+  定位 Earliest Load-Bearing Fork（最早承重分岔点），通过 Counterfactual gate 验证后产出改进提案。
 
-- H1 定义或验收不可实现；
-- H2 依赖或基线漂移；
-- H3 调度或权限边界错误；
-- H4 实现或测试缺陷；
-- H5 门禁、发布或读回缺失。
+## 3 Physical Locks（三道物理锁）
 
-每次记录 Evidence boundary、Observable timeline、Earliest Load-Bearing Fork、
-H1–H5 verdict、Counterfactual gate、Responsibility/stop boundary，以及一个
-可执行的 Goal/Task 或明确 backlog。
+同一类问题第二次出现时，必须落下至少一道物理锁（文字提醒不算锁）：
 
-## 3 Physical Locks
+1. **Skill / Design Case lock**：在 `user-skills` 固化精简合同，或在 `my-designer` 注册 Plan C 缺陷规则。
+2. **Hook / Script lock**：在 `herdr-dispatch.sh`、`goal-queue.py`、`goal-supervisor.py` 或 Git `pre-commit`/`pre-push` 中硬性拦截。
+3. **6DQ CI lock**：在 `shared-ci`、`design_contract.py`、`contract_check.sh` 中阻断契约漂移。
 
-1. **Skill lock**：在 `user-skills`/`agent-skills` 固化拆分、状态、R10、停止线
-   和复盘模板。
-2. **Hook lock**：用 PreToolUse、Worktree 守卫、Herdr ID 与事件订阅阻止本地
-   路径和危险操作错误。
-3. **6DQ CI lock**：用 `shared-ci`、`sync_contract.py`、`design_contract.py`、
-   `release_sync.py` 和共享组件阻止跨仓契约、版本和发布漂移。
+## Return path & CLI 用法
 
-同一故障第二次出现时，至少增加一条不同层级的锁；文字提醒不算物理锁。
+已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task：
 
-## Return path
+```bash
+# 1. 从 aidata warehouse.db 扫描当前复盘异常信号 (发现问题)
+python3 skills/retro-loop/scripts/retro_story_engine.py discover
 
-已确认结论回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task；证据不足
-时保留 `unknown`，不得静默修改冻结合同。
+# 2. 提出改进提案写入 aidata proposals.jsonl，供 AIDash 展示 (提出问题)
+python3 skills/retro-loop/scripts/retro_story_engine.py propose \
+  --id "retro-20261107-01" \
+  --title "修复 CI 空跑配置噪音" \
+  --detail "H5 门禁噪音：停用未配置密钥的空跑 workflow" \
+  --priority high
+```
 
 实现入口：[retro_story_engine.py](scripts/retro_story_engine.py)。
