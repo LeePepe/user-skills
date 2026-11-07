@@ -634,10 +634,17 @@
       "web_implementation": "Derive list and KPIs from a shared activeCategory state; highlight active Recharts/Basalt segment, dim unselected segments, and toggle off on repeat click.",
       "mobile_implementation": "SwiftUI Charts selection binding filtering the shared query state with .contentTransition(.numericText()) on summary readouts and tap-to-deselect.",
       "token_guardrails": "tabular-nums / monospacedDigit for changing metrics; preserve active search keyword and sort order; >=4.5:1 active/inactive contrast.",
-      "usage_count": 0,
-      "rating": "unrated",
-      "last_used_at": null,
-      "usage_history": []
+      "usage_count": 1,
+      "rating": "liked",
+      "last_used_at": "2026-11-07",
+      "usage_history": [
+        {
+          "timestamp": "2026-11-07T18:58:11",
+          "context": "AIDash/TrendChartCardView",
+          "rating": "liked",
+          "notes": ""
+        }
+      ]
     },
     {
       "id": "IP-002",
@@ -664,10 +671,23 @@
       "web_implementation": "Pure derived selector: filter(items, category, keyword) then sort(field, dir); keep filter and sort controls in independent state slices.",
       "mobile_implementation": "SwiftUIsearchable + category filter tokens + Menu/Picker sort descriptor operating on the filtered collection without resetting filter state.",
       "token_guardrails": "Sorting never clears filter/search state; provide clear active indicators and reset options.",
-      "usage_count": 0,
-      "rating": "unrated",
-      "last_used_at": null,
-      "usage_history": []
+      "usage_count": 2,
+      "rating": "liked",
+      "last_used_at": "2026-11-07",
+      "usage_history": [
+        {
+          "timestamp": "2026-11-07T18:58:11",
+          "context": "AIDash/MainDashboardToolbar+Table",
+          "rating": "liked",
+          "notes": ""
+        },
+        {
+          "timestamp": "2026-11-07T22:23:07",
+          "context": "VoxPocket/TodoAndNoteFilterBar",
+          "rating": "liked",
+          "notes": ""
+        }
+      ]
     },
     {
       "id": "IP-003",
@@ -694,10 +714,23 @@
       "web_implementation": "Two-column master-detail layout with selectedId state; render detail panel in-place and keep master list key/scroll stable.",
       "mobile_implementation": "NavigationSplitView on iPad/macOS or in-place detail card/sheet on compact screens, preserving list scroll and ordering.",
       "token_guardrails": "CLS = 0 on selection; master list order and scroll offset remain unchanged; clear selected row state.",
-      "usage_count": 0,
-      "rating": "unrated",
-      "last_used_at": null,
-      "usage_history": []
+      "usage_count": 2,
+      "rating": "liked",
+      "last_used_at": "2026-11-07",
+      "usage_history": [
+        {
+          "timestamp": "2026-11-07T18:58:11",
+          "context": "AIDash/RankingTableCardView",
+          "rating": "liked",
+          "notes": ""
+        },
+        {
+          "timestamp": "2026-11-07T22:23:07",
+          "context": "VoxPocket/MacWorkspaceNavigationSplitView",
+          "rating": "liked",
+          "notes": ""
+        }
+      ]
     },
     {
       "id": "IP-004",
@@ -724,10 +757,23 @@
       "web_implementation": "Empty state names the active query/filter and offers a 'Clear keyword' action that resets only searchQuery while preserving category and sort state.",
       "mobile_implementation": "ContentUnavailableView.search(text:) or custom Strata empty state whose reset action clears search text without wiping selected category pills.",
       "token_guardrails": "Empty state explains why and provides a 1-click partial recovery CTA; non-keyword filters remain preserved.",
-      "usage_count": 0,
-      "rating": "unrated",
-      "last_used_at": null,
-      "usage_history": []
+      "usage_count": 2,
+      "rating": "liked",
+      "last_used_at": "2026-11-07",
+      "usage_history": [
+        {
+          "timestamp": "2026-11-07T18:58:12",
+          "context": "AIDash/WorkspaceEmptyState",
+          "rating": "liked",
+          "notes": ""
+        },
+        {
+          "timestamp": "2026-11-07T22:23:07",
+          "context": "VoxPocket/ScopedSearchEmptyState",
+          "rating": "liked",
+          "notes": ""
+        }
+      ]
     },
     {
       "id": "IP-005",
@@ -754,10 +800,23 @@
       "web_implementation": "Derive summary badges, counts, and semantic color tokens directly from the items array rather than separate static counters.",
       "mobile_implementation": "Computed properties on @Observable / SwiftData model collections driving summary badges and semantic tokens with .numericText() transition.",
       "token_guardrails": "Single source of truth for item status and summary counters; semantic tokens calibrated for both Light and Dark mode.",
-      "usage_count": 0,
-      "rating": "unrated",
-      "last_used_at": null,
-      "usage_history": []
+      "usage_count": 2,
+      "rating": "liked",
+      "last_used_at": "2026-11-07",
+      "usage_history": [
+        {
+          "timestamp": "2026-11-07T18:58:12",
+          "context": "AIDash/ActionItemsCardView+MenuBarPulse",
+          "rating": "liked",
+          "notes": ""
+        },
+        {
+          "timestamp": "2026-11-07T22:23:07",
+          "context": "VoxPocket/TodoStatusSummaryAndMenuBar",
+          "rating": "liked",
+          "notes": ""
+        }
+      ]
     }
   ]
 }

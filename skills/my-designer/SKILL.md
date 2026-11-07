@@ -1,126 +1,60 @@
 ---
 name: my-designer
-description: 'Handoff-only design lead for rendered UI, visual-interface, and design-system work across shared-design-system (DesignTokens + Strata) and product repositories: define macro visual personality, two-stage verbal design specs, micro alignment/geometry, anti-collision, and multi-device adaptation. Downstream Writers own product/design-system implementation and real rendering; no throwaway demos or Prototype code.'
+description: 'Apple-First progressive-disclosure design lead (`L0 -> L1 -> L2`) for macOS (`desktop`) and iOS/iPadOS (`mobile`) apps. Uses pure Apple Native components (SwiftUI, Swift Charts, SF Symbols, Liquid Glass), routes on-demand HIG & vault inspirations, enforces Plan A (Apple HIG 5 Lenses + code audit) by default, and evolves Plan C defect cases on demand. Downstream Writers implement directly in product code; no throwaway demos or Prototype code.'
 allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 ---
 
-# my-designer — thin handoff harness
+# my-designer — Progressive Disclosure Apple Design Lead (`L0`)
 
-This handoff-only skill owns the design handoff, not production implementation. Select one
-visual mode, compose the applicable category slot, and write an
-author the implementation-ready `design.md`/`spec.md` handoff and receipts.
-Downstream
-Writers implement in the product or design system, render real screenshots,
-and iterate against the frozen handoff. Never create throwaway demos or
-`Prototype/` code.
+This `handoff-only` skill owns the design specification and review routing, not production code implementation. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code** without throwaway demos or `Prototype/` directories.
 
 **Announce at start:** “I'm using the my-designer skill (as design lead).”
 
-## Visual modes
+---
 
-Select exactly one mode for every surface:
+## 4-Step Progressive Disclosure Workflow (`L0 -> L1 -> L2`)
 
-1. **Mode A · `Strata-Core`** — Strata accents and solid neutral surfaces;
-   best for dense tools, forms, tables, and settings.
-2. **Mode B · `Strata-Glass`** — Strata solid content with glass restricted
-   to outer floating containers, toolbars, and popovers.
-3. **Mode C · `Independent-Glass`** — project-specific content with native
-   Apple Liquid Glass for navigation, toolbars, and floating controls.
-4. **Mode D · `Independent-Custom`** — a bespoke visual system such as Basalt
-   + Recharts or an editorial world, with the same geometry and state floors.
+Never load all HIG documents or the entire inspiration vault upfront. Disclose context in three strict layers:
 
-Infer the platform and established token authority; do not mix modes ad hoc.
-For shared-design-system, read [five-layer-craft.md](references/five-layer-craft.md)
-and [agent-design-doc-v1.md](references/agent-design-doc-v1.md) when the task
-requires their detailed contract.
+### Step 1 · Lock Platform & Dimensions (`L0`)
+1. **Platform Topology:** Select `desktop` (macOS `NSWindow`, `NSPopover`, `MenuBarExtra`, `NavigationSplitView`) or `mobile` (iOS/iPadOS/iPhone Duo `NavigationStack`, `TabView`, `Sheet`, `Widget`, `LiveActivity`). `web` remains frozen in backlog unless `--platform web` is explicitly requested.
+2. **Design Dimensions:** Pick the 1–4 active dimensions for the surface:
+   - `color-palette` (`CL`) · `visual-style` (`VS`) · `component` (`CP`) · `chart-dataviz` (`DV`)
+   - `glass-material` (`GM`) · `motion-interaction` (`MI`) · `layout-navigation` (`LN`) · `typography-copy` (`TC`)
 
-## Level 1A — eight cross-platform hard floors
+### Step 2 · On-Demand Routing & Platform Firewall (`L1` -> [routing-index.md](references/routing-index.md))
+Run the L1 router and vault search. `verify_design_cases.py route` enforces a strict **Native vs. Web Platform Firewall** over the 4 external git-pullable repos in `~/Development/Personal/collected-tools/repos/` (`apple-design-skill`, `impeccable`, `taste-skill`, `ui-ux-pro-max-skill`):
+- **When `--platform desktop` or `mobile` (Apple Native):**
+  - **Skip raw foundation HIG** (`distilled_in_plan_a` is already in Plan A 5 Lenses);
+  - **Allowed external refs:** `apple-design-skill/references/hig/<on_demand_external_refs>`, `impeccable` **native-only subset** (`reference/{ios.md,audit.native.md,adapt.native.md,craft-floor.md,operate.md}`), and `ui-ux-pro-max` `--stack swiftui` only;
+  - **Strictly blocked (Zero Web Pollution):** never load `taste-skill` (100% Web HTML/CSS/Shader/Chrome hook), `ui-ux-pro-max` Web `--design-system`/Tailwind/Shadcn/GSAP, or `impeccable` Web `detect`/`live`/`audit.md`.
+- **When `--platform web` (Web / Landing Page):**
+  - Routes to `taste-skill/skills/taste-skill/SKILL.md`, `impeccable` Web (`SKILL.md` + `detect`), and `ui-ux-pro-max` (`--design-system` / `ui-styling`).
 
-These are immutable and category slots cannot override them:
+```bash
+# 1. Route active platform + dimensions -> Plan A lenses, Plan C defect cases & platform-isolated external refs
+python3 skills/my-designer/scripts/verify_design_cases.py route \
+  --platform desktop --dimensions glass-material,chart-dataviz
 
-1. **Handoff-only role:** Designer writes verbal handoffs; Writer owns
-   production code and rendering.
-2. **Semantic tokens:** Use the active theme authority; never add raw colors.
-3. **Four states and two appearances:** Cover populated, loading, empty, and
-   error in Light and Dark.
-4. **Contrast:** Interactive foreground/background pairs meet WCAG 2.1 AA,
-   at least `4.5:1`.
-5. **Platform ergonomics:** Respect platform typography and minimum
-   `44×44pt` touch targets; never truncate numeric values or units with `…`.
-6. **Host geometry:** Apply padding before fixed frame sizing, e.g.
-   `.padding(16).frame(width: 380)`.
-7. **Anti-collision stack:** Keep content surfaces solid, separate functional
-   material from content, and route bottom chrome through one ordered inset
-   stack.
-8. **Upstream-first escalation:** Escalate reusable primitives or more than
-   `>15` lines of local layout/chrome instead of patching a product view.
-
-## Level 1B — general grid, corner, tier, and motion rules
-
-- Use the `4/8pt` scale (`4, 8, 12, 16, 24, 32, 48`) and derive text width
-  from container width minus padding, gaps, and fixed controls. Avoid
-  off-grid magic values and zero/one-point entry gaps.
-- Use size-aware concentric radii: outer `32pt`, card `24pt`, control
-  `16pt`; compact collections and keyboards scale down to `4–8pt`.
-- Classify the surface as one of three macro tiers: **Tier 1
-  `Compact-Portrait`** (single column, thumb-zone actions), **Tier 2
-  `Wide-Touch`** (adaptive two/three-column workspace, bounded actions), or
-  **Tier 3 `Desktop-Pointer`** (sidebar/multi-pane, `32–36pt` controls,
-  hover, keyboard focus, and Escape dismissal).
-- Every surface has populated/loading/empty/error geometry; loading preserves
-  geometry (`CLS = 0`) and error includes an inline retry.
-- Route motion by frequency: frequent taps use pointer-down `scale(0.97)` with
-  `100–120ms` ease-out and no spatial travel; ordinary state changes use
-  critically damped springs (`response 0.28–0.30`, `dampingFraction
-  0.85–1.0`). Never animate from `scale(0)` and honor Reduce Motion.
-- Keep numeric transitions readable, use `ViewThatFits` or a dedicated row
-  for unbounded titles, and preserve a strict single-line header where the
-  surface is dense (`lineLimit(1)`). `StrataStickySectionHeader` is a fixed
-  `44pt` row; `StrataExpandableTitleHeader` handles expandable titles.
-  Verify availability before using planned primitives such as `StrataMetricRow`.
-
-## Workflow and entry points
-
-1. Intake the platform, surface, one visual mode, macro tier, token authority,
-   states, and screenshot acceptance criteria.
-2. Translate the request into design terminology, then lock parameter-level
-   tokens, spacing, radii, alignment anchors, z-stack, states, and motion in
-   the handoff. Existing-screen changes include an **Obsolete Test Manifest**
-   and **Deprecated Test Clauses to Remove/Rewrite** section.
-3. Compose `Global > Category Slot > Intent > Sources`. Category slots live
-   in [`references/slots/`](references/slots/); use the platform slot rather
-   than copying its rules into this harness.
-
-Use the deterministic prompt composer:
-
-```text
-python3 skills/my-designer/scripts/design_slots.py list-categories
-python3 skills/my-designer/scripts/design_slots.py compose \
-  --category ios-dense-single-hand --intent-json '{}' --sources-json '{}'
+# 2. Retrieve matching inspirations from desktop-macos.json or mobile-ios.json
+python3 skills/design-studio/scripts/design_catalog.py vault-search \
+  --platform desktop --dimension chart-dataviz --query "<intent>" --top 5
 ```
 
-For inspiration and interaction/motion/tool lookup, use the design-studio
-catalog entry point (read-only reference):
+### Step 3 · Author Apple-First Native Handoff (`design.md` / `spec.md`)
+- **Pure Apple Native Priority (No Mandatory Design System Wrapper):**
+  - Default to native SwiftUI controls (`NavigationSplitView`, `TabView`, `List`, `Table`, `Form`, `.toolbar`, `.sheet`, `.searchable`, `ContentUnavailableView`, `LabeledContent`), **Swift Charts** (`Chart`, `LineMark`, `BarMark`, `AreaMark`, `SectorMark`, `.chartXSelection`), **SF Symbols**, system semantic colors, and native **Liquid Glass** (`.glassEffect(.regular / .clear)`, `GlassEffectContainer`, `.buttonStyle(.glassProminent)`).
+  - Do not force custom design-system wrappers on standalone Apple apps; add lightweight project-local modifiers only when native components cannot express a recurring domain pattern.
+- **Spec-First Test Alignment:** When modifying an existing screen, include an **Obsolete Test Manifest** and **Deprecated Test Clauses to Remove/Rewrite** section so legacy UI assertions do not block approved design changes.
 
-```text
-python3 skills/design-studio/scripts/design_catalog.py search --query IP-
-python3 skills/design-studio/scripts/design_catalog.py recommend --surface-mode operate
-```
+### Step 4 · Baseline Gate: Plan A Default + Plan C Defect-Case Evolution (`L2`)
+- **Plan A (Always Active):** Audit against Apple's 5 HIG Lenses (Accessibility, Platform Conventions, Liquid Glass Two-Layer Craft, Interaction & States, Typography & Copy), run the static native code audit, and run the portable Localization (`xcstrings`) audit:
+  ```bash
+  python3 skills/my-designer/scripts/verify_design_cases.py audit-code \
+    --platform desktop --path <SwiftUI-File-Or-Dir>
 
-The catalog is inspiration, not authority: preserve the floors above and
-record chosen triggers, linkage, recovery, and motion in `design.md`. For
-native projects, verify the pinned `Package.resolved`/`DesignKit` before
-referencing upstream primitives; do not invent unavailable names. Before
-visual delivery, run the applicable platform design reviewer on real
-screenshots across device tiers and appearances.
-
-the downstream `Writer` implements **directly in the product or `shared-design-system` code**;
-this skill only authors the handoff.
-
-## Native restraint
-
-For a new native scaffold, use the repository's existing `DesignKit`,
-`ColorSystem`, and package/build conventions. For an existing app, refine its
-established components; do not replace architecture or seed a local token
-table. For Financial, read its constitution and preserve financial engine,
-currency/sign conventions, and data provenance.
+  # Portable Cross-Project Localization Gate (locale completeness, format parity, source key coverage & Info.plist CFBundleLocalizations)
+  python3 skills/my-designer/scripts/verify_design_cases.py audit-l10n \
+    --path <App-Or-Package-Dir> --locales en,zh-Hans
+  ```
+- **Plan C ([defect-cases/index.json](references/defect-cases/index.json)):** Starts empty (`active_cases: []`) to keep daily design lightweight. When a real visual or layout defect is discovered, register an atomic case via `verify_design_cases.py register-case` so future tasks on the same platform/container automatically disclose and check it.

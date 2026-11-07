@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared entrypoint for the canonical goal-task Linear synchronizer."""
+"""Shared entrypoint for the canonical team-lead Linear synchronizer."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 CANONICAL = (
     Path(__file__).resolve().parents[2]
-    / "goal-task"
+    / "team-lead"
     / "scripts"
     / "linear-sync.py"
 )

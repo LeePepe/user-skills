@@ -26,16 +26,16 @@ INLINE_CODE_RE: re.Pattern[str] = re.compile(r"`[^`\n]+`")
 MARKDOWN_LINK_RE: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/workflow-hub/SKILL.md": 12 * 1024,
-    "skills/goal-task/SKILL.md": 36 * 1024,
-    "skills/bot-tl-orchestration/SKILL.md": 24 * 1024,
+    "skills/team-lead/SKILL.md": 36 * 1024,
+    "skills/coordinator/SKILL.md": 24 * 1024,
     "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
     "skills/my-designer/SKILL.md": 12 * 1024,
-    "skills/goal-task/references/bots-and-agents.md": 38 * 1024,
-    "skills/goal-task/references/ledger.md": 18 * 1024,
-    "skills/goal-task/references/runtime-profiles.yaml": 34 * 1024,
-    "skills/goal-task/references/playbook.md": 58 * 1024,
+    "skills/team-lead/references/bots-and-agents.md": 38 * 1024,
+    "skills/team-lead/references/ledger.md": 18 * 1024,
+    "skills/team-lead/references/runtime-profiles.yaml": 34 * 1024,
+    "skills/team-lead/references/playbook.md": 58 * 1024,
 }
 BANNED_SURFACE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("../goal-target-task/", ("skills/",)),
@@ -45,8 +45,8 @@ BANNED_SURFACE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("gemini-3.8-flash", ("skills/",)),
     ("composer-2.5", ("skills/",)),
     ("kimi-k3-high", ("skills/",)),
-    ("[总 45 kg]", ("skills/goal-task/SKILL.md", "skills/goal-task/references/bots-and-agents.md")),
-    ("+ 添加动作", ("skills/goal-task/SKILL.md", "skills/goal-task/references/bots-and-agents.md")),
+    ("[总 45 kg]", ("skills/team-lead/SKILL.md", "skills/team-lead/references/bots-and-agents.md")),
+    ("+ 添加动作", ("skills/team-lead/SKILL.md", "skills/team-lead/references/bots-and-agents.md")),
 )
 
 
@@ -124,7 +124,7 @@ class VerifySkillsTests(unittest.TestCase):
     """Contract and integrity checks for skills, metadata, links, and hygiene."""
 
     def _load_ci_monitor(self):
-        path = SKILLS_DIR / "goal-task" / "scripts" / "ci-monitor.py"
+        path = SKILLS_DIR / "team-lead" / "scripts" / "ci-monitor.py"
         spec = importlib.util.spec_from_file_location("ci_monitor_test", path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
@@ -134,7 +134,7 @@ class VerifySkillsTests(unittest.TestCase):
         return module
 
     def test_ci_monitor_cli_and_layer_zero_contract(self) -> None:
-        script = SKILLS_DIR / "goal-task" / "scripts" / "ci-monitor.py"
+        script = SKILLS_DIR / "team-lead" / "scripts" / "ci-monitor.py"
         self.assertTrue(script.is_file())
         self.assertEqual(script.stat().st_mode & 0o777, 0o755)
         for command in ("workflow", "pr"):
@@ -146,8 +146,8 @@ class VerifySkillsTests(unittest.TestCase):
                 check=True,
             )
             self.assertIn("usage:", result.stdout)
-        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
-        agents_text = (SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
+        skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
         for text in (skill_text, agents_text):
             self.assertIn("ci-monitor.py", text)
             self.assertIn("Layer 0", text)
@@ -295,7 +295,7 @@ class VerifySkillsTests(unittest.TestCase):
                 self.assertTrue(description, f"Empty description in {skill_md}")
 
     def test_runtime_profiles_yaml_structure(self) -> None:
-        profile_path = SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml"
+        profile_path = SKILLS_DIR / "team-lead" / "references" / "runtime-profiles.yaml"
         self.assertTrue(profile_path.is_file())
         content = profile_path.read_text(encoding="utf-8")
 
@@ -406,7 +406,7 @@ class VerifySkillsTests(unittest.TestCase):
                     self.assertNotIn(phrase, path.read_text(encoding="utf-8"), f"{phrase!r} in {path}")
 
         path_re = re.compile(r"`(skills/[a-z0-9_-]+/(?:scripts|references|assets)/[A-Za-z0-9_./-]+)`")
-        for rel_path in ("skills/goal-task/SKILL.md", "skills/bot-tl-orchestration/SKILL.md"):
+        for rel_path in ("skills/team-lead/SKILL.md", "skills/coordinator/SKILL.md"):
             text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             for match in path_re.findall(text):
                 self.assertNotIn("*", match)
@@ -422,10 +422,10 @@ class VerifySkillsTests(unittest.TestCase):
             (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
         )
         plugin_names = {plugin.get("name") for plugin in marketplace.get("plugins", [])}
-        self.assertIn("goal-task", plugin_names)
+        self.assertIn("team-lead", plugin_names)
         self.assertNotIn("goal-target-task", plugin_names)
 
-        canonical_dir = SKILLS_DIR / "goal-task"
+        canonical_dir = SKILLS_DIR / "team-lead"
         canonical_refs = canonical_dir / "references"
         self.assertTrue(canonical_refs.is_dir())
         canonical_files = [p for p in canonical_refs.iterdir() if p.is_file()]
@@ -439,11 +439,11 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue(os.access(script_path, os.X_OK), f"{script_path} is not executable")
 
         canonical_fm = parse_frontmatter(canonical_dir / "SKILL.md")
-        self.assertEqual(canonical_fm.fields.get("name"), "goal-task")
+        self.assertEqual(canonical_fm.fields.get("name"), "team-lead")
         canonical_body = "\n".join(canonical_fm.body_lines)
         self.assertNotIn("../goal-target-task/", canonical_body)
         self.assertNotIn("兼容目录名", canonical_body)
-        self.assertIn("唯一技能名是 `goal-task`", canonical_body)
+        self.assertIn("唯一技能名是 `team-lead`", canonical_body)
         for anchor_heading in ("## 定义、冻结与缺口", "## 限定审查"):
             self.assertIn(
                 anchor_heading,
@@ -467,18 +467,18 @@ class VerifySkillsTests(unittest.TestCase):
                     "ledger.md",
                     "receipts/*-rN.md",
                     "TIA-xx",
-                    "linear-board -> domain-modeling -> goal-task",
-                    "goal-task -> code-review -> auto-review-merge",
+                    "linear-board -> domain-modeling -> team-lead",
+                    "team-lead -> code-review",
                     "linear-board",
-                    "bot-tl-orchestration",
-                    "goal-task",
+                    "coordinator",
+                    "team-lead",
                     "retro-loop",
                     "story-craft",
                     "Progressive Discovery Ladder",
                     "Not an upfront all-at-once constraint",
                     "Stage 1",
                     "Stage 5",
-                    "自治脉搏：Cron / Clockwork 定时调度",
+                    "自治脉搏：Cron / launchd 定时调度",
                     "Precheck-First, Wake-on-Actionable",
                     "pending == 0",
                 ),
@@ -538,7 +538,7 @@ class VerifySkillsTests(unittest.TestCase):
         linear_script = SKILLS_DIR / "linear-board" / "scripts" / "linear-sync.py"
         self.assertTrue(linear_script.is_file())
         self.assertEqual(linear_script.stat().st_mode & 0o777, 0o755)
-        self.assertIn("../goal-task/scripts/linear-sync.py", (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("../team-lead/scripts/linear-sync.py", (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8"))
         linear_board_text = (SKILLS_DIR / "linear-board" / "SKILL.md").read_text(encoding="utf-8")
         workflow_hub_text = (SKILLS_DIR / "workflow-hub" / "SKILL.md").read_text(encoding="utf-8")
         for project_name in ("Agent Workflow", "Bing", "Personal project"):
@@ -550,9 +550,9 @@ class VerifySkillsTests(unittest.TestCase):
         for skill_dir in ("~/.agents/skills", "~/.copilot/skills", "~/.codex/skills", "~/.claude/skills"):
             self.assertIn(skill_dir, workflow_hub_text)
 
-        goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
-        playbook_text = (SKILLS_DIR / "goal-task" / "references" / "playbook.md").read_text(encoding="utf-8")
-        roadmap_text = (SKILLS_DIR / "goal-task" / "references" / "workflow-refine-roadmap.md").read_text(encoding="utf-8")
+        goal_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
+        playbook_text = (SKILLS_DIR / "team-lead" / "references" / "playbook.md").read_text(encoding="utf-8")
+        roadmap_text = (SKILLS_DIR / "team-lead" / "references" / "workflow-refine-roadmap.md").read_text(encoding="utf-8")
         for target in ("../workflow-hub/SKILL.md", "../linear-board/SKILL.md", "../retro-loop/SKILL.md", "../story-craft/SKILL.md"):
             self.assertIn(f"]({target})", goal_text)
         for text in (playbook_text, roadmap_text):
@@ -560,7 +560,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Not an upfront all-at-once constraint", text)
         self.assertIn("Stage 1", playbook_text)
         self.assertIn("Stage 5", playbook_text)
-        queue_path = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
+        queue_path = SKILLS_DIR / "team-lead" / "scripts" / "goal-queue.py"
         spec = importlib.util.spec_from_file_location("goal_queue_contract_test", queue_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
@@ -573,7 +573,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue(queue_module._is_isolated_handoff_dir(isolated))
 
     def test_thin_three_group_role_routing_without_designer_subagent(self) -> None:
-        skill_path = SKILLS_DIR / "goal-task" / "SKILL.md"
+        skill_path = SKILLS_DIR / "team-lead" / "SKILL.md"
         agents_path = skill_path.parent / "references" / "bots-and-agents.md"
         profiles_path = skill_path.parent / "references" / "runtime-profiles.yaml"
         skill_text = skill_path.read_text(encoding="utf-8")
@@ -602,56 +602,55 @@ class VerifySkillsTests(unittest.TestCase):
         designer_dir = SKILLS_DIR / "my-designer"
         modernization_dir = SKILLS_DIR / "visual-design-modernization"
         designer_text = (designer_dir / "SKILL.md").read_text(encoding="utf-8")
-        craft_text = (designer_dir / "references" / "five-layer-craft.md").read_text(encoding="utf-8")
-        spec_text = (designer_dir / "references" / "agent-design-doc-v1.md").read_text(encoding="utf-8")
+        routing_text = (designer_dir / "references" / "routing-index.md").read_text(encoding="utf-8")
+        cases_text = (designer_dir / "references" / "defect-cases" / "index.json").read_text(encoding="utf-8")
         modernization_text = (modernization_dir / "SKILL.md").read_text(encoding="utf-8")
-        goal_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
-        agents_text = (SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
+        goal_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
+        agents_text = (SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
 
         for path in (
             designer_dir / "SKILL.md",
-            designer_dir / "references" / "agent-design-doc-v1.md",
-            designer_dir / "references" / "five-layer-craft.md",
+            designer_dir / "references" / "routing-index.md",
+            designer_dir / "references" / "defect-cases" / "index.json",
+            designer_dir / "scripts" / "verify_design_cases.py",
             modernization_dir / "SKILL.md",
         ):
             with self.subTest(path=str(path)):
                 self.assertTrue(path.is_file())
-        for layer in ("L1", "L2", "L3", "L4", "L5"):
-            self.assertIn(layer, craft_text)
-        self.assertIn("schema: agent-design-doc/v1", spec_text)
-        self.assertIn("MUST", spec_text)
-        self.assertIn("NEVER", spec_text)
+        for token in ("L0 -> L1 -> L2", "Plan A", "Plan C"):
+            self.assertIn(token, routing_text)
+        self.assertIn("plan-a-apple-hig", cases_text)
         self.assertIn("handoff-only", designer_text)
         self.assertNotIn("艺术家", goal_text)
         self.assertNotIn("艺术家", agents_text)
         self.assertNotIn("执行设计总审门禁", agents_text)
         self.assertNotIn("Bot → `艺术家`", agents_text)
         self.assertIn("downstream `Writer`", designer_text)
-        self.assertIn("author the implementation-ready `design.md`/`spec.md` handoff and receipts", designer_text)
+        self.assertIn("Author the implementation-ready `design.md`/`spec.md` handoff and receipts", designer_text)
         self.assertIn("the downstream `Writer` implements **directly in the product or `shared-design-system` code**", designer_text)
         self.assertIn("No Code Demo", modernization_text)
 
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
-        skill_dir = SKILLS_DIR / "bot-tl-orchestration"
+        skill_dir = SKILLS_DIR / "coordinator"
         skill_path = skill_dir / "SKILL.md"
         manifest_path = skill_dir / ".claude-plugin" / "plugin.json"
         skill_text = skill_path.read_text(encoding="utf-8")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(manifest.get("name"), "bot-tl-orchestration")
+        self.assertEqual(manifest.get("name"), "coordinator")
         self.assertEqual(
             manifest.get("description"),
             "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。",
         )
         self.assertEqual(manifest.get("category"), "workflow")
-        self.assertIn("bot-tl-orchestration", skill_text)
+        self.assertIn("coordinator", skill_text)
 
         shared_targets = (
-            "../goal-task/references/runtime-profiles.yaml",
-            "../goal-task/references/bots-and-agents.md",
-            "../goal-task/references/ledger.md",
-            "../goal-task/scripts/goal-queue.py",
-            "../goal-task/scripts/herdr-dispatch.sh",
+            "../team-lead/references/runtime-profiles.yaml",
+            "../team-lead/references/bots-and-agents.md",
+            "../team-lead/references/ledger.md",
+            "../team-lead/scripts/goal-queue.py",
+            "../team-lead/scripts/herdr-dispatch.sh",
         )
         for target in shared_targets:
             with self.subTest(target=target):
@@ -660,8 +659,8 @@ class VerifySkillsTests(unittest.TestCase):
 
         for document in (
             skill_path,
-            SKILLS_DIR / "goal-task" / "references" / "playbook.md",
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "team-lead" / "references" / "playbook.md",
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
         ):
             with self.subTest(document=str(document.relative_to(REPO_ROOT))):
                 text = document.read_text(encoding="utf-8")
@@ -675,9 +674,9 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
 
     def test_merged_worktree_cleanup_contract(self) -> None:
-        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
 
         for text in (skill_text, agents_text):
@@ -687,9 +686,9 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("Owner", text)
 
     def test_design_budget_upstream_sync_and_v2_truncation_gate_contract(self) -> None:
-        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
 
         for text in (skill_text, agents_text):
@@ -703,9 +702,9 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("Package.resolved", agents_text)
 
     def test_spec_first_obsolete_test_manifest_and_visual_harmony_gate_contract(self) -> None:
-        skill_text = (SKILLS_DIR / "goal-task" / "SKILL.md").read_text(encoding="utf-8")
+        skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
 
         for text in (skill_text, agents_text):
@@ -720,7 +719,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("shared-design-system", text)
 
     def test_goal_supervisor_scan_check_pins_and_telemetry(self) -> None:
-        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        supervisor = SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
         self.assertTrue(supervisor.is_file())
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -794,7 +793,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue((handoff / "receipts" / "contract-telemetry.json").is_file())
 
     def test_goal_supervisor_binds_shortened_names_and_cwd(self) -> None:
-        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        supervisor = SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "good-designer"
@@ -884,7 +883,7 @@ class VerifySkillsTests(unittest.TestCase):
             )
 
     def test_goal_supervisor_notify_bridge_and_scan_alerts(self) -> None:
-        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        supervisor = SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
             root = Path(tmp)
             handoff = root / "goal-a"
@@ -957,32 +956,32 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_blocked_alert_contract_is_documented(self) -> None:
         for path in (
-            SKILLS_DIR / "bot-tl-orchestration" / "SKILL.md",
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
-            SKILLS_DIR / "goal-task" / "references" / "playbook.md",
+            SKILLS_DIR / "coordinator" / "SKILL.md",
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "team-lead" / "references" / "playbook.md",
         ):
             text = path.read_text(encoding="utf-8")
             self.assertIn("blocked-<agent>-<ts>.md", text)
             self.assertIn("通知桥 ≠ 解卡", text)
             self.assertIn("GOAL_DONE 关窗与 blocked alerts 两条独立", text)
         supervisor_text = (
-            SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+            SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("send-keys", supervisor_text)
 
     def test_goal_supervisor_contract_and_xcode_allowlist(self) -> None:
-        supervisor = SKILLS_DIR / "goal-task" / "scripts" / "goal-supervisor.py"
+        supervisor = SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
         self.assertTrue(supervisor.stat().st_mode & 0o111)
-        dispatch = (SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh").read_text()
-        profiles = (SKILLS_DIR / "goal-task" / "references" / "runtime-profiles.yaml").read_text()
+        dispatch = (SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh").read_text()
+        profiles = (SKILLS_DIR / "team-lead" / "references" / "runtime-profiles.yaml").read_text()
         self.assertIn("/Applications/Xcode.app", dispatch)
         self.assertIn("/Applications/Xcode.app", profiles)
         self.assertIn('"/Volumes/SSD"', dispatch)
         self.assertIn("/Volumes/SSD", profiles)
         for path in (
-            SKILLS_DIR / "goal-task" / "SKILL.md",
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md",
-            SKILLS_DIR / "bot-tl-orchestration" / "SKILL.md",
+            SKILLS_DIR / "team-lead" / "SKILL.md",
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "coordinator" / "SKILL.md",
         ):
             text = path.read_text(encoding="utf-8")
             self.assertIn("goal-supervisor.py", text)
@@ -1032,7 +1031,7 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_herdr_cli_examples_and_dispatch_helper(self) -> None:
         md_files = [
-            *sorted((SKILLS_DIR / "goal-task").rglob("*.md")),
+            *sorted((SKILLS_DIR / "team-lead").rglob("*.md")),
         ]
         self.assertGreaterEqual(len(md_files), 6)
 
@@ -1065,7 +1064,7 @@ class VerifySkillsTests(unittest.TestCase):
 
         self.assertGreaterEqual(split_matches_total, 4)
 
-        canonical_helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
+        canonical_helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
         self.assertTrue(canonical_helper.is_file(), f"Missing {canonical_helper}")
         self.assertTrue(os.access(canonical_helper, os.X_OK), f"{canonical_helper} is not executable")
 
@@ -1432,12 +1431,12 @@ class VerifySkillsTests(unittest.TestCase):
             )
 
         bots_and_agents_text = (
-            SKILLS_DIR / "goal-task" / "references" / "bots-and-agents.md"
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md"
         ).read_text(encoding="utf-8")
         self.assertNotIn("高复杂度／并发 Task", bots_and_agents_text)
 
     def test_codex_trust_dedupes_adjacent_project_blocks(self) -> None:
-        helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
+        helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             home = tmp_dir / "home"
@@ -1515,7 +1514,7 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(again, text)
 
     def test_copilot_ssd_baseline_covers_handoff_sibling_realpath(self) -> None:
-        helper = SKILLS_DIR / "goal-task" / "scripts" / "herdr-dispatch.sh"
+        helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             home = tmp_dir / "home"
@@ -1622,15 +1621,15 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(start.count(handoff_real), 1)
 
     def test_goal_queue_batch_and_hot_append(self) -> None:
-        canonical_queue = SKILLS_DIR / "goal-task" / "scripts" / "goal-queue.py"
+        canonical_queue = SKILLS_DIR / "team-lead" / "scripts" / "goal-queue.py"
         self.assertTrue(canonical_queue.is_file())
         self.assertEqual(canonical_queue.stat().st_mode & 0o777, 0o755)
 
         for doc_rel in (
-            "skills/goal-task/SKILL.md",
-            "skills/goal-task/references/bots-and-agents.md",
-            "skills/goal-task/references/ledger.md",
-            "skills/goal-task/references/playbook.md",
+            "skills/team-lead/SKILL.md",
+            "skills/team-lead/references/bots-and-agents.md",
+            "skills/team-lead/references/ledger.md",
+            "skills/team-lead/references/playbook.md",
         ):
             doc_text = (REPO_ROOT / doc_rel).read_text(encoding="utf-8")
             self.assertIn(
@@ -1638,7 +1637,7 @@ class VerifySkillsTests(unittest.TestCase):
                 doc_text,
                 f"Missing Batch & Hot-Append section in {doc_rel}",
             )
-        ledger_ref = (SKILLS_DIR / "goal-task" / "references" / "ledger.md").read_text(encoding="utf-8")
+        ledger_ref = (SKILLS_DIR / "team-lead" / "references" / "ledger.md").read_text(encoding="utf-8")
         self.assertIn("`HOT_APPEND`", ledger_ref)
 
         def run_queue(*cli_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -1727,7 +1726,7 @@ class VerifySkillsTests(unittest.TestCase):
                     "--repo",
                     "LeePepe/user-skills",
                     "--paths",
-                    "skills/goal-task/SKILL.md",
+                    "skills/team-lead/SKILL.md",
                     "--brief",
                     "briefs/TK4.md",
                 ).stdout

@@ -27,29 +27,24 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 - **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、
   `my-designer`、`visual-design-modernization`、`design-studio`：收敛事实、领域、
   架构与视觉决策，冻结 `spec.md`/`design.md`。
-- **Autonomous Build, Review & Merge** — `bot-tl-orchestration`、`goal-task`、
-  `code-review`、`auto-review-merge` 与 `pr_monitor`：执行 `1 Task = 1 Writer =
-  1 Worktree = 1 PR`，完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
+- **Autonomous Build, Review & Merge** — `coordinator`、`team-lead`、
+  `code-review` 与 `ci-monitor.py`（`pr_monitor`）：完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
 - **Product Delivery & Release** — 产品／共享底座交付及真实发布读回。
 - **Learning & Narrative** — `retro-loop` 与 `story-craft`：把项目／工程证据和脱敏
   叙事回流为下一轮 Idea 或 Goal。
 
-节点可以按证据和状态任意直连，例如 `linear-board -> domain-modeling -> goal-task`、
-`goal-task -> code-review -> auto-review-merge`，或
-`goal-task -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类
+节点可以按证据和状态任意直连，例如 `linear-board -> domain-modeling -> team-lead`、
+`team-lead -> code-review`，或
+`team-lead -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类
 标准合同：冻结决策使用 `spec.md`/`design.md`，执行状态使用 `ledger.md`，交接证据使用
 `receipts/*-rN.md`，Goal／Task 绑定使用 Linear `TIA-xx`。
 
-## 自治脉搏：Cron / Clockwork 定时调度（Precheck-First, Wake-on-Actionable）
+## 自治脉搏：Cron / launchd 定时调度（Precheck-First, Wake-on-Actionable）
 
 ### 核心原则（零 Token 确定性预检 → 按需唤醒）
 
-1. **Step 1 — 定时触发与时间窗守卫（Clockwork / `launchd`）**：通过
-   `~/Library/LaunchAgents/is.ian.clockwork.task.*.plist` 与
-   `~/Library/Application Support/Clockwork/Jobs/*.sh`（例如
-   `StartInterval=300`，门控工作日 `09:00–22:00 Asia/Shanghai`）启动；每次运行
-   落盘 `Results/<job_id>/runs/<run_id>/{started,stdout.log,stderr.log,exit,finished,event.json}`
-   并自动保留最近 50 次运行记录。
+1. **Step 1 — 定时触发与时间窗守卫（Cron / `launchd`）**：通过
+   `~/Library/LaunchAgents/*.plist`（例如 `StartInterval=300`，门控工作日 `09:00–22:00 Asia/Shanghai`）启动定时预检脚本。
 2. **Step 2 — 确定性预检（Deterministic Precheck，0 Token）**：先运行纯
    Python / Shell 预检（如 `precheck.py` 或 `goal-supervisor.py scan`）。若
    `pending == 0`（无待审新 SHA、CI 失败/冲突或阻塞 Agent），直接 `exit 0`，
@@ -72,7 +67,7 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 |---|---|---|---|
 | 1. Products & Apps | `VitalStride`、`VoxPocket`、`WebIQSearch`、Sapphire | 用户旅程、设计契约、真实数据 | 功能、E2E、PLT/FPS、Crash-Free、DSAT |
 | 2. Shared Foundations | `shared-design-system`、`shared-telemetry`、`shared-ci` | Token、遥测、质量契约 | 组件、契约、遥测链、6DQ、版本摘要 |
-| 3. Engineering Workflows | `01–06`、Goal/Task、PR、发布 | brief、R10、Git、CI | 准确 head、Task 状态、门禁与发布读回 |
+| 3. Engineering Workflows | `coordinator`、`team-lead`、PR、发布 | brief、R10、Git、CI | 准确 head、Task 状态、门禁与发布读回 |
 | 4. Knowledge & Narrative | 复盘、Story Series、Tech Blog、Deck | 证据、量化 Delta、脱敏映射 | 可迁移机制、公开作品、反馈回流 |
 
 ## Progressive 6DQ Discovery Ladder

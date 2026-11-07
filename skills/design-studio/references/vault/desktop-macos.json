@@ -1,0 +1,560 @@
+{
+  "schema": "design-vault-platform/v2",
+  "platform": "desktop",
+  "status": "active-primary",
+  "tools": [
+    {
+      "id": "T-005",
+      "name": "Lottie",
+      "aliases": [],
+      "category": "core-ui-motion",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Read",
+        "Experience"
+      ],
+      "motion_tier": "M1",
+      "automation_mode": "direct-code",
+      "token_integration": "Exports token-colored illustrations for web and lottie-ios/SwiftUI.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "track": "apple-active",
+      "platform_rationale": "Lottie vector animations run natively on macOS (`desktop`) and iOS/iPadOS (`mobile`) via `lottie-spm` (`LottieView` in SwiftUI) alongside native SF Symbols `.symbolEffect`, as well as on `web`.",
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "visual-style",
+        "color-palette"
+      ],
+      "sub_category": "micro-feedback-haptics-symbols"
+    },
+    {
+      "id": "T-011",
+      "name": "MCP for Blender",
+      "aliases": [],
+      "category": "3d-physics",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Video/Offline"
+      ],
+      "motion_tier": "M3",
+      "automation_mode": "mcp-cli",
+      "token_integration": "Exports GLTF for web and USDZ/OBJ for RealityKit/SceneKit using shared materials.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "track": "apple-active",
+      "platform_rationale": "MCP for Blender automates 3D asset authoring and exports USDZ/OBJ models directly consumable by native macOS (`desktop`) and iOS (`mobile`) RealityKit/`Model3D`/SceneKit views, plus GLTF for `web`.",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "glass-material"
+      ],
+      "sub_category": "hero-3d-spatial-canvas"
+    }
+  ],
+  "inspirations": [
+    {
+      "id": "MP-001",
+      "name": "卡片揭角 (Card Corner Peel)",
+      "aliases": [
+        "揭角",
+        "卡片揭角",
+        "corner peel"
+      ],
+      "category": "gesture-physical",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "做一张可揭角的卡片，右下角按住后随拖动卷起，用折线裁切正面并露出背面，折片带柔和明暗。松手沿原路回落，短距离拖动只露一角，整张卡片保持稳定。",
+      "canonical_prompt": "Drag the card's lower-right corner to peel a clipped front layer, reveal the back, then spring back along the inverse path unless committed.",
+      "state_machine": "idle -> press -> drag -> partial_peel -> release -> spring_settle",
+      "web_implementation": "Motion drag progress with CSS clip-path polygon and @nocoo/basalt tokens.",
+      "mobile_implementation": "SwiftUI DragGesture with Canvas/path clipping, StrataMotion spring, and Reduce Motion crossfade.",
+      "token_guardrails": "CLS = 0; tabular-nums where values appear; >=4.5:1 contrast; 44x44pt hit target; Reduce Motion fallback.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "visual-style",
+        "component"
+      ],
+      "sub_category": "gesture-physical-manipulation",
+      "desktop_macos_implementation": "SwiftUI `.onContinuousHover` for corner curl preview plus pointer `DragGesture` driving a custom `Shape` or `Canvas` clip path and `.visualEffect` / Metal `ShaderLibrary` crease shading; settles with native `Animation.spring(duration: 0.38, bounce: 0.15)` while keeping the outer card frame locked inside its `NSWindow` or `NSPopover` grid.",
+      "mobile_ios_implementation": "SwiftUI `DragGesture(minimumDistance: 0)` on a 44x44pt lower-right corner hit region, clipping the front card layer via a dynamic `Path`/`Canvas` fold line and revealing the back layer; uses `Animation.spring(response: 0.35, dampingFraction: 0.78)` on release and `.sensoryFeedback(.impact(flexibility: .soft), trigger: isCommitted)`.",
+      "native_guardrails": "Zero layout shift (card bounds never jump); `.monospacedDigit()` on any revealed numeric metrics; >=4.5:1 foreground/background contrast in Light and Dark mode using semantic `Color.primary` / `Color(nsColor: .controlBackgroundColor)` / `Color(uiColor: .secondarySystemGroupedBackground)`; >=44x44pt corner hit target on iOS and >=28x28pt on macOS; `@Environment(\\.accessibilityReduceMotion)` replaces peel geometry with a direct `.opacity` crossfade; `@Environment(\\.accessibilityReduceTransparency)` replaces translucent back-card layers with opaque system surfaces."
+    },
+    {
+      "id": "MP-002",
+      "name": "滑动确认 (Slide-to-Confirm)",
+      "aliases": [
+        "滑动确认",
+        "slide confirm",
+        "confirm slider"
+      ],
+      "category": "confirmation-safety",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "做一个滑动确认按钮，圆钮与轨道填充跟随同一拖动进度。未到终点松手，阻尼回到起点且不执行；到终点松手才确认，箭头变成对勾，文字变为已完成。",
+      "canonical_prompt": "Keep thumb and track fill on one normalized drag progress; cancel below the endpoint with damped return, commit only at endpoint, then swap arrow to checkmark and copy.",
+      "state_machine": "idle -> drag -> threshold -> commit/cancel -> spring_settle",
+      "web_implementation": "Motion drag controls thumb and track; CSS/SVG icon morph; Basalt semantic success tokens.",
+      "mobile_implementation": "SwiftUI DragGesture with StrataMotion spring, contentTransition(.symbolEffect), SensoryFeedback, and numericText.",
+      "token_guardrails": "No accidental commit; 44x44pt target; explicit threshold; >=4.5:1 contrast; Reduce Motion opacity/state fallback.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "component",
+        "typography-copy"
+      ],
+      "sub_category": "threshold-commit-safety",
+      "desktop_macos_implementation": "SwiftUI pointer `DragGesture` (plus keyboard `Return` / `⌘Return` confirmation equivalent) binding a single normalized progress `CGFloat` (`0.0...1.0`) to both the thumb offset and track fill width; commits only when released at `progress >= 0.95`, morphing SF Symbols (`arrow.right` to `checkmark`) via `.contentTransition(.symbolEffect(.replace))` and settling with `Animation.spring(duration: 0.3, bounce: 0.1)`.",
+      "mobile_ios_implementation": "SwiftUI `DragGesture` on a 44x44pt thumb inside a capsule track (`GlassEffectContainer` / `.glassEffect(.regular.interactive(), in: .capsule)` where appropriate), driving thumb position and tint fill from one shared progress state; damped return via `Animation.spring(response: 0.32, dampingFraction: 0.82)` if released early, or commit at endpoint with `.contentTransition(.symbolEffect(.replace))`, `.contentTransition(.numericText())`, and `.sensoryFeedback(.success, trigger: isConfirmed)`.",
+      "native_guardrails": "No accidental commit below threshold; >=44x44pt thumb hit target on iOS and >=32x32pt on macOS with full keyboard accessibility (`accessibilityAction`); >=4.5:1 text and icon contrast against both unfilled and filled semantic `Color.green` / `Color.accentColor` tracks in Light and Dark modes; `@Environment(\\.accessibilityReduceMotion)` disables spring oscillation and uses instant state/opacity transition; `@Environment(\\.accessibilityReduceTransparency)` backs the track with solid `Color(uiColor: .tertiarySystemFill)`."
+    },
+    {
+      "id": "MP-003",
+      "name": "拉绳开关 (Pull-Cord Light Switch)",
+      "aliases": [
+        "拉绳",
+        "灯光开关",
+        "pull cord"
+      ],
+      "category": "gesture-physical",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "做一个拉绳灯光开关，绳头跟随竖向拖动，超过触发距离时切换灯光与玻璃暖光，每次拉动切换一次。松手收回绳子，摆幅逐渐衰减，再拉一次可以关闭。",
+      "canonical_prompt": "Track vertical cord drag; cross the trigger distance once to toggle light and warm glass glow, then return with damped swing and allow the next pull to turn it off.",
+      "state_machine": "off_idle -> pull -> threshold -> on_commit -> return_swing -> on_idle -> pull -> off_commit -> settle",
+      "web_implementation": "Motion drag transform with Anime.js damped return and tokenized warm-glow CSS.",
+      "mobile_implementation": "SwiftUI DragGesture plus KeyframeAnimator/StrataMotion, ShaderLibrary glow, and SensoryFeedback.",
+      "token_guardrails": "One toggle per pull; bounded drag; no glare-only status; 44x44pt target; Reduce Motion removes swing.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "glass-material",
+        "visual-style"
+      ],
+      "sub_category": "gesture-physical-manipulation",
+      "desktop_macos_implementation": "SwiftUI vertical pointer `DragGesture` on the cord handle with direct click/keyboard (`Space`) toggle support; crossing the vertical threshold toggles state once per pull, drives warm illumination via native `Canvas` / `.shadow` / `NSGlassEffectView` tinting, and animates the cord's damped pendulum return using `KeyframeAnimator` with `SpringKeyframe`.",
+      "mobile_ios_implementation": "SwiftUI vertical `DragGesture` on a >=44x44pt cord handle target; crossing the trigger distance fires `.sensoryFeedback(.impact(weight: .medium), trigger: isLit)`, toggles the ambient glass glow (`.glassEffect` / radial gradient overlay), and settles the cord back with `KeyframeAnimator` damped swing.",
+      "native_guardrails": "Strictly one toggle per pull cycle with bounded vertical drag distance; state is never communicated by glow alone (always pair with explicit SF Symbol `lightbulb.fill` / `lightbulb` and semantic label); >=44x44pt hit target on iOS and >=28x28pt on macOS; >=4.5:1 contrast in Light and Dark appearances; `@Environment(\\.accessibilityReduceMotion)` eliminates pendulum swing and snaps the cord smoothly; `@Environment(\\.accessibilityReduceTransparency)` uses opaque warm surface fills."
+    },
+    {
+      "id": "MP-004",
+      "name": "滑动工具栏 (Magnification Scrubbing Toolbar)",
+      "aliases": [
+        "滑选工具栏",
+        "放大工具栏",
+        "scrubbing toolbar"
+      ],
+      "category": "spatial-navigation",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "做一条可滑选的工具栏，当前图标随手指靠近连续放大，相邻图标平滑让位，位置由实时宽度累加计算。显示当前名称，松手提交选择，画布同步切换工具效果。",
+      "canonical_prompt": "Scrub across a toolbar whose focused icon magnifies continuously and neighbors make room from live accumulated widths; show the name and commit the selected tool on release.",
+      "state_machine": "idle -> hover/drag -> focus_magnify -> neighbor_reflow -> release -> commit -> settle",
+      "web_implementation": "Motion layout animation with measured widths, CSS transform scale, and tokenized focus ring.",
+      "mobile_implementation": "SwiftUI DragGesture with matchedGeometryEffect, measured layout, and StrataMotion spring.",
+      "token_guardrails": "Live width accumulation, no overlap, single-line label, 44x44pt targets, Reduce Motion uses discrete focus.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "motion-interaction",
+        "component"
+      ],
+      "sub_category": "spatial-scrubbing-toolbars",
+      "desktop_macos_implementation": "Mac Dock-style scrubbing bar using SwiftUI `.onContinuousHover` and pointer `DragGesture` inside a `GeometryReader` / custom `Layout` that computes each icon's scale from pointer distance and accumulates live widths so neighbors reflow without overlap; displays a single-line tooltip label and commits on click/release with `Animation.interactiveSpring(response: 0.25, dampingFraction: 0.8)`.",
+      "mobile_ios_implementation": "Touch-scrubbing floating toolbar inside a `GlassEffectContainer` using `.glassEffect(.regular.interactive(), in: .capsule)` and `DragGesture(minimumDistance: 0)` to track finger X location, continuously scaling the focused SF Symbol icon while reflowing neighbors from live accumulated widths; emits `.sensoryFeedback(.selection, trigger: hoveredToolID)` as focus changes and commits the active tool on finger release.",
+      "native_guardrails": "Positions derived from live width accumulation so icons never overlap or clip; single-line non-wrapping tool label; >=44x44pt effective touch targets on iOS and >=28x28pt pointer targets on macOS with keyboard arrow-key navigation; >=4.5:1 contrast in Light and Dark modes; `@Environment(\\.accessibilityReduceMotion)` replaces continuous magnification with discrete highlight focus; `@Environment(\\.accessibilityReduceTransparency)` replaces Liquid Glass bar material with opaque system background."
+    },
+    {
+      "id": "MP-005",
+      "name": "消息气泡反馈 (Long-Press Bubble Reaction)",
+      "aliases": [
+        "消息气泡",
+        "长按表情",
+        "bubble reaction"
+      ],
+      "category": "micro-feedback-social",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "长按消息后拾起当前气泡，周围消息降低亮度，三枚表情错峰展开。选中并松手后，同一表情沿弧线缩到气泡角标，菜单收回。徽标随气泡归位，再点可取消。",
+      "canonical_prompt": "Long-press and lift the message bubble, dim neighbors, stagger three reactions, then arc the selected reaction into the bubble badge on release; tap again cancels.",
+      "state_machine": "idle -> long_press -> lifted_dimmed -> reaction_menu -> select -> arc_commit/cancel -> settle",
+      "web_implementation": "Motion shared layout with Anime.js stagger and SVG arc path; Basalt reaction tokens.",
+      "mobile_implementation": "SwiftUI long press, matchedGeometryEffect, KeyframeAnimator arc, and SensoryFeedback.",
+      "token_guardrails": "Preserve message context; 44x44pt reactions; tabular-nums for counts; Reduce Motion uses fade/scale.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "component",
+        "color-palette"
+      ],
+      "sub_category": "micro-feedback-haptics-symbols",
+      "desktop_macos_implementation": "Hover action bar or secondary-click / long-press on a message bubble that dims surrounding rows via `.opacity`, presents staggered SF Symbol / emoji reaction items in a floating `.glassEffect` or `NSPopover`-style callout using `PhaseAnimator`, and arcs the chosen reaction into the bubble corner badge via `matchedGeometryEffect` and `KeyframeAnimator` (clicking the badge again removes it).",
+      "mobile_ios_implementation": "SwiftUI `LongPressGesture` sequenced with `DragGesture` that lifts the target message bubble with `.scaleEffect`, dims background context, staggers three reaction pills inside a `GlassEffectContainer` (`.glassEffectID` morphing), fires `.sensoryFeedback(.impact(weight: .light), trigger: isMenuOpen)`, and animates the selected reaction along a `KeyframeAnimator` arc into the corner badge on release.",
+      "native_guardrails": "Message list scroll offset and layout stability preserved (`CLS = 0`); `.monospacedDigit()` on reaction count badges; >=44x44pt hit targets for each reaction option on iOS and >=28x28pt on macOS; >=4.5:1 badge contrast in Light and Dark modes; `@Environment(\\.accessibilityReduceMotion)` replaces staggered lift and arc trajectory with a direct scale/opacity transition; `@Environment(\\.accessibilityReduceTransparency)` uses opaque elevated surface colors for the reaction bar and badge."
+    },
+    {
+      "id": "MP-006",
+      "name": "文件拖入文件夹 (Spring-Loaded Folder Drop)",
+      "aliases": [
+        "文件夹拖入",
+        "文件拖放",
+        "spring-loaded folder"
+      ],
+      "category": "drag-drop-choreography",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "拖动文件靠近文件夹时，夹口张开并显示落点；悬停阶段保持原数量；松手命中后文件缩进前后盖之间，数量加一，再合上夹口；未命中则回到原位置。",
+      "canonical_prompt": "When a dragged file nears a folder, open the folder and show the drop target without changing count; on hit, tuck the file between covers, increment count, and close, otherwise return.",
+      "state_machine": "idle -> drag -> near_target -> folder_open -> hover -> commit/cancel -> settle",
+      "web_implementation": "Motion pointer drag with Anime.js folder lid choreography, hit testing, and numeric transition.",
+      "mobile_implementation": "SwiftUI DragGesture/drop delegate, matchedGeometryEffect tuck, numericText count, and SensoryFeedback.",
+      "token_guardrails": "Visible target and hit parity; count changes only on commit; 44x44pt targets; Reduce Motion crossfade.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "component",
+        "typography-copy"
+      ],
+      "sub_category": "drag-drop-spatial-choreography",
+      "desktop_macos_implementation": "SwiftUI `.draggable` / `.dropDestination` (or spatial `DragGesture` with `DropDelegate`) on macOS where hovering near a folder opens the front/back folder layers using `Animation.spring(duration: 0.28)` and highlights the drop ring without mutating the item count; releasing inside the target tucks the item between folder covers via `matchedGeometryEffect`, increments the `.monospacedDigit()` badge with `.contentTransition(.numericText())`, and closes the folder.",
+      "mobile_ios_implementation": "SwiftUI `DragGesture` / `.dropDestination` with proximity detection that opens the folder icon layers and triggers `.sensoryFeedback(.alignment, trigger: isHoveringFolder)`; dropping on target tucks the file card into the folder via `matchedGeometryEffect`, updates the count badge with `.contentTransition(.numericText())` and `.sensoryFeedback(.success, trigger: dropCommitted)`, or springs back to origin if cancelled.",
+      "native_guardrails": "Visual drop target boundary matches hit-test geometry 1:1; folder item count mutates strictly on commit (never during hover); `.monospacedDigit()` on count readouts; >=44x44pt drop target on iOS and >=28x28pt on macOS; >=4.5:1 contrast in Light and Dark modes; `@Environment(\\.accessibilityReduceMotion)` replaces folder-lid 3D/spring choreography with a highlight border and crossfade."
+    },
+    {
+      "id": "IP-001",
+      "name": "图表联动筛选 (Chart Cross-Filtering)",
+      "aliases": [
+        "图表联动",
+        "交叉筛选",
+        "cross-filtering"
+      ],
+      "category": "data-linkage",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "点图表里的分类，下方列表和统计数字跟着变，再点一下全部恢复。",
+      "canonical_prompt": "Click a chart category/segment to highlight it and cross-filter the list and summary metrics below; click the same category again to reset to all items.",
+      "state_machine": "all_items -> select_category(X) -> filtered_list_and_kpi(X) -> tap_same_category(X) -> all_items",
+      "web_implementation": "Derive list and KPIs from a shared activeCategory state; highlight active Recharts/Basalt segment, dim unselected segments, and toggle off on repeat click.",
+      "mobile_implementation": "SwiftUI Charts selection binding filtering the shared query state with .contentTransition(.numericText()) on summary readouts and tap-to-deselect.",
+      "token_guardrails": "tabular-nums / monospacedDigit for changing metrics; preserve active search keyword and sort order; >=4.5:1 active/inactive contrast.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "chart-dataviz",
+      "secondary_dimensions": [
+        "component",
+        "typography-copy"
+      ],
+      "sub_category": "chart-cross-filtering",
+      "desktop_macos_implementation": "Swift Charts `Chart` with `.chartAngleSelection(value:)` or `.chartXSelection(value:)` (plus direct pointer click/hover on marks) bound to an `@Observable` view model's `selectedCategory` property; selecting a mark highlights the active series, dims unselected marks via `.opacity(0.3)`, and synchronously filters the macOS `Table` / `List` and summary KPI cards (`.contentTransition(.numericText())`); clicking the same category or pressing `Esc` resets to all items.",
+      "mobile_ios_implementation": "Swift Charts interactive selection binding (`.chartXSelection` / `.chartAngleSelection`) on a touch-friendly chart mark (>=44x44pt effective selection zone) with `.sensoryFeedback(.selection, trigger: selectedCategory)`; updates the shared `@Observable` filter state to cross-filter the `List` / `LazyVStack` and animate summary metrics via `.contentTransition(.numericText())` with tap-again-to-reset.",
+      "native_guardrails": "All changing KPI numbers use `.monospacedDigit()` so layout never shifts; cross-filtering preserves any active search text and sort descriptor; active vs. dimmed chart marks and text maintain >=4.5:1 contrast in Light and Dark modes using distinct Swift Charts foreground style scales separate from semantic status colors; `@Environment(\\.accessibilityReduceMotion)` disables animated chart bar/sector morphing."
+    },
+    {
+      "id": "IP-002",
+      "name": "组合筛选与排序 (Combined Filter & Orthogonal Sort)",
+      "aliases": [
+        "组合筛选",
+        "正交排序",
+        "orthogonal sort"
+      ],
+      "category": "filter-sort-recovery",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "选好类别搜关键词，还能按数量升降序排，而且排序不会清空之前的筛选条件。",
+      "canonical_prompt": "Compose category filter, keyword search, and ascending/descending sort orthogonally; toggling sort order reorders the filtered subset without clearing active filters.",
+      "state_machine": "idle -> apply_filter(category, keyword) -> toggle_sort(asc|desc) -> reorder_subset_preserving_filters",
+      "web_implementation": "Pure derived selector: filter(items, category, keyword) then sort(field, dir); keep filter and sort controls in independent state slices.",
+      "mobile_implementation": "SwiftUIsearchable + category filter tokens + Menu/Picker sort descriptor operating on the filtered collection without resetting filter state.",
+      "token_guardrails": "Sorting never clears filter/search state; provide clear active indicators and reset options.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "component",
+      "secondary_dimensions": [
+        "layout-navigation"
+      ],
+      "sub_category": "search-filter-sort-bars",
+      "desktop_macos_implementation": "SwiftUI `.searchable` field in the window/split-view toolbar, horizontal category filter tokens/segmented `Picker`, and `Table` column `SortComparator` (or toolbar sort `Menu`) backed by independent properties on an `@Observable` state model; a pure derived computed array applies category + keyword filtering first and sorts the resulting slice without ever clearing active filter state.",
+      "mobile_ios_implementation": "Navigation-integrated `.searchable` bar, horizontal scrolling category filter capsules (`>=44pt` touch height), and a trailing toolbar `Menu` / `Picker` for ascending/descending `SortDescriptor` operating orthogonally on the filtered collection with `.sensoryFeedback(.selection, trigger: sortOrder)` and animated list reordering.",
+      "native_guardrails": "Changing sort field or direction never resets active search text or category filters; active filter count and sort direction remain visibly indicated with >=4.5:1 contrast in Light and Dark modes; hit targets >=44x44pt on iOS and >=28x28pt on macOS; `@Environment(\\.accessibilityReduceMotion)` disables row reordering animations."
+    },
+    {
+      "id": "IP-003",
+      "name": "列表联动详情 (In-Place Master-Detail Linkage)",
+      "aliases": [
+        "列表详情",
+        "主从联动",
+        "master-detail"
+      ],
+      "category": "master-detail-flow",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "点左侧记录，右侧详情直接更新，不用跳页面，列表顺序也不变。",
+      "canonical_prompt": "Select a record in the master list to update the detail pane in-place without page navigation, preserving the master list's sort order, filters, and scroll position.",
+      "state_machine": "list_ready -> select_row(id) -> detail_updated_in_place(id) [master_order_and_scroll_preserved]",
+      "web_implementation": "Two-column master-detail layout with selectedId state; render detail panel in-place and keep master list key/scroll stable.",
+      "mobile_implementation": "NavigationSplitView on iPad/macOS or in-place detail card/sheet on compact screens, preserving list scroll and ordering.",
+      "token_guardrails": "CLS = 0 on selection; master list order and scroll offset remain unchanged; clear selected row state.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "component"
+      ],
+      "sub_category": "split-view-master-detail",
+      "desktop_macos_implementation": "Two- or three-column `NavigationSplitView` (or trailing `.inspector(isPresented:)`) where `List(selection: $selectedItemID)` updates the detail pane in-place on pointer click or up/down arrow keys without mutating the master list's sort order, active filters, or `ScrollView` offset.",
+      "mobile_ios_implementation": "Adaptive `NavigationSplitView` on regular horizontal size class (`horizontalSizeClass == .regular` on iPad / landscape) and in-place detail card or `.sheet(item: $selectedItem)` / `NavigationStack` on compact iPhone screens, preserving the master `List` scroll position, filter state, and row ordering across selection changes.",
+      "native_guardrails": "Zero layout jump (`CLS = 0`) and preserved scroll offset in the master list when selecting or switching records; selected row uses native system selection highlight with >=4.5:1 text contrast in Light and Dark modes; >=44pt minimum row height on iOS and >=28pt on macOS; respects `@Environment(\\.accessibilityReduceMotion)` and `@Environment(\\.accessibilityReduceTransparency)`."
+    },
+    {
+      "id": "IP-004",
+      "name": "无结果与局部恢复 (Scoped Empty State & Context-Preserving Recovery)",
+      "aliases": [
+        "无结果恢复",
+        "局部恢复",
+        "context-preserving recovery"
+      ],
+      "category": "filter-sort-recovery",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "搜不到时显示空状态，清空关键词后数据恢复，其他筛选条件还得保留。",
+      "canonical_prompt": "Show a contextual empty state when keyword search yields zero matches; clearing the keyword restores matching data while keeping other active filters intact.",
+      "state_machine": "filtered(category) -> keyword_no_match -> contextual_empty_state -> clear_keyword_only -> restored(category)",
+      "web_implementation": "Empty state names the active query/filter and offers a 'Clear keyword' action that resets only searchQuery while preserving category and sort state.",
+      "mobile_implementation": "ContentUnavailableView.search(text:) or custom Strata empty state whose reset action clears search text without wiping selected category pills.",
+      "token_guardrails": "Empty state explains why and provides a 1-click partial recovery CTA; non-keyword filters remain preserved.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "typography-copy",
+      "secondary_dimensions": [
+        "component"
+      ],
+      "sub_category": "empty-state-recovery-copy",
+      "desktop_macos_implementation": "In-place `ContentUnavailableView` inside the filtered results pane naming the unmatched `searchQuery` while showing active category filter badges; provides a prominent `Button(\"Clear Search Keyword\")` (plus `Esc` shortcut) that resets `searchQuery = \"\"` while keeping selected category filters and sort order intact.",
+      "mobile_ios_implementation": "Native `ContentUnavailableView` (customizing `ContentUnavailableView.search(text:)` with an explicit `actions` closure) containing a >=44pt-tall recovery button that clears only `searchQuery` with `.sensoryFeedback(.impact(weight: .light), trigger: searchQuery.isEmpty)` while preserving active category filter pills and sort state.",
+      "native_guardrails": "Empty state explicitly states which keyword produced zero results and offers a single-action partial recovery that never wipes non-keyword filters; >=4.5:1 contrast on empty-state iconography, title, description, and CTA button in Light and Dark modes; >=44x44pt CTA target on iOS and >=28x28pt on macOS."
+    },
+    {
+      "id": "IP-005",
+      "name": "状态联动汇总 (Live Status-to-Summary Aggregation)",
+      "aliases": [
+        "状态汇总",
+        "实时汇总",
+        "status aggregation"
+      ],
+      "category": "data-linkage",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "卡片状态一变，下方的分类数量和颜色也得跟着同步更新。",
+      "canonical_prompt": "When an item's status changes, synchronously recompute summary category counts, ratios, and semantic status colors from the same single source of truth.",
+      "state_machine": "item_status_change(old -> new) -> recompute_summary_counts_and_semantic_tokens -> UI_sync",
+      "web_implementation": "Derive summary badges, counts, and semantic color tokens directly from the items array rather than separate static counters.",
+      "mobile_implementation": "Computed properties on @Observable / SwiftData model collections driving summary badges and semantic tokens with .numericText() transition.",
+      "token_guardrails": "Single source of truth for item status and summary counters; semantic tokens calibrated for both Light and Dark mode.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "chart-dataviz",
+      "secondary_dimensions": [
+        "color-palette",
+        "typography-copy"
+      ],
+      "sub_category": "kpi-summary-aggregation",
+      "desktop_macos_implementation": "Single `@Observable` model or SwiftData `@Query` collection where summary category counts, ratios, and semantic status colors (`Color.green`, `Color.orange`, `Color.red`, `Color.secondary`) are computed properties derived directly from item statuses; mutating a row's status immediately updates top/bottom summary cards with `.monospacedDigit()` and `.contentTransition(.numericText())`.",
+      "mobile_ios_implementation": "Reactive `@Observable` / SwiftData collection driving both individual item cards and summary status badges from a single source of truth; toggling an item's status triggers `.sensoryFeedback(.selection, trigger: statusChangeCounter)` and animates summary counters in-place via `.monospacedDigit()` and `.contentTransition(.numericText())`.",
+      "native_guardrails": "Strict single source of truth (never maintain separate manual counters that can drift from item array state); `.monospacedDigit()` on all summary numbers and percentages; semantic status colors calibrated for >=4.5:1 contrast in both Light and Dark appearances and paired with SF Symbols or text labels (never color alone); `@Environment(\\.accessibilityReduceMotion)` replaces rolling numeric transitions with instant updates."
+    }
+  ]
+}

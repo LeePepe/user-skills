@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,14 +14,15 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("git_gc", ROOT / "skills/goal-task/scripts/git-gc.py")
+SPEC = importlib.util.spec_from_file_location("git_gc", ROOT / "skills/team-lead/scripts/git-gc.py")
 assert SPEC and SPEC.loader
 git_gc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(git_gc)
 
 
 def run(command, *, cwd=None, check=True):
-    return subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True)
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(command, cwd=cwd, env=clean_env, check=check, capture_output=True, text=True)
 
 
 class GitGcTests(unittest.TestCase):
@@ -89,7 +91,7 @@ class GitGcTests(unittest.TestCase):
 
     def test_json_cli_returns_safe_summary(self) -> None:
         result = subprocess.run(
-            ["python3", str(ROOT / "skills/goal-task/scripts/git-gc.py"), "task-clean",
+            ["python3", str(ROOT / "skills/team-lead/scripts/git-gc.py"), "task-clean",
              "--repo", str(ROOT), "--branch", "not-a-real-branch", "--dry-run"],
             capture_output=True, text=True,
         )

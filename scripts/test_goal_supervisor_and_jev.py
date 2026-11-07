@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "skills" / "goal-task" / "scripts"
+SCRIPTS = ROOT / "skills" / "team-lead" / "scripts"
 SUPERVISOR = SCRIPTS / "goal-supervisor.py"
 ROUTER = SCRIPTS / "jev-skill-router.py"
 COMPACT = SCRIPTS / "jev-compact.py"
@@ -37,7 +37,7 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             falcon_dir = home / ".config" / "falcon"
             falcon_dir.mkdir(parents=True)
             (falcon_dir / "source-keys.json").write_text(
-                json.dumps({"goal-task": "flk_goal_task"}),
+                json.dumps({"team-lead": "flk_goal_task"}),
                 encoding="utf-8",
             )
             with patch.object(jev_client.Path, "home", return_value=home), patch.dict(

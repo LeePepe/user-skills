@@ -34,6 +34,29 @@ layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
 `PhaseAnimator`, Canvas, `ShaderLibrary` Metal effects, `SensoryFeedback`, and
 `.contentTransition(.numericText())`.
 
+### Two-Stage Inspiration Vault (`desktop` / `mobile` / `web-backlog` × 8 Dimensions)
+
+Unlabeled design inspirations (color palettes, visual styles, native components, Swift Charts, Liquid Glass materials, motion, layout, or copy) are automatically classified and routed into platform-specific vaults (`references/vault/desktop-macos.json`, `references/vault/mobile-ios.json`, and frozen `references/vault/web-backlog.json`) using `[taxonomy-v2.json](references/taxonomy-v2.json)`:
+
+1. **Stage 1 · Jev Fast Classify (`http://127.0.0.1:19823/v1/systemone` + Taxonomy v2):**
+   - Rejects non-design noise (`noul < 0.40`).
+   - Scores platform (`desktop` vs `mobile` vs `web`) and 8 orthogonal dimensions (`color-palette` `CL`, `visual-style` `VS`, `component` `CP`, `chart-dataviz` `DV`, `glass-material` `GM`, `motion-interaction` `MI`, `layout-navigation` `LN`, `typography-copy` `TC`).
+2. **Stage 2 · Independent LLM Fallback & Self-Learning Writeback:**
+   - Triggered automatically when `platform_confidence < 0.70`, `dimension_confidence < 0.70`, or the prompt mixes multiple dimensions (`>=2` strong dimensions).
+   - Decomposes compound prompts into atomic inspiration cards with pure Apple Native (`desktop_macos_implementation`, `mobile_ios_implementation`) mappings and writes newly discovered domain keywords back into `taxonomy-v2.json`.
+
+```bash
+# Classify unlabeled raw inspiration (Jev fast path -> LLM fallback with keyword learning)
+python3 skills/design-studio/scripts/design_catalog.py classify --text "<raw inspiration>" --learn
+
+# Ingest into platform-separated vaults (desktop-macos.json / mobile-ios.json / web-backlog.json)
+python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "<raw inspiration>"
+
+# Progressive disclosure search (queries Apple desktop/mobile by default; web stays in backlog)
+python3 skills/design-studio/scripts/design_catalog.py vault-search \
+  --platform desktop --dimension glass-material --query "侧边栏毛玻璃" --top 5
+```
+
 ### Extensible catalog workflow
 
 1. **Grok Bot, Cindy, and local CLI users:** when an external design,

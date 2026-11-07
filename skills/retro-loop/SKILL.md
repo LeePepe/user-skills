@@ -4,7 +4,7 @@ description: 双路复盘与 3 Physical Locks：以项目 Telemetry/Crash 和工
 ---
 # Retro Loop
 
-`retro-loop` 是 workflow-hub 的环 7a，抽取自 `goal-task` playbook §2。它不把
+`retro-loop` 是 workflow-hub 的环 7a，抽取自 `team-lead` playbook §2。它不把
 复盘文字当作完成，而是把可反驳的事实转成 Task、共享底座升级或物理锁。
 
 ## Project Loop A
@@ -44,7 +44,7 @@ H1–H5 verdict、Counterfactual gate、Responsibility/stop boundary，以及一
 
 ## Return path
 
-已确认结论回流 `linear-board` 的 TIA Idea 或 `goal-task` 的 Goal/Task；证据不足
+已确认结论回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task；证据不足
 时保留 `unknown`，不得静默修改冻结合同。
 
 实现入口：[retro_story_engine.py](scripts/retro_story_engine.py)。

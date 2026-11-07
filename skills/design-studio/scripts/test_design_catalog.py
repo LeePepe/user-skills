@@ -328,5 +328,87 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
 
+class TaxonomyV2AndVaultTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT)
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.taxonomy = self.directory / "taxonomy-v2.json"
+        self.vault_dir = self.directory / "vault"
+        self.vault_dir.mkdir(parents=True)
+        src_refs = SCRIPT.parents[1] / "references"
+        self.taxonomy.write_bytes((src_refs / "taxonomy-v2.json").read_bytes())
+        for vf in ("desktop-macos.json", "mobile-ios.json", "web-backlog.json"):
+            (self.vault_dir / vf).write_bytes((src_refs / "vault" / vf).read_bytes())
+
+    def test_jev_fast_path_and_llm_fallback_and_learn(self):
+        # 1. Fast path (single dimension, high confidence desktop + chart-dataviz)
+        fast = run(
+            "classify",
+            "--text", "macOS 菜单栏 NSPopover 里的折线图 Swift Charts，hover 时高亮数据",
+            "--no-jev",
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(fast.returncode, 0, fast.stderr)
+        fast_data = json.loads(fast.stdout)["results"][0]
+        self.assertEqual(fast_data["route_stage"], "stage1_jev_fast_path")
+        self.assertEqual(fast_data["platforms"], ["desktop"])
+        self.assertEqual(fast_data["primary_dimension"], "chart-dataviz")
+
+        # 2. Compound multi-dimension prompt triggers Stage 2 LLM fallback & decomposes into atomic cards
+        compound = run(
+            "classify",
+            "--text", "iOS TabView 液态玻璃 Liquid Glass 导航栏配深色模式 P3 主题配色方案与折线图统计",
+            "--no-jev",
+            "--learn",
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(compound.returncode, 0, compound.stderr)
+        comp_payload = json.loads(compound.stdout)
+        comp_res = comp_payload["results"][0]
+        self.assertEqual(comp_res["route_stage"], "stage2_llm_fallback")
+        self.assertTrue(comp_res["needs_llm_fallback"])
+        self.assertGreaterEqual(len(comp_res["cards"]), 2)
+        self.assertTrue(comp_payload["learned_keywords_updated"])
+
+        # 3. Noise rejection via Jev noul < 0.40
+        noise = run(
+            "classify",
+            "--text", "unrelated backend sql migration log",
+            "--mock-jev-json", json.dumps({"is_design_inspiration": {"noul": 0.12}}),
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(noise.returncode, 0, noise.stderr)
+        self.assertEqual(json.loads(noise.stdout)["results"][0]["status"], "noise_skipped")
+
+    def test_vault_ingest_and_progressive_disclosure_search(self):
+        ing = run(
+            "vault-ingest",
+            "--text", "macOS NavigationSplitView 侧边栏使用 Liquid Glass 悬浮材质并支持快捷键收起",
+            "--no-jev",
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(ing.returncode, 0, ing.stderr)
+        ing_data = json.loads(ing.stdout)
+        self.assertGreaterEqual(ing_data["created_count"], 1)
+
+        search = run(
+            "vault-search",
+            "--platform", "desktop",
+            "--dimension", "glass-material",
+            "--query", "Liquid Glass 侧边栏",
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(search.returncode, 0, search.stderr)
+        s_data = json.loads(search.stdout)
+        self.assertIn("liquid-glass.md", s_data["progressive_disclosure"]["hig_files_to_load"])
+        self.assertGreaterEqual(len(s_data["matches"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

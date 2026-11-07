@@ -170,11 +170,11 @@ extend, rate, and re-render the catalog.
 | MP-004 | 0 | unrated | — |
 | MP-005 | 0 | unrated | — |
 | MP-006 | 0 | unrated | — |
-| IP-001 | 0 | unrated | — |
-| IP-002 | 0 | unrated | — |
-| IP-003 | 0 | unrated | — |
-| IP-004 | 0 | unrated | — |
-| IP-005 | 0 | unrated | — |
+| IP-001 | 1 | liked | 2026-11-07 |
+| IP-002 | 2 | liked | 2026-11-07 |
+| IP-003 | 2 | liked | 2026-11-07 |
+| IP-004 | 2 | liked | 2026-11-07 |
+| IP-005 | 2 | liked | 2026-11-07 |
 
 ## Code / CLI Recipes
 

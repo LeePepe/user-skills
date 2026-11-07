@@ -34,14 +34,14 @@
       "description": "四元素叙事素材抽取、脱敏与 Story Series/Tech Blog/Deck 发布读回。"
     },
     {
-      "name": "goal-task",
-      "source": "./skills/goal-task",
+      "name": "team-lead",
+      "source": "./skills/team-lead",
       "category": "workflow",
       "description": "进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 1-Hop 子代理编排 Explorer -> Designer -> Writer -> Reviewer -> pr_monitor。"
     },
     {
-      "name": "bot-tl-orchestration",
-      "source": "./skills/bot-tl-orchestration",
+      "name": "coordinator",
+      "source": "./skills/coordinator",
       "category": "workflow",
       "description": "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
     },
@@ -64,12 +64,6 @@
       "description": "对任意主题做深度、多来源、经交叉核查的调研,产出带引用、按置信度分级的报告。五阶段流水线:把问题分解成 4-8 个子问题 → 跨渠道(web/github/news/academic)并行 fan-out 调研 → 对每个发现做对抗式核查(证伪而非确认,发现者≠核查者)→ 交叉验证+圆桌综合、标注分歧 → 输出 HIGH/MEDIUM/LOW/CONTESTED 分级的引用报告。Provider-agnostic:同一份 skill 在 Claude Code、Kimi(kimi -p)、Codex(codex exec)三端都成立;fan-out 与核查阶段可跨模型互查(claude 的发现让 codex/kimi 证伪,反之亦然),对方模型作独立第二视角。当用户想「深度调研 / deep research / 全面调研 / 多角度调研 / research roundtable / 帮我把某主题查透并给带引用的报告」时使用。调用前:若问题欠具体(如「买什么车」却无预算/用途/地区),先问 2-3 个澄清问题收窄范围,再把澄清结果织进 args。"
     },
     {
-      "name": "auto-review-merge",
-      "source": "./skills/auto-review-merge",
-      "category": "repo",
-      "description": "Use when a user wants automated PR code review plus hands-off auto-merge on a GitHub repo — \"review my PRs automatically\", \"auto-merge when CI passes\", \"gate merges on a Claude review\", \"set up PR automation\". Installs a self-hosted-runner mechanism that runs a local subscription `claude` CLI as a deterministic merge gate (no ANTHROPIC_API_KEY), wires GitHub auto-merge, and codifies a branch ruleset. Framework/language-agnostic; the review dimensions are configurable per repo."
-    },
-    {
       "name": "codebase-design",
       "source": "./skills/codebase-design",
       "category": "repo",
@@ -80,6 +74,18 @@
       "source": "./skills/domain-modeling",
       "category": "repo",
       "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR."
+    },
+    {
+      "name": "my-designer",
+      "source": "./skills/my-designer",
+      "category": "design",
+      "description": "Apple-First progressive-disclosure design lead (L0 -> L1 -> L2) for macOS (desktop) and iOS/iPadOS (mobile) apps with Plan A HIG 5 Lenses, platform firewall, and Plan C defect evolution."
+    },
+    {
+      "name": "visual-design-modernization",
+      "source": "./skills/visual-design-modernization",
+      "category": "design",
+      "description": "Two-Stage Verbal Spec -> Direct Product Implementation -> Real Screenshot Review loop for modernizing app UI quality without throwaway demos."
     },
     {
       "name": "design-studio",

@@ -36,7 +36,7 @@ Never judge aesthetics or alignment from reading code alone—always verify agai
 
 ### Step 0 & 1 — Two-Stage Verbal Spec (Terminology → Parameters)
 
-Do not write demo code to explore directions. Translate the diagnosis into a concise verbal specification covering the **6 Core Dimensions** (see [my-designer five-layer craft](../my-designer/references/five-layer-craft.md)):
+Do not write demo code to explore directions. Translate the diagnosis into a concise verbal specification covering the **6 Core Dimensions** (see [my-designer routing index](../my-designer/references/routing-index.md)):
 
 1. **Visual Mode (pick 1):**
    - `Strata-Core` (Strata solid luminance tiers + candy accents)

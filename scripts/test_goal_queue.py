@@ -19,7 +19,7 @@ from typing import Any
 os.environ.setdefault("GTT_LINEAR_SYNC", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QUEUE = REPO_ROOT / "skills" / "goal-task" / "scripts" / "goal-queue.py"
+QUEUE = REPO_ROOT / "skills" / "team-lead" / "scripts" / "goal-queue.py"
 
 
 def manifest(
@@ -126,7 +126,7 @@ def manifest_for_tasks(
 
 class GoalQueueFeedbackGuardTests(unittest.TestCase):
     def test_isolated_cli_loads_sibling_helper(self) -> None:
-        script = REPO_ROOT / "skills" / "goal-task" / "scripts" / "goal-queue.py"
+        script = REPO_ROOT / "skills" / "team-lead" / "scripts" / "goal-queue.py"
         for command in ("enqueue", "set-status"):
             result = subprocess.run(
                 [sys.executable, "-I", "-B", str(script), command, "--help"],
@@ -137,7 +137,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(
                 result.returncode,
                 0,
-                msg=f"goal-task {command}: {result.stderr}",
+                msg=f"team-lead {command}: {result.stderr}",
             )
             self.assertIn("usage:", result.stdout.lower())
 
@@ -939,7 +939,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 db.commit()
                 self.assertGreaterEqual(first, 1)
 
-            state_module_path = REPO_ROOT / "skills" / "goal-task" / "scripts" / "state_store.py"
+            state_module_path = REPO_ROOT / "skills" / "team-lead" / "scripts" / "state_store.py"
             spec = importlib.util.spec_from_file_location("state_store_test", state_module_path)
             module = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
@@ -1025,7 +1025,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                     1,
                 )
 
-            fixture = REPO_ROOT / "skills" / "goal-task" / "tests" / "fixtures" / "bootstrap_ledger_target"
+            fixture = REPO_ROOT / "skills" / "team-lead" / "tests" / "fixtures" / "bootstrap_ledger_target"
             spec = importlib.util.spec_from_file_location("ledger_fixture", fixture / "ledger_app.py")
             module = importlib.util.module_from_spec(spec)
             assert spec.loader is not None

@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DISPATCH = ROOT / "skills" / "goal-task" / "scripts" / "herdr-dispatch.sh"
-PROFILES = ROOT / "skills" / "goal-task" / "references" / "runtime-profiles.yaml"
+DISPATCH = ROOT / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh"
+PROFILES = ROOT / "skills" / "team-lead" / "references" / "runtime-profiles.yaml"
 
 
 class GatewayDispatchTests(unittest.TestCase):
@@ -17,14 +17,35 @@ class GatewayDispatchTests(unittest.TestCase):
         cls.herdr_source = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
+if os.environ.get("TEST_CAPTURE_ALL"):
+    with open(os.environ["TEST_CAPTURE_ALL"], "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args) + "\\n")
 if args[:2] == ["pane", "split"]:
     print(json.dumps({"result": {"pane": {"pane_id": "p99"}}}))
+elif args[:2] == ["workspace", "create"]:
+    print(json.dumps({
+        "result": {
+            "workspace": {"workspace_id": "w77"},
+            "root_pane": {"pane_id": "w77:p1"},
+        }
+    }))
 elif args[:2] == ["agent", "start"]:
     with open(os.environ["TEST_CAPTURE"], "a", encoding="utf-8") as handle:
         handle.write(json.dumps(args) + "\\n")
     print(json.dumps({"ok": True}))
 elif args[:2] == ["agent", "get"]:
-    print(json.dumps({"interactive_ready": True, "agent_status": "working"}))
+    existing_status = os.environ.get("MOCK_EXISTING_TL_STATUS", "")
+    if existing_status:
+        print(json.dumps({
+            "interactive_ready": True,
+            "agent_status": existing_status,
+            "pane_id": "w55:p1",
+            "workspace_id": "w55",
+        }))
+    elif os.environ.get("MOCK_NO_EXISTING_TL") == "1" and not os.path.exists(os.environ["TEST_CAPTURE"]):
+        sys.exit(1)
+    else:
+        print(json.dumps({"interactive_ready": True, "agent_status": "working"}))
 elif args[:2] == ["agent", "prompt"]:
     print(json.dumps({"ok": True}))
 """
@@ -108,6 +129,69 @@ elif args[:2] == ["agent", "prompt"]:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(str(valid), result.mock_log)
             self.assertNotIn(str(valid / "missing"), result.mock_log)
+
+    def test_team_lead_bootstrap_without_herdr_env_and_idempotent_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            herdr = tmp / "herdr"
+            herdr.write_text(self.herdr_source, encoding="utf-8")
+            herdr.chmod(0o755)
+            handoff_goal = tmp / "handoff" / "demo-goal"
+            handoff_goal.mkdir(parents=True)
+            all_calls = tmp / "all_calls"
+
+            # 1. Fresh team_lead spawn without HERDR_ENV or HERDR_PANE_ID (simulates Grok Bot / Cindy / plain CLI)
+            env = {
+                **os.environ,
+                "PATH": f"{tmp}:{os.environ['PATH']}",
+                "HERDR_ENV": "",
+                "HERDR_PANE_ID": "",
+                "HERDR_MOCK_MAGPIE_ONLINE": "1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+                "MOCK_HERDR_LOG": str(tmp / "calls"),
+                "TEST_CAPTURE": str(tmp / "calls"),
+                "TEST_CAPTURE_ALL": str(all_calls),
+                "MOCK_NO_EXISTING_TL": "1",
+            }
+            fresh = subprocess.run(
+                [
+                    str(DISPATCH), "--name", "demo-goal-tl-r1", "--kind", "claude",
+                    "--cwd", str(handoff_goal), "--prompt", "Load /team-lead", "--role", "team_lead",
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            payload = json.loads(fresh.stdout)
+            self.assertEqual(payload["workspace_id"], "w77")
+            self.assertEqual(payload["pane_id"], "w77:p1")
+            self.assertEqual(payload["logical_group"], "group/steering")
+            self.assertEqual(payload["resolved_model"], "group/steering")
+            self.assertEqual(payload["gateway_mode"], "magpie")
+            recorded = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
+            ws_creates = [c for c in recorded if c[:2] == ["workspace", "create"]]
+            self.assertEqual(len(ws_creates), 1)
+            self.assertIn("--label", ws_creates[0])
+            self.assertIn("demo", ws_creates[0])
+
+            # 2. Idempotent reuse when <goal>-goal-tl-r1 is already idle
+            all_calls.write_text("", encoding="utf-8")
+            reuse_env = {**env, "MOCK_EXISTING_TL_STATUS": "idle"}
+            reused = subprocess.run(
+                [
+                    str(DISPATCH), "--name", "demo-goal-tl-r1", "--kind", "claude",
+                    "--cwd", str(handoff_goal), "--prompt", "Wake up for hot append", "--role", "team_lead",
+                ],
+                env=reuse_env, capture_output=True, text=True,
+            )
+            self.assertEqual(reused.returncode, 0, reused.stderr)
+            reused_payload = json.loads(reused.stdout)
+            self.assertTrue(reused_payload["reused_existing"])
+            self.assertEqual(reused_payload["workspace_id"], "w55")
+            self.assertEqual(reused_payload["pane_id"], "w55:p1")
+            reuse_calls = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(c[:2] == ["workspace", "create"] for c in reuse_calls))
+            self.assertFalse(any(c[:2] == ["agent", "start"] for c in reuse_calls))
+            self.assertTrue(any(c[:2] == ["agent", "prompt"] for c in reuse_calls))
 
 
 if __name__ == "__main__":

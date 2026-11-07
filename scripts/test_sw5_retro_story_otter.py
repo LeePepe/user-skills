@@ -19,7 +19,7 @@ def load(relative: str):
     return module
 
 
-GTT = load("skills/goal-task/scripts/gtt-telemetry-export.py")
+GTT = load("skills/team-lead/scripts/gtt-telemetry-export.py")
 ENGINE = load("skills/retro-loop/scripts/retro_story_engine.py")
 DRIFT = load("skills/workflow-hub/scripts/skills-drift-check.py")
 

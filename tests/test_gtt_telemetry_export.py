@@ -7,7 +7,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills/goal-task/scripts/gtt-telemetry-export.py"
+SCRIPT = ROOT / "skills/team-lead/scripts/gtt-telemetry-export.py"
 spec = importlib.util.spec_from_file_location("gtt_telemetry_export", SCRIPT)
 exporter = importlib.util.module_from_spec(spec)
 assert spec.loader is not None

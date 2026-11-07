@@ -6,16 +6,15 @@
 |---|---|---|---|
 | 1. Linear Board | `linear-board` | Idea、TIA state、Goal checklist | promoted Goal、状态与 blocker evidence |
 | 2. Co-Design | research/domain/design skills | facts、constraints、open decisions | frozen `spec.md`/`design.md` |
-| 3. Bot/TL | `bot-tl-orchestration` | Goal handoff、queue、alerts | TL lifecycle、R8 state、handoff receipts |
-| 4. Build | `goal-task` | frozen spec、brief、Owned Paths | commit、PR、tests、R10 |
+| 3. Bot/TL | `coordinator` | Goal handoff、queue、alerts | TL lifecycle、R8 state、handoff receipts |
+| 4. Build | `team-lead` | frozen spec、brief、Owned Paths | commit、PR、tests、R10 |
 | 5. Review/Merge | review skills、`pr_monitor` | diff、checks、R10 | V1–V5 conclusion、merged head |
 | 6. Delivery/Release | product and shared foundations | merged head、contracts、release inputs | published build、readback |
 | 7. Retro/Story | `retro-loop`、`story-craft` | telemetry、timeline、quantitative delta | locks、narrative、new Idea |
 
-## 自治脉搏：Cron / Clockwork 定时调度（Precheck-First, Wake-on-Actionable）
+## 自治脉搏：Cron / launchd 定时调度（Precheck-First, Wake-on-Actionable）
 
-Clockwork / `launchd` 以 `StartInterval=300` 等时间窗任务启动预检，运行结果写入
-`Results/<job_id>/runs/<run_id>/` 并保留最近 50 次。每次先运行 0 Token 的
+Cron / `launchd` 以 `StartInterval=300` 等时间窗任务启动预检。每次先运行 0 Token 的
 `precheck.py` 或 `goal-supervisor.py scan`：`pending == 0` 时直接退出且不唤醒
 LLM；只有 `pending > 0` 才通过 webhook 或 `herdr agent prompt` 精准唤醒对应
 Bot / Sticky TL。该心跳分别驱动环 5 的 PR 盯梢、环 3/4 的 Goal 租约巡检，以及
@@ -53,4 +52,4 @@ Passing an earlier stage never implies that later delivery readback has passed.
 
 Ring 7 sends a confirmed mechanism to `linear-board` as a TIA Idea or active Goal.
 Unconfirmed hypotheses remain backlog material and never silently rewrite a frozen
-`goal-task` contract.
+`team-lead` contract.

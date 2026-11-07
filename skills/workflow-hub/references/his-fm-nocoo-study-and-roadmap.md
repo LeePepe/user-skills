@@ -27,9 +27,9 @@
 | **网关与快思考层** | [`nocoo/raven`](https://github.com/nocoo/raven) (`:7024`) | 本机/VPS Copilot 与自定义上游转换代理；**`v3.2.0` 已原生支持 `POST /v1/systemone` (`docs/30-systemone.md`)、Key-Bound Routing (`docs/28`) 与 GHE Copilot (`b5a55cf`)**。 | **核心底座**：升级本机 `~/Development/raven` 至 `v3.2.0`，提供底层协议转换与原生 `/v1/systemone` 能力。 |
 | | [`yetone/magpie`](https://github.com/yetone/magpie) / [`nocoo/magpie`](https://github.com/nocoo/magpie) (`:3425`) | 上层本机模型网关：对外暴露 `group/steering`、`group/reviewing`、`group/coding`，负责意图路由、会话缓存粘性（Affinity）、跨节点配额调度与模型名回写（`replyNamingOf`）。 | **核心底座**：架在 `Raven (:7024)` 之上，收拢全工作流模型路由与配额管理。 |
 | | [`nocoo/falcon`](https://github.com/nocoo/falcon) (`:19823`) + [`typesafe-ai/skills`](https://github.com/typesafe-ai/skills) | 本机 Jev (`POST /v1/systemone`) HTTP/MCP 可观测代理：按 Agent 签发 `FALCON_SOURCE_KEY`，SQLite 留存 7 天请求与概率分布，支持 `⌘Return` 审阅与加星沉淀回归样本。 | **核心底座**：作为全工作流 Layer 1（毫秒级判断层）统一入口，上游对接本机 `Raven :7024/v1/systemone`。 |
-| **编排与状态机内核** | [`nocoo/pi-superagent`](https://github.com/nocoo/pi-superagent) & [`dsh-superagent`](https://github.com/deepseek-ai/dsh-superagent-prototype) | 注意力经济学（`status` 第一屏置顶 `needs a person`）、`Observe -> Auto` 预演、不可变 `Mandate`（`spec_sha` 锁）、Subscription Fan-out + `handback`、单写者 SQLite + `Effects` 队列。 | **全面吸收内核机制**：直接注入 `goal-task`（Sub-Workflow 3）与 `linear-board`（Sub-Workflow 1）。 |
+| **编排与状态机内核** | [`nocoo/pi-superagent`](https://github.com/nocoo/pi-superagent) & [`dsh-superagent`](https://github.com/deepseek-ai/dsh-superagent-prototype) | 注意力经济学（`status` 第一屏置顶 `needs a person`）、`Observe -> Auto` 预演、不可变 `Mandate`（`spec_sha` 锁）、Subscription Fan-out + `handback`、单写者 SQLite + `Effects` 队列。 | **全面吸收内核机制**：直接注入 `team-lead`（Sub-Workflow 3）与 `linear-board`（Sub-Workflow 1）。 |
 | | [`multica-ai/multica`](https://github.com/multica-ai/multica) | 人机同看板协作平台（Web/Desktop + Go Backend + Postgres + 本机 `multica daemon` 驱动 26 种 CLI），支持 **Live Steering（运行中实时注入指令）**、**Inbox-Only 通知**、**Execution Log + 单次 Run 成本归因**。 | **与 `nocoo` 演进路径一致（去壳留核）**：`nocoo` 曾在 2026.04–09.15 用 Multica 跑了近 6000 单（`STU-xxxx` / `SDE-01..04`），随后同样弃用其重型 Postgres/Squad/Issue 业务壳，仅抽取其零依赖 Go `server/pkg/agent/` SDK 放入 `meowth`，转向 `Herdr + pi-superagent`（详见 1.3 节）。 |
-| | [`nocoo/goalx`](https://github.com/nocoo/goalx) | 本地持久自治框架：Master 拆解 typed obligations、独立 worktree 经显式 `keep` 边界合回、支持 **`--intent evolve` 预算内持续自主演进**。 | **吸收特性**：在 `goal-task` 中引入 `--intent evolve` 预算内持续打磨循环与 `keep/discard` 实验分支机制。 |
+| | [`nocoo/goalx`](https://github.com/nocoo/goalx) | 本地持久自治框架：Master 拆解 typed obligations、独立 worktree 经显式 `keep` 边界合回、支持 **`--intent evolve` 预算内持续自主演进**。 | **吸收特性**：在 `team-lead` 中引入 `--intent evolve` 预算内持续打磨循环与 `keep/discard` 实验分支机制。 |
 | | [`nocoo/arena`](https://github.com/nocoo/arena) | 本机 `~/.arena/arena.db` 多 Agent 方案辩论看板 + 人类 Checkpoint CLI（`arena push / status / pop`）。 | **吸收进 Phase 0（环 2）**：将多方案比选与人类拍板标准化为 `Proposal -> Checkpoint -> Pop` 协议。 |
 | | [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) | 极简高缓存命中率 Coding Harness（省去内置 plan/subagent，交由外层控制）。 | **借鉴缓存原则**：不替换现有 `claude`/`codex`/`copilot`，但借鉴其固定短前缀以提升 Prompt Cache 命中率。 |
 | | [`nocoo/meowth`](https://github.com/nocoo/meowth) (`:7040`) | 将 5 种 CLI 封装为本机统一 HTTP/NDJSON 接口的 Go 守护进程。 | **暂不引入**：当前已有 `herdr` 管理终端分屏，仅作纯无头 API 调用备选参考。 |
@@ -44,7 +44,7 @@
 | **Backlog（延后）** | `Grok Bot` / [`hermes-agent`](https://github.com/NousResearch/hermes-agent) / [`openclaw`](https://github.com/openclaw/openclaw) / [`cindy`](https://github.com/makecindy/cindy) | M2 常驻个人助理与跨设备伴侣层。 | **归入 Backlog**：与现有七域常驻 Bot 改造一并延后，先完成底层网关与核心工作流升级。 |
 
 ### 1.3 一手考古还原：`nocoo` 自己是怎么用 `Multica`、最后又为什么弃壳留核的？
-通过检索 `github.com/nocoo` 全量 Commit、PR、Issue 与架构文档，可以完整还原他使用 `Multica` 的真实演进轨迹（与你本机 `multica-cleanup` 下线 NAS Multica 转向 `Linear + Herdr + goal-task` 的路径惊人一致）：
+通过检索 `github.com/nocoo` 全量 Commit、PR、Issue 与架构文档，可以完整还原他使用 `Multica` 的真实演进轨迹（与你本机 `multica-cleanup` 下线 NAS Multica 转向 `Linear + Herdr + team-lead` 的路径惊人一致）：
 1. **重度使用期（2026-04 至 2026-09-15，累计近 6,000 单 `STU-xxxx`）**：
    - **工号化 Agent 编队**：他在自建 Multica（Workspace 前缀 `STU`）里配置了 4 个固定工号的 Agent 员工：`SDE-01 <sde-01@multica.local>`、`SDE-02 <sde-02@multica.ai>`、`SDE-03 <sde-03@multica.ai>`、`SDE-04 <sde-04@multica.ai>`。
    - **`[🥝 choko]` 巡检 → GitHub Issue → Multica `STU-xxxx` 自动消单流水线**：用自研巡检脚本 `🥝 choko` 扫描名下 20+ 个仓库（`raven`、`bat`、`otter`、`ellie`、`surety`、`zhe`、`frogie` 等），以幂等标题 `[🥝 choko][deps] <pkg> <cur> → <target>` 自动开 GitHub Issue；Multica 接单生成 `STU-3400` ~ `STU-5962`，由本机 Daemon 在 `~/multica_workspaces/<workspace-id>/<task-id>/codex-home/` 隔离目录下拉起 Codex/Claude 跑完 `pre-push` 6DQ 门禁并提 PR。
@@ -66,7 +66,7 @@
 
 ### 2.1 全局模型与决策网关拓扑（`Magpie :3425` + `Raven v3.2 :7024` + `Falcon :19823`）
 ```text
-[各 Sub-Workflow: goal-task / shared-ci / deep-research / my-designer / Clockwork]
+[各 Sub-Workflow: team-lead / shared-ci / deep-research / my-designer / launchd]
         │
         ├── 1. 常规生成与编码推理 (OpenAI / Anthropic 兼容协议)
         │      只传逻辑分组名：group/steering | group/reviewing | group/coding
@@ -87,7 +87,7 @@
 ```
 
 ### 2.2 全工作流三层执行漏斗（Three-Tier Execution Funnel）
-任何环路的自动化触发（Clockwork 定时任务、PR 监控、状态巡检、上下文管理）统一遵循：
+任何环路的自动化触发（`launchd` 定时任务、PR 监控、状态巡检、上下文管理）统一遵循：
 1. **Layer 0 — 确定性脚本（0 Token，`<50ms`）**：纯 Python/Shell 检查 Git SHA、状态水位线、文件锁与 JSON Schema；`pending == 0` 直接退出。
 2. **Layer 1 — Jev System One 快思考（经 `Falcon :19823 -> Raven :7024/v1/systemone`，`150ms`）**：对非空事件并发提问（`Choice` + 伴生 `Noul` 或 `Score`），过滤无需改代码的评论/噪音、预筛 1–2 个所需 Skill、核查引用真实性；代码用确定性真值表（Truth Table）承接概率输出。
 3. **Layer 2 — 重型 CLI 执行器（经 `Magpie :3425` 路由 `group/steering | reviewing | coding`）**：仅在明确需要规划、写代码或双轴审查时拉起 Herdr CLI 会话。
@@ -105,7 +105,7 @@
 > - **SW0（网关三件套）**：Space `w2P` (`sw0-gateway-goal-tl-r1`) → `~/Development/handoff/sw0-gateway-research/spec.md` (68 KB)
 > - **SW1（`linear-board`）**：Space `w2Q` (`sw1-linear-goal-tl-r1`) → `~/Development/handoff/sw1-linear-research/spec.md` (46 KB)
 > - **SW2（Phase 0 共创与调研）**：Space `w2R` (`sw2-codesign-goal-tl-r1`) → `~/Development/handoff/sw2-codesign-research/spec.md` (91 KB)
-> - **SW3（`goal-task` 编排内核）**：Space `w2S` (`sw3-goaltask-goal-tl-r1`) → `~/Development/handoff/sw3-goaltask-research/spec.md` (87 KB)
+> - **SW3（`team-lead` 编排内核）**：Space `w2S` (`sw3-goaltask-goal-tl-r1`) → `~/Development/handoff/sw3-goaltask-research/spec.md` (87 KB)
 > - **SW4（`shared-ci` 与 PR 审查）**：Space `w2T` (`sw4-sharedci-goal-tl-r1`) → `~/Development/handoff/sw4-sharedci-research/spec.md` (53 KB)
 > - **SW5（`AIDash` 统一展示与环 6/7）**：Space `w2V` (`sw5-aidash-goal-tl-r1`) → `~/Development/handoff/sw5-aidash-research/spec.md` (78 KB)
 
@@ -119,11 +119,11 @@
   - `origin/main` 已包含 `cbf5ad3`（原生 `POST /v1/systemone` 代理 `microsoft-decision-1`，见 `docs/30-systemone.md`）、`docs/28-key-bound-routing.md`（按 Key 绑定路由规则与配额池）与 `b5a55cf`（GHE Copilot 支持）；
   - 本机尚未配置上层 `Magpie (:3425)` 的三组逻辑路由（`group/steering`、`group/reviewing`、`group/coding`）及旁路 `Falcon (:19823)`。
 - **向上游/下游 Sub-Workflow 暴露的适配接口**：
-  1. **给 `goal-task`（Sub-Workflow 3）与 `shared-ci`（Sub-Workflow 4）的推理接口**：统一在 `http://127.0.0.1:3425/v1` 暴露 `group/steering`（原 `strong`）、`group/reviewing`（原跨厂商 `mid` reviewer）、`group/coding`（原 `worker` writer/explorer），利用 Magpie 的 `replyNamingOf` 与配额调度屏蔽底层模型切换。
+  1. **给 `team-lead`（Sub-Workflow 3）与 `shared-ci`（Sub-Workflow 4）的推理接口**：统一在 `http://127.0.0.1:3425/v1` 暴露 `group/steering`（原 `strong`）、`group/reviewing`（原跨厂商 `mid` reviewer）、`group/coding`（原 `worker` writer/explorer），利用 Magpie 的 `replyNamingOf` 与配额调度屏蔽底层模型切换。
   2. **给全工作流脚本的 System One 接口**：统一在 `http://127.0.0.1:19823/v1/systemone`（Falcon，上游转发 `127.0.0.1:7024/v1/systemone`）暴露 `microsoft-decision-1` 的 `Choice`/`Noul`/`Score`/`Box` 能力，并提供标准库 Python 客户端契约 `jev_decide(state, questions, source_key)`。
 - **📋 专项会话启动 Prompt（复制到新会话执行，调研先行）**：
   ```text
-  加载 /workflow-hub、/deep-research 与 /goal-task skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「2.1 全局模型与决策网关拓扑」与「Sub-Workflow 0：Agent 网关与 System One 基础设施」。
+  加载 /workflow-hub、/deep-research 与 /team-lead skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「2.1 全局模型与决策网关拓扑」与「Sub-Workflow 0：Agent 网关与 System One 基础设施」。
 
   当前处于 Phase 0 只读深度调研阶段（严禁直接重启 :7024 服务、严禁改动任何配置或泄露密钥）。请先把以下 4 块事实与一手源码调研清楚，给出带精确 file:line 与配置字段的调研报告和落地设计方案：
 
@@ -150,7 +150,7 @@
   4. 【对下游 Sub-Workflow 的适配契约盘点】
      - 盘点本机各消费方当前是怎么调模型的，以及切到 Magpie + Raven + Falcon 后分别要改哪些字段：
        a) 本机 CLI 配置：~/.codex/config.toml (当前 base_url = http://127.0.0.1:7024/v1)、~/.claude/settings.json、~/.copilot/config.json；
-       b) Sub-Workflow 3 (goal-task)：~/Development/user-skills/skills/goal-task/references/runtime-profiles.yaml 与 scripts/herdr-dispatch.sh 如何从硬编码模型名 + Claude 周配额脚本平滑切换为网关逻辑组；
+       b) Sub-Workflow 3 (team-lead)：~/Development/user-skills/skills/team-lead/references/runtime-profiles.yaml 与 scripts/herdr-dispatch.sh 如何从硬编码模型名 + Claude 周配额脚本平滑切换为网关逻辑组；
        c) Sub-Workflow 4 (shared-ci)：~/Development/shared-ci/scripts/review/{codex-review.sh,kimi-review.sh} 如何对接网关。
 
   请先完成上述只读调研，输出一份结构清晰的《Agent 网关三件套（Magpie + Raven + Falcon）调研报告与适配契约草案》，等我确认后再进入实施。
@@ -159,21 +159,21 @@
 ---
 
 ### Sub-Workflow 1（环 1）：`linear-board` 看板、主动巡检预演与单次运行成本归因
-- **涉及路径**：`~/Development/user-skills/skills/linear-board/`、`~/Development/user-skills/skills/goal-task/scripts/linear-sync.py`、`~/Development/user-skills/skills/goal-task/tests/test_linear_sync.py`
+- **涉及路径**：`~/Development/user-skills/skills/linear-board/`、`~/Development/user-skills/skills/team-lead/scripts/linear-sync.py`、`~/Development/user-skills/skills/team-lead/tests/test_linear_sync.py`
 - **关联编号**：`R01`（环 1 部分）、`R12`（Linear 端）、Multica 机制吸收
 - **基本信息与可扩展点**：
   - **借鉴 `pi-superagent` (`002-authorization.md`)**：主动同步与自动建单增加 `--mode off|observe|auto`；在 `observe` 模式下只输出 `decision: "observe (would accept)"` 与拟建/拟改的 Issue 载荷，不实际写远端 Linear，跨过信任磨合期后再切 `auto`。
   - **借鉴 `Multica`（Run Cost & Transcript Attribution）**：在 Task 收口同步 Linear Issue 时，支持附带该 Task 的真实 Token 消耗、耗时与 R10 回执摘要，使 Linear Issue 成为完整的人机协作账本。
   - **借鉴 `nocoo/clip`**：保持凭据严格隔离在 `~/.config/linear/` (`0600`)，所有子命令输出确定性 JSON。
 - **与其它 Sub-Workflow 的适配接口**：
-  - 消费 Sub-Workflow 3（`goal-task`）的 `ledger.md` / `state.sqlite` 状态变更与 R10 成本摘要；
+  - 消费 Sub-Workflow 3（`team-lead`）的 `ledger.md` / `state.sqlite` 状态变更与 R10 成本摘要；
   - 接收 Sub-Workflow 5（`retro-loop` / `AIDash`）在 `observe/auto` 模式下回流的巡检 Idea。
 - **📋 专项会话启动 Prompt（复制到新会话执行，调研先行）**：
   ```text
-  加载 /workflow-hub、/linear-board 与 /goal-task skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 1（环 1）：linear-board 看板、主动巡检预演与单次运行成本归因」。
+  加载 /workflow-hub、/linear-board 与 /team-lead skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 1（环 1）：linear-board 看板、主动巡检预演与单次运行成本归因」。
 
   当前处于 Phase 0 只读深度调研阶段（严禁修改业务代码或向远端 Linear 写入测试垃圾数据）。请先把以下事实与一手资料调研清楚，输出带精确 file:line 的调研与设计报告至 ~/Development/handoff/sw1-linear-research/spec.md：
-  1. 精读 ~/Development/user-skills/skills/goal-task/scripts/linear-sync.py 与 tests/test_linear_sync.py，梳理当前 idea / ensure-goal / sync-ledger 的全部触发路径、锁机制与 GraphQL 变更点；
+  1. 精读 ~/Development/user-skills/skills/team-lead/scripts/linear-sync.py 与 tests/test_linear_sync.py，梳理当前 idea / ensure-goal / sync-ledger 的全部触发路径、锁机制与 GraphQL 变更点；
   2. 对照 nocoo/pi-superagent 的 docs/002-authorization.md，设计 R12 `--mode off|observe|auto`（含环境变量 GTT_LINEAR_MODE）在 linear-sync.py 中的精确返回 Schema（observe 模式下如何完整计算 diff 并返回 `"decision": "observe (would accept)"` 及拟执行的 GraphQL mutation 预演清单而不发真实写请求）；
   3. 对照 multica-ai/multica 的 Issue Run Attribution 与 nocoo/clip 的凭据/JSON CLI 规范，设计如何将每个 Task 的 R10 回执摘要、耗时与网关（Magpie/Raven）Token 成本增量聚合写回 Linear Issue Checklist / 里程碑评论；
   4. 梳理与 Sub-Workflow 3 (goal-queue.py) 和 Sub-Workflow 5 (retro-loop / AIDash) 的接口契约。
@@ -203,14 +203,14 @@
 
 ---
 
-### Sub-Workflow 3（环 3/4）：`goal-task` 编排内核、网关适配与 Thin Harness 瘦身
-- **涉及路径**：`~/Development/user-skills/skills/goal-task/`、`~/Development/user-skills/skills/bot-tl-orchestration/`、`~/Development/user-skills/scripts/{test_verify_skills.py,test_goal_queue.py}`
+### Sub-Workflow 3（环 3/4）：`team-lead` 编排内核、网关适配与 Thin Harness 瘦身
+- **涉及路径**：`~/Development/user-skills/skills/team-lead/`、`~/Development/user-skills/skills/coordinator/`、`~/Development/user-skills/scripts/{test_verify_skills.py,test_goal_queue.py}`
 - **关联编号**：`R02`、`R03`、`R08`、`R11`、`R12`、`R13`、`R14`、`R15`、`R16`、`R17`（消费侧）、`R18`、`R20`
 - **基本信息与可扩展点（核心重镇）**：
   1. **适配 Agent 网关（对接 Sub-Workflow 0，`R17`）**：
      - 将 `references/runtime-profiles.yaml` 与 `scripts/herdr-dispatch.sh` 中硬编码的具体模型（`opus`/`gemini-4-argon`/`gpt-5.6-luna`/`mai-code-2-flash`）与 Mac mini Claude 周配额 shell 预检，平滑改造为对接本机 `Magpie (:3425)` 的三个逻辑模型组：`group/steering`（TL / 裁决）、`group/reviewing`（Planner Reviewer / Code Reviewer）、`group/coding`（Writer / Designer / Explorer / `pr_monitor`），同时保留显式 profile 回退兼容。
   2. **Thin Harness 瘦身与 `model-surface` 门禁（`R11`）**：
-     - 将 `skills/goal-task/SKILL.md`（当前 65.2 KB）瘦身至 `<= 36 KB`：删掉与 `bots-and-agents.md` 双份复制的长命令串及特定健身 App 的死板像素条款（`34–36pt` 等），在 `scripts/test_verify_skills.py` 新增 `model-surface` 体积上限与单向引用门禁。
+     - 将 `skills/team-lead/SKILL.md`（当前 65.2 KB）瘦身至 `<= 36 KB`：删掉与 `bots-and-agents.md` 双份复制的长命令串及特定健身 App 的死板像素条款（`34–36pt` 等），在 `scripts/test_verify_skills.py` 新增 `model-surface` 体积上限与单向引用门禁。
   3. **吸收 `pi-superagent` 与 `Multica` 编排内核（`R12–R16`、`R18`）**：
      - **`R13` 注意力优先 `status`**：`goal-supervisor.py status [--check]` 第一屏只列 `needs a person`（按 `blocked` / `decision` / `stale` 分组，写明等谁做什么），健康 Goal 压成 1 行；
      - **`R12` 巡检 `observe` 模式**：`goal-supervisor.py scan/watch --mode off|observe|auto`；
@@ -222,11 +222,11 @@
      - 支持 `--intent evolve` 预算内持续改进模式；接入 Jev 动态 Skill 预筛（`R02`）、Keep-or-Drop 无损历史压缩（`R03`）与每 5 步死循环看门狗（`R08`）。
 - **📋 专项会话启动 Prompt（复制到新会话执行，调研先行）**：
   ```text
-  加载 /workflow-hub 与 /goal-task skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 3（环 3/4）：goal-task 编排内核、网关适配与 Thin Harness 瘦身」。
+  加载 /workflow-hub 与 /team-lead skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 3（环 3/4）：team-lead 编排内核、网关适配与 Thin Harness 瘦身」。
 
-  当前处于 Phase 0 只读深度调研阶段（严禁修改 user-skills 源码或破坏现有测试）。请结合 nocoo/pi-superagent (docs/000..007)、multica-ai/multica、nocoo/goalx 的一手文档与本机 goal-task 现状，完成深度调研并将完整方案落盘至 ~/Development/handoff/sw3-goaltask-research/spec.md：
-  1. 逐行盘点 skills/goal-task/SKILL.md (65KB)、references/bots-and-agents.md (46KB)、bot-tl-orchestration/SKILL.md (24KB) 与 scripts/test_verify_skills.py，列出所有双份复制段落、已过时冲突条款（如 bot-tl-orchestration:29）与特定 App 死板像素规则，给出 R11 model-surface 体积预算门禁与 SKILL.md 瘦身（<=36KB）的精确裁剪清单；
-  2. 精读 skills/goal-task/scripts/{goal-supervisor.py,goal-queue.py,herdr-dispatch.sh}，设计 R12 (`--mode off|observe|auto`)、R13 (`status [--check]` 第一屏置顶 `needs a person`)、R14 (Live Steering 同范围追问直达扇出 + 越界 `handback`)、R15 (不可变 `Mandate` + `spec_sha` 恢复校验)、R16 (`maxWorkers + 1` 人类插队槽位) 的精确 CLI 参数、JSON 数据结构与状态转移表；
+  当前处于 Phase 0 只读深度调研阶段（严禁修改 user-skills 源码或破坏现有测试）。请结合 nocoo/pi-superagent (docs/000..007)、multica-ai/multica、nocoo/goalx 的一手文档与本机 team-lead 现状，完成深度调研并将完整方案落盘至 ~/Development/handoff/sw3-goaltask-research/spec.md：
+  1. 逐行盘点 skills/team-lead/SKILL.md (65KB)、references/bots-and-agents.md (46KB)、coordinator/SKILL.md (24KB) 与 scripts/test_verify_skills.py，列出所有双份复制段落、已过时冲突条款（如 coordinator:29）与特定 App 死板像素规则，给出 R11 model-surface 体积预算门禁与 SKILL.md 瘦身（<=36KB）的精确裁剪清单；
+  2. 精读 skills/team-lead/scripts/{goal-supervisor.py,goal-queue.py,herdr-dispatch.sh}，设计 R12 (`--mode off|observe|auto`)、R13 (`status [--check]` 第一屏置顶 `needs a person`)、R14 (Live Steering 同范围追问直达扇出 + 越界 `handback`)、R15 (不可变 `Mandate` + `spec_sha` 恢复校验)、R16 (`maxWorkers + 1` 人类插队槽位) 的精确 CLI 参数、JSON 数据结构与状态转移表；
   3. 设计 R17 网关适配方案：runtime-profiles.yaml 与 herdr-dispatch.sh 如何对接 Magpie (:3425) 的 `group/steering`、`group/reviewing`、`group/coding` 逻辑组并兼容回退；
   4. 给出 R18（单写者 `state.sqlite + effects` 队列）、`goalx` `--intent evolve` 演进模式以及 Jev R02/R03/R08（动态 Skill 预筛、Keep-or-Drop 压缩、死循环看门狗）的分阶段演进路线与接口定义。
   ```
@@ -295,22 +295,22 @@
 |---|---|---|---|
 | **R10** | 本机部署 `Falcon (:19823)` 对接 `Raven v3.2 (:7024/v1/systemone)` | **Sub-Workflow 0（网关底座）** | Stage 1 |
 | **R17** | 上层 `Magpie (:3425)` + 底层 `Raven v3.2 (:7024)` 暴露三组逻辑路由 (`steering`/`reviewing`/`coding`) | **Sub-Workflow 0 → 适配 Sub-Workflow 3 & 4** | Stage 1 |
-| **R11** | `model-surface` 体积预算门禁 + `goal-task/SKILL.md` 拆精装房瘦身 | **Sub-Workflow 3（`goal-task`）** | Stage 1 |
-| **R12** | 主动巡检与同步 `--mode off\|observe\|auto` (`"would accept"` 预演) | **Sub-Workflow 1 (`linear-board`) & Sub-Workflow 3 (`goal-task`)** | Stage 1 |
-| **R13** | `goal-supervisor.py status --check` 注意力优先视图（第一屏置顶 `needs a person`） | **Sub-Workflow 3（`goal-task`）** | Stage 1 |
-| **R14** | 吸收 Multica Live Steering：同范围追问直达扇出 + 越界 `handback` | **Sub-Workflow 3（`goal-task`）** | Stage 2 |
-| **R15** | Task `Mandate` 不可变授权凭证与 `spec_sha` 恢复校验 | **Sub-Workflow 3（`goal-task`）** | Stage 2 |
-| **R16** | `maxWorkers + 1` 人类插队槽位与主控 `<5s` 非阻塞铁律 | **Sub-Workflow 3（`goal-task`）** | Stage 2 |
+| **R11** | `model-surface` 体积预算门禁 + `team-lead/SKILL.md` 拆精装房瘦身 | **Sub-Workflow 3（`team-lead`）** | Stage 1 |
+| **R12** | 主动巡检与同步 `--mode off\|observe\|auto` (`"would accept"` 预演) | **Sub-Workflow 1 (`linear-board`) & Sub-Workflow 3 (`team-lead`)** | Stage 1 |
+| **R13** | `goal-supervisor.py status --check` 注意力优先视图（第一屏置顶 `needs a person`） | **Sub-Workflow 3（`team-lead`）** | Stage 1 |
+| **R14** | 吸收 Multica Live Steering：同范围追问直达扇出 + 越界 `handback` | **Sub-Workflow 3（`team-lead`）** | Stage 2 |
+| **R15** | Task `Mandate` 不可变授权凭证与 `spec_sha` 恢复校验 | **Sub-Workflow 3（`team-lead`）** | Stage 2 |
+| **R16** | `maxWorkers + 1` 人类插队槽位与主控 `<5s` 非阻塞铁律 | **Sub-Workflow 3（`team-lead`）** | Stage 2 |
 | **R01** | PR 评论/告警三层漏斗：插入 150ms Jev `/v1/systemone` 预判层 | **Sub-Workflow 4（`shared-ci` / PR 监控）** | Stage 2 |
-| **R02** | 动态 Skill 预筛（Skill Suggestion，150ms 按需挂载 1–2 个 Skill） | **Sub-Workflow 3（`goal-task`）** | Stage 2 |
-| **R03** | Keep-or-Drop 无损上下文压缩（保住精确行号与 SHA） | **Sub-Workflow 3（`goal-task`）** | Stage 2 |
+| **R02** | 动态 Skill 预筛（Skill Suggestion，150ms 按需挂载 1–2 个 Skill） | **Sub-Workflow 3（`team-lead`）** | Stage 2 |
+| **R03** | Keep-or-Drop 无损上下文压缩（保住精确行号与 SHA） | **Sub-Workflow 3（`team-lead`）** | Stage 2 |
 | **R05** | 视觉 UI 截图门禁 + `jev-1.14` `Box` 缺陷框选 | **Sub-Workflow 2（设计）& Sub-Workflow 4（`shared-ci`）** | Stage 3 |
 | **R06** | 复盘/调研/R10 引用真实性核查（Citation Check） | **Sub-Workflow 2（调研）& Sub-Workflow 5（复盘）** | Stage 3 |
 | **R07** | 语义级代码规范 Linter（Semantic Code Linting） | **Sub-Workflow 4（`shared-ci`）** | Stage 3 |
-| **R08** | 子代理死循环实时看门狗（每 5 步 Stuck-Loop 检查） | **Sub-Workflow 3（`goal-task`）** | Stage 3 |
+| **R08** | 子代理死循环实时看门狗（每 5 步 Stuck-Loop 检查） | **Sub-Workflow 3（`team-lead`）** | Stage 3 |
 | **R04** | 长期记忆准入守卫（Memory Gatekeeper 3 `Noul`） | **Sub-Workflow 5（全局支撑）** | Stage 3 |
-| **R18** | 单写者 `state.sqlite` 状态机 + `Effects` 持久队列 | **Sub-Workflow 3（`goal-task`）** | Stage 4 |
+| **R18** | 单写者 `state.sqlite` 状态机 + `Effects` 持久队列 | **Sub-Workflow 3（`team-lead`）** | Stage 4 |
 | **R19** | Prompt Slots 四级结构 + `spec.md`/`design.md` `version` 乐观锁 | **Sub-Workflow 2（设计）& Sub-Workflow 5（叙事）** | Stage 4 |
-| **R20** | 三缺陷灰色地带自举靶场 + 标准 JSON `Inbox` | **Sub-Workflow 3（`goal-task`）** | Stage 4 |
+| **R20** | 三缺陷灰色地带自举靶场 + 标准 JSON `Inbox` | **Sub-Workflow 3（`team-lead`）** | Stage 4 |
 | **R09** | 个人项目检索重排（`WebIQSearch` / `deep-research` Reranking） | **Sub-Workflow 2（调研与应用）** | Stage 4 |
-| **Backlog** | 常驻 Bot 拆分（七域 Bot vs. 拆 Bot 三准则、M2 四形态 `Grok Bot`/`Hermes`/`OpenClaw`/`Cindy`、`his.fm` Scoped Tokens） | **Backlog（`bot-tl-orchestration`，待网关与核心环升级完成后再议）** | Backlog |
+| **Backlog** | 常驻 Bot 拆分（七域 Bot vs. 拆 Bot 三准则、M2 四形态 `Grok Bot`/`Hermes`/`OpenClaw`/`Cindy`、`his.fm` Scoped Tokens） | **Backlog（`coordinator`，待网关与核心环升级完成后再议）** | Backlog |

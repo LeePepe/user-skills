@@ -26,9 +26,9 @@ def load(name: str, relative: str):
 
 
 gate = load("spec_gate", "skills/codebase-design/scripts/spec_gate.py")
-slots = load("design_slots", "skills/my-designer/scripts/design_slots.py")
 research = load("jev_research_helper", "skills/deep-research/scripts/jev_research_helper.py")
 visual = load("jev_visual_gate", "skills/my-designer/scripts/jev_visual_gate.py")
+design_cases = load("verify_design_cases", "skills/my-designer/scripts/verify_design_cases.py")
 
 
 class SpecGateTests(unittest.TestCase):
@@ -86,25 +86,27 @@ class SpecGateTests(unittest.TestCase):
             self.assertEqual(code, 1); self.assertIn("STALE_DESIGN", result["issues"]); self.assertIn("STALE_MANDATE", result["issues"])
 
 
-class DesignSlotTests(unittest.TestCase):
-    def test_merge_modes_and_locked_redlines(self):
-        redline = slots.DesignSlot("role-handoff-only", "Role", "locked", 0, True, "locked", 1)
-        default = slots.DesignSlot("craft", "Craft", "base", 1, True, "append", 1)
-        appended = slots.DesignSlot("craft", "Craft", "extra", 1, True, "append", 1)
-        self.assertEqual(slots.merge_design_slots([redline], [default], [appended])[1].body, "base\n\nextra")
-        cleared = slots.DesignSlot("craft", "Craft", "", 1, True, "override", 1)
-        self.assertEqual(len(slots.merge_design_slots([], [default], [cleared])), 0)
-        disabled = slots.DesignSlot("craft", "Craft", "ignored", 1, False, "override", 1)
-        self.assertEqual(slots.merge_design_slots([], [default], [disabled])[0].body, "base")
-        with self.assertRaisesRegex(ValueError, "RESERVED_GLOBAL_REDLINE"):
-            slots.merge_design_slots([redline], [], [redline])
-
-    def test_all_category_prompts(self):
-        categories = {"macos-statusbar-popover", "ios-dense-single-hand", "web-saas-data-workspace", "editorial-narrative"}
-        for category in categories:
-            result = slots.compose_designer_prompt(category, {"job": "test"}, {"source": "fact"})
-            self.assertTrue(result["ok"]); self.assertEqual(len(result["receipt"]["prompt_sha"]), 64)
-            self.assertIn("trusted=\"untrusted_factual_only\"", result["prompt"])
+class ProgressiveRouterTests(unittest.TestCase):
+    def test_route_discloses_hig_and_plan_a_lenses(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = design_cases.main(["route", "--platform", "desktop", "--dimensions", "glass-material,chart-dataviz"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["baseline_mode"], "plan-a-apple-hig")
+        self.assertEqual(payload["plan_c_active_cases"], [])
+        self.assertIn("liquid-glass.md", payload["progressive_disclosure"]["hig_files_to_load"])
+        self.assertIn("charts.md", payload["progressive_disclosure"]["hig_files_to_load"])
+        self.assertIn("designing-for-macos.md", payload["progressive_disclosure"]["distilled_in_plan_a"])
+        self.assertIn("liquid-glass.md", payload["progressive_disclosure"]["on_demand_external_refs"])
+        self.assertNotIn("designing-for-macos.md", payload["progressive_disclosure"]["on_demand_external_refs"])
+        ext_routing = payload["progressive_disclosure"]["external_skill_routing"]
+        self.assertIn("allowed_native_sources", ext_routing)
+        self.assertIn("apple-design-skill", ext_routing["allowed_native_sources"])
+        self.assertIn("impeccable_native_only", ext_routing["allowed_native_sources"])
+        self.assertTrue(any("taste-skill" in b for b in ext_routing["blocked_web_only_sources"]))
 
 
 class ResearchTests(unittest.TestCase):
@@ -156,6 +158,56 @@ class VisualTests(unittest.TestCase):
         self.assertTrue(visual.evaluate_r05_truth_table(.9, .8, None, 0, [10, 10, 30, 30], (100, 100))["fail"])
         self.assertEqual(visual.evaluate_r05_truth_table(.5, 0, .1, .8)["verdict"], "PASS_CLEARED_ON_ZOOM")
         self.assertEqual(visual.evaluate_r05_truth_table(.5, 0, .8, .8)["verdict"], "FAIL_CONFIRMED_ON_ZOOM")
+
+
+class DesignCasesAndRoutingTests(unittest.TestCase):
+    def test_plan_a_default_and_plan_c_case_promotion(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(temp)
+            cases_file = root / "index.json"
+            src_cases = ROOT / "skills" / "my-designer" / "references" / "defect-cases" / "index.json"
+            taxonomy_file = ROOT / "skills" / "design-studio" / "references" / "taxonomy-v2.json"
+            cases_file.write_bytes(src_cases.read_bytes())
+
+            swift_file = root / "SampleView.swift"
+            swift_file.write_text(
+                "import SwiftUI\nstruct SampleView: View {\n"
+                "  var body: some View {\n"
+                "    Text(\"Hi\").frame(width: 380).padding(16)\n"
+                "  }\n}\n",
+                encoding="utf-8",
+            )
+            # Under pure Plan A default (active_cases == []), frame-before-padding is not flagged until promoted to Plan C
+            self.assertEqual(
+                design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "desktop", "--path", str(swift_file),
+                ]),
+                0,
+            )
+            # Register Plan C defect case when discovered
+            self.assertEqual(
+                design_cases.main([
+                    "register-case", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--id", "DC-001", "--title", "Popover Frame Before Padding",
+                    "--platforms", "desktop", "--dimensions", "layout-navigation",
+                    "--containers", "NSPopover",
+                    "--symptom", "Clips trailing content",
+                    "--fix-rule", "Use .padding(P).frame(width: W)",
+                    "--forbidden-regex", r"\.frame\(\s*width\s*:[^)]+\)\s*\.padding\(",
+                ]),
+                0,
+            )
+            # Now Plan C catches the defect on desktop
+            self.assertEqual(
+                design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "desktop", "--dimensions", "layout-navigation",
+                    "--container", "NSPopover", "--path", str(swift_file),
+                ]),
+                1,
+            )
 
 
 if __name__ == "__main__":
