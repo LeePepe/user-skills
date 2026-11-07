@@ -56,30 +56,13 @@ Tier A/A′ 人工／策略决定或 Tier B `NEED_GO`。**通知桥 ≠ 解卡**
 
 UI/UX design is handled by `Steering` during Phase 0 co-design and by
 `Writer` during Phase 1 implementation. Steering loads `my-designer`
-(`L0 -> L1 -> L2`) directly when authoring `design.md`/`spec.md`; Writer
+(`L0 -> L1 -> L2`) directly when authoring `design.md`/`spec.md` (`Package.resolved`与 `shared-design-system` upstream primitives 按需核对)；Writer
 implements directly in product or `shared-design-system` code. The CI Design
-Gate (`design_contract.py`) and Cross-Vendor `Reviewer` verify the result,
-including `sips -g pixelWidth`, zero numeric truncation (`…`), the
-`followed the brief verbatim` rule, `Package.resolved`, and `shared-design-system`
-upstream primitives.
-
-产品 UI/UX 设计仍以 `shared-design-system`（`ai/DESIGN-CONTRACT.md`）、项目
-`docs/design-contract.md` 与既有 `Strata`／原型预览为共享设计资产的单一事实源。
-`Steering` 直接核对 `Package.resolved` 与 upstream primitives；需要 >15 行
-custom layout/chrome glue 且 upstream 缺失时，先拆上游 Task，不得在 `AppUI`
-先行修补。
+Gate (`design_contract.py`) and Cross-Vendor `Reviewer` verify the result
+(including `sips -g pixelWidth`, zero numeric truncation `…`, and the
+`followed the brief verbatim` V2 P1 rule;具体品类与视觉细则归 `my-designer` 维护，不在全局合同堆砌特定项目像素规则).
 
 - **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。`Steering`（或按需 `Explorer`）映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**，并记录 **Deprecated Test Clauses to Remove/Rewrite**；随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，`Code/UI Reviewer` 保留非 deprecated regression tests。
-- **Reviewer V2 UI gate**：Reviewer 必须以 worst-case density fixtures 核验 `sips -g pixelWidth` == `W * scale`，并检查 zero numeric truncation（`…`）、无 unexpected wrapping、Bento 卡片等高、无 duplicate unit placeholders（`lb lb`）及无 raw localization keys。任一项是 V2 P1 `FAIL`；不得以“followed the brief verbatim”降级为 `CONCERNS`。
-- **Anti-Gaming Visual Harmony Gate**：Writer 不得用仅通过 literal width／ellipsis checks 的 workaround 破坏 visual harmony；具体字号、间距、组件几何与 hit-target 规则由 `my-designer` Category Slot 维护，Reviewer 仍按 V2 P1 判定真实截断、溢出与可访问性回归。
-- **Reviewer V2 UI gate**：Reviewer 必须以 worst-case density fixtures 核验 `sips -g pixelWidth` == `W * scale`，并检查 zero numeric truncation（`…`）、无 unexpected wrapping、Bento 卡片等高、无 duplicate unit placeholders（`lb lb`）及无 raw localization keys。任一项是 V2 P1 `FAIL`；不得以“followed the brief verbatim”降级为 `CONCERNS`，若 brief formula 导致 overflow/truncation，仍 `FAIL` 并报告 brief definition defect。
-- **Anti-Gaming Visual Harmony Gate**：Writer 不得用仅通过 literal width／
-  ellipsis checks 的 workaround 破坏 visual harmony；具体字号、间距、组件
-  几何与 hit-target 规则由 `my-designer` Category Slot 维护，Reviewer 仍按
-  V2 P1 判定真实截断、溢出与可访问性回归。
-- **Mac mini 常驻域**：`flower`／`Atlas`／`ana`／`笔者`，以及在 Mac mini 上做协调的 `Hotty`，均按 Steering → Writer → CI Design Gate → Reviewer 处理产品 UI/UX 设计 Goal；`Hotty` 不做具体 Goal 协调的边界不变。
-- **MacBook／`Joy`（本机设计流水线）**：`Joy` 在 MacBook 上、于 goal-task 内运行同一 Steering → Writer → CI Design Gate → Reviewer 流程，也不操作 Mac mini。
-- **CLI 入口**：本地 CLI／TL 在本 Goal 内主动运行同一 Steering → Writer → CI Design Gate → Reviewer 流程。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -95,25 +78,24 @@ custom layout/chrome glue 且 upstream 缺失时，先拆上游 Task，不得在
    仅补一次 `herdr agent send-keys "$GOAL-goal-tl-r1" enter`，并在波次收口
    前重跑 `next-wave`。
 
-### 两级完成与清理边界
+### 两级完成与清理边界（`1 Goal = 1 分支 / 最多 1 PR` + 本地 `keep / drop`）
 
 - **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：独立 Goal TL
    存在时，Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时回收 TL pane/workspace；
    TL 独占下属 Subagent 的派发、更新与回收。Bot 或本地 CLI 直接担任 TL 时，
    由其直接管辖下属。
-- `pr_monitor` 必须从主仓或 `~/Development/handoff/<goal>` 启动，不能占用 `$TASK_WORKTREE`；如果曾在任务 Worktree 中运行，先关闭其 pane，再执行 Worktree 清理。
-- **Task / `PR_MERGED`**：按 **`writer_stays_and_cleans_own_worktree`（谁建谁埋）**，Writer 在开 PR、写 R10 回执后保持 `idle`，等待 Cross-Vendor Reviewer `V5 PASS`；通过后由 Writer（或 fallback `pr_monitor` Worker）从主仓 cwd 运行 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`，执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`，再关闭自己的任务 pane。Steering TL 只规划、派发、仲裁（`EVT=RULING`）并读回执，不内联执行 CI 监控或清理。未合并、HOLD 或 dirty Worktree 保留并报告 Owner。
+- **同 Goal 共用分支与按需子 Worktree**：同一个 Goal 下的多个 Tasks 默认在同一个 Goal 分支上连续 commit，不建拆多个碎 Worktree、不开多个碎 PR；仅在多 Writer 真并发或实验探索时按需建临时子 Worktree，验证通过后本地 `keep`（merge）合回 Goal 分支并立即清理临时 Worktree。
+- **Writer 干完即退与 `PR_MERGED` 清理**：`Writer` 完成本地验证与交付后即退出并关闭自己的任务 pane（无需挂起空等 Reviewer）。当临时子 Worktree 已本地 `keep` 合回或最终 PR 已读回 `PR_MERGED` 后，通过 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`（执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`）完成清理。未合并／暂停（HOLD）或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE`（全部 Task `done` 且 `drained: true`）后，关窗与 Worktree 处置分开验收。**A（MUST）**：MUST 关闭该 Goal 的 TL pane，并清空其 herdr workspace（例如 `herdr workspace close "$GOAL_WORKSPACE"`）。TL SHOULD 延迟自闭 pane；若未发生，协调 Bot MUST 回退关闭，即使 Worktree 已由 Owner Freeze 保留。不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：Owner Freeze 可以保留 Worktree；未合并、HOLD 或 dirty Worktree 保留并报告 Owner。保留 Worktree MUST NOT 阻断 A。
 
-### 会话内追问与 Bug 反馈守卫（Sticky TL & Context-Noise Threshold）
+### 会话内追问与上下文污染度弹性分流（Sticky TL & Context-Noise Threshold）
 
-进入 `goal-task` 或存在活动 ledger 后，会话追问继续继承 TL 合同。
+进入 `goal-task` 或存在活动 ledger 后，会话追问继续继承合同约束。
 已知模块或中小改动（`≤8` 个文件）由 Steering 直接读取、诊断根因并写
 `spec.md`／`briefs/<task>.md`，无需派发 `Explorer`；
 跨仓大海捞针、全量盘点 `Obsolete Test Manifest` 或长日志分析超过 8 个文件时，
 通过 `herdr-dispatch.sh` 按需派发只读 `Explorer`，接收 `<15` 行摘要与 R10 receipt。
-UI/UX 设计由 Steering 直接加载 `skill("my-designer")`；Phase 1 产品代码仍由隔离
-worktree 的 Writer 修改，Steering 不内联改产品代码。
+`≤3` 个文件的轻量代码修正可由 `Steering` 直接完成并验证；大范围或耗时构建交 `Writer` 执行。
 
 ### CLI 原生 Goal 引擎挂载与状态同步（Native Goal Continuation Binding）
 
@@ -121,24 +103,6 @@ worktree 的 Writer 修改，Steering 不内联改产品代码。
 `create_goal`／`update_goal`、Copilot `sql` 的 `todos`／`todo_deps`、
 以及 Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后才标 complete；
 `TASK_BLOCKED`、`NEED_GO`、`NEED_OWNER_DECISION` 或 V3 两轮失败立即标 blocked。
-
-## bot 分工（唯一一处）
-
-Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册的唯一来源。
-
-| 域 | 主 bot | 机器 | 范围 | 不做 |
-|---|---|---|---|---|
-| retro + 反思 | ana | Mac mini | retro 与反思 | |
-| 文章形成 | 笔者（writer） | Mac mini | 文章形成 | 与 CLI 层 Task 写者（`writer`）不是同一身份 |
-| 产品开发 | Atlas | Mac mini | 产品应用（VitalStride、VoxPocket 等） | |
-| 流程/方法（含基建） | flower | Mac mini | workflows 01–06、user-skills/GTT，以及 herdr、CLI、shared-ci、tooling | 具体盯梢由 stuck-PR bot + Mac mini 只读心跳负责；flower 负责每日摘要聊天与危险操作或 hold 例外需 Owner 决定时的路由；可执行的卡住 PR 走 supervise-and-fix 而非默认 Owner |
-| 总控 | Hotty | Mac mini | 七域矩阵与跨域摘要；Owner 问时从各 Goal 台账汇总超时与卡住事件 | 不做具体 Goal 协调，不做 Task 写者 |
-| MacBook | Joy | MacBook | MacBook 上 Goal 的协调者；本机产品 UI/UX 设计在 goal-task 内跑设计流水线 | 不操作 Mac mini |
-
-- fonder（Mac mini）只作为 flower 域下的可选帮手，不占域主。
-- pigger（Mac mini）在七域之外：Owner 的个人咨询顾问，可按 GTT 做自己的咨询类工作；不接触 Owner 的这些项目（仓库、台账、handoff 中的 Goal）。
-- 每个 bot 只操作自己的机器；跨机器只通过 handoff 交接（[ledger.md](ledger.md) 的 inputs 规则）。
-- Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——普通 PR 在准确 head 的 required checks 通过并完成独立审查后，按仓库既定 auto-merge 流程合并，再读回合并结果。bot 转述不产生新的放行授权；已有明确 Owner 授权须在台账记录原话或来源。
 
 ## 每个 Goal 的责任线
 
@@ -148,13 +112,12 @@ Owner 2026-10-23 的七域分工：每个域一个主 bot。本表是花名册�
 写者/Reviewer/Explorer → TL → 协调者 bot → Owner
 ```
 
-- 协调者 bot 每个 Goal 只有一个：开 TL、收 TL 事件、需要 Owner 决定时去问。
-- TL 按 **`Goal -> Task` 两层模型（`1 Task = 1 Writer = 1 Worktree = 1 PR`）** 划分垂直切片并写 `briefs/<task>.md`（Lite 档单 Task 免独立台账），按 **1-Hop Flat Tree** 在 herdr 里统一开 Explorer、Planner、Reviewer、写者（含 `writer_escalated`）；不兼任写者或独立验收（SKILL.md「角色绑定与交接」）。写者与 Reviewer 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`）。
-- Hotty 只读台账做跨域摘要，不在具体 Goal 的协调线上；线上没人接的事件由 Owner 问 Hotty 时查出。
+- **单出口交付与权限**：Owner（用户）是危险操作及明确 hold 例外的唯一放行人；普通 PR 合并与发布（04/tag/TestFlight）不需要 Owner GO——Goal 的最终 PR 在准确 head 的 required checks 通过并完成独立审查（或复用仓库 `codex-review-target` 门禁）后，按仓库既定 auto-merge 流程合并，再由 `ci-monitor.py` 读回合并结果。
+- TL 按 **1-Hop Flat Tree** 在 herdr 里按需调度 `Writer`、`Reviewer` 与可选只读 `Explorer`；下属 Subagent 默认不再递归派发下级 Subagent（`You Do Not Dispatch Subagents`）。
 
 ### 技术栈 Skill 路由表（Apple & DataViz Skills Routing）
 
-TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_escalated`）时，必须在简报中声明按任务技术栈匹配的 `Required Skills`；执行者启动时先加载这些 Skills，再开始实现。
+`Steering` 或 `Writer` 按任务技术栈按需加载对应 `Required Skills`（也可由 `jev-skill-router.py` 预筛）：
 
 | 任务技术栈 | Required Skills |
 |---|---|
@@ -166,64 +129,18 @@ TL 编写 `briefs/<task>.md` 或派发 `Writer`（`worker.writer`／`writer_esca
 | HealthKit／运动健康（`VitalStride`） | `healthkit` |
 | macOS SwiftPM 打包、测试与构建 | `guide-macos-spm-packaging` + `guide-swift-testing` + `swift-testing` + `xcode-cli` |
 
-## CLI agent 角色与档位
+## CLI agent 三组角色与网关调度
 
-| 角色 | 档位（见 profile） | 谁开 | 生命周期 |
+所有模型配额水位（`pace`／`smart`）、会话缓存粘性（`affinity`）与首句轻重意图路由均由本机网关 **`Magpie (:3425)`** 的三组逻辑模型（`group/steering`、`group/reviewing`、`group/coding`）统一接管，不再手写单机周配额脚本或诊断特例表（网关不可达时按 [runtime-profiles.yaml](runtime-profiles.yaml) 自动回退）。
+
+| 角色 | 逻辑组 / 档位 | 谁开 | 生命周期 |
 |---|---|---|---|
-| Team lead | strong | 协调者 bot | 整个 Goal |
-| 裁决 | strong | TL / 协调者 | 一次裁决 |
-| Planner | mid | TL | 一轮计划 |
-| Planner 的 Reviewer、代码 Reviewer | mid，**与被审者不同家** | TL | 一次审查（每轮新会话） |
-| 写者（`writer`） | worker | TL | 一个 Task（不递归派 subagent） |
-| 升档写者（`writer_escalated`） | mid | TL | **仅限 V3 第 2 轮审查失败升档**（严禁在首轮 `r1`、Planner 简报或常规修改中直接派发 `writer_escalated`／`gpt-6.1-sol`；新鲜上下文，不递归派 subagent） |
-| Explorer、机械活 | worker | 任何 bot / TL | 一次调研或一次活 |
-| PR 监控者（`pr_monitor`） | 默认由 Layer 0 `ci-monitor.py`（0 Token）处理；失败诊断或特殊复杂场景才用 worker（**`pr_monitor` 顺序为 `mai-code-2-flash` → `gpt-5.6-luna`**） | TL | 一次 PR／波次 CI 与 auto-merge 状态监控（Job 级 Fail-Fast；禁止 TL 与 Writer 内联 `gh run watch`／长 `sleep`） |
-| 调研主 + 旁听 | research，旁听与主不同家，强档裁决 | 协调者 / TL | 一次调研 |
-
-## 诊断类 Goal 的 TL（仅此类；Owner 2026-10-26，Joy → Hotty → flower）
-
-**只适用于**以「为什么慢／效果如何／用了哪个 skill」为目的的诊断 Goal：调查 CLI、`goal-task` 或 TL 过慢、有效性，或 skill 选用回顾。不替换日常实现类 Goal 的 TL，也不改会话内 Bug 追问所继承的在途 TL。
-
-| 机器 | 诊断 Goal 的 TL |
-|---|---|
-| MacBook | `copilot` + `gemini-4-argon`（与该机日常 strong `team_lead` 相同） |
-| Mac mini | 同一类诊断对齐 gemini-4 档：`copilot` + `gemini-4-argon` |
-
-Mac mini 上此类诊断**不得**用 strong 档（`claude` + `opus`）硬扛调研，也**不**走下一节 Claude 周配额预检。日常实现 TL 不变：MacBook 仍是 `copilot`／`gemini-4-argon`；Mac mini strong 仍是 `claude`／`opus`，周剩余 `weekly_remaining_pct` &lt; 20%（或测不到）才改 `copilot`／`gemini-4-argon`。默认档位仍以 [runtime-profiles.yaml](runtime-profiles.yaml) 为准；本表不改那些默认项。
-
-## Mac mini strong：Claude 周配额预检（team_lead / arbitration）
-
-**范围**：仅 `machines.mac-mini.strong` 的 `team_lead` 与 `arbitration`（首项为 `claude` + `opus`，备份为 `copilot` + `gemini-4-argon`）。Joy / MacBook 的 strong 档不使用 Claude，**不适用**本规则。
-
-**Owner 规则**：在 herdr 拉起 `<goal>-goal-tl-r1`（或 strong 档 `arbitration`）**之前**，若 Claude 订阅的 **周剩余用量 `weekly_remaining_pct` &lt; 20%**，协调者必须**直接**以备份档启动（`copilot` + `gemini-4-argon`），**不得**先起 Claude 等撞墙后再切换。合同字段见 [runtime-profiles.yaml](runtime-profiles.yaml) 中 `machines.mac-mini.strong.quota_precheck`（`threshold_lt: 20`、`action: use_next`、`on_measure_failure: use_next`）。
-
-**选择算法（herdr / bot 实现）**：
-
-1. 读取当前机器与角色的 profile 列表（`team_lead` 或 `arbitration`）。
-2. 若 `quota_precheck` 存在且 `list[0]` 匹配 `primary_match`（`cli: claude`），则测量 `weekly_remaining_pct`（见下节 Measurement）。
-3. 若 `weekly_remaining_pct < 20` **或**测量失败（未知），选用 `list[1]`（备份）作为**初始** `--kind` / `--` 参数；否则选用 `list[0]`。
-4. 在 `ledger.md` 头或 TL 启动回执中记一行：`TL_PROFILE=… | quota_precheck=pass|skip_low_quota|skip_unknown`。
-
-### Measurement（如何读取 `weekly_remaining_pct`）
-
-合同指标 **`weekly_remaining_pct`** = 100 − **`rate_limits.seven_day.used_percentage`**（Claude Code 7 日窗口**已用**百分比，0–100）。与交互式 `/usage` 中 “Current week (all models)” 的 **used** 一致。
-
-| 方式 | 用法 | 解析 |
-|---|---|---|
-| **缓存（推荐，预启动）** | Mac mini 上由 Claude Code **statusline** 脚本在每次 API 响应后写入 `~/.config/claude/gtt-weekly-remaining-pct.json`（见 [statusline 文档](https://code.claude.com/docs/en/statusline) 的 `rate_limits.seven_day`） | 若 `observed_at` 距今 ≤ `cache_max_age_seconds`（900），读 `weekly_remaining_pct`；否则视为过期，走下一行 |
-| **Statusline stdin JSON** | 从 statusline 收到的 JSON 取 `rate_limits.seven_day.used_percentage` | `weekly_remaining_pct=$((100 - USED))`（`USED` 为空则测量失败） |
-| **交互式核对** | 已有 Claude Code 会话中执行 `/usage` | 周窗口 **used** ≥ 80% 等价于 `weekly_remaining_pct` &lt; 20% |
-
-**失败模式（fail-closed）**：无法得到可信的 `weekly_remaining_pct`（字段缺失、缓存过期、非 Pro/Max 订阅无 `rate_limits`、命令非零退出等）→ 按 `on_measure_failure: use_next` **直接起备份** `copilot` + `gemini-4-argon`，避免意外撞周限额。不得在未测量且周余量可能不足时默认冒险使用 `claude`/`opus`。
-
-**Statusline 解析示例**（协调者脚本可内联；stdout 一行整数 0–100 即 `weekly_remaining_pct`）：
-
-```sh
-set -euo pipefail
-USED="$(jq -r '.rate_limits.seven_day.used_percentage // empty' <<<"$CLAUDE_STATUSLINE_JSON")"
-if [ -z "$USED" ]; then exit 1; fi
-echo $((100 - "${USED%.*}"))
-```
+| Steering / Team lead (`team_lead`) | `group/steering` (`strong`) | Owner / 协调者 bot | 整个 Goal（探查、规划、UI 设计、`≤3` 文件直改、调度与 `EVT=RULING`） |
+| 写者（`writer`） | `group/coding` (`worker`) | Steering | 多文件或耗时构建切片（干完即退，不递归派 subagent） |
+| 升档写者（`writer_escalated`） | `group/coding-escalated` (`mid`) | Steering | **仅限 V3 第 2 轮审查失败升档**（首轮 `r1` 严禁直接派发） |
+| 代码 Reviewer (`code_reviewer`) | `group/reviewing` (`mid`，**与写者不同家**） | Steering | Goal 收口单次审查（若仓库 CI 已有 `codex-review-target` 则直接复用） |
+| Explorer（可选） | `group/coding` (`worker`) | Steering | 仅 `>8` 文件高噪声跨仓搜索时按需启动 |
+| CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认由 Layer 0 `ci-monitor.py`（0 Token）处理；失败诊断才回退 `worker.pr_monitor` | Steering | 异步监控 PR CI、auto-merge 与发布流水线（Job 级 Fail-Fast） |
 
 ## 生命周期（herdr）
 
