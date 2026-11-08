@@ -419,6 +419,88 @@ def approve_tier2(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "cleaned": cleaned, "dry_run": args.dry_run}
 
 
+def daily_cleanup(args: argparse.Namespace) -> dict[str, Any]:
+    """Incremental watermarked daily cleanup: never re-processes already-cleaned Goals."""
+    state_dir = Path(args.state_dir).expanduser()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_file = state_dir / "daily-cleanup-state.json"
+    state = {"cleaned_goals": [], "last_run_epoch": 0.0}
+    if state_file.is_file():
+        try:
+            loaded = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                state["cleaned_goals"] = list(loaded.get("cleaned_goals", []))
+                state["last_run_epoch"] = float(loaded.get("last_run_epoch", 0.0))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    already_cleaned: set[str] = set(state["cleaned_goals"])
+    handoff_root = Path(args.handoff_root).expanduser()
+    now_ts = time.time()
+    log_age_cutoff = now_ts - args.log_prune_days * 86400
+    newly_cleaned_goals: list[str] = []
+    pruned_logs: list[str] = []
+
+    if handoff_root.is_dir():
+        for goal_dir in sorted(handoff_root.iterdir()):
+            if not goal_dir.is_dir() or goal_dir.name.startswith("_") or goal_dir.name in already_cleaned:
+                continue
+            ledger = goal_dir / "ledger.md"
+            if not ledger.is_file():
+                continue
+            try:
+                text = ledger.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if "EVT=GOAL_DONE" not in text:
+                continue
+            # Prune temporary .log / .out files on old completed goals while keeping spec/ledger/receipts
+            if ledger.stat().st_mtime <= log_age_cutoff:
+                for log_file in sorted(goal_dir.glob("*.log")) + sorted(goal_dir.glob("*.out")):
+                    if not args.dry_run:
+                        try:
+                            log_file.unlink()
+                            pruned_logs.append(str(log_file))
+                        except OSError:
+                            pass
+                    else:
+                        pruned_logs.append(str(log_file))
+                already_cleaned.add(goal_dir.name)
+                newly_cleaned_goals.append(goal_dir.name)
+
+    sweep_ns = argparse.Namespace(
+        dev_root=args.dev_root,
+        worktrees_root=args.worktrees_root,
+        repos=args.repos,
+        remote_repos="",
+        apply_tier1=not args.dry_run,
+        report_dir=str(state_dir),
+        min_age_hours=24,
+    )
+    sweep_res = sweep(sweep_ns)
+    if not args.dry_run:
+        state_file.write_text(
+            json.dumps(
+                {
+                    "cleaned_goals": sorted(already_cleaned),
+                    "last_run_epoch": now_ts,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return {
+        "ok": True,
+        "dry_run": args.dry_run,
+        "newly_cleaned_goals": newly_cleaned_goals,
+        "pruned_logs_count": len(pruned_logs),
+        "tier1_reclaimed_count": len(sweep_res.get("tier1", [])),
+        "tier2_pending_count": len(sweep_res.get("tier2", [])),
+        "total_watermarked_goals": len(already_cleaned),
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -444,6 +526,14 @@ def _parser() -> argparse.ArgumentParser:
     approve.add_argument("--include-no-pr", action="store_true")
     approve.add_argument("--include-companion-data", action="store_true")
     approve.add_argument("--dry-run", action="store_true")
+    daily = sub.add_parser("daily-cleanup")
+    daily.add_argument("--dev-root", default="~/Development")
+    daily.add_argument("--worktrees-root", default="~/Development/worktrees")
+    daily.add_argument("--handoff-root", default="~/Development/handoff")
+    daily.add_argument("--state-dir", default="~/.local/state/git-gc")
+    daily.add_argument("--repos", default="")
+    daily.add_argument("--log-prune-days", type=int, default=14)
+    daily.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -455,6 +545,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                                  branch=args.branch, pr=args.pr, dry_run=args.dry_run)
         elif args.command == "sweep":
             payload = sweep(args)
+        elif args.command == "daily-cleanup":
+            payload = daily_cleanup(args)
         else:
             payload = approve_tier2(args)
         print(json.dumps(payload, sort_keys=True))

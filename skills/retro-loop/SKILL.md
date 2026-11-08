@@ -55,24 +55,33 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 
 同一类问题第二次出现时，必须落下至少一道物理锁（文字提醒不算锁）：
 
-1. **Skill / Design Case lock**：在 `user-skills` 固化精简合同，或在 `my-designer` 注册 Plan C 缺陷规则。
-2. **Hook / Script lock**：在 `herdr-dispatch.sh`、`goal-queue.py`、`goal-supervisor.py` 或 Git `pre-commit`/`pre-push` 中硬性拦截。
-3. **6DQ CI lock**：在 `shared-ci`、`design_contract.py`、`contract_check.sh` 中阻断契约漂移。
+1. **Skill / Config lock**：在 `user-skills` 或网关配置固化边界（如 `claude-magpie-diag` Lock 1：`magpie claude default` + `switch-only claude on` + `capCareful off`，让 Claude Code 保持 100% 原生直连 `opus`，消除中途跨协议切模型导致原生 `Agent`/`TeamCreate` 失灵）。
+2. **Hook / Script lock**：在 `herdr-dispatch.sh`、`goal-queue.py`、`goal-supervisor.py` 或 Git hooks 中硬性拦截（如 `claude-magpie-diag` Lock 2：`herdr-dispatch.sh` 派发 `--kind claude` 前预检 `~/.config/magpie/quotas.json` `<80%` 与 OAuth 连通性；超限或 `401/403/429` 时在开窗前自动剥离 `--allowedTools` 并降级改派 `copilot --model magpie/group/steering`）。
+3. **6DQ CI / Gateway Schema lock**：在 `shared-ci`、`raven` 协议层、`design_contract.py` 中阻断契约与协议漂移（如 `claude-magpie-diag` Lock 3：Local Raven `:7024` `sanitizeGeminiSchema` 在存在 `anyOf` 时强制剥离顶层 `out.type`，根治上游网关注入 `type: "string"` 触发的 Gemini `400 invalid_request_body`）。
+
+## Agent 效率 5 大指标（`agent-efficiency`）与每日增量清理（`daily-cleanup`）
+
+| 指标 ID | 指标名称 | 保底线（Floor） | Improve 方向（不限制编码内环探索，重点消灭审核往返与无效损耗） |
+|---|---|---|---|
+| **M1** | **审核返工往返率 (`M1_review_ping_pong`)** | R1 打回率 `<= 15%`，**`r3+` 多轮拉锯 `== 0`** | 定位高频被 Reviewer 打回的 Task，把审查发现的问题前移到提交 Review 前的内环 L1/G2 脚本 |
+| **M2** | **文件反复擦写率 (`M2_edit_churn`)** | 单会话单文件 `edit <= 4 次` | 找出单会话被连改 `>=5 次` 的热点文件，补充局部契约或拆分深模块 |
+| **M3** | **流转延迟、阻塞与网关错误 (`M3_flow_and_blockers`)** | `P90 TTFT <= 3s`，网关 `400/403` 错误率 `== 0` | 监控网关协议 `400`/`403`、重试率与 `TASK_BLOCKED` 弹窗阻塞 |
+| **M4** | **Prompt Cache 命中率 (`M4_cache_efficiency`)** | 各逻辑组 `>= 75%` | 检查会话粘性（`stays`）与固定前缀稳定性 |
+| **M5** | **主控与写者分流比 (`M5_steering_vs_coding_split`)** | `steering` Token 占比 `<= 35%` | 确保重度编码由 `group/coding` 承担，主控只做规划与裁决 |
 
 ## Return path & CLI 用法
 
 已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task：
 
 ```bash
-# 1. 从 aidata warehouse.db 扫描当前复盘异常信号 (发现问题)
+# 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash
+python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose
+
+# 2. 从 aidata warehouse.db 扫描 L4 复盘视图信号
 python3 skills/retro-loop/scripts/retro_story_engine.py discover
 
-# 2. 提出改进提案写入 aidata proposals.jsonl，供 AIDash 展示 (提出问题)
-python3 skills/retro-loop/scripts/retro_story_engine.py propose \
-  --id "retro-20261107-01" \
-  --title "修复 CI 空跑配置噪音" \
-  --detail "H5 门禁噪音：停用未配置密钥的空跑 workflow" \
-  --priority high
+# 3. 每日增量水位线清理（仅处理新完结的 Goal 日志与已合并 Worktree，不重复扫描已清理项）
+python3 skills/team-lead/scripts/git-gc.py daily-cleanup
 ```
 
 实现入口：[retro_story_engine.py](scripts/retro_story_engine.py)。

@@ -180,8 +180,8 @@ Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并
   等待子 Agent 使用 30–60s 有界 slices，并检查 `ZOMBIE_LEASE`、
   `BLOCKED_AGENT` 与 R10 receipts。关联 `good-des-*`／`gd-e1-*`，基线祖先为
   `/Volumes/SSD`；完成回收可执行 `herdr pane close "$HERDR_PANE_ID"`。
-- 模型配额水位与轻重意图路由统一由本机网关 `Magpie (:3425)` 的 `group/steering`、
-  `group/reviewing`、`group/coding` 自动调度（网关不可达时按 `runtime-profiles.yaml` 回退）。
+- 模型配额水位与轻重意图路由统一由 `herdr-dispatch.sh` 与本机网关 `Magpie (:3425)` 的 `group/steering`、
+  `group/reviewing`、`group/coding` 协同调度：`--kind claude` 走 `direct_quota_gated`（额度 `<80%` 且 OAuth 正常时原生 `opus` 直连，保住原生 Subagent/Teammate 且防跨协议 Schema 400；超限或 `401/403/429` 时开窗前自动改派 `copilot --model magpie/group/steering`），网关不可达时按 `runtime-profiles.yaml` 回退。
 - 通过 `skills/team-lead/scripts/herdr-dispatch.sh` 按 profile 显式分屏、
   allowlist、`--direction right|down` 与 Parent ≥ Child 白名单派发；
   不使用裸 `--current`，不在 Writer／TL 内联等待远端 CI。

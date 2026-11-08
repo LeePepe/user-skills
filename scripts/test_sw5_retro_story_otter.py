@@ -72,6 +72,37 @@ class Sw5Tests(unittest.TestCase):
             result = DRIFT.inspect_skills_topology([root / "repo"], [target])
             self.assertEqual([], result["issues"])
 
+    def test_agent_efficiency_and_watermarked_daily_cleanup(self):
+        gc_mod = load("skills/team-lead/scripts/git-gc.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            handoff = root / "handoff"
+            goal_done = handoff / "done-goal"
+            goal_done.mkdir(parents=True)
+            ledger = goal_done / "ledger.md"
+            ledger.write_text("# Goal\n- 2026-01-01T00:00:00Z | EVT=GOAL_DONE\n", encoding="utf-8")
+            old_log = goal_done / "temp.log"
+            old_log.write_text("noise\n", encoding="utf-8")
+            import os
+            os.utime(ledger, (1000, 1000))
+            state_dir = root / "state"
+            ns = gc_mod._parser().parse_args([
+                "daily-cleanup",
+                "--dev-root", str(root),
+                "--worktrees-root", str(root / "wt"),
+                "--handoff-root", str(handoff),
+                "--state-dir", str(state_dir),
+                "--log-prune-days", "1",
+            ])
+            first = gc_mod.daily_cleanup(ns)
+            self.assertEqual(first["newly_cleaned_goals"], ["done-goal"])
+            self.assertEqual(first["pruned_logs_count"], 1)
+            self.assertFalse(old_log.exists())
+            # Second run must skip already-watermarked goal
+            second = gc_mod.daily_cleanup(ns)
+            self.assertEqual(second["newly_cleaned_goals"], [])
+            self.assertEqual(second["pruned_logs_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
