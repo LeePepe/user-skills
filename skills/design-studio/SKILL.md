@@ -6,32 +6,31 @@ allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 
 # design-studio
 
-Use this skill when an interaction, data linkage, motion choreography, or
+Use this skill when an interaction, data linkage, motion choreography, style recipe, or
 rendered asset is part of the product surface. Start by reading the
-`my-designer` handoff and selecting exactly one `surface_mode` (`Operate`,
-`Read`, `Persuade`, or `Experience`) and one `visual_mode`
-(`Strata-Core`, `Strata-Glass`, `Independent-Glass`, or `Independent-Custom`).
-Treat `DesignTokens`, `Strata`/`StrataMotion`, and `@nocoo/basalt` as token
-authorities; do not invent a parallel interaction or motion language.
+`my-designer` handoff and selecting one `surface_mode` (`Operate`,
+`Read`, `Persuade`, or `Experience`) and a **Style Archetype (`VS-001..008`, including Cross-Domain Archetype Remixes `VS-005..008`) + Brand Palette (`CL-001..008`, obeying `CL-005` Hue-Arc Luminous Gradient Rule)** from `../my-designer/references/appearance-ledger.md` (or `awesome-ios-design-md`).
+Treat the app-local `AppTheme.swift` (and `@nocoo/basalt` on web) as token
+authorities; combine Apple Native SwiftUI + Liquid Glass with self-contained bespoke components and Metal shaders from `ShipSwift` (`~/Development/Personal/collected-tools/repos/shipswift/ShipSwift/SWPackage/`) and `genjutsu`.
 
 ## Three-skill synergy and routing
 
 The handoff flows `my-designer` → `visual-design-modernization` →
-`design-studio`. Consume the selected `visual_mode`, `surface_mode`, and
+`design-studio`. Consume the selected `Style Archetype`, `surface_mode`, and
 `motion_tier`: M1 is Micro-Feedback, M2 is Spatial & Gesture Choreography, M3
-is Narrative/3D Hero, and M4 is Code-to-Video. Use
+is Narrative/3D/Metal Hero, and M4 is Code-to-Video. Use
 `python3 skills/design-studio/scripts/design_catalog.py` to search and
-recommend catalog entries before implementation. The catalog stores `IP-*`
-Interaction/Data-Linkage Patterns, `MP-*` Motion Patterns, and `T-*` Tools.
+recommend catalog entries and vault recipes before implementation. The catalog stores `IP-*`
+Interaction/Data-Linkage Patterns, `MP-*` Motion Patterns, `CL-*/VS-*/GM-*/CP-*/DV-*/MI-*` Vault Recipes, and `T-*` Tools.
 
 The **Shared** layer owns physical state machines
 (`idle -> drag -> threshold -> commit/cancel -> spring settle`),
-DesignTokens/StrataMotion timing and spring semantics, Lottie, MCP for Blender
+`AppTheme` timing and spring semantics (`emilkowalski` `dampingRatio: 1.0` default vs `0.8` gesture momentum), Lottie, MCP for Blender
 GLTF/USDZ assets, and Remotion/FFmpeg promo outputs. The **Web** layer owns
 Motion, Anime.js, Three.js with Postprocessing/Three.quarks/Jolt Physics/GPU
 Pathtracer, and DEV-only Tweakpane. The **Mobile-Native** iOS/macOS SwiftUI
-layer owns StrataMotion, `matchedGeometryEffect`, `KeyframeAnimator`,
-`PhaseAnimator`, Canvas, `ShaderLibrary` Metal effects, `SensoryFeedback`, and
+layer owns native `Spring(response:dampingRatio:)`, `matchedGeometryEffect`, `KeyframeAnimator`,
+`PhaseAnimator`, Canvas, `ShaderLibrary` Metal effects (`ShipSwift/SWMetal` & `genjutsu`), `SensoryFeedback` (`game-feel` Single-Owner rule), and
 `.contentTransition(.numericText())`.
 
 ### Two-Stage Inspiration Vault (`desktop` / `mobile` / `web-backlog` × 8 Dimensions)
@@ -49,13 +48,20 @@ Unlabeled design inspirations (color palettes, visual styles, native components,
 # Classify unlabeled raw inspiration (Jev fast path -> LLM fallback with keyword learning)
 python3 skills/design-studio/scripts/design_catalog.py classify --text "<raw inspiration>" --learn
 
-# Ingest into platform-separated vaults (desktop-macos.json / mobile-ios.json / web-backlog.json)
+# M2 Direct One-Shot Vault Ingest (text, reference app name, or screenshot + BAMA palette measurement)
 python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "<raw inspiration>"
+python3 skills/design-studio/scripts/design_catalog.py vault-ingest \
+  --image <screenshot.png> --measure-palette --archetype-ref VS-005
 
 # Progressive disclosure search (queries Apple desktop/mobile by default; web stays in backlog)
 python3 skills/design-studio/scripts/design_catalog.py vault-search \
   --platform desktop --dimension glass-material --query "侧边栏毛玻璃" --top 5
 ```
+
+### M2 Coordinator (`cli` / `Grok Bot` / `Cindy`) Fast-Track vs. Background `Steering`
+
+- **Single Inspiration / App Reference / Screenshot (`M2` Inline Fast-Track):** When Owner drops a one-line design inspiration, a favorite app name (e.g., `Things 3`, `Calm`, `Flighty`), or a screenshot, `M2` directly runs `design_catalog.py vault-ingest` (with `--image <shot.png> --measure-palette` when measuring screenshot hex palettes via BAMA `measure.swift` or PNG fallback, or `ingest` for `IP-*/MP-*` interaction/motion patterns) and returns the archived card ID immediately.
+- **Cross-Domain Archetype Clustering or Product Implementation (`M1` Background `Steering`):** When extracting multi-app cross-domain remixes (`VS-005..008`) or applying them to a product repository, `M2` freezes `spec.md` and dispatches `<goal>-goal-tl-r1` via `herdr-dispatch.sh --new-workspace --role team_lead`.
 
 ### Extensible catalog workflow
 

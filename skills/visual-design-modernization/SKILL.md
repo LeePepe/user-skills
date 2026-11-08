@@ -38,11 +38,10 @@ Never judge aesthetics or alignment from reading code alone—always verify agai
 
 Do not write demo code to explore directions. Translate the diagnosis into a concise verbal specification covering the **6 Core Dimensions** (see [my-designer routing index](../my-designer/references/routing-index.md)):
 
-1. **Visual Mode (pick 1):**
-   - `Strata-Core` (Strata solid luminance tiers + candy accents)
-   - `Strata-Glass` (Strata solid content + outer floating glass chrome)
-   - `Independent-Glass` (Independent palette/atmosphere + native Apple Liquid Glass controls/nav)
-   - `Independent-Custom` (Bespoke system, e.g., Basalt on web or editorial minimalist)
+1. **Visual Mode & Style Archetype (pick 1 mode + 1 non-colliding archetype from [appearance-ledger.md](../my-designer/references/appearance-ledger.md)):**
+   - `Independent-Glass` (Default for Apple apps: per-app `AppTheme.swift` brand palette/atmosphere + native Apple Liquid Glass functional chrome + curated `ShipSwift` components/Metal shaders)
+   - `Independent-Custom` (Bespoke system, e.g., `@nocoo/basalt` on web or pure solid editorial minimalist)
+   - Legacy modes (`Strata-Core`, `Strata-Glass`) apply only when maintaining legacy `Strata` consumers.
 2. **Interaction, Hierarchy & Motion:**
    - Single primary focal point + 1 primary CTA per viewport.
    - All 4 states (`populated`, `loading` skeleton, `empty` with 1 CTA, `error` with inline retry).

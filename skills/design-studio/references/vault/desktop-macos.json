@@ -98,7 +98,7 @@
       "canonical_prompt": "Drag the card's lower-right corner to peel a clipped front layer, reveal the back, then spring back along the inverse path unless committed.",
       "state_machine": "idle -> press -> drag -> partial_peel -> release -> spring_settle",
       "web_implementation": "Motion drag progress with CSS clip-path polygon and @nocoo/basalt tokens.",
-      "mobile_implementation": "SwiftUI DragGesture with Canvas/path clipping, StrataMotion spring, and Reduce Motion crossfade.",
+      "mobile_implementation": "SwiftUI DragGesture with Canvas/path clipping, native SwiftUI Spring(response:dampingRatio:), and Reduce Motion crossfade.",
       "token_guardrails": "CLS = 0; tabular-nums where values appear; >=4.5:1 contrast; 44x44pt hit target; Reduce Motion fallback.",
       "usage_count": 0,
       "rating": "unrated",
@@ -142,7 +142,7 @@
       "canonical_prompt": "Keep thumb and track fill on one normalized drag progress; cancel below the endpoint with damped return, commit only at endpoint, then swap arrow to checkmark and copy.",
       "state_machine": "idle -> drag -> threshold -> commit/cancel -> spring_settle",
       "web_implementation": "Motion drag controls thumb and track; CSS/SVG icon morph; Basalt semantic success tokens.",
-      "mobile_implementation": "SwiftUI DragGesture with StrataMotion spring, contentTransition(.symbolEffect), SensoryFeedback, and numericText.",
+      "mobile_implementation": "SwiftUI DragGesture with native SwiftUI Spring(response:dampingRatio:), contentTransition(.symbolEffect), SensoryFeedback, and numericText.",
       "token_guardrails": "No accidental commit; 44x44pt target; explicit threshold; >=4.5:1 contrast; Reduce Motion opacity/state fallback.",
       "usage_count": 0,
       "rating": "unrated",
@@ -186,7 +186,7 @@
       "canonical_prompt": "Track vertical cord drag; cross the trigger distance once to toggle light and warm glass glow, then return with damped swing and allow the next pull to turn it off.",
       "state_machine": "off_idle -> pull -> threshold -> on_commit -> return_swing -> on_idle -> pull -> off_commit -> settle",
       "web_implementation": "Motion drag transform with Anime.js damped return and tokenized warm-glow CSS.",
-      "mobile_implementation": "SwiftUI DragGesture plus KeyframeAnimator/StrataMotion, ShaderLibrary glow, and SensoryFeedback.",
+      "mobile_implementation": "SwiftUI DragGesture plus KeyframeAnimator/native SwiftUI Spring, ShaderLibrary glow, and SensoryFeedback.",
       "token_guardrails": "One toggle per pull; bounded drag; no glare-only status; 44x44pt target; Reduce Motion removes swing.",
       "usage_count": 0,
       "rating": "unrated",
@@ -230,7 +230,7 @@
       "canonical_prompt": "Scrub across a toolbar whose focused icon magnifies continuously and neighbors make room from live accumulated widths; show the name and commit the selected tool on release.",
       "state_machine": "idle -> hover/drag -> focus_magnify -> neighbor_reflow -> release -> commit -> settle",
       "web_implementation": "Motion layout animation with measured widths, CSS transform scale, and tokenized focus ring.",
-      "mobile_implementation": "SwiftUI DragGesture with matchedGeometryEffect, measured layout, and StrataMotion spring.",
+      "mobile_implementation": "SwiftUI DragGesture with matchedGeometryEffect, measured layout, and native SwiftUI Spring(response:dampingRatio:).",
       "token_guardrails": "Live width accumulation, no overlap, single-line label, 44x44pt targets, Reduce Motion uses discrete focus.",
       "usage_count": 0,
       "rating": "unrated",
@@ -492,7 +492,7 @@
       "canonical_prompt": "Show a contextual empty state when keyword search yields zero matches; clearing the keyword restores matching data while keeping other active filters intact.",
       "state_machine": "filtered(category) -> keyword_no_match -> contextual_empty_state -> clear_keyword_only -> restored(category)",
       "web_implementation": "Empty state names the active query/filter and offers a 'Clear keyword' action that resets only searchQuery while preserving category and sort state.",
-      "mobile_implementation": "ContentUnavailableView.search(text:) or custom Strata empty state whose reset action clears search text without wiping selected category pills.",
+      "mobile_implementation": "ContentUnavailableView.search(text:) or contextual empty state whose reset action clears search text without wiping selected category pills.",
       "token_guardrails": "Empty state explains why and provides a 1-click partial recovery CTA; non-keyword filters remain preserved.",
       "usage_count": 0,
       "rating": "unrated",
@@ -555,6 +555,830 @@
       "desktop_macos_implementation": "Single `@Observable` model or SwiftData `@Query` collection where summary category counts, ratios, and semantic status colors (`Color.green`, `Color.orange`, `Color.red`, `Color.secondary`) are computed properties derived directly from item statuses; mutating a row's status immediately updates top/bottom summary cards with `.monospacedDigit()` and `.contentTransition(.numericText())`.",
       "mobile_ios_implementation": "Reactive `@Observable` / SwiftData collection driving both individual item cards and summary status badges from a single source of truth; toggling an item's status triggers `.sensoryFeedback(.selection, trigger: statusChangeCounter)` and animates summary counters in-place via `.monospacedDigit()` and `.contentTransition(.numericText())`.",
       "native_guardrails": "Strict single source of truth (never maintain separate manual counters that can drift from item array state); `.monospacedDigit()` on all summary numbers and percentages; semantic status colors calibrated for >=4.5:1 contrast in both Light and Dark appearances and paired with SF Symbols or text labels (never color alone); `@Environment(\\.accessibilityReduceMotion)` replaces rolling numeric transitions with instant updates."
+    },
+    {
+      "id": "CL-001",
+      "name": "暗黑高能竞技荧光色板 (Kinetic Obsidian & Volt Telemetry Palette)",
+      "aliases": [
+        "暗黑荧光绿",
+        "运动色板",
+        "Spotify暗黑",
+        "Nike Volt",
+        "高能竞技"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Experience"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "高对比暗黑竞技色板（灵感源自 Spotify / Nike Run Club / Hevy）：深曜石底色 #0B0D10、分层卡片 #14181F、高能荧光绿主色 #C8FF00（或电光橙）、热身琥珀色 #F59E0B、递减紫 #A855F7，保障健身房强光与暗光下 >=7:1 极高可读性。",
+      "canonical_prompt": "High-contrast obsidian dark athletic palette (#0B0D10 base, #14181F elevated surface, #C8FF00 volt accent, semantic warmup/drop-set badges) with >=7:1 metric legibility.",
+      "desktop_macos_implementation": "Asset Catalog adaptive Color Set with dark-biased `NSAppearance`, semantic `Color.primary` white text, and `AppTheme.accent` volt highlight restricted to active selection and primary CTAs.",
+      "mobile_ios_implementation": "SwiftUI adaptive Asset Catalog colors (`surfacePrimary`, `surfaceCard`, `accentVolt`) paired with `.preferredColorScheme(.dark)` option and high-contrast `.glassProminent` primary action.",
+      "native_guardrails": ">=4.5:1 WCAG AA contrast on filled volt buttons (use dark #0B0D10 ink on #C8FF00 fill, never white text on lime); semantic status colors remain fixed.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-002",
+      "name": "温润瑞士纸感与深林墨色账本色板 (Warm Editorial Paper & Forest Ledger)",
+      "aliases": [
+        "暖纸感",
+        "瑞士账本",
+        "金融配色",
+        "Wise风",
+        "Apple Wallet配色"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Read",
+        "Operate"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style",
+        "typography-copy"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "温润纸感金融与阅读色板（灵感源自 Apple Wallet / Wise / Readwise）：浅色模式采用暖象牙纸底 #FAF7F2 与纯白浮卡 #FFFFFF，深色模式采用深炭墨 #121316 与 #1C1E22；主强调色为深林绿 #0F5132（暗色 #34D399）配黄铜金点缀 #D97706。",
+      "canonical_prompt": "Warm ivory editorial paper surface (#FAF7F2 light / #121316 dark) paired with deep forest ink (#0F5132 / #34D399) and brass accents for calm financial and reading workspaces.",
+      "desktop_macos_implementation": "macOS `NSWindow` background tinted with subtle warm paper luminance tiers (L0 `#FAF7F2` -> L1 `#FFFFFF` card) in Light mode and carbon slate in Dark mode.",
+      "mobile_ios_implementation": "SwiftUI semantic surface tokens in `AppTheme.swift` with `Color(uiColor: .systemGroupedBackground)` fallback and high-contrast tabular currency coloring.",
+      "native_guardrails": "Never hardcode raw RGB without Light/Dark pair; keep semantic income/expense colors distinct and accessible for red-green color blindness (pair with +/- prefix).",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-003",
+      "name": "深空声波青与录音珊瑚极客色板 (Precision Acoustic Slate & Sonic Cyan)",
+      "aliases": [
+        "声波青",
+        "录音配色",
+        "极客暗色",
+        "Flighty风",
+        "Overcast风"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "glass-material",
+        "motion-interaction"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "精密声学与 AI 工具色板（灵感源自 Flighty / Linear / Overcast）：深岩灰底色 #0E1117、声波青 #38BDF8 代表 AI 转写与就绪态、录音珊瑚红 #F43F5E 代表麦克风激活态、翡翠绿 #10B981 代表任务完成。",
+      "canonical_prompt": "Precision acoustic dark slate (#0E1117) with sonic cyan (#38BDF8) for AI processing and recording coral (#F43F5E) for active voice capture.",
+      "desktop_macos_implementation": "macOS `MenuBarExtra` / `NSPopover` dark vibrancy chrome with subtle cyan `.glassEffect(.regular.tint(.cyan.opacity(0.16)))` during AI refinement.",
+      "mobile_ios_implementation": "iOS single-hand capture surface with high-visibility coral recording state and cyan AI Todo extraction pill.",
+      "native_guardrails": "Recording state must never rely on red color alone—always pair with pulsing waveform or elapsed timer (`00:12`) and SF Symbol state change.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-004",
+      "name": "暖阳奶油与多巴胺贴纸生活色板 (Sunlit Cream & Tactile Sticker Palette)",
+      "aliases": [
+        "贴纸风配色",
+        "多巴胺色板",
+        "Duolingo风",
+        "CapWords风",
+        "Airbnb暖色"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style",
+        "component"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "温暖生活与语言学习贴纸色板（灵感源自 CapWords / Duolingo / Airbnb）：日光奶油底色 #FFFDF9、珊瑚粉 #FF5A5F、钴蓝 #2563EB、明黄 #FACC15，搭配柔和深褐正文 #1F2937（避免生硬纯黑）。",
+      "canonical_prompt": "Sunlit cream canvas (#FFFDF9) with warm charcoal ink (#1F2937) and joyful coral/cobalt/sunflower category accents.",
+      "desktop_macos_implementation": "Soft neutral canvas with saturated category tag pills (`color.opacity(0.15)` fill + full-saturation label).",
+      "mobile_ios_implementation": "Tactile cards with subtle bottom lip border and adaptive dark-mode desaturation so playful colors never vibrate on OLED dark backgrounds.",
+      "native_guardrails": "Desaturate pastel/neon accents by 15-20% in Dark Mode to prevent halation; verify >=4.5:1 contrast on all pill labels.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-001",
+      "name": "高能运动仪表盘风格母体 (Kinetic Athletic Telemetry Archetype)",
+      "aliases": [
+        "运动风",
+        "健身房风格",
+        "Hevy风格",
+        "Nike风格",
+        "Athletic Archetype"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "typography-copy",
+        "component"
+      ],
+      "sub_category": "style-archetype",
+      "source_prompt_zh": "高能运动记录风格配方（源自 awesome-ios-design-md 的 Hevy / Strong / Nike Run Club）：零多余装饰边框，采用大字重 SF Pro Rounded 数值展示、紧凑表格行或全屏焦点大卡、5x4 定制网格键盘，配合干脆的触觉反馈。",
+      "canonical_prompt": "High-energy athletic logging archetype: borderless luminance-tiered surfaces, oversized SF Pro Rounded tabular numerals, zero decorative chrome, and instant tactile confirmation.",
+      "desktop_macos_implementation": "Dense telemetry grid with 4pt spacing scale (`AppTheme.Space`), `.monospacedDigit()` columns, and `SWActivityHeatmap` / `SWRingChart` summary widgets.",
+      "mobile_ios_implementation": "Dual-mode architecture (Tiled Table vs Focus Card) with `ConcentricRectangle` outer containers, 44x44pt independent check hit targets, and `AppPressableButtonStyle` (`scaleEffect(0.97)`).",
+      "native_guardrails": "Ban Web-style 1px gray borders (`Tell #9 Wireframe Borders`) and nested cards (`Tell #7 Everything is a Card`); keep Liquid Glass strictly on top switcher and floating rest bar.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-002",
+      "name": "瑞士网格与人文账本风格母体 (Swiss Editorial & Tactile Wallet Archetype)",
+      "aliases": [
+        "瑞士风格",
+        "杂志账本",
+        "Apple Wallet风格",
+        "Cash App风格",
+        "Editorial Ledger"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Read",
+        "Operate"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "typography-copy",
+        "color-palette"
+      ],
+      "sub_category": "style-archetype",
+      "source_prompt_zh": "瑞士社论与质感卡包风格配方（源自 awesome-ios-design-md 的 Apple Wallet / Wise / Cash App）：New York 衬线大标题或高对比无衬线净值大字，列表采用干净的原生分组与微細分割线，账户卡支持叠卡展开（ShipSwift SWWallet）。",
+      "canonical_prompt": "Swiss editorial ledger archetype combining serif/sans typographic contrast, clean hairline list hierarchy, and tactile stacked wallet cards (`SWWallet`).",
+      "desktop_macos_implementation": "Two-column `NavigationSplitView` with `.unifiedCompact` toolbar, `Table` / `List` hairline rows, and `SWAreaChart` + `SWDonutChart` net-worth breakdown.",
+      "mobile_ios_implementation": "Native `List` / `Section` hierarchy (no card-in-card), hero net-worth header with `.contentTransition(.numericText())`, and `ShipSwift` `SWWallet` card stack.",
+      "native_guardrails": "Never use heavy drop shadows (`Tell #8 Shadowboxing`); rely on 3 luminance tiers (L0 canvas < L1 section < L2 focal card) and typographic scale.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-003",
+      "name": "精密仪器与极客桌面工作台母体 (Precision Cockpit & Developer Workbench)",
+      "aliases": [
+        "极客工具风",
+        "精密仪器",
+        "Flighty风格",
+        "Linear风格",
+        "BAMA桌面风"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "sub_category": "style-archetype",
+      "source_prompt_zh": "精密航空仪表与极客工具风格（源自 Flighty / Linear / BAMA mac-design）：入口优先（全局快捷键唤起浮动面板 + 菜单栏常驻）、4pt 严格网格对齐、乐观 UI（回车即刻落盘无阻断转圈）、高信息密度胶囊徽章。",
+      "canonical_prompt": "Precision instrument and Mac/iOS pro-tool archetype: entry-points-first (`MenuBarExtra` / hotkey panel), strict 4pt grid alignment, optimistic UI, and monospace telemetry.",
+      "desktop_macos_implementation": "BAMA `mac-design` rules: 380pt `NSPopover` or multi-pane `NavigationSplitView`, `28x28pt` compact controls, `13pt` body / `11pt` mono badges, `.onHover` + `.pointerStyle`, paired with `SWThinkingIndicator` and `SWKPICard`.",
+      "mobile_ios_implementation": "Compact single-hand capture bar in bottom thumb zone, instant clipboard/iCloud handoff banner, and live status pills.",
+      "native_guardrails": "Zero decorative bounce on 100+/day actions (`dampingRatio: 1.0`); never use iOS `.hoverEffect` on macOS (`@available(macOS, unavailable)`).",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-004",
+      "name": "拟物贴纸与微庆典生活风格母体 (Playful Tactile Sticker & Game-Feel Archetype)",
+      "aliases": [
+        "贴纸拟物风",
+        "微庆典",
+        "CapWords风格",
+        "Duolingo风格",
+        "Game-Feel"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "motion-interaction",
+        "component"
+      ],
+      "sub_category": "style-archetype",
+      "source_prompt_zh": "实物贴纸与多感官微庆典风格（源自 CapWords / Duolingo / claude-code-apple-skills game-feel）：卡片带真实白边或微立体按压唇边，达成里程碑时协同触发 Haptics + 粒子/全息闪卡（ShipSwift SWFoil / SWConfetti / SWParticleTransition）。",
+      "canonical_prompt": "Tactile sticker and game-feel celebration archetype: die-cut sticker borders, responsive spring press (`0.94` scale), and synchronized Haptics + Metal foil/confetti milestone rewards.",
+      "desktop_macos_implementation": "Interactive canvas cards with `.visualEffect` tilt, `SWFoil` holographic shader on collectible cards, and subtle sound/motion reward on completion.",
+      "mobile_ios_implementation": "SwiftUI sticker cards with `Spring(response: 0.28, dampingRatio: 0.72)`, `SWConfetti` / `SWParticleTransition` on streak milestones, and Single-Owner `.sensoryFeedback(.success, trigger:)`.",
+      "native_guardrails": "Follow `game-feel` rarity ladder: reserve full-screen confetti/foil for rare milestones; keep everyday taps under 120ms; Single-Owner haptics (never double-fire in ViewModel and View).",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "GM-001",
+      "name": "Apple 原生双层液态玻璃导航与浮动控制栏 (Liquid Glass Functional Chrome)",
+      "aliases": [
+        "液态玻璃",
+        "Liquid Glass",
+        "GlassEffectContainer",
+        "毛玻璃导航栏",
+        "浮动玻璃条"
+      ],
+      "category": "spatial-navigation",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "glass-material",
+      "secondary_dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "sub_category": "liquid-glass-chrome",
+      "source_prompt_zh": "Apple iOS 26 / macOS 26 原生双层液态玻璃：玻璃本身是透明光学折射材质（非黑底渐变），仅用于顶栏切换器、底部浮动条与悬浮气泡（`.glassEffect(.regular.interactive())` + `GlassEffectContainer`），通透折射下方柔和的亮色/自然内容层。",
+      "canonical_prompt": "Enforce the Two-Layer Liquid Glass rule: wrap adjacent floating controls in `GlassEffectContainer` with `.glassEffect(.regular.interactive())` applied after layout/padding modifiers, while keeping content rows/cards on solid semantic surfaces.",
+      "desktop_macos_implementation": "`GlassEffectContainer` in floating `NSPopover` headers or overlay HUDs; standard `.toolbar` and `NavigationSplitView` sidebar materials without custom opaque background overrides.",
+      "mobile_ios_implementation": "`GlassEffectContainer(spacing: 12)` with `@Namespace` and `.glassEffectID` for morphing floating pills/bars; `.buttonStyle(.glass)` for secondary actions and at most one `.buttonStyle(.glassProminent)` primary CTA.",
+      "native_guardrails": "Always place `.glassEffect(...)` AFTER `.padding()` and `.frame()`; only attach `.interactive()` to tappable/focusable controls; never apply `.glassEffect` inside `List`/`ForEach` content rows.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "GM-002",
+      "name": "ShipSwift + Genjutsu Metal 着色器玻璃与流体材质库 (Metal Shader Glass, Foil & Liquid Chrome)",
+      "aliases": [
+        "Metal着色器",
+        "色差玻璃",
+        "全息闪卡",
+        "液态金属",
+        "SWChromaticGlass",
+        "SWFoil",
+        "SWLiquidMetal",
+        "胶片噪点"
+      ],
+      "category": "3d-physics",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Persuade"
+      ],
+      "motion_tier": "M3",
+      "primary_dimension": "glass-material",
+      "secondary_dimensions": [
+        "visual-style",
+        "motion-interaction"
+      ],
+      "sub_category": "metal-shader-materials",
+      "source_prompt_zh": "SwiftUI Metal 光学材质着色器（`ShipSwift/SWMetal` + `genjutsu`）：重点是色差透镜折射 (`SWChromaticGlass`)、可拖拽玻璃球 (`SWGlassOrb`)、拉丝铝 (`SWPolishedAluminum`)、水波焦散 (`SWWater`) 等物理质感；底色搭配干净高明度或同色系弧线过渡，绝不掺杂脏黑底。",
+      "canonical_prompt": "Escalate beyond standard SwiftUI modifiers using self-contained Metal Stitchable Shaders (`.colorEffect`, `.distortionEffect`, `.layerEffect`) from `ShipSwift/SWPackage/SWAnimation/SWMetal/` and `genjutsu`.",
+      "desktop_macos_implementation": "Copy paired `.swift` + `.metal` files from `~/Development/Personal/collected-tools/repos/shipswift/ShipSwift/SWPackage/SWAnimation/SWMetal/` (e.g., `SWGrainGradient`, `SWPolishedAluminum`, `SWChromaticGlass`) for hero headers, AI active states, or badge cards.",
+      "mobile_ios_implementation": "Use `.colorEffect` / `.layerEffect(..., maxSampleOffset:)` with `TimelineView(.animation)` for 60/120fps GPU shaders (`SWGlassOrb`, `SWFoil`, `SWWater`); pause timeline when off-screen or when `accessibilityReduceMotion` is true.",
+      "native_guardrails": "Follow `genjutsu` escalation ladder (`Built-in modifiers -> .visualEffect -> Canvas -> Metal Shader`); gate continuous `TimelineView` shaders behind `@Environment(\\.accessibilityReduceMotion)` and scene phase.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CP-002",
+      "name": "ShipSwift 源码级高阶 UI 组件库直连 (SWWallet, SWKPICard, SWThinkingIndicator, SWStepper)",
+      "aliases": [
+        "ShipSwift组件",
+        "叠卡卡包",
+        "SWWallet",
+        "SWThinkingIndicator",
+        "AI思考指示器",
+        "SWKPICard",
+        "SWStatusBadge"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "component",
+      "secondary_dimensions": [
+        "visual-style",
+        "motion-interaction"
+      ],
+      "sub_category": "shipswift-bespoke-components",
+      "source_prompt_zh": "当系统原生控件不足以表达高阶交互时，直接按需拣选 `ShipSwift/SWPackage/SWComponent/` 自包含源码组件并注入当前项目的 `AppTheme`：包括 Apple Wallet 叠卡卡包 (`SWWallet`)、AI 思考律动指示器 (`SWThinkingIndicator`)、指标卡 (`SWKPICard`)、胶囊搜索栏 (`SWSearchBar`)、步进器 (`SWStepper`)。",
+      "canonical_prompt": "Adopt self-contained SwiftUI source components from `ShipSwift/SWPackage/SWComponent/` (`SWWallet`, `SWThinkingIndicator`, `SWKPICard`, `SWStepper`, `SWStatusBadge`) restyled with the app-local `AppTheme.swift` tokens.",
+      "desktop_macos_implementation": "Copy target `.swift` file from `~/Development/Personal/collected-tools/repos/shipswift/ShipSwift/SWPackage/SWComponent/`, bind colors/radii to `AppTheme`, and add `@FocusState` / `.onHover` pointer support.",
+      "mobile_ios_implementation": "Copy target `.swift` file into product module, wire `AppTheme` semantic colors and `SensoryFeedback`, ensuring >=44x44pt hit targets and Dynamic Type scaling.",
+      "native_guardrails": "Never import a monolithic external UI wrapper dependency for 1-2 bespoke components; copy only the needed self-contained SwiftUI source file and adapt it to `AppTheme`.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "DV-003",
+      "name": "ShipSwift 高阶定制图表库 (SWActivityHeatmap, SWRadarChart, SWRingChart, SWNetworkGraph)",
+      "aliases": [
+        "热力图",
+        "雷达图",
+        "圆环进度",
+        "关系图",
+        "SWActivityHeatmap",
+        "SWRadarChart",
+        "SWRingChart"
+      ],
+      "category": "data-linkage",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Read",
+        "Operate"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "chart-dataviz",
+      "secondary_dimensions": [
+        "component",
+        "color-palette"
+      ],
+      "sub_category": "shipswift-charts",
+      "source_prompt_zh": "在原生 Swift Charts（折线/柱状/面积/扇形）之外，通过 `ShipSwift/SWPackage/SWChart/` 补齐 GitHub 风格训练/贡献热力图 (`SWActivityHeatmap`)、多维能力雷达图 (`SWRadarChart`)、三环进度 (`SWRingChart`) 与 3D 节点关系网 (`SWNetworkGraph`)。",
+      "canonical_prompt": "Complement native Swift Charts with `ShipSwift/SWPackage/SWChart/` (`SWActivityHeatmap`, `SWRadarChart`, `SWRingChart`, `SWNetworkGraph`) using `AppTheme` semantic series colors and `.monospacedDigit()` readouts.",
+      "desktop_macos_implementation": "Embed `SWActivityHeatmap` or `SWRadarChart` inside dashboard cards with pointer hover tooltips and `AppTheme.Space` 4pt grid padding.",
+      "mobile_ios_implementation": "Pair `SWRingChart` or `SWActivityHeatmap` with touch scrubbing selection and `.contentTransition(.numericText())` summary headers.",
+      "native_guardrails": "Provide VoiceOver `.accessibilityLabel` and `.accessibilityValue` summaries on every chart canvas.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "MI-006",
+      "name": "ShipSwift + Emil 物理微交互与粒子转场 (SWChangeEffect, SWParticleTransition, SWConfetti, SWShimmer)",
+      "aliases": [
+        "粒子转场",
+        "数值跳动",
+        "骨架屏闪光",
+        "撒花庆典",
+        "SWChangeEffect",
+        "SWParticleTransition",
+        "SWConfetti"
+      ],
+      "category": "micro-feedback-social",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "component",
+        "visual-style"
+      ],
+      "sub_category": "micro-feedback-haptics-symbols",
+      "source_prompt_zh": "结合 Emil Kowalski 动效频率门禁与 `ShipSwift/SWPackage/SWAnimation/`：高频操作 (>100次/天) 保持零位移临界阻尼 (`dampingRatio: 1.0`)；关键数值变更用 `SWChangeEffect` 摇晃/脉冲，加载态用 `SWShimmer` / `SWLightSweep`，删除或达成纪录用 `SWParticleTransition` / `SWConfetti`。",
+      "canonical_prompt": "Combine Emil Kowalski frequency gating (`100+/day` zero bounce, `dampingRatio: 1.0`) with `ShipSwift` micro-animations (`SWChangeEffect`, `SWShimmer`, `SWParticleTransition`, `SWConfetti`) and `game-feel` single-owner haptics.",
+      "desktop_macos_implementation": "Subtle `SWShimmer` loading placeholders and `SWChangeEffect` value pulses without full-window motion clutter.",
+      "mobile_ios_implementation": "Pair `SWChangeEffect` / `SWParticleTransition` with `.sensoryFeedback` (Single-Owner rule) and `.contentTransition(.numericText())`.",
+      "native_guardrails": "Ban waterfall entrance animations on routine screens (`Tell #14 The Grand Entrance`); fall back to instant opacity crossfade when `accessibilityReduceMotion` is enabled.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-005",
+      "name": "色轮弧线渐变铁律（Instagram 暖阳弧线，严禁穿心灰黑死区）(Hue-Arc Luminous Gradient Rule)",
+      "aliases": [
+        "渐变铁律",
+        "Instagram渐变",
+        "不走直线渐变",
+        "防脏灰渐变",
+        "Hue-Arc Gradient"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read",
+        "Experience",
+        "Persuade"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style",
+        "glass-material"
+      ],
+      "sub_category": "gradient-craft",
+      "source_prompt_zh": "渐变色绝不在取色板上走直线或直接混入纯黑 #000000（RGB 直线插值经过色轮中心会产生肮脏的灰黑死区 Muddy Dead Zone）。必须像 Instagram 图标一样沿色轮外圈走同明度/高饱和度『色相弧线』（如暖黄 #FEDA77 -> 珊瑚橙 #F58529 -> 品红 #DD2A7B -> 柔紫 #8134AF），或加入高明度奶白/柔光过渡点。",
+      "canonical_prompt": "Never interpolate gradients in a straight RGB line across the color wheel or fade into #000000 (which creates a muddy gray/black dead zone). Step through adjacent hues along a high-luminance arc (Instagram-style warm yellow -> coral -> rose -> violet, or sky blue -> aqua -> mint) with luminous white/pastel stops.",
+      "desktop_macos_implementation": "Use multi-stop `LinearGradient` or `MeshGradient` stepping through adjacent HSB/OKLCH hues at high brightness (`B >= 85%`), never `colors: [accent, .black]`.",
+      "mobile_ios_implementation": "SwiftUI 3-to-4 stop `LinearGradient` / `MeshGradient` along a warm or cool hue arc (e.g., `[Color(hex: 0xFEDA77), Color(hex: 0xF58529), Color(hex: 0xDD2A7B)]`), keeping luminance clean behind `.glassEffect`.",
+      "native_guardrails": "Ban 2-stop complementary RGB gradients and `to .black` fades; always insert an intermediate adjacent hue stop to curve around the gray dead zone.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-005",
+      "name": "禅意留白与纸感清单跨界母体 (Things 3 / Bear / Notion × Fitness Tiled Plan)",
+      "aliases": [
+        "禅意清单风",
+        "Things3风格健身",
+        "纸感训练表",
+        "GTD训练计划",
+        "Bear留白风",
+        "Zen Paper Checklist"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "typography-copy",
+        "component"
+      ],
+      "sub_category": "cross-domain-archetype-remix",
+      "source_prompt_zh": "跨品类混搭母体 A（`Things 3 / Bear / Notion × Fitness 平铺版训中计划表`）：打破健身 App 只能用暗黑荧光绿的刻板印象，将 `Things 3` 的温润留白（`#FFFFFF` / `#F5F6F8`）、22pt 圆圈中心扩散打勾动画（`ThingsCheckbox` `scaleEffect(0.001 -> 1.0)` + `.sensoryFeedback(.impact(weight: .soft))`）、`Bear` 暖纸分组与柔和蓝 `#4F97FF` / 鼠尾草绿 `#57C98B` 嫁接到抗阻训练平铺计划表，让完成每组深蹲像勾选一张优雅的 GTD 清单。",
+      "canonical_prompt": "Cross-domain remix grafting Things 3 / Bear / Notion calm paper whitespace, center-out circular checkbox fill animations (`22pt`), and soft blue/sage semantic pills onto a tiled workout logging checklist.",
+      "desktop_macos_implementation": "macOS `NavigationSplitView` workout planner with `Things 3` airy `#F5F6F8` grouping, `13pt` SF Pro + tabular set columns, hover row highlight (`#4F97FF` at `10%` opacity), and keyboard `Space` to check sets.",
+      "mobile_ios_implementation": "SwiftUI tiled workout list with `20pt` horizontal margins, borderless luminance grouping (`#FFFFFF` canvas + `#F5F6F8` group pill), `ThingsCheckbox` center-out spring (`response: 0.3, dampingFraction: 0.6`), and `MagicPlusButton` floating action.",
+      "native_guardrails": "Zero dark-neon gym clichés or heavy 1px table grid borders; keep completed sets softly dimmed (`#8A8A8E`) rather than violently deleted so volume history stays legible.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-006",
+      "name": "呼吸感正念专注跨界母体 (Calm / Headspace / Endel × Fitness Focus & Rest)",
+      "aliases": [
+        "正念专注风",
+        "Calm呼吸风健身",
+        "Headspace暖阳专注",
+        "组间恢复冥想风",
+        "Mindful Focus Recovery"
+      ],
+      "category": "core-ui-motion",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Operate"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "motion-interaction",
+        "color-palette"
+      ],
+      "sub_category": "cross-domain-archetype-remix",
+      "source_prompt_zh": "跨品类混搭母体 B（`Calm / Headspace / Endel × Fitness 专注版训中大卡 & 组间休息`）：将正念冥想 App 的呼吸节律圆环（`BreatheBubble` / `BreathingSphere` 4s 吸气 - 4s 屏息 - 6s 呼气）、`Headspace` 暖杏奶油 `#FFF7E7` 与晨曦弧线渐变（`#FFB89E -> #FFD25C -> #FF6B35`）或 `Calm` 晴空蓝弧线渐变（`#38BDF8 -> #2A6FD6 -> #1E40AF`，严守 `CL-005` 零黑底铁律）引入专注版训中卡片与组间倒计时，把大重量组间恢复变成心率平稳降落的正念时刻。",
+      "canonical_prompt": "Cross-domain remix blending Calm / Headspace mindful breathing spheres, warm aurora or sky-blue hue-arc gradients (zero black dead zones per `CL-005`), and serif/rounded typographic calm into Focus-mode workout cards and rest recovery timers.",
+      "desktop_macos_implementation": "macOS focus timer widget / HUD using `SWAnimatedMeshGradient` along a luminous hue arc, soft `.glassEffect(.regular)` controls, and gentle `PhaseAnimator` breathing cadence.",
+      "mobile_ios_implementation": "Full-screen Focus-mode set card + rest recovery overlay with `BreathingSphere` radial hue-arc glow, `56pt` `.monospacedDigit()` countdown, and `.sensoryFeedback(.impact(flexibility: .soft))` breath cues.",
+      "native_guardrails": "Strictly obey `CL-005` Hue-Arc Luminous Gradient Rule—never fade rest screens into `#000000` or muddy gray; provide stationary progress ring when `accessibilityReduceMotion` is enabled.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-007",
+      "name": "瑞士精密计时码表跨界母体 (Linear / Flighty / Chrono × Fitness Telemetry)",
+      "aliases": [
+        "精密码表风",
+        "Flighty航班仪表风",
+        "Linear极客健身",
+        "高密度遥测风",
+        "Swiss Chrono Telemetry"
+      ],
+      "category": "data-linkage",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "chart-dataviz",
+        "typography-copy"
+      ],
+      "sub_category": "cross-domain-archetype-remix",
+      "source_prompt_zh": "跨品类混搭母体 C（`Linear / Flighty / Chrono × Fitness 容量与 PR 遥测`）：提取 `Flighty` 登机牌级高密度信息编排、弧线进度轨迹（`FlightArc`）與语义状态胶囊（`ON PACE` `#30D158` / `DELOAD` `#FFD60A` / `PR +5KG` `#5E6AD2`），结合 `Linear` 的 `StatusGlyph` 半圆进度环、等宽编号（`SET-01` `SF Mono`）与零回弹临界阻尼（`dampingRatio: 1.0`），打造精密仪器感的训练遥测台。",
+      "canonical_prompt": "Cross-domain remix combining Flighty boarding-pass telemetry density, Linear `StatusGlyph` progress rings, `SF Mono` set identifiers (`SET-01`), and critically damped (`dampingRatio: 1.0`) micro-interactions for precision workout volume & PR tracking.",
+      "desktop_macos_implementation": "BAMA 4pt grid `NavigationSplitView` telemetry workbench with `SWKPICard`, `SWActivityHeatmap`, `SF Mono 12pt` set IDs, and instant keyboard command palette.",
+      "mobile_ios_implementation": "Compact `44pt` telemetry rows with `StatusGlyph` set completion states, `FlightArc` session volume trajectory header, and `.monospacedDigit()` e1RM / RPE readouts.",
+      "native_guardrails": "Maintain `dampingRatio: 1.0` (zero decorative bounce) on rapid set logging; keep status chips at `color.opacity(0.15)` fill with full-saturation labels.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "VS-008",
+      "name": "杂志画报与高明度大胆色块跨界母体 (Nike Run Club / Apple Music / Cash App × Fitness)",
+      "aliases": [
+        "画报大字风",
+        "杂志色块风",
+        "Nike浓缩大字",
+        "CashApp大键盘风",
+        "Editorial Poster Block"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Persuade"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "typography-copy",
+        "color-palette"
+      ],
+      "sub_category": "cross-domain-archetype-remix",
+      "source_prompt_zh": "跨品类混搭母体 D（`Nike Run Club / Apple Music / Cash App × Fitness 画报大字报`）：融合 `Nike Run Club` 的 `64-88pt` 超大号浓缩字重（`.width(.condensed)`）、`Cash App` 的自适应字号大数字键盘（`AmountKeypad`）以及 `Apple Music` 的高饱和珊瑚红 `#FA2D48` + 纯白/浅灰画报底色，用纯粹的字重对比与明亮色块取代繁琐边框。",
+      "canonical_prompt": "Cross-domain remix uniting Nike Run Club oversized condensed hero numerals (`64-88pt` `.width(.condensed)`), Cash App auto-scaling numeric keypad, and Apple Music editorial color blocking on luminous surfaces.",
+      "desktop_macos_implementation": "Editorial poster summary header with condensed display numerals, `SWRingChart` hero rings, and vibrant color-blocked milestone cards.",
+      "mobile_ios_implementation": "Poster-scale live set readout (`64pt` condensed heavy `.monospacedDigit()`), `Cash App`-style responsive weight/reps keypad, and `ApplePlayButton` spring scale (`0.92`).",
+      "native_guardrails": "Auto-scale hero numerals (`96pt -> 64pt -> 52pt`) as digit count grows so zero numeric truncation (`…`) ever occurs.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-006",
+      "name": "Things 3 晴空纸感与 Bear 鼠尾草绿清单色板 (Zen Paper & Sky-Sage Checklist Palette)",
+      "aliases": [
+        "Things3色板",
+        "纸感晴空蓝",
+        "鼠尾草绿清单",
+        "无压迫浅色健身色板"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style",
+        "typography-copy"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "源自 `Things 3` 与 `Bear` 的零压迫感纸感色板：纯白画布 `#FFFFFF` 配冷灰分组 `#F5F6F8`（或暖纸 `#F6F6F4`），主强调色采用 `Things` 晴空蓝 `#4F97FF`（按压态 `#3D7FE0`，选中底色 `10%` 透明），完成态采用 `Bear` 鼠尾草翡翠绿 `#57C98B`，热身组采用暖阳黄 `#FFD60A`，正文为温润深炭 `#1D1D1F`。",
+      "canonical_prompt": "Airy paper canvas (`#FFFFFF` / `#F5F6F8`) paired with Things 3 sky blue (`#4F97FF`), Bear sage emerald (`#57C98B`) for completed sets, warm today gold (`#FFD60A`) for warm-ups, and soft ink (`#1D1D1F`).",
+      "desktop_macos_implementation": "Light-first `NSWindow` paper hierarchy with subtle `#ECECEC` hairlines and `#4F97FF` 10% selection tint.",
+      "mobile_ios_implementation": "`AppTheme` tokens binding `surfacePrimary = #FFFFFF`, `surfaceCard = #F5F6F8`, `accent = #4F97FF`, and `completed = #57C98B` with zero dark-mode muddy grays.",
+      "native_guardrails": "Keep selection and tag fills at `8-12%` opacity over white/paper surfaces; maintain >=4.5:1 contrast on all pill labels.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-007",
+      "name": "Headspace 晨曦暖杏与 Calm 晴空色轮弧线色板 (Mindful Aurora & Sky Hue-Arc Palette)",
+      "aliases": [
+        "Headspace配色",
+        "Calm晴空色板",
+        "正念晨曦渐变",
+        "无黑底呼吸色板"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Operate"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "visual-style",
+        "glass-material"
+      ],
+      "sub_category": "gradient-craft",
+      "source_prompt_zh": "源自 `Headspace` 与 `Calm` 的正念恢复色板（严格遵循 `CL-005` 色轮弧线渐变铁律，严禁混入 `#000000` 黑底）：暖色系采用奶油杏底 `#FFF7E7` + 晨曦三段弧线渐变（暖桃 `#FFB89E` -> 金黄 `#FFD25C` -> 万寿菊橙 `#FF6B35`）+ 深紫褐正文 `#2E1A47`；冷色系采用晴空冰蓝底 `#F0F7FF` + 天际弧线渐变（冰青 `#38BDF8` -> 晴空蓝 `#2A6FD6` -> 皇家靛蓝 `#4F46E5`）。",
+      "canonical_prompt": "Mindful recovery hue-arc palette (`CL-005` compliant, zero `#000000`): Warm Butter Cream (`#FFF7E7`) with Aurora arc (`#FFB89E -> #FFD25C -> #FF6B35`) and Ink Brown (`#2E1A47`), or Cool Sky Mist (`#F0F7FF`) with Sky-to-Indigo arc (`#38BDF8 -> #2A6FD6 -> #4F46E5`).",
+      "desktop_macos_implementation": "Multi-stop `LinearGradient` / `MeshGradient` stepping through warm aurora or cool sky hue arcs behind translucent `.glassEffect` rest overlays.",
+      "mobile_ios_implementation": "Radial/Linear 3-stop hue-arc gradients in `BreathingSphere` and Focus cards, paired with `#2E1A47` or `#0F172A` high-contrast typography.",
+      "native_guardrails": "Never fade `Calm` or `Headspace` gradients to `#000000`; curve every gradient through adjacent high-brightness stops (`B >= 80%`).",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "CL-008",
+      "name": "Linear 极光紫与 Flighty 航空语义遥测色板 (Swiss Chrono & Avionics Telemetry Palette)",
+      "aliases": [
+        "Flighty色板",
+        "Linear紫配色",
+        "精密仪表色板",
+        "航空级语义色"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "color-palette",
+      "secondary_dimensions": [
+        "chart-dataviz",
+        "visual-style"
+      ],
+      "sub_category": "semantic-brand-palette",
+      "source_prompt_zh": "源自 `Linear`、`Flighty` 与 `Apple Music` 的高对比度精密色板：浅色模式采用瑞士冷白 `#F8FAFC` 与纯白浮层 `#FFFFFF`，深色模式采用深空靛蓝灰 `#0E131F` 与 `#182032`（避免死黑）；主信号色为 `Linear` 极光紫 `#5E6AD2` 与 `Flighty` 航线蓝 `#0A84FF`，语义胶囊严格采用准点绿 `#30D158`（达标）、琥珀黄 `#F2C94C`（热身/递减）、画报珊瑚红 `#FA2D48`（极限 PR 冲击）。",
+      "canonical_prompt": "Precision telemetry palette combining Swiss cool alabaster (`#F8FAFC` / `#FFFFFF`) or deep avionics navy (`#0E131F` / `#182032`), Linear indigo (`#5E6AD2`), Flighty route blue (`#0A84FF`), and strict semantic status pills (`#30D158`, `#F2C94C`, `#FA2D48`).",
+      "desktop_macos_implementation": "Crisp tabular telemetry surfaces with `14%` opacity semantic status capsules and glowing `#0A84FF` trajectory arcs.",
+      "mobile_ios_implementation": "High-contrast `StatusChip` and `StatusGlyph` tokens with tabular monospace numerals and zero muddy black gradients.",
+      "native_guardrails": "Reserve `#FA2D48` / `#FF453A` strictly for PR breakthroughs or failure alerts; pair every semantic color with an explicit text code (`W`, `WK`, `PR`, `DROP`).",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
     }
   ]
 }

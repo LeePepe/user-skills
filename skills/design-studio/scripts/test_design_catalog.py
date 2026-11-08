@@ -409,6 +409,47 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.assertIn("liquid-glass.md", s_data["progressive_disclosure"]["hig_files_to_load"])
         self.assertGreaterEqual(len(s_data["matches"]), 1)
 
+    def test_cross_domain_archetype_remixes_and_screenshot_palette_ingest(self):
+        import struct
+        import zlib
+
+        for vf in ("mobile-ios.json", "desktop-macos.json"):
+            vault_doc = json.loads((self.vault_dir / vf).read_text(encoding="utf-8"))
+            ids = {item["id"] for item in vault_doc["inspirations"]}
+            for expected_id in ("VS-005", "VS-006", "VS-007", "VS-008", "CL-005", "CL-006", "CL-007", "CL-008"):
+                self.assertIn(expected_id, ids, f"Missing {expected_id} in {vf}")
+
+        # Build a deterministic 4x4 PNG in #4F97FF (Things 3 Sky Blue)
+        raw = b"".join(b"\0" + bytes((0x4F, 0x97, 0xFF)) * 4 for _ in range(4))
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        shot = self.directory / "shot.png"
+        shot.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
+        palette = DESIGN_CATALOG._parse_png_palette(shot, top=3)
+        self.assertEqual(len(palette), 1)
+        self.assertEqual(palette[0]["hex"], "#4C94FC")
+
+        ing = run(
+            "vault-ingest",
+            "--text", "Things 3 纸感留白圆圈打勾跨界到平铺训练计划表",
+            "--measure-palette", str(shot),
+            "--archetype-ref", "VS-005",
+            "--no-jev",
+            "--taxonomy", str(self.taxonomy),
+            "--vault-dir", str(self.vault_dir),
+        )
+        self.assertEqual(ing.returncode, 0, ing.stderr)
+        payload = json.loads(ing.stdout)
+        self.assertEqual(payload["archetype_ref"], "VS-005")
+        self.assertTrue(payload["measured_palette"])
+        self.assertEqual(payload["created_cards"][0]["archetype_ref"], "VS-005")
+        self.assertTrue(payload["created_cards"][0]["measured_palette"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -82,6 +82,38 @@ PLAN_A_CODE_RULES = [
         "pattern": re.compile(r"UIDesignRequiresCompatibility"),
         "message": "UIDesignRequiresCompatibility is temporary and ignored on modern SDKs; adopt native Liquid Glass chrome.",
     },
+    {
+        "id": "SLOP-PURPLE-GRADIENT",
+        "severity": "High",
+        "platforms": ["desktop", "mobile"],
+        "citation": "native-slop.md › Tell #4 The Purple-Gradient Hero",
+        "pattern": re.compile(r"LinearGradient\([^)]*colors\s*:\s*\[\s*(?:\.purple\s*,\s*\.blue|\.blue\s*,\s*\.purple|\.indigo\s*,\s*\.purple)"),
+        "message": "Avoid generic AI purple-blue gradient heroes; use purposeful brand seed tokens or subtle surface luminance.",
+    },
+    {
+        "id": "SLOP-LEFT-ACCENT-STRIPE",
+        "severity": "Medium",
+        "platforms": ["desktop", "mobile"],
+        "citation": "anti-ai-slop.md › Left-border accent card",
+        "pattern": re.compile(r"Rectangle\(\)\s*\.fill\([^)]+\)\s*\.frame\(\s*width\s*:\s*[3-6]\b"),
+        "message": "Avoid Web-style left-border accent stripe cards; use native semantic badges, SF Symbols, or clean list hierarchy.",
+    },
+    {
+        "id": "HIG-MACOS-HOVER-EFFECT",
+        "severity": "High",
+        "platforms": ["desktop"],
+        "citation": "genjutsu/desktop-principles › macOS pointer conventions",
+        "pattern": re.compile(r"\.hoverEffect\s*\("),
+        "message": ".hoverEffect(_:) is unavailable on macOS; use .onHover / .pointerStyle on macOS or guard with #if !os(macOS).",
+    },
+    {
+        "id": "SLOP-MUDDY-BLACK-GRADIENT",
+        "severity": "Medium",
+        "platforms": ["desktop", "mobile"],
+        "citation": "CL-005 › Hue-Arc Luminous Gradient Rule",
+        "pattern": re.compile(r"LinearGradient\([^)]*colors\s*:\s*\[[^\]]*\.black\b"),
+        "message": "Avoid straight-to-black RGB gradients (muddy dead zone); step through adjacent high-luminance hues along the color wheel arc.",
+    },
 ]
 
 
@@ -205,6 +237,43 @@ def command_route(args: argparse.Namespace) -> int:
             },
             "shipswift": {
                 "catalog": f"{ext_root}/shipswift/skills/catalog.md",
+                "packages": {
+                    "animation": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation",
+                    "metal_shaders": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation/SWMetal",
+                    "charts": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWChart",
+                    "components": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWComponent",
+                    "modules": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWModule",
+                },
+            },
+            "awesome-ios-design-md": {
+                "root": f"{ext_root}/awesome-ios-design-md/design-md",
+                "categories": [
+                    "finance", "fitness", "music", "productivity", "social",
+                    "travel", "messaging", "video", "food", "dating", "misc",
+                ],
+                "note": "200 real iOS apps with DESIGN-swiftui.md brand palettes, typography scales, and ButtonStyle springs.",
+            },
+            "genjutsu_native_only": {
+                "files": [
+                    f"{ext_root}/genjutsu/skills/_jutsu/swiftui-graphics/SKILL.md",
+                    f"{ext_root}/genjutsu/skills/_jutsu/swiftui-motion/SKILL.md",
+                    f"{ext_root}/genjutsu/skills/_jutsu/motion-principles/SKILL.md",
+                    *(
+                        [f"{ext_root}/genjutsu/skills/_jutsu/desktop-principles/SKILL.md"]
+                        if args.platform == "desktop"
+                        else [f"{ext_root}/genjutsu/skills/_jutsu/mobile-principles/SKILL.md"]
+                    ),
+                ],
+                "forbidden_web_compose": ["css-native", "framer-motion", "gsap", "threejs-r3f", "compose-*"],
+            },
+            "claude-code-apple-skills": {
+                "files": [
+                    f"{ext_root}/claude-code-apple-skills/skills/design/game-feel/SKILL.md",
+                    f"{ext_root}/claude-code-apple-skills/skills/design/design-system/SKILL.md",
+                    f"{ext_root}/claude-code-apple-skills/skills/design/liquid-glass/SKILL.md",
+                    f"{ext_root}/claude-code-apple-skills/skills/design/animation-patterns/SKILL.md",
+                    f"{ext_root}/claude-code-apple-skills/skills/design/typography/SKILL.md",
+                ],
             },
             "impeccable_native_only": {
                 "ref_dir": f"{ext_root}/impeccable/.agents/skills/impeccable/reference",
@@ -269,11 +338,13 @@ def command_route(args: argparse.Namespace) -> int:
             "external_hig_root": f"{ext_root}/apple-design-skill/references/hig",
             "external_skill_routing": external_skill_routing,
             "external_repos_sync_cmd": (
-                f"for r in apple-design-skill avdlee-swiftui-skill bama dimillian-skills "
-                f"emilkowalski-skills expo-skills impeccable shipswift taste-skill "
-                f"twostraws-swiftui-skill ui-ux-pro-max-skill; do "
+                f"for r in apple-design-skill avdlee-swiftui-skill awesome-ios-design-md bama "
+                f"claude-code-apple-skills dimillian-skills emilkowalski-skills expo-skills "
+                f"genjutsu impeccable shipswift taste-skill twostraws-swiftui-skill "
+                f"ui-ux-pro-max-skill; do "
                 f"git -C {ext_root}/$r pull --ff-only; done"
             ),
+            "appearance_ledger": "skills/my-designer/references/appearance-ledger.md",
             "hig_files_to_load": hig_files[:12],
             "apple_native_primitives": native_primitives[:12],
         },

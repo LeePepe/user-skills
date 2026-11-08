@@ -670,6 +670,8 @@ class VerifySkillsTests(unittest.TestCase):
                 self.assertIn("pr_monitor", text)
 
         self.assertIn("每次只沟通一层", skill_text)
+        self.assertIn("vault-ingest", skill_text)
+        self.assertIn("--measure-palette", skill_text)
         self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
         self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
 

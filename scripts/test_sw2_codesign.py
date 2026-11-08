@@ -105,8 +105,16 @@ class ProgressiveRouterTests(unittest.TestCase):
         ext_routing = payload["progressive_disclosure"]["external_skill_routing"]
         self.assertIn("allowed_native_sources", ext_routing)
         self.assertIn("apple-design-skill", ext_routing["allowed_native_sources"])
+        self.assertIn("shipswift", ext_routing["allowed_native_sources"])
+        self.assertIn("awesome-ios-design-md", ext_routing["allowed_native_sources"])
+        self.assertIn("genjutsu_native_only", ext_routing["allowed_native_sources"])
+        self.assertIn("claude-code-apple-skills", ext_routing["allowed_native_sources"])
         self.assertIn("impeccable_native_only", ext_routing["allowed_native_sources"])
+        self.assertEqual(payload["progressive_disclosure"]["appearance_ledger"], "skills/my-designer/references/appearance-ledger.md")
         self.assertTrue(any("taste-skill" in b for b in ext_routing["blocked_web_only_sources"]))
+        ledger_text = (ROOT / "skills" / "my-designer" / "references" / "appearance-ledger.md").read_text(encoding="utf-8")
+        for token in ("Cross-Domain Archetype Remix Matrix", "VS-005", "VS-006", "VS-007", "VS-008", "CL-006", "CL-007", "CL-008"):
+            self.assertIn(token, ledger_text)
 
 
 class ResearchTests(unittest.TestCase):
@@ -205,6 +213,24 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
                     "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
                     "--platform", "desktop", "--dimensions", "layout-navigation",
                     "--container", "NSPopover", "--path", str(swift_file),
+                ]),
+                1,
+            )
+
+            # Plan A catches SwiftUI anti-slop (purple-blue gradient, left-border stripe, macOS .hoverEffect)
+            slop_file = root / "SlopView.swift"
+            slop_file.write_text(
+                "import SwiftUI\nstruct SlopView: View {\n"
+                "  var body: some View {\n"
+                "    LinearGradient(colors: [.purple, .blue], startPoint: .top, endPoint: .bottom)\n"
+                "      .hoverEffect(.highlight)\n"
+                "  }\n}\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "desktop", "--path", str(slop_file),
                 ]),
                 1,
             )

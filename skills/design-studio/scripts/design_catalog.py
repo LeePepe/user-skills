@@ -351,6 +351,84 @@ for observation in request.results ?? [] { if let candidate = observation.topCan
     return extracted
 
 
+BAMA_MEASURE_SWIFT = Path.home() / "Development" / "Personal" / "collected-tools" / "repos" / "bama" / "skills" / "design" / "design-from-app" / "scripts" / "measure.swift"
+
+
+def _parse_png_palette(path, top=6):
+    """Deterministic pure-Python PNG RGB/RGBA palette fallback when Swift is not used."""
+    import struct
+    import zlib
+
+    raw = Path(path).read_bytes()
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        return []
+    pos = 8
+    width = height = bit_depth = color_type = 0
+    idat = bytearray()
+    while pos + 8 <= len(raw):
+        length = struct.unpack(">I", raw[pos:pos + 4])[0]
+        chunk_type = raw[pos + 4:pos + 8]
+        chunk_data = raw[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk_data[:10])
+        elif chunk_type == b"IDAT":
+            idat.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+    if width <= 0 or height <= 0 or bit_depth != 8 or color_type not in (2, 6):
+        return []
+    bpp = 3 if color_type == 2 else 4
+    try:
+        decompressed = zlib.decompress(bytes(idat))
+    except zlib.error:
+        return []
+    stride = 1 + width * bpp
+    counts = {}
+    total = 0
+    for y in range(height):
+        row_start = y * stride
+        if row_start + stride > len(decompressed):
+            break
+        filter_byte = decompressed[row_start]
+        if filter_byte != 0:
+            break
+        for x in range(width):
+            px = row_start + 1 + x * bpp
+            r, g, b = decompressed[px], decompressed[px + 1], decompressed[px + 2]
+            hx = f"#{(r // 4) * 4:02X}{(g // 4) * 4:02X}{(b // 4) * 4:02X}"
+            counts[hx] = counts.get(hx, 0) + 1
+            total += 1
+    if not total:
+        return []
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+    return [{"hex": hx, "pct": round(cnt * 100.0 / total, 1)} for hx, cnt in ranked]
+
+
+def measure_image_palette(path, top=6, runner=None):
+    """Extract dominant hex palette from a screenshot via BAMA measure.swift or PNG fallback."""
+    img_path = Path(path)
+    if not img_path.is_file():
+        raise ValueError(f"image not found for palette measurement: {path}")
+    if runner is not None or BAMA_MEASURE_SWIFT.is_file():
+        run_fn = runner or subprocess.run
+        try:
+            completed = run_fn(
+                ["swift", str(BAMA_MEASURE_SWIFT), "palette", str(img_path)],
+                check=True, capture_output=True, text=True,
+            )
+            entries = []
+            for line in completed.stdout.splitlines():
+                m = re.match(r"^\s*(#[0-9A-Fa-f]{6})\s+([0-9.]+)%", line)
+                if m:
+                    entries.append({"hex": m.group(1).upper(), "pct": float(m.group(2))})
+            if entries:
+                return entries[:top]
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    return _parse_png_palette(img_path, top=top)
+
+
 def ingest(args, catalog, catalog_path, markdown_path):
     if args.text is not None:
         text = args.text.strip()
@@ -686,11 +764,12 @@ def classify_v2_segment(text, taxonomy, args):
     }
 
 
-def _build_atomic_card(text, platforms, primary_dim, secondary_dims, sub_category, d_meta):
+def _build_atomic_card(text, platforms, primary_dim, secondary_dims, sub_category, d_meta,
+                       measured_palette=None, archetype_ref=None):
     normalized = " ".join(text.split())
     primitives = d_meta.get("apple_native_primitives", ["SwiftUI", "SF Symbols"])
     hig_routes = d_meta.get("hig_routes", ["design-principles.md", "layout.md"])
-    return {
+    card = {
         "name": normalized[:80],
         "platforms": platforms,
         "primary_dimension": primary_dim,
@@ -714,6 +793,11 @@ def _build_atomic_card(text, platforms, primary_dim, secondary_dims, sub_categor
             "floating functional chrome, Reduce Motion & Reduce Transparency respected."
         ),
     }
+    if measured_palette:
+        card["measured_palette"] = measured_palette
+    if archetype_ref:
+        card["archetype_ref"] = archetype_ref
+    return card
 
 
 def llm_decompose_inspiration(text, taxonomy, active_plats, target_dims, dim_scores, args):
@@ -822,7 +906,23 @@ def command_vault_ingest(args):
     taxonomy_path = Path(args.taxonomy)
     vault_dir = Path(args.vault_dir)
     taxonomy = load(taxonomy_path)
-    text = _read_ingest_source(args)
+
+    palette_target = None
+    if getattr(args, "measure_palette", None):
+        palette_target = args.image if args.measure_palette is True else args.measure_palette
+        if not palette_target:
+            raise ValueError("--measure-palette requires --image or an explicit screenshot path")
+    measured_palette = measure_image_palette(palette_target) if palette_target else None
+    archetype_ref = getattr(args, "archetype_ref", None)
+
+    try:
+        text = _read_ingest_source(args)
+    except ValueError:
+        if measured_palette:
+            hex_list = ", ".join(item["hex"] for item in measured_palette[:5])
+            text = f"Screenshot measured color palette ({hex_list}) for {archetype_ref or 'AppTheme'}"
+        else:
+            raise
     segments = [text] if args.no_split else (split_segments(text) or [text])
 
     vault_files = {
@@ -861,6 +961,10 @@ def command_vault_ingest(args):
                 "rating": "unrated",
                 "last_used_at": None,
             }
+            if measured_palette:
+                entry["measured_palette"] = measured_palette
+            if archetype_ref:
+                entry["archetype_ref"] = archetype_ref
             created_cards.append(entry)
             if not args.dry_run:
                 for plat in card["platforms"]:
@@ -874,14 +978,19 @@ def command_vault_ingest(args):
         for plat, vpath in vault_files.items():
             save(vpath, vaults[plat])
 
-    print(json.dumps({
+    out = {
         "schema": "design-vault-ingest/v2",
         "dry_run": args.dry_run,
         "created_count": len(created_cards),
         "created_cards": created_cards,
         "skipped_segments": skipped_segments,
         "learned_keywords_updated": learned_written,
-    }, ensure_ascii=False, indent=2))
+    }
+    if measured_palette is not None:
+        out["measured_palette"] = measured_palette
+    if archetype_ref:
+        out["archetype_ref"] = archetype_ref
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1129,6 +1238,10 @@ def parser():
     v_source.add_argument("--text")
     v_source.add_argument("--file")
     v_source.add_argument("--image")
+    vingest.add_argument("--measure-palette", nargs="?", const=True, default=None,
+                         help="Measure screenshot hex palette via BAMA measure.swift or PNG fallback")
+    vingest.add_argument("--archetype-ref", default=None,
+                         help="Optional style archetype or cross-domain remix reference (e.g. VS-005)")
     vingest.add_argument("--no-split", action="store_true")
     vingest.add_argument("--dry-run", action="store_true")
 
