@@ -27,6 +27,7 @@ MARKDOWN_LINK_RE: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/workflow-hub/SKILL.md": 12 * 1024,
     "skills/team-lead/SKILL.md": 36 * 1024,
+    "skills/m2-dispatcher/SKILL.md": 24 * 1024,
     "skills/coordinator/SKILL.md": 24 * 1024,
     "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
@@ -406,7 +407,11 @@ class VerifySkillsTests(unittest.TestCase):
                     self.assertNotIn(phrase, path.read_text(encoding="utf-8"), f"{phrase!r} in {path}")
 
         path_re = re.compile(r"`(skills/[a-z0-9_-]+/(?:scripts|references|assets)/[A-Za-z0-9_./-]+)`")
-        for rel_path in ("skills/team-lead/SKILL.md", "skills/coordinator/SKILL.md"):
+        for rel_path in (
+            "skills/team-lead/SKILL.md",
+            "skills/m2-dispatcher/SKILL.md",
+            "skills/coordinator/SKILL.md",
+        ):
             text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             for match in path_re.findall(text):
                 self.assertNotIn("*", match)
@@ -631,19 +636,21 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("No Code Demo", modernization_text)
 
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
-        skill_dir = SKILLS_DIR / "coordinator"
-        skill_path = skill_dir / "SKILL.md"
-        manifest_path = skill_dir / ".claude-plugin" / "plugin.json"
-        skill_text = skill_path.read_text(encoding="utf-8")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for skill_name in ("m2-dispatcher", "coordinator"):
+            skill_dir = SKILLS_DIR / skill_name
+            skill_path = skill_dir / "SKILL.md"
+            manifest_path = skill_dir / ".claude-plugin" / "plugin.json"
+            skill_text = skill_path.read_text(encoding="utf-8")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(manifest.get("name"), "coordinator")
-        self.assertEqual(
-            manifest.get("description"),
-            "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。",
-        )
-        self.assertEqual(manifest.get("category"), "workflow")
-        self.assertIn("coordinator", skill_text)
+            self.assertEqual(manifest.get("name"), skill_name)
+            self.assertEqual(manifest.get("category"), "workflow")
+            self.assertIn(skill_name, skill_text)
+            self.assertIn("M2-Dispatcher", skill_text)
+
+        skill_dir = SKILLS_DIR / "m2-dispatcher"
+        skill_path = skill_dir / "SKILL.md"
+        skill_text = skill_path.read_text(encoding="utf-8")
 
         shared_targets = (
             "../team-lead/references/runtime-profiles.yaml",
@@ -958,6 +965,7 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_blocked_alert_contract_is_documented(self) -> None:
         for path in (
+            SKILLS_DIR / "m2-dispatcher" / "SKILL.md",
             SKILLS_DIR / "coordinator" / "SKILL.md",
             SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
             SKILLS_DIR / "team-lead" / "references" / "playbook.md",
@@ -983,6 +991,7 @@ class VerifySkillsTests(unittest.TestCase):
         for path in (
             SKILLS_DIR / "team-lead" / "SKILL.md",
             SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
+            SKILLS_DIR / "m2-dispatcher" / "SKILL.md",
             SKILLS_DIR / "coordinator" / "SKILL.md",
         ):
             text = path.read_text(encoding="utf-8")

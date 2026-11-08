@@ -57,8 +57,8 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 | **Phase 1：自治执行期**（Autonomous Execution） | **Steering 执行/协调态** | Owner 明确拍板（“按这个做／开始执行／做”），或初始请求本身即为范围清晰、无歧义的直接实现指令 | 锁定 `spec.md`（`Mandate`）→ `≤3` 文件轻量改动由 `Steering` 直接内联改完验证；多文件/耗时编译派 `Writer` 在同 Goal 分支连续推进，收口时做 **1 次** 异构 `Reviewer` 审查（或复用仓库 CI 异构门禁）＋Layer-0 `ci-monitor.py` 读回 |
 
 **三类入口派生独立 `Steering` 与单层 `Steering` 规则**：
-- **M2 两径简单 Spec 确认与拍板后硬切换门禁（普通启动的 CLI、`Grok Bot`、`Cindy` → 启动独立 `Steering` M1）**：显式加载的领域 Skill（如 `/my-designer`、`/design-studio`）只负责领域/设计内容与审计，与编排层正交。Phase 0 确认基本任务时，常规需求由前台 M2 直接快速只读探查并用 `ask_user` 与 Owner 拍板落盘 `spec.md`；复杂需求由 M2 先派后台 `<goal>-goal-tl-r1`（M1）梳理草案与 `NEED_GO` 再由 M2 与 Owner 沟通。**一旦 `ask_user` 拍板完成（或无需确认），凡改动 `>3` 文件或含耗时编译/安装（如 `xcodebuild`、`install-fixed-build.sh`），前台 M2 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装指令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），必须调用 `skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind <claude|codex|copilot> --cwd <repo_or_dev_root> --prompt ...` 在后台 Herdr Space 启动绑定 `Magpie (:3425)` `group/steering` 的独立 `Steering`，并在前台挂载 `goal-supervisor.py watch` 看门狗，绝不阻塞当前交互窗口。
-- **Goal 内唯一 `Steering` 铁律**：一旦进入 `<goal>-goal-tl-r1`（或本地 CLI 内联执行轻量改动），当前 `Steering`（TL）主会话是该 Goal 唯一的 `Steering`（TL），**never spawns a second `Steering`** 或独立 `Planner`；仅由协调入口为每个 Goal 启动一个 `<goal>-goal-tl-r1`，再由该 `Steering` 派发叶子 `Writer`（`--role writer` → `group/coding`）／`Reviewer`（`--role code_reviewer` → `group/reviewing`），并运行 Layer-0 `ci-monitor.py`。
+- **`M2-Dispatcher` 两径简单 Spec 确认与拍板后硬切换门禁（普通启动的 CLI、`Grok Bot`、`Cindy` → 启动独立 `Steering` M1）**：显式加载的领域 Skill（如 `/my-designer`、`/design-studio`）只负责领域/设计内容与审计，与编排层正交。Phase 0 确认基本任务时，常规需求由前台 `M2-Dispatcher` 直接快速只读探查并用 `ask_user` 与 Owner 拍板落盘 `spec.md`；复杂需求由 `M2-Dispatcher` 先派后台 `<goal>-goal-tl-r1`（M1）梳理草案与 `NEED_GO` 再由 `M2-Dispatcher` 与 Owner 沟通。**一旦 `ask_user` 拍板完成（或无需确认），凡改动 `>3` 文件或含耗时编译/安装（如 `xcodebuild`、`install-fixed-build.sh`），前台 `M2-Dispatcher` 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装指令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），必须调用 `skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind <claude|codex|copilot> --cwd <repo_or_dev_root> --prompt ...` 在后台 Herdr Space 启动绑定 `Magpie (:3425)` `group/steering` 的独立 `Steering`，并在前台挂载 `goal-supervisor.py watch` 看门狗，绝不阻塞当前交互窗口。
+- **Goal 内唯一 `Steering` 铁律**：一旦进入 `<goal>-goal-tl-r1`（或本地 CLI 内联执行轻量改动），当前 `Steering`（TL）主会话是该 Goal 唯一的 `Steering`（TL），**never spawns a second `Steering`** 或独立 `Planner`；仅由 `M2-Dispatcher` 为每个 Goal 启动一个 `<goal>-goal-tl-r1`，再由该 `Steering` 派发叶子 `Writer`（`--role writer` → `group/coding`）／`Reviewer`（`--role code_reviewer` → `group/reviewing`），并运行 Layer-0 `ci-monitor.py`。
 
 ### Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）
 
@@ -84,7 +84,7 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 - **Inline 直改 vs. 后台 Worker**：`≤3` 个文件的轻量改动/配置/脚本热修，由 `Steering` 在当前工作树直接修改并运行验证命令；多文件、跨模块或耗时构建（如 `xcodebuild`）则通过 `herdr-dispatch.sh` 派发后台 `Writer`，绝不阻塞用户当前交互 CLI Space。
 - **Space 与分屏规范**：派发后台 Subagent 时复用同一 Space 分屏（`herdr pane split --direction right|down`）或创建 Space（`herdr workspace create`／`herdr worktree create`，`--cwd` 传目标 Git 仓根或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`）。
-- Bot ↔ TL 协同与 `PR_MERGED`／`GOAL_DONE` 回收遵循 [`coordinator`](../coordinator/SKILL.md)；保留 Worktree 不阻断关窗。
+- `M2-Dispatcher` ↔ TL 协同与 `PR_MERGED`／`GOAL_DONE` 回收遵循 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](../coordinator/SKILL.md)）；保留 Worktree 不阻断关窗。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -194,5 +194,5 @@ Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并
 - `Writer` 完成本地验证与交付后即退出关窗（无需挂起空等）；当临时子 Worktree 已本地 `keep` 合回或最终 PR 已 `PR_MERGED` 后，通过 `python3 skills/team-lead/scripts/git-gc.py task-clean`（或 `git worktree remove`）清理已合并 Worktree；`GOAL_DONE` 时关闭 Goal pane/workspace，未合并／暂停（HOLD）现场保留并报告 `Owner`。
 - 详细启动、Tier A/A′ 解卡、Reply/Resolve、队列和生命周期规则分别见
   [`bots-and-agents.md`](references/bots-and-agents.md)、
-  [`coordinator`](../coordinator/SKILL.md)、
+  [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（[`coordinator`](../coordinator/SKILL.md)）、
   [`playbook.md`](references/playbook.md) 与 [`ledger.md`](references/ledger.md)。

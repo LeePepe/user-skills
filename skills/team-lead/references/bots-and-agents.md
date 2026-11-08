@@ -1,6 +1,6 @@
 # Bot 与 CLI agent：分工与生命周期
 
-本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。常驻域主 Bot 与 Goal-level TL 的开 TL、热追加、巡检解卡和完成回收另见 [`coordinator`](../../coordinator/SKILL.md)。
+本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。`M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 的开 TL、热追加、巡检解卡和完成回收另见 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](../../coordinator/SKILL.md)）。
 
 ## 两层
 
@@ -19,9 +19,9 @@ for the command contract and event mapping.
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
 Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务
-Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 中，无论是常驻 `Grok Bot`、桌面伴侣 `Cindy` 还是普通启动的交互式 CLI（非 `≤3` 文件极轻量内联修改），均作为前台协调入口通过 `herdr-dispatch.sh --new-workspace --role team_lead` 在后台 Herdr Space 拉起绑定本机 `Magpie (:3425)` `group/steering` 的独立 Goal `Steering`（`<goal>-goal-tl-r1`），再由该 `Steering` 按 1-Hop 合同派发 `Writer`（`--role writer` → `group/coding`）与跨厂商 `Reviewer`（`--role code_reviewer` → `group/reviewing`）；机器、白名单和 UI/UX 设计挂载分别以 [`coordinator`](../../coordinator/SKILL.md)、[`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
+Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 中，无论是常驻 `Grok Bot`、桌面伴侣 `Cindy` 还是普通启动的交互式 CLI（非 `≤3` 文件极轻量内联修改），均作为 **`M2-Dispatcher`** 通过 `herdr-dispatch.sh --new-workspace --role team_lead` 在后台 Herdr Space 拉起绑定本机 `Magpie (:3425)` `group/steering` 的独立 Goal `Steering`（`<goal>-goal-tl-r1`），再由该 `Steering` 按 1-Hop 合同派发 `Writer`（`--role writer` → `group/coding`）与跨厂商 `Reviewer`（`--role code_reviewer` → `group/reviewing`）；机器、白名单和 UI/UX 设计挂载分别以 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)（[`coordinator`](../../coordinator/SKILL.md)）、[`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
 
-**Single-Steering per Goal rule:** once `<goal>-goal-tl-r1` is running (or when a local CLI session executes a `≤3`-file inline task directly), that active `Steering` (TL) session is the sole `Steering` (TL) for the Goal and never spawns a second `Steering` or standalone `Planner` subagent. The entry coordinator (`Grok Bot`, `Cindy`, or a normal interactive CLI) starts at most one `<goal>-goal-tl-r1` in Herdr (reusing/waking it idempotently if already alive); that `Steering` then dispatches leaf `Writer`／`Reviewer` agents as needed, with optional read-only `Explorer` support for noisy searches.
+**Single-Steering per Goal rule:** once `<goal>-goal-tl-r1` is running (or when a local CLI session executes a `≤3`-file inline task directly), that active `Steering` (TL) session is the sole `Steering` (TL) for the Goal and never spawns a second `Steering` or standalone `Planner` subagent. The `M2-Dispatcher` (`Grok Bot`, `Cindy`, or a normal interactive CLI) starts at most one `<goal>-goal-tl-r1` in Herdr (reusing/waking it idempotently if already alive); that `Steering` then dispatches leaf `Writer`／`Reviewer` agents as needed, with optional read-only `Explorer` support for noisy searches.
 
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>

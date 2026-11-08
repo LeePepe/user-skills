@@ -2,11 +2,11 @@
 name: coordinator
 description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。
 ---
-# Bot ↔ TL 编排合同
+# M2-Dispatcher ↔ M1-Steering (TL) 编排合同（`coordinator` 兼容别名）
 
-本入口供常驻域主 Bot（`Grok Bot`：`Joy`、`Atlas`、`flower`、`艺术家`、`ana`、`笔者`、`Hotty`）、桌面伴侣（`Cindy`）以及普通启动的交互式 CLI（作为 M2 协调入口时）共用。
-它只负责协调入口与 Goal-level `Steering`（TL，`<goal>-goal-tl-r1`）的生命周期；`Steering` 与 Subagent 的 Task-level 1-Hop 执行仍由
-[`team-lead`](../team-lead/SKILL.md) 负责。以下共享资产是唯一事实源：
+> Canonical skill: [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（`coordinator` 兼容别名）；角色统一名 **`M2-Dispatcher`**。
+
+本入口供 **`M2-Dispatcher`**（常驻 `Grok Bot`、`Cindy` 与交互式 CLI 入口）共用，规定 `M2-Dispatcher` 与 Goal-level `Steering`（TL，`<goal>-goal-tl-r1`）的生命周期；Task-level 1-Hop 执行由 [`team-lead`](../team-lead/SKILL.md) 负责。共享事实源：
 
 - [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml)：模型、机器与白名单档位。
 - [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md)：角色、启动、监控与回收规则。
@@ -16,20 +16,15 @@ description: 常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期�
 
 ## 三层分离
 
-1. **Layer A — Shared Flow Contract**：本入口规定 `Bot ↔ TL` 的 Goal 生命周期；
-   [`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 的 Task-level 1-Hop 执行。
-   两者共享上述 `references/*` 与 `scripts/*`，不复制模型表或生命周期命令。
-2. **Layer B — Private Bot Identity & Memory**：Bot 的 profile、记忆与日常例程留在私有
-   记忆中；不得把七域花名册或模型表作为私有记忆中的唯一真源。
-3. **Layer C — Product Auto-review Gate**：客户端安全门禁在仓库外。若 Auto-review 阻止
-   Bot 的 `herdr` 调用，fail-closed：向 Owner 报告所需的确切规则，不得退回 Bot 会话内
-   编辑业务代码。
+1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` 的 Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 的 Task-level 1-Hop 执行。两者共享上述 `references/*` 与 `scripts/*`。
+2. **Layer B — Private Bot Identity & Memory**：Bot 记忆与例程留在私有记忆，不把花名册或模型表作私有真源。
+3. **Layer C — Product Auto-review Gate**：安全门禁在仓库外；若阻止 `herdr` 调用则 fail-closed 上报 Owner，不退回 `M2-Dispatcher` 编辑业务代码。
 
 ## 1. 开 TL、热追加与路由
 
-- **M2（协调入口）两径简单 Spec 对齐**：无论是否显式调用 `/my-designer`、`/design-studio`，Owner 确认（`ask_user`）始终留在 M2。**路径 A（清晰边界）**：M2 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：M2 先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 M2 与 Owner 拍板回传 M1。
-- **M2 灵感/截图/色板一键摄取直通车（`coordinator` ↔ `design-studio`）**：当 Owner 发来单条设计灵感、喜欢的参考 App 名字或截图时，M2 直接在前台调用 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 自动做 Vision OCR + BAMA 截图测色板；动效/交互模式可用 `ingest`）秒级入库；若需批量跨品类母体聚类或落地到业务项目，M2 走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering` 执行。
-- **拍板后硬切换门禁（Space 优先与无 `HERDR_ENV` 自动建 Workspace，三类入口通用）**：一旦 `ask_user` 确认完成（或初始需求无需确认），除 `≤3` 文件且无编译阻塞的极轻量热修外，**M2 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装命令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），绝不阻塞当前交互 CLI、`Grok Bot` 或 `Cindy`；协调入口落盘 `spec.md` 并调 [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) `--new-workspace --role team_lead --name <goal>-goal-tl-r1` 在后台 Herdr Space 启动独立 `Steering`（绑定本机 `Magpie :3425` `group/steering`，无 `HERDR_ENV=1` 也能建 Space）。`herdr workspace create`／`herdr worktree create` 的 `--cwd`（`identity_cwd`）须传 Git 仓根／worktree，或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`；禁传 `handoff/<goal>`（`--new-workspace` 自动归一化至共享父目录）。
+- **`M2-Dispatcher` 两径简单 Spec 对齐**：无论是否显式调用 `/my-designer`、`/design-studio`，Owner 确认（`ask_user`）始终留在 `M2-Dispatcher`。**路径 A（清晰边界）**：`M2-Dispatcher` 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：`M2-Dispatcher` 先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 `M2-Dispatcher` 与 Owner 拍板回传 M1。
+- **`M2-Dispatcher` 灵感/截图/色板一键摄取直通车（`m2-dispatcher` / `coordinator` ↔ `design-studio`）**：当 Owner 发来单条设计灵感、喜欢的参考 App 名字或截图时，`M2-Dispatcher` 直接在前台调用 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 自动做 Vision OCR + BAMA 截图测色板；动效/交互模式可用 `ingest`）秒级入库；若需批量跨品类母体聚类或落地到业务项目，`M2-Dispatcher` 走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering` 执行。
+- **拍板后硬切换门禁（Space 优先与无 `HERDR_ENV` 自动建 Workspace，三类入口通用）**：一旦 `ask_user` 确认完成（或初始需求无需确认），除 `≤3` 文件且无编译阻塞的极轻量热修外，**`M2-Dispatcher` 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装命令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），绝不阻塞当前交互 CLI、`Grok Bot` 或 `Cindy`；`M2-Dispatcher` 落盘 `spec.md` 并调 [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) `--new-workspace --role team_lead --name <goal>-goal-tl-r1` 在后台 Herdr Space 启动独立 `Steering`（绑定本机 `Magpie :3425` `group/steering`，无 `HERDR_ENV=1` 也能建 Space）。`herdr workspace create`／`herdr worktree create` 的 `--cwd`（`identity_cwd`）须传 Git 仓根／worktree，或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`；禁传 `handoff/<goal>`（`--new-workspace` 自动归一化至共享父目录）。
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`（`herdr-dispatch.sh --new-workspace` 已内置幂等复用）：状态为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，TL 为 `idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：所有机器与入口均在本 Goal 内直接按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线（不转交 `艺术家`）；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 采用 `direct_quota_gated`（预检 `~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 时开窗前自动剥离 `--allowedTools` 并改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 直接绑定本机 `Magpie (:3425)` `group/steering`。
 - 启动父 TL 时满足 Parent ≥ Child Allowlist：传入基线

@@ -40,6 +40,12 @@
       "description": "进行任何开发、架构或规格规划、UI/UX 设计或界面重设计、数据/指标或代码库调研、实现、Bug 修复、代码审查或 PR 交付前必须加载；按单任务或多任务 Goal 通过 1-Hop 子代理编排 Explorer -> Designer -> Writer -> Reviewer -> pr_monitor。"
     },
     {
+      "name": "m2-dispatcher",
+      "source": "./skills/m2-dispatcher",
+      "category": "workflow",
+      "description": "M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）编排后台 Herdr Goal Steering (TL) 的生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
+    },
+    {
       "name": "coordinator",
       "source": "./skills/coordinator",
       "category": "workflow",
