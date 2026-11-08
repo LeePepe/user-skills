@@ -6,7 +6,7 @@ allowed-tools: Read, Write, Edit, Bash, Agent, Skill
 
 # my-designer — Progressive Disclosure Apple Design Lead (`L0`)
 
-This `handoff-only` skill owns the design specification and review routing, not production code implementation. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code** without throwaway demos or `Prototype/` directories.
+This `handoff-only` skill owns the design specification and review routing, not production code implementation. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code** without throwaway demos or `Prototype/` directories. (`my-designer` is a pure design capability node: it never edits product source files itself and remains agnostic of underlying agent orchestration.)
 
 **Announce at start:** “I'm using the my-designer skill (as design lead).”
 
@@ -22,11 +22,11 @@ Never load all HIG documents or the entire inspiration vault upfront. Disclose c
    - `color-palette` (`CL`) · `visual-style` (`VS`) · `component` (`CP`) · `chart-dataviz` (`DV`)
    - `glass-material` (`GM`) · `motion-interaction` (`MI`) · `layout-navigation` (`LN`) · `typography-copy` (`TC`)
 
-### Step 2 · On-Demand Routing & Platform Firewall (`L1` -> [routing-index.md](references/routing-index.md))
-Run the L1 router and vault search. `verify_design_cases.py route` enforces a strict **Native vs. Web Platform Firewall** over the 4 external git-pullable repos in `~/Development/Personal/collected-tools/repos/` (`apple-design-skill`, `impeccable`, `taste-skill`, `ui-ux-pro-max-skill`):
-- **When `--platform desktop` or `mobile` (Apple Native):**
+### Step 2 · On-Demand Routing & Platform Firewall (`L1` -> [routing-index.md](references/routing-index.md) & [appearance-ledger.md](references/appearance-ledger.md))
+Run the L1 router and vault search. `verify_design_cases.py route` enforces a strict **Native vs. Web Platform Firewall** over the 14 external git-pullable repos in `~/Development/Personal/collected-tools/repos/`:
+- **When `--platform desktop` or `mobile` (Apple Native + Distinct Style Recipes):**
   - **Skip raw foundation HIG** (`distilled_in_plan_a` is already in Plan A 5 Lenses);
-  - **Allowed external refs:** `apple-design-skill/references/hig/<on_demand_external_refs>`, `impeccable` **native-only subset** (`reference/{ios.md,audit.native.md,adapt.native.md,craft-floor.md,operate.md}`), and `ui-ux-pro-max` `--stack swiftui` only;
+  - **Allowed native & style sources:** `apple-design-skill`, `twostraws-swiftui-skill`, `avdlee-swiftui-skill`, `dimillian-skills`, `bama` (macOS 4pt grid & pixel measurement), `awesome-ios-design-md` (200 real iOS app `DESIGN-swiftui.md` style recipes), `shipswift` (80+ self-contained SwiftUI components, charts, and 28 Metal shaders), `genjutsu` (`swiftui-graphics` Metal shaders & desktop/mobile principles), `claude-code-apple-skills` (`game-feel` & `AppTextStyle`), `emilkowalski-skills` (fluid spring physics & frequency gates), `expo-skills` (`native-slop.md` 20 Tells), `impeccable` native-only subset, and `ui-ux-pro-max --stack swiftui`;
   - **Strictly blocked (Zero Web Pollution):** never load `taste-skill` (100% Web HTML/CSS/Shader/Chrome hook), `ui-ux-pro-max` Web `--design-system`/Tailwind/Shadcn/GSAP, or `impeccable` Web `detect`/`live`/`audit.md`.
 - **When `--platform web` (Web / Landing Page):**
   - Routes to `taste-skill/skills/taste-skill/SKILL.md`, `impeccable` Web (`SKILL.md` + `detect`), and `ui-ux-pro-max` (`--design-system` / `ui-styling`).
@@ -36,15 +36,15 @@ Run the L1 router and vault search. `verify_design_cases.py route` enforces a st
 python3 skills/my-designer/scripts/verify_design_cases.py route \
   --platform desktop --dimensions glass-material,chart-dataviz
 
-# 2. Retrieve matching inspirations from desktop-macos.json or mobile-ios.json
+# 2. Retrieve matching style archetypes, palettes, and ShipSwift components from desktop-macos.json or mobile-ios.json
 python3 skills/design-studio/scripts/design_catalog.py vault-search \
-  --platform desktop --dimension chart-dataviz --query "<intent>" --top 5
+  --platform desktop --dimension visual-style --query "<intent>" --top 5
 ```
 
-### Step 3 · Author Apple-First Native Handoff (`design.md` / `spec.md`)
-- **Pure Apple Native Priority (No Mandatory Design System Wrapper):**
-  - Default to native SwiftUI controls (`NavigationSplitView`, `TabView`, `List`, `Table`, `Form`, `.toolbar`, `.sheet`, `.searchable`, `ContentUnavailableView`, `LabeledContent`), **Swift Charts** (`Chart`, `LineMark`, `BarMark`, `AreaMark`, `SectorMark`, `.chartXSelection`), **SF Symbols**, system semantic colors, and native **Liquid Glass** (`.glassEffect(.regular / .clear)`, `GlassEffectContainer`, `.buttonStyle(.glassProminent)`).
-  - Do not force custom design-system wrappers on standalone Apple apps; add lightweight project-local modifiers only when native components cannot express a recurring domain pattern.
+### Step 3 · Author Apple-First + Bespoke Style Handoff (`design.md` / `spec.md`)
+- **Apple Principle + Liquid Glass Foundation, Distinct Per-App Personality ([appearance-ledger.md](references/appearance-ledger.md)):**
+  - Anchor ergonomics and navigation on native SwiftUI (`NavigationSplitView`, `TabView`, `List`, `Table`, `.toolbar`, `.sheet`, `ConcentricRectangle`, `ContentUnavailableView`), **Swift Charts**, **SF Symbols**, and native **Liquid Glass** (`.glassEffect(.regular / .clear)`, `GlassEffectContainer`, `.buttonStyle(.glassProminent)`).
+  - **Distinct Per-App Style Recipe (`AppTheme.swift` + `ShipSwift` Source Components):** Never force a monolithic cross-repo UI wrapper package onto every app. Instead, pick a non-colliding **Style Archetype (`VS-001..006`) and Brand Palette (`CL-001..004`)** from [appearance-ledger.md](references/appearance-ledger.md) (or `awesome-ios-design-md`), generate a single-file `<80`-line `AppTheme.swift` (`Space`, `Radius`, semantic colors, `AppTextStyle`, `AppPressableButtonStyle`) inside the app, and copy self-contained bespoke components/Metal shaders from `ShipSwift/SWPackage/` (`SWMetal`, `SWAnimation`, `SWChart`, `SWComponent`) restyled with `AppTheme`.
 - **Spec-First Test Alignment:** When modifying an existing screen, include an **Obsolete Test Manifest** and **Deprecated Test Clauses to Remove/Rewrite** section so legacy UI assertions do not block approved design changes.
 
 ### Step 4 · Baseline Gate: Plan A Default + Plan C Defect-Case Evolution (`L2`)
