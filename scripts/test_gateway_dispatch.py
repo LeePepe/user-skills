@@ -164,16 +164,42 @@ elif args[:2] == ["agent", "prompt"]:
             payload = json.loads(fresh.stdout)
             self.assertEqual(payload["workspace_id"], "w77")
             self.assertEqual(payload["pane_id"], "w77:p1")
+            self.assertEqual(payload["resolved_kind"], "claude")
             self.assertEqual(payload["logical_group"], "group/steering")
-            self.assertEqual(payload["resolved_model"], "group/steering")
-            self.assertEqual(payload["gateway_mode"], "magpie")
+            self.assertEqual(payload["resolved_model"], "opus")
+            self.assertEqual(payload["gateway_mode"], "direct_fallback")
             recorded = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
             ws_creates = [c for c in recorded if c[:2] == ["workspace", "create"]]
             self.assertEqual(len(ws_creates), 1)
             self.assertIn("--label", ws_creates[0])
             self.assertIn("demo", ws_creates[0])
 
-            # 2. Idempotent reuse when <goal>-goal-tl-r1 is already idle
+            # 2. Quota-exhausted / locked Claude skips directly to copilot + Magpie group/steering
+            all_calls.write_text("", encoding="utf-8")
+            (tmp / "calls").write_text("", encoding="utf-8")
+            capped_env = {**env, "HERDR_CLAUDE_QUOTA_STATE": "quota_capped:5 hours=85%>=80%"}
+            skipped = subprocess.run(
+                [
+                    str(DISPATCH), "--name", "demo-goal-tl-r1", "--kind", "claude",
+                    "--cwd", str(handoff_goal), "--prompt", "Load /team-lead", "--role", "team_lead",
+                    "--", "--model", "opus", "--allowedTools", "Bash", "Read", "Write",
+                ],
+                env=capped_env, capture_output=True, text=True,
+            )
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+            skipped_payload = json.loads(skipped.stdout)
+            self.assertEqual(skipped_payload["resolved_kind"], "copilot")
+            self.assertTrue(skipped_payload["skipped_claude"])
+            self.assertEqual(skipped_payload["skipped_claude_reason"], "quota_capped:5 hours=85%>=80%")
+            self.assertEqual(skipped_payload["logical_group"], "group/steering")
+            self.assertEqual(skipped_payload["resolved_model"], "magpie/group/steering")
+            self.assertEqual(skipped_payload["gateway_mode"], "magpie")
+            start_calls = (tmp / "calls").read_text(encoding="utf-8")
+            self.assertIn('"--kind", "copilot"', start_calls)
+            self.assertNotIn("--allowedTools", start_calls)
+            self.assertIn("magpie/group/steering", start_calls)
+
+            # 3. Idempotent reuse when <goal>-goal-tl-r1 is already idle
             all_calls.write_text("", encoding="utf-8")
             reuse_env = {**env, "MOCK_EXISTING_TL_STATUS": "idle"}
             reused = subprocess.run(

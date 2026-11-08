@@ -16,6 +16,7 @@ gateway:
       roles: [team_lead, arbitration, planner, research_arbiter]
       routing: pace
       stays: session
+      claude_mode: direct_quota_gated
       fallback_models: {claude: "opus", copilot: "gemini-4-argon", codex: "gpt-6.1-sol"}
     reviewing:
       id: "group/reviewing"

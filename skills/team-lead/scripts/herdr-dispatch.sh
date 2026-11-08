@@ -206,9 +206,227 @@ if [[ "$REQUESTED_MODEL" == group/* || "$REQUESTED_MODEL" == magpie/group/* ]]; 
   LOGICAL_GROUP="${REQUESTED_MODEL#magpie/}"
 fi
 
+SKIPPED_CLAUDE=0
+SKIPPED_CLAUDE_REASON=""
+if [[ "$KIND" == "claude" ]]; then
+  CLAUDE_PREFLIGHT="$(
+    python3 - "$NAME" "$NEW_WORKSPACE" <<'PY' || printf 'ok\tdirect\n'
+import json, os, pathlib, subprocess, sys, time, urllib.error, urllib.request
+
+agent_name, new_ws = sys.argv[1], sys.argv[2]
+override = os.environ.get("HERDR_CLAUDE_QUOTA_STATE", "").strip()
+if override:
+    if override in ("ok", "direct", "available"):
+        print("ok\tdirect")
+    elif override == "magpie":
+        print("ok\tmagpie")
+    else:
+        print(f"skip\t{override}")
+    sys.exit(0)
+
+if os.environ.get("MOCK_HERDR_LOG"):
+    print("ok\tdirect")
+    sys.exit(0)
+
+# If reusing an existing live Goal TL workspace, skip preflight probe.
+if new_ws == "1":
+    try:
+        proc = subprocess.run(["herdr", "agent", "get", agent_name], capture_output=True, text=True, timeout=1.5)
+        if proc.returncode == 0 and proc.stdout.strip():
+            data = json.loads(proc.stdout)
+            def find_status(node):
+                if isinstance(node, dict):
+                    if "agent_status" in node and isinstance(node["agent_status"], str):
+                        return node["agent_status"]
+                    for v in node.values():
+                        r = find_status(v)
+                        if r:
+                            return r
+                elif isinstance(node, list):
+                    for v in node:
+                        r = find_status(v)
+                        if r:
+                            return r
+                return ""
+            if find_status(data) in ("working", "idle", "done"):
+                print("ok\tdirect")
+                sys.exit(0)
+    except Exception:
+        pass
+
+home = pathlib.Path.home()
+magpie_dir = home / ".config" / "magpie"
+logins_path = magpie_dir / "logins.json"
+quotas_path = magpie_dir / "quotas.json"
+providers_path = magpie_dir / "providers.json"
+
+try:
+    logins = json.loads(logins_path.read_text(encoding="utf-8")) if logins_path.is_file() else []
+except Exception:
+    logins = []
+
+claude_accounts = [
+    x for x in logins
+    if isinstance(x, dict) and x.get("agent") == "claude" and x.get("on") is not False and x.get("user")
+]
+if not claude_accounts:
+    print("skip\tno_claude_account")
+    sys.exit(0)
+
+default_cap = float(os.environ.get("HERDR_CLAUDE_MAX_USED_PCT", "80"))
+account_caps = {}
+try:
+    pdata = json.loads(providers_path.read_text(encoding="utf-8")) if providers_path.is_file() else {}
+    for p in pdata.get("providers") or []:
+        if isinstance(p, dict) and p.get("id") == "claude":
+            for k, v in (p.get("accountCaps") or {}).items():
+                account_caps[str(k)] = float(v)
+except Exception:
+    pass
+
+try:
+    quotas = json.loads(quotas_path.read_text(encoding="utf-8")) if quotas_path.is_file() else {}
+except Exception:
+    quotas = {}
+
+cache_path = pathlib.Path("/tmp/herdr-claude-preflight.json")
+cache_ttl = float(os.environ.get("HERDR_CLAUDE_PREFLIGHT_TTL_SEC", "60"))
+now = time.time()
+cache_data = {}
+try:
+    if cache_path.is_file():
+        cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+except Exception:
+    cache_data = {}
+
+last_reason = "quota_unavailable"
+for acc in claude_accounts:
+    email = str(acc.get("user"))
+    cap = account_caps.get(email, default_cap)
+    qentry = (quotas.get(f"claude/{email}") or {}).get("quota") or {}
+    windows = qentry.get("windows") or []
+    if not windows:
+        last_reason = f"quota_unread:{email}"
+        continue
+    capped_win = None
+    for w in windows:
+        if not isinstance(w, dict):
+            continue
+        used = float(w.get("used", 100.0))
+        if used >= cap:
+            capped_win = f"quota_capped:{w.get('name', 'window')}={used:g}%>={cap:g}%"
+            break
+    if capped_win:
+        last_reason = capped_win
+        continue
+
+    token = (((acc.get("auth") or {}).get("claudeAiOauth") or {}).get("accessToken") or "").strip()
+    if not token:
+        print("ok\tdirect")
+        sys.exit(0)
+
+    cache_key = f"{email}:{token[:16]}"
+    cached = cache_data.get(cache_key)
+    if isinstance(cached, dict) and (now - float(cached.get("ts", 0))) < cache_ttl:
+        if cached.get("ok"):
+            print("ok\tdirect")
+            sys.exit(0)
+        last_reason = str(cached.get("reason") or "cached_failure")
+        continue
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages?beta=true",
+        data=json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "1"}],
+        }).encode("utf-8"),
+        headers={
+            "authorization": f"Bearer {token}",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "oauth-2025-04-20",
+            "content-type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            if 200 <= resp.status < 300:
+                cache_data[cache_key] = {"ok": True, "ts": now}
+                try:
+                    cache_path.write_text(json.dumps(cache_data), encoding="utf-8")
+                except Exception:
+                    pass
+                print("ok\tdirect")
+                sys.exit(0)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 429, 529):
+            last_reason = f"http_{exc.code}"
+            cache_data[cache_key] = {"ok": False, "reason": last_reason, "ts": now}
+            try:
+                cache_path.write_text(json.dumps(cache_data), encoding="utf-8")
+            except Exception:
+                pass
+            continue
+        print("ok\tdirect")
+        sys.exit(0)
+    except Exception:
+        print("ok\tdirect")
+        sys.exit(0)
+
+print(f"skip\t{last_reason}")
+PY
+  )"
+  IFS=$'\t' read -r CLAUDE_STATUS CLAUDE_DETAIL <<< "$CLAUDE_PREFLIGHT"
+  if [[ "$CLAUDE_STATUS" == "skip" ]]; then
+    SKIPPED_CLAUDE=1
+    SKIPPED_CLAUDE_REASON="${CLAUDE_DETAIL:-quota_unavailable}"
+    KIND="${HERDR_CLAUDE_FALLBACK_KIND:-copilot}"
+    [[ -n "$LOGICAL_GROUP" ]] || LOGICAL_GROUP="group/steering"
+    # Strip Claude-specific CLI flags (--allowedTools, --permission-mode, Claude model args) before switching to fallback CLI.
+    CLEANED_ARGS=()
+    skip_next=0
+    in_tool_list=0
+    for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
+      if [[ "$skip_next" -eq 1 ]]; then
+        skip_next=0
+        continue
+      fi
+      if [[ "$in_tool_list" -eq 1 ]]; then
+        if [[ "$arg" == -* ]]; then
+          in_tool_list=0
+        else
+          continue
+        fi
+      fi
+      case "$arg" in
+        -m|--model|--permission-mode)
+          skip_next=1
+          ;;
+        --model=*|--permission-mode=*|--dangerously-skip-permissions)
+          ;;
+        --allowedTools|--disallowedTools)
+          in_tool_list=1
+          ;;
+        --allowedTools=*|--disallowedTools=*)
+          ;;
+        *)
+          CLEANED_ARGS+=("$arg")
+          ;;
+      esac
+    done
+    AGENT_ARGS=("${CLEANED_ARGS[@]+"${CLEANED_ARGS[@]}"}")
+    REQUESTED_MODEL=""
+    MODEL_INDEX=-1
+    MODEL_PREFIX=""
+  fi
+fi
+
 if [[ -n "$LOGICAL_GROUP" ]]; then
   ROLE_ROUTE=1
-  if [[ "$GATEWAY_MODE" == "magpie" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "1" ]]; then
+  if [[ "$KIND" == "claude" && "$GATEWAY_MODE" != "magpie" ]]; then
+    # Claude runs direct against Anthropic so it never switches models mid-session and preserves native Subagent/Teammate support.
+    GATEWAY_ONLINE=0
+  elif [[ "$GATEWAY_MODE" == "magpie" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "1" ]]; then
     GATEWAY_ONLINE=1
   elif [[ "$GATEWAY_MODE" == "direct" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "0" ]]; then
     GATEWAY_ONLINE=0
@@ -749,16 +967,21 @@ elif [[ "$WAIT_FLAG" -eq 0 ]]; then
   fi
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" <<'PY'
 import json, sys
 payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
 if sys.argv[8]:
     payload["workspace_id"] = sys.argv[8]
 if sys.argv[3] == "1" or sys.argv[7] == "1":
     payload.update({
+        "resolved_kind": sys.argv[9],
         "logical_group": sys.argv[4],
         "resolved_model": sys.argv[5],
         "gateway_mode": "magpie" if sys.argv[6] == "1" else "direct_fallback",
     })
+if sys.argv[10] == "1":
+    payload["resolved_kind"] = sys.argv[9]
+    payload["skipped_claude"] = True
+    payload["skipped_claude_reason"] = sys.argv[11]
 print(json.dumps(payload))
 PY
