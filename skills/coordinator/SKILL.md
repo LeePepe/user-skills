@@ -62,8 +62,8 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
 auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 **GOAL_DONE 关窗与 blocked alerts 两条独立**。
 
-- **禁止“空口承诺巡检后裸退 Turn”（Mandatory Watchdog）**：
-  交互式会话结束 Turn 进入 `idle` 后无后台通知不具备自唤醒能力。协调者拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 启动 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 Cindy (Pi) 同步 `bash` 中运行 `--interval 15 --max-wait 600 --json`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即解卡或执行验收 A（`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
+- **禁止“空口承诺巡检后裸退 Turn”与途中插话续挂看门狗（Mandatory Watchdog & Mid-Flight Question Rule）**：
+  交互式会话结束 Turn 进入 `idle` 后无后台通知不具备自唤醒能力。协调者拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 启动 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 Cindy (Pi) 同步 `bash` 中运行 `--interval 15 --max-wait 600 --json`。**途中用户插话提问规则（Mid-Flight User Question Rule）**：当后台 Herdr TL 仍在运行（`working`／`blocked`，未达 `EVT=GOAL_DONE`）期间，若用户中途插话提问（如问 session ID 或状态），协调者**严禁只回纯文本就结束 Turn 进入 `idle`**——回答问题后必须在**同一 Turn 内立即重新挂载／继续运行 `goal-supervisor.py watch`** 直至 `EVT=GOAL_DONE`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即解卡或执行验收 A（`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
 
 - 双源对账：同时读取 [`ledger.md`](../team-lead/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。Bot 事件使用真实系统时钟与 `id=B<N>`
