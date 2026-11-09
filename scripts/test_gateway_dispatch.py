@@ -168,6 +168,10 @@ elif args[:2] == ["agent", "prompt"]:
             self.assertEqual(payload["logical_group"], "group/steering")
             self.assertEqual(payload["resolved_model"], "opus")
             self.assertEqual(payload["gateway_mode"], "direct_fallback")
+            self.assertIn(
+                "goal-supervisor.py watch --handoff-dir ~/Development/handoff/demo --interval 15 --max-wait 600 --json",
+                payload["watchdog_cmd"],
+            )
             recorded = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
             ws_creates = [c for c in recorded if c[:2] == ["workspace", "create"]]
             self.assertEqual(len(ws_creates), 1)
@@ -214,6 +218,10 @@ elif args[:2] == ["agent", "prompt"]:
             self.assertTrue(reused_payload["reused_existing"])
             self.assertEqual(reused_payload["workspace_id"], "w55")
             self.assertEqual(reused_payload["pane_id"], "w55:p1")
+            self.assertIn(
+                "goal-supervisor.py watch --handoff-dir ~/Development/handoff/demo --interval 15 --max-wait 600 --json",
+                reused_payload["watchdog_cmd"],
+            )
             reuse_calls = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
             self.assertFalse(any(c[:2] == ["workspace", "create"] for c in reuse_calls))
             self.assertFalse(any(c[:2] == ["agent", "start"] for c in reuse_calls))
