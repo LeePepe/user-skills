@@ -1,0 +1,4 @@
+interface:
+  display_name: "Xcode CLI"
+  short_description: "Route SwiftPM and Xcode command-line builds correctly"
+  default_prompt: "Use $xcode-cli to build and test this Apple project with the narrowest correct command-line tool."

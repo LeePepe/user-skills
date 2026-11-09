@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "otter-workspace",
+  "repositories": [
+    "~/Development/user-skills",
+    "~/Development/agent-skills",
+    "~/Development/Skills",
+    "~/Development/Personal/collected-tools/repos"
+  ],
+  "cli_skill_roots": [
+    "~/.agents/skills",
+    "~/.copilot/skills",
+    "~/.codex/skills",
+    "~/.claude/skills"
+  ],
+  "copilot_home": "~/.copilot"
+}

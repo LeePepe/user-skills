@@ -1,0 +1,5 @@
+{
+  "name": "m2-dispatcher",
+  "description": "M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）编排后台 Herdr Goal Steering (TL) 的生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。",
+  "category": "workflow"
+}

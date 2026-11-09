@@ -1,0 +1,5 @@
+{
+  "name": "deep-research",
+  "description": "对任意主题做深度、多来源、经交叉核查的调研,产出带引用、按置信度分级的报告。五阶段流水线:把问题分解成 4-8 个子问题 → 跨渠道(web/github/news/academic)并行 fan-out 调研 → 对每个发现做对抗式核查(证伪而非确认,发现者≠核查者)→ 交叉验证+圆桌综合、标注分歧 → 输出 HIGH/MEDIUM/LOW/CONTESTED 分级的引用报告。Provider-agnostic:同一份 skill 在 Claude Code、Kimi(kimi -p)、Codex(codex exec)三端都成立;fan-out 与核查阶段可跨模型互查(claude 的发现让 codex/kimi 证伪,反之亦然),对方模型作独立第二视角。当用户想「深度调研 / deep research / 全面调研 / 多角度调研 / research roundtable / 帮我把某主题查透并给带引用的报告」时使用。调用前:若问题欠具体(如「买什么车」却无预算/用途/地区),先问 2-3 个澄清问题收窄范围,再把澄清结果织进 args。",
+  "category": "research"
+}

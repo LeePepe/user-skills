@@ -1,0 +1,5 @@
+{
+  "name": "code-review",
+  "description": "Review a branch, PR, worktree, or implementation handoff against both repository standards and feature intent. Use for implementer self-review or independent review when the target repo may contain Spec Kit artifacts and repo-kit files; preserves separate Standards and Spec axes, fans Standards review out by changed layer, checks cross-layer dependency direction, and reports cited findings without editing code.",
+  "category": "repo"
+}

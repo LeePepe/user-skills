@@ -1,0 +1,5 @@
+{
+  "name": "xcode-cli",
+  "description": "Route Apple-platform builds, tests, simulator runs, and result inspection through Swift and Xcode command-line tools. Use when Codex needs to build or test a Swift package, Xcode project, or workspace; diagnose Apple build failures; run an iOS simulator; choose between swift build/test and xcodebuild; or parse xcresult output. Package-only changes stay on SwiftPM commands and escalate to xcodebuild only when the diff includes app/Xcode integration work or the user explicitly requests integration verification. Not for Xcode MCP or GUI automation.",
+  "category": "repo"
+}

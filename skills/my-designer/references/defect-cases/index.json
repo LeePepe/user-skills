@@ -1,0 +1,48 @@
+{
+  "schema": "apple-design-defect-cases/v1",
+  "version": 1,
+  "updated": "2026-11-06",
+  "baseline_mode": "plan-a-apple-hig",
+  "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases start empty and are registered here only when real defects are encountered in practice.",
+  "active_cases": [],
+  "archived_templates": [
+    {
+      "id": "DC-TEMPLATE-001",
+      "title": "macOS Fixed-Width NSPopover Frame-Before-Padding Clipping",
+      "platforms": [
+        "desktop"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "NSPopover",
+        "MenuBarExtra"
+      ],
+      "symptom": "Applying .frame(width: W).padding(P) inside NSPopover expands intrinsic content width to W+2P and clips trailing controls.",
+      "fix_rule": "Apply .padding(P).frame(width: W) and verify pixelWidth == W * scale.",
+      "forbidden_regex": "\\.frame\\(\\s*width\\s*:[^)]+\\)\\s*\\.padding\\("
+    },
+    {
+      "id": "DC-TEMPLATE-002",
+      "title": "Dynamic Telemetry Readout Numeric Ellipsis (12…)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "chart-dataviz"
+      ],
+      "containers": [
+        "NSPopover",
+        "NavigationStack",
+        "Widget"
+      ],
+      "symptom": "High-precision metrics truncate with ellipsis when paired with long labels.",
+      "fix_rule": "Apply .monospacedDigit() and .layoutPriority(1) on numeric readouts; use ViewThatFits for unbounded titles.",
+      "forbidden_regex": null
+    }
+  ]
+}

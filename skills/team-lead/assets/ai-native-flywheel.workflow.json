@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "工程全景飞轮：开发 · 复盘回馈 · 叙事",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "build-ship",
+        "label": "开发与交付闭环",
+        "focus": ["backlog_intake", "slice_herdr", "pr_ci_ship", "live_product"],
+        "note": "覆盖产品矩阵与共享基建：从垂直切片、CLI+Herdr 协同编码到 6DQ 门禁、PR 自动合并与发布读回。"
+      },
+      {
+        "id": "retro-feedback",
+        "label": "复盘反思与回馈开发",
+        "focus": ["live_product", "product_retro", "infra_retro", "gate_upgrade", "auto_fix_task", "slice_herdr"],
+        "note": "项目级（Telemetry 自动发现性能问题、Crash 自动诊断修复）与工程级（Workflow/PR/基建演进）闭环回馈开发。"
+      },
+      {
+        "id": "extract-narrate",
+        "label": "信息抽取与叙事成文",
+        "focus": ["product_retro", "infra_retro", "evidence_extract", "narrative_craft", "blog_series"],
+        "note": "从实战证据中抽取时间线、量化水位与反直觉转折，打磨为深度技术 Blog 与故事集连载。"
+      }
+    ],
+    "output": "assets/ai-native-flywheel.html"
+  },
+  "lanes": [
+    { "id": "dev", "label": "板块一：开发与交付 (App 产品矩阵 + Design/Telemetry/CI 基建)" },
+    { "id": "retro", "label": "板块二(上)：双路复盘诊断 (项目 Telemetry/Crash + 工程 Workflow/PR)" },
+    { "id": "feedback", "label": "板块二(下)：反思回馈开发闭环 (自动修复派单 + 门禁底座升级)", "variant": "exception" },
+    { "id": "story", "label": "板块三：总结抽取与叙事成文 (证据提炼 → Blog / 故事集 / 分享)" }
+  ],
+  "phases": [
+    { "id": "p1_build", "label": "01 开发与交付 (1/3)", "fromCol": 0, "toCol": 1, "variant": "emphasis" },
+    { "id": "p2_retro", "label": "02 复盘反思与回馈开发 (1/3)", "fromCol": 2, "toCol": 3, "variant": "security" },
+    { "id": "p3_story", "label": "03 总结抽取与叙事成文 (1/3)", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": [
+    "backlog_intake",
+    "slice_herdr",
+    "pr_ci_ship",
+    "live_product",
+    "product_retro",
+    "evidence_extract",
+    "narrative_craft",
+    "blog_series"
+  ],
+  "nodes": [
+    {
+      "id": "backlog_intake",
+      "lane": "dev",
+      "col": 0,
+      "type": "frontend",
+      "label": "产品与基建需求池",
+      "sublabel": "新特性 / 自动回馈单",
+      "tag": "产出矩阵入口",
+      "width": 132
+    },
+    {
+      "id": "slice_herdr",
+      "lane": "dev",
+      "col": 1,
+      "type": "backend",
+      "label": "架构切片与协同开发",
+      "sublabel": "垂直切片 + CLI/Herdr",
+      "tag": "1-Hop 隔离实现",
+      "width": 132
+    },
+    {
+      "id": "pr_ci_ship",
+      "lane": "dev",
+      "col": 2,
+      "type": "security",
+      "label": "PR 审查与 6DQ 门禁",
+      "sublabel": "异构双轴审 + 自动合并",
+      "tag": "shared-ci",
+      "width": 132
+    },
+    {
+      "id": "live_product",
+      "lane": "dev",
+      "col": 3,
+      "type": "cloud",
+      "label": "自动化发布与读回",
+      "sublabel": "TestFlight / 线上读回",
+      "tag": "Live & 遥测采集",
+      "width": 132
+    },
+    {
+      "id": "infra_retro",
+      "lane": "retro",
+      "col": 2,
+      "type": "security",
+      "label": "工程与基建复盘",
+      "sublabel": "Workflow / PR / CI 归因",
+      "tag": "H1-H5 根因诊断",
+      "width": 132
+    },
+    {
+      "id": "product_retro",
+      "lane": "retro",
+      "col": 3,
+      "type": "database",
+      "label": "项目遥测与 Crash",
+      "sublabel": "性能退化发现 / 崩溃分析",
+      "tag": "Telemetry 自动感知",
+      "width": 132
+    },
+    {
+      "id": "auto_fix_task",
+      "lane": "feedback",
+      "col": 1,
+      "type": "messagebus",
+      "label": "自动回馈开发池",
+      "sublabel": "Crash 自动修复 / 性能单",
+      "tag": "驱动下一轮开发",
+      "width": 132
+    },
+    {
+      "id": "gate_upgrade",
+      "lane": "feedback",
+      "col": 2,
+      "type": "security",
+      "label": "加固门禁与共享底座",
+      "sublabel": "升级 6DQ / 契约 / Hook",
+      "tag": "物理防回归",
+      "width": 132
+    },
+    {
+      "id": "evidence_extract",
+      "lane": "story",
+      "col": 3,
+      "type": "database",
+      "label": "多源信息与证据抽取",
+      "sublabel": "时间线 / 量化对比 / 转折",
+      "tag": "高信噪比素材包",
+      "width": 132
+    },
+    {
+      "id": "narrative_craft",
+      "lane": "story",
+      "col": 4,
+      "type": "backend",
+      "label": "总结提炼与叙事构建",
+      "sublabel": "反直觉冲突 + 隐私脱敏",
+      "tag": "五段式叙事法",
+      "width": 132
+    },
+    {
+      "id": "blog_series",
+      "lane": "story",
+      "col": 5,
+      "type": "frontend",
+      "label": "Blog · 故事集 · 分享",
+      "sublabel": "技术深潜与系列连载",
+      "tag": "知识复利产出",
+      "width": 132
+    }
+  ],
+  "edges": [
+    { "id": "e_intake_slice", "from": "backlog_intake", "to": "slice_herdr", "variant": "emphasis" },
+    { "id": "e_slice_pr", "from": "slice_herdr", "to": "pr_ci_ship", "label": "提交", "variant": "emphasis" },
+    { "id": "e_pr_live", "from": "pr_ci_ship", "to": "live_product", "label": "发布", "variant": "emphasis" },
+    { "id": "e_live_prod_retro", "from": "live_product", "to": "product_retro", "variant": "emphasis" },
+    { "id": "e_pr_eng_retro", "from": "pr_ci_ship", "to": "infra_retro", "variant": "security", "role": "branch" },
+    { "id": "e_prod_eng_link", "from": "product_retro", "to": "infra_retro", "label": "性能/崩溃", "variant": "emphasis", "role": "return" },
+    { "id": "e_eng_gate", "from": "infra_retro", "to": "gate_upgrade", "variant": "security" },
+    { "id": "e_gate_autofix", "from": "gate_upgrade", "to": "auto_fix_task", "label": "回流", "variant": "emphasis", "role": "return" },
+    { "id": "e_autofix_dev", "from": "auto_fix_task", "to": "slice_herdr", "variant": "emphasis", "role": "return" },
+    { "id": "e_prod_extract", "from": "product_retro", "to": "evidence_extract", "variant": "default" },
+    { "id": "e_extract_narrate", "from": "evidence_extract", "to": "narrative_craft", "label": "提炼", "variant": "emphasis" },
+    { "id": "e_narrate_blog", "from": "narrative_craft", "to": "blog_series", "label": "成文", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "开发交付 ⇄ 双路复盘回馈 (项目 + 工程)",
+      "items": [
+        "项目级：Telemetry 发现性能退化、Crash 自动诊断回流开发",
+        "工程级：Workflow / PR / CI 基建复盘，持续加固 6DQ 底座"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "总结抽取 ➔ 叙事成文 (Blog / 故事集)",
+      "items": [
+        "信息抽取：从遥测水位、Crash 根因与台账提取量化证据与转折",
+        "叙事产出：沉淀《带一群 AI 干活》连载、深度复盘 Blog 与分享"
+      ]
+    }
+  ]
+}

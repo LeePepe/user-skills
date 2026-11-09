@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "global": {
+    "evidence_law": "Use only verified evidence IDs and preserve provenance.",
+    "privacy_redlines": "Remove secrets, personal paths, private identifiers, and customer data.",
+    "anti_slogan": "Prefer a falsifiable mechanism over a slogan."
+  },
+  "categories": {
+    "story_series": {
+      "mode": "append",
+      "slots": {
+        "format": "Scene, pivot, mechanism, measured readback."
+      }
+    },
+    "tech_deep_dive": {
+      "mode": "append",
+      "slots": {
+        "format": "Timeline, root cause, repair, limits, and next lock."
+      }
+    },
+    "sharing_deck": {
+      "mode": "override",
+      "slots": {
+        "format": "One thesis per slide with evidence and applicability."
+      }
+    }
+  },
+  "intent_required_keys": [
+    "pivot",
+    "takeaway_mechanism"
+  ],
+  "sources_required_keys": [
+    "provenance",
+    "quantitative_delta",
+    "evidence_ids"
+  ]
+}
