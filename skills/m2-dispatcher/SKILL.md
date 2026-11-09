@@ -8,17 +8,18 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
 
 本入口供 **`M2-Dispatcher`**（常驻 `Grok Bot`、`Cindy` 与交互式 CLI 入口）共用，规定 `M2-Dispatcher` 与 Goal-level `Steering`（TL，`<goal>-goal-tl-r1`）的生命周期；Task-level 1-Hop 执行由 [`team-lead`](../team-lead/SKILL.md) 负责。共享事实源：
 
-- [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml)：模型、机器与白名单档位。
-- [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md)：角色、启动、监控与回收规则。
-- [`ledger.md`](../team-lead/references/ledger.md)：Goal 事件与 R10 证据格式。
-- [`goal-queue.py`](../team-lead/scripts/goal-queue.py)：批量入队、热追加、波次与 drain。
-- [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh)：分屏、启动、解卡与等待的 fail-closed 辅助脚本。
+- [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml)（`references/runtime-profiles.yaml`）
+- [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md)（`references/bots-and-agents.md`）
+- [`ledger.md`](../team-lead/references/ledger.md)（`references/ledger.md`）
+- [`goal-queue.py`](../team-lead/scripts/goal-queue.py)（`scripts/goal-queue.py`）
+- [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh)（`scripts/herdr-dispatch.sh`）
+- **脚本归属（双路径兼容）**：① **M2+M1 共享编排**（`scripts/` ⇄ `../team-lead/scripts/`）：`herdr-dispatch.sh`、`goal-supervisor.py`、`goal-queue.py`、`state_store.py`、`jev_client.py`；② **M2 专属 Harness**：`skill-slash-expander.ts`、`install-pi-harness.sh`；③ **M1 任务执行**（`../team-lead/scripts/`）：`ci-monitor.py`、`git-gc.py`、`feedback_guard.py`、`gtt-telemetry-export.py`、`linear-sync.py`、`jev-compact.py`、`jev-skill-router.py`。
 
 ## 三层分离
 
-1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` 的 Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 的 Task-level 1-Hop 执行。两者共享上述 `references/*` 与 `scripts/*`。
-2. **Layer B — Private Bot Identity & Memory**：Bot 记忆与例程留在私有记忆，不把花名册或模型表作私有真源。
-3. **Layer C — Product Auto-review Gate**：安全门禁在仓库外；若阻止 `herdr` 调用则 fail-closed 上报 Owner，不退回 `M2-Dispatcher` 编辑业务代码。
+1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 1-Hop 执行。
+2. **Layer B — Private Bot Identity & Memory**：Bot 记忆留在私有记忆，不复制花名册或模型表。
+3. **Layer C — Product Auto-review Gate**：安全门禁阻止 `herdr` 时 fail-closed 上报 Owner，不退回 `M2-Dispatcher` 改代码。
 
 ## 1. 开 TL、热追加与路由
 
@@ -55,8 +56,8 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
 auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 **GOAL_DONE 关窗与 blocked alerts 两条独立**。
 
-- **禁止“空口承诺巡检后裸退 Turn”与途中插话续挂看门狗（Mandatory Watchdog & Mid-Flight Question Rule）**：
-  交互式会话结束 Turn 进入 `idle` 后无后台通知不具备自唤醒能力。`M2-Dispatcher` 拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 启动 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 Cindy (Pi) 同步 `bash` 中运行 `--interval 15 --max-wait 600 --json`。**途中用户插话提问规则（Mid-Flight User Question Rule）**：当后台 Herdr TL 仍在运行（`working`／`blocked`，尚未达成 `EVT=GOAL_DONE`）期间，若用户中途插话提问（例如询问 session ID、当前状态等），`M2-Dispatcher` **严禁只回纯文本就结束 Turn 进入 `idle`**——回答用户问题后，必须在**同一 Turn 内立即重新挂载／继续运行 `goal-supervisor.py watch`**（CLI 用 `async`，Cindy/Pi 用有界同步切片）直至 `EVT=GOAL_DONE`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即执行解卡或完结回收（验收 A：`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
+- **禁止“空口承诺巡检后裸退 Turn”与途中插话续挂看门狗（Mandatory Watchdog & Mid-Flight User Question Rule）**：
+  交互式会话结束 Turn 进入 `idle` 后无自唤醒能力。`M2-Dispatcher` 拉起后台 TL 后，CLI 启动异步 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；Cindy (Pi) 同步运行 `--interval 15 --max-wait 600 --json`。**Mid-Flight User Question Rule**：当后台 Herdr TL 仍在运行（尚未 `EVT=GOAL_DONE`）期间，若用户中途插话提问，`M2-Dispatcher` **严禁只回纯文本就结束 Turn 进入 `idle`**——回答后必须在**同一 Turn 内立即续挂 `goal-supervisor.py watch`** 直至 `EVT=GOAL_DONE`。达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT` 时立即解卡或关窗回收（`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
 
 - 双源对账：同时读取 [`ledger.md`](../team-lead/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。`M2-Dispatcher` 事件使用真实系统时钟与 `id=B<N>`
@@ -84,14 +85,7 @@ auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 
 ## 4. 交接边界
 
-`M2-Dispatcher` 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收；Task 的实现、验证、R10
-回执与独立审查遵循 [`team-lead`](../team-lead/SKILL.md)。所有异常沿
-`Writer/Reviewer → TL → M2-Dispatcher → Owner` 回报，真实 Git、ledger、R10 和 Herdr 状态
-必须相互对账。
-
-此处同步 **1-Hop Communication & Lifecycle Ownership**：当 `M2-Dispatcher` 拉起独立的 Goal TL
-时，`M2-Dispatcher` 只与该 TL 沟通并负责 TL 层的生命周期清理；`M2-Dispatcher` 不得创建、prompt 或关闭 TL 的
-任何 Subagent。TL 全权拥有并负责这些 Subagent 的派发、沟通、生命周期与回收。
+`M2-Dispatcher` 只负责开 TL、入队、路由、巡检、解卡与 Goal 完结回收（遵循 **1-Hop Communication & Lifecycle Ownership**，绝不创建、prompt 或关闭 TL 的任何 Subagent；TL 全权负责下属 Subagent 的派发与回收）；Task 的实现、验证、R10 回执与独立审查遵循 [`team-lead`](../team-lead/SKILL.md)。所有异常沿 `Writer/Reviewer → TL → M2-Dispatcher → Owner` 回报，真实 Git、ledger、R10 和 Herdr 状态必须相互对账。
 
 ## 5. 固定操作顺序
 
