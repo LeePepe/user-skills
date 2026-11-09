@@ -281,6 +281,25 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue(isinstance(manifest.get("description"), str) and manifest["description"])
             self.assertTrue(isinstance(manifest.get("category"), str) and manifest["category"])
 
+    def test_design_case_surface_contains_no_project_private_identifiers(self) -> None:
+        for rel_path in (
+            "skills/my-designer/references/defect-cases/index.json",
+            "skills/my-designer/scripts/verify_design_cases.py",
+        ):
+            text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+            for private in ("progressRail", "isUnilateral", "DashboardL10n"):
+                self.assertNotIn(private, text, f"{private} leaked into {rel_path}")
+
+    def test_skill_contract_package_is_wired(self) -> None:
+        skill_dir = SKILLS_DIR / "skill-contract"
+        self.assertTrue((skill_dir / "SKILL.md").is_file())
+        self.assertTrue((skill_dir / "scripts" / "skill_contract.py").is_file())
+        manifest = json.loads((skill_dir / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest.get("category"), "meta")
+        contract = (skill_dir / "scripts" / "skill_contract.py").read_text(encoding="utf-8")
+        for token in ("audit_package", "sink_rule", "case-card", "mental-model", "regex-gate"):
+            self.assertIn(token, contract)
+
     def test_skill_frontmatter_valid(self) -> None:
         skill_dirs = sorted(path for path in SKILLS_DIR.iterdir() if path.is_dir())
         self.assertGreaterEqual(len(skill_dirs), 1)

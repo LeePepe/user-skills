@@ -46,7 +46,7 @@ python3 skills/my-designer/scripts/verify_design_cases.py route \
   --platform desktop --dimensions glass-material,chart-dataviz
 
 # 2. Run Plan A Apple Native Code Audit (+ active Plan C checks) on Swift files
-python3 shared-ci/scripts/context/design_contract.py --shared-ci/scripts/context/design_contract.py --audit-code \
+python3 shared-ci/scripts/context/design_contract.py --audit-code \
   --platform desktop --path <SwiftUI-File-Or-Dir>
 ```
 

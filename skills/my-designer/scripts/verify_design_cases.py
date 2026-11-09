@@ -346,11 +346,9 @@ def command_route(args: argparse.Namespace) -> int:
 
 
 def _next_defect_case_id(cases_doc: dict[str, Any]) -> str:
-    used = {str(c.get("id", "")) for c in cases_doc.get("active_cases", [])}
-    number = 1
-    while f"DC-{number:03d}" in used:
-        number += 1
-    return f"DC-{number:03d}"
+    numbers = [int(match.group(1)) for c in cases_doc.get("active_cases", [])
+               if (match := re.fullmatch(r"DC-(\d+)", str(c.get("id", ""))))]
+    return f"DC-{(max(numbers) if numbers else 0) + 1:03d}"
 
 
 def command_register_case(args: argparse.Namespace) -> int:
@@ -388,6 +386,7 @@ def command_flow_map(args: argparse.Namespace) -> int:
     ds_refs = ROOT.parent / "design-studio" / "references"
     desktop_vault = _load_json(ds_refs / "vault" / "desktop-macos.json")
     mobile_vault = _load_json(ds_refs / "vault" / "mobile-ios.json")
+    web_vault = _load_json(ds_refs / "vault" / "web.json")
     catalog = _load_json(ds_refs / "catalog.json")
 
     l1_md_files = sorted((ROOT / "references").glob("*.md"))
@@ -421,6 +420,7 @@ def command_flow_map(args: argparse.Namespace) -> int:
                 "taxonomy_dimensions": len(taxonomy.get("dimensions", [])),
                 "desktop_macos_cards": len(desktop_vault.get("inspirations", [])),
                 "mobile_ios_cards": len(mobile_vault.get("inspirations", [])),
+                "web_cards": len(web_vault.get("inspirations", [])),
                 "catalog_patterns": len(catalog.get("patterns", [])),
                 "catalog_tools": len(catalog.get("tools", [])),
             },
