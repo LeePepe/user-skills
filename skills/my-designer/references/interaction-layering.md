@@ -53,3 +53,28 @@ Before drawing layout boxes, classify every domain element in a `3 × 4` table:
   - Houses `L0` canvas, `L1` grouped sections/lists, and `L2` focal cards. Never apply `.glassEffect` inside content rows, and never use heavy drop shadows where luminance tiers (`L0 < L1 < L2`) and 1px indented hairlines suffice.
 - **Breathing Room & Zero-Guessing UX (`L1` Companion)**:
   - When tuning spacing ratios (`1:3:6`, `padding >= spacing`), luminance borders, `90/10` chromatic restraint, or novice-friendly microcopy (`说法 · 入口 · 反馈`), load [breathing-and-clarity.md](breathing-and-clarity.md).
+
+---
+
+### 2.4 · Spatial Action Priority Principle (`Bottom > Top > Secondary Menu` — Thumb-Zone Hierarchy)
+
+Map every action's physical placement on `mobile` (and primary action surfaces) strictly by invocation frequency and cognitive priority:
+
+| Spatial Zone | Priority Tier | Allowed Action Types & Examples | Placement Contract & Anti-Patterns |
+|---|---|---|---|
+| **1. `Bottom` (Thumb Golden Zone)** | **High-Priority Actions (`P0 / P1`)** | High-frequency core flow commits and frequent creation actions (e.g., `✓ 完成本组` / `Complete Set`, `+ 添加动作` / `+ Add Exercise`, `开始录音` / `Record`) | Anchor in `.safeAreaInset(edge: .bottom)` bottom action bar or primary focal card footer for zero-stretch single-hand thumb reach. |
+| **2. `Top` (Navigation Toolbar)** | **Low-Priority Session / Global Controls (`P1 / P2`)** | Session-level mode/lens switchers (e.g., `[平铺 \| 专注]` segmented control) and session-level completion (`完成训练` / `Finish`) | Place in `.toolbar` (`principal` / `topBarTrailing`). **Never cram high-frequency creation buttons (`+ Add Exercise`) next to session finish buttons in the top bar.** |
+| **3. `Secondary Menu` (`⋯` / Sheet / Swipe)** | **Lower-Priority or Destructive Actions (`P2 / P3`)** | Reorder, replace, AI substitute, unit toggle, set type change, delete, or discard session | Tuck into a `⋯` (`ellipsis`) secondary menu (`>= 44×44pt` hit target), row swipe actions, or confirmation sheet; never expose directly on the top bar or primary card face. |
+
+---
+
+### 2.5 · Compact Width Anti-Overflow Guardrails (`DC-003`)
+
+Prevent unbounded horizontal children from expanding a parent `VStack` beyond the compact iPhone viewport width (`393pt`) and clipping sibling headers/cards on both left and right edges:
+
+1. **Wrap Dynamic Horizontal Rails in `ScrollView(.horizontal, showsIndicators: false)`**:
+   - Any dynamic `HStack { ForEach(...) }` (e.g., set progress dots/pills) MUST be scoped to the active parent item (not all session items globally) and wrapped in `ScrollView(.horizontal, showsIndicators: false)`.
+2. **Cap Complex Interactive Cards at `<= 2` per Horizontal Row on Compact Width**:
+   - Never cram `3+` multi-button interactive stepper/input cards into a single horizontal `HStack` on compact width (`393pt`). When a third module appears (e.g., unilateral `L + R + Reps`), split into a `2 + 1` vertical grid (`L + R` top row, `Reps` full-width bottom row).
+3. **Lock Vertical `ScrollView` Content Width to the Container**:
+   - Apply `.containerRelativeFrame(.horizontal)` on the root `VStack` inside vertical `ScrollView` containers so no child can push the scroll content wider than the viewport.

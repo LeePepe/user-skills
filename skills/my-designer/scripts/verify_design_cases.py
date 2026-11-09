@@ -130,6 +130,16 @@ PLAN_A_CODE_RULES = [
         "pattern": re.compile(r"(?:SWDonutChart|SectorMark)[\s\S]{0,800}?ProgressView\(\s*value\s*:"),
         "message": "Never render both a Donut/Sector chart with legend AND a redundant ProgressView bar list for the same dataset in one pane; use a Segmented Lens or interactive chart slices.",
     },
+    {
+        "id": "HIG-LAYOUT-OVERFLOW",
+        "severity": "High",
+        "platforms": ["mobile"],
+        "citation": "DC-003 › Compact Width Anti-Overflow Guardrails (interaction-layering.md §2.5)",
+        "pattern": re.compile(
+            r"(?:var\s+progressRail\s*:\s*some\s+View\s*\{\s*HStack\b|HStack\s*\([^)]*\)\s*\{\s*if\s+\w+(?:\.\w+)*\.isUnilateral\b)"
+        ),
+        "message": "Unbounded horizontal HStack/ForEach rail or 3+ interactive cards crammed into one compact HStack expands parent VStack beyond 393pt viewport width; wrap dynamic rails in ScrollView(.horizontal, showsIndicators: false), cap compact rows at <=2 complex cards (2+1 split), and lock ScrollView content width with .containerRelativeFrame(.horizontal).",
+    },
 ]
 
 
