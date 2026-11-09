@@ -344,7 +344,7 @@ class GraphQLClient:
 
     def issue(self, identifier: str) -> dict[str, Any]:
         fields = f"""
-          id identifier url title description priority updatedAt
+          id identifier url title description priority createdAt updatedAt
           state {{ id name type }}
           team {{ id key name }}
           project {{ id name }}
@@ -422,7 +422,7 @@ class GraphQLClient:
               issueCreate(input: $input) {{
                 success
                 issue {{
-                  id identifier url title description priority updatedAt
+                  id identifier url title description priority createdAt updatedAt
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -470,7 +470,7 @@ class GraphQLClient:
               issueUpdate(id: $id, input: $input) {{
                 success
                 issue {{
-                  id identifier url title description priority updatedAt
+                  id identifier url title description priority createdAt updatedAt
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -512,7 +512,7 @@ class GraphQLClient:
             query ListIssues($team: String!, $first: Int!) {
               issues(filter: {team: {key: {eq: $team}}}, first: $first, orderBy: updatedAt) {
                 nodes {
-                  id identifier title url description priority updatedAt
+                  id identifier title url description priority createdAt updatedAt
                   state { id name type } project { id name }
                   labels { nodes { id name } }
                 }
@@ -1379,13 +1379,21 @@ def _issue_summary(issue: dict[str, Any]) -> dict[str, Any]:
     state = issue.get("state") or {}
     project = issue.get("project") or {}
     return {
+        "id": issue.get("id"),
         "identifier": issue.get("identifier"),
         "title": issue.get("title"),
         "state": state.get("name") or state.get("type"),
+        "stateType": state.get("type"),
         "project": project.get("name") if project else None,
         "priority": issue.get("priority"),
         "url": issue.get("url"),
+        "createdAt": issue.get("createdAt"),
         "updatedAt": issue.get("updatedAt"),
+        "labels": [
+            node.get("name")
+            for node in (issue.get("labels") or {}).get("nodes", [])
+            if isinstance(node, dict) and node.get("name")
+        ],
     }
 
 
@@ -1393,7 +1401,6 @@ def _issue_detail(issue: dict[str, Any]) -> dict[str, Any]:
     result = _issue_summary(issue)
     result.update({
         "description": issue.get("description"),
-        "labels": [node.get("name") for node in (issue.get("labels") or {}).get("nodes", [])],
         "comments": (issue.get("comments") or {}).get("nodes", []),
         "history": (issue.get("history") or {}).get("nodes", []),
     })
@@ -1566,12 +1573,21 @@ def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
     issue = client.create_issue(team_id=str(team["id"]), title=args.title, description=description,
                                 state_id=str(target_state["id"]) if target_state else None,
                                 label_ids=[str(label["id"])] if label else None, project_id=project_id)
+    summary = _issue_summary(issue)
+    if not summary.get("project") and project_id:
+        summary["project"] = project_name
     return {
+        "ok": True,
+        "command": "idea",
+        "mode": mode,
+        "decision": "accept",
         "identifier": issue.get("identifier"),
         "url": issue.get("url"),
         "state": issue.get("state", {}).get("name"),
+        "stateType": issue.get("state", {}).get("type"),
         "id": issue.get("id"),
-        "project": (issue.get("project") or {}).get("name") or (project_name if project_id else None),
+        "project": summary.get("project"),
+        "issue": summary,
     }
 
 
