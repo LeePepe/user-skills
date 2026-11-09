@@ -35,7 +35,7 @@ const ALLOWED_M2_SPEC_PATTERNS: readonly RegExp[] = [
 ];
 
 export const M2_SPEC_ONLY_BLOCK_REASON =
-	"M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md). Code and other files must be modified in a worktree by dispatching Herdr TL via herdr-dispatch.sh.";
+	"M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md). Code and other files must be modified in a worktree by dispatching Herdr TL via herdr-dispatch.sh. After dispatching Herdr TL, NEVER poll with 'sleep && herdr agent read' or 'herdr agent wait'; run 'python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json' synchronously until EVT=GOAL_DONE.";
 
 export function isAllowedM2SpecPath(rawPath: string, cwd?: string): boolean {
 	if (!rawPath || typeof rawPath !== "string") return false;
@@ -290,6 +290,10 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 
 		if (isAllowedM2SpecPath(targetPath, ctx?.cwd)) {
 			return undefined;
+		}
+
+		if (!injectedSkills.has("m2-dispatcher")) {
+			pendingQueue.add("m2-dispatcher");
 		}
 
 		if (ctx?.hasUI && ctx.ui?.notify) {

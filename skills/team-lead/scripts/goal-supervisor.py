@@ -266,7 +266,7 @@ def goal_metadata(root: Path) -> list[dict[str, Any]]:
     metadata: list[dict[str, Any]] = []
     for ledger in sorted(root.glob("*/ledger.md")):
         events = goal_events(ledger)
-        if not events or any(event == "GOAL_DONE" for _, event in events):
+        if any(event == "GOAL_DONE" for _, event in events):
             continue
         text = ledger.read_text(encoding="utf-8")
         tl_name = ledger_tl_name(text)
@@ -274,6 +274,11 @@ def goal_metadata(root: Path) -> list[dict[str, Any]]:
         recorded_stem = tl_stem(tl_name)
         if recorded_stem:
             stems.add(recorded_stem)
+        latest = (
+            max(timestamp for timestamp, _ in events)
+            if events
+            else dt.datetime.fromtimestamp(ledger.stat().st_mtime, tz=dt.timezone.utc)
+        )
         metadata.append(
             {
                 "path": ledger.parent,
@@ -282,7 +287,7 @@ def goal_metadata(root: Path) -> list[dict[str, Any]]:
                 "ledger_names": ledger_agent_names(text),
                 "stems": stems,
                 "events": events,
-                "latest": max(timestamp for timestamp, _ in events),
+                "latest": latest,
             }
         )
     return metadata
@@ -1028,11 +1033,14 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
     import time
 
     handoff = Path(args.handoff_dir).expanduser()
-    interval = max(5, int(args.interval))
+    interval = max(1, int(args.interval))
     max_wait = max(interval, int(args.max_wait))
     started = time.monotonic()
+    tl_seen_working = False
+    polls = 0
     while True:
-        events = [event for _, event in goal_events(handoff / "ledger.md")]
+        ledger_path = handoff / "ledger.md"
+        events = [event for _, event in goal_events(ledger_path)] if ledger_path.is_file() else []
         if "GOAL_DONE" in events:
             return {"goal_id": handoff.name, "reason": "GOAL_DONE", "events": len(events)}
         scan_args = argparse.Namespace(
@@ -1049,6 +1057,47 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
         goal_anomalies = [a for a in scan_result["anomalies"] if a.get("goal_id") == handoff.name]
         if goal_anomalies:
             return {"goal_id": handoff.name, "reason": "ANOMALY", "anomalies": goal_anomalies}
+
+        agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
+        goals_meta = goal_metadata(handoff.parent)
+        tl_name = ledger_tl_name(ledger_path.read_text(encoding="utf-8")) if ledger_path.is_file() else ""
+        goal_agents: list[dict[str, Any]] = []
+        for item in agents:
+            name = agent_name(item)
+            chosen = bind_live_tl(name, agent_cwd(item), goals_meta) or choose_goal_name(
+                name, agent_cwd(item), goals_meta
+            )
+            if chosen == handoff.name or (tl_name and name == tl_name):
+                goal_agents.append(item)
+
+        tl_agent = next(
+            (
+                item
+                for item in goal_agents
+                if (tl_name and agent_name(item) == tl_name) or role_for(agent_name(item)) == "team_lead"
+            ),
+            None,
+        )
+        if tl_agent is not None:
+            resolved_tl_name = agent_name(tl_agent) or tl_name
+            tl_status = agent_status(tl_agent)
+            if tl_status == "working":
+                tl_seen_working = True
+            elif tl_status in {"idle", "done"} and (tl_seen_working or polls >= 1):
+                other_busy = any(
+                    item is not tl_agent and agent_status(item) in {"working", "blocked"}
+                    for item in goal_agents
+                )
+                if not other_busy:
+                    return {
+                        "goal_id": handoff.name,
+                        "reason": "TL_IDLE_OR_DONE",
+                        "tl": resolved_tl_name,
+                        "tl_status": tl_status,
+                        "events": len(events),
+                    }
+
+        polls += 1
         if time.monotonic() - started >= max_wait:
             return {"goal_id": handoff.name, "reason": "WATCH_SLICE_TIMEOUT", "events": len(events)}
         time.sleep(interval)

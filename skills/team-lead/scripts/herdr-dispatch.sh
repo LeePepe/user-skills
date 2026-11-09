@@ -763,7 +763,10 @@ else:
         fi
       fi
     fi
-    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" <<'PY'
+    WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
+    [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
+    WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
+    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" <<'PY'
 import json, sys
 payload = {
     "ok": True,
@@ -772,6 +775,7 @@ payload = {
     "agent": sys.argv[2],
     "reused_existing": True,
     "agent_status": sys.argv[8],
+    "watchdog_cmd": sys.argv[9],
 }
 if sys.argv[3] == "1":
     payload.update({
@@ -967,11 +971,20 @@ elif [[ "$WAIT_FLAG" -eq 0 ]]; then
   fi
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" <<'PY'
+WATCHDOG_CMD=""
+if [[ "$ROLE" == "team_lead" || "$NEW_WORKSPACE" -eq 1 ]]; then
+  WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
+  [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
+  WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
+fi
+
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" <<'PY'
 import json, sys
 payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
 if sys.argv[8]:
     payload["workspace_id"] = sys.argv[8]
+if sys.argv[12]:
+    payload["watchdog_cmd"] = sys.argv[12]
 if sys.argv[3] == "1" or sys.argv[7] == "1":
     payload.update({
         "resolved_kind": sys.argv[9],

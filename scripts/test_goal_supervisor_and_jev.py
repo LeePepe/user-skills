@@ -214,6 +214,46 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertTrue((archive / "turn-2-drop.log").read_text() == blocks[1]["text"])
             self.assertEqual(compacted[2]["action"], "keep_recent")
 
+    def test_empty_events_ledger_tracked_and_watch_wakes_on_tl_idle_or_done(self):
+        supervisor = load_supervisor()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            goal = root / "fresh-goal"
+            goal.mkdir(parents=True)
+            (goal / "ledger.md").write_text(
+                "# Goal: fresh-goal\n- Owner: tianpei\n- TL: fresh-goal-goal-tl-r1\n",
+                encoding="utf-8",
+            )
+            meta = supervisor.goal_metadata(root)
+            self.assertEqual([item["name"] for item in meta], ["fresh-goal"])
+            self.assertEqual(meta[0]["tl_name"], "fresh-goal-goal-tl-r1")
+
+            agents_file = root / "agents.json"
+            calls = []
+            def fake_load_agents(_path):
+                calls.append(1)
+                if len(calls) == 1:
+                    return [{"name": "fresh-goal-goal-tl-r1", "agent_status": "working", "cwd": str(goal)}]
+                return [{"name": "fresh-goal-goal-tl-r1", "agent_status": "done", "cwd": str(goal)}]
+
+            with patch.object(supervisor, "load_agents", side_effect=fake_load_agents), patch.object(
+                supervisor.time, "sleep", return_value=None
+            ):
+                args = supervisor.argparse.Namespace(
+                    handoff_dir=str(goal),
+                    interval=1,
+                    max_wait=30,
+                    herdr_json=str(agents_file),
+                    write_alerts=False,
+                    mode="observe",
+                    json=True,
+                )
+                watch_res = supervisor.watch(args)
+            self.assertEqual(watch_res["reason"], "TL_IDLE_OR_DONE")
+            self.assertEqual(watch_res["tl"], "fresh-goal-goal-tl-r1")
+            self.assertEqual(watch_res["tl_status"], "done")
+            self.assertEqual(watch_res["events"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

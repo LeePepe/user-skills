@@ -689,8 +689,14 @@ class VerifySkillsTests(unittest.TestCase):
         expander_ts = (skill_dir / "scripts" / "skill-slash-expander.ts").read_text(encoding="utf-8")
         self.assertIn('pi.on("tool_call"', expander_ts)
         self.assertIn("M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md).", expander_ts)
+        self.assertIn("NEVER poll with 'sleep && herdr agent read' or 'herdr agent wait'", expander_ts)
+        self.assertIn("goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json", expander_ts)
+        self.assertIn('pendingQueue.add("m2-dispatcher")', expander_ts)
         self.assertIn("HERDR_ENV", expander_ts)
         self.assertIn("CINDY_PI_SUBAGENT_RUN_DIR", expander_ts)
+
+        installer_sh = (skill_dir / "scripts" / "install-pi-harness.sh").read_text(encoding="utf-8")
+        self.assertNotIn("rm -f", installer_sh)
 
         prepush_text = (REPO_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
         self.assertIn("refs/heads/main", prepush_text)

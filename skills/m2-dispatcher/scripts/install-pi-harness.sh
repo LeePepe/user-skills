@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install and sync `skill-slash-expander.ts` into both native Pi CLI (`~/.pi/agent`)
 # and Cindy's managed package store (`CindyGlobal/pi-package-home`), recomputing
-# `cindy-pi-package-fingerprint-v1` and cleaning legacy global dotfile instruction copies.
+# `cindy-pi-package-fingerprint-v1`. Never modifies any global AGENTS.md / CLAUDE.md files.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,12 +18,6 @@ CINDY_PKG_DIR="$CINDY_PKG_HOME/cindy-skill-slash-expander"
 
 mkdir -p "$PI_AGENT_DIR/extensions"
 cp "$EXT_SRC" "$PI_AGENT_DIR/extensions/skill-slash-expander.ts"
-
-# Clean legacy standalone global dotfile instruction copies (routed via repo AGENTS.md -> user-skills)
-rm -f "$HOME/.claude/CLAUDE.md" \
-      "$HOME/.codex/AGENTS.md" \
-      "$HOME/.copilot/copilot-instructions.md" \
-      "$PI_AGENT_DIR/AGENTS.md"
 
 if [[ -d "$CINDY_PKG_HOME" ]]; then
   mkdir -p "$CINDY_PKG_DIR/extensions" "$CINDY_PKG_DIR/prompts"
