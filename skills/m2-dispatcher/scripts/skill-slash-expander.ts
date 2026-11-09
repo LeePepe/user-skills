@@ -52,6 +52,182 @@ export function isM2DispatcherMainSession(env: NodeJS.ProcessEnv = process.env):
 	return true;
 }
 
+const GEMINI_MODEL_RE = /^gemini-/i;
+const ALLOWED_GEMINI_SCHEMA_KEYS = new Set([
+	"type",
+	"format",
+	"title",
+	"description",
+	"nullable",
+	"enum",
+	"maxItems",
+	"minItems",
+	"properties",
+	"required",
+	"minProperties",
+	"maxProperties",
+	"minLength",
+	"maxLength",
+	"pattern",
+	"example",
+	"anyOf",
+	"default",
+	"items",
+	"minimum",
+	"maximum",
+]);
+
+export function isGeminiModel(model?: string | null): boolean {
+	if (!model || typeof model !== "string") return false;
+	const leaf = model.split("/").pop() ?? model;
+	return GEMINI_MODEL_RE.test(leaf);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sanitizeAnyOfBranches(branches: unknown[], out: Record<string, unknown>): void {
+	const cleaned: unknown[] = [];
+	for (const branch of branches) {
+		if (isObjectRecord(branch) && branch.type === "null") {
+			out.nullable = true;
+		} else {
+			cleaned.push(sanitizeGeminiSchema(branch));
+		}
+	}
+	if (cleaned.length === 1 && isObjectRecord(cleaned[0])) {
+		for (const [bk, bv] of Object.entries(cleaned[0])) {
+			if (!(bk in out)) out[bk] = bv;
+		}
+	} else if (cleaned.length > 0) {
+		out.anyOf = cleaned;
+	}
+}
+
+export function sanitizeGeminiSchema(node: unknown): unknown {
+	if (Array.isArray(node)) {
+		return node.map((item) => sanitizeGeminiSchema(item));
+	}
+	if (!isObjectRecord(node)) {
+		return node;
+	}
+	const out: Record<string, unknown> = {};
+	if ("const" in node && !("enum" in node)) {
+		out.enum = [String(node.const)];
+		if (!("type" in node)) out.type = "string";
+	}
+	for (const [rawKey, value] of Object.entries(node)) {
+		if (rawKey === "properties" && isObjectRecord(value)) {
+			const props: Record<string, unknown> = {};
+			for (const [pk, pv] of Object.entries(value)) {
+				props[pk] = sanitizeGeminiSchema(pv);
+			}
+			out.properties = props;
+			continue;
+		}
+		const key = rawKey === "oneOf" && Array.isArray(value) ? "anyOf" : rawKey;
+		if (!ALLOWED_GEMINI_SCHEMA_KEYS.has(key)) continue;
+		if (key === "type") {
+			if (Array.isArray(value)) {
+				const nonNull = value.filter((item): item is string => typeof item === "string" && item !== "null");
+				out.type = nonNull[0] ?? "string";
+				if (value.includes("null")) out.nullable = true;
+			} else if (value === "null") {
+				out.type = "string";
+				out.nullable = true;
+			} else {
+				out.type = value;
+			}
+			continue;
+		}
+		if (key === "anyOf" && Array.isArray(value)) {
+			sanitizeAnyOfBranches(value, out);
+			continue;
+		}
+		out[key] = sanitizeGeminiSchema(value);
+	}
+	if ("anyOf" in out) {
+		delete out.type;
+	}
+	if (out.type === "array") {
+		const items = out.items;
+		if (!isObjectRecord(items) || Object.keys(items).length === 0) {
+			out.items = { type: "string" };
+		} else if ("anyOf" in items) {
+			out.items = { type: "object" };
+		}
+	}
+	if (Array.isArray(out.required)) {
+		const props = out.properties;
+		if (isObjectRecord(props)) {
+			const filtered = out.required.filter((reqKey): reqKey is string => typeof reqKey === "string" && reqKey in props);
+			if (filtered.length > 0) {
+				out.required = filtered;
+			} else {
+				delete out.required;
+			}
+		} else {
+			delete out.required;
+		}
+	}
+	return out;
+}
+
+export function sanitizeGeminiSchemaInPlace<T>(schema: T): T {
+	if (!isObjectRecord(schema)) return schema;
+	const cleaned = sanitizeGeminiSchema(schema);
+	if (!isObjectRecord(cleaned)) return schema;
+	for (const key of Object.keys(schema)) {
+		delete schema[key];
+	}
+	Object.assign(schema, cleaned);
+	return schema;
+}
+
+export function sanitizeRegisteredToolsInPlace(pi: unknown): number {
+	const getAllTools = (pi as { getAllTools?: () => Array<{ name?: string; parameters?: unknown }> })?.getAllTools;
+	if (typeof getAllTools !== "function") return 0;
+	let count = 0;
+	for (const tool of getAllTools.call(pi) ?? []) {
+		if (tool && isObjectRecord(tool.parameters)) {
+			sanitizeGeminiSchemaInPlace(tool.parameters);
+			count += 1;
+		}
+	}
+	return count;
+}
+
+export function sanitizeGeminiChatPayload<T>(payload: T, modelHint?: string | null): T {
+	if (!isObjectRecord(payload)) return payload;
+	const model = typeof payload.model === "string" ? payload.model : modelHint;
+	if (!isGeminiModel(model) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
+		return payload;
+	}
+	return {
+		...payload,
+		tools: payload.tools.map((tool) => {
+			if (!isObjectRecord(tool)) return tool;
+			if (isObjectRecord(tool.function) && isObjectRecord(tool.function.parameters)) {
+				return {
+					...tool,
+					function: {
+						...tool.function,
+						parameters: sanitizeGeminiSchema(tool.function.parameters),
+					},
+				};
+			}
+			if (isObjectRecord(tool.parameters)) {
+				return {
+					...tool,
+					parameters: sanitizeGeminiSchema(tool.parameters),
+				};
+			}
+			return tool;
+		}),
+	} as T;
+}
+
 function extractFrontmatterName(content: string): string | undefined {
 	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
 	if (!match?.[1]) return undefined;
@@ -197,6 +373,37 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	const pendingQueue = new Set<string>();
 	let scannedHistory = false;
 
+	const origRegisterTool = (pi as { registerTool?: (tool: unknown, ...rest: unknown[]) => unknown }).registerTool;
+	if (typeof origRegisterTool === "function") {
+		(pi as { registerTool: (tool: unknown, ...rest: unknown[]) => unknown }).registerTool = (tool: unknown, ...rest: unknown[]) => {
+			if (isObjectRecord(tool) && isObjectRecord(tool.parameters)) {
+				sanitizeGeminiSchemaInPlace(tool.parameters);
+			}
+			return origRegisterTool.call(pi, tool, ...rest);
+		};
+	}
+
+	function sanitizeTranscriptSystemTools(ctx?: ExtensionContext): void {
+		const sm = ctx?.sessionManager as
+			| {
+					getBranch?: () => unknown[];
+					getEntries?: () => unknown[];
+			  }
+			| undefined;
+		const entries = sm?.getEntries?.() ?? sm?.getBranch?.() ?? [];
+		if (!Array.isArray(entries)) return;
+		for (const raw of entries) {
+			if (!isObjectRecord(raw)) continue;
+			const msg = raw.message;
+			if (!isObjectRecord(msg) || !Array.isArray(msg.toolsAdded)) continue;
+			for (const tool of msg.toolsAdded) {
+				if (isObjectRecord(tool) && isObjectRecord(tool.parameters)) {
+					sanitizeGeminiSchemaInPlace(tool.parameters);
+				}
+			}
+		}
+	}
+
 	function refreshCatalog(ctx?: ExtensionContext, systemPromptSkills?: ReadonlyArray<{ name: string; path?: string }>): void {
 		skillCatalog = discoverSkills(ctx?.cwd);
 		if (Array.isArray(systemPromptSkills)) {
@@ -265,10 +472,21 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 		injectedSkills.clear();
 		pendingQueue.clear();
 		scannedHistory = false;
+		sanitizeRegisteredToolsInPlace(pi);
+		sanitizeTranscriptSystemTools(ctx);
 		refreshCatalog(ctx);
 		scanSessionEntries(ctx);
 		scannedHistory = true;
 	});
+
+	(pi as unknown as { on: (event: string, handler: (event: any, ctx: any) => unknown) => void }).on(
+		"before_provider_request",
+		async (event, ctx) => {
+			sanitizeRegisteredToolsInPlace(pi);
+			const modelId = typeof ctx?.model?.id === "string" ? ctx.model.id : undefined;
+			return sanitizeGeminiChatPayload(event?.payload, modelId);
+		},
+	);
 
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = (event as { toolName?: string }).toolName;
@@ -340,6 +558,8 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		sanitizeRegisteredToolsInPlace(pi);
+		sanitizeTranscriptSystemTools(ctx);
 		const spSkills = (
 			event as {
 				systemPromptOptions?: { skills?: ReadonlyArray<{ name: string; path?: string }> };
