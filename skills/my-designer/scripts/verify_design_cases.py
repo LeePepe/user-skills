@@ -281,6 +281,7 @@ def command_route(args: argparse.Namespace) -> int:
                 ],
             }
         external_skill_routing = {
+            "allowed_native": allowed_native,
             "allowed_native_sources": allowed_native,
             "blocked_web_only_sources": [
                 "taste-skill (design-taste-frontend: 100% Web HTML/CSS/Shader/Chrome Stop-hook)",
@@ -291,13 +292,158 @@ def command_route(args: argparse.Namespace) -> int:
             ],
         }
     else:
-        external_skill_routing = {
-            "allowed_web_sources": {
-                "taste-skill": f"{ext_root}/taste-skill/skills/taste-skill/SKILL.md",
-                "impeccable_web": f"{ext_root}/impeccable/.agents/skills/impeccable/SKILL.md",
-                "ui-ux-pro-max_web": f"{ext_root}/ui-ux-pro-max-skill/.claude/skills/ui-ux-pro-max/SKILL.md",
-                "emilkowalski_web": f"{ext_root}/emilkowalski-skills/skills/emil-design-eng/SKILL.md",
+        has_tc = not dim_set or ("typography-copy" in dim_set or "TC" in dim_set)
+        has_ln = not dim_set or ("layout-navigation" in dim_set or "LN" in dim_set)
+        has_cl = not dim_set or ("color-palette" in dim_set or "CL" in dim_set)
+        has_vs = not dim_set or ("visual-style" in dim_set or "VS" in dim_set)
+        has_cp = not dim_set or ("component" in dim_set or "CP" in dim_set)
+        has_dv = not dim_set or ("chart-dataviz" in dim_set or "DV" in dim_set)
+        has_mi = not dim_set or ("motion-interaction" in dim_set or "MI" in dim_set)
+        has_gm = not dim_set or ("glass-material" in dim_set or "GM" in dim_set)
+
+        impeccable_root = f"{ext_root}/impeccable/skill/reference"
+        impeccable_focused: list[str] = []
+        if has_tc:
+            impeccable_focused.extend([f"{impeccable_root}/typeset.md", f"{impeccable_root}/mode-read.md", f"{impeccable_root}/clarify.md"])
+        if has_ln:
+            impeccable_focused.extend([f"{impeccable_root}/layout.md", f"{impeccable_root}/region-map.md", f"{impeccable_root}/adapt.md"])
+        if has_cl:
+            impeccable_focused.extend([f"{impeccable_root}/colorize.md", f"{impeccable_root}/quieter.md", f"{impeccable_root}/bolder.md"])
+        if has_vs or has_gm:
+            impeccable_focused.extend([f"{impeccable_root}/craft-floor.md", f"{impeccable_root}/polish.md", f"{impeccable_root}/mode-read.md", f"{impeccable_root}/mode-persuade.md"])
+        if has_cp:
+            impeccable_focused.extend([f"{impeccable_root}/mode-operate.md", f"{impeccable_root}/harden.md"])
+        if has_dv:
+            impeccable_focused.append(f"{impeccable_root}/visualize.md")
+        if has_mi:
+            impeccable_focused.extend([f"{impeccable_root}/animate.md", f"{impeccable_root}/delight.md"])
+        impeccable_focused = list(dict.fromkeys(impeccable_focused)) or [f"{impeccable_root}/craft-floor.md"]
+
+        taste_root = f"{ext_root}/taste-skill/skills/taste-skill"
+        taste_focused: list[str] = []
+        if has_ln:
+            taste_focused.extend([f"{taste_root}/references/layout-v4.md", f"{taste_root}/references/sections.md"])
+        if has_cp:
+            taste_focused.extend([f"{taste_root}/references/cards.md", f"{taste_root}/references/icons.md"])
+        if has_vs or has_gm:
+            taste_focused.extend([f"{taste_root}/references/backgrounds.md", f"{taste_root}/references/effects-usage.md"])
+        if has_mi:
+            taste_focused.extend([f"{taste_root}/references/motion.md", f"{taste_root}/references/moments.md"])
+        if has_dv:
+            taste_focused.append(f"{taste_root}/references/diagrams.md")
+        if has_tc:
+            taste_focused.extend([f"{taste_root}/references/copy.md", f"{taste_root}/references/copy-voice.md", f"{taste_root}/library/type.json"])
+        if has_cl:
+            taste_focused.append(f"{taste_root}/library/palettes.json")
+        taste_focused = list(dict.fromkeys(taste_focused)) or [f"{taste_root}/references/layout-v4.md"]
+
+        emil_root = f"{ext_root}/emilkowalski-skills"
+        emil_focused: list[str] = []
+        if has_mi:
+            emil_focused.extend([
+                f"{emil_root}/skills/animate/SKILL.md",
+                f"{emil_root}/skills/animate/RECIPES.md",
+                f"{emil_root}/skills/choreograph/SKILL.md",
+                f"{emil_root}/skills/animation-performance/SKILL.md",
+                f"{emil_root}/performance-cheatsheet.md",
+            ])
+        if has_cp or has_vs or has_ln or has_tc:
+            emil_focused.extend([
+                f"{emil_root}/ui-cheatsheet.md",
+                f"{emil_root}/skills/emil-design-eng/SKILL.md",
+                f"{emil_root}/skills/ask-sonner/SKILL.md",
+            ])
+        emil_focused = list(dict.fromkeys(emil_focused)) or [f"{emil_root}/ui-cheatsheet.md"]
+
+        pro_max_root = f"{ext_root}/ui-ux-pro-max-skill/src/ui-ux-pro-max"
+        pro_max_focused: list[str] = []
+        if has_vs:
+            pro_max_focused.append(f"{pro_max_root}/data/styles.csv")
+        if has_cl:
+            pro_max_focused.append(f"{pro_max_root}/data/colors.csv")
+        if has_tc:
+            pro_max_focused.append(f"{pro_max_root}/data/typography.csv")
+        if has_dv:
+            pro_max_focused.append(f"{pro_max_root}/data/charts.csv")
+        if has_ln or has_cp:
+            pro_max_focused.extend([
+                f"{pro_max_root}/data/web-interface.csv",
+                f"{pro_max_root}/data/ux-guidelines.csv",
+                f"{pro_max_root}/data/stacks/html-tailwind.csv",
+                f"{pro_max_root}/data/stacks/react.csv",
+                f"{pro_max_root}/data/stacks/astro.csv",
+            ])
+        pro_max_focused = list(dict.fromkeys(pro_max_focused)) or [f"{pro_max_root}/data/web-interface.csv"]
+
+        vercel_root = f"{ext_root}/vercel-agent-skills/skills"
+        vercel_focused: list[str] = []
+        if has_ln or has_cp or has_vs:
+            vercel_focused.append(f"{vercel_root}/web-design-guidelines/SKILL.md")
+        if has_tc:
+            vercel_focused.append(f"{vercel_root}/writing-guidelines/SKILL.md")
+        if has_mi:
+            vercel_focused.append(f"{vercel_root}/react-view-transitions/SKILL.md")
+        if has_cp:
+            vercel_focused.extend([
+                f"{vercel_root}/composition-patterns/SKILL.md",
+                f"{vercel_root}/react-best-practices/SKILL.md",
+            ])
+        vercel_focused = list(dict.fromkeys(vercel_focused)) or [f"{vercel_root}/web-design-guidelines/SKILL.md"]
+
+        web_design_md_root = f"{ext_root}/awesome-web-design-md/design-md"
+        allowed_web = {
+            "impeccable": {
+                "root": impeccable_root,
+                "focused_files": impeccable_focused,
             },
+            "taste_skill": {
+                "root": taste_root,
+                "focused_files": taste_focused,
+            },
+            "emilkowalski": {
+                "root": emil_root,
+                "focused_files": emil_focused,
+            },
+            "ui_ux_pro_max": {
+                "root": pro_max_root,
+                "focused_files": pro_max_focused,
+            },
+            "awesome_web_design_md": {
+                "root": web_design_md_root,
+                "focused_files": [
+                    f"{web_design_md_root}/linear/DESIGN.md",
+                    f"{web_design_md_root}/stripe/DESIGN.md",
+                    f"{web_design_md_root}/vercel/DESIGN.md",
+                    f"{web_design_md_root}/notion/DESIGN.md",
+                    f"{web_design_md_root}/claude/DESIGN.md",
+                    f"{web_design_md_root}/mintlify/DESIGN.md",
+                    f"{web_design_md_root}/raycast/DESIGN.md",
+                    f"{web_design_md_root}/resend/DESIGN.md",
+                ],
+                "note": "84 real brand Web DESIGN.md systems.",
+            },
+            "vercel_agent_skills": {
+                "root": vercel_root,
+                "focused_files": vercel_focused,
+            },
+            "awesome_cjk_design_md": {
+                "root": f"{ext_root}/awesome-cjk-design-md",
+                "focused_files": [
+                    f"{ext_root}/awesome-cjk-design-md/README.md",
+                    f"{ext_root}/awesome-cjk-design-md/design-md",
+                ] if (has_tc or has_ln or has_vs) else [f"{ext_root}/awesome-cjk-design-md/README.md"],
+            },
+            "vibecoded_design_tells": {
+                "root": f"{ext_root}/vibecoded-design-tells/skill",
+                "focused_files": [
+                    f"{ext_root}/vibecoded-design-tells/skill/SKILL.md",
+                    f"{ext_root}/vibecoded-design-tells/skill/references",
+                ],
+            },
+        }
+        external_skill_routing = {
+            "allowed_web": allowed_web,
+            "allowed_web_sources": allowed_web,
             "blocked_native_only_sources": [
                 "apple-design-skill / twostraws / avdlee / dimillian / bama / shipswift SwiftUI native APIs",
                 "impeccable ios.md / audit.native.md",
@@ -310,17 +456,20 @@ def command_route(args: argparse.Namespace) -> int:
         "dimensions": dims,
         "container": args.container,
         "baseline_mode": cases_doc.get("baseline_mode", "plan-a-apple-hig"),
+        "external_skill_sources": external_skill_routing,
         "progressive_disclosure": {
             "distilled_in_plan_a": distilled_base,
             "distilled_note": "Already distilled in Plan A 5 Lenses; skip reading raw files by default.",
             "on_demand_external_refs": on_demand_external[:8],
             "external_hig_root": f"{ext_root}/apple-design-skill/references/hig",
             "external_skill_routing": external_skill_routing,
+            "external_skill_sources": external_skill_routing,
             "external_repos_sync_cmd": (
-                f"for r in apple-design-skill avdlee-swiftui-skill awesome-ios-design-md bama "
-                f"claude-code-apple-skills dimillian-skills emilkowalski-skills expo-skills "
-                f"genjutsu impeccable shipswift taste-skill twostraws-swiftui-skill "
-                f"ui-ux-pro-max-skill; do "
+                f"for r in apple-design-skill avdlee-swiftui-skill awesome-cjk-design-md "
+                f"awesome-ios-design-md awesome-web-design-md bama claude-code-apple-skills "
+                f"dimillian-skills emilkowalski-skills expo-skills genjutsu impeccable "
+                f"shipswift taste-skill twostraws-swiftui-skill ui-ux-pro-max-skill "
+                f"vercel-agent-skills vibecoded-design-tells; do "
                 f"git -C {ext_root}/$r pull --ff-only; done"
             ),
             "appearance_ledger": "skills/my-designer/references/appearance-ledger.md",
