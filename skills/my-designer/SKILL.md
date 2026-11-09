@@ -1,68 +1,33 @@
 ---
 name: my-designer
-description: 'Apple-First progressive-disclosure design lead (`L0 -> L1 -> L2`) for macOS (`desktop`) and iOS/iPadOS (`mobile`) apps. Uses pure Apple Native components (SwiftUI, Swift Charts, SF Symbols, Liquid Glass), routes on-demand HIG & vault inspirations, enforces Plan A (Apple HIG 5 Lenses + code audit) by default, and evolves Plan C defect cases on demand. Downstream Writers implement directly in product code; no throwaway demos or Prototype code.'
-allowed-tools: Read, Write, Edit, Bash, Agent, Skill
+description: "Progressive-disclosure design lead for desktop, mobile, and web."
+allowed-tools: Read, Write, Edit, Bash, Skill
 ---
 
-# my-designer — Progressive Disclosure Apple Design Lead (`L0`)
+# my-designer — three-platform design lead
 
-This `handoff-only` skill owns the design specification and review routing, not production code implementation. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code** without throwaway demos or `Prototype/` directories. (`my-designer` is a pure design capability node: it never edits product source files itself and remains agnostic of underlying agent orchestration.)
+I'm using the my-designer skill (as design lead). This is a handoff-only capability. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code**, never a throwaway demo.
 
-**Announce at start:** “I'm using the my-designer skill (as design lead).”
+## Step 1 · Lock coordinates
+Choose one equal first-class platform: `desktop`, `mobile`, or `web`; choose 1–4 dimensions: `color-palette`, `visual-style`, `component`, `chart-dataviz`, `glass-material`, `motion-interaction`, `layout-navigation`, `typography-copy`.
 
-> **Dual-Entry Architecture & Anti-Explosion Contract ([design-flow-architecture.md](references/design-flow-architecture.md)):**
-> All knowledge ingestion (`Entry A: A0..A4`) and design delivery (`Entry B: B0..B4`) share the 4-Tier Asset Pool (`Tier 0..3`) governed by 4 Anti-Explosion Valves (Zero-Token Code Sinking, 3D Coordinate Slicing, `--top 3` & `<=130`-line `L1` Caps, One-In/One-Out Compaction). Run `python3 skills/my-designer/scripts/verify_design_cases.py flow-map` to inspect live asset counts and budget health.
+Shared L1 fundamentals apply to every platform: [interaction-layering.md](references/interaction-layering.md), [breathing-and-clarity.md](references/breathing-and-clarity.md), and [appearance-ledger.md](references/appearance-ledger.md).
 
----
-
-## 4-Step Progressive Disclosure Workflow (`L0 -> L1 -> L2`)
-
-Never load all HIG documents or the entire inspiration vault upfront. Disclose context in three strict layers:
-
-### Step 1 · Lock Platform & Dimensions (`L0`)
-1. **Platform Topology:** Select `desktop` (macOS `NSWindow`, `NSPopover`, `MenuBarExtra`, `NavigationSplitView`) or `mobile` (iOS/iPadOS/iPhone Duo `NavigationStack`, `TabView`, `Sheet`, `Widget`, `LiveActivity`). `web` remains frozen in backlog unless `--platform web` is explicitly requested.
-2. **Design Dimensions:** Pick the 1–4 active dimensions for the surface:
-   - `color-palette` (`CL`) · `visual-style` (`VS`) · `component` (`CP`) · `chart-dataviz` (`DV`)
-   - `glass-material` (`GM`) · `motion-interaction` (`MI`) · `layout-navigation` (`LN`) · `typography-copy` (`TC`)
-
-### Step 2 · On-Demand Routing & Platform Firewall (`L1` -> [routing-index.md](references/routing-index.md), [appearance-ledger.md](references/appearance-ledger.md), [interaction-layering.md](references/interaction-layering.md))
-Run the L1 router and vault search. `verify_design_cases.py route` enforces a strict **Native vs. Web Platform Firewall** over the 14 external git-pullable repos in `~/Development/Personal/collected-tools/repos/` and discloses [interaction-layering.md](references/interaction-layering.md) on demand when `LN / CP / DV / MI` dimensions are active:
-- **When `--platform desktop` or `mobile` (Apple Native + Distinct Style Recipes):**
-  - **Skip raw foundation HIG** (`distilled_in_plan_a` is already in Plan A 5 Lenses);
-  - **Allowed native & style sources:** `apple-design-skill`, `twostraws-swiftui-skill`, `avdlee-swiftui-skill`, `dimillian-skills`, `bama` (macOS 4pt grid & pixel measurement), `awesome-ios-design-md` (200 real iOS app `DESIGN-swiftui.md` style recipes), `shipswift` (80+ self-contained SwiftUI components, charts, and 28 Metal shaders), `genjutsu` (`swiftui-graphics` Metal shaders & desktop/mobile principles), `claude-code-apple-skills` (`game-feel` & `AppTextStyle`), `emilkowalski-skills` (fluid spring physics & frequency gates), `expo-skills` (`native-slop.md` 20 Tells), `impeccable` native-only subset, and `ui-ux-pro-max --stack swiftui`;
-  - **Strictly blocked (Zero Web Pollution):** never load `taste-skill` (100% Web HTML/CSS/Shader/Chrome hook), `ui-ux-pro-max` Web `--design-system`/Tailwind/Shadcn/GSAP, or `impeccable` Web `detect`/`live`/`audit.md`.
-- **When `--platform web` (Web / Landing Page):**
-  - Routes to `taste-skill/skills/taste-skill/SKILL.md`, `impeccable` Web (`SKILL.md` + `detect`), and `ui-ux-pro-max` (`--design-system` / `ui-styling`).
-
+## Step 2 · Route on demand
 ```bash
-# 1. Route active platform + dimensions -> Plan A lenses, Plan C defect cases & platform-isolated external refs
-python3 skills/my-designer/scripts/verify_design_cases.py route \
-  --platform desktop --dimensions glass-material,chart-dataviz
-
-# 2. Retrieve matching style archetypes, palettes, and ShipSwift components from desktop-macos.json or mobile-ios.json
-python3 skills/design-studio/scripts/design_catalog.py vault-search \
-  --platform desktop --dimension visual-style --query "<intent>" --top 3
+python3 skills/my-designer/scripts/verify_design_cases.py route --platform web --dimensions visual-style,motion-interaction
+python3 skills/design-studio/scripts/design_catalog.py vault-search --platform web --dimension visual-style --query "intent" --top 3
 ```
 
-### Step 3 · Author Apple-First + Bespoke Style Handoff (`design.md` / `spec.md`)
-- **Apple Principle + Liquid Glass Foundation, Distinct Per-App Personality ([appearance-ledger.md](references/appearance-ledger.md)):**
-  - Anchor ergonomics and navigation on native SwiftUI (`NavigationSplitView`, `TabView`, `List`, `Table`, `.toolbar`, `.sheet`, `ConcentricRectangle`, `ContentUnavailableView`), **Swift Charts**, **SF Symbols**, and native **Liquid Glass** (`.glassEffect(.regular / .clear)`, `GlassEffectContainer`, `.buttonStyle(.glassProminent)`).
-  - **Distinct Per-App Style Recipe (`AppTheme.swift` + `ShipSwift` Source Components):** Never force a monolithic cross-repo UI wrapper package onto every app. Instead, pick a non-colliding **Style Archetype (`VS-001..008`, including Cross-Domain Archetype Remixes) and Brand Palette (`CL-001..008`)** from [appearance-ledger.md](references/appearance-ledger.md) (or `awesome-ios-design-md`), generate a single-file `<80`-line `AppTheme.swift` (`Space`, `Radius`, semantic colors, `AppTextStyle`, `AppPressableButtonStyle`) inside the app, and copy self-contained bespoke components/Metal shaders from `ShipSwift/SWPackage/` (`SWMetal`, `SWAnimation`, `SWChart`, `SWComponent`) restyled with `AppTheme`.
-  - **Orthogonal X-Y-Z Interactive Layering & Spatial Action Priority (`DC-001`..`DC-004` -> [interaction-layering.md](references/interaction-layering.md)):**
-    Disclose [interaction-layering.md](references/interaction-layering.md) on demand for `LN / CP / DV / MI` surfaces to enforce: (1) **Axis X (`Role × P0..P3` Matrix + `Spatial Action Priority: Bottom > Top > Secondary Menu`)** — filter `Display / Action / Display+Action` into `P0` focal, `P1` inline companion, `P2` folded context, `P3` `⋯` menu/Sheet, anchoring `P0/P1` core commits in the `Bottom` thumb zone and keeping `Top` `.toolbar` for session/global controls; (2) **Axis Y (`Nielsen <=3 Chunks` + `Shneiderman Overview -> Zoom/Filter -> Details` + `Tufte Zero Redundancy` + `DC-003` Compact Anti-Overflow)** — fold 3rd+ modules via Accordion single-active, Segmented Lens, or `SWWallet` 3D `ZStack` (`~220pt`), never duplicate Donut legends with `ProgressView` bars (`DC-002`), and wrap horizontal `HStack/ForEach` rails in `ScrollView(.horizontal)` with `<= 2` complex cards per compact row (`DC-003`); (3) **Axis Z (`Apple Two-Layer Glass` + `DC-004` 120Hz `1:1` `LazyStack` Prefetch)**.
-- **Spec-First Test Alignment:** When modifying an existing screen, include an **Obsolete Test Manifest** and **Deprecated Test Clauses to Remove/Rewrite** section so legacy UI assertions do not block approved design changes.
+Platform slices: `web` uses Basalt, CSS, Motion, Anime.js, Three.js, taste-skill, impeccable Web, and ui-ux-pro-max Web. `desktop|mobile` uses SwiftUI, Liquid Glass, AppTheme, and ShipSwift. Never mix platform firewalls.
 
-### Step 4 · Baseline Gate: Plan A Default + Plan C Defect-Case Evolution (`L2`)
-- **Plan A (Always Active):** Audit against Apple's 5 HIG Lenses (Accessibility, Platform Conventions, Liquid Glass Two-Layer Craft, Interaction & States, Typography & Copy), run the static native code audit, run the portable Localization (`xcstrings`) audit, and run the Simulator Screenshot Edge-Clipping Visual Gate (`jev_visual_gate.py`):
-  ```bash
-  python3 skills/my-designer/scripts/verify_design_cases.py audit-code \
-    --platform desktop --path <SwiftUI-File-Or-Dir>
+## Step 3 · Author the handoff
+Anchor ergonomics, state coverage, accessibility, responsive/container behavior, reduced motion, and the selected style recipe. Include an Obsolete Test Manifest when changing an existing screen. Use Plan A principles and Plan C cases from [defect-cases/index.json](references/defect-cases/index.json); register new cases with `register-case --id auto`.
 
-  # Portable Cross-Project Localization Gate (locale completeness, format parity, source key coverage & Info.plist CFBundleLocalizations)
-  python3 skills/my-designer/scripts/verify_design_cases.py audit-l10n \
-    --path <App-Or-Package-Dir> --locales en,zh-Hans
+## Step 4 · Deliver
+Keep design-time routing and case registration here. Implementation-time static, localization, screenshot, and geometry checks belong to `shared-ci/scripts/context/design_contract.py`, not this skill.
 
-  # Layer 3 Simulator Screenshot Horizontal Edge-Clipping Gate (detects DC-003 left/right viewport clipping)
-  python3 skills/my-designer/scripts/jev_visual_gate.py --check-edge-clipping <Simulator-Screenshot.png>
-  ```
-- **Plan C ([defect-cases/index.json](references/defect-cases/index.json)):** Enforces verified spatial, anti-overflow, and interaction-layering guards (`DC-001` Single-Plane Flat Tiling & Flattened `SWWallet`, `DC-002` Duplicate Same-Source Data Representation, `DC-003` Unbounded Horizontal `HStack/ForEach` Overflow & Multi-Card Row Cramming on Compact Width, `DC-004` `LazyStack` Leaf Conditional Subview Leak). When a new defect is discovered, register an atomic case via `verify_design_cases.py register-case` so future tasks on the same platform/container automatically disclose and check it.
+```bash
+python3 skills/my-designer/scripts/verify_design_cases.py flow-map
+python3 skills/my-designer/scripts/verify_design_cases.py register-case --id auto --title "..." --platforms desktop,mobile,web --symptom "..." --fix-rule "..."
+```

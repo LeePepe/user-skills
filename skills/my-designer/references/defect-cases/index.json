@@ -10,7 +10,8 @@
       "title": "Single-Plane Flat Tiling & ShipSwift Spatial Signature Loss (SWWallet Flattened to VStack/ForEach)",
       "platforms": [
         "desktop",
-        "mobile"
+        "mobile",
+        "web"
       ],
       "dimensions": [
         "component",
@@ -33,7 +34,8 @@
       "title": "Duplicate Same-Source Data Representation (Donut Legend + Redundant Category Progress Bars)",
       "platforms": [
         "desktop",
-        "mobile"
+        "mobile",
+        "web"
       ],
       "dimensions": [
         "chart-dataviz",
@@ -53,7 +55,9 @@
       "id": "DC-003",
       "title": "Unbounded Horizontal HStack/ForEach Overflow & Multi-Card Row Cramming on Compact Width",
       "platforms": [
-        "mobile"
+        "desktop",
+        "mobile",
+        "web"
       ],
       "dimensions": [
         "layout-navigation",
@@ -74,7 +78,8 @@
       "title": "LazyStack Leaf Conditional Subview Leak & OnAppear Prefetch Invalidation (WWDC26-321)",
       "platforms": [
         "desktop",
-        "mobile"
+        "mobile",
+        "web"
       ],
       "dimensions": [
         "motion-interaction",
@@ -96,7 +101,8 @@
       "title": "Table Header-to-Cell Column Geometry Drift (Flex Header vs. Fixed-Width Centered Row)",
       "platforms": [
         "desktop",
-        "mobile"
+        "mobile",
+        "web"
       ],
       "dimensions": [
         "layout-navigation",

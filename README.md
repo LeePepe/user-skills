@@ -19,7 +19,7 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 负责双路复盘与三道物理锁；[`story-craft`](./skills/story-craft/SKILL.md) 负责四元素
 素材抽取、脱敏、Story Series、Tech Deep-Dive Blog 与 Deck 发布读回。
 
-[`m2-dispatcher`](./skills/m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](./skills/coordinator/SKILL.md)）是 `M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `team-lead` 提供。
+[`m2-dispatcher`](./skills/m2-dispatcher/SKILL.md)是 `M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `team-lead` 提供。
 
 ### `m2-dispatcher` 与 `team-lead` 脚本及参考文档职责划分（100% 路径兼容）
 
@@ -59,7 +59,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install team-lead@user-skills
 /plugin install m2-dispatcher@user-skills
 /plugin install code-review@user-skills
-/plugin install coordinator@user-skills
+/plugin install m2-dispatcher@user-skills
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
 /plugin install codebase-design@user-skills
@@ -78,7 +78,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/workflow-hub 安装 workflow-hub。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/linear-board 安装 linear-board。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
-请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/coordinator 安装 coordinator。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。

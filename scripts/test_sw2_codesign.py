@@ -3,18 +3,14 @@
 
 from __future__ import annotations
 
-import base64
 import importlib.util
 import json
-import struct
 import sys
 import tempfile
 import unittest
-import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-
 
 def load(name: str, relative: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
@@ -24,13 +20,10 @@ def load(name: str, relative: str):
     spec.loader.exec_module(module)
     return module
 
-
 gate = load("spec_gate", "skills/codebase-design/scripts/spec_gate.py")
 research = load("jev_research_helper", "skills/deep-research/scripts/jev_research_helper.py")
-visual = load("jev_visual_gate", "skills/my-designer/scripts/jev_visual_gate.py")
 design_cases = load("verify_design_cases", "skills/my-designer/scripts/verify_design_cases.py")
 xcode_classify = load("classify_changes", "skills/xcode-cli/scripts/classify_changes.py")
-
 
 class SpecGateTests(unittest.TestCase):
     def test_digest_is_non_circular(self):
@@ -208,282 +201,6 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("XC-001", swiftpm_cases)
         self.assertNotIn("XC-002", swiftpm_cases)
 
-
-def png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
-    raw = b"".join(b"\0" + bytes(rgb) * width for _ in range(height))
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
-
-
-class VisualTests(unittest.TestCase):
-    def test_layer0_matrix_width_and_polarity(self):
-        snapshots = {f"{state}-{appearance}": png(20, 4, (250, 250, 250) if appearance == "light" else (10, 10, 10))
-                     for state in visual.STATES for appearance in visual.APPEARANCES}
-        result = visual.audit_snapshots_layer0(snapshots, 10, 2)
-        self.assertTrue(result["ok"])
-        snapshots["empty-dark"] = png(19, 4, (10, 10, 10))
-        self.assertFalse(visual.audit_snapshots_layer0(snapshots, 10, 2)["ok"])
-
-    def test_edge_clipping_detection_and_cli(self):
-        import contextlib, io
-        self.assertIn("edge_clipping", visual.DEFECTS)
-        # Clean screenshot: uniform dark canvas with inset card (no stroke at x=0 or x=width-1)
-        clean_png = png(40, 40, (18, 18, 22))
-        clean_report = visual.detect_horizontal_edge_clipping(clean_png)
-        self.assertTrue(clean_report["ok"])
-        self.assertFalse(clean_report["clipped"])
-
-        # Clipped screenshot: mid-screen rows have high-contrast card pixels touching left/right edges
-        rows = []
-        for y in range(40):
-            if 12 <= y < 28:
-                row_pixels = b"\0" + bytes((220, 90, 40)) * 40
-            else:
-                row_pixels = b"\0" + bytes((18, 18, 22)) * 40
-            rows.append(row_pixels)
-        raw = b"".join(rows)
-        def chunk(kind: bytes, data: bytes) -> bytes:
-            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-        clipped_png = (
-            b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", 40, 40, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw))
-            + chunk(b"IEND", b"")
-        )
-        clipped_report = visual.detect_horizontal_edge_clipping(clipped_png)
-        self.assertFalse(clipped_report["ok"])
-        self.assertEqual(clipped_report["defect"], "edge_clipping")
-        self.assertEqual(clipped_report["clipped_edges"], ["left", "right"])
-
-        with tempfile.TemporaryDirectory() as temp:
-            p = Path(temp) / "clipped.png"
-            p.write_bytes(clipped_png)
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = visual.main(["--check-edge-clipping", str(p)])
-            self.assertEqual(rc, 1)
-            self.assertTrue(json.loads(buf.getvalue())["clipped"])
-
-    def test_request_mapping_and_truth_table(self):
-        request = visual.build_r05_request("screen", "populated", "light", {"full": png(4, 4, (255, 255, 255))})
-        self.assertEqual(request["model"], "jev-1.14.0"); self.assertEqual(request["headers"]["TypeSafe-Danger-Zone-Images"], "true")
-        self.assertEqual(visual.map_tile_box_to_image({"left": .1, "right": .5, "top": .2, "bottom": .6}, .29, .71, 100, 200), [10, 75, 50, 108])
-        self.assertEqual(visual.map_zoom_box_to_image({"left": 0, "top": 0, "right": 1, "bottom": 1}, [.1, .2, .5, .6], 100, 200), [10, 40, 50, 120])
-        self.assertEqual(visual.evaluate_r05_truth_table(.1)["verdict"], "PASS_CLEAN")
-        self.assertTrue(visual.evaluate_r05_truth_table(.9, .8, None, 0, [10, 10, 30, 30], (100, 100))["fail"])
-        self.assertEqual(visual.evaluate_r05_truth_table(.5, 0, .1, .8)["verdict"], "PASS_CLEARED_ON_ZOOM")
-        self.assertEqual(visual.evaluate_r05_truth_table(.5, 0, .8, .8)["verdict"], "FAIL_CONFIRMED_ON_ZOOM")
-
-
-class DesignCasesAndRoutingTests(unittest.TestCase):
-    def test_plan_a_default_and_plan_c_case_promotion(self):
-        import contextlib, io
-        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
-            root = Path(temp)
-            cases_file = root / "index.json"
-            src_cases = ROOT / "skills" / "my-designer" / "references" / "defect-cases" / "index.json"
-            taxonomy_file = ROOT / "skills" / "design-studio" / "references" / "taxonomy-v2.json"
-            cases_file.write_bytes(src_cases.read_bytes())
-
-            swift_file = root / "SampleView.swift"
-            swift_file.write_text(
-                "import SwiftUI\nstruct SampleView: View {\n"
-                "  var body: some View {\n"
-                "    Text(\"Hi\").frame(width: 380).padding(16)\n"
-                "  }\n}\n",
-                encoding="utf-8",
-            )
-            # Under pure Plan A default (active_cases == []), frame-before-padding is not flagged until promoted to Plan C
-            self.assertEqual(
-                design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "desktop", "--path", str(swift_file),
-                ]),
-                0,
-            )
-            # Register a new Plan C defect case (DC-999) when discovered
-            self.assertEqual(
-                design_cases.main([
-                    "register-case", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--id", "DC-999", "--title", "Popover Frame Before Padding",
-                    "--platforms", "desktop", "--dimensions", "layout-navigation",
-                    "--containers", "NSPopover",
-                    "--symptom", "Clips trailing content",
-                    "--fix-rule", "Use .padding(P).frame(width: W)",
-                    "--forbidden-regex", r"\.frame\(\s*width\s*:[^)]+\)\s*\.padding\(",
-                ]),
-                0,
-            )
-            # Now Plan C catches the defect on desktop
-            self.assertEqual(
-                design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "desktop", "--dimensions", "layout-navigation",
-                    "--container", "NSPopover", "--path", str(swift_file),
-                ]),
-                1,
-            )
-
-            # Plan A + Plan C catch SwiftUI anti-slop & anti-flat-tiling defects:
-            # purple-blue gradient, macOS .hoverEffect, flattened SWWallet, duplicate Donut+ProgressView
-            slop_file = root / "SlopView.swift"
-            slop_file.write_text(
-                "import SwiftUI\n"
-                "struct SWWallet: View {\n"
-                "  var body: some View { VStack { ForEach(0..<3, id: \\.self) { _ in Text(\"Flat\") } } }\n"
-                "}\n"
-                "struct SlopView: View {\n"
-                "  var body: some View {\n"
-                "    VStack {\n"
-                "      SWDonutChart()\n"
-                "      ProgressView(value: 0.5)\n"
-                "      LinearGradient(colors: [.purple, .blue], startPoint: .top, endPoint: .bottom)\n"
-                "        .hoverEffect(.highlight)\n"
-                "    }\n"
-                "  }\n}\n",
-                encoding="utf-8",
-            )
-            buf_audit = io.StringIO()
-            with contextlib.redirect_stdout(buf_audit):
-                rc = design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "desktop", "--path", str(slop_file),
-                ])
-            self.assertEqual(rc, 1)
-            audit_ids = {f["id"] for f in json.loads(buf_audit.getvalue())["findings"]}
-            for expected_id in (
-                "SLOP-PURPLE-GRADIENT",
-                "HIG-MACOS-HOVER-EFFECT",
-                "SHIPSWIFT-SWWALLET-FLATTENED",
-                "SLOP-DUPLICATE-DATA-REPRESENTATION",
-                "DC-001",
-                "DC-002",
-            ):
-                self.assertIn(expected_id, audit_ids)
-
-            # WWDC25/26 static rules: HIG-IOS-SCREEN-BOUNDS (idiom/orientation), HIG-LAZY-LEAF-CONDITIONAL + DC-004,
-            # HIG-APPKIT-LEGACY-MOUSELOOP, and HIG-DRAG-WILL-BEGIN-UI
-            wwdc_file = root / "WWDC26Violations.swift"
-            wwdc_file.write_text(
-                "import SwiftUI\n"
-                "struct FeedView: View {\n"
-                "  let items = [1, 2, 3]\n"
-                "  var body: some View {\n"
-                "    LazyVStack {\n"
-                "      ForEach(items, id: \\.self) { item in\n"
-                "        if item > 1 { Text(\"\\(item)\") }\n"
-                "      }\n"
-                "    }\n"
-                "  }\n"
-                "  func checkIdiom() -> Bool {\n"
-                "    UIDevice.current.userInterfaceIdiom == .phone || interfaceOrientation.isLandscape\n"
-                "  }\n"
-                "  override func mouseDown(with event: NSEvent) {\n"
-                "    while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) { _ = next }\n"
-                "  }\n"
-                "  func dragInteraction(_ interaction: UIDragInteraction, sessionWillBegin session: UIDragSession) {\n"
-                "    withAnimation { present(UIAlertController(), animated: true) }\n"
-                "  }\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            buf_wwdc = io.StringIO()
-            with contextlib.redirect_stdout(buf_wwdc):
-                rc_wwdc = design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "desktop", "--path", str(wwdc_file),
-                ])
-            self.assertEqual(rc_wwdc, 1)
-            wwdc_ids = {f["id"] for f in json.loads(buf_wwdc.getvalue())["findings"]}
-            for expected_wwdc_id in (
-                "HIG-IOS-SCREEN-BOUNDS",
-                "HIG-LAZY-LEAF-CONDITIONAL",
-                "HIG-APPKIT-LEGACY-MOUSELOOP",
-                "HIG-DRAG-WILL-BEGIN-UI",
-                "DC-004",
-            ):
-                self.assertIn(expected_wwdc_id, wwdc_ids)
-
-            # Mobile compact-width overflow check (DC-003 + HIG-LAYOUT-OVERFLOW)
-            overflow_file = root / "OverflowFocusView.swift"
-            overflow_file.write_text(
-                "import SwiftUI\n"
-                "struct OverflowFocusView: View {\n"
-                "  private var headerChips: some View {\n"
-                "    HStack(spacing: 6) { ForEach(0..<12, id: \\.self) { _ in Circle() } }\n"
-                "  }\n"
-                "  var body: some View { headerChips }\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            buf_mobile = io.StringIO()
-            with contextlib.redirect_stdout(buf_mobile):
-                rc_mobile = design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "mobile", "--path", str(overflow_file),
-                ])
-            self.assertEqual(rc_mobile, 1)
-            mobile_ids = {f["id"] for f in json.loads(buf_mobile.getvalue())["findings"]}
-            self.assertIn("HIG-LAYOUT-OVERFLOW", mobile_ids)
-            self.assertIn("DC-003", mobile_ids)
-
-            # Table Header-to-Cell Column Geometry Drift check (DC-005 + HIG-TABLE-COLUMN-MISMATCH)
-            table_drift_file = root / "TableColumnDriftView.swift"
-            table_drift_file.write_text(
-                "import SwiftUI\n"
-                "struct TableColumnDriftView: View {\n"
-                "  private var tableHeader: some View {\n"
-                "    HStack(spacing: 8) {\n"
-                "      Text(\"#\")\n"
-                "        .frame(width: 28, alignment: .center)\n"
-                "      Text(\"Primary\")\n"
-                "        .frame(maxWidth: .infinity, alignment: .leading)\n"
-                "      Text(\"Action\")\n"
-                "        .frame(width: 44, alignment: .trailing)\n"
-                "    }\n"
-                "  }\n"
-                "  private var tableRow: some View {\n"
-                "    HStack(spacing: 8) {\n"
-                "      Text(\"1\")\n"
-                "        .frame(width: 28, alignment: .center)\n"
-                "      Text(\"100\")\n"
-                "        .frame(width: 64, alignment: .center)\n"
-                "      Image(systemName: \"checkmark\")\n"
-                "        .frame(width: 44, alignment: .center)\n"
-                "    }\n"
-                "  }\n"
-                "  var body: some View { VStack { tableHeader; tableRow } }\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            buf_table = io.StringIO()
-            with contextlib.redirect_stdout(buf_table):
-                rc_table = design_cases.main([
-                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--platform", "mobile", "--path", str(table_drift_file),
-                ])
-            self.assertEqual(rc_table, 1)
-            table_ids = {f["id"] for f in json.loads(buf_table.getvalue())["findings"]}
-            self.assertIn("HIG-TABLE-COLUMN-MISMATCH", table_ids)
-            self.assertIn("DC-005", table_ids)
-
-            # Auto-incrementing DC-00N registration (--id auto)
-            auto_cases_file = root / "auto_index.json"
-            auto_cases_file.write_bytes(src_cases.read_bytes())
-            buf_auto = io.StringIO()
-            with contextlib.redirect_stdout(buf_auto):
-                rc_auto = design_cases.main([
-                    "register-case", "--cases-file", str(auto_cases_file), "--taxonomy", str(taxonomy_file),
-                    "--id", "auto", "--title", "Auto Assigned Sequential Defect Case",
-                    "--platforms", "mobile", "--dimensions", "layout-navigation",
-                    "--containers", "ScrollView",
-                    "--symptom", "Symptom description",
-                    "--fix-rule", "Fix rule description",
-                ])
-            self.assertEqual(rc_auto, 0)
-            auto_payload = json.loads(buf_auto.getvalue())
-            self.assertEqual(auto_payload["registered"]["id"], "DC-006")
 
 
 if __name__ == "__main__":

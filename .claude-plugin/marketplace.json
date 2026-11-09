@@ -46,12 +46,6 @@
       "description": "M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）编排后台 Herdr Goal Steering (TL) 的生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
     },
     {
-      "name": "coordinator",
-      "source": "./skills/coordinator",
-      "category": "workflow",
-      "description": "常驻域主 Bot 编排 Herdr Team Lead (TL) 的共用生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
-    },
-    {
       "name": "code-review",
       "source": "./skills/code-review",
       "category": "repo",
@@ -85,7 +79,7 @@
       "name": "my-designer",
       "source": "./skills/my-designer",
       "category": "design",
-      "description": "Apple-First progressive-disclosure design lead (L0 -> L1 -> L2) for macOS (desktop) and iOS/iPadOS (mobile) apps with Plan A HIG 5 Lenses, platform firewall, and Plan C defect evolution."
+      "description": "Progressive-disclosure design lead for equal desktop, mobile, and web platforms."
     },
     {
       "name": "visual-design-modernization",
@@ -97,7 +91,13 @@
       "name": "design-studio",
       "source": "./skills/design-studio",
       "category": "design",
-      "description": "Design and implement Web/App interactions, data-linkage patterns, motion choreography, and code-driven covers, transitions, and promo videos with Motion, Anime.js, Lottie, Three.js, Remotion, and FFmpeg using DesignTokens, StrataMotion, and Basalt."
+      "description": "Equal desktop, mobile, and web interaction, motion, and video design."
+    },
+    {
+      "name": "skill-contract",
+      "source": "./skills/skill-contract",
+      "category": "meta",
+      "description": "Create and audit progressive-disclosure skills with four valves."
     }
   ]
 }

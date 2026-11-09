@@ -10,7 +10,7 @@ This file is the **Level 1 (L1) Router** for Apple-First UI/UX design. Never loa
 |---|---|---|---|---|
 | **`desktop`** (macOS Native) | **Active Primary** | `NSWindow`, `NSPopover`, `MenuBarExtra`, `NavigationSplitView`, `Settings`, `Inspector` | Default target `28×28pt` (min `20×20pt`); default font `13pt` (min `10pt`); Menu Bar command parity, pointer hover, keyboard focus ring, `Esc`/`⌘` shortcuts; **never place a floating bottom action bar** | `designing-for-macos.md`, `accessibility.md`, `layout.md`, `color.md`, `typography.md` (already distilled into Plan A 5 Lenses) |
 | **`mobile`** (iOS / iPadOS / iPhone Duo) | **Active Primary** | `NavigationStack`, `TabView`, `Sheet`, `Widget`, `LiveActivity`, `iPhoneDuoSplit` | Default target `44×44pt` (min `28×28pt`); default font `17pt` (min `11pt`); `TabView` for navigation only, `.toolbar` for actions, `Sheet` with grabber/detents, Size Classes instead of hardcoded screen widths | `designing-for-ios.md`, `designing-for-ipados.md`, `accessibility.md`, `layout.md`, `color.md`, `typography.md` (already distilled into Plan A 5 Lenses) |
-| **`web`** (Web / Video) | **Backlog (Frozen)** | `WebViewport`, `RemotionComposition` | Frozen in `../design-studio/references/vault/web-backlog.json`; do not load during Apple design tasks unless `--platform web` is explicitly requested | N/A |
+| **`web`** (Web / Video) | **Active** | `WebViewport`, `RemotionComposition` | Active in `../design-studio/references/vault/web.json` when `--platform web` is selected | N/A |
 
 ---
 
@@ -46,7 +46,7 @@ python3 skills/my-designer/scripts/verify_design_cases.py route \
   --platform desktop --dimensions glass-material,chart-dataviz
 
 # 2. Run Plan A Apple Native Code Audit (+ active Plan C checks) on Swift files
-python3 skills/my-designer/scripts/verify_design_cases.py audit-code \
+python3 shared-ci/scripts/context/design_contract.py --audit-code \
   --platform desktop --path <SwiftUI-File-Or-Dir>
 ```
 

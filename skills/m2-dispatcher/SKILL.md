@@ -4,7 +4,7 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
 ---
 # M2-Dispatcher ↔ M1-Steering (TL) 编排合同（`m2-dispatcher`）
 
-> Canonical skill: `m2-dispatcher`（[`coordinator`](../coordinator/SKILL.md) 兼容别名）；角色统一名 **`M2-Dispatcher`**。
+> Canonical skill: `m2-dispatcher`；角色统一名 **`M2-Dispatcher`**。
 
 本入口供 **`M2-Dispatcher`**（常驻 `Grok Bot`、`Cindy` 与交互式 CLI 入口）共用，规定 `M2-Dispatcher` 与 Goal-level `Steering`（TL，`<goal>-goal-tl-r1`）的生命周期；Task-level 1-Hop 执行由 [`team-lead`](../team-lead/SKILL.md) 负责。共享事实源：
 

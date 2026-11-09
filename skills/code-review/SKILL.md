@@ -102,3 +102,6 @@ Use [eval-cases.md](references/eval-cases.md) when changing this skill or checki
 - Constitution overrides spec; spec defines intent; tech-context defines implementation constraints.
 - Layer is the Standards review scope unit. Cross-layer work is reviewed explicitly, never hidden inside a generic whole-repo pass.
 - Missing context lowers declared coverage; it never becomes a silent pass.
+
+## UI review gate
+For UI diffs, independently run `shared-ci/scripts/context/design_contract.py` with `--audit-code --platform <desktop|mobile|web>`, `--audit-l10n --locales en,zh-Hans`, and applicable `--check-edge-clipping <png-or-dir>` / `--audit-geometry <geometry.json>`. `xcode-cli` remains build/test routing only.

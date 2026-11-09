@@ -204,7 +204,7 @@
 ---
 
 ### Sub-Workflow 3（环 3/4）：`team-lead` 编排内核、网关适配与 Thin Harness 瘦身
-- **涉及路径**：`~/Development/user-skills/skills/team-lead/`、`~/Development/user-skills/skills/coordinator/`、`~/Development/user-skills/scripts/{test_verify_skills.py,test_goal_queue.py}`
+- **涉及路径**：`~/Development/user-skills/skills/team-lead/`、`~/Development/user-skills/skills/m2-dispatcher/`、`~/Development/user-skills/scripts/{test_verify_skills.py,test_goal_queue.py}`
 - **关联编号**：`R02`、`R03`、`R08`、`R11`、`R12`、`R13`、`R14`、`R15`、`R16`、`R17`（消费侧）、`R18`、`R20`
 - **基本信息与可扩展点（核心重镇）**：
   1. **适配 Agent 网关（对接 Sub-Workflow 0，`R17`）**：
@@ -225,7 +225,7 @@
   加载 /workflow-hub 与 /team-lead skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 3（环 3/4）：team-lead 编排内核、网关适配与 Thin Harness 瘦身」。
 
   当前处于 Phase 0 只读深度调研阶段（严禁修改 user-skills 源码或破坏现有测试）。请结合 nocoo/pi-superagent (docs/000..007)、multica-ai/multica、nocoo/goalx 的一手文档与本机 team-lead 现状，完成深度调研并将完整方案落盘至 ~/Development/handoff/sw3-goaltask-research/spec.md：
-  1. 逐行盘点 skills/team-lead/SKILL.md (65KB)、references/bots-and-agents.md (46KB)、coordinator/SKILL.md (24KB) 与 scripts/test_verify_skills.py，列出所有双份复制段落、已过时冲突条款（如 coordinator:29）与特定 App 死板像素规则，给出 R11 model-surface 体积预算门禁与 SKILL.md 瘦身（<=36KB）的精确裁剪清单；
+  1. 逐行盘点 skills/team-lead/SKILL.md (65KB)、references/bots-and-agents.md (46KB)、m2-dispatcher/SKILL.md (24KB) 与 scripts/test_verify_skills.py，列出所有双份复制段落、已过时冲突条款（如 m2-dispatcher）与特定 App 死板像素规则，给出 R11 model-surface 体积预算门禁与 SKILL.md 瘦身（<=36KB）的精确裁剪清单；
   2. 精读 skills/team-lead/scripts/{goal-supervisor.py,goal-queue.py,herdr-dispatch.sh}，设计 R12 (`--mode off|observe|auto`)、R13 (`status [--check]` 第一屏置顶 `needs a person`)、R14 (Live Steering 同范围追问直达扇出 + 越界 `handback`)、R15 (不可变 `Mandate` + `spec_sha` 恢复校验)、R16 (`maxWorkers + 1` 人类插队槽位) 的精确 CLI 参数、JSON 数据结构与状态转移表；
   3. 设计 R17 网关适配方案：runtime-profiles.yaml 与 herdr-dispatch.sh 如何对接 Magpie (:3425) 的 `group/steering`、`group/reviewing`、`group/coding` 逻辑组并兼容回退；
   4. 给出 R18（单写者 `state.sqlite + effects` 队列）、`goalx` `--intent evolve` 演进模式以及 Jev R02/R03/R08（动态 Skill 预筛、Keep-or-Drop 压缩、死循环看门狗）的分阶段演进路线与接口定义。
@@ -313,4 +313,4 @@
 | **R19** | Prompt Slots 四级结构 + `spec.md`/`design.md` `version` 乐观锁 | **Sub-Workflow 2（设计）& Sub-Workflow 5（叙事）** | Stage 4 |
 | **R20** | 三缺陷灰色地带自举靶场 + 标准 JSON `Inbox` | **Sub-Workflow 3（`team-lead`）** | Stage 4 |
 | **R09** | 个人项目检索重排（`WebIQSearch` / `deep-research` Reranking） | **Sub-Workflow 2（调研与应用）** | Stage 4 |
-| **Backlog** | 常驻 Bot 拆分（七域 Bot vs. 拆 Bot 三准则、M2 四形态 `Grok Bot`/`Hermes`/`OpenClaw`/`Cindy`、`his.fm` Scoped Tokens） | **Backlog（`coordinator`，待网关与核心环升级完成后再议）** | Backlog |
+| **Backlog** | 常驻 Bot 拆分（七域 Bot vs. 拆 Bot 三准则、M2 四形态 `Grok Bot`/`Hermes`/`OpenClaw`/`Cindy`、`his.fm` Scoped Tokens） | **Backlog（`m2-dispatcher`，待网关与核心环升级完成后再议）** | Backlog |

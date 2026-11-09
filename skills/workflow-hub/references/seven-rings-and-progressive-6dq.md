@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 1. Linear Board | `linear-board` | Idea、TIA state、Goal checklist | promoted Goal、状态与 blocker evidence |
 | 2. Co-Design | research/domain/design skills | facts、constraints、open decisions | frozen `spec.md`/`design.md` |
-| 3. Bot/TL | `coordinator` | Goal handoff、queue、alerts | TL lifecycle、R8 state、handoff receipts |
+| 3. Bot/TL | `m2-dispatcher` | Goal handoff、queue、alerts | TL lifecycle、R8 state、handoff receipts |
 | 4. Build | `team-lead` | frozen spec、brief、Owned Paths | commit、PR、tests、R10 |
 | 5. Review/Merge | review skills、`pr_monitor` | diff、checks、R10 | V1–V5 conclusion、merged head |
 | 6. Delivery/Release | product and shared foundations | merged head、contracts、release inputs | published build、readback |

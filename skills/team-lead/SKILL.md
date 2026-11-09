@@ -84,7 +84,7 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 - **Worktree 强制修改提交与 Inline/Worker 弹性分流**：任何代码或其他仓库文件的修改，**一律在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）和独立分支中完成修改与提交**，绝不在主 checkout（`main`）上直接修改（`M2-Dispatcher` 严禁改代码，只改简单 Spec）。在 `<goal>-goal-tl-r1` 的独立 Worktree 内，`≤3` 个文件的轻量改动可由 `Steering` 直接修改并运行验证命令；多文件、跨模块或耗时构建（如 `xcodebuild`）则通过 `herdr-dispatch.sh` 派发后台 `Writer`。
 - **Space 与分屏规范**：派发后台 Subagent 时复用同一 Space 分屏（`herdr pane split --direction right|down`）或创建 Space（`herdr workspace create`／`herdr worktree create`，`--cwd` 传目标 Git 仓根或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`）。
-- `M2-Dispatcher` ↔ TL 协同与 `PR_MERGED`／`GOAL_DONE` 回收遵循 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](../coordinator/SKILL.md)）；保留 Worktree 不阻断关窗。
+- `M2-Dispatcher` ↔ TL 协同与 `PR_MERGED`／`GOAL_DONE` 回收遵循 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)；保留 Worktree 不阻断关窗。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -194,5 +194,8 @@ Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并
 - `Writer` 完成本地验证与交付后即退出关窗（无需挂起空等）；当临时子 Worktree 已本地 `keep` 合回或最终 PR 已 `PR_MERGED` 后，通过 `python3 skills/team-lead/scripts/git-gc.py task-clean`（或 `git worktree remove`）清理已合并 Worktree；`GOAL_DONE` 时关闭 Goal pane/workspace，未合并／暂停（HOLD）现场保留并报告 `Owner`。
 - 详细启动、Tier A/A′ 解卡、Reply/Resolve、队列和生命周期规则分别见
   [`bots-and-agents.md`](references/bots-and-agents.md)、
-  [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（[`coordinator`](../coordinator/SKILL.md)）、
+  [`m2-dispatcher`](../m2-dispatcher/SKILL.md)、
   [`playbook.md`](references/playbook.md) 与 [`ledger.md`](references/ledger.md)。
+
+### UI implementation inner loop
+For UI tasks, Writers and Steering invoke the shared cross-platform gate (never `xcode-cli` for visual gates): `python3 shared-ci/scripts/context/design_contract.py --audit-code --platform <desktop|mobile|web>`, `--audit-l10n --locales en,zh-Hans`, `--check-edge-clipping <png-or-dir>`, and `--audit-geometry <geometry.json>` as applicable.
