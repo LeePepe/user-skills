@@ -518,7 +518,10 @@
         "specular highlight",
         "bloom",
         "shader",
-        "3D canvas"
+        "3D canvas",
+        "containerConcentric",
+        "cornerConfiguration",
+        "domain warping"
       ],
       "jev_question": {
         "id": "dim_visual_style",
@@ -532,6 +535,8 @@
       "apple_native_primitives": [
         "RoundedRectangle(cornerRadius:style: .continuous)",
         "ConcentricRectangle",
+        ".rect(corner: .containerConcentric)",
+        "NSView.cornerConfiguration",
         ".clipShape(_:)",
         ".shadow(color:radius:x:y:)",
         ".strokeBorder(_:lineWidth:)",
@@ -633,7 +638,10 @@
         "table",
         "list row",
         "badge",
-        "gauge"
+        "gauge",
+        "ToolbarOverflowMenu",
+        "ToolbarSpacer",
+        "NSTextSelectionManager"
       ],
       "jev_question": {
         "id": "dim_component",
@@ -668,7 +676,12 @@
         "ProgressView",
         ".badge(_:)",
         "ControlGroup",
-        "ToolbarItem"
+        "ToolbarItem",
+        "ToolbarSpacer",
+        "ToolbarOverflowMenu",
+        "Tab(role: .prominent)",
+        "NSTextSelectionManager",
+        "NSControl.Events"
       ],
       "hig_routes": [
         "buttons.md",
@@ -869,7 +882,11 @@
         "vibrancy",
         "backdrop blur",
         "refraction",
-        "specular rim"
+        "specular rim",
+        "optical lensing",
+        "appearsActive",
+        "backgroundExtensionEffect",
+        "scrollEdgeEffectStyle"
       ],
       "jev_question": {
         "id": "dim_glass_material",
@@ -894,6 +911,10 @@
         ".glassEffectUnion(id:namespace:)",
         ".buttonStyle(.glass)",
         ".buttonStyle(.glassProminent)",
+        "@Environment(\\.appearsActive)",
+        ".backgroundExtensionEffect()",
+        ".scrollEdgeEffectStyle(.hard, for:)",
+        ".sharedBackgroundVisibility(.hidden)",
         "Material.ultraThinMaterial",
         "Material.thinMaterial",
         "Material.regularMaterial",
@@ -993,7 +1014,12 @@
         "SensoryFeedback",
         "haptics",
         "symbolEffect",
-        "Reduce Motion"
+        "Reduce Motion",
+        "onScrollTargetVisibilityChange",
+        "swipeActionsContainer",
+        "reorderContainer",
+        "dragContainer",
+        "dropConfiguration"
       ],
       "jev_question": {
         "id": "dim_motion_interaction",
@@ -1024,6 +1050,13 @@
         ".contentTransition(_:)",
         ".draggable(_:)",
         ".dropDestination(for:action:isTargeted:)",
+        ".onScrollTargetVisibilityChange(idType:threshold:)",
+        ".swipeActionsContainer()",
+        ".reorderContainer(for:in:action:)",
+        ".dragContainer(for:)",
+        ".dragPreviewsFormation(.stack)",
+        ".dropPreviewsFormation(.stack)",
+        ".dropConfiguration",
         "@Environment(\\.accessibilityReduceMotion)"
       ],
       "hig_routes": [
@@ -1118,7 +1151,11 @@
         "containerRelativeFrame",
         "safeAreaInset",
         "scrollPosition",
-        "CLS = 0"
+        "CLS = 0",
+        "visibilityPriority",
+        "topBarPinnedTrailing",
+        "toolbarMinimizeBehavior",
+        "alignmentGuide"
       ],
       "jev_question": {
         "id": "dim_layout_navigation",
@@ -1136,6 +1173,13 @@
         ".tabViewStyle(.sidebarAdaptable)",
         ".inspector(isPresented:content:)",
         ".toolbar(content:)",
+        ".visibilityPriority(.high)",
+        "ToolbarOverflowMenu",
+        ".topBarPinnedTrailing",
+        ".toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)",
+        "ToolbarSpacer",
+        ".rect(corner: .containerConcentric)",
+        "NSView.cornerConfiguration",
         "Grid",
         "GridRow",
         "LazyVGrid",

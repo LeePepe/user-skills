@@ -56,7 +56,8 @@ Do not write demo code to explore directions. Translate the diagnosis into a con
      anti-collision gates.
 3. **Micro-Precision & Alignment (Fixed & Aligned):**
    - Strict `4/8pt` spacing scale (`4, 8, 12, 16, 24, 32, 48`).
-   - **Size-aware concentric radii:** Outer `32pt` → Card `24pt` → Control `16pt` → Capsule; **dense collections / custom keyboards / compact grid cells scale down to `4–8pt` (`radius.xs` / `radius.sm`)**.
+   - **Size-aware concentric radii (`WWDC25-323 / WWDC26-289`):** Prefer native `.clipShape(.rect(corner: .containerConcentric))` (or `NSView.cornerConfiguration` in AppKit) so nested cards automatically derive concentric curvature from their parent container; when using explicit fallback tokens, follow Outer `32pt` → Card `24pt` → Control `16pt` → Capsule, scaling **dense collections / custom keyboards / compact grid cells down to `4–8pt` (`radius.xs` / `radius.sm`)**.
+   - **Zero-`GeometryReader` edge attachments (`WWDC26-322` `IP-008`):** When anchoring timestamps, reaction pills, or status badges outside a bubble/card edge, use `.overlay(alignment: .bottomLeading)` + `.alignmentGuide(.bottom) { $0[.top] }` (pin-flip) instead of `GeometryReader` or hardcoded `.offset(y:)` so Dynamic Type scaling never overlaps.
    - **Same-row control alignment:** Buttons and single-line inputs share identical box height (`36pt` / `44pt`), `.body` font, and align on the input box's center/baseline (`AlignmentID`), ignoring outer top labels or bottom error messages.
    - **Icon + text alignment:** Use `Label` or `.firstTextBaseline`; fixed-width icon columns constrain width only, never adding a tall square `minHeight` inside a `.top`-aligned `HStack`.
    - **Zero-jump embedded icons:** Chip/SearchField clear/remove buttons use `16–20pt` visual frames + hit-target expansion, never inflating row height to `44pt`.
@@ -72,10 +73,11 @@ Do not write demo code to explore directions. Translate the diagnosis into a con
    - Explicitly inject `theme` and `colorScheme` into detached hosts (`UITextField.inputView` custom keyboards, `UIHostingController`).
    - **Zero-height inactive slots:** In the single bottom inset stack, omit an inactive snackbar/toast slot or set its height to `0`; hidden opacity must not retain intrinsic layout height.
    - **Sidebar and keyboard continuity:** Rail `+` actions match sibling rounded-rectangle cards (`cornerRadius: 12`, continuous style). Custom keyboard docks extend through the bottom safe area with one `1px` top hairline and no white strip or duplicate divider.
-6. **Multi-Device Macro-Tiers:**
-   - **Tier 1 `Compact-Portrait` (iPhone portrait):** Single column, bottom 1/3 thumb-zone primary bar, `44pt` hit targets.
-   - **Tier 2 `Wide-Touch` (iPhone landscape / iPad):** Split view / adaptive 2–3 col grid, bounded bottom actions (never full-width across landscape).
-   - **Tier 3 `Desktop-Pointer` (macOS):** Sidebar + multi-pane, compact `32–36pt` controls, top-trailing/bottom-right actions (no bottom floating bar), hover + focus rings.
+6. **Multi-Device Macro-Tiers & OS 27 Free-Form Window Resizing (`WWDC26-278`):**
+   - **Never branch on `UIScreen.main.bounds`, `userInterfaceIdiom == .phone`, or `interfaceOrientation.isLandscape`:** In iOS 27 multitasking and macOS 27 iPhone Mirroring, iPhone apps resize freely into wide landscape windows while `userInterfaceIdiom` stays `.phone` and `interfaceOrientation` stays `.portrait`. Drive all layout breakpoints strictly from `@Environment(\.horizontalSizeClass)`, `ViewThatFits`, or `effectiveGeometry`.
+   - **Tier 1 `Compact-Portrait` (`horizontalSizeClass == .compact`):** Single column, bottom 1/3 thumb-zone primary bar, `44pt` hit targets, `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)`.
+   - **Tier 2 `Wide-Touch` (`horizontalSizeClass == .regular` on resized iPhone window / iPad):** Split view / adaptive 2–3 col grid, `.visibilityPriority(.high)` + `ToolbarOverflowMenu` + `.topBarPinnedTrailing`, bounded bottom actions (never full-width across landscape).
+   - **Tier 3 `Desktop-Pointer` (macOS):** Sidebar + multi-pane, compact `32–36pt` controls, top-trailing/bottom-right actions (no bottom floating bar), `@Environment(\.appearsActive)` window focus dimming, hover + focus rings.
 
 ### Step 2 — Implement Directly in Product / Design System
 

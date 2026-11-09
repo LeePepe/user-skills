@@ -24,12 +24,12 @@ Never design a screen by dumping every feature or candidate component onto a sin
 
 Before drawing layout boxes, classify every domain element in a `3 × 4` table:
 
-| Priority Tier | 1. `Display Only` (纯展示) | 2. `Action Only` (纯操作) | 3. `Display + Action` (展示+操作复合) |
+| Priority Tier | 1. `Display Only` (纯展示) | 2. `Action Only` (纯操作 ·含 OS 27 工具栏折叠) | 3. `Display + Action` (展示+操作复合) |
 |---|---|---|---|
-| **`P0` · Primary Focal**<br>*(1 per viewport; `100+/day`)* | Single primary anchor metric or active object title (e.g., Active Exercise / Monthly Total Spend Hero) | Single primary commit CTA (`✓ Complete Set`, `Record`) | Primary direct-manipulation target (`Weight × Reps` cells, active interactive chart/table) |
-| **`P1` · Inline Companion**<br>*(Non-blocking; `10s/day`)* | Non-blocking companion status bar (`⏱ Rest 01:42 · ♥ 136 BPM`, active filter summary pill) | High-frequency creation or lens toggle (`+ Add Exercise`, Segmented Lens `[Breakdown | Wallet]`) | **Merged Placeholder Hints & Direct Filter Tiles**: put `Previous / Suggested` values inside input placeholders (kill separate "Previous" columns!); make chart Bento tiles directly clickable to filter rows |
-| **`P2` · Collapsed Context**<br>*(Folded by default)* | **Collapsed siblings**: completed/upcoming exercises folded to single-line headers; secondary account cards tucked inside `SWWallet` `ZStack` | Undo toast, `±15s` timer nudge, expand/collapse toggle | Secondary perspective folded behind Segmented Control or 3D `ZStack` card deck (tap card header to peek/filter) |
-| **`P3` · On-Demand Drill-Down**<br>*(Rare / configuration)* | Audit metadata (`external_id`, `transfer_group_id`, full 40-category tail) hidden until requested | Low-frequency or destructive actions (reorder, AI swap, unit toggle, delete, settings) | Tucked into row/toolbar `⋯` menu (`>=44×44pt`), custom keypad function keys, or `L3` Receipt Detail `Sheet` / `Inspector` |
+| **`P0` · Primary Focal**<br>*(1 per viewport; `100+/day`)* | Single primary anchor metric or active object title (e.g., Active Exercise / Monthly Total Spend Hero) | Single primary commit CTA (`✓ Complete Set`, `.topBarPinnedTrailing` or separated `Tab(role: .prominent)`) | Primary direct-manipulation target (`Weight × Reps` cells, active interactive chart/table) |
+| **`P1` · Inline Companion**<br>*(Non-blocking; `10s/day`)* | Non-blocking companion status bar (`⏱ Rest 01:42 · ♥ 136 BPM`, active filter summary pill) | High-frequency creation or lens toggle (`+ Add`, `.visibilityPriority(.high)`, `ToolbarSpacer`, Segmented Lens) | **Merged Placeholder Hints & Direct Filter Tiles**: put `Previous / Suggested` values inside input placeholders (kill separate "Previous" columns!); make chart Bento tiles directly clickable to filter rows |
+| **`P2` · Collapsed Context**<br>*(Folded by default)* | **Collapsed siblings**: completed/upcoming exercises folded to single-line headers; secondary account cards tucked inside `SWWallet` `ZStack` | Undo toast, `±15s` timer nudge, expand/collapse toggle, `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)` | Secondary perspective folded behind Segmented Control or 3D `ZStack` card deck (tap card header to peek/filter) |
+| **`P3` · On-Demand Drill-Down**<br>*(Rare / configuration)* | Audit metadata (`external_id`, `transfer_group_id`, full 40-category tail) hidden until requested | Low-frequency or destructive actions auto-collapsed into `ToolbarOverflowMenu` (`⋯`) or `Sheet` | Tucked into row/toolbar `ToolbarOverflowMenu` (`>=44×44pt`), custom keypad function keys, or `L3` Receipt Detail `Sheet` / `Inspector` |
 
 ### Axis Y · Fold Space via Chunking Cap & Shneiderman Mantra (`<= 2–3` Groups per Pane)
 
@@ -45,11 +45,12 @@ Before drawing layout boxes, classify every domain element in a `3 × 4` table:
 3. **Tufte Zero-Redundancy Rule (`DC-002`)**:
    - Never render the same dataset twice in one viewport (e.g., `SWDonutChart` with a 6-row legend + an 8-row `ProgressView` category bar list below it). Fuse the chart and legend into a single **Donut + 2-Column Interactive Bento Grid** where tapping a tile filters the list.
 
-### Axis Z · Separate Functional Glass Chrome from Solid Content (`Apple Two-Layer Rule`)
+### Axis Z · Separate Functional Glass Chrome from Solid Content (`Apple Two-Layer & Optical Sampling Rule`)
 
 - **Top Z-Layer (Floating Functional Chrome — `.glassEffect` + `GlassEffectContainer`)**:
   - Houses unified 1-row toolbar (`Period Menu` + `SWSearchBar` + compact `32pt` filter pills), mode switchers, and non-blocking companion bars (`.safeAreaInset`).
-- **Bottom Z-Layer (Scrolling Content Canvas — Solid Semantic Luminance Tiers)**:
-  - Houses `L0` canvas, `L1` grouped sections/lists, and `L2` focal cards. Never apply `.glassEffect` inside content rows, and never use heavy drop shadows where luminance tiers (`L0 < L1 < L2`) and 1px indented hairlines suffice.
+  - **WWDC25/26 Optical Lensing Contract (`GM-003`)**: Liquid Glass refracts via optical lensing, not simple blur—**glass cannot sample glass**. Group adjacent glass controls inside a single `GlassEffectContainer` with `@Namespace` + `.glassEffectID` for fluid morphing; use `Glass.regular` by default and restrict `Glass.clear` to surfaces satisfying all **3 preconditions** (media-rich backdrop + dimming scrim + bold bright foreground); on macOS 27 add `.interactive()` to custom glass controls for click bounce and observe `@Environment(\.appearsActive)` to dim accents when the window is inactive.
+- **Bottom Z-Layer (Scrolling Content Canvas — Solid Semantic Luminance Tiers & 120Hz Prefetch)**:
+  - Houses `L0` canvas, `L1` grouped sections/lists, and `L2` focal cards. Never apply `.glassEffect` inside content rows, and keep `LazyVStack`/`LazyHStack` `ForEach` closures strictly `1:1` (filter in `@Query(#Predicate)`, never a top-level `if` inside `ForEach` per `DC-003`).
 - **Breathing Room & Zero-Guessing UX (`L1` Companion)**:
   - When tuning spacing ratios (`1:3:6`, `padding >= spacing`), luminance borders, `90/10` chromatic restraint, or novice-friendly microcopy (`说法 · 入口 · 反馈`), load [breathing-and-clarity.md](breathing-and-clarity.md).

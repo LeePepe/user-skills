@@ -1486,6 +1486,127 @@
       "usage_count": 0,
       "rating": "unrated",
       "last_used_at": null
+    },
+    {
+      "id": "GM-003",
+      "name": "Liquid Glass 光学透镜共享容器与窗口失焦退让 (WWDC25-219/323 & WWDC26-269)",
+      "aliases": [
+        "光学透镜",
+        "GlassEffectContainer共享采样",
+        "玻璃不采样玻璃",
+        "appearsActive",
+        "Clear三前提",
+        "interactive点击微弹"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "glass-material",
+      "secondary_dimensions": [
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "sub_category": "liquid-glass-primitives",
+      "source_prompt_zh": "WWDC25-219/323 与 WWDC26-269 Liquid Glass 物理铁律：核心机制是光学透镜折射（Lensing）而非高斯模糊，玻璃绝不能采样另一层玻璃；相邻浮动胶囊必须装入同一个 `GlassEffectContainer` 共享采样域并配 `@Namespace` + `.glassEffectID` 实现液态融合过渡；`Clear` 变体仅在满足「富媒体底图 + 暗化底衬 + 粗体亮色前景」三前提时启用；macOS 27 为自定义玻璃控件显式加 `.glassEffect(.regular.interactive())` 获得按压微弹发光，并用 `@Environment(\\.appearsActive)` 在窗口失焦时自动降色温退让。",
+      "canonical_prompt": "Group adjacent Liquid Glass controls inside a single `GlassEffectContainer` with `.glassEffectID` so glass never samples glass; reserve `Glass.clear` for media-rich dimmed backdrops; add `.interactive()` on macOS 27 custom glass controls and dim inactive window accents via `@Environment(\\.appearsActive)`.",
+      "desktop_macos_implementation": "Wrap floating toolbar/HUD pills in `GlassEffectContainer(spacing: 10)` with `.glassEffect(.regular.interactive(), in: .capsule)` on macOS 27; observe `@Environment(\\.appearsActive)` to soften accent saturation when the `NSWindow` loses key status; use `.backgroundExtensionEffect()` and `.scrollEdgeEffectStyle(.hard, for: .top)` for full-bleed split views.",
+      "mobile_ios_implementation": "Combine `GlassEffectContainer` + `@Namespace` + `.glassEffectID(_:in:)` for morphing toolbars and floating action bars; use `Glass.regular` by default and restrict `Glass.clear` to media overlays that satisfy all 3 legibility preconditions.",
+      "native_guardrails": "Glass cannot sample glass—never nest or stack `.glassEffect` without a shared `GlassEffectContainer`; at most 1 tinted `.glassProminent` primary CTA per bar; respect `@Environment(\\.accessibilityReduceTransparency)` and `@Environment(\\.accessibilityReduceMotion)`.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "LN-002",
+      "name": "OS 27 自由缩放窗口、自适应工具栏折叠与容器同心圆角 (WWDC26-269/278/289 & WWDC25-323)",
+      "aliases": [
+        "ToolbarOverflowMenu",
+        "visibilityPriority",
+        "topBarPinnedTrailing",
+        "containerConcentric",
+        "cornerConfiguration",
+        "窗口自由缩放",
+        "SizeClass自适应"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "component",
+        "visual-style"
+      ],
+      "sub_category": "spatial-scrubbing-toolbars",
+      "source_prompt_zh": "WWDC26-269/278/289 与 WWDC25-323 窗口与工具栏自适应契约：iOS 27 与 macOS 27 iPhone 镜像支持任意比例自由拖拽窗口（此时 `idiom` 恒为 `.phone`、`orientation` 恒为 `.portrait`），严禁用 `UIScreen.main` 或设备方向分支，一律改用 `horizontalSizeClass`、`ViewThatFits` 或 `effectiveGeometry`；工具栏通过 `.visibilityPriority(.high)` 声明保留优先级，窄窗自动收进 `ToolbarOverflowMenu`，主操作钉在 `.topBarPinnedTrailing`（或底部 `Tab(role: .prominent)`），阅读流配 `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)`；嵌套卡片圆角用 `.rect(corner: .containerConcentric)`（AppKit 用 `NSView.cornerConfiguration`）由系统自动推算同心曲率。",
+      "canonical_prompt": "Support OS 27 free-form window resizing using `horizontalSizeClass` and `effectiveGeometry` (never `UIScreen.main`, `userInterfaceIdiom`, or `interfaceOrientation`); configure adaptive toolbars with `.visibilityPriority(.high)`, `ToolbarOverflowMenu`, `.topBarPinnedTrailing`, and `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)`, and use `.rect(corner: .containerConcentric)` / `NSView.cornerConfiguration` for nested concentric radii.",
+      "desktop_macos_implementation": "Use `.toolbar` with `ToolbarSpacer(.flexible)`, `.visibilityPriority(.high)` on primary actions, and `ToolbarOverflowMenu` for secondary tools; apply `.clipShape(.rect(corner: .containerConcentric))` in SwiftUI or `NSView.cornerConfiguration` in AppKit so nested tiles automatically match window/sheet bezel curvature.",
+      "mobile_ios_implementation": "Drive multi-column reflow strictly from `@Environment(\\.horizontalSizeClass)` and `ViewThatFits`; pin primary actions with `.topBarPinnedTrailing` or separated `Tab(role: .prominent)`, collapse nav chrome on scroll via `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)`, and replace manual radius math with `.rect(corner: .containerConcentric)`.",
+      "native_guardrails": "Never branch layout on `UIScreen.main.bounds`, `UIDevice.current.userInterfaceIdiom == .phone`, or `interfaceOrientation.isLandscape`; never place custom opaque backgrounds behind system toolbars.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "MI-008",
+      "name": "LazyStack 帧死线预取、1:1 子视图解析与视口曝光感知 (WWDC26-321 & WWDC26-269)",
+      "aliases": [
+        "LazyVStack预取",
+        "1比1子视图",
+        "onScrollTargetVisibilityChange",
+        "帧死线",
+        "State惰性初始化",
+        "滚动掉帧优化"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "platforms_v2": [
+        "desktop",
+        "mobile"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "sub_category": "scroll-pinning-safe-areas",
+      "source_prompt_zh": "WWDC26-321 与 WWDC26-269 120Hz 滚动性能铁律：SwiftUI 利用垂直同步帧死线（Frame Deadline）剩余空闲预算提前预取下一行，必须在数据源或 `@Query(#Predicate)` 层完成过滤，保持 `ForEach` 闭包内 1:1 固定根视图映射（严禁在 `ForEach` 顶层写 `if` 导致 0/1 动态子视图计数与离屏内存泄漏）；在视图 `init` 中直接创建 `@State` / `@Observable` 模型（配合 Macro 属性惰性监听，绝不推迟到 `.onAppear` 错过预取窗口）；用 `.onScrollTargetVisibilityChange(idType:threshold: 0.8)` 控制音视频自动启停，并用自定义 `Layout` 替代多层 `onGeometryChange` 写回 `@State` 的二次布局震荡。",
+      "canonical_prompt": "Preserve 120Hz `LazyVStack`/`LazyHStack` frame-deadline prefetching by enforcing 1:1 subview resolution inside `ForEach` (filter in `@Query(#Predicate)` or the collection, never a top-level `if` inside `ForEach`), initializing `@State`/`@Observable` models in `init` rather than `.onAppear`, and driving viewport media playback with `.onScrollTargetVisibilityChange(idType:threshold:)`.",
+      "desktop_macos_implementation": "Filter `LazyVStack` / `Table` collections upstream via `#Predicate` or computed slices; initialize lightweight `@Observable` row models in `init`; use custom `Layout` (`sizeThatFits` / `placeSubviews`) instead of chaining `onGeometryChange` -> `@State` height mutations across parent-child views.",
+      "mobile_ios_implementation": "Keep every `ForEach` element mapped 1:1 to a single root row view so iOS 27 prefetching prepares offscreen cells before VSync; attach `.onScrollTargetVisibilityChange(idType: Item.ID.self, threshold: 0.8)` to start/stop inline video or waveform animations only when >=80% visible.",
+      "native_guardrails": "Never place a top-level `if` filter inside `LazyVStack`/`LazyHStack` `ForEach` closures (`HIG-LAZY-LEAF-CONDITIONAL` / `DC-003`); never allocate heavy objects lazily inside `.onAppear` when prefetching is active.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
     }
   ]
 }

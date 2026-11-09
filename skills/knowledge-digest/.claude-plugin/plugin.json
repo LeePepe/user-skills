@@ -1,0 +1,5 @@
+{
+  "name": "knowledge-digest",
+  "description": "面向日常学习、知识获取与好内容拆解沉淀的通用技能：支持「通道 A 主动求知（问题/概念 -> 快速多维检索四要素）」与「通道 B 素材拆解（视频总结/脚本/文章/URL -> 知识卡 + 制作技巧）」双通道输入，统一以「极简 TL;DR + 核心痛点问答（3–5 问）+ 立即可用清单 + 可选脚本/表达技巧拆解」直击痛点，并分类沉淀到 ~/Development/Personal/knowledge-vault/。",
+  "category": "research"
+}

@@ -63,6 +63,9 @@ extend, rate, and re-render the catalog.
 | IP-006 | **说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。 | layout-craft | web, mobile, shared | M1 | `ready -> container_or_content_change -> measure -> reflow -> stable` |
 | IP-007 | **入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。 | layout-craft | web, mobile, shared | M1 | `ready -> container_or_content_change -> measure -> reflow -> stable` |
 | MP-007 | **反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。 | micro-feedback-social | web, mobile, shared | M2 | `idle -> press -> feedback_preview -> commit/cancel -> acknowledged -> idle` |
+| MP-008 | Domain Warping 流体背景与时间水管 (Domain Warping Fluid Shader & Time Pipe — WWDC26-322) | 3d-physics | web, mobile, shared | M3 | `idle_or_paused -> timeline_tick(dt) -> accumulate_elapsed -> metal_two_pass_domain_warp(uv, elapsed) -> render_frame` |
+| IP-008 | 图钉孔位反转零测高外挂角标 (AlignmentGuide Pin-Flip Edge Attachment — WWDC26-322) | layout-craft | web, mobile, shared | M1 | `ready -> dynamic_type_or_content_resize -> alignment_guide_pin_flip -> zero_cls_edge_anchor` |
+| MP-009 | 任意容器成摞拖拽与规则验牌回弹 (Multi-Item Card Stack Drag & Drop Validation — WWDC26-269/271) | drag-drop-choreography | web, mobile, shared | M2 | `idle -> grab_sub_pile(.stack_formation) -> hover_target -> drop_configuration_validate(.move | .forbidden) -> commit_insert_or_spring_snap_back` |
 
 ### Pattern details
 
@@ -164,6 +167,27 @@ extend, rate, and re-render the catalog.
 - Mobile: SwiftUI SensoryFeedback and StrataMotion with numericText for changing counts.
 - Guardrails: Keep counts derived from committed state; feedback must not depend on color alone. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.
 
+#### MP-008 · Domain Warping 流体背景与时间水管 (Domain Warping Fluid Shader & Time Pipe — WWDC26-322)
+- Prompt: WWDC26-322 流体英雄背景：对 4–5 个高饱和色块先施加 `Blur(radius: 30)` 融合成丝滑渐变基底，再用 `TimelineView(.animation)` 维护暂停安全（Pause-Safe）的累积 `elapsed` 时间水管，灌入 Metal `layerEffect` 执行两遍 `NoiseTexture` 坐标扭曲（Domain Warping：`uv -> firstWarp -> secondWarp`），实现 120Hz 零 CPU 负担的液态星云。
+- Canonical: Fuse 4-5 saturated color blobs with `Blur(radius: 30)`, drive a pause-safe `TimelineView(.animation)` `elapsed` time accumulator, and pipe `elapsed` into a Metal `layerEffect(..., maxSampleOffset:)` performing two-pass `NoiseTexture` Domain Warping.
+- Web: WebGL / Three.js fragment shader with two-pass simplex/texture noise domain warping driven by a pause-aware requestAnimationFrame delta accumulator.
+- Mobile: SwiftUI `Blur(radius: 30)` base + `TimelineView(.animation(paused: isPaused || reduceMotion))` `elapsed` state piped into `ShaderLibrary.domainWarp(.float(elapsed), .image(noiseTexture))` via `.layerEffect`.
+- Guardrails: Obey `CL-005` hue-arc rule (never blur into `#000000` dead zones); pause `TimelineView` when offscreen, backgrounded, or when `@Environment(\.accessibilityReduceMotion)` is true.
+
+#### IP-008 · 图钉孔位反转零测高外挂角标 (AlignmentGuide Pin-Flip Edge Attachment — WWDC26-322)
+- Prompt: WWDC26-322 零测高边缘外挂布局：在聊天气泡或卡片边缘外挂时间戳/状态徽标时，严禁使用 `GeometryReader` 或硬编码 `.offset(y: 20)`；直接用 `.overlay(alignment: .bottomLeading)` 配合 `.alignmentGuide(.bottom) { $0[.top] }` 将子视图顶边钉在父视图底边，天然适配一切 Dynamic Type 字号缩放。
+- Canonical: Attach external timestamps, reactions, or edge badges without `GeometryReader` or magic `.offset` numbers by combining `.overlay(alignment: .bottomLeading)` with `.alignmentGuide(.bottom) { $0[.top] }` (pin-flip).
+- Web: CSS anchor positioning or absolute top: 100% edge attachment without JS getBoundingClientRect measurement loops.
+- Mobile: SwiftUI `.overlay(alignment: .bottomLeading) { badge.alignmentGuide(.bottom) { $0[.top] } }` or custom `Layout` when coordinating sibling spacing.
+- Guardrails: Never hardcode `.offset(y:)` for text-bearing edge attachments; verify zero overlap under `accessibilityExtraExtraExtraLarge` Dynamic Type.
+
+#### MP-009 · 任意容器成摞拖拽与规则验牌回弹 (Multi-Item Card Stack Drag & Drop Validation — WWDC26-269/271)
+- Prompt: WWDC26-269 与 WWDC26-271 纸牌级成摞拖拽与验牌回弹：在 `LazyVStack` 或自定义栈中组合 `.swipeActionsContainer()`、`.reorderContainer(for:in:action:)` 与 `.dragContainer(for:)`，通过 `.dragPreviewsFormation(.stack)` 将多张关联卡片收拢成真实三维牌摞；悬停落点时在 `.dropConfiguration` 中校验业务规则（合法返 `.move` + `.dropPreviewsFormation(.stack)`，非法返 `.forbidden`），松手后非法落点自动沿物理弹簧轨迹飞回原位。
+- Canonical: Enable multi-item card stack dragging in custom containers using `.swipeActionsContainer()`, `.reorderContainer`, `.dragContainer`, and `.dragPreviewsFormation(.stack)`, validating drop legality in `.dropConfiguration` (`.move` vs `.forbidden` spring snap-back).
+- Web: Motion pointer drag with stacked card preview transforms, drop-target rule validation, and spring snap-back on invalid drop.
+- Mobile: SwiftUI `.swipeActionsContainer()`, `.reorderContainer`, `.dragContainer(for:)`, `.dragPreviewsFormation(.stack)`, `.dropPreviewsFormation(.stack)`, and `.dropConfiguration` with `SensoryFeedback`.
+- Guardrails: Keep source data unchanged until a valid `.move` drop commits; provide an accessible ContextMenu / keyboard move equivalent and respect Reduce Motion.
+
 ## Usage & Preference Ledger
 
 | ID | Usage count | Rating | Last used |
@@ -202,6 +226,9 @@ extend, rate, and re-render the catalog.
 | IP-006 | 0 | unrated | — |
 | IP-007 | 0 | unrated | — |
 | MP-007 | 0 | unrated | — |
+| MP-008 | 0 | unrated | — |
+| IP-008 | 0 | unrated | — |
+| MP-009 | 0 | unrated | — |
 
 ## Code / CLI Recipes
 

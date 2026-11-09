@@ -61,10 +61,12 @@ PLAN_A_CODE_RULES = [
     {
         "id": "HIG-IOS-SCREEN-BOUNDS",
         "severity": "High",
-        "platforms": ["mobile"],
-        "citation": "designing-for-iphone-duo.md › Best practices",
-        "pattern": re.compile(r"\bUIScreen\.main\.bounds\b"),
-        "message": "Avoid UIScreen.main.bounds; use GeometryReader, window size, or horizontalSizeClass for adaptive layouts.",
+        "platforms": ["mobile", "desktop"],
+        "citation": "WWDC26-278 & designing-for-iphone-duo.md › Resizable Windows & Size Classes",
+        "pattern": re.compile(
+            r"(?:\bUIScreen\.main\b|\buserInterfaceIdiom\s*==\s*\.phone\b|\binterfaceOrientation\.(?:isLandscape|isPortrait)\b)"
+        ),
+        "message": "Avoid UIScreen.main, userInterfaceIdiom == .phone, or interfaceOrientation layout branches; iPhone apps resize freely in iOS 27 / macOS 27 iPhone Mirroring where idiom stays .phone and orientation stays .portrait—use horizontalSizeClass, ViewThatFits, or effectiveGeometry.",
     },
     {
         "id": "HIG-COLOR-RAW-HEX",
@@ -130,6 +132,32 @@ PLAN_A_CODE_RULES = [
         "pattern": re.compile(r"(?:SWDonutChart|SectorMark)[\s\S]{0,800}?ProgressView\(\s*value\s*:"),
         "message": "Never render both a Donut/Sector chart with legend AND a redundant ProgressView bar list for the same dataset in one pane; use a Segmented Lens or interactive chart slices.",
     },
+    {
+        "id": "HIG-LAZY-LEAF-CONDITIONAL",
+        "severity": "High",
+        "platforms": ["desktop", "mobile"],
+        "citation": "WWDC26-321 › Subview loading 1:1 resolution",
+        "pattern": re.compile(r"Lazy(?:V|H)Stack[^{]*\{[\s\S]{0,220}?ForEach\([^)]*\)\s*\{\s*\w+\s+in\s+if\b"),
+        "message": "Avoid top-level 'if' filtering inside LazyStack ForEach closures (causes 0/1 dynamic subview count and offscreen memory retention); filter data in @Query(#Predicate) or the collection instead.",
+    },
+    {
+        "id": "HIG-APPKIT-LEGACY-MOUSELOOP",
+        "severity": "Medium",
+        "platforms": ["desktop"],
+        "citation": "WWDC26-289 › Modernize your AppKit app",
+        "pattern": re.compile(r"override\s+func\s+mouseDown\b[\s\S]{0,300}?nextEvent\(\s*matching\s*:"),
+        "message": "Avoid overriding mouseDown with blocking nextEvent tracking loops; use NSGestureRecognizer, NSControl.Events (.trackingEndedOutside), or NSTextSelectionManager.",
+    },
+    {
+        "id": "HIG-DRAG-WILL-BEGIN-UI",
+        "severity": "Medium",
+        "platforms": ["mobile", "desktop"],
+        "citation": "WWDC26-278 › Apple Intelligence & Drag Session",
+        "pattern": re.compile(
+            r"dragInteraction\([^)]*sessionWillBegin[\s\S]{0,240}?(?:present\(|UIAlertController|withAnimation)"
+        ),
+        "message": "Do not trigger modals or animations in sessionWillBegin (Siri / Apple Intelligence invokes drag sessions headlessly without touch); move UI feedback to sessionDidMove.",
+    },
 ]
 
 
@@ -190,8 +218,77 @@ def command_route(args: argparse.Namespace) -> int:
     breathing_dims = {"visual-style", "color-palette", "layout-navigation", "typography-copy"}
     disclose_layering = (not dims) or bool(set(dims) & layering_dims) or bool(active_plan_c)
     disclose_breathing = (not dims) or bool(set(dims) & breathing_dims)
+    dim_set = set(dims)
     ext_root = "~/Development/Personal/collected-tools/repos"
     if args.platform in ("desktop", "mobile"):
+        shipswift_pkgs = {
+            "animation": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation",
+            "metal_shaders": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation/SWMetal",
+            "charts": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWChart",
+            "components": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWComponent",
+            "modules": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWModule",
+        }
+        focused_shipswift: dict[str, str] = {}
+        if not dim_set or (dim_set & {"motion-interaction", "glass-material", "visual-style"}):
+            focused_shipswift["animation"] = shipswift_pkgs["animation"]
+        if not dim_set or (dim_set & {"glass-material", "visual-style", "motion-interaction"}):
+            focused_shipswift["metal_shaders"] = shipswift_pkgs["metal_shaders"]
+        if not dim_set or ("chart-dataviz" in dim_set):
+            focused_shipswift["charts"] = shipswift_pkgs["charts"]
+        if not dim_set or (dim_set & {"component", "layout-navigation", "typography-copy"}):
+            focused_shipswift["components"] = shipswift_pkgs["components"]
+        if not dim_set or ("layout-navigation" in dim_set):
+            focused_shipswift["modules"] = shipswift_pkgs["modules"]
+        if not focused_shipswift:
+            focused_shipswift["components"] = shipswift_pkgs["components"]
+
+        avdlee_all_files = [
+            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/liquid-glass.md",
+            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/charts.md",
+            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/animation-advanced.md",
+            *(
+                [
+                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/macos-window-styling.md",
+                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/macos-scenes.md",
+                ]
+                if args.platform == "desktop"
+                else [
+                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/iphone-duo.md",
+                ]
+            ),
+        ]
+        avdlee_focused: list[str] = []
+        if not dim_set or (dim_set & {"glass-material", "visual-style", "color-palette"}):
+            avdlee_focused.append(avdlee_all_files[0])
+        if not dim_set or ("chart-dataviz" in dim_set):
+            avdlee_focused.append(avdlee_all_files[1])
+        if not dim_set or ("motion-interaction" in dim_set):
+            avdlee_focused.append(avdlee_all_files[2])
+        if not dim_set or (dim_set & {"layout-navigation", "component"}):
+            avdlee_focused.extend(avdlee_all_files[3:])
+        if not avdlee_focused:
+            avdlee_focused = list(avdlee_all_files[:1])
+
+        genjutsu_all_files = [
+            f"{ext_root}/genjutsu/skills/_jutsu/swiftui-graphics/SKILL.md",
+            f"{ext_root}/genjutsu/skills/_jutsu/swiftui-motion/SKILL.md",
+            f"{ext_root}/genjutsu/skills/_jutsu/motion-principles/SKILL.md",
+            *(
+                [f"{ext_root}/genjutsu/skills/_jutsu/desktop-principles/SKILL.md"]
+                if args.platform == "desktop"
+                else [f"{ext_root}/genjutsu/skills/_jutsu/mobile-principles/SKILL.md"]
+            ),
+        ]
+        genjutsu_focused: list[str] = []
+        if not dim_set or (dim_set & {"glass-material", "visual-style", "color-palette"}):
+            genjutsu_focused.append(genjutsu_all_files[0])
+        if not dim_set or ("motion-interaction" in dim_set):
+            genjutsu_focused.extend(genjutsu_all_files[1:3])
+        if not dim_set or (dim_set & {"layout-navigation", "component"}):
+            genjutsu_focused.append(genjutsu_all_files[3])
+        if not genjutsu_focused:
+            genjutsu_focused = [genjutsu_all_files[3]]
+
         allowed_native = {
             "apple-design-skill": {
                 "hig_dir": f"{ext_root}/apple-design-skill/references/hig",
@@ -206,21 +303,8 @@ def command_route(args: argparse.Namespace) -> int:
                 ],
             },
             "avdlee-swiftui-skill": {
-                "files": [
-                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/liquid-glass.md",
-                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/charts.md",
-                    f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/animation-advanced.md",
-                    *(
-                        [
-                            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/macos-window-styling.md",
-                            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/macos-scenes.md",
-                        ]
-                        if args.platform == "desktop"
-                        else [
-                            f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/iphone-duo.md",
-                        ]
-                    ),
-                ],
+                "files": avdlee_all_files,
+                "focused_files": avdlee_focused,
             },
             "dimillian-skills": {
                 "files": [
@@ -257,13 +341,8 @@ def command_route(args: argparse.Namespace) -> int:
             },
             "shipswift": {
                 "catalog": f"{ext_root}/shipswift/skills/catalog.md",
-                "packages": {
-                    "animation": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation",
-                    "metal_shaders": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWAnimation/SWMetal",
-                    "charts": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWChart",
-                    "components": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWComponent",
-                    "modules": f"{ext_root}/shipswift/ShipSwift/SWPackage/SWModule",
-                },
+                "packages": shipswift_pkgs,
+                "focused_packages": focused_shipswift,
             },
             "awesome-ios-design-md": {
                 "root": f"{ext_root}/awesome-ios-design-md/design-md",
@@ -274,16 +353,8 @@ def command_route(args: argparse.Namespace) -> int:
                 "note": "200 real iOS apps with DESIGN-swiftui.md brand palettes, typography scales, and ButtonStyle springs.",
             },
             "genjutsu_native_only": {
-                "files": [
-                    f"{ext_root}/genjutsu/skills/_jutsu/swiftui-graphics/SKILL.md",
-                    f"{ext_root}/genjutsu/skills/_jutsu/swiftui-motion/SKILL.md",
-                    f"{ext_root}/genjutsu/skills/_jutsu/motion-principles/SKILL.md",
-                    *(
-                        [f"{ext_root}/genjutsu/skills/_jutsu/desktop-principles/SKILL.md"]
-                        if args.platform == "desktop"
-                        else [f"{ext_root}/genjutsu/skills/_jutsu/mobile-principles/SKILL.md"]
-                    ),
-                ],
+                "files": genjutsu_all_files,
+                "focused_files": genjutsu_focused,
                 "forbidden_web_compose": ["css-native", "framer-motion", "gsap", "threejs-r3f", "compose-*"],
             },
             "claude-code-apple-skills": {
@@ -373,6 +444,11 @@ def command_route(args: argparse.Namespace) -> int:
             ),
             "hig_files_to_load": hig_files[:12],
             "apple_native_primitives": native_primitives[:12],
+            "context_budget": {
+                "vault_search_top_k": 3,
+                "l1_doc_max_lines": 130,
+                "active_plan_c_cap": 15,
+            },
         },
         "plan_a_lenses": PLAN_A_LENSES,
         "plan_c_active_cases": active_plan_c,
@@ -578,12 +654,89 @@ def command_register_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_flow_map(args: argparse.Namespace) -> int:
+    cases_doc = _load_json(Path(args.cases_file))
+    taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
+    ds_refs = ROOT.parent / "design-studio" / "references"
+    desktop_vault = _load_json(ds_refs / "vault" / "desktop-macos.json")
+    mobile_vault = _load_json(ds_refs / "vault" / "mobile-ios.json")
+    catalog = _load_json(ds_refs / "catalog.json")
+
+    l1_md_files = sorted((ROOT / "references").glob("*.md"))
+    l1_line_counts = {
+        f"skills/my-designer/references/{p.name}": len(p.read_text(encoding="utf-8").splitlines())
+        for p in l1_md_files
+    }
+    max_l1_lines = 130
+    active_cases_count = len(cases_doc.get("active_cases", []))
+    all_within_budget = all(cnt <= max_l1_lines for cnt in l1_line_counts.values()) and active_cases_count <= 15
+
+    payload = {
+        "ok": all_within_budget,
+        "architecture_doc": "skills/my-designer/references/design-flow-architecture.md",
+        "entry_a_ingest": {
+            "A0_raw_digest": "skills/knowledge-digest/SKILL.md -> ~/Development/Personal/knowledge-vault/",
+            "A1_classify_learn": "python3 skills/design-studio/scripts/design_catalog.py classify --text '<raw>' --learn",
+            "A2_vault_and_catalog_ingest": [
+                "python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text '<raw>'",
+                "python3 skills/design-studio/scripts/design_catalog.py ingest --text '<pattern>'",
+            ],
+            "A3_tier2_distillation": "Update <=130-line L1 tables in skills/my-designer/references/*.md (One-In, One-Out)",
+            "A4_tier3_code_sinking": "Add regex to PLAN_A_CODE_RULES or run verify_design_cases.py register-case --id DC-xxx",
+        },
+        "shared_tiers": {
+            "tier_0_raw_archives": [
+                "~/Development/Personal/knowledge-vault/",
+                "~/Development/Personal/collected-tools/repos/",
+            ],
+            "tier_1_indexed_vault": {
+                "taxonomy_dimensions": len(taxonomy.get("dimensions", [])),
+                "desktop_macos_cards": len(desktop_vault.get("inspirations", [])),
+                "mobile_ios_cards": len(mobile_vault.get("inspirations", [])),
+                "catalog_patterns": len(catalog.get("patterns", [])),
+                "catalog_tools": len(catalog.get("tools", [])),
+            },
+            "tier_2_l1_docs_line_counts": l1_line_counts,
+            "tier_3_executable_gates": {
+                "plan_a_code_rules": len(PLAN_A_CODE_RULES),
+                "plan_c_active_cases": active_cases_count,
+                "plan_c_case_ids": [c["id"] for c in cases_doc.get("active_cases", [])],
+            },
+        },
+        "entry_b_design": {
+            "B0_lock_coordinates": "--platform (desktop|mobile|web) --dimensions <1..4> [--container <host>]",
+            "B1_drawer_retrieval": "python3 skills/design-studio/scripts/design_catalog.py vault-search --platform <p> --dimension <d> --query '<q>' --top 3",
+            "B2_sliced_route": "python3 skills/my-designer/scripts/verify_design_cases.py route --platform <p> --dimensions <d>",
+            "B3_direct_impl": "Author design.md/spec.md (AppTheme.swift + X-Y-Z layering) -> direct product implementation (Zero Demo)",
+            "B4_static_and_visual_audit": [
+                "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform <p> --path <dir>",
+                "python3 skills/my-designer/scripts/verify_design_cases.py audit-l10n --path <dir> --locales en,zh-Hans",
+            ],
+        },
+        "anti_explosion_valves": {
+            "valve_1_zero_token_code_sinking": len(PLAN_A_CODE_RULES) + active_cases_count,
+            "valve_2_3d_coordinate_slicing": True,
+            "valve_3_top_k_and_line_caps": {
+                "vault_search_top_k": 3,
+                "l1_doc_max_lines": max_l1_lines,
+                "active_plan_c_cap": 15,
+            },
+            "valve_4_one_in_one_out_compaction": True,
+            "all_l1_docs_within_budget": all_within_budget,
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if all_within_budget else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cases-file", default=str(DEFAULT_CASES))
     common.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("flow-map", parents=[common])
 
     route = sub.add_parser("route", parents=[common])
     route.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
@@ -614,6 +767,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "flow-map":
+        return command_flow_map(args)
     if args.command == "route":
         return command_route(args)
     if args.command == "audit-code":

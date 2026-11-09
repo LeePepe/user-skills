@@ -1,7 +1,7 @@
 {
   "schema": "apple-design-defect-cases/v1",
-  "version": 2,
-  "updated": "2026-11-08",
+  "version": 3,
+  "updated": "2026-11-09",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
@@ -48,6 +48,28 @@
       "fix_rule": "Never render the same dataset twice in one viewport; fuse the chart with a compact 2-column Bento legend grid (tap tile -> filter detail list) OR use a Segmented Picker to toggle between Chart and Progress List.",
       "forbidden_regex": "SWDonutChart[\\s\\S]{0,800}?ProgressView\\(\\s*value\\s*:",
       "registered_at": "2026-11-08"
+    },
+    {
+      "id": "DC-003",
+      "title": "LazyStack Leaf Conditional Subview Leak & OnAppear Prefetch Invalidation (WWDC26-321)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "motion-interaction",
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "LazyVStack",
+        "LazyHStack"
+      ],
+      "symptom": "Placing a top-level 'if' inside LazyVStack/LazyHStack ForEach closures creates dynamic 0/1 subview counts per element, defeating frame-deadline prefetching and retaining offscreen views in memory; delaying @Observable/@State model allocation to .onAppear misses the pre-render prefetch window.",
+      "fix_rule": "Filter data in the collection or @Query(#Predicate) before ForEach so each item resolves 1:1 to a single root view; initialize lightweight @State/@Observable view models in init (paired with @Observable Macro lazy property tracking) and use .onScrollTargetVisibilityChange(idType:threshold:) for media visibility.",
+      "forbidden_regex": "Lazy(?:V|H)Stack[^{]*\\{[\\s\\S]{0,220}?ForEach\\([^)]*\\)\\s*\\{\\s*\\w+\\s+in\\s+if\\b",
+      "registered_at": "2026-11-09"
     }
   ],
   "archived_templates": [

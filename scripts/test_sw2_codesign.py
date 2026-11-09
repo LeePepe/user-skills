@@ -110,6 +110,11 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertIn("genjutsu_native_only", ext_routing["allowed_native_sources"])
         self.assertIn("claude-code-apple-skills", ext_routing["allowed_native_sources"])
         self.assertIn("impeccable_native_only", ext_routing["allowed_native_sources"])
+        self.assertIn("charts", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertIn("metal_shaders", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertNotIn("modules", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertEqual(payload["progressive_disclosure"]["context_budget"]["vault_search_top_k"], 3)
+        self.assertEqual(payload["progressive_disclosure"]["context_budget"]["l1_doc_max_lines"], 130)
         self.assertEqual(payload["progressive_disclosure"]["appearance_ledger"], "skills/my-designer/references/appearance-ledger.md")
         self.assertEqual(payload["progressive_disclosure"]["interaction_layering_ref"], "skills/my-designer/references/interaction-layering.md")
         self.assertIsNone(payload["progressive_disclosure"]["breathing_and_clarity_ref"])
@@ -122,10 +127,29 @@ class ProgressiveRouterTests(unittest.TestCase):
             payload_vs["progressive_disclosure"]["breathing_and_clarity_ref"],
             "skills/my-designer/references/breathing-and-clarity.md",
         )
+        vs_shipswift_focused = payload_vs["progressive_disclosure"]["external_skill_routing"]["allowed_native_sources"]["shipswift"]["focused_packages"]
+        self.assertNotIn("charts", vs_shipswift_focused)
+        self.assertIn("metal_shaders", vs_shipswift_focused)
         self.assertTrue(any("taste-skill" in b for b in ext_routing["blocked_web_only_sources"]))
         ledger_text = (ROOT / "skills" / "my-designer" / "references" / "appearance-ledger.md").read_text(encoding="utf-8")
         for token in ("Cross-Domain Archetype Remix Matrix", "VS-005", "VS-006", "VS-007", "VS-008", "CL-006", "CL-007", "CL-008"):
             self.assertIn(token, ledger_text)
+
+    def test_flow_map_and_anti_explosion_budget(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = design_cases.main(["flow-map"])
+        self.assertEqual(code, 0)
+        fm = json.loads(buf.getvalue())
+        self.assertTrue(fm["ok"])
+        self.assertTrue(fm["anti_explosion_valves"]["all_l1_docs_within_budget"])
+        self.assertIn("entry_a_ingest", fm)
+        self.assertIn("shared_tiers", fm)
+        self.assertIn("entry_b_design", fm)
+        self.assertIn("DC-003", fm["shared_tiers"]["tier_3_executable_gates"]["plan_c_case_ids"])
+        for doc_path, lines in fm["shared_tiers"]["tier_2_l1_docs_line_counts"].items():
+            self.assertLessEqual(lines, 130, f"{doc_path} exceeds 130-line cap ({lines})")
 
 
 class ResearchTests(unittest.TestCase):
@@ -264,6 +288,49 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
                 "DC-002",
             ):
                 self.assertIn(expected_id, audit_ids)
+
+            # WWDC25/26 static rules: HIG-IOS-SCREEN-BOUNDS (idiom/orientation), HIG-LAZY-LEAF-CONDITIONAL + DC-003,
+            # HIG-APPKIT-LEGACY-MOUSELOOP, and HIG-DRAG-WILL-BEGIN-UI
+            wwdc_file = root / "WWDC26Violations.swift"
+            wwdc_file.write_text(
+                "import SwiftUI\n"
+                "struct FeedView: View {\n"
+                "  let items = [1, 2, 3]\n"
+                "  var body: some View {\n"
+                "    LazyVStack {\n"
+                "      ForEach(items, id: \\.self) { item in\n"
+                "        if item > 1 { Text(\"\\(item)\") }\n"
+                "      }\n"
+                "    }\n"
+                "  }\n"
+                "  func checkIdiom() -> Bool {\n"
+                "    UIDevice.current.userInterfaceIdiom == .phone || interfaceOrientation.isLandscape\n"
+                "  }\n"
+                "  override func mouseDown(with event: NSEvent) {\n"
+                "    while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) { _ = next }\n"
+                "  }\n"
+                "  func dragInteraction(_ interaction: UIDragInteraction, sessionWillBegin session: UIDragSession) {\n"
+                "    withAnimation { present(UIAlertController(), animated: true) }\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            buf_wwdc = io.StringIO()
+            with contextlib.redirect_stdout(buf_wwdc):
+                rc_wwdc = design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "desktop", "--path", str(wwdc_file),
+                ])
+            self.assertEqual(rc_wwdc, 1)
+            wwdc_ids = {f["id"] for f in json.loads(buf_wwdc.getvalue())["findings"]}
+            for expected_wwdc_id in (
+                "HIG-IOS-SCREEN-BOUNDS",
+                "HIG-LAZY-LEAF-CONDITIONAL",
+                "HIG-APPKIT-LEGACY-MOUSELOOP",
+                "HIG-DRAG-WILL-BEGIN-UI",
+                "DC-003",
+            ):
+                self.assertIn(expected_wwdc_id, wwdc_ids)
 
 
 if __name__ == "__main__":

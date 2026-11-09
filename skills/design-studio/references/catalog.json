@@ -895,6 +895,101 @@
       "rating": "unrated",
       "last_used_at": null,
       "usage_history": []
+    },
+    {
+      "id": "MP-008",
+      "name": "Domain Warping 流体背景与时间水管 (Domain Warping Fluid Shader & Time Pipe — WWDC26-322)",
+      "aliases": [
+        "Domain Warping",
+        "流体着色器",
+        "时间水管",
+        "NoiseTexture",
+        "TimelineView shader"
+      ],
+      "category": "3d-physics",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Experience",
+        "Persuade"
+      ],
+      "motion_tier": "M3",
+      "source_prompt_zh": "WWDC26-322 流体英雄背景：对 4–5 个高饱和色块先施加 `Blur(radius: 30)` 融合成丝滑渐变基底，再用 `TimelineView(.animation)` 维护暂停安全（Pause-Safe）的累积 `elapsed` 时间水管，灌入 Metal `layerEffect` 执行两遍 `NoiseTexture` 坐标扭曲（Domain Warping：`uv -> firstWarp -> secondWarp`），实现 120Hz 零 CPU 负担的液态星云。",
+      "canonical_prompt": "Fuse 4-5 saturated color blobs with `Blur(radius: 30)`, drive a pause-safe `TimelineView(.animation)` `elapsed` time accumulator, and pipe `elapsed` into a Metal `layerEffect(..., maxSampleOffset:)` performing two-pass `NoiseTexture` Domain Warping.",
+      "state_machine": "idle_or_paused -> timeline_tick(dt) -> accumulate_elapsed -> metal_two_pass_domain_warp(uv, elapsed) -> render_frame",
+      "web_implementation": "WebGL / Three.js fragment shader with two-pass simplex/texture noise domain warping driven by a pause-aware requestAnimationFrame delta accumulator.",
+      "mobile_implementation": "SwiftUI `Blur(radius: 30)` base + `TimelineView(.animation(paused: isPaused || reduceMotion))` `elapsed` state piped into `ShaderLibrary.domainWarp(.float(elapsed), .image(noiseTexture))` via `.layerEffect`.",
+      "token_guardrails": "Obey `CL-005` hue-arc rule (never blur into `#000000` dead zones); pause `TimelineView` when offscreen, backgrounded, or when `@Environment(\\.accessibilityReduceMotion)` is true.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
+    },
+    {
+      "id": "IP-008",
+      "name": "图钉孔位反转零测高外挂角标 (AlignmentGuide Pin-Flip Edge Attachment — WWDC26-322)",
+      "aliases": [
+        "alignmentGuide反转",
+        "零GeometryReader外挂",
+        "气泡时间戳外挂",
+        "pin-flip alignment"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "WWDC26-322 零测高边缘外挂布局：在聊天气泡或卡片边缘外挂时间戳/状态徽标时，严禁使用 `GeometryReader` 或硬编码 `.offset(y: 20)`；直接用 `.overlay(alignment: .bottomLeading)` 配合 `.alignmentGuide(.bottom) { $0[.top] }` 将子视图顶边钉在父视图底边，天然适配一切 Dynamic Type 字号缩放。",
+      "canonical_prompt": "Attach external timestamps, reactions, or edge badges without `GeometryReader` or magic `.offset` numbers by combining `.overlay(alignment: .bottomLeading)` with `.alignmentGuide(.bottom) { $0[.top] }` (pin-flip).",
+      "state_machine": "ready -> dynamic_type_or_content_resize -> alignment_guide_pin_flip -> zero_cls_edge_anchor",
+      "web_implementation": "CSS anchor positioning or absolute top: 100% edge attachment without JS getBoundingClientRect measurement loops.",
+      "mobile_implementation": "SwiftUI `.overlay(alignment: .bottomLeading) { badge.alignmentGuide(.bottom) { $0[.top] } }` or custom `Layout` when coordinating sibling spacing.",
+      "token_guardrails": "Never hardcode `.offset(y:)` for text-bearing edge attachments; verify zero overlap under `accessibilityExtraExtraExtraLarge` Dynamic Type.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
+    },
+    {
+      "id": "MP-009",
+      "name": "任意容器成摞拖拽与规则验牌回弹 (Multi-Item Card Stack Drag & Drop Validation — WWDC26-269/271)",
+      "aliases": [
+        "成摞拖拽",
+        "dragPreviewsFormation",
+        "reorderContainer",
+        "swipeActionsContainer",
+        "dropConfiguration"
+      ],
+      "category": "drag-drop-choreography",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "WWDC26-269 与 WWDC26-271 纸牌级成摞拖拽与验牌回弹：在 `LazyVStack` 或自定义栈中组合 `.swipeActionsContainer()`、`.reorderContainer(for:in:action:)` 与 `.dragContainer(for:)`，通过 `.dragPreviewsFormation(.stack)` 将多张关联卡片收拢成真实三维牌摞；悬停落点时在 `.dropConfiguration` 中校验业务规则（合法返 `.move` + `.dropPreviewsFormation(.stack)`，非法返 `.forbidden`），松手后非法落点自动沿物理弹簧轨迹飞回原位。",
+      "canonical_prompt": "Enable multi-item card stack dragging in custom containers using `.swipeActionsContainer()`, `.reorderContainer`, `.dragContainer`, and `.dragPreviewsFormation(.stack)`, validating drop legality in `.dropConfiguration` (`.move` vs `.forbidden` spring snap-back).",
+      "state_machine": "idle -> grab_sub_pile(.stack_formation) -> hover_target -> drop_configuration_validate(.move | .forbidden) -> commit_insert_or_spring_snap_back",
+      "web_implementation": "Motion pointer drag with stacked card preview transforms, drop-target rule validation, and spring snap-back on invalid drop.",
+      "mobile_implementation": "SwiftUI `.swipeActionsContainer()`, `.reorderContainer`, `.dragContainer(for:)`, `.dragPreviewsFormation(.stack)`, `.dropPreviewsFormation(.stack)`, and `.dropConfiguration` with `SensoryFeedback`.",
+      "token_guardrails": "Keep source data unchanged until a valid `.move` drop commits; provide an accessible ContextMenu / keyboard move equivalent and respect Reduce Motion.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
     }
   ]
 }

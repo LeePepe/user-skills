@@ -57,7 +57,7 @@ public enum AppTheme {
         public static let section: CGFloat = 32
     }
 
-    // 2. Concentric Radii (innerRadius = max(4, outerRadius - padding))
+    // 2. Concentric Radii (prefer OS 26/27 .rect(corner: .containerConcentric) / NSView.cornerConfiguration; fallback tokens below)
     public enum Radius {
         public static let xs: CGFloat = 6     // Compact cells / 5x4 keypad keys
         public static let sm: CGFloat = 10    // Controls & pills

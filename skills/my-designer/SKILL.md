@@ -10,6 +10,9 @@ This `handoff-only` skill owns the design specification and review routing, not 
 
 **Announce at start:** “I'm using the my-designer skill (as design lead).”
 
+> **Dual-Entry Architecture & Anti-Explosion Contract ([design-flow-architecture.md](references/design-flow-architecture.md)):**
+> All knowledge ingestion (`Entry A: A0..A4`) and design delivery (`Entry B: B0..B4`) share the 4-Tier Asset Pool (`Tier 0..3`) governed by 4 Anti-Explosion Valves (Zero-Token Code Sinking, 3D Coordinate Slicing, `--top 3` & `<=130`-line `L1` Caps, One-In/One-Out Compaction). Run `python3 skills/my-designer/scripts/verify_design_cases.py flow-map` to inspect live asset counts and budget health.
+
 ---
 
 ## 4-Step Progressive Disclosure Workflow (`L0 -> L1 -> L2`)
@@ -38,7 +41,7 @@ python3 skills/my-designer/scripts/verify_design_cases.py route \
 
 # 2. Retrieve matching style archetypes, palettes, and ShipSwift components from desktop-macos.json or mobile-ios.json
 python3 skills/design-studio/scripts/design_catalog.py vault-search \
-  --platform desktop --dimension visual-style --query "<intent>" --top 5
+  --platform desktop --dimension visual-style --query "<intent>" --top 3
 ```
 
 ### Step 3 · Author Apple-First + Bespoke Style Handoff (`design.md` / `spec.md`)
