@@ -723,6 +723,10 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn('pendingQueue.add("m2-dispatcher")', expander_ts)
         self.assertIn("HERDR_ENV", expander_ts)
         self.assertIn("CINDY_PI_SUBAGENT_RUN_DIR", expander_ts)
+        self.assertIn("sanitizeGeminiSchema", expander_ts)
+        self.assertIn("sanitizeGeminiSchemaInPlace", expander_ts)
+        self.assertIn("sanitizeRegisteredToolsInPlace", expander_ts)
+        self.assertIn("before_provider_request", expander_ts)
 
         installer_sh = (skill_dir / "scripts" / "install-pi-harness.sh").read_text(encoding="utf-8")
         self.assertNotIn("rm -f", installer_sh)
