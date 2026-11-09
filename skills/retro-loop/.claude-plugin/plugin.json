@@ -1,5 +1,0 @@
-{
-  "name": "retro-loop",
-  "description": "双路复盘与三道物理锁：把 Telemetry/Crash 与 Workflow/PR/Infra 证据转成可验收 Task、底座升级和回流 Idea。",
-  "category": "workflow"
-}
