@@ -19,7 +19,14 @@ from typing import Any
 STATES = ("populated", "empty", "loading", "error")
 APPEARANCES = ("light", "dark")
 BANDS = {"top_band": (0.0, 0.42), "mid_band": (0.29, 0.71), "bot_band": (0.58, 1.0)}
-DEFECTS = ("ellipsis", "control_overlap", "double_chrome", "raw_key_or_dup_unit", "unequal_bento")
+DEFECTS = (
+    "ellipsis",
+    "control_overlap",
+    "double_chrome",
+    "raw_key_or_dup_unit",
+    "unequal_bento",
+    "edge_clipping",
+)
 
 
 def call_systemone(payload: dict[str, Any], endpoint: str | None = None) -> dict[str, Any]:
@@ -167,10 +174,96 @@ def evaluate_r05_truth_table(noul: float, confidence: float = 0.0, zoom_noul: fl
     return {"verdict": "WARN_ESCALATE_REVIEWER", "fail": False}
 
 
+def detect_horizontal_edge_clipping(
+    snapshot: Any,
+    *,
+    y_band: tuple[float, float] = (0.14, 0.86),
+    edge_px: int = 2,
+    contrast_delta: int = 28,
+    min_clipped_ratio: float = 0.06,
+) -> dict[str, Any]:
+    """Detect whether mid-screen cards/strokes are abruptly clipped at the left/right viewport edges."""
+    data = _snapshot_bytes(snapshot)
+    width, height, pixels, channels = _png_pixels(data)
+    stride = width * channels
+    y_start = max(0, min(height, int(height * y_band[0])))
+    y_end = max(y_start + 1, min(height, int(height * y_band[1])))
+    band_rows = max(1, y_end - y_start)
+    edge_span = max(1, min(edge_px, width // 4 or 1))
+
+    def _rgb_at(row_idx: int, col_idx: int) -> tuple[int, int, int]:
+        base = row_idx * stride + col_idx * channels
+        return (pixels[base], pixels[base + 1], pixels[base + 2])
+
+    def _dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+        return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+
+    # Estimate baseline canvas background from top/bottom margin corners inside the band
+    bg_samples = [
+        _rgb_at(y_start, 0),
+        _rgb_at(y_start, width - 1),
+        _rgb_at(y_end - 1, 0),
+        _rgb_at(y_end - 1, width - 1),
+    ]
+    bg_rgb = (
+        sorted(s[0] for s in bg_samples)[len(bg_samples) // 2],
+        sorted(s[1] for s in bg_samples)[len(bg_samples) // 2],
+        sorted(s[2] for s in bg_samples)[len(bg_samples) // 2],
+    )
+
+    left_clipped_rows = 0
+    right_clipped_rows = 0
+    for y in range(y_start, y_end):
+        left_rgb = _rgb_at(y, 0)
+        right_rgb = _rgb_at(y, width - 1)
+        left_non_bg = any(_dist(_rgb_at(y, x), bg_rgb) >= contrast_delta for x in range(edge_span))
+        right_non_bg = any(_dist(_rgb_at(y, width - 1 - x), bg_rgb) >= contrast_delta for x in range(edge_span))
+        # A full-bleed uniform background has left_rgb == right_rgb == row background;
+        # edge clipping occurs when non-background card/text/border strokes touch x=0..1 or width-1.
+        if left_non_bg:
+            left_clipped_rows += 1
+        if right_non_bg:
+            right_clipped_rows += 1
+
+    left_ratio = round(left_clipped_rows / band_rows, 4)
+    right_ratio = round(right_clipped_rows / band_rows, 4)
+    clipped = left_ratio >= min_clipped_ratio or right_ratio >= min_clipped_ratio
+    edges = []
+    if left_ratio >= min_clipped_ratio:
+        edges.append("left")
+    if right_ratio >= min_clipped_ratio:
+        edges.append("right")
+    return {
+        "ok": not clipped,
+        "defect": "edge_clipping" if clipped else None,
+        "clipped": clipped,
+        "clipped_edges": edges,
+        "left_clipped_ratio": left_ratio,
+        "right_clipped_ratio": right_ratio,
+        "dimensions": [width, height],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--mode", choices=["off", "observe", "auto"], default="off")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=["off", "observe", "auto"], default="off")
     parser.add_argument("--input", type=argparse.FileType("r"), default="-")
-    args = parser.parse_args(argv); data = json.load(args.input)
+    parser.add_argument(
+        "--check-edge-clipping",
+        metavar="PNG_PATH",
+        help="Check a simulator screenshot PNG for horizontal left/right edge clipping (DC-003).",
+    )
+    args = parser.parse_args(argv)
+    if args.check_edge_clipping:
+        report = detect_horizontal_edge_clipping(args.check_edge_clipping)
+        if args.mode == "observe" and report["clipped"]:
+            report["decision"] = "observe (would fail)"
+            print(json.dumps(report))
+            return 0
+        print(json.dumps(report))
+        return 1 if report["clipped"] else 0
+
+    data = json.load(args.input)
     result = evaluate_r05_truth_table(float(data.get("noul", 0)), float(data.get("confidence", 0)),
                                       data.get("zoom_noul"), float(data.get("zoom_confidence", 0)), data.get("box"), data.get("image_size"))
     if args.mode == "observe" and result["fail"]:

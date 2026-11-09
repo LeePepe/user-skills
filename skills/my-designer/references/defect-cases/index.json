@@ -1,7 +1,7 @@
 {
   "schema": "apple-design-defect-cases/v1",
-  "version": 2,
-  "updated": "2026-11-08",
+  "version": 3,
+  "updated": "2026-11-09",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
@@ -48,6 +48,26 @@
       "fix_rule": "Never render the same dataset twice in one viewport; fuse the chart with a compact 2-column Bento legend grid (tap tile -> filter detail list) OR use a Segmented Picker to toggle between Chart and Progress List.",
       "forbidden_regex": "SWDonutChart[\\s\\S]{0,800}?ProgressView\\(\\s*value\\s*:",
       "registered_at": "2026-11-08"
+    },
+    {
+      "id": "DC-003",
+      "title": "Unbounded Horizontal HStack/ForEach Overflow & Multi-Card Row Cramming on Compact Width",
+      "platforms": [
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "NavigationStack",
+        "VStack"
+      ],
+      "symptom": "Unbounded HStack { ForEach(...) } without ScrollView(.horizontal) or cramming 3+ multi-button interactive cards into a single compact HStack expands the parent VStack beyond the iPhone viewport width (393pt), clipping sibling headers and cards on both left and right edges.",
+      "fix_rule": "Wrap dynamic horizontal rails in ScrollView(.horizontal, showsIndicators: false), scope per-item progress rails to the active parent item, cap complex interactive cards at <= 2 per horizontal row on compact width (use 2 + 1 grid for unilateral L + R + Reps), and apply .containerRelativeFrame(.horizontal) on vertical ScrollView content roots.",
+      "forbidden_regex": "(?:var\\s+progressRail\\s*:\\s*some\\s+View\\s*\\{\\s*HStack\\b|HStack\\s*\\([^)]*\\)\\s*\\{\\s*if\\s+\\w+(?:\\.\\w+)*\\.isUnilateral\\b)",
+      "registered_at": "2026-11-09"
     }
   ],
   "archived_templates": [
