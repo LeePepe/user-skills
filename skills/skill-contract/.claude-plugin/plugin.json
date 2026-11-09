@@ -1,0 +1,9 @@
+{
+  "name": "skill-contract",
+  "description": "Create and audit progressive-disclosure skills with four valves.",
+  "version": "1.0.0",
+  "skills": [
+    "SKILL.md"
+  ],
+  "category": "meta"
+}

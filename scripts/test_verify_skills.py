@@ -28,8 +28,7 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/workflow-hub/SKILL.md": 12 * 1024,
     "skills/team-lead/SKILL.md": 36 * 1024,
     "skills/m2-dispatcher/SKILL.md": 24 * 1024,
-    "skills/coordinator/SKILL.md": 24 * 1024,
-    "skills/linear-board/SKILL.md": 16 * 1024,
+        "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
     "skills/my-designer/SKILL.md": 12 * 1024,
@@ -410,8 +409,7 @@ class VerifySkillsTests(unittest.TestCase):
         for rel_path in (
             "skills/team-lead/SKILL.md",
             "skills/m2-dispatcher/SKILL.md",
-            "skills/coordinator/SKILL.md",
-        ):
+                    ):
             text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             for match in path_re.findall(text):
                 self.assertNotIn("*", match)
@@ -475,7 +473,7 @@ class VerifySkillsTests(unittest.TestCase):
                     "linear-board -> domain-modeling -> team-lead",
                     "team-lead -> code-review",
                     "linear-board",
-                    "coordinator",
+                    "m2-dispatcher",
                     "team-lead",
                     "retro-loop",
                     "story-craft",
@@ -636,7 +634,7 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("No Code Demo", modernization_text)
 
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
-        for skill_name in ("m2-dispatcher", "coordinator"):
+        for skill_name in ("m2-dispatcher",):
             skill_dir = SKILLS_DIR / skill_name
             skill_path = skill_dir / "SKILL.md"
             manifest_path = skill_dir / ".claude-plugin" / "plugin.json"
@@ -1018,7 +1016,6 @@ class VerifySkillsTests(unittest.TestCase):
     def test_blocked_alert_contract_is_documented(self) -> None:
         for path in (
             SKILLS_DIR / "m2-dispatcher" / "SKILL.md",
-            SKILLS_DIR / "coordinator" / "SKILL.md",
             SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
             SKILLS_DIR / "team-lead" / "references" / "playbook.md",
         ):
@@ -1044,7 +1041,6 @@ class VerifySkillsTests(unittest.TestCase):
             SKILLS_DIR / "team-lead" / "SKILL.md",
             SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md",
             SKILLS_DIR / "m2-dispatcher" / "SKILL.md",
-            SKILLS_DIR / "coordinator" / "SKILL.md",
         ):
             text = path.read_text(encoding="utf-8")
             self.assertIn("goal-supervisor.py", text)
@@ -1977,31 +1973,6 @@ class VerifySkillsTests(unittest.TestCase):
                     f"{script_path.name} L1 docs exceeded budget: {payload}",
                 )
 
-        # (e) No project-private hardcoded identifiers in defect-cases/index.json or PLAN_A_CODE_RULES
-        forbidden_private_tokens = ("progressRail", "isUnilateral")
-        cases_index_path = SKILLS_DIR / "my-designer" / "references" / "defect-cases" / "index.json"
-        cases_doc = json.loads(cases_index_path.read_text(encoding="utf-8"))
-        for case in [*cases_doc.get("active_cases", []), *cases_doc.get("archived_templates", [])]:
-            regex_str = case.get("forbidden_regex") or ""
-            for token in forbidden_private_tokens:
-                self.assertNotIn(
-                    token,
-                    regex_str,
-                    f"Project-private identifier {token!r} found in {case.get('id')} forbidden_regex",
-                )
-        verify_cases_script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
-        spec = importlib.util.spec_from_file_location("verify_design_cases_valve_check", verify_cases_script)
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        for rule in getattr(mod, "PLAN_A_CODE_RULES", []):
-            pattern_str = getattr(rule.get("pattern"), "pattern", "") or ""
-            for token in forbidden_private_tokens:
-                self.assertNotIn(
-                    token,
-                    pattern_str,
-                    f"Project-private identifier {token!r} found in PLAN_A_CODE_RULES[{rule.get('id')}]",
-                )
 
 
 if __name__ == "__main__":

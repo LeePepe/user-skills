@@ -49,138 +49,6 @@ PLAN_A_LENSES = [
     },
 ]
 
-PLAN_A_CODE_RULES = [
-    {
-        "id": "HIG-LG-CONTENT",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "liquid-glass.md › Where the material belongs",
-        "pattern": re.compile(r"(?:List|Form|Table|ForEach)\s*\{[\s\S]{0,240}?\.glassEffect\("),
-        "message": "Liquid Glass applied inside content list/table rows; keep glass in the floating functional layer.",
-    },
-    {
-        "id": "HIG-IOS-SCREEN-BOUNDS",
-        "severity": "High",
-        "platforms": ["mobile", "desktop"],
-        "citation": "WWDC26-278 & designing-for-iphone-duo.md › Resizable Windows & Size Classes",
-        "pattern": re.compile(
-            r"(?:\bUIScreen\.main\b|\buserInterfaceIdiom\s*==\s*\.phone\b|\binterfaceOrientation\.(?:isLandscape|isPortrait)\b)"
-        ),
-        "message": "Avoid UIScreen.main, userInterfaceIdiom == .phone, or interfaceOrientation layout branches; iPhone apps resize freely in iOS 27 / macOS 27 iPhone Mirroring where idiom stays .phone and orientation stays .portrait—use horizontalSizeClass, ViewThatFits, or effectiveGeometry.",
-    },
-    {
-        "id": "HIG-COLOR-RAW-HEX",
-        "severity": "Medium",
-        "platforms": ["desktop", "mobile"],
-        "citation": "color.md › Best practices",
-        "pattern": re.compile(r"Color\(\s*red\s*:[^)]+green\s*:[^)]+blue\s*:"),
-        "message": "Prefer Apple semantic system colors or Asset Catalog adaptive color sets over inline RGB literals.",
-    },
-    {
-        "id": "HIG-COMPAT-FLAG",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "liquid-glass.md › SwiftUI, UIKit, and AppKit",
-        "pattern": re.compile(r"UIDesignRequiresCompatibility"),
-        "message": "UIDesignRequiresCompatibility is temporary and ignored on modern SDKs; adopt native Liquid Glass chrome.",
-    },
-    {
-        "id": "SLOP-PURPLE-GRADIENT",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "native-slop.md › Tell #4 The Purple-Gradient Hero",
-        "pattern": re.compile(r"LinearGradient\([^)]*colors\s*:\s*\[\s*(?:\.purple\s*,\s*\.blue|\.blue\s*,\s*\.purple|\.indigo\s*,\s*\.purple)"),
-        "message": "Avoid generic AI purple-blue gradient heroes; use purposeful brand seed tokens or subtle surface luminance.",
-    },
-    {
-        "id": "SLOP-LEFT-ACCENT-STRIPE",
-        "severity": "Medium",
-        "platforms": ["desktop", "mobile"],
-        "citation": "anti-ai-slop.md › Left-border accent card",
-        "pattern": re.compile(r"Rectangle\(\)\s*\.fill\([^)]+\)\s*\.frame\(\s*width\s*:\s*[3-6]\b"),
-        "message": "Avoid Web-style left-border accent stripe cards; use native semantic badges, SF Symbols, or clean list hierarchy.",
-    },
-    {
-        "id": "HIG-MACOS-HOVER-EFFECT",
-        "severity": "High",
-        "platforms": ["desktop"],
-        "citation": "genjutsu/desktop-principles › macOS pointer conventions",
-        "pattern": re.compile(r"\.hoverEffect\s*\("),
-        "message": ".hoverEffect(_:) is unavailable on macOS; use .onHover / .pointerStyle on macOS or guard with #if !os(macOS).",
-    },
-    {
-        "id": "SLOP-MUDDY-BLACK-GRADIENT",
-        "severity": "Medium",
-        "platforms": ["desktop", "mobile"],
-        "citation": "CL-005 › Hue-Arc Luminous Gradient Rule",
-        "pattern": re.compile(r"LinearGradient\([^)]*colors\s*:\s*\[[^\]]*\.black\b"),
-        "message": "Avoid straight-to-black RGB gradients (muddy dead zone); step through adjacent high-luminance hues along the color wheel arc.",
-    },
-    {
-        "id": "SHIPSWIFT-SWWALLET-FLATTENED",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "DC-001 › ShipSwift Spatial Signature Preservation (SWWallet.swift)",
-        "pattern": re.compile(r"struct\s+SWWallet\b[\s\S]{0,600}?VStack[^{]*\{\s*ForEach"),
-        "message": "Do not flatten ShipSwift SWWallet into a VStack/ForEach list; preserve its ZStack + zIndex + offset(y:) 3D pocket stack geometry (~220pt collapsed height).",
-    },
-    {
-        "id": "SLOP-DUPLICATE-DATA-REPRESENTATION",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "DC-002 › No Duplicate Same-Source Data Representation",
-        "pattern": re.compile(r"(?:SWDonutChart|SectorMark)[\s\S]{0,800}?ProgressView\(\s*value\s*:"),
-        "message": "Never render both a Donut/Sector chart with legend AND a redundant ProgressView bar list for the same dataset in one pane; use a Segmented Lens or interactive chart slices.",
-    },
-    {
-        "id": "HIG-LAYOUT-OVERFLOW",
-        "severity": "High",
-        "platforms": ["mobile"],
-        "citation": "DC-003 › Compact Width Anti-Overflow Guardrails (interaction-layering.md Axis Y)",
-        "pattern": re.compile(
-            r"var\s+\w+\s*:\s*some\s+View\s*\{\s*HStack(?:\s*\([^)]*\))?\s*\{\s*ForEach\b"
-        ),
-        "message": "Unbounded horizontal HStack/ForEach rail or 3+ interactive cards crammed into one compact HStack expands parent VStack beyond 393pt viewport width; wrap dynamic rails in ScrollView(.horizontal, showsIndicators: false), cap compact rows at <=2 complex cards (2+1 split), and lock ScrollView content width with .containerRelativeFrame(.horizontal).",
-    },
-    {
-        "id": "HIG-TABLE-COLUMN-MISMATCH",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "DC-005 › Table Header-to-Cell Shared Column Geometry (interaction-layering.md Axis Y)",
-        "pattern": re.compile(
-            r"var\s+\w*[Hh]eader\w*\s*:\s*some\s+View\s*\{[\s\S]{0,450}?HStack[\s\S]{0,350}?maxWidth\s*:\s*\.infinity[\s\S]{0,600}?var\s+\w*[Rr]ow\w*\s*:\s*some\s+View\s*\{(?![\s\S]{0,450}?maxWidth\s*:\s*\.infinity)[\s\S]{0,450}?HStack[\s\S]{0,350}?\.frame\(\s*width\s*:"
-        ),
-        "message": "Multi-column table/list Header and Row must share identical column geometry (matching fixed widths, matching maxWidth: .infinity flex columns, matching alignment and outer HStack spacing/padding, or use SwiftUI Grid/GridRow); never use maxWidth: .infinity in the Header while using only fixed widths in data Rows.",
-    },
-    {
-        "id": "HIG-LAZY-LEAF-CONDITIONAL",
-        "severity": "High",
-        "platforms": ["desktop", "mobile"],
-        "citation": "DC-004 & WWDC26-321 › Subview loading 1:1 resolution",
-        "pattern": re.compile(r"Lazy(?:V|H)Stack[^{]*\{[\s\S]{0,220}?ForEach\([^)]*\)\s*\{\s*\w+\s+in\s+if\b"),
-        "message": "Avoid top-level 'if' filtering inside LazyStack ForEach closures (causes 0/1 dynamic subview count and offscreen memory retention); filter data in @Query(#Predicate) or the collection instead.",
-    },
-    {
-        "id": "HIG-APPKIT-LEGACY-MOUSELOOP",
-        "severity": "Medium",
-        "platforms": ["desktop"],
-        "citation": "WWDC26-289 › Modernize your AppKit app",
-        "pattern": re.compile(r"override\s+func\s+mouseDown\b[\s\S]{0,300}?nextEvent\(\s*matching\s*:"),
-        "message": "Avoid overriding mouseDown with blocking nextEvent tracking loops; use NSGestureRecognizer, NSControl.Events (.trackingEndedOutside), or NSTextSelectionManager.",
-    },
-    {
-        "id": "HIG-DRAG-WILL-BEGIN-UI",
-        "severity": "Medium",
-        "platforms": ["mobile", "desktop"],
-        "citation": "WWDC26-278 › Apple Intelligence & Drag Session",
-        "pattern": re.compile(
-            r"dragInteraction\([^)]*sessionWillBegin[\s\S]{0,240}?(?:present\(|UIAlertController|withAnimation)"
-        ),
-        "message": "Do not trigger modals or animations in sessionWillBegin (Siri / Apple Intelligence invokes drag sessions headlessly without touch); move UI feedback to sessionDidMove.",
-    },
-]
-
-
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -477,186 +345,12 @@ def command_route(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_audit_code(args: argparse.Namespace) -> int:
-    cases_doc = _load_json(Path(args.cases_file))
-    target = Path(args.path)
-    files = [target] if target.is_file() else sorted(target.rglob("*.swift"))
-    dims = _csv(args.dimensions)
-    active_plan_c = match_active_cases(cases_doc, args.platform, dims, args.container)
-
-    findings: list[dict[str, Any]] = []
-    for file_path in files:
-        try:
-            text = file_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for rule in PLAN_A_CODE_RULES:
-            if args.platform not in rule["platforms"]:
-                continue
-            for match in rule["pattern"].finditer(text):
-                line_no = text.count("\n", 0, match.start()) + 1
-                findings.append({
-                    "source": "plan-a-hig",
-                    "id": rule["id"],
-                    "severity": rule["severity"],
-                    "file": str(file_path),
-                    "line": line_no,
-                    "citation": rule["citation"],
-                    "message": rule["message"],
-                })
-        for case in active_plan_c:
-            regex_str = case.get("forbidden_regex")
-            if not regex_str:
-                continue
-            pattern = re.compile(regex_str)
-            for match in pattern.finditer(text):
-                line_no = text.count("\n", 0, match.start()) + 1
-                findings.append({
-                    "source": "plan-c-defect-case",
-                    "id": case["id"],
-                    "severity": "High",
-                    "file": str(file_path),
-                    "line": line_no,
-                    "citation": f"defect-cases/index.json › {case['id']}",
-                    "message": f"{case['title']}: {case['fix_rule']}",
-                })
-
-    payload = {
-        "ok": len(findings) == 0,
-        "platform": args.platform,
-        "scanned_files": len(files),
-        "plan_c_cases_evaluated": [c["id"] for c in active_plan_c],
-        "findings": findings,
-    }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0 if not findings else 1
-
-
-def _normalize_format_tokens(text: str) -> list[str]:
-    stripped = text.replace("%%", "")
-    raw = re.findall(r"%(?:\d+\$)?[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|q|z|t|L)?[@dDuUxXoOfeEgGcCsSpaA]", stripped)
-    normalized = []
-    for tok in raw:
-        clean = re.sub(r"^%\d+\$", "%", tok)
-        normalized.append(clean)
-    return sorted(normalized)
-
-
-def command_audit_l10n(args: argparse.Namespace) -> int:
-    target = Path(args.path).resolve()
-    locales = _csv(args.locales) or ["en", "zh-Hans"]
-    excluded_parts = {".build", "DerivedData", ".git", "node_modules"}
-
-    def _is_excluded(p: Path) -> bool:
-        return any(part in excluded_parts for part in p.parts)
-
-    catalogs = [p for p in ( [target] if target.name.endswith(".xcstrings") else sorted(target.rglob("*.xcstrings")) ) if not _is_excluded(p)]
-    swift_files = [] if target.is_file() else [p for p in sorted(target.rglob("*.swift")) if not _is_excluded(p) and "Tests" not in p.parts]
-    info_plists = [] if target.is_file() else [p for p in sorted(target.rglob("Info.plist")) if not _is_excluded(p)]
-
-    findings: list[dict[str, Any]] = []
-    all_catalog_keys: set[str] = set()
-
-    for cat_path in catalogs:
-        try:
-            doc = _load_json(cat_path)
-        except Exception as exc:
-            findings.append({"id": "L10N-PARSE-ERR", "severity": "Critical", "file": str(cat_path), "message": str(exc)})
-            continue
-        source_lang = doc.get("sourceLanguage", "en")
-        strings = doc.get("strings", {})
-        for key, entry in strings.items():
-            all_catalog_keys.add(key)
-            locs = entry.get("localizations", {})
-            base_val = locs.get(source_lang, {}).get("stringUnit", {}).get("value", key)
-            base_tokens = _normalize_format_tokens(base_val)
-            for loc in locales:
-                unit = locs.get(loc, {}).get("stringUnit", {})
-                val = unit.get("value", "")
-                if not val:
-                    findings.append({
-                        "id": "L10N-MISSING-LOCALE",
-                        "severity": "High",
-                        "file": str(cat_path),
-                        "key": key,
-                        "locale": loc,
-                        "message": f"Missing '{loc}' translation for key '{key}'.",
-                    })
-                    continue
-                if "." in key and val == key:
-                    findings.append({
-                        "id": "L10N-RAW-KEY-LEAK",
-                        "severity": "High",
-                        "file": str(cat_path),
-                        "key": key,
-                        "locale": loc,
-                        "message": f"Translation for '{key}' in '{loc}' equals the raw dotted key.",
-                    })
-                loc_tokens = _normalize_format_tokens(val)
-                if loc_tokens != base_tokens:
-                    findings.append({
-                        "id": "L10N-FORMAT-MISMATCH",
-                        "severity": "Critical",
-                        "file": str(cat_path),
-                        "key": key,
-                        "locale": loc,
-                        "message": f"Format specifiers in '{loc}' ({loc_tokens}) do not match '{source_lang}' ({base_tokens}).",
-                    })
-
-    key_pattern = re.compile(
-        r'(?:DashboardL10n\.(?:tr|format)|localized|String\(\s*localized)\s*\(\s*"([a-z0-9_]+(?:\.[a-z0-9_]+)+(?:\s*%[@lld]+)?)"'
-    )
-    if all_catalog_keys:
-        for sf in swift_files:
-            try:
-                text = sf.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            for match in key_pattern.finditer(text):
-                k = match.group(1)
-                if k not in all_catalog_keys:
-                    line_no = text.count("\n", 0, match.start()) + 1
-                    findings.append({
-                        "id": "L10N-UNREGISTERED-KEY",
-                        "severity": "High",
-                        "file": str(sf),
-                        "line": line_no,
-                        "key": k,
-                        "message": f"Key '{k}' referenced in source is missing from Localizable.xcstrings.",
-                    })
-
-    for plist_path in info_plists:
-        try:
-            plist_text = plist_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if "CFBundleLocalizations" not in plist_text:
-            findings.append({
-                "id": "L10N-INFOPLIST-LOCALES",
-                "severity": "Medium",
-                "file": str(plist_path),
-                "message": "Info.plist is missing CFBundleLocalizations array; non-default OS languages may fall back to English.",
-            })
-
-    payload = {
-        "ok": len(findings) == 0,
-        "locales_checked": locales,
-        "catalogs_scanned": len(catalogs),
-        "total_keys": len(all_catalog_keys),
-        "swift_files_scanned": len(swift_files),
-        "findings": findings,
-    }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0 if not findings else 1
-
-
 def _next_defect_case_id(cases_doc: dict[str, Any]) -> str:
-    max_num = 0
-    for item in cases_doc.get("active_cases", []):
-        m = re.match(r"^DC-(\d+)$", str(item.get("id", "")))
-        if m:
-            max_num = max(max_num, int(m.group(1)))
-    return f"DC-{max_num + 1:03d}"
+    used = {str(c.get("id", "")) for c in cases_doc.get("active_cases", [])}
+    number = 1
+    while f"DC-{number:03d}" in used:
+        number += 1
+    return f"DC-{number:03d}"
 
 
 def command_register_case(args: argparse.Namespace) -> int:
@@ -716,7 +410,7 @@ def command_flow_map(args: argparse.Namespace) -> int:
                 "python3 skills/design-studio/scripts/design_catalog.py ingest --text '<pattern>'",
             ],
             "A3_tier2_distillation": "Update <=130-line L1 tables in skills/my-designer/references/*.md (One-In, One-Out)",
-            "A4_tier3_code_sinking": "Add regex to PLAN_A_CODE_RULES or run verify_design_cases.py register-case --id DC-xxx",
+            "A4_tier3_code_sinking": "Register a generic case with verify_design_cases.py register-case --id auto",
         },
         "shared_tiers": {
             "tier_0_raw_archives": [
@@ -732,7 +426,7 @@ def command_flow_map(args: argparse.Namespace) -> int:
             },
             "tier_2_l1_docs_line_counts": l1_line_counts,
             "tier_3_executable_gates": {
-                "plan_a_code_rules": len(PLAN_A_CODE_RULES),
+                "design_time_rules": "shared-ci/scripts/context/design_contract.py",
                 "plan_c_active_cases": active_cases_count,
                 "plan_c_case_ids": [c["id"] for c in cases_doc.get("active_cases", [])],
             },
@@ -743,12 +437,12 @@ def command_flow_map(args: argparse.Namespace) -> int:
             "B2_sliced_route": "python3 skills/my-designer/scripts/verify_design_cases.py route --platform <p> --dimensions <d>",
             "B3_direct_impl": "Author design.md/spec.md (AppTheme.swift + X-Y-Z layering) -> direct product implementation (Zero Demo)",
             "B4_static_and_visual_audit": [
-                "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform <p> --path <dir>",
-                "python3 skills/my-designer/scripts/verify_design_cases.py audit-l10n --path <dir> --locales en,zh-Hans",
+                "python3 shared-ci/scripts/context/design_contract.py --audit-code --platform <p> <path>",
+                "python3 shared-ci/scripts/context/design_contract.py --audit-l10n --locales en,zh-Hans <path>",
             ],
         },
         "anti_explosion_valves": {
-            "valve_1_zero_token_code_sinking": len(PLAN_A_CODE_RULES) + active_cases_count,
+            "valve_1_zero_token_code_sinking": "shared-ci/scripts/context/design_contract.py",
             "valve_2_3d_coordinate_slicing": True,
             "valve_3_top_k_and_line_caps": {
                 "vault_search_top_k": 3,
@@ -777,16 +471,6 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
 
-    audit = sub.add_parser("audit-code", parents=[common])
-    audit.add_argument("--platform", choices=["desktop", "mobile"], required=True)
-    audit.add_argument("--path", required=True)
-    audit.add_argument("--dimensions", default="")
-    audit.add_argument("--container", default=None)
-
-    l10n = sub.add_parser("audit-l10n", parents=[common])
-    l10n.add_argument("--path", required=True, help="Repo root, app target directory, or .xcstrings file")
-    l10n.add_argument("--locales", default="en,zh-Hans", help="Comma-separated required locales")
-
     reg = sub.add_parser("register-case", parents=[common])
     reg.add_argument("--id", default="auto", help="Case ID (e.g. DC-005) or 'auto' to assign the next sequential DC-00N")
     reg.add_argument("--auto-id", action="store_true", help="Automatically assign the next sequential DC-00N ID")
@@ -806,10 +490,6 @@ def main(argv: list[str] | None = None) -> int:
         return command_flow_map(args)
     if args.command == "route":
         return command_route(args)
-    if args.command == "audit-code":
-        return command_audit_code(args)
-    if args.command == "audit-l10n":
-        return command_audit_l10n(args)
     if args.command == "register-case":
         return command_register_case(args)
     return 1

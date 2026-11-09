@@ -27,7 +27,7 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 - **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、
   `my-designer`、`visual-design-modernization`、`design-studio`：收敛事实、领域、
   架构与视觉决策，冻结 `spec.md`/`design.md`。
-- **Autonomous Build, Review & Merge** — `m2-dispatcher`（兼容别名 `coordinator`）、`team-lead`、
+- **Autonomous Build, Review & Merge** — `m2-dispatcher`、`team-lead`、
   `code-review` 与 `ci-monitor.py`（`pr_monitor`）：完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
 - **Product Delivery & Release** — 产品／共享底座交付及真实发布读回。
 - **Learning & Narrative** — `retro-loop` 与 `story-craft`：把项目／工程证据和脱敏
@@ -67,7 +67,7 @@ idle context overhead。Copilot CLI / Claude Code 使用 `/workflow-hub`，或�
 |---|---|---|---|
 | 1. Products & Apps | `VitalStride`、`VoxPocket`、`WebIQSearch`、Sapphire | 用户旅程、设计契约、真实数据 | 功能、E2E、PLT/FPS、Crash-Free、DSAT |
 | 2. Shared Foundations | `shared-design-system`、`shared-telemetry`、`shared-ci` | Token、遥测、质量契约 | 组件、契约、遥测链、6DQ、版本摘要 |
-| 3. Engineering Workflows | `m2-dispatcher`（`coordinator`）、`team-lead`、PR、发布 | brief、R10、Git、CI | 准确 head、Task 状态、门禁与发布读回 |
+| 3. Engineering Workflows | `m2-dispatcher`、`team-lead`、PR、发布 | brief、R10、Git、CI | 准确 head、Task 状态、门禁与发布读回 |
 | 4. Knowledge & Narrative | 复盘、Story Series、Tech Blog、Deck | 证据、量化 Delta、脱敏映射 | 可迁移机制、公开作品、反馈回流 |
 
 ## Progressive 6DQ Discovery Ladder

@@ -16,7 +16,7 @@ DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
 DEFAULT_VAULT_DIR = ROOT / "references" / "vault"
-PLATFORMS = {"web", "mobile", "shared"}
+PLATFORMS = {"desktop", "web", "mobile", "shared"}
 VAULT_PLATFORMS = {"desktop", "mobile", "web"}
 DIMENSIONS = {
     "color-palette", "visual-style", "component", "chart-dataviz",
@@ -865,7 +865,7 @@ def _apply_learned_keywords(taxonomy, taxonomy_path, learned_updates):
 
 def _next_vault_id(vault_dir, prefix, reserved):
     max_num = 0
-    for vf in ("desktop-macos.json", "mobile-ios.json", "web-backlog.json"):
+    for vf in ("desktop-macos.json", "mobile-ios.json", "web.json"):
         vpath = vault_dir / vf
         if vpath.is_file():
             vdata = load(vpath)
@@ -928,7 +928,7 @@ def command_vault_ingest(args):
     vault_files = {
         "desktop": vault_dir / "desktop-macos.json",
         "mobile": vault_dir / "mobile-ios.json",
-        "web": vault_dir / "web-backlog.json",
+        "web": vault_dir / "web.json",
     }
     vaults = {}
     for plat, vpath in vault_files.items():
@@ -1001,7 +1001,7 @@ def command_vault_search(args):
     vault_files = {
         "desktop": vault_dir / "desktop-macos.json",
         "mobile": vault_dir / "mobile-ios.json",
-        "web": vault_dir / "web-backlog.json",
+        "web": vault_dir / "web.json",
     }
     seen = {}
     for plat in platforms:

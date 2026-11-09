@@ -1,6 +1,6 @@
 # Bot 与 CLI agent：分工与生命周期
 
-本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。`M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 的开 TL、热追加、巡检解卡和完成回收另见 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](../../coordinator/SKILL.md)）。
+本文件是本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)。`M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 的开 TL、热追加、巡检解卡和完成回收另见 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)。
 
 ## 两层
 
@@ -19,7 +19,7 @@ for the command contract and event mapping.
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
 Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务
-Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 中，无论是常驻 `Grok Bot`、桌面伴侣 `Cindy` 还是普通启动的交互式 CLI，均作为 **`M2-Dispatcher`** 遵守**只写简单 Spec 边界（仅可改 `spec.md`/`design.md` 及 handoff 简报，严禁改任何代码或其他仓库文件）**，凡涉及代码或其他文件修改一律通过 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 在后台 Herdr Space 拉起绑定本机 `Magpie (:3425)` `group/steering` 的独立 Goal `Steering`（`<goal>-goal-tl-r1`），并在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）中由 `Steering`（`≤3` 文件轻量改动）或 `Writer`（`--role writer` → `group/coding`）完成修改与提交（绝不在主 checkout `main` 直改；Cindy 中须同步运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json` 盯完解卡与完结）；机器、白名单和 UI/UX 设计挂载分别以 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)（[`coordinator`](../../coordinator/SKILL.md)）、[`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
+Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 中，无论是常驻 `Grok Bot`、桌面伴侣 `Cindy` 还是普通启动的交互式 CLI，均作为 **`M2-Dispatcher`** 遵守**只写简单 Spec 边界（仅可改 `spec.md`/`design.md` 及 handoff 简报，严禁改任何代码或其他仓库文件）**，凡涉及代码或其他文件修改一律通过 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 在后台 Herdr Space 拉起绑定本机 `Magpie (:3425)` `group/steering` 的独立 Goal `Steering`（`<goal>-goal-tl-r1`），并在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）中由 `Steering`（`≤3` 文件轻量改动）或 `Writer`（`--role writer` → `group/coding`）完成修改与提交（绝不在主 checkout `main` 直改；Cindy 中须同步运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json` 盯完解卡与完结）；机器、白名单和 UI/UX 设计挂载分别以 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)（`m2-dispatcher`）、[`runtime-profiles.yaml`](runtime-profiles.yaml) 与下方设计路由为准。
 
 **Single-Steering per Goal rule:** once `<goal>-goal-tl-r1` is running (or when a local CLI session executes a `≤3`-file inline task directly), that active `Steering` (TL) session is the sole `Steering` (TL) for the Goal and never spawns a second `Steering` or standalone `Planner` subagent. The `M2-Dispatcher` (`Grok Bot`, `Cindy`, or a normal interactive CLI) starts at most one `<goal>-goal-tl-r1` in Herdr (reusing/waking it idempotently if already alive); that `Steering` then dispatches leaf `Writer`／`Reviewer` agents as needed, with optional read-only `Explorer` support for noisy searches.
 
@@ -289,3 +289,6 @@ Gate (`design_contract.py`) and Cross-Vendor `Reviewer` verify the result
    若延迟自闭没有发生，协调 Bot MUST 回退关窗，即使该 Goal 的 Worktree 仍被 Owner Freeze 保留。严禁触碰共享 `w1`、Owner 手开的 workspace／pane 或其他在途 Goal。
 
    在主仓库 checkout 执行 `git pull --ff-only` 同步基分支。**Worktree 处置（验收 B）**：未合并／暂停（HOLD）／含未提交业务改动的 worktree 不自动删；Owner Freeze 可保留现场，列清单（路径、分支、状态）交 Owner 确认后再清理。保留 Worktree MUST NOT 阻断上面的 pane／workspace 关闭。不得执行 `herdr server stop`。
+
+### Shared UI contract gate
+UI inner-loop verification uses `shared-ci/scripts/context/design_contract.py` for `--audit-code`, `--audit-l10n`, `--check-edge-clipping`, and `--audit-geometry` across `desktop|mobile|web`. Do not route these gates through `xcode-cli`.

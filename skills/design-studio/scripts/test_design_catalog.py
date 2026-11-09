@@ -301,7 +301,7 @@ class IngestTests(unittest.TestCase):
         for args in (
             [], ["--text", "one", "--file", "other"],
             ["--text", "grid", "--category", "code-to-video"],
-            ["--text", "grid", "--platforms", "desktop"],
+            ["--text", "grid", "--platforms", "tablet"],
             ["--text", "grid", "--platforms", ""],
             ["--text", "grid", "--surface-modes", "Unknown"],
             ["--text", "grid", "--motion-tier", "M5"],
@@ -338,7 +338,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.vault_dir.mkdir(parents=True)
         src_refs = SCRIPT.parents[1] / "references"
         self.taxonomy.write_bytes((src_refs / "taxonomy-v2.json").read_bytes())
-        for vf in ("desktop-macos.json", "mobile-ios.json", "web-backlog.json"):
+        for vf in ("desktop-macos.json", "mobile-ios.json", "web.json"):
             (self.vault_dir / vf).write_bytes((src_refs / "vault" / vf).read_bytes())
 
     def test_jev_fast_path_and_llm_fallback_and_learn(self):
