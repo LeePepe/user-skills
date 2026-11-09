@@ -133,10 +133,20 @@ PLAN_A_CODE_RULES = [
         "message": "Never render both a Donut/Sector chart with legend AND a redundant ProgressView bar list for the same dataset in one pane; use a Segmented Lens or interactive chart slices.",
     },
     {
+        "id": "HIG-LAYOUT-OVERFLOW",
+        "severity": "High",
+        "platforms": ["mobile"],
+        "citation": "DC-003 › Compact Width Anti-Overflow Guardrails (interaction-layering.md Axis Y)",
+        "pattern": re.compile(
+            r"var\s+\w+\s*:\s*some\s+View\s*\{\s*HStack(?:\s*\([^)]*\))?\s*\{\s*ForEach\b"
+        ),
+        "message": "Unbounded horizontal HStack/ForEach rail or 3+ interactive cards crammed into one compact HStack expands parent VStack beyond 393pt viewport width; wrap dynamic rails in ScrollView(.horizontal, showsIndicators: false), cap compact rows at <=2 complex cards (2+1 split), and lock ScrollView content width with .containerRelativeFrame(.horizontal).",
+    },
+    {
         "id": "HIG-LAZY-LEAF-CONDITIONAL",
         "severity": "High",
         "platforms": ["desktop", "mobile"],
-        "citation": "WWDC26-321 › Subview loading 1:1 resolution",
+        "citation": "DC-004 & WWDC26-321 › Subview loading 1:1 resolution",
         "pattern": re.compile(r"Lazy(?:V|H)Stack[^{]*\{[\s\S]{0,220}?ForEach\([^)]*\)\s*\{\s*\w+\s+in\s+if\b"),
         "message": "Avoid top-level 'if' filtering inside LazyStack ForEach closures (causes 0/1 dynamic subview count and offscreen memory retention); filter data in @Query(#Predicate) or the collection instead.",
     },

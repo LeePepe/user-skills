@@ -1603,7 +1603,7 @@
       "canonical_prompt": "Preserve 120Hz `LazyVStack`/`LazyHStack` frame-deadline prefetching by enforcing 1:1 subview resolution inside `ForEach` (filter in `@Query(#Predicate)` or the collection, never a top-level `if` inside `ForEach`), initializing `@State`/`@Observable` models in `init` rather than `.onAppear`, and driving viewport media playback with `.onScrollTargetVisibilityChange(idType:threshold:)`.",
       "desktop_macos_implementation": "Filter `LazyVStack` / `Table` collections upstream via `#Predicate` or computed slices; initialize lightweight `@Observable` row models in `init`; use custom `Layout` (`sizeThatFits` / `placeSubviews`) instead of chaining `onGeometryChange` -> `@State` height mutations across parent-child views.",
       "mobile_ios_implementation": "Keep every `ForEach` element mapped 1:1 to a single root row view so iOS 27 prefetching prepares offscreen cells before VSync; attach `.onScrollTargetVisibilityChange(idType: Item.ID.self, threshold: 0.8)` to start/stop inline video or waveform animations only when >=80% visible.",
-      "native_guardrails": "Never place a top-level `if` filter inside `LazyVStack`/`LazyHStack` `ForEach` closures (`HIG-LAZY-LEAF-CONDITIONAL` / `DC-003`); never allocate heavy objects lazily inside `.onAppear` when prefetching is active.",
+      "native_guardrails": "Never place a top-level `if` filter inside `LazyVStack`/`LazyHStack` `ForEach` closures (`HIG-LAZY-LEAF-CONDITIONAL` / `DC-004`); never allocate heavy objects lazily inside `.onAppear` when prefetching is active.",
       "usage_count": 0,
       "rating": "unrated",
       "last_used_at": null

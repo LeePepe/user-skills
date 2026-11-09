@@ -1977,6 +1977,32 @@ class VerifySkillsTests(unittest.TestCase):
                     f"{script_path.name} L1 docs exceeded budget: {payload}",
                 )
 
+        # (e) No project-private hardcoded identifiers in defect-cases/index.json or PLAN_A_CODE_RULES
+        forbidden_private_tokens = ("progressRail", "isUnilateral")
+        cases_index_path = SKILLS_DIR / "my-designer" / "references" / "defect-cases" / "index.json"
+        cases_doc = json.loads(cases_index_path.read_text(encoding="utf-8"))
+        for case in [*cases_doc.get("active_cases", []), *cases_doc.get("archived_templates", [])]:
+            regex_str = case.get("forbidden_regex") or ""
+            for token in forbidden_private_tokens:
+                self.assertNotIn(
+                    token,
+                    regex_str,
+                    f"Project-private identifier {token!r} found in {case.get('id')} forbidden_regex",
+                )
+        verify_cases_script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
+        spec = importlib.util.spec_from_file_location("verify_design_cases_valve_check", verify_cases_script)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for rule in getattr(mod, "PLAN_A_CODE_RULES", []):
+            pattern_str = getattr(rule.get("pattern"), "pattern", "") or ""
+            for token in forbidden_private_tokens:
+                self.assertNotIn(
+                    token,
+                    pattern_str,
+                    f"Project-private identifier {token!r} found in PLAN_A_CODE_RULES[{rule.get('id')}]",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

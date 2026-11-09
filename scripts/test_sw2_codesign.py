@@ -149,6 +149,7 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertIn("shared_tiers", fm)
         self.assertIn("entry_b_design", fm)
         self.assertIn("DC-003", fm["shared_tiers"]["tier_3_executable_gates"]["plan_c_case_ids"])
+        self.assertIn("DC-004", fm["shared_tiers"]["tier_3_executable_gates"]["plan_c_case_ids"])
         for doc_path, lines in fm["shared_tiers"]["tier_2_l1_docs_line_counts"].items():
             self.assertLessEqual(lines, 130, f"{doc_path} exceeds 130-line cap ({lines})")
 
@@ -223,6 +224,46 @@ class VisualTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         snapshots["empty-dark"] = png(19, 4, (10, 10, 10))
         self.assertFalse(visual.audit_snapshots_layer0(snapshots, 10, 2)["ok"])
+
+    def test_edge_clipping_detection_and_cli(self):
+        import contextlib, io
+        self.assertIn("edge_clipping", visual.DEFECTS)
+        # Clean screenshot: uniform dark canvas with inset card (no stroke at x=0 or x=width-1)
+        clean_png = png(40, 40, (18, 18, 22))
+        clean_report = visual.detect_horizontal_edge_clipping(clean_png)
+        self.assertTrue(clean_report["ok"])
+        self.assertFalse(clean_report["clipped"])
+
+        # Clipped screenshot: mid-screen rows have high-contrast card pixels touching left/right edges
+        rows = []
+        for y in range(40):
+            if 12 <= y < 28:
+                row_pixels = b"\0" + bytes((220, 90, 40)) * 40
+            else:
+                row_pixels = b"\0" + bytes((18, 18, 22)) * 40
+            rows.append(row_pixels)
+        raw = b"".join(rows)
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        clipped_png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 40, 40, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
+        clipped_report = visual.detect_horizontal_edge_clipping(clipped_png)
+        self.assertFalse(clipped_report["ok"])
+        self.assertEqual(clipped_report["defect"], "edge_clipping")
+        self.assertEqual(clipped_report["clipped_edges"], ["left", "right"])
+
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "clipped.png"
+            p.write_bytes(clipped_png)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = visual.main(["--check-edge-clipping", str(p)])
+            self.assertEqual(rc, 1)
+            self.assertTrue(json.loads(buf.getvalue())["clipped"])
 
     def test_request_mapping_and_truth_table(self):
         request = visual.build_r05_request("screen", "populated", "light", {"full": png(4, 4, (255, 255, 255))})
@@ -321,7 +362,7 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
             ):
                 self.assertIn(expected_id, audit_ids)
 
-            # WWDC25/26 static rules: HIG-IOS-SCREEN-BOUNDS (idiom/orientation), HIG-LAZY-LEAF-CONDITIONAL + DC-003,
+            # WWDC25/26 static rules: HIG-IOS-SCREEN-BOUNDS (idiom/orientation), HIG-LAZY-LEAF-CONDITIONAL + DC-004,
             # HIG-APPKIT-LEGACY-MOUSELOOP, and HIG-DRAG-WILL-BEGIN-UI
             wwdc_file = root / "WWDC26Violations.swift"
             wwdc_file.write_text(
@@ -360,9 +401,32 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
                 "HIG-LAZY-LEAF-CONDITIONAL",
                 "HIG-APPKIT-LEGACY-MOUSELOOP",
                 "HIG-DRAG-WILL-BEGIN-UI",
-                "DC-003",
+                "DC-004",
             ):
                 self.assertIn(expected_wwdc_id, wwdc_ids)
+
+            # Mobile compact-width overflow check (DC-003 + HIG-LAYOUT-OVERFLOW)
+            overflow_file = root / "OverflowFocusView.swift"
+            overflow_file.write_text(
+                "import SwiftUI\n"
+                "struct OverflowFocusView: View {\n"
+                "  private var headerChips: some View {\n"
+                "    HStack(spacing: 6) { ForEach(0..<12, id: \\.self) { _ in Circle() } }\n"
+                "  }\n"
+                "  var body: some View { headerChips }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            buf_mobile = io.StringIO()
+            with contextlib.redirect_stdout(buf_mobile):
+                rc_mobile = design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "mobile", "--path", str(overflow_file),
+                ])
+            self.assertEqual(rc_mobile, 1)
+            mobile_ids = {f["id"] for f in json.loads(buf_mobile.getvalue())["findings"]}
+            self.assertIn("HIG-LAYOUT-OVERFLOW", mobile_ids)
+            self.assertIn("DC-003", mobile_ids)
 
 
 if __name__ == "__main__":

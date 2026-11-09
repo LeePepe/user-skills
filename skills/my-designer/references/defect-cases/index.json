@@ -51,6 +51,26 @@
     },
     {
       "id": "DC-003",
+      "title": "Unbounded Horizontal HStack/ForEach Overflow & Multi-Card Row Cramming on Compact Width",
+      "platforms": [
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "NavigationStack",
+        "VStack"
+      ],
+      "symptom": "Unbounded HStack { ForEach(...) } without ScrollView(.horizontal) or cramming 3+ multi-button interactive cards into a single compact HStack expands the parent VStack beyond the iPhone viewport width (393pt), clipping sibling headers and cards on both left and right edges.",
+      "fix_rule": "Wrap dynamic horizontal rails in ScrollView(.horizontal, showsIndicators: false), scope per-item progress rails to the active parent item, cap complex interactive cards at <= 2 per horizontal row on compact width (use 2 + 1 grid for unilateral L + R + Reps), and apply .containerRelativeFrame(.horizontal) on vertical ScrollView content roots.",
+      "forbidden_regex": "var\\s+\\w+\\s*:\\s*some\\s+View\\s*\\{\\s*HStack(?:\\s*\\([^)]*\\))?\\s*\\{\\s*ForEach\\b",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "DC-004",
       "title": "LazyStack Leaf Conditional Subview Leak & OnAppear Prefetch Invalidation (WWDC26-321)",
       "platforms": [
         "desktop",
