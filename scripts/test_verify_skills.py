@@ -679,8 +679,24 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("每次只沟通一层", skill_text)
         self.assertIn("vault-ingest", skill_text)
         self.assertIn("--measure-palette", skill_text)
+        self.assertIn("skill-slash-expander.ts", skill_text)
+        self.assertIn("install-pi-harness.sh", skill_text)
+        self.assertIn("worktrees/", skill_text)
         self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
         self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)
+
+        expander_ts = (skill_dir / "scripts" / "skill-slash-expander.ts").read_text(encoding="utf-8")
+        self.assertIn('pi.on("tool_call"', expander_ts)
+        self.assertIn("M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md).", expander_ts)
+        self.assertIn("HERDR_ENV", expander_ts)
+        self.assertIn("CINDY_PI_SUBAGENT_RUN_DIR", expander_ts)
+
+        prepush_text = (REPO_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
+        self.assertIn("refs/heads/main", prepush_text)
+        self.assertIn("refs/heads/master", prepush_text)
+        self.assertIn("ALLOW_MAIN_PUSH", prepush_text)
+        precommit_text = (REPO_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+        self.assertNotIn("ALLOW_MAIN_COMMIT", precommit_text)
 
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")

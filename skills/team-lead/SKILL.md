@@ -40,8 +40,8 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 `Steering`（TL 主会话）按改动体量与耗时自适应分流：
 
-- **Inline Mode（`≤3` 个文件的轻量改动／配置／脚本／热修，无长时编译阻塞）**：
-  免除独立 `ledger.md`、免建新 Worktree、免派 `Writer` 子代理；由 **`Steering` 在当前工作区直接修改并跑通本地验证命令**，完成后直接 commit（需要 PR 的仓库提 1 个 PR 并由 Layer-0 `ci-monitor.py` 跟进）。
+- **Inline Mode（Goal 专属 Worktree 内 `≤3` 个文件的轻量改动／配置／脚本／热修，无长时编译阻塞）**：
+  免派 `Writer` 子代理；由已进入后台 Herdr Space 与**独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）**的 **`Steering`（`<goal>-goal-tl-r1`）直接在该 Worktree 分支修改并跑通本地验证命令**，完成后 commit 并提 PR（严禁在 `M2-Dispatcher` 入口会话或主 checkout `main` 上直接修改业务代码或其他仓库文件；`M2` 只允许修改简单 Spec `spec.md`/`design.md`）。macOS 项目允许在本地 `main` 修改或合入后构建安装到 `/Applications/<App>.app`，但首次执行前须通过 `ask_user` 询问用户并记录习惯。
 - **Single-Stream Mode（常规单流 Goal，多文件或耗时编译如 `xcodebuild`）**：
   整个 Goal 共用 1 个分支/工作树；`Steering` 派发 1 个 `Writer`（`group/coding`）在后台完成编码与本地测试，避免阻塞主会话输入框；所有切片完成后执行 **1 次** 跨厂商 `Reviewer` 审查（若目标仓 PR CI 已有 `codex-review-target` 等异构 AI 门禁则直接复用）并交付唯一 PR。
 - **Parallel Wave Mode（跨仓或多模块真并发 Goal）**：
@@ -57,8 +57,8 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 | **Phase 1：自治执行期**（Autonomous Execution） | **Steering 执行/协调态** | Owner 明确拍板（“按这个做／开始执行／做”），或初始请求本身即为范围清晰、无歧义的直接实现指令 | 锁定 `spec.md`（`Mandate`）→ `≤3` 文件轻量改动由 `Steering` 直接内联改完验证；多文件/耗时编译派 `Writer` 在同 Goal 分支连续推进，收口时做 **1 次** 异构 `Reviewer` 审查（或复用仓库 CI 异构门禁）＋Layer-0 `ci-monitor.py` 读回 |
 
 **三类入口派生独立 `Steering` 与单层 `Steering` 规则**：
-- **`M2-Dispatcher` 两径简单 Spec 确认与拍板后硬切换门禁（普通启动的 CLI、`Grok Bot`、`Cindy` → 启动独立 `Steering` M1）**：显式加载的领域 Skill（如 `/my-designer`、`/design-studio`）只负责领域/设计内容与审计，与编排层正交。Phase 0 确认基本任务时，常规需求由前台 `M2-Dispatcher` 直接快速只读探查并用 `ask_user` 与 Owner 拍板落盘 `spec.md`；复杂需求由 `M2-Dispatcher` 先派后台 `<goal>-goal-tl-r1`（M1）梳理草案与 `NEED_GO` 再由 `M2-Dispatcher` 与 Owner 沟通。**一旦 `ask_user` 拍板完成（或无需确认），凡改动 `>3` 文件或含耗时编译/安装（如 `xcodebuild`、`install-fixed-build.sh`），前台 `M2-Dispatcher` 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装指令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），必须调用 `skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind <claude|codex|copilot> --cwd <repo_or_dev_root> --prompt ...` 在后台 Herdr Space 启动绑定 `Magpie (:3425)` `group/steering` 的独立 `Steering`，并在前台挂载 `goal-supervisor.py watch` 看门狗，绝不阻塞当前交互窗口。
-- **Goal 内唯一 `Steering` 铁律**：一旦进入 `<goal>-goal-tl-r1`（或本地 CLI 内联执行轻量改动），当前 `Steering`（TL）主会话是该 Goal 唯一的 `Steering`（TL），**never spawns a second `Steering`** 或独立 `Planner`；仅由 `M2-Dispatcher` 为每个 Goal 启动一个 `<goal>-goal-tl-r1`，再由该 `Steering` 派发叶子 `Writer`（`--role writer` → `group/coding`）／`Reviewer`（`--role code_reviewer` → `group/reviewing`），并运行 Layer-0 `ci-monitor.py`。
+- **`M2-Dispatcher` 只写简单 Spec 边界与拍板后硬切换门禁（普通启动的 CLI、`Grok Bot`、`Cindy` → 启动独立 `Steering` M1）**：显式加载的领域 Skill（如 `/my-designer`、`/design-studio`）只负责领域/设计内容与审计，与编排层正交。Phase 0 确认基本任务时，常规需求由前台 `M2-Dispatcher` 直接快速只读探查并用 `ask_user` 与 Owner 拍板落盘 `spec.md`；复杂需求由 `M2-Dispatcher` 先派后台 `<goal>-goal-tl-r1`（M1）梳理草案与 `NEED_GO` 再由 `M2-Dispatcher` 与 Owner 沟通。**`M2-Dispatcher` 只允许创建/修改简单 Spec 与交接文件（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），严禁修改任何业务代码、测试、配置或其他文件**（即便 Prompt 含提交/安装指令、仓库 `AGENTS.md` 写有“单层一个 agent 直接做”或 Cindy 默认提示“Keep Cindy tasks in Cindy”）。凡涉及代码或其他文件修改，前台 `M2-Dispatcher` 必须调用 `skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt ...` 在后台 Herdr Space 启动绑定 `Magpie (:3425)` `group/steering` 的独立 `Steering`，且所有代码/文件修改一律在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）和独立分支中完成提交（绝不在主 checkout `main` 直改；macOS 项目允许在本地 `main` 合入后构建安装到 `/Applications/<App>.app`，首次须经 `ask_user` 询问并记录习惯）。在 Cindy (Pi) 中因 `bash` 为同步阻塞，启动 `herdr-dispatch.sh` 后必须在同步 `bash` 中运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。
+- **Goal 内唯一 `Steering` 铁律**：一旦进入 `<goal>-goal-tl-r1`，当前 `Steering`（TL）主会话是该 Goal 唯一的 `Steering`（TL），**never spawns a second `Steering`** 或独立 `Planner`；仅由 `M2-Dispatcher` 为每个 Goal 启动一个 `<goal>-goal-tl-r1`，再由该 `Steering` 在独立 Worktree 中内联完成 `≤3` 文件改动或派发叶子 `Writer`（`--role writer` → `group/coding`）／`Reviewer`（`--role code_reviewer` → `group/reviewing`），并运行 Layer-0 `ci-monitor.py`。
 
 ### Phase 0：交互共创期（Interactive Co-Design —— 讨论 / 方案 / 设计）
 
@@ -82,7 +82,7 @@ the environment. See [`linear-board`](../linear-board/SKILL.md) and
 
 ### Phase 1：自治执行期（Autonomous Execution —— Inline 与 Worker 弹性分流）
 
-- **Inline 直改 vs. 后台 Worker**：`≤3` 个文件的轻量改动/配置/脚本热修，由 `Steering` 在当前工作树直接修改并运行验证命令；多文件、跨模块或耗时构建（如 `xcodebuild`）则通过 `herdr-dispatch.sh` 派发后台 `Writer`，绝不阻塞用户当前交互 CLI Space。
+- **Worktree 强制修改提交与 Inline/Worker 弹性分流**：任何代码或其他仓库文件的修改，**一律在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）和独立分支中完成修改与提交**，绝不在主 checkout（`main`）上直接修改（`M2-Dispatcher` 严禁改代码，只改简单 Spec）。在 `<goal>-goal-tl-r1` 的独立 Worktree 内，`≤3` 个文件的轻量改动可由 `Steering` 直接修改并运行验证命令；多文件、跨模块或耗时构建（如 `xcodebuild`）则通过 `herdr-dispatch.sh` 派发后台 `Writer`。
 - **Space 与分屏规范**：派发后台 Subagent 时复用同一 Space 分屏（`herdr pane split --direction right|down`）或创建 Space（`herdr workspace create`／`herdr worktree create`，`--cwd` 传目标 Git 仓根或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`）。
 - `M2-Dispatcher` ↔ TL 协同与 `PR_MERGED`／`GOAL_DONE` 回收遵循 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](../coordinator/SKILL.md)）；保留 Worktree 不阻断关窗。
 

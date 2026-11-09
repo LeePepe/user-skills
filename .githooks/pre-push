@@ -2,4 +2,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" != "$ZERO_SHA" ] && { [ "$remote_ref" = "refs/heads/main" ] || [ "$remote_ref" = "refs/heads/master" ]; } && [ "${ALLOW_MAIN_PUSH:-0}" != "1" ]; then
+    branch="${remote_ref#refs/heads/}"
+    echo "❌ [pre-push] Direct pushes to remote '$branch' are forbidden." >&2
+    echo "   Push a feature/fix branch from a worktree and merge via PR (or set ALLOW_MAIN_PUSH=1 for emergency override)." >&2
+    exit 1
+  fi
+done
+
 exec "$REPO_ROOT/scripts/verify" --all

@@ -23,8 +23,10 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
 ## 1. 开 TL、热追加与路由
 
 - **`M2-Dispatcher` 两径简单 Spec 对齐**：无论是否显式调用 `/my-designer`、`/design-studio`，Owner 确认（`ask_user`）始终留在 `M2-Dispatcher`。**路径 A（清晰边界）**：`M2-Dispatcher` 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：`M2-Dispatcher` 先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 `M2-Dispatcher` 与 Owner 拍板回传 M1。
-- **`M2-Dispatcher` 灵感/截图/色板一键摄取直通车（`m2-dispatcher` ↔ `design-studio`）**：当 Owner 发来单条设计灵感、喜欢的参考 App 名字或截图时，`M2-Dispatcher` 直接在前台调用 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 自动做 Vision OCR + BAMA 截图测色板；动效/交互模式可用 `ingest`）秒级入库；若需批量跨品类母体聚类或落地到业务项目，`M2-Dispatcher` 走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering` 执行。
-- **拍板后硬切换门禁（Space 优先与无 `HERDR_ENV` 自动建 Workspace，三类入口通用）**：一旦 `ask_user` 确认完成（或初始需求无需确认），除 `≤3` 文件且无编译阻塞的极轻量热修外，**`M2-Dispatcher` 严禁对业务仓文件调 `edit`/`create`**（即便 Prompt 含提交/安装命令或仓库 `AGENTS.md` 写有“单层一个 agent 直接做”），绝不阻塞当前交互 CLI、`Grok Bot` 或 `Cindy`；`M2-Dispatcher` 落盘 `spec.md` 并调 [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) `--new-workspace --role team_lead --name <goal>-goal-tl-r1` 在后台 Herdr Space 启动独立 `Steering`（绑定本机 `Magpie :3425` `group/steering`，无 `HERDR_ENV=1` 也能建 Space）。`herdr workspace create`／`herdr worktree create` 的 `--cwd`（`identity_cwd`）须传 Git 仓根／worktree，或共享根 `~/Development`／`/Volumes/SSD/Development/handoff`；禁传 `handoff/<goal>`（`--new-workspace` 自动归一化至共享父目录）。
+- **`M2-Dispatcher` 灵感/截图/色板一键摄取（`m2-dispatcher` ↔ `design-studio`）**：Owner 发来单条设计灵感、参考 App 或截图时，`M2-Dispatcher` 直接前台调 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 做 Vision OCR + BAMA 测色板；动效可用 `ingest`）入库；批量母体聚类或落地业务项目则走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering`。
+- **拍板后硬切换与 `M2` 只写简单 Spec 门禁（三类入口通用）**：
+  - **`M2` 写边界**：废除 `M2` 内联直改业务文件口子。`M2-Dispatcher` 只可写简单 Spec/Handoff（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），**严禁改任何代码、测试、配置或其他文件**（Pi/Cindy 由 [`skill-slash-expander.ts`](scripts/skill-slash-expander.ts) `tool_call` 拦截，[`install-pi-harness.sh`](scripts/install-pi-harness.sh) 同步并清理独立全局隐藏副本）。
+  - **强制 Worktree 派发与 Cindy 同步看门狗**：凡改代码或其他文件（覆盖 Cindy “Keep Cindy tasks in Cindy”），`M2` 落盘 `spec.md` 后必经 [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) `--new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。Cindy 的 `bash` 同步阻塞，启动后须同步运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`（`herdr-dispatch.sh --new-workspace` 已内置幂等复用）：状态为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，TL 为 `idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：所有机器与入口均在本 Goal 内直接按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线（不转交 `艺术家`）；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 采用 `direct_quota_gated`（预检 `~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 时开窗前自动剥离 `--allowedTools` 并改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 直接绑定本机 `Magpie (:3425)` `group/steering`。
 - 启动父 TL 时满足 Parent ≥ Child Allowlist：传入基线
@@ -62,10 +64,8 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
 auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 **GOAL_DONE 关窗与 blocked alerts 两条独立**。
 
-- **禁止“空口承诺巡检后裸退 Turn”（Mandatory Async Wakeup Watchdog）**：
-  交互式 CLI 会话结束 Turn 进入 `idle` 后，无后台附加进程完成通知则**不具备自唤醒能力**。`M2-Dispatcher` 拉起后台 TL 后若需先向 Owner 汇报，**必须在结束当前 Turn 前通过 `bash(mode="async")` 启动非分离式（attached）看门狗**：
-  `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`
-  一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，`watch` 退出并由运行时注入 `<system_notification>` 唤醒 `M2-Dispatcher` 执行解卡或完结回收，严禁无活跃 `async` 唤醒源就结束 Turn 并声称“我会持续巡检”。`GOAL_DONE` 唤醒后的完结动作是验收 A：`M2-Dispatcher` MUST 执行 `herdr workspace close "$GOAL_WORKSPACE"`（或 `herdr pane close` 关闭该 Goal 的 TL pane）。Owner Freeze 保留 Worktree 不进入这条唤醒的关窗条件。
+- **禁止“空口承诺巡检后裸退 Turn”（Mandatory Watchdog）**：
+  交互式 CLI 会话结束 Turn 进入 `idle` 后无后台通知则不具备自唤醒能力。`M2-Dispatcher` 拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 中启动非分离式看门狗 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 `bash` 为同步阻塞的 Cindy (Pi) 中则直接运行同步有界切片 `--interval 15 --max-wait 600 --json`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即执行解卡或完结回收（验收 A：`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
 
 - 双源对账：同时读取 [`ledger.md`](../team-lead/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。`M2-Dispatcher` 事件使用真实系统时钟与 `id=B<N>`
@@ -93,12 +93,7 @@ auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 
 ## 3. 两级完成与回收
 
-- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层
-  Agent。`M2-Dispatcher` 若拉起独立的 `<goal>-goal-tl-r1`，最多沟通与更新到 TL 这一层：
-  唤醒、解卡并在 `GOAL_DONE` 时关闭 TL 所在的 Goal pane/workspace；绝不越级创建、
-  prompt 或关闭 TL 下属的 Explorer／Designer／Writer／Reviewer／`pr_monitor`。
-  TL 全权负责下属 Subagent 的派发、更新以及 Task／阶段完结时的关窗回收，不得将
-  子 pane 留给 `M2-Dispatcher` 清理。若 `M2-Dispatcher` 自己内联执行 `≤3` 文件改动，则由其直接验证完成。
+- **1-Hop Communication & Lifecycle Ownership（单层沟通与管辖）**：每次只沟通一层 Agent。`M2-Dispatcher` 拉起独立的 `<goal>-goal-tl-r1` 后，只沟通、唤醒、解卡并在 `GOAL_DONE` 时关闭 TL 所在的 Goal pane/workspace；绝不越级创建、prompt 或关闭 TL 下属的 Explorer／Writer／Reviewer／`pr_monitor`。TL 全权负责下属 Subagent 的派发、更新以及 Task／阶段完结时的关窗回收，不得将子 pane 留给 `M2-Dispatcher` 清理。
 - **Task / `PR_MERGED`**：由 TL 或清理 Subagent 启动 `pr_monitor`，其 cwd 使用主仓或
   `~/Development/handoff/<goal>`，不要占用 `$TASK_WORKTREE`。确认 `PR_MERGED` 与 R10
   回执后，关闭任务窗格，清理 `__pycache__`，执行
