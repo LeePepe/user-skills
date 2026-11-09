@@ -29,6 +29,7 @@ gate = load("spec_gate", "skills/codebase-design/scripts/spec_gate.py")
 research = load("jev_research_helper", "skills/deep-research/scripts/jev_research_helper.py")
 visual = load("jev_visual_gate", "skills/my-designer/scripts/jev_visual_gate.py")
 design_cases = load("verify_design_cases", "skills/my-designer/scripts/verify_design_cases.py")
+xcode_classify = load("classify_changes", "skills/xcode-cli/scripts/classify_changes.py")
 
 
 class SpecGateTests(unittest.TestCase):
@@ -174,6 +175,37 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(research.evaluate_r06_truth_table({"status": "quote_found"}, answers)["verdict"], "VERIFIED")
         answers["relation"] = {"choice": "contradicts", "probabilities": {"contradicts": 0.8}}
         self.assertEqual(research.evaluate_r06_truth_table({"status": "quote_found"}, answers)["verdict"], "CONTRADICTED")
+
+    def test_research_flow_map_and_topic_channel_routing(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = research.main(["flow-map"])
+        self.assertEqual(rc, 0)
+        fm = json.loads(buf.getvalue())
+        self.assertTrue(fm["ok"])
+        self.assertTrue(fm["anti_explosion_valves"]["all_l1_docs_within_budget"])
+        self.assertIn("ST-001", fm["shared_tiers"]["tier_1_json_drawer"]["tier_rule_ids"])
+
+        buf_route = io.StringIO()
+        with contextlib.redirect_stdout(buf_route):
+            rc_route = research.main(["route", "--topic-type", "tooling", "--depth", "standard"])
+        self.assertEqual(rc_route, 0)
+        routed = json.loads(buf_route.getvalue())
+        self.assertEqual(routed["active_channels"], ["github", "web"])
+        self.assertIn("academic", routed["skipped_channels"])
+        self.assertLessEqual(len(routed["matched_source_tiers"]), 3)
+
+        buf_xc = io.StringIO()
+        with contextlib.redirect_stdout(buf_xc):
+            rc_xc = xcode_classify.main(["--flow-map"])
+        self.assertEqual(rc_xc, 0)
+        xc_fm = json.loads(buf_xc.getvalue())
+        self.assertTrue(xc_fm["ok"])
+        self.assertIn("XC-001", xc_fm["shared_tiers"]["tier_1_json_drawer"]["active_case_ids"])
+        swiftpm_cases = [c["id"] for c in xcode_classify.match_build_cases("swiftpm")]
+        self.assertIn("XC-001", swiftpm_cases)
+        self.assertNotIn("XC-002", swiftpm_cases)
 
 
 def png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:

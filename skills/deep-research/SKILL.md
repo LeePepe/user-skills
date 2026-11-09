@@ -15,6 +15,9 @@ user-invocable: true
 
 核心纪律贯穿始终:**发现者 ≠ 核查者**,**核查以证伪为目标**,**每个论断都要有可回溯的来源**。
 
+> **Dual-Entry Source-Tier Drawer & Anti-Explosion Contract ([source-tiers.json](references/source-tiers.json)):**
+> Before fan-out, run `python3 skills/deep-research/scripts/jev_research_helper.py route --topic-type <tooling|scientific|market|general> --depth <quick|standard|deep>` to slice active channels and retrieve `Top-3` source-tier rules (`ST-001..003`). Run `python3 skills/deep-research/scripts/jev_research_helper.py flow-map` to verify reference line budgets (`<= 160` lines).
+
 ---
 
 ## 调用前:够不够具体?
@@ -160,7 +163,8 @@ SOURCE_UNAVAILABLE is not treated as false and caps confidence at MEDIUM.
 
 ## References
 
-- `references/channel-playbooks.md` — 四渠道搜索手册:GitHub 结构化 landscape 搜索、Wikipedia curl 兜底、来源质量与时效规则。
-- `references/verification-protocol.md` — finding / verdict 的 markdown schema、对抗式证伪 checklist、置信度分级判据、subagent 输出纪律(只返正文不写文件)。
-- `references/cross-model-verification.md` — claude/kimi/codex 互为独立核查者的命令模式与三端映射,含可直接抄的调用片段。
-- `references/report-template.md` — 最终报告模板(执行摘要、分级发现、圆桌纪要、置信度表、引用来源、局限性)。
+- [source-tiers.json](references/source-tiers.json) — 主题渠道切片路由(`tooling`/`scientific`/`market`/`general`)与高/低信噪比来源分级抽屉(`ST-001..003`)。
+- [channel-playbooks.md](references/channel-playbooks.md) — 四渠道搜索手册:GitHub 结构化 landscape 搜索、Wikipedia curl 兜底、来源质量与时效规则。
+- [verification-protocol.md](references/verification-protocol.md) — finding / verdict 的 markdown schema、对抗式证伪 checklist、置信度分级判据、subagent 输出纪律(只返正文不写文件)。
+- [cross-model-verification.md](references/cross-model-verification.md) — claude/kimi/codex 互为独立核查者的命令模式与三端映射,含可直接抄的调用片段。
+- [report-template.md](references/report-template.md) — 最终报告模板(执行摘要、分级发现、圆桌纪要、置信度表、引用来源、局限性)。

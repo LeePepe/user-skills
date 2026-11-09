@@ -99,6 +99,24 @@ class DiscoveryTests(unittest.TestCase):
         result = self.discover(root, "--base", "main", "--spec", "specs/002-second")
         self.assertEqual(result["spec_kit"]["active_feature_dir"], "specs/002-second")
 
+    def test_flow_map_and_scoped_review_smells_drawer(self) -> None:
+        root = self.make_repo()
+        flow = json.loads(run("python3", str(SCRIPT), "--flow-map", cwd=root).stdout)
+        self.assertTrue(flow["ok"])
+        self.assertTrue(flow["anti_explosion_valves"]["all_l1_docs_within_budget"])
+        self.assertIn("RS-001", flow["shared_tiers"]["tier_1_json_drawer"]["active_smell_ids"])
+
+        write(root, "Packages/UI/tech-context.md", "---\nlayer: UI\ndepends_on: [Core]\n---\n")
+        write(root, "Packages/UI/View.swift", "let v = 1\n")
+        self.commit(root, "base")
+        write(root, "Packages/UI/View.swift", "let v = 2\n")
+        result = self.discover(root, "--base", "main")
+        self.assertIn("matched_review_smells", result)
+        self.assertLessEqual(len(result["matched_review_smells"]), 3)
+        smell_ids = [s["id"] for s in result["matched_review_smells"]]
+        self.assertIn("RS-002", smell_ids)
+        self.assertNotIn("RS-003", smell_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

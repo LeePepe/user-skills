@@ -7,6 +7,9 @@ description: Review a branch, PR, worktree, or implementation handoff against bo
 
 Run a read-only, two-axis review of one exact change surface. This skill distills Matt Pocock's `code-review` structure and consumes the repository facts produced by `repo-kit`.
 
+> **Dual-Entry Review Smell Drawer & Anti-Explosion Contract ([review-smells.json](references/review-smells.json)):**
+> `discover_review_context.py` slices the indexed review smell drawer (`RS-001..004`) by changed file extensions and active layers, returning at most `Top-3` `matched_review_smells`. Run `python3 scripts/discover_review_context.py --flow-map` to inspect drawer inventory and reference line budgets (`<= 160` lines), or `--register-smell` to promote recurring review findings without bloating `SKILL.md`.
+
 ## 1. Pin the review surface
 
 Run the deterministic discovery script from this skill directory:
