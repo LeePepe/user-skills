@@ -1992,6 +1992,49 @@ class VerifySkillsTests(unittest.TestCase):
                     f"{script_path.name} L1 docs exceeded budget: {payload}",
                 )
 
+    def test_post_implementation_visual_traceback_and_impl_bug_spec_gap_contract(self) -> None:
+        my_designer_skill = (SKILLS_DIR / "my-designer" / "SKILL.md").read_text(encoding="utf-8")
+        my_designer_routing = (
+            SKILLS_DIR / "my-designer" / "references" / "routing-index.md"
+        ).read_text(encoding="utf-8")
+        my_designer_arch = (
+            SKILLS_DIR / "my-designer" / "references" / "design-flow-architecture.md"
+        ).read_text(encoding="utf-8")
+        code_review_skill = (SKILLS_DIR / "code-review" / "SKILL.md").read_text(encoding="utf-8")
+        reviewer_prompts = (
+            SKILLS_DIR / "code-review" / "references" / "reviewer-prompts.md"
+        ).read_text(encoding="utf-8")
+        team_lead_skill = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
+        bots_and_agents = (
+            SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertLessEqual(
+            len(my_designer_skill.splitlines()),
+            80,
+            "my-designer/SKILL.md must stay <= 80 lines",
+        )
+        for name, text in (
+            ("skills/my-designer/SKILL.md", my_designer_skill),
+            ("skills/my-designer/references/routing-index.md", my_designer_routing),
+            ("skills/my-designer/references/design-flow-architecture.md", my_designer_arch),
+            ("skills/code-review/SKILL.md", code_review_skill),
+            ("skills/code-review/references/reviewer-prompts.md", reviewer_prompts),
+            ("skills/team-lead/SKILL.md", team_lead_skill),
+            ("skills/team-lead/references/bots-and-agents.md", bots_and_agents),
+        ):
+            with self.subTest(doc=name):
+                self.assertIn("Visual Traceback", text)
+                self.assertIn("[IMPL_BUG]", text)
+                self.assertIn("[SPEC_GAP]", text)
+                self.assertIn("design.md", text)
+
+        for text in (my_designer_skill, my_designer_routing, team_lead_skill, bots_and_agents):
+            self.assertIn("Playwright", text)
+            self.assertIn("ImageRenderer", text)
+            self.assertIn("spec_sha", text)
+            self.assertIn("sink-rule", text)
+
 
 
 if __name__ == "__main__":

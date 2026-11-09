@@ -49,10 +49,10 @@ Tier A/A′ 人工／策略决定或 Tier B `NEED_GO`。**通知桥 ≠ 解卡**
 UI/UX design is handled by `Steering` during Phase 0 co-design and by
 `Writer` during Phase 1 implementation. Steering loads `my-designer`
 (`L0 -> L1 -> L2`) directly when authoring `design.md`/`spec.md` (`Package.resolved`与 `shared-design-system` upstream primitives 按需核对)；Writer
-implements directly in product or `shared-design-system` code. The CI Design
-Gate (`design_contract.py`) and Cross-Vendor `Reviewer` verify the result
+implements directly in product or `shared-design-system` code, runs `shared-ci/scripts/context/design_contract.py`, and exports low-cost real screenshots (Apple: `XCTest` snapshot / `xcrun simctl io booted screenshot` / `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot) into the R10 receipt (Writer implements declared constraints only, never guessing undeclared rules). The CI Design
+Gate (`design_contract.py`) and Cross-Vendor `Reviewer` (`code-review` + `my-designer` **Visual Traceback**) verify the diff and rendered screenshots
 (including `sips -g pixelWidth`, zero numeric truncation `…`, and the
-`followed the brief verbatim` V2 P1 rule;具体品类与视觉细则归 `my-designer` 维护，不在全局合同堆砌特定项目像素规则).
+`followed the brief verbatim` V2 P1 rule): `[IMPL_BUG]` routes directly back to Writer, whereas `[SPEC_GAP]` requires `Steering` to amend `design.md` (`spec_sha`) first before Writer implements the delta (100% updating current `design.md`; sinking via `skill_contract.py sink-rule` / `register-case --id auto` only when cross-project generic, zero private symbols, and recurring on the same container).
 
 - **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。`Steering`（或按需 `Explorer`）映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**，并记录 **Deprecated Test Clauses to Remove/Rewrite**；随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，`Code/UI Reviewer` 保留非 deprecated regression tests。
 

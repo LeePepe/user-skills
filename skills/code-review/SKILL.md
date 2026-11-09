@@ -103,5 +103,9 @@ Use [eval-cases.md](references/eval-cases.md) when changing this skill or checki
 - Layer is the Standards review scope unit. Cross-layer work is reviewed explicitly, never hidden inside a generic whole-repo pass.
 - Missing context lowers declared coverage; it never becomes a silent pass.
 
-## UI review gate
+## UI review gate & Post-Implementation Visual Traceback
 For UI diffs, independently run `shared-ci/scripts/context/design_contract.py` with `--audit-code --platform <desktop|mobile|web>`, `--audit-l10n --locales en,zh-Hans`, and applicable `--check-edge-clipping <png-or-dir>` / `--audit-geometry <geometry.json>`. `xcode-cli` remains build/test routing only.
+
+When reviewing UI changes with rendered screenshots (from the Writer's R10 receipt), load `my-designer` alongside `code-review` to execute **Post-Implementation Visual Traceback (`实现后截图回溯`)** across both the code diff and the rendered screenshots. Tag every visual or interaction finding with its attribution class:
+- **`[IMPL_BUG]` (Implementation Deviation)**: The implementation violates an explicit clause in `design.md` or `design_contract.py` → route directly back to the `Writer` to fix against the existing `design.md`.
+- **`[SPEC_GAP]` (Phase 0 Spec Omission / Unforeseen Reality)**: The `Writer` faithfully followed `design.md`, but the rendered screenshots expose crowding, CJK wrapping, column drift, or hierarchy conflict missed in Phase 0 → **never blame the `Writer` or ask the `Writer` to guess undeclared rules**; route back to `Steering` to **amend `design.md` first (and re-stamp `spec_sha`)** with concrete layout parameters before dispatching the `Writer`.

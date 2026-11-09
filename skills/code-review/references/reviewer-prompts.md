@@ -46,6 +46,13 @@ Check:
 
 Do not repeat layer-local style findings.
 
+## UI Visual Traceback (`code-review` + `my-designer`)
+
+When the review surface includes UI changes and rendered screenshots (recorded in the Writer's R10 receipt via Apple `XCTest`/`simctl`/`ImageRenderer` or Web Playwright), load `my-designer` and inspect both the code diff and the rendered screenshots. Prefix every visual/interaction finding `title` or `body` with its mandatory attribution tag:
+
+- **`[IMPL_BUG]`**: The Writer violated an explicit requirement in `design.md`/`spec.md` or a deterministic `design_contract.py` gate → route directly to the Writer to fix against the existing `design.md`.
+- **`[SPEC_GAP]`**: The Writer implemented `design.md` as written, but the rendered pixels reveal Phase 0 omissions (crowding, CJK line-wrapping, column misalignment, or visual hierarchy conflict) → do not ask the Writer to guess undeclared constraints; require `Steering` to amend `design.md` first (re-stamping `spec_sha`) before the Writer implements the delta.
+
 ## Reviewer return format
 
 Return a JSON array of finding objects matching `output-contract.md`. Return `[]` when there are no findings. Do not produce a verdict; aggregation owns axis results.

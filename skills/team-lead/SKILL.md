@@ -168,8 +168,8 @@ Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并
   **Deprecated Test Clauses to Remove/Rewrite**；`Code Writer` 先迁移获授权旧断言再实现，
   `Code/UI Reviewer` 保留非 deprecated regression tests。
 - **V1 双轴（Goal 收口单次审查）**：中间子任务以本地确定性编译/测试通过为准；Goal 收口交付时执行 **1 次** 独立审查（若目标仓 PR CI 已配置 `codex-review-target` 等异构 AI 审查门禁则直接复用，不重复派发 Reviewer 子代理）。Axis 1 核对范围与规格，Axis 2 核对测试真实性、质量与安全红线。
-- **V2 按引入来源阻塞**：本 diff 引入的问题、验收失败、安全／隐私／数据丢失问题阻塞；既有无关问题仅记 backlog。UI 任务须通过目标仓 `design_contract.py` 与 `my-designer` 门禁（含 `sips -g pixelWidth`、zero numeric truncation `…`、无 raw localization keys，且不得因 “followed the brief verbatim” 降级 V2 P1 `FAIL`）。
-- **V3 复审与升档**：第 1 轮 FAIL 由原写者修复；仍 FAIL 时在第 2 轮启用 `writer_escalated`（`gpt-6.1-sol`）；两轮仍失败转 `blocked` 交 `Steering`／Owner 裁决。
+- **V2 按引入来源阻塞**：本 diff 引入的问题、验收失败、安全／隐私／数据丢失问题阻塞；既有无关问题仅记 backlog。UI 任务须通过目标仓 `design_contract.py` 与 `my-designer` 门禁（含 `sips -g pixelWidth`、zero numeric truncation `…`、无 raw localization keys，且不得因 “followed the brief verbatim” 降级 V2 P1 `FAIL`）。独立 `Reviewer` 加载 `code-review` + `my-designer` 对代码与 R10 真实截图做 **Visual Traceback**，强制将视觉问题判责为 `[IMPL_BUG]`（违反 `design.md`/`design_contract.py`，直退 Writer 修复）或 `[SPEC_GAP]`（Phase 0 漏项，严禁让 Writer 盲猜，须先由 `Steering` 修订 `design.md` 重签 `spec_sha` 再派 Writer；仅跨项目通用、零私有符号且同类容器必踩时才经 `skill_contract.py sink-rule` 入库）。
+- **V3 复审与升档**：第 1 轮 FAIL：`[IMPL_BUG]` 直接交原写者修复，`[SPEC_GAP]` 先由 `Steering` 补齐 `design.md`（更新 `spec_sha`）再交写者增量实现；仍 FAIL 时在第 2 轮启用 `writer_escalated`（`gpt-6.1-sol`）；两轮仍失败转 `blocked` 交 `Steering`／Owner 裁决。
 - **V4 CI 范围**：目标仓库 CI 门禁照常有效；修改门禁须获 Owner 批准。
 - **V5 结论**：`PASS` 通过，`CONCERNS` 记非阻塞 backlog，`WAIVED` 记批准与原因，`FAIL` 触发修复。
 
@@ -198,4 +198,4 @@ Agent。常驻 Bot 拉起独立 Goal TL 时，Bot 只沟通、唤醒、解卡并
   [`playbook.md`](references/playbook.md) 与 [`ledger.md`](references/ledger.md)。
 
 ### UI implementation inner loop
-For UI tasks, Writers and Steering invoke the shared cross-platform gate (never `xcode-cli` for visual gates): `python3 shared-ci/scripts/context/design_contract.py --audit-code --platform <desktop|mobile|web>`, `--audit-l10n --locales en,zh-Hans`, `--check-edge-clipping <png-or-dir>`, and `--audit-geometry <geometry.json>` as applicable.
+For UI tasks, Writers and Steering invoke the shared cross-platform gate (never `xcode-cli` for visual gates): `python3 shared-ci/scripts/context/design_contract.py --audit-code --platform <desktop|mobile|web>`, `--audit-l10n --locales en,zh-Hans`, `--check-edge-clipping <png-or-dir>`, and `--audit-geometry <geometry.json>` as applicable. After passing `design_contract.py`, the Writer exports low-cost rendered screenshots (Apple: `XCTest` snapshot / `xcrun simctl io booted screenshot` / `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot) into the R10 receipt (`Writer` implements declared constraints only and never guesses undeclared rules); the independent `Reviewer` (`code-review` + `my-designer`) runs **Visual Traceback** on the screenshots to classify issues as `[IMPL_BUG]` vs `[SPEC_GAP]`.
