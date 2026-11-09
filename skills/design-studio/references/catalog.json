@@ -817,6 +817,84 @@
           "notes": ""
         }
       ]
+    },
+    {
+      "id": "IP-006",
+      "name": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "aliases": [],
+      "category": "layout-craft",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "canonical_prompt": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "state_machine": "ready -> container_or_content_change -> measure -> reflow -> stable",
+      "web_implementation": "Container queries and CSS grid/flex with Basalt spacing and typography tokens.",
+      "mobile_implementation": "SwiftUI Layout/ViewThatFits with DesignTokens spacing and Dynamic Type support.",
+      "token_guardrails": "Use container-driven width budgets; prevent overlap and numeric truncation. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
+    },
+    {
+      "id": "IP-007",
+      "name": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "aliases": [],
+      "category": "layout-craft",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "canonical_prompt": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "state_machine": "ready -> container_or_content_change -> measure -> reflow -> stable",
+      "web_implementation": "Container queries and CSS grid/flex with Basalt spacing and typography tokens.",
+      "mobile_implementation": "SwiftUI Layout/ViewThatFits with DesignTokens spacing and Dynamic Type support.",
+      "token_guardrails": "Use container-driven width budgets; prevent overlap and numeric truncation. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
+    },
+    {
+      "id": "MP-007",
+      "name": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "aliases": [],
+      "category": "micro-feedback-social",
+      "platforms": [
+        "web",
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "canonical_prompt": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "state_machine": "idle -> press -> feedback_preview -> commit/cancel -> acknowledged -> idle",
+      "web_implementation": "Motion press feedback and Basalt semantic badges with accessible status announcements.",
+      "mobile_implementation": "SwiftUI SensoryFeedback and StrataMotion with numericText for changing counts.",
+      "token_guardrails": "Keep counts derived from committed state; feedback must not depend on color alone. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
     }
   ]
 }

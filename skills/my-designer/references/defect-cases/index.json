@@ -1,10 +1,55 @@
 {
   "schema": "apple-design-defect-cases/v1",
-  "version": 1,
-  "updated": "2026-11-06",
+  "version": 2,
+  "updated": "2026-11-08",
   "baseline_mode": "plan-a-apple-hig",
-  "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases start empty and are registered here only when real defects are encountered in practice.",
-  "active_cases": [],
+  "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
+  "active_cases": [
+    {
+      "id": "DC-001",
+      "title": "Single-Plane Flat Tiling & ShipSwift Spatial Signature Loss (SWWallet Flattened to VStack/ForEach)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "component",
+        "layout-navigation",
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "ScrollView"
+      ],
+      "symptom": "Agent treats the appearance-ledger component palette as a mandatory flat checklist, stacking 4+ sections (Hero + Donut + Duplicate Category Bars + Flattened Wallet List + Transactions) in one >1000pt ScrollView, and rewrites ShipSwift SWWallet from a ZStack 3D pocket stack into a flat VStack/ForEach list.",
+      "fix_rule": "Apply the 3-Axis × P0..P3 Priority Matrix (Display / Action / Display+Action): cap any single viewport or split-view pane at 2-3 visual groups, collapse non-active groups (Accordion / Segmented Lens / Sheet), merge reference hints into placeholders/subtitles, and preserve ShipSwift SWWallet ZStack + zIndex + offset(y:) pocket geometry.",
+      "forbidden_regex": "struct\\s+SWWallet\\b[\\s\\S]{0,600}?VStack[^{]*\\{\\s*ForEach",
+      "registered_at": "2026-11-08"
+    },
+    {
+      "id": "DC-002",
+      "title": "Duplicate Same-Source Data Representation (Donut Legend + Redundant Category Progress Bars)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "chart-dataviz",
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "ScrollView"
+      ],
+      "symptom": "Rendering a Donut/Ring chart with a full category breakdown legend AND immediately stacking a second category progress-bar list bound to the exact same dataset in the same pane.",
+      "fix_rule": "Never render the same dataset twice in one viewport; fuse the chart with a compact 2-column Bento legend grid (tap tile -> filter detail list) OR use a Segmented Picker to toggle between Chart and Progress List.",
+      "forbidden_regex": "SWDonutChart[\\s\\S]{0,800}?ProgressView\\(\\s*value\\s*:",
+      "registered_at": "2026-11-08"
+    }
+  ],
   "archived_templates": [
     {
       "id": "DC-TEMPLATE-001",

@@ -4,11 +4,16 @@ Every Apple app shares **Apple HIG + Liquid Glass two-layer craft**, while ownin
 
 ---
 
-## 1. Cross-App Appearance Ledger (Anti-Clone Registry)
+## 1. Cross-App Appearance Ledger (Anti-Clone Registry & Spatial Budget)
 
-Before locking a new app or major redesign in `design.md`, inspect this ledger to pick a **non-colliding Style Archetype (`VS-001..008`) and Brand Seed (`CL-001..008`)**:
+Before locking a new app or major redesign in `design.md`, inspect this ledger to pick a **non-colliding Style Archetype (`VS-001..008`) and Brand Seed (`CL-001..008`)**.
 
-| Product / Repo | Platform | Style Archetype (`VS-*`) | Palette & Surface Polarity (`CL-*`) | Typography Signature (`TC-*`) | Signature Glass / Shader & `ShipSwift` Components |
+> **CRITICAL — Component Palette ≠ Mandatory Flat Checklist (`DC-001` & `DC-002`):**
+>1. **Spatial & Progressive Disclosure Budget**: The rightmost column lists the *candidate component menu* for the entire product, **NOT a checklist to stack onto one screen**. Any single viewport or split-view pane is capped at **at most 2–3 visual container groups** (`<= 900pt` vertical height budget on desktop panes; `aspect_ratio <= 2.6`). Any 4th+ module MUST be folded into a **Segmented Lens** (`Overview | Breakdown | Accounts`), a **3D `ZStack` pocket stack** (`SWWallet`), or a **Sheet / Inspector drill-down**.
+>2. **No Duplicate Data Representation (`DC-002`)**: Never render the same dataset twice in one viewport (e.g., a `SWDonutChart` with a 6-row category legend AND a redundant 8-row category `ProgressView` bar list below it). Pick ONE representation or toggle them via a Segmented Picker.
+>3. **`ShipSwift` Spatial Signature Preservation (`DC-001`)**: When adopting a `ShipSwift` spatial component such as `SWWallet`, preserve its `ZStack` + `zIndex` + `offset(y:)` 3D pocket geometry (~220pt collapsed height that fans out on tap). **Never flatten `SWWallet` into a plain `VStack { ForEach }` list.**
+
+| Product / Repo | Platform | Style Archetype (`VS-*`) | Palette & Surface Polarity (`CL-*`) | Typography Signature (`TC-*`) | Candidate Glass / Shader & `ShipSwift` Palette (Pick `<=2` per Viewport; Fold via Lens/ZStack/Sheet) |
 |---|---|---|---|---|---|
 | **VitalStride (`Workout`)** | iOS / watchOS | `VS-001` Kinetic Athletic Telemetry (or Cross-Domain Remix `VS-005..008` below) | `CL-001` Athletic Volt or `CL-006..008` Luminous Paper / Aurora / Chrono (`CL-005` zero-black-dead-zone rule) | SF Pro Rounded Display + `.monospacedDigit()` heavy tabular numbers | `.glassEffect(.regular)` top mode switcher & rest bar; 5×4 grid keypad; `SWActivityHeatmap`, `SWRingChart`, `SWConfetti` |
 | **Financial (`FinUI`)** | iOS / macOS | `VS-002` Warm Editorial & Swiss Ledger (Apple Wallet / Wise / Readwise paper craft) | `CL-002` Warm Ivory Paper (`#FAF7F2` Light / `#121316` Dark) + Deep Forest Ink (`#0F5132`) + Brass Accent | New York Serif headlines + SF Pro body + tabular currency digits | Functional glass toolbar only; solid tactile ledger cards; `SWWallet`, `SWDonutChart`, `SWAreaChart` |

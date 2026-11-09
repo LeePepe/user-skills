@@ -5,7 +5,7 @@
 - **范围边界**：
   - 聚焦个人整体 Workflow（网关底座、工程门禁、编排内核、看板与复盘交付）；
   - **常驻 Bot（七域分工、M2 个人助理层）统一归入 Backlog**，不阻塞当前网关与架构主线；
-  - **三套 Skills 仓库（`~/Development/user-skills`、`~/Development/agent-skills`、`~/Development/Skills`）保持分离**，通过四端目录映射与快照工具协同；
+  - **三层 Skills 仓库（共享公开 `~/Development/user-skills`、个人私有 `~/Development/Skills`、工作专用 `~/Development/job skills`）边界清晰**，旧 `agent-skills` 已归档下线，通过四端目录映射与快照工具协同；
   - 公司业务项（Sapphire DSAT）独立归入 [TIA-84](https://linear.app/tianpeili/issue/TIA-84/todo-sapphire-dsat-用户反馈接入-jev-system-one-海量初筛归因与-sde-级联提取)，不在本总纲范围内。
 - **关联中枢**：[`SKILL.md`](../SKILL.md)、[`seven-rings-and-progressive-6dq.md`](seven-rings-and-progressive-6dq.md)、Linear [TIA-85](https://linear.app/tianpeili/issue/TIA-85/todo-个人-workflow-hub-演进候选池接入-jev-第-12-类-与借鉴-dsh-magpie-hisfm-r01-r20)
 
@@ -36,7 +36,7 @@
 | **架构门禁与契约** | [`nocoo/base-ci`](https://github.com/nocoo/base-ci) | 6DQ 可复用 GitHub Actions（强制 40 位 SHA 固定 + `release-source` 制品溯源校验）。 | **与 `shared-ci` 同构**：对比补强 `shared-ci` 的制品溯源与跨仓门禁（Sub-Workflow 4）。 |
 | | [`nocoo/his.fm`](https://github.com/nocoo/his.fm) | 零内置 AI 的 7 态乐观锁（`version`）内容状态机 + **`Global > Category Slot > Intent > Sources` 四级提示词槽位**。 | **吸收进环 2 / 环 7**：用于 `spec.md`/`design.md` 乐观锁版本控制与设计/叙事四级 Prompt Slots。 |
 | | [`nocoo/steed`](https://github.com/nocoo/steed) | 按供应商分层、按物理位置划定信任域（Trust Boundary）的个人系统拓扑平台（带类密钥属性值拦截）。 | **借鉴拓扑模型**：在 `workflow-hub` 维护机器可读的本机/跨机网关与服务拓扑定义。 |
-| **可观测、配置与交付** | [`nocoo/otter`](https://github.com/nocoo/otter) | macOS 多配置源目录（Git 仓、本地目录、4 端 CLI Skills 软链、LaunchAgents）不可变快照、`snapshot diff` 与恢复导出。 | **高契合直接可用**：解决本机 `user-skills` / `agent-skills` / `Skills` 三仓分离与四端 CLI 目录的快照比对与防漂移。 |
+| **可观测、配置与交付** | [`nocoo/otter`](https://github.com/nocoo/otter) | macOS 多配置源目录（Git 仓、本地目录、4 端 CLI Skills 软链、LaunchAgents）不可变快照、`snapshot diff` 与恢复导出。 | **高契合直接可用**：解决本机 `user-skills` / `Skills` / `job skills` 三层分离与四端 CLI 目录的快照比对与防漂移。 |
 | | [`nocoo/eagle`](https://github.com/nocoo/eagle) | 跨机 Herdr Space 态势看板、端口监听（`watchPorts: 7024`）、真实证据校验（`idle/done` 不算完成）与 **23:59 `eagle-daily-zh-v2` 24 小时逐时强制引用日报**。 | **吸收进环 3/7**：将 `eagle-daily-zh-v2` 逐时证据引用 Schema 吸收进 `retro-loop` 与遥测日报。 |
 | | [`nocoo/clip`](https://github.com/nocoo/clip) & [`base-cli`](https://github.com/nocoo/base-cli) | 从 `clip.yaml` 一键生成带 `~/.clip/<alias>/credentials.json` (`0600`) 凭据隔离的 Bun CLI。 | **工具化范式**：新增内部 API 数据源时统一生成 JSON CLI，践行“CLI 能拿到数据，Agent 就能拿到”。 |
 | | [`nocoo/showtime`](https://github.com/nocoo/showtime) | 原生 macOS (Swift 6 + WebKit) 演示浏览器，支持 Agent CLI/MCP 编排镜头/光标/透明图层并录制 4K 60fps MP4。 | **环 6/7 交付利器**：用于产品发布与 `story-craft` 自动录制可重复的产品演示视频。 |
@@ -254,8 +254,8 @@
 
 ---
 
-### Sub-Workflow 5（环 6/7 & 全局展示）：结合 `AIDash` 的统一态势/日报中心、三仓快照与叙事飞轮
-- **涉及路径**：`~/Development/AIDash`（`aidata` Python 数据层 + `aidash` CLI + XPC + Menubar/Main Window + iCloud 同步 iPhone/iPad）、`~/Development/user-skills/skills/{retro-loop,story-craft}`、三套 Skills 仓（`user-skills` / `agent-skills` / `Skills`）
+### Sub-Workflow 5（环 6/7 & 全局展示）：结合 `AIDash` 的统一态势/日报中心、三层快照与叙事飞轮
+- **涉及路径**：`~/Development/AIDash`（`aidata` Python 数据层 + `aidash` CLI + XPC + Menubar/Main Window + iCloud 同步 iPhone/iPad）、`~/Development/user-skills/skills/{retro-loop,story-craft}`、三层 Skills 仓（`user-skills` / `Skills` / `job skills`）
 - **关联编号**：`R04`、`R06`、`R13`（展示层）、`R19`（叙事侧）、对标 `nocoo/{eagle,pew,codo,falcon,otter,showtime,steed}`
 - **基本信息与可扩展点（重点：以 `AIDash` 为核心整合展示方式 vs. 独立工具选型）**：
   - **核心发现**：你本机已有成熟的原生全平台个人 AI 简报与状态中心 **`~/Development/AIDash`**（上游 Python `aidata` L1–L5 数据生产 → `aidash` Swift CLI → XPC → `AIDash.app` macOS 菜单栏与主窗口 → SwiftData + CloudKit 自动同步 iPad/iPhone + `mark done` / `star` 用户事件回写）。
@@ -267,11 +267,11 @@
     3. **整合 `nocoo/pew` + `Raven/Magpie/Falcon` → `AIDash` 模型网关配额与多 CLI Token 账单卡片**：
        - 采集本机 Claude/Codex/Copilot 及 `Magpie (:3425)` / `Raven (:7024)` / `Falcon (:19823)` 的 Token 消耗、缓存命中率、配额水位与 Jev 决策统计，在 `AIDash` 展示趋势；利用 `AIDash` 原生的 `star`（加星）回写能力，直接对标 `Falcon` 的“加星沉淀 Jev 回归样本”。
     4. **对比评估何时用 `AIDash` 原生承载、何时用独立轻量工具**：
-       - **配置快照防漂移（`nocoo/otter`）**：针对保持分离的 `user-skills`、`agent-skills`、`Skills` 三仓与四端 CLI 目录（`~/.agents`、`~/.copilot`、`~/.codex`、`~/.claude`），用 `otter` CLI 做底层快照 diff，仅把“发现配置漂移告警”摘要推入 `AIDash`。
+       - **配置快照防漂移（`nocoo/otter`）**：针对保持分离的 `user-skills`、`Skills`、`job skills` 三层与四端 CLI 目录（`~/.agents`、`~/.copilot`、`~/.codex`、`~/.claude`），用 `otter` CLI 做底层快照 diff，仅把“发现配置漂移告警”摘要推入 `AIDash`。
        - **产品演示录制（`nocoo/showtime`）**：环 6/7 独立调用 `Showtime.app` AI Director 录制 4K MP4 演示视频，供 `story-craft` 与发布使用。
 - **📋 专项会话启动 Prompt（复制到新会话执行，调研先行）**：
   ```text
-  加载 /workflow-hub、/retro-loop 与 /story-craft skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 5（环 6/7 & 全局展示）：结合 AIDash 的统一态势/日报中心、三仓快照与叙事飞轮」及 ~/Development/AIDash/AGENTS.md。
+  加载 /workflow-hub、/retro-loop 与 /story-craft skill，先阅读 ~/Development/user-skills/skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md 中的「Sub-Workflow 5（环 6/7 & 全局展示）：结合 AIDash 的统一态势/日报中心、三层快照与叙事飞轮」及 ~/Development/AIDash/AGENTS.md。
 
   当前处于 Phase 0 只读深度调研阶段（严禁修改 AIDash 或 user-skills 业务代码）。请先把以下 4 块内容彻底调研清楚，输出带精确 file:line 的调研报告与架构设计方案至 ~/Development/handoff/sw5-aidash-research/spec.md：
   1. 【AIDash 现有架构与数据链路摸底】
@@ -283,8 +283,8 @@
   3. 【环 7 复盘与叙事流水线升级（retro-loop + story-craft）】
      - 设计如何将 `eagle-daily-zh-v2` 强制证据 ID 引用 Schema 与 Jev R06 Citation Check 注入 retro-loop 与 gtt-telemetry-export.py；
      - 对照 his.fm 的双触发器乐观锁状态机与四级 Prompt Slots，设计 retro-loop -> story-craft -> AIDash / linear-board 的自动化闭环。
-  4. 【三仓 Skills 与四端 CLI 配置快照治理（nocoo/otter 对标）】
-     - 针对本机保持分离的 user-skills、agent-skills、Skills 三仓与 ~/.agents、~/.copilot、~/.codex、~/.claude 四端目录，调研 nocoo/otter 的快照与 diff 机制，给出跨机器防漂移体检方案。
+  4. 【三层 Skills 与四端 CLI 配置快照治理（nocoo/otter 对标）】
+     - 针对本机保持分离的 user-skills、Skills、job skills 三层与 ~/.agents、~/.copilot、~/.codex、~/.claude 四端目录，调研 nocoo/otter 的快照与 diff 机制，给出跨机器防漂移体检方案。
   ```
 
 ---

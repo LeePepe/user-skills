@@ -1379,6 +1379,113 @@
       "usage_count": 0,
       "rating": "unrated",
       "last_used_at": null
+    },
+    {
+      "id": "TC-001",
+      "name": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "primary_dimension": "typography-copy",
+      "secondary_dimensions": [],
+      "sub_category": "type-scale-dynamic-hierarchy",
+      "prefix": "TC",
+      "source_prompt_zh": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "canonical_prompt": "**说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。",
+      "apple_native_primitives": [
+        "Font.largeTitle",
+        "Font.title",
+        "Font.headline",
+        "Font.subheadline",
+        "Font.body"
+      ],
+      "hig_routes": [
+        "typography.md",
+        "writing.md",
+        "VoiceOver.md",
+        "accessibility.md"
+      ],
+      "desktop_macos_implementation": "macOS Native (Font.largeTitle, Font.title, Font.headline): pointer/hover feedback, keyboard shortcut support, and standard window/popover materials per typography.md, writing.md.",
+      "mobile_ios_implementation": "iOS/iPadOS Native (Font.largeTitle, Font.title, Font.headline): >=44x44pt touch targets, Size Class adaptive layout, and Dynamic Type scaling per typography.md, writing.md.",
+      "native_guardrails": "Apple HIG baseline: semantic Light/Dark colors (>=4.5:1 contrast), Liquid Glass restricted to floating functional chrome, Reduce Motion & Reduce Transparency respected.",
+      "route_stage": "stage2_llm_fallback",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "LN-001",
+      "name": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [],
+      "sub_category": "split-view-master-detail",
+      "prefix": "LN",
+      "source_prompt_zh": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "canonical_prompt": "**入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。",
+      "apple_native_primitives": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "TabView",
+        ".tabViewStyle(.sidebarAdaptable)",
+        ".inspector(isPresented:content:)"
+      ],
+      "hig_routes": [
+        "layout.md",
+        "spatial-layout.md",
+        "split-views.md",
+        "sidebars.md",
+        "tab-bars.md",
+        "navigation-bars.md",
+        "toolbars.md",
+        "scroll-views.md"
+      ],
+      "desktop_macos_implementation": "macOS Native (NavigationSplitView, NavigationStack, TabView): pointer/hover feedback, keyboard shortcut support, and standard window/popover materials per layout.md, spatial-layout.md.",
+      "mobile_ios_implementation": "iOS/iPadOS Native (NavigationSplitView, NavigationStack, TabView): >=44x44pt touch targets, Size Class adaptive layout, and Dynamic Type scaling per layout.md, spatial-layout.md.",
+      "native_guardrails": "Apple HIG baseline: semantic Light/Dark colors (>=4.5:1 contrast), Liquid Glass restricted to floating functional chrome, Reduce Motion & Reduce Transparency respected.",
+      "route_stage": "stage2_llm_fallback",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
+    },
+    {
+      "id": "MI-007",
+      "name": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "primary_dimension": "motion-interaction",
+      "secondary_dimensions": [],
+      "sub_category": "gesture-physical-manipulation",
+      "prefix": "MI",
+      "source_prompt_zh": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "canonical_prompt": "**反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。",
+      "apple_native_primitives": [
+        "Spring(duration:bounce:)",
+        "Animation.spring(response:dampingFraction:blendDuration:)",
+        "Animation.snappy",
+        "Animation.smooth",
+        "Animation.bouncy"
+      ],
+      "hig_routes": [
+        "motion.md",
+        "gestures.md",
+        "drag-and-drop.md",
+        "feedback.md",
+        "playing-haptics.md"
+      ],
+      "desktop_macos_implementation": "macOS Native (Spring(duration:bounce:), Animation.spring(response:dampingFraction:blendDuration:), Animation.snappy): pointer/hover feedback, keyboard shortcut support, and standard window/popover materials per motion.md, gestures.md.",
+      "mobile_ios_implementation": "iOS/iPadOS Native (Spring(duration:bounce:), Animation.spring(response:dampingFraction:blendDuration:), Animation.snappy): >=44x44pt touch targets, Size Class adaptive layout, and Dynamic Type scaling per motion.md, gestures.md.",
+      "native_guardrails": "Apple HIG baseline: semantic Light/Dark colors (>=4.5:1 contrast), Liquid Glass restricted to floating functional chrome, Reduce Motion & Reduce Transparency respected.",
+      "route_stage": "stage2_llm_fallback",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null
     }
   ]
 }

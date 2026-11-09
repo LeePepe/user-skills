@@ -96,7 +96,7 @@ class ProgressiveRouterTests(unittest.TestCase):
         payload = json.loads(buf.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["baseline_mode"], "plan-a-apple-hig")
-        self.assertEqual(payload["plan_c_active_cases"], [])
+        self.assertIn("DC-002", [c["id"] for c in payload["plan_c_active_cases"]])
         self.assertIn("liquid-glass.md", payload["progressive_disclosure"]["hig_files_to_load"])
         self.assertIn("charts.md", payload["progressive_disclosure"]["hig_files_to_load"])
         self.assertIn("designing-for-macos.md", payload["progressive_disclosure"]["distilled_in_plan_a"])
@@ -111,6 +111,17 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertIn("claude-code-apple-skills", ext_routing["allowed_native_sources"])
         self.assertIn("impeccable_native_only", ext_routing["allowed_native_sources"])
         self.assertEqual(payload["progressive_disclosure"]["appearance_ledger"], "skills/my-designer/references/appearance-ledger.md")
+        self.assertEqual(payload["progressive_disclosure"]["interaction_layering_ref"], "skills/my-designer/references/interaction-layering.md")
+        self.assertIsNone(payload["progressive_disclosure"]["breathing_and_clarity_ref"])
+
+        buf_vs = io.StringIO()
+        with contextlib.redirect_stdout(buf_vs):
+            design_cases.main(["route", "--platform", "desktop", "--dimensions", "visual-style,typography-copy"])
+        payload_vs = json.loads(buf_vs.getvalue())
+        self.assertEqual(
+            payload_vs["progressive_disclosure"]["breathing_and_clarity_ref"],
+            "skills/my-designer/references/breathing-and-clarity.md",
+        )
         self.assertTrue(any("taste-skill" in b for b in ext_routing["blocked_web_only_sources"]))
         ledger_text = (ROOT / "skills" / "my-designer" / "references" / "appearance-ledger.md").read_text(encoding="utf-8")
         for token in ("Cross-Domain Archetype Remix Matrix", "VS-005", "VS-006", "VS-007", "VS-008", "CL-006", "CL-007", "CL-008"):
@@ -194,11 +205,11 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
                 ]),
                 0,
             )
-            # Register Plan C defect case when discovered
+            # Register a new Plan C defect case (DC-999) when discovered
             self.assertEqual(
                 design_cases.main([
                     "register-case", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
-                    "--id", "DC-001", "--title", "Popover Frame Before Padding",
+                    "--id", "DC-999", "--title", "Popover Frame Before Padding",
                     "--platforms", "desktop", "--dimensions", "layout-navigation",
                     "--containers", "NSPopover",
                     "--symptom", "Clips trailing content",
@@ -217,23 +228,42 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
                 1,
             )
 
-            # Plan A catches SwiftUI anti-slop (purple-blue gradient, left-border stripe, macOS .hoverEffect)
+            # Plan A + Plan C catch SwiftUI anti-slop & anti-flat-tiling defects:
+            # purple-blue gradient, macOS .hoverEffect, flattened SWWallet, duplicate Donut+ProgressView
             slop_file = root / "SlopView.swift"
             slop_file.write_text(
-                "import SwiftUI\nstruct SlopView: View {\n"
+                "import SwiftUI\n"
+                "struct SWWallet: View {\n"
+                "  var body: some View { VStack { ForEach(0..<3, id: \\.self) { _ in Text(\"Flat\") } } }\n"
+                "}\n"
+                "struct SlopView: View {\n"
                 "  var body: some View {\n"
-                "    LinearGradient(colors: [.purple, .blue], startPoint: .top, endPoint: .bottom)\n"
-                "      .hoverEffect(.highlight)\n"
+                "    VStack {\n"
+                "      SWDonutChart()\n"
+                "      ProgressView(value: 0.5)\n"
+                "      LinearGradient(colors: [.purple, .blue], startPoint: .top, endPoint: .bottom)\n"
+                "        .hoverEffect(.highlight)\n"
+                "    }\n"
                 "  }\n}\n",
                 encoding="utf-8",
             )
-            self.assertEqual(
-                design_cases.main([
+            buf_audit = io.StringIO()
+            with contextlib.redirect_stdout(buf_audit):
+                rc = design_cases.main([
                     "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
                     "--platform", "desktop", "--path", str(slop_file),
-                ]),
-                1,
-            )
+                ])
+            self.assertEqual(rc, 1)
+            audit_ids = {f["id"] for f in json.loads(buf_audit.getvalue())["findings"]}
+            for expected_id in (
+                "SLOP-PURPLE-GRADIENT",
+                "HIG-MACOS-HOVER-EFFECT",
+                "SHIPSWIFT-SWWALLET-FLATTENED",
+                "SLOP-DUPLICATE-DATA-REPRESENTATION",
+                "DC-001",
+                "DC-002",
+            ):
+                self.assertIn(expected_id, audit_ids)
 
 
 if __name__ == "__main__":

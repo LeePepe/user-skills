@@ -971,6 +971,12 @@
         "震动",
         "过渡动画",
         "减少动态效果",
+        "反馈",
+        "给个准信",
+        "操作完",
+        "点保存后",
+        "下次提醒",
+        "状态回执",
         "motion",
         "animation",
         "spring",
@@ -1090,6 +1096,13 @@
         "吸顶",
         "滚动位置",
         "不跳页面",
+        "入口",
+        "满屏找",
+        "任务发生的地方",
+        "高级设置先收起来",
+        "收起高级设置",
+        "渐进披露",
+        "就近放置",
         "layout",
         "navigation",
         "master-detail",
@@ -1204,6 +1217,14 @@
         "截断",
         "多语言排版",
         "动态字体",
+        "说法",
+        "系统术语",
+        "别用系统术语",
+        "大白话",
+        "循环规则",
+        "每周一提醒我",
+        "看不懂",
+        "自然语言标签",
         "typography",
         "font",
         "type scale",
@@ -1405,8 +1426,12 @@
       "component": [],
       "chart-dataviz": [],
       "glass-material": [],
-      "motion-interaction": [],
-      "layout-navigation": [],
+      "motion-interaction": [
+        "操作完得给个"
+      ],
+      "layout-navigation": [
+        "别让新用户满"
+      ],
       "typography-copy": []
     }
   }

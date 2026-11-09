@@ -114,6 +114,22 @@ PLAN_A_CODE_RULES = [
         "pattern": re.compile(r"LinearGradient\([^)]*colors\s*:\s*\[[^\]]*\.black\b"),
         "message": "Avoid straight-to-black RGB gradients (muddy dead zone); step through adjacent high-luminance hues along the color wheel arc.",
     },
+    {
+        "id": "SHIPSWIFT-SWWALLET-FLATTENED",
+        "severity": "High",
+        "platforms": ["desktop", "mobile"],
+        "citation": "DC-001 › ShipSwift Spatial Signature Preservation (SWWallet.swift)",
+        "pattern": re.compile(r"struct\s+SWWallet\b[\s\S]{0,600}?VStack[^{]*\{\s*ForEach"),
+        "message": "Do not flatten ShipSwift SWWallet into a VStack/ForEach list; preserve its ZStack + zIndex + offset(y:) 3D pocket stack geometry (~220pt collapsed height).",
+    },
+    {
+        "id": "SLOP-DUPLICATE-DATA-REPRESENTATION",
+        "severity": "High",
+        "platforms": ["desktop", "mobile"],
+        "citation": "DC-002 › No Duplicate Same-Source Data Representation",
+        "pattern": re.compile(r"(?:SWDonutChart|SectorMark)[\s\S]{0,800}?ProgressView\(\s*value\s*:"),
+        "message": "Never render both a Donut/Sector chart with legend AND a redundant ProgressView bar list for the same dataset in one pane; use a Segmented Lens or interactive chart slices.",
+    },
 ]
 
 
@@ -170,6 +186,10 @@ def command_route(args: argparse.Namespace) -> int:
                     native_primitives.append(p)
 
     active_plan_c = match_active_cases(cases_doc, args.platform, dims, args.container)
+    layering_dims = {"layout-navigation", "component", "chart-dataviz", "motion-interaction"}
+    breathing_dims = {"visual-style", "color-palette", "layout-navigation", "typography-copy"}
+    disclose_layering = (not dims) or bool(set(dims) & layering_dims) or bool(active_plan_c)
+    disclose_breathing = (not dims) or bool(set(dims) & breathing_dims)
     ext_root = "~/Development/Personal/collected-tools/repos"
     if args.platform in ("desktop", "mobile"):
         allowed_native = {
@@ -345,6 +365,12 @@ def command_route(args: argparse.Namespace) -> int:
                 f"git -C {ext_root}/$r pull --ff-only; done"
             ),
             "appearance_ledger": "skills/my-designer/references/appearance-ledger.md",
+            "interaction_layering_ref": (
+                "skills/my-designer/references/interaction-layering.md" if disclose_layering else None
+            ),
+            "breathing_and_clarity_ref": (
+                "skills/my-designer/references/breathing-and-clarity.md" if disclose_breathing else None
+            ),
             "hig_files_to_load": hig_files[:12],
             "apple_native_primitives": native_primitives[:12],
         },

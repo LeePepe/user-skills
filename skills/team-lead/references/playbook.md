@@ -664,7 +664,7 @@ Executable Task or lock
 
 | 锁 | 作用位置 | 适合固化的结论 | 典型载体 |
 |---|---|---|---|
-| **锁 1：认知与工作流层** | `user-skills`／`agent-skills` | 任务拆分、状态机、证据格式、停止线、复盘法 | Goal/Task 合同、brief 模板、R10 模板、双轴清单 |
+| **锁 1：认知与工作流层** | `user-skills` | 任务拆分、状态机、证据格式、停止线、复盘法 | Goal/Task 合同、brief 模板、R10 模板、双轴清单 |
 | **锁 2：本地执行层** | `PreToolUse` Worktree 守卫、Herdr 回调器 | 路径隔离、显式 ID、事件唤醒、危险操作拦截 | Worktree／pane 检查、Socket 订阅、状态对账 |
 | **锁 3：跨仓 CI 与组件层** | `shared-ci` 6DQ、`sync_contract.py`、`release_sync.py`、共享设计与遥测库 | 契约、版本、质量、发布、组件和遥测不可回归 | CI 门禁、生成器、共享组件、线上读回 |
 

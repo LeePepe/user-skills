@@ -60,6 +60,9 @@ extend, rate, and re-render the catalog.
 | IP-003 | 列表联动详情 (In-Place Master-Detail Linkage) | master-detail-flow | web, mobile, shared | M1 | `list_ready -> select_row(id) -> detail_updated_in_place(id) [master_order_and_scroll_preserved]` |
 | IP-004 | 无结果与局部恢复 (Scoped Empty State & Context-Preserving Recovery) | filter-sort-recovery | web, mobile, shared | M1 | `filtered(category) -> keyword_no_match -> contextual_empty_state -> clear_keyword_only -> restored(category)` |
 | IP-005 | 状态联动汇总 (Live Status-to-Summary Aggregation) | data-linkage | web, mobile, shared | M1 | `item_status_change(old -> new) -> recompute_summary_counts_and_semantic_tokens -> UI_sync` |
+| IP-006 | **说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。 | layout-craft | web, mobile, shared | M1 | `ready -> container_or_content_change -> measure -> reflow -> stable` |
+| IP-007 | **入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。 | layout-craft | web, mobile, shared | M1 | `ready -> container_or_content_change -> measure -> reflow -> stable` |
+| MP-007 | **反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。 | micro-feedback-social | web, mobile, shared | M2 | `idle -> press -> feedback_preview -> commit/cancel -> acknowledged -> idle` |
 
 ### Pattern details
 
@@ -140,6 +143,27 @@ extend, rate, and re-render the catalog.
 - Mobile: Computed properties on @Observable / SwiftData model collections driving summary badges and semantic tokens with .numericText() transition.
 - Guardrails: Single source of truth for item status and summary counters; semantic tokens calibrated for both Light and Dark mode.
 
+#### IP-006 · **说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。
+- Prompt: **说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。
+- Canonical: **说法**：别用系统术语。比如写“循环规则”，用户根本看不懂；换成大白话“每周一提醒我”，一下就明白了。
+- Web: Container queries and CSS grid/flex with Basalt spacing and typography tokens.
+- Mobile: SwiftUI Layout/ViewThatFits with DesignTokens spacing and Dynamic Type support.
+- Guardrails: Use container-driven width budgets; prevent overlap and numeric truncation. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.
+
+#### IP-007 · **入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。
+- Prompt: **入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。
+- Canonical: **入口**：别让新用户满屏找。把选项直接放在任务发生的地方，高级设置先收起来。
+- Web: Container queries and CSS grid/flex with Basalt spacing and typography tokens.
+- Mobile: SwiftUI Layout/ViewThatFits with DesignTokens spacing and Dynamic Type support.
+- Guardrails: Use container-driven width budgets; prevent overlap and numeric truncation. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.
+
+#### MP-007 · **反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。
+- Prompt: **反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。
+- Canonical: **反馈**：操作完得给个准信。点保存后页面啥变化没有，新手根本不知道成没成功；直接告诉他“下次提醒周一上午9点”才行。
+- Web: Motion press feedback and Basalt semantic badges with accessible status announcements.
+- Mobile: SwiftUI SensoryFeedback and StrataMotion with numericText for changing counts.
+- Guardrails: Keep counts derived from committed state; feedback must not depend on color alone. Reuse DesignTokens/StrataMotion/Basalt tokens; support Light/Dark, >=44x44pt hit targets, and prefers-reduced-motion / Reduce Motion without spatial motion.
+
 ## Usage & Preference Ledger
 
 | ID | Usage count | Rating | Last used |
@@ -175,6 +199,9 @@ extend, rate, and re-render the catalog.
 | IP-003 | 2 | liked | 2026-11-07 |
 | IP-004 | 2 | liked | 2026-11-07 |
 | IP-005 | 2 | liked | 2026-11-07 |
+| IP-006 | 0 | unrated | — |
+| IP-007 | 0 | unrated | — |
+| MP-007 | 0 | unrated | — |
 
 ## Code / CLI Recipes
 
