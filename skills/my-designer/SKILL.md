@@ -24,8 +24,13 @@ Platform slices: `web` uses Basalt, CSS, Motion, Anime.js, Three.js, taste-skill
 ## Step 3 · Author the handoff
 Anchor ergonomics, state coverage, accessibility, responsive/container behavior, reduced motion, and the selected style recipe. Include an Obsolete Test Manifest when changing an existing screen. Use Plan A principles and Plan C cases from [defect-cases/index.json](references/defect-cases/index.json); register new cases with `register-case --id auto`.
 
-## Step 4 · Deliver
-Keep design-time routing and case registration here. Implementation-time static, localization, screenshot, and geometry checks belong to `shared-ci/scripts/context/design_contract.py`, not this skill.
+## Step 4 · Deliver & Post-Implementation Visual Traceback (`实现后截图回溯`)
+`my-designer` operates as a **Dual-Touchpoint Closed Loop**: **Touchpoint 1** is Phase 0 ideation (`design.md`/`spec.md`), and **Touchpoint 2** is **Post-Implementation Visual Traceback (`实现后截图回溯`)** during Phase 1 independent review:
+- **Writer low-cost screenshot capture**: After passing `shared-ci/scripts/context/design_contract.py` (`--audit-code`, `--audit-l10n`, `--check-edge-clipping`, `--audit-geometry`), the `Writer` captures real rendered screenshots by platform (Apple: `XCTest` snapshot / `xcrun simctl io booted screenshot` / headless `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot) and records screenshot paths in the R10 receipt. **Writer is responsible ONLY for faithfully implementing declared constraints, never for guessing undeclared constraints.**
+- **Independent Reviewer Visual Traceback (`[IMPL_BUG]` vs `[SPEC_GAP]`)**: The cross-vendor independent `Reviewer` loads `code-review` + `my-designer` to inspect both code diff and rendered screenshots from the R10 receipt, classifying every visual/interaction finding into:
+  - **`[IMPL_BUG]` (Implementation Deviation)**: Writer violated an explicit clause in `design.md` or `design_contract.py` → route directly back to Writer to fix against existing `design.md`.
+  - **`[SPEC_GAP]` (Phase 0 Spec Omission / Unforeseen Reality)**: Writer followed `design.md`, but rendered pixels expose crowding, CJK wrapping, column drift, or hierarchy conflict missed in Phase 0 → **NEVER blame Writer or ask Writer to guess undeclared rules**; route back to `Steering` to **amend `design.md` first (and re-stamp `spec_sha`)** with concrete parameters before dispatching Writer.
+- **Anti-Explosion Promotion Gate**: Every `[SPEC_GAP]` updates the current Goal's `design.md` (100%). Promote to `my-designer` (`verify_design_cases.py register-case --id auto`) or `shared-ci` (`design_contract.py`) via `skill_contract.py sink-rule` **ONLY when it is cross-project generic, free of private symbols, and recurring on the same container**.
 
 ```bash
 python3 skills/my-designer/scripts/verify_design_cases.py flow-map

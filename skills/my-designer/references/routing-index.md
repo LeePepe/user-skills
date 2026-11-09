@@ -73,3 +73,13 @@ python3 shared-ci/scripts/context/design_contract.py --audit-code \
     --fix-rule "Always apply .padding(P).frame(width: W)" \
     --forbidden-regex '\.frame\(\s*width\s*:[^)]+\)\s*\.padding\('
   ```
+
+---
+
+## Step 4: Touchpoint 2 — Post-Implementation Visual Traceback (`[IMPL_BUG]` vs `[SPEC_GAP]`)
+
+1. **Writer Low-Cost Screenshot Capture**: After `shared-ci/scripts/context/design_contract.py` passes, `Writer` captures real rendered screenshots (Apple: `XCTest` snapshot / `xcrun simctl io booted screenshot` / headless `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot) and logs paths in the R10 receipt. **Writer implements declared constraints only and never guesses undeclared rules.**
+2. **Independent Reviewer Attribution (`code-review` + `my-designer`)**: The cross-vendor `Reviewer` inspects both code diff and R10 rendered screenshots, tagging every visual finding:
+   - **`[IMPL_BUG]` (Implementation Deviation)**: Explicit `design.md` or `design_contract.py` violation → route directly back to `Writer` to fix against existing `design.md`.
+   - **`[SPEC_GAP]` (Phase 0 Spec Omission)**: `Writer` followed `design.md`, but real pixels expose crowding, CJK wrapping, column drift, or hierarchy conflict missed in Phase 0 → **never send `Writer` to blind-guess**; `Steering` must **amend `design.md` first (re-stamping `spec_sha`)** with concrete layout parameters before dispatching `Writer`.
+3. **Anti-Explosion Promotion Gate**: Every `[SPEC_GAP]` updates the current Goal's `design.md` (100%). Sink to `shared-ci` (`design_contract.py`) or `my-designer` (`verify_design_cases.py register-case --id auto` via `skill_contract.py sink-rule`) **only when cross-project generic, zero private symbols, and recurring on the same container**.
