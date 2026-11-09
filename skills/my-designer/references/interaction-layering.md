@@ -44,8 +44,8 @@ Before drawing layout boxes, classify every domain element in a `3 × 4` table:
    - **Mechanism C · 3D `ZStack` Pocket Stack (`ShipSwift SWWallet`)**: Stack multi-card collections along the Z-axis (`ZStack` + `zIndex` + `offset(y:)` + `scaleEffect`, `~220pt` collapsed height) that fan out only when revealed.
 3. **Tufte Zero-Redundancy Rule (`DC-002`)**:
    - Never render the same dataset twice in one viewport (e.g., `SWDonutChart` with a 6-row legend + an 8-row `ProgressView` category bar list below it). Fuse the chart and legend into a single **Donut + 2-Column Interactive Bento Grid** where tapping a tile filters the list.
-4. **Compact Width Anti-Overflow Guardrails (`DC-003`)**:
-   - Wrap dynamic horizontal `HStack { ForEach(...) }` rails in `ScrollView(.horizontal, showsIndicators: false)` scoped to the active parent item; cap complex interactive cards at `<= 2` per compact horizontal row (`2 + 1` vertical split for 3 modules like `L + R + Reps`); and apply `.containerRelativeFrame(.horizontal)` on vertical `ScrollView` content roots.
+4. **Compact Width Anti-Overflow & Shared Table Column Geometry (`DC-003` / `DC-005`)**:
+   - Wrap dynamic horizontal `HStack { ForEach(...) }` rails in `ScrollView(.horizontal, showsIndicators: false)` scoped to the active parent item; cap complex interactive cards at `<= 2` per compact horizontal row (`2 + 1` vertical split for 3 modules like `L + R + Reps`); apply `.containerRelativeFrame(.horizontal)` on vertical `ScrollView` content roots; and enforce 100% shared column geometry between multi-column table Headers and data Rows (identical fixed widths, identical `maxWidth: .infinity` flex columns, matching per-column alignment, and identical outer `HStack` spacing/padding, or `Grid`/`GridRow` — never pair a `maxWidth: .infinity` header with fixed-width-only rows).
 
 ### Axis Z · Separate Functional Glass Chrome from Solid Content (`Apple Two-Layer & Optical Sampling Rule`)
 

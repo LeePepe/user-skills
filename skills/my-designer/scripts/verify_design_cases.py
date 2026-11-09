@@ -143,6 +143,16 @@ PLAN_A_CODE_RULES = [
         "message": "Unbounded horizontal HStack/ForEach rail or 3+ interactive cards crammed into one compact HStack expands parent VStack beyond 393pt viewport width; wrap dynamic rails in ScrollView(.horizontal, showsIndicators: false), cap compact rows at <=2 complex cards (2+1 split), and lock ScrollView content width with .containerRelativeFrame(.horizontal).",
     },
     {
+        "id": "HIG-TABLE-COLUMN-MISMATCH",
+        "severity": "High",
+        "platforms": ["desktop", "mobile"],
+        "citation": "DC-005 › Table Header-to-Cell Shared Column Geometry (interaction-layering.md Axis Y)",
+        "pattern": re.compile(
+            r"var\s+\w*[Hh]eader\w*\s*:\s*some\s+View\s*\{[\s\S]{0,450}?HStack[\s\S]{0,350}?maxWidth\s*:\s*\.infinity[\s\S]{0,600}?var\s+\w*[Rr]ow\w*\s*:\s*some\s+View\s*\{(?![\s\S]{0,450}?maxWidth\s*:\s*\.infinity)[\s\S]{0,450}?HStack[\s\S]{0,350}?\.frame\(\s*width\s*:"
+        ),
+        "message": "Multi-column table/list Header and Row must share identical column geometry (matching fixed widths, matching maxWidth: .infinity flex columns, matching alignment and outer HStack spacing/padding, or use SwiftUI Grid/GridRow); never use maxWidth: .infinity in the Header while using only fixed widths in data Rows.",
+    },
+    {
         "id": "HIG-LAZY-LEAF-CONDITIONAL",
         "severity": "High",
         "platforms": ["desktop", "mobile"],
@@ -640,14 +650,28 @@ def command_audit_l10n(args: argparse.Namespace) -> int:
     return 0 if not findings else 1
 
 
+def _next_defect_case_id(cases_doc: dict[str, Any]) -> str:
+    max_num = 0
+    for item in cases_doc.get("active_cases", []):
+        m = re.match(r"^DC-(\d+)$", str(item.get("id", "")))
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    return f"DC-{max_num + 1:03d}"
+
+
 def command_register_case(args: argparse.Namespace) -> int:
     cases_path = Path(args.cases_file)
     cases_doc = _load_json(cases_path)
     active = cases_doc.setdefault("active_cases", [])
-    if any(c.get("id") == args.id for c in active):
-        raise ValueError(f"defect case already exists: {args.id}")
+    raw_id = (args.id or "").strip()
+    if getattr(args, "auto_id", False) or not raw_id or raw_id.lower() == "auto":
+        case_id = _next_defect_case_id(cases_doc)
+    else:
+        case_id = raw_id
+    if any(c.get("id") == case_id for c in active):
+        raise ValueError(f"defect case already exists: {case_id}")
     entry = {
-        "id": args.id,
+        "id": case_id,
         "title": args.title,
         "platforms": _csv(args.platforms) or ["desktop", "mobile"],
         "dimensions": _csv(args.dimensions),
@@ -655,7 +679,7 @@ def command_register_case(args: argparse.Namespace) -> int:
         "symptom": args.symptom,
         "fix_rule": args.fix_rule,
         "forbidden_regex": args.forbidden_regex,
-        "created_at": dt.date.today().isoformat(),
+        "registered_at": dt.date.today().isoformat(),
     }
     active.append(entry)
     cases_doc["updated"] = dt.date.today().isoformat()
@@ -764,7 +788,8 @@ def build_parser() -> argparse.ArgumentParser:
     l10n.add_argument("--locales", default="en,zh-Hans", help="Comma-separated required locales")
 
     reg = sub.add_parser("register-case", parents=[common])
-    reg.add_argument("--id", required=True)
+    reg.add_argument("--id", default="auto", help="Case ID (e.g. DC-005) or 'auto' to assign the next sequential DC-00N")
+    reg.add_argument("--auto-id", action="store_true", help="Automatically assign the next sequential DC-00N ID")
     reg.add_argument("--title", required=True)
     reg.add_argument("--platforms", default="desktop,mobile")
     reg.add_argument("--dimensions", default="")

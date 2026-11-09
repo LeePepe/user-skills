@@ -428,6 +428,63 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
             self.assertIn("HIG-LAYOUT-OVERFLOW", mobile_ids)
             self.assertIn("DC-003", mobile_ids)
 
+            # Table Header-to-Cell Column Geometry Drift check (DC-005 + HIG-TABLE-COLUMN-MISMATCH)
+            table_drift_file = root / "TableColumnDriftView.swift"
+            table_drift_file.write_text(
+                "import SwiftUI\n"
+                "struct TableColumnDriftView: View {\n"
+                "  private var tableHeader: some View {\n"
+                "    HStack(spacing: 8) {\n"
+                "      Text(\"#\")\n"
+                "        .frame(width: 28, alignment: .center)\n"
+                "      Text(\"Primary\")\n"
+                "        .frame(maxWidth: .infinity, alignment: .leading)\n"
+                "      Text(\"Action\")\n"
+                "        .frame(width: 44, alignment: .trailing)\n"
+                "    }\n"
+                "  }\n"
+                "  private var tableRow: some View {\n"
+                "    HStack(spacing: 8) {\n"
+                "      Text(\"1\")\n"
+                "        .frame(width: 28, alignment: .center)\n"
+                "      Text(\"100\")\n"
+                "        .frame(width: 64, alignment: .center)\n"
+                "      Image(systemName: \"checkmark\")\n"
+                "        .frame(width: 44, alignment: .center)\n"
+                "    }\n"
+                "  }\n"
+                "  var body: some View { VStack { tableHeader; tableRow } }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            buf_table = io.StringIO()
+            with contextlib.redirect_stdout(buf_table):
+                rc_table = design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "mobile", "--path", str(table_drift_file),
+                ])
+            self.assertEqual(rc_table, 1)
+            table_ids = {f["id"] for f in json.loads(buf_table.getvalue())["findings"]}
+            self.assertIn("HIG-TABLE-COLUMN-MISMATCH", table_ids)
+            self.assertIn("DC-005", table_ids)
+
+            # Auto-incrementing DC-00N registration (--id auto)
+            auto_cases_file = root / "auto_index.json"
+            auto_cases_file.write_bytes(src_cases.read_bytes())
+            buf_auto = io.StringIO()
+            with contextlib.redirect_stdout(buf_auto):
+                rc_auto = design_cases.main([
+                    "register-case", "--cases-file", str(auto_cases_file), "--taxonomy", str(taxonomy_file),
+                    "--id", "auto", "--title", "Auto Assigned Sequential Defect Case",
+                    "--platforms", "mobile", "--dimensions", "layout-navigation",
+                    "--containers", "ScrollView",
+                    "--symptom", "Symptom description",
+                    "--fix-rule", "Fix rule description",
+                ])
+            self.assertEqual(rc_auto, 0)
+            auto_payload = json.loads(buf_auto.getvalue())
+            self.assertEqual(auto_payload["registered"]["id"], "DC-006")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,11 +60,11 @@ python3 skills/my-designer/scripts/verify_design_cases.py audit-code \
 5. **Lens 5 · Typography & Copy (Medium)**: Platform title/sentence capitalization consistency, `.monospacedDigit()` for changing numbers, clear action verbs ("Save Changes", not "OK").
 
 ### Plan C — Defect-Driven Case Evolution (`defect-cases/index.json`)
-- **Active Plan C Registry**: [defect-cases/index.json](defect-cases/index.json) enforces verified interaction-layering, anti-flat-tiling, compact anti-overflow, and 120Hz scroll prefetching guards (`DC-001` Single-Plane Flat Tiling & `SWWallet` Flattening, `DC-002` Duplicate Same-Source Data Representation, `DC-003` Unbounded Horizontal `HStack/ForEach` Overflow & Multi-Card Row Cramming on Compact Width, `DC-004` `LazyStack` Leaf Conditional Subview Leak).
-- **When a new defect is discovered**: Register a scoped case so future tasks on the same platform/dimension automatically check for it:
+- **Active Plan C Registry**: [defect-cases/index.json](defect-cases/index.json) enforces verified interaction-layering, anti-flat-tiling, compact anti-overflow, 120Hz scroll prefetching, and shared table column geometry guards (`DC-001` Single-Plane Flat Tiling & `SWWallet` Flattening, `DC-002` Duplicate Same-Source Data Representation, `DC-003` Unbounded Horizontal `HStack/ForEach` Overflow & Multi-Card Row Cramming on Compact Width, `DC-004` `LazyStack` Leaf Conditional Subview Leak, `DC-005` Table Header-to-Cell Column Geometry Drift).
+- **When a new defect is discovered**: Register a scoped case (`--id auto` assigns the next sequential `DC-00N`) so future tasks automatically check for it:
   ```bash
   python3 skills/my-designer/scripts/verify_design_cases.py register-case \
-    --id DC-001 \
+    --id auto \
     --title "macOS NSPopover Frame-Before-Padding Clipping" \
     --platforms desktop \
     --dimensions layout-navigation \
