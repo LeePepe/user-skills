@@ -664,6 +664,35 @@ class VerifySkillsTests(unittest.TestCase):
                 self.assertIn(f"]({target})", skill_text)
                 self.assertTrue((skill_path.parent / target).resolve().is_file())
 
+        shared_m2_scripts = (
+            "herdr-dispatch.sh",
+            "goal-supervisor.py",
+            "goal-queue.py",
+            "state_store.py",
+            "jev_client.py",
+        )
+        for script_name in shared_m2_scripts:
+            m2_script = skill_dir / "scripts" / script_name
+            m1_script = SKILLS_DIR / "team-lead" / "scripts" / script_name
+            self.assertTrue(m2_script.exists(), f"Missing shared script in m2-dispatcher: {m2_script}")
+            self.assertEqual(m2_script.resolve(), m1_script.resolve())
+
+        shared_m2_refs = (
+            "runtime-profiles.yaml",
+            "bots-and-agents.md",
+            "ledger.md",
+        )
+        for ref_name in shared_m2_refs:
+            m2_ref = skill_dir / "references" / ref_name
+            m1_ref = SKILLS_DIR / "team-lead" / "references" / ref_name
+            self.assertTrue(m2_ref.exists(), f"Missing shared reference in m2-dispatcher: {m2_ref}")
+            self.assertEqual(m2_ref.resolve(), m1_ref.resolve())
+
+        readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Shared M2+M1 Orchestration Scripts", readme_text)
+        self.assertIn("M2-Only Harness Scripts", readme_text)
+        self.assertIn("M1 Task Execution Scripts", readme_text)
+
         for document in (
             skill_path,
             SKILLS_DIR / "team-lead" / "references" / "playbook.md",

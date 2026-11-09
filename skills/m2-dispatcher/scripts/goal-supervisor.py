@@ -1,0 +1,1 @@
+../../team-lead/scripts/goal-supervisor.py

@@ -21,6 +21,15 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`m2-dispatcher`](./skills/m2-dispatcher/SKILL.md)（兼容别名 [`coordinator`](./skills/coordinator/SKILL.md)）是 `M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `team-lead` 提供。
 
+### `m2-dispatcher` 与 `team-lead` 脚本及参考文档职责划分（100% 路径兼容）
+
+| 类别 | 规范入口与兼容软链路径 | 包含文件与职责 |
+|---|---|---|
+| **Shared M2+M1 Orchestration Scripts**（M2 调度与 M1 主控共用） | `skills/m2-dispatcher/scripts/<name>` ⇄ `skills/team-lead/scripts/<name>` | `herdr-dispatch.sh`（Workspace/Pane 启动与模型路由）、`goal-supervisor.py`（0-Token `watch`/`scan` 巡检与解卡告警）、`goal-queue.py`（批量/热追加波次队列）、`state_store.py`（SQLite 状态与耐用效果队列）、`jev_client.py`（Jev 决策客户端） |
+| **Shared M2+M1 References**（M2 与 M1 共用事实源） | `skills/m2-dispatcher/references/<name>` ⇄ `skills/team-lead/references/<name>` | `runtime-profiles.yaml`（模型、机器与白名单档位）、`bots-and-agents.md`（角色、启动、监控与回收规则）、`ledger.md`（Goal 台账事件与 R10 证据格式） |
+| **M2-Only Harness Scripts**（仅 M2 入口扩展与安装器） | `skills/m2-dispatcher/scripts/<name>` | `skill-slash-expander.ts`（Pi/Cindy 裸 `/skill` 展开 + `M2` 仅写 Spec 的 `tool_call` 硬门禁）、`install-pi-harness.sh`（同步扩展并更新 `cindy-pi-package-fingerprint-v1`） |
+| **M1 Task Execution Scripts**（M1 `team-lead` 切片执行与收口） | `skills/team-lead/scripts/<name>` | `ci-monitor.py`（Layer-0 远端 PR/Workflow 监控与合并 GC）、`git-gc.py`（Worktree 清理）、`feedback_guard.py`（反馈验收映射守卫）、`gtt-telemetry-export.py`（遥测导出）、`linear-sync.py`（Linear TIA 同步）、`jev-compact.py`、`jev-skill-router.py` |
+
 [`code-review`](./skills/code-review/SKILL.md) 审查分支、PR、工作树或实现交接，分别核对仓库规范与功能意图，支持实现者自检和独立审查。
 
 [`xcode-cli`](./skills/xcode-cli/SKILL.md) 使用 Swift 与 Xcode 命令行工具进行 Apple 平台构建、测试、模拟器运行和结果检查。
