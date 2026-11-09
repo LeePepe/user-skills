@@ -681,6 +681,7 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("--measure-palette", skill_text)
         self.assertIn("skill-slash-expander.ts", skill_text)
         self.assertIn("install-pi-harness.sh", skill_text)
+        self.assertIn("Mid-Flight User Question Rule", skill_text)
         self.assertIn("worktrees/", skill_text)
         self.assertIn('if [ "$TL_STATUS" = "idle" ] || [ "$TL_STATUS" = "done" ]; then', skill_text)
         self.assertIn('herdr agent send-keys "$GOAL-goal-tl-r1" enter', skill_text)

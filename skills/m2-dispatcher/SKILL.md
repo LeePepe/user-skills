@@ -29,16 +29,7 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
   - **强制 Worktree 派发与 Cindy 同步看门狗**：凡改代码或其他文件（覆盖 Cindy “Keep Cindy tasks in Cindy”），`M2` 落盘 `spec.md` 后必经 [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) `--new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。Cindy 的 `bash` 同步阻塞，启动后须同步运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。
 - 先检查 Goal 是否已有 `<goal>-goal-tl-r1`（`herdr-dispatch.sh --new-workspace` 已内置幂等复用）：状态为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，TL 为 `idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：所有机器与入口均在本 Goal 内直接按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线（不转交 `艺术家`）；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 采用 `direct_quota_gated`（预检 `~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 时开窗前自动剥离 `--allowedTools` 并改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 直接绑定本机 `Magpie (:3425)` `group/steering`。
-- 启动父 TL 时满足 Parent ≥ Child Allowlist：传入基线
-  `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、
-  `/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`，并合并 Goal 声明的
-  `extra_add_dirs`；不要让子 Agent 获得父 TL 未获准的路径。Mac mini 上 Goal handoff
-  若在 `/Volumes/SSD/.../handoff/<goal>`，只把该 Goal 目录写入 `trustedFolders`
-  盖不住 handoff 兄弟目录的 realpath：Copilot Allow-path 看会话 `--add-dir`。
-  父 TL 与 `herdr-dispatch.sh` 的 `BASELINE_ADD_DIRS` 都必须带上祖先 `/Volumes/SSD`。
-  当 handoff 父目录的 realpath 不在 `/Volumes/SSD`、`~/Development` 或 `~/orca` 之下时，
-  dispatch 再把该 realpath 补进 trust 候选与会话 `--add-dir`，兄弟目录才与子 Subagent
-  一起落在父白名单内。
+- 启动父 TL 时满足 Parent ≥ Child Allowlist：传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders`，并合并 Goal 声明的 `extra_add_dirs`；不要让子 Agent 获得父 TL 未获准的路径。Mac mini 上 Goal handoff 若在 `/Volumes/SSD/.../handoff/<goal>`，只写该目录到 `trustedFolders` 盖不住兄弟目录 realpath：父 TL 与 `herdr-dispatch.sh` 的 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD`；当 handoff 父目录 realpath 不在 `/Volumes/SSD`、`~/Development` 或 `~/orca` 下时，dispatch 自动补进 trust 与 `--add-dir`。
 
 ## 2. 监控与解卡
 
@@ -64,8 +55,8 @@ allowlist 同时包含 `/Applications/Xcode.app` 与软链解析后的真实根�
 auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 **GOAL_DONE 关窗与 blocked alerts 两条独立**。
 
-- **禁止“空口承诺巡检后裸退 Turn”（Mandatory Watchdog）**：
-  交互式 CLI 会话结束 Turn 进入 `idle` 后无后台通知则不具备自唤醒能力。`M2-Dispatcher` 拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 中启动非分离式看门狗 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 `bash` 为同步阻塞的 Cindy (Pi) 中则直接运行同步有界切片 `--interval 15 --max-wait 600 --json`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即执行解卡或完结回收（验收 A：`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
+- **禁止“空口承诺巡检后裸退 Turn”与途中插话续挂看门狗（Mandatory Watchdog & Mid-Flight Question Rule）**：
+  交互式会话结束 Turn 进入 `idle` 后无后台通知不具备自唤醒能力。`M2-Dispatcher` 拉起后台 TL 后，在支持 `bash(mode="async")` 的 CLI 启动 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；在 Cindy (Pi) 同步 `bash` 中运行 `--interval 15 --max-wait 600 --json`。**途中用户插话提问规则（Mid-Flight User Question Rule）**：当后台 Herdr TL 仍在运行（`working`／`blocked`，尚未达成 `EVT=GOAL_DONE`）期间，若用户中途插话提问（例如询问 session ID、当前状态等），`M2-Dispatcher` **严禁只回纯文本就结束 Turn 进入 `idle`**——回答用户问题后，必须在**同一 Turn 内立即重新挂载／继续运行 `goal-supervisor.py watch`**（CLI 用 `async`，Cindy/Pi 用有界同步切片）直至 `EVT=GOAL_DONE`。一旦达成 `EVT=GOAL_DONE` 或出现 `BLOCKED_AGENT`／`ZOMBIE_LEASE`／`ORPHAN_TL_WAIT`，立即执行解卡或完结回收（验收 A：`herdr workspace close "$GOAL_WORKSPACE"` 或 `herdr pane close`；Owner Freeze 保留 Worktree 不阻断关窗），严禁裸退 Turn。
 
 - 双源对账：同时读取 [`ledger.md`](../team-lead/references/ledger.md) 与
   `herdr agent get <tl-name>` 的 `agent_status`。`M2-Dispatcher` 事件使用真实系统时钟与 `id=B<N>`
@@ -73,21 +64,7 @@ auto-Enter 或自动提交按键；也不得把 `blocked` 当作完成。
 - `agent_status == "blocked"` 时先执行 `herdr agent read <name> --source visible --lines 40`。
   Tier A（临时路径、基线路径——含 `/Volumes/SSD` 及其下 handoff 兄弟目录的 realpath——或已声明 `extra_add_dirs` 的权限提示）才可
   `herdr agent send-keys <name> enter` 并记录 `EVT=UNBLOCK`。
-- Tier A′（`CMD_CONFIRM`）：可见窗格出现 Copilot／CLI「Do you want to run this command?」
-  或等价的命令确认时，必须先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项。
-  仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／
-  `reset`／`checkout` 及其它改写历史或工作区的子命令）、`python3`、`jq`、`herdr`
-  （不含 `herdr server stop`），以及 Allow-path／herdr 操作已经允许的同类安全操作
-  （例如 `shasum`、`date`、`sleep`、`env`）——才可按键解卡并记录 `EVT=UNBLOCK`。
-  当前高亮已是安全的运行项时，`herdr agent send-keys <name> enter`；界面若提供
-  don't-ask-again／remember，且记住范围仍限于这条已核对的白名单命令，用 Down+Enter
-  （`herdr agent send-keys <name> down`，随后 `herdr agent send-keys <name> enter`，
-  或本仓已建立的等效按键序列）选中该安全记住项。敏感、破坏性或未声明的命令保持 hold，
-  记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter，不得把 blocked 当作完成。
-  **`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**：即便启动参数带有该旗标，
-  也不抑制这两类提示，不得靠它解卡。MacBook `team_lead` 故意不带 `--no-ask-user`
-  （Owner 2026-10-26 对可选 B 暂不）；本条不改 `runtime-profiles.yaml` 或
-  `herdr-dispatch.sh`，也不开启 `--yolo`。
+- **Tier A′（`CMD_CONFIRM`）**：可见窗格出现「Do you want to run this command?」等确认时，先用 `herdr agent read <name> --source visible` 核对命令文本与当前高亮项。仅当命令属于白名单——`gh`、非破坏性 `git`（不含 `commit`／`push`／`merge`／`rebase`／`reset`／`checkout` 等改写历史或工作区子命令）、`python3`、`jq`、`herdr`（不含 `herdr server stop`）及 `shasum`、`date`、`sleep`、`env` 等安全操作——才可按键解卡并记 `EVT=UNBLOCK`。当前高亮安全时发 `herdr agent send-keys <name> enter`；若提供 don't-ask-again／remember 且范围仍限于该白名单命令，用 Down+Enter（`herdr agent send-keys <name> down` 后 `herdr agent send-keys <name> enter`）选中记住项。敏感、破坏性或未声明命令保持 hold，记 `EVT=NEED_GO` 或 `NEED_OWNER_DECISION`，严禁盲按 Enter 或把 blocked 当完成。**`--no-ask-user` 不批准 `CMD_CONFIRM` 或 Allow-path**；MacBook `team_lead` 故意不带 `--no-ask-user`（Owner 2026-10-26 对可选 B 暂不），不改 `runtime-profiles.yaml` 或 `herdr-dispatch.sh`，不开启 `--yolo`。
 - Tier B（未声明外部路径、凭据或破坏性操作）保持 hold，记录 `EVT=NEED_GO` 或
   `NEED_OWNER_DECISION`，把确切请求交给 Owner；不得把 blocked 当作完成。
 
