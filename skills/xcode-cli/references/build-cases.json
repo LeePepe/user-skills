@@ -1,0 +1,58 @@
+{
+  "schema": "apple-build-cases/v1",
+  "version": 1,
+  "updated": "2026-11-09",
+  "description": "Dual-Entry JSON drawer of Apple CLI build, test, simulator, and Swift 6 concurrency cases. Filtered by route (swiftpm/xcode/mixed) with a Top-3 disclosure cap.",
+  "active_cases": [
+    {
+      "id": "XC-001",
+      "title": "SwiftPM Package-Only Hard Scope Gate & Custom Target Path Verification",
+      "routes": [
+        "swiftpm",
+        "mixed"
+      ],
+      "symptom": "Escalating package-only diffs to xcodebuild rebuilds full app schemes and masks package-level manifest or platform floor errors.",
+      "fix_command": "swift build --package-path <PackageRoot> && swift test --package-path <PackageRoot>",
+      "fix_rule": "Stay strictly on swift build/test (--package-path) when all non-neutral paths are inside SwiftPM package roots; inspect Package.swift custom target paths first.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "XC-002",
+      "title": "Xcode 27 Generic Destination Build Without Signing Coupling",
+      "routes": [
+        "xcode",
+        "mixed"
+      ],
+      "symptom": "Coupling build-only verification to a named simulator or developer signing identity fails on clean environments or headless runners.",
+      "fix_command": "xcodebuild build -project <App.xcodeproj> -scheme <Scheme> -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO",
+      "fix_rule": "Use a generic simulator destination with CODE_SIGNING_ALLOWED=NO for compile checks; select an explicit simulator UDID only when running tests or launching an app.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "XC-003",
+      "title": "Simulator Lifecycle Isolation & Structured xcresult Summary Inspection",
+      "routes": [
+        "xcode",
+        "mixed"
+      ],
+      "symptom": "Booting unverified simulator names or dumping raw xcodebuild test transcripts pollutes host devices and overflows agent context.",
+      "fix_command": "xcrun simctl list devices available --json && xcrun xcresulttool get test-results summary --path <Results.xcresult>",
+      "fix_rule": "Query available simulators via simctl --json, shut down only devices booted by the current task, and parse test bundles with xcresulttool summary/tests.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "XC-004",
+      "title": "Swift 6 Strict Concurrency & Actor Isolation Boundary Diagnosis",
+      "routes": [
+        "swiftpm",
+        "xcode",
+        "mixed"
+      ],
+      "symptom": "Swift 6 Sendable or @MainActor isolation diagnostics across package/app seams are misattributed to tooling or bypassed by switching build runners.",
+      "fix_command": "swift test --package-path <PackageRoot>",
+      "fix_rule": "Preserve the first compiler concurrency diagnostic at the owning package or target boundary; fix @MainActor/@Sendable isolation contracts rather than falling back across routes.",
+      "registered_at": "2026-11-09"
+    }
+  ],
+  "archived_cases": []
+}

@@ -1,0 +1,124 @@
+{
+  "schema": "deep-research-source-tiers/v1",
+  "version": 1,
+  "updated": "2026-11-09",
+  "description": "Dual-Entry JSON drawer of topic-type channel routing and high/low-signal source tiers for deep-research.",
+  "topic_routes": {
+    "tooling": {
+      "active_channels": [
+        "github",
+        "web"
+      ],
+      "skipped_channels": [
+        "academic",
+        "news"
+      ],
+      "primary_playbook_sections": [
+        "GitHub Landscape 搜索",
+        "Web"
+      ],
+      "rationale": "Engineering/devops tooling requires GitHub star-sorted landscape search and official docs; academic papers rarely add actionable signal."
+    },
+    "scientific": {
+      "active_channels": [
+        "academic",
+        "github",
+        "web"
+      ],
+      "skipped_channels": [
+        "news"
+      ],
+      "primary_playbook_sections": [
+        "Academic / 论文",
+        "GitHub Landscape 搜索",
+        "Web"
+      ],
+      "rationale": "Algorithmic or ML research prioritizes arXiv/Scholar primary papers and reference code implementations."
+    },
+    "market": {
+      "active_channels": [
+        "news",
+        "web",
+        "github"
+      ],
+      "skipped_channels": [
+        "academic"
+      ],
+      "primary_playbook_sections": [
+        "News / 市场 / 融资",
+        "Web",
+        "GitHub Landscape 搜索"
+      ],
+      "rationale": "Market, funding, and product landscape queries prioritize recent news, Wikipedia citation curl fallback, and open-source adoption."
+    },
+    "general": {
+      "active_channels": [
+        "web",
+        "github",
+        "news",
+        "academic"
+      ],
+      "skipped_channels": [],
+      "primary_playbook_sections": [
+        "Web",
+        "GitHub Landscape 搜索",
+        "News / 市场 / 融资",
+        "Academic / 论文"
+      ],
+      "rationale": "Full 4-channel fan-out with adversarial Phase 2 verification."
+    }
+  },
+  "high_signal_tiers": [
+    {
+      "id": "ST-001",
+      "tier": 3,
+      "category": "primary_official_and_code",
+      "topics": [
+        "tooling",
+        "scientific",
+        "market",
+        "general"
+      ],
+      "patterns": [
+        "developer.apple.com",
+        "github.com/* (official repo / source / release)",
+        "arxiv.org/abs/*",
+        "Official RFC / W3C / IETF specification"
+      ],
+      "rule": "Treat primary specifications, official vendor documentation, and verified source repositories as Tier 3 direct primary evidence."
+    },
+    {
+      "id": "ST-002",
+      "tier": 2,
+      "category": "curated_secondary_and_wikipedia_citations",
+      "topics": [
+        "market",
+        "general",
+        "tooling"
+      ],
+      "patterns": [
+        "en.wikipedia.org/wiki/* (referenced footnotes)",
+        "reuters.com / bloomberg.com / techcrunch.com",
+        "Engineering postmortems with reproducible benchmarks"
+      ],
+      "rule": "Use Wikipedia curl fallback to extract primary citations when search engines rate-limit; require >=2 independent sources for HIGH confidence."
+    },
+    {
+      "id": "ST-003",
+      "tier": 0,
+      "category": "low_signal_seo_and_unverified_reposts",
+      "topics": [
+        "tooling",
+        "scientific",
+        "market",
+        "general"
+      ],
+      "patterns": [
+        "SEO content farms & AI-rewritten aggregator blogs",
+        "Syndicated press-release reposts counted as multiple sources",
+        "Unbenchmarked opinion threads without reproduction steps"
+      ],
+      "rule": "Drop syndicated reposts and content farms via R09 DROP_NOISE; three outlets reposting one press release count as a single source."
+    }
+  ]
+}

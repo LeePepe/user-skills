@@ -29,7 +29,7 @@ class DesignCatalogTests(unittest.TestCase):
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
         self.assertIsInstance(catalog, dict)
         self.assertEqual(len(catalog["tools"]), 20)
-        self.assertEqual(len(catalog["patterns"]), 14)
+        self.assertEqual(len(catalog["patterns"]), 17)
         self.assertEqual(run("render", "--check").returncode, 0)
 
     def test_search_prompts(self):
@@ -143,7 +143,7 @@ class IngestTests(unittest.TestCase):
                 data = json.loads(result.stdout)
                 self.assertEqual(data["classification"]["category"], category)
                 self.assertEqual(data["classification"]["prefix"], prefix)
-                self.assertEqual(data["pattern"]["id"], "IP-008" if prefix == "IP" else "MP-008")
+                self.assertEqual(data["pattern"]["id"], "IP-009" if prefix == "IP" else "MP-010")
                 self.assertEqual(data["pattern"]["motion_tier"], "M1" if prefix == "IP" else "M2")
                 self.assertTrue(data["dry_run"])
                 self.assertFalse(data["created"])
@@ -156,7 +156,7 @@ class IngestTests(unittest.TestCase):
         catalog["patterns"].insert(0, extra)
         self.catalog.write_text(json.dumps(catalog), encoding="utf-8")
         for text, expected in (("Responsive editorial grid", "IP-043"),
-                               ("Swipe an elastic paper edge", "MP-008"),
+                               ("Swipe an elastic paper edge", "MP-010"),
                                ("Align a compact calendar layout", "IP-044")):
             with self.subTest(expected=expected):
                 result = self.ingest("--text", text)
@@ -248,7 +248,7 @@ class IngestTests(unittest.TestCase):
         result = self.ingest("--text", prompt, "--no-jev", "--compact")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 5)
-        self.assertEqual(len(json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"]), 19)
+        self.assertEqual(len(json.loads(self.catalog.read_text(encoding="utf-8"))["patterns"]), 22)
         single = self.ingest("--text", "- first\n- second", "--no-split", "--no-jev", "--dry-run")
         self.assertEqual(single.returncode, 0, single.stderr)
         self.assertEqual(json.loads(single.stdout)["pattern"]["source_prompt_zh"], "- first\n- second")
@@ -416,7 +416,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         for vf in ("mobile-ios.json", "desktop-macos.json"):
             vault_doc = json.loads((self.vault_dir / vf).read_text(encoding="utf-8"))
             ids = {item["id"] for item in vault_doc["inspirations"]}
-            for expected_id in ("VS-005", "VS-006", "VS-007", "VS-008", "CL-005", "CL-006", "CL-007", "CL-008"):
+            for expected_id in ("VS-005", "VS-006", "VS-007", "VS-008", "CL-005", "CL-006", "CL-007", "CL-008", "GM-003", "LN-002", "MI-008"):
                 self.assertIn(expected_id, ids, f"Missing {expected_id} in {vf}")
 
         # Build a deterministic 4x4 PNG in #4F97FF (Things 3 Sky Blue)

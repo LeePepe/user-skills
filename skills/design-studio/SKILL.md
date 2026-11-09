@@ -15,13 +15,16 @@ authorities; combine Apple Native SwiftUI + Liquid Glass with self-contained bes
 
 ## Three-skill synergy and routing
 
+> **Dual-Entry Architecture & Anti-Explosion Contract ([../my-designer/references/design-flow-architecture.md](../my-designer/references/design-flow-architecture.md)):**
+> `design-studio` owns **Tier 1 (Indexed Atomic Vault & Pattern/Tool Catalog)** across `Entry A (A1/A2 Ingest)` and `Entry B (B1 Top-3 Drawer Retrieval)`. Whenever new WWDC/HIG digest notes, UI inspirations, or components are added, follow the Change Impact Matrix in `design-flow-architecture.md` and verify budget health via `python3 skills/my-designer/scripts/verify_design_cases.py flow-map`.
+
 The handoff flows `my-designer` → `visual-design-modernization` →
 `design-studio`. Consume the selected `Style Archetype`, `surface_mode`, and
 `motion_tier`: M1 is Micro-Feedback, M2 is Spatial & Gesture Choreography, M3
 is Narrative/3D/Metal Hero, and M4 is Code-to-Video. Use
 `python3 skills/design-studio/scripts/design_catalog.py` to search and
 recommend catalog entries and vault recipes before implementation. The catalog stores `IP-*`
-Interaction/Data-Linkage Patterns, `MP-*` Motion Patterns, `CL-*/VS-*/GM-*/CP-*/DV-*/MI-*` Vault Recipes, and `T-*` Tools.
+Interaction/Data-Linkage Patterns, `MP-*` Motion Patterns, `CL-*/VS-*/GM-*/CP-*/DV-*/MI-*/LN-*/TC-*` Vault Recipes, and `T-*` Tools.
 
 The **Shared** layer owns physical state machines
 (`idle -> drag -> threshold -> commit/cancel -> spring settle`),

@@ -66,7 +66,51 @@
       ],
       "symptom": "Unbounded HStack { ForEach(...) } without ScrollView(.horizontal) or cramming 3+ multi-button interactive cards into a single compact HStack expands the parent VStack beyond the iPhone viewport width (393pt), clipping sibling headers and cards on both left and right edges.",
       "fix_rule": "Wrap dynamic horizontal rails in ScrollView(.horizontal, showsIndicators: false), scope per-item progress rails to the active parent item, cap complex interactive cards at <= 2 per horizontal row on compact width (use 2 + 1 grid for unilateral L + R + Reps), and apply .containerRelativeFrame(.horizontal) on vertical ScrollView content roots.",
-      "forbidden_regex": "(?:var\\s+progressRail\\s*:\\s*some\\s+View\\s*\\{\\s*HStack\\b|HStack\\s*\\([^)]*\\)\\s*\\{\\s*if\\s+\\w+(?:\\.\\w+)*\\.isUnilateral\\b)",
+      "forbidden_regex": "var\\s+\\w+\\s*:\\s*some\\s+View\\s*\\{\\s*HStack(?:\\s*\\([^)]*\\))?\\s*\\{\\s*ForEach\\b",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "DC-004",
+      "title": "LazyStack Leaf Conditional Subview Leak & OnAppear Prefetch Invalidation (WWDC26-321)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "motion-interaction",
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "LazyVStack",
+        "LazyHStack"
+      ],
+      "symptom": "Placing a top-level 'if' inside LazyVStack/LazyHStack ForEach closures creates dynamic 0/1 subview counts per element, defeating frame-deadline prefetching and retaining offscreen views in memory; delaying @Observable/@State model allocation to .onAppear misses the pre-render prefetch window.",
+      "fix_rule": "Filter data in the collection or @Query(#Predicate) before ForEach so each item resolves 1:1 to a single root view; initialize lightweight @State/@Observable view models in init (paired with @Observable Macro lazy property tracking) and use .onScrollTargetVisibilityChange(idType:threshold:) for media visibility.",
+      "forbidden_regex": "Lazy(?:V|H)Stack[^{]*\\{[\\s\\S]{0,220}?ForEach\\([^)]*\\)\\s*\\{\\s*\\w+\\s+in\\s+if\\b",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "DC-005",
+      "title": "Table Header-to-Cell Column Geometry Drift (Flex Header vs. Fixed-Width Centered Row)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "List",
+        "VStack",
+        "LazyVStack"
+      ],
+      "symptom": "Table header HStack uses maxWidth: .infinity + .leading on a column while the corresponding data row HStack uses only fixed width + .center columns, causing the row HStack to be narrower than the container, center-drift inside the card, and misalign every cell beneath its header.",
+      "fix_rule": "Enforce a shared column geometry contract between Header and Row (identical fixed column widths, identical maxWidth: .infinity flex columns, identical per-column alignment, and 100% matching outer HStack spacing/padding, or use SwiftUI Grid / GridRow); never pair a maxWidth: .infinity header column with fixed-width-only data rows.",
+      "forbidden_regex": "var\\s+\\w*[Hh]eader\\w*\\s*:\\s*some\\s+View\\s*\\{[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?maxWidth\\s*:\\s*\\.infinity[\\s\\S]{0,600}?var\\s+\\w*[Rr]ow\\w*\\s*:\\s*some\\s+View\\s*\\{(?![\\s\\S]{0,450}?maxWidth\\s*:\\s*\\.infinity)[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?\\.frame\\(\\s*width\\s*:",
       "registered_at": "2026-11-09"
     }
   ],

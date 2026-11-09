@@ -36,7 +36,7 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/team-lead/references/bots-and-agents.md": 38 * 1024,
     "skills/team-lead/references/ledger.md": 18 * 1024,
     "skills/team-lead/references/runtime-profiles.yaml": 34 * 1024,
-    "skills/team-lead/references/playbook.md": 58 * 1024,
+    "skills/team-lead/references/playbook.md": 16 * 1024,
 }
 BANNED_SURFACE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("../goal-target-task/", ("skills/",)),
@@ -1911,6 +1911,97 @@ class VerifySkillsTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(symlink_res.returncode, 0)
+
+    def test_universal_skill_anti_explosion_valves(self) -> None:
+        # (a) Every skills/*/SKILL.md is <= 260 lines
+        for skill_md in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+            rel = skill_md.relative_to(REPO_ROOT).as_posix()
+            line_count = len(skill_md.read_text(encoding="utf-8").splitlines())
+            self.assertLessEqual(line_count, 260, f"{rel} exceeds 260-line L0 cap ({line_count} lines)")
+
+        # (b) Every skills/*/references/*.md is <= 320 lines, and playbook*.md + leaf refs in
+        # my-designer, xcode-cli, code-review, and deep-research are <= 160 lines
+        strict_leaf_skills = {"my-designer", "xcode-cli", "code-review", "deep-research"}
+        ref_md_files = sorted(SKILLS_DIR.glob("*/references/*.md"))
+        self.assertGreaterEqual(len(ref_md_files), 20)
+        for ref_md in ref_md_files:
+            rel = ref_md.relative_to(REPO_ROOT).as_posix()
+            skill_name = ref_md.parent.parent.name
+            line_count = len(ref_md.read_text(encoding="utf-8").splitlines())
+            self.assertLessEqual(line_count, 320, f"{rel} exceeds 320-line reference cap ({line_count} lines)")
+            if skill_name in strict_leaf_skills or ref_md.name.startswith("playbook"):
+                self.assertLessEqual(
+                    line_count,
+                    160,
+                    f"{rel} exceeds 160-line strict L1 leaf cap ({line_count} lines)",
+                )
+
+        # (c) No orphan references/*.md: every reference .md is linked from a SKILL.md, sibling .md, or script
+        searchable_files = [
+            *sorted(SKILLS_DIR.rglob("*.md")),
+            *sorted(SKILLS_DIR.rglob("*.py")),
+            *sorted(SKILLS_DIR.rglob("*.sh")),
+            REPO_ROOT / "README.md",
+        ]
+        for ref_md in ref_md_files:
+            rel = ref_md.relative_to(REPO_ROOT).as_posix()
+            ref_name = ref_md.name
+            linked = any(
+                candidate.resolve() != ref_md.resolve()
+                and (ref_name in candidate.read_text(encoding="utf-8", errors="ignore")
+                     or rel in candidate.read_text(encoding="utf-8", errors="ignore"))
+                for candidate in searchable_files
+            )
+            self.assertTrue(linked, f"Orphan reference markdown not linked by any SKILL.md, sibling .md, or script: {rel}")
+
+        # (d) All 4 domain flow-map CLIs exit 0 with valid JSON and all_l1_docs_within_budget == True
+        flow_map_commands = (
+            (SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py", ["flow-map"]),
+            (SKILLS_DIR / "xcode-cli" / "scripts" / "classify_changes.py", ["--flow-map"]),
+            (SKILLS_DIR / "code-review" / "scripts" / "discover_review_context.py", ["--flow-map"]),
+            (SKILLS_DIR / "deep-research" / "scripts" / "jev_research_helper.py", ["flow-map"]),
+        )
+        for script_path, extra_args in flow_map_commands:
+            with self.subTest(script=str(script_path.relative_to(REPO_ROOT))):
+                res = subprocess.run(
+                    [sys.executable, str(script_path), *extra_args],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                payload = json.loads(res.stdout)
+                self.assertTrue(payload.get("ok"), f"{script_path.name} flow-map not ok: {payload}")
+                self.assertTrue(
+                    payload.get("anti_explosion_valves", {}).get("all_l1_docs_within_budget"),
+                    f"{script_path.name} L1 docs exceeded budget: {payload}",
+                )
+
+        # (e) No project-private hardcoded identifiers in defect-cases/index.json or PLAN_A_CODE_RULES
+        forbidden_private_tokens = ("progressRail", "isUnilateral")
+        cases_index_path = SKILLS_DIR / "my-designer" / "references" / "defect-cases" / "index.json"
+        cases_doc = json.loads(cases_index_path.read_text(encoding="utf-8"))
+        for case in [*cases_doc.get("active_cases", []), *cases_doc.get("archived_templates", [])]:
+            regex_str = case.get("forbidden_regex") or ""
+            for token in forbidden_private_tokens:
+                self.assertNotIn(
+                    token,
+                    regex_str,
+                    f"Project-private identifier {token!r} found in {case.get('id')} forbidden_regex",
+                )
+        verify_cases_script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
+        spec = importlib.util.spec_from_file_location("verify_design_cases_valve_check", verify_cases_script)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for rule in getattr(mod, "PLAN_A_CODE_RULES", []):
+            pattern_str = getattr(rule.get("pattern"), "pattern", "") or ""
+            for token in forbidden_private_tokens:
+                self.assertNotIn(
+                    token,
+                    pattern_str,
+                    f"Project-private identifier {token!r} found in PLAN_A_CODE_RULES[{rule.get('id')}]",
+                )
 
 
 if __name__ == "__main__":

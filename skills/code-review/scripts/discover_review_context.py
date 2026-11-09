@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import re
 import subprocess
@@ -11,6 +12,11 @@ import sys
 from pathlib import Path
 
 
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_SMELLS_FILE = SKILL_DIR / "references" / "review-smells.json"
+TOP_K_SMELLS = 3
+MAX_ACTIVE_SMELLS = 15
+L1_REF_MAX_LINES = 160
 EXCLUDED_DIRS = {
     ".git",
     ".build",
@@ -245,13 +251,175 @@ def discover_context(repo: Path, changes: list[dict[str, str]]) -> tuple[dict, l
     )
 
 
-def main() -> int:
+def load_review_smells(smells_file: Path = DEFAULT_SMELLS_FILE) -> dict[str, object]:
+    if not smells_file.is_file():
+        return {"schema": "code-review-smells/v1", "version": 1, "active_smells": [], "archived_smells": []}
+    return json.loads(smells_file.read_text(encoding="utf-8"))
+
+
+def match_review_smells(
+    changes: list[dict[str, str]],
+    layers: list[dict],
+    smells_file: Path = DEFAULT_SMELLS_FILE,
+    top_k: int = TOP_K_SMELLS,
+) -> list[dict[str, object]]:
+    doc = load_review_smells(smells_file)
+    active = doc.get("active_smells", [])
+    if not isinstance(active, list):
+        return []
+    changed_exts = {Path(item["path"]).suffix.lower() for item in changes if Path(item["path"]).suffix}
+    changed_layer_names = {
+        str(layer.get("name", "")).lower()
+        for layer in layers
+        if layer.get("changed_files")
+    }
+    scored: list[tuple[int, int, dict[str, object]]] = []
+    for idx, smell in enumerate(active):
+        if not isinstance(smell, dict):
+            continue
+        langs = [str(x).lower() for x in smell.get("languages", ["*"])]
+        smell_layers = [str(x).lower() for x in smell.get("layers", ["*"])]
+        lang_exact = bool(changed_exts & set(langs))
+        lang_wild = "*" in langs
+        if not (lang_exact or lang_wild):
+            continue
+        layer_exact = bool(changed_layer_names & set(smell_layers))
+        layer_wild = "*" in smell_layers or not changed_layer_names
+        if not (layer_exact or layer_wild):
+            continue
+        score = (2 if lang_exact else 1) + (2 if layer_exact else 1)
+        scored.append((-score, idx, smell))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in scored[:top_k]]
+
+
+def build_flow_map(smells_file: Path = DEFAULT_SMELLS_FILE) -> dict[str, object]:
+    doc = load_review_smells(smells_file)
+    active = doc.get("active_smells", []) if isinstance(doc.get("active_smells"), list) else []
+    ref_dir = SKILL_DIR / "references"
+    ref_line_counts = {
+        path.relative_to(SKILL_DIR).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
+        for path in sorted(ref_dir.glob("*.md"))
+    }
+    all_within_budget = all(lines <= L1_REF_MAX_LINES for lines in ref_line_counts.values()) and (
+        len(active) <= MAX_ACTIVE_SMELLS
+    )
+    return {
+        "ok": all_within_budget,
+        "skill": "code-review",
+        "architecture_ref": "skills/code-review/SKILL.md",
+        "entry_a_ingest": {
+            "A1_register_review_smell": (
+                "python3 skills/code-review/scripts/discover_review_context.py --register-smell "
+                "--id RS-xxx --title '...' --languages .swift,.py --layers core,ui --axis standards --symptom '...' --check-rule '...'"
+            ),
+        },
+        "shared_tiers": {
+            "tier_1_json_drawer": {
+                "file": "skills/code-review/references/review-smells.json",
+                "active_smell_count": len(active),
+                "active_smell_ids": [s.get("id") for s in active if isinstance(s, dict)],
+            },
+            "tier_2_l1_docs_line_counts": ref_line_counts,
+            "tier_3_discovery_router": "skills/code-review/scripts/discover_review_context.py",
+        },
+        "entry_b_consume": {
+            "B1_discover_and_slice": "python3 skills/code-review/scripts/discover_review_context.py --repo <repo> [--base <ref>]",
+            "B2_packet_prompts": "skills/code-review/references/reviewer-prompts.md",
+            "B3_output_contract": "skills/code-review/references/output-contract.md",
+        },
+        "anti_explosion_valves": {
+            "valve_1_zero_token_surface_discovery": True,
+            "valve_2_layer_and_language_slicing": True,
+            "valve_3_top_k_and_line_caps": {
+                "matched_smells_top_k": TOP_K_SMELLS,
+                "l1_doc_max_lines": L1_REF_MAX_LINES,
+                "active_smells_cap": MAX_ACTIVE_SMELLS,
+            },
+            "valve_4_one_in_one_out_compaction": True,
+            "all_l1_docs_within_budget": all_within_budget,
+        },
+    }
+
+
+def register_review_smell(
+    smells_file: Path,
+    smell_id: str,
+    title: str,
+    languages: list[str],
+    layers: list[str],
+    axis: str,
+    symptom: str,
+    check_rule: str,
+) -> dict[str, object]:
+    doc = load_review_smells(smells_file)
+    active = list(doc.get("active_smells", [])) if isinstance(doc.get("active_smells"), list) else []
+    archived = list(doc.get("archived_smells", [])) if isinstance(doc.get("archived_smells"), list) else []
+    new_entry = {
+        "id": smell_id,
+        "title": title,
+        "languages": languages or ["*"],
+        "layers": layers or ["*"],
+        "axis": axis,
+        "symptom": symptom,
+        "check_rule": check_rule,
+        "registered_at": date.today().isoformat(),
+    }
+    active = [s for s in active if isinstance(s, dict) and s.get("id") != smell_id]
+    active.append(new_entry)
+    while len(active) > MAX_ACTIVE_SMELLS:
+        archived.append(active.pop(0))
+    doc["active_smells"] = active
+    doc["archived_smells"] = archived
+    doc["updated"] = date.today().isoformat()
+    smells_file.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return {"ok": True, "registered": new_entry, "active_count": len(active)}
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", default=".")
     parser.add_argument("--base")
     parser.add_argument("--spec")
     parser.add_argument("--committed-only", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--smells-file", default=str(DEFAULT_SMELLS_FILE))
+    parser.add_argument("--flow-map", action="store_true")
+    parser.add_argument("--register-smell", action="store_true")
+    parser.add_argument("--id", help="Review smell ID (e.g. RS-005)")
+    parser.add_argument("--title", help="Review smell title")
+    parser.add_argument("--languages", default="*", help="Comma-separated file extensions (e.g. .swift,.py)")
+    parser.add_argument("--layers", default="*", help="Comma-separated layer names (e.g. core,ui)")
+    parser.add_argument("--axis", default="standards", choices=["standards", "spec"])
+    parser.add_argument("--symptom", default="")
+    parser.add_argument("--check-rule", default="")
+    args = parser.parse_args(argv)
+
+    smells_path = Path(args.smells_file).resolve()
+    if args.flow_map:
+        payload = build_flow_map(smells_path)
+        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0 if payload.get("ok") else 1
+
+    if args.register_smell:
+        if not args.id or not args.title or not args.check_rule:
+            raise RuntimeError("--register-smell requires --id, --title, and --check-rule")
+        langs = [x.strip() for x in args.languages.split(",") if x.strip()]
+        layer_list = [x.strip() for x in args.layers.split(",") if x.strip()]
+        result = register_review_smell(
+            smells_path,
+            smell_id=args.id,
+            title=args.title,
+            languages=langs,
+            layers=layer_list,
+            axis=args.axis,
+            symptom=args.symptom,
+            check_rule=args.check_rule,
+        )
+        json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+
     repo = Path(git(Path(args.repo).resolve(), "rev-parse", "--show-toplevel")).resolve()
     base_ref, merge_base = resolve_base(repo, args.base)
     changes = changed_files(repo, merge_base, args.committed_only)
@@ -290,6 +458,7 @@ def main() -> int:
         "layers": layers,
         "unmapped_files": unmapped,
         "coverage_gaps": gaps,
+        "matched_review_smells": match_review_smells(changes, layers, smells_file=smells_path),
     }
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")

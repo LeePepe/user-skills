@@ -10,6 +10,9 @@ This `handoff-only` skill owns the design specification and review routing, not 
 
 **Announce at start:** “I'm using the my-designer skill (as design lead).”
 
+> **Dual-Entry Architecture & Anti-Explosion Contract ([design-flow-architecture.md](references/design-flow-architecture.md)):**
+> All knowledge ingestion (`Entry A: A0..A4`) and design delivery (`Entry B: B0..B4`) share the 4-Tier Asset Pool (`Tier 0..3`) governed by 4 Anti-Explosion Valves (Zero-Token Code Sinking, 3D Coordinate Slicing, `--top 3` & `<=130`-line `L1` Caps, One-In/One-Out Compaction). Run `python3 skills/my-designer/scripts/verify_design_cases.py flow-map` to inspect live asset counts and budget health.
+
 ---
 
 ## 4-Step Progressive Disclosure Workflow (`L0 -> L1 -> L2`)
@@ -38,19 +41,15 @@ python3 skills/my-designer/scripts/verify_design_cases.py route \
 
 # 2. Retrieve matching style archetypes, palettes, and ShipSwift components from desktop-macos.json or mobile-ios.json
 python3 skills/design-studio/scripts/design_catalog.py vault-search \
-  --platform desktop --dimension visual-style --query "<intent>" --top 5
+  --platform desktop --dimension visual-style --query "<intent>" --top 3
 ```
 
 ### Step 3 · Author Apple-First + Bespoke Style Handoff (`design.md` / `spec.md`)
 - **Apple Principle + Liquid Glass Foundation, Distinct Per-App Personality ([appearance-ledger.md](references/appearance-ledger.md)):**
   - Anchor ergonomics and navigation on native SwiftUI (`NavigationSplitView`, `TabView`, `List`, `Table`, `.toolbar`, `.sheet`, `ConcentricRectangle`, `ContentUnavailableView`), **Swift Charts**, **SF Symbols**, and native **Liquid Glass** (`.glassEffect(.regular / .clear)`, `GlassEffectContainer`, `.buttonStyle(.glassProminent)`).
   - **Distinct Per-App Style Recipe (`AppTheme.swift` + `ShipSwift` Source Components):** Never force a monolithic cross-repo UI wrapper package onto every app. Instead, pick a non-colliding **Style Archetype (`VS-001..008`, including Cross-Domain Archetype Remixes) and Brand Palette (`CL-001..008`)** from [appearance-ledger.md](references/appearance-ledger.md) (or `awesome-ios-design-md`), generate a single-file `<80`-line `AppTheme.swift` (`Space`, `Radius`, semantic colors, `AppTextStyle`, `AppPressableButtonStyle`) inside the app, and copy self-contained bespoke components/Metal shaders from `ShipSwift/SWPackage/` (`SWMetal`, `SWAnimation`, `SWChart`, `SWComponent`) restyled with `AppTheme`.
-  - **Orthogonal X-Y-Z Interactive Layering & Spatial Action Priority (`DC-001`..`DC-003` -> [interaction-layering.md](references/interaction-layering.md)):**
-    Disclose [interaction-layering.md](references/interaction-layering.md) on demand for `LN / CP / DV / MI` surfaces to enforce:
-    1. **Axis X (`Role × P0..P3` Matrix + Pace Layering)** — filter `Display / Action / Display+Action` into `P0` focal, `P1` inline hint/companion bar, `P2` folded context, `P3` `⋯` menu/Sheet;
-    2. **Axis Y (`Nielsen <=3 Chunks` + `Shneiderman Overview -> Zoom/Filter -> Details` + `Tufte Zero Redundancy`)** — fold 3rd+ modules via Accordion single-active, Segmented Lens, or `SWWallet` 3D `ZStack` (`~220pt`), and never duplicate Donut legends with `ProgressView` bars;
-    3. **Axis Z (`Apple Two-Layer Glass` + `Spatial Action Priority: Bottom > Top > Secondary Menu`)** — place **high-priority actions (`P0 / P1` core commits & frequent creation like `Complete Set`, `+ Add Exercise`, `Record`) at the `Bottom` (Thumb Golden Zone: `.safeAreaInset(edge: .bottom)` or primary card footer)**; restrict **`Top` (`.toolbar`) to low-priority session/global controls** (mode switchers, session finish); tuck **lower-priority or destructive actions (`P2 / P3` reorder, replace, AI substitute, unit toggle, delete, discard) into a secondary `⋯` menu or Sheet**.
-    4. **Compact Width Anti-Overflow (`DC-003`)** — wrap dynamic horizontal `HStack { ForEach(...) }` rails in `ScrollView(.horizontal, showsIndicators: false)`, cap complex interactive cards at `<= 2` per horizontal row on compact width (`2 + 1` vertical split for 3 modules like `L + R + Reps`), and apply `.containerRelativeFrame(.horizontal)` on vertical `ScrollView` content roots.
+  - **Orthogonal X-Y-Z Interactive Layering & Spatial Action Priority (`DC-001`..`DC-004` -> [interaction-layering.md](references/interaction-layering.md)):**
+    Disclose [interaction-layering.md](references/interaction-layering.md) on demand for `LN / CP / DV / MI` surfaces to enforce: (1) **Axis X (`Role × P0..P3` Matrix + `Spatial Action Priority: Bottom > Top > Secondary Menu`)** — filter `Display / Action / Display+Action` into `P0` focal, `P1` inline companion, `P2` folded context, `P3` `⋯` menu/Sheet, anchoring `P0/P1` core commits in the `Bottom` thumb zone and keeping `Top` `.toolbar` for session/global controls; (2) **Axis Y (`Nielsen <=3 Chunks` + `Shneiderman Overview -> Zoom/Filter -> Details` + `Tufte Zero Redundancy` + `DC-003` Compact Anti-Overflow)** — fold 3rd+ modules via Accordion single-active, Segmented Lens, or `SWWallet` 3D `ZStack` (`~220pt`), never duplicate Donut legends with `ProgressView` bars (`DC-002`), and wrap horizontal `HStack/ForEach` rails in `ScrollView(.horizontal)` with `<= 2` complex cards per compact row (`DC-003`); (3) **Axis Z (`Apple Two-Layer Glass` + `DC-004` 120Hz `1:1` `LazyStack` Prefetch)**.
 - **Spec-First Test Alignment:** When modifying an existing screen, include an **Obsolete Test Manifest** and **Deprecated Test Clauses to Remove/Rewrite** section so legacy UI assertions do not block approved design changes.
 
 ### Step 4 · Baseline Gate: Plan A Default + Plan C Defect-Case Evolution (`L2`)
@@ -66,4 +65,4 @@ python3 skills/design-studio/scripts/design_catalog.py vault-search \
   # Layer 3 Simulator Screenshot Horizontal Edge-Clipping Gate (detects DC-003 left/right viewport clipping)
   python3 skills/my-designer/scripts/jev_visual_gate.py --check-edge-clipping <Simulator-Screenshot.png>
   ```
-- **Plan C ([defect-cases/index.json](references/defect-cases/index.json)):** Enforces verified spatial, anti-overflow, and interaction-layering guards (`DC-001` Single-Plane Flat Tiling & Flattened `SWWallet`, `DC-002` Duplicate Same-Source Data Representation, `DC-003` Unbounded Horizontal `HStack/ForEach` Overflow & Multi-Card Row Cramming on Compact Width). When a new defect is discovered, register an atomic case via `verify_design_cases.py register-case` so future tasks on the same platform/container automatically disclose and check it.
+- **Plan C ([defect-cases/index.json](references/defect-cases/index.json)):** Enforces verified spatial, anti-overflow, and interaction-layering guards (`DC-001` Single-Plane Flat Tiling & Flattened `SWWallet`, `DC-002` Duplicate Same-Source Data Representation, `DC-003` Unbounded Horizontal `HStack/ForEach` Overflow & Multi-Card Row Cramming on Compact Width, `DC-004` `LazyStack` Leaf Conditional Subview Leak). When a new defect is discovered, register an atomic case via `verify_design_cases.py register-case` so future tasks on the same platform/container automatically disclose and check it.

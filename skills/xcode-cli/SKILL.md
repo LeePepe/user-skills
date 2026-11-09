@@ -7,6 +7,9 @@ description: Route Apple-platform builds, tests, simulator runs, and result insp
 
 Use the narrowest command-line layer that owns the changed files.
 
+> **Dual-Entry Build Drawer & Anti-Explosion Contract ([build-cases.json](references/build-cases.json)):**
+> `classify_changes.py` slices the indexed Apple CLI build/test/simulator/concurrency drawer (`XC-001..004`) by active `route` (`swiftpm | xcode | mixed`) and returns at most `Top-3` `matchedBuildCases`. Run `python3 <skill-dir>/scripts/classify_changes.py --flow-map` to inspect drawer inventory and reference line budgets (`<= 160` lines), or `--register-case` to promote new build/concurrency lessons without bloating `SKILL.md`. See [eval-cases.md](references/eval-cases.md) for routing grading criteria.
+
 ## Workflow
 
 1. Read the repository's `AGENTS.md`, constitution, package context, and build

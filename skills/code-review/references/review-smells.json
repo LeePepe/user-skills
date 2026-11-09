@@ -1,0 +1,83 @@
+{
+  "schema": "code-review-smells/v1",
+  "version": 1,
+  "updated": "2026-11-09",
+  "description": "Dual-Entry JSON drawer of high-signal code review smells scoped by file extension and layer role, disclosed with a Top-3 cap.",
+  "active_smells": [
+    {
+      "id": "RS-001",
+      "title": "Upward Layer Dependency or Red-Line Import Leak",
+      "languages": [
+        ".swift",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".go",
+        ".rs"
+      ],
+      "layers": [
+        "core",
+        "domain",
+        "data",
+        "*"
+      ],
+      "axis": "standards",
+      "symptom": "A lower or core layer imports a higher UI/presentation module or violates declared tech-context depends_on / red_lines.",
+      "check_rule": "Verify every new import against the owning layer's depends_on and red_lines in tech-context.md; report violations in the owning layer packet.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "RS-002",
+      "title": "SwiftUI / Concurrency MainActor & Lazy Container State Misuse",
+      "languages": [
+        ".swift"
+      ],
+      "layers": [
+        "ui",
+        "feature",
+        "app",
+        "*"
+      ],
+      "axis": "standards",
+      "symptom": "Mutating UI-bound @Observable/@State off @MainActor, or placing top-level conditional 'if' branches inside LazyVStack/ForEach that break prefetching.",
+      "check_rule": "Confirm UI state mutations stay isolated to @MainActor and LazyStack ForEach items resolve 1:1 to a deterministic root view.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "RS-003",
+      "title": "Unbounded Subprocess, Shell Injection, or Silent Exception Swallowing",
+      "languages": [
+        ".py",
+        ".sh",
+        ".ts",
+        ".js"
+      ],
+      "layers": [
+        "scripts",
+        "infra",
+        "core",
+        "*"
+      ],
+      "axis": "standards",
+      "symptom": "Running subprocess/shell calls without argument arrays, timeout bounds, or explicit non-zero exit handling, or catching broad exceptions silently.",
+      "check_rule": "Ensure subprocesses pass list args (never unsanitized shell interpolation), propagate or surface errors explicitly, and enforce fail-closed exit codes.",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "RS-004",
+      "title": "Spec Checkbox Claimed Complete Without Matching Diff or Test Artifact",
+      "languages": [
+        "*"
+      ],
+      "layers": [
+        "*"
+      ],
+      "axis": "spec",
+      "symptom": "tasks.md or PR description marks an acceptance criterion complete while the pinned diff omits the required validation, edge case, or contract field.",
+      "check_rule": "Cross-check each active Spec Kit acceptance item and tasks.md checkbox directly against the pinned diff; never trust task checkboxes over code evidence.",
+      "registered_at": "2026-11-09"
+    }
+  ],
+  "archived_smells": []
+}

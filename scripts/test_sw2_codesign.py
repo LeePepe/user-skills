@@ -29,6 +29,7 @@ gate = load("spec_gate", "skills/codebase-design/scripts/spec_gate.py")
 research = load("jev_research_helper", "skills/deep-research/scripts/jev_research_helper.py")
 visual = load("jev_visual_gate", "skills/my-designer/scripts/jev_visual_gate.py")
 design_cases = load("verify_design_cases", "skills/my-designer/scripts/verify_design_cases.py")
+xcode_classify = load("classify_changes", "skills/xcode-cli/scripts/classify_changes.py")
 
 
 class SpecGateTests(unittest.TestCase):
@@ -110,6 +111,11 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertIn("genjutsu_native_only", ext_routing["allowed_native_sources"])
         self.assertIn("claude-code-apple-skills", ext_routing["allowed_native_sources"])
         self.assertIn("impeccable_native_only", ext_routing["allowed_native_sources"])
+        self.assertIn("charts", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertIn("metal_shaders", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertNotIn("modules", ext_routing["allowed_native_sources"]["shipswift"]["focused_packages"])
+        self.assertEqual(payload["progressive_disclosure"]["context_budget"]["vault_search_top_k"], 3)
+        self.assertEqual(payload["progressive_disclosure"]["context_budget"]["l1_doc_max_lines"], 130)
         self.assertEqual(payload["progressive_disclosure"]["appearance_ledger"], "skills/my-designer/references/appearance-ledger.md")
         self.assertEqual(payload["progressive_disclosure"]["interaction_layering_ref"], "skills/my-designer/references/interaction-layering.md")
         self.assertIsNone(payload["progressive_disclosure"]["breathing_and_clarity_ref"])
@@ -122,10 +128,30 @@ class ProgressiveRouterTests(unittest.TestCase):
             payload_vs["progressive_disclosure"]["breathing_and_clarity_ref"],
             "skills/my-designer/references/breathing-and-clarity.md",
         )
+        vs_shipswift_focused = payload_vs["progressive_disclosure"]["external_skill_routing"]["allowed_native_sources"]["shipswift"]["focused_packages"]
+        self.assertNotIn("charts", vs_shipswift_focused)
+        self.assertIn("metal_shaders", vs_shipswift_focused)
         self.assertTrue(any("taste-skill" in b for b in ext_routing["blocked_web_only_sources"]))
         ledger_text = (ROOT / "skills" / "my-designer" / "references" / "appearance-ledger.md").read_text(encoding="utf-8")
         for token in ("Cross-Domain Archetype Remix Matrix", "VS-005", "VS-006", "VS-007", "VS-008", "CL-006", "CL-007", "CL-008"):
             self.assertIn(token, ledger_text)
+
+    def test_flow_map_and_anti_explosion_budget(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = design_cases.main(["flow-map"])
+        self.assertEqual(code, 0)
+        fm = json.loads(buf.getvalue())
+        self.assertTrue(fm["ok"])
+        self.assertTrue(fm["anti_explosion_valves"]["all_l1_docs_within_budget"])
+        self.assertIn("entry_a_ingest", fm)
+        self.assertIn("shared_tiers", fm)
+        self.assertIn("entry_b_design", fm)
+        self.assertIn("DC-003", fm["shared_tiers"]["tier_3_executable_gates"]["plan_c_case_ids"])
+        self.assertIn("DC-004", fm["shared_tiers"]["tier_3_executable_gates"]["plan_c_case_ids"])
+        for doc_path, lines in fm["shared_tiers"]["tier_2_l1_docs_line_counts"].items():
+            self.assertLessEqual(lines, 130, f"{doc_path} exceeds 130-line cap ({lines})")
 
 
 class ResearchTests(unittest.TestCase):
@@ -150,6 +176,37 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(research.evaluate_r06_truth_table({"status": "quote_found"}, answers)["verdict"], "VERIFIED")
         answers["relation"] = {"choice": "contradicts", "probabilities": {"contradicts": 0.8}}
         self.assertEqual(research.evaluate_r06_truth_table({"status": "quote_found"}, answers)["verdict"], "CONTRADICTED")
+
+    def test_research_flow_map_and_topic_channel_routing(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = research.main(["flow-map"])
+        self.assertEqual(rc, 0)
+        fm = json.loads(buf.getvalue())
+        self.assertTrue(fm["ok"])
+        self.assertTrue(fm["anti_explosion_valves"]["all_l1_docs_within_budget"])
+        self.assertIn("ST-001", fm["shared_tiers"]["tier_1_json_drawer"]["tier_rule_ids"])
+
+        buf_route = io.StringIO()
+        with contextlib.redirect_stdout(buf_route):
+            rc_route = research.main(["route", "--topic-type", "tooling", "--depth", "standard"])
+        self.assertEqual(rc_route, 0)
+        routed = json.loads(buf_route.getvalue())
+        self.assertEqual(routed["active_channels"], ["github", "web"])
+        self.assertIn("academic", routed["skipped_channels"])
+        self.assertLessEqual(len(routed["matched_source_tiers"]), 3)
+
+        buf_xc = io.StringIO()
+        with contextlib.redirect_stdout(buf_xc):
+            rc_xc = xcode_classify.main(["--flow-map"])
+        self.assertEqual(rc_xc, 0)
+        xc_fm = json.loads(buf_xc.getvalue())
+        self.assertTrue(xc_fm["ok"])
+        self.assertIn("XC-001", xc_fm["shared_tiers"]["tier_1_json_drawer"]["active_case_ids"])
+        swiftpm_cases = [c["id"] for c in xcode_classify.match_build_cases("swiftpm")]
+        self.assertIn("XC-001", swiftpm_cases)
+        self.assertNotIn("XC-002", swiftpm_cases)
 
 
 def png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
@@ -305,15 +362,58 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
             ):
                 self.assertIn(expected_id, audit_ids)
 
+            # WWDC25/26 static rules: HIG-IOS-SCREEN-BOUNDS (idiom/orientation), HIG-LAZY-LEAF-CONDITIONAL + DC-004,
+            # HIG-APPKIT-LEGACY-MOUSELOOP, and HIG-DRAG-WILL-BEGIN-UI
+            wwdc_file = root / "WWDC26Violations.swift"
+            wwdc_file.write_text(
+                "import SwiftUI\n"
+                "struct FeedView: View {\n"
+                "  let items = [1, 2, 3]\n"
+                "  var body: some View {\n"
+                "    LazyVStack {\n"
+                "      ForEach(items, id: \\.self) { item in\n"
+                "        if item > 1 { Text(\"\\(item)\") }\n"
+                "      }\n"
+                "    }\n"
+                "  }\n"
+                "  func checkIdiom() -> Bool {\n"
+                "    UIDevice.current.userInterfaceIdiom == .phone || interfaceOrientation.isLandscape\n"
+                "  }\n"
+                "  override func mouseDown(with event: NSEvent) {\n"
+                "    while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) { _ = next }\n"
+                "  }\n"
+                "  func dragInteraction(_ interaction: UIDragInteraction, sessionWillBegin session: UIDragSession) {\n"
+                "    withAnimation { present(UIAlertController(), animated: true) }\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            buf_wwdc = io.StringIO()
+            with contextlib.redirect_stdout(buf_wwdc):
+                rc_wwdc = design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "desktop", "--path", str(wwdc_file),
+                ])
+            self.assertEqual(rc_wwdc, 1)
+            wwdc_ids = {f["id"] for f in json.loads(buf_wwdc.getvalue())["findings"]}
+            for expected_wwdc_id in (
+                "HIG-IOS-SCREEN-BOUNDS",
+                "HIG-LAZY-LEAF-CONDITIONAL",
+                "HIG-APPKIT-LEGACY-MOUSELOOP",
+                "HIG-DRAG-WILL-BEGIN-UI",
+                "DC-004",
+            ):
+                self.assertIn(expected_wwdc_id, wwdc_ids)
+
             # Mobile compact-width overflow check (DC-003 + HIG-LAYOUT-OVERFLOW)
             overflow_file = root / "OverflowFocusView.swift"
             overflow_file.write_text(
                 "import SwiftUI\n"
                 "struct OverflowFocusView: View {\n"
-                "  private var progressRail: some View {\n"
+                "  private var headerChips: some View {\n"
                 "    HStack(spacing: 6) { ForEach(0..<12, id: \\.self) { _ in Circle() } }\n"
                 "  }\n"
-                "  var body: some View { progressRail }\n"
+                "  var body: some View { headerChips }\n"
                 "}\n",
                 encoding="utf-8",
             )
@@ -327,6 +427,63 @@ class DesignCasesAndRoutingTests(unittest.TestCase):
             mobile_ids = {f["id"] for f in json.loads(buf_mobile.getvalue())["findings"]}
             self.assertIn("HIG-LAYOUT-OVERFLOW", mobile_ids)
             self.assertIn("DC-003", mobile_ids)
+
+            # Table Header-to-Cell Column Geometry Drift check (DC-005 + HIG-TABLE-COLUMN-MISMATCH)
+            table_drift_file = root / "TableColumnDriftView.swift"
+            table_drift_file.write_text(
+                "import SwiftUI\n"
+                "struct TableColumnDriftView: View {\n"
+                "  private var tableHeader: some View {\n"
+                "    HStack(spacing: 8) {\n"
+                "      Text(\"#\")\n"
+                "        .frame(width: 28, alignment: .center)\n"
+                "      Text(\"Primary\")\n"
+                "        .frame(maxWidth: .infinity, alignment: .leading)\n"
+                "      Text(\"Action\")\n"
+                "        .frame(width: 44, alignment: .trailing)\n"
+                "    }\n"
+                "  }\n"
+                "  private var tableRow: some View {\n"
+                "    HStack(spacing: 8) {\n"
+                "      Text(\"1\")\n"
+                "        .frame(width: 28, alignment: .center)\n"
+                "      Text(\"100\")\n"
+                "        .frame(width: 64, alignment: .center)\n"
+                "      Image(systemName: \"checkmark\")\n"
+                "        .frame(width: 44, alignment: .center)\n"
+                "    }\n"
+                "  }\n"
+                "  var body: some View { VStack { tableHeader; tableRow } }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            buf_table = io.StringIO()
+            with contextlib.redirect_stdout(buf_table):
+                rc_table = design_cases.main([
+                    "audit-code", "--cases-file", str(cases_file), "--taxonomy", str(taxonomy_file),
+                    "--platform", "mobile", "--path", str(table_drift_file),
+                ])
+            self.assertEqual(rc_table, 1)
+            table_ids = {f["id"] for f in json.loads(buf_table.getvalue())["findings"]}
+            self.assertIn("HIG-TABLE-COLUMN-MISMATCH", table_ids)
+            self.assertIn("DC-005", table_ids)
+
+            # Auto-incrementing DC-00N registration (--id auto)
+            auto_cases_file = root / "auto_index.json"
+            auto_cases_file.write_bytes(src_cases.read_bytes())
+            buf_auto = io.StringIO()
+            with contextlib.redirect_stdout(buf_auto):
+                rc_auto = design_cases.main([
+                    "register-case", "--cases-file", str(auto_cases_file), "--taxonomy", str(taxonomy_file),
+                    "--id", "auto", "--title", "Auto Assigned Sequential Defect Case",
+                    "--platforms", "mobile", "--dimensions", "layout-navigation",
+                    "--containers", "ScrollView",
+                    "--symptom", "Symptom description",
+                    "--fix-rule", "Fix rule description",
+                ])
+            self.assertEqual(rc_auto, 0)
+            auto_payload = json.loads(buf_auto.getvalue())
+            self.assertEqual(auto_payload["registered"]["id"], "DC-006")
 
 
 if __name__ == "__main__":

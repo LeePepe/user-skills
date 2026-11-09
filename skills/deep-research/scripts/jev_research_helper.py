@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import re
+import sys
 import urllib.request
 from typing import Any
+
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_TIERS_FILE = SKILL_DIR / "references" / "source-tiers.json"
+TOP_K_TIERS = 3
+L1_REF_MAX_LINES = 160
 
 
 def normalize_quote(text: str) -> str:
@@ -129,12 +137,102 @@ def call_systemone(payload: dict[str, Any], endpoint: str | None = None, source_
         return json.loads(response.read().decode())
 
 
+def load_source_tiers(tiers_file: Path = DEFAULT_TIERS_FILE) -> dict[str, Any]:
+    if not tiers_file.is_file():
+        return {"schema": "deep-research-source-tiers/v1", "version": 1, "topic_routes": {}, "high_signal_tiers": []}
+    return json.loads(tiers_file.read_text(encoding="utf-8"))
+
+
+def route_research_topic(topic_type: str = "general", depth: str = "standard", tiers_file: Path = DEFAULT_TIERS_FILE) -> dict[str, Any]:
+    doc = load_source_tiers(tiers_file)
+    routes = doc.get("topic_routes", {})
+    route_cfg = routes.get(topic_type) or routes.get("general", {})
+    tiers = [
+        item
+        for item in doc.get("high_signal_tiers", [])
+        if isinstance(item, dict) and topic_type in item.get("topics", ["general"])
+    ][:TOP_K_TIERS]
+    active_channels = list(route_cfg.get("active_channels", ["web", "github"]))
+    if depth == "quick":
+        active_channels = [ch for ch in active_channels if ch in {"web", "github"}] or ["web", "github"]
+    return {
+        "ok": True,
+        "topic_type": topic_type,
+        "depth": depth,
+        "active_channels": active_channels,
+        "skipped_channels": route_cfg.get("skipped_channels", []),
+        "primary_playbook_sections": route_cfg.get("primary_playbook_sections", []),
+        "matched_source_tiers": tiers,
+        "skip_phase2_adversarial": depth == "quick",
+    }
+
+
+def build_flow_map(tiers_file: Path = DEFAULT_TIERS_FILE) -> dict[str, Any]:
+    doc = load_source_tiers(tiers_file)
+    ref_dir = SKILL_DIR / "references"
+    ref_line_counts = {
+        path.relative_to(SKILL_DIR).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
+        for path in sorted(ref_dir.glob("*.md"))
+    }
+    all_within_budget = all(lines <= L1_REF_MAX_LINES for lines in ref_line_counts.values())
+    return {
+        "ok": all_within_budget,
+        "skill": "deep-research",
+        "architecture_ref": "skills/deep-research/SKILL.md",
+        "entry_a_ingest": {
+            "A1_source_tiers_drawer": "skills/deep-research/references/source-tiers.json",
+        },
+        "shared_tiers": {
+            "tier_1_json_drawer": {
+                "file": "skills/deep-research/references/source-tiers.json",
+                "topic_types": sorted(doc.get("topic_routes", {}).keys()),
+                "tier_rule_ids": [t.get("id") for t in doc.get("high_signal_tiers", []) if isinstance(t, dict)],
+            },
+            "tier_2_l1_docs_line_counts": ref_line_counts,
+            "tier_3_executable_gates": "skills/deep-research/scripts/jev_research_helper.py (R09 rerank + R06 check-citations)",
+        },
+        "entry_b_consume": {
+            "B1_route_channels": "python3 skills/deep-research/scripts/jev_research_helper.py route --topic-type <tooling|scientific|market|general>",
+            "B2_rerank_r09": "python3 skills/deep-research/scripts/jev_research_helper.py rerank --input <candidates.json>",
+            "B3_verify_citations_r06": "python3 skills/deep-research/scripts/jev_research_helper.py check-citations --input <claim.json>",
+        },
+        "anti_explosion_valves": {
+            "valve_1_zero_token_quote_and_score_gates": True,
+            "valve_2_topic_channel_slicing": sorted(doc.get("topic_routes", {}).keys()),
+            "valve_3_top_k_and_line_caps": {
+                "source_tiers_top_k": TOP_K_TIERS,
+                "l1_doc_max_lines": L1_REF_MAX_LINES,
+            },
+            "valve_4_one_in_one_out_compaction": True,
+            "all_l1_docs_within_budget": all_within_budget,
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["rerank", "check-citations"])
-    parser.add_argument("--endpoint"); parser.add_argument("--input", type=argparse.FileType("r"), default="-")
+    parser.add_argument("command", choices=["rerank", "check-citations", "flow-map", "route"])
+    parser.add_argument("--endpoint")
+    parser.add_argument("--input", default="-")
+    parser.add_argument("--topic-type", default="general", choices=["tooling", "scientific", "market", "general"])
+    parser.add_argument("--depth", default="standard", choices=["quick", "standard", "deep"])
+    parser.add_argument("--tiers-file", default=str(DEFAULT_TIERS_FILE))
     args = parser.parse_args(argv)
-    data = json.load(args.input)
+    tiers_path = Path(args.tiers_file).resolve()
+    if args.command == "flow-map":
+        payload = build_flow_map(tiers_path)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if payload.get("ok") else 1
+    if args.command == "route":
+        print(json.dumps(route_research_topic(args.topic_type, args.depth, tiers_path), indent=2, ensure_ascii=False))
+        return 0
+    if hasattr(args.input, "read"):
+        data = json.load(args.input)
+    elif args.input == "-":
+        data = json.load(sys.stdin)
+    else:
+        with Path(args.input).open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
     if args.command == "rerank":
         payload = build_r09_request(data.get("research_goal", ""), data.get("sub_question", ""), data["candidates"])
         response = call_systemone(payload, args.endpoint, os.environ.get("FALCON_SOURCE_KEY"))
