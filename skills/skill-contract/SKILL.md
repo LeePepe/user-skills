@@ -17,10 +17,13 @@ Use this meta-skill to keep skills small, navigable, and executable. It enforces
 
 ```bash
 python3 skills/skill-contract/scripts/skill_contract.py init --skill example --category design --design
+python3 skills/skill-contract/scripts/skill_contract.py init --repo /path/to/repo --skill repo-domain --category repo
 python3 skills/skill-contract/scripts/skill_contract.py add-case --skill example --id auto --title "..." --tags cli --cmd "..."
 python3 skills/skill-contract/scripts/skill_contract.py sink-rule --skill example --kind regex-gate --id DC-001
 python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict
+python3 skills/skill-contract/scripts/skill_contract.py audit --repo /path/to/repo --strict
 python3 skills/skill-contract/scripts/skill_contract.py eval --all --strict
+python3 skills/skill-contract/scripts/skill_contract.py eval --repo /path/to/repo --strict
 ```
 
-`refine_skill.py` is a compatibility symlink. Read [valves-and-metabolism.md](references/valves-and-metabolism.md) and [eval-cases.json](references/eval-cases.json) for contract details and live assertions. This tool audits and evaluates the local repository and does not modify existing skills unless `init`, `add-case`, or `sink-rule` explicitly requests it.
+`refine_skill.py` is a compatibility symlink. Read [valves-and-metabolism.md](references/valves-and-metabolism.md) and [eval-cases.json](references/eval-cases.json) for contract details, Repo-Bound Skill governance (`--repo <path>`), and live assertions. This tool audits and evaluates the local repository or a target `--repo` (`<repo>/skills/*` and `<repo>/.agents/skills/*`) and does not modify existing skills unless `init`, `add-case`, or `sink-rule` explicitly requests it.

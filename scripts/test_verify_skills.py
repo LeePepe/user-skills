@@ -2277,6 +2277,107 @@ assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session 
             self.assertNotEqual(private_res.returncode, 0)
             self.assertEqual(len(json.loads(drawer.read_text(encoding="utf-8"))["active_cases"]), 1)
 
+            # Verify --repo mode for Repo-Bound Skills (init, add-case, audit, eval)
+            temp_repo = Path(tmp) / "sample-repo"
+            init_repo_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "init",
+                    "--repo",
+                    str(temp_repo),
+                    "--skill",
+                    "sample-domain-skill",
+                    "--category",
+                    "repo",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(init_repo_res.stdout)["ok"])
+            skill_md = temp_repo / "skills" / "sample-domain-skill" / "SKILL.md"
+            self.assertTrue(skill_md.is_file())
+            # Repo-bound skill may contain repo-specific identifiers without triggering global PRIVATE guard
+            skill_md.write_text(
+                skill_md.read_text(encoding="utf-8")
+                + "\nRepo-bound domain reference: progressRail is allowed inside repo-bound skills.\n"
+                + "See [eval-cases.json](references/eval-cases.json).\n",
+                encoding="utf-8",
+            )
+            # Also add a second repo-bound skill under .agents/skills/
+            dot_agent_skill = temp_repo / ".agents" / "skills" / "sample-agent-toolkit"
+            dot_agent_skill.mkdir(parents=True, exist_ok=True)
+            (dot_agent_skill / "SKILL.md").write_text(
+                "---\nname: sample-agent-toolkit\ndescription: \"Toolkit\"\n---\n\n# Toolkit\n",
+                encoding="utf-8",
+            )
+
+            add_repo_case_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "add-case",
+                    "--repo",
+                    str(temp_repo),
+                    "--skill",
+                    "sample-domain-skill",
+                    "--id",
+                    "auto",
+                    "--title",
+                    "Repo-bound skill SKILL.md contains domain note",
+                    "--tags",
+                    "repo-bound",
+                    "--file",
+                    "skills/sample-domain-skill/SKILL.md",
+                    "--must-contain",
+                    "progressRail",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(add_repo_case_res.stdout)["ok"])
+
+            audit_repo_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "audit",
+                    "--repo",
+                    str(temp_repo),
+                    "--strict",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            audit_repo_payload = json.loads(audit_repo_res.stdout)
+            self.assertTrue(audit_repo_payload["ok"], f"audit --repo failed: {audit_repo_payload}")
+            self.assertEqual(audit_repo_payload["skills"], 2)
+
+            eval_repo_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "eval",
+                    "--repo",
+                    str(temp_repo),
+                    "--strict",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            eval_repo_payload = json.loads(eval_repo_res.stdout)
+            self.assertTrue(eval_repo_payload["ok"], f"eval --repo failed: {eval_repo_payload}")
+            self.assertEqual(eval_repo_payload["cases_run"], 1)
+            self.assertEqual(eval_repo_payload["passed"], 1)
+
 
 
 if __name__ == "__main__":

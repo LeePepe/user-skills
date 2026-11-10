@@ -29,16 +29,68 @@ EVAL_DRAWERS = (
 )
 
 
-def package_roots() -> list[Path]:
+def package_roots(repo: str | Path | None = None) -> list[Path]:
+    if repo is not None:
+        repo_path = Path(repo).expanduser().resolve()
+        return [
+            candidate
+            for candidate in (repo_path / "skills", repo_path / ".agents" / "skills")
+            if candidate.is_dir()
+        ]
     roots = [ROOT / "skills"]
-    for candidate in (ROOT / "Skills" / "skills" / "meta", ROOT / "Skills" / "skills" / "repo"):
-        if candidate.is_dir():
+    for candidate in (
+        ROOT / "Skills" / "skills" / "meta",
+        ROOT / "Skills" / "skills" / "repo",
+        ROOT.parent / "Skills" / "skills" / "meta",
+        ROOT.parent / "Skills" / "skills" / "repo",
+        ROOT.parent.parent / "Skills" / "skills" / "meta",
+        ROOT.parent.parent / "Skills" / "skills" / "repo",
+    ):
+        if candidate.is_dir() and candidate not in roots:
             roots.append(candidate)
     return roots
 
 
+def _resolve_skill_dir(skill: str, repo: str | Path | None = None, create: bool = False) -> Path:
+    if repo is None:
+        for root in package_roots():
+            if (root / skill / "SKILL.md").is_file() or (root / skill).is_dir():
+                return root / skill
+        return ROOT / "skills" / skill
+    repo_path = Path(repo).expanduser().resolve()
+    candidates = [repo_path / "skills" / skill, repo_path / ".agents" / "skills" / skill]
+    for base in (repo_path / "skills", repo_path / ".agents" / "skills"):
+        if base.is_dir():
+            candidates.extend(sub / skill for sub in sorted(base.iterdir()) if sub.is_dir())
+    for candidate in candidates:
+        if (candidate / "SKILL.md").is_file() or candidate.is_dir():
+            return candidate
+    if create:
+        if (repo_path / ".agents" / "skills").is_dir() and not (repo_path / "skills").is_dir():
+            return repo_path / ".agents" / "skills" / skill
+        return repo_path / "skills" / skill
+    return candidates[0]
+
+
+def _discover_packages(skill: str | None = None, repo: str | Path | None = None) -> list[Path]:
+    if skill:
+        return [_resolve_skill_dir(skill, repo=repo, create=False)]
+    seen: set[Path] = set()
+    packages: list[Path] = []
+    for root in package_roots(repo=repo):
+        if not root.is_dir():
+            continue
+        for p in sorted(root.iterdir()):
+            if p.is_dir() and (p / "SKILL.md").exists():
+                resolved = p.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    packages.append(p)
+    return packages
+
+
 def init_skill(args: argparse.Namespace) -> int:
-    target = ROOT / "skills" / args.skill
+    target = _resolve_skill_dir(args.skill, repo=getattr(args, "repo", None), create=True)
     target.mkdir(parents=True, exist_ok=True)
     for dirname in (".claude-plugin", "references", "scripts"):
         (target / dirname).mkdir(exist_ok=True)
@@ -151,7 +203,9 @@ def _next_case_id(entries: list[dict[str, Any]], prefix: str) -> str:
 
 
 def add_case(args: argparse.Namespace) -> int:
-    target = ROOT / "skills" / args.skill
+    repo_arg = getattr(args, "repo", None)
+    repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
+    target = _resolve_skill_dir(args.skill, repo=repo_arg, create=False)
     if not (target / "SKILL.md").is_file():
         raise SystemExit(f"skill not found: {args.skill}")
     drawer_rel = args.drawer or "references/eval-cases.json"
@@ -172,7 +226,7 @@ def add_case(args: argparse.Namespace) -> int:
         args.must_not_contain,
         args.expect_contains,
     ]
-    if any(PRIVATE.search(val or "") for val in text_fields):
+    if not repo_arg and any(PRIVATE.search(val or "") for val in text_fields):
         print(json.dumps({"ok": False, "error": "project-private identifiers are forbidden in cases"}))
         return 1
 
@@ -230,7 +284,7 @@ def add_case(args: argparse.Namespace) -> int:
         entry["must_not_contain"] = _csv(args.must_not_contain)
     entry["registered_at"] = date.today().isoformat()
 
-    failures = evaluate_case(entry, target, ROOT)
+    failures = evaluate_case(entry, target, repo_root)
     if failures:
         print(json.dumps({"ok": False, "id": ident, "failures": failures}, ensure_ascii=False, indent=2))
         return 1
@@ -246,17 +300,11 @@ def add_case(args: argparse.Namespace) -> int:
 
 
 def run_eval(args: argparse.Namespace) -> int:
-    packages = (
-        [ROOT / "skills" / args.skill]
-        if args.skill
-        else sorted(
-            p
-            for root in package_roots()
-            if root.is_dir()
-            for p in root.iterdir()
-            if p.is_dir() and (p / "SKILL.md").exists()
-        )
-    )
+    if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
+        raise SystemExit("eval requires one of --all, --skill, or --repo")
+    repo_arg = getattr(args, "repo", None)
+    repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
+    packages = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
     seen_drawers: set[Path] = set()
     drawers_evaluated = 0
     cases_run = 0
@@ -292,7 +340,7 @@ def run_eval(args: argparse.Namespace) -> int:
                         failures.append({"skill": pkg.name, "drawer": rel_drawer, "id": case.get("id"), "reasons": ["eval case has no executable assertion"]})
                     continue
                 cases_run += 1
-                reasons = evaluate_case(case, pkg, ROOT)
+                reasons = evaluate_case(case, pkg, repo_root)
                 if reasons:
                     failures.append({"skill": pkg.name, "drawer": rel_drawer, "id": case.get("id"), "reasons": reasons})
                 else:
@@ -373,8 +421,15 @@ def sink_rule(args: argparse.Namespace) -> int:
     return 0
 
 
-def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]]) -> None:
-    rel = str(path.relative_to(ROOT / "skills"))
+def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]], pkg_dir: Path | None = None) -> None:
+    try:
+        rel = str(path.relative_to(ROOT / "skills"))
+    except ValueError:
+        base = pkg_dir.parent if pkg_dir is not None else path.parents[1]
+        try:
+            rel = str(path.relative_to(base))
+        except ValueError:
+            rel = path.name
     for suffix, (key, required) in DRAWERS.items():
         if not rel.endswith(suffix):
             continue
@@ -400,7 +455,7 @@ def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]]) -> Non
                     findings.append({"skill": skill, "code": "missing-coordinate", "file": rel, "id": entry.get("id"), "fields": missing})
 
 
-def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
+def audit_package(path: Path, design: bool = False, repo_bound: bool = False) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     skill = path.name
     md = path / "SKILL.md"
@@ -411,13 +466,13 @@ def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
     refs = path / "references"
     if refs.is_dir():
         all_md += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in refs.glob("*.md"))
-    if PRIVATE.search(all_md):
+    if not repo_bound and PRIVATE.search(all_md):
         findings.append({"skill": skill, "code": "private-identifier"})
     raw_regex_lines = [line for line in all_md.splitlines() if "forbidden_regex" in line or "regex-gate" in line]
     if len(raw_regex_lines) > 1:
         findings.append({"skill": skill, "code": "raw-regex-gates-in-markdown"})
     md_rel = f"{skill}/SKILL.md"
-    if md_rel not in BUDGET_EXEMPTIONS and len(md.read_text(encoding="utf-8").splitlines()) > (80 if skill in {"my-designer", "design-studio"} else 180):
+    if md_rel not in BUDGET_EXEMPTIONS and len(md.read_text(encoding="utf-8").splitlines()) > (80 if (design or skill in {"my-designer", "design-studio"}) else 180):
         findings.append({"skill": skill, "code": "l0-lines"})
     if md_rel not in BUDGET_EXEMPTIONS and md.stat().st_size > 16 * 1024:
         findings.append({"skill": skill, "code": "l0-bytes"})
@@ -428,12 +483,14 @@ def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
         ref_text = ref.read_text(encoding="utf-8")
         if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and len(ref_text.splitlines()) > 160:
             findings.append({"skill": skill, "code": "l1-lines", "file": str(ref)})
-        if ref.suffix == ".md" and skill in {"skill-contract", "my-designer", "design-studio"}:
+        if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and ref.stat().st_size > 16 * 1024:
+            findings.append({"skill": skill, "code": "l1-bytes", "file": str(ref)})
+        if ref.suffix == ".md" and (repo_bound or skill in {"skill-contract", "my-designer", "design-studio", "repo-kit", "nas-smart-home"}):
             for block in re.findall(r"```[^\n]*\n(.*?)```", ref_text, re.DOTALL):
                 if len(block.splitlines()) > 25:
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})
                     break
-        _audit_drawer(skill, ref, findings)
+        _audit_drawer(skill, ref, findings, pkg_dir=path)
         corpus = text + "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in refs.glob("*.md"))
         corpus += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (path / "scripts").glob("*.py")) if (path / "scripts").is_dir() else ""
         if ref.name not in corpus and ref.stem not in corpus:
@@ -442,12 +499,15 @@ def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
 
 
 def audit(args: argparse.Namespace) -> int:
-    packages = [ROOT / "skills" / args.skill] if args.skill else [p for root in package_roots() if root.is_dir() for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").exists()]
+    if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
+        raise SystemExit("audit requires one of --all, --skill, or --repo")
+    repo_arg = getattr(args, "repo", None)
+    packages = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
     findings: list[dict[str, Any]] = []
     names: dict[str, list[str]] = {}
     for package in packages:
         names.setdefault(package.name, []).append(str(package))
-        findings.extend(audit_package(package))
+        findings.extend(audit_package(package, repo_bound=bool(repo_arg)))
     findings.extend({"code": "duplicate-skill", "name": name, "paths": paths} for name, paths in names.items() if len(paths) > 1)
     result = {"ok": not findings, "skills": len(packages), "findings": findings}
     print(json.dumps(result, indent=2))
@@ -461,6 +521,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--skill", required=True)
     init.add_argument("--category", required=True)
     init.add_argument("--design", action="store_true")
+    init.add_argument("--repo", default=None)
 
     sink = sub.add_parser("sink-rule")
     sink.add_argument("--skill", required=True)
@@ -482,6 +543,7 @@ def parser() -> argparse.ArgumentParser:
 
     add_p = sub.add_parser("add-case")
     add_p.add_argument("--skill", required=True)
+    add_p.add_argument("--repo", default=None)
     add_p.add_argument("--drawer", default="references/eval-cases.json")
     add_p.add_argument("--id", default="auto")
     add_p.add_argument("--title", required=True)
@@ -505,16 +567,18 @@ def parser() -> argparse.ArgumentParser:
     add_p.add_argument("--must-not-contain", default="")
 
     eval_p = sub.add_parser("eval")
-    eval_group = eval_p.add_mutually_exclusive_group(required=True)
+    eval_group = eval_p.add_mutually_exclusive_group(required=False)
     eval_group.add_argument("--all", action="store_true")
     eval_group.add_argument("--skill")
+    eval_p.add_argument("--repo", default=None)
     eval_p.add_argument("--json", action="store_true")
     eval_p.add_argument("--strict", action="store_true")
 
     audit_parser = sub.add_parser("audit")
-    group = audit_parser.add_mutually_exclusive_group(required=True)
+    group = audit_parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--all", action="store_true")
     group.add_argument("--skill")
+    audit_parser.add_argument("--repo", default=None)
     audit_parser.add_argument("--json", action="store_true")
     audit_parser.add_argument("--strict", action="store_true")
     return parser
