@@ -1,6 +1,6 @@
 ---
 name: m2-dispatcher
-description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）编排后台 Herdr Goal Steering (TL) 的生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。
+description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台 Herdr Goal Steering（M1 TL）的生命周期合同，涵盖 Phase 0 简单 Spec 对齐、开 TL、热追加、巡检解卡与 Goal/Task 完结回收。
 ---
 # M2-Dispatcher ↔ M1-Steering (TL) 编排合同（`m2-dispatcher`）
 
@@ -14,16 +14,16 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
 ## 三层分离
 
 1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 1-Hop 执行。
-2. **Layer B — Private Bot Identity & Memory**：Bot 记忆留在私有记忆，不复制花名册或模型表。
+2. **Layer B — Private Bot Identity & Memory**：外层入口私有记忆留在宿主自身，不复制花名册或模型表。
 3. **Layer C — Product Auto-review Gate**：安全门禁阻止 `herdr` 时 fail-closed 上报 Owner，不退回 `M2-Dispatcher` 改代码。
 
 ## 1. 开 TL、热追加与路由
 
 - **两径简单 Spec 对齐**：Owner 确认（`ask_user`）始终留在 `M2-Dispatcher`。**路径 A（清晰边界）**：`M2-Dispatcher` 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 `M2-Dispatcher` 与 Owner 拍板回传 M1。
 - **灵感/截图/色板一键摄取（`m2-dispatcher` ↔ `design-studio`）**：收到单条灵感、参考 App 或截图时，`M2-Dispatcher` 直接前台调 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 做 Vision OCR + BAMA 测色板；动效用 `ingest`）入库；批量母体聚类或落地项目走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering`。
-- **拍板后硬切换与 `M2` 只写简单 Spec 门禁（三类入口通用）**：
-  - **`M2` 写边界**：`M2-Dispatcher` 只可写简单 Spec/Handoff（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），**严禁改任何代码、测试、配置或其他文件**（Pi/Cindy 由 `skill-slash-expander.ts` `tool_call` 拦截，`install-pi-harness.sh` 同步并清理独立全局隐藏副本）。
-  - **强制 Worktree 派发与 Cindy 同步看门狗**：凡改代码或其他文件，`M2` 落盘 `spec.md` 后必经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。Cindy 的 `bash` 同步阻塞，启动后须同步运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。
+- **拍板后硬切换与 `M2` 只写简单 Spec 门禁（外层 M2 入口通用）**：
+  - **`M2` 写边界**：`M2-Dispatcher` 只可写简单 Spec/Handoff（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），**严禁改任何代码、测试、配置或其他文件**（外层工具 Adapter 由 `skill-slash-expander.ts` 在 M2 主会话首轮自动挂载 `m2-dispatcher` 并通过 `tool_call` 拦截非 Spec 写入，`install-pi-harness.sh` 负责同步）。
+  - **强制 Worktree 派发与同步宿主看门狗**：凡改代码或其他文件，`M2` 落盘 `spec.md` 后必经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。同步 shell 宿主环境启动后须同步运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。
 - **幂等复用与热追加**：`<goal>-goal-tl-r1` 为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，`idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：在本 Goal 内按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 走 `direct_quota_gated`（`~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 自动剥离 `--allowedTools` 改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 绑定 `Magpie (:3425)` `group/steering`。
 - **Parent ≥ Child Allowlist**：父 TL 传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 并合并 `extra_add_dirs`。Mac mini 上 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD` 以覆盖 `/Volumes/SSD/.../handoff/<goal>` 兄弟目录 realpath；handoff 父目录不在基线时自动补进 trust 与 `--add-dir`。
@@ -32,7 +32,7 @@ description: M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）
 
 - **并发巡检与关联**：运行 `goal-supervisor.py scan`，按角色 TTL（Explorer/`pr_monitor` 10m、Designer/Reviewer 15m、Writer 30m、TL 40m）处理 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。Agent 通过 `-goal-tl-` 短名（`good-des-goal-tl-r1`）、台账 `TL:`／`from`／`to` 及 cwd 落在 Goal handoff 下绑定目录 `good-designer`（`good-des-*` 与 `gd-e1-*` 均计入 `BLOCKED_AGENT`）。用 `check-pins` 查 drift，`GOAL_DONE` 用 `telemetry --write` 写 `contract-telemetry.json`。子 Agent 等待拆成 30–60s slices（`herdr agent wait <name> --timeout 60000`）。Copilot allowlist 含 `/Applications/Xcode.app` 与 `/Volumes/SSD/Development`。
 - **Blocked notify bridge（Channel A / B）**：Herdr `pane.agent_status_changed`（`agent_status=blocked`）与 `goal-supervisor.py scan --write-alerts` 均写入 `handoff/<goal_folder>/alerts/blocked-<agent>-<ts>.md`。`M2-Dispatcher` 读取 alert 后检查可见提示做 Tier A / A′ 决定或按 Tier B 记 `NEED_GO`。**通知桥 ≠ 解卡**：桥只落盘通知，严禁 auto-Enter 或把 `blocked` 当完成。**GOAL_DONE 关窗与 blocked alerts 两条独立**。
-- **看门狗与途中插话续挂（Mandatory Watchdog & Mid-Flight User Question Rule）**：拉起后台 TL 后，CLI 异步运行 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；Cindy 同步运行 `--interval 15 --max-wait 600 --json`。**Mid-Flight User Question Rule**：后台 Herdr TL 未 `EVT=GOAL_DONE` 期间，若用户中途插话提问，`M2-Dispatcher` **严禁只回纯文本就结束 Turn 进入 `idle`**——回答后必须在**同一 Turn 内立即续挂 `goal-supervisor.py watch`** 直至 `EVT=GOAL_DONE` 或解卡/关窗回收。
+- **看门狗与途中插话续挂（Mandatory Watchdog & Mid-Flight User Question Rule）**：拉起后台 TL 后，异步 shell 宿主运行 `python3 skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 30 --max-wait 2400 --json`；同步 shell 宿主运行 `--interval 15 --max-wait 600 --json`。**Mid-Flight User Question Rule**：后台 Herdr TL 未 `EVT=GOAL_DONE` 期间，若用户中途插话提问，`M2-Dispatcher` **严禁只回纯文本就结束 Turn 进入 `idle`**——回答后必须在**同一 Turn 内立即续挂 `goal-supervisor.py watch`** 直至 `EVT=GOAL_DONE` 或解卡/关窗回收。
 - **双源对账与三级解卡**：同时读 [`ledger.md`](../team-lead/references/ledger.md) 与 `herdr agent get <tl-name>` 的 `agent_status`；`M2-Dispatcher` 事件用系统时钟与 `id=B<N>`／`id=J<N>`（禁撞 TL `id=E<N>`）。`blocked` 时先 `herdr agent read <name> --source visible --lines 40`：
   - **Tier A（路径权限）**：临时路径、基线路径（含 `/Volumes/SSD` 及其下 realpath）或已声明 `extra_add_dirs` 才可 `herdr agent send-keys <name> enter` 并记 `EVT=UNBLOCK`。
   - **Tier A′（`CMD_CONFIRM`）**：核对命令与高亮项，仅白名单（`gh`、不含 `commit`/`push`/`merge`/`rebase`/`reset`/`checkout` 的只读 `git`、`python3`、`jq`、不含 `server stop` 的 `herdr`、`shasum`、`date`、`sleep`、`env`）可发 `enter`（或 `down`+`enter` 选 remember）并记 `EVT=UNBLOCK`。`--no-ask-user` 不批准 `CMD_CONFIRM`；MacBook `team_lead` 不带 `--no-ask-user`，禁开启 `--yolo`。

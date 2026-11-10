@@ -679,6 +679,10 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 			scanSessionEntries(ctx);
 		}
 
+		if (isM2DispatcherMainSession() && !injectedSkills.has("m2-dispatcher") && skillCatalog.has("m2-dispatcher")) {
+			pendingQueue.add("m2-dispatcher");
+		}
+
 		const promptText = typeof event.prompt === "string" ? event.prompt : "";
 		if (promptText) {
 			for (const [key, meta] of skillCatalog.entries()) {

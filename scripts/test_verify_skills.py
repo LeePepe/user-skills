@@ -797,6 +797,69 @@ class VerifySkillsTests(unittest.TestCase):
         installer_sh = (skill_dir / "scripts" / "install-pi-harness.sh").read_text(encoding="utf-8")
         self.assertNotIn("rm -f", installer_sh)
 
+        # Verify M2 outer adapter auto-bootstraps m2-dispatcher on first turn in M2 main session,
+        # does not auto-inject when HERDR_ENV=1, and does not block local bash/git tool calls.
+        node_probe = r"""
+import assert from "node:assert/strict";
+import skillSlashExpander from "./skills/m2-dispatcher/scripts/skill-slash-expander.ts";
+
+async function runCase(envOverrides) {
+  const prevHerdr = process.env.HERDR_ENV;
+  const prevSub = process.env.CINDY_PI_SUBAGENT_RUN_DIR;
+  try {
+    if ("HERDR_ENV" in envOverrides) process.env.HERDR_ENV = envOverrides.HERDR_ENV;
+    else delete process.env.HERDR_ENV;
+    if ("CINDY_PI_SUBAGENT_RUN_DIR" in envOverrides) process.env.CINDY_PI_SUBAGENT_RUN_DIR = envOverrides.CINDY_PI_SUBAGENT_RUN_DIR;
+    else delete process.env.CINDY_PI_SUBAGENT_RUN_DIR;
+
+    const handlers = new Map();
+    const pi = {
+      on(event, fn) { handlers.set(event, fn); },
+      appendEntry() {},
+    };
+    skillSlashExpander(pi);
+    const ctx = { cwd: process.cwd() };
+    await handlers.get("session_start")?.({}, ctx);
+    const startRes = await handlers.get("before_agent_start")?.({ prompt: "hello world without slash token" }, ctx);
+    const bashRes = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "git status" } }, ctx);
+    return { startRes, bashRes };
+  } finally {
+    if (prevHerdr === undefined) delete process.env.HERDR_ENV;
+    else process.env.HERDR_ENV = prevHerdr;
+    if (prevSub === undefined) delete process.env.CINDY_PI_SUBAGENT_RUN_DIR;
+    else process.env.CINDY_PI_SUBAGENT_RUN_DIR = prevSub;
+  }
+}
+
+const m2Res = await runCase({});
+assert.ok(m2Res.startRes?.message, "Expected M2 main session to auto-inject m2-dispatcher");
+const m2Text = m2Res.startRes.message.content[0].text;
+assert.ok(m2Text.includes('<skill-context name="m2-dispatcher"'), "Expected <skill-context name=\"m2-dispatcher\"> in M2 session");
+assert.equal(m2Res.bashRes, undefined, "Expected local git/bash tool calls not to be blocked");
+
+const herdrRes = await runCase({ HERDR_ENV: "1" });
+assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session not to auto-inject m2-dispatcher");
+"""
+        probe_proc = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", node_probe],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            probe_proc.returncode,
+            0,
+            f"skill-slash-expander M2 auto-bootstrap probe failed:\nstdout={probe_proc.stdout}\nstderr={probe_proc.stderr}",
+        )
+
+        agents_md_path = REPO_ROOT / "AGENTS.md"
+        self.assertTrue(agents_md_path.is_file(), "user-skills/AGENTS.md must exist as a thin progressive-disclosure index")
+        agents_md_text = agents_md_path.read_text(encoding="utf-8")
+        self.assertIn("./scripts/verify", agents_md_text)
+        self.assertIn("skill_contract.py audit --strict", agents_md_text)
+        self.assertNotIn("herdr-dispatch.sh", agents_md_text)
+
         prepush_text = (REPO_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
         self.assertIn("refs/heads/main", prepush_text)
         self.assertIn("refs/heads/master", prepush_text)
