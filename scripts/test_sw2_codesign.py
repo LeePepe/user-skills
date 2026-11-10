@@ -129,7 +129,7 @@ class ProgressiveRouterTests(unittest.TestCase):
         for token in ("Cross-Domain Archetype Remix Matrix", "VS-005", "VS-006", "VS-007", "VS-008", "CL-006", "CL-007", "CL-008"):
             self.assertIn(token, ledger_text)
 
-    def test_route_web_mounts_8_underlying_reference_repos_and_slices_focused_files(self):
+    def test_route_web_mounts_9_underlying_reference_repos_and_slices_focused_files(self):
         import contextlib, io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -147,6 +147,7 @@ class ProgressiveRouterTests(unittest.TestCase):
             "vercel_agent_skills",
             "awesome_cjk_design_md",
             "vibecoded_design_tells",
+            "hallmark",
         }
         self.assertEqual(set(allowed_web.keys()), expected_repos)
         self.assertTrue(any(f.endswith("typeset.md") for f in allowed_web["impeccable"]["focused_files"]))
@@ -158,6 +159,12 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertTrue(any(f.endswith("typography.csv") for f in allowed_web["ui_ux_pro_max"]["focused_files"]))
         self.assertTrue(any(f.endswith("writing-guidelines/SKILL.md") for f in allowed_web["vercel_agent_skills"]["focused_files"]))
         self.assertTrue(any(f.endswith("react-view-transitions/SKILL.md") for f in allowed_web["vercel_agent_skills"]["focused_files"]))
+        self.assertTrue(any(f.endswith("fonts.md") for f in allowed_web["hallmark"]["focused_files"]))
+        self.assertTrue(any(f.endswith("microinteractions.md") for f in allowed_web["hallmark"]["focused_files"]))
+        self.assertFalse(any(f.endswith("data-viz.md") for f in allowed_web["hallmark"]["focused_files"]))
+        plan_c_ids = {c["id"] for c in payload["plan_c_active_cases"]}
+        self.assertIn("DC-009", plan_c_ids)
+        self.assertIn("DC-010", plan_c_ids)
 
     def test_flow_map_and_anti_explosion_budget(self):
         import contextlib, io

@@ -190,6 +190,43 @@
       "bad_snippet": ".prose th, .prose td { padding: 8px 10px; white-space: nowrap; }",
       "good_snippet": ".prose th { white-space: nowrap; }\n.prose td { padding: 8px 10px; white-space: normal; min-width: 96px; }",
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-009",
+      "title": "Hallmark Floor: Tracked-Capital Eyebrow & Oversized Letter Labels",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Placing small uppercase tracked-capital eyebrow labels above every heading or decorative oversized letter labels makes Web pages read immediately as machine-generated AI slop.",
+      "fix_rule": "Omit decorative eyebrows above headings; render labels, captions, table headers, tags, and nav links in the body/label face one step smaller, sentence or lowercase, untracked (letter-spacing <= 0.04em).",
+      "forbidden_regex": "text-transform\\s*:\\s*uppercase[^}]*letter-spacing\\s*:\\s*0\\.[1-9]\\d*em",
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-010",
+      "title": "Hallmark Floor: Non-Functional Fake Submit Form & Dead Action Control",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "component",
+        "motion-interaction",
+        "layout-navigation"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Shipping a decorative form (such as a footer email band or contact box) that intercepts submit with preventDefault() to show a fake 'Thanks!' state without sending or persisting data.",
+      "fix_rule": "Every shipped form must wire to a real submission endpoint/handler with 8 interactive states; if no backend exists yet, replace the fake form with a real action link (mailto:, GitHub issue, RSS) or explicit slot.",
+      "forbidden_regex": "<form[^>]*onsubmit=[\"'](?:event\\.)?preventDefault\\(\\)\\s*;?\\s*[\"']",
+      "registered_at": "2026-11-10"
     }
   ],
   "archived_templates": [

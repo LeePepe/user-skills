@@ -643,6 +643,46 @@
         "visual-style"
       ],
       "sub_category": "threshold-commit-safety"
+    },
+    {
+      "id": "T-021",
+      "name": "Hallmark (50-Material Theme Dealer & Browser Sloplint)",
+      "aliases": [
+        "Hallmark",
+        "Nutlope/hallmark",
+        "usehallmark",
+        "sloplint",
+        "theme.mjs"
+      ],
+      "category": "Anti-AI-Slop Web Design & Real-Browser Linter",
+      "platforms": [
+        "web"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read",
+        "Persuade",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "automation_mode": "mcp-cli",
+      "token_integration": "Deals 3 of 50 material themes via theme.mjs deal, draws job-driven page anatomy via theme.mjs draw, and runs multi-viewport real-browser sloplint.mjs --render against Floor/Reflex/Finish gates.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "web"
+      ],
+      "track": "web-active",
+      "platform_rationale": "Hallmark (~/Development/Personal/collected-tools/repos/hallmark) is Together AI's Web anti-AI-slop design skill combining 50 material themes (theme.mjs deal: 50 pick 3) with multi-breakpoint headless Chromium sloplint.mjs --render that rejects decorative eyebrow labels, oversized tracked-capital labels, single colored headline words, and fake submit forms.",
+      "primary_dimension": "visual-style",
+      "secondary_dimensions": [
+        "layout-navigation",
+        "typography-copy",
+        "component"
+      ],
+      "sub_category": "aesthetic-direction-mood"
     }
   ],
   "inspirations": [
@@ -1168,6 +1208,53 @@
       "desktop_macos_implementation": "Two-column reading split (.post-layout: 680px prose card + 240px borderless sticky aside.toc) under a single site-wide sticky header.site-header.",
       "mobile_ios_implementation": "Responsive single-column prose stream on 390x844 viewports with aside.toc hidden below 1100px and overflow-safe CJK tables.",
       "native_guardrails": "Assert documentElement.scrollWidth <= documentElement.clientWidth at 390x844 and 1280x900 via Playwright setViewportSize; enforce <!doctype html> on line 1 (DC-006), zero decorative heading Emojis (DC-007), and natural CJK table cell wrapping (DC-008)."
+    },
+    {
+      "id": "IP-007",
+      "name": "Hallmark 三步反模板工作流 (3-Deal Theme → Job Anatomy → Multi-Viewport Sloplint)",
+      "title": "Hallmark 三步反模板工作流 (3-Deal Theme → Job Anatomy → Multi-Viewport Sloplint)",
+      "aliases": [
+        "Hallmark",
+        "sloplint",
+        "theme.mjs deal",
+        "50选3主题",
+        "反模板工作流",
+        "anti-ai-slop"
+      ],
+      "category": "layout-navigation",
+      "platforms": [
+        "web"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read",
+        "Persuade",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "source_prompt_zh": "从 50 套预设材质主题里每次抽 3 套给用户拍板；围绕访客真实任务意图（subscribe/book/buy/try/read）与真实素材清单解剖排版，不套死板模板；完成后放进真实浏览器按多屏幕宽度跑 sloplint.mjs --render，把多余小字眉标（Eyebrow）、故意放大的字母标签（Tracked-Capitals）和假提交表单（Fake Form）打回重做。",
+      "canonical_prompt": "Run Hallmark (hallmark sloplint) 3-step anti-slop workflow: (1) deal 3 candidate material themes from 50 via theme.mjs deal for user selection instead of generic AI purple-gradient templates; (2) compose page anatomy around the visitor's real job (subscribe/book/buy/try/read) and factual material inventory (real/pictures/absent) per anatomy.md and macrostructures.md without inventing fake metrics, quotes, or logo walls; (3) render and audit across 8 browser viewport widths with sloplint.mjs --render to reject decorative eyebrow labels above headings, oversized tracked-capital labels, single colored words in headlines, and non-functional fake submit forms.",
+      "state_machine": "preflight_material_inventory(real|pictures|absent) -> theme_deal_3_of_50 -> user_pick_theme_and_job_anatomy_draw -> cold_hero_review -> multi_viewport_browser_sloplint_render -> ship_or_rework",
+      "web_implementation": "Execute node skills/hallmark/scripts/theme.mjs deal to pick 1 of 3 material themes (<=8KB material spec + reference jpg in references/themes/), structure sections from references/anatomy.md + macrostructures.md around the primary visitor action, stamp design decisions in the first CSS comment, and verify across 8 widths via node skills/hallmark/scripts/sloplint.mjs <path> --render.",
+      "mobile_implementation": "Verify 390x844 and narrow mobile breakpoints inside sloplint.mjs --render with >=44x44px hit targets, zero horizontal overflow, intact form wiring, and readable untracked sentence-case labels.",
+      "token_guardrails": "Zero invented facts/metrics/quotes; omit tracked-capital eyebrows above headings (letter-spacing <= 0.04em, DC-009); never ship dead/fake submit forms that only preventDefault() without a real handler or endpoint (DC-010); hero must fit 1280x800 first screen.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "web"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "visual-style",
+        "typography-copy",
+        "component"
+      ],
+      "sub_category": "adaptive-grid-container-queries",
+      "desktop_macos_implementation": "Desktop Web (1280x800 / 1440x900): deal 3 material themes via theme.mjs deal, build cold-reviewed hero + job-driven macrostructure, and pass sloplint.mjs --render Floor & Reflex gates.",
+      "mobile_ios_implementation": "Mobile Web (375x812 / 390x844): multi-viewport sloplint.mjs --render verification ensuring zero horizontal overflow, >=44x44px touch targets, and preserved interactive wiring (sloplint --before / --kept).",
+      "native_guardrails": "Enforce Hallmark Floor & Reflex gates via sloplint.mjs --render across 8 widths: ban tracked-capital eyebrows above every heading (DC-009), ban non-functional fake submit forms (DC-010), ban single-word headline color highlights, and require 100% factual content inventory."
     }
   ]
 }
