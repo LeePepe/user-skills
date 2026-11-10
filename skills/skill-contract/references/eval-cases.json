@@ -68,6 +68,26 @@
         "eval --repo"
       ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-005",
+      "title": "Universal Agent Shortcut Macros (/status, /ingest, /learn, /dash, /retro) Registered in m2-dispatcher L0 and Expander",
+      "tags": [
+        "shortcuts",
+        "m2-dispatcher"
+      ],
+      "file": "skills/m2-dispatcher/SKILL.md",
+      "must_contain": [
+        "/status",
+        "/ingest <text_or_image>",
+        "/learn <topic_or_url>",
+        "/dash",
+        "/retro",
+        "goal-supervisor.py status --check",
+        "cli.py digest --date today --aidash",
+        "retro_story_engine.py agent-efficiency --auto-propose"
+      ],
+      "registered_at": "2026-11-10"
     }
   ]
 }

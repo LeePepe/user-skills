@@ -16,12 +16,60 @@ PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 CINDY_PKG_HOME="${CINDY_PKG_HOME:-$HOME/Library/Application Support/CindyGlobal/pi-package-home}"
 CINDY_PKG_DIR="$CINDY_PKG_HOME/cindy-skill-slash-expander"
 
-mkdir -p "$PI_AGENT_DIR/extensions"
+mkdir -p "$PI_AGENT_DIR/extensions" "$PI_AGENT_DIR/prompts"
 cp "$EXT_SRC" "$PI_AGENT_DIR/extensions/skill-slash-expander.ts"
+
+write_shortcut_prompts() {
+  local prompts_dir="$1"
+  mkdir -p "$prompts_dir"
+
+  cat > "$prompts_dir/status.md" <<'EOF'
+---
+description: "Run goal-supervisor.py status --check and display the 'needs a person' pinned status view."
+argument-hint: "[optional filter or goal]"
+---
+/status $@
+EOF
+
+  cat > "$prompts_dir/ingest.md" <<'EOF'
+---
+description: "Route inspiration text or image to design-studio (Entry A) design_catalog.py vault-ingest (auto-adds --measure-palette for images)."
+argument-hint: "<text_or_image>"
+---
+/ingest $@
+EOF
+
+  cat > "$prompts_dir/learn.md" <<'EOF'
+---
+description: "Route topic or URL to knowledge-digest dual-channel digest, archive card, and sync knowledge-vault/index.md."
+argument-hint: "<topic_or_url>"
+---
+/learn $@
+EOF
+
+  cat > "$prompts_dir/dash.md" <<'EOF'
+---
+description: "Trigger ~/Development/AIDash/aidata refresh and push today's AIDash briefing (python3 cli.py digest --date today --aidash)."
+argument-hint: "[optional context]"
+---
+/dash $@
+EOF
+
+  cat > "$prompts_dir/retro.md" <<'EOF'
+---
+description: "Run retro-loop retro_story_engine.py agent-efficiency --auto-propose and discover."
+argument-hint: "[optional scope]"
+---
+/retro $@
+EOF
+}
+
+write_shortcut_prompts "$PI_AGENT_DIR/prompts"
 
 if [[ -d "$CINDY_PKG_HOME" ]]; then
   mkdir -p "$CINDY_PKG_DIR/extensions" "$CINDY_PKG_DIR/prompts"
   cp "$EXT_SRC" "$CINDY_PKG_DIR/extensions/skill-slash-expander.ts"
+  write_shortcut_prompts "$CINDY_PKG_DIR/prompts"
 
   node - "$CINDY_PKG_HOME" "$CINDY_PKG_DIR" <<'NODE_EOF'
 const fs = require("fs");

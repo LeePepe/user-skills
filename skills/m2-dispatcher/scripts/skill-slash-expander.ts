@@ -25,6 +25,195 @@ export interface SkillMetadata {
 	skillDir: string;
 }
 
+export type ShortcutMacroName = "status" | "ingest" | "learn" | "dash" | "retro";
+
+export interface ShortcutMacroDefinition {
+	name: ShortcutMacroName;
+	skill: string;
+	description: string;
+	argumentHint?: string;
+	expand: (rawArgs: string) => string;
+}
+
+export interface ShortcutInvocation {
+	name: ShortcutMacroName;
+	skill: string;
+	args: string;
+	expandedText: string;
+}
+
+const IMAGE_PATH_EXT_RE = /\.(?:png|jpe?g|webp|gif|heic|avif|tiff?|bmp|svg)(?:$|[?#\s"'])/i;
+
+export function isLikelyImageArgument(rawArgs: string): boolean {
+	if (!rawArgs || typeof rawArgs !== "string") return false;
+	const trimmed = rawArgs.trim();
+	if (!trimmed) return false;
+	if (/--image\b/i.test(trimmed)) return true;
+	return IMAGE_PATH_EXT_RE.test(trimmed);
+}
+
+export const UNIVERSAL_SHORTCUT_MACROS: Readonly<Record<ShortcutMacroName, ShortcutMacroDefinition>> = {
+	status: {
+		name: "status",
+		skill: "m2-dispatcher",
+		description: "Run goal-supervisor.py status --check and display the 'needs a person' pinned view.",
+		expand: (rawArgs: string): string => {
+			const extra = rawArgs.trim();
+			return [
+				"/m2-dispatcher",
+				"Shortcut `/status`: run `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py status --check` directly and present the `needs a person` pinned status view.",
+				...(extra ? [`Additional context: ${extra}`] : []),
+			].join("\n");
+		},
+	},
+	ingest: {
+		name: "ingest",
+		skill: "design-studio",
+		description: "Route inspiration text or image to design-studio Entry A vault-ingest (auto-adds --measure-palette for images).",
+		argumentHint: "<text_or_image>",
+		expand: (rawArgs: string): string => {
+			const trimmed = rawArgs.trim();
+			const isImage = isLikelyImageArgument(trimmed);
+			const cmdHint = isImage
+				? `python3 ~/Development/user-skills/skills/design-studio/scripts/design_catalog.py vault-ingest --image ${JSON.stringify(trimmed)} --measure-palette`
+				: `python3 ~/Development/user-skills/skills/design-studio/scripts/design_catalog.py vault-ingest --text ${JSON.stringify(trimmed || "<text>")}`;
+			return [
+				"/design-studio",
+				`Shortcut \`/ingest\`: route to \`design-studio\` (Entry A) via \`${cmdHint}\`${isImage ? " (image detected: includes `--measure-palette`)" : ""}.`,
+				...(trimmed ? [`Input: ${trimmed}`] : []),
+			].join("\n");
+		},
+	},
+	learn: {
+		name: "learn",
+		skill: "knowledge-digest",
+		description: "Route topic or URL to knowledge-digest dual-channel digest, archive card, and sync knowledge-vault/index.md.",
+		argumentHint: "<topic_or_url>",
+		expand: (rawArgs: string): string => {
+			const trimmed = rawArgs.trim();
+			return [
+				"/knowledge-digest",
+				"Shortcut `/learn`: execute `knowledge-digest` dual-channel digest and archive the card into `~/Development/Personal/knowledge-vault/` while syncing `~/Development/Personal/knowledge-vault/index.md`.",
+				...(trimmed ? [`Topic or URL: ${trimmed}`] : []),
+			].join("\n");
+		},
+	},
+	dash: {
+		name: "dash",
+		skill: "m2-dispatcher",
+		description: "Trigger ~/Development/AIDash/aidata refresh and push today's AIDash digest briefing.",
+		expand: (rawArgs: string): string => {
+			const extra = rawArgs.trim();
+			return [
+				"/m2-dispatcher",
+				"Shortcut `/dash`: refresh `~/Development/AIDash/aidata` and push today's `AIDash` briefing by running `cd ~/Development/AIDash/aidata && python3 cli.py digest --date today --aidash`.",
+				...(extra ? [`Additional context: ${extra}`] : []),
+			].join("\n");
+		},
+	},
+	retro: {
+		name: "retro",
+		skill: "retro-loop",
+		description: "Run retro-loop retro_story_engine.py agent-efficiency --auto-propose and discover.",
+		expand: (rawArgs: string): string => {
+			const extra = rawArgs.trim();
+			return [
+				"/retro-loop",
+				"Shortcut `/retro`: run `retro-loop` via `python3 ~/Development/user-skills/skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose` and `python3 ~/Development/user-skills/skills/retro-loop/scripts/retro_story_engine.py discover`.",
+				...(extra ? [`Additional context: ${extra}`] : []),
+			].join("\n");
+		},
+	},
+};
+
+const SHORTCUT_LEADING_LINE_RE = /^(\s*)\/(?:skill:)?(status|ingest|learn|dash|retro)(?=$|\s)(.*)$/i;
+const SHORTCUT_TOKEN_REGEX = /(?:^|(?<=[\s,;，；(（\[【"'`]))\/(?:skill:)?(status|ingest|learn|dash|retro)(?=$|[\s,;:，；：。)）\]】"'`!?！？])/gi;
+
+export function extractShortcutInvocations(text: string): ShortcutInvocation[] {
+	if (!text || typeof text !== "string") return [];
+	const invocations: ShortcutInvocation[] = [];
+	const seen = new Set<ShortcutMacroName>();
+
+	for (const line of text.split(/\r?\n/)) {
+		const m = line.match(SHORTCUT_LEADING_LINE_RE);
+		if (m) {
+			const macroName = m[2].toLowerCase() as ShortcutMacroName;
+			const def = UNIVERSAL_SHORTCUT_MACROS[macroName];
+			if (def && !seen.has(macroName)) {
+				seen.add(macroName);
+				const args = (m[3] ?? "").trim();
+				invocations.push({
+					name: macroName,
+					skill: def.skill,
+					args,
+					expandedText: def.expand(args),
+				});
+			}
+		}
+	}
+
+	for (const match of text.matchAll(SHORTCUT_TOKEN_REGEX)) {
+		const macroName = match[1]?.toLowerCase() as ShortcutMacroName | undefined;
+		if (!macroName || seen.has(macroName)) continue;
+		const def = UNIVERSAL_SHORTCUT_MACROS[macroName];
+		if (!def) continue;
+		seen.add(macroName);
+		const afterIdx = (match.index ?? 0) + match[0].length;
+		const restOfLine = text.slice(afterIdx).split(/\r?\n/, 1)[0]?.trim() ?? "";
+		invocations.push({
+			name: macroName,
+			skill: def.skill,
+			args: restOfLine,
+			expandedText: def.expand(restOfLine),
+		});
+	}
+
+	return invocations;
+}
+
+export function expandShortcutMacros(text: string): {
+	transformed: boolean;
+	text: string;
+	invocations: ShortcutInvocation[];
+} {
+	if (!text || typeof text !== "string") {
+		return { transformed: false, text: text ?? "", invocations: [] };
+	}
+	const lines = text.split(/\r?\n/);
+	let transformed = false;
+	const invocations: ShortcutInvocation[] = [];
+	const nextLines = lines.map((line) => {
+		const m = line.match(SHORTCUT_LEADING_LINE_RE);
+		if (!m) return line;
+		const indent = m[1] ?? "";
+		const macroName = m[2].toLowerCase() as ShortcutMacroName;
+		const def = UNIVERSAL_SHORTCUT_MACROS[macroName];
+		if (!def) return line;
+		const args = (m[3] ?? "").trim();
+		const expandedText = def.expand(args);
+		transformed = true;
+		invocations.push({
+			name: macroName,
+			skill: def.skill,
+			args,
+			expandedText,
+		});
+		return indent ? `${indent}${expandedText}` : expandedText;
+	});
+	if (transformed) {
+		return {
+			transformed: true,
+			text: nextLines.join("\n"),
+			invocations,
+		};
+	}
+	return {
+		transformed: false,
+		text,
+		invocations: extractShortcutInvocations(text),
+	};
+}
+
 const SLASH_TOKEN_REGEX = /(?:^|(?<=[\s,;，；(（\[【"'`]))\/(?:skill:)?([a-z0-9][a-z0-9-]{0,63})(?=$|[\s,;:，；：。)）\]】"'`!?！？])/gi;
 
 const ALLOWED_M2_SPEC_PATTERNS: readonly RegExp[] = [
@@ -459,6 +648,8 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	let skillCatalog = discoverSkills();
 	const injectedSkills = new Set<string>();
 	const pendingQueue = new Set<string>();
+	const pendingShortcutInvocations = new Map<string, ShortcutInvocation>();
+	const injectedShortcuts = new Set<string>();
 	let scannedHistory = false;
 
 	const origRegisterTool = (pi as { registerTool?: (tool: unknown, ...rest: unknown[]) => unknown }).registerTool;
@@ -532,6 +723,10 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 				for (const s of entry.data?.skills ?? []) {
 					if (typeof s === "string") injectedSkills.add(s.toLowerCase());
 				}
+				const recordedShortcuts = (entry.data as { shortcuts?: string[] } | undefined)?.shortcuts;
+				for (const sc of recordedShortcuts ?? []) {
+					if (typeof sc === "string") injectedShortcuts.add(sc);
+				}
 				continue;
 			}
 
@@ -547,6 +742,15 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 			}
 
 			if (msg.role === "user" && text) {
+				for (const sc of extractShortcutInvocations(text)) {
+					const key = `${sc.name}:${sc.args}`;
+					if (!injectedShortcuts.has(key) && !text.includes(sc.expandedText)) {
+						pendingShortcutInvocations.set(key, sc);
+					}
+					if (!injectedSkills.has(sc.skill)) {
+						pendingQueue.add(sc.skill);
+					}
+				}
 				for (const skillName of extractSkillTokens(text, skillCatalog)) {
 					if (!injectedSkills.has(skillName)) {
 						pendingQueue.add(skillName);
@@ -559,6 +763,8 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		injectedSkills.clear();
 		pendingQueue.clear();
+		pendingShortcutInvocations.clear();
+		injectedShortcuts.clear();
 		scannedHistory = false;
 		alignGeminiModelRuntimeConfig(ctx);
 		sanitizeRegisteredToolsInPlace(pi);
@@ -639,15 +845,34 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 		}
 
 		refreshCatalog(ctx);
-		const matchedSkills = extractSkillTokens(text, skillCatalog);
-		if (matchedSkills.length === 0) {
-			return { action: "continue" };
+		const macroResult = expandShortcutMacros(text);
+		for (const sc of macroResult.invocations) {
+			const key = `${sc.name}:${sc.args}`;
+			if (macroResult.transformed) {
+				injectedShortcuts.add(key);
+				pendingShortcutInvocations.delete(key);
+			} else if (!injectedShortcuts.has(key)) {
+				pendingShortcutInvocations.set(key, sc);
+			}
+			if (!injectedSkills.has(sc.skill) && skillCatalog.has(sc.skill)) {
+				pendingQueue.add(sc.skill);
+			}
 		}
 
+		const effectiveText = macroResult.transformed ? macroResult.text : text;
+		const matchedSkills = extractSkillTokens(effectiveText, skillCatalog);
 		for (const skillName of matchedSkills) {
 			if (!injectedSkills.has(skillName)) {
 				pendingQueue.add(skillName);
 			}
+		}
+
+		if (macroResult.transformed) {
+			return { action: "transform", text: macroResult.text };
+		}
+
+		if (matchedSkills.length === 0) {
+			return { action: "continue" };
 		}
 
 		if (matchedSkills.length === 1) {
@@ -695,6 +920,16 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 				}
 			}
 
+			for (const sc of extractShortcutInvocations(promptText)) {
+				const key = `${sc.name}:${sc.args}`;
+				if (!injectedShortcuts.has(key) && !promptText.includes(sc.expandedText)) {
+					pendingShortcutInvocations.set(key, sc);
+				}
+				if (!injectedSkills.has(sc.skill) && skillCatalog.has(sc.skill)) {
+					pendingQueue.add(sc.skill);
+				}
+			}
+
 			for (const skillName of extractSkillTokens(promptText, skillCatalog)) {
 				if (!injectedSkills.has(skillName)) {
 					pendingQueue.add(skillName);
@@ -712,7 +947,16 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 			toInject.push(meta);
 		}
 
-		if (toInject.length === 0) {
+		const shortcutDirectives: string[] = [];
+		for (const [key, sc] of pendingShortcutInvocations.entries()) {
+			if (!injectedShortcuts.has(key)) {
+				shortcutDirectives.push(`<shortcut-macro name="/${sc.name}" skill="${sc.skill}">\n${sc.expandedText}\n</shortcut-macro>`);
+				injectedShortcuts.add(key);
+			}
+			pendingShortcutInvocations.delete(key);
+		}
+
+		if (toInject.length === 0 && shortcutDirectives.length === 0) {
 			return undefined;
 		}
 
@@ -728,23 +972,32 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 			}
 		}
 
-		if (blocks.length === 0) {
+		if (blocks.length === 0 && shortcutDirectives.length === 0) {
 			return undefined;
 		}
 
 		try {
 			pi.appendEntry("skill-slash-expanded-state", {
 				skills: [...injectedSkills],
+				shortcuts: [...injectedShortcuts],
 			});
 		} catch {
 			// Ignore if appendEntry is unavailable in mock/test harness
 		}
 
-		const combinedPayload = [
-			`The user invoked the following skill(s): ${newlyInjected.map((n) => `/${n}`).join(", ")}. Follow their instructions now.`,
-			"",
-			...blocks,
-		].join("\n\n");
+		const payloadParts: string[] = [];
+		if (newlyInjected.length > 0) {
+			payloadParts.push(
+				`The user invoked the following skill(s): ${newlyInjected.map((n) => `/${n}`).join(", ")}. Follow their instructions now.`,
+			);
+		}
+		if (shortcutDirectives.length > 0) {
+			payloadParts.push(...shortcutDirectives);
+		}
+		if (blocks.length > 0) {
+			payloadParts.push(...blocks);
+		}
+		const combinedPayload = payloadParts.join("\n\n");
 
 		return {
 			message: {
