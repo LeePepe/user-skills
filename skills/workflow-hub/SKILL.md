@@ -15,7 +15,7 @@ description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创�
 图谱不规定固定数量或串行顺序；当前挂载的能力节点包括：
 
 - **Idea & Goal State** — `linear-board`：TIA `Triage`/`Backlog`、`1 Goal = 1 Issue`、Task checklist 与 `Promote Idea -> Goal`。
-- **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、`my-designer`、`visual-design-modernization`、`design-studio`：收敛事实、领域、架构与视觉决策，冻结 `spec.md`/`design.md`。
+- **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、`my-designer`、`design-studio`：收敛事实、领域、架构与视觉决策，冻结 `spec.md`/`design.md`。
 - **Autonomous Build, Review & Merge** — `m2-dispatcher`、`team-lead`、`code-review` 与 `ci-monitor.py`（`pr_monitor`）：完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
 - **Product Delivery & Release** — 产品／共享底座交付及真实发布读回。
 - **Learning & Narrative** — `retro-loop` 与 `story-craft`：把项目／工程证据和脱敏叙事回流为下一轮 Idea 或 Goal。

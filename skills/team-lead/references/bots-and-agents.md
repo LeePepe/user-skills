@@ -58,7 +58,7 @@ UI/UX design is handled by `Steering` during Phase 0 co-design and by `Writer` d
 |---|---|
 | SwiftUI 图表、数据联动与可视化 | `my-designer` + `design-studio`（按平台防火墙穿透 `apple-design-skill` 与 `impeccable` Native 子集） |
 | SwiftUI 界面、布局与材质（iOS 26／macOS 26） | `my-designer` + `design-studio`（禁载 Web 专属 `taste-skill` 与 Tailwind/Shadcn 规则） |
-| UI 视觉现代化与客观评审 | `visual-design-modernization` + `my-designer` |
+| UI 视觉现代化与客观评审 | `my-designer`（含 `modernization-dimensions.md` 与 Visual Traceback）+ `design-studio` |
 | macOS / iOS SwiftPM 打包、测试与构建 | `xcode-cli` |
 
 所有配额水位、缓存粘性与轻重意图路由由本机网关 **`Magpie (:3425)`** 的三组逻辑模型统一接管（不可达时按 [runtime-profiles.yaml](runtime-profiles.yaml) 回退）：

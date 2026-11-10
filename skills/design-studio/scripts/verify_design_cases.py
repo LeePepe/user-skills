@@ -1,0 +1,1 @@
+../../my-designer/scripts/verify_design_cases.py

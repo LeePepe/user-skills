@@ -538,7 +538,7 @@ def command_flow_map(args: argparse.Namespace) -> int:
     web_vault = _load_json(ds_refs / "vault" / "web.json")
     catalog = _load_json(ds_refs / "catalog.json")
 
-    l1_md_files = sorted((ROOT / "references").glob("*.md"))
+    l1_md_files = sorted(p for p in (ROOT / "references").glob("*.md") if not p.is_symlink())
     l1_line_counts = {
         f"skills/my-designer/references/{p.name}": len(p.read_text(encoding="utf-8").splitlines())
         for p in l1_md_files

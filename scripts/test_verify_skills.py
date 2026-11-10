@@ -622,27 +622,67 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:
         designer_dir = SKILLS_DIR / "my-designer"
+        studio_dir = SKILLS_DIR / "design-studio"
         modernization_dir = SKILLS_DIR / "visual-design-modernization"
+        self.assertFalse(
+            modernization_dir.exists(),
+            "skills/visual-design-modernization must remain retired into my-designer/references/modernization-dimensions.md",
+        )
         designer_text = (designer_dir / "SKILL.md").read_text(encoding="utf-8")
+        studio_text = (studio_dir / "SKILL.md").read_text(encoding="utf-8")
         routing_text = (designer_dir / "references" / "routing-index.md").read_text(encoding="utf-8")
         cases_text = (designer_dir / "references" / "defect-cases" / "index.json").read_text(encoding="utf-8")
-        modernization_text = (modernization_dir / "SKILL.md").read_text(encoding="utf-8")
+        modernization_text = (designer_dir / "references" / "modernization-dimensions.md").read_text(encoding="utf-8")
         goal_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
 
         for path in (
             designer_dir / "SKILL.md",
             designer_dir / "references" / "routing-index.md",
+            designer_dir / "references" / "modernization-dimensions.md",
             designer_dir / "references" / "defect-cases" / "index.json",
             designer_dir / "scripts" / "verify_design_cases.py",
-            modernization_dir / "SKILL.md",
+            studio_dir / "SKILL.md",
+            studio_dir / "scripts" / "design_catalog.py",
         ):
             with self.subTest(path=str(path)):
                 self.assertTrue(path.is_file())
+
+        shared_design_scripts = ("verify_design_cases.py", "design_catalog.py")
+        for script_name in shared_design_scripts:
+            md_script = designer_dir / "scripts" / script_name
+            ds_script = studio_dir / "scripts" / script_name
+            self.assertTrue(md_script.exists(), f"Missing shared design script in my-designer: {md_script}")
+            self.assertTrue(ds_script.exists(), f"Missing shared design script in design-studio: {ds_script}")
+            self.assertEqual(md_script.resolve(), ds_script.resolve())
+
+        shared_design_refs = (
+            "appearance-ledger.md",
+            "breathing-and-clarity.md",
+            "design-flow-architecture.md",
+            "interaction-layering.md",
+            "routing-index.md",
+            "modernization-dimensions.md",
+            "defect-cases",
+            "catalog.json",
+            "taxonomy-v2.json",
+            "remotion-video.md",
+            "toolchain-20-matrix.md",
+            "vault",
+        )
+        for ref_name in shared_design_refs:
+            md_ref = designer_dir / "references" / ref_name
+            ds_ref = studio_dir / "references" / ref_name
+            self.assertTrue(md_ref.exists(), f"Missing shared design reference in my-designer: {md_ref}")
+            self.assertTrue(ds_ref.exists(), f"Missing shared design reference in design-studio: {ds_ref}")
+            self.assertEqual(md_ref.resolve(), ds_ref.resolve())
+
         for token in ("L0 -> L1 -> L2", "Plan A", "Plan C"):
             self.assertIn(token, routing_text)
         self.assertIn("plan-a-apple-hig", cases_text)
         self.assertIn("handoff-only", designer_text)
+        self.assertIn("Entry B", designer_text)
+        self.assertIn("Entry A", studio_text)
         self.assertNotIn("艺术家", goal_text)
         self.assertNotIn("艺术家", agents_text)
         self.assertNotIn("执行设计总审门禁", agents_text)
@@ -650,6 +690,7 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("downstream `Writer`", designer_text)
         self.assertIn("Author the implementation-ready `design.md`/`spec.md` handoff and receipts", designer_text)
         self.assertIn("the downstream `Writer` implements **directly in the product or `shared-design-system` code**", designer_text)
+        self.assertIn("No Code Demo", designer_text)
         self.assertIn("No Code Demo", modernization_text)
 
     def test_bot_tl_orchestration_shared_components_contract(self) -> None:
