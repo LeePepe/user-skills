@@ -1,7 +1,7 @@
 {
   "schema": "apple-design-defect-cases/v1",
   "version": 3,
-  "updated": "2026-11-09",
+  "updated": "2026-11-10",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
@@ -118,6 +118,62 @@
       "fix_rule": "Enforce a shared column geometry contract between Header and Row (identical fixed column widths, identical maxWidth: .infinity flex columns, identical per-column alignment, and 100% matching outer HStack spacing/padding, or use SwiftUI Grid / GridRow); never pair a maxWidth: .infinity header column with fixed-width-only data rows.",
       "forbidden_regex": "var\\s+\\w*[Hh]eader\\w*\\s*:\\s*some\\s+View\\s*\\{[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?maxWidth\\s*:\\s*\\.infinity[\\s\\S]{0,600}?var\\s+\\w*[Rr]ow\\w*\\s*:\\s*some\\s+View\\s*\\{(?![\\s\\S]{0,450}?maxWidth\\s*:\\s*\\.infinity)[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?\\.frame\\(\\s*width\\s*:",
       "registered_at": "2026-11-09"
+    },
+    {
+      "id": "DC-006",
+      "title": "Static HTML Raw YAML Frontmatter Leak Above Doctype",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "typography-copy"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Static .html files served with .nojekyll or direct HTTP start with --- layout: null ... --- YAML frontmatter, rendering raw metadata text across the top of the browser viewport.",
+      "fix_rule": "Every static HTML entry file must start with <!doctype html> on line 1; handle routing via directory structure (/route/index.html) rather than Jekyll frontmatter.",
+      "forbidden_regex": "\\A---\\s*\\n[\\s\\S]{1,400}?\\n---\\s*\\n\\s*<!doctype html>",
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-007",
+      "title": "Web Prose Decorative Emoji Heading & Box-in-Box Callout Clutter",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "typography-copy",
+        "layout-navigation"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Long-form Web prose prefixes section headings with decorative Emojis (📌/❓/✅/🎬/🏷️) and wraps every Q&A or checklist in its own bordered card, creating wireframe clutter.",
+      "fix_rule": "Use quiet editorial typography: native blockquote (4px left accent bar) for TL;DR, standard h2/h3 + 1px hairline dividers for Q&A/checklists, zero nested .card cages inside .prose, and zero decorative heading Emojis.",
+      "forbidden_regex": "<h[1-4][^>]*>\\s*[📌❓✅🎬🏷️💡🔥✨🎯🚀]",
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-008",
+      "title": "Web Prose Table Global white-space:nowrap Horizontal Overflow",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "typography-copy",
+        "component"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Applying white-space: nowrap to all .prose th, .prose td forces multi-column CJK prose tables onto single lines, overflowing 680px desktop cards and clipping 390px mobile viewports.",
+      "fix_rule": "Allow natural text wrapping on .prose td (white-space: normal; min-width: 96px) inside an overflow-x: auto table container, and restrict white-space: nowrap to .num, time, or short code columns.",
+      "forbidden_regex": "\\.prose\\s+th\\s*,\\s*\\.prose\\s+td\\s*\\{[^}]*white-space\\s*:\\s*nowrap",
+      "registered_at": "2026-11-10"
     }
   ],
   "archived_templates": [
