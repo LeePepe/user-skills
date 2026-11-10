@@ -14,7 +14,8 @@ SCRIPT = Path(__file__).with_name("discover_review_context.py")
 
 
 def run(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=check)
+    env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=check)
 
 
 def write(root: Path, relative: str, content: str) -> None:

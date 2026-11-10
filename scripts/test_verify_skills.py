@@ -664,6 +664,7 @@ class VerifySkillsTests(unittest.TestCase):
             "routing-index.md",
             "modernization-dimensions.md",
             "defect-cases",
+            "eval-cases.json",
             "catalog.json",
             "taxonomy-v2.json",
             "remotion-video.md",
@@ -2150,6 +2151,131 @@ assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session 
             self.assertIn("ImageRenderer", text)
             self.assertIn("spec_sha", text)
             self.assertIn("sink-rule", text)
+
+    def test_skill_contract_add_case_and_eval_engine(self) -> None:
+        script = SKILLS_DIR / "skill-contract" / "scripts" / "skill_contract.py"
+        self.assertTrue(script.is_file())
+
+        audit_res = subprocess.run(
+            [sys.executable, str(script), "audit", "--all", "--strict"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        audit_payload = json.loads(audit_res.stdout)
+        self.assertTrue(audit_payload.get("ok"), f"audit --all --strict failed: {audit_payload}")
+
+        eval_res = subprocess.run(
+            [sys.executable, str(script), "eval", "--all", "--strict"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        eval_payload = json.loads(eval_res.stdout)
+        self.assertTrue(eval_payload.get("ok"), f"eval --all --strict failed: {eval_payload}")
+        self.assertGreaterEqual(eval_payload.get("drawers_evaluated", 0), 5)
+        self.assertGreaterEqual(eval_payload.get("cases_run", 0), 17)
+        self.assertEqual(eval_payload.get("passed"), eval_payload.get("cases_run"))
+        self.assertEqual(eval_payload.get("failures"), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            drawer = Path(tmp) / "eval-cases.json"
+            pass_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "add-case",
+                    "--skill",
+                    "skill-contract",
+                    "--drawer",
+                    str(drawer),
+                    "--id",
+                    "auto",
+                    "--title",
+                    "Reject inline force unwrap in sample pattern",
+                    "--tags",
+                    "safety,regex",
+                    "--forbidden-regex",
+                    r"try!\s+\w+",
+                    "--bad-snippet",
+                    "let x = try! load()",
+                    "--good-snippet",
+                    "let x = try? load()",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            pass_data = json.loads(pass_res.stdout)
+            self.assertTrue(pass_data["ok"])
+            self.assertEqual(pass_data["id"], "EV-001")
+            saved_doc = json.loads(drawer.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved_doc["active_cases"]), 1)
+
+            # Reject when good_snippet falsely trips forbidden_regex
+            bad_regex_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "add-case",
+                    "--skill",
+                    "skill-contract",
+                    "--drawer",
+                    str(drawer),
+                    "--id",
+                    "auto",
+                    "--title",
+                    "Overly broad regex trips good snippet",
+                    "--tags",
+                    "safety",
+                    "--forbidden-regex",
+                    r"load\(\)",
+                    "--bad-snippet",
+                    "let x = try! load()",
+                    "--good-snippet",
+                    "let x = try? load()",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(bad_regex_res.returncode, 0)
+            self.assertEqual(len(json.loads(drawer.read_text(encoding="utf-8"))["active_cases"]), 1)
+
+            # Reject when private identifier leaks into case
+            private_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "add-case",
+                    "--skill",
+                    "skill-contract",
+                    "--drawer",
+                    str(drawer),
+                    "--id",
+                    "auto",
+                    "--title",
+                    "Leak progressRail private symbol",
+                    "--tags",
+                    "privacy",
+                    "--forbidden-regex",
+                    r"progressRail",
+                    "--bad-snippet",
+                    "progressRail = 1",
+                    "--good-snippet",
+                    "rail = 1",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(private_res.returncode, 0)
+            self.assertEqual(len(json.loads(drawer.read_text(encoding="utf-8"))["active_cases"]), 1)
 
 
 

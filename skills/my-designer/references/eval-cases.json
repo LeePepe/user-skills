@@ -1,0 +1,88 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-10",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Web Platform Equal First-Class Routing & Native-Only Source Firewall",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py route --platform web --dimensions visual-style,motion-interaction",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"allowed_web\"",
+        "\"blocked_native_only_sources\""
+      ],
+      "expect_json_subset": {
+        "ok": true,
+        "platform": "web"
+      },
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-002",
+      "title": "Desktop Platform Native-Only Routing & Web-Only Source Firewall",
+      "platforms": [
+        "desktop"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "NavigationSplitView"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py route --platform desktop --dimensions layout-navigation,component",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"allowed_native\"",
+        "\"blocked_web_only_sources\""
+      ],
+      "expect_json_subset": {
+        "ok": true,
+        "platform": "desktop"
+      },
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-003",
+      "title": "Dual-Entry Flow-Map & Anti-Explosion L1 Budget Health Check",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "WebViewport"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py flow-map",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "anti_explosion_valves.all_l1_docs_within_budget": true
+      },
+      "file": "skills/my-designer/SKILL.md",
+      "must_contain": [
+        "Visual Traceback",
+        "[IMPL_BUG]",
+        "[SPEC_GAP]",
+        "No Code Demo"
+      ],
+      "registered_at": "2026-11-10"
+    }
+  ]
+}
