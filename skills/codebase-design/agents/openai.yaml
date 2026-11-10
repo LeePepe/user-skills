@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codebase Design"
-  short_description: "Design deep modules and clean implementation seams"
-  default_prompt: "Use $codebase-design to choose a deep module interface and seam for this plan."
+  display_name: "Codebase Design & Domain Modeling"
+  short_description: "Design deep modules, clean seams, CONTEXT.md glossaries, and ADRs"
+  default_prompt: "Use $codebase-design to choose a deep module interface and seam, refine CONTEXT.md terminology, or record a qualifying ADR."

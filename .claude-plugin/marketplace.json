@@ -67,13 +67,7 @@
       "name": "codebase-design",
       "source": "./skills/codebase-design",
       "category": "repo",
-      "description": "Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary."
-    },
-    {
-      "name": "domain-modeling",
-      "source": "./skills/domain-modeling",
-      "category": "repo",
-      "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR."
+      "description": "Shared vocabulary and discipline for designing deep modules and sharpening domain models. Use when designing or improving module interfaces, finding deepening opportunities, deciding seam placement, making code more testable or AI-navigable, refining ubiquitous language, writing or editing CONTEXT.md, or recording an ADR."
     },
     {
       "name": "my-designer",

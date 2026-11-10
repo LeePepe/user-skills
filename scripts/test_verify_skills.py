@@ -32,6 +32,7 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/retro-loop/SKILL.md": 16 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
     "skills/my-designer/SKILL.md": 12 * 1024,
+    "skills/codebase-design/SKILL.md": 12 * 1024,
     "skills/team-lead/references/bots-and-agents.md": 38 * 1024,
     "skills/team-lead/references/ledger.md": 18 * 1024,
     "skills/team-lead/references/runtime-profiles.yaml": 34 * 1024,
@@ -2455,6 +2456,36 @@ try {
             self.assertEqual(eval_repo_payload["cases_run"], 1)
             self.assertEqual(eval_repo_payload["passed"], 1)
 
+    def test_domain_modeling_consolidated_into_codebase_design(self) -> None:
+        self.assertFalse(
+            (SKILLS_DIR / "domain-modeling").exists(),
+            "skills/domain-modeling must remain merged into skills/codebase-design",
+        )
+        marketplace = json.loads(
+            (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+        )
+        plugin_names = {plugin.get("name") for plugin in marketplace.get("plugins", [])}
+        self.assertIn("codebase-design", plugin_names)
+        self.assertNotIn("domain-modeling", plugin_names)
+
+        codebase_dir = SKILLS_DIR / "codebase-design"
+        skill_md = codebase_dir / "SKILL.md"
+        skill_text = skill_md.read_text(encoding="utf-8")
+        self.assertLessEqual(len(skill_text.splitlines()), 120)
+        self.assertLessEqual(skill_md.stat().st_size, 12 * 1024)
+        for block in FENCED_CODE_RE.findall(skill_text):
+            inner_lines = block.splitlines()[1:-1]
+            self.assertLessEqual(len(inner_lines), 25)
+
+        for ref_name in ("ADR-FORMAT.md", "CONTEXT-FORMAT.md", "DEEPENING.md", "DESIGN-IT-TWICE.md", "PHASE0-PROPOSAL-CHECKPOINT.md"):
+            ref_path = codebase_dir / "references" / ref_name
+            self.assertTrue(ref_path.is_file(), f"Missing {ref_path}")
+            self.assertIn(f"references/{ref_name}", skill_text)
+
+        context_text = (codebase_dir / "references" / "CONTEXT-FORMAT.md").read_text(encoding="utf-8")
+        for block in FENCED_CODE_RE.findall(context_text):
+            inner_lines = block.splitlines()[1:-1]
+            self.assertLessEqual(len(inner_lines), 25)
 
 
 if __name__ == "__main__":
