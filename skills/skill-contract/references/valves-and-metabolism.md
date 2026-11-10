@@ -20,3 +20,7 @@ When adding an L1 mental model, replace the least useful row in the same table. 
 ## Audit scope
 
 `audit --all` checks local `skills/*`; it also checks `Skills/skills/meta` and `Skills/skills/repo` when those directories exist. `--skill` narrows to one package. `--json` emits machine-readable findings. `--strict` turns findings into a failing exit status.
+
+## Description-eval (opt-in)
+
+Not part of `audit`. Scores the `SKILL.md` frontmatter `description` against `evals/description-eval.json` with a lexical overlap proxy (not a model). Cases are `{id, prompt, should_trigger}`. `--apply` may add missing positive-cue tokens, writes only when the pass count does not fall, then runs the same checks as `audit --skill X --strict`. Any finding restores the previous file.

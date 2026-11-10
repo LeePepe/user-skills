@@ -23,6 +23,16 @@ DRAWERS = {
     "build-cases.json": ("active_cases", ("routes",)),
     "source-tiers.json": ("high_signal_tiers", ("topics", "patterns")),
 }
+STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "to", "of", "for", "in", "on", "with", "when",
+    "use", "this", "that", "skill", "skills", "user", "users", "from", "into",
+    "as", "by", "is", "be", "it", "its", "at", "if", "not", "do", "does",
+    "how", "what", "any", "all",
+})
+TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{1,}|[\u4e00-\u9fff]{2,}", re.I)
+DEFAULT_TRIGGER_THRESHOLD = 0.2
+DESCRIPTION_CUE_CAP = 8
+DESCRIPTION_CHAR_CAP = 600
 
 
 def package_roots() -> list[Path]:
@@ -180,18 +190,220 @@ def audit(args: argparse.Namespace) -> int:
     return 1 if findings and args.strict else 0
 
 
+def tokens(text: str) -> list[str]:
+    found: list[str] = []
+    for match in TOKEN_RE.finditer(text):
+        token = match.group(0).lower()
+        if token not in STOPWORDS:
+            found.append(token)
+    return found
+
+
+def overlap_ratio(prompt: str, description: str) -> float:
+    prompt_tokens = set(tokens(prompt))
+    if not prompt_tokens:
+        return 0.0
+    return len(prompt_tokens & set(tokens(description))) / len(prompt_tokens)
+
+
+def parse_description(text: str) -> str:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("missing frontmatter")
+    end = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+    if end is None:
+        raise ValueError("missing frontmatter close")
+    for line in lines[1:end]:
+        if not re.match(r"description\s*:", line):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] == '"':
+            return str(json.loads(raw))
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] == "'":
+            return raw[1:-1]
+        return raw
+    raise ValueError("missing description")
+
+
+def replace_description(text: str, description: str) -> str:
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("missing frontmatter")
+    end = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+    if end is None:
+        raise ValueError("missing frontmatter close")
+    quoted = json.dumps(description, ensure_ascii=False)
+    for index in range(1, end):
+        if re.match(r"description\s*:", lines[index]):
+            newline = "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f"description: {quoted}{newline}"
+            return "".join(lines)
+    lines.insert(1, f"description: {quoted}\n")
+    return "".join(lines)
+
+
+def score_evals(description: str, evals: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    for item in evals:
+        prompt = str(item["prompt"])
+        should_trigger = bool(item["should_trigger"])
+        ratio = overlap_ratio(prompt, description)
+        triggered = ratio >= threshold
+        cases.append({
+            "id": item.get("id"),
+            "prompt": prompt,
+            "should_trigger": should_trigger,
+            "ratio": round(ratio, 4),
+            "triggered": triggered,
+            "pass": triggered == should_trigger,
+        })
+    return {
+        "description": description,
+        "passed": sum(1 for case in cases if case["pass"]),
+        "total": len(cases),
+        "cases": cases,
+    }
+
+
+def _with_cues(description: str, cues: list[str]) -> str:
+    if not cues:
+        return description
+    base = description.rstrip().rstrip(".")
+    proposed = f"{base}. Use when: {', '.join(cues)}."
+    return proposed if len(proposed) <= DESCRIPTION_CHAR_CAP else description
+
+
+def propose_description(description: str, evals: list[dict[str, Any]], threshold: float) -> str:
+    baseline = score_evals(description, evals, threshold)
+    if baseline["passed"] == baseline["total"]:
+        return description
+    negative_tokens = {token for item in evals if not item.get("should_trigger") for token in tokens(str(item["prompt"]))}
+    present = set(tokens(description))
+    cues: list[str] = []
+    base_neg_fail = sum(1 for case in baseline["cases"] if not case["should_trigger"] and not case["pass"])
+    for case in baseline["cases"]:
+        if case["should_trigger"] and case["pass"]:
+            continue
+        if not case["should_trigger"]:
+            continue
+        for token in tokens(case["prompt"]):
+            if token in present or token in negative_tokens or token in cues:
+                continue
+            trial = _with_cues(description, cues + [token])
+            if trial == description:
+                continue
+            trial_score = score_evals(trial, evals, threshold)
+            trial_neg_fail = sum(1 for row in trial_score["cases"] if not row["should_trigger"] and not row["pass"])
+            if trial_neg_fail > base_neg_fail:
+                continue
+            cues.append(token)
+            present.add(token)
+            if len(cues) >= DESCRIPTION_CUE_CAP:
+                break
+        if len(cues) >= DESCRIPTION_CUE_CAP:
+            break
+    proposed = _with_cues(description, cues)
+    scored = score_evals(proposed, evals, threshold)
+    return proposed if scored["passed"] > baseline["passed"] else description
+
+
+def run_description_eval(
+    skill: str,
+    eval_file: str | None = None,
+    candidate: str | None = None,
+    apply: bool = False,
+    threshold: float | None = None,
+) -> tuple[int, dict[str, Any]]:
+    package = ROOT / "skills" / skill
+    markdown = package / "SKILL.md"
+    if not markdown.is_file():
+        raise SystemExit(f"skill not found: {skill}")
+    eval_path = Path(eval_file) if eval_file else package / "evals" / "description-eval.json"
+    if not eval_path.is_file():
+        return 2, {"ok": False, "error": "missing-eval-file", "path": str(eval_path)}
+    doc = json.loads(eval_path.read_text(encoding="utf-8"))
+    evals = doc.get("evals")
+    if not isinstance(evals, list) or not evals:
+        return 2, {"ok": False, "error": "empty-evals", "path": str(eval_path)}
+    gate = DEFAULT_TRIGGER_THRESHOLD if threshold is None else threshold
+    if threshold is None and isinstance(doc.get("threshold"), (int, float)):
+        gate = float(doc["threshold"])
+    original = markdown.read_text(encoding="utf-8")
+    current = parse_description(original)
+    baseline = score_evals(current, evals, gate)
+    proposed_text = candidate if candidate is not None else propose_description(current, evals, gate)
+    proposed = score_evals(proposed_text, evals, gate)
+    improved = proposed["passed"] > baseline["passed"]
+    result: dict[str, Any] = {
+        "ok": proposed["passed"] == proposed["total"],
+        "skill": skill,
+        "eval_file": str(eval_path),
+        "threshold": gate,
+        "baseline": baseline,
+        "proposed": proposed,
+        "improved": improved,
+        "applied": False,
+        "rolled_back": False,
+        "audit": None,
+    }
+    if not apply:
+        result["ok"] = baseline["passed"] == baseline["total"]
+        return (0 if result["ok"] else 1), result
+    if proposed_text == current:
+        result["apply_skipped"] = "unchanged"
+        result["ok"] = baseline["passed"] == baseline["total"]
+        return (0 if result["ok"] else 1), result
+    if proposed["passed"] < baseline["passed"]:
+        result["apply_skipped"] = "score-regressed"
+        result["ok"] = False
+        return 1, result
+    if candidate is None and not improved:
+        result["apply_skipped"] = "not-improved"
+        return 1, result
+    markdown.write_text(replace_description(original, proposed_text), encoding="utf-8")
+    findings = audit_package(package)
+    result["audit"] = {"ok": not findings, "findings": findings}
+    if findings:
+        markdown.write_text(original, encoding="utf-8")
+        result["applied"] = False
+        result["rolled_back"] = True
+        result["ok"] = False
+        return 1, result
+    result["applied"] = True
+    result["ok"] = proposed["passed"] == proposed["total"]
+    return (0 if result["ok"] else 1), result
+
+
+def description_eval(args: argparse.Namespace) -> int:
+    code, result = run_description_eval(
+        skill=args.skill,
+        eval_file=args.eval_file,
+        candidate=args.candidate,
+        apply=args.apply,
+        threshold=args.threshold,
+    )
+    print(json.dumps(result, indent=2))
+    return code
+
+
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init"); init.add_argument("--skill", required=True); init.add_argument("--category", required=True); init.add_argument("--design", action="store_true")
     sink = sub.add_parser("sink-rule"); sink.add_argument("--skill", required=True); sink.add_argument("--kind", choices=["regex-gate", "case-card", "mental-model"], required=True); sink.add_argument("--id"); sink.add_argument("--target-file"); sink.add_argument("--replace-row"); sink.add_argument("--section"); sink.add_argument("--value", default=""); sink.add_argument("--platforms", default="desktop,mobile,web"); sink.add_argument("--dimensions", default=""); sink.add_argument("--containers", default=""); sink.add_argument("--title", default=""); sink.add_argument("--severity", default="Medium"); sink.add_argument("--regex", default=""); sink.add_argument("--remediation", default="")
     audit_parser = sub.add_parser("audit"); group = audit_parser.add_mutually_exclusive_group(required=True); group.add_argument("--all", action="store_true"); group.add_argument("--skill"); audit_parser.add_argument("--json", action="store_true"); audit_parser.add_argument("--strict", action="store_true")
+    desc = sub.add_parser("description-eval")
+    desc.add_argument("--skill", required=True)
+    desc.add_argument("--eval-file")
+    desc.add_argument("--candidate")
+    desc.add_argument("--apply", action="store_true")
+    desc.add_argument("--threshold", type=float, default=None)
     return parser
 
 
 def main() -> int:
     args = parser().parse_args()
-    return {"init": init_skill, "sink-rule": sink_rule, "audit": audit}[args.command](args)
+    return {"init": init_skill, "sink-rule": sink_rule, "audit": audit, "description-eval": description_eval}[args.command](args)
 
 
 if __name__ == "__main__":
