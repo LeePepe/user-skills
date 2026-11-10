@@ -17,7 +17,8 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
   │      ├─ `retro/bot_tl_operations.sql`      (Steering/Writer 超时、解卡、配额异常)
   │      ├─ `retro/ci_health_and_noise.sql`    (CI 失败与空跑配置噪音)
   │      ├─ `retro/workspace_hygiene_reclaim.sql` (已合并未清理的残留 Worktree)
-  │      └─ `retro/tf_release_deliveries.sql`  (个人 App TestFlight 交付与异常)
+  │      ├─ `retro/tf_release_deliveries.sql`  (个人 App TestFlight 交付与异常)
+  │      └─ `retro/app_crash_and_perf.sql`     (7d 新 Crash 签名、Crash-Free 率与 P95 退化 >20%)
   ▼
 【2. 提出问题：retro-loop 根因归因 + 写入 `proposals.jsonl`】
   │  • 按 Project Loop A（个人 App 体验/UI/构建）与 Engineering Loop B（H1–H5 工作流分岔点）归因；

@@ -103,6 +103,95 @@ class Sw5Tests(unittest.TestCase):
             self.assertEqual(second["newly_cleaned_goals"], [])
             self.assertEqual(second["pruned_logs_count"], 0)
 
+    def test_discover_app_crash_and_perf_queues_proposals(self):
+        import contextlib
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wh = root / "warehouse.db"
+            qdir = root / "retro"
+            qdir.mkdir(parents=True)
+            proposals = root / "proposals.jsonl"
+
+            (qdir / "app_crash_and_perf.sql").write_text(
+                """
+                SELECT
+                    app_name,
+                    MAX(platform) AS platform,
+                    COUNT(*) AS total_events_7d,
+                    SUM(CASE WHEN event_kind = 'crash' THEN 1 ELSE 0 END) AS crash_count_7d,
+                    SUM(CASE WHEN event_kind = 'crash' THEN 1 ELSE 0 END) AS new_crash_signature_count,
+                    ROUND(1.0 - (1.0 * SUM(CASE WHEN event_kind = 'crash' THEN 1 ELSE 0 END) / COUNT(*)), 4) AS crash_free_rate_7d,
+                    MAX(signature) AS signature,
+                    MAX(stack_top_symbol) AS stack_top_symbol,
+                    MAX(metric_ms) AS p95_metric_ms_7d,
+                    MIN(metric_ms) AS p95_metric_ms_prev_7d,
+                    ROUND(CASE WHEN MIN(metric_ms) > 0 THEN ((MAX(metric_ms) - MIN(metric_ms)) * 100.0) / MIN(metric_ms) ELSE 0.0 END, 2) AS p95_regression_pct,
+                    CASE WHEN MIN(metric_ms) > 0 AND ((MAX(metric_ms) - MIN(metric_ms)) * 100.0) / MIN(metric_ms) > 20.0 THEN 1 ELSE 0 END AS is_perf_regressed
+                FROM fact_product_telemetry
+                GROUP BY app_name;
+                """,
+                encoding="utf-8",
+            )
+
+            with contextlib.closing(sqlite3.connect(wh)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE fact_product_telemetry (
+                        event_id TEXT PRIMARY KEY,
+                        app_name TEXT NOT NULL,
+                        app_version TEXT,
+                        build_number TEXT,
+                        platform TEXT,
+                        event_kind TEXT NOT NULL,
+                        signature TEXT,
+                        stack_top_symbol TEXT,
+                        metric_ms REAL,
+                        occurred_at TEXT NOT NULL,
+                        cst_day TEXT GENERATED ALWAYS AS (date(occurred_at, '+8 hours')) STORED
+                    )
+                    """
+                )
+                conn.executemany(
+                    "INSERT INTO fact_product_telemetry "
+                    "(event_id, app_name, app_version, build_number, platform, event_kind, "
+                    "signature, stack_top_symbol, metric_ms, occurred_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        ("e1", "AIDash", "2.0", "100", "macos", "perf", "aidash.ready_scene", "BriefingView.body", 100.0, "2026-11-01T02:00:00Z"),
+                        ("e2", "AIDash", "2.1", "108", "macos", "perf", "aidash.ready_scene", "BriefingView.body", 160.0, "2026-11-10T02:00:00Z"),
+                        ("e3", "VoxPocket", "1.4", "42", "macos", "crash", "EXC_BAD_ACCESS:Audio", "AudioEngine.start()", None, "2026-11-10T03:00:00Z"),
+                    ],
+                )
+                conn.commit()
+
+            report = ENGINE.discover_aidata_signals(
+                warehouse_db=wh,
+                queries_dir=qdir,
+                proposals_path=proposals,
+                auto_propose=True,
+            )
+            self.assertTrue(report["ok"])
+            self.assertFalse(report["degraded"])
+            props = report["project_loop_a_proposals"]
+            self.assertEqual(len(props), 2)
+            by_app = {p["app_name"]: p for p in props}
+            self.assertIn("VoxPocket", by_app)
+            self.assertEqual(by_app["VoxPocket"]["stack_top_symbol"], "AudioEngine.start()")
+            self.assertEqual(by_app["VoxPocket"]["recommended_layer"], "Packages/VoxPocketCore")
+            self.assertEqual(by_app["VoxPocket"]["verify_cmd"], "swift test")
+
+            self.assertIn("AIDash", by_app)
+            self.assertEqual(by_app["AIDash"]["event_kind"], "perf")
+            self.assertEqual(by_app["AIDash"]["recommended_layer"], "Packages/AIDashUI")
+            self.assertIn("AIDashUI", by_app["AIDash"]["verify_cmd"])
+
+            lines = [json.loads(ln) for ln in proposals.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertEqual(len(lines), 2)
+            self.assertTrue(all(ln["status"] == "pending" for ln in lines))
+
+
 
 if __name__ == "__main__":
     unittest.main()
