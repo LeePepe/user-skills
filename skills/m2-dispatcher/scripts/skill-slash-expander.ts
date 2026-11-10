@@ -378,13 +378,14 @@ export function discoverSkills(cwd?: string): Map<string, SkillMetadata> {
 	const home = os.homedir();
 	const effectiveCwd = cwd || process.cwd();
 
-	// 1. Project-local ancestors (.agents/skills, .claude/skills)
+	// 1. Project-local ancestors (.agents/skills, .claude/skills, skills)
 	let cursor = path.resolve(effectiveCwd);
 	const visitedDirs = new Set<string>();
 	while (cursor && !visitedDirs.has(cursor)) {
 		visitedDirs.add(cursor);
 		scanSkillsInDirectory(path.join(cursor, ".agents", "skills"), map);
 		scanSkillsInDirectory(path.join(cursor, ".claude", "skills"), map);
+		scanSkillsInDirectory(path.join(cursor, "skills"), map);
 		const parent = path.dirname(cursor);
 		if (parent === cursor) break;
 		cursor = parent;
