@@ -1,0 +1,61 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-10",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Classify Changes CLI Help & Route Option Contract",
+      "routes": [
+        "swiftpm",
+        "xcode",
+        "mixed",
+        "none"
+      ],
+      "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--flow-map",
+        "--register-case",
+        "--cases-file"
+      ],
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-002",
+      "title": "Neutral Documentation Path Resolves to Route 'none'",
+      "routes": [
+        "none"
+      ],
+      "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py README.md",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "route": "none",
+        "neutralFiles.0": "README.md"
+      },
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-003",
+      "title": "Xcode Project Metadata Path Resolves to Route 'xcode' & Flow-Map Budget Holds",
+      "routes": [
+        "xcode",
+        "swiftpm"
+      ],
+      "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py project.yml",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "route": "xcode",
+        "xcodeInputs.0.path": "project.yml"
+      },
+      "file": "skills/xcode-cli/SKILL.md",
+      "must_contain": [
+        "build-cases.json",
+        "eval-cases.json",
+        "swiftpm",
+        "xcodebuild"
+      ],
+      "registered_at": "2026-11-10"
+    }
+  ]
+}

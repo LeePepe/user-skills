@@ -27,6 +27,8 @@
       "symptom": "Agent treats the appearance-ledger component palette as a mandatory flat checklist, stacking 4+ sections (Hero + Donut + Duplicate Category Bars + Flattened Wallet List + Transactions) in one >1000pt ScrollView, and rewrites ShipSwift SWWallet from a ZStack 3D pocket stack into a flat VStack/ForEach list.",
       "fix_rule": "Apply the 3-Axis × P0..P3 Priority Matrix (Display / Action / Display+Action): cap any single viewport or split-view pane at 2-3 visual groups, collapse non-active groups (Accordion / Segmented Lens / Sheet), merge reference hints into placeholders/subtitles, and preserve ShipSwift SWWallet ZStack + zIndex + offset(y:) pocket geometry.",
       "forbidden_regex": "struct\\s+SWWallet\\b[\\s\\S]{0,600}?VStack[^{]*\\{\\s*ForEach",
+      "bad_snippet": "struct SWWallet: View {\n    var body: some View {\n        VStack {\n            ForEach(cards) { card in CardRow(card: card) }\n        }\n    }\n}",
+      "good_snippet": "struct SWWallet: View {\n    var body: some View {\n        ZStack {\n            ForEach(cards) { card in CardView(card: card).zIndex(card.z).offset(y: card.y) }\n        }\n    }\n}",
       "registered_at": "2026-11-08"
     },
     {
@@ -49,6 +51,8 @@
       "symptom": "Rendering a Donut/Ring chart with a full category breakdown legend AND immediately stacking a second category progress-bar list bound to the exact same dataset in the same pane.",
       "fix_rule": "Never render the same dataset twice in one viewport; fuse the chart with a compact 2-column Bento legend grid (tap tile -> filter detail list) OR use a Segmented Picker to toggle between Chart and Progress List.",
       "forbidden_regex": "SWDonutChart[\\s\\S]{0,800}?ProgressView\\(\\s*value\\s*:",
+      "bad_snippet": "VStack {\n    SWDonutChart(segments: items)\n    ForEach(items) { item in\n        ProgressView(value: item.ratio)\n    }\n}",
+      "good_snippet": "VStack {\n    SWDonutChart(segments: items)\n    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {\n        ForEach(items) { item in LegendTile(item: item) }\n    }\n}",
       "registered_at": "2026-11-08"
     },
     {
@@ -71,6 +75,8 @@
       "symptom": "Unbounded HStack { ForEach(...) } without ScrollView(.horizontal) or cramming 3+ multi-button interactive cards into a single compact HStack expands the parent VStack beyond the iPhone viewport width (393pt), clipping sibling headers and cards on both left and right edges.",
       "fix_rule": "Wrap dynamic horizontal rails in ScrollView(.horizontal, showsIndicators: false), scope per-item progress rails to the active parent item, cap complex interactive cards at <= 2 per horizontal row on compact width (use 2 + 1 grid for unilateral L + R + Reps), and apply .containerRelativeFrame(.horizontal) on vertical ScrollView content roots.",
       "forbidden_regex": "var\\s+\\w+\\s*:\\s*some\\s+View\\s*\\{\\s*HStack(?:\\s*\\([^)]*\\))?\\s*\\{\\s*ForEach\\b",
+      "bad_snippet": "var chipStrip: some View {\n    HStack(spacing: 8) {\n        ForEach(items) { item in ChipView(item: item) }\n    }\n}",
+      "good_snippet": "var chipStrip: some View {\n    ScrollView(.horizontal, showsIndicators: false) {\n        HStack(spacing: 8) {\n            ForEach(items) { item in ChipView(item: item) }\n        }\n    }\n}",
       "registered_at": "2026-11-09"
     },
     {
@@ -94,6 +100,8 @@
       "symptom": "Placing a top-level 'if' inside LazyVStack/LazyHStack ForEach closures creates dynamic 0/1 subview counts per element, defeating frame-deadline prefetching and retaining offscreen views in memory; delaying @Observable/@State model allocation to .onAppear misses the pre-render prefetch window.",
       "fix_rule": "Filter data in the collection or @Query(#Predicate) before ForEach so each item resolves 1:1 to a single root view; initialize lightweight @State/@Observable view models in init (paired with @Observable Macro lazy property tracking) and use .onScrollTargetVisibilityChange(idType:threshold:) for media visibility.",
       "forbidden_regex": "Lazy(?:V|H)Stack[^{]*\\{[\\s\\S]{0,220}?ForEach\\([^)]*\\)\\s*\\{\\s*\\w+\\s+in\\s+if\\b",
+      "bad_snippet": "LazyVStack(spacing: 12) {\n    ForEach(items) { item in\n        if item.isVisible {\n            ItemRow(item: item)\n        }\n    }\n}",
+      "good_snippet": "LazyVStack(spacing: 12) {\n    ForEach(visibleItems) { item in\n        ItemRow(item: item)\n    }\n}",
       "registered_at": "2026-11-09"
     },
     {
@@ -117,6 +125,8 @@
       "symptom": "Table header HStack uses maxWidth: .infinity + .leading on a column while the corresponding data row HStack uses only fixed width + .center columns, causing the row HStack to be narrower than the container, center-drift inside the card, and misalign every cell beneath its header.",
       "fix_rule": "Enforce a shared column geometry contract between Header and Row (identical fixed column widths, identical maxWidth: .infinity flex columns, identical per-column alignment, and 100% matching outer HStack spacing/padding, or use SwiftUI Grid / GridRow); never pair a maxWidth: .infinity header column with fixed-width-only data rows.",
       "forbidden_regex": "var\\s+\\w*[Hh]eader\\w*\\s*:\\s*some\\s+View\\s*\\{[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?maxWidth\\s*:\\s*\\.infinity[\\s\\S]{0,600}?var\\s+\\w*[Rr]ow\\w*\\s*:\\s*some\\s+View\\s*\\{(?![\\s\\S]{0,450}?maxWidth\\s*:\\s*\\.infinity)[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?\\.frame\\(\\s*width\\s*:",
+      "bad_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(width: 120)\n        Text(row.amount).frame(width: 80)\n    }\n}",
+      "good_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80, alignment: .trailing)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(maxWidth: .infinity, alignment: .leading)\n        Text(row.amount).frame(width: 80, alignment: .trailing)\n    }\n}",
       "registered_at": "2026-11-09"
     },
     {
@@ -135,6 +145,8 @@
       "symptom": "Static .html files served with .nojekyll or direct HTTP start with --- layout: null ... --- YAML frontmatter, rendering raw metadata text across the top of the browser viewport.",
       "fix_rule": "Every static HTML entry file must start with <!doctype html> on line 1; handle routing via directory structure (/route/index.html) rather than Jekyll frontmatter.",
       "forbidden_regex": "\\A---\\s*\\n[\\s\\S]{1,400}?\\n---\\s*\\n\\s*<!doctype html>",
+      "bad_snippet": "---\nlayout: null\npermalink: /about/\n---\n<!doctype html>\n<html></html>",
+      "good_snippet": "<!doctype html>\n<html lang=\"zh-CN\">\n<head><meta charset=\"utf-8\"></head>\n</html>",
       "registered_at": "2026-11-10"
     },
     {
@@ -154,6 +166,8 @@
       "symptom": "Long-form Web prose prefixes section headings with decorative Emojis (📌/❓/✅/🎬/🏷️) and wraps every Q&A or checklist in its own bordered card, creating wireframe clutter.",
       "fix_rule": "Use quiet editorial typography: native blockquote (4px left accent bar) for TL;DR, standard h2/h3 + 1px hairline dividers for Q&A/checklists, zero nested .card cages inside .prose, and zero decorative heading Emojis.",
       "forbidden_regex": "<h[1-4][^>]*>\\s*[📌❓✅🎬🏷️💡🔥✨🎯🚀]",
+      "bad_snippet": "<article class=\"prose\">\n  <h2>📌 核心痛点问答</h2>\n</article>",
+      "good_snippet": "<article class=\"prose\">\n  <h2>核心痛点问答</h2>\n</article>",
       "registered_at": "2026-11-10"
     },
     {
@@ -173,6 +187,8 @@
       "symptom": "Applying white-space: nowrap to all .prose th, .prose td forces multi-column CJK prose tables onto single lines, overflowing 680px desktop cards and clipping 390px mobile viewports.",
       "fix_rule": "Allow natural text wrapping on .prose td (white-space: normal; min-width: 96px) inside an overflow-x: auto table container, and restrict white-space: nowrap to .num, time, or short code columns.",
       "forbidden_regex": "\\.prose\\s+th\\s*,\\s*\\.prose\\s+td\\s*\\{[^}]*white-space\\s*:\\s*nowrap",
+      "bad_snippet": ".prose th, .prose td { padding: 8px 10px; white-space: nowrap; }",
+      "good_snippet": ".prose th { white-space: nowrap; }\n.prose td { padding: 8px 10px; white-space: normal; min-width: 96px; }",
       "registered_at": "2026-11-10"
     }
   ],

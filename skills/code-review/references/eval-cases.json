@@ -1,0 +1,56 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-10",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Discover Review Context CLI Help & Smell Drawer Flags",
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ],
+      "cmd": "python3 skills/code-review/scripts/discover_review_context.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--flow-map",
+        "--register-smell",
+        "--committed-only"
+      ],
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-002",
+      "title": "Code Review Dual-Entry Flow-Map & L1 Line Budget Invariant",
+      "layers": [
+        "standards"
+      ],
+      "cmd": "python3 skills/code-review/scripts/discover_review_context.py --flow-map",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "skill": "code-review",
+        "anti_explosion_valves.all_l1_docs_within_budget": true
+      },
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-003",
+      "title": "Post-Implementation Visual Traceback & [IMPL_BUG] vs [SPEC_GAP] Attribution Contract",
+      "layers": [
+        "spec",
+        "standards"
+      ],
+      "file": "skills/code-review/SKILL.md",
+      "must_contain": [
+        "Visual Traceback",
+        "[IMPL_BUG]",
+        "[SPEC_GAP]",
+        "review-smells.json",
+        "eval-cases.json"
+      ],
+      "registered_at": "2026-11-10"
+    }
+  ]
+}

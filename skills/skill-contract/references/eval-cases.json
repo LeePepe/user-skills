@@ -1,0 +1,56 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-10",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "skill_contract.py CLI Exposes init, sink-rule, add-case, eval, and audit",
+      "tags": [
+        "cli",
+        "meta"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "init",
+        "sink-rule",
+        "add-case",
+        "eval",
+        "audit"
+      ],
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-002",
+      "title": "Valve 1 Private Identifier Guard Pattern Detects Leaked Project Symbols",
+      "tags": [
+        "valve-1",
+        "privacy"
+      ],
+      "forbidden_regex": "\\b(?:var|let)\\s+samplePrivateFlag\\b",
+      "bad_snippet": "let samplePrivateFlag = true",
+      "good_snippet": "let isCompactLayout = true",
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-003",
+      "title": "Valves 1-4 & Auto-ID Eval Engine Contract Clauses Present in L0/L1",
+      "tags": [
+        "valve-1",
+        "valve-2",
+        "valve-3",
+        "valve-4"
+      ],
+      "file": "skills/skill-contract/SKILL.md",
+      "must_contain": [
+        "add-case",
+        "eval --all --strict",
+        "audit --all --strict",
+        "eval-cases.json",
+        "One-In-One-Out"
+      ],
+      "registered_at": "2026-11-10"
+    }
+  ]
+}
