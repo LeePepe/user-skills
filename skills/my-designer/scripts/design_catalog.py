@@ -1,0 +1,1 @@
+../../design-studio/scripts/design_catalog.py

@@ -500,12 +500,11 @@ def ingest(args, catalog, catalog_path, markdown_path):
     return 2 if duplicate_items and not created_items else 0
 
 
-def render(catalog):
+def render_matrix_markdown(catalog):
     lines = [
         "# Design Studio Reference Catalog & Toolchain Matrix",
         "",
-        "This matrix is generated from `catalog.json`; use `design_catalog.py` to search,",
-        "extend, rate, and re-render the catalog.",
+        "Generated from `catalog.json`; full per-pattern prompts, Web/Mobile implementations, and guardrails live in `catalog.json` (query on demand via `design_catalog.py search|recommend`).",
         "",
         "## M1–M4 Expressiveness Decision Table",
         "",
@@ -516,57 +515,44 @@ def render(catalog):
         "| M3 | Narrative / 3D hero | Persuade, Experience | Tokenized timeline, progressive fallback, no dense-form usage |",
         "| M4 | Code-to-video | Video/Offline, Persuade | Deterministic frame render and reproducible export |",
         "",
-        "## Web vs. Mobile-Native vs. Shared",
+        "## Extensible Toolchain (`T-*`)",
         "",
-        "| Boundary | Contract |",
-        "|---|---|",
-        "| Shared | Physical state machines, DesignTokens/StrataMotion timing, Lottie, Blender GLTF/USDZ, Remotion/FFmpeg promo outputs |",
-        "| Web | Motion, Anime.js, Three.js/Postprocessing/Three.quarks/Jolt/GPU Pathtracer, DEV-only Tweakpane |",
-        "| Mobile-Native | StrataMotion, matchedGeometryEffect, KeyframeAnimator, PhaseAnimator, Canvas, ShaderLibrary, SensoryFeedback, numericText |",
-        "",
-        "## Extensible Toolchain",
-        "",
-        "| ID | Tool | Category | Platforms | Surface modes | Tier | Automation |",
+        "| ID | Tool | Category | Platforms | Surface modes | Tier | Rating (Uses) |",
         "|---|---|---|---|---|---|---|",
     ]
     for item in catalog["tools"]:
-        lines.append("| {id} | {name} | {category} | {platforms} | {surface_modes} | {tier} | {automation} |".format(
+        lines.append("| {id} | {name} | {category} | {platforms} | {surface_modes} | {tier} | {rating} ({uses}) |".format(
             id=item["id"], name=item["name"], category=item["category"],
             platforms=", ".join(item["platforms"]), surface_modes=", ".join(item["surface_modes"]),
-            tier=item["motion_tier"], automation=item["automation_mode"]))
-    lines += ["", "## Interactive Pattern Catalog", "",
-              "| ID | Pattern | Category | Platforms | Tier | State machine |",
-              "|---|---|---|---|---|---|"]
+            tier=item["motion_tier"], rating=item["rating"], uses=item["usage_count"]))
+    lines += [
+        "",
+        "## Interactive Pattern Catalog (`IP-*` / `MP-*`)",
+        "",
+        "| ID | Pattern | Category | Platforms | Tier | State machine | Rating (Uses) |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for item in catalog["patterns"]:
-        lines.append("| {id} | {name} | {category} | {platforms} | {tier} | `{state}` |".format(
+        lines.append("| {id} | {name} | {category} | {platforms} | {tier} | `{state}` | {rating} ({uses}) |".format(
             id=item["id"], name=item["name"], category=item["category"],
             platforms=", ".join(item["platforms"]), tier=item["motion_tier"],
-            state=item["state_machine"]))
-    lines += ["", "### Pattern details", ""]
-    for item in catalog["patterns"]:
-        lines += [
-            f"#### {item['id']} · {item['name']}",
-            f"- Prompt: {item['source_prompt_zh']}",
-            f"- Canonical: {item['canonical_prompt']}",
-            f"- Web: {item['web_implementation']}",
-            f"- Mobile: {item['mobile_implementation']}",
-            f"- Guardrails: {item['token_guardrails']}",
-            "",
-        ]
-    lines += ["## Usage & Preference Ledger", "",
-              "| ID | Usage count | Rating | Last used |",
-              "|---|---:|---|---|"]
-    for item in all_items(catalog):
-        lines.append(f"| {item['id']} | {item['usage_count']} | {item['rating']} | {item['last_used_at'] or '—'} |")
+            state=item["state_machine"], rating=item["rating"], uses=item["usage_count"]))
     lines += [
-        "", "## Code / CLI Recipes", "",
+        "",
+        "## CLI Recipes (`Top-3` On-Demand Retrieval)",
+        "",
         "```bash",
         'python3 skills/design-studio/scripts/design_catalog.py search --query "滑动确认"',
         "python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface-mode Operate",
         'python3 skills/design-studio/scripts/design_catalog.py record-use --id MP-002 --context "checkout" --rating liked',
-        "```", "",
+        "```",
+        "",
     ]
     return "\n".join(lines)
+
+
+def render(catalog):
+    return render_matrix_markdown(catalog)
 
 
 def catalog_paths(args):

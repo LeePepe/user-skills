@@ -79,19 +79,13 @@
       "name": "my-designer",
       "source": "./skills/my-designer",
       "category": "design",
-      "description": "Progressive-disclosure design lead for equal desktop, mobile, and web platforms."
-    },
-    {
-      "name": "visual-design-modernization",
-      "source": "./skills/visual-design-modernization",
-      "category": "design",
-      "description": "Two-Stage Verbal Spec -> Direct Product Implementation -> Real Screenshot Review loop for modernizing app UI quality without throwaway demos."
+      "description": "Entry B of the Dual-Entry Design Flow: progressive-disclosure product design, UI modernization, and post-implementation Visual Traceback for desktop, mobile, and web."
     },
     {
       "name": "design-studio",
       "source": "./skills/design-studio",
       "category": "design",
-      "description": "Equal desktop, mobile, and web interaction, motion, and video design."
+      "description": "Entry A of the Dual-Entry Design Flow: ingest, classify, and stockpile design inspirations, measured palettes, interaction/motion patterns, and video assets."
     },
     {
       "name": "skill-contract",

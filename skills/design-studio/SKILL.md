@@ -1,25 +1,26 @@
 ---
 name: design-studio
-description: "Design and implement equal desktop, mobile, and web interactions, motion, and rendered assets."
+description: "Entry A of the Dual-Entry Design Flow: ingest, classify, and stockpile design inspirations, measured palettes, interaction/motion patterns, and video assets."
 allowed-tools: Read, Write, Edit, Bash, Skill
 ---
 
-# design-studio
+# design-studio — Entry A: Ingest, Stockpile & Video (`A0..A4`)
 
-Use after a `my-designer` handoff. Select one equal platform (`desktop`, `mobile`, `web`), one surface mode (`Operate`, `Read`, `Persuade`, `Experience`, or `Video/Offline`), and a Style Archetype + Brand Palette. Token authorities are AppTheme/SwiftUI on Apple platforms and Basalt/CSS on web.
+`design-studio` is **Entry A (`Ingest & Stockpile`)** of the Dual-Entry Design Flow (see [design-flow-architecture.md](references/design-flow-architecture.md)). Use it to classify and stockpile external design inspirations, reference apps, measured screenshot palettes, WWDC/HIG notes, interaction/motion patterns (`IP-*/MP-*`), reusable defect cases (`DC-*`), and `Video/Offline` Remotion pipelines.
 
-## Shared contract
-Use the shared state machine `idle -> intent -> commit/cancel -> settle`, preserve one source of truth, cover populated/loading/empty/error states, and provide reduced-motion fallbacks. Shared L1 fundamentals live in `../my-designer/references/{interaction-layering,breathing-and-clarity,appearance-ledger}.md`.
+For product UI design, existing screen modernization (`No Code Demo`), `design.md`/`spec.md` authoring, and post-implementation screenshot verification (`Visual Traceback`), use **Entry B (`my-designer`)** (see [../my-designer/SKILL.md](../my-designer/SKILL.md)).
 
-## Platform routing
-- **web:** Basalt, CSS, Motion, Anime.js, Three.js, taste-skill, impeccable Web, ui-ux-pro-max Web.
-- **desktop/mobile:** SwiftUI, Liquid Glass, AppTheme, ShipSwift, native spring/gesture primitives.
-- **video:** disclose [references/remotion-video.md](references/remotion-video.md) only when `--surface-mode video`; do not load it for product UI.
+## Entry A · Ingest & Stockpile Workflow (`A0..A4`)
+1. **A1 · Classify & Learn**: Score `desktop|mobile|web` × 8 dimensions (`CL,VS,CP,DV,GM,MI,LN,TC`) against [taxonomy-v2.json](references/taxonomy-v2.json), decomposing compound prompts into atomic cards and learning new trigger keywords.
+2. **A2 · Vault, Palette & Pattern Ingest**: Store atomic cards into [vault/](references/vault), extract screenshot hex palettes via `--measure-palette` (`--archetype-ref VS-*`), or add state-machine patterns (`idle -> intent -> commit/cancel -> settle`) to [catalog.json](references/catalog.json) and re-render [toolchain-20-matrix.md](references/toolchain-20-matrix.md).
+3. **A3 · Distill Shared `L1` Laws (`One-In, One-Out`)**: Keep shared `L1` references ([routing-index.md](references/routing-index.md), [interaction-layering.md](references/interaction-layering.md), [appearance-ledger.md](references/appearance-ledger.md), [breathing-and-clarity.md](references/breathing-and-clarity.md), [modernization-dimensions.md](references/modernization-dimensions.md)) within `<=130` lines.
+4. **A4 · Sink Generic Defect Cases & Usage Telemetry**: Register cross-project recurring cases into [defect-cases/index.json](references/defect-cases/index.json) via `register-case --id auto`, and track pattern ratings via `record-use`.
+5. **Video Mode (`M4`)**: Disclose [remotion-video.md](references/remotion-video.md) only when `--surface-mode video`; never load it for product UI.
 
 ```bash
-python3 skills/design-studio/scripts/design_catalog.py vault-search --platform web --dimension motion-interaction --query "intent" --top 3
-python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface-mode Experience
+python3 skills/design-studio/scripts/design_catalog.py classify --text "..." --learn
+python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..." --measure-palette <shot.png> --archetype-ref VS-005
+python3 skills/design-studio/scripts/design_catalog.py ingest --text "..."
+python3 skills/design-studio/scripts/verify_design_cases.py register-case --id auto --title "..." --platforms desktop,mobile,web --symptom "..." --fix-rule "..."
+python3 skills/design-studio/scripts/design_catalog.py record-use --id MP-002 --context "checkout" --rating liked
 ```
-
-## Delivery
-Implement directly in the real product/design system; keep dev controls out of production, preserve token authority, and validate rendered output. Implementation-time code, localization, edge, and geometry gates are owned by `shared-ci/scripts/context/design_contract.py`.

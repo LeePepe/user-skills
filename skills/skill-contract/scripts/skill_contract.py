@@ -10,13 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 PRIVATE = re.compile(r"\b(?:progressRail|isUnilateral|DashboardL10n)\b")
-BUDGET_EXEMPTIONS = {
-    "m2-dispatcher/SKILL.md", "team-lead/SKILL.md",
-    "m2-dispatcher/references/ledger.md", "m2-dispatcher/references/bots-and-agents.md",
-    "team-lead/references/ledger.md", "team-lead/references/bots-and-agents.md",
-    "design-studio/references/toolchain-20-matrix.md",
-    "workflow-hub/references/his-fm-nocoo-study-and-roadmap.md",
-}
+BUDGET_EXEMPTIONS: set[str] = set()
 DRAWERS = {
     "defect-cases/index.json": ("active_cases", ("platforms", "dimensions", "containers")),
     "review-smells.json": ("active_smells", ("languages", "layers")),
@@ -143,7 +137,7 @@ def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
     if len(raw_regex_lines) > 1:
         findings.append({"skill": skill, "code": "raw-regex-gates-in-markdown"})
     md_rel = f"{skill}/SKILL.md"
-    if md_rel not in BUDGET_EXEMPTIONS and len(md.read_text(encoding="utf-8").splitlines()) > (80 if skill in {"my-designer", "design-studio", "visual-design-modernization"} else 180):
+    if md_rel not in BUDGET_EXEMPTIONS and len(md.read_text(encoding="utf-8").splitlines()) > (80 if skill in {"my-designer", "design-studio"} else 180):
         findings.append({"skill": skill, "code": "l0-lines"})
     if md_rel not in BUDGET_EXEMPTIONS and md.stat().st_size > 16 * 1024:
         findings.append({"skill": skill, "code": "l0-bytes"})
@@ -154,7 +148,7 @@ def audit_package(path: Path, design: bool = False) -> list[dict[str, Any]]:
         ref_text = ref.read_text(encoding="utf-8")
         if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and len(ref_text.splitlines()) > 160:
             findings.append({"skill": skill, "code": "l1-lines", "file": str(ref)})
-        if ref.suffix == ".md" and skill in {"skill-contract", "my-designer", "design-studio", "visual-design-modernization"}:
+        if ref.suffix == ".md" and skill in {"skill-contract", "my-designer", "design-studio"}:
             for block in re.findall(r"```[^\n]*\n(.*?)```", ref_text, re.DOTALL):
                 if len(block.splitlines()) > 25:
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})

@@ -1378,29 +1378,22 @@
   },
   "skill_inventory_classification": {
     "my-designer": {
-      "role": "Primary orchestrator and slot-based design specification generator for macOS (`desktop`) and iOS/iPadOS (`mobile`) surfaces, stripped of legacy Strata* wrapper references and web/editorial slots.",
-      "platforms": [
-        "desktop",
-        "mobile"
-      ],
-      "disposition": "merge-into-apple-designer"
-    },
-    "design-studio": {
-      "role": "Structured interactive pattern (`MP-*`, `IP-*`) and motion/tooling catalog (`T-*`) with CLI search/recommendation and telemetry tracking.",
+      "role": "Entry B of the Dual-Entry Design Flow: progressive-disclosure product design, UI modernization (modernization-dimensions.md), and post-implementation Visual Traceback across desktop, mobile, and web.",
       "platforms": [
         "desktop",
         "mobile",
         "web"
       ],
-      "disposition": "upgrade-to-design-vault"
+      "disposition": "active-entry-b"
     },
-    "visual-design-modernization": {
-      "role": "Visual polish, hierarchy, surface elevation, and anti-generic modernization heuristics folded directly into the core Apple design workflow.",
+    "design-studio": {
+      "role": "Entry A of the Dual-Entry Design Flow: structured interactive pattern (`MP-*`, `IP-*`), vault (`CL/VS/CP/DV/GM/MI/LN/TC-*`), palette measurement, and motion/tooling catalog (`T-*`) with CLI ingest/search/recommendation.",
       "platforms": [
         "desktop",
-        "mobile"
+        "mobile",
+        "web"
       ],
-      "disposition": "merge-into-apple-designer"
+      "disposition": "active-entry-a"
     },
     "hig": {
       "role": "Authoritative Apple Human Interface Guidelines reference covering macOS and iOS/iPadOS layout, typography, hit targets, semantic color, and accessibility.",
