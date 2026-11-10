@@ -1127,6 +1127,47 @@
       "desktop_macos_implementation": "Single `@Observable` model or SwiftData `@Query` collection where summary category counts, ratios, and semantic status colors (`Color.green`, `Color.orange`, `Color.red`, `Color.secondary`) are computed properties derived directly from item statuses; mutating a row's status immediately updates top/bottom summary cards with `.monospacedDigit()` and `.contentTransition(.numericText())`.",
       "mobile_ios_implementation": "Reactive `@Observable` / SwiftData collection driving both individual item cards and summary status badges from a single source of truth; toggling an item's status triggers `.sensoryFeedback(.selection, trigger: statusChangeCounter)` and animates summary counters in-place via `.monospacedDigit()` and `.contentTransition(.numericText())`.",
       "native_guardrails": "Strict single source of truth (never maintain separate manual counters that can drift from item array state); `.monospacedDigit()` on all summary numbers and percentages; semantic status colors calibrated for >=4.5:1 contrast in both Light and Dark appearances and paired with SF Symbols or text labels (never color alone); `@Environment(\\.accessibilityReduceMotion)` replaces rolling numeric transitions with instant updates."
+    },
+    {
+      "id": "IP-006",
+      "name": "安静杂志双栏流与右侧无框目录 (Quiet Editorial Stream & Borderless Sticky TOC)",
+      "aliases": [
+        "安静杂志排版",
+        "右侧无框目录",
+        "quiet editorial",
+        "editorial toc",
+        "borderless sticky toc"
+      ],
+      "category": "editorial-reading-flow",
+      "platforms": [
+        "web"
+      ],
+      "surface_modes": [
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "全站统一顶部毛玻璃导航栏，首页无框标题区配 1px 细线文章列表，文章详情页左侧 680px 纸张阅读卡片、右侧 240px 无框粘性目录。",
+      "canonical_prompt": "Unify all routes under a single sticky glass header (header.site-header) for quiet editorial toc reading, place the page intro directly on the L0 canvas without nested box cages, render the index feed inside a single L1 card with 1px hairline dividers, and pair a 680px prose paper card (.post-layout) with a 240px borderless sticky right-side table of contents (aside.toc, hidden below 1100px).",
+      "state_machine": "site_index(L0_page_intro + L1_stream_card) -> open_article -> post_layout(680px_prose_card + 240px_sticky_toc) -> scroll_heading_spy(active_toc_anchor)",
+      "web_implementation": "Single token CSS chain (colors.css -> strata-theme.css -> app.css); header.site-header as the sole backdrop-filter glass layer; section.page-intro on L0 canvas; .layout two-column index with 1px hairline rows (<=3 tags/item); .post-layout (minmax(0, 680px) + 240px aside.toc) with native blockquote TL;DR, zero nested .card cages inside .prose, and natural CJK table cell wrapping.",
+      "mobile_implementation": "Single column stack on <=760px viewports (390x844 verified via Playwright setViewportSize); hide aside.toc below 1100px, collapse header navigation cleanly with >=44x44px hit targets, and wrap .prose tables in overflow-x: auto with scrollWidth <= clientWidth.",
+      "token_guardrails": "Zero hardcoded hex/RGB in app CSS; sole backdrop-filter glass on header.site-header; zero decorative heading Emojis or box-in-box callouts in .prose; CJK table cells wrap naturally while .num/time columns use tabular-nums + nowrap.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "web"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "typography-copy",
+        "visual-style"
+      ],
+      "sub_category": "editorial-reading-toc",
+      "desktop_macos_implementation": "Two-column reading split (.post-layout: 680px prose card + 240px borderless sticky aside.toc) under a single site-wide sticky header.site-header.",
+      "mobile_ios_implementation": "Responsive single-column prose stream on 390x844 viewports with aside.toc hidden below 1100px and overflow-safe CJK tables.",
+      "native_guardrails": "Assert documentElement.scrollWidth <= documentElement.clientWidth at 390x844 and 1280x900 via Playwright setViewportSize; enforce <!doctype html> on line 1 (DC-006), zero decorative heading Emojis (DC-007), and natural CJK table cell wrapping (DC-008)."
     }
   ]
 }
