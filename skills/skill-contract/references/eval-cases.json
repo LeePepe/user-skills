@@ -51,6 +51,23 @@
         "One-In-One-Out"
       ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-004",
+      "title": "Repo-Bound Skill Governance (--repo) Documented and Supported in CLI",
+      "tags": [
+        "cli",
+        "repo-bound"
+      ],
+      "file": "skills/skill-contract/references/valves-and-metabolism.md",
+      "must_contain": [
+        "--repo",
+        ".agents/skills",
+        "repo_bound=True",
+        "audit --repo",
+        "eval --repo"
+      ],
+      "registered_at": "2026-11-10"
     }
   ]
 }
