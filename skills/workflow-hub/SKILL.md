@@ -15,12 +15,12 @@ description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创�
 图谱不规定固定数量或串行顺序；当前挂载的能力节点包括：
 
 - **Idea & Goal State** — `linear-board`：TIA `Triage`/`Backlog`、`1 Goal = 1 Issue`、Task checklist 与 `Promote Idea -> Goal`。
-- **Co-Design** — `deep-research`、`domain-modeling`、`codebase-design`、`my-designer`、`design-studio`：收敛事实、领域、架构与视觉决策，冻结 `spec.md`/`design.md`。
+- **Co-Design** — `deep-research`、`codebase-design`（含领域建模 `domain-modeling` / `CONTEXT.md` / ADR）、`my-designer`、`design-studio`：收敛事实、领域、架构与视觉决策，冻结 `spec.md`/`design.md`。
 - **Autonomous Build, Review & Merge** — `m2-dispatcher`、`team-lead`、`code-review` 与 `ci-monitor.py`（`pr_monitor`）：完成 R1–R11、V1–V5、审查、Job-level Fail-Fast 与合法合并。
 - **Product Delivery & Release** — 产品／共享底座交付及真实发布读回。
 - **Learning & Narrative** — `retro-loop` 与 `story-craft`：把项目／工程证据和脱敏叙事回流为下一轮 Idea 或 Goal。
 
-节点可以按证据和状态任意直连，例如 `linear-board -> domain-modeling -> team-lead`、`team-lead -> code-review`，或 `team-lead -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类标准合同：冻结决策使用 `spec.md`/`design.md`，执行状态使用 `ledger.md`，交接证据使用 `receipts/*-rN.md`，Goal／Task 绑定使用 Linear `TIA-xx`。
+节点可以按证据和状态任意直连，例如 `linear-board -> codebase-design -> team-lead`（兼容旧链路表述 `linear-board -> domain-modeling -> team-lead`）、`team-lead -> code-review`，或 `team-lead -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类标准合同：冻结决策使用 `spec.md`/`design.md`，执行状态使用 `ledger.md`，交接证据使用 `receipts/*-rN.md`，Goal／Task 绑定使用 Linear `TIA-xx`。
 
 ## 自治脉搏：Cron / launchd 定时调度（Precheck-First, Wake-on-Actionable）
 

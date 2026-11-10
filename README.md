@@ -36,15 +36,13 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`deep-research`](./skills/deep-research/SKILL.md) 对主题进行多来源调研与交叉核查，输出带引用、按置信度分级的报告。
 
-[`codebase-design`](./skills/codebase-design/SKILL.md) 提供深模块、接口、接缝和适配器的设计词汇与方法。
-
-[`domain-modeling`](./skills/domain-modeling/SKILL.md) 梳理领域术语，按需维护 `CONTEXT.md` 和架构决策记录。
+[`codebase-design`](./skills/codebase-design/SKILL.md) 提供深模块、接口、接缝和适配器的设计词汇与方法，并整合领域建模（梳理 Ubiquitous Language、按需维护 `CONTEXT.md` 和架构决策记录 ADR）。
 
 [`my-designer`](./skills/my-designer/SKILL.md) 是双入口设计流的 **Entry B（Product Design, Modernization & Post-Impl Visual Traceback）**：采用渐进式披露（`L0 -> L1 -> L2`）、三端平台防火墙、Plan A 五大透镜、6 维存量界面现代化改版（`No Code Demo`）与 Plan C 缺陷演进机制，产出 `design.md`/`spec.md` 并在实现后结合真实截图执行 `[IMPL_BUG]` vs `[SPEC_GAP]` 视觉回溯；底层 `references/` 与 `scripts/` 与 `design-studio` 100% 软链互通。
 
 [`design-studio`](./skills/design-studio/SKILL.md) 是双入口设计流的 **Entry A（Ingest, Stockpile & Video）**：专管外部设计/交互/动效灵感、截图色板测量（`--measure-palette`）、交互模式（`IP-*/MP-*`）与共性缺陷卡（`DC-*`）分类入库至共享 JSON 抽屉，并在 `--surface-mode video` 时按需披露 Remotion 与 FFmpeg 视频流水线。
 
-`codebase-design`、`domain-modeling` 衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；各目录附上原始版权与许可文本。
+`codebase-design`（含原 `domain-modeling`）衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；目录附上原始版权与许可文本。
 
 ## 安装
 
@@ -61,7 +59,6 @@ Claude Code 使用 plugin marketplace：
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
 /plugin install codebase-design@user-skills
-/plugin install domain-modeling@user-skills
 /plugin install my-designer@user-skills
 /plugin install design-studio@user-skills
 /plugin install retro-loop@user-skills
@@ -80,7 +77,6 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/codebase-design 安装 codebase-design。
-请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/domain-modeling 安装 domain-modeling。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/my-designer 安装 my-designer。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/design-studio 安装 design-studio。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/retro-loop 安装 retro-loop。
