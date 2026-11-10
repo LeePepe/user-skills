@@ -22,6 +22,7 @@ def load(relative: str):
 GTT = load("skills/team-lead/scripts/gtt-telemetry-export.py")
 ENGINE = load("skills/retro-loop/scripts/retro_story_engine.py")
 DRIFT = load("skills/workflow-hub/scripts/skills-drift-check.py")
+DIGEST_VAULT = load("skills/knowledge-digest/scripts/digest_vault.py")
 
 
 class Sw5Tests(unittest.TestCase):
@@ -191,6 +192,61 @@ class Sw5Tests(unittest.TestCase):
             self.assertEqual(len(lines), 2)
             self.assertTrue(all(ln["status"] == "pending" for ln in lines))
 
+    def test_digest_vault_archive_discover_and_publish_blog(self):
+        drawer = DIGEST_VAULT.load_card_templates()
+        self.assertEqual(drawer["schema"], "knowledge-digest-card-templates/v1")
+        self.assertGreaterEqual(len(drawer["templates"]), 3)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vault = root / "knowledge-vault"
+            tools = root / "collected-tools"
+            tools.mkdir(parents=True)
+            (tools / "hallmark.md").write_text(
+                "# Hallmark\n\nAnti-AI-slop web design anatomy and multi-viewport linter.\n",
+                encoding="utf-8",
+            )
+            proposals = root / "proposals.jsonl"
+            blog_repo = root / "blog"
+            (blog_repo / "assets").mkdir(parents=True)
+            (blog_repo / "assets" / "blog.css").write_text(
+                ".prose th { white-space: nowrap; }\n.prose td { white-space: normal; min-width: 96px; }\n",
+                encoding="utf-8",
+            )
+
+            disc = DIGEST_VAULT.discover_topics(
+                top=2,
+                propose_aidash=True,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=proposals,
+                materialize_cards=True,
+            )
+            self.assertTrue(disc["ok"])
+            self.assertGreaterEqual(disc["selected_count"], 1)
+            first_slug = disc["topics"][0]["slug"]
+            self.assertTrue((vault / "concepts" / f"{first_slug}.md").is_file())
+            self.assertIn(f"concepts/{first_slug}.md", (vault / "index.md").read_text(encoding="utf-8"))
+
+            prop_records = [
+                json.loads(line)
+                for line in proposals.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(prop_records[0]["ref"], f"knowledge://{first_slug}")
+
+            pub = DIGEST_VAULT.publish_blog(
+                slug=f"knowledge://{first_slug}",
+                blog_repo=blog_repo,
+                vault_dir=vault,
+                mode="observe",
+            )
+            self.assertTrue(pub["ok"])
+            self.assertEqual(pub["dc_validation"], "PASS")
+            html_out = Path(pub["output_html"]).read_text(encoding="utf-8")
+            self.assertTrue(html_out.startswith("<!doctype html>"))
+            self.assertEqual(DIGEST_VAULT.validate_dc006_to_008(html_out), [])
 
 
 if __name__ == "__main__":
