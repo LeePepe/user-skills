@@ -14,6 +14,34 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = ROOT / "references" / "defect-cases" / "index.json"
 DEFAULT_TAXONOMY = ROOT.parent / "design-studio" / "references" / "taxonomy-v2.json"
+EXT_REPOS_ROOT = "~/Development/Personal/collected-tools/repos"
+
+EXTERNAL_SKILL_SOURCES: dict[str, dict[str, str]] = {
+    "web": {
+        "impeccable": f"{EXT_REPOS_ROOT}/impeccable/skill/reference",
+        "taste_skill": f"{EXT_REPOS_ROOT}/taste-skill/skills/taste-skill",
+        "emilkowalski": f"{EXT_REPOS_ROOT}/emilkowalski-skills",
+        "ui_ux_pro_max": f"{EXT_REPOS_ROOT}/ui-ux-pro-max-skill/src/ui-ux-pro-max",
+        "awesome_web_design_md": f"{EXT_REPOS_ROOT}/awesome-web-design-md/design-md",
+        "vercel_agent_skills": f"{EXT_REPOS_ROOT}/vercel-agent-skills/skills",
+        "awesome_cjk_design_md": f"{EXT_REPOS_ROOT}/awesome-cjk-design-md",
+        "vibecoded_design_tells": f"{EXT_REPOS_ROOT}/vibecoded-design-tells/skill",
+        "hallmark": f"{EXT_REPOS_ROOT}/hallmark/skills/hallmark/references",
+    },
+}
+
+WEB_DIMENSION_SLICES: dict[str, dict[str, list[str]]] = {
+    "hallmark": {
+        "color-palette": ["themes/index.json", "dark-mode.md"],
+        "visual-style": ["craft.md", "gates.md", "texture.md"],
+        "component": ["patterns.md", "interaction-and-states.md"],
+        "chart-dataviz": ["data-viz.md"],
+        "glass-material": ["texture.md", "dark-mode.md"],
+        "motion-interaction": ["microinteractions.md", "scroll-choreography.md"],
+        "layout-navigation": ["layout.md", "anatomy.md", "macrostructures.md", "responsive.md"],
+        "typography-copy": ["fonts.md", "craft.md", "gates.md"],
+    },
+}
 
 ALWAYS_LOAD_HIG = {
     "desktop": ["designing-for-macos.md", "accessibility.md", "layout.md", "color.md", "typography.md"],
@@ -390,6 +418,26 @@ def command_route(args: argparse.Namespace) -> int:
             ])
         vercel_focused = list(dict.fromkeys(vercel_focused)) or [f"{vercel_root}/web-design-guidelines/SKILL.md"]
 
+        hallmark_root = EXTERNAL_SKILL_SOURCES["web"]["hallmark"]
+        hallmark_slices = WEB_DIMENSION_SLICES["hallmark"]
+        hallmark_rel: list[str] = []
+        for flag, dim_key in (
+            (has_cl, "color-palette"),
+            (has_vs, "visual-style"),
+            (has_cp, "component"),
+            (has_dv, "chart-dataviz"),
+            (has_gm, "glass-material"),
+            (has_mi, "motion-interaction"),
+            (has_ln, "layout-navigation"),
+            (has_tc, "typography-copy"),
+        ):
+            if flag:
+                hallmark_rel.extend(hallmark_slices.get(dim_key, []))
+        hallmark_focused = [
+            f"{hallmark_root}/{rel}"
+            for rel in (list(dict.fromkeys(hallmark_rel)) or ["craft.md", "gates.md"])
+        ]
+
         web_design_md_root = f"{ext_root}/awesome-web-design-md/design-md"
         allowed_web = {
             "impeccable": {
@@ -440,6 +488,15 @@ def command_route(args: argparse.Namespace) -> int:
                     f"{ext_root}/vibecoded-design-tells/skill/references",
                 ],
             },
+            "hallmark": {
+                "root": hallmark_root,
+                "focused_files": hallmark_focused,
+                "scripts": {
+                    "theme_deal": f"{ext_root}/hallmark/skills/hallmark/scripts/theme.mjs",
+                    "sloplint": f"{ext_root}/hallmark/skills/hallmark/scripts/sloplint.mjs",
+                },
+                "note": "50 material themes (theme.mjs deal: 50 pick 3), job-driven anatomy, and multi-viewport real-browser sloplint.mjs --render.",
+            },
         }
         external_skill_routing = {
             "allowed_web": allowed_web,
@@ -467,7 +524,7 @@ def command_route(args: argparse.Namespace) -> int:
             "external_repos_sync_cmd": (
                 f"for r in apple-design-skill avdlee-swiftui-skill awesome-cjk-design-md "
                 f"awesome-ios-design-md awesome-web-design-md bama claude-code-apple-skills "
-                f"dimillian-skills emilkowalski-skills expo-skills genjutsu impeccable "
+                f"dimillian-skills emilkowalski-skills expo-skills genjutsu hallmark impeccable "
                 f"shipswift taste-skill twostraws-swiftui-skill ui-ux-pro-max-skill "
                 f"vercel-agent-skills vibecoded-design-tells; do "
                 f"git -C {ext_root}/$r pull --ff-only; done"
