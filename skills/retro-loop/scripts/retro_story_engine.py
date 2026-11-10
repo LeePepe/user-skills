@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -185,17 +186,139 @@ def compose_prompt(category: str, intent: dict[str, Any], sources: dict[str, Any
     return "\n".join(lines)
 
 
+_APP_REPAIR_TARGETS: dict[str, dict[str, str]] = {
+    "AIDash": {
+        "layer": "Packages/AIDashUI",
+        "verify_cmd": "scripts/context/run AIDashUI --mode local",
+    },
+    "VitalStride": {
+        "layer": "Packages/VitalStrideCore",
+        "verify_cmd": "swift test",
+    },
+    "VoxPocket": {
+        "layer": "Packages/VoxPocketCore",
+        "verify_cmd": "swift test",
+    },
+    "Financial": {
+        "layer": "backend/services",
+        "verify_cmd": "pytest -q",
+    },
+}
+
+
+def _recommend_repair_target(app_name: str, stack_top_symbol: str) -> tuple[str, str]:
+    base = _APP_REPAIR_TARGETS.get(
+        app_name,
+        {"layer": f"{app_name}/Core", "verify_cmd": "./scripts/verify"},
+    )
+    sym_lower = (stack_top_symbol or "").lower()
+    if app_name == "AIDash":
+        if any(k in sym_lower for k in ("core", "cloudkit", "xpc", "model", "payload")):
+            return "Packages/AIDashCore", "scripts/context/run AIDashCore --mode local"
+        if any(k in sym_lower for k in ("aidata", "digest", "inbox", "bridge")):
+            return "aidata/L5_apps", "scripts/context/run AidataL5 --mode local"
+    return base["layer"], base["verify_cmd"]
+
+
+def _build_app_telemetry_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        app_name = str(row.get("app_name") or "").strip()
+        if not app_name:
+            continue
+        new_crashes = int(row.get("new_crash_signature_count") or 0)
+        is_regressed = int(row.get("is_perf_regressed") or 0)
+        if new_crashes <= 0 and is_regressed <= 0:
+            continue
+        stack_top_symbol = str(
+            row.get("stack_top_symbol")
+            or row.get("top_crash_symbol")
+            or row.get("perf_stack_top_symbol")
+            or "unknown_symbol"
+        ).strip()
+        signature = str(
+            row.get("signature")
+            or row.get("top_new_signature")
+            or row.get("perf_signature")
+            or f"{app_name}.anomaly"
+        ).strip()
+        layer, verify_cmd = _recommend_repair_target(app_name, stack_top_symbol)
+        slug_sig = "".join(ch.lower() if ch.isalnum() else "-" for ch in signature).strip("-")[:24] or "sig"
+
+        if new_crashes > 0:
+            crash_free = float(row.get("crash_free_rate_7d") or 0.0) * 100.0
+            candidates.append({
+                "id": f"telemetry-crash-{app_name.lower()}-{slug_sig}",
+                "title": f"[Crash] {app_name} 新增闪退签名 ({new_crashes} 项): {signature[:40]}",
+                "detail": (
+                    f"app_name={app_name} | stack_top_symbol={stack_top_symbol} | "
+                    f"signature={signature} | crash_free_7d={crash_free:.2f}% | "
+                    f"recommended_layer={layer} | verify_cmd={verify_cmd}"
+                ),
+                "priority": "high",
+                "app_name": app_name,
+                "event_kind": "crash",
+                "signature": signature,
+                "stack_top_symbol": stack_top_symbol,
+                "recommended_layer": layer,
+                "verify_cmd": verify_cmd,
+            })
+        if is_regressed > 0:
+            reg_pct = float(row.get("p95_regression_pct") or 0.0)
+            p95_cur = float(row.get("p95_metric_ms_7d") or 0.0)
+            p95_prev = float(row.get("p95_metric_ms_prev_7d") or 0.0)
+            candidates.append({
+                "id": f"telemetry-perf-{app_name.lower()}-{slug_sig}",
+                "title": f"[Perf] {app_name} P95 耗时退化 +{reg_pct:.1f}% ({p95_prev:.0f}ms -> {p95_cur:.0f}ms)",
+                "detail": (
+                    f"app_name={app_name} | stack_top_symbol={stack_top_symbol} | "
+                    f"signature={signature} | p95_7d={p95_cur:.1f}ms (prev={p95_prev:.1f}ms, +{reg_pct:.1f}%) | "
+                    f"recommended_layer={layer} | verify_cmd={verify_cmd}"
+                ),
+                "priority": "high",
+                "app_name": app_name,
+                "event_kind": "perf",
+                "signature": signature,
+                "stack_top_symbol": stack_top_symbol,
+                "recommended_layer": layer,
+                "verify_cmd": verify_cmd,
+            })
+    return candidates
+
+
 def discover_aidata_signals(
     warehouse_db: Path | None = None,
     queries_dir: Path | None = None,
+    proposals_path: Path | None = None,
+    auto_propose: bool = True,
 ) -> dict[str, Any]:
     """Run aidata L4 retro queries against warehouse.db to discover anomalies."""
     db_path = warehouse_db or DEFAULT_WAREHOUSE_DB
     q_dir = queries_dir or DEFAULT_RETRO_QUERIES_DIR
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
     findings: list[dict[str, Any]] = []
+    project_loop_a_proposals: list[dict[str, Any]] = []
     if not db_path.is_file() or not q_dir.is_dir():
-        return {"ok": True, "degraded": True, "findings": findings}
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        return {
+            "ok": True,
+            "degraded": True,
+            "findings": findings,
+            "project_loop_a_proposals": project_loop_a_proposals,
+        }
+
+    existing_ids: set[str] = set()
+    if prop_path and prop_path.is_file():
+        for line in prop_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                if isinstance(rec, dict) and rec.get("id"):
+                    existing_ids.add(str(rec["id"]))
+            except json.JSONDecodeError:
+                continue
+
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         for sql_file in sorted(q_dir.glob("*.sql")):
             query_name = f"retro/{sql_file.stem}"
             sql_text = "\n".join(
@@ -210,9 +333,24 @@ def discover_aidata_signals(
                 rows = [dict(zip(cols, row)) for row in cur.fetchall()[:10]]
                 if rows:
                     findings.append({"query": query_name, "count": len(rows), "sample": rows[:3]})
+                    if query_name == "retro/app_crash_and_perf":
+                        for cand in _build_app_telemetry_candidates(rows):
+                            if auto_propose and prop_path is not None and cand["id"] not in existing_ids:
+                                routed = route_retro_candidate(
+                                    cand, mode="observe", proposals_path=prop_path
+                                )
+                                existing_ids.add(cand["id"])
+                                project_loop_a_proposals.append(routed["proposal"])
+                            else:
+                                project_loop_a_proposals.append(cand)
             except sqlite3.Error:
                 continue
-    return {"ok": True, "degraded": False, "findings": findings}
+    return {
+        "ok": True,
+        "degraded": False,
+        "findings": findings,
+        "project_loop_a_proposals": project_loop_a_proposals,
+    }
 
 
 def compute_agent_efficiency(
@@ -418,6 +556,16 @@ def route_retro_candidate(
         "agent": "retro-loop", "title": candidate.get("title", ""), "detail": candidate.get("detail", ""),
         "priority": norm_prio, "status": "pending",
     }
+    for extra_key in (
+        "app_name",
+        "event_kind",
+        "signature",
+        "stack_top_symbol",
+        "recommended_layer",
+        "verify_cmd",
+    ):
+        if candidate.get(extra_key):
+            proposal[extra_key] = candidate[extra_key]
     if mode == "observe" and not starred:
         if proposals_path is None:
             raise ValueError("proposals_path is required for observe mode")
@@ -442,8 +590,21 @@ def main(argv: list[str] | None = None) -> int:
         p = argparse.ArgumentParser(prog="retro_story_engine.py discover")
         p.add_argument("--warehouse-db", type=Path, default=DEFAULT_WAREHOUSE_DB)
         p.add_argument("--queries-dir", type=Path, default=DEFAULT_RETRO_QUERIES_DIR)
+        p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p.add_argument("--no-auto-propose", action="store_true")
         ns = p.parse_args(args_list[1:])
-        print(json.dumps(discover_aidata_signals(ns.warehouse_db, ns.queries_dir), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                discover_aidata_signals(
+                    ns.warehouse_db,
+                    ns.queries_dir,
+                    proposals_path=ns.proposals_path,
+                    auto_propose=not ns.no_auto_propose,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if args_list and args_list[0] == "agent-efficiency":
         p = argparse.ArgumentParser(prog="retro_story_engine.py agent-efficiency")
