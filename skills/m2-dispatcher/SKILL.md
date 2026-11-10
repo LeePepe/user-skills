@@ -21,6 +21,15 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 
 - **两径简单 Spec 对齐**：Owner 确认（`ask_user`）始终留在 `M2-Dispatcher`。**路径 A（清晰边界）**：`M2-Dispatcher` 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 `M2-Dispatcher` 与 Owner 拍板回传 M1。
 - **灵感/截图/色板一键摄取（`m2-dispatcher` ↔ `design-studio`）**：收到单条灵感、参考 App 或截图时，`M2-Dispatcher` 直接前台调 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 做 Vision OCR + BAMA 测色板；动效用 `ingest`）入库；批量母体聚类或落地项目走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering`。
+- **跨端统一快捷口令（Universal Shortcut Macros — Copilot / Claude / Codex / Pi / Cindy）**：由 [`skill-slash-expander.ts`](scripts/skill-slash-expander.ts) 展开并经 [`install-pi-harness.sh`](scripts/install-pi-harness.sh) 同步至 `~/.pi/agent` 与 `CindyGlobal/pi-package-home`（重算 `cindy-pi-package-fingerprint-v1`）：
+
+| 口令 | 目标路由 | 执行动作 |
+|---|---|---|
+| `/status` | `m2-dispatcher` | 直接运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py status --check` 展示 `needs a person` 置顶视图 |
+| `/ingest <text_or_image>` | `design-studio` | 调 `design_catalog.py vault-ingest`（图片路径自动附带 `--measure-palette`） |
+| `/learn <topic_or_url>` | `knowledge-digest` | 执行双通道拆解归档至 `~/Development/Personal/knowledge-vault/` 并同步 `knowledge-vault/index.md` |
+| `/dash` | `m2-dispatcher` | 触发 `~/Development/AIDash/aidata` 刷新并推送今日 `AIDash` 简报（`python3 cli.py digest --date today --aidash`） |
+| `/retro` | `retro-loop` | 运行 `retro_story_engine.py agent-efficiency --auto-propose` 与 `discover` |
 - **拍板后硬切换与 `M2` 只写简单 Spec 门禁（外层 M2 入口通用）**：
   - **`M2` 写边界**：`M2-Dispatcher` 只可写简单 Spec/Handoff（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），**严禁改任何代码、测试、配置或其他文件**（外层工具 Adapter 由 `skill-slash-expander.ts` 在 M2 主会话首轮自动挂载 `m2-dispatcher` 并通过 `tool_call` 拦截非 Spec 写入，`install-pi-harness.sh` 负责同步）。
   - **强制 Worktree 派发与同步宿主看门狗**：凡改代码或其他文件，`M2` 落盘 `spec.md` 后必经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。同步 shell 宿主环境启动后须同步运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json` 盯完解卡与完结，严禁裸退 Turn。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。

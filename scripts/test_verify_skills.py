@@ -794,15 +794,37 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("before_provider_request", expander_ts)
         self.assertIn("before_provider_headers", expander_ts)
         self.assertIn('value.filter((item) => item !== "")', expander_ts)
+        self.assertIn("UNIVERSAL_SHORTCUT_MACROS", expander_ts)
+        self.assertIn("expandShortcutMacros", expander_ts)
+        self.assertIn("extractShortcutInvocations", expander_ts)
+        for shortcut_token in (
+            "/status",
+            "/ingest <text_or_image>",
+            "/learn <topic_or_url>",
+            "/dash",
+            "/retro",
+            "goal-supervisor.py status --check",
+            "cli.py digest --date today --aidash",
+            "retro_story_engine.py agent-efficiency --auto-propose",
+        ):
+            self.assertIn(shortcut_token, skill_text)
 
         installer_sh = (skill_dir / "scripts" / "install-pi-harness.sh").read_text(encoding="utf-8")
         self.assertNotIn("rm -f", installer_sh)
+        for prompt_name in ("status.md", "ingest.md", "learn.md", "dash.md", "retro.md"):
+            self.assertIn(prompt_name, installer_sh)
 
         # Verify M2 outer adapter auto-bootstraps m2-dispatcher on first turn in M2 main session,
-        # does not auto-inject when HERDR_ENV=1, and does not block local bash/git tool calls.
+        # does not auto-inject when HERDR_ENV=1, does not block local bash/git tool calls,
+        # and expands the 5 universal shortcut macros (/status, /ingest, /learn, /dash, /retro).
         node_probe = r"""
 import assert from "node:assert/strict";
-import skillSlashExpander from "./skills/m2-dispatcher/scripts/skill-slash-expander.ts";
+import skillSlashExpander, {
+  UNIVERSAL_SHORTCUT_MACROS,
+  expandShortcutMacros,
+  extractShortcutInvocations,
+  isLikelyImageArgument,
+} from "./skills/m2-dispatcher/scripts/skill-slash-expander.ts";
 
 async function runCase(envOverrides) {
   const prevHerdr = process.env.HERDR_ENV;
@@ -823,7 +845,7 @@ async function runCase(envOverrides) {
     await handlers.get("session_start")?.({}, ctx);
     const startRes = await handlers.get("before_agent_start")?.({ prompt: "hello world without slash token" }, ctx);
     const bashRes = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "git status" } }, ctx);
-    return { startRes, bashRes };
+    return { startRes, bashRes, handlers, ctx };
   } finally {
     if (prevHerdr === undefined) delete process.env.HERDR_ENV;
     else process.env.HERDR_ENV = prevHerdr;
@@ -840,6 +862,61 @@ assert.equal(m2Res.bashRes, undefined, "Expected local git/bash tool calls not t
 
 const herdrRes = await runCase({ HERDR_ENV: "1" });
 assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session not to auto-inject m2-dispatcher");
+
+// Verify the 5 universal shortcut macros
+assert.deepEqual(Object.keys(UNIVERSAL_SHORTCUT_MACROS).sort(), ["dash", "ingest", "learn", "retro", "status"]);
+assert.equal(isLikelyImageArgument("/tmp/shot.png"), true);
+assert.equal(isLikelyImageArgument("Linear glass card inspiration"), false);
+
+const statusExp = expandShortcutMacros("/status");
+assert.equal(statusExp.transformed, true);
+assert.ok(statusExp.text.includes("goal-supervisor.py status --check"));
+
+const ingestImgExp = expandShortcutMacros("/ingest /tmp/hero-shot.png");
+assert.equal(ingestImgExp.transformed, true);
+assert.ok(ingestImgExp.text.includes("design_catalog.py vault-ingest"));
+assert.ok(ingestImgExp.text.includes("--measure-palette"));
+
+const ingestTxtExp = expandShortcutMacros("/ingest Minimalist dark bento card");
+assert.equal(ingestTxtExp.transformed, true);
+assert.ok(ingestTxtExp.text.includes("design_catalog.py vault-ingest --text"));
+assert.equal(ingestTxtExp.text.includes("--measure-palette"), false);
+
+const learnExp = expandShortcutMacros("/learn https://example.com/swift-concurrency");
+assert.equal(learnExp.transformed, true);
+assert.ok(learnExp.text.includes("/knowledge-digest"));
+assert.ok(learnExp.text.includes("knowledge-vault/index.md"));
+
+const dashExp = expandShortcutMacros("/dash");
+assert.equal(dashExp.transformed, true);
+assert.ok(dashExp.text.includes("python3 cli.py digest --date today --aidash"));
+
+const retroExp = expandShortcutMacros("/retro");
+assert.equal(retroExp.transformed, true);
+assert.ok(retroExp.text.includes("retro_story_engine.py agent-efficiency --auto-propose"));
+assert.ok(retroExp.text.includes("discover"));
+
+// Verify runtime input & before_agent_start skill injection for shortcut macro in worker mode
+const prevHerdr = process.env.HERDR_ENV;
+process.env.HERDR_ENV = "1";
+try {
+  const handlers = new Map();
+  const pi = {
+    on(event, fn) { handlers.set(event, fn); },
+    appendEntry() {},
+  };
+  skillSlashExpander(pi);
+  const ctx = { cwd: process.cwd() };
+  await handlers.get("session_start")?.({}, ctx);
+  const inputRes = await handlers.get("input")?.({ text: "/retro" }, ctx);
+  assert.equal(inputRes?.action, "transform");
+  assert.ok(inputRes.text.includes("/retro-loop"));
+  const agentStartRes = await handlers.get("before_agent_start")?.({ prompt: inputRes.text }, ctx);
+  assert.ok(agentStartRes?.message?.content?.[0]?.text?.includes('<skill-context name="retro-loop"'));
+} finally {
+  if (prevHerdr === undefined) delete process.env.HERDR_ENV;
+  else process.env.HERDR_ENV = prevHerdr;
+}
 """
         probe_proc = subprocess.run(
             ["node", "--experimental-strip-types", "--input-type=module", "-e", node_probe],
