@@ -297,7 +297,7 @@ class VerifySkillsTests(unittest.TestCase):
         manifest = json.loads((skill_dir / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest.get("category"), "meta")
         contract = (skill_dir / "scripts" / "skill_contract.py").read_text(encoding="utf-8")
-        for token in ("audit_package", "sink_rule", "case-card", "mental-model", "regex-gate"):
+        for token in ("audit_package", "sink_rule", "case-card", "mental-model", "regex-gate", "description-eval"):
             self.assertIn(token, contract)
 
     def test_skill_frontmatter_valid(self) -> None:

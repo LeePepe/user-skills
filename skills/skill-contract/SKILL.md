@@ -1,6 +1,6 @@
 ---
 name: skill-contract
-description: "Meta-skill for creating, refining, and auditing progressive-disclosure skill packages."
+description: "Meta-skill for creating, refining, and auditing progressive-disclosure skill packages. Use when running skill-contract audit, sink-rule, or opt-in description-eval."
 allowed-tools: Read, Write, Edit, Bash
 ---
 
@@ -19,6 +19,8 @@ Use this meta-skill to keep skills small, navigable, and executable. It enforces
 python3 skills/skill-contract/scripts/skill_contract.py init --skill example --category design --design
 python3 skills/skill-contract/scripts/skill_contract.py sink-rule --skill example --kind regex-gate --id DC-001
 python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict
+python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill example
+python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill example --apply
 ```
 
-`refine_skill.py` is a compatibility symlink. Read [valves-and-metabolism.md](references/valves-and-metabolism.md) for the contract details. This tool audits the local repository and does not modify existing skills unless `init` or `sink-rule` explicitly requests it.
+`refine_skill.py` is a compatibility symlink. Read [valves-and-metabolism.md](references/valves-and-metabolism.md) for the contract details. `audit` never writes. `description-eval` is opt-in and dry-run unless `--apply`; apply writes only if the trigger score does not regress and `audit --strict` on that package is clean, otherwise it rolls back.
