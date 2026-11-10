@@ -101,6 +101,7 @@ def _initialize(connection: sqlite3.Connection) -> None:
             max_workers INTEGER NOT NULL DEFAULT 3,
             budget_json TEXT NOT NULL DEFAULT '{}',
             feedback_json TEXT,
+            revision INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT NOT NULL
         ) STRICT;
         CREATE TABLE IF NOT EXISTS tasks (
@@ -113,6 +114,8 @@ def _initialize(connection: sqlite3.Connection) -> None:
             owner_agent TEXT NOT NULL DEFAULT '—',
             pr_ref TEXT NOT NULL DEFAULT '—',
             value_json TEXT NOT NULL,
+            blocked_reason_json TEXT,
+            revision INTEGER NOT NULL DEFAULT 1,
             is_active INTEGER GENERATED ALWAYS AS (
                 CASE WHEN status IN ('in_progress','in_review','changes_requested') THEN 1 ELSE 0 END
             ) VIRTUAL,
@@ -179,6 +182,12 @@ def _initialize(connection: sqlite3.Connection) -> None:
         ) STRICT;
         """
     )
+    for table, column in (("goal_state", "revision"), ("tasks", "revision"), ("tasks", "blocked_reason_json")):
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column in existing:
+            continue
+        definition = "INTEGER NOT NULL DEFAULT 1" if column == "revision" else "TEXT"
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     connection.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
         (SCHEMA_VERSION,),
@@ -303,12 +312,12 @@ def sync_to_sqlite(
             INSERT INTO goal_state
               (goal_id, status, intent, owner, coordinator, tl_agent, machine,
                linear_issue, contract_sha, spec_sha, max_workers, budget_json,
-               feedback_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               feedback_json, revision, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(goal_id) DO UPDATE SET
               status=excluded.status, intent=excluded.intent, max_workers=excluded.max_workers,
               budget_json=excluded.budget_json, feedback_json=excluded.feedback_json,
-              updated_at=excluded.updated_at
+              revision=excluded.revision, updated_at=excluded.updated_at
             """,
             (
                 goal_id,
@@ -326,6 +335,7 @@ def sync_to_sqlite(
                 json.dumps(queue_data.get("feedback_manifest"), ensure_ascii=False)
                 if queue_data.get("feedback_manifest") is not None
                 else None,
+                max(1, int(queue_data.get("revision") or 1)),
                 now,
             ),
         )
@@ -334,12 +344,15 @@ def sync_to_sqlite(
             connection.execute(
                 """
                 INSERT INTO tasks
-                  (task_id, status, priority, repo, title, brief, owner_agent, pr_ref, value_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (task_id, status, priority, repo, title, brief, owner_agent, pr_ref, value_json,
+                   blocked_reason_json, revision, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                   status=excluded.status, priority=excluded.priority, repo=excluded.repo,
                   title=excluded.title, brief=excluded.brief, owner_agent=excluded.owner_agent,
-                  pr_ref=excluded.pr_ref, value_json=excluded.value_json, updated_at=excluded.updated_at
+                  pr_ref=excluded.pr_ref, value_json=excluded.value_json,
+                  blocked_reason_json=excluded.blocked_reason_json, revision=excluded.revision,
+                  updated_at=excluded.updated_at
                 """,
                 (
                     task_id,
@@ -351,6 +364,9 @@ def sync_to_sqlite(
                     str(task.get("owner") or "—"),
                     str(task.get("pr") or "—"),
                     json.dumps(task, ensure_ascii=False, sort_keys=True),
+                    json.dumps(task.get("blocked_reason"), ensure_ascii=False, sort_keys=True)
+                    if task.get("blocked_reason") is not None else None,
+                    max(1, int(task.get("revision") or 1)),
                     now,
                 ),
             )
