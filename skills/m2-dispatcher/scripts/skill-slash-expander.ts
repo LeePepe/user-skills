@@ -145,6 +145,13 @@ export function sanitizeGeminiSchema(node: unknown): unknown {
 			sanitizeAnyOfBranches(value, out);
 			continue;
 		}
+		if (key === "enum" && Array.isArray(value)) {
+			const nonEmpty = value.filter((item) => item !== "");
+			if (nonEmpty.length > 0) {
+				out.enum = nonEmpty.map((item) => String(item));
+			}
+			continue;
+		}
 		out[key] = sanitizeGeminiSchema(value);
 	}
 	if ("anyOf" in out) {
@@ -201,12 +208,45 @@ export function sanitizeRegisteredToolsInPlace(pi: unknown): number {
 export function sanitizeGeminiChatPayload<T>(payload: T, modelHint?: string | null): T {
 	if (!isObjectRecord(payload)) return payload;
 	const model = typeof payload.model === "string" ? payload.model : modelHint;
-	if (!isGeminiModel(model) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
+	if (!isGeminiModel(model)) {
 		return payload;
 	}
-	return {
-		...payload,
-		tools: payload.tools.map((tool) => {
+	const out: Record<string, unknown> = { ...payload };
+	delete out.store;
+	delete out.reasoning_effort;
+	if (Array.isArray(payload.messages)) {
+		out.messages = payload.messages.map((msg) => {
+			if (!isObjectRecord(msg)) return msg;
+			const nextMsg: Record<string, unknown> = {
+				...msg,
+				...(msg.role === "developer" ? { role: "system" } : {}),
+			};
+			if (Array.isArray(msg.tools)) {
+				nextMsg.tools = msg.tools.map((tool) => {
+					if (!isObjectRecord(tool)) return tool;
+					if (isObjectRecord(tool.function) && isObjectRecord(tool.function.parameters)) {
+						return {
+							...tool,
+							function: {
+								...tool.function,
+								parameters: sanitizeGeminiSchema(tool.function.parameters),
+							},
+						};
+					}
+					if (isObjectRecord(tool.parameters)) {
+						return {
+							...tool,
+							parameters: sanitizeGeminiSchema(tool.parameters),
+						};
+					}
+					return tool;
+				});
+			}
+			return nextMsg;
+		});
+	}
+	if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+		out.tools = payload.tools.map((tool) => {
 			if (!isObjectRecord(tool)) return tool;
 			if (isObjectRecord(tool.function) && isObjectRecord(tool.function.parameters)) {
 				return {
@@ -224,8 +264,55 @@ export function sanitizeGeminiChatPayload<T>(payload: T, modelHint?: string | nu
 				};
 			}
 			return tool;
-		}),
-	} as T;
+		});
+	}
+	return out as T;
+}
+
+export const COPILOT_GEMINI_DEFAULT_HEADERS: Readonly<Record<string, string>> = {
+	"User-Agent": "GitHubCopilotChat/0.35.0",
+	"Editor-Version": "vscode/1.107.0",
+	"Editor-Plugin-Version": "copilot-chat/0.35.0",
+	"Copilot-Integration-Id": "vscode-chat",
+};
+
+export const GEMINI_LONG_CONTEXT_WINDOW = 1_000_000;
+
+export function alignGeminiModelRuntimeConfig(ctx?: ExtensionContext): void {
+	const candidates: Array<Record<string, unknown>> = [];
+	if (isObjectRecord(ctx?.model)) {
+		candidates.push(ctx.model as Record<string, unknown>);
+	}
+	const registry = (ctx as { modelRegistry?: { getAll?: () => unknown[] } } | undefined)?.modelRegistry;
+	if (typeof registry?.getAll === "function") {
+		try {
+			for (const m of registry.getAll() ?? []) {
+				if (isObjectRecord(m)) candidates.push(m);
+			}
+		} catch {
+			// Ignore registry probe errors
+		}
+	}
+	for (const model of candidates) {
+		const id = typeof model.id === "string" ? model.id : "";
+		if (!isGeminiModel(id)) continue;
+		if (typeof model.contextWindow !== "number" || model.contextWindow < GEMINI_LONG_CONTEXT_WINDOW) {
+			model.contextWindow = GEMINI_LONG_CONTEXT_WINDOW;
+		}
+		const prevCompat = isObjectRecord(model.compat) ? model.compat : {};
+		model.compat = {
+			...prevCompat,
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			supportsFinishReason: false,
+		};
+		const prevHeaders = isObjectRecord(model.headers) ? model.headers : {};
+		model.headers = {
+			...COPILOT_GEMINI_DEFAULT_HEADERS,
+			...prevHeaders,
+		};
+	}
 }
 
 function extractFrontmatterName(content: string): string | undefined {
@@ -472,6 +559,7 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 		injectedSkills.clear();
 		pendingQueue.clear();
 		scannedHistory = false;
+		alignGeminiModelRuntimeConfig(ctx);
 		sanitizeRegisteredToolsInPlace(pi);
 		sanitizeTranscriptSystemTools(ctx);
 		refreshCatalog(ctx);
@@ -482,9 +570,25 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	(pi as unknown as { on: (event: string, handler: (event: any, ctx: any) => unknown) => void }).on(
 		"before_provider_request",
 		async (event, ctx) => {
+			alignGeminiModelRuntimeConfig(ctx);
 			sanitizeRegisteredToolsInPlace(pi);
 			const modelId = typeof ctx?.model?.id === "string" ? ctx.model.id : undefined;
 			return sanitizeGeminiChatPayload(event?.payload, modelId);
+		},
+	);
+
+	(pi as unknown as { on: (event: string, handler: (event: any, ctx: any) => unknown) => void }).on(
+		"before_provider_headers",
+		async (event, ctx) => {
+			const modelId = typeof ctx?.model?.id === "string" ? ctx.model.id : undefined;
+			if (!isGeminiModel(modelId) || !isObjectRecord(event?.headers)) {
+				return;
+			}
+			for (const [hk, hv] of Object.entries(COPILOT_GEMINI_DEFAULT_HEADERS)) {
+				if (!(hk in event.headers) && !(hk.toLowerCase() in event.headers)) {
+					event.headers[hk] = hv;
+				}
+			}
 		},
 	);
 
@@ -558,6 +662,7 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		alignGeminiModelRuntimeConfig(ctx);
 		sanitizeRegisteredToolsInPlace(pi);
 		sanitizeTranscriptSystemTools(ctx);
 		const spSkills = (
