@@ -1,0 +1,138 @@
+{
+  "schema": "knowledge-digest-card-templates/v1",
+  "version": 1,
+  "updated": "2026-11-10",
+  "categories": [
+    "物理与硬件",
+    "计算机与网络",
+    "工程与设计",
+    "科学健康与生活",
+    "叙事与表达技法",
+    "智能家居与生活"
+  ],
+  "templates": [
+    {
+      "id": "TPL-CONCEPT-001",
+      "folder": "concepts",
+      "title": "概念痛点卡模板（concepts/<slug>.md）",
+      "tags": ["concepts", "acquire", "digest"],
+      "frontmatter": {
+        "title": "<概念中文名：副标题>",
+        "category": "<物理与硬件 | 计算机与网络 | 工程与设计 | 科学健康与生活>",
+        "tags": ["<tag1>", "<tag2>", "<tag3>"],
+        "channel": "<acquire | digest>",
+        "updated": "YYYY-MM-DD",
+        "related_craft": "../craft/<craft-slug>.md",
+        "raw_source": "../raw/<raw-slug>.md"
+      },
+      "sections": [
+        {
+          "heading": "## ⚡ 一句话本质（TL;DR）",
+          "body": "> **<反常识底层结论>** —— <1 个直观尺度/时间/倍率数字对比>。"
+        },
+        {
+          "heading": "## 🧰 核心教具与量级速览",
+          "body": "| 抽象概念 / 参数 | 关键数字 | 生活教具 / 直观参照 | 物理/工程效果 |\n|---|---|---|---|\n| <概念 1> | <数字 1> | <教具 1> | <效果 1> |\n| <概念 2> | <数字 2> | <教具 2> | <效果 2> |"
+        },
+        {
+          "heading": "## 🎯 核心痛点直答（Pain-Point Q&A）",
+          "body": "### Q1：<最常见的生活/工程痛点问题 1>？\n- **直答**：<一句话结论>。\n- **原理与教具**：<用生活物品打比方 + 1 个核心数字讲透机制>。\n\n### Q2：<高频干扰或反直觉现象问题 2>？\n- **直答**：<一句话结论>。\n- **原理与教具**：<用生活物品打比方 + 1 个核心数字讲透机制>。\n\n### Q3：<常见误区或安全焦虑问题 3>？\n- **直答**：<一句话结论>。\n- **原理与教具**：<用生活物品打比方 + 1 个核心数字讲透机制>。\n\n### Q4：<选型对比或进阶边界问题 4>？\n- **直答**：<一句话结论>。\n- **原理与教具**：<用生活物品打比方 + 1 个核心数字讲透机制>。"
+        },
+        {
+          "heading": "## ✅ 立即可用清单（Actionable Checklist）",
+          "body": "1. **<动作 1>**：<一句话讲清怎么做 + 为什么有效>。\n2. **<动作 2>**：<一句话讲清怎么做 + 为什么有效>。\n3. **<动作 3>**：<一句话讲清怎么做 + 为什么有效>。"
+        },
+        {
+          "heading": "## 🔭 延伸视野（1 分钟拔高）",
+          "body": "- <从该原理延伸出的前沿应用或破界思考，控制在 2–3 句话内>。"
+        }
+      ]
+    },
+    {
+      "id": "TPL-CRAFT-001",
+      "folder": "craft",
+      "title": "叙事与制作技巧卡模板（craft/<slug>.md）",
+      "tags": ["craft", "storytelling", "visual-metaphor"],
+      "frontmatter": {
+        "title": "<技法名称>",
+        "category": "叙事与表达技法",
+        "tags": ["科普脚本", "视觉化", "教具隐喻"],
+        "updated": "YYYY-MM-DD",
+        "exemplar_concept": "../concepts/<concept-slug>.md",
+        "raw_source": "../raw/<raw-slug>.md"
+      },
+      "sections": [
+        {
+          "heading": "## ⚡ 一句话公式（TL;DR）",
+          "body": "> **<核心叙事骨架公式>**（如：先制造视觉悬念 -> 用生活物件解释原理 -> 落到实用动作与前沿拔高）。"
+        },
+        {
+          "heading": "## 🎬 标准脚本结构流（Step-by-Step Spine）",
+          "body": "| 阶段 | 目标作用 | 示范动作 / 句式 | 避坑指南 |\n|---|---|---|---|\n| 1. 开场钩子 | 打破习以为常，建立反常识悬念 | “如果能看见 XX……它其实是一种 YY” | 忌教科书式定义开场 |\n| 2. 建立概念 | 放进熟悉家族，做极端尺度缩放 | “把波长放大 N 倍，相当于……” | 忌孤立报出枯燥频段/单位 |\n| 3. 制造速度/规模感 | 用生活空间衡量极端物理量 | “穿过整个客厅只需 30 纳秒” | 忌只写公式光速 |\n| 4. 可视化 + 教具演示 | 把暗箱机制变成肉眼可见的交互 | 冰箱=反射、鱼缸=吸收、砖墙=衰减 | 忌抽象术语堆叠 |\n| 5. 常见痛点破案 | 解答观众最挠头的切身体验 | 手机挪几厘米卡顿、微波炉断网 | 忌脱离日常体感谈理论 |\n| 6. 回应焦虑与对比 | 拆解安全迷思与参数选型 | 光子能量 vs. DNA；2.4G vs. 5G | 忌只说“安全”不给量级证据 |\n| 7. 行动建议与拔高 | 给出可落地清单，结尾升华格局 | 摆位三原则 -> 无线感知新世界 | 忌虎头蛇尾无可执行收获 |"
+        },
+        {
+          "heading": "## 🛠 四大可复用表达技巧（Reusable Craft Patterns）",
+          "body": "1. **把不可见变成可见（Invisible -> Visible）**：<具体手法与适用场景>\n2. **用生活物品当教具（Household Props as Mental Models）**：<具体手法与适用场景>\n3. **夸张时间/空间尺度（Extreme Scale Zoom）**：<具体手法与适用场景>\n4. **单数字配单画面（One Number, One Scene）**：<具体手法与适用场景>"
+        },
+        {
+          "heading": "## 🔄 迁移套用模板（怎么用到下一个主题）",
+          "body": "- 当你要讲 **<新主题 A>** 时：把不可见的 `<X>` 变成 `<视觉元素>`，用 `<日常物件>` 当教具，只抓 `<1 个核心倍率>`。"
+        }
+      ]
+    },
+    {
+      "id": "TPL-RAW-001",
+      "folder": "raw",
+      "title": "原始素材与拆解存档模板（raw/<slug>.md）",
+      "tags": ["raw", "source", "transcript"],
+      "frontmatter": {
+        "title": "<原始素材标题>",
+        "category": "原始素材存档",
+        "source_type": "<video_script_summary | article | transcript | note>",
+        "captured_at": "YYYY-MM-DD",
+        "derived_concept": "../concepts/<concept-slug>.md",
+        "derived_craft": "../craft/<craft-slug>.md"
+      },
+      "sections": [
+        {
+          "heading": "## 原始摘录 / 总结全文",
+          "body": "<完整保留用户提供的原始总结、脚本或关键段落，不做有损删改>"
+        },
+        {
+          "heading": "## 提炼产物指针",
+          "body": "- **概念痛点卡**：[`../concepts/<concept-slug>.md`](../concepts/<concept-slug>.md)\n- **叙事制作技巧卡**：[`../craft/<craft-slug>.md`](../craft/<craft-slug>.md)"
+        }
+      ]
+    },
+    {
+      "id": "TPL-THOUGHTS-001",
+      "folder": "thoughts",
+      "title": "思考与感悟随笔模板（thoughts/<slug>.md）",
+      "tags": ["thoughts", "essay", "reflection"],
+      "frontmatter": {
+        "title": "<随笔标题>",
+        "subtitle": "<副标题>",
+        "slug": "<slug>",
+        "date": "YYYY-MM-DD",
+        "category": "<智能家居与生活 | 工程与设计 | 思考与感悟>",
+        "reading_time": "约 3 分钟",
+        "tags": ["<tag1>", "<tag2>"],
+        "insight": "<核心感悟一句话总结>"
+      },
+      "sections": [
+        {
+          "heading": "## 一、从具体生活/工程现场切入",
+          "body": "<用真实遇到的具体小事或痛点开场>"
+        },
+        {
+          "heading": "## 二、核心取舍与减法机制",
+          "body": "<讲清楚为什么这样做、砍掉了什么复杂度>"
+        },
+        {
+          "heading": "## 三、一点感悟",
+          "body": "1. **<感悟 1>**：<说明>\n2. **<感悟 2>**：<说明>"
+        }
+      ]
+    }
+  ]
+}

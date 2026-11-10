@@ -22,6 +22,7 @@ DRAWERS = {
     "review-smells.json": ("active_smells", ("languages", "layers")),
     "build-cases.json": ("active_cases", ("routes",)),
     "source-tiers.json": ("high_signal_tiers", ("topics", "patterns")),
+    "card-templates.json": ("templates", ("tags",)),
 }
 EVAL_DRAWERS = (
     "references/eval-cases.json",
@@ -485,7 +486,7 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False) ->
             findings.append({"skill": skill, "code": "l1-lines", "file": str(ref)})
         if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and ref.stat().st_size > 16 * 1024:
             findings.append({"skill": skill, "code": "l1-bytes", "file": str(ref)})
-        if ref.suffix == ".md" and (repo_bound or skill in {"skill-contract", "my-designer", "design-studio", "repo-kit", "nas-smart-home"}):
+        if ref.suffix == ".md" and (repo_bound or skill in {"skill-contract", "my-designer", "design-studio", "repo-kit", "nas-smart-home", "knowledge-digest"}):
             for block in re.findall(r"```[^\n]*\n(.*?)```", ref_text, re.DOTALL):
                 if len(block.splitlines()) > 25:
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})

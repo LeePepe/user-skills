@@ -77,14 +77,12 @@ user-invocable: true
 
 ### 沉淀工作流（Ingest & Dedupe Steps）
 
-1. **先读索引去重**：读取 `~/Development/Personal/knowledge-vault/index.md`。若同一概念/技法已有卡片，**增量更新（append/refine）** 现有卡片，不重复新建近义文件。
-2. **按层落盘文件**（文件名采用 kebab-case，完整模板见 [templates.md](references/templates.md)）：
-   - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`。
-   - **好内容/脚本拆解（通道 B）**：
-     - 原始素材与拆解笔记存 `raw/<source-slug>.md`；
-     - 提炼出的通俗概念卡存 `concepts/<concept-slug>.md`；
-     - 提炼出的可复用讲法/制作技巧存 `craft/<craft-slug>.md`。
-3. **更新总表 `index.md`**：在对应分表中新增或更新一行（`门类 | 标题 | 一句话本质 | 路径 | 更新日期`）。
+1. **先读索引去重**：读取 `~/Development/Personal/knowledge-vault/index.md`（或运行 `python3 skills/knowledge-digest/scripts/digest_vault.py discover-topics --top 2 --propose-aidash` 结合 Jev `R09` 自动扫描近期 Git 技术栈与 `collected-tools/` 缺口并推上 `AIDash` `proposals.jsonl`，`ref = "knowledge://<slug>"`）。若同一概念/技法已有卡片，**增量更新（append/refine）** 现有卡片，不重复新建近义文件。
+2. **按层落盘文件与 0-Token 归档**（文件名采用 kebab-case，骨架见 [templates.md](references/templates.md)，完整 L2 抽屉见 [card-templates.json](references/card-templates.json)）：
+   - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`；
+   - **好内容/脚本拆解（通道 B）**：原始素材存 `raw/<source-slug>.md`，概念卡存 `concepts/<concept-slug>.md`，制作技巧存 `craft/<craft-slug>.md`；
+   - **一键归档与索引同步**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py archive --slug <slug> --category <cat> --title "..." --file <md>` 自动归档并幂等更新 `index.md`。
+3. **点 Star 自动发布 Blog 飞轮**：当用户在 `AIDash` 对 `ref = "knowledge://<slug>"` 卡片点 **⭐ Star** 时，`event_bridge.py` 自动调用 `python3 skills/knowledge-digest/scripts/digest_vault.py publish-blog --slug <slug> --blog-repo ~/Development/leepepe.github.io` 渲染符合 `DC-006..008` 规范的静态文章。
 4. **工程与设计双入口联动钩子（Entry A1 -> Tier 1..3 Promotion Hook）**：当沉淀门类为 `工程与设计` 且涉及 **UI/UX、SwiftUI/AppKit/UIKit、Liquid Glass、Metal Shader、动效状态机或 Apple HIG**（如 WWDC 设计/UI 课程拆解）时，归档完个人知识库卡片后，**必须继续读取 [`../my-designer/references/design-flow-architecture.md`](../my-designer/references/design-flow-architecture.md) 的「Change Impact Matrix」**，按双入口防爆架构将可复用原语、原子灵感卡、紧凑规则与 0-Token 静态红线同步提升至 Tier 1–3（`design-studio` 与 `my-designer`），并运行 `python3 skills/my-designer/scripts/verify_design_cases.py flow-map` 校验预算健康度。
 5. **简短回报**：向用户展示讲解内容，并在末尾用 1–2 行告知已沉淀的卡片路径（及若触发工程与设计钩子时同步更新的 Tier 1–3 资产 ID）。
 
@@ -92,5 +90,6 @@ user-invocable: true
 
 ## References
 
-- [templates.md](references/templates.md) — `concepts/`、`craft/`、`raw/` 与 `index.md` 的标准 Markdown 模板及 WiFi 标杆范例。
+- [templates.md](references/templates.md) & [card-templates.json](references/card-templates.json) — `concepts/`、`craft/`、`thoughts/`、`raw/` 与 `index.md` 的标准骨架及 L2 模板抽屉。
+- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics`（含 Jev `R09` 重排与 `AIDash` 提案生成）与 `publish-blog`（`DC-006..008` 校验）CLI。
 - [../my-designer/references/design-flow-architecture.md](../my-designer/references/design-flow-architecture.md) — `Entry A (Ingest) ⇄ Tier 0..3 ⇄ Entry B (Design)` 双入口知识流转与 4 道防信息爆炸物理阀门真源。
