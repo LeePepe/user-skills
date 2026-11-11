@@ -1152,10 +1152,11 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         elif replacement_manifest is not None:
             raise ValueError("--feedback-manifest is only valid for tracked supersession")
 
+        effective_reason = args.reason if getattr(args, "reason", None) is not None else args.note
         if args.status == "handback":
             handback = {
                 "trigger_id": str(args.trigger_id or "manual"),
-                "reason": str(args.note or "out of scope"),
+                "reason": str(effective_reason or "out of scope"),
                 "at": _now_iso(),
             }
             target_task.setdefault("handbacks", []).append(handback)
@@ -1164,8 +1165,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
-        if args.note is not None:
-            target_task["note"] = args.note
+        if effective_reason is not None:
+            target_task["note"] = effective_reason
         if args.status not in TERMINAL_STATUSES:
             target_task.pop("superseded_by", None)
             target_task.pop("cancellation_authorization", None)
@@ -1205,7 +1206,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             "evt": evt_type,
             "task": args.task_id,
             "ref": str(args.pr or target_task.get("pr") or target_task.get("brief") or ""),
-            "note": str(args.note or f"status={args.status}"),
+            "note": str(effective_reason or f"status={args.status}"),
         }
 
         _save_queue(handoff_dir, queue_data)
@@ -1651,6 +1652,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--pr", default=None, help="PR URL, number, or head SHA.")
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
+    status_parser.add_argument(
+        "--reason",
+        default=None,
+        help="Reason for handback/blocked transition (alias for --note).",
+    )
     status_parser.add_argument(
         "--evidence-json",
         default="",

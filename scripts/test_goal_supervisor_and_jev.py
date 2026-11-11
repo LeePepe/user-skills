@@ -254,6 +254,88 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertEqual(watch_res["tl_status"], "done")
             self.assertEqual(watch_res["events"], 0)
 
+    def test_operator_policy_compatibility_and_default_upgrade_diff(self):
+        supervisor = load_supervisor()
+        default_res = supervisor.check_operator_policy_compatibility()
+        self.assertTrue(default_res["ok"])
+        self.assertTrue(default_res["compatible"])
+        self.assertEqual(
+            default_res["slots"],
+            ["communication", "ticket_scope", "delivery_requirements"],
+        )
+        self.assertEqual(default_res["missing_slots"], [])
+        self.assertEqual(default_res["type_mismatches"], [])
+
+        cli_res = subprocess.run(
+            [str(SUPERVISOR), "check-operator-policy", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        cli_payload = json.loads(cli_res.stdout)
+        self.assertTrue(cli_payload["compatible"])
+
+        with tempfile.TemporaryDirectory() as temp:
+            custom_policy_path = Path(temp) / "operator-policy.json"
+            # Simulate user personal overrides + an upgraded system template with a new default key
+            custom_policy = {
+                "schema_version": 1,
+                "policy_id": "personal-policy",
+                "communication": {
+                    "language": "en-US",
+                    "style": "concise_direct",
+                    "max_summary_lines": 10,
+                    "agent_signature": "Custom-TL",
+                    "mention_handle": "@lee",
+                },
+                "ticket_scope": {
+                    "auto_ruling_allowed_for_non_redline": True,
+                    "pause_on_redlines": ["core_goal_change"],
+                    "max_inline_files": 2,
+                    "explorer_noise_file_threshold": 6,
+                },
+                "delivery_requirements": {
+                    "commit_coauthor_trailer": "Co-authored-by: Custom <custom@example.com>",
+                    "require_cross_vendor_review": True,
+                    "require_r10_receipt": True,
+                    "auto_merge_when_checks_green": False,
+                    "clean_worktree_on_merge": True,
+                    "close_workspace_on_goal_done": True,
+                },
+            }
+            custom_policy_path.write_text(json.dumps(custom_policy), encoding="utf-8")
+            diff_res = supervisor.check_operator_policy_compatibility(policy_path=custom_policy_path)
+            self.assertTrue(diff_res["compatible"])
+            self.assertIn("foreground_command_max_seconds", diff_res["missing_keys"]["ticket_scope"])
+            self.assertEqual(diff_res["custom_overrides"]["communication"]["language"], "en-US")
+            self.assertEqual(
+                diff_res["merged_policy"]["ticket_scope"]["foreground_command_max_seconds"],
+                5,
+            )
+            self.assertEqual(diff_res["merged_policy"]["communication"]["language"], "en-US")
+
+            # Incompatible policy with missing slot and type mismatch fails check-operator-policy
+            broken_policy_path = Path(temp) / "broken-policy.json"
+            broken_policy_path.write_text(
+                json.dumps({
+                    "schema_version": "bad",
+                    "communication": {"language": "zh-CN", "max_summary_lines": "fifteen"},
+                    "ticket_scope": {},
+                }),
+                encoding="utf-8",
+            )
+            broken_cli = subprocess.run(
+                [str(SUPERVISOR), "check-operator-policy", "--policy-file", str(broken_policy_path), "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(broken_cli.returncode, 1)
+            broken_payload = json.loads(broken_cli.stdout)
+            self.assertFalse(broken_payload["compatible"])
+            self.assertIn("delivery_requirements", broken_payload["missing_slots"])
+            self.assertTrue(any(m["path"] == "communication.max_summary_lines" for m in broken_payload["type_mismatches"]))
+
 
 if __name__ == "__main__":
     unittest.main()

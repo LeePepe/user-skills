@@ -868,7 +868,17 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 "--task-id", "TK1",
                 "--status", "handback",
                 "--trigger-id", "tr-2",
+                "--reason", "touching outside owned paths src/b",
             )
+            queue_after_handback = json.loads((handoff_dir / "queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue_after_handback["tasks"][0]["status"], "handback")
+            self.assertEqual(
+                queue_after_handback["tasks"][0]["handbacks"][-1]["reason"],
+                "touching outside owned paths src/b",
+            )
+            ledger_after_handback = (handoff_dir / "ledger.md").read_text(encoding="utf-8")
+            self.assertIn("EVT=HANDBACK", ledger_after_handback)
+            self.assertIn("touching outside owned paths src/b", ledger_after_handback)
             rejected = json.loads(
                 self.run_queue(
                     handoff_dir,
@@ -886,6 +896,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 "--task-id", "TK1",
                 "--status", "handback",
                 "--trigger-id", "tr-3",
+                "--reason", "partial out-of-scope follow-up returned to TL",
                 "--keep-working",
             )
             kept = json.loads(
@@ -898,6 +909,18 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 ).stdout
             )
             self.assertEqual(kept["disposition"], "steered")
+
+            out_of_scope = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "steer",
+                    "--paths", "src/other/file.py",
+                    "--trigger-id", "tr-5",
+                    "--message", "out of scope path requires TL routing",
+                ).stdout
+            )
+            self.assertEqual(out_of_scope["disposition"], "needs_tl_eval")
+            self.assertIsNone(out_of_scope["target_task_id"])
 
             missing_selector = json.loads(
                 self.run_queue(
