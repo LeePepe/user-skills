@@ -22,6 +22,14 @@ description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创�
 
 节点可以按证据和状态任意直连，例如 `linear-board -> codebase-design -> team-lead`（兼容旧链路表述 `linear-board -> domain-modeling -> team-lead`）、`team-lead -> code-review`，或 `team-lead -> retro-loop -> linear-board`；不要求经过未相关的节点。所有直连共享四类标准合同：冻结决策使用 `spec.md`/`design.md`，执行状态使用 `ledger.md`，交接证据使用 `receipts/*-rN.md`，Goal／Task 绑定使用 Linear `TIA-xx`。
 
+### 可组合 How-To 节点契约与新增路由
+
+每个节点用五元组登记：`Inbound → Internal → Calls → PointsTo → Trigger/Notify`。`Internal` 只写本节点独有逻辑；`Calls` 是调用子节点并取回结果；`PointsTo` 是完成后的条件交接；`Trigger/Notify` 统一区分 Manual、Hook、Pulse 与 P0/P1/P2。
+
+- 复合调用示例：`E2 Bug List --[1:N]--> E4a Triage`（先筛 `BY DESIGN`/`REMOTE CONFIG`，必要时交 I5 P0 拍板）→ `E3 Single Bug`；`E1 Feature` 按需调用 `E5/E6/E7/E4/E3/E10/E12`。
+- `P1 AIDash` 汇聚 P2/P3、阻塞拍板、PR 状态、Teams/Email 摘要；`Star/Done/Promote/拍板` 可回流 G1/P7/P8/P6 或解封等待节点。
+- 新 How-To 若 Internal 薄、仅串现有节点，登记为本图谱的 Composite Recipe；若含厚领域知识、外部 CLI/API 或可复用确定性门禁，按四层归位并用 `skill-contract` 建独立 Skill。详细目录、断链清册与验收门见 [`how-to-nodes.md`](references/how-to-nodes.md)。
+
 ## 自治脉搏：Cron / launchd 定时调度（Precheck-First, Wake-on-Actionable）
 
 ### 核心原则（零 Token 确定性预检 → 按需唤醒）
