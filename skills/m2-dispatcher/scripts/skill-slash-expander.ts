@@ -247,12 +247,68 @@ export function isLikelySlowForegroundCommand(command: string): boolean {
 	return SLOW_FOREGROUND_COMMAND_PATTERNS.some((re) => re.test(trimmed));
 }
 
+function normalizedResolvedPath(rawPath: string, cwd?: string): string {
+	return path.resolve(cwd || process.cwd(), rawPath).split(path.sep).join("/");
+}
+
+function pathIsUnderNamedRoot(normalizedPath: string, root: string): boolean {
+	return normalizedPath === root || normalizedPath.startsWith(`${root}/`) || normalizedPath.includes(`${root}/`);
+}
+
+function nearestExistingDirectory(rawPath: string, cwd?: string): string {
+	let current = path.resolve(cwd || process.cwd(), rawPath);
+	try {
+		if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+	} catch {
+		current = path.dirname(current);
+	}
+	return current;
+}
+
+function hasGitMarker(rawPath: string, cwd: string | undefined, markerType: "file" | "directory"): boolean {
+	let current = nearestExistingDirectory(rawPath, cwd);
+	while (true) {
+		try {
+			const marker = fs.statSync(path.join(current, ".git"));
+			if ((markerType === "file" && marker.isFile()) || (markerType === "directory" && marker.isDirectory())) {
+				return true;
+			}
+		} catch {
+			// Continue toward the filesystem root when an ancestor has no .git marker.
+		}
+		const parent = path.dirname(current);
+		if (parent === current) return false;
+		current = parent;
+	}
+}
+
+export function isInsideLinkedWorktree(rawPath: string, cwd?: string): boolean {
+	if (!rawPath || typeof rawPath !== "string") return false;
+	const resolved = normalizedResolvedPath(rawPath, cwd);
+	if (["/worktrees", "/orca/workspaces", "/multica_workspaces"].some((root) => pathIsUnderNamedRoot(resolved, root))) {
+		return true;
+	}
+	return hasGitMarker(rawPath, cwd, "file");
+}
+
+export function isInsidePrimaryGitCheckout(rawPath: string, cwd?: string): boolean {
+	if (!rawPath || typeof rawPath !== "string") return false;
+	const resolved = normalizedResolvedPath(rawPath, cwd);
+	if (resolved.includes("/handoff/") || resolved.endsWith("/handoff") || isInsideLinkedWorktree(rawPath, cwd)) {
+		return false;
+	}
+	return hasGitMarker(rawPath, cwd, "directory");
+}
+
 export function isAllowedM2SpecPath(rawPath: string, cwd?: string): boolean {
 	if (!rawPath || typeof rawPath !== "string") return false;
 	const trimmed = rawPath.trim();
 	if (!trimmed) return false;
-	const resolved = path.resolve(cwd || process.cwd(), trimmed).split(path.sep).join("/");
+	const resolved = normalizedResolvedPath(trimmed, cwd);
 	const normalizedRaw = trimmed.split(path.sep).join("/");
+	if (resolved.includes("/handoff/") || resolved.endsWith("/handoff")) return true;
+	if (isInsideLinkedWorktree(trimmed, cwd)) return true;
+	if (isInsidePrimaryGitCheckout(trimmed, cwd)) return false;
 	return ALLOWED_M2_SPEC_PATTERNS.some((re) => re.test(resolved) || re.test(normalizedRaw));
 }
 

@@ -220,6 +220,132 @@ def _maybe_gc_task(handoff_dir: Path, task: Mapping[str, Any]) -> None:
         pass
 
 
+def _git_common_root(path: Path) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = path / common
+    return common.resolve().parent
+
+
+def _resolve_repository(raw_repo: str) -> Path:
+    candidate = Path(raw_repo).expanduser()
+    if not candidate.is_dir():
+        candidate = Path.home() / "Development" / raw_repo
+    if not candidate.is_dir():
+        raise ValueError(f"Repository directory not found: {raw_repo}")
+    try:
+        return _git_common_root(candidate)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"Not a Git repository: {candidate}") from exc
+
+
+def _worktree_repository(path: Path) -> Path | None:
+    if not path.is_dir():
+        return None
+    try:
+        return _git_common_root(path)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _spawn_worktree_gc(primary_repo: Path, worktrees_root: Path) -> None:
+    script = Path(__file__).with_name("git-gc.py")
+    command = [
+        sys.executable,
+        str(script),
+        "sweep",
+        "--repos",
+        primary_repo.name,
+        "--dev-root",
+        str(primary_repo.parent),
+        "--worktrees-root",
+        str(worktrees_root),
+    ]
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def cmd_ensure_worktree(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    primary_repo = _resolve_repository(args.repo)
+    goal = str(args.goal or handoff_dir.name).strip()
+    if not goal:
+        raise ValueError("Goal name must not be empty")
+    branch = str(args.branch or f"feat/{goal}").strip()
+    if not branch:
+        raise ValueError("Branch name must not be empty")
+    worktrees_root = Path(args.worktrees_root).expanduser().resolve()
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+    worktree_path = worktrees_root / goal
+    existing_repo = _worktree_repository(worktree_path)
+    reused = existing_repo == primary_repo and (worktree_path / ".git").is_file()
+    if not reused and worktree_path.exists():
+        if existing_repo is not None and existing_repo != primary_repo:
+            worktree_path = worktrees_root / f"{goal}--{primary_repo.name}"
+        elif existing_repo is None:
+            worktree_path = worktrees_root / f"{goal}--{primary_repo.name}"
+        existing_repo = _worktree_repository(worktree_path)
+        reused = existing_repo == primary_repo and (worktree_path / ".git").is_file()
+    if not reused:
+        if worktree_path.exists():
+            raise ValueError(f"Worktree path is already occupied: {worktree_path}")
+        base_ref = "HEAD"
+        origin_main = subprocess.run(
+            ["git", "-C", str(primary_repo), "rev-parse", "--verify", "origin/main"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if origin_main.returncode == 0:
+            base_ref = "origin/main"
+        subprocess.run(
+            ["git", "-C", str(primary_repo), "worktree", "add", "-B", branch, str(worktree_path), base_ref],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    queue_path = handoff_dir / "queue.json"
+    if queue_path.exists():
+        with _queue_lock(handoff_dir):
+            queue_data = _load_queue(handoff_dir)
+            queue_data["goal_worktree"] = str(worktree_path)
+            queue_data["goal_branch"] = branch
+            repo_names = {str(primary_repo), primary_repo.name, str(args.repo)}
+            for task in queue_data["tasks"]:
+                task_repo = str(task.get("repo") or "").strip()
+                task_worktree = str(task.get("worktree") or "").strip()
+                if task_repo in repo_names and (not task_worktree or Path(task_worktree).expanduser().resolve() == primary_repo):
+                    task["worktree"] = str(worktree_path)
+                    task.setdefault("branch", branch)
+            _save_queue(handoff_dir, queue_data)
+    if os.environ.get("GTT_WORKTREE_GC") != "0" and (
+        not _is_isolated_handoff_dir(handoff_dir) or os.environ.get("GTT_WORKTREE_GC") == "1"
+    ):
+        _spawn_worktree_gc(primary_repo, worktrees_root)
+    return {
+        "ok": True,
+        "goal": goal,
+        "repo": str(primary_repo),
+        "worktree": str(worktree_path),
+        "branch": branch,
+        "reused": reused,
+    }
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -662,6 +788,61 @@ def _queue_metrics(tasks: Sequence[dict[str, Any]]) -> tuple[int, int, bool]:
     blocked_count = sum(1 for t in tasks if str(t.get("status")) == "blocked")
     drained = (in_progress_count + pending_count + blocked_count) == 0
     return (in_progress_count, pending_count, drained)
+
+
+PR_REFERENCE_RE = re.compile(
+    r"(?:#\d+|PR\s+#\d+|https?://\S+/(?:pull|pullrequest)/\d+)",
+    re.IGNORECASE,
+)
+
+
+def _valid_pr_reference(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text not in {"—", "-"} and PR_REFERENCE_RE.search(text))
+
+
+def _pr_gate_applies(args: argparse.Namespace, queue_data: Mapping[str, Any], handoff_dir: Path, task: Mapping[str, Any]) -> bool:
+    if getattr(args, "require_pr", False) or queue_data.get("require_pr") or os.environ.get("GTT_REQUIRE_PR_ON_DONE") == "1":
+        return True
+    if _is_isolated_handoff_dir(handoff_dir) or os.environ.get("GTT_SKIP_PR_GATE") == "1":
+        return False
+    worktree = Path(str(task.get("worktree") or "")).expanduser()
+    repo = str(task.get("repo") or "").strip()
+    return bool(repo and repo not in {"local-config", "handoff-only", "none"} and worktree.is_dir() and (worktree / ".git").exists())
+
+
+def _validate_pr_and_worktree_gate(
+    args: argparse.Namespace,
+    queue_data: Mapping[str, Any],
+    handoff_dir: Path,
+    staged_tasks: Sequence[Mapping[str, Any]],
+    target_task: Mapping[str, Any],
+    drained: bool,
+) -> None:
+    if args.status != "done" or not drained or not _pr_gate_applies(args, queue_data, handoff_dir, target_task):
+        return
+    worktree = Path(str(target_task.get("worktree") or "")).expanduser()
+    if worktree.is_dir() and (worktree / ".git").exists():
+        if not (worktree / ".git").is_file():
+            raise ValueError(f"PR completion gate requires a linked worktree, not primary checkout: {worktree}")
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--untracked-files=no"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"PR completion gate could not inspect worktree: {worktree}")
+        if result.stdout.strip():
+            raise ValueError(f"PR completion gate requires a clean worktree: {worktree}")
+    if any(str(task.get("status")) != "cancelled" and _valid_pr_reference(task.get("pr")) for task in staged_tasks):
+        return
+    if any(str(task.get("no_pr_reason") or "").strip() for task in staged_tasks if str(task.get("status")) != "cancelled"):
+        return
+    raise ValueError(
+        "PR completion gate requires --pr with a valid PR reference (for example #123 or a Pull Request URL), "
+        "or --no-pr-reason <text>"
+    )
 
 
 def _parse_batch_payload(batch_arg: str) -> list[dict[str, Any]]:
@@ -1165,6 +1346,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
+        if args.status == "done" and getattr(args, "no_pr_reason", None):
+            target_task["no_pr_reason"] = args.no_pr_reason
         if effective_reason is not None:
             target_task["note"] = effective_reason
         if args.status not in TERMINAL_STATUSES:
@@ -1189,6 +1372,11 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         queue_data["tasks"] = staged_tasks
         if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
             _feedback_validation(queue_data, staged_tasks)
+
+        _, _, drained = _queue_metrics(staged_tasks)
+        _validate_pr_and_worktree_gate(
+            args, queue_data, handoff_dir, staged_tasks, target_task, drained
+        )
 
         status_to_evt = {
             "done": "DONE",
@@ -1425,6 +1613,8 @@ def cmd_init_goal(args: argparse.Namespace) -> dict[str, Any]:
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         queue_data.update({"intent": args.intent, "readonly": bool(args.readonly), "status": queue_data.get("status", "planning")})
+        if args.require_pr:
+            queue_data["require_pr"] = True
         budget = dict(queue_data.get("budget") or {})
         if args.budget_sec is not None:
             budget["max_sec"] = args.budget_sec
@@ -1638,6 +1828,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wave_parser.add_argument("--max-workers", type=int, default=None)
 
+    worktree_parser = subparsers.add_parser(
+        "ensure-worktree",
+        help="Create or reuse the singleton Goal worktree for a repository.",
+    )
+    worktree_parser.add_argument("--handoff-dir", required=True, help="Path to handoff/<goal> directory.")
+    worktree_parser.add_argument("--repo", required=True, help="Repository path or name under ~/Development.")
+    worktree_parser.add_argument("--goal", default="", help="Goal slug; defaults to the handoff directory name.")
+    worktree_parser.add_argument("--branch", default="", help="Branch name; defaults to feat/<goal>.")
+    worktree_parser.add_argument("--worktrees-root", default="~/Development/worktrees")
+
     status_parser = subparsers.add_parser(
         "set-status",
         help="Atomically update task status in queue.json and ledger.md.",
@@ -1651,6 +1851,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="New task status.",
     )
     status_parser.add_argument("--pr", default=None, help="PR URL, number, or head SHA.")
+    status_parser.add_argument("--require-pr", action="store_true", help="Require a valid PR and clean linked worktree when the Goal drains.")
+    status_parser.add_argument("--no-pr-reason", default="", help="Document an approved reason for completing without a PR.")
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
     status_parser.add_argument(
         "--reason",
@@ -1714,6 +1916,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--dimensions", default="")
     init_parser.add_argument("--max-workers", type=int, default=None)
     init_parser.add_argument("--readonly", action="store_true")
+    init_parser.add_argument("--require-pr", action="store_true", help="Require a PR before the Goal can drain.")
 
     budget_parser = subparsers.add_parser("budget", help="Adjust an evolve goal budget.")
     budget_parser.add_argument("--handoff-dir", required=True)
@@ -1748,6 +1951,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = cmd_enqueue(args)
         elif args.subcommand == "next-wave":
             payload = cmd_next_wave(args)
+        elif args.subcommand == "ensure-worktree":
+            payload = cmd_ensure_worktree(args)
         elif args.subcommand == "set-status":
             payload = cmd_set_status(args)
         elif args.subcommand == "ack-spec":

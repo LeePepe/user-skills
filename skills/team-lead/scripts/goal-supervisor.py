@@ -34,6 +34,37 @@ EVENT_RE = re.compile(
     r"(?P<timestamp>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d))"
     r".*?\bEVT=(?P<event>[A-Z0-9_]+)"
 )
+PR_REFERENCE_RE = re.compile(
+    r"(?:#\d+|PR\s+#\d+|https?://\S+/(?:pull|pullrequest)/\d+)",
+    re.IGNORECASE,
+)
+CODE_REPOS = {"", "local-config", "handoff-only", "none"}
+
+
+def valid_pr_reference(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text not in {"—", "-"} and PR_REFERENCE_RE.search(text))
+
+
+def queue_pr_state(handoff: Path) -> tuple[bool, bool]:
+    queue_path = handoff / "queue.json"
+    if not queue_path.is_file():
+        return False, False
+    try:
+        payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, False
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(tasks, list):
+        return False, False
+    queue_drained = bool(tasks) and all(str(task.get("status")) in {"done", "cancelled"} for task in tasks if isinstance(task, dict))
+    code_tasks = [
+        task for task in tasks
+        if isinstance(task, dict) and str(task.get("repo") or "").strip() not in CODE_REPOS
+        and str(task.get("status")) != "cancelled"
+    ]
+    has_pr = any(valid_pr_reference(task.get("pr")) or str(task.get("no_pr_reason") or "").strip() for task in code_tasks)
+    return queue_drained, (queue_drained and not has_pr)
 UNRESOLVED_EVENT_TYPES = {
     "NEED_GO": "decision",
     "NEED_OWNER_DECISION": "decision",
@@ -1199,6 +1230,7 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
     max_wait = max(interval, int(args.max_wait))
     started = time.monotonic()
     tl_seen_working = False
+    nudges_sent = 0
     polls = 0
     while True:
         ledger_path = handoff / "ledger.md"
@@ -1251,12 +1283,31 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
                     for item in goal_agents
                 )
                 if not other_busy:
+                    queue_drained, missing_pr = queue_pr_state(handoff)
+                    if getattr(args, "auto_nudge_pr", False) and (not queue_drained or missing_pr) and nudges_sent < 2:
+                        subprocess.run(
+                            [
+                                "herdr", "agent", "prompt", resolved_tl_name,
+                                "Supervisor gate: queue is not drained or PR is missing. Commit inside the worktree, push branch, open PR via gh pr create, pass --pr to goal-queue.py set-status, and log EVT=GOAL_DONE.",
+                            ],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        nudges_sent += 1
+                        polls += 1
+                        if time.monotonic() - started >= max_wait:
+                            return {"goal_id": handoff.name, "reason": "WATCH_SLICE_TIMEOUT", "events": len(events)}
+                        time.sleep(interval)
+                        continue
                     return {
                         "goal_id": handoff.name,
                         "reason": "TL_IDLE_OR_DONE",
                         "tl": resolved_tl_name,
                         "tl_status": tl_status,
                         "events": len(events),
+                        "queue_drained": queue_drained,
+                        "missing_pr": missing_pr,
                     }
 
         polls += 1
@@ -1333,6 +1384,7 @@ def main() -> None:
     watch_parser.add_argument("--max-wait", type=int, default=2400)
     watch_parser.add_argument("--herdr-json")
     watch_parser.add_argument("--write-alerts", action="store_true")
+    watch_parser.add_argument("--auto-nudge-pr", action="store_true")
     watch_parser.add_argument("--mode", choices=sorted(VALID_MODES))
     watch_parser.add_argument("--json", action="store_true")
     status_parser = subparsers.add_parser("status")

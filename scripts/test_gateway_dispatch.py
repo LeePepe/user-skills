@@ -227,6 +227,59 @@ elif args[:2] == ["agent", "prompt"]:
             self.assertFalse(any(c[:2] == ["agent", "start"] for c in reuse_calls))
             self.assertTrue(any(c[:2] == ["agent", "prompt"] for c in reuse_calls))
 
+    def test_primary_checkout_auto_pivots_to_singleton_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            primary = tmp / "repo"
+            primary.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(primary)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+            (primary / "README").write_text("test\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(primary), "add", "README"], check=True)
+            subprocess.run(["git", "-C", str(primary), "commit", "-m", "initial"], check=True, capture_output=True)
+            worktrees_root = tmp / "worktrees"
+            handoff_root = tmp / "handoff"
+            herdr = tmp / "herdr"
+            herdr.write_text(self.herdr_source, encoding="utf-8")
+            herdr.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{tmp}:{os.environ['PATH']}",
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p1",
+                "HERDR_AUTO_WORKTREE": "1",
+                "HERDR_WORKTREES_ROOT": str(worktrees_root),
+                "HERDR_HANDOFF_ROOT": str(handoff_root),
+                "GTT_WORKTREE_GC": "0",
+                "MOCK_HERDR_LOG": str(tmp / "calls"),
+                "TEST_CAPTURE": str(tmp / "calls"),
+                "HERDR_MOCK_MAGPIE_ONLINE": "0",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+            }
+            first = subprocess.run(
+                [str(DISPATCH), "--name", "demo-goal-tl-r1", "--kind", "copilot", "--cwd", str(primary),
+                 "--prompt", "test", "--role", "team_lead", "--auto-worktree"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_payload = json.loads(first.stdout)
+            expected = (worktrees_root / "demo").resolve()
+            self.assertEqual(Path(first_payload["cwd"]), expected)
+            self.assertTrue(first_payload["auto_pivoted_worktree"])
+            self.assertTrue((expected / ".git").is_file())
+
+            second = subprocess.run(
+                [str(DISPATCH), "--name", "demo-tk2-writer-r2", "--kind", "copilot", "--cwd", str(primary),
+                 "--prompt", "test", "--role", "writer", "--auto-worktree"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(Path(second_payload["cwd"]), expected)
+            self.assertTrue(second_payload["auto_pivoted_worktree"])
+            subprocess.run(["git", "-C", str(primary), "worktree", "remove", "--force", str(expected)], check=True)
+
 
 if __name__ == "__main__":
     unittest.main()

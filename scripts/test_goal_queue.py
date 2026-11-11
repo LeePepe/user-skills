@@ -141,6 +141,62 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             )
             self.assertIn("usage:", result.stdout.lower())
 
+    def test_ensure_worktree_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            root = Path(tmp_dir)
+            primary = root / "repo"
+            primary.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(primary)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+            (primary / "README").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(primary), "add", "README"], check=True)
+            subprocess.run(["git", "-C", str(primary), "commit", "-m", "initial"], check=True, capture_output=True)
+            handoff = root / "handoff" / "demo"
+            worktrees = root / "worktrees"
+            first = json.loads(self.run_queue(
+                handoff, "ensure-worktree", "--repo", str(primary), "--worktrees-root", str(worktrees)
+            ).stdout)
+            second = json.loads(self.run_queue(
+                handoff, "ensure-worktree", "--repo", str(primary), "--worktrees-root", str(worktrees)
+            ).stdout)
+            self.assertFalse(first["reused"])
+            self.assertTrue(second["reused"])
+            self.assertEqual(first["worktree"], second["worktree"])
+            subprocess.run(["git", "-C", str(primary), "worktree", "remove", "--force", first["worktree"]], check=True)
+
+    def test_done_requires_pr_and_clean_linked_worktree(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            root = Path(tmp_dir)
+            primary = root / "repo"
+            primary.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(primary)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+            (primary / "README").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(primary), "add", "README"], check=True)
+            subprocess.run(["git", "-C", str(primary), "commit", "-m", "initial"], check=True, capture_output=True)
+            linked = root / "linked"
+            subprocess.run(["git", "-C", str(primary), "worktree", "add", "-b", "feat/test", str(linked), "HEAD"], check=True, capture_output=True)
+            handoff = root / "handoff" / "demo"
+            batch = json.dumps([{"task_id": "TK1", "title": "TK1", "repo": "repo", "paths": ["README"], "worktree": str(primary)}])
+            self.run_queue(handoff, "enqueue", "--batch-json", batch)
+            self.run_queue(handoff, "next-wave", "--mark-in-progress")
+            missing = self.run_queue(handoff, "set-status", "--task-id", "TK1", "--status", "done", "--require-pr", "--pr", "#123", check=False)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("linked worktree", missing.stderr)
+            queue = json.loads((handoff / "queue.json").read_text(encoding="utf-8"))
+            queue["tasks"][0]["worktree"] = str(linked)
+            (handoff / "queue.json").write_text(json.dumps(queue), encoding="utf-8")
+            (linked / "README").write_text("dirty\n", encoding="utf-8")
+            dirty = self.run_queue(handoff, "set-status", "--task-id", "TK1", "--status", "done", "--require-pr", "--pr", "#123", check=False)
+            self.assertNotEqual(dirty.returncode, 0)
+            self.assertIn("clean worktree", dirty.stderr)
+            subprocess.run(["git", "-C", str(linked), "checkout", "--", "README"], check=True)
+            completed = json.loads(self.run_queue(handoff, "set-status", "--task-id", "TK1", "--status", "done", "--require-pr", "--pr", "#123").stdout)
+            self.assertTrue(completed["drained"])
+            subprocess.run(["git", "-C", str(primary), "worktree", "remove", "--force", str(linked)], check=True)
+
     def run_queue(
         self,
         handoff_dir: Path,

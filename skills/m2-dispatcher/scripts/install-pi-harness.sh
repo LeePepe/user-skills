@@ -15,9 +15,15 @@ fi
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 CINDY_PKG_HOME="${CINDY_PKG_HOME:-$HOME/Library/Application Support/CindyGlobal/pi-package-home}"
 CINDY_PKG_DIR="$CINDY_PKG_HOME/cindy-skill-slash-expander"
+PRIMARY_CHECKOUT_HOOK_SRC="$SCRIPT_DIR/../../team-lead/scripts/primary-checkout-pre-commit.py"
+GIT_GLOBAL_HOOKS_DIR="${GIT_GLOBAL_HOOKS_DIR:-$HOME/.config/git/hooks}"
 
-mkdir -p "$PI_AGENT_DIR/extensions" "$PI_AGENT_DIR/prompts"
+mkdir -p "$PI_AGENT_DIR/extensions" "$PI_AGENT_DIR/prompts" "$GIT_GLOBAL_HOOKS_DIR"
 cp "$EXT_SRC" "$PI_AGENT_DIR/extensions/skill-slash-expander.ts"
+if [[ -f "$PRIMARY_CHECKOUT_HOOK_SRC" ]]; then
+  cp "$PRIMARY_CHECKOUT_HOOK_SRC" "$GIT_GLOBAL_HOOKS_DIR/primary-checkout-pre-commit.py"
+  chmod +x "$GIT_GLOBAL_HOOKS_DIR/primary-checkout-pre-commit.py"
+fi
 
 write_shortcut_prompts() {
   local prompts_dir="$1"
