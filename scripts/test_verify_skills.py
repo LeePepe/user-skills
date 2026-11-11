@@ -822,12 +822,18 @@ class VerifySkillsTests(unittest.TestCase):
         # and expands the 5 universal shortcut macros (/status, /ingest, /learn, /dash, /retro).
         node_probe = r"""
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import skillSlashExpander, {
   FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE,
   FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC,
   UNIVERSAL_SHORTCUT_MACROS,
   expandShortcutMacros,
   extractShortcutInvocations,
+  isAllowedM2SpecPath,
+  isInsideLinkedWorktree,
+  isInsidePrimaryGitCheckout,
   isLikelyImageArgument,
   isLikelySlowForegroundCommand,
 } from "./skills/m2-dispatcher/scripts/skill-slash-expander.ts";
@@ -878,6 +884,23 @@ assert.equal(isLikelySlowForegroundCommand("pytest aidata/tests/"), true);
 assert.equal(isLikelySlowForegroundCommand("git status --short"), false);
 assert.equal(isLikelyImageArgument("/tmp/shot.png"), true);
 assert.equal(isLikelyImageArgument("Linear glass card inspiration"), false);
+
+const guardRoot = fs.mkdtempSync(path.join(os.tmpdir(), "m2-spec-guard-"));
+const primaryRoot = path.join(guardRoot, "primary");
+const linkedRoot = path.join(guardRoot, "worktrees", "demo");
+const handoffRoot = path.join(guardRoot, "handoff", "demo");
+fs.mkdirSync(path.join(primaryRoot, ".git"), { recursive: true });
+fs.mkdirSync(linkedRoot, { recursive: true });
+fs.mkdirSync(handoffRoot, { recursive: true });
+fs.writeFileSync(path.join(linkedRoot, ".git"), "gitdir: ../.git/worktrees/demo\n");
+assert.equal(isInsidePrimaryGitCheckout(path.join(primaryRoot, "specs", "design.md")), true);
+assert.equal(isInsideLinkedWorktree(path.join(primaryRoot, "specs", "design.md")), false);
+assert.equal(isInsideLinkedWorktree(path.join(linkedRoot, "src", "main.ts")), true);
+assert.equal(isInsidePrimaryGitCheckout(path.join(linkedRoot, "src", "main.ts")), false);
+assert.equal(isAllowedM2SpecPath(path.join(primaryRoot, "specs", "design.md")), false);
+assert.equal(isAllowedM2SpecPath(path.join(handoffRoot, "spec.md")), true);
+assert.equal(isAllowedM2SpecPath(path.join(linkedRoot, "src", "main.ts")), true);
+fs.rmSync(guardRoot, { recursive: true, force: true });
 
 const statusExp = expandShortcutMacros("/status");
 assert.equal(statusExp.transformed, true);
@@ -955,6 +978,39 @@ try {
         self.assertIn("ALLOW_MAIN_PUSH", prepush_text)
         precommit_text = (REPO_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
         self.assertNotIn("ALLOW_MAIN_COMMIT", precommit_text)
+
+    def test_primary_checkout_pre_commit_lock(self) -> None:
+        hook = SKILLS_DIR / "team-lead" / "scripts" / "primary-checkout-pre-commit.py"
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp:
+            root = Path(temp)
+            primary = root / "repo"
+            primary.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(primary)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(primary), "config", "user.name", "Test"], check=True)
+            (primary / "README").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(primary), "add", "README"], check=True)
+            subprocess.run(["git", "-C", str(primary), "commit", "-m", "initial"], check=True, capture_output=True)
+            blocked = subprocess.run(
+                [sys.executable, str(hook)], cwd=primary,
+                env={**os.environ, "HERDR_ENV": "1"}, capture_output=True, text=True,
+            )
+            self.assertEqual(blocked.returncode, 1)
+            self.assertIn("singleton worktree", blocked.stderr)
+            allowed = subprocess.run(
+                [sys.executable, str(hook)], cwd=primary,
+                env={**os.environ, "HERDR_ENV": "1", "ALLOW_PRIMARY_COMMIT": "1"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            linked = root / "linked"
+            subprocess.run(["git", "-C", str(primary), "worktree", "add", "-b", "feat/test", str(linked), "HEAD"], check=True, capture_output=True)
+            linked_result = subprocess.run(
+                [sys.executable, str(hook)], cwd=linked,
+                env={**os.environ, "HERDR_ENV": "1"}, capture_output=True, text=True,
+            )
+            self.assertEqual(linked_result.returncode, 0, linked_result.stderr)
+            subprocess.run(["git", "-C", str(primary), "worktree", "remove", "--force", str(linked)], check=True)
 
     def test_merged_worktree_cleanup_contract(self) -> None:
         skill_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
@@ -1445,7 +1501,13 @@ try {
             payload = json.loads(ok_res.stdout.strip())
             self.assertEqual(
                 payload,
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-writer-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-writer-r1",
+                    "cwd": str(tmp_dir),
+                    "auto_pivoted_worktree": False,
+                },
             )
             recorded_calls = [
                 json.loads(line)
@@ -1586,7 +1648,13 @@ try {
             )
             self.assertEqual(
                 json.loads(copilot_res.stdout.strip()),
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-pr-monitor-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-pr-monitor-r1",
+                    "cwd": str(tmp_dir),
+                    "auto_pivoted_worktree": False,
+                },
             )
             copilot_calls = [
                 json.loads(line)
@@ -1632,7 +1700,13 @@ try {
             )
             self.assertEqual(
                 json.loads(stall_res.stdout.strip()),
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-writer-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-writer-r1",
+                    "cwd": str(tmp_dir),
+                    "auto_pivoted_worktree": False,
+                },
             )
             stall_calls = [
                 json.loads(line)
