@@ -248,6 +248,153 @@ class Sw5Tests(unittest.TestCase):
             self.assertTrue(html_out.startswith("<!doctype html>"))
             self.assertEqual(DIGEST_VAULT.validate_dc006_to_008(html_out), [])
 
+    def test_skill_roi_diagnostics_and_auto_propose(self):
+        import contextlib
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wh = root / "warehouse.db"
+            cp = root / "session-store.db"
+            proposals = root / "proposals.jsonl"
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            dev_root.mkdir(parents=True)
+
+            # Create two mock skills: one healthy, one with uncalled scripts + R1 fail + churn
+            sk_good = skills_root / "knowledge-digest"
+            (sk_good / "scripts").mkdir(parents=True)
+            (sk_good / "references").mkdir(parents=True)
+            (sk_good / "SKILL.md").write_text("---\nname: knowledge-digest\n---\n# Good\n", encoding="utf-8")
+            (sk_good / "scripts" / "digest_vault.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            (sk_good / "references" / "eval-cases.json").write_text(
+                json.dumps({"active_cases": [{"id": "EV-001", "registered_at": "2099-01-01"}]}),
+                encoding="utf-8",
+            )
+
+            sk_low = skills_root / "my-designer"
+            (sk_low / "scripts").mkdir(parents=True)
+            (sk_low / "references").mkdir(parents=True)
+            (sk_low / "SKILL.md").write_text("---\nname: my-designer\n---\n# Designer\n", encoding="utf-8")
+            (sk_low / "scripts" / "verify_design_cases.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            with contextlib.closing(sqlite3.connect(wh)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE fact_turn (
+                        session_id TEXT,
+                        attribution_skill TEXT,
+                        skill_names TEXT,
+                        tool_calls TEXT,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        cache_read INTEGER,
+                        cst_day TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_task_run (
+                        goal_id TEXT,
+                        task_id TEXT,
+                        role_name TEXT,
+                        round_no INTEGER,
+                        v5_verdict TEXT,
+                        status TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_event (
+                        goal_id TEXT,
+                        evt_type TEXT,
+                        note_preview TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_ci_job_run (
+                        job_id INTEGER PRIMARY KEY,
+                        failure_category TEXT,
+                        cst_day TEXT
+                    )
+                    """
+                )
+                conn.executemany(
+                    "INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))",
+                    [
+                        ("s-good", "knowledge-digest", '["knowledge-digest"]', '["Bash", "Read"]', 1000, 200, 500, ),
+                        ("s-low", "my-designer", '["my-designer"]', '["Read", "Read", "Read", "Read"]', 15000, 2000, 1000, ),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        ("learn-blog", "T1", "code_reviewer", 1, "PASS", "completed"),
+                        ("ui-feel-design", "T1", "code_reviewer", 1, "FAIL", "failed"),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO fact_gtt_event VALUES (?, ?, ?)",
+                    [
+                        ("ui-feel-design", "REVIEW_FAIL", "[IMPL_BUG] missing padding check"),
+                        ("ui-feel-design", "RULING", "[SPEC_GAP] missing dark mode token"),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO fact_ci_job_run VALUES (?, ?, date('now'))",
+                    [
+                        (1, "true_positive_gate"),
+                        (2, "config_drift_missing_secret"),
+                        (3, None),
+                    ],
+                )
+                conn.commit()
+
+            with contextlib.closing(sqlite3.connect(cp)) as conn:
+                conn.execute(
+                    "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT)"
+                )
+                for _ in range(5):
+                    conn.execute(
+                        "INSERT INTO session_files VALUES ('s-low', '/repo/skills/my-designer/SKILL.md', 'edit')"
+                    )
+                conn.commit()
+
+            report = ENGINE.compute_skill_roi_diagnostics(
+                warehouse_db=wh,
+                copilot_db=cp,
+                skills_root=skills_root,
+                dev_root=dev_root,
+            )
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["S2_gate_catch"]["true_positive_catches_7d"], 1)
+            self.assertEqual(report["S3_skill_health"]["total_skills"], 2)
+            self.assertGreaterEqual(report["S3_skill_health"]["eval_case_total"], 1)
+            self.assertEqual(len(report["S11_context_composition"]["slices"]), 5)
+            self.assertTrue(report["S12_tool_context_burn"])
+            self.assertTrue(report["low_roi_proposals"])
+            top_prop = report["low_roi_proposals"][0]
+            self.assertEqual(top_prop["ref"], "skill-roi://my-designer")
+            self.assertIn("my-designer", top_prop["title"])
+
+            rc = ENGINE.main([
+                "skill-roi",
+                "--warehouse-db", str(wh),
+                "--copilot-db", str(cp),
+                "--skills-root", str(skills_root),
+                "--dev-root", str(dev_root),
+                "--auto-propose",
+                "--proposals-path", str(proposals),
+            ])
+            self.assertEqual(rc, 0)
+            written = [json.loads(ln) for ln in proposals.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertEqual(written[0]["ref"], "skill-roi://my-designer")
+            self.assertEqual(written[0]["status"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()
