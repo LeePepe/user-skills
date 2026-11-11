@@ -226,6 +226,27 @@ const ALLOWED_M2_SPEC_PATTERNS: readonly RegExp[] = [
 export const M2_SPEC_ONLY_BLOCK_REASON =
 	"M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md). Code and other files must be modified in a worktree by dispatching Herdr TL via herdr-dispatch.sh. After dispatching Herdr TL, NEVER poll with 'sleep && herdr agent read' or 'herdr agent wait'; run 'python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json' synchronously until EVT=GOAL_DONE.";
 
+export const FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC = 5;
+
+export const FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE =
+	"5s Foreground-to-Background Rule (DSH Mechanism 1): Any build, test, or verification command expected to take >5s (such as `xcodebuild`, full `pytest` suites, `swift test`, or `./scripts/verify --all`) MUST run asynchronously/in background or in bounded slices so the worker's ears remain open to live `steer` follow-ups (`goal-queue.py steer`), `handback` (`goal-queue.py set-status --status handback --reason \"...\"`), or stop signals.";
+
+const SLOW_FOREGROUND_COMMAND_PATTERNS: readonly RegExp[] = [
+	/\bxcodebuild\b/i,
+	/\bswift\s+(?:build|test)\b/i,
+	/\bpytest\b/i,
+	/\bscripts\/verify\s+--all\b/i,
+	/\bgh\s+run\s+watch\b/i,
+	/\bsleep\s+(?:[6-9]|\d{2,})\b/i,
+];
+
+export function isLikelySlowForegroundCommand(command: string): boolean {
+	if (!command || typeof command !== "string") return false;
+	const trimmed = command.trim();
+	if (!trimmed) return false;
+	return SLOW_FOREGROUND_COMMAND_PATTERNS.some((re) => re.test(trimmed));
+}
+
 export function isAllowedM2SpecPath(rawPath: string, cwd?: string): boolean {
 	if (!rawPath || typeof rawPath !== "string") return false;
 	const trimmed = rawPath.trim();
@@ -632,11 +653,15 @@ function extractTextFromContent(content: unknown): string {
 function formatSkillBlock(meta: SkillMetadata): string | undefined {
 	try {
 		const body = fs.readFileSync(meta.skillMdPath, "utf8");
+		const extraRule =
+			meta.name === "team-lead" || meta.name === "m2-dispatcher"
+				? `\n\n> ${FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE}`
+				: "";
 		return [
 			`<skill-context name="${meta.name}" location="${meta.skillMdPath}">`,
 			`Base directory for this skill: ${meta.skillDir}`,
 			"",
-			body.trim(),
+			body.trim() + extraRule,
 			`</skill-context>`,
 		].join("\n");
 	} catch {
@@ -801,6 +826,15 @@ export default function skillSlashExpander(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = (event as { toolName?: string }).toolName;
+		if (toolName === "bash") {
+			const input = (event as { input?: { command?: unknown; mode?: unknown; async?: unknown } }).input;
+			const cmd = typeof input?.command === "string" ? input.command : "";
+			const isAsync = input?.mode === "async" || input?.async === true || /&\s*$/.test(cmd.trim());
+			if (!isAsync && isLikelySlowForegroundCommand(cmd) && ctx?.hasUI && ctx.ui?.notify) {
+				ctx.ui.notify(FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE, "info");
+			}
+			return undefined;
+		}
 		if (toolName !== "edit" && toolName !== "write") {
 			return undefined;
 		}

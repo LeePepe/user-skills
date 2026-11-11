@@ -798,6 +798,8 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("UNIVERSAL_SHORTCUT_MACROS", expander_ts)
         self.assertIn("expandShortcutMacros", expander_ts)
         self.assertIn("extractShortcutInvocations", expander_ts)
+        self.assertIn("FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE", expander_ts)
+        self.assertIn("isLikelySlowForegroundCommand", expander_ts)
         for shortcut_token in (
             "/status",
             "/ingest <text_or_image>",
@@ -821,10 +823,13 @@ class VerifySkillsTests(unittest.TestCase):
         node_probe = r"""
 import assert from "node:assert/strict";
 import skillSlashExpander, {
+  FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE,
+  FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC,
   UNIVERSAL_SHORTCUT_MACROS,
   expandShortcutMacros,
   extractShortcutInvocations,
   isLikelyImageArgument,
+  isLikelySlowForegroundCommand,
 } from "./skills/m2-dispatcher/scripts/skill-slash-expander.ts";
 
 async function runCase(envOverrides) {
@@ -866,6 +871,11 @@ assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session 
 
 // Verify the 5 universal shortcut macros
 assert.deepEqual(Object.keys(UNIVERSAL_SHORTCUT_MACROS).sort(), ["dash", "ingest", "learn", "retro", "status"]);
+assert.equal(FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC, 5);
+assert.ok(FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE.includes("5s Foreground-to-Background Rule"));
+assert.equal(isLikelySlowForegroundCommand("xcodebuild -scheme AIDashApp build"), true);
+assert.equal(isLikelySlowForegroundCommand("pytest aidata/tests/"), true);
+assert.equal(isLikelySlowForegroundCommand("git status --short"), false);
 assert.equal(isLikelyImageArgument("/tmp/shot.png"), true);
 assert.equal(isLikelyImageArgument("Linear glass card inspiration"), false);
 

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "policy_id": "dsh-operator-policy-v1",
+  "communication": {
+    "language": "zh-CN",
+    "style": "concise_direct",
+    "max_summary_lines": 15,
+    "agent_signature": "GTT-TL",
+    "mention_handle": "@tianpei"
+  },
+  "ticket_scope": {
+    "auto_ruling_allowed_for_non_redline": true,
+    "pause_on_redlines": [
+      "core_goal_change",
+      "security_privacy_data_loss",
+      "ci_gate_or_ruleset_mutation",
+      "destructive_operation"
+    ],
+    "max_inline_files": 3,
+    "explorer_noise_file_threshold": 8,
+    "foreground_command_max_seconds": 5,
+    "out_of_scope_followup_action": "handback"
+  },
+  "delivery_requirements": {
+    "commit_coauthor_trailer": "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+    "require_cross_vendor_review": true,
+    "require_r10_receipt": true,
+    "auto_merge_when_checks_green": true,
+    "clean_worktree_on_merge": true,
+    "close_workspace_on_goal_done": true
+  }
+}

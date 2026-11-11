@@ -50,11 +50,11 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 |---|---|
 | Steering / 主控（TL / `group/steering`） | 探查规划、加载 `my-designer` 写 `spec.md`／`design.md`、`≤3` 文件直改、依赖调度与内联裁决（`EVT=RULING`） |
 | 探查者（Explorer，可选） | 仅在 `>8` 文件高噪声跨仓搜索时派发，只读核实事实（附 `file:line`）并写 handoff R10 回执（R11） |
-| Task 写者（Writer / `writer_escalated`） | 多文件或耗时编译任务实现、本地验证与 commit（同分支连续推进或子 Worktree 本地 `keep` 合回后退出关窗）；严禁 `gh run watch` 或 `sleep >= 30`；首轮 `group/coding`，V3 第 2 轮启用 `writer_escalated` |
+| Task 写者（Writer / `writer_escalated`） | 多文件或耗时编译任务实现、本地验证与 commit（同分支连续推进或子 Worktree 本地 `keep` 合回后退出关窗）；遵守 **5s Foreground-to-Background Rule**（耗时 `>5s` 的编译/全量测试如 `xcodebuild` 必走后台/异步或短时间片，严禁阻塞 Worker 实时接收 `steer`/停止信号，严禁 `gh run watch` 或 `sleep >= 30`）；超 `Owned Paths` 追问执行 `goal-queue.py set-status --status handback --reason "..."` 退回 TL；首轮 `group/coding`，V3 第 2 轮启用 `writer_escalated` |
 | 独立验收（Reviewer） | Goal 收口执行 **1 次** V1–V5 双轴跨厂商独立审查（若目标仓 PR CI 已运行 `codex-review-target` 则直接复用） |
 | CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认后台运行 `skills/team-lead/scripts/ci-monitor.py`（Layer 0、0 Token），不为纯状态轮询启动 LLM；仅失败需 LLM 诊断时回退 `worker.pr_monitor`。Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，Run `in_progress` 时读 `actions/jobs/<id>/logs` |
 
-技术栈到 Required Skills 的路由见 [`bots-and-agents.md`](references/bots-and-agents.md)；模型与启动参数见 [`runtime-profiles.yaml`](references/runtime-profiles.yaml)（历史归档见 [`model-roles.md`](references/model-roles.md)）。
+技术栈到 Required Skills 的路由见 [`bots-and-agents.md`](references/bots-and-agents.md)；个人偏好与系统底盘分离配置见 [`operator-policy.json`](references/operator-policy.json)（由 `goal-supervisor.py check-operator-policy` 校验升级兼容性）；模型与启动参数见 [`runtime-profiles.yaml`](references/runtime-profiles.yaml)（历史归档见 [`model-roles.md`](references/model-roles.md)）。
 
 ## 定义、冻结与缺口
 

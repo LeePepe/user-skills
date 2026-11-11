@@ -828,6 +828,167 @@ def check_pins(args: argparse.Namespace) -> dict[str, Any]:
     return {"consumers": results, "all_up_to_date": all(item["status"] == "UP_TO_DATE" for item in results)}
 
 
+DEFAULT_OPERATOR_POLICY_TEMPLATE: dict[str, Any] = {
+    "schema_version": 1,
+    "policy_id": "dsh-operator-policy-v1",
+    "communication": {
+        "language": "zh-CN",
+        "style": "concise_direct",
+        "max_summary_lines": 15,
+        "agent_signature": "GTT-TL",
+        "mention_handle": "@tianpei",
+    },
+    "ticket_scope": {
+        "auto_ruling_allowed_for_non_redline": True,
+        "pause_on_redlines": [
+            "core_goal_change",
+            "security_privacy_data_loss",
+            "ci_gate_or_ruleset_mutation",
+            "destructive_operation",
+        ],
+        "max_inline_files": 3,
+        "explorer_noise_file_threshold": 8,
+        "foreground_command_max_seconds": 5,
+        "out_of_scope_followup_action": "handback",
+    },
+    "delivery_requirements": {
+        "commit_coauthor_trailer": "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+        "require_cross_vendor_review": True,
+        "require_r10_receipt": True,
+        "auto_merge_when_checks_green": True,
+        "clean_worktree_on_merge": True,
+        "close_workspace_on_goal_done": True,
+    },
+}
+OPERATOR_POLICY_SLOTS = ("communication", "ticket_scope", "delivery_requirements")
+
+
+def _default_operator_policy_path() -> Path:
+    return SCRIPT_DIR.parent / "references" / "operator-policy.json"
+
+
+def check_operator_policy_compatibility(
+    policy_path: Path | None = None,
+    template: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target = (policy_path or _default_operator_policy_path()).expanduser()
+    base = template or DEFAULT_OPERATOR_POLICY_TEMPLATE
+    if not target.is_file():
+        return {
+            "ok": False,
+            "compatible": False,
+            "policy_path": str(target),
+            "missing_slots": list(OPERATOR_POLICY_SLOTS),
+            "missing_keys": {slot: sorted(base[slot].keys()) for slot in OPERATOR_POLICY_SLOTS},
+            "type_mismatches": [],
+            "custom_overrides": {},
+            "merged_policy": dict(base),
+        }
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "compatible": False,
+            "policy_path": str(target),
+            "error": str(exc),
+            "missing_slots": list(OPERATOR_POLICY_SLOTS),
+            "missing_keys": {},
+            "type_mismatches": [],
+            "custom_overrides": {},
+            "merged_policy": dict(base),
+        }
+    if not isinstance(loaded, dict):
+        return {
+            "ok": False,
+            "compatible": False,
+            "policy_path": str(target),
+            "error": "operator-policy.json root must be a JSON object",
+            "missing_slots": list(OPERATOR_POLICY_SLOTS),
+            "missing_keys": {},
+            "type_mismatches": [],
+            "custom_overrides": {},
+            "merged_policy": dict(base),
+        }
+
+    missing_slots: list[str] = []
+    missing_keys: dict[str, list[str]] = {}
+    type_mismatches: list[dict[str, str]] = []
+    custom_overrides: dict[str, dict[str, Any]] = {}
+    merged: dict[str, Any] = {
+        "schema_version": loaded.get("schema_version", base["schema_version"]),
+        "policy_id": loaded.get("policy_id", base["policy_id"]),
+    }
+
+    if not isinstance(merged["schema_version"], int) or isinstance(merged["schema_version"], bool):
+        type_mismatches.append(
+            {
+                "path": "schema_version",
+                "expected": "int",
+                "actual": type(merged["schema_version"]).__name__,
+            }
+        )
+
+    for slot in OPERATOR_POLICY_SLOTS:
+        default_slot = base.get(slot, {})
+        actual_slot = loaded.get(slot)
+        if not isinstance(actual_slot, dict):
+            missing_slots.append(slot)
+            merged[slot] = dict(default_slot)
+            continue
+        merged_slot = dict(default_slot)
+        slot_missing: list[str] = []
+        slot_overrides: dict[str, Any] = {}
+        for key, default_val in default_slot.items():
+            if key not in actual_slot:
+                slot_missing.append(key)
+                continue
+            actual_val = actual_slot[key]
+            expected_is_bool = isinstance(default_val, bool)
+            actual_is_bool = isinstance(actual_val, bool)
+            if expected_is_bool != actual_is_bool or not isinstance(actual_val, type(default_val)):
+                type_mismatches.append(
+                    {
+                        "path": f"{slot}.{key}",
+                        "expected": type(default_val).__name__,
+                        "actual": type(actual_val).__name__,
+                    }
+                )
+                continue
+            merged_slot[key] = actual_val
+            if actual_val != default_val:
+                slot_overrides[key] = actual_val
+        for extra_key, extra_val in actual_slot.items():
+            if extra_key not in default_slot:
+                merged_slot[extra_key] = extra_val
+                slot_overrides[extra_key] = extra_val
+        if slot_missing:
+            missing_keys[slot] = sorted(slot_missing)
+        if slot_overrides:
+            custom_overrides[slot] = slot_overrides
+        merged[slot] = merged_slot
+
+    compatible = not missing_slots and not type_mismatches
+    return {
+        "ok": compatible,
+        "compatible": compatible,
+        "policy_path": str(target),
+        "schema_version": merged["schema_version"],
+        "slots": list(OPERATOR_POLICY_SLOTS),
+        "missing_slots": missing_slots,
+        "missing_keys": missing_keys,
+        "type_mismatches": type_mismatches,
+        "custom_overrides": custom_overrides,
+        "merged_policy": merged,
+    }
+
+
+def check_operator_policy(args: argparse.Namespace) -> dict[str, Any]:
+    policy_path = Path(args.policy_file).expanduser() if getattr(args, "policy_file", None) else None
+    template = load_json_input(args.template_file) if getattr(args, "template_file", None) else None
+    return check_operator_policy_compatibility(policy_path=policy_path, template=template)
+
+
 def telemetry(args: argparse.Namespace) -> dict[str, Any]:
     handoff = Path(args.handoff_dir)
     events = goal_events(handoff / "ledger.md")
@@ -981,6 +1142,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
         "blocked_agents": sum(item.get("type") == "BLOCKED_AGENT" for item in scan_result["anomalies"]),
         "zombie_leases": sum(item.get("type") == "ZOMBIE_LEASE" for item in scan_result["anomalies"]),
         "orphan_tl_waits": sum(item.get("type") == "ORPHAN_TL_WAIT" for item in scan_result["anomalies"]),
+        "operator_policy_compatible": check_operator_policy_compatibility()["compatible"],
     }
     return {
         "command": "status", "mode": mode, "needs_a_person_count": len(needs),
@@ -1157,6 +1319,10 @@ def main() -> None:
     pins_parser = subparsers.add_parser("check-pins")
     pins_parser.add_argument("--pins-file", required=True)
     pins_parser.add_argument("--json", action="store_true")
+    policy_parser = subparsers.add_parser("check-operator-policy")
+    policy_parser.add_argument("--policy-file", default="")
+    policy_parser.add_argument("--template-file", default="")
+    policy_parser.add_argument("--json", action="store_true")
     telemetry_parser = subparsers.add_parser("telemetry")
     telemetry_parser.add_argument("--handoff-dir", required=True)
     telemetry_parser.add_argument("--write", action="store_true")
@@ -1189,6 +1355,12 @@ def main() -> None:
         result = notify_bridge(args)
     elif args.command == "check-pins":
         result = check_pins(args)
+    elif args.command == "check-operator-policy":
+        result = check_operator_policy(args)
+        json_output(result, args.json)
+        if not result.get("compatible", False):
+            raise SystemExit(1)
+        return
     elif args.command == "watch":
         result = watch(args)
     elif args.command == "status":
