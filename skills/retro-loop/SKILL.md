@@ -18,7 +18,9 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
   │      ├─ `retro/ci_health_and_noise.sql`    (CI 失败与空跑配置噪音)
   │      ├─ `retro/workspace_hygiene_reclaim.sql` (已合并未清理的残留 Worktree)
   │      ├─ `retro/tf_release_deliveries.sql`  (个人 App TestFlight 交付与异常)
-  │      └─ `retro/app_crash_and_perf.sql`     (7d 新 Crash 签名、Crash-Free 率与 P95 退化 >20%)
+  │      ├─ `retro/app_crash_and_perf.sql`     (7d 新 Crash 签名、Crash-Free 率与 P95 退化 >20%)
+  │      ├─ `retro/skill_roi_diagnostics.sql`  (S1–S4 与 S6–S10 Skill 效果/效率 ROI 诊断)
+  │      └─ `retro/context_composition.sql` + `retro/tool_context_burn.sql` (S11 五维上下文切片与 S12 工具 >10k 膨胀告警)
   ▼
 【2. 提出问题：retro-loop 根因归因 + 写入 `proposals.jsonl`】
   │  • 按 Project Loop A（个人 App 体验/UI/构建）与 Engineering Loop B（H1–H5 工作流分岔点）归因；
@@ -78,10 +80,13 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 # 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash
 python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose
 
-# 2. 从 aidata warehouse.db 扫描 L4 复盘视图信号
+# 2. 计算 S1–S4 与 S6–S10 Skill 效果与效率 ROI，将 Top 低 ROI Skill 写入 proposals.jsonl (ref="skill-roi://<skill>")
+python3 skills/retro-loop/scripts/retro_story_engine.py skill-roi --auto-propose
+
+# 3. 从 aidata warehouse.db 扫描 L4 复盘视图信号
 python3 skills/retro-loop/scripts/retro_story_engine.py discover
 
-# 3. 每日增量水位线清理（仅处理新完结的 Goal 日志与已合并 Worktree，不重复扫描已清理项）
+# 4. 每日增量水位线清理（仅处理新完结的 Goal 日志与已合并 Worktree，不重复扫描已清理项）
 python3 skills/team-lead/scripts/git-gc.py daily-cleanup
 ```
 
