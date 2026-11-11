@@ -220,6 +220,132 @@ def _maybe_gc_task(handoff_dir: Path, task: Mapping[str, Any]) -> None:
         pass
 
 
+def _git_common_root(path: Path) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = path / common
+    return common.resolve().parent
+
+
+def _resolve_repository(raw_repo: str) -> Path:
+    candidate = Path(raw_repo).expanduser()
+    if not candidate.is_dir():
+        candidate = Path.home() / "Development" / raw_repo
+    if not candidate.is_dir():
+        raise ValueError(f"Repository directory not found: {raw_repo}")
+    try:
+        return _git_common_root(candidate)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"Not a Git repository: {candidate}") from exc
+
+
+def _worktree_repository(path: Path) -> Path | None:
+    if not path.is_dir():
+        return None
+    try:
+        return _git_common_root(path)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _spawn_worktree_gc(primary_repo: Path, worktrees_root: Path) -> None:
+    script = Path(__file__).with_name("git-gc.py")
+    command = [
+        sys.executable,
+        str(script),
+        "sweep",
+        "--repos",
+        primary_repo.name,
+        "--dev-root",
+        str(primary_repo.parent),
+        "--worktrees-root",
+        str(worktrees_root),
+    ]
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def cmd_ensure_worktree(args: argparse.Namespace) -> dict[str, Any]:
+    handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    primary_repo = _resolve_repository(args.repo)
+    goal = str(args.goal or handoff_dir.name).strip()
+    if not goal:
+        raise ValueError("Goal name must not be empty")
+    branch = str(args.branch or f"feat/{goal}").strip()
+    if not branch:
+        raise ValueError("Branch name must not be empty")
+    worktrees_root = Path(args.worktrees_root).expanduser().resolve()
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+    worktree_path = worktrees_root / goal
+    existing_repo = _worktree_repository(worktree_path)
+    reused = existing_repo == primary_repo and (worktree_path / ".git").is_file()
+    if not reused and worktree_path.exists():
+        if existing_repo is not None and existing_repo != primary_repo:
+            worktree_path = worktrees_root / f"{goal}--{primary_repo.name}"
+        elif existing_repo is None:
+            worktree_path = worktrees_root / f"{goal}--{primary_repo.name}"
+        existing_repo = _worktree_repository(worktree_path)
+        reused = existing_repo == primary_repo and (worktree_path / ".git").is_file()
+    if not reused:
+        if worktree_path.exists():
+            raise ValueError(f"Worktree path is already occupied: {worktree_path}")
+        base_ref = "HEAD"
+        origin_main = subprocess.run(
+            ["git", "-C", str(primary_repo), "rev-parse", "--verify", "origin/main"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if origin_main.returncode == 0:
+            base_ref = "origin/main"
+        subprocess.run(
+            ["git", "-C", str(primary_repo), "worktree", "add", "-B", branch, str(worktree_path), base_ref],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    queue_path = handoff_dir / "queue.json"
+    if queue_path.exists():
+        with _queue_lock(handoff_dir):
+            queue_data = _load_queue(handoff_dir)
+            queue_data["goal_worktree"] = str(worktree_path)
+            queue_data["goal_branch"] = branch
+            repo_names = {str(primary_repo), primary_repo.name, str(args.repo)}
+            for task in queue_data["tasks"]:
+                task_repo = str(task.get("repo") or "").strip()
+                task_worktree = str(task.get("worktree") or "").strip()
+                if task_repo in repo_names and (not task_worktree or Path(task_worktree).expanduser().resolve() == primary_repo):
+                    task["worktree"] = str(worktree_path)
+                    task.setdefault("branch", branch)
+            _save_queue(handoff_dir, queue_data)
+    if os.environ.get("GTT_WORKTREE_GC") != "0" and (
+        not _is_isolated_handoff_dir(handoff_dir) or os.environ.get("GTT_WORKTREE_GC") == "1"
+    ):
+        _spawn_worktree_gc(primary_repo, worktrees_root)
+    return {
+        "ok": True,
+        "goal": goal,
+        "repo": str(primary_repo),
+        "worktree": str(worktree_path),
+        "branch": branch,
+        "reused": reused,
+    }
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -1638,6 +1764,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wave_parser.add_argument("--max-workers", type=int, default=None)
 
+    worktree_parser = subparsers.add_parser(
+        "ensure-worktree",
+        help="Create or reuse the singleton Goal worktree for a repository.",
+    )
+    worktree_parser.add_argument("--handoff-dir", required=True, help="Path to handoff/<goal> directory.")
+    worktree_parser.add_argument("--repo", required=True, help="Repository path or name under ~/Development.")
+    worktree_parser.add_argument("--goal", default="", help="Goal slug; defaults to the handoff directory name.")
+    worktree_parser.add_argument("--branch", default="", help="Branch name; defaults to feat/<goal>.")
+    worktree_parser.add_argument("--worktrees-root", default="~/Development/worktrees")
+
     status_parser = subparsers.add_parser(
         "set-status",
         help="Atomically update task status in queue.json and ledger.md.",
@@ -1748,6 +1884,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = cmd_enqueue(args)
         elif args.subcommand == "next-wave":
             payload = cmd_next_wave(args)
+        elif args.subcommand == "ensure-worktree":
+            payload = cmd_ensure_worktree(args)
         elif args.subcommand == "set-status":
             payload = cmd_set_status(args)
         elif args.subcommand == "ack-spec":

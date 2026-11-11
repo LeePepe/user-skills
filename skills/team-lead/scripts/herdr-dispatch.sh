@@ -7,7 +7,7 @@ Usage:
   herdr-dispatch.sh --name <agent-name> --kind <kind> --cwd <worktree-or-dir> --prompt <text> \
     [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace-label <label>] \
     [--role <role>] [--exclude-vendor <vendor>] [--gateway-mode auto|magpie|direct] \
-    [--wait] [--timeout <ms>] [-- <agent-args>...]
+    [--auto-worktree|--no-auto-worktree] [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
 }
 
@@ -25,6 +25,9 @@ TIMEOUT_MS=""
 ROLE=""
 EXCLUDE_VENDOR=""
 GATEWAY_MODE="${HERDR_GATEWAY_MODE:-auto}"
+AUTO_WORKTREE_REQUESTED=0
+NO_AUTO_WORKTREE=0
+AUTO_PIVOTED_WORKTREE=0
 AGENT_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -92,6 +95,15 @@ while [[ $# -gt 0 ]]; do
       GATEWAY_MODE="$2"
       shift 2
       ;;
+    --auto-worktree)
+      AUTO_WORKTREE_REQUESTED=1
+      NO_AUTO_WORKTREE=0
+      shift
+      ;;
+    --no-auto-worktree)
+      NO_AUTO_WORKTREE=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -142,6 +154,36 @@ fi
 if [[ ! "$NAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
   echo "Error: --name '$NAME' must match ^[a-z][a-z0-9_-]{0,31}$ (<=32 chars) before splitting pane" >&2
   exit 2
+fi
+
+# Code-bearing agents must share one Goal worktree instead of mutating a primary checkout.
+if [[ "$ROLE" == "team_lead" || "$ROLE" == "writer" || "$ROLE" == "writer_escalated" ]] \
+  && [[ "$NO_AUTO_WORKTREE" -ne 1 ]] \
+  && [[ "${HERDR_AUTO_WORKTREE:-1}" != "0" ]] \
+  && [[ -z "${MOCK_HERDR_LOG:-}" || "${HERDR_FORCE_AUTO_WORKTREE:-0}" == "1" || "$AUTO_WORKTREE_REQUESTED" -eq 1 ]] \
+  && [[ -d "$CWD/.git" ]]; then
+  if [[ -n "$WORKSPACE_LABEL" ]]; then
+    GOAL_SLUG="$WORKSPACE_LABEL"
+  elif [[ "$NAME" == *-goal-tl-r* ]]; then
+    GOAL_SLUG="${NAME%-goal-tl-r*}"
+  elif [[ "$NAME" == *-tk* ]]; then
+    GOAL_SLUG="${NAME%-tk*}"
+  else
+    GOAL_SLUG="$NAME"
+  fi
+  GOAL_SLUG="$(printf '%s' "$GOAL_SLUG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_-' '-' | sed -e 's/^-*//' -e 's/-*$//')"
+  [[ -n "$GOAL_SLUG" ]] || GOAL_SLUG="goal"
+  GOAL_QUEUE_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/goal-queue.py"
+  HANDOFF_ROOT="${HERDR_HANDOFF_ROOT:-$HOME/Development/handoff}"
+  WORKTREES_ROOT="${HERDR_WORKTREES_ROOT:-$HOME/Development/worktrees}"
+  ENSURE_JSON="$(python3 "$GOAL_QUEUE_SCRIPT" ensure-worktree \
+    --handoff-dir "$HANDOFF_ROOT/$GOAL_SLUG" --repo "$CWD" --goal "$GOAL_SLUG" \
+    --branch "feat/$GOAL_SLUG" --worktrees-root "$WORKTREES_ROOT")" || {
+      echo "Error: unable to ensure singleton worktree for goal '$GOAL_SLUG'" >&2
+      exit 1
+    }
+  CWD="$(printf '%s' "$ENSURE_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin)["worktree"])')"
+  AUTO_PIVOTED_WORKTREE=1
 fi
 
 if [[ "$DIRECTION" != "right" && "$DIRECTION" != "down" ]]; then
@@ -766,7 +808,7 @@ else:
     WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
     [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
     WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
-    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" <<'PY'
+    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$CWD" "$AUTO_PIVOTED_WORKTREE" <<'PY'
 import json, sys
 payload = {
     "ok": True,
@@ -776,6 +818,8 @@ payload = {
     "reused_existing": True,
     "agent_status": sys.argv[8],
     "watchdog_cmd": sys.argv[9],
+    "cwd": sys.argv[10],
+    "auto_pivoted_worktree": sys.argv[11] == "1",
 }
 if sys.argv[3] == "1":
     payload.update({
@@ -978,9 +1022,15 @@ if [[ "$ROLE" == "team_lead" || "$NEW_WORKSPACE" -eq 1 ]]; then
   WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$CWD" "$AUTO_PIVOTED_WORKTREE" <<'PY'
 import json, sys
-payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
+payload = {
+    "ok": True,
+    "pane_id": sys.argv[1],
+    "agent": sys.argv[2],
+    "cwd": sys.argv[13],
+    "auto_pivoted_worktree": sys.argv[14] == "1",
+}
 if sys.argv[8]:
     payload["workspace_id"] = sys.argv[8]
 if sys.argv[12]:
