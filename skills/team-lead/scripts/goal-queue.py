@@ -790,6 +790,61 @@ def _queue_metrics(tasks: Sequence[dict[str, Any]]) -> tuple[int, int, bool]:
     return (in_progress_count, pending_count, drained)
 
 
+PR_REFERENCE_RE = re.compile(
+    r"(?:#\d+|PR\s+#\d+|https?://\S+/(?:pull|pullrequest)/\d+)",
+    re.IGNORECASE,
+)
+
+
+def _valid_pr_reference(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text not in {"—", "-"} and PR_REFERENCE_RE.search(text))
+
+
+def _pr_gate_applies(args: argparse.Namespace, queue_data: Mapping[str, Any], handoff_dir: Path, task: Mapping[str, Any]) -> bool:
+    if getattr(args, "require_pr", False) or queue_data.get("require_pr") or os.environ.get("GTT_REQUIRE_PR_ON_DONE") == "1":
+        return True
+    if _is_isolated_handoff_dir(handoff_dir) or os.environ.get("GTT_SKIP_PR_GATE") == "1":
+        return False
+    worktree = Path(str(task.get("worktree") or "")).expanduser()
+    repo = str(task.get("repo") or "").strip()
+    return bool(repo and repo not in {"local-config", "handoff-only", "none"} and worktree.is_dir() and (worktree / ".git").exists())
+
+
+def _validate_pr_and_worktree_gate(
+    args: argparse.Namespace,
+    queue_data: Mapping[str, Any],
+    handoff_dir: Path,
+    staged_tasks: Sequence[Mapping[str, Any]],
+    target_task: Mapping[str, Any],
+    drained: bool,
+) -> None:
+    if args.status != "done" or not drained or not _pr_gate_applies(args, queue_data, handoff_dir, target_task):
+        return
+    worktree = Path(str(target_task.get("worktree") or "")).expanduser()
+    if worktree.is_dir() and (worktree / ".git").exists():
+        if not (worktree / ".git").is_file():
+            raise ValueError(f"PR completion gate requires a linked worktree, not primary checkout: {worktree}")
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--untracked-files=no"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"PR completion gate could not inspect worktree: {worktree}")
+        if result.stdout.strip():
+            raise ValueError(f"PR completion gate requires a clean worktree: {worktree}")
+    if any(str(task.get("status")) != "cancelled" and _valid_pr_reference(task.get("pr")) for task in staged_tasks):
+        return
+    if any(str(task.get("no_pr_reason") or "").strip() for task in staged_tasks if str(task.get("status")) != "cancelled"):
+        return
+    raise ValueError(
+        "PR completion gate requires --pr with a valid PR reference (for example #123 or a Pull Request URL), "
+        "or --no-pr-reason <text>"
+    )
+
+
 def _parse_batch_payload(batch_arg: str) -> list[dict[str, Any]]:
     stripped = batch_arg.strip()
     if stripped.startswith(("[", "{")):
@@ -1291,6 +1346,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
+        if args.status == "done" and getattr(args, "no_pr_reason", None):
+            target_task["no_pr_reason"] = args.no_pr_reason
         if effective_reason is not None:
             target_task["note"] = effective_reason
         if args.status not in TERMINAL_STATUSES:
@@ -1315,6 +1372,11 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         queue_data["tasks"] = staged_tasks
         if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
             _feedback_validation(queue_data, staged_tasks)
+
+        _, _, drained = _queue_metrics(staged_tasks)
+        _validate_pr_and_worktree_gate(
+            args, queue_data, handoff_dir, staged_tasks, target_task, drained
+        )
 
         status_to_evt = {
             "done": "DONE",
@@ -1551,6 +1613,8 @@ def cmd_init_goal(args: argparse.Namespace) -> dict[str, Any]:
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         queue_data.update({"intent": args.intent, "readonly": bool(args.readonly), "status": queue_data.get("status", "planning")})
+        if args.require_pr:
+            queue_data["require_pr"] = True
         budget = dict(queue_data.get("budget") or {})
         if args.budget_sec is not None:
             budget["max_sec"] = args.budget_sec
@@ -1787,6 +1851,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="New task status.",
     )
     status_parser.add_argument("--pr", default=None, help="PR URL, number, or head SHA.")
+    status_parser.add_argument("--require-pr", action="store_true", help="Require a valid PR and clean linked worktree when the Goal drains.")
+    status_parser.add_argument("--no-pr-reason", default="", help="Document an approved reason for completing without a PR.")
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
     status_parser.add_argument(
         "--reason",
@@ -1850,6 +1916,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--dimensions", default="")
     init_parser.add_argument("--max-workers", type=int, default=None)
     init_parser.add_argument("--readonly", action="store_true")
+    init_parser.add_argument("--require-pr", action="store_true", help="Require a PR before the Goal can drain.")
 
     budget_parser = subparsers.add_parser("budget", help="Adjust an evolve goal budget.")
     budget_parser.add_argument("--handoff-dir", required=True)

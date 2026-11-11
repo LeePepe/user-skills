@@ -227,6 +227,9 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             meta = supervisor.goal_metadata(root)
             self.assertEqual([item["name"] for item in meta], ["fresh-goal"])
             self.assertEqual(meta[0]["tl_name"], "fresh-goal-goal-tl-r1")
+            (goal / "queue.json").write_text(json.dumps({
+                "tasks": [{"task_id": "TK1", "status": "done", "repo": "user-skills"}]
+            }), encoding="utf-8")
 
             agents_file = root / "agents.json"
             calls = []
@@ -253,6 +256,8 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertEqual(watch_res["tl"], "fresh-goal-goal-tl-r1")
             self.assertEqual(watch_res["tl_status"], "done")
             self.assertEqual(watch_res["events"], 0)
+            self.assertTrue(watch_res["queue_drained"])
+            self.assertTrue(watch_res["missing_pr"])
 
     def test_operator_policy_compatibility_and_default_upgrade_diff(self):
         supervisor = load_supervisor()
