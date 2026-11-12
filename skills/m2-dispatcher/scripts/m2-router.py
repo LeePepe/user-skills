@@ -340,19 +340,61 @@ def _split_ordered_clauses(message: str) -> list[tuple[int, str]]:
     return clauses or [(1, message)]
 
 
+def _clean_target_name(value: Any) -> str:
+    return _text(value).strip(" `[](){}<>\"'。，,;；:：")
+
+
+def _session_target_aliases(sessions: list[dict[str, Any]]) -> tuple[dict[str, str], list[str]]:
+    aliases: dict[str, str] = {}
+    for session in sessions:
+        canonical = _clean_target_name(session.get("target_repo"))
+        if not canonical:
+            continue
+        values = (canonical, session.get("title"), session.get("herdr_target"))
+        cwd = _text(session.get("cwd"))
+        if cwd:
+            values += (Path(cwd.rstrip("/")).name,)
+        for value in values:
+            alias = _clean_target_name(value)
+            if alias:
+                aliases.setdefault(alias.casefold(), canonical)
+    return aliases, sorted(aliases, key=len, reverse=True)
+
+
 def _deterministic_targets(message: str, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract repo names and soft waves when Jev returns no target list."""
+    """Extract known or explicitly named repos and soft waves without Jev targets."""
     clauses = _split_ordered_clauses(message)
-    known = sorted({s["target_repo"] for s in sessions if s.get("target_repo")}, key=len, reverse=True)
+    alias_map, known_aliases = _session_target_aliases(sessions)
+    actions = r"(?:更新|同步|接入|处理|完成|检查|执行|负责|修复|实现|推进|to(?:\s|$))"
     targets: list[dict[str, Any]] = []
     for wave, clause in clauses:
-        names = [repo for repo in known if re.search(rf"(?<![\w-]){re.escape(repo)}(?![\w-])", clause, re.I)]
-        if not names:
-            marker = re.search(r"(?:让|由|请|叫|let|ask|tell|have)\s+(.+?)(?=\s+(?:更新|同步|接入|处理|完成|检查|执行|负责|to\s+|and\s+then|然后|再|，|,|$))", clause, re.I)
-            candidate_text = marker.group(1) if marker else ""
-            names = [part.strip(" `[]()") for part in re.split(r"\s*(?:和|及|以及|、|and|&)\s*", candidate_text, flags=re.I) if part.strip()]
-            names = [name for name in names if re.search(r"[A-Za-z0-9]", name)]
-        for name in dict.fromkeys(names):
+        names: list[str] = []
+        marker = re.search(
+            rf"(?:先让|再让|然后让|随后让|之后让|让|由|请|叫|let|ask|tell|have)\s*(.+?)(?=\s*{actions}|$)",
+            clause,
+            re.I,
+        )
+        candidate_text = marker.group(1) if marker else ""
+        candidates = [
+            _clean_target_name(part)
+            for part in re.split(r"\s*(?:和|及|以及|、|and|&)\s*", candidate_text, flags=re.I)
+            if _clean_target_name(part)
+        ]
+        names.extend(candidates)
+
+        known_matches: list[tuple[int, str]] = []
+        for alias in known_aliases:
+            match = re.search(rf"(?<![\w-]){re.escape(alias)}(?![\w-])", clause, re.I)
+            if match:
+                known_matches.append((match.start(), alias_map[alias.casefold()]))
+        names.extend(canonical for _, canonical in sorted(known_matches, key=lambda item: item[0]))
+
+        canonical_names: list[str] = []
+        for name in names:
+            canonical = alias_map.get(name.casefold(), name)
+            if re.search(r"[A-Za-z0-9]", canonical) and canonical not in canonical_names:
+                canonical_names.append(canonical)
+        for name in canonical_names:
             targets.append({"target_repo": name, "sub_prompt": clause, "wave_order": wave})
     return targets
 
@@ -366,8 +408,12 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
         route = _route_from_message(message, sessions)
 
     raw_targets = _target_value(decision)
-    if not raw_targets and not decision:
+    used_deterministic_fallback = False
+    if not raw_targets:
         raw_targets = _deterministic_targets(message, sessions)
+        used_deterministic_fallback = bool(raw_targets)
+        if len(raw_targets) > 1 or _route_from_message(message, sessions) == "ROUTE_CROSS_SESSION":
+            route = "ROUTE_CROSS_SESSION"
     if not raw_targets:
         primary = answers.get("primary_target")
         if isinstance(primary, dict):
@@ -417,7 +463,7 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
     if not targets:
         targets = [{"target_repo": "unspecified", "sub_prompt": message, "wave_order": 1, "rag_context_hint": None, "m2_status": "NEW_M2", "transport": "auto"}]
     targets.sort(key=lambda item: (item["wave_order"], item.get("target_repo", "")))
-    return route, targets, {"source": "jev" if decision else "deterministic_fallback", "model": _text(decision.get("model"), "microsoft-decision-1"), "confidence": answers.get("route_mode", {}).get("confidence", decision.get("confidence", 0.0)) if isinstance(answers.get("route_mode"), dict) else decision.get("confidence", 0.0), "reason": _text(decision.get("reason"))}
+    return route, targets, {"source": "deterministic_fallback" if used_deterministic_fallback or not decision else "jev", "model": _text(decision.get("model"), "microsoft-decision-1"), "confidence": answers.get("route_mode", {}).get("confidence", decision.get("confidence", 0.0)) if isinstance(answers.get("route_mode"), dict) else decision.get("confidence", 0.0), "reason": _text(decision.get("reason"))}
 
 
 def classify(message: str, sessions: list[dict[str, Any]], *, mock: Any = None, goal_id: str = "") -> tuple[str, list[dict[str, Any]], dict[str, Any]]:

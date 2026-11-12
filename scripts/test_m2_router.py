@@ -71,6 +71,23 @@ class M2RouterTests(unittest.TestCase):
         ])
         self.assertTrue(all(item["m2_status"] == "EXISTING_M2" for item in plan["targets"]))
 
+    def test_falcon_boolean_noul_falls_back_to_deterministic_multi_target_plan(self):
+        sessions = [
+            {"session_id": "dash", "target_repo": "AIDash", "title": "AIDash", "status": "working", "cwd": "/repo/AIDash", "source": "herdr", "herdr_target": "AIDash", "pane_id": "w2:p1", "workspace_id": "w2"},
+            {"session_id": "sapphire", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire", "status": "working", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "Sapphire", "pane_id": "w3:p1", "workspace_id": "w3"},
+        ]
+        plan = self.router.build_plan(
+            "先让 shared-ci 更新门禁，再让 AIDash 和 Sapphire 同步接入",
+            sessions,
+            mock_jev={"answers": {"route_mode": {"choice": "ROUTE_SINGLE"}, "targets": {"noul": True}}},
+        )
+        self.assertEqual(plan["decision"]["route"], "ROUTE_CROSS_SESSION")
+        self.assertEqual(plan["decision"]["source"], "deterministic_fallback")
+        self.assertEqual(
+            [(item["target_repo"], item["wave_order"], item["m2_status"]) for item in plan["targets"]],
+            [("shared-ci", 1, "NEW_M2"), ("AIDash", 2, "EXISTING_M2"), ("bing-growth-sapphire-app", 2, "EXISTING_M2")],
+        )
+
     def test_plan_contains_owner_gate_status_and_jev_multi_target_contract(self):
         sessions, warnings = self.router.discover_sessions(
             herdr_payload={"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]},
