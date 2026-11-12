@@ -65,7 +65,9 @@ python3 skills/m2-dispatcher/scripts/m2-router.py --apply \
   --plan-file plan.json --approve --json
 ```
 
-`--plan` 只读取 `herdr agent list` 与 dsh Omni Hub 公共状态（可用 `--herdr-json`/`--dsh-state-json` 做离线夹具），调用 Jev I3 Classify 拆出 `target_repo`、`sub_prompt`、`wave_order`、`rag_context_hint`，并输出 Owner Gate 预览；不创建 session、不发送 prompt。`--apply` 没有 `--approve` 会 fail-closed，按 wave 顺序串行执行：已有 Herdr M2 用 `herdr agent prompt`，新目标经 `herdr-dispatch.sh` 侧向分屏/新 workspace；dsh 通过公开 Session Sink pinned delivery（必要时回退明确目标的 Omni Hub dispatch）。`stdout` transport 仅用于 dry-run/测试。顺序是软门禁，RAG/context 只作为显式 prompt hook，不伪造上游结果。
+`--plan` 只读取 Herdr/dsh 公共状态（可用 `--herdr-json`/`--dsh-state-json` 离线夹具），默认调用 `Magpie (:3425/v1/chat/completions)` 的 `group/steering`，输入 `{user_message, active_m2_sessions}`，输出 JSON `{route, reason, targets:[{target_repo, session_id, sub_prompt, wave_order, rag_context_hint}]}`。Magpie 完成拆解、改写、wave 判定与会话绑定，路由器标记 `EXISTING_M2`/`NEW_M2`。支持 `--magpie-url`、`--magpie-model`、`--mock-magpie-json`；`--targets-json` 可跳过请求。网关不可达且无 targets 时才兜底；不创建 session、不发送 prompt。
+
+`--apply` 未带 `--approve` 会 fail-closed，按 wave 串行执行 Herdr prompt、`herdr-dispatch.sh` 新建或 dsh Session Sink 投递（必要时 Omni Hub 回退）。stdout 仅 dry-run；RAG 为显式 hook。
 
 计划 schema 与技术细节见 `~/Development/handoff/m2-unified-ingress/spec.md`；该入口对应 How-To 节点 I7（Unified M2 Ingress）。
 

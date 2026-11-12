@@ -9,7 +9,6 @@ and sends only the targets recorded in the plan.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -27,6 +26,8 @@ SCHEMA_VERSION = 1
 ACTIVE_STATUSES = {"working", "running", "idle", "blocked", "needs_input", "ready"}
 TERMINAL_STATUSES = {"done", "cancelled", "canceled", "stopped", "archived", "exited", "dead"}
 ROUTES = {"ROUTE_SINGLE", "ROUTE_CROSS_SESSION", "CREATE_NEW_M2"}
+MAGPIE_BASE_URL = "http://127.0.0.1:3425"
+MAGPIE_DEFAULT_MODEL = "group/steering"
 HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
 HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
 
@@ -466,33 +467,165 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
     return route, targets, {"source": "deterministic_fallback" if used_deterministic_fallback or not decision else "jev", "model": _text(decision.get("model"), "microsoft-decision-1"), "confidence": answers.get("route_mode", {}).get("confidence", decision.get("confidence", 0.0)) if isinstance(answers.get("route_mode"), dict) else decision.get("confidence", 0.0), "reason": _text(decision.get("reason"))}
 
 
-def classify(message: str, sessions: list[dict[str, Any]], *, mock: Any = None, goal_id: str = "") -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def _magpie_token() -> str:
+    """Read an optional local gateway token without including it in plans or logs."""
+    for key in ("MAGPIE_API_KEY", "MAGPIE_TOKEN", "MAGPIE_AUTH_TOKEN"):
+        token = _text(os.environ.get(key))
+        if token:
+            return token
+    config_root = Path.home() / ".config" / "magpie"
+    for candidate in (config_root / "token", config_root / "api_key", config_root / "auth_token"):
+        try:
+            if candidate.is_file():
+                token = candidate.read_text(encoding="utf-8").strip()
+                if token:
+                    return token
+        except OSError:
+            continue
+    for candidate in (config_root / "config.json", config_root / "settings.json"):
+        try:
+            if candidate.is_file():
+                value = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    for key in ("api_key", "apiKey", "token", "auth_token", "authToken"):
+                        token = _text(value.get(key))
+                        if token:
+                            return token
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def _magpie_decision(value: Any) -> dict[str, Any] | None:
+    """Extract the strict JSON routing object from a mock or OpenAI response."""
+    if isinstance(value, str):
+        value = _parse_json_output(value)
+    if not isinstance(value, dict):
+        return None
+    choices = value.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            content = message.get("content") if isinstance(message, dict) else first.get("text")
+            parsed = _magpie_decision(content)
+            if parsed:
+                return parsed
+    if "content" in value and not ("route" in value or "targets" in value):
+        parsed = _magpie_decision(value.get("content"))
+        if parsed:
+            return parsed
+    if isinstance(value.get("route"), str) or isinstance(value.get("targets"), (list, dict)) or isinstance(value.get("answers"), dict):
+        return value
+    return None
+
+
+def _request_magpie(message: str, sessions: list[dict[str, Any]], *, base_url: str, model: str, token: str = "") -> dict[str, Any]:
+    request_input = {"user_message": message, "active_m2_sessions": sessions}
+    system = (
+        "You are the unified M2 ingress semantic decomposer. Return only strict JSON, with no markdown or prose. "
+        "Rewrite each target's sub_prompt as a complete executable instruction for that M2. "
+        "Bind session_id only when it matches an active session; otherwise use an empty string. "
+        "Use route ROUTE_SINGLE, ROUTE_CROSS_SESSION, or CREATE_NEW_M2. "
+        "Return {route, reason, targets:[{target_repo, session_id, sub_prompt, wave_order, rag_context_hint}]}."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(request_input, ensure_ascii=False)},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    response = _post_json(base_url.rstrip("/") + "/v1/chat/completions", payload, token=token, timeout=5.0)
+    decision = _magpie_decision(response)
+    if decision is None:
+        raise RouterError("Magpie returned invalid routing JSON")
+    decision.setdefault("model", model)
+    return decision
+
+
+def _targets_decision(value: Any, message: str, model: str = "targets-json") -> dict[str, Any]:
+    if isinstance(value, dict) and isinstance(value.get("targets"), list):
+        decision = dict(value)
+    elif isinstance(value, list):
+        decision = {"targets": value}
+    else:
+        raise RouterError("--targets-json must contain a target list or routing object")
+    decision.setdefault("route", _route_from_message(message, []))
+    decision.setdefault("reason", "targets supplied by outer CLI model")
+    decision.setdefault("model", model)
+    return decision
+
+
+def classify(
+    message: str,
+    sessions: list[dict[str, Any]],
+    *,
+    mock_magpie: Any = None,
+    targets_json: Any = None,
+    magpie_url: str = "",
+    magpie_model: str = "",
+    mock: Any = None,
+    goal_id: str = "",
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    del goal_id  # retained for callers of the pre-Magpie API
     decision: dict[str, Any] | None = None
-    try:
-        jev_path = Path(__file__).resolve().parents[2] / "team-lead" / "scripts" / "jev_client.py"
-        spec = importlib.util.spec_from_file_location("m2_router_jev_client", jev_path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        spec.loader.exec_module(module)
-        state = {"user_message": message, "active_m2_sessions": sessions, "routing_contract": {"target_fields": ["target_repo", "m2_status", "sub_prompt", "wave_order", "rag_context_hint"]}}
-        questions = {
-            "route_mode": {"type": "choice", "instructions": "Choose ROUTE_SINGLE, ROUTE_CROSS_SESSION, or CREATE_NEW_M2.", "criteria": {route: route for route in sorted(ROUTES)}},
-            "targets": {"type": "noul", "instructions": "Return a JSON list of target_repo, sub_prompt, wave_order, and rag_context_hint entries."},
-        }
-        decision = module.jev_decide(state, questions, agent_role="team-lead", goal_id=goal_id, mock_response=mock)
-        if not isinstance(decision, dict):
+    source = "magpie"
+    if targets_json is not None:
+        decision = _targets_decision(targets_json, message)
+        source = "targets-json"
+    elif mock_magpie is not None or mock is not None:
+        decision = _magpie_decision(mock_magpie if mock_magpie is not None else mock)
+        source = "mock-magpie"
+    else:
+        try:
+            decision = _request_magpie(
+                message,
+                sessions,
+                base_url=_text(magpie_url, os.environ.get("MAGPIE_BASE_URL", MAGPIE_BASE_URL)),
+                model=_text(magpie_model, os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL)),
+                token=_magpie_token(),
+            )
+        except (OSError, ValueError, RouterError, urllib.error.URLError, TimeoutError):
             decision = None
-    except (OSError, ImportError, TypeError, AssertionError):
-        decision = None
-    return _extract_jev_plan(decision or {}, sessions, message)
+            source = "offline-fallback"
+    route, targets, metadata = _extract_jev_plan(decision or {}, sessions, message)
+    if decision and metadata.get("source") == "deterministic_fallback" and source == "mock-magpie":
+        metadata["source"] = "deterministic_fallback"
+    else:
+        metadata["source"] = source if decision else "offline-fallback"
+    metadata["model"] = _text((decision or {}).get("model"), _text(magpie_model, os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL)))
+    return route, targets, metadata
 
 
-def build_plan(message: str, sessions: list[dict[str, Any]], warnings: Iterable[str] = (), *, mock_jev: Any = None, transport: str = "auto") -> dict[str, Any]:
+def build_plan(
+    message: str,
+    sessions: list[dict[str, Any]],
+    warnings: Iterable[str] = (),
+    *,
+    mock_magpie: Any = None,
+    targets_json: Any = None,
+    magpie_url: str = "",
+    magpie_model: str = "",
+    mock_jev: Any = None,
+    transport: str = "auto",
+) -> dict[str, Any]:
     message = _text(message)
     if not message:
         raise RouterError("message is required")
     plan_id = f"m2p-{uuid.uuid4().hex[:10]}"
-    route, targets, decision = classify(message, sessions, mock=mock_jev, goal_id=plan_id)
+    route, targets, decision = classify(
+        message,
+        sessions,
+        mock_magpie=mock_magpie,
+        targets_json=targets_json,
+        magpie_url=magpie_url,
+        magpie_model=magpie_model,
+        mock=mock_jev,
+        goal_id=plan_id,
+    )
     for target in targets:
         if transport != "auto" and target["m2_status"] == "EXISTING_M2":
             target["transport"] = transport
@@ -643,7 +776,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--herdr-bin")
     parser.add_argument("--dsh-token", default=os.environ.get("DSH_M2_TOKEN", ""))
     parser.add_argument("--transport", choices=("auto", "herdr", "dsh", "stdout"), default="auto")
-    parser.add_argument("--mock-jev-json")
+    parser.add_argument("--magpie-url", default=os.environ.get("MAGPIE_BASE_URL", MAGPIE_BASE_URL))
+    parser.add_argument("--magpie-model", default=os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL))
+    parser.add_argument("--targets-json", help="target list/object supplied by an outer CLI model")
+    parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
+    parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
     parser.add_argument("--approve", "--yes", action="store_true", help="explicitly approve dispatch")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--no-herdr", action="store_true")
@@ -671,7 +808,17 @@ def main(argv: list[str] | None = None) -> int:
             herdr_agent_payload = _json_value(args.herdr_agent_json) if args.herdr_agent_json else None
             dsh_payload = _json_value(args.dsh_state_json) if args.dsh_state_json else payload
             sessions, warnings = discover_sessions(herdr_payload=herdr_payload, herdr_pane_payload=herdr_pane_payload, herdr_agent_payload=herdr_agent_payload, dsh_payload=dsh_payload, herdr_bin=args.herdr_bin, dsh_state_url=args.dsh_state_url, dsh_token=args.dsh_token, include_herdr=not args.no_herdr, include_dsh=not args.no_dsh)
-            plan = build_plan(_message(args), sessions, warnings, mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None, transport=args.transport)
+            plan = build_plan(
+                _message(args),
+                sessions,
+                warnings,
+                mock_magpie=_json_value(args.mock_magpie_json) if args.mock_magpie_json else None,
+                targets_json=_json_value(args.targets_json) if args.targets_json else None,
+                magpie_url=args.magpie_url,
+                magpie_model=args.magpie_model,
+                mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None,
+                transport=args.transport,
+            )
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url
             output: Any = plan if args.json else preview_text(plan)

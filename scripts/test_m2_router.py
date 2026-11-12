@@ -112,6 +112,71 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(plan["waves"], [1, 2])
         self.assertEqual(plan["targets"][0]["rag_context_hint"], "alpha-summary")
 
+    def test_magpie_mock_semantically_rewrites_and_binds_targets(self):
+        sessions = [{
+            "session_id": "dash-session",
+            "target_repo": "AIDash",
+            "title": "AIDash",
+            "status": "working",
+            "cwd": "/repo/AIDash",
+            "source": "herdr",
+            "herdr_target": "AIDash",
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+        }]
+        plan = self.router.build_plan(
+            "把指标同步到 AIDash",
+            sessions,
+            mock_magpie={"route": "ROUTE_SINGLE", "reason": "明确命中活跃会话", "targets": [{
+                "target_repo": "AIDash",
+                "session_id": "dash-session",
+                "sub_prompt": "在 AIDash 中接入该指标并验证卡片展示",
+                "wave_order": 1,
+                "rag_context_hint": None,
+            }]},
+        )
+        self.assertEqual(plan["decision"]["source"], "mock-magpie")
+        self.assertEqual(plan["decision"]["reason"], "明确命中活跃会话")
+        self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
+        self.assertEqual(plan["targets"][0]["session_id"], "dash-session")
+        self.assertIn("接入该指标", plan["targets"][0]["sub_prompt"])
+
+    def test_targets_json_skips_magpie_request(self):
+        with patch.object(self.router, "_request_magpie", side_effect=AssertionError("Magpie must be skipped")):
+            plan = self.router.build_plan(
+                "route this request",
+                [],
+                targets_json=[{"target_repo": "alpha", "sub_prompt": "inspect alpha", "wave_order": 1}],
+            )
+        self.assertEqual(plan["decision"]["source"], "targets-json")
+        self.assertEqual(plan["targets"][0]["target_repo"], "alpha")
+        self.assertEqual(plan["targets"][0]["m2_status"], "NEW_M2")
+
+    def test_magpie_request_posts_one_step_contract(self):
+        calls = []
+
+        def poster(url, payload, **kwargs):
+            calls.append((url, payload, kwargs))
+            return {"choices": [{"message": {"content": json.dumps({
+                "route": "ROUTE_SINGLE",
+                "reason": "one active session",
+                "targets": [{"target_repo": "alpha", "session_id": "alpha-session", "sub_prompt": "inspect alpha", "wave_order": 1, "rag_context_hint": None}],
+            })}}]}
+
+        with patch.object(self.router, "_post_json", side_effect=poster):
+            decision = self.router._request_magpie(
+                "inspect alpha",
+                [{"session_id": "alpha-session", "target_repo": "alpha"}],
+                base_url="http://127.0.0.1:3425/",
+                model="group/steering",
+            )
+        self.assertEqual(calls[0][0], "http://127.0.0.1:3425/v1/chat/completions")
+        self.assertEqual(calls[0][1]["model"], "group/steering")
+        request_input = json.loads(calls[0][1]["messages"][1]["content"])
+        self.assertEqual(request_input["user_message"], "inspect alpha")
+        self.assertEqual(request_input["active_m2_sessions"][0]["session_id"], "alpha-session")
+        self.assertEqual(decision["targets"][0]["sub_prompt"], "inspect alpha")
+
     def test_new_target_is_marked_new_without_dispatch_side_effects(self):
         plan = self.router.build_plan(
             "新建一个 M2 处理 gamma 发布任务",
