@@ -1205,6 +1205,18 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
         events = [event for _, event in goal_events(ledger_path)] if ledger_path.is_file() else []
         if "GOAL_DONE" in events:
             return {"goal_id": handoff.name, "reason": "GOAL_DONE", "events": len(events)}
+        decision_items = [
+            {**item, "timestamp": item["timestamp"].isoformat()}
+            for item in _ledger_attention(handoff, dt.datetime.now(dt.timezone.utc))
+            if UNRESOLVED_EVENT_TYPES.get(item["event"]) == "decision"
+        ]
+        if decision_items:
+            return {
+                "goal_id": handoff.name,
+                "reason": "NEED_DECISION",
+                "unresolved_events": decision_items,
+                "events": len(events),
+            }
         scan_args = argparse.Namespace(
             handoff_root=str(handoff.parent),
             herdr_json=args.herdr_json,
@@ -1246,18 +1258,29 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
             if tl_status == "working":
                 tl_seen_working = True
             elif tl_status in {"idle", "done"} and (tl_seen_working or polls >= 1):
-                other_busy = any(
-                    item is not tl_agent and agent_status(item) in {"working", "blocked"}
-                    for item in goal_agents
-                )
-                if not other_busy:
-                    return {
-                        "goal_id": handoff.name,
-                        "reason": "TL_IDLE_OR_DONE",
-                        "tl": resolved_tl_name,
-                        "tl_status": tl_status,
-                        "events": len(events),
-                    }
+                visible_working = False
+                if not getattr(args, "herdr_json", None):
+                    visible_working = bool(re.search(
+                        r"(?:[○◎●]\s*Working\b|ctrl\+c\s+interrupt|esc\s+to\s+interrupt)",
+                        read_visible_from_herdr(resolved_tl_name),
+                        re.IGNORECASE,
+                    ))
+                if visible_working:
+                    tl_seen_working = True
+                    tl_status = "working"
+                else:
+                    other_busy = any(
+                        item is not tl_agent and agent_status(item) in {"working", "blocked"}
+                        for item in goal_agents
+                    )
+                    if not other_busy:
+                        return {
+                            "goal_id": handoff.name,
+                            "reason": "TL_IDLE_OR_DONE",
+                            "tl": resolved_tl_name,
+                            "tl_status": tl_status,
+                            "events": len(events),
+                        }
 
         polls += 1
         if time.monotonic() - started >= max_wait:
