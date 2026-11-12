@@ -7,13 +7,16 @@ import argparse
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 import fcntl
+import hashlib
 import html
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
@@ -25,9 +28,10 @@ DEFAULT_BLOG_REPO = Path.home() / "Development" / "leepepe.github.io"
 DEFAULT_PROPOSALS_PATH = (
     Path.home() / "Development" / "AIDash" / "aidata" / "L5_apps" / "digest" / "state" / "proposals.jsonl"
 )
+DEFAULT_STATE_PATH = (
+    Path.home() / "Development" / "AIDash" / "aidata" / "L5_apps" / "digest" / "state" / "learning-topics-state.json"
+)
 DEFAULT_TOPIC_LEDGER_PATH = DEFAULT_VAULT_DIR / "topic-ledger.json"
-
-
 DEFAULT_GIT_ROOTS = (
     Path.home() / "Development" / "user-skills",
     Path.home() / "Development" / "AIDash",
@@ -35,6 +39,18 @@ DEFAULT_GIT_ROOTS = (
     Path.home() / "Development" / "VitalStride",
 )
 CARD_TEMPLATES_PATH = SKILL_DIR / "references" / "card-templates.json"
+_CST_TZ = timezone(timedelta(hours=8))
+
+DAILY_NEW_TOPIC_QUOTA = 1
+MAX_PENDING_LEARNING_PROPOSALS = 3
+DISMISS_COOLDOWN_DAYS = 30
+SNOOZE_COOLDOWN_DAYS = 7
+
+_INTEGRATION_EVIDENCE_RE = re.compile(
+    r"(?:实际使用|已接入|集成记录|統合済み|已集成|used\s+in|integrated\s+(?:into|with)|entry\s+a\s*\(a1\.\.a4\))",
+    re.IGNORECASE,
+)
+
 
 FOLDER_SECTION_HEADINGS = {
     "thoughts": "## 💭 思考与感悟随笔（`thoughts/`）",
@@ -314,6 +330,116 @@ def _normalize_source_uri(raw_uri: str) -> str:
     return uri.rstrip("/")
 
 
+def _normalize_rel_vault_ref(raw_ref: str) -> str:
+    s = str(raw_ref or "").strip().strip("`'\"")
+    while s.startswith("../") or s.startswith("./"):
+        s = s[3:] if s.startswith("../") else s[2:]
+    s = s.lstrip("/").lower()
+    if s.startswith("knowledge-vault/"):
+        s = s.removeprefix("knowledge-vault/")
+    return s
+
+def _inspect_vault_coverage(vault_dir: Path) -> dict[str, Any]:
+    parts: list[str] = []
+    rel_paths: set[str] = set()
+    stems: set[str] = set()
+    topic_keys: set[str] = set()
+    aliases: set[str] = set()
+    covered_raw_files: set[str] = set()
+    uncovered_raw_items: list[dict[str, Any]] = []
+
+    index_path = vault_dir / "index.md"
+    if index_path.is_file():
+        idx_text = index_path.read_text(encoding="utf-8", errors="ignore")
+        parts.append(idx_text)
+        for m in re.finditer(r"\(((?:concepts|craft|thoughts|raw)/[^)]+\.md)\)", idx_text):
+            rel_paths.add(_normalize_rel_vault_ref(m.group(1)))
+
+    for sub in ("concepts", "craft", "thoughts", "raw"):
+        sub_dir = vault_dir / sub
+        if not sub_dir.is_dir():
+            continue
+        for md in sorted(sub_dir.glob("*.md")):
+            rel_p = f"{sub}/{md.name}".lower()
+            rel_paths.add(rel_p)
+            stem_l = md.stem.lower()
+            stems.add(stem_l)
+            text = md.read_text(encoding="utf-8", errors="ignore")
+            meta, body = parse_frontmatter(text)
+            parts.append(stem_l)
+            parts.append(text)
+
+            tk = str(meta.get("topic_key") or "").strip().lower()
+            if tk:
+                topic_keys.add(tk)
+            for al_key in ("aliases", "tags"):
+                raw_al = meta.get(al_key)
+                if isinstance(raw_al, list):
+                    for item in raw_al:
+                        if str(item).strip():
+                            aliases.add(str(item).strip().lower())
+                elif isinstance(raw_al, str) and raw_al.strip():
+                    aliases.add(raw_al.strip().lower())
+
+            for cov_key in ("coverage_refs",):
+                raw_cov = meta.get(cov_key)
+                if isinstance(raw_cov, list):
+                    for item in raw_cov:
+                        if str(item).strip():
+                            rel_paths.add(_normalize_rel_vault_ref(str(item)))
+
+            if sub == "raw":
+                derived_ptrs: list[str] = []
+                for d_key in ("derived_concept", "derived_craft", "derived_cards", "derived"):
+                    d_val = meta.get(d_key)
+                    if isinstance(d_val, list):
+                        derived_ptrs.extend(str(x) for x in d_val if str(x).strip())
+                    elif isinstance(d_val, str) and d_val.strip():
+                        derived_ptrs.append(d_val.strip())
+                for m_ptr in re.finditer(r"\(\.\./((?:concepts|craft|thoughts)/[^)]+\.md)\)", body):
+                    derived_ptrs.append(m_ptr.group(1))
+                norm_ptrs = [_normalize_rel_vault_ref(p) for p in derived_ptrs if _normalize_rel_vault_ref(p)]
+                for np in norm_ptrs:
+                    rel_paths.add(np)
+                    stems.add(Path(np).stem.lower())
+                if norm_ptrs:
+                    covered_raw_files.add(rel_p)
+                else:
+                    first_h1 = next(
+                        (ln[2:].strip() for ln in body.splitlines() if ln.startswith("# ")),
+                        str(meta.get("title") or md.stem),
+                    )
+                    summary_lines = [
+                        ln.strip()
+                        for ln in body.splitlines()
+                        if ln.strip() and not ln.strip().startswith("#") and not ln.strip().startswith("---")
+                    ]
+                    uncovered_raw_items.append({
+                        "slug": stem_l,
+                        "topic_key": tk or stem_l,
+                        "title": first_h1,
+                        "category": str(meta.get("category") or "工程与设计"),
+                        "source_kind": "vault_raw",
+                        "source_ref": str(md),
+                        "source_uri": f"vault://{rel_p}",
+                        "aliases": [stem_l],
+                        "coverage_refs": [],
+                        "excerpt": " ".join(summary_lines[:2])[:220] or f"Raw material {md.name}",
+                        "heuristic_direct": 0.86,
+                        "heuristic_tier": 2.5,
+                    })
+
+    return {
+        "corpus_text": "\n".join(parts).lower(),
+        "rel_paths": rel_paths,
+        "stems": stems,
+        "topic_keys": topic_keys,
+        "aliases": aliases,
+        "covered_raw_files": covered_raw_files,
+        "uncovered_raw_items": uncovered_raw_items,
+    }
+
+
 def _vault_coverage(vault_dir: Path) -> tuple[set[str], set[str]]:
     identities: set[str] = set()
     questions: set[str] = set()
@@ -352,8 +478,21 @@ class TopicLedgerError(RuntimeError):
     pass
 
 
-def _load_topic_ledger(vault_dir: Path) -> dict[str, dict[str, Any]]:
-    ledger_path = vault_dir / "topic-ledger.json"
+def _load_topic_ledger_document(vault_dir: Path, topic_ledger_path: Path | None = None) -> dict[str, Any]:
+    path = topic_ledger_path or vault_dir / "topic-ledger.json"
+    if not path.is_file():
+        raise TopicLedgerError(f"missing authoritative topic ledger: {path}")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TopicLedgerError(f"invalid topic ledger: {path}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise TopicLedgerError(f"invalid topic ledger document: {path}")
+    return doc
+
+
+def _load_topic_ledger(vault_dir: Path, topic_ledger_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    ledger_path = topic_ledger_path or vault_dir / "topic-ledger.json"
     if not ledger_path.is_file():
         raise TopicLedgerError(f"missing authoritative topic ledger: {ledger_path}")
     try:
@@ -380,15 +519,82 @@ def _load_topic_ledger(vault_dir: Path) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def _save_topic_ledger(vault_dir: Path, entries: dict[str, dict[str, Any]]) -> Path:
-    ledger_path = vault_dir / "topic-ledger.json"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": 1,
-        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "topics": list(entries.values()),
-    }
-    ledger_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def _save_topic_ledger(
+    vault_dir: Path,
+    entries: dict[str, dict[str, Any]] | list[dict[str, Any]],
+    *,
+    topic_ledger_path: Path | None = None,
+) -> Path:
+    """Save topic-ledger.json while preserving schema_version, policy, sources, vault_coverage_inventory, and unknown topic fields."""
+    ledger_path = topic_ledger_path or (vault_dir / "topic-ledger.json")
+    existing_doc = _load_topic_ledger_document(vault_dir, topic_ledger_path=ledger_path)
+
+    existing_topics_raw = existing_doc.get("topics", []) if isinstance(existing_doc, dict) else []
+    existing_by_tk: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+    if isinstance(existing_topics_raw, list):
+        for item in existing_topics_raw:
+            if isinstance(item, dict) and item.get("topic_key"):
+                tk = str(item["topic_key"])
+                existing_by_tk[tk] = dict(item)
+                if tk not in ordered_keys:
+                    ordered_keys.append(tk)
+    elif isinstance(existing_topics_raw, dict):
+        for tk, item in existing_topics_raw.items():
+            if isinstance(item, dict):
+                row = dict(item)
+                row.setdefault("topic_key", str(tk))
+                existing_by_tk[str(tk)] = row
+                if str(tk) not in ordered_keys:
+                    ordered_keys.append(str(tk))
+
+    incoming_list: list[dict[str, Any]] = []
+    if isinstance(entries, dict):
+        seen_in: set[str] = set()
+        for k, v in entries.items():
+            if not isinstance(v, dict):
+                continue
+            tk = str(v.get("topic_key") or k).strip()
+            if not tk or tk in seen_in:
+                continue
+            # Skip secondary alias index keys when entries came from _load_topic_ledger
+            if k != tk and k.lower() != tk.lower() and tk in entries:
+                continue
+            seen_in.add(tk)
+            row = dict(v)
+            row["topic_key"] = tk
+            incoming_list.append(row)
+    elif isinstance(entries, list):
+        for v in entries:
+            if isinstance(v, dict) and v.get("topic_key"):
+                incoming_list.append(dict(v))
+
+    for inc in incoming_list:
+        tk = str(inc["topic_key"])
+        if tk in existing_by_tk:
+            merged_topic = dict(existing_by_tk[tk])
+            for field_k, field_v in inc.items():
+                # Never clobber non-null existing metadata with None unless explicitly updating state fields
+                if field_v is None and field_k in merged_topic and merged_topic[field_k] is not None and field_k not in {"proposed_on", "next_eligible_at", "external_id", "event_id"}:
+                    continue
+                if field_k == "aliases" and isinstance(merged_topic.get("aliases"), list) and isinstance(field_v, list):
+                    merged_topic["aliases"] = list(dict.fromkeys([*merged_topic["aliases"], *field_v]))
+                else:
+                    merged_topic[field_k] = field_v
+            existing_by_tk[tk] = merged_topic
+        else:
+            existing_by_tk[tk] = dict(inc)
+            ordered_keys.append(tk)
+
+    merged_topics = [existing_by_tk[tk] for tk in ordered_keys if tk in existing_by_tk]
+
+    payload: dict[str, Any] = {}
+    if isinstance(existing_doc, dict):
+        payload.update(existing_doc)
+    payload["schema_version"] = existing_doc.get("schema_version", "personal-topic-ledger/v1") if isinstance(existing_doc, dict) else "personal-topic-ledger/v1"
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    payload["topics"] = merged_topics
+    _atomic_write_json(ledger_path, payload)
     return ledger_path
 
 
@@ -415,13 +621,15 @@ def _cst_day_str(dt: datetime | None = None) -> str:
 
 def _reconcile_proposals_history(
     proposals_path: Path | None, entries: dict[str, dict[str, Any]] | None = None,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     by_topic: dict[str, dict[str, Any]] = {}
     creation_days: dict[str, str] = {}
     aliases = _topic_alias_map(entries or {})
     question_owners: dict[str, set[str]] = {}
     for key, item in (entries or {}).items():
-        question_owners.setdefault(_question_identity(str(item["question"])), set()).add(key)
+        if item.get("question"):
+            question_owners.setdefault(_question_identity(str(item["question"])), set()).add(key)
     if proposals_path and proposals_path.is_file():
         for line_no, line in enumerate(proposals_path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -463,13 +671,13 @@ def _reconcile_proposals_history(
 
     pending: set[str] = set()
     excluded: set[str] = set()
-    now = datetime.now(timezone.utc)
+    now = now_utc or datetime.now(timezone.utc)
     # The ledger is authoritative over generic source text; newer proposal lifecycle
     # records can advance it, but a stale record cannot reopen a terminal ledger state.
     for key in set(entries or {}) | set(by_topic):
         ledger = (entries or {}).get(key, {})
         rec = by_topic.get(key, ledger)
-        if ledger.get("learning_state") in {"learned", "dismissed", "blocked", "approved", "exploring"}:
+        if int(ledger.get("revision") or 0) > int(rec.get("revision") or 0) or (ledger.get("learning_state") in {"learned", "dismissed", "blocked", "approved", "exploring", "transferred"} and int(rec.get("revision") or 0) <= int(ledger.get("revision") or 1)):
             rec = ledger
         state = str(rec.get("learning_state") or "").lower()
         status = str(rec.get("status") or "").lower()
@@ -488,7 +696,7 @@ def _reconcile_proposals_history(
         elif state not in {"queued"} or status in {"approved", "dismissed", "blocked", "transferred"}:
             excluded.add(key)
     return {"by_topic": by_topic, "pending_topics": pending, "excluded_topics": excluded,
-            "creation_days": creation_days, "proposed_today_cst": {key for key, day in creation_days.items() if day == _cst_day_str()}}
+            "creation_days": creation_days, "proposed_today_cst": {key for key, day in creation_days.items() if day == _cst_day_str(now)}}
 
 
 def _scan_collected_tools_candidates(
@@ -552,7 +760,7 @@ def _scan_collected_tools_candidates(
             "source_kind": str(item.get("source_kind") or "collected_tools"),
             "source_ref": str(source_ref), "why_now": str(item.get("why_now") or question),
             "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": question,
-            "rank": int(item.get("rank", 99)), "scope": "personal",
+            "rank": int(item.get("rank") or item.get("priority_rank") or 99), "scope": "personal",
         })
     return sorted(candidates, key=lambda item: (item["rank"], item["topic_key"]))
 
@@ -588,8 +796,8 @@ def _scan_git_tech_stack_candidates(git_roots: tuple[Path, ...], existing_corpus
             "计算机与网络",
             ("r09", "r06", "jev", "systemone", "rerank"),
             "Recent commits wire Jev R09 score reranking and R06 citation verification across research and digest pipelines.",
-            0.90,
-            2.7,
+            0.84,
+            2.4,
         ),
         (
             "progressive-disclosure-four-valves",
@@ -597,8 +805,8 @@ def _scan_git_tech_stack_candidates(git_roots: tuple[Path, ...], existing_corpus
             "工程与设计",
             ("skill-contract", "repo-bound", "progressive", "drawer", "audit"),
             "Recent git commits refine skill-contract L0/L1/L2 progressive disclosure budgets and executable eval drawers.",
-            0.85,
-            2.5,
+            0.82,
+            2.3,
         ),
         (
             "aidash-xpc-event-bridge-flywheel",
@@ -606,8 +814,8 @@ def _scan_git_tech_stack_candidates(git_roots: tuple[Path, ...], existing_corpus
             "工程与设计",
             ("event_bridge", "aidata", "linear_issue", "aidash", "proposal"),
             "Recent commits in AIDash connect L1-L5 telemetry with event_bridge Star/Done actions.",
-            0.83,
-            2.4,
+            0.80,
+            2.2,
         ),
     ]
     for slug, title, category, keywords, excerpt, p_direct, s_tier in topic_probes:
@@ -635,6 +843,9 @@ def _scan_git_tech_stack_candidates(git_roots: tuple[Path, ...], existing_corpus
                 "scope": "personal",
             })
     return candidates
+
+
+_scan_git_candidates = _scan_git_tech_stack_candidates
 
 
 def _rerank_candidates_r09(
@@ -757,30 +968,232 @@ updated: {eff_date}
 """
 
 
+def _cst_date_str(now_utc: datetime | None = None) -> str:
+    dt = now_utc or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_CST_TZ).date().isoformat()
+
+
+def _parse_iso_date(raw: Any) -> date | None:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if len(s) >= 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s[:10]):
+        try:
+            return date.fromisoformat(s[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_state_path(
+    proposals_path: Path | None = None,
+    state_path: Path | None = None,
+    vault_dir: Path | None = None,
+) -> Path:
+    if state_path is not None:
+        return state_path
+    if proposals_path is not None:
+        return proposals_path.parent / "learning-topics-state.json"
+    if vault_dir is not None:
+        return vault_dir / ".state" / "learning-topics-state.json"
+    return DEFAULT_STATE_PATH
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+
+
+def validate_proposal_record(record: dict[str, Any]) -> list[str]:
+    required_fields = ("id", "ts", "agent", "title", "detail", "priority", "status", "ref")
+    missing = [
+        f
+        for f in required_fields
+        if not isinstance(record.get(f), str) or not str(record.get(f)).strip()
+    ]
+    return missing
+
+
+def _append_valid_proposal(proposals_path: Path, record: dict[str, Any]) -> dict[str, Any]:
+    missing = validate_proposal_record(record)
+    if missing:
+        raise ValueError(f"proposal record missing required non-empty fields: {', '.join(missing)}")
+    record.setdefault("created_at", record["ts"])
+    record.setdefault("proposed_on", _cst_day_str(_parse_iso_ts(record["created_at"])))
+    proposals_path.parent.mkdir(parents=True, exist_ok=True)
+    with proposals_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
+
+
+def _extract_topic_key_from_proposal(rec: dict[str, Any]) -> str | None:
+    tk = str(rec.get("topic_key") or "").strip()
+    if tk:
+        return tk
+    for field in ("origin_ref", "ref"):
+        val = str(rec.get(field) or "").strip()
+        if val.startswith("learning-topic://"):
+            return val.removeprefix("learning-topic://").strip("/")
+        if val.startswith("knowledge://"):
+            return val.removeprefix("knowledge://").strip("/")
+    pid = str(rec.get("id") or "").strip()
+    if pid.startswith("learning-topic-"):
+        return pid.removeprefix("learning-topic-")
+    if pid.startswith("learn-"):
+        return pid.removeprefix("learn-")
+    return None
+
+
+def _load_learning_state_registry(
+    *, proposals_path: Path | None = None, state_path: Path | None = None,
+    vault_dir: Path | None = None, topic_ledger_path: Path | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    resolved = _resolve_state_path(proposals_path, state_path, vault_dir)
+    registry: dict[str, Any] = {"schema_version": 1, "updated_at": "", "topics": {}, "consumed_events": {}}
+    if resolved.is_file():
+        loaded = json.loads(resolved.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("topics"), dict) or not isinstance(loaded.get("consumed_events", {}), dict):
+            raise ValueError(f"invalid learning state registry: {resolved}")
+        registry.update(loaded)
+    ledger_path = topic_ledger_path or (vault_dir or DEFAULT_VAULT_DIR) / "topic-ledger.json"
+    ledger = _load_topic_ledger(vault_dir or DEFAULT_VAULT_DIR, ledger_path) if ledger_path.is_file() else {}
+    entries = {key: dict(item) for key, item in ledger.items()}
+    for key, item in registry["topics"].items():
+        if not isinstance(item, dict):
+            raise ValueError(f"invalid learning state entry: {key}")
+        if int(item.get("revision") or 0) >= int(entries.get(key, {}).get("revision") or 0):
+            entries[key] = {**entries.get(key, {}), **item}
+    history = _reconcile_proposals_history(proposals_path, entries, now_utc)
+    for key, item in list(entries.items()):
+        # A proposed-state mirror cannot outlive its authoritative proposal record.
+        if item.get("learning_state") == "proposed" and key not in history["by_topic"] and key in ledger:
+            entries[key] = dict(ledger[key])
+    for key, rec in history["by_topic"].items():
+        prior = entries.get(key, {})
+        if int(rec.get("revision") or 0) < int(prior.get("revision") or 0) or (prior.get("learning_state") in {"learned", "dismissed", "blocked", "approved", "exploring", "transferred"} and int(rec.get("revision") or 0) <= int(prior.get("revision") or 1)):
+            continue
+        state = str(rec.get("learning_state") or "")
+        if not state:
+            status = rec.get("status")
+            state = "transferred" if status == "approved" and str(rec.get("ref", "")).startswith("linear://") and not rec.get("exploration_authorized") else {"pending": "proposed", "approved": "approved", "dismissed": "dismissed"}.get(status, "unknown")
+        entries[key] = {**prior, **rec, "topic_key": key, "proposal_id": rec["id"], "learning_state": state}
+        if str(rec.get("ref", "")).startswith("linear://"):
+            entries[key]["external_id"] = rec["ref"]
+        if key in history["creation_days"]:
+            entries[key]["proposed_on"] = history["creation_days"][key]
+    registry["topics"] = entries
+    return registry
+
+
+def _save_learning_state_registry(
+    registry: dict[str, Any],
+    *,
+    proposals_path: Path | None = None,
+    state_path: Path | None = None,
+    vault_dir: Path | None = None,
+) -> Path:
+    resolved = _resolve_state_path(proposals_path, state_path, vault_dir)
+    registry["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    _atomic_write_json(resolved, registry)
+    return resolved
+
+
+def _topic_exclusion_reason(
+    cand: dict[str, Any],
+    registry: dict[str, Any],
+    today_cst: date,
+) -> str | None:
+    topics_map: dict[str, dict[str, Any]] = registry.get("topics", {})
+    cand_tk = str(cand.get("topic_key") or cand.get("slug") or "").strip()
+    cand_aliases = {cand_tk.lower(), str(cand.get("slug") or "").lower()}
+    for al in cand.get("aliases") or []:
+        if str(al).strip():
+            cand_aliases.add(str(al).strip().lower())
+
+    matched_entry: dict[str, Any] | None = None
+    if cand_tk in topics_map:
+        matched_entry = topics_map[cand_tk]
+    else:
+        for t_k, t_entry in topics_map.items():
+            entry_aliases = {t_k.lower()}
+            for al in t_entry.get("aliases") or []:
+                if str(al).strip():
+                    entry_aliases.add(str(al).strip().lower())
+            if cand_aliases & entry_aliases:
+                matched_entry = t_entry
+                break
+
+    if matched_entry is None:
+        return None
+
+    lstate = str(matched_entry.get("learning_state") or "").strip().lower()
+    if lstate in {"proposed", "pending"}:
+        return "already_pending"
+    if lstate == "transferred":
+        return "already_transferred_to_linear"
+    if lstate == "approved":
+        return "already_approved"
+    if lstate == "exploring":
+        return "already_exploring"
+    if lstate in {"learned", "covered"}:
+        return "already_learned"
+    if lstate == "blocked":
+        return "blocked_requires_attention"
+    if lstate == "dismissed":
+        if not matched_entry.get("reopened"):
+            return "dismissed_cooldown_or_no_auto_revive"
+    if lstate == "snoozed":
+        next_el = _parse_iso_date(matched_entry.get("next_eligible_at"))
+        if next_el is None:
+            upd = _parse_iso_date(matched_entry.get("updated_at") or matched_entry.get("proposed_on"))
+            if upd is not None:
+                next_el = upd + timedelta(days=SNOOZE_COOLDOWN_DAYS)
+        if next_el is None or today_cst < next_el:
+            return "snoozed_cooldown"
+    return None
+
+
 def discover_topics(
     *,
-    top: int = 1,
+    top: int | None = None,
     propose_aidash: bool = False,
     vault_dir: Path = DEFAULT_VAULT_DIR,
     collected_tools_dir: Path = DEFAULT_COLLECTED_TOOLS_DIR,
     git_roots: tuple[Path, ...] = DEFAULT_GIT_ROOTS,
     proposals_path: Path = DEFAULT_PROPOSALS_PATH,
+    state_path: Path | None = None,
+    topic_ledger_path: Path | None = None,
     materialize_cards: bool | None = None,
+    materialize_before_approval: bool = False,
+    include_unreconciled_repos: bool = False,
+    now_utc: datetime | None = None,
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with _proposal_lock(proposals_path):
+        now_dt = now_utc or datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
         # Per TK1 contract: proposal discovery never materializes a card, even when a
         # legacy caller passes --materialize. Archival is a separate explicit command.
         eff_materialize = bool(materialize_cards) if not propose_aidash else False
         try:
             existing_corpus = _existing_vault_corpus(vault_dir)
             try:
-                ledger_entries = _load_topic_ledger(vault_dir)
+                ledger_entries = _load_topic_ledger(vault_dir, topic_ledger_path)
             except TopicLedgerError:
                 if propose_aidash:
                     raise
                 ledger_entries = {}
-            history = _reconcile_proposals_history(proposals_path, ledger_entries)
+            registry = _load_learning_state_registry(proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir, topic_ledger_path=topic_ledger_path, now_utc=now_dt)
+            effective_entries = registry["topics"]
+            history = _reconcile_proposals_history(proposals_path, effective_entries, now_dt)
         except (TopicLedgerError, ValueError) as exc:
             return {"ok": False, "status": "health_error", "error": str(exc), "selected_count": 0, "topics": [], "proposals_written": []}
         excluded_topics: set[str] = set(history["excluded_topics"])
@@ -795,6 +1208,7 @@ def discover_topics(
         seen_keys: set[str] = set()
         seen_questions: set[str] = set()
         excluded_count = 0
+        excluded_reasons = {key: reason for key, entry in effective_entries.items() if (reason := _topic_exclusion_reason({"topic_key": key}, registry, now_dt.astimezone(_CST_TZ).date()))}
         topic_aliases = _topic_alias_map(ledger_entries)
         for cand in raw_candidates:
             t_key = str(cand.get("topic_key") or cand.get("slug") or "").strip()
@@ -825,6 +1239,9 @@ def discover_topics(
                 "ok": True,
                 "status": "no_new_topic",
                 "reason": reason,
+                "quota_blocked_reason": "pending_cap_reached" if pending_cap_reached else "daily_slot_already_used" if daily_cap_reached else None,
+                "excluded_reasons": excluded_reasons,
+                "materialized": False,
                 "candidate_count": len(deduped),
                 "excluded_count": excluded_count,
                 "pending_learning_count": len(pending_topics),
@@ -837,7 +1254,7 @@ def discover_topics(
         # Candidate selection is metadata-only and deterministic. Approval-time research
         # may use other services, but discovery must never call a network/LLM reranker.
         ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
-        eff_top = 1 if propose_aidash else max(1, top)
+        eff_top = 1 if propose_aidash else max(1, top or 1)
         selected = ranked[:eff_top]
         if not selected:
             return {
@@ -855,8 +1272,8 @@ def discover_topics(
 
         archived_cards: list[dict[str, Any]] = []
         proposals_written: list[dict[str, Any]] = []
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        today_cst = _cst_day_str()
+        now_iso = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+        today_cst = _cst_day_str(now_dt)
 
         for item in selected:
             slug = str(item.get("topic_key") or item["slug"]).strip()
@@ -885,9 +1302,9 @@ def discover_topics(
                     f"为什么现在学：{why_now} · 来源依据：{source_uri} · 覆盖对账：{cov_note} · "
                     f"批准后由后台启动 knowledge-digest 探索并归档至 knowledge-vault；不自动发博客，不同步 design-studio。"
                 )
-                prior = history["by_topic"].get(slug, ledger_entries.get(slug, {}))
+                prior = effective_entries.get(slug, {})
                 record = {
-                    "id": f"learning-{slug}",
+                    "id": str(prior.get("proposal_id") or prior.get("id") or f"learning-topic-{slug}"),
                     "ref": ref_uri,
                     "origin_ref": ref_uri,
                     "topic_key": slug,
@@ -906,17 +1323,22 @@ def discover_topics(
                     "agent": "knowledge-digest",
                     "title": item["title"],
                     "detail": detail_text,
-                    "priority": "medium",
+                    "priority": "P2",
                     "status": "pending",
                 }
-                proposals_path.parent.mkdir(parents=True, exist_ok=True)
-                with proposals_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                _append_valid_proposal(proposals_path, record)
                 proposals_written.append(record)
+                registry["topics"][slug] = {**prior, **item, **record, "proposal_id": record["id"]}
+
+        if proposals_written:
+            _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
 
         return {
             "ok": True,
-            "status": "proposed" if proposals_written else "ok",
+            "status": "selected",
+            "materialized": bool(archived_cards),
+            "quota_blocked_reason": None,
+            "excluded_reasons": excluded_reasons,
             "candidate_count": len(deduped),
             "excluded_count": excluded_count,
             "pending_learning_count": len(pending_topics) + len(proposals_written),
@@ -925,6 +1347,567 @@ def discover_topics(
             "archived_cards": archived_cards,
             "proposals_written": proposals_written,
         }
+
+
+def _handle_learning_event_locked(
+    *,
+    action: str,
+    topic_key: str | None = None,
+    ref: str | None = None,
+    external_id: str | None = None,
+    event_id: str | None = None,
+    note: str = "",
+    revision: int | None = None,
+    proposals_path: Path = DEFAULT_PROPOSALS_PATH,
+    state_path: Path | None = None,
+    vault_dir: Path = DEFAULT_VAULT_DIR,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Deterministic Owner-decision & post-approval exploration state handler for learning topics."""
+    now_dt = now_utc or datetime.now(timezone.utc)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    now_iso = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+    today_cst = _cst_date_str(now_dt)
+    today_date = date.fromisoformat(today_cst)
+
+    registry = _load_learning_state_registry(
+        proposals_path=proposals_path,
+        state_path=state_path,
+        vault_dir=vault_dir,
+        now_utc=now_dt,
+    )
+    topics_reg: dict[str, dict[str, Any]] = registry.setdefault("topics", {})
+    consumed_events: dict[str, dict[str, Any]] = registry.setdefault("consumed_events", {})
+
+    # Resolve topic_key from topic_key, ref, or external_id
+    resolved_tk = (topic_key or "").strip()
+    if resolved_tk.startswith("learning-topic://"):
+        resolved_tk = resolved_tk.removeprefix("learning-topic://").strip("/")
+    elif resolved_tk.startswith("knowledge://"):
+        resolved_tk = resolved_tk.removeprefix("knowledge://").strip("/")
+    elif resolved_tk.startswith("learning-topic-"):
+        resolved_tk = resolved_tk.removeprefix("learning-topic-")
+    elif resolved_tk.startswith("learn-"):
+        resolved_tk = resolved_tk.removeprefix("learn-")
+
+    raw_ref = (ref or "").strip()
+    raw_ext = (external_id or "").strip()
+    if not resolved_tk and raw_ref:
+        if raw_ref.startswith("learning-topic://"):
+            resolved_tk = raw_ref.removeprefix("learning-topic://").strip("/")
+        elif raw_ref.startswith("knowledge://"):
+            resolved_tk = raw_ref.removeprefix("knowledge://").strip("/")
+        else:
+            for tk_cand, ent in topics_reg.items():
+                if raw_ref in {ent.get("ref"), ent.get("origin_ref"), ent.get("external_id"), ent.get("proposal_id")}:
+                    resolved_tk = tk_cand
+                    break
+    if not resolved_tk and raw_ext:
+        for tk_cand, ent in topics_reg.items():
+            if raw_ext in {ent.get("external_id"), ent.get("ref"), ent.get("proposal_id")}:
+                resolved_tk = tk_cand
+                break
+        if not resolved_tk and raw_ext.lower().startswith("linear://"):
+            resolved_tk = raw_ext.split("://", 1)[1].strip().lower()
+
+    if not resolved_tk:
+        raise ValueError("topic_key, ref, or matching external_id is required")
+
+    resolved_tk = _topic_alias_map(topics_reg).get(resolved_tk, resolved_tk)
+    entry = dict(topics_reg.get(resolved_tk, {}))
+    entry.setdefault("created_at", now_iso)
+    entry.setdefault("proposed_on", _cst_day_str(_parse_iso_ts(entry["created_at"])))
+    current_rev = int(entry.get("revision") or 1)
+    current_state = str(entry.get("learning_state") or "proposed").strip().lower()
+    expected_revision = revision
+    if expected_revision is not None and expected_revision != current_rev:
+        return {"ok": False, "conflict": True, "error": "stale topic revision", "topic_key": resolved_tk, "revision": current_rev, "learning_state": current_state}
+    origin_ref = str(entry.get("origin_ref") or f"learning-topic://{resolved_tk}")
+    prop_id = str(entry.get("proposal_id") or f"learning-topic-{resolved_tk}")
+    title = str(entry.get("title") or f"学习探索：{resolved_tk}")
+    detail = str(entry.get("detail") or f"topic_key={resolved_tk} · ref={origin_ref}")
+    priority = str(entry.get("priority") or "P2")
+
+    raw_action = (action or "").strip()
+    norm_action = raw_action.casefold()
+
+    # Check event deduplication by event_id
+    eff_event_id = (event_id or "").strip()
+    if eff_event_id and eff_event_id in consumed_events:
+        prior = consumed_events[eff_event_id]
+        if prior.get("topic_key") == resolved_tk:
+            return {
+                "ok": True,
+                "deduplicated": True,
+                "event_id": eff_event_id,
+                "topic_key": resolved_tk,
+                "action": prior.get("action", norm_action),
+                "learning_state": entry.get("learning_state", current_state),
+                "revision": current_rev,
+                "exploration_authorized": bool(entry.get("exploration_authorized", False)),
+                "exploration_started": False,
+                "blog_published": False,
+                "design_studio_synced": False,
+            }
+
+    # 1. Star on learning-topic:// -> harmless bookmark only, NEVER triggers publish-blog or design-studio
+    if norm_action in {"star", "bookmark", "favorite"}:
+        entry.setdefault("topic_key", resolved_tk)
+        entry.setdefault("origin_ref", origin_ref)
+        entry["bookmarked"] = True
+        entry["bookmarked_at"] = now_iso
+        entry["updated_at"] = now_iso
+        topics_reg[resolved_tk] = entry
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": current_rev,
+                "action": "bookmarked",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "bookmarked",
+            "learning_state": current_state,
+            "revision": current_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+        }
+
+    # 2. sync_triage (cloud transfer to Linear) -> state = transferred, NOT Owner exploration approval
+    if norm_action in {"sync_triage", "transfer", "transferred"}:
+        new_rev = current_rev + 1
+        ext_val = raw_ext or (raw_ref if raw_ref.lower().startswith("linear://") else str(entry.get("external_id") or ""))
+        entry.update({
+            "topic_key": resolved_tk,
+            "proposal_id": prop_id,
+            "title": title,
+            "detail": detail,
+            "priority": priority,
+            "agent": "knowledge-digest",
+            "origin_ref": origin_ref,
+            "ref": ext_val or origin_ref,
+            "external_id": ext_val or None,
+            "learning_state": "transferred",
+            "exploration_authorized": False,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        prop_record = {
+            "id": prop_id,
+            "ts": now_iso,
+            "agent": "knowledge-digest",
+            "title": title,
+            "detail": detail,
+            "priority": priority,
+            "status": "approved",
+            "ref": ext_val or origin_ref,
+            "origin_ref": origin_ref,
+            "topic_key": resolved_tk,
+            "external_id": ext_val or None,
+            "source": "Learning",
+            "scope": "personal",
+            "learning_state": "transferred",
+            "sync_triage": True,
+            "exploration_authorized": False,
+            "revision": new_rev,
+        }
+        prop_record.update({key: entry[key] for key in ("created_at", "proposed_on", "external_id") if key in entry})
+        _append_valid_proposal(proposals_path, prop_record)
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "transferred",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "transferred",
+            "learning_state": "transferred",
+            "external_id": ext_val or None,
+            "origin_ref": origin_ref,
+            "revision": new_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+            "proposal_written": prop_record,
+        }
+
+    # 3. Owner Approve / 快速学习 / 深度调研
+    if norm_action in {"approve", "approve to todo", "快速学习", "深度调研", "quick_learn", "deep_research"}:
+        if current_state in {"learned", "dismissed", "blocked"} and not entry.get("reopened"):
+            return {
+                "ok": False,
+                "conflict": True,
+                "error": f"topic '{resolved_tk}' is already in terminal state '{current_state}'; explicit Reopen required",
+                "topic_key": resolved_tk,
+                "learning_state": current_state,
+                "revision": current_rev,
+                "exploration_authorized": False,
+                "exploration_started": False,
+                "blog_published": False,
+                "design_studio_synced": False,
+            }
+        if current_state in {"approved", "exploring"}:
+            return {"ok": True, "deduplicated": True, "topic_key": resolved_tk, "learning_state": current_state, "revision": current_rev, "exploration_authorized": True, "exploration_started": False, "exploration_task_key": entry.get("exploration_task_key"), "blog_published": False, "design_studio_synced": False}
+        route = "deep-research" if (raw_action == "深度调研" or norm_action == "deep_research" or "深度" in note) else "knowledge-digest"
+        new_rev = current_rev + 1
+        task_key = f"explore-{resolved_tk}-r{new_rev}"
+        entry.update({
+            "topic_key": resolved_tk,
+            "proposal_id": prop_id,
+            "title": title,
+            "detail": detail if not note else f"{detail} | note={note}",
+            "priority": priority,
+            "agent": "knowledge-digest",
+            "origin_ref": origin_ref,
+            "ref": entry.get("ref") or origin_ref,
+            "learning_state": "approved",
+            "exploration_authorized": True,
+            "exploration_route": route,
+            "exploration_task_key": task_key,
+            "owner_note": note,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        prop_record = {
+            "id": prop_id,
+            "ts": now_iso,
+            "agent": "knowledge-digest",
+            "title": title,
+            "detail": entry["detail"],
+            "priority": priority,
+            "status": "approved",
+            "ref": origin_ref,
+            "origin_ref": origin_ref,
+            "topic_key": resolved_tk,
+            "source": "Learning",
+            "scope": "personal",
+            "learning_state": "approved",
+            "exploration_authorized": True,
+            "exploration_route": route,
+            "exploration_task_key": task_key,
+            "revision": new_rev,
+        }
+        prop_record.update({key: entry[key] for key in ("created_at", "proposed_on", "external_id") if key in entry})
+        _append_valid_proposal(proposals_path, prop_record)
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "approved",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "approved",
+            "learning_state": "approved",
+            "exploration_authorized": True,
+            "exploration_route": route,
+            "exploration_task_key": task_key,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+            "revision": new_rev,
+            "proposal_written": prop_record,
+        }
+
+    # 4. Owner Done -> learned (outcome=owner_reported)
+    if norm_action in {"done", "mark done", "确认", "confirm", "resolve", "learned"}:
+        new_rev = current_rev + 1
+        entry.update({
+            "topic_key": resolved_tk,
+            "proposal_id": prop_id,
+            "title": title,
+            "detail": detail if not note else f"{detail} | note={note}",
+            "priority": priority,
+            "agent": "knowledge-digest",
+            "origin_ref": origin_ref,
+            "ref": origin_ref,
+            "learning_state": "learned",
+            "outcome": "owner_reported",
+            "exploration_authorized": False,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        prop_record = {
+            "id": prop_id,
+            "ts": now_iso,
+            "agent": "knowledge-digest",
+            "title": title,
+            "detail": entry["detail"],
+            "priority": priority,
+            "status": "dismissed",
+            "ref": origin_ref,
+            "origin_ref": origin_ref,
+            "topic_key": resolved_tk,
+            "source": "Learning",
+            "scope": "personal",
+            "learning_state": "learned",
+            "outcome": "owner_reported",
+            "revision": new_rev,
+        }
+        prop_record.update({key: entry[key] for key in ("created_at", "proposed_on", "external_id") if key in entry})
+        _append_valid_proposal(proposals_path, prop_record)
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "learned",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "done",
+            "learning_state": "learned",
+            "outcome": "owner_reported",
+            "revision": new_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+            "proposal_written": prop_record,
+        }
+
+    # 5. Owner Dismiss -> dismissed (30d cooldown, no auto-revive)
+    if norm_action in {"dismiss", "cancel", "canceled", "cancelled", "reject"}:
+        new_rev = current_rev + 1
+        next_el = (today_date + timedelta(days=DISMISS_COOLDOWN_DAYS)).isoformat()
+        entry.update({
+            "topic_key": resolved_tk,
+            "proposal_id": prop_id,
+            "title": title,
+            "detail": detail if not note else f"{detail} | note={note}",
+            "priority": priority,
+            "agent": "knowledge-digest",
+            "origin_ref": origin_ref,
+            "ref": origin_ref,
+            "learning_state": "dismissed",
+            "next_eligible_at": next_el,
+            "auto_revive": False,
+            "reopened": False,
+            "exploration_authorized": False,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        prop_record = {
+            "id": prop_id,
+            "ts": now_iso,
+            "agent": "knowledge-digest",
+            "title": title,
+            "detail": entry["detail"],
+            "priority": priority,
+            "status": "dismissed",
+            "ref": origin_ref,
+            "origin_ref": origin_ref,
+            "topic_key": resolved_tk,
+            "source": "Learning",
+            "scope": "personal",
+            "learning_state": "dismissed",
+            "next_eligible_at": next_el,
+            "auto_revive": False,
+            "revision": new_rev,
+        }
+        prop_record.update({key: entry[key] for key in ("created_at", "proposed_on", "external_id") if key in entry})
+        _append_valid_proposal(proposals_path, prop_record)
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "dismissed",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "dismissed",
+            "learning_state": "dismissed",
+            "next_eligible_at": next_el,
+            "auto_revive": False,
+            "revision": new_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+            "proposal_written": prop_record,
+        }
+
+    # 6. Owner Snooze -> snoozed (7d cooldown)
+    if norm_action in {"snooze", "snooze 7d", "defer", "later", "延后"}:
+        new_rev = current_rev + 1
+        next_el = (today_date + timedelta(days=SNOOZE_COOLDOWN_DAYS)).isoformat()
+        entry.update({
+            "topic_key": resolved_tk,
+            "proposal_id": prop_id,
+            "title": title,
+            "detail": detail if not note else f"{detail} | note={note}",
+            "priority": priority,
+            "agent": "knowledge-digest",
+            "origin_ref": origin_ref,
+            "ref": origin_ref,
+            "learning_state": "snoozed",
+            "next_eligible_at": next_el,
+            "exploration_authorized": False,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        prop_record = {
+            "id": prop_id,
+            "ts": now_iso,
+            "agent": "knowledge-digest",
+            "title": title,
+            "detail": entry["detail"],
+            "priority": priority,
+            "status": "dismissed",
+            "ref": origin_ref,
+            "origin_ref": origin_ref,
+            "topic_key": resolved_tk,
+            "source": "Learning",
+            "scope": "personal",
+            "learning_state": "snoozed",
+            "next_eligible_at": next_el,
+            "revision": new_rev,
+        }
+        prop_record.update({key: entry[key] for key in ("created_at", "proposed_on", "external_id") if key in entry})
+        _append_valid_proposal(proposals_path, prop_record)
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "snoozed",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "snoozed",
+            "learning_state": "snoozed",
+            "next_eligible_at": next_el,
+            "revision": new_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+            "proposal_written": prop_record,
+        }
+
+    # 7. Explicit Reopen
+    if norm_action in {"reopen", "reset", "queue"}:
+        new_rev = current_rev + 1
+        entry.update({
+            "topic_key": resolved_tk,
+            "learning_state": "queued",
+            "reopened": True,
+            "next_eligible_at": today_cst,
+            "exploration_authorized": False,
+            "revision": new_rev,
+            "updated_at": now_iso,
+        })
+        topics_reg[resolved_tk] = entry
+        if eff_event_id:
+            consumed_events[eff_event_id] = {
+                "topic_key": resolved_tk,
+                "revision": new_rev,
+                "action": "reopened",
+                "ts": now_iso,
+            }
+        _save_learning_state_registry(
+            registry,
+            proposals_path=proposals_path,
+            state_path=state_path,
+            vault_dir=vault_dir,
+        )
+        return {
+            "ok": True,
+            "deduplicated": False,
+            "event_id": eff_event_id or None,
+            "topic_key": resolved_tk,
+            "action": "reopened",
+            "learning_state": "queued",
+            "revision": new_rev,
+            "exploration_authorized": False,
+            "exploration_started": False,
+            "blog_published": False,
+            "design_studio_synced": False,
+        }
+
+    raise ValueError(f"unsupported learning event action: {action!r}")
+
+
+def handle_learning_event(*, proposals_path: Path = DEFAULT_PROPOSALS_PATH, **kwargs: Any) -> dict[str, Any]:
+    with _proposal_lock(proposals_path):
+        return _handle_learning_event_locked(proposals_path=proposals_path, **kwargs)
+
+
+def _reconcile_collected_tools_entities(collected_dir: Path, existing_corpus: str, *, vault_dir: Path, topic_ledger_path: Path | None = None, include_unreconciled_repos: bool = False):
+    entries = _load_topic_ledger(vault_dir, topic_ledger_path)
+    candidates = _scan_collected_tools_candidates(collected_dir, existing_corpus, vault_dir, entries)
+    sources = {str(item.get("source_id") or "") for item in entries.values()}
+    local_sources = {p.name for p in (collected_dir / "repos").glob("*") if p.is_dir()}
+    learned = sorted({str(item.get("source_id")) for item in entries.values() if item["learning_state"] == "learned"})
+    return candidates, {"merged_entities": sorted({p.stem for p in collected_dir.glob("*.md") if (collected_dir / "repos" / p.stem).is_dir()}), "covered_sources": learned, "integrated_sources": learned, "unknown_sources": sorted(local_sources - sources)}
 
 
 def validate_dc006_to_008(html_text: str, css_text: str = "") -> list[str]:
@@ -1018,7 +2001,12 @@ def publish_blog(
     vault_dir: Path = DEFAULT_VAULT_DIR,
     mode: str = "observe",
 ) -> dict[str, Any]:
-    clean_slug = re.sub(r"^knowledge://", "", slug.strip()).strip("/")
+    raw_slug = slug.strip()
+    if raw_slug.startswith("learning-topic://"):
+        raise ValueError(
+            "learning-topic:// candidates cannot trigger publish-blog before Owner exploration and card archival"
+        )
+    clean_slug = re.sub(r"^knowledge://", "", raw_slug).strip("/")
     folder, card_path = _find_vault_card(vault_dir, clean_slug)
     raw_md = card_path.read_text(encoding="utf-8")
     meta, _ = parse_frontmatter(raw_md)
@@ -1173,22 +2161,40 @@ def _build_parser() -> argparse.ArgumentParser:
     p_arch.add_argument("--title", required=True)
     p_arch.add_argument("--file", required=True, type=Path)
     p_arch.add_argument("--folder", choices=("concepts", "craft", "thoughts", "raw"), default=None)
-    p_arch.add_argument("--vault-dir", type=Path, default=DEFAULT_VAULT_DIR)
+    p_arch.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
     p_arch.add_argument("--updated", default=None)
 
     p_disc = sub.add_parser("discover-topics", help="Scan git tech stack, collected-tools, and vault gaps with R09")
-    p_disc.add_argument("--top", type=int, default=1)
+    p_disc.add_argument("--top", type=int, default=None)
     p_disc.add_argument("--propose-aidash", action="store_true")
-    p_disc.add_argument("--no-materialize", action="store_true", help="Do not materialize cards (default when proposing)")
-    p_disc.add_argument("--materialize", action="store_true", help="Explicitly materialize concept cards")
-    p_disc.add_argument("--vault-dir", type=Path, default=DEFAULT_VAULT_DIR)
+    p_disc.add_argument("--no-materialize", action="store_true")
+    p_disc.add_argument("--materialize-before-approval", action="store_true", help="Deprecated; cannot override candidate-only gate")
+    p_disc.add_argument("--materialize", action="store_true", help="Explicit standalone archival only")
+    p_disc.add_argument("--include-unreconciled-repos", action="store_true")
+    p_disc.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
     p_disc.add_argument("--collected-tools-dir", type=Path, default=DEFAULT_COLLECTED_TOOLS_DIR)
     p_disc.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+    p_disc.add_argument("--state-path", type=Path, default=None)
+    p_disc.add_argument("--topic-ledger-path", type=Path, default=None)
+    p_disc.add_argument("--no-git", action="store_true", help="Disable default git root scanning for isolated runs")
+
+    for cmd_name in ("handle-learning-event", "handle-decision", "explore-topic"):
+        p_evt = sub.add_parser(cmd_name, help="Handle Owner learning topic decision or post-approval exploration gate")
+        p_evt.add_argument("--action", required=True)
+        p_evt.add_argument("--topic-key", default=None)
+        p_evt.add_argument("--ref", default=None)
+        p_evt.add_argument("--external-id", default=None)
+        p_evt.add_argument("--event-id", default=None)
+        p_evt.add_argument("--revision", type=int, default=None)
+        p_evt.add_argument("--note", default="")
+        p_evt.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p_evt.add_argument("--state-path", type=Path, default=None)
+        p_evt.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
 
     p_pub = sub.add_parser("publish-blog", help="Render a knowledge-vault card into leepepe.github.io (DC-006..008)")
     p_pub.add_argument("--slug", required=True)
     p_pub.add_argument("--blog-repo", type=Path, default=DEFAULT_BLOG_REPO)
-    p_pub.add_argument("--vault-dir", type=Path, default=DEFAULT_VAULT_DIR)
+    p_pub.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
     p_pub.add_argument("--mode", choices=("observe", "auto"), default="observe")
 
     return parser
@@ -1221,11 +2227,31 @@ def main(argv: list[str] | None = None) -> int:
             propose_aidash=args.propose_aidash,
             vault_dir=args.vault_dir,
             collected_tools_dir=args.collected_tools_dir,
+            git_roots=() if getattr(args, "no_git", False) else DEFAULT_GIT_ROOTS,
             proposals_path=args.proposals_path,
-            materialize_cards=mat,
+            state_path=args.state_path,
+            topic_ledger_path=args.topic_ledger_path,
+            materialize_cards=False if args.no_materialize else args.materialize,
+            materialize_before_approval=args.materialize_before_approval,
+            include_unreconciled_repos=args.include_unreconciled_repos,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
+    if args.command in {"handle-learning-event", "handle-decision", "explore-topic"}:
+        res = handle_learning_event(
+            action=args.action,
+            topic_key=args.topic_key,
+            ref=args.ref,
+            external_id=args.external_id,
+            event_id=args.event_id,
+            revision=args.revision,
+            note=args.note,
+            proposals_path=args.proposals_path,
+            state_path=args.state_path,
+            vault_dir=args.vault_dir,
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("ok", True) else 1
     if args.command == "publish-blog":
         res = publish_blog(
             slug=args.slug,

@@ -143,7 +143,8 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
             self.assertEqual(eff["window_cst"], "7d")
             self.assertEqual(eff["coverage_status"], "healthy")
             self.assertGreaterEqual(eff["sample_size"], 10)
-            rec_ids = {r["id"] for r in eff["recommendations"]}
+            rec_ids = {identity for row in eff["recommendations"] for identity in (row["id"], *row.get("legacy_ids", []))}
+            self.assertIn("improve-m3-automated-share", rec_ids)
             self.assertIn("improve-m3-gateway-flow", rec_ids)
             self.assertIn("improve-m4-cache-efficiency", rec_ids)
             self.assertIn("improve-m5-steering-token-share", rec_ids)

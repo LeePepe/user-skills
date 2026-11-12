@@ -14,9 +14,11 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -25,6 +27,9 @@ from typing import Any, Callable, Iterable
 
 
 SCHEMA_VERSION = 1
+DEFAULT_M2_MODEL = "gemini-4-argon"
+DEFAULT_M2_CONTEXT = "long_context"
+DEFAULT_M2_MODEL_LABEL = "Gemini 4 Argon · 983K context"
 ACTIVE_STATUSES = {"working", "running", "idle", "blocked", "needs_input", "ready"}
 TERMINAL_STATUSES = {"done", "cancelled", "canceled", "stopped", "archived", "exited", "dead"}
 ROUTES = {"ROUTE_SINGLE", "ROUTE_CROSS_SESSION", "CREATE_NEW_M2"}
@@ -36,6 +41,39 @@ MAGPIE_DEFAULT_MODEL = "group/steering"
 DEFAULT_DOMAIN_MAP_PATH = Path(__file__).resolve().parents[1] / "references" / "m2-domain-map.json"
 HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
 HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
+SAFE_BASELINE_ROOTS = (
+    "~/Development",
+    "/Volumes/SSD",
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+    "~/.copilot",
+    "~/.agents",
+    "~/.codex",
+    "~/orca",
+)
+WHITELISTED_CMD_BINARIES = {
+    "gh",
+    "git",
+    "python3",
+    "jq",
+    "herdr",
+    "orca",
+    "shasum",
+    "date",
+    "sleep",
+    "env",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "rg",
+    "grep",
+    "find",
+}
+FORBIDDEN_GIT_SUBCOMMANDS = {"commit", "push", "merge", "rebase", "reset", "checkout"}
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class RouterError(RuntimeError):
@@ -44,6 +82,15 @@ class RouterError(RuntimeError):
 
 def _text(value: Any, default: str = "") -> str:
     return str(value).strip() if value is not None else default
+
+
+def _expand_cwd(raw_cwd: Any) -> str:
+    text = _text(raw_cwd)
+    if not text:
+        return ""
+    if text.startswith("~"):
+        return str(Path(text).expanduser())
+    return text
 
 
 def _json_value(value: str) -> Any:
@@ -155,7 +202,7 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
         "target_repo": repo,
         "title": _text(value.get("title") or value.get("terminal_title_stripped") or value.get("name"), sid),
         "status": status,
-        "cwd": _text(value.get("foreground_cwd") or value.get("cwd") or value.get("worktree")),
+        "cwd": _expand_cwd(value.get("foreground_cwd") or value.get("cwd") or value.get("worktree")),
         "workspace_id": _text(value.get("workspace_id") or value.get("workspaceId")),
         "pane_id": _text(value.get("pane_id") or value.get("paneId")),
         "herdr_target": _text(value.get("herdr_target") or value.get("herdrTarget") or value.get("name"), sid),
@@ -316,8 +363,8 @@ def load_domain_map(path: str | Path | None = None) -> dict[str, Any]:
             item = dict(topic)
             item.setdefault("group", group.get("group", "unclassified"))
             item.setdefault("title", item["topic_id"])
-            item.setdefault("target_repo", "")
-            item.setdefault("cwd", "")
+            item["cwd"] = _expand_cwd(item.get("cwd"))
+            item["target_repo"] = _text(item.get("target_repo")) or _repo_from(item)
             item.setdefault("keywords", [])
             item.setdefault("aliases", [])
             topics.append(item)
@@ -399,7 +446,7 @@ def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str,
     title = _text(target.get("proposed_domain", {}).get("title") if isinstance(target.get("proposed_domain"), dict) else "")
     title = title or _text(target.get("title")) or topic_id.replace("-", " ").title()
     repo = _text(target.get("target_repo"), "unspecified")
-    cwd = _text(target.get("cwd")) or f"~/Development/{repo}"
+    cwd = _expand_cwd(_text(target.get("cwd")) or f"~/Development/{repo}")
     keywords = target.get("keywords") if isinstance(target.get("keywords"), list) else []
     if not keywords:
         keywords = [word for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", message)[:8]]
@@ -906,6 +953,131 @@ def _stale_candidates(target: dict[str, Any], sessions: list[dict[str, Any]], do
     return candidates
 
 
+def _default_preview_path(plan_id: str) -> Path:
+    safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"
+    return Path(f"/tmp/m2-plan-{safe_id}.md")
+
+
+def render_preview_markdown(plan: dict[str, Any]) -> str:
+    plan_id = _text(plan.get("plan_id"), "m2p-unknown")
+    route = _text((plan.get("decision") or {}).get("route"), "ROUTE_SINGLE")
+    default_label = _text(plan.get("default_model_label"), DEFAULT_M2_MODEL_LABEL)
+    lines = [
+        f"# M2 Dispatch Plan · {plan_id} ({route})",
+        "",
+        f"- **Message**: {_text(plan.get('message'))}",
+        f"- **Route**: `{route}`",
+        f"- **Default Model / Context**: `{default_label}` (`{_text(plan.get('default_model'), DEFAULT_M2_MODEL)}` / `{_text(plan.get('default_context'), DEFAULT_M2_CONTEXT)}`)",
+        "- **Owner Gate**: Owner approval required before dispatch.",
+        "",
+        "## Target Dispatch Table",
+        "",
+        "| Wave | Topic | Domain Status | Target Repo | M2 Status | Transport | Model / Context | CWD |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for target in plan.get("targets", []):
+        model_label = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
+        cwd = _expand_cwd(target.get("cwd"))
+        lines.append(
+            f"| {target.get('wave_order', 1)} | `{_text(target.get('topic_id'))}` | "
+            f"`{_text(target.get('domain_status'))}` | `{_text(target.get('target_repo'), 'unspecified')}` | "
+            f"`{_text(target.get('m2_status'))}` | `{_text(target.get('transport'), 'auto')}` | "
+            f"`{model_label}` | `{cwd}` |"
+        )
+    lines.extend(["", "## Target Instructions"])
+    for index, target in enumerate(plan.get("targets", []), start=1):
+        lines.extend([
+            "",
+            f"### {index}. Wave {target.get('wave_order', 1)} · `{_text(target.get('topic_id'))}` → `{_text(target.get('target_repo'), 'unspecified')}` ({_text(target.get('m2_status'))})",
+            f"- **Model / Context**: `{_text(target.get('model_label'), DEFAULT_M2_MODEL_LABEL)}` (`{_text(target.get('model'), DEFAULT_M2_MODEL)}` / `{_text(target.get('context'), DEFAULT_M2_CONTEXT)}`)",
+            f"- **CWD**: `{_expand_cwd(target.get('cwd'))}`",
+            f"- **Transport**: `{_text(target.get('transport'), 'auto')}`",
+            "",
+            "#### `sub_prompt`",
+            "```text",
+            _text(target.get("sub_prompt")),
+            "```",
+        ])
+        hint = _text(target.get("rag_context_hint"))
+        if hint:
+            lines.extend([
+                "",
+                "#### `rag_context_hint`",
+                "```text",
+                hint,
+                "```",
+            ])
+    stale = plan.get("stale_m2_candidates", [])
+    if stale:
+        lines.extend(["", "## Stale / Duplicate M2 Cleanup Candidates", ""])
+        for candidate in stale:
+            lines.append(
+                f"- `{_text(candidate.get('topic_id'))}`: `{_text(candidate.get('session_id'))}` "
+                f"`{_text(candidate.get('pane_id'))}` [{_text(candidate.get('reason'))}] {_text(candidate.get('title'))}"
+            )
+    candidates = plan.get("new_domain_candidates", [])
+    if candidates:
+        lines.extend(["", "## New Domain Candidates", ""])
+        for candidate in candidates:
+            lines.append(
+                f"- `{_text(candidate.get('topic_id'))}`: {_text(candidate.get('title'))} → "
+                f"`{_text(candidate.get('target_repo'))}` (`{_text(candidate.get('group'))}`, cwd `{_expand_cwd(candidate.get('cwd'))}`)"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def write_preview_markdown(plan: dict[str, Any], path: str | Path | None = None) -> Path:
+    preview_path = Path(path).expanduser() if path else _default_preview_path(_text(plan.get("plan_id"), "m2p-plan"))
+    markdown = _text(plan.get("preview_markdown"))
+    if not markdown:
+        markdown = render_preview_markdown(plan)
+    else:
+        markdown = markdown + ("\n" if not markdown.endswith("\n") else "")
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_text(markdown, encoding="utf-8")
+    plan["preview_markdown"] = markdown
+    plan["preview_markdown_path"] = str(preview_path)
+    return preview_path
+
+
+def open_preview_in_orca(
+    preview_path: str | Path,
+    *,
+    orca_bin: str | None = None,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
+    resolved_path = str(Path(preview_path).expanduser())
+    binary = _text(orca_bin or os.environ.get("ORCA_BIN") or shutil.which("orca"), "orca")
+    command = [binary, "file", "open", resolved_path, "--focus"]
+    try:
+        result = runner(command, timeout=5.0)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {
+            "ok": False,
+            "path": resolved_path,
+            "command": command,
+            "returncode": -1,
+            "warning": f"orca preview open failed: {error}",
+        }
+    returncode = int(getattr(result, "returncode", 1))
+    if returncode != 0:
+        stderr = _text(getattr(result, "stderr", "")) or _text(getattr(result, "stdout", ""))
+        return {
+            "ok": False,
+            "path": resolved_path,
+            "command": command,
+            "returncode": returncode,
+            "warning": stderr or f"orca exited {returncode}",
+        }
+    return {
+        "ok": True,
+        "path": resolved_path,
+        "command": command,
+        "returncode": 0,
+        "stdout": _text(getattr(result, "stdout", "")),
+    }
+
+
 def build_plan(
     message: str,
     sessions: list[dict[str, Any]],
@@ -919,6 +1091,11 @@ def build_plan(
     magpie_model: str = "",
     mock_jev: Any = None,
     transport: str = "auto",
+    preview_md_file: str | Path | None = None,
+    write_preview_md: bool = True,
+    open_preview: bool = False,
+    orca_bin: str | None = None,
+    runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
@@ -942,14 +1119,27 @@ def build_plan(
             target["transport"] = transport
         elif transport != "auto":
             target["transport"] = transport
+        raw_cwd = _text(target.get("cwd"))
+        if not raw_cwd:
+            repo_name = _clean_target_name(target.get("target_repo"))
+            raw_cwd = f"~/Development/{repo_name}" if repo_name and repo_name != "unspecified" else "~/Development"
+        target["cwd"] = _expand_cwd(raw_cwd)
+        if isinstance(target.get("proposed_domain"), dict):
+            target["proposed_domain"]["cwd"] = _expand_cwd(target["proposed_domain"].get("cwd") or target["cwd"])
+        target["model"] = _text(target.get("model"), DEFAULT_M2_MODEL)
+        target["context"] = _text(target.get("context"), DEFAULT_M2_CONTEXT)
+        target["model_label"] = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
         target.setdefault("context_pass", {"enabled": bool(target.get("rag_context_hint")), "hint": target.get("rag_context_hint")})
         target["cleanup_candidates"] = _stale_candidates(target, sessions, loaded_domain_map)
         stale_candidates.extend(target["cleanup_candidates"])
     unique_stale = {item["session_id"]: item for item in stale_candidates}
-    return {
+    plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "plan_id": plan_id,
         "message": message,
+        "default_model": DEFAULT_M2_MODEL,
+        "default_context": DEFAULT_M2_CONTEXT,
+        "default_model_label": DEFAULT_M2_MODEL_LABEL,
         "decision": {"route": route, **decision},
         "domain_map_file": loaded_domain_map.get("path", str(domain_map_file or DEFAULT_DOMAIN_MAP_PATH)),
         "discovery": {"sessions": sessions, "warnings": list(warnings)},
@@ -959,11 +1149,33 @@ def build_plan(
         "stale_m2_candidates": list(unique_stale.values()),
         "approval": {"required": True, "approved": False},
     }
+    plan["preview_markdown"] = render_preview_markdown(plan)
+    preview_path = Path(preview_md_file).expanduser() if preview_md_file else _default_preview_path(plan_id)
+    if write_preview_md or preview_md_file is not None or open_preview:
+        preview_path = write_preview_markdown(plan, preview_path)
+    else:
+        plan["preview_markdown_path"] = str(preview_path)
+    if open_preview:
+        plan["preview_open"] = open_preview_in_orca(preview_path, orca_bin=orca_bin, runner=runner)
+    else:
+        plan["preview_open"] = {"ok": False, "skipped": True, "path": str(preview_path)}
+    return plan
 
 
 def preview_text(plan: dict[str, Any]) -> str:
-    lines = [f"Plan {plan['plan_id']} · {plan['decision']['route']}", "Owner approval required before dispatch.", "", "wave | topic_id | domain status | target repo | M2 status | transport | content"]
-    lines.append("-----|----------|---------------|-------------|-----------|-----------|--------")
+    lines = [
+        f"Plan {plan['plan_id']} · {plan['decision']['route']}",
+        f"Default Model / Context: {_text(plan.get('default_model_label'), DEFAULT_M2_MODEL_LABEL)}",
+    ]
+    preview_md_path = _text(plan.get("preview_markdown_path"))
+    if preview_md_path:
+        lines.append(f"Preview Markdown: {preview_md_path}")
+    lines.extend([
+        "Owner approval required before dispatch.",
+        "",
+        "wave | topic_id | domain status | target repo | M2 status | transport | content",
+        "-----|----------|---------------|-------------|-----------|-----------|--------",
+    ])
     for target in plan.get("targets", []):
         marker = " [NEW_DOMAIN_CANDIDATE]" if target.get("domain_status") == NEW_DOMAIN_CANDIDATE else ""
         lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
@@ -1008,9 +1220,10 @@ def _apply_dsh(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, pos
         raise RouterError(f"no dsh endpoint for {target.get('target_repo', 'target')}")
     token = _text(target.get("dsh_token") or os.environ.get("DSH_M2_TOKEN"))
     session_id = _text(target.get("session_id"))
+    expanded_cwd = _expand_cwd(target.get("cwd") or os.environ.get("DSH_M2_CWD", ""))
     created = False
     if target.get("m2_status") == "NEW_M2":
-        created_body = poster(base + "/m2-omni-hub/api/create-session", {"topic": target.get("target_repo", "New M2"), "cwd": target.get("cwd") or os.environ.get("DSH_M2_CWD", "")}, token=token)
+        created_body = poster(base + "/m2-omni-hub/api/create-session", {"topic": target.get("target_repo", "New M2"), "cwd": expanded_cwd}, token=token)
         session = created_body.get("session") if isinstance(created_body.get("session"), dict) else created_body
         session_id = _text(session.get("sessionId") or session.get("id"))
         if not session_id:
@@ -1021,12 +1234,12 @@ def _apply_dsh(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, pos
     delivery = {"sessionStrategy": "pinned", "sessionKey": f"m2-router:{target.get('target_repo', session_id)}", "sessionId": session_id, "title": target.get("title") or f"[M2] {target.get('target_repo', 'M2')}", "markdown": prompt, "deliveryKey": f"{plan['plan_id']}:{target.get('target_repo', session_id)}"}
     try:
         receipt = poster(base + "/dsh-session-sink/api/deliver", delivery, token=token)
-        return {"ok": True, "method": "dsh.session-sink", "target": session_id, "created": created, "receipt": receipt}
+        return {"ok": True, "method": "dsh.session-sink", "target": session_id, "created": created, "cwd": expanded_cwd, "receipt": receipt}
     except Exception:
         if created:
             raise
         receipt = poster(base + "/m2-omni-hub/api/dispatch", {"message": prompt, "targetSessionIds": [session_id], "forceMode": "single"}, token=token)
-        return {"ok": True, "method": "dsh.omni-hub.dispatch", "target": session_id, "created": False, "receipt": receipt}
+        return {"ok": True, "method": "dsh.omni-hub.dispatch", "target": session_id, "created": False, "cwd": expanded_cwd, "receipt": receipt}
 
 
 def _herdr_binary(target: dict[str, Any]) -> str:
@@ -1080,6 +1293,10 @@ def _resolve_target_transport(target: dict[str, Any], plan: dict[str, Any], requ
 
 def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, index: int = 1, used_names: set[str] | None = None) -> dict[str, Any]:
     binary = _herdr_binary(target)
+    model = _text(target.get("model"), _text(plan.get("default_model"), DEFAULT_M2_MODEL))
+    context = _text(target.get("context"), _text(plan.get("default_context"), DEFAULT_M2_CONTEXT))
+    model_label = _text(target.get("model_label"), _text(plan.get("default_model_label"), DEFAULT_M2_MODEL_LABEL))
+    expanded_cwd = _expand_cwd(_text(target.get("cwd")) or str(Path.home() / "Development"))
     if target.get("m2_status") == "EXISTING_M2":
         agent = _text(target.get("herdr_target") or target.get("session_id"))
         if not agent:
@@ -1087,18 +1304,29 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
         result = runner([binary, "agent", "prompt", agent, prompt], timeout=10.0)
         if result.returncode != 0:
             raise RouterError(f"Herdr prompt failed for {agent}: {result.stderr.strip()}")
-        return {"ok": True, "method": "herdr.agent.prompt", "target": agent, "created": False, "stdout": result.stdout.strip()}
+        return {
+            "ok": True,
+            "method": "herdr.agent.prompt",
+            "target": agent,
+            "created": False,
+            "model": model,
+            "context": context,
+            "model_label": model_label,
+            "cwd": expanded_cwd,
+            "stdout": result.stdout.strip(),
+        }
 
     name = _new_herdr_agent_name(target, index=index, used_names=used_names)
     dispatch = _text(target.get("dispatch_script") or os.environ.get("M2_ROUTER_HERDR_DISPATCH"))
     if not dispatch:
         dispatch = str(Path.home() / "Development" / "user-skills" / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh")
-    args = [dispatch, "--name", name, "--kind", _text(target.get("kind"), "copilot"), "--cwd", _text(target.get("cwd"), str(Path.home() / "Development")), "--prompt", prompt]
+    args = [dispatch, "--name", name, "--kind", _text(target.get("kind"), "copilot"), "--cwd", expanded_cwd, "--prompt", prompt]
     pane = _text(target.get("source_pane") or os.environ.get("HERDR_PANE_ID"))
     if pane:
         args.extend(["--pane", pane, "--direction", "right"])
     else:
         args.append("--new-workspace")
+    args.extend(["--", "--model", model, "--context", context])
     result = runner(args, timeout=30.0)
     if result.returncode != 0:
         raise RouterError(f"Herdr new M2 failed for {name}: {result.stderr.strip()}")
@@ -1108,7 +1336,17 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
         prompt_res = runner([binary, "agent", "prompt", name, prompt], timeout=10.0)
         if prompt_res.returncode != 0:
             raise RouterError(f"Herdr prompt failed for reused working agent {name}: {prompt_res.stderr.strip()}")
-    return {"ok": True, "method": "herdr-dispatch", "target": name, "created": not reused, "receipt": parsed or result.stdout.strip()}
+    return {
+        "ok": True,
+        "method": "herdr-dispatch",
+        "target": name,
+        "created": not reused,
+        "model": model,
+        "context": context,
+        "model_label": model_label,
+        "cwd": expanded_cwd,
+        "receipt": parsed or result.stdout.strip(),
+    }
 
 
 def _register_new_domains(plan: dict[str, Any], domain_map_file: str | Path | None = None, *, dry_run: bool = False) -> list[str]:
@@ -1228,7 +1466,7 @@ def _cleanup_stale(
     return receipts
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -1287,8 +1525,1011 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
                 receipt = _apply_dsh(dispatch_target, plan, prompt, poster=poster)
             else:
                 raise RouterError(f"unsupported transport: {selected}")
-            receipts.append({"wave_order": wave, "target_repo": target.get("target_repo"), **receipt})
-    return {"ok": True, "plan_id": plan.get("plan_id"), "approved": True, "registered_new_domains": registered, "cleanup_receipts": cleanup_receipts, "receipts": receipts}
+            pane_id_val = _text(
+                (receipt.get("receipt") or {}).get("pane_id")
+                if isinstance(receipt.get("receipt"), dict)
+                else dispatch_target.get("pane_id")
+            )
+            session_id_val = _text(receipt.get("target")) if selected == "dsh" else _text(dispatch_target.get("session_id") or receipt.get("target"))
+            receipts.append({
+                "wave_order": wave,
+                "topic_id": _text(target.get("topic_id")),
+                "target_repo": target.get("target_repo"),
+                "pane_id": pane_id_val,
+                "session_id": session_id_val,
+                **receipt,
+            })
+    plan_id = _text(plan.get("plan_id"), "m2p-plan")
+    safe_plan_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", plan_id).strip("-") or "m2p-plan"
+    resolved_plan_file = _text(plan_file or plan.get("plan_file"), f"/tmp/m2-plan-{safe_plan_id}.json")
+    resolved_receipt_path = Path(apply_receipt_file).expanduser() if apply_receipt_file else Path(f"/tmp/m2-apply-{safe_plan_id}.json")
+    watch_cmd = (
+        f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
+        f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
+        f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
+        f"--interval 15 --max-wait 2400 --json"
+    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "plan_id": plan.get("plan_id"),
+        "approved": True,
+        "apply_receipt_path": str(resolved_receipt_path),
+        "registered_new_domains": registered,
+        "cleanup_receipts": cleanup_receipts,
+        "receipts": receipts,
+        "watchdog_cmd": watch_cmd,
+        "watchdog_copilot_cli": {
+            "tool": "bash",
+            "mode": "async",
+            "detach": True,
+            "shellId": f"watch-m2-{plan_id}",
+            "description": f"Watch dispatched target M2 sessions ({plan_id}) until quiescent",
+            "command": watch_cmd,
+        },
+    }
+    try:
+        resolved_receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        payload["apply_receipt_write_warning"] = str(error)
+    return payload
+
+
+def _safe_roots_for_target(target_cwd: str = "", *, include_target_cwd: bool = True) -> list[str]:
+    baseline_roots = [_expand_cwd(root).rstrip("/") for root in SAFE_BASELINE_ROOTS if _expand_cwd(root)]
+    if not include_target_cwd:
+        return baseline_roots
+    expanded_target = _expand_cwd(target_cwd).rstrip("/")
+    if expanded_target and _path_is_under_safe_roots(expanded_target, baseline_roots):
+        if expanded_target not in baseline_roots:
+            baseline_roots.append(expanded_target)
+    return baseline_roots
+
+
+def _lexical_within(path_str: str, roots: list[str]) -> bool:
+    norm = os.path.abspath(path_str).rstrip("/")
+    for root in roots:
+        norm_root = os.path.abspath(root).rstrip("/")
+        if norm == norm_root or norm.startswith(norm_root + "/"):
+            return True
+    return False
+
+
+def _resolved_within(path_obj: Path, resolved_roots: list[str]) -> bool:
+    try:
+        resolved_str = str(path_obj.resolve(strict=False)).rstrip("/")
+    except OSError:
+        return False
+    for r_root in resolved_roots:
+        if resolved_str == r_root or resolved_str.startswith(r_root + "/"):
+            return True
+    return False
+
+
+def _path_is_under_safe_roots(candidate_path: str, safe_roots: list[str]) -> bool:
+    raw = _text(candidate_path)
+    if not raw or "\n" in raw or "\r" in raw or "\x00" in raw:
+        return False
+    if re.search(r"[*?\[\]{}$`<>|;]", raw):
+        return False
+    parts = [p for p in re.split(r"[/\\]+", raw) if p]
+    if ".." in parts or "." in parts:
+        return False
+    expanded = _expand_cwd(raw)
+    if not expanded or not os.path.isabs(expanded):
+        return False
+
+    expanded_roots = [os.path.abspath(_expand_cwd(r)).rstrip("/") for r in safe_roots if _expand_cwd(r)]
+    if not expanded_roots:
+        return False
+    if not _lexical_within(expanded, expanded_roots):
+        return False
+
+    resolved_roots: list[str] = []
+    for r in expanded_roots:
+        try:
+            resolved_roots.append(str(Path(r).resolve(strict=False)).rstrip("/"))
+        except OSError:
+            continue
+    if not resolved_roots:
+        return False
+
+    cand_obj = Path(os.path.abspath(expanded))
+    if not _resolved_within(cand_obj, resolved_roots):
+        return False
+
+    # Walk every prefix from deepest allowed lexical root down to candidate to catch symlinks escaping safe roots.
+    matching_lex_roots = [
+        r for r in expanded_roots
+        if os.path.abspath(expanded).rstrip("/") == r or os.path.abspath(expanded).startswith(r + "/")
+    ]
+    base_lex = max(matching_lex_roots, key=len)
+    base_path = Path(base_lex)
+    try:
+        rel_parts = cand_obj.relative_to(base_path).parts
+    except ValueError:
+        return False
+
+    cur = base_path
+    if cur.is_symlink() and not _resolved_within(cur, resolved_roots):
+        return False
+    for part in rel_parts:
+        cur = cur / part
+        try:
+            is_link = cur.is_symlink()
+            exists = cur.exists()
+        except OSError:
+            return False
+        if is_link or exists:
+            if not _resolved_within(cur, resolved_roots):
+                return False
+            if is_link:
+                try:
+                    link_target = os.readlink(cur)
+                except OSError:
+                    return False
+                resolved_target = (cur.parent / link_target) if not os.path.isabs(link_target) else Path(link_target)
+                if not _resolved_within(resolved_target, resolved_roots):
+                    return False
+    return True
+
+
+def _extract_single_dialog_path(frame_text: str) -> str | None:
+    """Extract the exact single path from a path/folder permission prompt, or None if ambiguous."""
+    patterns = (
+        re.compile(r"(?:Allow\s+(?:path|directory)\s+access\s+to|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|Confirm\s+folder\s+trust\s*:?|Trust\s+folder\s*:?|access\s+to)\s+([^\n?]+?)\??\s*$", re.I),
+        re.compile(r"^(?:Path|Directory|Folder)\s*:\s*([^\n]+?)\s*$", re.I),
+    )
+    extracted: list[str] = []
+    for raw_line in frame_text.splitlines():
+        line = raw_line.strip()
+        if not line or re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", line):
+            continue
+        for pat in patterns:
+            m = pat.search(line)
+            if m:
+                candidate = m.group(1).strip()
+                if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"', "`"}:
+                    candidate = candidate[1:-1].strip()
+                else:
+                    candidate = candidate.rstrip("?").strip()
+                    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"', "`"}:
+                        candidate = candidate[1:-1].strip()
+                if candidate and candidate not in extracted:
+                    extracted.append(candidate)
+                break
+    if len(extracted) != 1:
+        return None
+    single = extracted[0]
+    if not (single.startswith("/") or single.startswith("~/") or single == "~"):
+        return None
+    # Reject multiple unquoted path tokens in the same captured span
+    if re.search(r"\s+(?:~|/)[A-Za-z0-9_.-]", single):
+        return None
+    if any(ch in single for ch in ("*", "?", "[", "]", "$", "`", ";", "|", "&", "<", ">", '"', "'")):
+        return None
+    return single
+
+
+_READONLY_GIT_SUBCOMMANDS = {
+    "status",
+    "diff",
+    "log",
+    "show",
+    "rev-parse",
+    "ls-files",
+    "worktree",
+    "branch",
+}
+_SAFE_GIT_BRANCH_FLAGS = {"--show-current", "-a", "--all", "-r", "--remotes", "--list"}
+_FORBIDDEN_GIT_FLAGS = (
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--work-tree",
+    "--upload-pack",
+    "--receive-pack",
+    "--ext-diff",
+    "--textconv",
+    "--output",
+    "--paginate",
+    "-p",
+)
+
+
+def _is_safe_git_command(args: list[str]) -> bool:
+    idx = 0
+    while idx < len(args):
+        tok = args[idx]
+        if tok in {"--no-pager", "-P", "--no-optional-locks"}:
+            idx += 1
+            continue
+        if tok == "-C":
+            if idx + 1 >= len(args):
+                return False
+            if not _path_is_under_safe_roots(args[idx + 1], _safe_roots_for_target(include_target_cwd=False)):
+                return False
+            idx += 2
+            continue
+        if tok.startswith("-"):
+            return False
+        break
+    if idx >= len(args):
+        return False
+    subcmd = args[idx]
+    rest = args[idx + 1 :]
+    if subcmd not in _READONLY_GIT_SUBCOMMANDS:
+        return False
+    for flag in rest:
+        if any(flag == p or flag.startswith(p + "=") for p in _FORBIDDEN_GIT_FLAGS):
+            return False
+    if subcmd == "worktree":
+        return rest == ["list"] or rest == ["list", "--porcelain"]
+    if subcmd == "branch":
+        if not rest:
+            return False
+        return all(tok in _SAFE_GIT_BRANCH_FLAGS for tok in rest)
+    return True
+
+
+def _is_safe_gh_command(args: list[str]) -> bool:
+    if len(args) < 2:
+        return False
+    group, action = args[0], args[1]
+    rest = args[2:]
+    allowed = {
+        "pr": {"view", "list", "status", "checks"},
+        "run": {"view", "list"},
+        "issue": {"view", "list"},
+    }
+    if action not in allowed.get(group, set()):
+        return False
+    for flag in rest:
+        if flag in {"-w", "--web"} or flag.startswith("--output"):
+            return False
+    return True
+
+
+def _is_safe_herdr_command(args: list[str]) -> bool:
+    if len(args) < 2:
+        return False
+    group, action = args[0], args[1]
+    if group == "agent" and action in {"list", "get", "read", "wait"}:
+        return True
+    if group == "pane" and action == "list" and len(args) == 2:
+        return True
+    if group == "workspace" and action == "list" and len(args) == 2:
+        return True
+    return False
+
+
+def _is_safe_python_command(args: list[str]) -> bool:
+    if len(args) == 1 and args[0] in {"--version", "-V", "--help", "-h"}:
+        return True
+    if len(args) >= 2 and args[0] == "-m" and args[1] == "unittest":
+        for tok in args[2:]:
+            if tok in {"-c", "-k"}:
+                continue
+            if tok.startswith("-"):
+                if tok not in {"-v", "--verbose", "-q", "--quiet", "-f", "--failfast", "-b", "--buffer", "discover", "-s", "-p", "-t"}:
+                    return False
+            elif ".." in tok or tok.startswith("/") or tok.startswith("~"):
+                return False
+        return True
+    return False
+
+
+def _is_whitelisted_command_segment(segment: str) -> bool:
+    tokens = shlex.split(segment.strip()) if segment.strip() else []
+    if not tokens:
+        return False
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        return False
+    if "/" in tokens[0] and Path(tokens[0]).parent not in {Path("/bin"), Path("/usr/bin"), Path("/usr/local/bin"), Path("/opt/homebrew/bin")}:
+        return False
+    binary = Path(tokens[0]).name
+    if binary not in WHITELISTED_CMD_BINARIES:
+        return False
+    args = tokens[1:]
+    if binary == "env":
+        return len(args) == 0
+    if binary == "git":
+        return _is_safe_git_command(args)
+    if binary == "gh":
+        return _is_safe_gh_command(args)
+    if binary == "herdr":
+        return _is_safe_herdr_command(args)
+    if binary == "orca":
+        if len(args) != 4 or args[:2] != ["file", "open"] or "--focus" not in args[2:]:
+            return False
+        file_args = [a for a in args[2:] if a != "--focus"]
+        if len(file_args) != 1 or file_args[0].startswith("-"):
+            return False
+        return _path_is_under_safe_roots(file_args[0], _safe_roots_for_target(include_target_cwd=False))
+    if binary == "python3":
+        return _is_safe_python_command(args)
+    if binary == "find":
+        forbidden_find = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+        return not any(tok.lower() in forbidden_find or tok.lower().startswith("-fprint") or tok.lower().startswith("-fls") for tok in args)
+    if binary == "jq":
+        return not any(tok in {"-f", "--from-file", "-L"} for tok in args)
+    if binary in {"rg", "grep"}:
+        return not any(tok == "--pre" or tok.startswith("--pre=") or tok == "--pre-glob" or tok.startswith("--pre-glob=") for tok in args)
+    if binary == "sleep":
+        return len(args) == 1 and bool(re.match(r"^\d+(?:\.\d+)?$", args[0]))
+    if binary in {"date", "shasum", "ls", "cat", "head", "tail"}:
+        return not any(tok in {"-s", "--set"} for tok in args)
+    return False
+
+
+def _extract_command_block_from_frame(frame_text: str) -> str | None:
+    """Extract the full command block from an active command confirmation frame, or None if multiline/ambiguous."""
+    lines = [ln.strip() for ln in frame_text.splitlines() if ln.strip()]
+    cmd_lines: list[str] = []
+    collecting = False
+    for line in lines:
+        if re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", line):
+            collecting = False
+            continue
+        if re.match(
+            r"^(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
+            r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command)\b",
+            line,
+            re.I,
+        ):
+            m_inline = re.match(
+                r"^(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)\s*:\s*(.+)$",
+                line,
+                re.I,
+            )
+            if m_inline:
+                rest = m_inline.group(1).strip()
+                if not re.match(r"^(?:Do\s+you|Allow|Confirm|Run\s+command|Execute\s+command)\b", rest, re.I):
+                    cmd_lines.append(rest.strip("`"))
+                    collecting = True
+            continue
+        m_cmd = re.match(r"^(?:Command|Run|Execute|Shell|bash|sh)\s*:\s*(.+)$", line, re.I)
+        if m_cmd:
+            cmd_lines.append(m_cmd.group(1).strip().strip("`"))
+            collecting = True
+            continue
+        if line.startswith("$ "):
+            cmd_lines.append(line[2:].strip().strip("`"))
+            collecting = True
+            continue
+        if collecting:
+            # Any extra non-choice line after Command: makes it a multiline command block -> reject
+            cmd_lines.append(line)
+    if len(cmd_lines) != 1:
+        return None
+    return cmd_lines[0]
+
+
+def _is_whitelisted_command(cmd_text: str) -> bool:
+    stripped = cmd_text.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped or "\\" in stripped:
+        return False
+    # Reject shell chaining, pipes, redirections, command/process substitutions, subshells, backgrounding, or globs
+    if re.search(r"[`<>()$*{}\[\];|&]", stripped):
+        return False
+    try:
+        return _is_whitelisted_command_segment(stripped)
+    except ValueError:
+        return False
+
+
+_PROMPT_HEADER_RE = re.compile(
+    r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\bCurate\s+Memory\b|"
+    r"\bstore_memory\b|\bvote_memory\b|Confirm\s+folder\s+trust|"
+    r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|\bCMD_CONFIRM\b|"
+    r"Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
+    r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command|"
+    r"\bask_user\b|NEED_GO|NEED_OWNER_DECISION|Owner\s+Gate|Owner\s+decision\s+required|"
+    r"Proceed\s+with|What\s+would\s+you\s+like|Which\s+option\s+would\s+you\s+like|"
+    r"请选择方案|请确认方案|Question\s+for\s+Owner)",
+    re.I,
+)
+_BUSINESS_DECISION_RE = re.compile(
+    r"(?:\bask_user\b|NEED_GO|NEED_OWNER_DECISION|Owner\s+Gate|Owner\s+decision\s+required|"
+    r"Proceed\s+with|What\s+would\s+you\s+like|Which\s+option\s+would\s+you\s+like|"
+    r"请选择方案|请确认方案|Question\s+for\s+Owner)",
+    re.I,
+)
+_COMPLETION_BOUNDARY_RE = re.compile(
+    r"^(?:Completed\.|Done\.|Finished\.|[✓✔✗✘]\s+|\bExit\s+code\b|---+$|═+$|━+$)",
+    re.I,
+)
+
+
+def _extract_active_bottom_frame(visible_text: str) -> str:
+    """Slice only the bottom-most active interactive frame after the last output/completion boundary."""
+    lines = [ln.rstrip() for ln in _text(visible_text).splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = lines[-20:]
+    last_boundary_idx = -1
+    for idx, raw in enumerate(tail):
+        stripped = raw.strip()
+        if _COMPLETION_BOUNDARY_RE.search(stripped):
+            last_boundary_idx = idx
+    if last_boundary_idx >= 0 and last_boundary_idx + 1 < len(tail):
+        tail = tail[last_boundary_idx + 1 :]
+    # Also if there are multiple prompt headers separated by non-choice output, slice from the last header/question
+    header_indices = [
+        idx for idx, raw in enumerate(tail)
+        if _PROMPT_HEADER_RE.search(raw) or (raw.strip().endswith("?") and not re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", raw.strip()))
+    ]
+    if len(header_indices) > 1:
+        # Check if there are multiple distinct prompt headers -> if separated or conflicting, return full tail so ambiguity check rejects it
+        pass
+    return "\n".join(tail)
+
+
+def _validate_apply_receipt_for_target(
+    plan: dict[str, Any],
+    apply_receipt: dict[str, Any] | None,
+    *,
+    target_ref: str = "",
+    pane_id: str = "",
+) -> bool:
+    if not isinstance(apply_receipt, dict):
+        return False
+    if apply_receipt.get("ok") is not True or apply_receipt.get("approved") is not True:
+        return False
+    plan_id = _text(plan.get("plan_id"))
+    receipt_plan_id = _text(apply_receipt.get("plan_id"))
+    if not plan_id or receipt_plan_id != plan_id:
+        return False
+    receipts = apply_receipt.get("receipts")
+    if not isinstance(receipts, list) or not receipts:
+        return False
+    for rec in receipts:
+        if not isinstance(rec, dict) or rec.get("ok") is not True:
+            continue
+        method = _text(rec.get("method"))
+        if method == "stdout":
+            continue
+        rec_target = _text(rec.get("target"))
+        rec_pane = _text(
+            rec.get("pane_id")
+            or ((rec.get("receipt") or {}).get("pane_id") if isinstance(rec.get("receipt"), dict) else "")
+        )
+        if target_ref and rec_target and target_ref == rec_target:
+            return True
+        if pane_id and rec_pane and pane_id == rec_pane:
+            return True
+    return False
+
+
+def _classify_and_unblock_dialog(
+    visible_text: str,
+    *,
+    target_ref: str,
+    target_cwd: str = "",
+    live_status: str = "blocked",
+    auto_unblock_enabled: bool = False,
+    herdr_bin: str = "herdr",
+    runner: CommandRunner = _run_command,
+    already_unblocked_signatures: set[str] | None = None,
+) -> dict[str, Any]:
+    """Classify the bottom-most active dialog frame and auto-unblock only when authorized."""
+    text = _text(visible_text)
+    if not text:
+        return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
+
+    if _text(live_status).lower() not in {"blocked", "needs_input"}:
+        return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
+
+    active_frame = _extract_active_bottom_frame(text)
+    if not active_frame:
+        return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
+
+    # Business / Spec ask_user or custom decision questions must NEVER be auto-unblocked.
+    if _BUSINESS_DECISION_RE.search(active_frame):
+        return {
+            "action": "owner_decision",
+            "kind": "ask_user",
+            "keys": [],
+            "blocked_reason": "owner_decision_required",
+            "auto_unblock_enabled": auto_unblock_enabled,
+        }
+
+    baseline_roots = _safe_roots_for_target(include_target_cwd=False)
+    safe_roots = _safe_roots_for_target(target_cwd, include_target_cwd=True)
+
+    is_cmd_prompt = bool(
+        re.search(
+            r"(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
+            r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command)",
+            active_frame,
+            re.I,
+        )
+    )
+    is_path_prompt = bool(
+        re.search(r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\baccess\s+to\b)", active_frame, re.I)
+    )
+    is_folder_trust_prompt = bool(
+        re.search(
+            r"(?:Confirm\s+folder\s+trust|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|Trust\s+folder|Yes,\s*I\s+trust)",
+            active_frame,
+            re.I,
+        )
+    )
+    is_curate_memory_prompt = bool(
+        re.search(r"(?:Curate\s+Memory|\bstore_memory\b|\bvote_memory\b)", active_frame, re.I)
+        and re.search(r"(?:\?|[>❯●◉▶]|\bAllow\b|\bConfirm\b|\bYes\b|1[.)])", active_frame, re.I)
+    )
+
+    # Also detect any unrecognized question lines in active_frame alongside a dialog header
+    other_questions = [
+        ln.strip()
+        for ln in active_frame.splitlines()
+        if ln.strip().endswith("?")
+        and not re.search(
+            r"(?:Allow\s+(?:path|directory)\s+access|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
+            r"Confirm\s+folder\s+trust|Trust\s+folder|Curate\s+Memory|store_memory|vote_memory|"
+            r"CMD_CONFIRM|Do\s+you\s+want\s+to\s+run|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)",
+            ln,
+            re.I,
+        )
+    ]
+    matched_kinds = sum(bool(flag) for flag in (is_cmd_prompt, is_path_prompt, is_folder_trust_prompt, is_curate_memory_prompt))
+    if matched_kinds > 1 or (matched_kinds == 1 and other_questions):
+        return {
+            "action": "owner_decision",
+            "kind": "ambiguous_dialog",
+            "keys": [],
+            "blocked_reason": "owner_decision_required",
+            "auto_unblock_enabled": auto_unblock_enabled,
+        }
+
+    kind = ""
+    keys: list[str] = []
+
+    if is_cmd_prompt:
+        cmd_block = _extract_command_block_from_frame(active_frame)
+        if cmd_block is not None and _is_whitelisted_command(cmd_block):
+            kind = "whitelisted_cmd_confirm"
+            keys = ["enter"]
+        else:
+            return {
+                "action": "owner_decision",
+                "kind": "non_whitelisted_cmd",
+                "keys": [],
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+    elif is_path_prompt:
+        single_path = _extract_single_dialog_path(active_frame)
+        if single_path is not None and _path_is_under_safe_roots(single_path, safe_roots):
+            kind = "allow_path_access"
+            keys = ["enter"]
+        else:
+            return {
+                "action": "owner_decision",
+                "kind": "unsafe_path_access",
+                "keys": [],
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+    elif is_folder_trust_prompt:
+        single_path = _extract_single_dialog_path(active_frame)
+        has_any_path_like = bool(re.search(r"(?:^|[\s'\"`:])(?:~|/)[A-Za-z0-9_.-]", active_frame))
+        if single_path is not None:
+            if _path_is_under_safe_roots(single_path, baseline_roots):
+                kind = "confirm_folder_trust"
+                keys = ["enter"]
+            else:
+                return {
+                    "action": "owner_decision",
+                    "kind": "untrusted_folder",
+                    "keys": [],
+                    "blocked_reason": "owner_decision_required",
+                    "auto_unblock_enabled": auto_unblock_enabled,
+                }
+        elif not has_any_path_like and target_cwd and _path_is_under_safe_roots(target_cwd, baseline_roots):
+            kind = "confirm_folder_trust"
+            keys = ["enter"]
+        else:
+            return {
+                "action": "owner_decision",
+                "kind": "untrusted_folder",
+                "keys": [],
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+    elif is_curate_memory_prompt:
+        kind = "curate_memory"
+        keys = ["enter"]
+
+    if not kind:
+        if re.search(r"(?:\?|\bconfirm\b|\bapprove\b|\bchoose\b|\bselect\b|\[y/n\])", active_frame, re.I):
+            return {
+                "action": "owner_decision",
+                "kind": "owner_prompt",
+                "keys": [],
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+        return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
+
+    if not auto_unblock_enabled:
+        return {
+            "action": "owner_decision",
+            "kind": kind,
+            "keys": [],
+            "blocked_reason": "passive_watch_no_verified_apply_receipt",
+            "auto_unblock_enabled": False,
+        }
+
+    signature = f"{kind}:{hashlib.sha256(active_frame.encode('utf-8')).hexdigest()[:12]}"
+    if already_unblocked_signatures is not None and signature in already_unblocked_signatures:
+        return {"action": "already_unblocked", "kind": kind, "keys": keys, "blocked_reason": "", "auto_unblock_enabled": True}
+
+    cmd = [herdr_bin, "agent", "send-keys", target_ref, *keys]
+    res = runner(cmd, timeout=5.0)
+    ok = getattr(res, "returncode", 1) == 0
+    if ok and already_unblocked_signatures is not None:
+        already_unblocked_signatures.add(signature)
+    return {
+        "action": "auto_unblocked" if ok else "unblock_failed",
+        "ok": ok,
+        "kind": kind,
+        "keys": keys,
+        "command": cmd,
+        "target": target_ref,
+        "blocked_reason": "" if ok else "unblock_send_keys_failed",
+        "auto_unblock_enabled": True,
+    }
+
+
+def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
+    lines = [line.rstrip() for line in _text(text).splitlines() if line.strip()]
+    return "\n".join(lines[-max_lines:])[:800]
+
+
+def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner = _run_command, lines: int = 40) -> str:
+    if not target_ref:
+        return ""
+    try:
+        res = runner([binary, "agent", "read", target_ref, "--source", "visible", "--lines", str(lines)], timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if getattr(res, "returncode", 1) != 0:
+        return ""
+    stdout = _text(getattr(res, "stdout", ""))
+    parsed = _parse_json_output(stdout)
+    if isinstance(parsed, dict):
+        for key in ("visible", "visible_text", "text", "content", "output"):
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        result = parsed.get("result")
+        if isinstance(result, dict):
+            for key in ("visible", "visible_text", "text", "content", "output"):
+                val = result.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+    return stdout
+
+
+def watch_dispatched_m2(
+    plan: dict[str, Any],
+    *,
+    apply_receipt: dict[str, Any] | None = None,
+    interval: float = 15.0,
+    max_wait: float = 2400.0,
+    max_polls: int | None = None,
+    herdr_bin: str | None = None,
+    dsh_state_url: str = "",
+    dsh_token: str = "",
+    runner: CommandRunner = _run_command,
+    fetcher: Callable[..., Any] = _fetch_json,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Poll dispatched target M2s until quiescent, auto-unblocking safe Allow dialogs only with verified apply_receipt."""
+    binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    plan_targets = [dict(t) for t in (plan.get("targets") or []) if isinstance(t, dict)]
+    receipt_items = [dict(r) for r in ((apply_receipt or {}).get("receipts") or []) if isinstance(r, dict)]
+    has_apply_receipt = bool(receipt_items)
+    receipt_header_valid = bool(
+        isinstance(apply_receipt, dict)
+        and apply_receipt.get("ok") is True
+        and apply_receipt.get("approved") is True
+        and _text(plan.get("plan_id"))
+        and _text(apply_receipt.get("plan_id")) == _text(plan.get("plan_id"))
+    )
+
+    monitored: list[dict[str, Any]] = []
+    if has_apply_receipt:
+        used_plan_indices: set[int] = set()
+        for idx, rec in enumerate(receipt_items):
+            plan_match: dict[str, Any] = {}
+            for p_idx, pt in enumerate(plan_targets):
+                if p_idx in used_plan_indices:
+                    continue
+                if _text(rec.get("topic_id")) and _text(pt.get("topic_id")) == _text(rec.get("topic_id")) and int(rec.get("wave_order") or 1) == int(pt.get("wave_order") or 1):
+                    plan_match = pt
+                    used_plan_indices.add(p_idx)
+                    break
+            if not plan_match and idx < len(plan_targets) and idx not in used_plan_indices:
+                plan_match = plan_targets[idx]
+                used_plan_indices.add(idx)
+            method = _text(rec.get("method"))
+            transport = "stdout" if method == "stdout" else ("dsh" if method.startswith("dsh") else "herdr")
+            target_ref = _text(rec.get("target") or rec.get("session_id"))
+            pane_id = _text(
+                rec.get("pane_id")
+                or ((rec.get("receipt") or {}).get("pane_id") if isinstance(rec.get("receipt"), dict) else "")
+            )
+            target_unblock_enabled = bool(
+                receipt_header_valid
+                and rec.get("ok") is True
+                and transport == "herdr"
+                and (target_ref or pane_id)
+                and _validate_apply_receipt_for_target(plan, apply_receipt, target_ref=target_ref, pane_id=pane_id)
+            )
+            monitored.append({
+                "wave_order": int(rec.get("wave_order") or plan_match.get("wave_order") or 1),
+                "topic_id": _text(rec.get("topic_id") or plan_match.get("topic_id")),
+                "target_repo": _text(rec.get("target_repo") or plan_match.get("target_repo"), "unspecified"),
+                "target": target_ref,
+                "pane_id": pane_id,
+                "session_id": _text(rec.get("session_id") or target_ref),
+                "transport": transport,
+                "strict_receipt_identity": True,
+                "auto_unblock_enabled": target_unblock_enabled,
+                "cwd": _expand_cwd(rec.get("cwd") or plan_match.get("cwd")),
+                "status": "done" if transport == "stdout" else "unknown",
+                "needs_owner_attention": False,
+                "blocked_reason": "",
+                "auto_unblocked": [],
+                "visible_summary": _text(rec.get("prompt"))[:240] if transport == "stdout" else "",
+                "seen_working": False,
+                "initial_seq": None,
+                "completion_seq": None,
+                "state_change_seq": None,
+                "unblocked_signatures": set(),
+            })
+    else:
+        for idx, pt in enumerate(plan_targets, start=1):
+            transport = _resolve_target_transport(pt, plan, _text(pt.get("transport"), "auto"))
+            target_ref = _text(pt.get("herdr_target") or pt.get("session_id"))
+            if not target_ref and transport == "herdr":
+                target_ref = _new_herdr_agent_name(pt, index=idx)
+            monitored.append({
+                "wave_order": int(pt.get("wave_order") or 1),
+                "topic_id": _text(pt.get("topic_id")),
+                "target_repo": _text(pt.get("target_repo"), "unspecified"),
+                "target": target_ref or _text(pt.get("target_repo"), "unspecified"),
+                "pane_id": _text(pt.get("pane_id")),
+                "session_id": _text(pt.get("session_id") or target_ref),
+                "transport": transport,
+                "strict_receipt_identity": False,
+                "auto_unblock_enabled": False,
+                "cwd": _expand_cwd(pt.get("cwd")),
+                "status": "done" if transport == "stdout" else "unknown",
+                "needs_owner_attention": False,
+                "blocked_reason": "",
+                "auto_unblocked": [],
+                "visible_summary": "",
+                "seen_working": False,
+                "initial_seq": None,
+                "completion_seq": None,
+                "state_change_seq": None,
+                "unblocked_signatures": set(),
+            })
+
+    effective_dsh_url = _text(dsh_state_url or (plan.get("discovery") or {}).get("dsh_state_url") or os.environ.get("DSH_M2_STATE_URL"))
+    started = time.monotonic()
+    polls = 0
+    while True:
+        needs_herdr = any(item["transport"] == "herdr" for item in monitored)
+        needs_dsh = any(item["transport"] == "dsh" for item in monitored)
+        herdr_merged: list[dict[str, Any]] = []
+        if needs_herdr:
+            try:
+                pane_res = runner([binary, "pane", "list"], timeout=5.0)
+                agent_res = runner([binary, "agent", "list"], timeout=5.0)
+                pane_records = _records(_parse_json_output(getattr(pane_res, "stdout", ""))) if getattr(pane_res, "returncode", 1) == 0 else []
+                agent_records = _records(_parse_json_output(getattr(agent_res, "stdout", ""))) if getattr(agent_res, "returncode", 1) == 0 else []
+                herdr_merged = _merge_herdr_records(pane_records, agent_records)
+            except (OSError, subprocess.SubprocessError):
+                herdr_merged = []
+        dsh_sessions: list[dict[str, Any]] = []
+        if needs_dsh and effective_dsh_url:
+            dsh_sessions, _ = discover_dsh(state_url=effective_dsh_url, token=dsh_token, fetcher=fetcher)
+
+        all_settled = True
+        for item in monitored:
+            if item["transport"] == "stdout":
+                continue
+            if item["transport"] == "dsh":
+                if item["strict_receipt_identity"]:
+                    expected_sid = _text(item["session_id"] or item["target"])
+                    match = next(
+                        (s for s in dsh_sessions if expected_sid and _text(s.get("session_id")) == expected_sid),
+                        None,
+                    )
+                else:
+                    match = next(
+                        (
+                            s for s in dsh_sessions
+                            if (_text(item["target"]) and _text(s.get("session_id")) == _text(item["target"]))
+                        ),
+                        None,
+                    )
+                if match is None:
+                    item["status"] = "missing"
+                    all_settled = False
+                    continue
+                status = _text(match.get("status"), "idle").lower()
+                item["status"] = status
+                item["visible_summary"] = _text(match.get("summary")) or item["visible_summary"]
+                if status in {"working", "running"}:
+                    item["seen_working"] = True
+                    item["needs_owner_attention"] = False
+                    item["blocked_reason"] = ""
+                    all_settled = False
+                elif status in {"blocked", "needs_input"}:
+                    item["needs_owner_attention"] = True
+                    item["blocked_reason"] = "owner_decision_required"
+                elif status in {"idle", "done"}:
+                    item["needs_owner_attention"] = False
+                    item["blocked_reason"] = ""
+                    if not item["seen_working"] and polls == 0 and (max_polls is None or max_polls > 1):
+                        all_settled = False
+                else:
+                    all_settled = False
+                continue
+
+            # Herdr target: match strictly by applied target/pane identity (never by repo fallback)
+            expected_target = _text(item["target"])
+            expected_pane = _text(item["pane_id"])
+            live = None
+            if expected_target or expected_pane:
+                live = next(
+                    (
+                        rec for rec in herdr_merged
+                        if (expected_target and _text(rec.get("name") or rec.get("herdr_target") or rec.get("id")) == expected_target)
+                        or (expected_pane and _text(rec.get("pane_id") or rec.get("paneId")) == expected_pane)
+                        or (expected_target and _session_id(rec) == expected_target)
+                    ),
+                    None,
+                )
+            if live is None:
+                item["status"] = "missing"
+                all_settled = False
+                continue
+            item["pane_id"] = _text(live.get("pane_id") or live.get("paneId")) or item["pane_id"]
+            status = _text(live.get("agent_status") or live.get("status"), "idle").lower()
+            comp_seq = live.get("completion_seq", live.get("completionSeq"))
+            state_seq = live.get("state_change_seq", live.get("stateChangeSeq"))
+            seq_tuple = (comp_seq, state_seq)
+            if item["initial_seq"] is None:
+                item["initial_seq"] = seq_tuple
+            item["completion_seq"] = comp_seq
+            item["state_change_seq"] = state_seq
+            seq_advanced = item["initial_seq"] != (None, None) and seq_tuple != item["initial_seq"]
+
+            visible = _read_herdr_visible(binary, item["target"] or item["pane_id"], runner=runner, lines=40)
+            if not visible:
+                visible = _text(live.get("visible") or live.get("visible_text") or live.get("summary"))
+            if visible:
+                item["visible_summary"] = _summarize_visible_lines(visible)
+
+            if status in {"working", "running"}:
+                item["seen_working"] = True
+                item["status"] = status
+                item["needs_owner_attention"] = False
+                item["blocked_reason"] = ""
+                all_settled = False
+                continue
+
+            # S3 & S4: Only inspect/unblock dialogs when target's live status is blocked or needs_input
+            if status in {"blocked", "needs_input"}:
+                decision = _classify_and_unblock_dialog(
+                    visible,
+                    target_ref=item["target"] or item["pane_id"],
+                    target_cwd=item["cwd"],
+                    live_status=status,
+                    auto_unblock_enabled=bool(item["auto_unblock_enabled"]),
+                    herdr_bin=binary,
+                    runner=runner,
+                    already_unblocked_signatures=item["unblocked_signatures"],
+                )
+                if decision["action"] == "auto_unblocked":
+                    item["auto_unblocked"].append({
+                        "kind": decision["kind"],
+                        "keys": decision["keys"],
+                        "target": decision["target"],
+                    })
+                    item["seen_working"] = True
+                    item["status"] = "working"
+                    item["needs_owner_attention"] = False
+                    item["blocked_reason"] = ""
+                    all_settled = False
+                    continue
+                item["status"] = status
+                item["needs_owner_attention"] = True
+                item["blocked_reason"] = decision.get("blocked_reason") or "owner_decision_required"
+                continue
+
+            item["status"] = status
+            item["needs_owner_attention"] = False
+            item["blocked_reason"] = ""
+            if status in {"idle", "done"}:
+                if status == "idle" and not item["seen_working"] and not seq_advanced and polls == 0 and (max_polls is None or max_polls > 1) and (time.monotonic() - started < max_wait):
+                    all_settled = False
+            else:
+                all_settled = False
+
+        polls += 1
+        if all_settled:
+            break
+        if max_polls is not None and polls >= max_polls:
+            break
+        if (time.monotonic() - started) >= max_wait:
+            break
+        sleep_fn(max(0.0, float(interval)))
+
+    # F1: Any target still missing/unknown at deadline is unresolved and requires Owner attention
+    target_reports: list[dict[str, Any]] = []
+    for item in monitored:
+        if item["status"] in {"missing", "unknown"}:
+            item["status"] = "missing"
+            item["needs_owner_attention"] = True
+            item["blocked_reason"] = "target_missing_or_unreachable"
+        target_reports.append({
+            "wave_order": item["wave_order"],
+            "topic_id": item["topic_id"],
+            "target_repo": item["target_repo"],
+            "target": item["target"],
+            "pane_id": item["pane_id"],
+            "status": item["status"],
+            "auto_unblock_enabled": bool(item["auto_unblock_enabled"]),
+            "needs_owner_attention": bool(item["needs_owner_attention"]),
+            "blocked_reason": item["blocked_reason"],
+            "auto_unblocked": list(item["auto_unblocked"]),
+            "visible_summary": item["visible_summary"],
+            "completion_seq": item["completion_seq"],
+            "state_change_seq": item["state_change_seq"],
+        })
+
+    any_missing = any(t["status"] == "missing" for t in target_reports)
+    any_owner_attention = any(t["needs_owner_attention"] for t in target_reports)
+    settled = (not any_missing) and all(
+        t["status"] in {"idle", "done"} or (t["status"] in {"blocked", "needs_input"} and t["needs_owner_attention"])
+        for t in target_reports
+    )
+    overall_ok = settled and not any_missing
+    any_auto_unblock = any(t["auto_unblock_enabled"] for t in target_reports)
+    summary_lines = [
+        f"### M2 Watch Summary · `{_text(plan.get('plan_id'), 'm2p-unknown')}`",
+        f"- **All Settled**: `{settled}` · **Needs Owner Attention**: `{any_owner_attention}` · **Auto Unblock Enabled**: `{any_auto_unblock}` · **Polls**: `{polls}`",
+    ]
+    for t in target_reports:
+        unblocked_kinds = ",".join(u["kind"] for u in t["auto_unblocked"]) or "none"
+        attn = f" · **NEEDS OWNER ({t['blocked_reason']})**" if t["needs_owner_attention"] else ""
+        summary_lines.append(
+            f"- Wave {t['wave_order']} `{t['topic_id']}` (`{t['target_repo']}` → `{t['target']}`): "
+            f"status=`{t['status']}` · auto_unblocked=`{unblocked_kinds}`{attn}"
+        )
+        if t["visible_summary"]:
+            first_line = t["visible_summary"].splitlines()[-1].strip()
+            summary_lines.append(f"  - Latest: `{first_line[:160]}`")
+    return {
+        "ok": overall_ok,
+        "plan_id": _text(plan.get("plan_id")),
+        "polls": polls,
+        "auto_unblock_enabled": any_auto_unblock,
+        "passive_only": not any_auto_unblock,
+        "all_settled": settled,
+        "needs_owner_attention": any_owner_attention,
+        "targets": target_reports,
+        "summary_markdown": "\n".join(summary_lines),
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1296,9 +2537,17 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true", help="build and print a dispatch preview")
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
+    mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     parser.add_argument("--message")
     parser.add_argument("--message-file")
     parser.add_argument("--plan-file")
+    parser.add_argument("--apply-receipt-file", help="optional apply receipt JSON file for --watch")
+    parser.add_argument("--preview-md-file", help="optional markdown file path for --plan preview")
+    parser.add_argument("--no-open-preview", action="store_true", help="do not invoke orca file open --focus during --plan")
+    parser.add_argument("--orca-bin", help="optional path to orca binary")
+    parser.add_argument("--interval", type=float, default=15.0, help="polling interval in seconds for --watch")
+    parser.add_argument("--max-wait", type=float, default=2400.0, help="max wait in seconds for --watch")
+    parser.add_argument("--max-polls", type=int, default=None, help="optional max poll iterations for --watch")
     parser.add_argument("--sessions-json", help="combined discovery fixture")
     parser.add_argument("--herdr-json", help="combined Herdr discovery fixture")
     parser.add_argument("--herdr-pane-json", "--pane-json", dest="herdr_pane_json", help="Herdr pane list fixture")
@@ -1355,17 +2604,41 @@ def main(argv: list[str] | None = None) -> int:
                 magpie_model=args.magpie_model,
                 mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None,
                 transport=args.transport,
+                preview_md_file=args.preview_md_file,
+                write_preview_md=True,
+                open_preview=not args.no_open_preview,
+                orca_bin=args.orca_bin,
             )
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url
             output: Any = plan if args.json else preview_text(plan)
-        else:
+        elif args.apply:
             if not args.plan_file:
                 raise RouterError("--apply requires --plan-file")
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, transport=args.transport)
+            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, transport=args.transport)
+        else:
+            if not args.plan_file:
+                raise RouterError("--watch requires --plan-file")
+            plan = _json_value(args.plan_file)
+            if not isinstance(plan, dict):
+                raise RouterError("plan file must contain a JSON object")
+            apply_receipt = _json_value(args.apply_receipt_file) if args.apply_receipt_file else None
+            if apply_receipt is not None and not isinstance(apply_receipt, dict):
+                raise RouterError("apply receipt file must contain a JSON object")
+            watch_result = watch_dispatched_m2(
+                plan,
+                apply_receipt=apply_receipt,
+                interval=args.interval,
+                max_wait=args.max_wait,
+                max_polls=args.max_polls,
+                herdr_bin=args.herdr_bin,
+                dsh_state_url=args.dsh_state_url,
+                dsh_token=args.dsh_token,
+            )
+            output = watch_result if args.json else watch_result["summary_markdown"]
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)
         return 0
     except (OSError, ValueError, RouterError, json.JSONDecodeError) as error:

@@ -1,0 +1,517 @@
+{
+  "_CANONICAL_FIXTURE_DOC": {
+    "schema_version": "personal-topic-ledger/v1",
+    "policy": {
+      "max_new_per_day": 1,
+      "max_pending_proposals": 3,
+      "cooldown_days_on_dismiss": 30,
+      "snooze_days_default": 7,
+      "timezone": "Asia/Shanghai",
+      "scope": "personal",
+      "actionable_domain": "个人成长与思考",
+      "require_no_materialize_before_approval": true,
+      "forbid_auto_design_studio_sync": true,
+      "forbid_auto_blog_publish_on_star": true
+    },
+    "vault_coverage_inventory": [
+      {
+        "path": "knowledge-vault/concepts/appkit-uikit-27-modernization.md",
+        "folder": "concepts",
+        "title": "macOS 27 AppKit 与 iOS 27 UIKit 现代化：自由缩放窗口、同心圆角与手势革命",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/concepts/liquid-glass-optics-and-swiftui-26-27.md",
+        "folder": "concepts",
+        "title": "Liquid Glass 光学第一性原理与 SwiftUI 26→27 实战破案",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/concepts/swiftui-27-scrolling-and-drag-drop-motion.md",
+        "folder": "concepts",
+        "title": "SwiftUI 27 高性能滚动与多元素拖拽：LazyStack 帧预取与纸牌级重排",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/concepts/swiftui-27-shader-and-motion-pipeline.md",
+        "folder": "concepts",
+        "title": "SwiftUI 27 高级图形与动效管线：Metal Shader 扭曲、时间流与图钉对齐",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/concepts/wifi-invisible-light.md",
+        "folder": "concepts",
+        "title": "如果能看见 WiFi：看不见的光与室内信号破案",
+        "derived_from": [
+          "knowledge-vault/raw/wifi-video-script-breakdown.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/concepts/wwdc27-liquid-glass-and-motion-map.md",
+        "folder": "concepts",
+        "title": "WWDC25/26 (OS 26 → OS 27) Liquid Glass 与动效 8 节课全景导读地图",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/craft/science-video-invisible-to-visible.md",
+        "folder": "craft",
+        "title": "科普视频拆解：把不可见变成可见的痛点叙事法",
+        "derived_from": [
+          "knowledge-vault/raw/wifi-video-script-breakdown.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/craft/wwdc-pipeline-and-optical-metaphor-craft.md",
+        "folder": "craft",
+        "title": "WWDC 视觉化与架构讲法拆解：水管数据流、图钉几何与贴纸叙事法",
+        "derived_from": [
+          "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"
+        ],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/thoughts/study-switch-long-press-ac.md",
+        "folder": "thoughts",
+        "title": "为什么我给书房按键加了「长按开空调」",
+        "derived_from": [],
+        "derived_cards": []
+      },
+      {
+        "path": "knowledge-vault/raw/wifi-video-script-breakdown.md",
+        "folder": "raw",
+        "title": "「如果能看见 WiFi」视频脚本流程与制作技巧总结",
+        "derived_from": [],
+        "derived_cards": [
+          "knowledge-vault/concepts/wifi-invisible-light.md",
+          "knowledge-vault/craft/science-video-invisible-to-visible.md"
+        ]
+      },
+      {
+        "path": "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md",
+        "folder": "raw",
+        "title": "WWDC25/26 Liquid Glass 与 OS 27 动效 8 节官方课程 Transcript 与关键代码汇编",
+        "derived_from": [],
+        "derived_cards": [
+          "knowledge-vault/concepts/appkit-uikit-27-modernization.md",
+          "knowledge-vault/concepts/liquid-glass-optics-and-swiftui-26-27.md",
+          "knowledge-vault/concepts/swiftui-27-scrolling-and-drag-drop-motion.md",
+          "knowledge-vault/concepts/swiftui-27-shader-and-motion-pipeline.md",
+          "knowledge-vault/concepts/wwdc27-liquid-glass-and-motion-map.md",
+          "knowledge-vault/craft/wwdc-pipeline-and-optical-metaphor-craft.md"
+        ]
+      }
+    ]
+  },
+  "CANONICAL_COLLECTED_TOOLS_RECONCILIATION": {
+    "hallmark": {
+      "source_id": "hallmark",
+      "source_uri": "https://github.com/Nutlope/hallmark",
+      "topic_key": "hallmark-anti-slop-anatomy",
+      "aliases": [
+        "hallmark",
+        "hallmark-anti-slop-anatomy",
+        "hallmark-core-patterns"
+      ],
+      "coverage_refs": [
+        "collected-tools/hallmark.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "title": "Hallmark：反 AI 模板感解剖设计与多视口几何门禁",
+      "question": "Hallmark 如何通过 50 选 3 主题抽选、访问者目的（Job）解剖设计与真实浏览器 8 视口几何门禁拦截 AI 模板感？",
+      "why_now": "collected-tools/hallmark.md & repos/hallmark",
+      "category": "工程与设计",
+      "heuristic_direct": 0.88,
+      "heuristic_tier": 2.6
+    },
+    "apple-design-skill": {
+      "source_id": "apple-design-skill",
+      "source_uri": "https://github.com/dickwu/apple-design-skill",
+      "topic_key": "apple-design-skill-hig-liquid-glass",
+      "aliases": [
+        "apple-design-skill",
+        "apple-design-skill-core-patterns",
+        "apple-design-skill-hig-liquid-glass"
+      ],
+      "coverage_refs": [
+        "concepts/wwdc27-liquid-glass-and-motion-map.md",
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md",
+        "concepts/appkit-uikit-27-modernization.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "rank": 0,
+      "title": "Apple Design Skill 核心架构模式与实战拆解",
+      "question": "Apple Design Skill 如何对齐 HIG 与 Liquid Glass 现代化规范？",
+      "why_now": "repos/apple-design-skill（已被 WWDC26/27 Liquid Glass 与 AppKit/UIKit 概念卡覆盖）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.8,
+      "heuristic_tier": 2.3
+    },
+    "awesome-ios-design-md": {
+      "source_id": "awesome-ios-design-md",
+      "source_uri": "https://github.com/Meliwat/awesome-ios-design-md",
+      "topic_key": "awesome-ios-design-md-tokens",
+      "aliases": [
+        "awesome-ios-design-md",
+        "awesome-ios-design-md-core-patterns",
+        "awesome-ios-design-md-tokens"
+      ],
+      "coverage_refs": [
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "rank": 0,
+      "title": "awesome-ios-design-md 核心架构模式与实战拆解",
+      "question": "Awesome iOS DESIGN.md 如何组织 200 款 iOS App 色板与排版令牌字典？",
+      "why_now": "repos/awesome-ios-design-md（作为按需检索字典使用，无独立未探索原理题）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.78,
+      "heuristic_tier": 2.2
+    },
+    "awesome-web-design-md": {
+      "source_id": "awesome-web-design-md",
+      "source_uri": "https://github.com/VoltAgent/awesome-design-md",
+      "topic_key": "awesome-web-design-md-tokens",
+      "aliases": [
+        "awesome-web-design-md",
+        "awesome-web-design-md-core-patterns",
+        "awesome-web-design-md-tokens"
+      ],
+      "coverage_refs": [
+        "collected-tools/hallmark.md",
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "rank": 0,
+      "title": "awesome-web-design-md 核心架构模式与实战拆解",
+      "question": "Awesome Web DESIGN.md 如何组织 Web 站点样式令牌字典？",
+      "why_now": "repos/awesome-web-design-md（作为按需检索字典使用，无独立未探索原理题）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.78,
+      "heuristic_tier": 2.2
+    },
+    "shipswift": {
+      "source_id": "shipswift",
+      "source_uri": "https://github.com/signerlabs/ShipSwift",
+      "topic_key": "shipswift-animation-metal-components",
+      "aliases": [
+        "shipswift",
+        "shipswift-core-patterns",
+        "shipswift-animation-metal-components"
+      ],
+      "coverage_refs": [
+        "concepts/swiftui-27-shader-and-motion-pipeline.md",
+        "concepts/swiftui-27-scrolling-and-drag-drop-motion.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "rank": 0,
+      "title": "shipswift 核心架构模式与实战拆解",
+      "question": "ShipSwift 的 SWAnimation/SWMetal/SWChart 组件管线如何工作？",
+      "why_now": "repos/shipswift（动效与 Shader 管线已被 WWDC26/27 概念卡覆盖）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.8,
+      "heuristic_tier": 2.3
+    },
+    "twostraws-swiftui-skill": {
+      "source_id": "twostraws-swiftui-skill",
+      "source_uri": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+      "topic_key": "twostraws-swiftui-pro-patterns",
+      "aliases": [
+        "twostraws-swiftui-skill",
+        "twostraws-swiftui-skill-core-patterns",
+        "twostraws-swiftui-pro-patterns"
+      ],
+      "coverage_refs": [
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md",
+        "concepts/swiftui-27-scrolling-and-drag-drop-motion.md"
+      ],
+      "default_state": "covered_if_refs_present",
+      "rank": 0,
+      "title": "twostraws-swiftui-skill 核心架构模式与实战拆解",
+      "question": "Twostraws SwiftUI Agent Skill 如何规范现代 SwiftUI API 与可访问性？",
+      "why_now": "repos/twostraws-swiftui-skill（已被现有 SwiftUI 26/27 卡片覆盖）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.8,
+      "heuristic_tier": 2.3
+    },
+    "awesome-cjk-design-md": {
+      "source_id": "awesome-cjk-design-md",
+      "source_uri": "https://github.com/kzhrknt/awesome-design-md-jp",
+      "topic_key": "jp-mixed-script-line-breaking",
+      "aliases": [
+        "awesome-cjk-design-md",
+        "awesome-cjk-design-md-core-patterns",
+        "jp-mixed-script-line-breaking"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 1,
+      "title": "日文/CJK 与拉丁文混排中的字体回退与行首行末禁则（Kinsoku Shori）",
+      "question": "日文/CJK 与拉丁文混排中，字体回退与行首行末禁则（Kinsoku Shori）如何共同避免断行错误？",
+      "why_now": "repos/awesome-cjk-design-md/README.md:17-29（仅挂载路径，未拆解 CJK 混排禁则原理）",
+      "category": "工程与设计",
+      "heuristic_direct": 0.91,
+      "heuristic_tier": 2.7
+    },
+    "bama": {
+      "source_id": "bama",
+      "source_uri": "https://github.com/daveebbelaar/bama",
+      "topic_key": "bama-agent-cli-story-verification",
+      "aliases": [
+        "bama",
+        "bama-core-patterns",
+        "bama-agent-cli-story-verification"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 2,
+      "title": "BAMA：把 macOS 页面清单转为免 Xcode GUI、可由 Agent CLI 逐步验收的用户故事与架构分层",
+      "question": "BAMA 怎样把 macOS 页面清单转为免 Xcode GUI、可由 Agent CLI 逐步验收的用户故事与架构分层？",
+      "why_now": "repos/bama/README.md:42-65 & skills/code/{agent-cli,improve-architecture}/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.89,
+      "heuristic_tier": 2.6
+    },
+    "genjutsu": {
+      "source_id": "genjutsu",
+      "source_uri": "https://github.com/AThevon/genjutsu",
+      "topic_key": "genjutsu-three-tier-choreography-gate",
+      "aliases": [
+        "genjutsu",
+        "genjutsu-core-patterns",
+        "genjutsu-three-tier-choreography-gate"
+      ],
+      "coverage_refs": [
+        "concepts/swiftui-27-shader-and-motion-pipeline.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 3,
+      "title": "Genjutsu：通过 uchiha / kuchiyose / bunshin 区分单次交互、整套视觉与整站编排的审批粒度与评测门禁",
+      "question": "Genjutsu 如何通过 uchiha / kuchiyose / bunshin 区分单次交互、整套视觉与整站编排的审批粒度与评测门禁？",
+      "why_now": "repos/genjutsu/README.md:57-65 & PLATFORM-CONTRACT.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.88,
+      "heuristic_tier": 2.6
+    },
+    "avdlee-swiftui-skill": {
+      "source_id": "avdlee-swiftui-skill",
+      "source_uri": "https://github.com/AvdLee/SwiftUI-Agent-Skill",
+      "topic_key": "swiftui-26-api-migration-scan-manifest",
+      "aliases": [
+        "avdlee-swiftui-skill",
+        "avdlee-swiftui-skill-core-patterns",
+        "swiftui-26-api-migration-scan-manifest"
+      ],
+      "coverage_refs": [
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 4,
+      "title": "update-swiftui-apis：用确定性 scan-manifest 批量扫描并迁移废弃 SwiftUI API",
+      "question": "update-swiftui-apis 如何用确定性 scan-manifest 批量扫描并迁移废弃 SwiftUI API 而不引入状态回归？",
+      "why_now": "repos/avdlee-swiftui-skill/.agents/skills/update-swiftui-apis/references/scan-manifest.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.87,
+      "heuristic_tier": 2.5
+    },
+    "dimillian-skills": {
+      "source_id": "dimillian-skills",
+      "source_uri": "https://github.com/Dimillian/Skills",
+      "topic_key": "dimillian-spm-app-packaging-and-bug-swarm",
+      "aliases": [
+        "dimillian-skills",
+        "dimillian-skills-core-patterns",
+        "dimillian-spm-app-packaging-and-bug-swarm"
+      ],
+      "coverage_refs": [
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md",
+        "concepts/swiftui-27-scrolling-and-drag-drop-motion.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 5,
+      "title": "纯 SwiftPM 无 .xcodeproj 打包签名 macOS 桌面应用与 bug-hunt-swarm 多角色排障",
+      "question": "如何用纯 SwiftPM 无 .xcodeproj 打包签名 macOS MenuBar/桌面应用，并配合 bug-hunt-swarm 做多角色缺陷围剿？",
+      "why_now": "repos/dimillian-skills/{macos-spm-app-packaging,bug-hunt-swarm}/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.86,
+      "heuristic_tier": 2.5
+    },
+    "claude-code-apple-skills": {
+      "source_id": "claude-code-apple-skills",
+      "source_uri": "https://github.com/rshankras/claude-code-apple-skills",
+      "topic_key": "apple-game-feel-and-store-rejection-gates",
+      "aliases": [
+        "claude-code-apple-skills",
+        "claude-code-apple-skills-core-patterns",
+        "apple-game-feel-and-store-rejection-gates"
+      ],
+      "coverage_refs": [
+        "concepts/liquid-glass-optics-and-swiftui-26-27.md",
+        "concepts/swiftui-27-shader-and-motion-pipeline.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 6,
+      "title": "量化 Apple 原生应用的 game-feel 触觉/微反馈物理参数与 App Store 审核预拦截",
+      "question": "如何量化 Apple 原生应用的 game-feel 触觉/微反馈物理参数，并用 rejection-handler 提前拦截 App Store 审核被拒风险？",
+      "why_now": "repos/claude-code-apple-skills/skills/{design/game-feel,app-store/rejection-handler}/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.85,
+      "heuristic_tier": 2.5
+    },
+    "emilkowalski-skills": {
+      "source_id": "emilkowalski-skills",
+      "source_uri": "https://github.com/emilkowalski/skills",
+      "topic_key": "emil-spring-choreography-and-interruptibility",
+      "aliases": [
+        "emilkowalski-skills",
+        "emilkowalski-skills-core-patterns",
+        "emil-spring-choreography-and-interruptibility"
+      ],
+      "coverage_refs": [
+        "concepts/swiftui-27-shader-and-motion-pipeline.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 7,
+      "title": "Emil Kowalski 动效工程法则：主动移除动画（remove-animations）与可打断弹簧手势速度连续",
+      "question": "Emil Kowalski 的动效工程法则：何时该主动移除动画（remove-animations），以及可打断弹簧如何维持手势速度连续？",
+      "why_now": "repos/emilkowalski-skills/skills/{remove-animations,animation-performance,choreograph}/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.85,
+      "heuristic_tier": 2.4
+    },
+    "impeccable": {
+      "source_id": "impeccable",
+      "source_uri": "https://github.com/pbakaus/impeccable",
+      "topic_key": "impeccable-mode-operate-vs-persuade-critique",
+      "aliases": [
+        "impeccable",
+        "impeccable-core-patterns",
+        "impeccable-mode-operate-vs-persuade-critique"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 8,
+      "title": "Impeccable：用正交审查标尺区分高密度操作台（mode-operate）与叙事说服页（mode-persuade）",
+      "question": "Impeccable 如何用正交审查标尺区分高密度操作台（mode-operate）与叙事说服页（mode-persuade）的排版与视觉克制边界？",
+      "why_now": "repos/impeccable/.agents/skills/impeccable/reference/{mode-operate,mode-persuade,critique}.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.84,
+      "heuristic_tier": 2.4
+    },
+    "taste-skill": {
+      "source_id": "taste-skill",
+      "source_uri": "https://github.com/Leonxlnx/taste-skill",
+      "topic_key": "taste-skill-stop-hook-and-bento-anti-slop",
+      "aliases": [
+        "taste-skill",
+        "taste-skill-core-patterns",
+        "taste-skill-stop-hook-and-bento-anti-slop"
+      ],
+      "coverage_refs": [
+        "collected-tools/hallmark.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 9,
+      "title": "Taste Skill：通过 Stop-hook 自审回路与 Bento 卡片密度预算拦截前端 AI 模板感",
+      "question": "Taste Skill 如何通过 Stop-hook 自审回路与 Bento 卡片密度预算拦截前端 AI 模板感？",
+      "why_now": "repos/taste-skill/skills/taste-skill/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.83,
+      "heuristic_tier": 2.4
+    },
+    "ui-ux-pro-max-skill": {
+      "source_id": "ui-ux-pro-max-skill",
+      "source_uri": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+      "topic_key": "uupm-csv-faceted-design-retrieval",
+      "aliases": [
+        "ui-ux-pro-max-skill",
+        "ui-ux-pro-max-skill-core-patterns",
+        "uupm-csv-faceted-design-retrieval"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 10,
+      "title": "UI UX Pro Max：用轻量 CSV 分面索引与 BM25 脚本实现跨技术栈设计检索",
+      "question": "UI UX Pro Max 如何用轻量 CSV 分面索引与 BM25 脚本实现跨技术栈色板、字体与图表类型的确定性检索？",
+      "why_now": "repos/ui-ux-pro-max-skill/src/ui-ux-pro-max/",
+      "category": "工程与设计",
+      "heuristic_direct": 0.82,
+      "heuristic_tier": 2.3
+    },
+    "vercel-agent-skills": {
+      "source_id": "vercel-agent-skills",
+      "source_uri": "https://github.com/vercel-labs/agent-skills",
+      "topic_key": "vercel-composition-patterns-and-view-transitions",
+      "aliases": [
+        "vercel-agent-skills",
+        "vercel-agent-skills-core-patterns",
+        "vercel-composition-patterns-and-view-transitions"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 11,
+      "title": "Vercel Agent Skills：复合组件状态隔离（Composition Patterns）与声明式 React View Transitions",
+      "question": "Vercel Agent Skills 中的复合组件状态隔离（Composition Patterns）与声明式 React View Transitions 如何消除布尔 Props 爆炸？",
+      "why_now": "repos/vercel-agent-skills/skills/{composition-patterns,react-view-transitions}/SKILL.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.82,
+      "heuristic_tier": 2.3
+    },
+    "vibecoded-design-tells": {
+      "source_id": "vibecoded-design-tells",
+      "source_uri": "https://github.com/JCarterJohnson/vibecoded-design-tells",
+      "topic_key": "vibecoded-reddit-empirical-slop-tells",
+      "aliases": [
+        "vibecoded-design-tells",
+        "vibecoded-design-tells-core-patterns",
+        "vibecoded-reddit-empirical-slop-tells"
+      ],
+      "coverage_refs": [
+        "collected-tools/hallmark.md"
+      ],
+      "default_state": "queued",
+      "rank_order": 12,
+      "title": "Vibe-Coded Design Tells：基于 Reddit 真实负评统计的 UI、文案与代码三大类 AI 破绽反制清单",
+      "question": "基于 Reddit 真实负评样本统计的 UI、文案与代码三大类“Vibe-Coded AI 破绽”有哪些高频特征与反制清单？",
+      "why_now": "repos/vibecoded-design-tells/skill/references/{tells,choosing-a-look}.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.81,
+      "heuristic_tier": 2.3
+    },
+    "expo-skills": {
+      "source_id": "expo-skills",
+      "source_uri": "https://github.com/expo/skills",
+      "topic_key": "expo-visual-grader-and-web-to-native-false-friends",
+      "aliases": [
+        "expo-skills",
+        "expo-skills-core-patterns",
+        "expo-visual-grader-and-web-to-native-false-friends"
+      ],
+      "coverage_refs": [],
+      "default_state": "queued",
+      "rank_order": 13,
+      "title": "Expo Skills：visual-grader 评分量表与 web-to-native/false-friends 原生布局防呆",
+      "question": "expo-skill-eval 的 visual-grader 评分量表与 web-to-native/false-friends 如何系统性拦截把 Web CSS 习惯生搬到原生端的布局缺陷？",
+      "why_now": "repos/expo-skills/.claude/skills/expo-skill-eval/agents/visual-grader.md",
+      "category": "工程与设计",
+      "heuristic_direct": 0.8,
+      "heuristic_tier": 2.3
+    }
+  }
+}

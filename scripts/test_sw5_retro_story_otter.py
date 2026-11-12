@@ -458,17 +458,19 @@ class Sw5Tests(unittest.TestCase):
             self.assertEqual(top_prop["ref"], "skill-roi://my-designer")
             self.assertIn("my-designer", top_prop["title"])
 
-            rc = ENGINE.main([
-                "skill-roi",
-                "--warehouse-db", str(wh),
-                "--copilot-db", str(cp),
-                "--skills-root", str(skills_root),
-                "--dev-root", str(dev_root),
-                "--magpie-usage", str(root / "missing_usage.jsonl"),
-                "--dsh-sessions", str(root / "missing_dsh"),
-                "--auto-propose",
-                "--proposals-path", str(proposals),
-            ])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = ENGINE.main([
+                    "skill-roi",
+                    "--warehouse-db", str(wh),
+                    "--copilot-db", str(cp),
+                    "--skills-root", str(skills_root),
+                    "--dev-root", str(dev_root),
+                    "--magpie-usage", str(root / "missing_usage.jsonl"),
+                    "--dsh-sessions", str(root / "missing_dsh"),
+                    "--auto-propose",
+                    "--proposals-path", str(proposals),
+                ])
             self.assertEqual(rc, 0)
             written = [json.loads(ln) for ln in proposals.read_text(encoding="utf-8").splitlines() if ln.strip()]
             self.assertEqual(written[0]["ref"], "skill-roi://my-designer")
@@ -809,6 +811,91 @@ class Round2MetricTests(unittest.TestCase):
         proposals.write_text("{corrupt}\n")
         with self.assertRaises(ValueError):
             ENGINE.route_retro_candidate({"id": "metric", "title": "Metric"}, proposals_path=proposals)
+
+
+class UpstreamIntegrationTests(unittest.TestCase):
+    setUp = Round2LearningTests.setUp
+    add_topic = Round2LearningTests.add_topic
+    discover = Round2LearningTests.discover
+
+    def test_event_and_discovery_share_lock_identity_and_immutable_day(self):
+        self.add_topic("second-question")
+        first = self.discover(now_utc=datetime(2026, 11, 11, 8, tzinfo=timezone.utc))["proposals_written"][0]
+        original = DIGEST_VAULT._append_valid_proposal
+        def append(path, record):
+            with path.with_name(path.name + ".lock").open("a+") as other:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return original(path, record)
+        with mock.patch.object(DIGEST_VAULT, "_append_valid_proposal", side_effect=append), \
+             mock.patch.object(DIGEST_VAULT, "publish_blog", side_effect=AssertionError("publication forbidden")):
+            approved = DIGEST_VAULT.handle_learning_event(action="Approve", topic_key=first["topic_key"],
+                event_id="approve", proposals_path=self.proposals, vault_dir=self.vault,
+                now_utc=datetime(2026, 11, 12, 8, tzinfo=timezone.utc))
+        self.assertEqual(first["id"], approved["proposal_written"]["id"])
+        self.assertEqual(first["created_at"], approved["proposal_written"]["created_at"])
+        self.assertEqual("2026-11-11", approved["proposal_written"]["proposed_on"])
+        next_day = self.discover(now_utc=datetime(2026, 11, 12, 9, tzinfo=timezone.utc), materialize_before_approval=True)
+        self.assertEqual("second-question", next_day["topics"][0]["topic_key"])
+        self.assertFalse((self.vault / "concepts").exists())
+        with self.proposals.with_name(self.proposals.name + ".lock").open("a+") as other:
+            fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_alias_decisions_replay_terminal_revision_and_corrupt_state(self):
+        self.topics[0]["aliases"] = ["old-question"]
+        self.add_topic("second-question")
+        self.discover()
+        kwargs = {"proposals_path": self.proposals, "vault_dir": self.vault, "topic_key": "old-question"}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: DIGEST_VAULT.handle_learning_event(action="Approve", event_id="same", **kwargs), range(4)))
+        self.assertEqual(1, sum(not result.get("deduplicated") for result in results))
+        task_keys = {result.get("exploration_task_key") for result in results if result.get("exploration_task_key")}
+        self.assertEqual(1, len(task_keys))
+        approved_rev = max(result["revision"] for result in results)
+        done = DIGEST_VAULT.handle_learning_event(action="Done", event_id="done", **kwargs)
+        stale = DIGEST_VAULT.handle_learning_event(action="Approve", event_id="late", revision=approved_rev, **kwargs)
+        self.assertFalse(stale["ok"])
+        self.assertEqual("learned", stale["learning_state"])
+        self.assertGreater(done["revision"], approved_rev)
+        (self.root / "learning-topics-state.json").write_text("{corrupt}")
+        self.assertEqual("health_error", self.discover()["status"])
+
+    def test_auto_propose_preserves_metadata_and_dedups_closed_legacy_aliases(self):
+        candidate = {"id": "reduce-m1-ping-pong", "ref": "retro://agent-efficiency-m1",
+            "legacy_ids": ["improve-m1-review-pingpong"], "legacy_refs": ["proposal://improve-m1-review-pingpong"],
+            "title": "Review repair", "window_cst": "7d", "window_start": "2026-11-06T00:00:00+08:00",
+            "window_end": "2026-11-13T00:00:00+08:00", "source_as_of": "2026-11-11T00:00:00+08:00",
+            "sample_size": 2, "coverage_status": "healthy", "estimated": True}
+        legacy = {**candidate, "id": candidate["legacy_ids"][0], "ref": candidate["legacy_refs"][0],
+            "ts": "2026-11-11T00:00:00Z", "agent": "retro-loop", "status": "approved"}
+        self.proposals.write_text(json.dumps(legacy) + "\n")
+        self.assertEqual([], ENGINE._queue_recommendations([candidate], self.proposals))
+        fresh = {**candidate, "id": "new-metric", "ref": "retro://new-metric", "legacy_ids": [], "legacy_refs": []}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            emitted = list(pool.map(lambda _: ENGINE._queue_recommendations([fresh], self.proposals), range(4)))
+        self.assertEqual(1, sum(len(rows) for rows in emitted))
+        record = json.loads(self.proposals.read_text().splitlines()[-1])
+        for field in ("window_cst", "window_start", "window_end", "source_as_of", "sample_size", "coverage_status", "estimated"):
+            self.assertEqual(fresh[field], record[field])
+
+    def test_ci_only_and_blocker_only_breaches_keep_unknown_token_rates(self):
+        wh = self.root / "warehouse.db"
+        with contextlib.closing(sqlite3.connect(wh)) as conn:
+            conn.execute("CREATE TABLE fact_ci_job_run (failure_category, cst_day)")
+            conn.execute("INSERT INTO fact_ci_job_run VALUES ('build_or_test_failure', '2026-11-11')")
+            conn.execute("CREATE TABLE fact_gtt_event (evt_type, cst_day)")
+            conn.executemany("INSERT INTO fact_gtt_event VALUES ('TASK_BLOCKED', '2026-11-11')", [()] * 4)
+            conn.commit()
+        with mock.patch.object(ENGINE, "datetime", FrozenDateTime):
+            report = ENGINE.compute_agent_efficiency(wh, self.root / "missing-usage", self.root / "missing-copilot",
+                auto_propose=True, proposals_path=self.proposals)
+        self.assertEqual(2, report["proposals_written"])
+        m3, m5 = (report["metrics"][key] for key in ("M3_flow_and_blockers", "M5_steering_vs_coding_split"))
+        self.assertIsNone(m3["retry_rate"])
+        self.assertIsNone(m5["steering_token_share"])
+        self.assertEqual(0, m5["first_pass_pr_green_rate"])
+        self.assertEqual(1, m5["first_pass_pr_green_freshness"]["sample_size"])
+        self.assertTrue(all(row["sample_size"] > 0 for row in report["recommendations"]))
 
 
 if __name__ == "__main__":

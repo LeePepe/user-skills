@@ -75,14 +75,14 @@ user-invocable: true
 - `科学健康与生活`（生理机制、家电原理、日常理化现象等）
 - `叙事与表达技法`（科普脚本结构、视觉化拆解、隐喻教具库等，对应 `craft/`）
 
-### 沉淀工作流（Ingest & Dedupe Steps）
+### 沉淀与每日候选审批工作流（Candidate-Only -> Owner Gate -> Exploration）
 
-1. **先读元数据去重**：权威 `topic-ledger.json` 的问题、别名、来源和学习状态优先于 note/README 泛词；`design-studio` 接入不等于已学。核对 `concepts/craft/thoughts/raw` 全文 frontmatter 与 `derived_*`，相邻覆盖不吞掉同源不同问题。`discover-topics --propose-aidash --no-materialize` 只生成 `learning-topic://<topic-key>` 候选，不联网/LLM、不写卡或 index；状态缺失/损坏则报 health_error。共享 `proposals.jsonl.lock` 串行化读取/日槽/追加：按不可变 `proposed_on/created_at` 限 CST 每日新增 1 条、pending 3 条，状态更新不占新日槽。
+1. **先读元数据去重**：权威 `topic-ledger.json` 的问题、别名、来源和学习状态优先于 note/README 泛词；`design-studio` 接入不等于已学。核对 `concepts/craft/thoughts/raw` 全文 frontmatter 与 `derived_*`，相邻覆盖不吞掉同源不同问题。`discover-topics --propose-aidash --no-materialize` 只生成 `learning-topic://<topic-key>` 候选，不联网/LLM、不写卡或 index；状态缺失/损坏则报 health_error；`personal-topic-ledger/v1` 的 policy/sources/覆盖清单与未知字段保留，19 来源快照只在测试 fixture，不是生产兜底。共享 `proposals.jsonl.lock` 串行化读取/日槽/追加：按不可变 `proposed_on/created_at` 限 CST 每日新增 1 条、pending 3 条，状态更新不占新日槽。
 2. **按层落盘文件与 0-Token 归档**（文件名采用 kebab-case，骨架见 [templates.md](references/templates.md)，完整 L2 抽屉见 [card-templates.json](references/card-templates.json)）：
    - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`；
    - **好内容/脚本拆解（通道 B）**：原始素材存 `raw/<source-slug>.md`，概念卡存 `concepts/<concept-slug>.md`，制作技巧存 `craft/<craft-slug>.md`；
    - **一键归档与索引同步**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py archive --slug <slug> --category <cat> --title "..." --file <md>` 自动归档并幂等更新 `index.md`。
-3. **审批与发布分离**：`learning-topic://<topic-key>` 的 Approve 只授权后台探索；探索完成后仍需显式归档/发布授权。Star 不会自动写卡、发 Blog 或同步 `design-studio`。已存在且明确授权的 `knowledge://<slug>` learned card 仍可按既有发布流程调用 `publish-blog`。
+3. **审批与发布分离**：`handle-learning-event --action <Approve|快速学习|深度调研|Done|Dismiss|Snooze|Star|sync_triage> --topic-key <key> --event-id <id>` 在共享锁内幂等记录 Owner 决定；`sync_triage` 仅 transferred，不是批准；Done 为 owner_reported，Dismiss 不自动复活，Snooze 延后 7 天。`learning-topic://<topic-key>` 的 Approve 只授权后台探索；探索完成后仍需显式归档/发布授权。Star 不会自动写卡、发 Blog 或同步 `design-studio`。已存在且明确授权的 `knowledge://<slug>` learned card 仍可按既有发布流程调用 `publish-blog`。
 4. **工程与设计晋升需独立授权（Entry A1 -> Tier 1..3）**：归档不授权自动同步 `design-studio` 或 `my-designer`。仅在 Owner 明确批准设计素材晋升后读取 [`../my-designer/references/design-flow-architecture.md`](../my-designer/references/design-flow-architecture.md) 的「Change Impact Matrix」，按双入口防爆架构提升可复用原语、灵感卡与规则，再运行 `python3 skills/my-designer/scripts/verify_design_cases.py flow-map`。
 5. **简短回报**：向用户展示讲解内容，并在末尾用 1–2 行告知已沉淀的卡片路径（及若触发工程与设计钩子时同步更新的 Tier 1–3 资产 ID）。
 
@@ -91,5 +91,5 @@ user-invocable: true
 ## References
 
 - [templates.md](references/templates.md) & [card-templates.json](references/card-templates.json) — `concepts/`、`craft/`、`thoughts/`、`raw/` 与 `index.md` 的标准骨架及 L2 模板抽屉。
-- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics`（确定性元数据筛选与 `AIDash` 候选生成）与独立授权的 `publish-blog`（`DC-006..008` 校验）CLI。
+- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics --no-materialize`（候选对账与配额门禁）、`handle-learning-event`（Owner 审批状态机）与 `publish-blog`（`DC-006..008` 校验）CLI。
 - [../my-designer/references/design-flow-architecture.md](../my-designer/references/design-flow-architecture.md) — `Entry A (Ingest) ⇄ Tier 0..3 ⇄ Entry B (Design)` 双入口知识流转与 4 道防信息爆炸物理阀门真源。
