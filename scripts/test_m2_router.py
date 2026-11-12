@@ -640,6 +640,30 @@ class M2RouterTests(unittest.TestCase):
         self.assertLessEqual(len(name_a), 32)
         self.assertLessEqual(len(name_b), 32)
 
+        unreg_conflict = self.router.build_plan(
+            "QuantLab 交易",
+            [{"session_id": "ql-risk", "topic_id": "new-topic-quantlab-risk", "target_repo": "QuantLab", "title": "QuantLab Risk", "status": "idle", "cwd": "/repo/QuantLab", "source": "herdr", "herdr_target": "ql-risk", "pane_id": "w8:p2", "workspace_id": "w8"}],
+            targets_json=[{"topic_id": "new-topic-quantlab-trading", "target_repo": "QuantLab", "sub_prompt": "执行交易策略", "wave_order": 1}],
+        )
+        self.assertEqual(unreg_conflict["targets"][0]["m2_status"], "NEW_M2")
+        self.assertEqual(unreg_conflict["stale_m2_candidates"], [])
+
+        plan_risk = self.router.build_plan(
+            "QuantLab 风控",
+            [],
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "处理风控", "wave_order": 1}]},
+        )
+        plan_trading = self.router.build_plan(
+            "QuantLab 交易",
+            [],
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "执行交易策略", "wave_order": 1}]},
+        )
+        self.assertNotEqual(plan_risk["targets"][0]["topic_id"], plan_trading["targets"][0]["topic_id"])
+        self.assertNotEqual(
+            self.router._new_herdr_agent_name(plan_risk["targets"][0]),
+            self.router._new_herdr_agent_name(plan_trading["targets"][0]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

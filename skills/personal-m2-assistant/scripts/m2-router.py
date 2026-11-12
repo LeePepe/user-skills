@@ -374,9 +374,22 @@ def _new_topic_id(target: dict[str, Any], message: str) -> str:
     explicit = _clean_target_name(target.get("topic_id"))
     if explicit and explicit not in {NEW_UNMAPPED_DOMAIN}:
         return explicit
-    seed = _clean_target_name(target.get("target_repo")) or _clean_target_name(message.split()[0] if message.split() else "domain")
+    repo_seed = _clean_target_name(target.get("target_repo"))
+    seed = repo_seed or _clean_target_name(message.split()[0] if message.split() else "domain")
     slug = re.sub(r"[^a-z0-9]+", "-", seed.casefold()).strip("-") or "unmapped-domain"
-    return f"new-topic-{slug[:40]}"
+    prop = target.get("proposed_domain") if isinstance(target.get("proposed_domain"), dict) else {}
+    hint_text = " ".join(_text(x) for x in (prop.get("title"), target.get("title"), target.get("sub_prompt"), message) if _text(x)).strip()
+    if repo_seed and hint_text and hint_text.casefold() != repo_seed.casefold():
+        en_words = [
+            w for w in re.findall(r"[a-z0-9]{2,}", hint_text.casefold())
+            if w != slug and w not in {"m2", "session", "new", "create", "build", "fix", "update", "inspect"}
+        ]
+        if en_words:
+            suffix = "-".join(en_words[:2])[:16].rstrip("-")
+        else:
+            suffix = hashlib.sha256(hint_text.encode("utf-8")).hexdigest()[:6]
+        slug = f"{slug[:20].rstrip('-')}-{suffix}"
+    return f"new-topic-{slug[:40].rstrip('-')}"
 
 
 def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str, Any]) -> dict[str, Any]:
@@ -399,13 +412,15 @@ def _matching_topic_sessions(
 ) -> list[dict[str, Any]]:
     repo = _clean_target_name(target.get("target_repo"))
     candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
-    if not topic:
+    effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
+    if effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
         return candidates
-    topic_id = _text(topic.get("topic_id")).casefold()
-    compatible = [session for session in candidates if not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == topic_id]
-    exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == topic_id]
+    compatible = [session for session in candidates if not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == effective_topic_id]
+    exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == effective_topic_id]
     if exact:
         return exact
+    if not topic:
+        return compatible
     active_map = domain_map or load_domain_map()
     repo_topics = [
         item for item in active_map.get("topics", [])
@@ -442,7 +457,8 @@ def _target_session(
         match = next((session for session in candidates if session["session_id"] == session_id), None)
         if match:
             return match
-        if not topic:
+        effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
+        if not topic and effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
             repo = _clean_target_name(target.get("target_repo"))
             fallback = next(
                 (
