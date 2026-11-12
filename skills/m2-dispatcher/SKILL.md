@@ -37,6 +37,22 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 - **产品 UI/UX 设计与模型路由**：在本 Goal 内按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 走 `direct_quota_gated`（`~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 自动剥离 `--allowedTools` 改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 绑定 `Magpie (:3425)` `group/steering`。
 - **Parent ≥ Child Allowlist**：父 TL 传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 并合并 `extra_add_dirs`。Mac mini 上 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD` 以覆盖 `/Volumes/SSD/.../handoff/<goal>` 兄弟目录 realpath；handoff 父目录不在基线时自动补进 trust 与 `--add-dir`。
 
+## 1.5 Unified M2 Ingress（`m2-router.py`）
+
+跨 Repo 或跨会话输入应先走唯一入口脚本 [`scripts/m2-router.py`](scripts/m2-router.py)，不要直接把自然语言广播给多个 M2：
+
+```bash
+python3 skills/m2-dispatcher/scripts/m2-router.py --plan \
+  --message '把 repo-a 的结论同步给 repo-b' --json > plan.json
+# Owner 审阅 wave、sub_prompt、EXISTING_M2/NEW_M2 后：
+python3 skills/m2-dispatcher/scripts/m2-router.py --apply \
+  --plan-file plan.json --approve --json
+```
+
+`--plan` 只读取 `herdr agent list` 与 dsh Omni Hub 公共状态（可用 `--herdr-json`/`--dsh-state-json` 做离线夹具），调用 Jev I3 Classify 拆出 `target_repo`、`sub_prompt`、`wave_order`、`rag_context_hint`，并输出 Owner Gate 预览；不创建 session、不发送 prompt。`--apply` 没有 `--approve` 会 fail-closed，按 wave 顺序串行执行：已有 Herdr M2 用 `herdr agent prompt`，新目标经 `herdr-dispatch.sh` 侧向分屏/新 workspace；dsh 通过公开 Session Sink pinned delivery（必要时回退明确目标的 Omni Hub dispatch）。`stdout` transport 仅用于 dry-run/测试。顺序是软门禁，RAG/context 只作为显式 prompt hook，不伪造上游结果。
+
+计划 schema 与技术细节见 `~/Development/handoff/m2-unified-ingress/spec.md`；该入口对应 How-To 节点 I7（Unified M2 Ingress）。
+
 ## 2. 监控与解卡
 
 - **并发巡检与关联**：运行 `goal-supervisor.py scan`，按角色 TTL（Explorer/`pr_monitor` 10m、Designer/Reviewer 15m、Writer 30m、TL 40m）处理 `BLOCKED_AGENT`、`ZOMBIE_LEASE` 与 `ORPHAN_TL_WAIT`。Agent 通过 `-goal-tl-` 短名（`good-des-goal-tl-r1`）、台账 `TL:`／`from`／`to` 及 cwd 落在 Goal handoff 下绑定目录 `good-designer`（`good-des-*` 与 `gd-e1-*` 均计入 `BLOCKED_AGENT`）。用 `check-pins` 查 drift，`GOAL_DONE` 用 `telemetry --write` 写 `contract-telemetry.json`。子 Agent 等待拆成 30–60s slices（`herdr agent wait <name> --timeout 60000`）。Copilot allowlist 含 `/Applications/Xcode.app` 与 `/Volumes/SSD/Development`。
