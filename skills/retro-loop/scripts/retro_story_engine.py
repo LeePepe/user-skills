@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import fcntl
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -316,7 +317,7 @@ def _build_tool_context_burn_candidates(rows: list[dict[str, Any]]) -> list[dict
             "id": f"tool-burn-{dom_skill}-{slug_tool}",
             "ref": f"skill-roi://{dom_skill}",
             "title": (
-                f"[Context Burn] {t_name} ({dom_skill}) 产出 {bloated} 次 >10k tok 膨胀结果："
+                f"[Context Burn · estimated] {t_name} ({dom_skill}) 产出 {bloated} 次 >10k tok 膨胀结果："
                 "建议加 --head-limit / view_range 或脚本下沉过滤"
             ),
             "detail": (
@@ -326,6 +327,8 @@ def _build_tool_context_burn_candidates(rows: list[dict[str, Any]]) -> list[dict
                 "remediation=Add --head-limit, view_range, or sink filtering into deterministic script"
             ),
             "priority": "high",
+            **{key: row[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                         "sample_size", "coverage_status", "estimated", "estimation_method") if key in row},
         })
     return candidates
 
@@ -350,21 +353,6 @@ def discover_aidata_signals(
             "project_loop_a_proposals": project_loop_a_proposals,
         }
 
-    existing_ids: set[str] = set()
-    if prop_path and prop_path.is_file():
-        for line in prop_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-                if isinstance(rec, dict) and rec.get("id"):
-                    if str(rec.get("status", "pending")).lower() == "pending":
-                        existing_ids.add(str(rec["id"]))
-                    else:
-                        existing_ids.discard(str(rec["id"]))
-            except json.JSONDecodeError:
-                continue
-
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         for sql_file in sorted(q_dir.glob("*.sql")):
             query_name = f"retro/{sql_file.stem}"
@@ -382,21 +370,19 @@ def discover_aidata_signals(
                     findings.append({"query": query_name, "count": len(rows), "sample": rows[:3]})
                     if query_name == "retro/app_crash_and_perf":
                         for cand in _build_app_telemetry_candidates(rows):
-                            if auto_propose and prop_path is not None and cand["id"] not in existing_ids:
+                            if auto_propose and prop_path is not None:
                                 routed = route_retro_candidate(
-                                    cand, mode="observe", proposals_path=prop_path
+                                    cand, mode="observe", proposals_path=prop_path, deduplicate_pending=True
                                 )
-                                existing_ids.add(cand["id"])
                                 project_loop_a_proposals.append(routed["proposal"])
                             else:
                                 project_loop_a_proposals.append(cand)
                     elif query_name == "retro/tool_context_burn":
                         for cand in _build_tool_context_burn_candidates(rows):
-                            if auto_propose and prop_path is not None and cand["id"] not in existing_ids:
+                            if auto_propose and prop_path is not None:
                                 routed = route_retro_candidate(
-                                    cand, mode="observe", proposals_path=prop_path
+                                    cand, mode="observe", proposals_path=prop_path, deduplicate_pending=True
                                 )
-                                existing_ids.add(cand["id"])
                                 project_loop_a_proposals.append(routed["proposal"])
                             else:
                                 project_loop_a_proposals.append(cand)
@@ -566,6 +552,7 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
         if not r_path.is_dir():
             continue
         pins: dict[str, str] = {}
+        pin_sources: dict[str, Path] = {}
         shared_ci_file = r_path / ".shared-ci"
         if shared_ci_file.is_file():
             try:
@@ -573,6 +560,7 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
                 m = re.search(r"\b([0-9a-f]{7,40})\b", txt)
                 if m:
                     pins["shared-ci"] = m.group(1)
+                    pin_sources["shared-ci"] = shared_ci_file
             except OSError:
                 pass
         wf_dir = r_path / ".github" / "workflows"
@@ -585,6 +573,7 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
                 m = re.search(r"LeePepe/shared-ci/[^@\s]+@([0-9a-f]{7,40})", wtxt)
                 if m:
                     pins["shared-ci"] = m.group(1)
+                    pin_sources["shared-ci"] = wf
                     break
         for pr_rel in (
             r_path / f"{repo_name}.xcodeproj" / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved",
@@ -600,6 +589,7 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
                     rev = str((pin_entry.get("state") or {}).get("revision") or "")
                     if ident in {"shared-design-system", "shared-telemetry"} and rev:
                         pins[ident] = rev
+                        pin_sources[ident] = pr_rel
             except (OSError, json.JSONDecodeError):
                 continue
 
@@ -611,6 +601,7 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
             commits_behind, days_behind = _git_commits_behind(up_path, pinned, head_sha)
             is_outdated = not head_sha.startswith(pinned) and not pinned.startswith(head_sha) and commits_behind > 0
             drift_items.append({
+                **_snapshot_freshness([pin_sources[dep]], 1),
                 "dependency": dep,
                 "pinned_sha": pinned[:12],
                 "latest_sha": head_sha[:12],
@@ -619,17 +610,24 @@ def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
                 "status": "OUTDATED_PIN" if is_outdated else "UP_TO_DATE",
             })
         consumers.append({
+            **_snapshot_freshness([pin_sources[d["dependency"]] for d in drift_items], len(drift_items)),
             "repo": repo_name,
             "pins": pins,
             "drift": drift_items,
             "outdated_count": sum(1 for d in drift_items if d["status"] == "OUTDATED_PIN"),
         })
     total_outdated = sum(c["outdated_count"] for c in consumers)
+    stamps = [_observed_at(row["source_as_of"]) for row in consumers if row["source_as_of"]]
+    metadata = _freshness(stamps, bool(consumers))
+    metadata.update(window_cst="snapshot", window_start=min(stamps).isoformat() if stamps else None,
+                    window_end=max(stamps).isoformat() if stamps else None)
     return {
+        **metadata,
         "upstreams": {k: v[1][:12] for k, v in upstreams.items()},
         "consumers": consumers,
         "outdated_pin_count": total_outdated,
-        "all_up_to_date": total_outdated == 0,
+        "all_up_to_date": total_outdated == 0 if any(c["drift"] for c in consumers) else None,
+        "sample_size": sum(len(c["drift"]) for c in consumers),
     }
 
 
@@ -639,179 +637,97 @@ def _compute_s11_s12_context_and_tools(
     copilot_db: Path | None = None,
     dsh_sessions: Path | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compute S11 5-slice context composition & KV cache and S12 tool context burn (>10k alert)."""
-    mp = magpie_usage or DEFAULT_MAGPIE_USAGE
-    cp = copilot_db or DEFAULT_COPILOT_DB
-    dsh_dir = dsh_slices_dir = dsh_sessions or DEFAULT_DSH_SESSIONS
-
-    slice_tokens: dict[str, int] = {
-        "System & AGENTS.md 指令链": 0,
-        "Skills 目录与 SKILL.md": 0,
-        "Tools Schema 定义": 0,
-        "Tool Results 工具返回": 0,
-        "User/Assistant 对话与思考链": 0,
-    }
-    total_in = 0
-    total_cache_read = 0
-    tool_calls_map: dict[str, list[tuple[int, str]]] = {}
-
-    def _norm_tool(raw: str) -> str:
-        r = raw.strip().lower()
-        if r in {"bash", "execute_code", "terminal", "run_command"}:
-            return "bash"
-        if r in {"read", "view", "read_file"}:
-            return "read/view"
-        if r in {"grep", "search", "rg"}:
-            return "grep"
-        if r in {"edit", "apply_patch", "write", "create"}:
-            return "edit/write"
-        if "web" in r or "fetch" in r:
-            return "web_fetch"
-        if r.startswith(("mcp", "linear", "github")):
-            return "mcp"
-        return r or "other"
-
+    """Token allocation and per-tool burn are proxies, never measured savings."""
+    mp, cp = magpie_usage or DEFAULT_MAGPIE_USAGE, copilot_db or DEFAULT_COPILOT_DB
+    slice_tokens = dict.fromkeys(("System & AGENTS.md 指令链", "Skills 目录与 SKILL.md", "Tools Schema 定义",
+                                 "Tool Results 工具返回", "User/Assistant 对话与思考链"), 0)
+    total_in, total_cache_read = 0, 0
+    context_stamps, cache_stamps = [], []
+    tool_calls: dict[str, list[tuple[int, str, datetime]]] = {}
+    rows = []
     if warehouse_db.is_file():
-        try:
-            with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
-                tables = {
-                    r[0]
-                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                }
-                if "fact_turn" in tables:
-                    rows = conn.execute(
-                        """
-                        SELECT
-                            COALESCE(input_tokens, 0),
-                            COALESCE(output_tokens, 0),
-                            COALESCE(cache_read, 0),
-                            COALESCE(attribution_skill, ''),
-                            COALESCE(skill_names, ''),
-                            COALESCE(tool_calls, '')
-                        FROM fact_turn
-                        WHERE cst_day >= date('now', '-7 days')
-                        """
-                    ).fetchall()
-                    for in_t, out_t, cr_t, attr_sk, sk_names, tc_json in rows:
-                        in_i, out_i, cr_i = int(in_t or 0), int(out_t or 0), int(cr_t or 0)
-                        total_in += in_i
-                        total_cache_read += cr_i
-                        ctx = in_i + cr_i
-                        has_sk = bool(attr_sk or (sk_names and sk_names != "[]"))
-                        t_list: list[str] = []
-                        if tc_json:
-                            try:
-                                t_list = [str(x) for x in json.loads(tc_json) if x]
-                            except json.JSONDecodeError:
-                                t_list = []
-                        has_tl = bool(t_list)
-                        slice_tokens["System & AGENTS.md 指令链"] += int(
-                            ctx * (0.16 if (has_sk and has_tl) else 0.20 if has_tl else 0.28)
-                        )
-                        slice_tokens["Skills 目录与 SKILL.md"] += int(ctx * (0.18 if has_sk else 0.04))
-                        slice_tokens["Tools Schema 定义"] += int(ctx * (0.14 if has_tl else 0.18))
-                        slice_tokens["Tool Results 工具返回"] += int(ctx * (0.36 if has_tl else 0.10))
-                        slice_tokens["User/Assistant 对话与思考链"] += int(ctx * 0.16) + out_i
-
-                        dom_sk = str(attr_sk or "").strip()
-                        if not dom_sk and sk_names:
-                            try:
-                                parsed_sk = json.loads(sk_names)
-                                if parsed_sk and isinstance(parsed_sk[0], str):
-                                    dom_sk = parsed_sk[0].strip()
-                            except json.JSONDecodeError:
-                                pass
-                        dom_sk = "team-lead" if dom_sk in {"", "goal-target-task"} else dom_sk
-                        if t_list:
-                            per_call = int(round((ctx * 0.36) / max(1, len(t_list))))
-                            for raw_t in t_list:
-                                tool_calls_map.setdefault(_norm_tool(raw_t), []).append((per_call, dom_sk))
-        except sqlite3.Error:
-            pass
-
-    if mp.is_file() and total_in + total_cache_read == 0:
-        try:
-            for ln in mp.read_text(encoding="utf-8", errors="ignore").splitlines()[-2000:]:
-                try:
-                    rec = json.loads(ln)
-                except json.JSONDecodeError:
-                    continue
-                total_in += int(rec.get("in") or 0)
-                total_cache_read += int(rec.get("cache_read") or 0)
-        except OSError:
-            pass
-
-    if cp.is_file():
-        try:
-            with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
-                cp_tables = {
-                    r[0]
-                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                }
-                if "assistant_usage_events" in cp_tables and total_in + total_cache_read == 0:
-                    u_row = conn.execute(
-                        "SELECT SUM(COALESCE(input_tokens, 0)), SUM(COALESCE(cache_read_tokens, 0)) FROM assistant_usage_events"
-                    ).fetchone()
-                    if u_row:
-                        total_in += int(u_row[0] or 0)
-                        total_cache_read += int(u_row[1] or 0)
-        except sqlite3.Error:
-            pass
-
-    if dsh_slices_dir.is_dir() and sum(slice_tokens.values()) == 0:
-        try:
-            for jpath in list(dsh_slices_dir.rglob("*.jsonl"))[:20]:
-                sz = jpath.stat().st_size
-                est_tok = max(100, sz // 4)
-                slice_tokens["System & AGENTS.md 指令链"] += int(est_tok * 0.18)
-                slice_tokens["Skills 目录与 SKILL.md"] += int(est_tok * 0.14)
-                slice_tokens["Tools Schema 定义"] += int(est_tok * 0.14)
-                slice_tokens["Tool Results 工具返回"] += int(est_tok * 0.36)
-                slice_tokens["User/Assistant 对话与思考链"] += int(est_tok * 0.18)
-        except OSError:
-            pass
-
+        with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
+            rows = _timed_rows(conn, "fact_turn")
+    for row in rows:
+        in_t, out_t, cache = (int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+        total_in += in_t
+        total_cache_read += cache
+        stamp = row["_observed_at"]
+        if in_t + cache > 0:
+            cache_stamps.append(stamp)
+        context = in_t + cache
+        if context + out_t <= 0:
+            continue
+        context_stamps.append(stamp)
+        tools = json.loads(row.get("tool_calls") or "[]")
+        skills = json.loads(row.get("skill_names") or "[]")
+        skill = str(row.get("attribution_skill") or (skills[0] if skills else "team-lead"))
+        has_skill, has_tool = bool(row.get("attribution_skill") or skills), bool(tools)
+        shares = (0.16 if has_skill and has_tool else 0.20 if has_tool else 0.28,
+                  0.18 if has_skill else 0.04, 0.14 if has_tool else 0.18,
+                  0.36 if has_tool else 0.10, 0.16)
+        for key, share in zip(slice_tokens, shares):
+            slice_tokens[key] += int(context * share)
+        slice_tokens["User/Assistant 对话与思考链"] += out_t
+        for tool in tools:
+            name = str(tool).strip().lower()
+            if name in {"bash", "execute_code", "terminal", "run_command"}:
+                name = "bash"
+            elif name in {"read", "view", "read_file"}:
+                name = "read/view"
+            elif name in {"edit", "apply_patch", "write", "create"}:
+                name = "edit/write"
+            tool_calls.setdefault(name, []).append((round(context * 0.36 / len(tools)), skill, stamp))
+    if not cache_stamps:
+        usage = _usage_records(mp)
+        for row in usage:
+            in_t, cache = int(row.get("in") or 0), int(row.get("cache_read") or 0)
+            if in_t + cache > 0:
+                total_in += in_t
+                total_cache_read += cache
+                cache_stamps.append(row["_observed_at"])
+    if not cache_stamps and cp.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+            for row in _timed_rows(conn, "assistant_usage_events"):
+                in_t, cache = int(row.get("input_tokens") or 0), int(row.get("cache_read_tokens") or 0)
+                if in_t + cache > 0:
+                    total_in += in_t
+                    total_cache_read += cache
+                    cache_stamps.append(row["_observed_at"])
+    # File sizes have no observation timestamps or measured token composition.
+    # Do not synthesize slices from an unbounded DSH byte-count fallback.
+    present = warehouse_db.is_file() or mp.is_file() or cp.is_file()
+    context_meta = _freshness(context_stamps, present)
+    cache_meta = _freshness(cache_stamps, present)
     total_ctx = sum(slice_tokens.values())
-    slices_out = [
-        {
-            "slice_key": k,
-            "tokens": v,
-            "share_pct": round(100.0 * v / total_ctx, 1) if total_ctx > 0 else 0.0,
-        }
-        for k, v in slice_tokens.items()
-    ]
-    kv_hit_pct = round(100.0 * total_cache_read / (total_in + total_cache_read), 1) if (total_in + total_cache_read) > 0 else 0.0
-    s11_data = {
-        "slices": slices_out,
-        "total_context_tokens": total_ctx,
-        "kv_cache_hit_pct": kv_hit_pct,
-        "compressed_saved_tokens": int(round(total_cache_read * 0.9)),
-    }
+    s11 = {**_freshness(context_stamps or cache_stamps, present), "estimated": True,
+           "estimation_method": "fixed-share allocation of observed turn tokens; no measured compression saving",
+           "slices": [{"slice_key": key, "tokens": value if total_ctx else None,
+                       "share_pct": round(100 * value / total_ctx, 1) if total_ctx else None,
+                       "estimated": True, **context_meta} for key, value in slice_tokens.items()],
+           "total_context_tokens": total_ctx or None,
+           "kv_cache_hit_pct": round(100 * total_cache_read / (total_in + total_cache_read), 1) if total_in + total_cache_read else None,
+           "kv_cache_freshness": cache_meta, "compressed_saved_tokens": None}
+    grand_total = sum(tokens for calls in tool_calls.values() for tokens, _, _ in calls)
+    s12 = []
+    for tool, calls in tool_calls.items():
+        tokens = sorted(item[0] for item in calls)
+        skill_counts: dict[str, int] = {}
+        for tok, skill, _ in calls:
+            skill_counts[skill] = skill_counts.get(skill, 0) + tok
+        s12.append({"tool_name": tool, "call_count": len(calls), "total_tokens": sum(tokens),
+                    "p95_tokens": tokens[max(0, (len(tokens) * 95 + 99) // 100 - 1)],
+                    "bloated_call_count": sum(tok > 10000 for tok in tokens),
+                    "share_pct": round(100 * sum(tokens) / grand_total, 1) if grand_total else None,
+                    "dominant_skill": max(skill_counts, key=skill_counts.get), "estimated": True,
+                    "estimation_method": "turn context * 0.36 / tool count, not measured tool result tokens",
+                    **_freshness([item[2] for item in calls])})
+    s12.sort(key=lambda row: (-row["total_tokens"], row["tool_name"]))
+    return s11, s12, _build_tool_context_burn_candidates(s12)
 
-    grand_tool_tok = sum(tok for calls in tool_calls_map.values() for tok, _ in calls)
-    s12_rows: list[dict[str, Any]] = []
-    for t_name, calls in tool_calls_map.items():
-        toks = sorted(tok for tok, _ in calls)
-        p95_idx = min(len(toks) - 1, max(0, int((len(toks) * 95 + 99) // 100) - 1))
-        p95_val = toks[p95_idx] if toks else 0
-        tot_t = sum(toks)
-        bloated = sum(1 for tok in toks if tok > 10000)
-        sk_counts: dict[str, int] = {}
-        for tok, sk in calls:
-            sk_counts[sk] = sk_counts.get(sk, 0) + (100000 if tok > 10000 else 1)
-        dom_sk = max(sk_counts.items(), key=lambda kv: (kv[1], kv[0]))[0] if sk_counts else "team-lead"
-        s12_rows.append({
-            "tool_name": t_name,
-            "call_count": len(calls),
-            "total_tokens": tot_t,
-            "p95_tokens": p95_val,
-            "bloated_call_count": bloated,
-            "share_pct": round(100.0 * tot_t / grand_tool_tok, 1) if grand_tool_tok > 0 else 0.0,
-            "dominant_skill": dom_sk,
-        })
-    s12_rows.sort(key=lambda r: (-r["total_tokens"], r["tool_name"]))
-    burn_proposals = _build_tool_context_burn_candidates(s12_rows)
-    return s11_data, s12_rows, burn_proposals
+
+def _percent_label(value: float | None) -> str:
+    return f"{value * 100:.1f}%" if value is not None else "unknown"
 
 
 def compute_skill_roi_diagnostics(
@@ -849,6 +765,7 @@ def compute_skill_roi_diagnostics(
             "l1_selective_sessions": 0,
             "l1_greedy_sessions": 0,
             "total_tokens": 0,
+            "token_session_count": 0,
             "session_count": 0,
             "edit_churn_count": 0,
             "retry_commands": 0,
@@ -875,6 +792,7 @@ def compute_skill_roi_diagnostics(
                 "l1_selective_sessions": 0,
                 "l1_greedy_sessions": 0,
                 "total_tokens": 0,
+                "token_session_count": 0,
                 "session_count": 0,
                 "edit_churn_count": 0,
                 "retry_commands": 0,
@@ -885,267 +803,145 @@ def compute_skill_roi_diagnostics(
             }
         return stats[norm]
 
-    s2_gate: dict[str, Any] = {
-        "total_runs_7d": 0,
-        "true_positive_catches_7d": 0,
-        "config_or_rerun_noise_7d": 0,
-        "gate_catch_rate": None,
-        "noise_rate": None,
-        "window_cst": "7d",
-        "source_as_of": datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
-        "sample_size": 0,
-        "coverage_status": "unknown",
-    }
+    populations: dict[str, dict[str, list[datetime]]] = {}
+    observed: list[datetime] = []
+    def observe(skill: str, kind: str, stamp: datetime) -> dict[str, Any]:
+        entry = _ensure_skill(skill)
+        populations.setdefault(entry["skill"], {}).setdefault(kind, []).append(stamp)
+        return entry
 
-    source_as_of = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
-    sample_turns = 0
-    # 1. Read warehouse.db (fact_turn, fact_gtt_task_run, fact_gtt_event, fact_ci_*)
+    s2_gate = {"total_runs_7d": 0, "true_positive_catches_7d": 0, "config_or_rerun_noise_7d": 0,
+               "classified_sample_size": 0, "gate_catch_rate": None, "noise_rate": None,
+               **_freshness([], wh.is_file())}
     if wh.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
-            tables = {
-                r[0]
-                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            if "fact_turn" in tables:
-                max_day_row = conn.execute("SELECT MAX(cst_day), COUNT(*) FROM fact_turn").fetchone()
-                if max_day_row and max_day_row[0]:
-                    source_as_of = str(max_day_row[0])
-                if max_day_row and max_day_row[1]:
-                    sample_turns = int(max_day_row[1] or 0)
-            if "fact_ci_job_run" in tables:
-                row_ci = conn.execute(
-                    """
-                    SELECT
-                        COUNT(*),
-                        SUM(CASE WHEN failure_category IN ('true_positive_gate', 'build_or_test_failure') THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN failure_category LIKE 'config_drift_%' OR failure_category = 'runner_capacity_or_sim' THEN 1 ELSE 0 END),
-                        MAX(cst_day)
-                    FROM fact_ci_job_run
-                    WHERE cst_day >= date('now', '-7 days')
-                    """
-                ).fetchone()
-                if row_ci and row_ci[0]:
-                    total_j = int(row_ci[0] or 0)
-                    catches = int(row_ci[1] or 0)
-                    noise = int(row_ci[2] or 0)
-                    ci_as_of = str(row_ci[3] or source_as_of)
-                    s2_gate["total_runs_7d"] = total_j
-                    s2_gate["true_positive_catches_7d"] = catches
-                    s2_gate["config_or_rerun_noise_7d"] = noise
-                    s2_gate["sample_size"] = total_j
-                    s2_gate["source_as_of"] = ci_as_of
-                    denom = catches + noise
-                    if denom > 0:
-                        s2_gate["gate_catch_rate"] = round(catches / denom, 4)
-                        s2_gate["coverage_status"] = "healthy"
-                    else:
-                        s2_gate["gate_catch_rate"] = None
-                        s2_gate["coverage_status"] = "unknown"
-                    s2_gate["noise_rate"] = round(noise / total_j, 4) if total_j > 0 else None
-
-            if "fact_turn" in tables:
-                turn_rows = conn.execute(
-                    """
-                    SELECT
-                        session_id,
-                        attribution_skill,
-                        skill_names,
-                        tool_calls,
-                        COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read, 0) AS tokens,
-                        cst_day >= date('now', '-7 days') AS is_7d,
-                        cst_day >= date('now', '-30 days') AS is_30d
-                    FROM fact_turn
-                    WHERE (attribution_skill IS NOT NULL AND attribution_skill != '')
-                       OR (skill_names IS NOT NULL AND skill_names != '')
-                    """
-                ).fetchall()
-                session_skills: dict[str, set[str]] = {}
-                session_tokens: dict[str, int] = {}
-                session_bash_calls: dict[str, int] = {}
-                session_read_calls: dict[str, int] = {}
-                for sess_id, attr_sk, sk_json, tc_json, tok, is_7d, is_30d in turn_rows:
-                    matched_skills: set[str] = set()
-                    if attr_sk:
-                        matched_skills.add(str(attr_sk).strip())
-                    if sk_json:
-                        try:
-                            for item in json.loads(sk_json):
-                                if isinstance(item, str) and item.strip():
-                                    matched_skills.add(item.strip())
-                        except json.JSONDecodeError:
-                            pass
-                    t_list: list[str] = []
-                    if tc_json:
-                        try:
-                            t_list = [str(x) for x in json.loads(tc_json) if x]
-                        except json.JSONDecodeError:
-                            t_list = []
-                    bash_cnt = sum(1 for t in t_list if t.lower() in {"bash", "execute_code", "terminal"})
-                    read_cnt = sum(1 for t in t_list if t.lower() in {"read", "view"})
-                    for sk in matched_skills:
-                        entry = _ensure_skill(sk)
-                        if is_7d:
-                            entry["loads_7d"] += 1
-                        if is_30d:
-                            entry["loads_30d"] += 1
-                        if sess_id:
-                            session_skills.setdefault(str(sess_id), set()).add(entry["skill"])
-                    if sess_id:
-                        session_tokens[str(sess_id)] = session_tokens.get(str(sess_id), 0) + int(tok or 0)
-                        session_bash_calls[str(sess_id)] = session_bash_calls.get(str(sess_id), 0) + bash_cnt
-                        session_read_calls[str(sess_id)] = session_read_calls.get(str(sess_id), 0) + read_cnt
-
-                for sess_id, sk_set in session_skills.items():
-                    tok_share = int(session_tokens.get(sess_id, 0) / max(1, len(sk_set)))
-                    b_cnt = session_bash_calls.get(sess_id, 0)
-                    r_cnt = session_read_calls.get(sess_id, 0)
-                    for sk in sk_set:
-                        entry = _ensure_skill(sk)
-                        entry["session_count"] += 1
-                        entry["total_tokens"] += tok_share
-                        if b_cnt > 0 and entry["has_scripts"]:
-                            entry["script_execs"] += 1
-                        if r_cnt <= 1:
-                            entry["l0_only_sessions"] += 1
-                        elif r_cnt <= 3:
-                            entry["l1_selective_sessions"] += 1
+            ci_rows = _timed_rows(conn, "fact_ci_job_run")
+            catches = sum(row.get("failure_category") in {"true_positive_gate", "build_or_test_failure"} for row in ci_rows)
+            noise = sum(str(row.get("failure_category") or "").startswith("config_drift_") or
+                        row.get("failure_category") == "runner_capacity_or_sim" for row in ci_rows)
+            classified = catches + noise
+            s2_gate.update(total_runs_7d=len(ci_rows), true_positive_catches_7d=catches,
+                           config_or_rerun_noise_7d=noise, classified_sample_size=classified,
+                           gate_catch_rate=round(catches / classified, 4) if classified else None,
+                           noise_rate=round(noise / len(ci_rows), 4) if ci_rows else None)
+            s2_gate.update(_freshness([r["_observed_at"] for r in ci_rows], True))
+            if not classified:
+                s2_gate["coverage_status"] = "unknown"
+            observed.extend(row["_observed_at"] for row in ci_rows)
+            sessions: dict[str, list[dict[str, Any]]] = {}
+            start7, _ = _window_bounds()
+            for row in _timed_rows(conn, "fact_turn", 30):
+                stamp = row["_observed_at"]
+                skills = set(json.loads(row.get("skill_names") or "[]"))
+                if row.get("attribution_skill"):
+                    skills.add(str(row["attribution_skill"]))
+                row["_skills"] = skills
+                for skill in skills:
+                    entry = observe(skill, "usage", stamp)
+                    entry["loads_30d"] += 1
+                    entry["loads_7d"] += stamp >= start7
+                if skills:
+                    sessions.setdefault(str(row.get("session_id") or ""), []).append(row)
+                    observed.append(stamp)
+            for rows in sessions.values():
+                skills = set().union(*(row["_skills"] for row in rows))
+                tokens = sum(int(row.get(key) or 0) for row in rows for key in ("input_tokens", "output_tokens", "cache_read"))
+                tools = [str(tool).lower() for row in rows for tool in json.loads(row.get("tool_calls") or "[]")]
+                read_count = sum(tool in {"read", "view"} for tool in tools)
+                for skill in skills:
+                    entry = _ensure_skill(skill)
+                    entry["session_count"] += 1
+                    entry["total_tokens"] += tokens // max(1, len(skills))
+                    entry["token_session_count"] += any(row.get(key) is not None for row in rows for key in ("input_tokens", "output_tokens", "cache_read"))
+                    # Generic Bash usage is only a script-touch proxy, not an observed script invocation.
+                    if any(tool in {"bash", "execute_code", "terminal"} for tool in tools) and entry["has_scripts"]:
+                        entry["script_execs"] += 1
+                    entry["l0_only_sessions" if read_count <= 1 else "l1_selective_sessions" if read_count <= 3 else "l1_greedy_sessions"] += 1
+            for row in _timed_rows(conn, "fact_gtt_task_run"):
+                if row.get("role_name") not in {"reviewer", "code_reviewer", "planner_reviewer"}:
+                    continue
+                goal = str(row.get("goal_id") or "").lower()
+                inferred = {"team-lead"}
+                for skill, hints in (("my-designer", ("design", "ui", "feel", "glass", "hallmark")),
+                                     ("design-studio", ("ingest", "palette", "motion")),
+                                     ("retro-loop", ("retro", "telemetry", "roi", "aidash")),
+                                     ("knowledge-digest", ("learn", "digest", "blog", "vault")),
+                                     ("skill-contract", ("skill", "contract")),
+                                     ("m2-dispatcher", ("m2", "herdr", "dispatch"))):
+                    if any(hint in goal for hint in hints):
+                        inferred.add(skill)
+                for skill in inferred:
+                    entry = observe(skill, "reviews", row["_observed_at"])
+                    if int(row.get("round_no") or 1) == 1:
+                        entry["r1_total"] += 1
+                        if str(row.get("v5_verdict") or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and row.get("status") != "failed":
+                            entry["r1_pass"] += 1
                         else:
-                            entry["l1_greedy_sessions"] += 1
+                            entry["impl_bug_escapes"] += 1
+                observed.append(row["_observed_at"])
+            for row in _timed_rows(conn, "fact_gtt_event"):
+                event = row.get("evt_type")
+                if event not in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
+                    continue
+                goal, note = str(row.get("goal_id") or "").lower(), str(row.get("note_preview") or "").upper()
+                skill = "my-designer" if any(hint in goal for hint in ("design", "ui", "feel")) else "team-lead"
+                entry = observe(skill, "events", row["_observed_at"])
+                entry["spec_gap_escapes" if "SPEC_GAP" in note or event in {"RULING", "CHANGE_REQUEST"} else "impl_bug_escapes"] += 1
+                observed.append(row["_observed_at"])
 
-            if "fact_gtt_task_run" in tables:
-                run_rows = conn.execute(
-                    """
-                    SELECT goal_id, task_id, round_no, v5_verdict, status
-                    FROM fact_gtt_task_run
-                    WHERE role_name IN ('reviewer', 'code_reviewer', 'planner_reviewer')
-                    """
-                ).fetchall()
-                for goal_id, _task_id, round_no, v5, status in run_rows:
-                    g_lower = str(goal_id or "").lower()
-                    inferred = ["team-lead"]
-                    if any(k in g_lower for k in ("design", "ui", "feel", "glass", "hallmark")):
-                        inferred.append("my-designer")
-                    if any(k in g_lower for k in ("ingest", "palette", "motion")):
-                        inferred.append("design-studio")
-                    if any(k in g_lower for k in ("retro", "telemetry", "roi", "aidash")):
-                        inferred.append("retro-loop")
-                    if any(k in g_lower for k in ("learn", "digest", "blog", "vault")):
-                        inferred.append("knowledge-digest")
-                    if any(k in g_lower for k in ("skill", "contract")):
-                        inferred.append("skill-contract")
-                    if any(k in g_lower for k in ("m2", "herdr", "dispatch")):
-                        inferred.append("m2-dispatcher")
-                    for sk in inferred:
-                        entry = _ensure_skill(sk)
-                        if int(round_no or 1) == 1:
-                            entry["r1_total"] += 1
-                            if str(v5 or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and str(status or "") != "failed":
-                                entry["r1_pass"] += 1
-                            else:
-                                entry["impl_bug_escapes"] += 1
-
-            if "fact_gtt_event" in tables:
-                evt_rows = conn.execute(
-                    """
-                    SELECT goal_id, evt_type, COALESCE(note_preview, '')
-                    FROM fact_gtt_event
-                    WHERE evt_type IN ('REVIEW_FAIL', 'RULING', 'CHANGE_REQUEST')
-                    """
-                ).fetchall()
-                for goal_id, evt_type, note in evt_rows:
-                    note_up = str(note).upper()
-                    g_lower = str(goal_id or "").lower()
-                    target_sk = "my-designer" if any(k in g_lower for k in ("design", "ui", "feel")) else "team-lead"
-                    entry = _ensure_skill(target_sk)
-                    if "SPEC_GAP" in note_up or evt_type in {"RULING", "CHANGE_REQUEST"}:
-                        entry["spec_gap_escapes"] += 1
-                    elif "IMPL_BUG" in note_up or evt_type == "REVIEW_FAIL":
-                        entry["impl_bug_escapes"] += 1
-
-    # 2. Enrich from ~/.copilot/session-store.db if present
     if cp.is_file():
-        try:
-            with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
-                cp_tables = {
-                    r[0]
-                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                }
-                sess_to_skills: dict[str, set[str]] = {}
-                sess_to_refs: dict[str, set[str]] = {}
-                if "session_files" in cp_tables:
-                    sf_rows = conn.execute(
-                        "SELECT session_id, file_path, tool_name, count(*) FROM session_files GROUP BY session_id, file_path, tool_name"
-                    ).fetchall()
-                    for sid, fpath, tname, cnt in sf_rows:
-                        fpath_s = str(fpath or "")
-                        for m in _SKILL_NAME_RE.finditer(fpath_s):
-                            sk_hit = m.group("ctx") or m.group("path") or m.group("call")
-                            if sk_hit and sk_hit in known_skills:
-                                sess_to_skills.setdefault(str(sid), set()).add(sk_hit)
-                        for rm in _REF_PATH_RE.finditer(fpath_s):
-                            sk_hit = rm.group("skill")
-                            if sk_hit in known_skills:
-                                sess_to_skills.setdefault(str(sid), set()).add(sk_hit)
-                                sess_to_refs.setdefault(f"{sid}:{sk_hit}", set()).add(rm.group("ref"))
-                        for sm in _SCRIPT_PATH_RE.finditer(fpath_s):
-                            sk_hit = sm.group("skill")
-                            if sk_hit in known_skills:
-                                _ensure_skill(sk_hit)["script_execs"] += int(cnt or 1)
-
-                    # Edit churn per session linked to skills
-                    churn_rows = conn.execute(
-                        """
-                        SELECT session_id, file_path, count(*) as edit_cnt
-                        FROM session_files
-                        WHERE tool_name IN ('edit', 'apply_patch')
-                        GROUP BY session_id, file_path
-                        HAVING count(*) >= 4
-                        """
-                    ).fetchall()
-                    for sid, _fp, edit_cnt in churn_rows:
-                        for sk in sess_to_skills.get(str(sid), {"team-lead"}):
-                            _ensure_skill(sk)["edit_churn_count"] += int(edit_cnt or 0)
-
-                if "turns" in cp_tables:
-                    t_rows = conn.execute(
-                        """
-                        SELECT session_id, substr(user_message, 1, 2000), substr(assistant_response, 1, 2000),
-                               substr(timestamp, 1, 10) >= date('now', '-7 days') AS is_7d,
-                               substr(timestamp, 1, 10) >= date('now', '-30 days') AS is_30d
-                        FROM turns
-                        WHERE user_message LIKE '%skill-context%' OR user_message LIKE '%/skills/%'
-                           OR assistant_response LIKE '%/skills/%'
-                        LIMIT 2000
-                        """
-                    ).fetchall()
-                    for sid, u_msg, a_msg, is_7d, is_30d in t_rows:
-                        blob = f"{u_msg or ''}\n{a_msg or ''}"
-                        for m in _SKILL_NAME_RE.finditer(blob):
-                            sk_hit = m.group("ctx") or m.group("path") or m.group("call")
-                            if sk_hit:
-                                entry = _ensure_skill(sk_hit)
-                                if is_7d:
-                                    entry["loads_7d"] += 1
-                                if is_30d:
-                                    entry["loads_30d"] += 1
-                                sess_to_skills.setdefault(str(sid), set()).add(entry["skill"])
-                        for sc_name, sc_skill in script_to_skill.items():
-                            if sc_name in blob:
-                                _ensure_skill(sc_skill)["script_execs"] += 1
-
-                for sid, sk_set in sess_to_skills.items():
-                    for sk in sk_set:
-                        entry = _ensure_skill(sk)
-                        entry["session_count"] += 1
-                        refs_used = len(sess_to_refs.get(f"{sid}:{sk}", set()))
-                        if refs_used == 0:
-                            entry["l0_only_sessions"] += 1
-                        elif refs_used <= 2:
-                            entry["l1_selective_sessions"] += 1
-                        else:
-                            entry["l1_greedy_sessions"] += 1
-        except sqlite3.Error:
-            pass
+        with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+            files = _timed_rows(conn, "session_files", 30)
+            turns = _timed_rows(conn, "turns", 30)
+            sessions: dict[str, set[str]] = {}
+            refs: dict[tuple[str, str], set[str]] = {}
+            session_stamps: dict[str, datetime] = {}
+            edits: dict[tuple[str, str], int] = {}
+            start7, _ = _window_bounds()
+            for row in files:
+                sid, path = str(row.get("session_id") or ""), str(row.get("file_path") or "")
+                stamp = row["_observed_at"]
+                matched = {m.group("ctx") or m.group("path") or m.group("call") for m in _SKILL_NAME_RE.finditer(path)}
+                matched.update(m.group("skill") for m in _REF_PATH_RE.finditer(path))
+                matched.update(m.group("skill") for m in _SCRIPT_PATH_RE.finditer(path))
+                for skill in matched & known_skills:
+                    observe(skill, "usage", stamp)
+                    sessions.setdefault(sid, set()).add(skill)
+                session_stamps[sid] = max(session_stamps.get(sid, stamp), stamp)
+                for match in _REF_PATH_RE.finditer(path):
+                    refs.setdefault((sid, match.group("skill")), set()).add(match.group("ref"))
+                for match in _SCRIPT_PATH_RE.finditer(path):
+                    _ensure_skill(match.group("skill"))["script_execs"] += 1
+                if row.get("tool_name") in {"edit", "apply_patch"}:
+                    edits[(sid, path)] = edits.get((sid, path), 0) + 1
+                observed.append(stamp)
+            for row in turns:
+                sid = str(row.get("session_id") or "")
+                blob = f"{row.get('user_message') or ''}\n{row.get('assistant_response') or ''}"
+                stamp = row["_observed_at"]
+                matched = {m.group("ctx") or m.group("path") or m.group("call") for m in _SKILL_NAME_RE.finditer(blob)}
+                for skill in matched:
+                    entry = observe(skill, "usage", stamp)
+                    entry["loads_7d"] += stamp >= start7
+                    entry["loads_30d"] += 1
+                    sessions.setdefault(sid, set()).add(entry["skill"])
+                session_stamps[sid] = max(session_stamps.get(sid, stamp), stamp)
+                observed.append(stamp)
+            for (sid, _), count in edits.items():
+                if count >= 4:
+                    for skill in sessions.get(sid, {"team-lead"}):
+                        observe(skill, "churn", session_stamps[sid])["edit_churn_count"] += count
+            for sid, skills in sessions.items():
+                for skill in skills:
+                    entry = _ensure_skill(skill)
+                    entry["session_count"] += 1
+                    ref_count = len(refs.get((sid, skill), set()))
+                    entry["l0_only_sessions" if ref_count == 0 else "l1_selective_sessions" if ref_count <= 2 else "l1_greedy_sessions"] += 1
+    source_meta = _freshness(observed, wh.is_file() or cp.is_file(), 30)
+    source_as_of = source_meta["source_as_of"]
+    start7, end7 = _window_bounds()
+    root_stamps = [stamp for stamp in observed if start7 <= stamp < end7]
+    root_meta = _freshness(root_stamps, wh.is_file() or cp.is_file())
 
     # 3. Synthesize S1, S2, S3, S4, S6, S7, S8, S9, S10
     s1_pins = _compute_s1_pin_drift(d_root)
@@ -1182,14 +978,14 @@ def compute_skill_roi_diagnostics(
         r1_tot = st["r1_total"]
         r1_pass_rate = round(st["r1_pass"] / r1_tot, 4) if r1_tot > 0 else None
         script_execs = st["script_execs"]
-        script_ratio = round(min(1.0, script_execs / max(1, loads)), 4) if st["has_scripts"] and loads > 0 else (1.0 if not st["has_scripts"] else 0.0)
-        read_only_unpracticed_rate = round(1.0 - script_ratio, 4) if st["has_scripts"] and loads > 0 else 0.0
+        script_ratio = round(min(1.0, script_execs / loads), 4) if st["has_scripts"] and loads > 0 else None
+        read_only_unpracticed_rate = round(1.0 - script_ratio, 4) if script_ratio is not None else None
 
         f_tot = max(1, st["l0_only_sessions"] + st["l1_selective_sessions"] + st["l1_greedy_sessions"])
         l0_rate = round(st["l0_only_sessions"] / f_tot, 4) if loads > 0 else None
         l1_sel_rate = round(st["l1_selective_sessions"] / f_tot, 4) if loads > 0 else None
         l1_greedy_rate = round(st["l1_greedy_sessions"] / f_tot, 4) if loads > 0 else None
-        avg_tokens = int(st["total_tokens"] / st["session_count"]) if st["session_count"] > 0 else None
+        avg_tokens = int(st["total_tokens"] / st["token_session_count"]) if st["token_session_count"] > 0 else None
 
         # S10 formula: Skill ROI = R1_Pass_Rate / Normalized(Tokens + Churn + Uncalled_Script_Penalty)
         norm_tokens = min(2.0, max(0.2, avg_tokens / 10000.0)) if avg_tokens is not None else None
@@ -1211,7 +1007,13 @@ def compute_skill_roi_diagnostics(
         if l1_greedy_rate is not None and l1_greedy_rate > 0.25:
             diagnoses.append(f"L1 全量暴读违规率 {l1_greedy_rate*100:.0f}%")
 
+        kinds = populations.get(s_name, {})
+        stamps = [stamp for values in kinds.values() for stamp in values]
+        row_meta = _freshness(stamps, wh.is_file() or cp.is_file(), 30)
         skill_rows.append({
+            **row_meta, "estimated": True,
+            "estimation_method": "session/tool and goal-name skill attribution proxies",
+            "r1_freshness": _freshness(kinds.get("reviews", []), wh.is_file()),
             "skill": s_name,
             "loads_7d": st["loads_7d"],
             "loads_30d": loads,
@@ -1231,7 +1033,7 @@ def compute_skill_roi_diagnostics(
             "impl_bug_escapes": st["impl_bug_escapes"],
             "spec_gap_escapes": st["spec_gap_escapes"],
             "roi_score": roi_score,
-            "diagnosis": "；".join(diagnoses) if diagnoses else "健康达标",
+            "diagnosis": "；".join(diagnoses) if diagnoses else ("健康达标" if loads and r1_tot else "unknown / 观测不足"),
             "needs_optimization": bool(diagnoses) and (loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0),
         })
 
@@ -1253,12 +1055,14 @@ def compute_skill_roi_diagnostics(
             "detail": (
                 f"skill={sk} | roi_score={roi_label} | "
                 f"r1_pass_rate={r1_label} | "
-                f"unpracticed_rate={cand['unpracticed_rate']*100:.1f}% | "
+                f"unpracticed_rate={_percent_label(cand['unpracticed_rate'])} | "
                 f"edit_churn={cand['edit_churn_count']} | "
                 f"impl_bug={cand['impl_bug_escapes']} | spec_gap={cand['spec_gap_escapes']} | "
                 f"diagnosis={cand['diagnosis']}"
             ),
             "priority": "high",
+            **{key: cand[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                         "sample_size", "coverage_status", "estimated", "estimation_method")},
         })
 
     s11_context, s12_tools, burn_proposals = _compute_s11_s12_context_and_tools(
@@ -1269,22 +1073,31 @@ def compute_skill_roi_diagnostics(
     )
     proposals.extend(burn_proposals[:2])
 
-    total_sample_size = max(
-        sample_turns,
-        sum(r["loads_30d"] + r["r1_total"] for r in skill_rows),
-        int(s2_gate["total_runs_7d"] or 0),
-    )
-    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if wh.is_file() else "missing")
+    total_sample_size = max(len(root_stamps), int(s11_context["sample_size"] or 0))
+    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if wh.is_file() or cp.is_file() else "missing")
+    observed_as_of = [value for value in (root_meta["source_as_of"], s11_context["source_as_of"]) if value]
+    source_as_of = max(observed_as_of) if observed_as_of else None
+    inventory_paths = [path for meta in inventory.values() for path in
+                       [Path(meta["path"]) / "SKILL.md", *(Path(meta["path"]) / "references").rglob("*.md"),
+                        *(Path(meta["path"]) / "references").rglob("*.json")]]
+    s3_health.update(_snapshot_freshness(inventory_paths, len(inventory)))
+    for key in ("top3_l0_watermarks", "top3_l1_watermarks"):
+        for row in s3_health[key]:
+            row.update(_snapshot_freshness([Path(inventory[row["skill"]]["path"]) / "SKILL.md"], 1))
 
     for p_item in proposals:
         p_item.setdefault("window_cst", "7d")
         p_item.setdefault("source_as_of", source_as_of)
         p_item.setdefault("sample_size", total_sample_size)
         p_item.setdefault("coverage_status", cov_status)
+        p_item.setdefault("window_start", source_meta["window_start"])
+        p_item.setdefault("window_end", source_meta["window_end"])
 
     return {
         "ok": True,
         "window_cst": "7d",
+        "window_start": root_meta["window_start"] or s11_context["window_start"],
+        "window_end": root_meta["window_end"] or s11_context["window_end"],
         "source_as_of": source_as_of,
         "sample_size": total_sample_size,
         "coverage_status": cov_status,
@@ -1292,12 +1105,17 @@ def compute_skill_roi_diagnostics(
         "S2_gate_catch": s2_gate,
         "S3_skill_health": s3_health,
         "S4_usage_and_r1": {
+            **source_meta,
             "active_skills_count": len(active_rows),
             "idle_skills_30d": idle_skills_30d,
             "top_used_skills": sorted(skill_rows, key=lambda r: (-r["loads_30d"], r["skill"]))[:8],
         },
         "S6_load_vs_script": [
             {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             wh.is_file() or cp.is_file(), 30),
                 "skill": r["skill"],
                 "loads_30d": r["loads_30d"],
                 "script_execs": r["script_execs"],
@@ -1309,6 +1127,10 @@ def compute_skill_roi_diagnostics(
         ],
         "S7_disclosure_funnel": [
             {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             wh.is_file() or cp.is_file(), 30),
                 "skill": r["skill"],
                 "l0_only_rate": r["l0_only_rate"],
                 "l1_selective_rate": r["l1_selective_rate"],
@@ -1319,6 +1141,10 @@ def compute_skill_roi_diagnostics(
         ],
         "S8_post_skill_churn": [
             {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('churn',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             wh.is_file() or cp.is_file(), 30),
                 "skill": r["skill"],
                 "edit_churn_count": r["edit_churn_count"],
                 "retry_commands": r["retry_commands"],
@@ -1328,6 +1154,10 @@ def compute_skill_roi_diagnostics(
         ],
         "S9_escape_attribution": [
             {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('reviews', 'events') for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             wh.is_file() or cp.is_file(), 7),
                 "skill": r["skill"],
                 "impl_bug_escapes": r["impl_bug_escapes"],
                 "spec_gap_escapes": r["spec_gap_escapes"],
@@ -1342,168 +1172,197 @@ def compute_skill_roi_diagnostics(
     }
 
 
+CST = timezone(timedelta(hours=8))
+
+
+def _window_bounds(days: int = 7) -> tuple[datetime, datetime]:
+    today = datetime.now(CST).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today - timedelta(days=days - 1), today + timedelta(days=1)
+
+
+def _observed_at(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    try:
+        text = str(value)
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=CST if len(text) == 10 else timezone.utc)
+        return stamp.astimezone(CST)
+    except (ValueError, TypeError):
+        return None
+
+
+def _timed_rows(conn: sqlite3.Connection, table: str, days: int = 7) -> list[dict[str, Any]]:
+    columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+    time_column = next((name for name in ("observed_at", "completed_at", "ended_at", "started_at",
+                        "timestamp", "first_seen_at", "ts", "created_at", "cst_day") if name in columns), None)
+    if time_column is None:
+        return []
+    start, end = _window_bounds(days)
+    rows = []
+    if time_column == "cst_day":
+        predicate = f'"{time_column}" >= ? AND "{time_column}" < ?'
+        bounds = (start.date().isoformat(), end.date().isoformat())
+    else:
+        # Bare dates are CST days; offset/naive timestamps are parsed as UTC by SQLite.
+        observed_jd = (f'CASE WHEN length("{time_column}") = 10 '
+                       f'THEN julianday("{time_column}", \'-8 hours\') ELSE julianday("{time_column}") END')
+        predicate = f'{observed_jd} >= julianday(?) AND {observed_jd} < julianday(?)'
+        bounds = (start.isoformat(), end.isoformat())
+    for values in conn.execute(f'SELECT * FROM "{table}" WHERE {predicate}', bounds):
+        record = dict(zip(columns, values))
+        stamp = _observed_at(record[time_column])
+        if stamp and start <= stamp < end:
+            record["_observed_at"] = stamp
+            rows.append(record)
+    return rows
+
+
+def _freshness(stamps: list[datetime], present: bool = True, days: int = 7) -> dict[str, Any]:
+    start, end = _window_bounds(days)
+    return {"window_cst": f"{days}d", "window_start": start.isoformat() if stamps else None,
+            "window_end": end.isoformat() if stamps else None,
+            "source_as_of": max(stamps).isoformat() if stamps else None,
+            "sample_size": len(stamps),
+            "coverage_status": "healthy" if stamps else ("unknown" if present else "missing")}
+
+
+def _snapshot_freshness(paths: list[Path], sample_size: int) -> dict[str, Any]:
+    stamps = [datetime.fromtimestamp(path.stat().st_mtime, CST) for path in paths if path.is_file()]
+    return {"window_cst": "snapshot", "window_start": min(stamps).isoformat() if stamps else None,
+            "window_end": max(stamps).isoformat() if stamps else None,
+            "source_as_of": max(stamps).isoformat() if stamps else None,
+            "sample_size": sample_size, "coverage_status": "healthy" if sample_size and stamps else "unknown",
+            "freshness_basis": "source_file_mtime"}
+
+
+def _usage_records(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    start, end = _window_bounds()
+    records = []
+    with path.open(encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
+            if not isinstance(rec, dict):
+                raise ValueError(f"invalid usage record at {path}:{number}")
+            stamp = next((_observed_at(rec[key]) for key in ("ts", "timestamp", "created_at", "observed_at")
+                          if rec.get(key)), None)
+            if stamp and start <= stamp < end:
+                rec["_observed_at"] = stamp
+                records.append(rec)
+    return records
+
+
 def compute_agent_efficiency(
     warehouse_db: Path | None = None,
     magpie_usage: Path | None = None,
     copilot_db: Path | None = None,
 ) -> dict[str, Any]:
-    """Compute M1-M5 Agent Efficiency metrics & improvement gaps."""
+    """Compute M1-M5 from timestamped observations in seven natural CST days."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     mp = magpie_usage or DEFAULT_MAGPIE_USAGE
     cp = copilot_db or DEFAULT_COPILOT_DB
-
-    # M1: Review Ping-Pong (审核与修复往返拉锯，重点监控 R1 FAIL 与 Round >= 2/3)
-    m1: dict[str, Any] = {
-        "reviewed_tasks": 0,
-        "r1_fail_tasks": 0,
-        "r1_fail_rate": None,
-        "floor_max_r1_fail_rate": 0.15,
-        "multi_round_review_tasks": [],
-        "round_3_plus_tasks": [],
-        "breached": False,
-    }
-    blocked_events_7d = 0
+    review_rows, event_rows, edit_rows = [], [], []
     if wh.is_file():
-        with sqlite3.connect(f"file:{wh}?mode=ro", uri=True) as conn:
-            rows = conn.execute("""
-                SELECT goal_id, task_id, max(round_no) as max_round,
-                       sum(case when round_no = 1 and v5_verdict = 'FAIL' then 1 else 0 end) as r1_fail
-                FROM fact_gtt_task_run
-                WHERE role_name IN ('reviewer', 'code_reviewer', 'planner_reviewer')
-                GROUP BY goal_id, task_id
-            """).fetchall()
-            m1["reviewed_tasks"] = len(rows)
-            m1["r1_fail_tasks"] = sum(1 for r in rows if (r[3] or 0) > 0 or (r[2] or 1) >= 2)
-            m1["r1_fail_rate"] = round(m1["r1_fail_tasks"] / len(rows), 4) if rows else None
-            m1["multi_round_review_tasks"] = [
-                {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
-                for r in rows if (r[2] or 1) >= 2
-            ][:10]
-            m1["round_3_plus_tasks"] = [
-                {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
-                for r in rows if (r[2] or 1) >= 3
-            ]
-            m1["breached"] = m1["r1_fail_rate"] > m1["floor_max_r1_fail_rate"] or len(m1["round_3_plus_tasks"]) > 0
-            row_blk = conn.execute("""
-                SELECT count(*) FROM fact_gtt_event
-                WHERE evt_type = 'TASK_BLOCKED' AND cst_day >= date('now', '-7 days')
-            """).fetchone()
-            blocked_events_7d = int(row_blk[0] if row_blk else 0)
+        with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
+            review_rows = [r for r in _timed_rows(conn, "fact_gtt_task_run")
+                           if r.get("role_name") in {"reviewer", "code_reviewer", "planner_reviewer"}]
+            event_rows = [r for r in _timed_rows(conn, "fact_gtt_event") if r.get("evt_type") == "TASK_BLOCKED"]
+    grouped_reviews: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in review_rows:
+        grouped_reviews.setdefault((row["goal_id"], row["task_id"]), []).append(row)
+    reviews = [{"goal_id": goal, "task_id": task,
+                "max_round": max(int(r.get("round_no") or 1) for r in rows),
+                "r1_fail": any(int(r.get("round_no") or 1) == 1 and r.get("v5_verdict") == "FAIL" for r in rows),
+                "_observed_at": max(r["_observed_at"] for r in rows)}
+               for (goal, task), rows in grouped_reviews.items()]
+    failures = sum(r["r1_fail"] or r["max_round"] >= 2 for r in reviews)
+    rate = round(failures / len(reviews), 4) if reviews else None
+    m1 = {"reviewed_tasks": len(reviews), "r1_fail_tasks": failures, "r1_fail_rate": rate,
+          "floor_max_r1_fail_rate": 0.15,
+          "multi_round_review_tasks": [{k: r[k] for k in ("goal_id", "task_id", "max_round")} for r in reviews if r["max_round"] >= 2][:10],
+          "round_3_plus_tasks": [{k: r[k] for k in ("goal_id", "task_id", "max_round")} for r in reviews if r["max_round"] >= 3],
+          "breached": bool(rate is not None and (rate > 0.15 or any(r["max_round"] >= 3 for r in reviews))),
+          **_freshness([r["_observed_at"] for r in reviews], wh.is_file())}
 
-    # M2: File Edit Churn (从 ~/.copilot/session-store.db 统计同会话反复修改同一文件)
-    m2: dict[str, Any] = {
-        "high_churn_files": [],
-        "max_edits_single_file": 0,
-        "floor_max_edits_per_session": 5,
-        "breached": False,
-    }
     if cp.is_file():
-        try:
-            with sqlite3.connect(f"file:{cp}?mode=ro", uri=True) as conn:
-                churn_rows = conn.execute("""
-                    SELECT session_id, file_path, count(*) as edit_cnt
-                    FROM session_files
-                    WHERE tool_name = 'edit'
-                    GROUP BY session_id, file_path
-                    HAVING count(*) >= 5
-                    ORDER BY edit_cnt DESC
-                    LIMIT 8
-                """).fetchall()
-                m2["high_churn_files"] = [
-                    {"session_id": r[0][:8], "file_path": r[1], "edits": r[2]}
-                    for r in churn_rows
-                ]
-                m2["max_edits_single_file"] = churn_rows[0][2] if churn_rows else 0
-                m2["breached"] = len(m2["high_churn_files"]) > 0
-        except sqlite3.Error:
-            pass
+        with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+            edit_rows = [r for r in _timed_rows(conn, "session_files")
+                         if r.get("tool_name") in {"edit", "apply_patch", "create"}]
+    edits: dict[tuple[str, str], int] = {}
+    edit_stamps: dict[tuple[str, str], list[datetime]] = {}
+    for row in edit_rows:
+        key = (str(row.get("session_id") or ""), str(row.get("file_path") or ""))
+        edits[key] = edits.get(key, 0) + 1
+        edit_stamps.setdefault(key, []).append(row["_observed_at"])
+    churn = [{"session_id": sid[:8], "file_path": path, "edits": count, **_freshness(edit_stamps[(sid, path)])}
+             for (sid, path), count in sorted(edits.items(), key=lambda pair: (-pair[1], pair[0])) if count >= 5]
+    m2 = {"high_churn_files": churn[:8], "max_edits_single_file": max(edits.values(), default=0),
+          "floor_max_edits_per_session": 5, "breached": bool(churn),
+          **_freshness([r["_observed_at"] for r in edit_rows], cp.is_file())}
 
-    # M3, M4, M5 from ~/.config/magpie/usage.jsonl (recent 5000 records)
-    ttfts: list[int] = []
-    retries = 0
-    gateway_4xx = 0
-    total_reqs = 0
+    records = _usage_records(mp)
+    ttfts, retries, gateway_4xx = [], 0, 0
     group_tokens: dict[str, dict[str, int]] = {}
-    steering_tiny_outputs = 0
-    steering_reqs = 0
-    if mp.is_file():
-        try:
-            lines = mp.read_text(encoding="utf-8", errors="ignore").splitlines()[-5000:]
-            for ln in lines:
-                try:
-                    rec = json.loads(ln)
-                except json.JSONDecodeError:
-                    continue
-                total_reqs += 1
-                status_code = int(rec.get("status") or 200)
-                if status_code in (400, 401, 403, 422, 429):
-                    gateway_4xx += 1
-                req_model = str(rec.get("req") or rec.get("model") or "other")
-                grp = req_model if req_model.startswith("group/") else "direct"
-                in_t = int(rec.get("in") or 0)
-                out_t = int(rec.get("out") or 0)
-                cr_t = int(rec.get("cache_read") or 0)
-                bucket = group_tokens.setdefault(grp, {"in": 0, "out": 0, "cache_read": 0, "reqs": 0})
-                bucket["in"] += in_t
-                bucket["out"] += out_t
-                bucket["cache_read"] += cr_t
-                bucket["reqs"] += 1
-                if int(rec.get("tries") or 1) > 1 or int(rec.get("retried_ms") or 0) > 0:
-                    retries += 1
-                ttft = int(rec.get("ttft_ms") or 0)
-                if ttft > 0:
-                    ttfts.append(ttft)
-                if "steering" in grp:
-                    steering_reqs += 1
-                    if 0 < out_t < 80:
-                        steering_tiny_outputs += 1
-        except OSError:
-            pass
-
+    cache_stamps, token_stamps = [], []
+    steering_tiny_outputs, steering_reqs = 0, 0
+    for rec in records:
+        status = int(rec.get("status") or 200)
+        gateway_4xx += status in (400, 401, 403, 422, 429)
+        retries += int(rec.get("tries") or 1) > 1 or int(rec.get("retried_ms") or 0) > 0
+        ttft = int(rec.get("ttft_ms") or 0)
+        if ttft > 0:
+            ttfts.append(ttft)
+        req_model = str(rec.get("req") or rec.get("model") or "other")
+        group = req_model if req_model.startswith("group/") else "direct"
+        in_t, out_t, cr_t = (int(rec.get(key) or 0) for key in ("in", "out", "cache_read"))
+        if in_t + cr_t > 0:
+            cache_stamps.append(rec["_observed_at"])
+        if in_t + out_t + cr_t > 0:
+            token_stamps.append(rec["_observed_at"])
+            bucket = group_tokens.setdefault(group, {"in": 0, "out": 0, "cache_read": 0})
+            bucket["in"] += in_t
+            bucket["out"] += out_t
+            bucket["cache_read"] += cr_t
+            if "steering" in group:
+                steering_reqs += 1
+                steering_tiny_outputs += 0 < out_t < 80
     ttfts.sort()
-    p90_ttft = ttfts[int(len(ttfts) * 0.9)] if ttfts else 0
-    retry_rate = round(retries / total_reqs, 4) if total_reqs else 0.0
-    m3 = {
-        "sampled_requests": total_reqs,
-        "p90_ttft_ms": p90_ttft if ttfts else None,
-        "floor_max_p90_ttft_ms": 3000,
-        "retry_rate": retry_rate if total_reqs else None,
-        "gateway_4xx_count": gateway_4xx,
-        "blocked_events_7d": blocked_events_7d,
-        "breached": bool(total_reqs and (p90_ttft > 3000 or retry_rate > 0.05 or gateway_4xx > 0)),
-    }
-
+    total_reqs = len(records)
+    p90 = ttfts[min(len(ttfts) - 1, max(0, (len(ttfts) * 90 + 99) // 100 - 1))] if ttfts else None
+    retry_rate = round(retries / total_reqs, 4) if total_reqs else None
+    m3 = {"sampled_requests": total_reqs, "p90_ttft_ms": p90, "ttft_sample_size": len(ttfts),
+          "floor_max_p90_ttft_ms": 3000, "retry_rate": retry_rate, "gateway_4xx_count": gateway_4xx,
+          "blocked_events_7d": len(event_rows),
+          "blocked_events_freshness": _freshness([r["_observed_at"] for r in event_rows], wh.is_file()),
+          "breached": bool(total_reqs and ((p90 or 0) > 3000 or retry_rate > 0.05 or gateway_4xx)),
+          **_freshness([r["_observed_at"] for r in records], mp.is_file())}
     total_in = sum(b["in"] for b in group_tokens.values())
     total_cr = sum(b["cache_read"] for b in group_tokens.values())
-    overall_cache_hit = round(total_cr / (total_in + total_cr), 4) if (total_in + total_cr) > 0 else None
-    by_group_cache = {
-        g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if (b["in"] + b["cache_read"]) > 0 else None
-        for g, b in group_tokens.items()
-    }
-    m4 = {
-        "overall_cache_hit_rate": overall_cache_hit,
-        "floor_min_cache_hit_rate": 0.75,
-        "by_group": by_group_cache,
-        "breached": bool(total_in + total_cr and overall_cache_hit is not None and overall_cache_hit < 0.75),
-    }
-
-    total_all_tokens = sum(b["in"] + b["out"] + b["cache_read"] for b in group_tokens.values())
-    steering_tokens = sum(
-        b["in"] + b["out"] + b["cache_read"]
-        for g, b in group_tokens.items() if "steering" in g
-    )
-    steering_share = round(steering_tokens / total_all_tokens, 4) if total_all_tokens > 0 else None
-    m5 = {
-        "steering_token_share": steering_share,
-        "floor_max_steering_share": 0.35,
-        "steering_tiny_output_ratio": round(steering_tiny_outputs / steering_reqs, 4) if steering_reqs else None,
-        "breached": bool(total_all_tokens and steering_share is not None and steering_share > 0.35),
-    }
+    overall_cache_hit = round(total_cr / (total_in + total_cr), 4) if total_in + total_cr else None
+    m4 = {"overall_cache_hit_rate": overall_cache_hit, "floor_min_cache_hit_rate": 0.75,
+          "by_group": {g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if b["in"] + b["cache_read"] else None
+                       for g, b in group_tokens.items()},
+          "breached": overall_cache_hit is not None and overall_cache_hit < 0.75,
+          **_freshness(cache_stamps, mp.is_file())}
+    total_tokens = sum(b["in"] + b["out"] + b["cache_read"] for b in group_tokens.values())
+    steering_tokens = sum(b["in"] + b["out"] + b["cache_read"] for g, b in group_tokens.items() if "steering" in g)
+    share = round(steering_tokens / total_tokens, 4) if total_tokens else None
+    m5 = {"steering_token_share": share, "floor_max_steering_share": 0.35,
+          "steering_tiny_output_ratio": round(steering_tiny_outputs / steering_reqs, 4) if steering_reqs else None,
+          "breached": share is not None and share > 0.35, **_freshness(token_stamps, mp.is_file())}
+    observed = [r["_observed_at"] for r in reviews + edit_rows + records + event_rows]
+    freshness = _freshness(observed, wh.is_file() or cp.is_file() or mp.is_file())
+    eff_as_of, eff_cov, eff_sample = (freshness[k] for k in ("source_as_of", "coverage_status", "sample_size"))
 
     recommendations: list[dict[str, Any]] = []
-    eff_as_of = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
-    eff_sample = max(m1["reviewed_tasks"], total_reqs, len(m2["high_churn_files"]))
-    eff_cov = "healthy" if eff_sample > 0 else ("unknown" if wh.is_file() or mp.is_file() else "missing")
 
     if m1["breached"]:
         multi_str = ", ".join(f"{t['goal_id']}/{t['task_id']}(r{t['max_round']})" for t in m1["round_3_plus_tasks"][:4])
@@ -1587,12 +1446,15 @@ def compute_agent_efficiency(
             "coverage_status": eff_cov,
         })
 
+    for proposal in recommendations:
+        metric = {"m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": m5}[proposal["id"].split("-")[1]]
+        proposal.update({key: metric[key] for key in freshness})
+        proposal["detail"] = proposal["detail"].split(" | window_cst=")[0] + (
+            f" | window_cst=7d | source_as_of={metric['source_as_of']} | sample_size={metric['sample_size']}")
+
     return {
         "ok": True,
-        "window_cst": "7d",
-        "source_as_of": eff_as_of,
-        "sample_size": eff_sample,
-        "coverage_status": eff_cov,
+        **freshness,
         "metrics": {
             "M1_review_ping_pong": m1,
             "M2_edit_churn": m2,
@@ -1604,12 +1466,52 @@ def compute_agent_efficiency(
     }
 
 
+@contextlib.contextmanager
+def _proposal_lock(path: Path):
+    sidecar = path.with_name(path.name + ".lock")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with sidecar.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _proposal_history(path: Path) -> dict[str, dict[str, Any]]:
+    records = {}
+    if path.is_file():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid proposal history JSON at {path}:{number}") from exc
+            if not isinstance(rec, dict) or any(not str(rec.get(k) or "").strip() for k in ("id", "ts", "agent", "title")):
+                raise ValueError(f"incomplete proposal history record at {path}:{number}")
+            if _observed_at(rec["ts"]) is None:
+                raise ValueError(f"invalid proposal timestamp at {path}:{number}")
+            records[str(rec["id"])] = rec
+    return records
+
+
+def _queue_recommendations(candidates: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
+    queued = []
+    for candidate in candidates:
+        result = route_retro_candidate(candidate, proposals_path=path, deduplicate_pending=True)
+        if result["decision"] != "already_pending":
+            queued.append(result)
+    return queued
+
+
 def route_retro_candidate(
     candidate: dict[str, Any],
     mode: str = "observe",
     starred: bool = False,
     proposals_path: Path | None = None,
     linear_runner: Callable[..., Any] | None = None,
+    deduplicate_pending: bool = False,
 ) -> dict[str, Any]:
     raw_prio = str(candidate.get("priority", "high")).strip().lower()
     norm_prio = raw_prio if raw_prio in {"high", "medium", "low"} else "high"
@@ -1627,20 +1529,30 @@ def route_retro_candidate(
         "recommended_layer",
         "verify_cmd",
         "window_cst",
+        "window_start",
+        "window_end",
+        "estimated",
+        "estimation_method",
         "source_as_of",
         "sample_size",
         "coverage_status",
         "scope",
     ):
-        if candidate.get(extra_key) is not None:
+        if extra_key in candidate:
             proposal[extra_key] = candidate[extra_key]
     proposal.setdefault("scope", "personal")
+    if any(not str(proposal[key] or "").strip() for key in ("id", "ts", "agent", "title")):
+        raise ValueError("proposal requires nonempty id/ts/agent/title")
     if mode == "observe" and not starred:
         if proposals_path is None:
             raise ValueError("proposals_path is required for observe mode")
-        proposals_path.parent.mkdir(parents=True, exist_ok=True)
-        with proposals_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(proposal, ensure_ascii=False) + "\n")
+        with _proposal_lock(proposals_path):
+            history = _proposal_history(proposals_path)
+            prior = history.get(proposal["id"])
+            if deduplicate_pending and prior and prior.get("status") == "pending":
+                return {"decision": "already_pending", "promoted": False, "proposal": prior}
+            with proposals_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(proposal, ensure_ascii=False) + "\n")
         return {"decision": "observe (queued_to_aidash)", "promoted": False, "proposal": proposal}
     if linear_runner is None:
         raise ValueError("linear_runner is required for promotion")
@@ -1685,26 +1597,7 @@ def main(argv: list[str] | None = None) -> int:
         ns = p.parse_args(args_list[1:])
         report = compute_agent_efficiency(ns.warehouse_db, ns.magpie_usage, ns.copilot_db)
         if ns.auto_propose:
-            existing_pending: set[str] = set()
-            if ns.proposals_path and ns.proposals_path.is_file():
-                for line in ns.proposals_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        rec_obj = json.loads(line)
-                        if isinstance(rec_obj, dict) and rec_obj.get("id"):
-                            if str(rec_obj.get("status", "pending")).lower() == "pending":
-                                existing_pending.add(str(rec_obj["id"]))
-                            else:
-                                existing_pending.discard(str(rec_obj["id"]))
-                    except json.JSONDecodeError:
-                        continue
-            queued = []
-            for rec in report.get("recommendations", []):
-                if rec["id"] not in existing_pending:
-                    queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
-                    existing_pending.add(rec["id"])
-            report["auto_proposed"] = queued
+            report["auto_proposed"] = _queue_recommendations(report.get("recommendations", []), ns.proposals_path)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args_list and args_list[0] == "skill-roi":
@@ -1713,6 +1606,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--copilot-db", type=Path, default=DEFAULT_COPILOT_DB)
         p.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
         p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
+        p.add_argument("--magpie-usage", type=Path, default=DEFAULT_MAGPIE_USAGE)
+        p.add_argument("--dsh-sessions", type=Path, default=DEFAULT_DSH_SESSIONS)
         p.add_argument("--auto-propose", action="store_true")
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
@@ -1721,28 +1616,11 @@ def main(argv: list[str] | None = None) -> int:
             copilot_db=ns.copilot_db,
             skills_root=ns.skills_root,
             dev_root=ns.dev_root,
+            magpie_usage=ns.magpie_usage,
+            dsh_sessions=ns.dsh_sessions,
         )
         if ns.auto_propose:
-            existing_pending: set[str] = set()
-            if ns.proposals_path and ns.proposals_path.is_file():
-                for line in ns.proposals_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        rec_obj = json.loads(line)
-                        if isinstance(rec_obj, dict) and rec_obj.get("id"):
-                            if str(rec_obj.get("status", "pending")).lower() == "pending":
-                                existing_pending.add(str(rec_obj["id"]))
-                            else:
-                                existing_pending.discard(str(rec_obj["id"]))
-                    except json.JSONDecodeError:
-                        continue
-            queued = []
-            for rec in report.get("low_roi_proposals", []):
-                if rec["id"] not in existing_pending:
-                    queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
-                    existing_pending.add(rec["id"])
-            report["auto_proposed"] = queued
+            report["auto_proposed"] = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args_list and args_list[0] == "propose":

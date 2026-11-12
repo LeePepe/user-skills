@@ -73,6 +73,12 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 | **M4** | **Prompt Cache 命中率 (`M4_cache_efficiency`)** | 各逻辑组 `>= 75%` | 检查会话粘性（`stays`）与固定前缀稳定性 |
 | **M5** | **主控与写者分流比 (`M5_steering_vs_coding_split`)** | `steering` Token 占比 `<= 35%` | 确保重度编码由 `group/coding` 承担，主控只做规划与裁决 |
 
+### 观测与元数据合同
+
+M1–M5 使用包含今天的七个 CST 自然日，`window_start` 含边界、`window_end` 不含边界；只统计真实时间戳，缺时间列的旧 schema 返回 unknown，不能把全历史贴上 7d。`source_as_of` 是对应样本最大观测时间，不是生成日期。S1/S3 是实际检查快照，使用 `snapshot` 窗口；技能行明确标注 30d 使用/会话口径与独立 R1 freshness。
+
+保留 `S1_pin_drift`、`S2_gate_catch`、`S3_skill_health`、`S4_usage_and_r1`、`S6`–`S12` 既有键（不造 S5）。每对象/行/提案保留窗口、观测时间、样本量和覆盖状态；无样本的率/ROI 为 null。S11 分片、S12 工具 Token 与技能归因是 `estimated:true` 代理，不是实测；不推算“90% 压缩节省”。所有提案历史校验和幂等追加持有同一个 `proposals.jsonl.lock`，损坏历史显式失败。
+
 ## Return path & CLI 用法
 
 已确认结论经 `AIDash` 展示与普通提案 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task；学习候选仍须遵守 `learning-topic://` 的独立探索与发布授权：

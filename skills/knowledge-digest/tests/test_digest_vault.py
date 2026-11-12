@@ -130,7 +130,7 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
             root = Path(tmp)
             mp = root / "usage.jsonl"
             records = [
-                {"status": 429, "req": "group/steering", "in": 5000, "out": 40, "cache_read": 100, "ttft_ms": 4500, "tries": 2}
+                {"ts": RETRO_ENGINE.datetime.now(RETRO_ENGINE.timezone.utc).isoformat(), "status": 429, "req": "group/steering", "in": 5000, "out": 40, "cache_read": 100, "ttft_ms": 4500, "tries": 2}
                 for _ in range(10)
             ]
             mp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
@@ -153,11 +153,13 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
                 copilot_db=root / "missing_cp.db",
                 skills_root=root / "empty_skills",
                 dev_root=root / "empty_dev",
+                magpie_usage=root / "missing_usage.jsonl",
+                dsh_sessions=root / "missing_dsh",
             )
             self.assertEqual(s_roi["window_cst"], "7d")
             self.assertEqual(s_roi["coverage_status"], "missing")
             self.assertIsNone(s_roi["S2_gate_catch"]["gate_catch_rate"])
-            self.assertEqual(s_roi["S2_gate_catch"]["coverage_status"], "unknown")
+            self.assertEqual(s_roi["S2_gate_catch"]["coverage_status"], "missing")
 
 
 if __name__ == "__main__":
