@@ -46,6 +46,12 @@
       "description": "M2-Dispatcher（常驻域主 Bot、Cindy 与交互式 CLI 入口）编排后台 Herdr Goal Steering (TL) 的生命周期合同：开 TL、热追加、巡检解卡与 Goal/Task 完结回收。"
     },
     {
+      "name": "personal-m2-assistant",
+      "source": "./skills/personal-m2-assistant",
+      "category": "workflow",
+      "description": "个人跨 M2 唯一入口：语义拆解、业务话题映射、Owner Gate 预览、按 wave 派发及安全清理旧 M2。"
+    },
+    {
       "name": "code-review",
       "source": "./skills/code-review",
       "category": "repo",

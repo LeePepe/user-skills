@@ -55,14 +55,14 @@ export function isLikelyImageArgument(rawArgs: string): boolean {
 export const UNIVERSAL_SHORTCUT_MACROS: Readonly<Record<ShortcutMacroName, ShortcutMacroDefinition>> = {
 	m2: {
 		name: "m2",
-		skill: "m2-dispatcher",
-		description: "Route a cross-M2 instruction through m2-router.py --plan, pause for Owner approval, then apply only after explicit confirmation.",
+		skill: "personal-m2-assistant",
+		description: "Route a cross-M2 instruction through the canonical personal-m2-assistant router --plan, pause for Owner approval, then apply only after explicit confirmation.",
 		argumentHint: "<cross_m2_instruction>",
 		expand: (rawArgs: string): string => {
 			const trimmed = rawArgs.trim();
 			return [
-				"/m2-dispatcher",
-				"Shortcut `/m2`: run `m2-router.py --plan` first, show the per-M2 wave/status/sub-prompt preview, and use `ask_user` for the Owner Gate. Only after Owner approval, run `m2-router.py --apply --plan-file <approved-plan.json> --approve`.",
+				"/personal-m2-assistant",
+				"Shortcut `/m2`: run `python3 skills/personal-m2-assistant/scripts/m2-router.py --plan` first, show the per-M2 wave/status/sub-prompt preview, and use `ask_user` for the Owner Gate. Only after Owner approval, run `python3 skills/personal-m2-assistant/scripts/m2-router.py --apply --plan-file <approved-plan.json> --approve`.",
 				...(trimmed ? [`Cross-M2 instruction: ${trimmed}`] : []),
 			].join("\n");
 		},

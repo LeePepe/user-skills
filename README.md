@@ -21,6 +21,8 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`m2-dispatcher`](./skills/m2-dispatcher/SKILL.md)是 `M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `team-lead` 提供。
 
+[`personal-m2-assistant`](./skills/personal-m2-assistant/SKILL.md) 是跨仓/跨会话的个人 M2 唯一入口：`/personal-m2-assistant` 与 `/m2` 先生成带话题映射、wave、完整子指令及 `EXISTING_M2`/`NEW_M2` 的 Owner Gate 计划，明确批准后才派发；`m2-dispatcher` 的旧 router 路径保留兼容 wrapper。
+
 ### `m2-dispatcher` 与 `team-lead` 脚本及参考文档职责划分（100% 路径兼容）
 
 | 类别 | 规范入口与兼容软链路径 | 包含文件与职责 |
@@ -54,6 +56,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install linear-board@user-skills
 /plugin install team-lead@user-skills
 /plugin install m2-dispatcher@user-skills
+/plugin install personal-m2-assistant@user-skills
 /plugin install code-review@user-skills
 /plugin install m2-dispatcher@user-skills
 /plugin install xcode-cli@user-skills
@@ -73,6 +76,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/linear-board 安装 linear-board。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/personal-m2-assistant 安装 personal-m2-assistant。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。

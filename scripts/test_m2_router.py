@@ -10,10 +10,11 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTER_PATH = ROOT / "skills" / "m2-dispatcher" / "scripts" / "m2-router.py"
+CANONICAL_ROUTER_PATH = ROOT / "skills" / "personal-m2-assistant" / "scripts" / "m2-router.py"
 
 
-def load_router():
-    spec = importlib.util.spec_from_file_location("m2_router", ROUTER_PATH)
+def load_router(path=ROUTER_PATH):
+    spec = importlib.util.spec_from_file_location("m2_router", path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
@@ -24,6 +25,13 @@ class M2RouterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.router = load_router()
+
+    def test_canonical_router_is_source_and_legacy_path_delegates(self):
+        canonical = load_router(CANONICAL_ROUTER_PATH)
+        self.assertEqual(self.router.SCHEMA_VERSION, canonical.SCHEMA_VERSION)
+        self.assertEqual(self.router.DEFAULT_DOMAIN_MAP_PATH, canonical.DEFAULT_DOMAIN_MAP_PATH)
+        self.assertIn("personal-m2-assistant", ROUTER_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(self.router.load_domain_map()["path"], canonical.load_domain_map()["path"])
 
     def test_discovery_normalizes_herdr_and_dsh_and_ignores_terminal_agents(self):
         herdr, warnings = self.router.discover_herdr(payload={"result": {"agents": [
