@@ -889,10 +889,16 @@ def compute_skill_roi_diagnostics(
         "total_runs_7d": 0,
         "true_positive_catches_7d": 0,
         "config_or_rerun_noise_7d": 0,
-        "gate_catch_rate": 0.0,
-        "noise_rate": 0.0,
+        "gate_catch_rate": None,
+        "noise_rate": None,
+        "window_cst": "7d",
+        "source_as_of": datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
+        "sample_size": 0,
+        "coverage_status": "unknown",
     }
 
+    source_as_of = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    sample_turns = 0
     # 1. Read warehouse.db (fact_turn, fact_gtt_task_run, fact_gtt_event, fact_ci_*)
     if wh.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
@@ -900,13 +906,20 @@ def compute_skill_roi_diagnostics(
                 r[0]
                 for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
+            if "fact_turn" in tables:
+                max_day_row = conn.execute("SELECT MAX(cst_day), COUNT(*) FROM fact_turn").fetchone()
+                if max_day_row and max_day_row[0]:
+                    source_as_of = str(max_day_row[0])
+                if max_day_row and max_day_row[1]:
+                    sample_turns = int(max_day_row[1] or 0)
             if "fact_ci_job_run" in tables:
                 row_ci = conn.execute(
                     """
                     SELECT
                         COUNT(*),
                         SUM(CASE WHEN failure_category IN ('true_positive_gate', 'build_or_test_failure') THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN failure_category LIKE 'config_drift_%' OR failure_category = 'runner_capacity_or_sim' THEN 1 ELSE 0 END)
+                        SUM(CASE WHEN failure_category LIKE 'config_drift_%' OR failure_category = 'runner_capacity_or_sim' THEN 1 ELSE 0 END),
+                        MAX(cst_day)
                     FROM fact_ci_job_run
                     WHERE cst_day >= date('now', '-7 days')
                     """
@@ -915,12 +928,20 @@ def compute_skill_roi_diagnostics(
                     total_j = int(row_ci[0] or 0)
                     catches = int(row_ci[1] or 0)
                     noise = int(row_ci[2] or 0)
+                    ci_as_of = str(row_ci[3] or source_as_of)
                     s2_gate["total_runs_7d"] = total_j
                     s2_gate["true_positive_catches_7d"] = catches
                     s2_gate["config_or_rerun_noise_7d"] = noise
+                    s2_gate["sample_size"] = total_j
+                    s2_gate["source_as_of"] = ci_as_of
                     denom = catches + noise
-                    s2_gate["gate_catch_rate"] = round(catches / denom, 4) if denom > 0 else 1.0
-                    s2_gate["noise_rate"] = round(noise / total_j, 4) if total_j > 0 else 0.0
+                    if denom > 0:
+                        s2_gate["gate_catch_rate"] = round(catches / denom, 4)
+                        s2_gate["coverage_status"] = "healthy"
+                    else:
+                        s2_gate["gate_catch_rate"] = 1.0 if total_j > 0 else None
+                        s2_gate["coverage_status"] = "healthy" if total_j > 0 else "unknown"
+                    s2_gate["noise_rate"] = round(noise / total_j, 4) if total_j > 0 else None
 
             if "fact_turn" in tables:
                 turn_rows = conn.execute(
@@ -1246,8 +1267,25 @@ def compute_skill_roi_diagnostics(
     )
     proposals.extend(burn_proposals[:2])
 
+    total_sample_size = max(
+        sample_turns,
+        sum(r["loads_30d"] + r["r1_total"] for r in skill_rows),
+        int(s2_gate["total_runs_7d"] or 0),
+    )
+    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if wh.is_file() else "missing")
+
+    for p_item in proposals:
+        p_item.setdefault("window_cst", "7d")
+        p_item.setdefault("source_as_of", source_as_of)
+        p_item.setdefault("sample_size", total_sample_size)
+        p_item.setdefault("coverage_status", cov_status)
+
     return {
         "ok": True,
+        "window_cst": "7d",
+        "source_as_of": source_as_of,
+        "sample_size": total_sample_size,
+        "coverage_status": cov_status,
         "S1_pin_drift": s1_pins,
         "S2_gate_catch": s2_gate,
         "S3_skill_health": s3_health,
@@ -1460,26 +1498,99 @@ def compute_agent_efficiency(
         "breached": steering_share > 0.35,
     }
 
-    recommendations: list[dict[str, str]] = []
+    recommendations: list[dict[str, Any]] = []
+    eff_as_of = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    eff_sample = max(m1["reviewed_tasks"], total_reqs, len(m2["high_churn_files"]))
+    eff_cov = "healthy" if eff_sample > 0 else ("unknown" if wh.is_file() or mp.is_file() else "missing")
+
     if m1["breached"]:
         multi_str = ", ".join(f"{t['goal_id']}/{t['task_id']}(r{t['max_round']})" for t in m1["round_3_plus_tasks"][:4])
         recommendations.append({
             "id": "improve-m1-review-pingpong",
+            "ref": "proposal://improve-m1-review-pingpong",
             "title": f"缩减审核返工拉锯：R1 打回率 {m1['r1_fail_rate']*100:.1f}%（{len(m1['round_3_plus_tasks'])} 项达 r3+）",
-            "detail": f"多轮审核拉锯任务：{multi_str or '见 multi_round_review_tasks'}。建议将 Reviewer 打回的高频项前移至 Writer 提交前的内环 L1/G2 脚本预检。",
+            "detail": (
+                f"多轮审核拉锯任务：{multi_str or '见 multi_round_review_tasks'}。"
+                f"建议将 Reviewer 打回的高频项前移至 Writer 提交前的内环 L1/G2 脚本预检。"
+                f" | window_cst=7d | source_as_of={eff_as_of} | sample_size={m1['reviewed_tasks']}"
+            ),
             "priority": "high",
+            "window_cst": "7d",
+            "source_as_of": eff_as_of,
+            "sample_size": m1["reviewed_tasks"],
+            "coverage_status": eff_cov,
         })
     if m2["breached"]:
         top_f = m2["high_churn_files"][0]
         recommendations.append({
             "id": "improve-m2-edit-churn",
+            "ref": "proposal://improve-m2-edit-churn",
             "title": f"降低文件反复擦写：单会话最高连改 {top_f['edits']} 次 ({Path(top_f['file_path']).name})",
-            "detail": f"文件 {top_f['file_path']} 在单次会话中被反复 edit {top_f['edits']} 次，建议补充局部契约或拆分深模块。",
+            "detail": (
+                f"文件 {top_f['file_path']} 在单次会话中被反复 edit {top_f['edits']} 次，建议补充局部契约或拆分深模块。"
+                f" | window_cst=7d | source_as_of={eff_as_of} | sample_size={len(m2['high_churn_files'])}"
+            ),
             "priority": "medium",
+            "window_cst": "7d",
+            "source_as_of": eff_as_of,
+            "sample_size": len(m2["high_churn_files"]),
+            "coverage_status": eff_cov,
+        })
+    if m3["breached"]:
+        recommendations.append({
+            "id": "improve-m3-gateway-flow",
+            "ref": "proposal://improve-m3-gateway-flow",
+            "title": f"治理网关阻塞与首字延迟：P90 TTFT {m3['p90_ttft_ms']}ms · 4xx 错误 {m3['gateway_4xx_count']} 次",
+            "detail": (
+                f"采样 {m3['sampled_requests']} 次请求中 P90 TTFT={m3['p90_ttft_ms']}ms (阈值 3000ms)，"
+                f"重试率={m3['retry_rate']*100:.1f}%，4xx={m3['gateway_4xx_count']} 次，近 7d TASK_BLOCKED={m3['blocked_events_7d']} 次。"
+                f"建议收紧路由超时回退与配额预检锁。"
+                f" | window_cst=7d | source_as_of={eff_as_of} | sample_size={m3['sampled_requests']}"
+            ),
+            "priority": "high",
+            "window_cst": "7d",
+            "source_as_of": eff_as_of,
+            "sample_size": m3["sampled_requests"],
+            "coverage_status": eff_cov,
+        })
+    if m4["breached"]:
+        recommendations.append({
+            "id": "improve-m4-cache-efficiency",
+            "ref": "proposal://improve-m4-cache-efficiency",
+            "title": f"提升 KV Cache 命中率：当前 {m4['overall_cache_hit_rate']*100:.1f}% 低于 75% 基准线",
+            "detail": (
+                f"整体缓存命中率 {m4['overall_cache_hit_rate']*100:.1f}% 偏低，建议固定 System/AGENTS.md 前缀顺序并减少跨轮动态注入抖动。"
+                f" | window_cst=7d | source_as_of={eff_as_of} | sample_size={total_reqs}"
+            ),
+            "priority": "medium",
+            "window_cst": "7d",
+            "source_as_of": eff_as_of,
+            "sample_size": total_reqs,
+            "coverage_status": eff_cov,
+        })
+    if m5["breached"]:
+        recommendations.append({
+            "id": "improve-m5-steering-token-share",
+            "ref": "proposal://improve-m5-steering-token-share",
+            "title": f"收敛 Steering 主控 Token 占比：当前 {m5['steering_token_share']*100:.1f}% 超出 35% 预算",
+            "detail": (
+                f"Steering 消耗占比达 {m5['steering_token_share']*100:.1f}%（短输出占比 {m5['steering_tiny_output_ratio']*100:.1f}%），"
+                f"建议将 >3 文件实现与大日志探查下沉至 Writer / Layer-0 脚本。"
+                f" | window_cst=7d | source_as_of={eff_as_of} | sample_size={total_reqs}"
+            ),
+            "priority": "medium",
+            "window_cst": "7d",
+            "source_as_of": eff_as_of,
+            "sample_size": total_reqs,
+            "coverage_status": eff_cov,
         })
 
     return {
         "ok": True,
+        "window_cst": "7d",
+        "source_as_of": eff_as_of,
+        "sample_size": eff_sample,
+        "coverage_status": eff_cov,
         "metrics": {
             "M1_review_ping_pong": m1,
             "M2_edit_churn": m2,
@@ -1513,9 +1624,15 @@ def route_retro_candidate(
         "stack_top_symbol",
         "recommended_layer",
         "verify_cmd",
+        "window_cst",
+        "source_as_of",
+        "sample_size",
+        "coverage_status",
+        "scope",
     ):
-        if candidate.get(extra_key):
+        if candidate.get(extra_key) is not None:
             proposal[extra_key] = candidate[extra_key]
+    proposal.setdefault("scope", "personal")
     if mode == "observe" and not starred:
         if proposals_path is None:
             raise ValueError("proposals_path is required for observe mode")
@@ -1566,9 +1683,25 @@ def main(argv: list[str] | None = None) -> int:
         ns = p.parse_args(args_list[1:])
         report = compute_agent_efficiency(ns.warehouse_db, ns.magpie_usage, ns.copilot_db)
         if ns.auto_propose:
+            existing_pending: set[str] = set()
+            if ns.proposals_path and ns.proposals_path.is_file():
+                for line in ns.proposals_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        rec_obj = json.loads(line)
+                        if isinstance(rec_obj, dict) and rec_obj.get("id"):
+                            if str(rec_obj.get("status", "pending")).lower() == "pending":
+                                existing_pending.add(str(rec_obj["id"]))
+                            else:
+                                existing_pending.discard(str(rec_obj["id"]))
+                    except json.JSONDecodeError:
+                        continue
             queued = []
             for rec in report.get("recommendations", []):
-                queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
+                if rec["id"] not in existing_pending:
+                    queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
+                    existing_pending.add(rec["id"])
             report["auto_proposed"] = queued
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0

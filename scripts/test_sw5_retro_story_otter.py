@@ -203,7 +203,12 @@ class Sw5Tests(unittest.TestCase):
             tools = root / "collected-tools"
             tools.mkdir(parents=True)
             (tools / "hallmark.md").write_text(
-                "# Hallmark\n\nAnti-AI-slop web design anatomy and multi-viewport linter.\n",
+                "# Hallmark\n\n## 実際に使ったメモ\n- `/design-studio` Entry A により統合済み（Vault `T-021`）。\n",
+                encoding="utf-8",
+            )
+            (tools / "repos" / "bama").mkdir(parents=True)
+            (tools / "repos" / "bama" / "README.md").write_text(
+                "# BAMA\n\nAgent CLI macOS story verification and architecture layering.\n",
                 encoding="utf-8",
             )
             proposals = root / "proposals.jsonl"
@@ -234,7 +239,9 @@ class Sw5Tests(unittest.TestCase):
                 for line in proposals.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            self.assertEqual(prop_records[0]["ref"], f"knowledge://{first_slug}")
+            self.assertEqual(prop_records[0]["ref"], f"learning-topic://{first_slug}")
+            self.assertEqual(prop_records[0]["source"], "Learning")
+            self.assertEqual(prop_records[0]["scope"], "personal")
 
             pub = DIGEST_VAULT.publish_blog(
                 slug=f"knowledge://{first_slug}",
@@ -247,6 +254,54 @@ class Sw5Tests(unittest.TestCase):
             html_out = Path(pub["output_html"]).read_text(encoding="utf-8")
             self.assertTrue(html_out.startswith("<!doctype html>"))
             self.assertEqual(DIGEST_VAULT.validate_dc006_to_008(html_out), [])
+
+    def test_learning_topic_dedup_hallmark_no_materialize_and_caps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vault = root / "knowledge-vault"
+            tools = root / "collected-tools"
+            (tools / "repos" / "hallmark").mkdir(parents=True)
+            (tools / "repos" / "awesome-cjk-design-md").mkdir(parents=True)
+            (tools / "repos" / "bama").mkdir(parents=True)
+            (tools / "hallmark.md").write_text(
+                "# Hallmark\n\n## 実際に使ったメモ\n- `/design-studio` Entry A により統合済み（Vault `T-021`、`DC-009`）。\n",
+                encoding="utf-8",
+            )
+            (tools / "repos" / "hallmark" / "README.md").write_text("# Hallmark Repo\n", encoding="utf-8")
+            (tools / "repos" / "awesome-cjk-design-md" / "README.md").write_text("# Awesome Design MD JP\n", encoding="utf-8")
+            (tools / "repos" / "bama" / "README.md").write_text("# BAMA\n", encoding="utf-8")
+            proposals = root / "proposals.jsonl"
+
+            disc = DIGEST_VAULT.discover_topics(
+                top=2,
+                propose_aidash=True,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=proposals,
+            )
+            self.assertTrue(disc["ok"])
+            self.assertEqual(disc["selected_count"], 1)
+            self.assertEqual(disc["topics"][0]["topic_key"], "jp-mixed-script-line-breaking")
+            self.assertFalse((vault / "concepts").exists())
+            self.assertEqual(len(disc["proposals_written"]), 1)
+            rec = disc["proposals_written"][0]
+            self.assertEqual(rec["ref"], "learning-topic://jp-mixed-script-line-breaking")
+            self.assertEqual(rec["source"], "Learning")
+            self.assertEqual(rec["learning_state"], "proposed")
+
+            # Re-running on the same CST day must enforce daily cap = 1 and return no_new_topic
+            disc2 = DIGEST_VAULT.discover_topics(
+                top=2,
+                propose_aidash=True,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=proposals,
+            )
+            self.assertEqual(disc2["status"], "no_new_topic")
+            self.assertEqual(disc2["reason"], "daily_cap_reached")
+            self.assertEqual(disc2["selected_count"], 0)
 
     def test_skill_roi_diagnostics_and_auto_propose(self):
         import contextlib
