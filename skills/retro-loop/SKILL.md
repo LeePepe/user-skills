@@ -64,23 +64,23 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 
 ## Agent 效率 5 大指标（`agent-efficiency`）与每日增量清理（`daily-cleanup`）
 
-| 指标 ID | 指标名称 | 保底线（Floor） | Improve 方向（不限制编码内环探索，重点消灭审核往返与无效损耗） |
+| 指标 ID | 指标名称 | 保底线（Floor） | 自动提案 (`--auto-propose`, `scope: "personal"`) |
 |---|---|---|---|
-| **M1** | **审核返工往返率 (`M1_review_ping_pong`)** | R1 打回率 `<= 15%`，**`r3+` 多轮拉锯 `== 0`** | 定位高频被 Reviewer 打回的 Task，把审查发现的问题前移到提交 Review 前的内环 L1/G2 脚本 |
-| **M2** | **文件反复擦写率 (`M2_edit_churn`)** | 单会话单文件 `edit <= 4 次` | 找出单会话被连改 `>=5 次` 的热点文件，补充局部契约或拆分深模块 |
-| **M3** | **流转延迟、阻塞与网关错误 (`M3_flow_and_blockers`)** | `P90 TTFT <= 3s`，网关 `400/403` 错误率 `== 0` | 监控网关协议 `400`/`403`、重试率与 `TASK_BLOCKED` 弹窗阻塞 |
-| **M4** | **Prompt Cache 命中率 (`M4_cache_efficiency`)** | 各逻辑组 `>= 75%` | 检查会话粘性（`stays`）与固定前缀稳定性 |
-| **M5** | **主控与写者分流比 (`M5_steering_vs_coding_split`)** | `steering` Token 占比 `<= 35%` | 确保重度编码由 `group/coding` 承担，主控只做规划与裁决 |
+| **M1** | **审核返工往返率 (`M1_review_ping_pong`)** | R1 打回率 `<= 15%`，**`r3+` 多轮拉锯 `== 0`** | `id="reduce-m1-ping-pong"` (`ref="retro://agent-efficiency-m1"`)：定位高频打回项，前移至提交 Review 前的 L1/G2 脚本 |
+| **M2** | **文件反复擦写率 (`M2_edit_churn`)** | 单会话单文件 `edit <= 4 次` | `id="reduce-m2-retry-tax"` (`ref="retro://agent-efficiency-m2"`)：找出单会话连改 `>=5 次` 热点文件，补充契约或拆深模块 |
+| **M3** | **流转延迟、阻塞与网关错误 (`M3_flow_and_blockers`)** | `P90 TTFT <= 3s`，网关 `400/403` 错误率 `== 0` | `id="improve-m3-automated-share"` (`ref="retro://agent-efficiency-m3"`)：监控协议 `4xx`、重试率与 `TASK_BLOCKED` 阻塞 |
+| **M4** | **Prompt Cache 命中率 (`M4_cache_efficiency`)** | 各逻辑组 `>= 75%` | `id="improve-m4-steer-autonomy"` (`ref="retro://agent-efficiency-m4"`)：稳定固定系统前缀与同会话粘性（`stays`） |
+| **M5** | **主控与写者分流及首轮绿灯率 (`M5_steering_vs_coding_split`)** | `steering` Token 占比 `<= 35%` | `id="improve-m5-first-pass-pr-green"` (`ref="retro://agent-efficiency-m5"`)：重度编码与本地验证交由 Writer，确保首轮绿灯 |
 
 ## Return path & CLI 用法
 
-已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task：
+已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task（每次写入 `proposals.jsonl` 均携带完整非空 `id, ts, agent, title, detail, priority, status, ref, scope: "personal"` 并按历史记录去重）：
 
 ```bash
-# 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash
+# 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash (含跨日 id/ref 去重)
 python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose
 
-# 2. 计算 S1–S4 与 S6–S10 Skill 效果与效率 ROI，将 Top 低 ROI Skill 写入 proposals.jsonl (ref="skill-roi://<skill>")
+# 2. 计算 S1–S4 与 S6–S12 Skill ROI（含 window_anchor: source_as_of / staleness_days / coverage_status）并写入 proposals.jsonl
 python3 skills/retro-loop/scripts/retro_story_engine.py skill-roi --auto-propose
 
 # 3. 从 aidata warehouse.db 扫描 L4 复盘视图信号

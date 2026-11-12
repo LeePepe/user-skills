@@ -75,21 +75,22 @@ user-invocable: true
 - `科学健康与生活`（生理机制、家电原理、日常理化现象等）
 - `叙事与表达技法`（科普脚本结构、视觉化拆解、隐喻教具库等，对应 `craft/`）
 
-### 沉淀工作流（Ingest & Dedupe Steps）
+### 沉淀与每日候选审批工作流（Candidate-Only -> Owner Gate -> Exploration）
 
-1. **先读索引去重**：读取 `~/Development/Personal/knowledge-vault/index.md`（或运行 `python3 skills/knowledge-digest/scripts/digest_vault.py discover-topics --top 2 --propose-aidash` 结合 Jev `R09` 自动扫描近期 Git 技术栈与 `collected-tools/` 缺口并推上 `AIDash` `proposals.jsonl`，`ref = "knowledge://<slug>"`）。若同一概念/技法已有卡片，**增量更新（append/refine）** 现有卡片，不重复新建近义文件。
-2. **按层落盘文件与 0-Token 归档**（文件名采用 kebab-case，骨架见 [templates.md](references/templates.md)，完整 L2 抽屉见 [card-templates.json](references/card-templates.json)）：
-   - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`；
-   - **好内容/脚本拆解（通道 B）**：原始素材存 `raw/<source-slug>.md`，概念卡存 `concepts/<concept-slug>.md`，制作技巧存 `craft/<craft-slug>.md`；
-   - **一键归档与索引同步**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py archive --slug <slug> --category <cat> --title "..." --file <md>` 自动归档并幂等更新 `index.md`。
-3. **点 Star 自动发布 Blog 飞轮**：当用户在 `AIDash` 对 `ref = "knowledge://<slug>"` 卡片点 **⭐ Star** 时，`event_bridge.py` 自动调用 `python3 skills/knowledge-digest/scripts/digest_vault.py publish-blog --slug <slug> --blog-repo ~/Development/leepepe.github.io` 渲染符合 `DC-006..008` 规范的静态文章。
-4. **工程与设计双入口联动钩子（Entry A1 -> Tier 1..3 Promotion Hook）**：当沉淀门类为 `工程与设计` 且涉及 **UI/UX、SwiftUI/AppKit/UIKit、Liquid Glass、Metal Shader、动效状态机或 Apple HIG**（如 WWDC 设计/UI 课程拆解）时，归档完个人知识库卡片后，**必须继续读取 [`../my-designer/references/design-flow-architecture.md`](../my-designer/references/design-flow-architecture.md) 的「Change Impact Matrix」**，按双入口防爆架构将可复用原语、原子灵感卡、紧凑规则与 0-Token 静态红线同步提升至 Tier 1–3（`design-studio` 与 `my-designer`），并运行 `python3 skills/my-designer/scripts/verify_design_cases.py flow-map` 校验预算健康度。
-5. **简短回报**：向用户展示讲解内容，并在末尾用 1–2 行告知已沉淀的卡片路径（及若触发工程与设计钩子时同步更新的 Tier 1–3 资产 ID）。
+1. **每日候选寻题（`--no-materialize` 铁律）**：读取 `~/Development/Personal/knowledge-vault/index.md` 与 `topic-ledger.json`；定时寻题运行 `python3 skills/knowledge-digest/scripts/digest_vault.py discover-topics --top 1 --no-materialize --propose-aidash` 合并 `collected-tools/` 19 个来源实体（笔记+克隆归一、排除已接入/已覆盖项与无具体问题的 `unknown` 克隆）、核对 4 目录（`concepts/craft/thoughts/raw` 含 `derived_concept`/`derived_craft`）覆盖与最近 7 天真实 Git 提交，按每日最多新增 1 题、pending 上限 3 题将候选写入 `proposals.jsonl`（`id = "learning-topic-<topic_key>"`、`ref = "learning-topic://<topic_key>"`、`source = "Learning"`、`scope = "personal"`）。**未获 Owner 逐卡 Approve 前绝不写 `concepts/<slug>.md` 或修改 `index.md`**。
+2. **Owner Gate 决定与探索门禁（`handle-learning-event`）**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py handle-learning-event --action <Approve|快速学习|深度调研|Done|Dismiss|Snooze|Star|sync_triage> --topic-key <topic_key> --event-id <id>`：
+   - 对 `learning-topic://` 点 **Star** 仅记录收藏回执（`action="bookmarked"`），**绝不触发 `publish-blog` 或 `design-studio`**；
+   - `sync_triage` 上云仅记为 `transferred`（保留 `topic_key ↔ origin_ref ↔ external_id`），不等同于探索批准；
+   - 仅当 Owner 显式 **Approve / 快速学习 / 深度调研** 后才进入探索并落盘知识卡；**Done** 记为 `learned (owner_reported)`，**Dismiss** 冷却 30 天且不自动复活，**Snooze** 延后 7 天；每次回写均写入完整非空 `id, ts, agent, title, detail, priority, status, ref`。
+3. **按层落盘文件与 0-Token 归档**（骨架见 [templates.md](references/templates.md)，完整 L2 抽屉见 [card-templates.json](references/card-templates.json)）：
+   - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`；**好内容拆解（通道 B）**：存 `raw/`、`concepts/`、`craft/`；
+   - **一键归档与索引同步**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py archive --slug <slug> --category <cat> --title "..." --file <md>` 幂等更新 `index.md`。
+4. **已归档知识卡发布 Blog**：仅针对已归档 `ref = "knowledge://<slug>"` 卡片，调用 `python3 skills/knowledge-digest/scripts/digest_vault.py publish-blog --slug <slug> --blog-repo ~/Development/leepepe.github.io` 渲染符合 `DC-006..008` 规范的静态文章。学习候选从不自动同步至 `design-studio`；仅当用户主动拆解 UI/UX 专题并明确要求沉淀设计资产时，才按 [`../my-designer/references/design-flow-architecture.md`](../my-designer/references/design-flow-architecture.md) 提升。
 
 ---
 
 ## References
 
 - [templates.md](references/templates.md) & [card-templates.json](references/card-templates.json) — `concepts/`、`craft/`、`thoughts/`、`raw/` 与 `index.md` 的标准骨架及 L2 模板抽屉。
-- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics`（含 Jev `R09` 重排与 `AIDash` 提案生成）与 `publish-blog`（`DC-006..008` 校验）CLI。
+- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics --no-materialize`（候选对账与配额门禁）、`handle-learning-event`（Owner 审批状态机）与 `publish-blog`（`DC-006..008` 校验）CLI。
 - [../my-designer/references/design-flow-architecture.md](../my-designer/references/design-flow-architecture.md) — `Entry A (Ingest) ⇄ Tier 0..3 ⇄ Entry B (Design)` 双入口知识流转与 4 道防信息爆炸物理阀门真源。
