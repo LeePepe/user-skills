@@ -113,20 +113,20 @@
         {
           "topic_id": "skills-research-knowledge",
           "group": "user-skills",
-          "title": "Skills Research and Knowledge",
+          "title": "Skills Research and Knowledge Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["deep-research", "knowledge-digest", "save-tool"],
-          "aliases": ["research", "knowledge", "digest"]
+          "keywords": ["deep-research", "knowledge-digest", "save-tool", "skill maintenance", "user-skills code"],
+          "aliases": ["research skill code", "knowledge skill maintenance", "digest implementation"]
         },
         {
           "topic_id": "skills-retro-story",
           "group": "user-skills",
-          "title": "Skills Retro and Story",
+          "title": "Skills Retro and Story Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["retro-loop", "story-craft"],
-          "aliases": ["retro", "story"]
+          "keywords": ["retro-loop", "story-craft", "skill maintenance", "user-skills code"],
+          "aliases": ["retro skill code", "story skill maintenance"]
         },
         {
           "topic_id": "skills-repo-ci",
@@ -222,13 +222,13 @@
           "aliases": ["nas", "smart home", "home assistant", "node red", "mijia"]
         },
         {
-          "topic_id": "personal-digest-tools",
+          "topic_id": "learning-and-blog",
           "group": "personal-products-home",
-          "title": "Personal Digest Tools",
+          "title": "学习与写博客",
           "target_repo": "Personal",
           "cwd": "~/Development/Personal",
-          "keywords": ["collected-tools", "daily-digest", "knowledge-vault"],
-          "aliases": ["personal digest", "daily digest", "knowledge vault"]
+          "keywords": ["学习", "写博客", "blog", "learn", "knowledge-digest", "story-craft", "save-tool", "knowledge-vault", "collected-tools", "技术博客"],
+          "aliases": ["learning", "blog writing", "knowledge vault", "technical blog", "daily digest"]
         }
       ]
     }

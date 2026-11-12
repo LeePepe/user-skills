@@ -65,9 +65,9 @@ python3 skills/m2-dispatcher/scripts/m2-router.py --apply \
   --plan-file plan.json --approve --json
 ```
 
-`--plan` 先让 Jev/Falcon (`:19823`) 在 [`references/m2-domain-map.json`](references/m2-domain-map.json) 的 23 个 `topic_id` 与 `NEW_UNMAPPED_DOMAIN` 中 `choice`，并以 `noul` 判断 `has_unmapped_domain`；再让 Magpie (`:3425`) 语义拆解并绑定会话。计划为每个 target 填 `topic_id`、`MAPPED_DOMAIN`/`NEW_DOMAIN_CANDIDATE`，并在预览与 `new_domain_candidates` 展示新领域提案。支持 `--domain-map-file`、`--mock-jev-json`、`--mock-magpie-json`、`--targets-json`；离线时才确定性兜底，不创建 session、不发送 prompt。
+`--plan` 先让 Jev/Falcon (`:19823`) 在 [`references/m2-domain-map.json`](references/m2-domain-map.json) 的 23 个 `topic_id` 与 `NEW_UNMAPPED_DOMAIN` 中 `choice`，再让 Magpie (`:3425`) 拆解并绑定会话；target 填 `topic_id`、`MAPPED_DOMAIN`/`NEW_DOMAIN_CANDIDATE`，预览显示新领域提案。`--apply` 需 `--approve`；仅 `--register-new-domains` 才写回候选映射。
 
-`--apply` 未带 `--approve` 会 fail-closed，按 wave 串行投递。只有 `--apply --approve --register-new-domains` 才会把 Owner 批准的候选追加到映射表；stdout 仅 dry-run，RAG 为显式 hook。
+每次 `--plan` 也扫描命中话题的 idle/重复 Herdr M2，预览 `stale_m2_candidates`；Owner 可在批准时用 `--cleanup-duplicates` 清重复窗格，或 `--replace-stale-m2` 关闭安全的 idle 旧窗并重开。保护 `HERDR_PANE_ID`、`w1:p1` 及 working/blocked 窗格。支持 `--domain-map-file`、`--mock-jev-json`、`--mock-magpie-json`、`--targets-json`；离线才兜底。
 
 计划 schema 与技术细节见 `~/Development/handoff/m2-unified-ingress/spec.md`；该入口对应 How-To 节点 I7（Unified M2 Ingress）。
 

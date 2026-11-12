@@ -300,6 +300,64 @@ class M2RouterTests(unittest.TestCase):
             registered = self.router.load_domain_map(map_path)
             self.assertEqual(len(registered["topics"]), 24)
 
+    def test_learning_and_blog_replaces_personal_digest_topic(self):
+        plan = self.router.build_plan(
+            "学习量子计算并把结果写成技术博客，归档到 knowledge-vault",
+            [],
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "Personal", "sub_prompt": "学习并写博客", "wave_order": 1}]},
+        )
+        self.assertEqual(plan["targets"][0]["topic_id"], "learning-and-blog")
+        self.assertEqual(plan["targets"][0]["domain_status"], "MAPPED_DOMAIN")
+
+    def _learning_sessions(self):
+        return [
+            {"session_id": "learn-old", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客", "status": "idle", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-old", "pane_id": "w2:p1", "workspace_id": "w2"},
+            {"session_id": "learn-duplicate", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客 (old)", "status": "idle", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-duplicate", "pane_id": "w2:p2", "workspace_id": "w2"},
+            {"session_id": "learn-working", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客 (active)", "status": "working", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-working", "pane_id": "w2:p3", "workspace_id": "w2"},
+        ]
+
+    def test_plan_surfaces_idle_and_duplicate_cleanup_candidates(self):
+        plan = self.router.build_plan(
+            "写一篇技术博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+        )
+        self.assertEqual({candidate["reason"] for candidate in plan["stale_m2_candidates"]}, {"idle_existing_m2", "duplicate_m2"})
+        self.assertEqual(len(plan["targets"][0]["cleanup_candidates"]), 2)
+        self.assertIn("Stale / Duplicate M2 Cleanup Candidates", self.router.preview_text(plan))
+        self.assertNotIn("learn-working", {candidate["session_id"] for candidate in plan["stale_m2_candidates"]})
+
+    def test_cleanup_duplicates_closes_only_duplicate_idle_panes(self):
+        plan = self.router.build_plan(
+            "写一篇技术博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+        )
+        calls = []
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, runner=runner)
+        self.assertEqual([item["pane_id"] for item in result["cleanup_receipts"]], ["w2:p2"])
+        self.assertEqual(calls[0][-3:], ["pane", "close", "w2:p2"])
+        self.assertEqual(calls[1][1:3], ["agent", "prompt"])
+
+    def test_replace_stale_m2_closes_idle_panes_and_spawns_fresh_target(self):
+        plan = self.router.build_plan(
+            "写一篇技术博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+        )
+        plan["targets"][0]["dispatch_script"] = "/tmp/fake-herdr-dispatch"
+        calls = []
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        result = self.router.apply_plan(plan, approve=True, replace_stale_m2=True, runner=runner)
+        self.assertEqual({item["pane_id"] for item in result["cleanup_receipts"]}, {"w2:p1", "w2:p2"})
+        self.assertEqual(calls[-1][0], "/tmp/fake-herdr-dispatch")
+        self.assertTrue("--new-workspace" in calls[-1] or "--pane" in calls[-1])
+
     def test_cli_plan_outputs_json_without_dispatch(self):
         fixture = {"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]}
         with tempfile.TemporaryDirectory() as temp:

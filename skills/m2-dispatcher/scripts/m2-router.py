@@ -150,6 +150,7 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
     repo = _repo_from(value)
     return {
         "session_id": sid,
+        "topic_id": _text(value.get("topic_id") or value.get("topicId")),
         "target_repo": repo,
         "title": _text(value.get("title") or value.get("terminal_title_stripped") or value.get("name"), sid),
         "status": status,
@@ -385,21 +386,33 @@ def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str,
     return {"topic_id": topic_id, "group": _text(target.get("group"), "new-domain"), "title": title, "target_repo": repo, "cwd": cwd, "keywords": sorted(set(keywords)), "aliases": list(target.get("aliases") or [])}
 
 
+def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    repo = _clean_target_name(target.get("target_repo"))
+    candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
+    if not topic:
+        return candidates
+    topic_id = _text(topic.get("topic_id")).casefold()
+    topic_values = [topic.get("topic_id"), topic.get("title"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]
+    topic_terms = re.findall(r"[a-z0-9]+|[\\u4e00-\\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
+    topic_candidates = [session for session in candidates if _text(session.get("topic_id")).casefold() == topic_id or any(term in " ".join(_text(session.get(key)) for key in ("title", "summary")).casefold() for term in topic_terms if len(term) > 2)]
+    if topic_candidates:
+        return topic_candidates
+    return candidates if len(candidates) == 1 else []
+
+
 def _target_session(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
     session_id = _text(target.get("session_id") or target.get("sessionId"))
     if session_id:
         match = next((session for session in sessions if session["session_id"] == session_id), None)
         if match:
             return match
-    repo = _clean_target_name(target.get("target_repo"))
-    candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
-    if topic:
-        topic_values = [topic.get("topic_id"), topic.get("title"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]
-        topic_terms = re.findall(r"[a-z0-9]+|[\\u4e00-\\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
-        topic_candidates = [session for session in candidates if any(term in " ".join(_text(session.get(key)) for key in ("title", "summary")).casefold() for term in topic_terms if len(term) > 2)]
-        if len(topic_candidates) == 1:
-            return topic_candidates[0]
-    return candidates[0] if len(candidates) == 1 else None
+    candidates = _matching_topic_sessions(target, topic, sessions)
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        active = [session for session in candidates if _text(session.get("status"), "idle").casefold() != "idle"]
+        return active[0] if active else candidates[0]
+    return None
 
 
 def _jev_decision(message: str, sessions: list[dict[str, Any]], domain_map: dict[str, Any], *, mock: Any = None, goal_id: str = "") -> dict[str, Any] | None:
@@ -772,6 +785,29 @@ def classify(
     return route, targets, metadata
 
 
+def _stale_candidates(target: dict[str, Any], sessions: list[dict[str, Any]], domain_map: dict[str, Any]) -> list[dict[str, Any]]:
+    """Find only safe-to-close idle Herdr panes for the target topic/repo."""
+    topic = _topic_by_id(domain_map).get(_text(target.get("topic_id")))
+    matches = _matching_topic_sessions(target, topic, sessions)
+    if not matches:
+        return []
+    current_pane = _text(os.environ.get("HERDR_PANE_ID"))
+    primary_id = _text(target.get("session_id")) if target.get("m2_status") == "EXISTING_M2" else ""
+    candidates: list[dict[str, Any]] = []
+    idle_primary_assigned = False
+    for session in matches:
+        if session.get("source") != "herdr" or _text(session.get("status"), "idle").casefold() != "idle":
+            continue
+        pane_id = _text(session.get("pane_id"))
+        if not pane_id or pane_id == current_pane or pane_id == "w1:p1":
+            continue
+        is_primary_idle = session.get("session_id") == primary_id or not idle_primary_assigned
+        reason = "idle_existing_m2" if is_primary_idle else "duplicate_m2"
+        idle_primary_assigned = True
+        candidates.append({"session_id": session.get("session_id", ""), "pane_id": pane_id, "title": session.get("title", ""), "status": session.get("status", "idle"), "target_repo": session.get("target_repo", ""), "topic_id": target.get("topic_id", ""), "reason": reason})
+    return candidates
+
+
 def build_plan(
     message: str,
     sessions: list[dict[str, Any]],
@@ -802,12 +838,16 @@ def build_plan(
         mock=mock_jev,
         goal_id=plan_id,
     )
+    stale_candidates: list[dict[str, Any]] = []
     for target in targets:
         if transport != "auto" and target["m2_status"] == "EXISTING_M2":
             target["transport"] = transport
         elif transport != "auto":
             target["transport"] = transport
         target.setdefault("context_pass", {"enabled": bool(target.get("rag_context_hint")), "hint": target.get("rag_context_hint")})
+        target["cleanup_candidates"] = _stale_candidates(target, sessions, loaded_domain_map)
+        stale_candidates.extend(target["cleanup_candidates"])
+    unique_stale = {item["session_id"]: item for item in stale_candidates}
     return {
         "schema_version": SCHEMA_VERSION,
         "plan_id": plan_id,
@@ -818,6 +858,7 @@ def build_plan(
         "waves": sorted({target["wave_order"] for target in targets}),
         "targets": targets,
         "new_domain_candidates": decision.get("new_domain_candidates", []),
+        "stale_m2_candidates": list(unique_stale.values()),
         "approval": {"required": True, "approved": False},
     }
 
@@ -828,6 +869,12 @@ def preview_text(plan: dict[str, Any]) -> str:
     for target in plan.get("targets", []):
         marker = " [NEW_DOMAIN_CANDIDATE]" if target.get("domain_status") == NEW_DOMAIN_CANDIDATE else ""
         lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
+    stale = plan.get("stale_m2_candidates", [])
+    if stale:
+        lines.extend(["", "Stale / Duplicate M2 Cleanup Candidates:"])
+        for candidate in stale:
+            lines.append(f"- {candidate.get('topic_id')}: {candidate.get('session_id')} {candidate.get('pane_id')} [{candidate.get('reason')}] {candidate.get('title')}")
+        lines.append("Use --cleanup-duplicates or --replace-stale-m2 only after Owner approval.")
     candidates = plan.get("new_domain_candidates", [])
     if candidates:
         lines.extend(["", "New domain candidates (Owner decision required):"])
@@ -948,32 +995,64 @@ def _register_new_domains(plan: dict[str, Any], domain_map_file: str | Path | No
     return registered
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, domain_map_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def _close_herdr_pane(candidate: dict[str, Any], *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command) -> dict[str, Any]:
+    pane_id = _text(candidate.get("pane_id"))
+    if not pane_id or pane_id == _text(os.environ.get("HERDR_PANE_ID")) or pane_id == "w1:p1":
+        return {"ok": False, "method": "herdr.pane.close", "pane_id": pane_id, "skipped": True, "reason": "protected_pane"}
+    binary = _text(os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    result = runner([binary, "pane", "close", pane_id], timeout=10.0)
+    if result.returncode != 0:
+        raise RouterError(f"Herdr pane close failed for {pane_id}: {result.stderr.strip()}")
+    return {"ok": True, "method": "herdr.pane.close", "pane_id": pane_id, "skipped": False, "stdout": result.stdout.strip()}
+
+
+def _cleanup_stale(plan: dict[str, Any], mode: str, *, runner: Callable[..., subprocess.CompletedProcess[str]]) -> list[dict[str, Any]]:
+    if mode == "none":
+        return []
+    receipts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in plan.get("stale_m2_candidates", []):
+        session_id = _text(candidate.get("session_id"))
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        if mode == "duplicates" and candidate.get("reason") != "duplicate_m2":
+            continue
+        receipts.append({"session_id": session_id, "reason": candidate.get("reason"), **_close_herdr_pane(candidate, runner=runner)})
+    return receipts
+
+
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve and not plan.get("approval", {}).get("approved"):
         raise RouterError("owner approval required: rerun with --approve")
     registered = _register_new_domains(plan, domain_map_file) if register_new_domains else []
+    cleanup_mode = "replace" if replace_stale_m2 else "duplicates" if cleanup_duplicates else "none"
+    cleanup_receipts = _cleanup_stale(plan, cleanup_mode, runner=runner)
     receipts: list[dict[str, Any]] = []
     for wave in sorted({int(item.get("wave_order", 1)) for item in plan.get("targets", [])}):
         for target in [item for item in plan.get("targets", []) if int(item.get("wave_order", 1)) == wave]:
-            prompt = _text(target.get("sub_prompt"), plan.get("message", ""))
-            hint = target.get("rag_context_hint")
+            dispatch_target = dict(target)
+            if replace_stale_m2 and target.get("cleanup_candidates"):
+                dispatch_target.update({"m2_status": "NEW_M2", "session_id": "", "source": "herdr", "transport": "herdr"})
+            prompt = _text(dispatch_target.get("sub_prompt"), plan.get("message", ""))
+            hint = dispatch_target.get("rag_context_hint")
             if hint:
                 prompt = f"[RAG/context hint]\n{hint}\n\n[Dispatched instruction]\n{prompt}"
-            selected = transport if transport != "auto" else _text(target.get("transport"), "auto")
+            selected = transport if transport != "auto" else _text(dispatch_target.get("transport"), "auto")
             if selected == "auto":
-                selected = "herdr" if target.get("source") == "herdr" else "dsh" if target.get("source") == "dsh" else "stdout"
+                selected = "herdr" if dispatch_target.get("source") == "herdr" else "dsh" if dispatch_target.get("source") == "dsh" else "stdout"
             if selected == "stdout":
-                receipt = {"ok": True, "method": "stdout", "target": target.get("target_repo", "unspecified"), "created": target.get("m2_status") == "NEW_M2", "prompt": prompt}
+                receipt = {"ok": True, "method": "stdout", "target": dispatch_target.get("target_repo", "unspecified"), "created": dispatch_target.get("m2_status") == "NEW_M2", "prompt": prompt}
             elif selected == "herdr":
-                receipt = _apply_herdr(target, plan, prompt, runner=runner)
+                receipt = _apply_herdr(dispatch_target, plan, prompt, runner=runner)
             elif selected == "dsh":
-                receipt = _apply_dsh(target, plan, prompt, poster=poster)
+                receipt = _apply_dsh(dispatch_target, plan, prompt, poster=poster)
             else:
                 raise RouterError(f"unsupported transport: {selected}")
             receipts.append({"wave_order": wave, "target_repo": target.get("target_repo"), **receipt})
-    return {"ok": True, "plan_id": plan.get("plan_id"), "approved": True, "registered_new_domains": registered, "receipts": receipts}
+    return {"ok": True, "plan_id": plan.get("plan_id"), "approved": True, "registered_new_domains": registered, "cleanup_receipts": cleanup_receipts, "receipts": receipts}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -997,6 +1076,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--magpie-model", default=os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL))
     parser.add_argument("--domain-map-file", default=str(DEFAULT_DOMAIN_MAP_PATH))
     parser.add_argument("--register-new-domains", action="store_true", help="register approved new domain candidates during --apply")
+    parser.add_argument("--cleanup-duplicates", action="store_true", help="close safe duplicate idle Herdr panes during --apply")
+    parser.add_argument("--replace-stale-m2", action="store_true", help="close safe idle stale panes and spawn a fresh M2 during --apply")
     parser.add_argument("--targets-json", help="target list/object supplied by an outer CLI model")
     parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
     parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
@@ -1048,7 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, domain_map_file=args.domain_map_file, transport=args.transport)
+            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, transport=args.transport)
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)
         return 0
     except (OSError, ValueError, RouterError, json.JSONDecodeError) as error:
