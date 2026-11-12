@@ -359,8 +359,8 @@ class M2RouterTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
         result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, runner=runner)
         self.assertEqual([item["pane_id"] for item in result["cleanup_receipts"]], ["w2:p2"])
-        self.assertEqual(calls[0][-3:], ["pane", "close", "w2:p2"])
-        self.assertEqual(calls[1][1:3], ["agent", "prompt"])
+        self.assertTrue(any(cmd[-3:] == ["pane", "close", "w2:p2"] for cmd in calls))
+        self.assertEqual(calls[-1][1:3], ["agent", "prompt"])
 
     def test_cleanup_protects_current_pane_and_w1_p1(self):
         sessions = [
@@ -411,6 +411,121 @@ class M2RouterTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["targets"][0]["m2_status"], "EXISTING_M2")
         self.assertFalse(payload["approval"]["approved"])
+
+    def test_apply_requires_explicit_approve_flag_even_if_plan_claims_approved(self):
+        plan = self.router.build_plan(
+            "send work",
+            [],
+            mock_jev={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "first", "sub_prompt": "first prompt", "wave_order": 1}]},
+            transport="stdout",
+        )
+        plan["approval"]["approved"] = True
+        with self.assertRaisesRegex(self.router.RouterError, "approval"):
+            self.router.apply_plan(plan, approve=False)
+
+    def test_stdout_transport_simulates_cleanup_without_side_effects(self):
+        plan = self.router.build_plan(
+            "写一篇技术博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+            transport="stdout",
+        )
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, transport="stdout", runner=runner)
+        self.assertEqual(calls, [])
+        self.assertTrue(result["cleanup_receipts"][0]["simulated"])
+        self.assertFalse(result["receipts"][0]["created"])
+
+    def test_cleanup_revalidates_live_status_and_skips_pane_that_became_working(self):
+        plan = self.router.build_plan(
+            "写一篇技术博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+        )
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w2:p2", "status": "working", "name": "learn-duplicate"}]}), stderr="")
+            if args[1:3] == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p2", "agent_status": "working", "name": "learn-duplicate"}]}), stderr="")
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, runner=runner)
+        self.assertTrue(result["cleanup_receipts"][0]["skipped"])
+        self.assertIn("pane_not_idle", result["cleanup_receipts"][0]["reason"])
+        self.assertFalse(any(cmd[1:3] == ["pane", "close"] for cmd in calls))
+
+    def test_topic_routing_prefers_exact_topic_id_and_excludes_shared_repo_stem_conflicts(self):
+        sessions = [
+            {"session_id": "notification", "topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire Notification Center", "status": "idle", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p2", "workspace_id": "w1"},
+            {"session_id": "china", "topic_id": "sapphire-china-bugs", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire China Bugs", "status": "working", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "china", "pane_id": "w1:p3", "workspace_id": "w1"},
+        ]
+        plan = self.router.build_plan(
+            "检查 Sapphire Notification 推送开关",
+            sessions,
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [
+                {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查推送开关", "wave_order": 1},
+            ]},
+        )
+        self.assertEqual(plan["targets"][0]["session_id"], "notification")
+
+    def test_offline_deterministic_fallback_uses_checked_in_domain_map(self):
+        with patch.object(self.router, "_request_magpie", side_effect=OSError("offline")), patch.object(self.router, "_jev_decision", return_value=None):
+            plan = self.router.build_plan("先让 AIDash 检查指标，然后让 VoxPocket 修复语音输入", [])
+        self.assertEqual([(t["topic_id"], t["target_repo"], t["wave_order"], t["domain_status"]) for t in plan["targets"]], [
+            ("aidash-aidata", "AIDash", 1, "MAPPED_DOMAIN"),
+            ("voxpocket", "VoxPocket", 2, "MAPPED_DOMAIN"),
+        ])
+
+    def test_conflicting_jev_single_route_does_not_truncate_multi_target_decomposition(self):
+        plan = self.router.build_plan(
+            "同时更新 AIDash 和 VoxPocket",
+            [],
+            mock_jev={"answers": {"route_mode": {"choice": "ROUTE_SINGLE"}}},
+            mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                {"target_repo": "AIDash", "sub_prompt": "更新 AIDash", "wave_order": 1},
+                {"target_repo": "VoxPocket", "sub_prompt": "更新 VoxPocket", "wave_order": 2},
+            ]},
+        )
+        self.assertEqual(plan["decision"]["route"], "ROUTE_CROSS_SESSION")
+        self.assertEqual(len(plan["targets"]), 2)
+
+    def test_new_m2_herdr_uses_distinct_topic_agent_names_and_auto_transport_resolves_adapter(self):
+        plan = self.router.build_plan(
+            "同时新建 Sapphire Notification 和 Sapphire China Bugs 会话",
+            [],
+            mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "通知任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
+                {"topic_id": "sapphire-china-bugs", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "中国区任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
+            ]},
+        )
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout='{"ok": true, "reused_existing": false}', stderr="")
+
+        result = self.router.apply_plan(plan, approve=True, runner=runner)
+        names = [receipt["target"] for receipt in result["receipts"]]
+        self.assertEqual(len(set(names)), 2)
+        self.assertTrue(all(receipt["method"] == "herdr-dispatch" for receipt in result["receipts"]))
+        self.assertTrue(all(receipt["created"] for receipt in result["receipts"]))
+
+    def test_personal_m2_assistant_skill_links_resolve(self):
+        skill_md = ROOT / "skills" / "personal-m2-assistant" / "SKILL.md"
+        text = skill_md.read_text(encoding="utf-8")
+        import re
+        links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)
+        self.assertTrue(links)
+        for rel in links:
+            self.assertTrue((skill_md.parent / rel).resolve().exists(), f"broken link in personal-m2-assistant/SKILL.md: {rel}")
 
 
 if __name__ == "__main__":
