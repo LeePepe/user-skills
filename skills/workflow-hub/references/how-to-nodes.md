@@ -60,6 +60,7 @@
 | I4 Summarize | 被I1/I2/E5/Q3/G2/P1/P5 | 事实、影响、责任人、截止、引用、脱敏 | — | 有出处摘要 | 跨渠道Schema |
 | I5 Notify | 被几乎所有节点 | P0拍板/P1回执/P2日报，去重并落唯一落点 | — | User decision→Waiting Node | event_id与回调桥 |
 | I6 Reply Teams | I1草稿+I5确认 | 幂等发送、回读消息深链 | — | I5已回复 | 待实装 |
+| I7 Unified M2 Ingress | Manual/CLI/dsh；P0预览/P1回执 | `personal-m2-assistant` 发现 Herdr/dsh M2；Jev I3 拆 `topic_id/target_repo/sub_prompt/wave_order/rag_context_hint`；Owner Gate 后按 wave 交付既有或新建 M2 | I3、I5、m2-dispatcher | `1:N` M2 Dispatcher；新建目标回执坐标 | dsh 私有 session 禁读；无 Owner 批准不得派发 |
 | G1 Task | Manual/I1/I2/Q1/Q3/G2/P1 | Linear/ADO去重、1 Goal=1 Issue、Task/R10 | — | GO→E1/E2/E3/P7/P8 | 跨源幂等键 |
 | G2 FlightBook | 周期/里程碑/I2/E10/E12/E8 | 五面同步、证据池、真实读回 | E8,I4,I5 | P1回执；缺件P0 | 邮件/PR/发布自动投递 |
 
@@ -106,3 +107,12 @@
 2. **组合配方**：Internal 薄、只串现有节点→追加本抽屉一行/ recipe；不新建 Skill。
 3. **独立 Skill**：有厚领域知识、外部 CLI/API、可复用确定性门禁→按四层归位，运行 `skill_contract.py init`，把 regex/AST/水位/Schema/像素/几何检查下沉 `scripts/*.py` 或 shared-ci，再跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
 4. 入口 L0 只保留路由；完整节点表放本 L1；机器可读状态放 L2。新节点必须附 `Owned Paths`、验证命令、缺口与 P0/P1/P2 落点。
+
+### I7 Unified M2 Ingress 组合配方
+
+- **Inbound**：CLI/Herdr 外部入口或 dsh Omni Hub 的一条自然语言输入，加上公开的活跃 M2 发现表。
+- **Internal**：`personal-m2-assistant/scripts/m2-router.py --plan` 调 I3 Jev Classify，再由 Magpie 语义拆解，生成包含 `topic_id`、`EXISTING_M2`/`NEW_M2`、完整 `sub_prompt`、软 `wave_order` 与可选 `rag_context_hint` 的计划；展示 P0 预览，Owner 以 `--approve` 放行后 `--apply` 调 Herdr `agent prompt`、`herdr-dispatch.sh` 或 dsh Session Sink。
+- **Calls**：I3（分类）、I5（预览/回执）、目标 `m2-dispatcher`（各仓自己的 Spec/Goal 生命周期）。
+- **PointsTo**：`1:N` 目标 M2；新建目标返回 session/agent/workspace/pane 坐标，后续由目标 M2 按原合同处理。
+- **红线**：计划阶段不能创建或投递；不读取 dsh 私有 session 存储；wave 不伪装成事务顺序；Cindy 适配器复用同一 schema，不另造路由语义。
+- **验证**：`python3 -m unittest scripts/test_m2_router.py`、`skill_contract.py audit --strict`、`./scripts/verify`。

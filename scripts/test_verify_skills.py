@@ -28,7 +28,8 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/workflow-hub/SKILL.md": 12 * 1024,
     "skills/team-lead/SKILL.md": 36 * 1024,
     "skills/m2-dispatcher/SKILL.md": 24 * 1024,
-        "skills/linear-board/SKILL.md": 16 * 1024,
+    "skills/personal-m2-assistant/SKILL.md": 16 * 1024,
+    "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
     "skills/my-designer/SKILL.md": 12 * 1024,
@@ -281,6 +282,27 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(manifest.get("name"), skill_dir_name)
             self.assertTrue(isinstance(manifest.get("description"), str) and manifest["description"])
             self.assertTrue(isinstance(manifest.get("category"), str) and manifest["category"])
+
+    def test_personal_m2_assistant_is_registered_with_canonical_router(self) -> None:
+        skill_dir = SKILLS_DIR / "personal-m2-assistant"
+        self.assertTrue((skill_dir / "SKILL.md").is_file())
+        self.assertTrue((skill_dir / "scripts" / "m2-router.py").is_file())
+        self.assertTrue((skill_dir / "references" / "m2-domain-map.json").is_file())
+        manifest = json.loads((skill_dir / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest, {
+            "name": "personal-m2-assistant",
+            "description": manifest["description"],
+            "category": "workflow",
+        })
+        marketplace = json.loads((REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        plugin = next(item for item in marketplace["plugins"] if item["name"] == "personal-m2-assistant")
+        self.assertEqual(plugin["source"], "./skills/personal-m2-assistant")
+        legacy_router = SKILLS_DIR / "m2-dispatcher" / "scripts" / "m2-router.py"
+        self.assertLess(legacy_router.stat().st_size, 2 * 1024)
+        self.assertIn("personal-m2-assistant", legacy_router.read_text(encoding="utf-8"))
+        expander = (SKILLS_DIR / "m2-dispatcher" / "scripts" / "skill-slash-expander.ts").read_text(encoding="utf-8")
+        self.assertIn('skill: "personal-m2-assistant"', expander)
+        self.assertIn("python3 skills/personal-m2-assistant/scripts/m2-router.py --plan", expander)
 
     def test_design_case_surface_contains_no_project_private_identifiers(self) -> None:
         for rel_path in (
@@ -807,6 +829,7 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE", expander_ts)
         self.assertIn("isLikelySlowForegroundCommand", expander_ts)
         for shortcut_token in (
+            "/m2 <跨M2指令>",
             "/status",
             "/ingest <text_or_image>",
             "/learn <topic_or_url>",
@@ -820,12 +843,12 @@ class VerifySkillsTests(unittest.TestCase):
 
         installer_sh = (skill_dir / "scripts" / "install-pi-harness.sh").read_text(encoding="utf-8")
         self.assertNotIn("rm -f", installer_sh)
-        for prompt_name in ("status.md", "ingest.md", "learn.md", "dash.md", "retro.md"):
+        for prompt_name in ("m2.md", "status.md", "ingest.md", "learn.md", "dash.md", "retro.md"):
             self.assertIn(prompt_name, installer_sh)
 
         # Verify M2 outer adapter auto-bootstraps m2-dispatcher on first turn in M2 main session,
         # does not auto-inject when HERDR_ENV=1, does not block local bash/git tool calls,
-        # and expands the 5 universal shortcut macros (/status, /ingest, /learn, /dash, /retro).
+        # and expands the 6 universal shortcut macros (/m2, /status, /ingest, /learn, /dash, /retro).
         node_probe = r"""
 import assert from "node:assert/strict";
 import skillSlashExpander, {
@@ -875,8 +898,8 @@ assert.equal(m2Res.bashRes, undefined, "Expected local git/bash tool calls not t
 const herdrRes = await runCase({ HERDR_ENV: "1" });
 assert.equal(herdrRes.startRes, undefined, "Expected HERDR_ENV=1 worker session not to auto-inject m2-dispatcher");
 
-// Verify the 5 universal shortcut macros
-assert.deepEqual(Object.keys(UNIVERSAL_SHORTCUT_MACROS).sort(), ["dash", "ingest", "learn", "retro", "status"]);
+// Verify the 6 universal shortcut macros
+assert.deepEqual(Object.keys(UNIVERSAL_SHORTCUT_MACROS).sort(), ["dash", "ingest", "learn", "m2", "retro", "status"]);
 assert.equal(FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC, 5);
 assert.ok(FOREGROUND_TO_BACKGROUND_5S_RULE_DIRECTIVE.includes("5s Foreground-to-Background Rule"));
 assert.equal(isLikelySlowForegroundCommand("xcodebuild -scheme AIDashApp build"), true);
@@ -884,6 +907,11 @@ assert.equal(isLikelySlowForegroundCommand("pytest aidata/tests/"), true);
 assert.equal(isLikelySlowForegroundCommand("git status --short"), false);
 assert.equal(isLikelyImageArgument("/tmp/shot.png"), true);
 assert.equal(isLikelyImageArgument("Linear glass card inspiration"), false);
+
+const m2Exp = expandShortcutMacros("/m2 先让 shared-ci 更新设计门禁，再让 AIDash 接入");
+assert.equal(m2Exp.transformed, true);
+assert.ok(m2Exp.text.includes("m2-router.py --plan"));
+assert.ok(m2Exp.text.includes("--apply --plan-file <approved-plan.json> --approve"));
 
 const statusExp = expandShortcutMacros("/status");
 assert.equal(statusExp.transformed, true);

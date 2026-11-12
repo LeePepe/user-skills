@@ -8,7 +8,7 @@
 |---|---|---|
 | `README.md` | 仓库概览、技能拓扑、共享组件与安装说明 | 了解仓库全貌或增删技能入口时 |
 | `.claude-plugin/marketplace.json` | 仓库级插件注册表 | 新增、重命名或归档技能时 |
-| `skills/<skill>/SKILL.md` | **L0 入口文档**：技能核心心智模型、触发边界与路由索引 | 修改或调用对应技能时首先读取 |
+| `skills/<skill>/SKILL.md` | **L0 入口文档**：技能核心心智模型、触发边界与路由索引 | 修改或调用对应技能时首先读取；跨 M2 入口优先看 `personal-m2-assistant` |
 | `skills/<skill>/references/` | **L1/L2 按需知识抽屉**：细分协议、模板、案例卡与配置表 | 仅在 `SKILL.md` 路由命中对应主题时下钻读取 |
 | `skills/<skill>/scripts/` | **确定性脚本与 CLI**：零 Token 检查器、同步器、目录与状态工具 | 修改脚本逻辑、参数契约或单测时读取 |
 | `skills/<skill>/.claude-plugin/plugin.json` | 单技能插件元数据（`name`、`description`、`category`） | 修改技能元数据或分类时读取 |
@@ -18,7 +18,7 @@
 
 | 类别 | 技能目录 | 内容职责 |
 |---|---|---|
-| `workflow` | `workflow-hub`、`linear-board`、`m2-dispatcher`、`team-lead`、`retro-loop`、`story-craft` | 开放能力图谱、Linear 看板同步、M2↔M1 生命周期编排、Goal→Task 执行、双路复盘与叙事产出 |
+| `workflow` | `workflow-hub`、`linear-board`、`personal-m2-assistant`、`m2-dispatcher`、`team-lead`、`retro-loop`、`story-craft` | 开放能力图谱、Linear 看板同步、跨 M2 唯一入口、M2↔M1 生命周期编排、Goal→Task 执行、双路复盘与叙事产出 |
 | `design` | `my-designer`、`design-studio` | 双入口设计流（产品设计/现代化改版/视觉回溯 vs. 灵感摄取/色板测量/视频流水线） |
 | `repo` | `code-review`、`xcode-cli`、`repo-kit`、`codebase-design` | 双轴代码审查、Apple 构建测试路由、仓库合同初始化、深模块设计与领域建模（含 `CONTEXT.md` 与 ADR） |
 | `research` | `deep-research`、`knowledge-digest`、`layered-data-warehouse` | 多源交叉核查调研、知识拆解沉淀与分层数仓蓝图设计 |

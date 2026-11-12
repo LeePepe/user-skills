@@ -11,6 +11,16 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 - [`goal-queue.py`](../team-lead/scripts/goal-queue.py) · [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) · [`pr-dag-auto-heal.md`](references/pr-dag-auto-heal.md)
 - **脚本归属（双路径兼容）**：① **M2+M1 共享编排**（`scripts/` ⇄ `../team-lead/scripts/`）：`herdr-dispatch.sh`、`goal-supervisor.py`、`goal-queue.py`、`state_store.py`、`jev_client.py`；② **M2 专属 Harness**：[`skill-slash-expander.ts`](scripts/skill-slash-expander.ts)、[`install-pi-harness.sh`](scripts/install-pi-harness.sh)；③ **M1 任务执行**（`../team-lead/scripts/`）：`ci-monitor.py`、`git-gc.py`、`feedback_guard.py`、`gtt-telemetry-export.py`、`linear-sync.py`、`jev-compact.py`、`jev-skill-router.py`。
 
+## 0. Interactive CLI trigger flows (high visibility)
+
+跨 M2 的唯一总入口已独立为 [`personal-m2-assistant`](../personal-m2-assistant/SKILL.md)。
+
+- `/m2 <跨M2指令>` 展开到 `personal-m2-assistant`，调用其 canonical `m2-router.py --plan`，展示每个话题 M2 的 wave、状态、transport 与完整子指令。
+- `/personal-m2-assistant <跨M2指令>` 是跨仓/跨会话显式入口；AI 必须先 `ask_user`，只有 Owner 明确批准后才可 `--apply --approve`。
+- `/m2-dispatcher` 仅保留本技能的单仓 M2↔M1 生命周期、Spec 对齐、热追加、巡检解卡与 Goal 回收职责。
+
+不要从本技能直接广播自然语言给多个 M2；跨 M2 路由、话题映射与旧 M2 清理由 `personal-m2-assistant` 负责。
+
 ## 三层分离
 
 1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 1-Hop 执行。
@@ -25,6 +35,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 
 | 口令 | 目标路由 | 执行动作 |
 |---|---|---|
+| `/m2 <跨M2指令>` | `personal-m2-assistant` | 先运行 canonical `m2-router.py --plan` 展示预览并 `ask_user` 拍板；确认后才运行 `--apply --approve` |
 | `/status` | `m2-dispatcher` | 直接运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py status --check` 展示 `needs a person` 置顶视图 |
 | `/ingest <text_or_image>` | `design-studio` | 调 `design_catalog.py vault-ingest`（图片路径自动附带 `--measure-palette`） |
 | `/learn <topic_or_url>` | `knowledge-digest` | 执行双通道拆解归档至 `~/Development/Personal/knowledge-vault/` 并同步 `knowledge-vault/index.md` |
@@ -36,6 +47,20 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 - **幂等复用与热追加**：`<goal>-goal-tl-r1` 为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，`idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：在本 Goal 内按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 走 `direct_quota_gated`（`~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 自动剥离 `--allowedTools` 改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 绑定 `Magpie (:3425)` `group/steering`。
 - **Parent ≥ Child Allowlist**：父 TL 传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 并合并 `extra_add_dirs`。Mac mini 上 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD` 以覆盖 `/Volumes/SSD/.../handoff/<goal>` 兄弟目录 realpath；handoff 父目录不在基线时自动补进 trust 与 `--add-dir`。
+
+## 1.5 Cross-M2 handoff
+
+跨 Repo 或跨会话输入请转到 [`personal-m2-assistant`](../personal-m2-assistant/SKILL.md)：
+
+```bash
+python3 skills/personal-m2-assistant/scripts/m2-router.py --plan \
+  --message '把 repo-a 的结论同步给 repo-b' --json > plan.json
+# Owner 审阅计划后：
+python3 skills/personal-m2-assistant/scripts/m2-router.py --apply \
+  --plan-file plan.json --approve --json
+```
+
+本路径 [`scripts/m2-router.py`](scripts/m2-router.py) 仅是兼容 wrapper；真实实现与话题映射位于 `personal-m2-assistant`。旧路径 [`references/m2-domain-map.json`](references/m2-domain-map.json) 也仅作兼容指向。本技能仍负责单仓 M2↔M1 交接：Owner Gate、简单 Spec、TL 派发、监控解卡与完成回收。
 
 ## 2. 监控与解卡
 
