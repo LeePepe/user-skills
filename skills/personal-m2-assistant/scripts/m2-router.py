@@ -380,15 +380,17 @@ def _new_topic_id(target: dict[str, Any], message: str) -> str:
     prop = target.get("proposed_domain") if isinstance(target.get("proposed_domain"), dict) else {}
     hint_text = " ".join(_text(x) for x in (prop.get("title"), target.get("title"), target.get("sub_prompt"), message) if _text(x)).strip()
     if repo_seed and hint_text and hint_text.casefold() != repo_seed.casefold():
+        digest = hashlib.sha256(hint_text.casefold().encode("utf-8")).hexdigest()[:6]
         en_words = [
             w for w in re.findall(r"[a-z0-9]{2,}", hint_text.casefold())
-            if w != slug and w not in {"m2", "session", "new", "create", "build", "fix", "update", "inspect"}
+            if w != slug and w not in {"m2", "session", "new", "create", "build", "fix", "update", "inspect", "implement", "the", "for", "and", "with"}
         ]
         if en_words:
-            suffix = "-".join(en_words[:2])[:16].rstrip("-")
+            readable = "-".join(en_words[:2])[:10].rstrip("-")
+            suffix = f"{readable}-{digest}"
         else:
-            suffix = hashlib.sha256(hint_text.encode("utf-8")).hexdigest()[:6]
-        slug = f"{slug[:20].rstrip('-')}-{suffix}"
+            suffix = digest
+        slug = f"{slug[:18].rstrip('-')}-{suffix}"
     return f"new-topic-{slug[:40].rstrip('-')}"
 
 

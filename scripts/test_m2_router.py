@@ -664,6 +664,22 @@ class M2RouterTests(unittest.TestCase):
             self.router._new_herdr_agent_name(plan_trading["targets"][0]),
         )
 
+        en_risk = self.router.build_plan(
+            "QuantLab risk dashboard",
+            [],
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "Implement the risk dashboard", "wave_order": 1}]},
+        )
+        en_trading = self.router.build_plan(
+            "QuantLab trading dashboard",
+            [],
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "Implement the trading dashboard", "wave_order": 1}]},
+        )
+        self.assertNotEqual(en_risk["targets"][0]["topic_id"], en_trading["targets"][0]["topic_id"])
+        self.assertNotEqual(
+            self.router._new_herdr_agent_name(en_risk["targets"][0]),
+            self.router._new_herdr_agent_name(en_trading["targets"][0]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
