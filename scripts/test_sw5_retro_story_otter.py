@@ -2,6 +2,7 @@
 """Focused tests for the SW5 retro, story, and otter interfaces."""
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -381,15 +382,17 @@ class Sw5Tests(unittest.TestCase):
             self.assertEqual(top_prop["ref"], "skill-roi://my-designer")
             self.assertIn("my-designer", top_prop["title"])
 
-            rc = ENGINE.main([
-                "skill-roi",
-                "--warehouse-db", str(wh),
-                "--copilot-db", str(cp),
-                "--skills-root", str(skills_root),
-                "--dev-root", str(dev_root),
-                "--auto-propose",
-                "--proposals-path", str(proposals),
-            ])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = ENGINE.main([
+                    "skill-roi",
+                    "--warehouse-db", str(wh),
+                    "--copilot-db", str(cp),
+                    "--skills-root", str(skills_root),
+                    "--dev-root", str(dev_root),
+                    "--auto-propose",
+                    "--proposals-path", str(proposals),
+                ])
             self.assertEqual(rc, 0)
             written = [json.loads(ln) for ln in proposals.read_text(encoding="utf-8").splitlines() if ln.strip()]
             self.assertEqual(written[0]["ref"], "skill-roi://my-designer")

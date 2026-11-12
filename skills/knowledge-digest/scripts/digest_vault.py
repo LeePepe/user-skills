@@ -9,6 +9,7 @@ import hashlib
 import html
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,6 +19,34 @@ from typing import Any
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SKILLS_ROOT = SKILL_DIR.parent
+_CANONICAL_FIXTURE_DOC: dict[str, Any] = {
+    "schema_version": "personal-topic-ledger/v1",
+    "policy": {
+        "max_new_per_day": 1,
+        "max_pending_proposals": 3,
+        "cooldown_days_on_dismiss": 30,
+        "snooze_days_default": 7,
+        "timezone": "Asia/Shanghai",
+        "scope": "personal",
+        "actionable_domain": "个人成长与思考",
+        "require_no_materialize_before_approval": True,
+        "forbid_auto_design_studio_sync": True,
+        "forbid_auto_blog_publish_on_star": True,
+    },
+    "vault_coverage_inventory": [
+        {"path": "knowledge-vault/concepts/appkit-uikit-27-modernization.md", "folder": "concepts", "title": "macOS 27 AppKit 与 iOS 27 UIKit 现代化：自由缩放窗口、同心圆角与手势革命", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/concepts/liquid-glass-optics-and-swiftui-26-27.md", "folder": "concepts", "title": "Liquid Glass 光学第一性原理与 SwiftUI 26→27 实战破案", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/concepts/swiftui-27-scrolling-and-drag-drop-motion.md", "folder": "concepts", "title": "SwiftUI 27 高性能滚动与多元素拖拽：LazyStack 帧预取与纸牌级重排", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/concepts/swiftui-27-shader-and-motion-pipeline.md", "folder": "concepts", "title": "SwiftUI 27 高级图形与动效管线：Metal Shader 扭曲、时间流与图钉对齐", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/concepts/wifi-invisible-light.md", "folder": "concepts", "title": "如果能看见 WiFi：看不见的光与室内信号破案", "derived_from": ["knowledge-vault/raw/wifi-video-script-breakdown.md"], "derived_cards": []},
+        {"path": "knowledge-vault/concepts/wwdc27-liquid-glass-and-motion-map.md", "folder": "concepts", "title": "WWDC25/26 (OS 26 → OS 27) Liquid Glass 与动效 8 节课全景导读地图", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/craft/science-video-invisible-to-visible.md", "folder": "craft", "title": "科普视频拆解：把不可见变成可见的痛点叙事法", "derived_from": ["knowledge-vault/raw/wifi-video-script-breakdown.md"], "derived_cards": []},
+        {"path": "knowledge-vault/craft/wwdc-pipeline-and-optical-metaphor-craft.md", "folder": "craft", "title": "WWDC 视觉化与架构讲法拆解：水管数据流、图钉几何与贴纸叙事法", "derived_from": ["knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md"], "derived_cards": []},
+        {"path": "knowledge-vault/thoughts/study-switch-long-press-ac.md", "folder": "thoughts", "title": "为什么我给书房按键加了「长按开空调」", "derived_from": [], "derived_cards": []},
+        {"path": "knowledge-vault/raw/wifi-video-script-breakdown.md", "folder": "raw", "title": "「如果能看见 WiFi」视频脚本流程与制作技巧总结", "derived_from": [], "derived_cards": ["knowledge-vault/concepts/wifi-invisible-light.md", "knowledge-vault/craft/science-video-invisible-to-visible.md"]},
+        {"path": "knowledge-vault/raw/wwdc25-26-liquid-glass-and-motion-transcripts.md", "folder": "raw", "title": "WWDC25/26 Liquid Glass 与 OS 27 动效 8 节官方课程 Transcript 与关键代码汇编", "derived_from": [], "derived_cards": ["knowledge-vault/concepts/appkit-uikit-27-modernization.md", "knowledge-vault/concepts/liquid-glass-optics-and-swiftui-26-27.md", "knowledge-vault/concepts/swiftui-27-scrolling-and-drag-drop-motion.md", "knowledge-vault/concepts/swiftui-27-shader-and-motion-pipeline.md", "knowledge-vault/concepts/wwdc27-liquid-glass-and-motion-map.md", "knowledge-vault/craft/wwdc-pipeline-and-optical-metaphor-craft.md"]},
+    ],
+}
 DEFAULT_VAULT_DIR = Path.home() / "Development" / "Personal" / "knowledge-vault"
 DEFAULT_COLLECTED_TOOLS_DIR = Path.home() / "Development" / "Personal" / "collected-tools"
 DEFAULT_BLOG_REPO = Path.home() / "Development" / "leepepe.github.io"
@@ -66,17 +95,22 @@ CANONICAL_COLLECTED_TOOLS_RECONCILIATION: dict[str, dict[str, Any]] = {
     "apple-design-skill": {
         "source_id": "apple-design-skill",
         "source_uri": "https://github.com/dickwu/apple-design-skill",
-        "topic_key": "apple-design-skill-hig-audit",
-        "aliases": ["apple-design-skill", "apple-design-skill-core-patterns"],
+        "topic_key": "apple-design-skill-hig-liquid-glass",
+        "aliases": [
+            "apple-design-skill",
+            "apple-design-skill-core-patterns",
+            "apple-design-skill-hig-liquid-glass",
+        ],
         "coverage_refs": [
             "concepts/wwdc27-liquid-glass-and-motion-map.md",
             "concepts/liquid-glass-optics-and-swiftui-26-27.md",
             "concepts/appkit-uikit-27-modernization.md",
         ],
         "default_state": "covered_if_refs_present",
-        "title": "Apple Design Skill：HIG 审计与 Liquid Glass / AppKit-UIKit 现代化原理",
-        "question": "Apple Design Skill 如何组织 HIG 审计与 Liquid Glass / AppKit-UIKit 现代化规范？",
-        "why_now": "repos/apple-design-skill",
+        "rank": 0,
+        "title": "Apple Design Skill 核心架构模式与实战拆解",
+        "question": "Apple Design Skill 如何对齐 HIG 与 Liquid Glass 现代化规范？",
+        "why_now": "repos/apple-design-skill（已被 WWDC26/27 Liquid Glass 与 AppKit/UIKit 概念卡覆盖）",
         "category": "工程与设计",
         "heuristic_direct": 0.80,
         "heuristic_tier": 2.3,
@@ -85,12 +119,17 @@ CANONICAL_COLLECTED_TOOLS_RECONCILIATION: dict[str, dict[str, Any]] = {
         "source_id": "awesome-ios-design-md",
         "source_uri": "https://github.com/Meliwat/awesome-ios-design-md",
         "topic_key": "awesome-ios-design-md-tokens",
-        "aliases": ["awesome-ios-design-md", "awesome-ios-design-md-core-patterns"],
+        "aliases": [
+            "awesome-ios-design-md",
+            "awesome-ios-design-md-core-patterns",
+            "awesome-ios-design-md-tokens",
+        ],
         "coverage_refs": ["concepts/liquid-glass-optics-and-swiftui-26-27.md"],
         "default_state": "covered_if_refs_present",
-        "title": "Awesome iOS DESIGN.md：200 款 iOS App 色板与排版令牌字典",
-        "question": "Awesome iOS DESIGN.md 怎样把 iOS App 的色板与排版提炼为按需检索字典？",
-        "why_now": "repos/awesome-ios-design-md",
+        "rank": 0,
+        "title": "awesome-ios-design-md 核心架构模式与实战拆解",
+        "question": "Awesome iOS DESIGN.md 如何组织 200 款 iOS App 色板与排版令牌字典？",
+        "why_now": "repos/awesome-ios-design-md（作为按需检索字典使用，无独立未探索原理题）",
         "category": "工程与设计",
         "heuristic_direct": 0.78,
         "heuristic_tier": 2.2,
@@ -99,12 +138,17 @@ CANONICAL_COLLECTED_TOOLS_RECONCILIATION: dict[str, dict[str, Any]] = {
         "source_id": "awesome-web-design-md",
         "source_uri": "https://github.com/VoltAgent/awesome-design-md",
         "topic_key": "awesome-web-design-md-tokens",
-        "aliases": ["awesome-web-design-md", "awesome-web-design-md-core-patterns"],
+        "aliases": [
+            "awesome-web-design-md",
+            "awesome-web-design-md-core-patterns",
+            "awesome-web-design-md-tokens",
+        ],
         "coverage_refs": ["collected-tools/hallmark.md", "concepts/liquid-glass-optics-and-swiftui-26-27.md"],
         "default_state": "covered_if_refs_present",
-        "title": "Awesome Web DESIGN.md：Web 站点样式令牌字典",
-        "question": "Awesome Web DESIGN.md 如何将 Web 站点视觉规范结构化为可检索 DESIGN.md 字典？",
-        "why_now": "repos/awesome-web-design-md",
+        "rank": 0,
+        "title": "awesome-web-design-md 核心架构模式与实战拆解",
+        "question": "Awesome Web DESIGN.md 如何组织 Web 站点样式令牌字典？",
+        "why_now": "repos/awesome-web-design-md（作为按需检索字典使用，无独立未探索原理题）",
         "category": "工程与设计",
         "heuristic_direct": 0.78,
         "heuristic_tier": 2.2,
@@ -113,15 +157,20 @@ CANONICAL_COLLECTED_TOOLS_RECONCILIATION: dict[str, dict[str, Any]] = {
         "source_id": "shipswift",
         "source_uri": "https://github.com/signerlabs/ShipSwift",
         "topic_key": "shipswift-animation-metal-components",
-        "aliases": ["shipswift", "shipswift-core-patterns"],
+        "aliases": [
+            "shipswift",
+            "shipswift-core-patterns",
+            "shipswift-animation-metal-components",
+        ],
         "coverage_refs": [
             "concepts/swiftui-27-shader-and-motion-pipeline.md",
             "concepts/swiftui-27-scrolling-and-drag-drop-motion.md",
         ],
         "default_state": "covered_if_refs_present",
-        "title": "ShipSwift：SWAnimation / SWMetal 动效与 Shader 管线",
-        "question": "ShipSwift 的 SWAnimation / SWMetal 动效与 Shader 组件如何封装 SwiftUI 高级管线？",
-        "why_now": "repos/shipswift",
+        "rank": 0,
+        "title": "shipswift 核心架构模式与实战拆解",
+        "question": "ShipSwift 的 SWAnimation/SWMetal/SWChart 组件管线如何工作？",
+        "why_now": "repos/shipswift（动效与 Shader 管线已被 WWDC26/27 概念卡覆盖）",
         "category": "工程与设计",
         "heuristic_direct": 0.80,
         "heuristic_tier": 2.3,
@@ -129,16 +178,21 @@ CANONICAL_COLLECTED_TOOLS_RECONCILIATION: dict[str, dict[str, Any]] = {
     "twostraws-swiftui-skill": {
         "source_id": "twostraws-swiftui-skill",
         "source_uri": "https://github.com/twostraws/SwiftUI-Agent-Skill",
-        "topic_key": "twostraws-swiftui-modern-api-rules",
-        "aliases": ["twostraws-swiftui-skill", "twostraws-swiftui-skill-core-patterns"],
+        "topic_key": "twostraws-swiftui-pro-patterns",
+        "aliases": [
+            "twostraws-swiftui-skill",
+            "twostraws-swiftui-skill-core-patterns",
+            "twostraws-swiftui-pro-patterns",
+        ],
         "coverage_refs": [
             "concepts/liquid-glass-optics-and-swiftui-26-27.md",
             "concepts/swiftui-27-scrolling-and-drag-drop-motion.md",
         ],
         "default_state": "covered_if_refs_present",
-        "title": "Twostraws SwiftUI Agent Skill：现代 SwiftUI API 与可访问性规范",
-        "question": "Twostraws SwiftUI Agent Skill 如何约束现代 SwiftUI API、布局与可访问性边界？",
-        "why_now": "repos/twostraws-swiftui-skill",
+        "rank": 0,
+        "title": "twostraws-swiftui-skill 核心架构模式与实战拆解",
+        "question": "Twostraws SwiftUI Agent Skill 如何规范现代 SwiftUI API 与可访问性？",
+        "why_now": "repos/twostraws-swiftui-skill（已被现有 SwiftUI 26/27 卡片覆盖）",
         "category": "工程与设计",
         "heuristic_direct": 0.80,
         "heuristic_tier": 2.3,
@@ -589,7 +643,10 @@ def _normalize_rel_vault_ref(raw_ref: str) -> str:
     s = str(raw_ref or "").strip().strip("`'\"")
     while s.startswith("../") or s.startswith("./"):
         s = s[3:] if s.startswith("../") else s[2:]
-    return s.lstrip("/").lower()
+    s = s.lstrip("/").lower()
+    if s.startswith("knowledge-vault/"):
+        s = s.removeprefix("knowledge-vault/")
+    return s
 
 
 def _inspect_vault_coverage(vault_dir: Path) -> dict[str, Any]:
@@ -693,44 +750,133 @@ def _inspect_vault_coverage(vault_dir: Path) -> dict[str, Any]:
     }
 
 
+def _load_topic_ledger_document(
+    vault_dir: Path,
+    topic_ledger_path: Path | None = None,
+) -> dict[str, Any]:
+    """Load the full topic-ledger.json document preserving schema_version, policy, sources, inventory, and topics."""
+    path = topic_ledger_path or (vault_dir / "topic-ledger.json")
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else {"topics": doc if isinstance(doc, list) else []}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _load_topic_ledger(
     vault_dir: Path,
     topic_ledger_path: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Load topic-ledger.json if present and index entries by source_id, topic_key, and aliases."""
-    path = topic_ledger_path or (vault_dir / "topic-ledger.json")
+    """Load topic-ledger.json if present and index entries by topic_key (plus lookup aliases in a secondary pass)."""
+    doc = _load_topic_ledger_document(vault_dir, topic_ledger_path=topic_ledger_path)
     by_key: dict[str, dict[str, Any]] = {}
-    if not path.is_file():
-        return by_key
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    if not doc:
         return by_key
     raw_items: list[dict[str, Any]] = []
-    if isinstance(doc, dict):
-        for k in ("topics", "entities", "items", "entries"):
-            val = doc.get(k)
-            if isinstance(val, list):
-                raw_items.extend(x for x in val if isinstance(x, dict))
-            elif isinstance(val, dict):
-                for sub_k, sub_v in val.items():
-                    if isinstance(sub_v, dict):
-                        item = dict(sub_v)
-                        item.setdefault("topic_key", sub_k)
-                        raw_items.append(item)
-    elif isinstance(doc, list):
-        raw_items.extend(x for x in doc if isinstance(x, dict))
+    for k in ("topics", "entities", "items", "entries"):
+        val = doc.get(k)
+        if isinstance(val, list):
+            raw_items.extend(x for x in val if isinstance(x, dict))
+        elif isinstance(val, dict):
+            for sub_k, sub_v in val.items():
+                if isinstance(sub_v, dict):
+                    item = dict(sub_v)
+                    item.setdefault("topic_key", sub_k)
+                    raw_items.append(item)
 
     for item in raw_items:
-        for field in ("source_id", "topic_key", "slug", "id"):
-            val = str(item.get(field) or "").strip().lower()
+        for field in ("topic_key", "source_id", "slug", "id"):
+            val = str(item.get(field) or "").strip()
             if val:
-                by_key[val] = item
+                by_key[val] = dict(item)
+                by_key[val.lower()] = dict(item)
         for al in item.get("aliases") or []:
-            al_s = str(al or "").strip().lower()
-            if al_s and al_s not in by_key:
-                by_key[al_s] = item
+            al_s = str(al or "").strip()
+            if al_s:
+                by_key.setdefault(al_s, dict(item))
+                by_key.setdefault(al_s.lower(), dict(item))
     return by_key
+
+
+def _save_topic_ledger(
+    vault_dir: Path,
+    entries: dict[str, dict[str, Any]] | list[dict[str, Any]],
+    *,
+    topic_ledger_path: Path | None = None,
+) -> Path:
+    """Save topic-ledger.json while preserving schema_version, policy, sources, vault_coverage_inventory, and unknown topic fields."""
+    ledger_path = topic_ledger_path or (vault_dir / "topic-ledger.json")
+    existing_doc = _load_topic_ledger_document(vault_dir, topic_ledger_path=ledger_path)
+
+    existing_topics_raw = existing_doc.get("topics", []) if isinstance(existing_doc, dict) else []
+    existing_by_tk: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+    if isinstance(existing_topics_raw, list):
+        for item in existing_topics_raw:
+            if isinstance(item, dict) and item.get("topic_key"):
+                tk = str(item["topic_key"])
+                existing_by_tk[tk] = dict(item)
+                if tk not in ordered_keys:
+                    ordered_keys.append(tk)
+    elif isinstance(existing_topics_raw, dict):
+        for tk, item in existing_topics_raw.items():
+            if isinstance(item, dict):
+                row = dict(item)
+                row.setdefault("topic_key", str(tk))
+                existing_by_tk[str(tk)] = row
+                if str(tk) not in ordered_keys:
+                    ordered_keys.append(str(tk))
+
+    incoming_list: list[dict[str, Any]] = []
+    if isinstance(entries, dict):
+        seen_in: set[str] = set()
+        for k, v in entries.items():
+            if not isinstance(v, dict):
+                continue
+            tk = str(v.get("topic_key") or k).strip()
+            if not tk or tk in seen_in:
+                continue
+            # Skip secondary alias index keys when entries came from _load_topic_ledger
+            if k != tk and k.lower() != tk.lower() and tk in entries:
+                continue
+            seen_in.add(tk)
+            row = dict(v)
+            row["topic_key"] = tk
+            incoming_list.append(row)
+    elif isinstance(entries, list):
+        for v in entries:
+            if isinstance(v, dict) and v.get("topic_key"):
+                incoming_list.append(dict(v))
+
+    for inc in incoming_list:
+        tk = str(inc["topic_key"])
+        if tk in existing_by_tk:
+            merged_topic = dict(existing_by_tk[tk])
+            for field_k, field_v in inc.items():
+                # Never clobber non-null existing metadata with None unless explicitly updating state fields
+                if field_v is None and field_k in merged_topic and merged_topic[field_k] is not None and field_k not in {"proposed_on", "next_eligible_at", "external_id", "event_id"}:
+                    continue
+                if field_k == "aliases" and isinstance(merged_topic.get("aliases"), list) and isinstance(field_v, list):
+                    merged_topic["aliases"] = list(dict.fromkeys([*merged_topic["aliases"], *field_v]))
+                else:
+                    merged_topic[field_k] = field_v
+            existing_by_tk[tk] = merged_topic
+        else:
+            existing_by_tk[tk] = dict(inc)
+            ordered_keys.append(tk)
+
+    merged_topics = [existing_by_tk[tk] for tk in ordered_keys if tk in existing_by_tk]
+
+    payload: dict[str, Any] = {}
+    if isinstance(existing_doc, dict):
+        payload.update(existing_doc)
+    payload["schema_version"] = existing_doc.get("schema_version", "personal-topic-ledger/v1") if isinstance(existing_doc, dict) else "personal-topic-ledger/v1"
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    payload["topics"] = merged_topics
+    _atomic_write_json(ledger_path, payload)
+    return ledger_path
 
 
 def _has_integration_evidence(note_text: str) -> bool:
@@ -792,28 +938,25 @@ def _reconcile_collected_tools_entities(
     covered_sources: list[str] = []
     merged_entities: list[str] = []
 
-    if not collected_dir.is_dir():
-        return candidates, {
-            "total_entities": 0,
-            "merged_entities": merged_entities,
-            "integrated_sources": integrated_sources,
-            "covered_sources": covered_sources,
-            "unknown_sources": unknown_sources,
-            "queued_sources": [],
-            "excluded_reasons": excluded_reasons,
-        }
-
     eff_vault = vault_dir or DEFAULT_VAULT_DIR
     vault_cov = _inspect_vault_coverage(eff_vault)
+    ledger_doc = _load_topic_ledger_document(eff_vault, topic_ledger_path=topic_ledger_path)
     ledger_map = _load_topic_ledger(eff_vault, topic_ledger_path=topic_ledger_path)
+    ledger_sources_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(ledger_doc.get("sources"), list):
+        for s_item in ledger_doc["sources"]:
+            if isinstance(s_item, dict) and s_item.get("source_id"):
+                sid = str(s_item["source_id"]).strip().lower()
+                ledger_sources_by_id[sid] = dict(s_item)
 
     notes_by_slug: dict[str, Path] = {}
-    for md in sorted(collected_dir.glob("*.md")):
-        if md.name.lower() == "readme.md":
-            continue
-        slug = re.sub(r"[^a-z0-9-]+", "-", md.stem.lower()).strip("-")
-        if slug:
-            notes_by_slug[slug] = md
+    if collected_dir.is_dir():
+        for md in sorted(collected_dir.glob("*.md")):
+            if md.name.lower() == "readme.md":
+                continue
+            slug = re.sub(r"[^a-z0-9-]+", "-", md.stem.lower()).strip("-")
+            if slug:
+                notes_by_slug[slug] = md
 
     repos_by_slug: dict[str, Path] = {}
     repos_dir = collected_dir / "repos"
@@ -825,13 +968,35 @@ def _reconcile_collected_tools_entities(
             if slug:
                 repos_by_slug[slug] = repo_dir
 
-    all_slugs = sorted(set(notes_by_slug.keys()) | set(repos_by_slug.keys()))
+    ledger_ct_slugs: set[str] = set()
+    for s_id in ledger_sources_by_id:
+        ledger_ct_slugs.add(s_id)
+    if isinstance(ledger_doc.get("topics"), list):
+        for t_item in ledger_doc["topics"]:
+            if isinstance(t_item, dict) and str(t_item.get("source_kind") or "collected_tools") == "collected_tools":
+                s_id = str(t_item.get("source_id") or "").strip().lower()
+                if s_id:
+                    ledger_ct_slugs.add(s_id)
+
+    all_slugs = sorted(set(notes_by_slug.keys()) | set(repos_by_slug.keys()) | ledger_ct_slugs)
+    if not all_slugs:
+        return candidates, {
+            "total_entities": 0,
+            "merged_entities": merged_entities,
+            "integrated_sources": integrated_sources,
+            "covered_sources": covered_sources,
+            "unknown_sources": unknown_sources,
+            "queued_sources": [],
+            "excluded_reasons": excluded_reasons,
+        }
     queued_sources: list[str] = []
 
     for slug in all_slugs:
         note_path = notes_by_slug.get(slug)
         repo_path = repos_by_slug.get(slug)
-        if note_path is not None and repo_path is not None:
+        src_meta = ledger_sources_by_id.get(slug, {})
+        local_paths_meta = [str(p) for p in (src_meta.get("local_paths") or [])]
+        if (note_path is not None and repo_path is not None) or len(local_paths_meta) >= 2:
             merged_entities.append(slug)
 
         note_text = note_path.read_text(encoding="utf-8", errors="ignore") if note_path is not None else ""
@@ -852,6 +1017,8 @@ def _reconcile_collected_tools_entities(
         spec_entry: dict[str, Any] = {}
         if canon_entry:
             spec_entry.update(canon_entry)
+        if src_meta:
+            spec_entry.update(src_meta)
         if ledger_entry:
             spec_entry.update(ledger_entry)
 
@@ -876,7 +1043,13 @@ def _reconcile_collected_tools_entities(
             or (f"file://{note_path}" if note_path else f"file://{repo_path}")
         )
         coverage_refs = [str(r) for r in (spec_entry.get("coverage_refs") or []) if str(r).strip()]
-        default_state = str(spec_entry.get("learning_state") or spec_entry.get("default_state") or "").strip().lower()
+        default_state = str(
+            (ledger_entry or {}).get("learning_state")
+            or src_meta.get("reconciliation_status")
+            or spec_entry.get("learning_state")
+            or spec_entry.get("default_state")
+            or ""
+        ).strip().lower()
 
         # 1. Check integration / usage evidence in top-level note
         if note_text and _has_integration_evidence(note_text):
@@ -885,7 +1058,7 @@ def _reconcile_collected_tools_entities(
             excluded_reasons[slug] = "integrated_in_workflow"
             continue
 
-        # 2. Check vault coverage
+        # 2. Check vault coverage or explicit learned state in topic-ledger.json
         if _is_entity_covered_in_vault(
             slug=slug,
             topic_key=topic_key,
@@ -904,8 +1077,8 @@ def _reconcile_collected_tools_entities(
         has_reconciled_question = bool(
             note_path is not None
             or spec_entry.get("question")
-            or spec_entry.get("reconciliation_status") == "reconciled"
-            or default_state == "queued"
+            or spec_entry.get("reconciliation_status") in {"reconciled", "queued_subtopic"}
+            or default_state in {"queued", "queued_subtopic"}
         )
         if not has_reconciled_question or default_state == "unknown" or spec_entry.get("reconciliation_status") == "unknown":
             unknown_sources.append(slug)
@@ -915,7 +1088,7 @@ def _reconcile_collected_tools_entities(
                 continue
             reconciliation_status = "unknown"
         else:
-            reconciliation_status = "reconciled"
+            reconciliation_status = str(spec_entry.get("reconciliation_status") or "reconciled")
 
         # Build excerpt & title
         if note_path is not None:
@@ -947,13 +1120,18 @@ def _reconcile_collected_tools_entities(
         question = str(spec_entry.get("question") or title).strip()
         why_now = str(
             spec_entry.get("why_now")
-            or (str(note_path) if note_path is not None else str(repo_path))
+            or (str(note_path) if note_path is not None else str(repo_path or slug))
         ).strip()
         fp_seed = f"{slug}|{topic_key}|{question}|{excerpt[:120]}"
-        source_fp = hashlib.sha256(fp_seed.encode("utf-8")).hexdigest()[:16]
+        source_fp = str(spec_entry.get("source_fingerprint") or src_meta.get("git_head_sha") or hashlib.sha256(fp_seed.encode("utf-8")).hexdigest()[:16])
+        rank_val = spec_entry.get("priority_rank")
+        if rank_val is None:
+            rank_val = spec_entry.get("rank")
+        if rank_val is None:
+            rank_val = spec_entry.get("rank_order", 50 if note_path is None else 5)
 
         queued_sources.append(slug)
-        candidates.append({
+        cand_row: dict[str, Any] = {
             "slug": topic_key,
             "topic_key": topic_key,
             "source_id": slug,
@@ -964,16 +1142,23 @@ def _reconcile_collected_tools_entities(
             "why_now": why_now,
             "title": title,
             "category": str(spec_entry.get("category") or "工程与设计"),
-            "source_kind": "collected_tools" if note_path is not None else "collected_tools_repo",
-            "source_ref": str(note_path if note_path is not None else repo_path),
+            "source_kind": str(spec_entry.get("source_kind") or ("collected_tools" if note_path is not None else "collected_tools_repo")),
+            "source_ref": str(note_path if note_path is not None else (repo_path or slug)),
             "excerpt": f"{question} — {excerpt}"[:240] if spec_entry.get("question") and excerpt else (excerpt or question),
             "heuristic_direct": float(spec_entry.get("heuristic_direct", 0.88 if note_path is not None else 0.82)),
             "heuristic_tier": float(spec_entry.get("heuristic_tier", 2.6 if note_path is not None else 2.4)),
-            "rank_order": int(spec_entry.get("rank_order", 50 if note_path is None else 5)),
+            "rank": int(rank_val),
+            "rank_order": int(rank_val),
+            "priority_rank": spec_entry.get("priority_rank", int(rank_val)),
             "reconciliation_status": reconciliation_status,
             "source_fingerprint": source_fp,
-            "scope": "personal",
-        })
+            "scope": str(spec_entry.get("scope") or "personal"),
+        }
+        # Preserve extra ledger topic metadata fields (such as aidash_card_preview, source_locator, legacy_ref, action_id, source_uris)
+        for extra_k, extra_v in spec_entry.items():
+            if extra_k not in cand_row:
+                cand_row[extra_k] = extra_v
+        candidates.append(cand_row)
 
     candidates.sort(key=lambda c: (int(c.get("rank_order", 50)), -float(c.get("heuristic_direct", 0.0)), c["topic_key"]))
     summary = {
@@ -1345,7 +1530,13 @@ def _load_learning_state_registry(
                     continue
                 existing = registry["topics"].get(tk, {})
                 merged = dict(item)
-                merged.update(existing)
+                for ex_k, ex_v in existing.items():
+                    if ex_v is None and ex_k in merged and merged[ex_k] is not None and ex_k not in {"proposed_on", "next_eligible_at", "external_id", "event_id"}:
+                        continue
+                    if ex_k == "aliases" and isinstance(merged.get("aliases"), list) and isinstance(ex_v, list):
+                        merged["aliases"] = list(dict.fromkeys([*merged["aliases"], *ex_v]))
+                    else:
+                        merged[ex_k] = ex_v
                 merged["topic_key"] = tk
                 merged.setdefault("origin_ref", f"learning-topic://{tk}")
                 merged.setdefault("revision", int(merged.get("revision") or 1))
@@ -1673,32 +1864,38 @@ def discover_topics(
             _append_valid_proposal(proposals_path, record)
             proposals_written.append(record)
 
-            topics_reg[topic_key] = {
+            prev_topic = dict(topics_reg.get(topic_key, {}))
+            updated_topic = dict(prev_topic)
+            for k_it, v_it in item.items():
+                if k_it not in {"r09", "slug", "excerpt"} and k_it not in updated_topic:
+                    updated_topic[k_it] = v_it
+            updated_topic.update({
                 "topic_key": topic_key,
-                "aliases": item.get("aliases") or [topic_key],
-                "scope": "personal",
-                "source_kind": item.get("source_kind", "collected_tools"),
-                "source_uri": item.get("source_uri", ""),
-                "source_fingerprint": item.get("source_fingerprint", ""),
-                "question": item.get("question") or item["title"],
-                "title": item["title"],
+                "aliases": list(dict.fromkeys([*(prev_topic.get("aliases") or []), *(item.get("aliases") or [topic_key])])),
+                "scope": str(prev_topic.get("scope") or item.get("scope") or "personal"),
+                "source_kind": str(prev_topic.get("source_kind") or item.get("source_kind", "collected_tools")),
+                "source_uri": str(prev_topic.get("source_uri") or item.get("source_uri", "")),
+                "source_fingerprint": str(prev_topic.get("source_fingerprint") or item.get("source_fingerprint", "")),
+                "question": str(prev_topic.get("question") or item.get("question") or item["title"]),
+                "title": str(prev_topic.get("title") or item["title"]),
                 "detail": record["detail"],
                 "priority": "P2",
                 "agent": "knowledge-digest",
-                "why_now": item.get("why_now", ""),
-                "coverage_refs": item.get("coverage_refs", []),
+                "why_now": str(prev_topic.get("why_now") or item.get("why_now", "")),
+                "coverage_refs": prev_topic.get("coverage_refs") if prev_topic.get("coverage_refs") is not None else item.get("coverage_refs", []),
                 "learning_state": "proposed",
                 "revision": record["revision"],
-                "created_at": topics_reg.get(topic_key, {}).get("created_at") or now_iso,
+                "created_at": prev_topic.get("created_at") or now_iso,
                 "updated_at": now_iso,
                 "proposed_on": today_cst_str,
                 "next_eligible_at": None,
-                "origin_ref": origin_ref,
+                "origin_ref": f"learning-topic://{topic_key}",
                 "ref": origin_ref,
                 "proposal_id": record["id"],
-                "external_id": topics_reg.get(topic_key, {}).get("external_id"),
+                "external_id": prev_topic.get("external_id"),
                 "exploration_authorized": False,
-            }
+            })
+            topics_reg[topic_key] = updated_topic
 
     if propose_aidash and proposals_written:
         _save_learning_state_registry(
@@ -2536,6 +2733,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_disc.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
     p_disc.add_argument("--state-path", type=Path, default=None)
     p_disc.add_argument("--topic-ledger-path", type=Path, default=None)
+    p_disc.add_argument("--no-git", action="store_true", help="Disable default git root scanning for isolated runs")
 
     for cmd_name in ("handle-learning-event", "handle-decision", "explore-topic"):
         p_evt = sub.add_parser(cmd_name, help="Handle Owner learning topic decision or post-approval exploration gate")
@@ -2578,6 +2776,7 @@ def main(argv: list[str] | None = None) -> int:
             propose_aidash=args.propose_aidash,
             vault_dir=args.vault_dir,
             collected_tools_dir=args.collected_tools_dir,
+            git_roots=() if getattr(args, "no_git", False) else DEFAULT_GIT_ROOTS,
             proposals_path=args.proposals_path,
             state_path=args.state_path,
             topic_ledger_path=args.topic_ledger_path,

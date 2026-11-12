@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -383,6 +384,168 @@ class KnowledgeDigestTests(unittest.TestCase):
             self.assertFalse(late_app["ok"])
             self.assertTrue(late_app["conflict"])
             self.assertEqual(late_app["learning_state"], "learned")
+
+    def test_personal_topic_ledger_v1_schema_preservation_and_offline_discovery_gap(self) -> None:
+        fixture_env = os.environ.get("PERSONAL_TOPIC_LEDGER_FIXTURE", "")
+        fixture_src = (
+            Path(fixture_env)
+            if fixture_env
+            else Path.home() / "Development" / "handoff" / "personal-daily-learning-topics" / "fixtures" / "personal-topic-ledger-v1.json"
+        )
+        if fixture_src.is_file():
+            canonical_doc = json.loads(fixture_src.read_text(encoding="utf-8"))
+        else:
+            canonical_doc = {
+                "schema_version": "personal-topic-ledger/v1",
+                "updated_at": "2026-11-12T21:55:00+08:00",
+                "policy": dict(DIGEST._CANONICAL_FIXTURE_DOC["policy"]),
+                "vault_coverage_inventory": list(DIGEST._CANONICAL_FIXTURE_DOC["vault_coverage_inventory"]),
+                "sources": [
+                    {
+                        "source_id": sid,
+                        "source_uri": meta["source_uri"],
+                        "local_paths": [f"collected-tools/repos/{sid}"],
+                        "git_head_sha": "deadbeef1234",
+                        "design_integration": "verified",
+                        "reconciliation_status": "learned" if meta.get("default_state") != "queued" else "queued_subtopic",
+                        "coverage_refs": meta.get("coverage_refs", []),
+                    }
+                    for sid, meta in DIGEST.CANONICAL_COLLECTED_TOOLS_RECONCILIATION.items()
+                ],
+                "topics": [
+                    *(
+                        {
+                            "source_id": sid,
+                            "source_uri": meta["source_uri"],
+                            "topic_key": meta["topic_key"],
+                            "aliases": meta["aliases"],
+                            "question": meta["question"],
+                            "title": meta["title"],
+                            "category": meta["category"],
+                            "coverage_refs": meta["coverage_refs"],
+                            "why_now": meta["why_now"],
+                            "learning_state": "learned" if meta.get("default_state") != "queued" else "queued",
+                            "rank": 0 if meta.get("default_state") != "queued" else meta.get("rank_order", 1),
+                            "priority_rank": None if meta.get("default_state") != "queued" else meta.get("rank_order", 1),
+                            "scope": "personal",
+                            "schema_version": 1,
+                            "source_kind": "collected_tools",
+                            "source_uris": [meta["source_uri"]],
+                            "source_fingerprint": "1234567890ab",
+                            "revision": 1,
+                            "origin_ref": f"learning-topic://{meta['topic_key']}",
+                            "legacy_ref": f"knowledge://{meta['topic_key']}",
+                            "action_id": f"knowledge-{meta['topic_key']}",
+                            "aidash_card_preview": {"source": "Retro", "ref": f"knowledge://{meta['topic_key']}"},
+                        }
+                        for sid, meta in DIGEST.CANONICAL_COLLECTED_TOOLS_RECONCILIATION.items()
+                    ),
+                    *(
+                        {
+                            "topic_key": Path(inv["path"]).stem,
+                            "aliases": [],
+                            "scope": "personal",
+                            "source_id": f"knowledge-vault-{Path(inv['path']).stem}",
+                            "source_kind": "knowledge_vault",
+                            "source_uri": inv["path"],
+                            "source_uris": [inv["path"]],
+                            "source_fingerprint": "sha256:0000",
+                            "title": inv["title"],
+                            "question": inv["title"],
+                            "why_now": "已归档；仅用于主题与派生覆盖去重，不重新提案。",
+                            "coverage_refs": [inv["path"]],
+                            "learning_state": "learned",
+                            "priority_rank": None,
+                            "revision": 1,
+                            "origin_ref": f"learning-topic://{Path(inv['path']).stem}",
+                            "legacy_ref": f"knowledge://{Path(inv['path']).stem}",
+                            "action_id": f"knowledge-{Path(inv['path']).stem}",
+                            "aidash_card_preview": None,
+                        }
+                        for inv in DIGEST._CANONICAL_FIXTURE_DOC["vault_coverage_inventory"]
+                        if inv["folder"] in {"concepts", "thoughts"}
+                    ),
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "knowledge-vault"
+            tools = root / "collected-tools"
+            proposals = root / "proposals.jsonl"
+            state_path = root / "learning-topics-state.json"
+            vault.mkdir(parents=True)
+            tools.mkdir(parents=True)
+
+            # Copy canonical fixture into temp vault ONLY (never touching production)
+            ledger_file = vault / "topic-ledger.json"
+            ledger_file.write_text(json.dumps(canonical_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            # Seed collected-tools with hallmark note + 19 repo dirs to simulate full 19-source workspace
+            (tools / "hallmark.md").write_text(
+                "# Hallmark\n\n## 実際に使ったメモ\n- `/design-studio` Entry A (A1..A4) により統合済み。\n",
+                encoding="utf-8",
+            )
+            for s_item in canonical_doc.get("sources", []):
+                sid = s_item["source_id"]
+                rdir = tools / "repos" / sid
+                rdir.mkdir(parents=True, exist_ok=True)
+                (rdir / "README.md").write_text(f"# {sid}\n\nRepository overview for {sid}.\n", encoding="utf-8")
+
+            orig_topic_keys = [t["topic_key"] for t in canonical_doc["topics"]]
+
+            # Run offline deterministic discover_topics (--no-materialize --top 1)
+            disc = DIGEST.discover_topics(
+                top=1,
+                propose_aidash=False,
+                materialize_cards=False,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=proposals,
+                state_path=state_path,
+                now_utc=datetime(2026, 11, 12, 14, 0, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(disc["ok"])
+            self.assertEqual(disc["status"], "selected")
+            self.assertEqual(disc["selected_count"], 1)
+            self.assertEqual(disc["candidate_count"], 13)
+            selected_tk = disc["topics"][0]["topic_key"]
+            self.assertEqual(selected_tk, "jp-mixed-script-line-breaking")
+            self.assertNotIn("hallmark-anti-slop-anatomy", [t["topic_key"] for t in disc["topics"]])
+            self.assertFalse(any(t["topic_key"].endswith("-core-patterns") for t in disc["topics"]))
+            self.assertFalse((vault / "concepts").exists())
+
+            # Verify _save_topic_ledger preserves schema_version, policy, sources[19], vault_coverage_inventory[11],
+            # all 26 topic_key values, aliases, rank, category, source_id, and aidash_card_preview metadata
+            loaded_map = DIGEST._load_topic_ledger(vault)
+            loaded_map["jp-mixed-script-line-breaking"]["learning_state"] = "proposed"
+            loaded_map["jp-mixed-script-line-breaking"]["proposed_on"] = "2026-11-12"
+            DIGEST._save_topic_ledger(vault, loaded_map)
+
+            saved_doc = json.loads(ledger_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved_doc["schema_version"], "personal-topic-ledger/v1")
+            self.assertEqual(saved_doc["policy"], canonical_doc["policy"])
+            self.assertEqual(len(saved_doc["sources"]), len(canonical_doc["sources"]))
+            self.assertEqual(
+                len(saved_doc["vault_coverage_inventory"]),
+                len(canonical_doc["vault_coverage_inventory"]),
+            )
+            self.assertEqual([t["topic_key"] for t in saved_doc["topics"]], orig_topic_keys)
+
+            by_saved_tk = {t["topic_key"]: t for t in saved_doc["topics"]}
+            jp_saved = by_saved_tk["jp-mixed-script-line-breaking"]
+            self.assertEqual(jp_saved["learning_state"], "proposed")
+            self.assertEqual(jp_saved["proposed_on"], "2026-11-12")
+            self.assertEqual(jp_saved["rank"], 1)
+            self.assertEqual(jp_saved["source_id"], "awesome-cjk-design-md")
+            self.assertIn("awesome-cjk-design-md-core-patterns", jp_saved["aliases"])
+            self.assertIsNotNone(jp_saved.get("aidash_card_preview"))
+            self.assertEqual(jp_saved["aidash_card_preview"]["source"], "Retro")
+            self.assertEqual(
+                jp_saved["aidash_card_preview"]["ref"],
+                "knowledge://jp-mixed-script-line-breaking",
+            )
 
 
 if __name__ == "__main__":
