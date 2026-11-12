@@ -847,7 +847,8 @@ class UpstreamIntegrationTests(unittest.TestCase):
         self.discover()
         kwargs = {"proposals_path": self.proposals, "vault_dir": self.vault, "topic_key": "old-question"}
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda _: DIGEST_VAULT.handle_learning_event(action="Approve", event_id="same", **kwargs), range(4)))
+            results = list(pool.map(lambda _: DIGEST_VAULT.handle_learning_event(action="Approve", event_id="same", revision=1, **kwargs), range(4)))
+        self.assertTrue(all(result["ok"] for result in results))
         self.assertEqual(1, sum(not result.get("deduplicated") for result in results))
         task_keys = {result.get("exploration_task_key") for result in results if result.get("exploration_task_key")}
         self.assertEqual(1, len(task_keys))

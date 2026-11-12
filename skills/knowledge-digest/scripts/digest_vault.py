@@ -1420,9 +1420,6 @@ def _handle_learning_event_locked(
     entry.setdefault("proposed_on", _cst_day_str(_parse_iso_ts(entry["created_at"])))
     current_rev = int(entry.get("revision") or 1)
     current_state = str(entry.get("learning_state") or "proposed").strip().lower()
-    expected_revision = revision
-    if expected_revision is not None and expected_revision != current_rev:
-        return {"ok": False, "conflict": True, "error": "stale topic revision", "topic_key": resolved_tk, "revision": current_rev, "learning_state": current_state}
     origin_ref = str(entry.get("origin_ref") or f"learning-topic://{resolved_tk}")
     prop_id = str(entry.get("proposal_id") or f"learning-topic-{resolved_tk}")
     title = str(entry.get("title") or f"学习探索：{resolved_tk}")
@@ -1450,6 +1447,9 @@ def _handle_learning_event_locked(
                 "blog_published": False,
                 "design_studio_synced": False,
             }
+
+    if revision is not None and revision != current_rev:
+        return {"ok": False, "conflict": True, "error": "stale topic revision", "topic_key": resolved_tk, "revision": current_rev, "learning_state": current_state}
 
     # 1. Star on learning-topic:// -> harmless bookmark only, NEVER triggers publish-blog or design-studio
     if norm_action in {"star", "bookmark", "favorite"}:
