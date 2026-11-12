@@ -882,7 +882,7 @@ class M2RouterTests(unittest.TestCase):
                         return SimpleNamespace(returncode=0, stdout="Confirm folder trust: Do you trust the files in this folder ~/Development/AIDash?\n❯ Yes, I trust\n", stderr="")
                     return SimpleNamespace(returncode=0, stdout=(
                         "CMD_CONFIRM: Do you want to run command?\n"
-                        "Command: git status && python3 --version\n"
+                        "Command: git status\n"
                         "❯ 1. Run once\n"
                         "  2. Always allow for this session\n"
                     ), stderr="")
@@ -895,8 +895,18 @@ class M2RouterTests(unittest.TestCase):
         def sleep_fn(_):
             poll_state["step"] += 1
 
+        apply_receipt = {
+            "ok": True,
+            "plan_id": "m2p-watch-allow",
+            "approved": True,
+            "receipts": [
+                {"wave_order": 1, "topic_id": "aidash-aidata", "target_repo": "AIDash", "ok": True, "method": "herdr-dispatch", "target": "m2-aidash-r1", "pane_id": "w5:p1"},
+                {"wave_order": 2, "topic_id": "learning-and-blog", "target_repo": "Personal", "ok": True, "method": "herdr-dispatch", "target": "m2-personal-r1", "pane_id": "w6:p1"},
+            ],
+        }
         watch_res = self.router.watch_dispatched_m2(
             plan,
+            apply_receipt=apply_receipt,
             interval=0.01,
             max_wait=10.0,
             max_polls=5,
@@ -905,6 +915,8 @@ class M2RouterTests(unittest.TestCase):
             sleep_fn=sleep_fn,
         )
         self.assertTrue(watch_res["ok"])
+        self.assertTrue(watch_res["auto_unblock_enabled"])
+        self.assertFalse(watch_res["passive_only"])
         self.assertTrue(watch_res["all_settled"])
         self.assertFalse(watch_res["needs_owner_attention"])
         self.assertEqual(sent_keys, [
@@ -925,31 +937,91 @@ class M2RouterTests(unittest.TestCase):
         self.assertFalse(self.router._path_is_under_safe_roots("/tmp/../etc/passwd", safe_roots))
         self.assertTrue(self.router._path_is_under_safe_roots("~/Development/AIDash/aidata", safe_roots))
 
-        with tempfile.TemporaryDirectory() as temp:
-            symlink_escape = Path(temp) / "escape-link"
-            symlink_escape.symlink_to("/etc")
-            custom_roots = [str(Path(temp))]
-            self.assertFalse(self.router._path_is_under_safe_roots(str(symlink_escape / "passwd"), custom_roots))
+        # S1: Spaced/quoted/Unicode paths and symlinks inside a safe root pointing outside roots
+        dev_root = Path("~/Development").expanduser()
+        dev_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(dev_root)) as temp:
+            spaced_link = Path(temp) / "review link"
+            spaced_link.symlink_to("/etc")
+            unicode_outside = "/etc/配置 机密/secret.txt"
+            safe_spaced_dir = Path(temp) / "safe 文件夹"
+            safe_spaced_dir.mkdir(parents=True, exist_ok=True)
+            temp_safe_roots = [*safe_roots, str(Path(temp))]
 
-        # Unsafe command strings must never be whitelisted
+            # Complete path extracted including space: <temp>/review link -> symlink to /etc -> rejected!
+            extracted_spaced = self.router._extract_single_dialog_path(f'Allow path access to "{spaced_link}"?')
+            self.assertEqual(extracted_spaced, str(spaced_link))
+            self.assertFalse(self.router._path_is_under_safe_roots(extracted_spaced, temp_safe_roots))
+
+            sent_for_symlink = []
+            res_symlink = self.router._classify_and_unblock_dialog(
+                f"Allow path access to {spaced_link}?\n❯ 1. Yes\n",
+                target_ref="m2-test-r1",
+                target_cwd=str(Path(temp)),
+                live_status="blocked",
+                auto_unblock_enabled=True,
+                runner=lambda args, **kw: (sent_for_symlink.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+            )
+            self.assertEqual(res_symlink["action"], "owner_decision")
+            self.assertEqual(sent_for_symlink, [])
+
+            res_unicode_outside = self.router._classify_and_unblock_dialog(
+                f'Allow path access to "{unicode_outside}"?\n❯ 1. Yes\n',
+                target_ref="m2-test-r1",
+                target_cwd="~/Development/AIDash",
+                live_status="blocked",
+                auto_unblock_enabled=True,
+                runner=lambda args, **kw: (sent_for_symlink.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+            )
+            self.assertEqual(res_unicode_outside["action"], "owner_decision")
+            self.assertEqual(sent_for_symlink, [])
+
+            # Multi-path or wildcard dialog must be rejected
+            res_multi = self.router._classify_and_unblock_dialog(
+                f"Allow path access to {safe_spaced_dir} /etc/passwd?\n❯ 1. Yes\n",
+                target_ref="m2-test-r1",
+                target_cwd="~/Development/AIDash",
+                live_status="blocked",
+                auto_unblock_enabled=True,
+                runner=lambda args, **kw: (sent_for_symlink.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+            )
+            self.assertEqual(res_multi["action"], "owner_decision")
+            self.assertEqual(sent_for_symlink, [])
+
+            # Safe spaced/Unicode directory is extracted intact and allowed when under safe roots
+            extracted_safe_unicode = self.router._extract_single_dialog_path(f'Allow path access to "{safe_spaced_dir}"?')
+            self.assertEqual(extracted_safe_unicode, str(safe_spaced_dir))
+            self.assertTrue(self.router._path_is_under_safe_roots(extracted_safe_unicode, temp_safe_roots))
+
+        # S2: Unsafe command strings and argument forms must never be whitelisted
         unsafe_cmds = [
             "ls & bash -c id",
+            "git status && python3 --version",
+            "git status | head -n 5",
             "git status > ~/.ssh/authorized_keys",
             "git status >> /tmp/out",
             "git clean -fd",
+            "git branch review-created",
             "git branch -D feat/x",
+            "git branch -m old new",
+            "git checkout main",
+            "git switch main",
             "git stash",
             "git tag v1",
+            "git config user.name x",
             "git apply patch.diff",
             "git cherry-pick abc",
             "git -c core.pager=sh status",
             "gh repo delete owner/repo --yes",
             "gh pr merge 123",
+            "gh pr view 123 --web",
             "gh api -X POST /repos/o/r/issues",
             "herdr agent send-keys w1:p1 enter",
             "herdr agent prompt w1:p1 hi",
             "herdr pane close w2:p1",
             "herdr server stop",
+            "orca file open /etc/passwd --focus",
+            "orca file open /tmp/m2-plan-test.md",
             "python3 -c 'import os'",
             "python3 -m http.server",
             "python3 arbitrary_script.py",
@@ -964,55 +1036,346 @@ class M2RouterTests(unittest.TestCase):
             with self.subTest(bad_cmd=bad_cmd):
                 self.assertFalse(self.router._is_whitelisted_command(bad_cmd), f"unsafe command falsely whitelisted: {bad_cmd}")
 
-        # Legitimate read-only commands must be whitelisted
+        # Legitimate single-line read-only commands must be whitelisted
         safe_cmds = [
             "git status",
             "git --no-pager diff --stat",
             "git log -n 5 --oneline",
             "git branch --show-current",
+            "git branch -a",
+            "git branch -r",
+            "git branch --list",
+            "git worktree list",
             "gh pr view 127",
             "gh pr checks 127",
             "gh run list",
+            "gh issue list",
             "herdr agent list",
             "herdr pane list",
+            "herdr workspace list",
             "herdr agent get m2-aidash-r1",
             "herdr agent read m2-aidash-r1 --source visible --lines 40",
+            "herdr agent wait m2-aidash-r1 --timeout 60000",
             "orca file open /tmp/m2-plan-test.md --focus",
             "python3 --version",
+            "python3 -m unittest scripts/test_m2_router.py",
             "env",
             "ls -la",
-            "git status && gh pr list | head -n 5",
         ]
         for good_cmd in safe_cmds:
             with self.subTest(good_cmd=good_cmd):
                 self.assertTrue(self.router._is_whitelisted_command(good_cmd), f"safe command rejected: {good_cmd}")
+
+        # S2: Multiline command confirmation (`Command: git status` followed by trailing `touch /tmp/pwn`) must reject whole block
+        multiline_cmd_dialog = (
+            "CMD_CONFIRM: Do you want to run command?\n"
+            "Command: git status\n"
+            "touch /tmp/pwn\n"
+            "❯ 1. Run once\n"
+        )
+        sent_multiline = []
+        multiline_res = self.router._classify_and_unblock_dialog(
+            multiline_cmd_dialog,
+            target_ref="m2-multi-cmd",
+            target_cwd="~/Development/AIDash",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent_multiline.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(multiline_res["action"], "owner_decision")
+        self.assertEqual(multiline_res["kind"], "non_whitelisted_cmd")
+        self.assertEqual(sent_multiline, [])
+
+        # S3: Completed CMD_CONFIRM in scrollback followed by "Proceed with deployment?" must never send keys
+        stale_scrollback_then_business = (
+            "CMD_CONFIRM\n"
+            "Command: git status\n"
+            "Completed.\n"
+            "Proceed with deployment?\n"
+            "❯ 1. Yes\n"
+            "  2. No\n"
+        )
+        sent_stale = []
+        stale_res = self.router._classify_and_unblock_dialog(
+            stale_scrollback_then_business,
+            target_ref="m2-stale-r1",
+            target_cwd="~/Development/AIDash",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent_stale.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(stale_res["action"], "owner_decision")
+        self.assertEqual(stale_res["blocked_reason"], "owner_decision_required")
+        self.assertEqual(sent_stale, [])
+
+        # S3: Non-blocked live_status (idle/working) must never trigger send-keys even if visible text has a dialog
+        idle_res = self.router._classify_and_unblock_dialog(
+            "CMD_CONFIRM: Do you want to run command?\nCommand: git status\n❯ 1. Run once\n",
+            target_ref="m2-idle-r1",
+            target_cwd="~/Development/AIDash",
+            live_status="idle",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent_stale.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(idle_res["action"], "none")
+        self.assertEqual(sent_stale, [])
 
         # Verify no-path folder trust fails closed when target_cwd is outside baseline roots
         no_path_outside = self.router._classify_and_unblock_dialog(
             "Confirm folder trust: Do you trust the files in this folder?\n❯ Yes, I trust",
             target_ref="m2-untrusted-r1",
             target_cwd="/etc/untrusted",
+            live_status="blocked",
+            auto_unblock_enabled=True,
             runner=lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
         )
         self.assertEqual(no_path_outside["action"], "owner_decision")
         self.assertEqual(no_path_outside["blocked_reason"], "owner_decision_required")
 
-        # Verify scrollback mention of Curate Memory does not override active unsafe command prompt
-        scrollback_mixed = "\n".join([
-            "Earlier log: Curate Memory completed via store_memory",
-            *([f"output line {i}" for i in range(20)]),
-            "CMD_CONFIRM: Confirm command",
-            "Command: git push origin main",
-            "❯ 1. Run",
-        ])
-        mixed_decision = self.router._classify_and_unblock_dialog(
-            scrollback_mixed,
-            target_ref="m2-mixed-r1",
-            target_cwd="~/Development/AIDash",
-            runner=lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    def test_watch_passive_without_verified_apply_receipt_and_exact_identity_binding(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-auth-check",
+            "targets": [{
+                "wave_order": 1,
+                "topic_id": "aidash-aidata",
+                "target_repo": "AIDash",
+                "herdr_target": "m2-aidash-old",
+                "pane_id": "w5:p1",
+                "transport": "herdr",
+                "cwd": "~/Development/AIDash",
+            }],
+        }
+        sent_keys = []
+
+        def blocked_runner(args, **kwargs):
+            cmd = args[1:3]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:pane:list", "result": {"panes": [{"pane_id": "w5:p1", "name": "m2-aidash-old"}]}}), stderr="")
+            if cmd == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:agent:list", "result": {"agents": [{"pane_id": "w5:p1", "name": "m2-aidash-old", "agent_status": "blocked"}]}}), stderr="")
+            if cmd == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout="CMD_CONFIRM: Confirm command\nCommand: git status\n❯ 1. Run once\n", stderr="")
+            if cmd == ["agent", "send-keys"]:
+                sent_keys.append(args)
+                return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            raise AssertionError(args)
+
+        # 1) No apply_receipt -> passive mode only, never sends keys even on safe git status dialog
+        no_receipt_res = self.router.watch_dispatched_m2(
+            plan,
+            apply_receipt=None,
+            interval=0.01,
+            max_wait=1.0,
+            max_polls=1,
+            runner=blocked_runner,
+            sleep_fn=lambda _: None,
         )
-        self.assertEqual(mixed_decision["action"], "owner_decision")
-        self.assertEqual(mixed_decision["kind"], "non_whitelisted_cmd")
+        self.assertEqual(sent_keys, [])
+        self.assertFalse(no_receipt_res["auto_unblock_enabled"])
+        self.assertTrue(no_receipt_res["passive_only"])
+        self.assertTrue(no_receipt_res["needs_owner_attention"])
+        self.assertEqual(no_receipt_res["targets"][0]["blocked_reason"], "passive_watch_no_verified_apply_receipt")
+
+        # 2) Mismatched plan_id or unapproved receipt -> passive mode only
+        for bad_receipt in (
+            {"ok": True, "approved": False, "plan_id": "m2p-auth-check", "receipts": [{"ok": True, "method": "herdr-dispatch", "target": "m2-aidash-old"}]},
+            {"ok": True, "approved": True, "plan_id": "m2p-other-plan", "receipts": [{"ok": True, "method": "herdr-dispatch", "target": "m2-aidash-old"}]},
+        ):
+            res_bad = self.router.watch_dispatched_m2(
+                plan,
+                apply_receipt=bad_receipt,
+                interval=0.01,
+                max_wait=1.0,
+                max_polls=1,
+                runner=blocked_runner,
+                sleep_fn=lambda _: None,
+            )
+            self.assertEqual(sent_keys, [])
+            self.assertFalse(res_bad["auto_unblock_enabled"])
+
+        # 3) F2: apply_plan persists apply_receipt_path, includes --apply-receipt-file in watchdog_cmd,
+        # and watch_dispatched_m2 binds exact replaced Herdr target + newly created dsh session ID (no repo fallback)
+        with tempfile.TemporaryDirectory() as temp:
+            receipt_file = Path(temp) / "apply-receipt.json"
+            multi_plan = {
+                "schema_version": 1,
+                "plan_id": "m2p-f2-bind",
+                "approval": {"approved": False},
+                "targets": [
+                    {
+                        "wave_order": 1,
+                        "topic_id": "learning-and-blog",
+                        "target_repo": "Personal",
+                        "m2_status": "EXISTING_M2",
+                        "session_id": "learn-stale",
+                        "herdr_target": "learn-stale",
+                        "pane_id": "w2:p1",
+                        "transport": "herdr",
+                        "cwd": "~/Development/Personal",
+                        "dispatch_script": "/bin/fake-herdr-dispatch",
+                        "cleanup_candidates": [{"session_id": "learn-stale", "pane_id": "w2:p1", "reason": "idle_existing_m2"}],
+                        "sub_prompt": "write blog",
+                    },
+                    {
+                        "wave_order": 2,
+                        "topic_id": "info-email",
+                        "target_repo": "dsh-personal-plugins",
+                        "m2_status": "NEW_M2",
+                        "transport": "dsh",
+                        "base_url": "http://dsh.test",
+                        "cwd": "~/Development/dsh-personal-plugins",
+                        "sub_prompt": "check email",
+                    },
+                ],
+                "stale_m2_candidates": [{"session_id": "learn-stale", "pane_id": "w2:p1", "reason": "idle_existing_m2"}],
+            }
+
+            def apply_runner(args, **kwargs):
+                if args[1:3] == ["pane", "list"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w2:p1", "status": "idle", "name": "learn-stale"}]}), stderr="")
+                if args[1:3] == ["agent", "list"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p1", "agent_status": "idle", "name": "learn-stale"}]}), stderr="")
+                if args[1:3] == ["pane", "close"]:
+                    return SimpleNamespace(returncode=0, stdout="closed", stderr="")
+                if args[0] == "/bin/fake-herdr-dispatch":
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "pane_id": "w9:p1", "agent": "m2-learning-and-blog-pe-9015cf-r1", "reused_existing": False}), stderr="")
+                raise AssertionError(args)
+
+            def apply_poster(url, payload, **kwargs):
+                if url.endswith("/create-session"):
+                    return {"ok": True, "session": {"sessionId": "dsh-created-99"}}
+                return {"ok": True}
+
+            apply_res = self.router.apply_plan(
+                multi_plan,
+                approve=True,
+                replace_stale_m2=True,
+                plan_file=Path(temp) / "plan.json",
+                apply_receipt_file=receipt_file,
+                runner=apply_runner,
+                poster=apply_poster,
+            )
+            self.assertTrue(receipt_file.is_file())
+            self.assertIn("--apply-receipt-file", apply_res["watchdog_cmd"])
+            self.assertIn(str(receipt_file), apply_res["watchdog_copilot_cli"]["command"])
+            persisted = json.loads(receipt_file.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["plan_id"], "m2p-f2-bind")
+            self.assertTrue(persisted["approved"])
+            spawned_target = persisted["receipts"][0]["target"]
+            self.assertEqual(persisted["receipts"][0]["pane_id"], "w9:p1")
+            self.assertEqual(persisted["receipts"][1]["target"], "dsh-created-99")
+
+            # Watching with persisted receipt must match w9:p1 / spawned_target and dsh-created-99,
+            # NOT an unrelated same-repo session ("other-personal-m2" or "dsh-other-same-repo")
+            def watch_runner(args, **kwargs):
+                cmd = args[1:3]
+                if cmd == ["pane", "list"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"result": {"panes": [
+                        {"pane_id": "w2:p9", "name": "other-personal-m2", "cwd": "~/Development/Personal"},
+                        {"pane_id": "w9:p1", "name": spawned_target, "cwd": "~/Development/Personal"},
+                    ]}}), stderr="")
+                if cmd == ["agent", "list"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"result": {"agents": [
+                        {"pane_id": "w2:p9", "name": "other-personal-m2", "agent_status": "working", "completion_seq": 1},
+                        {"pane_id": "w9:p1", "name": spawned_target, "agent_status": "idle", "completion_seq": 5},
+                    ]}}), stderr="")
+                if cmd == ["agent", "read"]:
+                    return SimpleNamespace(returncode=0, stdout=f"output from {args[3]}", stderr="")
+                raise AssertionError(args)
+
+            def watch_fetcher(url, **kwargs):
+                return {"sessions": [
+                    {"sessionId": "dsh-other-same-repo", "title": "[M2] Other", "target_repo": "dsh-personal-plugins", "status": "working", "isDshSession": True},
+                    {"sessionId": "dsh-created-99", "title": "[M2] Created", "target_repo": "dsh-personal-plugins", "status": "idle", "summary": "email done", "isDshSession": True},
+                ]}
+
+            watch_bound = self.router.watch_dispatched_m2(
+                multi_plan,
+                apply_receipt=persisted,
+                dsh_state_url="http://dsh.test/m2-omni-hub/api/state",
+                interval=0.01,
+                max_wait=5.0,
+                max_polls=2,
+                runner=watch_runner,
+                fetcher=watch_fetcher,
+                sleep_fn=lambda _: None,
+            )
+            self.assertTrue(watch_bound["ok"])
+            self.assertTrue(watch_bound["all_settled"])
+            self.assertEqual(watch_bound["targets"][0]["target"], spawned_target)
+            self.assertEqual(watch_bound["targets"][0]["pane_id"], "w9:p1")
+            self.assertEqual(watch_bound["targets"][0]["status"], "idle")
+            self.assertEqual(watch_bound["targets"][1]["target"], "dsh-created-99")
+            self.assertEqual(watch_bound["targets"][1]["status"], "idle")
+
+    def test_watch_missing_target_and_outage_recovery_behavior(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-f1-missing",
+            "targets": [{
+                "wave_order": 1,
+                "topic_id": "aidash-aidata",
+                "target_repo": "AIDash",
+                "herdr_target": "m2-aidash-r1",
+                "pane_id": "w5:p1",
+                "transport": "herdr",
+                "cwd": "~/Development/AIDash",
+            }],
+        }
+        # 1) Permanently missing target retries until max_polls and returns ok=False, all_settled=False, needs_owner_attention=True
+        polls_seen = {"count": 0}
+
+        def missing_runner(args, **kwargs):
+            if args[1:3] in (["pane", "list"], ["agent", "list"]):
+                return SimpleNamespace(returncode=1, stdout="", stderr="herdr daemon unavailable")
+            raise AssertionError(args)
+
+        missing_res = self.router.watch_dispatched_m2(
+            plan,
+            interval=0.01,
+            max_wait=5.0,
+            max_polls=3,
+            runner=missing_runner,
+            sleep_fn=lambda _: polls_seen.__setitem__("count", polls_seen["count"] + 1),
+        )
+        self.assertEqual(missing_res["polls"], 3)
+        self.assertFalse(missing_res["ok"])
+        self.assertFalse(missing_res["all_settled"])
+        self.assertTrue(missing_res["needs_owner_attention"])
+        self.assertEqual(missing_res["targets"][0]["status"], "missing")
+        self.assertEqual(missing_res["targets"][0]["blocked_reason"], "target_missing_or_unreachable")
+
+        # 2) Transient discovery outage on poll 0 followed by recovery on poll 1 -> working -> poll 2 idle succeeds
+        step_state = {"poll": 0}
+
+        def recovery_runner(args, **kwargs):
+            p = step_state["poll"]
+            cmd = args[1:3]
+            if p == 0:
+                return SimpleNamespace(returncode=1, stdout="", stderr="transient socket error")
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"result": {"panes": [{"pane_id": "w5:p1", "name": "m2-aidash-r1"}]}}), stderr="")
+            if cmd == ["agent", "list"]:
+                st = "working" if p == 1 else "idle"
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"result": {"agents": [{"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": st, "completion_seq": p}]}}), stderr="")
+            if cmd == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout="recovered and done", stderr="")
+            raise AssertionError(args)
+
+        rec_res = self.router.watch_dispatched_m2(
+            plan,
+            interval=0.01,
+            max_wait=5.0,
+            max_polls=5,
+            runner=recovery_runner,
+            sleep_fn=lambda _: step_state.__setitem__("poll", step_state["poll"] + 1),
+        )
+        self.assertEqual(rec_res["polls"], 3)
+        self.assertTrue(rec_res["ok"])
+        self.assertTrue(rec_res["all_settled"])
+        self.assertFalse(rec_res["needs_owner_attention"])
+        self.assertEqual(rec_res["targets"][0]["status"], "idle")
 
     def test_watch_preserves_business_ask_user_and_non_whitelisted_commands_for_owner(self):
         plan = {
