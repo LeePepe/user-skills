@@ -501,6 +501,21 @@ class M2RouterTests(unittest.TestCase):
         self.assertTrue(empty_res["cleanup_receipts"][0]["skipped"])
         self.assertEqual(empty_res["cleanup_receipts"][0]["reason"], "revalidation_inventory_unavailable")
 
+        missing_pane_res = self.router.apply_plan(
+            plan,
+            approve=True,
+            cleanup_duplicates=True,
+            runner=lambda args, **kwargs: (
+                SimpleNamespace(returncode=1, stdout="", stderr="err")
+                if args[1:3] == ["pane", "list"]
+                else SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"name": "learn-duplicate", "agent_status": "idle"}]}), stderr="")
+                if args[1:3] == ["agent", "list"]
+                else SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            ),
+        )
+        self.assertTrue(missing_pane_res["cleanup_receipts"][0]["skipped"])
+        self.assertEqual(missing_pane_res["cleanup_receipts"][0]["reason"], "pane_identity_changed")
+
     def test_topic_routing_prefers_exact_topic_id_and_excludes_shared_repo_stem_conflicts(self):
         sessions = [
             {"session_id": "notification", "topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire Notification Center", "status": "idle", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p2", "workspace_id": "w1"},
@@ -576,6 +591,54 @@ class M2RouterTests(unittest.TestCase):
         self.assertTrue(links)
         for rel in links:
             self.assertTrue((skill_md.parent / rel).resolve().exists(), f"broken link in personal-m2-assistant/SKILL.md: {rel}")
+
+    def test_mixed_transport_plan_preserves_per_target_stdout_isolation(self):
+        plan = self.router.build_plan(
+            "同时处理学习和 AIDash",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                {"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1, "transport": "stdout"},
+                {"topic_id": "aidash-aidata", "target_repo": "AIDash", "sub_prompt": "看指标", "wave_order": 2, "transport": "herdr", "dispatch_script": "/tmp/fake-herdr-dispatch"},
+            ]},
+        )
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout='{"ok": true, "reused_existing": false}', stderr="")
+
+        result = self.router.apply_plan(plan, approve=True, replace_stale_m2=True, runner=runner)
+        self.assertTrue(all(item["simulated"] for item in result["cleanup_receipts"]))
+        self.assertEqual(result["receipts"][0]["method"], "stdout")
+        self.assertEqual(result["receipts"][1]["method"], "herdr-dispatch")
+        self.assertFalse(any(cmd[1:3] == ["pane", "close"] for cmd in calls))
+
+    def test_custom_domain_map_multi_topic_singleton_guard_and_long_topic_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            custom_map_path = Path(temp) / "custom-map.json"
+            base_map = json.loads((ROOT / "skills/personal-m2-assistant/references/m2-domain-map.json").read_text(encoding="utf-8"))
+            base_map["groups"].append({
+                "group": "quant",
+                "title": "Quant",
+                "topics": [
+                    {"topic_id": "quantlab-risk", "title": "QuantLab Risk", "target_repo": "QuantLab", "cwd": "~/Development/QuantLab", "keywords": ["风控"], "aliases": []},
+                    {"topic_id": "quantlab-trading", "title": "QuantLab Trading", "target_repo": "QuantLab", "cwd": "~/Development/QuantLab", "keywords": ["交易"], "aliases": []},
+                ],
+            })
+            custom_map_path.write_text(json.dumps(base_map, ensure_ascii=False, indent=2), encoding="utf-8")
+            unrelated_plan = self.router.build_plan(
+                "检查 QuantLab 风控",
+                [{"session_id": "ql-general", "target_repo": "QuantLab", "title": "QuantLab General", "status": "working", "cwd": "/repo/QuantLab", "source": "herdr", "herdr_target": "ql-general", "pane_id": "w8:p1", "workspace_id": "w8"}],
+                domain_map_file=custom_map_path,
+                mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "quantlab-risk", "target_repo": "QuantLab", "sub_prompt": "检查风控", "wave_order": 1}]},
+            )
+            self.assertEqual(unrelated_plan["targets"][0]["m2_status"], "NEW_M2")
+
+        name_a = self.router._new_herdr_agent_name({"topic_id": "new-topic-quantlab-portfolio-analysis-risk", "target_repo": "QuantLab"})
+        name_b = self.router._new_herdr_agent_name({"topic_id": "new-topic-quantlab-portfolio-analysis-trading", "target_repo": "QuantLab"})
+        self.assertNotEqual(name_a, name_b)
+        self.assertLessEqual(len(name_a), 32)
+        self.assertLessEqual(len(name_b), 32)
 
 
 if __name__ == "__main__":

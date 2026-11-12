@@ -9,6 +9,7 @@ and sends only the targets recorded in the plan.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -390,7 +391,12 @@ def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str,
     return {"topic_id": topic_id, "group": _text(target.get("group"), "new-domain"), "title": title, "target_repo": repo, "cwd": cwd, "keywords": sorted(set(keywords)), "aliases": list(target.get("aliases") or [])}
 
 
-def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _matching_topic_sessions(
+    target: dict[str, Any],
+    topic: dict[str, Any] | None,
+    sessions: list[dict[str, Any]],
+    domain_map: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     repo = _clean_target_name(target.get("target_repo"))
     candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
     if not topic:
@@ -400,8 +406,9 @@ def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | Non
     exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == topic_id]
     if exact:
         return exact
+    active_map = domain_map or load_domain_map()
     repo_topics = [
-        item for item in load_domain_map().get("topics", [])
+        item for item in active_map.get("topics", [])
         if repo and _clean_target_name(item.get("target_repo")).casefold() == repo.casefold()
     ]
     repo_tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", repo.casefold()))
@@ -423,9 +430,14 @@ def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | Non
     return compatible if len(compatible) == 1 and len(repo_topics) <= 1 else []
 
 
-def _target_session(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _target_session(
+    target: dict[str, Any],
+    topic: dict[str, Any] | None,
+    sessions: list[dict[str, Any]],
+    domain_map: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     session_id = _text(target.get("session_id") or target.get("sessionId"))
-    candidates = _matching_topic_sessions(target, topic, sessions)
+    candidates = _matching_topic_sessions(target, topic, sessions, domain_map)
     if session_id:
         match = next((session for session in candidates if session["session_id"] == session_id), None)
         if match:
@@ -670,10 +682,23 @@ def _extract_jev_plan(
             target["domain_status"] = NEW_DOMAIN_CANDIDATE
             target["proposed_domain"] = proposal
             candidates.append(proposal)
-        match = _target_session(target, topic, sessions)
+        match = _target_session(target, topic, sessions, domain_map)
         session_id = _text(target.get("session_id") or target.get("sessionId"))
         if match:
-            target.update({"session_id": match["session_id"], "target_repo": target.get("target_repo") or match["target_repo"], "source": match["source"], "transport": match["source"], "cwd": target.get("cwd") or match["cwd"], "herdr_target": match["herdr_target"], "pane_id": match["pane_id"], "workspace_id": match["workspace_id"], "title": target.get("title") or match["title"], "base_url": match.get("base_url", ""), "m2_status": "EXISTING_M2"})
+            explicit_target_transport = _text(target.get("transport"))
+            target.update({
+                "session_id": match["session_id"],
+                "target_repo": target.get("target_repo") or match["target_repo"],
+                "source": match["source"],
+                "transport": explicit_target_transport if explicit_target_transport and explicit_target_transport != "auto" else match["source"],
+                "cwd": target.get("cwd") or match["cwd"],
+                "herdr_target": match["herdr_target"],
+                "pane_id": match["pane_id"],
+                "workspace_id": match["workspace_id"],
+                "title": target.get("title") or match["title"],
+                "base_url": match.get("base_url", ""),
+                "m2_status": "EXISTING_M2",
+            })
         else:
             target["session_id"] = session_id
             target["target_repo"] = _repo_from(target) or "unspecified"
@@ -843,7 +868,7 @@ def classify(
 def _stale_candidates(target: dict[str, Any], sessions: list[dict[str, Any]], domain_map: dict[str, Any]) -> list[dict[str, Any]]:
     """Find only safe-to-close idle Herdr panes for the target topic/repo."""
     topic = _topic_by_id(domain_map).get(_text(target.get("topic_id")))
-    matches = _matching_topic_sessions(target, topic, sessions)
+    matches = _matching_topic_sessions(target, topic, sessions, domain_map)
     if not matches:
         return []
     current_pane = _text(os.environ.get("HERDR_PANE_ID"))
@@ -1001,9 +1026,14 @@ def _new_herdr_agent_name(target: dict[str, Any], *, index: int = 1, used_names:
         topic_slug = re.sub(r"[^a-z0-9_-]+", "-", raw_topic).strip("-")
         repo_slug = re.sub(r"[^a-z0-9_-]+", "-", _text(target.get("target_repo"), "m2").lower()).strip("-") or "m2"
         if topic_slug and topic_slug not in {NEW_UNMAPPED_DOMAIN.lower(), "unmapped-domain"} and topic_slug != repo_slug:
-            slug = topic_slug if repo_slug in topic_slug else f"{topic_slug[:14]}-{repo_slug[:10]}"
+            full_slug = topic_slug if repo_slug in topic_slug else f"{topic_slug}-{repo_slug}"
         else:
-            slug = repo_slug
+            full_slug = repo_slug
+        if len(full_slug) > 25:
+            digest = hashlib.sha256(f"{repo_slug}:{topic_slug or full_slug}".encode("utf-8")).hexdigest()[:6]
+            slug = f"{full_slug[:18].rstrip('-')}-{digest}"
+        else:
+            slug = full_slug
         base_name = f"m2-{slug[:25]}-r1"[:32].rstrip("-")
     if used_names is not None and base_name in used_names:
         stem = re.sub(r"-r\d+$", "", base_name)[:24].rstrip("-")
@@ -1124,10 +1154,10 @@ def _revalidate_herdr_candidate(
     if live is None:
         return False, "candidate_missing"
     live_pane = _text(live.get("pane_id") or live.get("paneId"))
-    if live_pane and live_pane != pane_id:
+    if not live_pane or live_pane != pane_id:
         return False, "pane_identity_changed"
     live_sid = _session_id(live)
-    if session_id and live_sid and live_sid != session_id and live.get("name"):
+    if session_id and live_sid and live_sid not in {session_id, pane_id}:
         return False, "session_identity_changed"
     live_status = _text(live.get("agent_status") or live.get("status")).casefold()
     if live_status != "idle":
@@ -1162,6 +1192,7 @@ def _cleanup_stale(
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]],
     dry_run: bool = False,
+    dry_run_sessions: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if mode == "none":
         return []
@@ -1174,7 +1205,8 @@ def _cleanup_stale(
         seen.add(session_id)
         if mode == "duplicates" and candidate.get("reason") != "duplicate_m2":
             continue
-        receipts.append({"session_id": session_id, "reason": candidate.get("reason"), **_close_herdr_pane(candidate, runner=runner, dry_run=dry_run)})
+        candidate_dry_run = dry_run or bool(dry_run_sessions and session_id in dry_run_sessions)
+        receipts.append({"session_id": session_id, "reason": candidate.get("reason"), **_close_herdr_pane(candidate, runner=runner, dry_run=candidate_dry_run)})
     return receipts
 
 
@@ -1186,10 +1218,26 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     targets = plan.get("targets", [])
     resolved_initial_transports = [_resolve_target_transport(dict(item), plan, transport) for item in targets]
     is_stdout_only = transport == "stdout" or (bool(resolved_initial_transports) and all(item == "stdout" for item in resolved_initial_transports))
-    registered = _register_new_domains(plan, domain_map_file, dry_run=is_stdout_only) if register_new_domains else []
+    stdout_candidate_sessions: set[str] = set()
+    stdout_new_topics: set[str] = set()
+    for item, eff in zip(targets, resolved_initial_transports):
+        if eff == "stdout":
+            if _text(item.get("domain_status")) == NEW_DOMAIN_CANDIDATE and _text(item.get("topic_id")):
+                stdout_new_topics.add(_text(item.get("topic_id")))
+            for cand in item.get("cleanup_candidates", []):
+                if isinstance(cand, dict) and _text(cand.get("session_id")):
+                    stdout_candidate_sessions.add(_text(cand.get("session_id")))
+    reg_plan = plan
+    if register_new_domains and not is_stdout_only and stdout_new_topics:
+        reg_plan = dict(plan)
+        reg_plan["new_domain_candidates"] = [
+            c for c in plan.get("new_domain_candidates", [])
+            if isinstance(c, dict) and _text(c.get("topic_id")) not in stdout_new_topics
+        ]
+    registered = _register_new_domains(reg_plan, domain_map_file, dry_run=is_stdout_only) if register_new_domains else []
     cleanup_mode = "replace" if replace_stale_m2 else "duplicates" if cleanup_duplicates else "none"
-    cleanup_receipts = _cleanup_stale(plan, cleanup_mode, runner=runner, dry_run=is_stdout_only)
-    closed_sessions = {item.get("session_id") for item in cleanup_receipts if item.get("ok") and not item.get("skipped")}
+    cleanup_receipts = _cleanup_stale(plan, cleanup_mode, runner=runner, dry_run=is_stdout_only, dry_run_sessions=stdout_candidate_sessions)
+    closed_sessions = {item.get("session_id") for item in cleanup_receipts if item.get("ok") and not item.get("skipped") and not item.get("simulated")}
     used_herdr_names: set[str] = set()
     receipts: list[dict[str, Any]] = []
     target_seq = 0
@@ -1197,20 +1245,22 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         for target in [item for item in targets if int(item.get("wave_order", 1)) == wave]:
             target_seq += 1
             dispatch_target = dict(target)
+            initial_transport = _resolve_target_transport(dispatch_target, plan, transport)
+            target_is_stdout = is_stdout_only or initial_transport == "stdout"
             if replace_stale_m2 and target.get("cleanup_candidates"):
                 candidate_ids = {_text(c.get("session_id")) for c in target.get("cleanup_candidates", []) if isinstance(c, dict)}
-                if not candidate_ids or candidate_ids.issubset(closed_sessions) or is_stdout_only:
+                if not candidate_ids or candidate_ids.issubset(closed_sessions) or target_is_stdout:
                     dispatch_target.update({
                         "m2_status": "NEW_M2",
                         "session_id": "",
                         "source": "herdr",
-                        "transport": "stdout" if is_stdout_only else "herdr",
+                        "transport": "stdout" if target_is_stdout else "herdr",
                     })
             prompt = _text(dispatch_target.get("sub_prompt"), plan.get("message", ""))
             hint = dispatch_target.get("rag_context_hint")
             if hint:
                 prompt = f"[RAG/context hint]\n{hint}\n\n[Dispatched instruction]\n{prompt}"
-            selected = _resolve_target_transport(dispatch_target, plan, transport)
+            selected = "stdout" if target_is_stdout else _resolve_target_transport(dispatch_target, plan, transport)
             if selected == "stdout":
                 receipt = {"ok": True, "method": "stdout", "target": dispatch_target.get("target_repo", "unspecified"), "created": False, "would_create": dispatch_target.get("m2_status") == "NEW_M2", "prompt": prompt}
             elif selected == "herdr":
