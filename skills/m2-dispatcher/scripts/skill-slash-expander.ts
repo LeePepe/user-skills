@@ -224,7 +224,7 @@ const ALLOWED_M2_SPEC_PATTERNS: readonly RegExp[] = [
 ];
 
 export const M2_SPEC_ONLY_BLOCK_REASON =
-	"M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md). Code and other files must be modified in a worktree by dispatching Herdr TL via herdr-dispatch.sh. After dispatching Herdr TL, NEVER poll with 'sleep && herdr agent read' or 'herdr agent wait'; run 'python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json' synchronously until EVT=GOAL_DONE.";
+	"M2-Dispatcher Rule: M2 is only allowed to edit simple spec files (spec.md / design.md). Code and other files must be modified in a worktree by dispatching Herdr TL via herdr-dispatch.sh. After dispatching Herdr TL, NEVER poll with 'sleep && herdr agent read' or 'herdr agent wait'. In Copilot CLI, invoke bash with mode: \"async\", detach: true, shellId: \"watch-<goal>\" using goal-supervisor.py watch so the turn reaches session.idle and the user can continue chatting with M2 while <system_notification> wakes M2 on exit; then read_bash and re-arm as needed. Synchronous shell hosts use 'python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json' until EVT=GOAL_DONE.";
 
 export const FOREGROUND_TO_BACKGROUND_5S_THRESHOLD_SEC = 5;
 

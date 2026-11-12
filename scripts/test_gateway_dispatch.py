@@ -172,6 +172,11 @@ elif args[:2] == ["agent", "prompt"]:
                 "goal-supervisor.py watch --handoff-dir ~/Development/handoff/demo --interval 15 --max-wait 600 --json",
                 payload["watchdog_cmd"],
             )
+            copilot_watch = payload["watchdog_copilot_cli"]
+            self.assertEqual(copilot_watch["mode"], "async")
+            self.assertTrue(copilot_watch["detach"])
+            self.assertEqual(copilot_watch["shellId"], "watch-demo")
+            self.assertIn("--max-wait 2400", copilot_watch["command"])
             recorded = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
             ws_creates = [c for c in recorded if c[:2] == ["workspace", "create"]]
             self.assertEqual(len(ws_creates), 1)
@@ -222,6 +227,11 @@ elif args[:2] == ["agent", "prompt"]:
                 "goal-supervisor.py watch --handoff-dir ~/Development/handoff/demo --interval 15 --max-wait 600 --json",
                 reused_payload["watchdog_cmd"],
             )
+            reused_watch = reused_payload["watchdog_copilot_cli"]
+            self.assertEqual(reused_watch["mode"], "async")
+            self.assertTrue(reused_watch["detach"])
+            self.assertEqual(reused_watch["shellId"], "watch-demo")
+            self.assertIn("--max-wait 2400", reused_watch["command"])
             reuse_calls = [json.loads(line) for line in all_calls.read_text(encoding="utf-8").splitlines()]
             self.assertFalse(any(c[:2] == ["workspace", "create"] for c in reuse_calls))
             self.assertFalse(any(c[:2] == ["agent", "start"] for c in reuse_calls))

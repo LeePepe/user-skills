@@ -254,6 +254,88 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertEqual(watch_res["tl_status"], "done")
             self.assertEqual(watch_res["events"], 0)
 
+    def test_watch_wakes_for_unresolved_decision_and_ignores_closed_event(self):
+        supervisor = load_supervisor()
+        with tempfile.TemporaryDirectory() as temp:
+            goal = Path(temp) / "decision-goal"
+            goal.mkdir(parents=True)
+            ledger = goal / "ledger.md"
+            ledger.write_text(
+                "# Goal: decision-goal\n- TL: decision-goal-goal-tl-r1\n"
+                "2026-11-12T00:00:00Z | EVT=NEED_GO | id=E7 | note=Approve change\n",
+                encoding="utf-8",
+            )
+            args = supervisor.argparse.Namespace(
+                handoff_dir=str(goal), interval=1, max_wait=1, herdr_json=None,
+                write_alerts=False, mode="observe", json=True,
+            )
+            open_result = supervisor.watch(args)
+            self.assertEqual(open_result["reason"], "NEED_DECISION")
+            self.assertEqual(open_result["unresolved_events"][0]["event_id"], "E7")
+
+            for close_event in ("RESOLVED", "ACK"):
+                with self.subTest(close_event=close_event):
+                    ledger.write_text(
+                        "# Goal: decision-goal\n- TL: decision-goal-goal-tl-r1\n"
+                        "2026-11-12T00:00:00Z | EVT=NEED_GO | id=E7 | note=Approve change\n"
+                        f"2026-11-12T00:01:00Z | EVT={close_event} | id=E7\n",
+                        encoding="utf-8",
+                    )
+                    with patch.object(supervisor, "scan", return_value={"anomalies": []}), patch.object(
+                        supervisor, "load_agents", return_value=[]
+                    ), patch.object(supervisor.time, "monotonic", side_effect=[0, 2]), patch.object(
+                        supervisor.time, "sleep", return_value=None
+                    ):
+                        closed_result = supervisor.watch(args)
+                    self.assertEqual(closed_result["reason"], "WATCH_SLICE_TIMEOUT")
+
+    def test_watch_ignores_idle_status_while_visible_copilot_is_working(self):
+        supervisor = load_supervisor()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            goal = root / "copilot-goal"
+            goal.mkdir(parents=True)
+            (goal / "ledger.md").write_text(
+                "# Goal: copilot-goal\n- Owner: tianpei\n- TL: copilot-goal-goal-tl-r1\n",
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_load_agents(_path):
+                calls.append(1)
+                status = "idle" if len(calls) <= 2 else "done"
+                return [{
+                    "name": "copilot-goal-goal-tl-r1",
+                    "agent_status": status,
+                    "cwd": str(goal),
+                }]
+
+            visible_calls = []
+            def fake_read_visible(_name):
+                visible_calls.append(1)
+                return "○ Working · ctrl+c interrupt" if len(visible_calls) == 1 else ""
+
+            with patch.object(supervisor, "scan", return_value={"anomalies": []}), patch.object(
+                supervisor, "load_agents", side_effect=fake_load_agents
+            ), patch.object(supervisor, "read_visible_from_herdr", side_effect=fake_read_visible), patch.object(
+                supervisor.time, "sleep", return_value=None
+            ):
+                args = supervisor.argparse.Namespace(
+                    handoff_dir=str(goal),
+                    interval=1,
+                    max_wait=30,
+                    herdr_json=None,
+                    write_alerts=False,
+                    mode="observe",
+                    json=True,
+                )
+                watch_res = supervisor.watch(args)
+
+            self.assertEqual(watch_res["reason"], "TL_IDLE_OR_DONE")
+            self.assertEqual(watch_res["tl_status"], "done")
+            self.assertGreaterEqual(len(calls), 3)
+            self.assertGreaterEqual(len(visible_calls), 2)
+
     def test_operator_policy_compatibility_and_default_upgrade_diff(self):
         supervisor = load_supervisor()
         default_res = supervisor.check_operator_policy_compatibility()
