@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta, timezone
+import fcntl
 import html
 import importlib.util
 import json
@@ -606,25 +607,28 @@ def _has_usage_or_integration_evidence(text: str) -> bool:
     return any(m in lower for m in markers)
 
 
+class TopicLedgerError(RuntimeError):
+    pass
+
+
 def _load_topic_ledger(vault_dir: Path) -> dict[str, dict[str, Any]]:
     ledger_path = vault_dir / "topic-ledger.json"
+    if not ledger_path.is_file():
+        raise TopicLedgerError(f"missing authoritative topic ledger: {ledger_path}")
+    try:
+        doc = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TopicLedgerError(f"invalid topic ledger: {ledger_path}: {exc}") from exc
+    raw_topics = doc.get("topics") if isinstance(doc, dict) else None
+    if not isinstance(raw_topics, list) or not raw_topics:
+        raise TopicLedgerError(f"incomplete topic ledger: {ledger_path}")
     entries: dict[str, dict[str, Any]] = {}
-    if ledger_path.is_file():
-        try:
-            doc = json.loads(ledger_path.read_text(encoding="utf-8"))
-            raw_topics = doc.get("topics", doc) if isinstance(doc, dict) else doc
-            if isinstance(raw_topics, list):
-                for item in raw_topics:
-                    if isinstance(item, dict) and item.get("topic_key"):
-                        entries[str(item["topic_key"])] = dict(item)
-            elif isinstance(raw_topics, dict):
-                for k, v in raw_topics.items():
-                    if isinstance(v, dict):
-                        item = dict(v)
-                        item.setdefault("topic_key", str(k))
-                        entries[str(item["topic_key"])] = item
-        except (OSError, json.JSONDecodeError):
-            pass
+    required = ("topic_key", "source_uri", "question", "learning_state", "source_fingerprint")
+    for item in raw_topics:
+        if not isinstance(item, dict) or any(not str(item.get(key) or "").strip() for key in required):
+            raise TopicLedgerError(f"incomplete topic entry in {ledger_path}")
+        key = str(item["topic_key"]).strip()
+        entries[key] = dict(item)
     return entries
 
 
@@ -673,10 +677,13 @@ def _reconcile_proposals_history(proposals_path: Path | None) -> dict[str, Any]:
                 continue
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid proposal history JSON: {exc}") from exc
             if not isinstance(rec, dict):
-                continue
+                raise ValueError("invalid proposal history record: expected object")
+            required = ("id", "ts", "agent", "title")
+            if any(not str(rec.get(key) or "").strip() for key in required):
+                raise ValueError(f"invalid proposal history record: missing {required}")
             rec_id = str(rec.get("id") or "").strip()
             ref = str(rec.get("ref") or "").strip()
             origin_ref = str(rec.get("origin_ref") or "").strip()
@@ -785,7 +792,42 @@ def _scan_collected_tools_candidates(
             entities[source_id]["repo_dir"] = repo_dir
             entities[source_id]["readme_text"] = r_text
 
-    ledger_entries = _load_topic_ledger(vault_dir) if vault_dir else {}
+    try:
+        ledger_entries = _load_topic_ledger(vault_dir) if vault_dir else {}
+    except TopicLedgerError:
+        # Legacy preview/archive scans may operate without the Personal ledger;
+        # proposal-producing discovery is fail-closed in discover_topics.
+        ledger_entries = {}
+    if ledger_entries:
+        authoritative: list[dict[str, Any]] = []
+        for topic_key, item in sorted(ledger_entries.items(), key=lambda pair: (int(pair[1].get("rank", 99) or 99), pair[0])):
+            state = str(item.get("learning_state", "unknown")).lower()
+            if state != "queued":
+                continue
+            source_id = str(item.get("source_id") or "").strip()
+            ent = entities.get(source_id, {})
+            source_text = f"{ent.get('note_text', '')}\n{ent.get('readme_text', '')}"
+            source_ref = ent.get("repo_dir") or ent.get("note_path")
+            if not source_ref or not source_text.strip() or _has_usage_or_integration_evidence(source_text):
+                continue
+            question = str(item.get("question") or "").strip()
+            source_uri = _normalize_source_uri(str(item.get("source_uri") or ""))
+            if not question or len(question) < 12 or not source_uri:
+                continue
+            authoritative.append({
+                "slug": topic_key, "topic_key": topic_key, "source_id": source_id,
+                "source_uri": source_uri, "aliases": list(item.get("aliases") or [source_id, topic_key]),
+                "title": str(item.get("title") or question), "question": question,
+                "category": str(item.get("category") or "工程与设计"),
+                "source_kind": str(item.get("source_kind") or "collected_tools"),
+                "source_ref": str(source_ref), "why_now": str(item.get("why_now") or ""),
+                "coverage_refs": list(item.get("coverage_refs") or []),
+                "excerpt": str(item.get("why_now") or question),
+                "heuristic_direct": float(item.get("heuristic_direct", 0.8) or 0.8),
+                "heuristic_tier": float(item.get("heuristic_tier", 2.0) or 2.0),
+                "rank": int(item.get("rank", 99) or 99), "scope": "personal",
+            })
+        return authoritative
 
     for source_id, ent in sorted(entities.items()):
         note_text = ent["note_text"]
@@ -1078,14 +1120,27 @@ def discover_topics(
     materialize_cards: bool | None = None,
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Per TK1 contract: default --propose-aidash or scheduled discovery MUST NOT materialize
-    # concepts/<slug>.md or mutate knowledge-vault/index.md before Owner approval.
-    eff_materialize = False if materialize_cards is None else bool(materialize_cards)
-    if propose_aidash and materialize_cards is None:
-        eff_materialize = False
-
-    existing_corpus = _existing_vault_corpus(vault_dir)
-    history = _reconcile_proposals_history(proposals_path)
+    # Candidate discovery and reservation are one serialized critical section.
+    lock_path = proposals_path.with_name(proposals_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    # Per TK1 contract: proposal discovery never materializes a card, even when a
+    # legacy caller passes --materialize. Archival is a separate explicit command.
+    eff_materialize = bool(materialize_cards) if not propose_aidash else False
+    try:
+        existing_corpus = _existing_vault_corpus(vault_dir)
+        history = _reconcile_proposals_history(proposals_path)
+        try:
+            ledger_entries = _load_topic_ledger(vault_dir)
+        except TopicLedgerError:
+            if propose_aidash:
+                raise
+            ledger_entries = {}
+    except (TopicLedgerError, ValueError) as exc:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+        return {"ok": False, "status": "health_error", "error": str(exc), "selected_count": 0, "topics": [], "proposals_written": []}
     excluded_topics: set[str] = set(history["excluded_topics"])
     pending_topics: set[str] = set(history["pending_topics"])
     proposed_today_cst: set[str] = set(history["proposed_today_cst"])
@@ -1096,17 +1151,18 @@ def discover_topics(
     )
     deduped: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
-    seen_uris: set[str] = set()
+    seen_questions: set[tuple[str, str]] = set()
     excluded_count = 0
     for cand in raw_candidates:
         t_key = str(cand.get("topic_key") or cand.get("slug") or "").strip()
         s_uri = _normalize_source_uri(str(cand.get("source_uri") or ""))
+        question = re.sub(r"\s+", " ", str(cand.get("question") or cand.get("title") or "").strip()).casefold()
         aliases = {str(a).strip() for a in cand.get("aliases", []) if str(a).strip()} | {t_key}
-        if not t_key or (aliases & seen_keys) or (s_uri and s_uri in seen_uris):
+        question_key = (s_uri, question)
+        if not t_key or (aliases & seen_keys) or question_key in seen_questions:
             continue
         seen_keys |= aliases
-        if s_uri:
-            seen_uris.add(s_uri)
+        seen_questions.add(question_key)
         if aliases & excluded_topics:
             excluded_count += 1
             continue
@@ -1136,8 +1192,10 @@ def discover_topics(
             "proposals_written": [],
         }
 
-    ranked = _rerank_candidates_r09(deduped, mock_r09_answers=mock_r09_answers)
-    eff_top = min(max(1, top), 1) if propose_aidash else max(1, top)
+    # Candidate selection is metadata-only and deterministic. Approval-time research
+    # may use other services, but discovery must never call a network/LLM reranker.
+    ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
+    eff_top = 1 if propose_aidash else max(1, top)
     selected = ranked[:eff_top]
     if not selected:
         return {

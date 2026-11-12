@@ -26,6 +26,11 @@ RETRO_ENGINE = _load("skills/retro-loop/scripts/retro_story_engine.py")
 
 
 class KnowledgeDigestLearningTopicTests(unittest.TestCase):
+    @staticmethod
+    def _write_ledger(vault: Path, *topics: dict):
+        vault.mkdir(parents=True, exist_ok=True)
+        (vault / "topic-ledger.json").write_text(json.dumps({"topics": list(topics)}), encoding="utf-8")
+
     def test_hallmark_merged_and_excluded_while_queued_topics_emit_learning_topic_ref(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -40,6 +45,11 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
             (tools / "repos" / "hallmark" / "README.md").write_text("# Hallmark\n", encoding="utf-8")
             (tools / "repos" / "bama" / "README.md").write_text("# BAMA\n", encoding="utf-8")
             proposals = root / "proposals.jsonl"
+            self._write_ledger(
+                vault,
+                {"topic_key": "hallmark-anti-slop-anatomy", "source_id": "hallmark", "source_uri": "https://github.com/Nutlope/hallmark", "question": "Hallmark usage", "learning_state": "learned", "source_fingerprint": "hallmark"},
+                {"topic_key": "bama-agent-cli-story-verification", "source_id": "bama", "source_uri": "https://github.com/daveebbelaar/bama", "question": "BAMA 如何转为可验收用户故事？", "learning_state": "queued", "source_fingerprint": "bama"},
+            )
 
             res = DIGEST_VAULT.discover_topics(
                 top=3,
@@ -67,6 +77,10 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
             tools = root / "collected-tools"
             tools.mkdir(parents=True)
             proposals = root / "proposals.jsonl"
+            self._write_ledger(
+                vault,
+                {"topic_key": "bama-agent-cli-story-verification", "source_id": "bama", "source_uri": "https://github.com/daveebbelaar/bama", "question": "BAMA 如何转为可验收用户故事？", "learning_state": "queued", "source_fingerprint": "bama"},
+            )
 
             # Empty tools and empty git roots must NOT fabricate fallback git probes
             empty_res = DIGEST_VAULT.discover_topics(

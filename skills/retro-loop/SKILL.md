@@ -36,9 +36,10 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
   │  • 经 `aidash` CLI XPC 推送到 macOS 菜单栏/主窗口与 iPhone 的「今日规划 / Needs a Person」卡片。
   ▼
 【4. 拍板与回流：`AIDash` 交互 -> `event_bridge.py` -> `linear-board` / 3 Physical Locks】
-     • 你在 `AIDash` 上对提案卡片点 **⭐ Star（批准）**：
+     • 你在 `AIDash` 上对普通提案卡片点 **⭐ Star（批准）**：
        `event_bridge.py` 自动调用 `skills/team-lead/scripts/linear-sync.py idea --mode auto`
        在 **Linear Team `TIA`** 创建 Issue，并将 `proposals.jsonl` 标记为 `approved`；
+     • `learning-topic://<topic-key>` 走独立学习审批边界：Approve 仅授权后台探索，Done 记录 Owner 结果；Star 不自动发布、归档或同步 `design-studio`。
      • 你在 `AIDash` 上点 **✓ Done（忽略/已处理）**：
        `event_bridge.py` 自动将提案标记为 `dismissed` 消警。
 ```
@@ -74,7 +75,7 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 
 ## Return path & CLI 用法
 
-已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task：
+已确认结论经 `AIDash` 展示与普通提案 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task；学习候选仍须遵守 `learning-topic://` 的独立探索与发布授权：
 
 ```bash
 # 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash

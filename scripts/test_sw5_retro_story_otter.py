@@ -212,6 +212,10 @@ class Sw5Tests(unittest.TestCase):
                 encoding="utf-8",
             )
             proposals = root / "proposals.jsonl"
+            (vault).mkdir(parents=True)
+            (vault / "topic-ledger.json").write_text(json.dumps({"topics": [
+                {"topic_key": "bama-agent-cli-story-verification", "source_id": "bama", "source_uri": "https://github.com/daveebbelaar/bama", "question": "BAMA 如何转为可验收用户故事？", "learning_state": "queued", "source_fingerprint": "bama"}
+            ]}), encoding="utf-8")
             blog_repo = root / "blog"
             (blog_repo / "assets").mkdir(parents=True)
             (blog_repo / "assets" / "blog.css").write_text(
@@ -231,8 +235,8 @@ class Sw5Tests(unittest.TestCase):
             self.assertTrue(disc["ok"])
             self.assertGreaterEqual(disc["selected_count"], 1)
             first_slug = disc["topics"][0]["slug"]
-            self.assertTrue((vault / "concepts" / f"{first_slug}.md").is_file())
-            self.assertIn(f"concepts/{first_slug}.md", (vault / "index.md").read_text(encoding="utf-8"))
+            self.assertFalse((vault / "concepts" / f"{first_slug}.md").exists())
+            self.assertFalse((vault / "index.md").exists())
 
             prop_records = [
                 json.loads(line)
@@ -243,6 +247,9 @@ class Sw5Tests(unittest.TestCase):
             self.assertEqual(prop_records[0]["source"], "Learning")
             self.assertEqual(prop_records[0]["scope"], "personal")
 
+            card_source = root / "approved-card.md"
+            card_source.write_text(DIGEST_VAULT.render_concept_card_markdown(disc["topics"][0]), encoding="utf-8")
+            DIGEST_VAULT.archive_card(slug=first_slug, category="工程与设计", title=disc["topics"][0]["title"], file_path=card_source, vault_dir=vault)
             pub = DIGEST_VAULT.publish_blog(
                 slug=f"knowledge://{first_slug}",
                 blog_repo=blog_repo,
@@ -271,6 +278,12 @@ class Sw5Tests(unittest.TestCase):
             (tools / "repos" / "awesome-cjk-design-md" / "README.md").write_text("# Awesome Design MD JP\n", encoding="utf-8")
             (tools / "repos" / "bama" / "README.md").write_text("# BAMA\n", encoding="utf-8")
             proposals = root / "proposals.jsonl"
+            vault.mkdir(parents=True)
+            (vault / "topic-ledger.json").write_text(json.dumps({"topics": [
+                {"topic_key": "hallmark-anti-slop-anatomy", "source_id": "hallmark", "source_uri": "https://github.com/Nutlope/hallmark", "question": "Hallmark usage", "learning_state": "learned", "source_fingerprint": "hallmark"},
+                {"topic_key": "jp-mixed-script-line-breaking", "source_id": "awesome-cjk-design-md", "source_uri": "https://github.com/kzhrknt/awesome-design-md-jp", "question": "日文与拉丁文混排如何避免断行错误？", "learning_state": "queued", "source_fingerprint": "cjk", "rank": 1},
+                {"topic_key": "bama-agent-cli-story-verification", "source_id": "bama", "source_uri": "https://github.com/daveebbelaar/bama", "question": "BAMA 如何转为可验收用户故事？", "learning_state": "queued", "source_fingerprint": "bama"}
+            ]}), encoding="utf-8")
 
             disc = DIGEST_VAULT.discover_topics(
                 top=2,

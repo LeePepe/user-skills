@@ -939,8 +939,8 @@ def compute_skill_roi_diagnostics(
                         s2_gate["gate_catch_rate"] = round(catches / denom, 4)
                         s2_gate["coverage_status"] = "healthy"
                     else:
-                        s2_gate["gate_catch_rate"] = 1.0 if total_j > 0 else None
-                        s2_gate["coverage_status"] = "healthy" if total_j > 0 else "unknown"
+                        s2_gate["gate_catch_rate"] = None
+                        s2_gate["coverage_status"] = "unknown"
                     s2_gate["noise_rate"] = round(noise / total_j, 4) if total_j > 0 else None
 
             if "fact_turn" in tables:
@@ -1159,7 +1159,7 @@ def compute_skill_roi_diagnostics(
     s3_health = {
         "total_skills": len(inventory),
         "audit_pass_count": budget_passed,
-        "audit_pass_rate": round(budget_passed / max(1, len(inventory)), 4),
+        "audit_pass_rate": round(budget_passed / len(inventory), 4) if inventory else None,
         "top3_l0_watermarks": [
             {"skill": m["skill"], "l0_lines": m["l0_lines"], "l0_cap": m["l0_cap"]}
             for m in top_l0
@@ -1180,24 +1180,24 @@ def compute_skill_roi_diagnostics(
         if loads == 0 and s_name in known_skills:
             idle_skills_30d.append(s_name)
         r1_tot = st["r1_total"]
-        r1_pass_rate = round(st["r1_pass"] / r1_tot, 4) if r1_tot > 0 else 1.0
+        r1_pass_rate = round(st["r1_pass"] / r1_tot, 4) if r1_tot > 0 else None
         script_execs = st["script_execs"]
         script_ratio = round(min(1.0, script_execs / max(1, loads)), 4) if st["has_scripts"] and loads > 0 else (1.0 if not st["has_scripts"] else 0.0)
         read_only_unpracticed_rate = round(1.0 - script_ratio, 4) if st["has_scripts"] and loads > 0 else 0.0
 
         f_tot = max(1, st["l0_only_sessions"] + st["l1_selective_sessions"] + st["l1_greedy_sessions"])
-        l0_rate = round(st["l0_only_sessions"] / f_tot, 4) if loads > 0 else 1.0
-        l1_sel_rate = round(st["l1_selective_sessions"] / f_tot, 4) if loads > 0 else 0.0
-        l1_greedy_rate = round(st["l1_greedy_sessions"] / f_tot, 4) if loads > 0 else 0.0
-        avg_tokens = int(st["total_tokens"] / max(1, st["session_count"])) if st["session_count"] > 0 else 1200
+        l0_rate = round(st["l0_only_sessions"] / f_tot, 4) if loads > 0 else None
+        l1_sel_rate = round(st["l1_selective_sessions"] / f_tot, 4) if loads > 0 else None
+        l1_greedy_rate = round(st["l1_greedy_sessions"] / f_tot, 4) if loads > 0 else None
+        avg_tokens = int(st["total_tokens"] / st["session_count"]) if st["session_count"] > 0 else None
 
         # S10 formula: Skill ROI = R1_Pass_Rate / Normalized(Tokens + Churn + Uncalled_Script_Penalty)
-        norm_tokens = min(2.0, max(0.2, avg_tokens / 10000.0))
+        norm_tokens = min(2.0, max(0.2, avg_tokens / 10000.0)) if avg_tokens is not None else None
         norm_churn = min(2.0, st["edit_churn_count"] * 0.15 + st["retry_commands"] * 0.1)
         uncalled_penalty = read_only_unpracticed_rate * 0.6 if st["has_scripts"] and loads > 0 else 0.0
         escape_penalty = (st["impl_bug_escapes"] * 0.2) + (st["spec_gap_escapes"] * 0.15)
-        denom = max(0.25, 0.5 + norm_tokens + norm_churn + uncalled_penalty + escape_penalty)
-        roi_score = round(r1_pass_rate / denom, 4)
+        denom = max(0.25, 0.5 + norm_tokens + norm_churn + uncalled_penalty + escape_penalty) if norm_tokens is not None else None
+        roi_score = round(r1_pass_rate / denom, 4) if denom is not None and r1_pass_rate is not None else None
 
         diagnoses: list[str] = []
         if st["has_scripts"] and loads > 0 and read_only_unpracticed_rate >= 0.5:
@@ -1208,7 +1208,7 @@ def compute_skill_roi_diagnostics(
             diagnoses.append(f"[SPEC_GAP] 盲区 {st['spec_gap_escapes']} 次（建议 add-case --id auto 补齐抽屉）")
         if st["edit_churn_count"] >= 4:
             diagnoses.append(f"挂载后文件反复擦写 {st['edit_churn_count']} 次")
-        if l1_greedy_rate > 0.25:
+        if l1_greedy_rate is not None and l1_greedy_rate > 0.25:
             diagnoses.append(f"L1 全量暴读违规率 {l1_greedy_rate*100:.0f}%")
 
         skill_rows.append({
@@ -1238,19 +1238,21 @@ def compute_skill_roi_diagnostics(
     active_rows = [r for r in skill_rows if r["loads_30d"] > 0 or r["r1_total"] > 0 or r["edit_churn_count"] > 0]
     low_roi_candidates = sorted(
         [r for r in active_rows if r["needs_optimization"]],
-        key=lambda r: (r["roi_score"], -r["impl_bug_escapes"], -r["unpracticed_rate"]),
+        key=lambda r: (r["roi_score"] is None, r["roi_score"] if r["roi_score"] is not None else float("inf"), -r["impl_bug_escapes"], -(r["unpracticed_rate"] or 0.0)),
     )[:2]
 
     proposals: list[dict[str, Any]] = []
     for cand in low_roi_candidates:
         sk = cand["skill"]
+        roi_label = f"{cand['roi_score']:.2f}" if cand["roi_score"] is not None else "unknown"
+        r1_label = f"{cand['r1_pass_rate'] * 100:.1f}%" if cand["r1_pass_rate"] is not None else "unknown"
         proposals.append({
             "id": f"skill-roi-{sk}",
             "ref": f"skill-roi://{sk}",
-            "title": f"[Skill ROI] 优化 {sk}（ROI={cand['roi_score']:.2f}, R1通过={cand['r1_pass_rate']*100:.0f}%）：{cand['diagnosis'][:36]}",
+            "title": f"[Skill ROI] 优化 {sk}（ROI={cand['roi_score']:.2f}，R1通过={cand['r1_pass_rate']*100:.0f}%）：{cand['diagnosis'][:36]}" if cand["roi_score"] is not None and cand["r1_pass_rate"] is not None else f"[Skill ROI] 补齐 {sk} 的观测覆盖：{cand['diagnosis'][:36]}",
             "detail": (
-                f"skill={sk} | roi_score={cand['roi_score']:.2f} | "
-                f"r1_pass_rate={cand['r1_pass_rate']*100:.1f}% | "
+                f"skill={sk} | roi_score={roi_label} | "
+                f"r1_pass_rate={r1_label} | "
                 f"unpracticed_rate={cand['unpracticed_rate']*100:.1f}% | "
                 f"edit_churn={cand['edit_churn_count']} | "
                 f"impl_bug={cand['impl_bug_escapes']} | spec_gap={cand['spec_gap_escapes']} | "
@@ -1333,7 +1335,7 @@ def compute_skill_roi_diagnostics(
             for r in active_rows
             if r["impl_bug_escapes"] > 0 or r["spec_gap_escapes"] > 0
         ],
-        "S10_skill_roi_ranking": sorted(active_rows, key=lambda r: (r["roi_score"], r["skill"])),
+        "S10_skill_roi_ranking": sorted(active_rows, key=lambda r: (r["roi_score"] is None, r["roi_score"] if r["roi_score"] is not None else float("inf"), r["skill"])),
         "S11_context_composition": s11_context,
         "S12_tool_context_burn": s12_tools,
         "low_roi_proposals": proposals,
@@ -1354,7 +1356,7 @@ def compute_agent_efficiency(
     m1: dict[str, Any] = {
         "reviewed_tasks": 0,
         "r1_fail_tasks": 0,
-        "r1_fail_rate": 0.0,
+        "r1_fail_rate": None,
         "floor_max_r1_fail_rate": 0.15,
         "multi_round_review_tasks": [],
         "round_3_plus_tasks": [],
@@ -1372,7 +1374,7 @@ def compute_agent_efficiency(
             """).fetchall()
             m1["reviewed_tasks"] = len(rows)
             m1["r1_fail_tasks"] = sum(1 for r in rows if (r[3] or 0) > 0 or (r[2] or 1) >= 2)
-            m1["r1_fail_rate"] = round(m1["r1_fail_tasks"] / len(rows), 4) if rows else 0.0
+            m1["r1_fail_rate"] = round(m1["r1_fail_tasks"] / len(rows), 4) if rows else None
             m1["multi_round_review_tasks"] = [
                 {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
                 for r in rows if (r[2] or 1) >= 2
@@ -1463,26 +1465,26 @@ def compute_agent_efficiency(
     retry_rate = round(retries / total_reqs, 4) if total_reqs else 0.0
     m3 = {
         "sampled_requests": total_reqs,
-        "p90_ttft_ms": p90_ttft,
+        "p90_ttft_ms": p90_ttft if ttfts else None,
         "floor_max_p90_ttft_ms": 3000,
-        "retry_rate": retry_rate,
+        "retry_rate": retry_rate if total_reqs else None,
         "gateway_4xx_count": gateway_4xx,
         "blocked_events_7d": blocked_events_7d,
-        "breached": p90_ttft > 3000 or retry_rate > 0.05 or gateway_4xx > 0,
+        "breached": bool(total_reqs and (p90_ttft > 3000 or retry_rate > 0.05 or gateway_4xx > 0)),
     }
 
     total_in = sum(b["in"] for b in group_tokens.values())
     total_cr = sum(b["cache_read"] for b in group_tokens.values())
-    overall_cache_hit = round(total_cr / (total_in + total_cr), 4) if (total_in + total_cr) > 0 else 0.0
+    overall_cache_hit = round(total_cr / (total_in + total_cr), 4) if (total_in + total_cr) > 0 else None
     by_group_cache = {
-        g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if (b["in"] + b["cache_read"]) > 0 else 0.0
+        g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if (b["in"] + b["cache_read"]) > 0 else None
         for g, b in group_tokens.items()
     }
     m4 = {
         "overall_cache_hit_rate": overall_cache_hit,
         "floor_min_cache_hit_rate": 0.75,
         "by_group": by_group_cache,
-        "breached": (total_in + total_cr) > 0 and overall_cache_hit < 0.75,
+        "breached": bool(total_in + total_cr and overall_cache_hit is not None and overall_cache_hit < 0.75),
     }
 
     total_all_tokens = sum(b["in"] + b["out"] + b["cache_read"] for b in group_tokens.values())
@@ -1490,12 +1492,12 @@ def compute_agent_efficiency(
         b["in"] + b["out"] + b["cache_read"]
         for g, b in group_tokens.items() if "steering" in g
     )
-    steering_share = round(steering_tokens / total_all_tokens, 4) if total_all_tokens > 0 else 0.0
+    steering_share = round(steering_tokens / total_all_tokens, 4) if total_all_tokens > 0 else None
     m5 = {
         "steering_token_share": steering_share,
         "floor_max_steering_share": 0.35,
-        "steering_tiny_output_ratio": round(steering_tiny_outputs / steering_reqs, 4) if steering_reqs else 0.0,
-        "breached": steering_share > 0.35,
+        "steering_tiny_output_ratio": round(steering_tiny_outputs / steering_reqs, 4) if steering_reqs else None,
+        "breached": bool(total_all_tokens and steering_share is not None and steering_share > 0.35),
     }
 
     recommendations: list[dict[str, Any]] = []
