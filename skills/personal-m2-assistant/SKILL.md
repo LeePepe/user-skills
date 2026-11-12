@@ -9,8 +9,8 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 ## 触发与职责边界
 
 - 直接触发：`/personal-m2-assistant <跨 M2 指令>`。
-- 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
-- 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)。
+- 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
+- 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
 - 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)。
 
 ## 强制 Owner Gate
@@ -49,6 +49,6 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --apply \
 
 ## 相关节点与验证
 
-- How-To 节点：[`I7 Unified M2 Ingress`](../../workflow-hub/references/how-to-nodes.md)。
-- 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../../m2-dispatcher/scripts/m2-router.py) 仅作 wrapper，权威实现位于本技能 `scripts/m2-router.py`。
+- How-To 节点：[`I7 Unified M2 Ingress`](../workflow-hub/references/how-to-nodes.md)。
+- 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../m2-dispatcher/scripts/m2-router.py) 仅作 wrapper，权威实现位于本技能 `scripts/m2-router.py`。
 - 验证：`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
