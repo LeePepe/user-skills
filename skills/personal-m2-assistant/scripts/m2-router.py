@@ -382,7 +382,7 @@ def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str,
     cwd = _text(target.get("cwd")) or f"~/Development/{repo}"
     keywords = target.get("keywords") if isinstance(target.get("keywords"), list) else []
     if not keywords:
-        keywords = [word for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\\u4e00-\\u9fff]{2,}", message)[:8]]
+        keywords = [word for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", message)[:8]]
     return {"topic_id": topic_id, "group": _text(target.get("group"), "new-domain"), "title": title, "target_repo": repo, "cwd": cwd, "keywords": sorted(set(keywords)), "aliases": list(target.get("aliases") or [])}
 
 
@@ -393,8 +393,8 @@ def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | Non
         return candidates
     topic_id = _text(topic.get("topic_id")).casefold()
     topic_values = [topic.get("topic_id"), topic.get("title"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]
-    topic_terms = re.findall(r"[a-z0-9]+|[\\u4e00-\\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
-    topic_candidates = [session for session in candidates if _text(session.get("topic_id")).casefold() == topic_id or any(term in " ".join(_text(session.get(key)) for key in ("title", "summary")).casefold() for term in topic_terms if len(term) > 2)]
+    topic_terms = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
+    topic_candidates = [session for session in candidates if _text(session.get("topic_id")).casefold() == topic_id or any(term in " ".join(_text(session.get(key)) for key in ("title", "summary")).casefold() for term in topic_terms if len(term) > 1)]
     if topic_candidates:
         return topic_candidates
     return candidates if len(candidates) == 1 else []

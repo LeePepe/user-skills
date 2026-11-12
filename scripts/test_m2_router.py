@@ -263,10 +263,18 @@ class M2RouterTests(unittest.TestCase):
         self.assertNotIn("app-ios", {topic["topic_id"] for topic in domain_map["topics"]})
         self.assertEqual(domain_map["topics"][0]["topic_id"], "sapphire-notification")
 
+    def test_legacy_domain_map_matches_canonical_domain_map(self):
+        legacy_path = ROOT / "skills" / "m2-dispatcher" / "references" / "m2-domain-map.json"
+        canonical_path = ROOT / "skills" / "personal-m2-assistant" / "references" / "m2-domain-map.json"
+        self.assertEqual(
+            json.loads(legacy_path.read_text(encoding="utf-8")),
+            json.loads(canonical_path.read_text(encoding="utf-8")),
+        )
+
     def test_topic_routing_distinguishes_same_repo_business_panes(self):
         sessions = [
-            {"session_id": "notification", "target_repo": "bing-growth-sapphire-app", "title": "Notification Center M2", "summary": "Push and weather units", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p1", "workspace_id": "w1"},
-            {"session_id": "china", "target_repo": "bing-growth-sapphire-app", "title": "China Bugs M2", "summary": "devsync bug list", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "china", "pane_id": "w1:p2", "workspace_id": "w1"},
+            {"session_id": "notification", "target_repo": "bing-growth-sapphire-app", "title": "通知开关 M2", "summary": "气象单位设置", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p1", "workspace_id": "w1"},
+            {"session_id": "china", "target_repo": "bing-growth-sapphire-app", "title": "中国区 bug M2", "summary": "反馈列表", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "china", "pane_id": "w1:p2", "workspace_id": "w1"},
         ]
         plan = self.router.build_plan(
             "同步 Notification Center 和 China Bugs 的状态",
@@ -306,7 +314,11 @@ class M2RouterTests(unittest.TestCase):
             result = self.router.apply_plan(plan, approve=True, register_new_domains=True, domain_map_file=map_path)
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
+            new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
             self.assertEqual(len(registered["topics"]), 24)
+            new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
+            self.assertTrue(len(new_topic["keywords"]) > 0)
+            self.assertEqual(len(new_domain_map["groups"]), 5)
 
     def test_learning_and_blog_replaces_personal_digest_topic(self):
         plan = self.router.build_plan(
@@ -349,6 +361,26 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual([item["pane_id"] for item in result["cleanup_receipts"]], ["w2:p2"])
         self.assertEqual(calls[0][-3:], ["pane", "close", "w2:p2"])
         self.assertEqual(calls[1][1:3], ["agent", "prompt"])
+
+    def test_cleanup_protects_current_pane_and_w1_p1(self):
+        sessions = [
+            {"session_id": "learn-w1", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客 w1", "status": "idle", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-w1", "pane_id": "w1:p1", "workspace_id": "w1"},
+            {"session_id": "learn-cur", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客 cur", "status": "idle", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-cur", "pane_id": "w9:p9", "workspace_id": "w9"},
+            {"session_id": "learn-safe", "topic_id": "learning-and-blog", "target_repo": "Personal", "title": "学习与写博客 safe", "status": "idle", "cwd": "/repo/Personal", "source": "herdr", "herdr_target": "learn-safe", "pane_id": "w2:p2", "workspace_id": "w2"},
+        ]
+        with patch.dict("os.environ", {"HERDR_PANE_ID": "w9:p9"}):
+            plan = self.router.build_plan(
+                "写一篇技术博客",
+                sessions,
+                mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "写博客", "wave_order": 1}]},
+            )
+            self.assertEqual([c["pane_id"] for c in plan["stale_m2_candidates"]], ["w2:p2"])
+            closed_res = self.router._close_herdr_pane({"pane_id": "w9:p9"})
+            self.assertTrue(closed_res["skipped"])
+            self.assertEqual(closed_res["reason"], "protected_pane")
+            w1_res = self.router._close_herdr_pane({"pane_id": "w1:p1"})
+            self.assertTrue(w1_res["skipped"])
+            self.assertEqual(w1_res["reason"], "protected_pane")
 
     def test_replace_stale_m2_closes_idle_panes_and_spawns_fresh_target(self):
         plan = self.router.build_plan(

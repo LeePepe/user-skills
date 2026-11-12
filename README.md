@@ -58,7 +58,6 @@ Claude Code 使用 plugin marketplace：
 /plugin install m2-dispatcher@user-skills
 /plugin install personal-m2-assistant@user-skills
 /plugin install code-review@user-skills
-/plugin install m2-dispatcher@user-skills
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
 /plugin install codebase-design@user-skills
@@ -74,7 +73,6 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/team-lead 安装 team-lead。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/workflow-hub 安装 workflow-hub。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/linear-board 安装 linear-board。
-请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/personal-m2-assistant 安装 personal-m2-assistant。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
