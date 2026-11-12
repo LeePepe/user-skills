@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import importlib.util
 import io
 import json
@@ -44,7 +45,8 @@ class RetroStoryEngineTests(unittest.TestCase):
                         task_id TEXT,
                         role_name TEXT,
                         round_no INTEGER,
-                        v5_verdict TEXT
+                        v5_verdict TEXT,
+                        cst_day TEXT
                     )
                     """
                 )
@@ -58,7 +60,7 @@ class RetroStoryEngineTests(unittest.TestCase):
                     """
                 )
                 conn.executemany(
-                    "INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, date('now'))",
                     [
                         ("goal-alpha", "TK1", "code_reviewer", 1, "FAIL"),
                         ("goal-alpha", "TK1", "code_reviewer", 2, "FAIL"),
@@ -72,16 +74,17 @@ class RetroStoryEngineTests(unittest.TestCase):
                 conn.commit()
 
             with contextlib.closing(sqlite3.connect(cp)) as conn:
-                conn.execute("CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT)")
+                conn.execute("CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, timestamp TEXT)")
                 for _ in range(6):
                     conn.execute(
-                        "INSERT INTO session_files VALUES ('sess-12345678', '/repo/src/churn.py', 'edit')"
+                        "INSERT INTO session_files VALUES ('sess-12345678', '/repo/src/churn.py', 'edit', datetime('now'))"
                     )
                 conn.commit()
 
             # Create usage records breaching M3 (high ttft, retries, 429), M4 (low cache hit < 0.75), M5 (steering share > 0.35)
             usage_rows = [
                 {
+                    "ts": datetime.now(timezone.utc).isoformat(),
                     "req": "group/steering",
                     "status": 429,
                     "in": 10000,
@@ -94,6 +97,7 @@ class RetroStoryEngineTests(unittest.TestCase):
                 for _ in range(10)
             ] + [
                 {
+                    "ts": datetime.now(timezone.utc).isoformat(),
                     "req": "group/coding",
                     "status": 200,
                     "in": 5000,
@@ -267,10 +271,11 @@ class RetroStoryEngineTests(unittest.TestCase):
                 proposals_path=proposals,
             )
             self.assertEqual(stale_report["query_id"], "retro/skill_roi_diagnostics")
-            self.assertEqual(stale_report["source_as_of"], "2026-10-16")
+            self.assertEqual(stale_report["window_anchor"]["source_as_of"], "2026-10-16")
             self.assertIsNotNone(stale_report["staleness_days"])
             self.assertGreater(stale_report["staleness_days"], 2)
-            self.assertEqual(stale_report["coverage_status"], "stale")
+            self.assertEqual(stale_report["window_anchor"]["coverage_status"], "stale")
+            # Historical source watermark is not substituted for current metric observations.
             anchor = stale_report["window_anchor"]
             self.assertEqual(anchor["source_as_of"], "2026-10-16")
             self.assertEqual(anchor["coverage_status"], "stale")

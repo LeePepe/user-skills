@@ -26,6 +26,17 @@ def _load_digest_vault():
 
 
 DIGEST = _load_digest_vault()
+SEED = json.loads((ROOT / "skills/knowledge-digest/tests/personal-topic-ledger-seed.json").read_text(encoding="utf-8"))
+
+
+def seed_ledger(vault: Path, source_ids: tuple[str, ...]) -> None:
+    topics = []
+    for index, sid in enumerate(source_ids, 1):
+        item = dict(SEED["CANONICAL_COLLECTED_TOOLS_RECONCILIATION"][sid])
+        item.update(learning_state="queued", source_fingerprint="fixture-source", rank=index, scope="personal")
+        topics.append(item)
+    vault.mkdir(parents=True, exist_ok=True)
+    (vault / "topic-ledger.json").write_text(json.dumps({"topics": topics}), encoding="utf-8")
 
 
 class KnowledgeDigestTests(unittest.TestCase):
@@ -41,6 +52,7 @@ class KnowledgeDigestTests(unittest.TestCase):
             )
             proposals = root / "proposals.jsonl"
             state_path = root / "learning-topics-state.json"
+            seed_ledger(vault, ("awesome-cjk-design-md",))
 
             res = DIGEST.discover_topics(
                 propose_aidash=True,
@@ -123,6 +135,11 @@ class KnowledgeDigestTests(unittest.TestCase):
             (tools / "repos" / "mystery-unverified-clone").mkdir(parents=True)
             (tools / "repos" / "mystery-unverified-clone" / "README.md").write_text("# Mystery\n", encoding="utf-8")
 
+            seed_ledger(vault, ("hallmark", "awesome-ios-design-md", "bama"))
+            ledger_file = vault / "topic-ledger.json"
+            ledger = json.loads(ledger_file.read_text())
+            ledger["topics"][1]["learning_state"] = "learned"
+            ledger_file.write_text(json.dumps(ledger))
             cands_a, summary_a = DIGEST._reconcile_collected_tools_entities(
                 tools,
                 DIGEST._existing_vault_corpus(vault),
@@ -141,6 +158,9 @@ class KnowledgeDigestTests(unittest.TestCase):
                 "# Hallmark\n\n## 实际使用与接入记录\n- 已接入 design-studio Entry A (A1..A4) 統合済み。\n",
                 encoding="utf-8",
             )
+            # Usage evidence is reconciled explicitly into the authority ledger; a generic note marker alone grants no learned state.
+            ledger["topics"][0]["learning_state"] = "learned"
+            ledger_file.write_text(json.dumps(ledger))
             cands_b, summary_b = DIGEST._reconcile_collected_tools_entities(
                 tools,
                 DIGEST._existing_vault_corpus(vault),
@@ -169,6 +189,8 @@ class KnowledgeDigestTests(unittest.TestCase):
 
             proposals = root / "proposals.jsonl"
             state_path = root / "learning-topics-state.json"
+
+            seed_ledger(vault, ("awesome-cjk-design-md", "bama", "genjutsu", "impeccable", "taste-skill"))
 
             # Propose on 3 distinct CST days to reach pending cap = 3
             for day_num, exp_tk in (
@@ -398,8 +420,8 @@ class KnowledgeDigestTests(unittest.TestCase):
             canonical_doc = {
                 "schema_version": "personal-topic-ledger/v1",
                 "updated_at": "2026-11-12T21:55:00+08:00",
-                "policy": dict(DIGEST._CANONICAL_FIXTURE_DOC["policy"]),
-                "vault_coverage_inventory": list(DIGEST._CANONICAL_FIXTURE_DOC["vault_coverage_inventory"]),
+                "policy": dict(SEED["_CANONICAL_FIXTURE_DOC"]["policy"]),
+                "vault_coverage_inventory": list(SEED["_CANONICAL_FIXTURE_DOC"]["vault_coverage_inventory"]),
                 "sources": [
                     {
                         "source_id": sid,
@@ -410,7 +432,7 @@ class KnowledgeDigestTests(unittest.TestCase):
                         "reconciliation_status": "learned" if meta.get("default_state") != "queued" else "queued_subtopic",
                         "coverage_refs": meta.get("coverage_refs", []),
                     }
-                    for sid, meta in DIGEST.CANONICAL_COLLECTED_TOOLS_RECONCILIATION.items()
+                    for sid, meta in SEED["CANONICAL_COLLECTED_TOOLS_RECONCILIATION"].items()
                 ],
                 "topics": [
                     *(
@@ -438,7 +460,7 @@ class KnowledgeDigestTests(unittest.TestCase):
                             "action_id": f"knowledge-{meta['topic_key']}",
                             "aidash_card_preview": {"source": "Retro", "ref": f"knowledge://{meta['topic_key']}"},
                         }
-                        for sid, meta in DIGEST.CANONICAL_COLLECTED_TOOLS_RECONCILIATION.items()
+                        for sid, meta in SEED["CANONICAL_COLLECTED_TOOLS_RECONCILIATION"].items()
                     ),
                     *(
                         {
@@ -462,7 +484,7 @@ class KnowledgeDigestTests(unittest.TestCase):
                             "action_id": f"knowledge-{Path(inv['path']).stem}",
                             "aidash_card_preview": None,
                         }
-                        for inv in DIGEST._CANONICAL_FIXTURE_DOC["vault_coverage_inventory"]
+                        for inv in SEED["_CANONICAL_FIXTURE_DOC"]["vault_coverage_inventory"]
                         if inv["folder"] in {"concepts", "thoughts"}
                     ),
                 ],

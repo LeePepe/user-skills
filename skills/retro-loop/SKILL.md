@@ -36,9 +36,10 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
   │  • 经 `aidash` CLI XPC 推送到 macOS 菜单栏/主窗口与 iPhone 的「今日规划 / Needs a Person」卡片。
   ▼
 【4. 拍板与回流：`AIDash` 交互 -> `event_bridge.py` -> `linear-board` / 3 Physical Locks】
-     • 你在 `AIDash` 上对提案卡片点 **⭐ Star（批准）**：
+     • 你在 `AIDash` 上对普通提案卡片点 **⭐ Star（批准）**：
        `event_bridge.py` 自动调用 `skills/team-lead/scripts/linear-sync.py idea --mode auto`
        在 **Linear Team `TIA`** 创建 Issue，并将 `proposals.jsonl` 标记为 `approved`；
+     • `learning-topic://<topic-key>` 走独立学习审批边界：Approve 仅授权后台探索，Done 记录 Owner 结果；Star 不自动发布、归档或同步 `design-studio`。
      • 你在 `AIDash` 上点 **✓ Done（忽略/已处理）**：
        `event_bridge.py` 自动将提案标记为 `dismissed` 消警。
 ```
@@ -72,9 +73,15 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 | **M4** | **Prompt Cache 命中率 (`M4_cache_efficiency`)** | 各逻辑组 `>= 75%` | `id="improve-m4-steer-autonomy"` (`ref="retro://agent-efficiency-m4"`)：稳定固定系统前缀与同会话粘性（`stays`） |
 | **M5** | **主控与写者分流及首轮绿灯率 (`M5_steering_vs_coding_split`)** | `steering` Token 占比 `<= 35%` | `id="improve-m5-first-pass-pr-green"` (`ref="retro://agent-efficiency-m5"`)：重度编码与本地验证交由 Writer，确保首轮绿灯 |
 
+### 观测与元数据合同
+
+M1–M5 使用包含今天的七个 CST 自然日，`window_start` 含边界、`window_end` 不含边界；只统计真实时间戳，缺时间列的旧 schema 返回 unknown，不能把全历史贴上 7d。`source_as_of` 是对应样本最大观测时间，不是生成日期。S1/S3 是实际检查快照，使用 `snapshot` 窗口；技能行明确标注 30d 使用/会话口径与独立 R1 freshness。`window_anchor` 单独保留历史源水位与 fresh/stale 判定，不将旧水位替换为当前 7d 观测；缺样本的指标 status 为 unknown。
+
+保留 `S1_pin_drift`、`S2_gate_catch`、`S3_skill_health`、`S4_usage_and_r1`、`S6`–`S12` 既有键（不造 S5）。每对象/行/提案保留窗口、观测时间、样本量和覆盖状态；无样本的率/ROI 为 null。S11 分片、S12 工具 Token 与技能归因是 `estimated:true` 代理，不是实测；不推算“90% 压缩节省”。所有提案历史校验和幂等追加持有同一个 `proposals.jsonl.lock`，损坏历史显式失败。
+
 ## Return path & CLI 用法
 
-已确认结论经 `AIDash` 展示与 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task（每次写入 `proposals.jsonl` 均携带完整非空 `id, ts, agent, title, detail, priority, status, ref, scope: "personal"` 并按历史记录去重）：
+已确认结论经 `AIDash` 展示与普通提案 Star 审批后回流 `linear-board` 的 TIA Idea 或 `team-lead` 的 Goal/Task；学习候选仍须遵守 `learning-topic://` 的独立探索与发布授权；完整非空提案字段与跨日 id/ref（含 legacy alias）去重均在共享锁内校验。
 
 ```bash
 # 1. 计算 M1–M5 Agent 效率指标并将未达标项自动写入 proposals.jsonl 推送 AIDash (含跨日 id/ref 去重)
