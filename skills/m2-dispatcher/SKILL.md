@@ -11,6 +11,21 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 - [`goal-queue.py`](../team-lead/scripts/goal-queue.py) · [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh) · [`pr-dag-auto-heal.md`](references/pr-dag-auto-heal.md)
 - **脚本归属（双路径兼容）**：① **M2+M1 共享编排**（`scripts/` ⇄ `../team-lead/scripts/`）：`herdr-dispatch.sh`、`goal-supervisor.py`、`goal-queue.py`、`state_store.py`、`jev_client.py`；② **M2 专属 Harness**：[`skill-slash-expander.ts`](scripts/skill-slash-expander.ts)、[`install-pi-harness.sh`](scripts/install-pi-harness.sh)；③ **M1 任务执行**（`../team-lead/scripts/`）：`ci-monitor.py`、`git-gc.py`、`feedback_guard.py`、`gtt-telemetry-export.py`、`linear-sync.py`、`jev-compact.py`、`jev-skill-router.py`。
 
+## 0. Interactive CLI trigger flows (high visibility)
+
+Use either trigger to enter the same Owner-gated cross-M2 flow:
+
+- `/m2 <跨M2指令>` is the short universal macro. It expands to `m2-dispatcher`, runs `m2-router.py --plan`, and shows the per-target wave, repo, `EXISTING_M2`/`NEW_M2`, transport, and full sub-prompt table.
+- `/m2-dispatcher <跨M2指令>` is the explicit skill trigger and follows the same plan-first flow.
+- The AI must call `ask_user` for Owner approval or edits after displaying the preview. Only an explicit approval may continue with `m2-router.py --apply --plan-file <approved-plan.json> --approve`; neither trigger may dispatch before that gate.
+
+Examples:
+
+```text
+/m2 先让 shared-ci 更新设计门禁，再让 AIDash 和 bing-growth-sapphire-app 同步接入
+/m2-dispatcher 把 FlightBook 的结论同步给 AIDash
+```
+
 ## 三层分离
 
 1. **Layer A — Shared Flow Contract**：本入口规定 `M2-Dispatcher ↔ TL` Goal 生命周期；[`team-lead`](../team-lead/SKILL.md) 规定 `TL ↔ Subagent` 1-Hop 执行。
@@ -25,6 +40,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 
 | 口令 | 目标路由 | 执行动作 |
 |---|---|---|
+| `/m2 <跨M2指令>` | `m2-dispatcher` | 先运行 `m2-router.py --plan` 展示预览并 `ask_user` 拍板；确认后才运行 `--apply --approve` |
 | `/status` | `m2-dispatcher` | 直接运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py status --check` 展示 `needs a person` 置顶视图 |
 | `/ingest <text_or_image>` | `design-studio` | 调 `design_catalog.py vault-ingest`（图片路径自动附带 `--measure-palette`） |
 | `/learn <topic_or_url>` | `knowledge-digest` | 执行双通道拆解归档至 `~/Development/Personal/knowledge-vault/` 并同步 `knowledge-vault/index.md` |

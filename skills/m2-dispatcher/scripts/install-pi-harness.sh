@@ -23,6 +23,14 @@ write_shortcut_prompts() {
   local prompts_dir="$1"
   mkdir -p "$prompts_dir"
 
+  cat > "$prompts_dir/m2.md" <<'EOF'
+---
+description: "Route a cross-M2 instruction through m2-router.py --plan, Owner approval, then --apply --approve."
+argument-hint: "<cross_m2_instruction>"
+---
+/m2 $@
+EOF
+
   cat > "$prompts_dir/status.md" <<'EOF'
 ---
 description: "Run goal-supervisor.py status --check and display the 'needs a person' pinned status view."

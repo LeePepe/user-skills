@@ -25,7 +25,7 @@ export interface SkillMetadata {
 	skillDir: string;
 }
 
-export type ShortcutMacroName = "status" | "ingest" | "learn" | "dash" | "retro";
+export type ShortcutMacroName = "status" | "ingest" | "learn" | "dash" | "retro" | "m2";
 
 export interface ShortcutMacroDefinition {
 	name: ShortcutMacroName;
@@ -53,6 +53,20 @@ export function isLikelyImageArgument(rawArgs: string): boolean {
 }
 
 export const UNIVERSAL_SHORTCUT_MACROS: Readonly<Record<ShortcutMacroName, ShortcutMacroDefinition>> = {
+	m2: {
+		name: "m2",
+		skill: "m2-dispatcher",
+		description: "Route a cross-M2 instruction through m2-router.py --plan, pause for Owner approval, then apply only after explicit confirmation.",
+		argumentHint: "<cross_m2_instruction>",
+		expand: (rawArgs: string): string => {
+			const trimmed = rawArgs.trim();
+			return [
+				"/m2-dispatcher",
+				"Shortcut `/m2`: run `m2-router.py --plan` first, show the per-M2 wave/status/sub-prompt preview, and use `ask_user` for the Owner Gate. Only after Owner approval, run `m2-router.py --apply --plan-file <approved-plan.json> --approve`.",
+				...(trimmed ? [`Cross-M2 instruction: ${trimmed}`] : []),
+			].join("\n");
+		},
+	},
 	status: {
 		name: "status",
 		skill: "m2-dispatcher",
@@ -126,8 +140,8 @@ export const UNIVERSAL_SHORTCUT_MACROS: Readonly<Record<ShortcutMacroName, Short
 	},
 };
 
-const SHORTCUT_LEADING_LINE_RE = /^(\s*)\/(?:skill:)?(status|ingest|learn|dash|retro)(?=$|\s)(.*)$/i;
-const SHORTCUT_TOKEN_REGEX = /(?:^|(?<=[\s,;，；(（\[【"'`]))\/(?:skill:)?(status|ingest|learn|dash|retro)(?=$|[\s,;:，；：。)）\]】"'`!?！？])/gi;
+const SHORTCUT_LEADING_LINE_RE = /^(\s*)\/(?:skill:)?(status|ingest|learn|dash|retro|m2)(?=$|\s)(.*)$/i;
+const SHORTCUT_TOKEN_REGEX = /(?:^|(?<=[\s,;，；(（\[【"'`]))\/(?:skill:)?(status|ingest|learn|dash|retro|m2)(?=$|[\s,;:，；：。)）\]】"'`!?！？])/gi;
 
 export function extractShortcutInvocations(text: string): ShortcutInvocation[] {
 	if (!text || typeof text !== "string") return [];

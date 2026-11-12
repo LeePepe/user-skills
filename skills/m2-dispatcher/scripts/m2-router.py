@@ -25,8 +25,10 @@ from typing import Any, Callable, Iterable
 
 SCHEMA_VERSION = 1
 ACTIVE_STATUSES = {"working", "running", "idle", "blocked", "needs_input", "ready"}
-TERMINAL_STATUSES = {"done", "cancelled", "canceled", "stopped", "archived"}
+TERMINAL_STATUSES = {"done", "cancelled", "canceled", "stopped", "archived", "exited", "dead"}
 ROUTES = {"ROUTE_SINGLE", "ROUTE_CROSS_SESSION", "CREATE_NEW_M2"}
+HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
+HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
 
 
 class RouterError(RuntimeError):
@@ -63,7 +65,7 @@ def _parse_json_output(text: str) -> Any:
 
 
 def _repo_from(value: dict[str, Any]) -> str:
-    for key in ("target_repo", "repo", "repository", "repository_name", "project", "goal"):
+    for key in ("target_repo", "repo", "repository", "repository_name", "repo_root", "repositoryPath", "project", "goal"):
         candidate = _text(value.get(key))
         if candidate:
             return candidate
@@ -81,6 +83,37 @@ def _session_id(value: dict[str, Any]) -> str:
     return ""
 
 
+def _herdr_agent_name(value: dict[str, Any]) -> str:
+    agent = value.get("agent") or value.get("agent_name") or value.get("agentName") or value.get("provider")
+    if isinstance(agent, dict):
+        agent = agent.get("name") or agent.get("type") or agent.get("id")
+    return _text(agent).lower()
+
+
+def _herdr_background(value: dict[str, Any]) -> bool:
+    haystack = " ".join(_text(value.get(key)) for key in (
+        "name", "title", "role", "goal", "cwd", "foreground_cwd", "worktree", "repo_root"
+    ))
+    return bool(HERDR_BACKGROUND_RE.search(haystack))
+
+
+def _herdr_interactive_candidate(value: dict[str, Any]) -> bool:
+    if _herdr_background(value):
+        return False
+    if value.get("active") is False or value.get("is_active") is False or value.get("isActive") is False:
+        return False
+    explicit = value.get("is_m2", value.get("isM2"))
+    if explicit is True or _looks_like_m2(value, "herdr"):
+        return True
+    if explicit is False:
+        return False
+    agent = _herdr_agent_name(value)
+    cwd = _text(value.get("foreground_cwd") or value.get("cwd") or value.get("worktree") or value.get("repo_root"))
+    if not agent or not cwd:
+        return False
+    return agent in HERDR_INTERACTIVE_AGENTS or bool(re.search(r"copilot|claude|codex|pi|cindy", agent, re.I))
+
+
 def _looks_like_m2(value: dict[str, Any], source: str) -> bool:
     explicit = value.get("is_m2", value.get("isM2"))
     if explicit is not None:
@@ -93,9 +126,14 @@ def _looks_like_m2(value: dict[str, Any], source: str) -> bool:
     return bool(re.search(r"(?:^|[-_ /])m2(?:[-_ /]|$)|dispatcher|omni-hub|omnihub", haystack))
 
 
-def normalize_session(value: dict[str, Any], source: str) -> dict[str, Any] | None:
+def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_herdr: bool = False) -> dict[str, Any] | None:
     """Normalize Herdr/dsh records without retaining provider-specific secrets."""
-    if not isinstance(value, dict) or not _looks_like_m2(value, source):
+    if not isinstance(value, dict):
+        return None
+    if source == "herdr" and allow_interactive_herdr:
+        if not _herdr_interactive_candidate(value):
+            return None
+    elif not _looks_like_m2(value, source):
         return None
     status = _text(value.get("agent_status") or value.get("status"), "idle").lower()
     if status in TERMINAL_STATUSES:
@@ -124,7 +162,7 @@ def _records(payload: Any) -> list[dict[str, Any]]:
         return [item for item in payload if isinstance(item, dict)]
     if not isinstance(payload, dict):
         return []
-    for key in ("agents", "sessions", "dshSessions", "items"):
+    for key in ("agents", "panes", "sessions", "dshSessions", "items"):
         nested = payload.get(key)
         if isinstance(nested, list):
             return [item for item in nested if isinstance(item, dict)]
@@ -136,25 +174,59 @@ def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.Complet
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
 
 
+def _merge_herdr_records(pane_records: list[dict[str, Any]], agent_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join pane and agent inventories so either public command can supply identity."""
+    merged: dict[str, dict[str, Any]] = {}
+    for record in pane_records + agent_records:
+        if not isinstance(record, dict):
+            continue
+        key = _text(record.get("pane_id") or record.get("paneId") or record.get("id") or record.get("name"))
+        if not key:
+            key = f"record-{len(merged)}"
+        current = merged.setdefault(key, {})
+        current.update({field: value for field, value in record.items() if value not in (None, "")})
+    return list(merged.values())
+
+
 def discover_herdr(
     *,
     payload: Any = None,
+    pane_payload: Any = None,
+    agent_payload: Any = None,
     herdr_bin: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Discover active M2-looking Herdr agents via the public JSON command."""
-    if payload is None:
+    """Discover interactive repo-root M2 panes from both public Herdr inventories."""
+    pane_records: list[dict[str, Any]] = []
+    agent_records: list[dict[str, Any]] = []
+    if payload is not None:
+        if isinstance(payload, dict) and ("panes" in payload or "agents" in payload):
+            pane_records = _records(payload.get("panes"))
+            agent_records = _records(payload.get("agents"))
+            if not pane_records and not agent_records:
+                pane_records = _records(payload)
+        else:
+            agent_records = _records(payload)
+    if pane_payload is not None:
+        pane_records = _records(pane_payload)
+    if agent_payload is not None:
+        agent_records = _records(agent_payload)
+    if pane_payload is None and agent_payload is None and payload is None:
         binary = herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr")
         if not binary:
             return [], None
         try:
-            result = runner([binary, "agent", "list"], timeout=3.0)
+            pane_result = runner([binary, "pane", "list"], timeout=3.0)
+            agent_result = runner([binary, "agent", "list"], timeout=3.0)
         except (OSError, subprocess.SubprocessError) as error:
             return [], f"herdr discovery failed: {error}"
-        if result.returncode != 0:
-            return [], f"herdr discovery exited {result.returncode}"
-        payload = _parse_json_output(result.stdout)
-    sessions = [normalize_session(item, "herdr") for item in _records(payload)]
+        failures = [result for result in (pane_result, agent_result) if result.returncode != 0]
+        if len(failures) == 2:
+            return [], f"herdr discovery exited {failures[0].returncode}/{failures[1].returncode}"
+        pane_records = _records(_parse_json_output(pane_result.stdout)) if pane_result.returncode == 0 else []
+        agent_records = _records(_parse_json_output(agent_result.stdout)) if agent_result.returncode == 0 else []
+    records = _merge_herdr_records(pane_records, agent_records)
+    sessions = [normalize_session(item, "herdr", allow_interactive_herdr=True) for item in records]
     return [item for item in sessions if item], None
 
 
@@ -188,6 +260,8 @@ def discover_dsh(
 def discover_sessions(
     *,
     herdr_payload: Any = None,
+    herdr_pane_payload: Any = None,
+    herdr_agent_payload: Any = None,
     dsh_payload: Any = None,
     herdr_bin: str | None = None,
     dsh_state_url: str = "",
@@ -200,7 +274,7 @@ def discover_sessions(
     sessions: list[dict[str, Any]] = []
     warnings: list[str] = []
     if include_herdr:
-        found, warning = discover_herdr(payload=herdr_payload, herdr_bin=herdr_bin, runner=runner)
+        found, warning = discover_herdr(payload=herdr_payload, pane_payload=herdr_pane_payload, agent_payload=herdr_agent_payload, herdr_bin=herdr_bin, runner=runner)
         sessions.extend(found)
         if warning:
             warnings.append(warning)
@@ -245,9 +319,42 @@ def _score(message: str, session: dict[str, Any]) -> float:
 def _route_from_message(message: str, sessions: list[dict[str, Any]]) -> str:
     if re.search(r"(?:新建|新开|另开|创建)\s*(?:一个\s*)?(?:m2|session|会话)|create\s+(?:a\s+)?new\s+m2", message, re.I):
         return "CREATE_NEW_M2"
-    if re.search(r"跨\s*(?:m2|session|会话)|多个\s*(?:m2|session|会话)|同时|分别|同步到|转发给|加到", message, re.I):
+    if re.search(r"跨\s*(?:m2|session|会话)|多个\s*(?:m2|session|会话)|同时|分别|同步到|转发给|加到|先让|再让|first|then|after that", message, re.I):
         return "ROUTE_CROSS_SESSION"
     return "ROUTE_SINGLE" if sessions else "CREATE_NEW_M2"
+
+
+def _split_ordered_clauses(message: str) -> list[tuple[int, str]]:
+    """Split common Chinese/English sequential instructions into soft waves."""
+    parts = re.split(r"\s*(?:，|,|;|；)\s*(?=(?:然后|再让|再由|随后|之后|then|next|after that|and then)\b)|\s+(?=(?:然后|再让|再由|随后|之后|then|next|after that)\b)", message, flags=re.I)
+    clauses: list[tuple[int, str]] = []
+    wave = 1
+    for part in parts:
+        text = part.strip()
+        if not text:
+            continue
+        if re.match(r"^(?:然后|再让|再由|随后|之后|then|next|after that|and then)\b", text, re.I):
+            wave += 1
+        text = re.sub(r"^(?:先|首先|first|initially)\s*", "", text, flags=re.I)
+        clauses.append((wave, text))
+    return clauses or [(1, message)]
+
+
+def _deterministic_targets(message: str, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract repo names and soft waves when Jev returns no target list."""
+    clauses = _split_ordered_clauses(message)
+    known = sorted({s["target_repo"] for s in sessions if s.get("target_repo")}, key=len, reverse=True)
+    targets: list[dict[str, Any]] = []
+    for wave, clause in clauses:
+        names = [repo for repo in known if re.search(rf"(?<![\w-]){re.escape(repo)}(?![\w-])", clause, re.I)]
+        if not names:
+            marker = re.search(r"(?:让|由|请|叫|let|ask|tell|have)\s+(.+?)(?=\s+(?:更新|同步|接入|处理|完成|检查|执行|负责|to\s+|and\s+then|然后|再|，|,|$))", clause, re.I)
+            candidate_text = marker.group(1) if marker else ""
+            names = [part.strip(" `[]()") for part in re.split(r"\s*(?:和|及|以及|、|and|&)\s*", candidate_text, flags=re.I) if part.strip()]
+            names = [name for name in names if re.search(r"[A-Za-z0-9]", name)]
+        for name in dict.fromkeys(names):
+            targets.append({"target_repo": name, "sub_prompt": clause, "wave_order": wave})
+    return targets
 
 
 def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], message: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
@@ -259,6 +366,8 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
         route = _route_from_message(message, sessions)
 
     raw_targets = _target_value(decision)
+    if not raw_targets and not decision:
+        raw_targets = _deterministic_targets(message, sessions)
     if not raw_targets:
         primary = answers.get("primary_target")
         if isinstance(primary, dict):
@@ -480,7 +589,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--message-file")
     parser.add_argument("--plan-file")
     parser.add_argument("--sessions-json", help="combined discovery fixture")
-    parser.add_argument("--herdr-json")
+    parser.add_argument("--herdr-json", help="combined Herdr discovery fixture")
+    parser.add_argument("--herdr-pane-json", "--pane-json", dest="herdr_pane_json", help="Herdr pane list fixture")
+    parser.add_argument("--herdr-agent-json", "--agent-json", dest="herdr_agent_json", help="Herdr agent list fixture")
     parser.add_argument("--dsh-state-json")
     parser.add_argument("--dsh-state-url", default=os.environ.get("DSH_M2_STATE_URL", ""))
     parser.add_argument("--herdr-bin")
@@ -510,8 +621,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.plan:
             payload = _json_value(args.sessions_json) if args.sessions_json else None
             herdr_payload = _json_value(args.herdr_json) if args.herdr_json else payload
+            herdr_pane_payload = _json_value(args.herdr_pane_json) if args.herdr_pane_json else None
+            herdr_agent_payload = _json_value(args.herdr_agent_json) if args.herdr_agent_json else None
             dsh_payload = _json_value(args.dsh_state_json) if args.dsh_state_json else payload
-            sessions, warnings = discover_sessions(herdr_payload=herdr_payload, dsh_payload=dsh_payload, herdr_bin=args.herdr_bin, dsh_state_url=args.dsh_state_url, dsh_token=args.dsh_token, include_herdr=not args.no_herdr, include_dsh=not args.no_dsh)
+            sessions, warnings = discover_sessions(herdr_payload=herdr_payload, herdr_pane_payload=herdr_pane_payload, herdr_agent_payload=herdr_agent_payload, dsh_payload=dsh_payload, herdr_bin=args.herdr_bin, dsh_state_url=args.dsh_state_url, dsh_token=args.dsh_token, include_herdr=not args.no_herdr, include_dsh=not args.no_dsh)
             plan = build_plan(_message(args), sessions, warnings, mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None, transport=args.transport)
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url

@@ -39,6 +39,38 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(herdr[0]["target_repo"], "repo-a")
         self.assertEqual(dsh[0]["source"], "dsh")
 
+    def test_discovery_merges_panes_and_agents_and_excludes_background_worktrees(self):
+        herdr, warning = self.router.discover_herdr(
+            pane_payload={"panes": [
+                {"pane_id": "w27:p1", "cwd": "/tmp/FlightBook", "agent": "copilot", "status": "working", "title": "FlightBook"},
+                {"pane_id": "w9:p2", "cwd": "/tmp/worktrees/task", "agent": "copilot", "status": "working", "title": "task"},
+                {"pane_id": "w10:p1", "cwd": "/tmp/repo", "agent": "copilot", "status": "working", "name": "repo-goal-tl-r1"},
+            ]},
+            agent_payload={"agents": [
+                {"pane_id": "w27:p1", "name": "FlightBook", "agent_status": "working"},
+                {"pane_id": "w55:p1", "cwd": "/tmp/AIDash", "agent": "claude", "agent_status": "idle", "name": "AIDash"},
+            ]},
+        )
+        self.assertIsNone(warning)
+        self.assertEqual({item["target_repo"] for item in herdr}, {"FlightBook", "AIDash"})
+        self.assertEqual(herdr[0]["source"], "herdr")
+
+    def test_deterministic_fallback_splits_sequential_and_parallel_targets(self):
+        sessions = [
+            {"session_id": "shared", "target_repo": "shared-ci", "title": "shared-ci", "status": "working", "cwd": "/repo/shared-ci", "source": "herdr", "herdr_target": "shared-ci", "pane_id": "w1:p1", "workspace_id": "w1"},
+            {"session_id": "dash", "target_repo": "AIDash", "title": "AIDash", "status": "working", "cwd": "/repo/AIDash", "source": "herdr", "herdr_target": "AIDash", "pane_id": "w2:p1", "workspace_id": "w2"},
+            {"session_id": "sapphire", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire", "status": "working", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "Sapphire", "pane_id": "w3:p1", "workspace_id": "w3"},
+        ]
+        plan = self.router.build_plan(
+            "先让 shared-ci 更新设计门禁，再让 AIDash 和 bing-growth-sapphire-app 同步接入",
+            sessions,
+            mock_jev={},
+        )
+        self.assertEqual([(item["target_repo"], item["wave_order"]) for item in plan["targets"]], [
+            ("shared-ci", 1), ("AIDash", 2), ("bing-growth-sapphire-app", 2),
+        ])
+        self.assertTrue(all(item["m2_status"] == "EXISTING_M2" for item in plan["targets"]))
+
     def test_plan_contains_owner_gate_status_and_jev_multi_target_contract(self):
         sessions, warnings = self.router.discover_sessions(
             herdr_payload={"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]},
