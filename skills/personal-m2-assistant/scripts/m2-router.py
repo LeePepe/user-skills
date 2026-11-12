@@ -400,6 +400,10 @@ def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | Non
     exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == topic_id]
     if exact:
         return exact
+    repo_topics = [
+        item for item in load_domain_map().get("topics", [])
+        if repo and _clean_target_name(item.get("target_repo")).casefold() == repo.casefold()
+    ]
     repo_tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", repo.casefold()))
     topic_values = [topic.get("topic_id"), topic.get("title"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]
     topic_terms = [
@@ -416,16 +420,28 @@ def _matching_topic_sessions(target: dict[str, Any], topic: dict[str, Any] | Non
     if scored:
         best = max(score for score, _ in scored)
         return [session for score, session in scored if score == best]
-    return compatible if len(compatible) == 1 else []
+    return compatible if len(compatible) == 1 and len(repo_topics) <= 1 else []
 
 
 def _target_session(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
     session_id = _text(target.get("session_id") or target.get("sessionId"))
+    candidates = _matching_topic_sessions(target, topic, sessions)
     if session_id:
-        match = next((session for session in sessions if session["session_id"] == session_id), None)
+        match = next((session for session in candidates if session["session_id"] == session_id), None)
         if match:
             return match
-    candidates = _matching_topic_sessions(target, topic, sessions)
+        if not topic:
+            repo = _clean_target_name(target.get("target_repo"))
+            fallback = next(
+                (
+                    session for session in sessions
+                    if session["session_id"] == session_id
+                    and (not repo or _clean_target_name(session.get("target_repo")).casefold() == repo.casefold())
+                ),
+                None,
+            )
+            if fallback:
+                return fallback
     if len(candidates) == 1:
         return candidates[0]
     if candidates:
@@ -974,17 +990,27 @@ def _herdr_binary(target: dict[str, Any]) -> str:
     return _text(target.get("herdr_bin") or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
 
 
-def _new_herdr_agent_name(target: dict[str, Any]) -> str:
+def _new_herdr_agent_name(target: dict[str, Any], *, index: int = 1, used_names: set[str] | None = None) -> str:
     explicit = _text(target.get("agent_name"))
     if explicit:
-        return explicit[:32].rstrip("-")
-    topic_slug = re.sub(r"[^a-z0-9_-]+", "-", _text(target.get("topic_id")).lower()).strip("-")
-    repo_slug = re.sub(r"[^a-z0-9_-]+", "-", _text(target.get("target_repo"), "m2").lower()).strip("-") or "m2"
-    if topic_slug and topic_slug != NEW_UNMAPPED_DOMAIN.lower() and not topic_slug.startswith("new-topic-"):
-        slug = topic_slug if repo_slug in topic_slug else f"{topic_slug[:14]}-{repo_slug[:10]}"
+        base_name = explicit[:32].rstrip("-")
     else:
-        slug = repo_slug
-    return f"m2-{slug[:25]}-r1"[:32].rstrip("-")
+        raw_topic = _text(target.get("topic_id")).lower()
+        if raw_topic.startswith("new-topic-"):
+            raw_topic = raw_topic[len("new-topic-"):]
+        topic_slug = re.sub(r"[^a-z0-9_-]+", "-", raw_topic).strip("-")
+        repo_slug = re.sub(r"[^a-z0-9_-]+", "-", _text(target.get("target_repo"), "m2").lower()).strip("-") or "m2"
+        if topic_slug and topic_slug not in {NEW_UNMAPPED_DOMAIN.lower(), "unmapped-domain"} and topic_slug != repo_slug:
+            slug = topic_slug if repo_slug in topic_slug else f"{topic_slug[:14]}-{repo_slug[:10]}"
+        else:
+            slug = repo_slug
+        base_name = f"m2-{slug[:25]}-r1"[:32].rstrip("-")
+    if used_names is not None and base_name in used_names:
+        stem = re.sub(r"-r\d+$", "", base_name)[:24].rstrip("-")
+        base_name = f"{stem}-{index}-r1"[:32].rstrip("-")
+    if used_names is not None:
+        used_names.add(base_name)
+    return base_name
 
 
 def _resolve_target_transport(target: dict[str, Any], plan: dict[str, Any], requested: str) -> str:
@@ -1004,7 +1030,7 @@ def _resolve_target_transport(target: dict[str, Any], plan: dict[str, Any], requ
     raise RouterError(f"cannot resolve delivery transport for NEW_M2 target {target.get('target_repo', 'unspecified')}; specify --transport herdr|dsh|stdout")
 
 
-def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command) -> dict[str, Any]:
+def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, index: int = 1, used_names: set[str] | None = None) -> dict[str, Any]:
     binary = _herdr_binary(target)
     if target.get("m2_status") == "EXISTING_M2":
         agent = _text(target.get("herdr_target") or target.get("session_id"))
@@ -1015,7 +1041,7 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
             raise RouterError(f"Herdr prompt failed for {agent}: {result.stderr.strip()}")
         return {"ok": True, "method": "herdr.agent.prompt", "target": agent, "created": False, "stdout": result.stdout.strip()}
 
-    name = _new_herdr_agent_name(target)
+    name = _new_herdr_agent_name(target, index=index, used_names=used_names)
     dispatch = _text(target.get("dispatch_script") or os.environ.get("M2_ROUTER_HERDR_DISPATCH"))
     if not dispatch:
         dispatch = str(Path.home() / "Development" / "user-skills" / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh")
@@ -1085,7 +1111,7 @@ def _revalidate_herdr_candidate(
     pane_records = _records(_parse_json_output(pane_res.stdout)) if getattr(pane_res, "returncode", 1) == 0 else []
     agent_records = _records(_parse_json_output(agent_res.stdout)) if getattr(agent_res, "returncode", 1) == 0 else []
     if not pane_records and not agent_records:
-        return True, "ok"
+        return False, "revalidation_inventory_unavailable"
     merged = _merge_herdr_records(pane_records, agent_records)
     live = next(
         (
@@ -1103,9 +1129,9 @@ def _revalidate_herdr_candidate(
     live_sid = _session_id(live)
     if session_id and live_sid and live_sid != session_id and live.get("name"):
         return False, "session_identity_changed"
-    live_status = _text(live.get("agent_status") or live.get("status"), "idle").casefold()
+    live_status = _text(live.get("agent_status") or live.get("status")).casefold()
     if live_status != "idle":
-        return False, f"pane_not_idle:{live_status}"
+        return False, f"pane_not_idle:{live_status or 'unknown'}"
     return True, "ok"
 
 
@@ -1158,19 +1184,18 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     if not approve:
         raise RouterError("owner approval required: rerun with --approve")
     targets = plan.get("targets", [])
-    is_stdout_only = transport == "stdout" or (
-        transport == "auto"
-        and bool(targets)
-        and all(_text(item.get("transport")) == "stdout" for item in targets)
-        and domain_map_file is None
-    )
-    registered = _register_new_domains(plan, domain_map_file, dry_run=(transport == "stdout" and domain_map_file is None)) if register_new_domains else []
+    resolved_initial_transports = [_resolve_target_transport(dict(item), plan, transport) for item in targets]
+    is_stdout_only = transport == "stdout" or (bool(resolved_initial_transports) and all(item == "stdout" for item in resolved_initial_transports))
+    registered = _register_new_domains(plan, domain_map_file, dry_run=is_stdout_only) if register_new_domains else []
     cleanup_mode = "replace" if replace_stale_m2 else "duplicates" if cleanup_duplicates else "none"
     cleanup_receipts = _cleanup_stale(plan, cleanup_mode, runner=runner, dry_run=is_stdout_only)
     closed_sessions = {item.get("session_id") for item in cleanup_receipts if item.get("ok") and not item.get("skipped")}
+    used_herdr_names: set[str] = set()
     receipts: list[dict[str, Any]] = []
+    target_seq = 0
     for wave in sorted({int(item.get("wave_order", 1)) for item in targets}):
         for target in [item for item in targets if int(item.get("wave_order", 1)) == wave]:
+            target_seq += 1
             dispatch_target = dict(target)
             if replace_stale_m2 and target.get("cleanup_candidates"):
                 candidate_ids = {_text(c.get("session_id")) for c in target.get("cleanup_candidates", []) if isinstance(c, dict)}
@@ -1189,7 +1214,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             if selected == "stdout":
                 receipt = {"ok": True, "method": "stdout", "target": dispatch_target.get("target_repo", "unspecified"), "created": False, "would_create": dispatch_target.get("m2_status") == "NEW_M2", "prompt": prompt}
             elif selected == "herdr":
-                receipt = _apply_herdr(dispatch_target, plan, prompt, runner=runner)
+                receipt = _apply_herdr(dispatch_target, plan, prompt, runner=runner, index=target_seq, used_names=used_herdr_names)
             elif selected == "dsh":
                 receipt = _apply_dsh(dispatch_target, plan, prompt, poster=poster)
             else:

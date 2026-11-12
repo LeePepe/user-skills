@@ -300,8 +300,7 @@ class M2RouterTests(unittest.TestCase):
             "为新量化研究工具建立独立 M2",
             [],
             mock_jev={"answers": {"route_mode": {"choice": "CREATE_NEW_M2"}, "primary_topic": {"choice": "NEW_UNMAPPED_DOMAIN"}, "has_unmapped_domain": {"noul": True}}},
-            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "建立量化研究工具 M2", "wave_order": 1}]},
-            transport="stdout",
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "建立量化研究工具 M2", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"}]},
         )
         self.assertEqual(plan["targets"][0]["domain_status"], "NEW_DOMAIN_CANDIDATE")
         self.assertTrue(plan["new_domain_candidates"])
@@ -311,7 +310,13 @@ class M2RouterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             map_path = Path(temp) / "map.json"
             map_path.write_text((ROOT / "skills/m2-dispatcher/references/m2-domain-map.json").read_text(), encoding="utf-8")
-            result = self.router.apply_plan(plan, approve=True, register_new_domains=True, domain_map_file=map_path)
+            result = self.router.apply_plan(
+                plan,
+                approve=True,
+                register_new_domains=True,
+                domain_map_file=map_path,
+                runner=lambda args, **kwargs: SimpleNamespace(returncode=0, stdout='{"ok": true, "reused_existing": false}', stderr=""),
+            )
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
@@ -356,6 +361,10 @@ class M2RouterTests(unittest.TestCase):
         calls = []
         def runner(args, **kwargs):
             calls.append(args)
+            if args[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w2:p1", "status": "idle", "name": "learn-old"}, {"pane_id": "w2:p2", "status": "idle", "name": "learn-duplicate"}]}), stderr="")
+            if args[1:3] == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p1", "agent_status": "idle", "name": "learn-old"}, {"pane_id": "w2:p2", "agent_status": "idle", "name": "learn-duplicate"}]}), stderr="")
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
         result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, runner=runner)
         self.assertEqual([item["pane_id"] for item in result["cleanup_receipts"]], ["w2:p2"])
@@ -392,6 +401,10 @@ class M2RouterTests(unittest.TestCase):
         calls = []
         def runner(args, **kwargs):
             calls.append(args)
+            if args[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w2:p1", "status": "idle", "name": "learn-old"}, {"pane_id": "w2:p2", "status": "idle", "name": "learn-duplicate"}]}), stderr="")
+            if args[1:3] == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p1", "agent_status": "idle", "name": "learn-old"}, {"pane_id": "w2:p2", "agent_status": "idle", "name": "learn-duplicate"}]}), stderr="")
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
         result = self.router.apply_plan(plan, approve=True, replace_stale_m2=True, runner=runner)
         self.assertEqual({item["pane_id"] for item in result["cleanup_receipts"]}, {"w2:p1", "w2:p2"})
@@ -436,10 +449,23 @@ class M2RouterTests(unittest.TestCase):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
-        result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, transport="stdout", runner=runner)
-        self.assertEqual(calls, [])
-        self.assertTrue(result["cleanup_receipts"][0]["simulated"])
-        self.assertFalse(result["receipts"][0]["created"])
+        with tempfile.TemporaryDirectory() as temp:
+            map_path = Path(temp) / "map.json"
+            original_map = (ROOT / "skills/m2-dispatcher/references/m2-domain-map.json").read_text(encoding="utf-8")
+            map_path.write_text(original_map, encoding="utf-8")
+            result = self.router.apply_plan(
+                plan,
+                approve=True,
+                cleanup_duplicates=True,
+                register_new_domains=True,
+                domain_map_file=map_path,
+                transport="auto",
+                runner=runner,
+            )
+            self.assertEqual(calls, [])
+            self.assertTrue(result["cleanup_receipts"][0]["simulated"])
+            self.assertFalse(result["receipts"][0]["created"])
+            self.assertEqual(map_path.read_text(encoding="utf-8"), original_map)
 
     def test_cleanup_revalidates_live_status_and_skips_pane_that_became_working(self):
         plan = self.router.build_plan(
@@ -462,6 +488,19 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("pane_not_idle", result["cleanup_receipts"][0]["reason"])
         self.assertFalse(any(cmd[1:3] == ["pane", "close"] for cmd in calls))
 
+        empty_res = self.router.apply_plan(
+            plan,
+            approve=True,
+            cleanup_duplicates=True,
+            runner=lambda args, **kwargs: (
+                SimpleNamespace(returncode=1, stdout="", stderr="err")
+                if args[1:3] in (["pane", "list"], ["agent", "list"])
+                else SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            ),
+        )
+        self.assertTrue(empty_res["cleanup_receipts"][0]["skipped"])
+        self.assertEqual(empty_res["cleanup_receipts"][0]["reason"], "revalidation_inventory_unavailable")
+
     def test_topic_routing_prefers_exact_topic_id_and_excludes_shared_repo_stem_conflicts(self):
         sessions = [
             {"session_id": "notification", "topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire Notification Center", "status": "idle", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p2", "workspace_id": "w1"},
@@ -471,10 +510,19 @@ class M2RouterTests(unittest.TestCase):
             "检查 Sapphire Notification 推送开关",
             sessions,
             mock_magpie={"route": "ROUTE_SINGLE", "targets": [
-                {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查推送开关", "wave_order": 1},
+                {"topic_id": "sapphire-notification", "session_id": "china", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查推送开关", "wave_order": 1},
             ]},
         )
         self.assertEqual(plan["targets"][0]["session_id"], "notification")
+
+        unrelated_single = self.router.build_plan(
+            "检查 Sapphire Notification 推送开关",
+            [{"session_id": "unrelated", "target_repo": "bing-growth-sapphire-app", "title": "Sapphire General", "status": "working", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "unrelated", "pane_id": "w1:p4", "workspace_id": "w1"}],
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [
+                {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查推送开关", "wave_order": 1},
+            ]},
+        )
+        self.assertEqual(unrelated_single["targets"][0]["m2_status"], "NEW_M2")
 
     def test_offline_deterministic_fallback_uses_checked_in_domain_map(self):
         with patch.object(self.router, "_request_magpie", side_effect=OSError("offline")), patch.object(self.router, "_jev_decision", return_value=None):
@@ -499,11 +547,13 @@ class M2RouterTests(unittest.TestCase):
 
     def test_new_m2_herdr_uses_distinct_topic_agent_names_and_auto_transport_resolves_adapter(self):
         plan = self.router.build_plan(
-            "同时新建 Sapphire Notification 和 Sapphire China Bugs 会话",
+            "同时新建 Sapphire Notification、Sapphire China Bugs 与两个 QuantLab 新话题会话",
             [],
             mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
                 {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "通知任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
                 {"topic_id": "sapphire-china-bugs", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "中国区任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
+                {"topic_id": "new-topic-quantlab-risk", "target_repo": "QuantLab", "sub_prompt": "风控任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
+                {"topic_id": "new-topic-quantlab-trading", "target_repo": "QuantLab", "sub_prompt": "交易任务", "wave_order": 1, "dispatch_script": "/tmp/fake-herdr-dispatch"},
             ]},
         )
         calls = []
@@ -514,7 +564,7 @@ class M2RouterTests(unittest.TestCase):
 
         result = self.router.apply_plan(plan, approve=True, runner=runner)
         names = [receipt["target"] for receipt in result["receipts"]]
-        self.assertEqual(len(set(names)), 2)
+        self.assertEqual(len(set(names)), 4)
         self.assertTrue(all(receipt["method"] == "herdr-dispatch" for receipt in result["receipts"]))
         self.assertTrue(all(receipt["created"] for receipt in result["receipts"]))
 
