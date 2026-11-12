@@ -38,7 +38,76 @@ _SCRIPT_PATH_RE = re.compile(
 )
 
 
+_PRIORITY_MAP = {
+    "p0": "high",
+    "p1": "high",
+    "p2": "medium",
+    "p3": "low",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+}
+_CST_TZ = timezone(timedelta(hours=8))
+
+
+def _cst_today_str() -> str:
+    return datetime.now(_CST_TZ).date().isoformat()
+
+
+def _normalize_priority(raw_priority: Any, default: str = "high") -> str:
+    norm = str(raw_priority or default).strip().lower()
+    return _PRIORITY_MAP.get(norm, default)
+
+
+def _read_existing_proposals_state(proposals_path: Path | None) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Return (by_id, by_ref) mapping to the latest valid proposal record in proposals.jsonl."""
+    by_id: dict[str, dict[str, Any]] = {}
+    by_ref: dict[str, dict[str, Any]] = {}
+    if proposals_path is None or not proposals_path.is_file():
+        return by_id, by_ref
+    try:
+        lines = proposals_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return by_id, by_ref
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        pid = str(rec.get("id") or "").strip()
+        ts = str(rec.get("ts") or "").strip()
+        agent = str(rec.get("agent") or "").strip()
+        title = str(rec.get("title") or "").strip()
+        if not (pid and ts and agent and title):
+            continue
+        by_id[pid] = rec
+        ref = str(rec.get("ref") or "").strip()
+        if ref:
+            by_ref[ref] = rec
+    return by_id, by_ref
+
+
+def _should_skip_proposal(
+    candidate: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    by_ref: dict[str, dict[str, Any]],
+) -> bool:
+    cid = str(candidate.get("id") or "").strip()
+    cref = str(candidate.get("ref") or "").strip()
+    existing = (by_id.get(cid) if cid else None) or (by_ref.get(cref) if cref else None)
+    if existing is None:
+        return False
+    status = str(existing.get("status") or "pending").strip().lower()
+    return status in {"pending", "approved", "dismissed"}
+
+
 class OptimisticLockError(RuntimeError):
+
     def __init__(self, code: int, message: str):
         super().__init__(message)
         self.code = code
@@ -350,20 +419,7 @@ def discover_aidata_signals(
             "project_loop_a_proposals": project_loop_a_proposals,
         }
 
-    existing_ids: set[str] = set()
-    if prop_path and prop_path.is_file():
-        for line in prop_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-                if isinstance(rec, dict) and rec.get("id"):
-                    if str(rec.get("status", "pending")).lower() == "pending":
-                        existing_ids.add(str(rec["id"]))
-                    else:
-                        existing_ids.discard(str(rec["id"]))
-            except json.JSONDecodeError:
-                continue
+    existing_by_id, existing_by_ref = _read_existing_proposals_state(prop_path)
 
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         for sql_file in sorted(q_dir.glob("*.sql")):
@@ -382,21 +438,25 @@ def discover_aidata_signals(
                     findings.append({"query": query_name, "count": len(rows), "sample": rows[:3]})
                     if query_name == "retro/app_crash_and_perf":
                         for cand in _build_app_telemetry_candidates(rows):
-                            if auto_propose and prop_path is not None and cand["id"] not in existing_ids:
+                            if auto_propose and prop_path is not None and not _should_skip_proposal(cand, existing_by_id, existing_by_ref):
                                 routed = route_retro_candidate(
                                     cand, mode="observe", proposals_path=prop_path
                                 )
-                                existing_ids.add(cand["id"])
+                                existing_by_id[cand["id"]] = routed["proposal"]
+                                if routed["proposal"].get("ref"):
+                                    existing_by_ref[routed["proposal"]["ref"]] = routed["proposal"]
                                 project_loop_a_proposals.append(routed["proposal"])
                             else:
                                 project_loop_a_proposals.append(cand)
                     elif query_name == "retro/tool_context_burn":
                         for cand in _build_tool_context_burn_candidates(rows):
-                            if auto_propose and prop_path is not None and cand["id"] not in existing_ids:
+                            if auto_propose and prop_path is not None and not _should_skip_proposal(cand, existing_by_id, existing_by_ref):
                                 routed = route_retro_candidate(
                                     cand, mode="observe", proposals_path=prop_path
                                 )
-                                existing_ids.add(cand["id"])
+                                existing_by_id[cand["id"]] = routed["proposal"]
+                                if routed["proposal"].get("ref"):
+                                    existing_by_ref[routed["proposal"]["ref"]] = routed["proposal"]
                                 project_loop_a_proposals.append(routed["proposal"])
                             else:
                                 project_loop_a_proposals.append(cand)
@@ -821,12 +881,16 @@ def compute_skill_roi_diagnostics(
     dev_root: Path | None = None,
     magpie_usage: Path | None = None,
     dsh_sessions: Path | None = None,
+    *,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute S1-S4, S6-S10 Skill ROI diagnostics, and S11-S12 Context & Tool Burn."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     cp = copilot_db or DEFAULT_COPILOT_DB
     s_root = skills_root or DEFAULT_SKILLS_ROOT
     d_root = dev_root or DEFAULT_DEV_ROOT
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
 
     inventory = _discover_skill_inventory(s_root, d_root)
     known_skills = set(inventory.keys())
@@ -834,6 +898,16 @@ def compute_skill_roi_diagnostics(
     for s_name, meta in inventory.items():
         for sc in meta.get("scripts", []):
             script_to_skill[sc] = s_name
+
+    wall_clock_date = _cst_today_str()
+    observed_dates: list[str] = []
+
+    def _collect_valid_date(raw_val: Any) -> None:
+        if not raw_val:
+            return
+        s = str(raw_val).strip()[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            observed_dates.append(s)
 
     # Per-skill accumulators
     stats: dict[str, dict[str, Any]] = {
@@ -854,6 +928,7 @@ def compute_skill_roi_diagnostics(
             "retry_commands": 0,
             "r1_total": 0,
             "r1_pass": 0,
+            "rework_rounds": 0,
             "impl_bug_escapes": 0,
             "spec_gap_escapes": 0,
         }
@@ -880,6 +955,7 @@ def compute_skill_roi_diagnostics(
                 "retry_commands": 0,
                 "r1_total": 0,
                 "r1_pass": 0,
+                "rework_rounds": 0,
                 "impl_bug_escapes": 0,
                 "spec_gap_escapes": 0,
             }
@@ -893,13 +969,43 @@ def compute_skill_roi_diagnostics(
         "noise_rate": 0.0,
     }
 
-    # 1. Read warehouse.db (fact_turn, fact_gtt_task_run, fact_gtt_event, fact_ci_*)
+    # 1. Read warehouse.db (fact_turn, fact_gtt_task_run, fact_gtt_event, fact_ci_*, skill_day)
     if wh.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
             tables = {
                 r[0]
-                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()
             }
+            for tbl_name, col_candidates in (
+                ("fact_turn", ("cst_day", "day", "date", "occurred_at", "timestamp", "created_at")),
+                ("fact_gtt_task_run", ("cst_day", "day", "date", "started_at", "completed_at", "updated_at", "created_at")),
+                ("skill_day", ("cst_day", "day", "date")),
+                ("hermes_skill_day", ("cst_day", "day", "date")),
+            ):
+                if tbl_name not in tables:
+                    continue
+                try:
+                    cols = {
+                        r[1]
+                        for r in conn.execute(f"PRAGMA table_info({tbl_name})").fetchall()
+                    }
+                    for col in col_candidates:
+                        if col in cols:
+                            mx_row = conn.execute(f"SELECT MAX(substr(CAST({col} AS TEXT), 1, 10)) FROM {tbl_name}").fetchone()
+                            if mx_row and mx_row[0]:
+                                _collect_valid_date(mx_row[0])
+                            break
+                except sqlite3.Error:
+                    pass
+
+            for attached_tbl in ("hermes_tools.skill_day",):
+                try:
+                    mx_row = conn.execute(f"SELECT MAX(substr(CAST(day AS TEXT), 1, 10)) FROM {attached_tbl}").fetchone()
+                    if mx_row and mx_row[0]:
+                        _collect_valid_date(mx_row[0])
+                except sqlite3.Error:
+                    pass
+
             if "fact_ci_job_run" in tables:
                 row_ci = conn.execute(
                     """
@@ -922,6 +1028,8 @@ def compute_skill_roi_diagnostics(
                     s2_gate["gate_catch_rate"] = round(catches / denom, 4) if denom > 0 else 1.0
                     s2_gate["noise_rate"] = round(noise / total_j, 4) if total_j > 0 else 0.0
 
+            anchor_for_queries = max(observed_dates) if observed_dates else wall_clock_date
+
             if "fact_turn" in tables:
                 turn_rows = conn.execute(
                     """
@@ -931,12 +1039,13 @@ def compute_skill_roi_diagnostics(
                         skill_names,
                         tool_calls,
                         COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read, 0) AS tokens,
-                        cst_day >= date('now', '-7 days') AS is_7d,
-                        cst_day >= date('now', '-30 days') AS is_30d
+                        cst_day >= date(?, '-7 days') AS is_7d,
+                        cst_day >= date(?, '-30 days') AS is_30d
                     FROM fact_turn
                     WHERE (attribution_skill IS NOT NULL AND attribution_skill != '')
                        OR (skill_names IS NOT NULL AND skill_names != '')
-                    """
+                    """,
+                    (anchor_for_queries, anchor_for_queries),
                 ).fetchall()
                 session_skills: dict[str, set[str]] = {}
                 session_tokens: dict[str, int] = {}
@@ -1014,14 +1123,17 @@ def compute_skill_roi_diagnostics(
                         inferred.append("skill-contract")
                     if any(k in g_lower for k in ("m2", "herdr", "dispatch")):
                         inferred.append("m2-dispatcher")
+                    r_no = int(round_no or 1)
                     for sk in inferred:
                         entry = _ensure_skill(sk)
-                        if int(round_no or 1) == 1:
+                        if r_no == 1:
                             entry["r1_total"] += 1
                             if str(v5 or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and str(status or "") != "failed":
                                 entry["r1_pass"] += 1
                             else:
                                 entry["impl_bug_escapes"] += 1
+                        elif r_no >= 2:
+                            entry["rework_rounds"] += 1
 
             if "fact_gtt_event" in tables:
                 evt_rows = conn.execute(
@@ -1040,6 +1152,37 @@ def compute_skill_roi_diagnostics(
                         entry["spec_gap_escapes"] += 1
                     elif "IMPL_BUG" in note_up or evt_type == "REVIEW_FAIL":
                         entry["impl_bug_escapes"] += 1
+
+    source_as_of: str | None = max(observed_dates) if observed_dates else None
+    if source_as_of is None:
+        staleness_days: int | None = None
+        coverage_status = "missing"
+        anchor_date = wall_clock_date
+    else:
+        anchor_date = source_as_of
+        try:
+            staleness_days = max(
+                0,
+                (date.fromisoformat(wall_clock_date) - date.fromisoformat(source_as_of)).days,
+            )
+        except ValueError:
+            staleness_days = None
+        if staleness_days is None:
+            coverage_status = "missing"
+        elif staleness_days <= 2:
+            coverage_status = "fresh"
+        else:
+            coverage_status = "stale"
+
+    window_anchor = {
+        "anchor_date": anchor_date,
+        "source_as_of": source_as_of,
+        "wall_clock_date": wall_clock_date,
+        "staleness_days": staleness_days,
+        "coverage_status": coverage_status,
+        "window_days_7d": 7,
+        "window_days_30d": 30,
+    }
 
     # 2. Enrich from ~/.copilot/session-store.db if present
     if cp.is_file():
@@ -1178,6 +1321,15 @@ def compute_skill_roi_diagnostics(
         denom = max(0.25, 0.5 + norm_tokens + norm_churn + uncalled_penalty + escape_penalty)
         roi_score = round(r1_pass_rate / denom, 4)
 
+        rework_rounds = int(st.get("rework_rounds") or 0)
+        repair_denom = max(1, r1_tot, loads)
+        repair_numer = st["impl_bug_escapes"] + st["spec_gap_escapes"] + rework_rounds + (1 if st["edit_churn_count"] >= 4 else 0)
+        post_invocation_repair_loop_rate = round(min(1.0, repair_numer / repair_denom), 4) if (loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0) else 0.0
+
+        meta_inv = inventory.get(s_name, {})
+        l0_lines = int(meta_inv.get("l0_lines") or 0)
+        max_l1_lines = int(meta_inv.get("max_l1_lines") or 0)
+
         diagnoses: list[str] = []
         if st["has_scripts"] and loads > 0 and read_only_unpracticed_rate >= 0.5:
             diagnoses.append(f"光读不练率 {read_only_unpracticed_rate*100:.0f}%（脚本未充分触发）")
@@ -1189,6 +1341,20 @@ def compute_skill_roi_diagnostics(
             diagnoses.append(f"挂载后文件反复擦写 {st['edit_churn_count']} 次")
         if l1_greedy_rate > 0.25:
             diagnoses.append(f"L1 全量暴读违规率 {l1_greedy_rate*100:.0f}%")
+        if post_invocation_repair_loop_rate > 0.25 and not diagnoses:
+            diagnoses.append(f"调用后返工率 {post_invocation_repair_loop_rate*100:.0f}% 超阈值")
+
+        if post_invocation_repair_loop_rate > 0.25 or st["impl_bug_escapes"] > 0 or st["spec_gap_escapes"] > 0 or st["edit_churn_count"] >= 4:
+            diagnostic_status = "high_repair_loop"
+        elif loads == 0 and (l0_lines > 120 or max_l1_lines > 140 or not meta_inv.get("budget_ok", True)):
+            diagnostic_status = "zero_trigger_bloat"
+            diagnoses.append(f"30d 零触发且 L0/L1 体积偏大 (L0={l0_lines}, max_L1={max_l1_lines})")
+        elif loads == 0 and s_name in known_skills:
+            diagnostic_status = "dormant"
+        elif diagnoses:
+            diagnostic_status = "warn"
+        else:
+            diagnostic_status = "healthy"
 
         skill_rows.append({
             "skill": s_name,
@@ -1196,6 +1362,8 @@ def compute_skill_roi_diagnostics(
             "loads_30d": loads,
             "r1_pass_rate": r1_pass_rate,
             "r1_total": r1_tot,
+            "rework_rounds": rework_rounds,
+            "post_invocation_repair_loop_rate": post_invocation_repair_loop_rate,
             "has_scripts": st["has_scripts"],
             "script_execs": script_execs,
             "script_failures": st["script_failures"],
@@ -1210,33 +1378,56 @@ def compute_skill_roi_diagnostics(
             "impl_bug_escapes": st["impl_bug_escapes"],
             "spec_gap_escapes": st["spec_gap_escapes"],
             "roi_score": roi_score,
+            "diagnostic_status": diagnostic_status,
             "diagnosis": "；".join(diagnoses) if diagnoses else "健康达标",
-            "needs_optimization": bool(diagnoses) and (loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0),
+            "needs_optimization": bool(diagnoses) and (
+                loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0 or diagnostic_status == "zero_trigger_bloat"
+            ),
         })
 
     active_rows = [r for r in skill_rows if r["loads_30d"] > 0 or r["r1_total"] > 0 or r["edit_churn_count"] > 0]
+    actionable_rows = [r for r in skill_rows if r["needs_optimization"]]
     low_roi_candidates = sorted(
-        [r for r in active_rows if r["needs_optimization"]],
-        key=lambda r: (r["roi_score"], -r["impl_bug_escapes"], -r["unpracticed_rate"]),
-    )[:2]
+        actionable_rows,
+        key=lambda r: (r["roi_score"], -r["post_invocation_repair_loop_rate"], -r["impl_bug_escapes"], -r["unpracticed_rate"]),
+    )[:3]
 
+    recommendations: list[dict[str, Any]] = []
     proposals: list[dict[str, Any]] = []
     for cand in low_roi_candidates:
         sk = cand["skill"]
-        proposals.append({
+        action_hint = (
+            f"Run skill_contract.py add-case --skill {sk} --id auto and sink repeated repair checks into scripts/"
+            if cand["diagnostic_status"] == "high_repair_loop"
+            else f"Audit {sk} L0/L1 budget and wire deterministic script triggers"
+        )
+        rec_item = {
             "id": f"skill-roi-{sk}",
-            "ref": f"skill-roi://{sk}",
+            "ref": f"retro://skill-roi/{sk}",
+            "legacy_ref": f"skill-roi://{sk}",
+            "skill": sk,
+            "metric_id": f"skill-roi-{sk}",
+            "diagnostic_status": cand["diagnostic_status"],
+            "post_invocation_repair_loop_rate": cand["post_invocation_repair_loop_rate"],
             "title": f"[Skill ROI] 优化 {sk}（ROI={cand['roi_score']:.2f}, R1通过={cand['r1_pass_rate']*100:.0f}%）：{cand['diagnosis'][:36]}",
             "detail": (
                 f"skill={sk} | roi_score={cand['roi_score']:.2f} | "
                 f"r1_pass_rate={cand['r1_pass_rate']*100:.1f}% | "
+                f"repair_loop_rate={cand['post_invocation_repair_loop_rate']*100:.1f}% | "
                 f"unpracticed_rate={cand['unpracticed_rate']*100:.1f}% | "
                 f"edit_churn={cand['edit_churn_count']} | "
                 f"impl_bug={cand['impl_bug_escapes']} | spec_gap={cand['spec_gap_escapes']} | "
                 f"diagnosis={cand['diagnosis']}"
             ),
-            "priority": "high",
-        })
+            "action": action_hint,
+            "priority": "P1",
+            "scope": "personal",
+        }
+        recommendations.append(rec_item)
+        prop_item = dict(rec_item)
+        prop_item["ref"] = f"skill-roi://{sk}"
+        prop_item["priority"] = "high"
+        proposals.append(prop_item)
 
     s11_context, s12_tools, burn_proposals = _compute_s11_s12_context_and_tools(
         wh,
@@ -1244,10 +1435,47 @@ def compute_skill_roi_diagnostics(
         copilot_db=cp,
         dsh_sessions=dsh_sessions,
     )
-    proposals.extend(burn_proposals[:2])
+    for bp in burn_proposals[:2]:
+        bp_enriched = dict(bp)
+        bp_enriched.setdefault("scope", "personal")
+        bp_enriched.setdefault("action", "Add --head-limit / view_range or sink filtering into deterministic script")
+        proposals.append(bp_enriched)
+        if not any(r["id"] == bp_enriched["id"] for r in recommendations):
+            recommendations.append(bp_enriched)
+
+    auto_proposed: list[dict[str, Any]] = []
+    proposals_written = 0
+    proposals_skipped = 0
+    if auto_propose and prop_path is not None:
+        by_id, by_ref = _read_existing_proposals_state(prop_path)
+        for rec in recommendations:
+            cand_to_write = dict(rec)
+            alt_ref = str(cand_to_write.get("legacy_ref") or "")
+            if _should_skip_proposal(cand_to_write, by_id, by_ref) or (
+                alt_ref and _should_skip_proposal({"ref": alt_ref}, by_id, by_ref)
+            ):
+                proposals_skipped += 1
+                continue
+            if alt_ref:
+                cand_to_write["ref"] = alt_ref
+            routed = route_retro_candidate(cand_to_write, mode="observe", proposals_path=prop_path)
+            auto_proposed.append(routed)
+            proposals_written += 1
+            written_prop = routed["proposal"]
+            by_id[written_prop["id"]] = written_prop
+            if written_prop.get("ref"):
+                by_ref[written_prop["ref"]] = written_prop
+            if rec.get("ref"):
+                by_ref[str(rec["ref"])] = written_prop
 
     return {
         "ok": True,
+        "query_id": "retro/skill_roi_diagnostics",
+        "source_as_of": source_as_of,
+        "wall_clock_date": wall_clock_date,
+        "staleness_days": staleness_days,
+        "coverage_status": coverage_status,
+        "window_anchor": window_anchor,
         "S1_pin_drift": s1_pins,
         "S2_gate_catch": s2_gate,
         "S3_skill_health": s3_health,
@@ -1298,7 +1526,11 @@ def compute_skill_roi_diagnostics(
         "S10_skill_roi_ranking": sorted(active_rows, key=lambda r: (r["roi_score"], r["skill"])),
         "S11_context_composition": s11_context,
         "S12_tool_context_burn": s12_tools,
+        "recommendations": recommendations,
         "low_roi_proposals": proposals,
+        "auto_proposed": auto_proposed,
+        "proposals_written": proposals_written,
+        "proposals_skipped": proposals_skipped,
     }
 
 
@@ -1306,14 +1538,19 @@ def compute_agent_efficiency(
     warehouse_db: Path | None = None,
     magpie_usage: Path | None = None,
     copilot_db: Path | None = None,
+    *,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute M1-M5 Agent Efficiency metrics & improvement gaps."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     mp = magpie_usage or DEFAULT_MAGPIE_USAGE
     cp = copilot_db or DEFAULT_COPILOT_DB
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
 
     # M1: Review Ping-Pong (审核与修复往返拉锯，重点监控 R1 FAIL 与 Round >= 2/3)
     m1: dict[str, Any] = {
+        "metric_id": "agent-efficiency-m1-review-pingpong",
         "reviewed_tasks": 0,
         "r1_fail_tasks": 0,
         "r1_fail_rate": 0.0,
@@ -1321,60 +1558,91 @@ def compute_agent_efficiency(
         "multi_round_review_tasks": [],
         "round_3_plus_tasks": [],
         "breached": False,
+        "status": "pass",
     }
     blocked_events_7d = 0
+    first_pass_pr_green_rate: float | None = None
     if wh.is_file():
-        with sqlite3.connect(f"file:{wh}?mode=ro", uri=True) as conn:
-            rows = conn.execute("""
-                SELECT goal_id, task_id, max(round_no) as max_round,
-                       sum(case when round_no = 1 and v5_verdict = 'FAIL' then 1 else 0 end) as r1_fail
-                FROM fact_gtt_task_run
-                WHERE role_name IN ('reviewer', 'code_reviewer', 'planner_reviewer')
-                GROUP BY goal_id, task_id
-            """).fetchall()
-            m1["reviewed_tasks"] = len(rows)
-            m1["r1_fail_tasks"] = sum(1 for r in rows if (r[3] or 0) > 0 or (r[2] or 1) >= 2)
-            m1["r1_fail_rate"] = round(m1["r1_fail_tasks"] / len(rows), 4) if rows else 0.0
-            m1["multi_round_review_tasks"] = [
-                {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
-                for r in rows if (r[2] or 1) >= 2
-            ][:10]
-            m1["round_3_plus_tasks"] = [
-                {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
-                for r in rows if (r[2] or 1) >= 3
-            ]
-            m1["breached"] = m1["r1_fail_rate"] > m1["floor_max_r1_fail_rate"] or len(m1["round_3_plus_tasks"]) > 0
-            row_blk = conn.execute("""
-                SELECT count(*) FROM fact_gtt_event
-                WHERE evt_type = 'TASK_BLOCKED' AND cst_day >= date('now', '-7 days')
-            """).fetchone()
-            blocked_events_7d = int(row_blk[0] if row_blk else 0)
+        with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
+            tables = {
+                r[0]
+                for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()
+            }
+            if "fact_gtt_task_run" in tables:
+                rows = conn.execute("""
+                    SELECT goal_id, task_id, max(round_no) as max_round,
+                           sum(case when round_no = 1 and v5_verdict = 'FAIL' then 1 else 0 end) as r1_fail
+                    FROM fact_gtt_task_run
+                    WHERE role_name IN ('reviewer', 'code_reviewer', 'planner_reviewer')
+                    GROUP BY goal_id, task_id
+                """).fetchall()
+                m1["reviewed_tasks"] = len(rows)
+                m1["r1_fail_tasks"] = sum(1 for r in rows if (r[3] or 0) > 0 or (r[2] or 1) >= 2)
+                m1["r1_fail_rate"] = round(m1["r1_fail_tasks"] / len(rows), 4) if rows else 0.0
+                m1["multi_round_review_tasks"] = [
+                    {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
+                    for r in rows if (r[2] or 1) >= 2
+                ][:10]
+                m1["round_3_plus_tasks"] = [
+                    {"goal_id": r[0], "task_id": r[1], "max_round": r[2]}
+                    for r in rows if (r[2] or 1) >= 3
+                ]
+                m1["breached"] = m1["r1_fail_rate"] > m1["floor_max_r1_fail_rate"] or len(m1["round_3_plus_tasks"]) > 0
+                m1["status"] = "fail" if m1["breached"] else "pass"
+
+            if "fact_gtt_event" in tables:
+                row_blk = conn.execute("""
+                    SELECT count(*) FROM fact_gtt_event
+                    WHERE evt_type = 'TASK_BLOCKED' AND cst_day >= date('now', '-7 days')
+                """).fetchone()
+                blocked_events_7d = int(row_blk[0] if row_blk else 0)
+
+            if "fact_ci_job_run" in tables:
+                try:
+                    ci_row = conn.execute("""
+                        SELECT
+                            COUNT(*),
+                            SUM(CASE WHEN failure_category IS NULL OR failure_category = '' OR failure_category = 'pass' THEN 1 ELSE 0 END)
+                        FROM fact_ci_job_run
+                    """).fetchone()
+                    if ci_row and int(ci_row[0] or 0) > 0:
+                        first_pass_pr_green_rate = round(int(ci_row[1] or 0) / int(ci_row[0]), 4)
+                except sqlite3.Error:
+                    pass
 
     # M2: File Edit Churn (从 ~/.copilot/session-store.db 统计同会话反复修改同一文件)
     m2: dict[str, Any] = {
+        "metric_id": "agent-efficiency-m2-retry-tax",
         "high_churn_files": [],
         "max_edits_single_file": 0,
         "floor_max_edits_per_session": 5,
         "breached": False,
+        "status": "pass",
     }
     if cp.is_file():
         try:
-            with sqlite3.connect(f"file:{cp}?mode=ro", uri=True) as conn:
-                churn_rows = conn.execute("""
-                    SELECT session_id, file_path, count(*) as edit_cnt
-                    FROM session_files
-                    WHERE tool_name = 'edit'
-                    GROUP BY session_id, file_path
-                    HAVING count(*) >= 5
-                    ORDER BY edit_cnt DESC
-                    LIMIT 8
-                """).fetchall()
-                m2["high_churn_files"] = [
-                    {"session_id": r[0][:8], "file_path": r[1], "edits": r[2]}
-                    for r in churn_rows
-                ]
-                m2["max_edits_single_file"] = churn_rows[0][2] if churn_rows else 0
-                m2["breached"] = len(m2["high_churn_files"]) > 0
+            with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+                cp_tables = {
+                    r[0]
+                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                if "session_files" in cp_tables:
+                    churn_rows = conn.execute("""
+                        SELECT session_id, file_path, count(*) as edit_cnt
+                        FROM session_files
+                        WHERE tool_name = 'edit'
+                        GROUP BY session_id, file_path
+                        HAVING count(*) >= 5
+                        ORDER BY edit_cnt DESC
+                        LIMIT 8
+                    """).fetchall()
+                    m2["high_churn_files"] = [
+                        {"session_id": r[0][:8], "file_path": r[1], "edits": r[2]}
+                        for r in churn_rows
+                    ]
+                    m2["max_edits_single_file"] = churn_rows[0][2] if churn_rows else 0
+                    m2["breached"] = len(m2["high_churn_files"]) > 0
+                    m2["status"] = "fail" if m2["breached"] else "pass"
         except sqlite3.Error:
             pass
 
@@ -1423,14 +1691,18 @@ def compute_agent_efficiency(
     ttfts.sort()
     p90_ttft = ttfts[int(len(ttfts) * 0.9)] if ttfts else 0
     retry_rate = round(retries / total_reqs, 4) if total_reqs else 0.0
+    m3_breached = p90_ttft > 3000 or retry_rate > 0.05 or gateway_4xx > 0 or blocked_events_7d > 3
+    m3_status = "fail" if m3_breached else "pass"
     m3 = {
+        "metric_id": "agent-efficiency-m3-automated-share",
         "sampled_requests": total_reqs,
         "p90_ttft_ms": p90_ttft,
         "floor_max_p90_ttft_ms": 3000,
         "retry_rate": retry_rate,
         "gateway_4xx_count": gateway_4xx,
         "blocked_events_7d": blocked_events_7d,
-        "breached": p90_ttft > 3000 or retry_rate > 0.05 or gateway_4xx > 0,
+        "breached": m3_breached,
+        "status": m3_status,
     }
 
     total_in = sum(b["in"] for b in group_tokens.values())
@@ -1440,11 +1712,15 @@ def compute_agent_efficiency(
         g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if (b["in"] + b["cache_read"]) > 0 else 0.0
         for g, b in group_tokens.items()
     }
+    m4_breached = (total_in + total_cr) > 0 and overall_cache_hit < 0.75
+    m4_status = "fail" if m4_breached else "pass"
     m4 = {
+        "metric_id": "agent-efficiency-m4-steer-autonomy",
         "overall_cache_hit_rate": overall_cache_hit,
         "floor_min_cache_hit_rate": 0.75,
         "by_group": by_group_cache,
-        "breached": (total_in + total_cr) > 0 and overall_cache_hit < 0.75,
+        "breached": m4_breached,
+        "status": m4_status,
     }
 
     total_all_tokens = sum(b["in"] + b["out"] + b["cache_read"] for b in group_tokens.values())
@@ -1453,30 +1729,108 @@ def compute_agent_efficiency(
         for g, b in group_tokens.items() if "steering" in g
     )
     steering_share = round(steering_tokens / total_all_tokens, 4) if total_all_tokens > 0 else 0.0
+    m5_breached = steering_share > 0.35 or (first_pass_pr_green_rate is not None and first_pass_pr_green_rate < 0.80)
+    m5_status = "fail" if m5_breached else "pass"
     m5 = {
+        "metric_id": "agent-efficiency-m5-first-pass-pr-green",
         "steering_token_share": steering_share,
         "floor_max_steering_share": 0.35,
         "steering_tiny_output_ratio": round(steering_tiny_outputs / steering_reqs, 4) if steering_reqs else 0.0,
-        "breached": steering_share > 0.35,
+        "first_pass_pr_green_rate": first_pass_pr_green_rate,
+        "breached": m5_breached,
+        "status": m5_status,
     }
 
-    recommendations: list[dict[str, str]] = []
-    if m1["breached"]:
+    recommendations: list[dict[str, Any]] = []
+    if m1["status"] == "fail":
         multi_str = ", ".join(f"{t['goal_id']}/{t['task_id']}(r{t['max_round']})" for t in m1["round_3_plus_tasks"][:4])
         recommendations.append({
-            "id": "improve-m1-review-pingpong",
+            "id": "reduce-m1-ping-pong",
             "title": f"缩减审核返工拉锯：R1 打回率 {m1['r1_fail_rate']*100:.1f}%（{len(m1['round_3_plus_tasks'])} 项达 r3+）",
+            "priority": "P1",
+            "metric_id": "agent-efficiency-m1-review-pingpong",
             "detail": f"多轮审核拉锯任务：{multi_str or '见 multi_round_review_tasks'}。建议将 Reviewer 打回的高频项前移至 Writer 提交前的内环 L1/G2 脚本预检。",
-            "priority": "high",
+            "action": "Move repeated Reviewer findings into pre-review L1/G2 deterministic check scripts.",
+            "ref": "retro://agent-efficiency-m1",
+            "scope": "personal",
         })
-    if m2["breached"]:
+    if m2["status"] == "fail":
         top_f = m2["high_churn_files"][0]
         recommendations.append({
-            "id": "improve-m2-edit-churn",
+            "id": "reduce-m2-retry-tax",
             "title": f"降低文件反复擦写：单会话最高连改 {top_f['edits']} 次 ({Path(top_f['file_path']).name})",
+            "priority": "P1",
+            "metric_id": "agent-efficiency-m2-retry-tax",
             "detail": f"文件 {top_f['file_path']} 在单次会话中被反复 edit {top_f['edits']} 次，建议补充局部契约或拆分深模块。",
-            "priority": "medium",
+            "action": "Add local module contract or split deep module to eliminate multi-edit retry churn.",
+            "ref": "retro://agent-efficiency-m2",
+            "scope": "personal",
         })
+    if m3_status == "fail":
+        recommendations.append({
+            "id": "improve-m3-automated-share",
+            "title": (
+                f"消除流转阻塞与网关重试损耗：P90 TTFT={p90_ttft}ms, "
+                f"重试率={retry_rate*100:.1f}%, 4xx={gateway_4xx}, 7d阻塞={blocked_events_7d}"
+            ),
+            "priority": "P1",
+            "metric_id": "agent-efficiency-m3-automated-share",
+            "detail": (
+                f"sampled_requests={total_reqs} | p90_ttft_ms={p90_ttft} | "
+                f"retry_rate={retry_rate*100:.1f}% | gateway_4xx={gateway_4xx} | "
+                f"blocked_events_7d={blocked_events_7d}。建议下沉网关 schema 预检与自治解卡守卫。"
+            ),
+            "action": "Harden gateway schema precheck and autonomous unblock routing to raise automated flow share.",
+            "ref": "retro://agent-efficiency-m3",
+            "scope": "personal",
+        })
+    if m4_status == "fail":
+        recommendations.append({
+            "id": "improve-m4-steer-autonomy",
+            "title": f"提升会话粘性与自治缓存效率：Cache 命中率 {overall_cache_hit*100:.1f}% < 75%",
+            "priority": "P1",
+            "metric_id": "agent-efficiency-m4-steer-autonomy",
+            "detail": (
+                f"overall_cache_hit_rate={overall_cache_hit*100:.1f}% (floor=75.0%) | "
+                f"by_group={json.dumps(by_group_cache, ensure_ascii=False)}。建议稳定固定系统前缀并保持同会话粘性。"
+            ),
+            "action": "Stabilize system/skill prefix ordering and preserve session stickiness across autonomous turns.",
+            "ref": "retro://agent-efficiency-m4",
+            "scope": "personal",
+        })
+    if m5_status == "fail":
+        pr_green_str = f", PR 首轮绿灯率={first_pass_pr_green_rate*100:.1f}%" if first_pass_pr_green_rate is not None else ""
+        recommendations.append({
+            "id": "improve-m5-first-pass-pr-green",
+            "title": f"收紧主控与写者分流及首轮绿灯率：Steering 占比 {steering_share*100:.1f}%{pr_green_str}",
+            "priority": "P1",
+            "metric_id": "agent-efficiency-m5-first-pass-pr-green",
+            "detail": (
+                f"steering_token_share={steering_share*100:.1f}% (floor<=35.0%) | "
+                f"steering_tiny_output_ratio={m5['steering_tiny_output_ratio']*100:.1f}% | "
+                f"first_pass_pr_green_rate={first_pass_pr_green_rate}。建议将重度编码与本地 verify 下沉给 Writer。"
+            ),
+            "action": "Offload implementation and pre-PR verification to Writer and Layer 0 scripts to keep Steering <=35% and PRs green on first pass.",
+            "ref": "retro://agent-efficiency-m5",
+            "scope": "personal",
+        })
+
+    auto_proposed: list[dict[str, Any]] = []
+    proposals_written = 0
+    proposals_skipped = 0
+    if auto_propose and prop_path is not None:
+        by_id, by_ref = _read_existing_proposals_state(prop_path)
+        for rec in recommendations:
+            if _should_skip_proposal(rec, by_id, by_ref):
+                proposals_skipped += 1
+                continue
+            routed = route_retro_candidate(rec, mode="observe", proposals_path=prop_path)
+            auto_proposed.append(routed)
+            proposals_written += 1
+            written_prop = routed["proposal"]
+            by_id[written_prop["id"]] = written_prop
+            if written_prop.get("ref"):
+                by_ref[written_prop["ref"]] = written_prop
 
     return {
         "ok": True,
@@ -1488,6 +1842,9 @@ def compute_agent_efficiency(
             "M5_steering_vs_coding_split": m5,
         },
         "recommendations": recommendations,
+        "auto_proposed": auto_proposed,
+        "proposals_written": proposals_written,
+        "proposals_skipped": proposals_skipped,
     }
 
 
@@ -1498,15 +1855,28 @@ def route_retro_candidate(
     proposals_path: Path | None = None,
     linear_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    raw_prio = str(candidate.get("priority", "high")).strip().lower()
-    norm_prio = raw_prio if raw_prio in {"high", "medium", "low"} else "high"
+    cid = str(candidate.get("id") or "").strip()
+    if not cid:
+        raise ValueError("candidate id is required")
+    title = str(candidate.get("title") or cid).strip()
+    detail = str(candidate.get("detail") or title).strip()
+    ref = str(candidate.get("ref") or f"retro://{cid}").strip()
+    scope = str(candidate.get("scope") or "personal").strip() or "personal"
+    norm_prio = _normalize_priority(candidate.get("priority"), default="high")
     proposal = {
-        "id": candidate["id"], "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "agent": "retro-loop", "title": candidate.get("title", ""), "detail": candidate.get("detail", ""),
-        "priority": norm_prio, "status": "pending",
+        "id": cid,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "agent": str(candidate.get("agent") or "retro-loop").strip() or "retro-loop",
+        "title": title,
+        "detail": detail,
+        "priority": norm_prio,
+        "status": "pending",
+        "ref": ref,
+        "scope": scope,
     }
     for extra_key in (
-        "ref",
+        "metric_id",
+        "action",
         "app_name",
         "event_kind",
         "signature",
@@ -1564,12 +1934,13 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--auto-propose", action="store_true")
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
-        report = compute_agent_efficiency(ns.warehouse_db, ns.magpie_usage, ns.copilot_db)
-        if ns.auto_propose:
-            queued = []
-            for rec in report.get("recommendations", []):
-                queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
-            report["auto_proposed"] = queued
+        report = compute_agent_efficiency(
+            ns.warehouse_db,
+            ns.magpie_usage,
+            ns.copilot_db,
+            auto_propose=ns.auto_propose,
+            proposals_path=ns.proposals_path,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args_list and args_list[0] == "skill-roi":
@@ -1586,28 +1957,9 @@ def main(argv: list[str] | None = None) -> int:
             copilot_db=ns.copilot_db,
             skills_root=ns.skills_root,
             dev_root=ns.dev_root,
+            auto_propose=ns.auto_propose,
+            proposals_path=ns.proposals_path,
         )
-        if ns.auto_propose:
-            existing_pending: set[str] = set()
-            if ns.proposals_path and ns.proposals_path.is_file():
-                for line in ns.proposals_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        rec_obj = json.loads(line)
-                        if isinstance(rec_obj, dict) and rec_obj.get("id"):
-                            if str(rec_obj.get("status", "pending")).lower() == "pending":
-                                existing_pending.add(str(rec_obj["id"]))
-                            else:
-                                existing_pending.discard(str(rec_obj["id"]))
-                    except json.JSONDecodeError:
-                        continue
-            queued = []
-            for rec in report.get("low_roi_proposals", []):
-                if rec["id"] not in existing_pending:
-                    queued.append(route_retro_candidate(rec, mode="observe", proposals_path=ns.proposals_path))
-                    existing_pending.add(rec["id"])
-            report["auto_proposed"] = queued
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args_list and args_list[0] == "propose":
@@ -1615,12 +1967,21 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--id", required=True)
         p.add_argument("--title", required=True)
         p.add_argument("--detail", default="")
-        p.add_argument("--priority", default="high", choices=("high", "medium", "low"))
+        p.add_argument("--priority", default="high", choices=("high", "medium", "low", "P0", "P1", "P2", "P3"))
+        p.add_argument("--ref", default="")
+        p.add_argument("--scope", default="personal")
         p.add_argument("--mode", default="observe", choices=("observe", "auto"))
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
         res = route_retro_candidate(
-            {"id": ns.id, "title": ns.title, "detail": ns.detail, "priority": ns.priority},
+            {
+                "id": ns.id,
+                "title": ns.title,
+                "detail": ns.detail,
+                "priority": ns.priority,
+                "ref": ns.ref,
+                "scope": ns.scope,
+            },
             mode=ns.mode,
             proposals_path=ns.proposals_path,
         )
