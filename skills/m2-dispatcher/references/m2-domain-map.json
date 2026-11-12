@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "groups": [
+    {
+      "group": "work-business",
+      "title": "Work Business Topics",
+      "topics": [
+        {
+          "topic_id": "sapphire-notification",
+          "group": "work-business",
+          "title": "Sapphire Notification Center",
+          "target_repo": "bing-growth-sapphire-app",
+          "cwd": "~/Development/bing-growth-sapphire-app",
+          "keywords": ["Notification Center", "Push", "通知开关", "气象单位"],
+          "aliases": ["notification", "push", "weather units", "notification settings"]
+        },
+        {
+          "topic_id": "sapphire-smartbanner",
+          "group": "work-business",
+          "title": "Sapphire SmartBanner",
+          "target_repo": "bing-growth-sapphire-app",
+          "cwd": "~/Development/bing-growth-sapphire-app",
+          "keywords": ["SmartBanner", "Universal Link", "Adjust", "Upsell"],
+          "aliases": ["smart banner", "universal links", "upsell"]
+        },
+        {
+          "topic_id": "sapphire-china-bugs",
+          "group": "work-business",
+          "title": "Sapphire China Bugs",
+          "target_repo": "bing-growth-sapphire-app",
+          "cwd": "~/Development/bing-growth-sapphire-app",
+          "keywords": ["China Bugs", "中国区 bug", "devsync", "Bug List"],
+          "aliases": ["china bugs", "china bug", "dev sync"]
+        },
+        {
+          "topic_id": "sapphire-discovery-kumo",
+          "group": "work-business",
+          "title": "Sapphire Discovery Kumo",
+          "target_repo": "bing-growth-sapphire-app",
+          "cwd": "~/Development/bing-growth-sapphire-app",
+          "keywords": ["Discovery Feed", "Kumo 组件"],
+          "aliases": ["discovery feed", "kumo"]
+        },
+        {
+          "topic_id": "sapphire-dsat-qa-de",
+          "group": "work-business",
+          "title": "Sapphire DSAT QA-DE",
+          "target_repo": "bing-growth-sapphire-app",
+          "cwd": "~/Development/bing-growth-sapphire-app",
+          "keywords": ["DSAT", "QA-DE", "Crash", "Postmortem", "线上反馈"],
+          "aliases": ["qa de", "crash", "user feedback"]
+        },
+        {
+          "topic_id": "webiq-search",
+          "group": "work-business",
+          "title": "WebIQ Search",
+          "target_repo": "WebIQSearch",
+          "cwd": "~/Development/WebIQSearch",
+          "keywords": ["WebIQSearch", "Aquamarine", "Query Lens", "智能搜索"],
+          "aliases": ["web iq", "aquamarine", "query lens"]
+        },
+        {
+          "topic_id": "flightbook-status",
+          "group": "work-business",
+          "title": "FlightBook Status",
+          "target_repo": "FlightBook",
+          "cwd": "~/Development/FlightBook",
+          "keywords": ["FlightBook", "实验状态", "五面同步", "周报看板"],
+          "aliases": ["flight book", "experiment status", "weekly board"]
+        },
+        {
+          "topic_id": "info-email",
+          "group": "work-business",
+          "title": "Work Information Email",
+          "target_repo": "dsh-personal-plugins",
+          "cwd": "~/Development/dsh-personal-plugins",
+          "keywords": ["workiq", "邮件汇总", "Outlook", "Email 投递 dsh"],
+          "aliases": ["email", "mail summary", "outlook"]
+        },
+        {
+          "topic_id": "info-teams",
+          "group": "work-business",
+          "title": "Work Information Teams",
+          "target_repo": "dsh-personal-plugins",
+          "cwd": "~/Development/Personal/teams-cli",
+          "keywords": ["teams-cli", "Teams 消息汇总", "群聊回复"],
+          "aliases": ["teams", "teams cli", "group chat"]
+        }
+      ]
+    },
+    {
+      "group": "user-skills",
+      "title": "user-skills Specializations",
+      "topics": [
+        {
+          "topic_id": "skills-workflow",
+          "group": "user-skills",
+          "title": "Skills Workflow",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": ["workflow-hub", "howto", "m2-dispatcher", "team-lead", "linear-board"],
+          "aliases": ["workflow", "m2", "linear"]
+        },
+        {
+          "topic_id": "skills-design",
+          "group": "user-skills",
+          "title": "Skills Design",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": ["my-designer", "design-studio", "impeccable", "taste-skill"],
+          "aliases": ["design", "designer", "visual"]
+        },
+        {
+          "topic_id": "skills-research-knowledge",
+          "group": "user-skills",
+          "title": "Skills Research and Knowledge",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": ["deep-research", "knowledge-digest", "save-tool"],
+          "aliases": ["research", "knowledge", "digest"]
+        },
+        {
+          "topic_id": "skills-retro-story",
+          "group": "user-skills",
+          "title": "Skills Retro and Story",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": ["retro-loop", "story-craft"],
+          "aliases": ["retro", "story"]
+        },
+        {
+          "topic_id": "skills-repo-ci",
+          "group": "user-skills",
+          "title": "Skills Repository and CI",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": ["skill-contract", "repo-kit", "code-review", "codebase-design", "shared-ci"],
+          "aliases": ["repo ci", "repository", "contracts", "ci"]
+        }
+      ]
+    },
+    {
+      "group": "personal-core-gateways",
+      "title": "Personal Core and Gateway Foundations",
+      "topics": [
+        {
+          "topic_id": "aidash-aidata",
+          "group": "personal-core-gateways",
+          "title": "AIDash AIdata",
+          "target_repo": "AIDash",
+          "cwd": "~/Development/AIDash",
+          "keywords": ["AIDash", "aidata", "MenuBar", "Scheduled Pulse", "pew"],
+          "aliases": ["ai dash", "telemetry", "pulse"]
+        },
+        {
+          "topic_id": "dsh-plugins",
+          "group": "personal-core-gateways",
+          "title": "dsh Plugins",
+          "target_repo": "dsh-personal-plugins",
+          "cwd": "~/Development/dsh-personal-plugins",
+          "keywords": ["dsh", "deepseek-harness", "dsh-session-sink", "dsh-m2-omni-hub"],
+          "aliases": ["deepseek harness", "session sink", "omni hub"]
+        },
+        {
+          "topic_id": "gateway-herdr-jev",
+          "group": "personal-core-gateways",
+          "title": "Gateway Herdr Jev",
+          "target_repo": "raven",
+          "cwd": "~/Development/raven",
+          "keywords": ["raven", "Magpie", "Falcon", "Jev", "agent-herdr"],
+          "aliases": ["gateway", "herdr", "falcon", "magpie"]
+        }
+      ]
+    },
+    {
+      "group": "personal-products-home",
+      "title": "Personal Products and Home",
+      "topics": [
+        {
+          "topic_id": "voxpocket",
+          "group": "personal-products-home",
+          "title": "VoxPocket",
+          "target_repo": "VoxPocket",
+          "cwd": "~/Development/VoxPocket",
+          "keywords": ["VoxPocket", "语音输入", "快捷键录音"],
+          "aliases": ["voice input", "recording"]
+        },
+        {
+          "topic_id": "vitalstride",
+          "group": "personal-products-home",
+          "title": "VitalStride",
+          "target_repo": "VitalStride",
+          "cwd": "~/Development/VitalStride",
+          "keywords": ["VitalStride", "健康步态", "运动"],
+          "aliases": ["health gait", "fitness"]
+        },
+        {
+          "topic_id": "helix",
+          "group": "personal-products-home",
+          "title": "Helix",
+          "target_repo": "Helix",
+          "cwd": "~/Development/Helix",
+          "keywords": ["Helix"],
+          "aliases": []
+        },
+        {
+          "topic_id": "davici",
+          "group": "personal-products-home",
+          "title": "Davici",
+          "target_repo": "Davici",
+          "cwd": "~/Development/Davici",
+          "keywords": ["Davici"],
+          "aliases": []
+        },
+        {
+          "topic_id": "nas-smart-home",
+          "group": "personal-products-home",
+          "title": "NAS Smart Home",
+          "target_repo": "Nas",
+          "cwd": "~/Development/Nas",
+          "keywords": ["Nas", "绿联", "Home Assistant", "Node-RED", "米家"],
+          "aliases": ["nas", "smart home", "home assistant", "node red", "mijia"]
+        },
+        {
+          "topic_id": "personal-digest-tools",
+          "group": "personal-products-home",
+          "title": "Personal Digest Tools",
+          "target_repo": "Personal",
+          "cwd": "~/Development/Personal",
+          "keywords": ["collected-tools", "daily-digest", "knowledge-vault"],
+          "aliases": ["personal digest", "daily digest", "knowledge vault"]
+        }
+      ]
+    }
+  ]
+}

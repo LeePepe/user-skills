@@ -9,6 +9,7 @@ and sends only the targets recorded in the plan.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -26,8 +27,12 @@ SCHEMA_VERSION = 1
 ACTIVE_STATUSES = {"working", "running", "idle", "blocked", "needs_input", "ready"}
 TERMINAL_STATUSES = {"done", "cancelled", "canceled", "stopped", "archived", "exited", "dead"}
 ROUTES = {"ROUTE_SINGLE", "ROUTE_CROSS_SESSION", "CREATE_NEW_M2"}
+NEW_UNMAPPED_DOMAIN = "NEW_UNMAPPED_DOMAIN"
+MAPPED_DOMAIN = "MAPPED_DOMAIN"
+NEW_DOMAIN_CANDIDATE = "NEW_DOMAIN_CANDIDATE"
 MAGPIE_BASE_URL = "http://127.0.0.1:3425"
 MAGPIE_DEFAULT_MODEL = "group/steering"
+DEFAULT_DOMAIN_MAP_PATH = Path(__file__).resolve().parents[1] / "references" / "m2-domain-map.json"
 HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
 HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
 
@@ -290,6 +295,135 @@ def discover_sessions(
     return list(deduped.values()), warnings
 
 
+def load_domain_map(path: str | Path | None = None) -> dict[str, Any]:
+    """Load and flatten the checked-in topic map without mutating it."""
+    map_path = Path(path).expanduser() if path else DEFAULT_DOMAIN_MAP_PATH
+    try:
+        value = json.loads(map_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RouterError(f"unable to load domain map {map_path}: {error}") from error
+    if not isinstance(value, dict) or not isinstance(value.get("groups"), list):
+        raise RouterError(f"invalid domain map {map_path}: expected groups")
+    topics: list[dict[str, Any]] = []
+    for group in value["groups"]:
+        if not isinstance(group, dict) or not isinstance(group.get("topics"), list):
+            continue
+        for topic in group["topics"]:
+            if not isinstance(topic, dict) or not _text(topic.get("topic_id")):
+                continue
+            item = dict(topic)
+            item.setdefault("group", group.get("group", "unclassified"))
+            item.setdefault("title", item["topic_id"])
+            item.setdefault("target_repo", "")
+            item.setdefault("cwd", "")
+            item.setdefault("keywords", [])
+            item.setdefault("aliases", [])
+            topics.append(item)
+    if len(topics) < 23:
+        raise RouterError(f"invalid domain map {map_path}: expected at least 23 topics, found {len(topics)}")
+    return {"schema_version": value.get("schema_version", 1), "groups": value["groups"], "topics": topics, "path": str(map_path)}
+
+
+def _topic_by_id(domain_map: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {topic["topic_id"]: topic for topic in domain_map.get("topics", [])}
+
+
+def _topic_text(topic: dict[str, Any]) -> str:
+    values = [topic.get("topic_id"), topic.get("title"), topic.get("target_repo"), topic.get("cwd")]
+    values.extend(topic.get("keywords") or [])
+    values.extend(topic.get("aliases") or [])
+    return " ".join(_text(value) for value in values if _text(value)).casefold()
+
+
+def _topic_match_score(text: str, topic: dict[str, Any]) -> int:
+    haystack = text.casefold()
+    score = 0
+    for value in [topic.get("topic_id"), topic.get("title"), topic.get("target_repo"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]:
+        candidate = _text(value).casefold()
+        if candidate and candidate in haystack:
+            score += 4 if candidate == _text(topic.get("target_repo")).casefold() else 2
+    return score
+
+
+def _topic_for_target(target: dict[str, Any], message: str, domain_map: dict[str, Any], jev: dict[str, Any]) -> dict[str, Any] | None:
+    by_id = _topic_by_id(domain_map)
+    explicit = _text(target.get("topic_id"))
+    if explicit in by_id:
+        return by_id[explicit]
+    primary = jev.get("primary_topic")
+    if isinstance(primary, dict):
+        primary = primary.get("choice")
+    if len(jev.get("targets", [])) <= 1 and _text(primary) in by_id:
+        return by_id[_text(primary)]
+    text = " ".join(_text(target.get(key)) for key in ("target_repo", "title", "sub_prompt", "rag_context_hint")) + " " + message
+    scored = sorted((( _topic_match_score(text, topic), topic) for topic in domain_map.get("topics", [])), key=lambda item: item[0], reverse=True)
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1]
+    repo = _clean_target_name(target.get("target_repo"))
+    repo_topics = [topic for topic in domain_map.get("topics", []) if _clean_target_name(topic.get("target_repo")).casefold() == repo.casefold()]
+    return repo_topics[0] if len(repo_topics) == 1 else None
+
+
+def _new_topic_id(target: dict[str, Any], message: str) -> str:
+    explicit = _clean_target_name(target.get("topic_id"))
+    if explicit and explicit not in {NEW_UNMAPPED_DOMAIN}:
+        return explicit
+    seed = _clean_target_name(target.get("target_repo")) or _clean_target_name(message.split()[0] if message.split() else "domain")
+    slug = re.sub(r"[^a-z0-9]+", "-", seed.casefold()).strip("-") or "unmapped-domain"
+    return f"new-topic-{slug[:40]}"
+
+
+def _proposed_domain(target: dict[str, Any], message: str, domain_map: dict[str, Any]) -> dict[str, Any]:
+    topic_id = _new_topic_id(target, message)
+    title = _text(target.get("proposed_domain", {}).get("title") if isinstance(target.get("proposed_domain"), dict) else "")
+    title = title or _text(target.get("title")) or topic_id.replace("-", " ").title()
+    repo = _text(target.get("target_repo"), "unspecified")
+    cwd = _text(target.get("cwd")) or f"~/Development/{repo}"
+    keywords = target.get("keywords") if isinstance(target.get("keywords"), list) else []
+    if not keywords:
+        keywords = [word for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\\u4e00-\\u9fff]{2,}", message)[:8]]
+    return {"topic_id": topic_id, "group": _text(target.get("group"), "new-domain"), "title": title, "target_repo": repo, "cwd": cwd, "keywords": sorted(set(keywords)), "aliases": list(target.get("aliases") or [])}
+
+
+def _target_session(target: dict[str, Any], topic: dict[str, Any] | None, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    session_id = _text(target.get("session_id") or target.get("sessionId"))
+    if session_id:
+        match = next((session for session in sessions if session["session_id"] == session_id), None)
+        if match:
+            return match
+    repo = _clean_target_name(target.get("target_repo"))
+    candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
+    if topic:
+        topic_values = [topic.get("topic_id"), topic.get("title"), *(topic.get("keywords") or []), *(topic.get("aliases") or [])]
+        topic_terms = re.findall(r"[a-z0-9]+|[\\u4e00-\\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
+        topic_candidates = [session for session in candidates if any(term in " ".join(_text(session.get(key)) for key in ("title", "summary")).casefold() for term in topic_terms if len(term) > 2)]
+        if len(topic_candidates) == 1:
+            return topic_candidates[0]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _jev_decision(message: str, sessions: list[dict[str, Any]], domain_map: dict[str, Any], *, mock: Any = None, goal_id: str = "") -> dict[str, Any] | None:
+    if mock is not None and not (isinstance(mock, dict) and ("targets" in mock or "m2_targets" in mock)):
+        return mock if isinstance(mock, dict) else None
+    try:
+        jev_path = Path(__file__).resolve().parents[2] / "team-lead" / "scripts" / "jev_client.py"
+        spec = importlib.util.spec_from_file_location("m2_router_jev_client", jev_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        topic_ids = [topic["topic_id"] for topic in domain_map.get("topics", [])] + [NEW_UNMAPPED_DOMAIN]
+        state = {"user_message": message, "active_m2_sessions": sessions, "domain_map": domain_map.get("topics", []), "routing_contract": {"target_fields": ["topic_id", "domain_status", "proposed_domain", "target_repo", "sub_prompt", "wave_order", "rag_context_hint"]}}
+        questions = {
+            "route_mode": {"type": "choice", "instructions": "Choose the route mode.", "criteria": {route: route for route in sorted(ROUTES)}},
+            "primary_topic": {"type": "choice", "instructions": "Choose the primary business topic, or NEW_UNMAPPED_DOMAIN.", "criteria": {topic_id: topic_id for topic_id in topic_ids}},
+            "has_unmapped_domain": {"type": "noul", "instructions": "Is any requested business topic missing from the domain map?"},
+        }
+        result = module.jev_decide(state, questions, agent_role="team-lead", goal_id=goal_id, mock_response=None if mock is None else mock)
+        return result if isinstance(result, dict) else None
+    except (OSError, ImportError, TypeError, AssertionError):
+        return None
+
+
 def _target_value(decision: dict[str, Any]) -> Any:
     answers = decision.get("answers") if isinstance(decision.get("answers"), dict) else decision
     for key in ("targets", "m2_targets", "dispatch_plan", "target_m2s", "routes"):
@@ -400,11 +534,17 @@ def _deterministic_targets(message: str, sessions: list[dict[str, Any]]) -> list
     return targets
 
 
-def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], message: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def _extract_jev_plan(
+    decision: dict[str, Any],
+    sessions: list[dict[str, Any]],
+    message: str,
+    domain_map: dict[str, Any],
+    jev_decision: dict[str, Any] | None = None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     answers = _decision_answers(decision)
-    route = _text(answers.get("route_mode") or answers.get("route") or decision.get("route"))
-    if isinstance(answers.get("route_mode"), dict):
-        route = _text(answers["route_mode"].get("choice"))
+    jev_answers = _decision_answers(jev_decision or {})
+    route_value = jev_answers.get("route_mode") or answers.get("route_mode") or answers.get("route") or decision.get("route")
+    route = _text(route_value.get("choice") if isinstance(route_value, dict) else route_value)
     if route not in ROUTES:
         route = _route_from_message(message, sessions)
 
@@ -416,15 +556,24 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
         if len(raw_targets) > 1 or _route_from_message(message, sessions) == "ROUTE_CROSS_SESSION":
             route = "ROUTE_CROSS_SESSION"
     if not raw_targets:
-        primary = answers.get("primary_target")
+        primary = answers.get("primary_target") or jev_answers.get("primary_topic")
         if isinstance(primary, dict):
             primary = primary.get("choice")
-        if primary and primary != "NEW_SESSION":
-            raw_targets = [{"session_id": primary, "sub_prompt": message}]
+        if primary and primary not in {"NEW_SESSION", NEW_UNMAPPED_DOMAIN}:
+            raw_targets = [{"topic_id": primary, "sub_prompt": message}]
         elif route == "CREATE_NEW_M2":
-            raw_targets = [{"sub_prompt": message}]
+            raw_targets = [{"topic_id": NEW_UNMAPPED_DOMAIN, "sub_prompt": message}]
+
+    jev_primary = jev_answers.get("primary_topic")
+    if isinstance(jev_primary, dict):
+        jev_primary = jev_primary.get("choice")
+    jev_unmapped = jev_answers.get("has_unmapped_domain")
+    if isinstance(jev_unmapped, dict):
+        jev_unmapped = jev_unmapped.get("noul", jev_unmapped.get("choice"))
+    jev_unmapped = bool(jev_unmapped) or _text(jev_primary) == NEW_UNMAPPED_DOMAIN
 
     targets: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_targets):
         if isinstance(raw, str):
             raw = {"target_repo": raw}
@@ -434,13 +583,29 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
         target.setdefault("sub_prompt", message)
         target.setdefault("wave_order", target.get("order", target.get("wave", index + 1)))
         target.setdefault("rag_context_hint", target.get("context_pass") or target.get("rag_hint"))
+        topic = _topic_for_target(target, message, domain_map, {"primary_topic": jev_primary, "targets": raw_targets})
+        explicit_topic = _text(target.get("topic_id"))
+        is_new = _text(jev_primary) == NEW_UNMAPPED_DOMAIN or (jev_unmapped and not explicit_topic and len(raw_targets) == 1)
+        if explicit_topic == NEW_UNMAPPED_DOMAIN:
+            topic = None
+            is_new = True
+        if topic and not is_new:
+            target["topic_id"] = topic["topic_id"]
+            target["domain_status"] = MAPPED_DOMAIN
+            target.setdefault("group", topic.get("group"))
+            target.setdefault("title", topic.get("title"))
+            target.setdefault("target_repo", topic.get("target_repo"))
+            target.setdefault("cwd", topic.get("cwd"))
+        else:
+            proposal = _proposed_domain(target, message, domain_map)
+            target["topic_id"] = proposal["topic_id"]
+            target["domain_status"] = NEW_DOMAIN_CANDIDATE
+            target["proposed_domain"] = proposal
+            candidates.append(proposal)
+        match = _target_session(target, topic, sessions)
         session_id = _text(target.get("session_id") or target.get("sessionId"))
-        match = next((s for s in sessions if session_id and s["session_id"] == session_id), None)
-        if not match:
-            repo = _repo_from(target)
-            match = next((s for s in sessions if repo and s["target_repo"].lower() == repo.lower()), None)
         if match:
-            target.update({"session_id": match["session_id"], "target_repo": target.get("target_repo") or match["target_repo"], "source": match["source"], "transport": match["source"], "cwd": match["cwd"], "herdr_target": match["herdr_target"], "pane_id": match["pane_id"], "workspace_id": match["workspace_id"], "title": match["title"], "base_url": match.get("base_url", ""), "m2_status": "EXISTING_M2"})
+            target.update({"session_id": match["session_id"], "target_repo": target.get("target_repo") or match["target_repo"], "source": match["source"], "transport": match["source"], "cwd": target.get("cwd") or match["cwd"], "herdr_target": match["herdr_target"], "pane_id": match["pane_id"], "workspace_id": match["workspace_id"], "title": target.get("title") or match["title"], "base_url": match.get("base_url", ""), "m2_status": "EXISTING_M2"})
         else:
             target["session_id"] = session_id
             target["target_repo"] = _repo_from(target) or "unspecified"
@@ -458,13 +623,14 @@ def _extract_jev_plan(decision: dict[str, Any], sessions: list[dict[str, Any]], 
         targets = targets[:1]
     if route == "ROUTE_CROSS_SESSION" and not targets:
         ranked = sorted(sessions, key=lambda item: _score(message, item), reverse=True)
-        targets = [{"session_id": item["session_id"], "target_repo": item["target_repo"], "sub_prompt": message, "wave_order": index + 1, "rag_context_hint": None, "m2_status": "EXISTING_M2", "source": item["source"], "transport": item["source"], "herdr_target": item["herdr_target"], "cwd": item["cwd"], "pane_id": item["pane_id"], "workspace_id": item["workspace_id"], "title": item["title"]} for index, item in enumerate(ranked[:3])]
+        targets = [{"session_id": item["session_id"], "target_repo": item["target_repo"], "sub_prompt": message, "wave_order": index + 1, "rag_context_hint": None, "m2_status": "EXISTING_M2", "source": item["source"], "transport": item["source"], "herdr_target": item["herdr_target"], "cwd": item["cwd"], "pane_id": item["pane_id"], "workspace_id": item["workspace_id"], "title": item["title"], "topic_id": _new_topic_id({}, message), "domain_status": NEW_DOMAIN_CANDIDATE, "proposed_domain": _proposed_domain({}, message, domain_map)} for index, item in enumerate(ranked[:3])]
         if not targets:
-            targets = [{"target_repo": "unspecified", "sub_prompt": message, "wave_order": 1, "rag_context_hint": None, "m2_status": "NEW_M2", "transport": "auto"}]
+            targets = [{"target_repo": "unspecified", "sub_prompt": message, "wave_order": 1, "rag_context_hint": None, "m2_status": "NEW_M2", "transport": "auto", "topic_id": _new_topic_id({}, message), "domain_status": NEW_DOMAIN_CANDIDATE, "proposed_domain": _proposed_domain({}, message, domain_map)}]
     if not targets:
-        targets = [{"target_repo": "unspecified", "sub_prompt": message, "wave_order": 1, "rag_context_hint": None, "m2_status": "NEW_M2", "transport": "auto"}]
+        targets = [{"target_repo": "unspecified", "sub_prompt": message, "wave_order": 1, "rag_context_hint": None, "m2_status": "NEW_M2", "transport": "auto", "topic_id": _new_topic_id({}, message), "domain_status": NEW_DOMAIN_CANDIDATE, "proposed_domain": _proposed_domain({}, message, domain_map)}]
     targets.sort(key=lambda item: (item["wave_order"], item.get("target_repo", "")))
-    return route, targets, {"source": "deterministic_fallback" if used_deterministic_fallback or not decision else "jev", "model": _text(decision.get("model"), "microsoft-decision-1"), "confidence": answers.get("route_mode", {}).get("confidence", decision.get("confidence", 0.0)) if isinstance(answers.get("route_mode"), dict) else decision.get("confidence", 0.0), "reason": _text(decision.get("reason"))}
+    unique_candidates = {item["topic_id"]: item for item in candidates}
+    return route, targets, {"source": "deterministic_fallback" if used_deterministic_fallback or not decision else "jev", "model": _text(decision.get("model"), "microsoft-decision-1"), "confidence": route_value.get("confidence", decision.get("confidence", 0.0)) if isinstance(route_value, dict) else decision.get("confidence", 0.0), "reason": _text(decision.get("reason")), "primary_topic": _text(jev_primary), "has_unmapped_domain": jev_unmapped, "new_domain_candidates": list(unique_candidates.values())}
 
 
 def _magpie_token() -> str:
@@ -563,6 +729,7 @@ def classify(
     message: str,
     sessions: list[dict[str, Any]],
     *,
+    domain_map: dict[str, Any],
     mock_magpie: Any = None,
     targets_json: Any = None,
     magpie_url: str = "",
@@ -570,14 +737,17 @@ def classify(
     mock: Any = None,
     goal_id: str = "",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-    del goal_id  # retained for callers of the pre-Magpie API
+    jev = _jev_decision(message, sessions, domain_map, mock=mock, goal_id=goal_id)
     decision: dict[str, Any] | None = None
     source = "magpie"
     if targets_json is not None:
         decision = _targets_decision(targets_json, message)
         source = "targets-json"
-    elif mock_magpie is not None or mock is not None:
-        decision = _magpie_decision(mock_magpie if mock_magpie is not None else mock)
+    elif mock_magpie is not None:
+        decision = _magpie_decision(mock_magpie)
+        source = "mock-magpie"
+    elif mock is not None:
+        decision = _magpie_decision(mock)
         source = "mock-magpie"
     else:
         try:
@@ -591,12 +761,14 @@ def classify(
         except (OSError, ValueError, RouterError, urllib.error.URLError, TimeoutError):
             decision = None
             source = "offline-fallback"
-    route, targets, metadata = _extract_jev_plan(decision or {}, sessions, message)
-    if decision and metadata.get("source") == "deterministic_fallback" and source == "mock-magpie":
+    semantic = decision or (jev if _target_value(jev or {}) else {})
+    route, targets, metadata = _extract_jev_plan(semantic, sessions, message, domain_map, jev)
+    if semantic and metadata.get("source") == "deterministic_fallback" and source == "mock-magpie":
         metadata["source"] = "deterministic_fallback"
     else:
-        metadata["source"] = source if decision else "offline-fallback"
+        metadata["source"] = source if semantic else "offline-fallback"
     metadata["model"] = _text((decision or {}).get("model"), _text(magpie_model, os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL)))
+    metadata["jev"] = jev or {}
     return route, targets, metadata
 
 
@@ -605,6 +777,8 @@ def build_plan(
     sessions: list[dict[str, Any]],
     warnings: Iterable[str] = (),
     *,
+    domain_map: dict[str, Any] | None = None,
+    domain_map_file: str | Path | None = None,
     mock_magpie: Any = None,
     targets_json: Any = None,
     magpie_url: str = "",
@@ -616,9 +790,11 @@ def build_plan(
     if not message:
         raise RouterError("message is required")
     plan_id = f"m2p-{uuid.uuid4().hex[:10]}"
+    loaded_domain_map = domain_map or load_domain_map(domain_map_file)
     route, targets, decision = classify(
         message,
         sessions,
+        domain_map=loaded_domain_map,
         mock_magpie=mock_magpie,
         targets_json=targets_json,
         magpie_url=magpie_url,
@@ -637,18 +813,26 @@ def build_plan(
         "plan_id": plan_id,
         "message": message,
         "decision": {"route": route, **decision},
+        "domain_map_file": loaded_domain_map.get("path", str(domain_map_file or DEFAULT_DOMAIN_MAP_PATH)),
         "discovery": {"sessions": sessions, "warnings": list(warnings)},
         "waves": sorted({target["wave_order"] for target in targets}),
         "targets": targets,
+        "new_domain_candidates": decision.get("new_domain_candidates", []),
         "approval": {"required": True, "approved": False},
     }
 
 
 def preview_text(plan: dict[str, Any]) -> str:
-    lines = [f"Plan {plan['plan_id']} · {plan['decision']['route']}", "Owner approval required before dispatch.", "", "wave | target repo | M2 status | transport | content"]
-    lines.append("-----|-------------|-----------|-----------|--------")
+    lines = [f"Plan {plan['plan_id']} · {plan['decision']['route']}", "Owner approval required before dispatch.", "", "wave | topic_id | domain status | target repo | M2 status | transport | content"]
+    lines.append("-----|----------|---------------|-------------|-----------|-----------|--------")
     for target in plan.get("targets", []):
-        lines.append(f"{target.get('wave_order', 1)} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
+        marker = " [NEW_DOMAIN_CANDIDATE]" if target.get("domain_status") == NEW_DOMAIN_CANDIDATE else ""
+        lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
+    candidates = plan.get("new_domain_candidates", [])
+    if candidates:
+        lines.extend(["", "New domain candidates (Owner decision required):"])
+        for candidate in candidates:
+            lines.append(f"- {candidate.get('topic_id')}: {candidate.get('title')} → {candidate.get('target_repo')} ({candidate.get('group')})")
     return "\n".join(lines)
 
 
@@ -732,11 +916,44 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
     return {"ok": True, "method": "herdr-dispatch", "target": name, "created": True, "receipt": _parse_json_output(result.stdout) or result.stdout.strip()}
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def _register_new_domains(plan: dict[str, Any], domain_map_file: str | Path | None = None) -> list[str]:
+    candidates = plan.get("new_domain_candidates", [])
+    if not candidates:
+        return []
+    path = Path(domain_map_file or plan.get("domain_map_file") or DEFAULT_DOMAIN_MAP_PATH).expanduser()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RouterError(f"unable to update domain map {path}: {error}") from error
+    groups = value.setdefault("groups", [])
+    registered: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not _text(candidate.get("topic_id")):
+            continue
+        topic_id = candidate["topic_id"]
+        if any(isinstance(group, dict) and any(isinstance(topic, dict) and topic.get("topic_id") == topic_id for topic in group.get("topics", [])) for group in groups):
+            continue
+        group_id = _text(candidate.get("group"), "new-domain")
+        group = next((item for item in groups if isinstance(item, dict) and item.get("group") == group_id), None)
+        if group is None:
+            group = {"group": group_id, "title": group_id.replace("-", " ").title(), "topics": []}
+            groups.append(group)
+        topic = {key: candidate.get(key) for key in ("topic_id", "group", "title", "target_repo", "cwd", "keywords", "aliases")}
+        group.setdefault("topics", []).append(topic)
+        registered.append(topic_id)
+    if registered:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    return registered
+
+
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, domain_map_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve and not plan.get("approval", {}).get("approved"):
         raise RouterError("owner approval required: rerun with --approve")
+    registered = _register_new_domains(plan, domain_map_file) if register_new_domains else []
     receipts: list[dict[str, Any]] = []
     for wave in sorted({int(item.get("wave_order", 1)) for item in plan.get("targets", [])}):
         for target in [item for item in plan.get("targets", []) if int(item.get("wave_order", 1)) == wave]:
@@ -756,7 +973,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, transport: str = 
             else:
                 raise RouterError(f"unsupported transport: {selected}")
             receipts.append({"wave_order": wave, "target_repo": target.get("target_repo"), **receipt})
-    return {"ok": True, "plan_id": plan.get("plan_id"), "approved": True, "receipts": receipts}
+    return {"ok": True, "plan_id": plan.get("plan_id"), "approved": True, "registered_new_domains": registered, "receipts": receipts}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -778,6 +995,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--transport", choices=("auto", "herdr", "dsh", "stdout"), default="auto")
     parser.add_argument("--magpie-url", default=os.environ.get("MAGPIE_BASE_URL", MAGPIE_BASE_URL))
     parser.add_argument("--magpie-model", default=os.environ.get("MAGPIE_MODEL", MAGPIE_DEFAULT_MODEL))
+    parser.add_argument("--domain-map-file", default=str(DEFAULT_DOMAIN_MAP_PATH))
+    parser.add_argument("--register-new-domains", action="store_true", help="register approved new domain candidates during --apply")
     parser.add_argument("--targets-json", help="target list/object supplied by an outer CLI model")
     parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
     parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
@@ -812,6 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
                 _message(args),
                 sessions,
                 warnings,
+                domain_map_file=args.domain_map_file,
                 mock_magpie=_json_value(args.mock_magpie_json) if args.mock_magpie_json else None,
                 targets_json=_json_value(args.targets_json) if args.targets_json else None,
                 magpie_url=args.magpie_url,
@@ -828,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, transport=args.transport)
+            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, domain_map_file=args.domain_map_file, transport=args.transport)
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)
         return 0
     except (OSError, ValueError, RouterError, json.JSONDecodeError) as error:

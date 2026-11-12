@@ -248,6 +248,58 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(result["receipts"][0]["method"], "dsh.omni-hub.dispatch")
         self.assertTrue(calls[-1][0].endswith("/m2-omni-hub/api/dispatch"))
 
+    def test_domain_map_has_four_groups_and_23_topics(self):
+        domain_map = self.router.load_domain_map()
+        self.assertEqual(len(domain_map["groups"]), 4)
+        self.assertEqual(len(domain_map["topics"]), 23)
+        self.assertNotIn("app-ios", {topic["topic_id"] for topic in domain_map["topics"]})
+        self.assertEqual(domain_map["topics"][0]["topic_id"], "sapphire-notification")
+
+    def test_topic_routing_distinguishes_same_repo_business_panes(self):
+        sessions = [
+            {"session_id": "notification", "target_repo": "bing-growth-sapphire-app", "title": "Notification Center M2", "summary": "Push and weather units", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "notification", "pane_id": "w1:p1", "workspace_id": "w1"},
+            {"session_id": "china", "target_repo": "bing-growth-sapphire-app", "title": "China Bugs M2", "summary": "devsync bug list", "cwd": "/repo/bing-growth-sapphire-app", "source": "herdr", "herdr_target": "china", "pane_id": "w1:p2", "workspace_id": "w1"},
+        ]
+        plan = self.router.build_plan(
+            "同步 Notification Center 和 China Bugs 的状态",
+            sessions,
+            mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                {"target_repo": "bing-growth-sapphire-app", "sub_prompt": "处理 Push 通知开关和气象单位", "wave_order": 1},
+                {"target_repo": "bing-growth-sapphire-app", "sub_prompt": "整理 China Bugs devsync Bug List", "wave_order": 1},
+            ]},
+        )
+        self.assertEqual([target["topic_id"] for target in plan["targets"]], ["sapphire-notification", "sapphire-china-bugs"])
+        self.assertEqual([target["domain_status"] for target in plan["targets"]], ["MAPPED_DOMAIN", "MAPPED_DOMAIN"])
+        self.assertEqual([target["session_id"] for target in plan["targets"]], ["notification", "china"])
+
+    def test_topic_map_covers_webiq_and_personal_product(self):
+        webiq = self.router.build_plan("更新 WebIQSearch Query Lens", [], mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "WebIQSearch", "sub_prompt": "更新 Query Lens", "wave_order": 1}]})
+        voxpocket = self.router.build_plan("修复 VoxPocket 语音输入", [], mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "VoxPocket", "sub_prompt": "修复语音输入", "wave_order": 1}]})
+        self.assertEqual(webiq["targets"][0]["topic_id"], "webiq-search")
+        self.assertEqual(webiq["targets"][0]["domain_status"], "MAPPED_DOMAIN")
+        self.assertEqual(voxpocket["targets"][0]["topic_id"], "voxpocket")
+
+    def test_unmapped_topic_is_previewed_and_can_be_registered_after_approval(self):
+        plan = self.router.build_plan(
+            "为新量化研究工具建立独立 M2",
+            [],
+            mock_jev={"answers": {"route_mode": {"choice": "CREATE_NEW_M2"}, "primary_topic": {"choice": "NEW_UNMAPPED_DOMAIN"}, "has_unmapped_domain": {"noul": True}}},
+            mock_magpie={"route": "CREATE_NEW_M2", "targets": [{"target_repo": "QuantLab", "sub_prompt": "建立量化研究工具 M2", "wave_order": 1}]},
+            transport="stdout",
+        )
+        self.assertEqual(plan["targets"][0]["domain_status"], "NEW_DOMAIN_CANDIDATE")
+        self.assertTrue(plan["new_domain_candidates"])
+        preview = self.router.preview_text(plan)
+        self.assertIn("topic_id", preview)
+        self.assertIn("NEW_DOMAIN_CANDIDATE", preview)
+        with tempfile.TemporaryDirectory() as temp:
+            map_path = Path(temp) / "map.json"
+            map_path.write_text((ROOT / "skills/m2-dispatcher/references/m2-domain-map.json").read_text(), encoding="utf-8")
+            result = self.router.apply_plan(plan, approve=True, register_new_domains=True, domain_map_file=map_path)
+            self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
+            registered = self.router.load_domain_map(map_path)
+            self.assertEqual(len(registered["topics"]), 24)
+
     def test_cli_plan_outputs_json_without_dispatch(self):
         fixture = {"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]}
         with tempfile.TemporaryDirectory() as temp:

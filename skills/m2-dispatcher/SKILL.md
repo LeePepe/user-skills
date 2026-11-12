@@ -65,9 +65,9 @@ python3 skills/m2-dispatcher/scripts/m2-router.py --apply \
   --plan-file plan.json --approve --json
 ```
 
-`--plan` 只读取 Herdr/dsh 公共状态（可用 `--herdr-json`/`--dsh-state-json` 离线夹具），默认调用 `Magpie (:3425/v1/chat/completions)` 的 `group/steering`，输入 `{user_message, active_m2_sessions}`，输出 JSON `{route, reason, targets:[{target_repo, session_id, sub_prompt, wave_order, rag_context_hint}]}`。Magpie 完成拆解、改写、wave 判定与会话绑定，路由器标记 `EXISTING_M2`/`NEW_M2`。支持 `--magpie-url`、`--magpie-model`、`--mock-magpie-json`；`--targets-json` 可跳过请求。网关不可达且无 targets 时才兜底；不创建 session、不发送 prompt。
+`--plan` 先让 Jev/Falcon (`:19823`) 在 [`references/m2-domain-map.json`](references/m2-domain-map.json) 的 23 个 `topic_id` 与 `NEW_UNMAPPED_DOMAIN` 中 `choice`，并以 `noul` 判断 `has_unmapped_domain`；再让 Magpie (`:3425`) 语义拆解并绑定会话。计划为每个 target 填 `topic_id`、`MAPPED_DOMAIN`/`NEW_DOMAIN_CANDIDATE`，并在预览与 `new_domain_candidates` 展示新领域提案。支持 `--domain-map-file`、`--mock-jev-json`、`--mock-magpie-json`、`--targets-json`；离线时才确定性兜底，不创建 session、不发送 prompt。
 
-`--apply` 未带 `--approve` 会 fail-closed，按 wave 串行执行 Herdr prompt、`herdr-dispatch.sh` 新建或 dsh Session Sink 投递（必要时 Omni Hub 回退）。stdout 仅 dry-run；RAG 为显式 hook。
+`--apply` 未带 `--approve` 会 fail-closed，按 wave 串行投递。只有 `--apply --approve --register-new-domains` 才会把 Owner 批准的候选追加到映射表；stdout 仅 dry-run，RAG 为显式 hook。
 
 计划 schema 与技术细节见 `~/Development/handoff/m2-unified-ingress/spec.md`；该入口对应 How-To 节点 I7（Unified M2 Ingress）。
 
