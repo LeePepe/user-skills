@@ -22,8 +22,8 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 5. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 6. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
 7. **后台异步巡检与安全 Allow 自动解卡（`--watch`）**：`--apply` 返回 `watchdog_copilot_cli`（`mode="async", detach=true, shellId="watch-m2-<plan_id>"`），在后台运行 `m2-router.py --watch` 轮询被派发的目标 M2 直至全部进入静默态（`idle`/`done`）：
-   - 遇到安全权限弹窗（安全基线/目标 `cwd` 下的 `Allow path access`、`Curate Memory`、`Confirm folder trust`，以及只读白名单命令确认 `CMD_CONFIRM`），自动发送 `down+enter` 或 `enter` 放行并继续轮询；
-   - 遇到业务/Spec 级 `ask_user` 提问或非白名单命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）并在完成汇总中将各目标 M2 的可见结果与待拍板项一并呈交当前会话的 Owner。
+   - 遇到安全权限弹窗（realpath 解析后落在安全基线/目标 `cwd` 下的 `Allow path access`、`Curate Memory`、`Confirm folder trust`，以及显式只读白名单命令确认 `CMD_CONFIRM`），仅以单次有界 `enter` 放行并继续轮询（不自动勾选持久化 remember/allow-all 选项）；
+   - 遇到业务/Spec 级 `ask_user` 提问、路径越界/符号链接逃逸或非只读/含元字符命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）并在完成汇总中将各目标 M2 的可见结果与待拍板项一并呈交当前会话的 Owner。
 
 ## CLI
 

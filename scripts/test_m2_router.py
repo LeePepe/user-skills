@@ -846,27 +846,27 @@ class M2RouterTests(unittest.TestCase):
             cmd = args[1:3]
             step = poll_state["step"]
             if cmd == ["pane", "list"]:
-                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:pane:list", "result": {"panes": [
                     {"pane_id": "w5:p1", "name": "m2-aidash-r1"},
                     {"pane_id": "w6:p1", "name": "m2-personal-r1"},
-                ]}), stderr="")
+                ]}}), stderr="")
             if cmd == ["agent", "list"]:
                 if step == 0:
                     # Target 1 blocked on Allow path access, Target 2 blocked on Curate Memory
-                    return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:agent:list", "result": {"agents": [
                         {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "blocked", "completion_seq": 1},
                         {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "needs_input", "completion_seq": 1},
-                    ]}), stderr="")
+                    ]}}), stderr="")
                 if step == 1:
                     # Target 1 blocked on Confirm folder trust, Target 2 blocked on whitelisted CMD_CONFIRM
-                    return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:agent:list", "result": {"agents": [
                         {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "blocked", "completion_seq": 1},
                         {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "blocked", "completion_seq": 1},
-                    ]}), stderr="")
-                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    ]}}), stderr="")
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "cli:agent:list", "result": {"agents": [
                     {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "idle", "completion_seq": 2},
                     {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "idle", "completion_seq": 2},
-                ]}), stderr="")
+                ]}}), stderr="")
             if cmd == ["agent", "read"]:
                 target_name = args[3]
                 if step == 0:
@@ -882,7 +882,7 @@ class M2RouterTests(unittest.TestCase):
                         return SimpleNamespace(returncode=0, stdout="Confirm folder trust: Do you trust the files in this folder ~/Development/AIDash?\n❯ Yes, I trust\n", stderr="")
                     return SimpleNamespace(returncode=0, stdout=(
                         "CMD_CONFIRM: Do you want to run command?\n"
-                        "Command: git status && python3 cli.py digest\n"
+                        "Command: git status && python3 --version\n"
                         "❯ 1. Run once\n"
                         "  2. Always allow for this session\n"
                     ), stderr="")
@@ -908,16 +908,111 @@ class M2RouterTests(unittest.TestCase):
         self.assertTrue(watch_res["all_settled"])
         self.assertFalse(watch_res["needs_owner_attention"])
         self.assertEqual(sent_keys, [
-            ["m2-aidash-r1", "down", "enter"],
+            ["m2-aidash-r1", "enter"],
             ["m2-personal-r1", "enter"],
             ["m2-aidash-r1", "enter"],
-            ["m2-personal-r1", "down", "enter"],
+            ["m2-personal-r1", "enter"],
         ])
         aidash_report = watch_res["targets"][0]
         personal_report = watch_res["targets"][1]
         self.assertEqual([u["kind"] for u in aidash_report["auto_unblocked"]], ["allow_path_access", "confirm_folder_trust"])
         self.assertEqual([u["kind"] for u in personal_report["auto_unblocked"]], ["curate_memory", "whitelisted_cmd_confirm"])
         self.assertIn("completed all checks", aidash_report["visible_summary"])
+
+    def test_watch_rejects_path_traversal_symlink_escape_and_unsafe_commands(self):
+        safe_roots = self.router._safe_roots_for_target("~/Development/AIDash")
+        self.assertFalse(self.router._path_is_under_safe_roots("~/Development/AIDash/../../.ssh/id_rsa", safe_roots))
+        self.assertFalse(self.router._path_is_under_safe_roots("/tmp/../etc/passwd", safe_roots))
+        self.assertTrue(self.router._path_is_under_safe_roots("~/Development/AIDash/aidata", safe_roots))
+
+        with tempfile.TemporaryDirectory() as temp:
+            symlink_escape = Path(temp) / "escape-link"
+            symlink_escape.symlink_to("/etc")
+            custom_roots = [str(Path(temp))]
+            self.assertFalse(self.router._path_is_under_safe_roots(str(symlink_escape / "passwd"), custom_roots))
+
+        # Unsafe command strings must never be whitelisted
+        unsafe_cmds = [
+            "ls & bash -c id",
+            "git status > ~/.ssh/authorized_keys",
+            "git status >> /tmp/out",
+            "git clean -fd",
+            "git branch -D feat/x",
+            "git stash",
+            "git tag v1",
+            "git apply patch.diff",
+            "git cherry-pick abc",
+            "git -c core.pager=sh status",
+            "gh repo delete owner/repo --yes",
+            "gh pr merge 123",
+            "gh api -X POST /repos/o/r/issues",
+            "herdr agent send-keys w1:p1 enter",
+            "herdr agent prompt w1:p1 hi",
+            "herdr pane close w2:p1",
+            "herdr server stop",
+            "python3 -c 'import os'",
+            "python3 -m http.server",
+            "python3 arbitrary_script.py",
+            "env FOO=1 bash -c id",
+            "FOO=1 git status",
+            "find . -fprint /tmp/x",
+            "find . -exec id {} +",
+            "rg --pre=sh foo",
+            "jq -f /etc/passwd .",
+        ]
+        for bad_cmd in unsafe_cmds:
+            with self.subTest(bad_cmd=bad_cmd):
+                self.assertFalse(self.router._is_whitelisted_command(bad_cmd), f"unsafe command falsely whitelisted: {bad_cmd}")
+
+        # Legitimate read-only commands must be whitelisted
+        safe_cmds = [
+            "git status",
+            "git --no-pager diff --stat",
+            "git log -n 5 --oneline",
+            "git branch --show-current",
+            "gh pr view 127",
+            "gh pr checks 127",
+            "gh run list",
+            "herdr agent list",
+            "herdr pane list",
+            "herdr agent get m2-aidash-r1",
+            "herdr agent read m2-aidash-r1 --source visible --lines 40",
+            "orca file open /tmp/m2-plan-test.md --focus",
+            "python3 --version",
+            "env",
+            "ls -la",
+            "git status && gh pr list | head -n 5",
+        ]
+        for good_cmd in safe_cmds:
+            with self.subTest(good_cmd=good_cmd):
+                self.assertTrue(self.router._is_whitelisted_command(good_cmd), f"safe command rejected: {good_cmd}")
+
+        # Verify no-path folder trust fails closed when target_cwd is outside baseline roots
+        no_path_outside = self.router._classify_and_unblock_dialog(
+            "Confirm folder trust: Do you trust the files in this folder?\n❯ Yes, I trust",
+            target_ref="m2-untrusted-r1",
+            target_cwd="/etc/untrusted",
+            runner=lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        self.assertEqual(no_path_outside["action"], "owner_decision")
+        self.assertEqual(no_path_outside["blocked_reason"], "owner_decision_required")
+
+        # Verify scrollback mention of Curate Memory does not override active unsafe command prompt
+        scrollback_mixed = "\n".join([
+            "Earlier log: Curate Memory completed via store_memory",
+            *([f"output line {i}" for i in range(20)]),
+            "CMD_CONFIRM: Confirm command",
+            "Command: git push origin main",
+            "❯ 1. Run",
+        ])
+        mixed_decision = self.router._classify_and_unblock_dialog(
+            scrollback_mixed,
+            target_ref="m2-mixed-r1",
+            target_cwd="~/Development/AIDash",
+            runner=lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        self.assertEqual(mixed_decision["action"], "owner_decision")
+        self.assertEqual(mixed_decision["kind"], "non_whitelisted_cmd")
 
     def test_watch_preserves_business_ask_user_and_non_whitelisted_commands_for_owner(self):
         plan = {

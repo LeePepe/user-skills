@@ -1551,28 +1551,40 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     }
 
 
-def _safe_roots_for_target(target_cwd: str = "") -> list[str]:
-    roots = [_expand_cwd(root) for root in SAFE_BASELINE_ROOTS]
-    expanded_target = _expand_cwd(target_cwd)
-    if expanded_target and expanded_target not in roots:
-        roots.append(expanded_target)
-    return [root.rstrip("/") for root in roots if root]
+def _safe_roots_for_target(target_cwd: str = "", *, include_target_cwd: bool = True) -> list[str]:
+    baseline_roots = [_expand_cwd(root).rstrip("/") for root in SAFE_BASELINE_ROOTS if _expand_cwd(root)]
+    if not include_target_cwd:
+        return baseline_roots
+    expanded_target = _expand_cwd(target_cwd).rstrip("/")
+    if expanded_target and _path_is_under_safe_roots(expanded_target, baseline_roots):
+        if expanded_target not in baseline_roots:
+            baseline_roots.append(expanded_target)
+    return baseline_roots
 
 
 def _path_is_under_safe_roots(candidate_path: str, safe_roots: list[str]) -> bool:
-    expanded = _expand_cwd(candidate_path).rstrip("/")
-    if not expanded:
+    raw = _text(candidate_path)
+    if not raw or re.search(r"(?:^|/)\.\.(?:/|$)", raw):
+        return False
+    expanded = _expand_cwd(raw)
+    if not expanded or not os.path.isabs(expanded):
+        return False
+    try:
+        real_cand = os.path.realpath(expanded).rstrip("/")
+    except OSError:
+        return False
+    if not real_cand:
         return False
     for root in safe_roots:
-        if expanded == root or expanded.startswith(root + "/"):
-            return True
+        expanded_root = _expand_cwd(root)
+        if not expanded_root:
+            continue
         try:
-            real_cand = os.path.realpath(expanded).rstrip("/")
-            real_root = os.path.realpath(root).rstrip("/")
-            if real_cand == real_root or real_cand.startswith(real_root + "/"):
-                return True
+            real_root = os.path.realpath(expanded_root).rstrip("/")
         except OSError:
             continue
+        if real_root and (real_cand == real_root or real_cand.startswith(real_root + "/")):
+            return True
     return False
 
 
@@ -1586,55 +1598,158 @@ def _extract_dialog_paths(text: str) -> list[str]:
     return cleaned
 
 
-def _has_remember_option_below(text: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    remember_re = re.compile(
-        r"(?:always\s+allow|don['’]?t\s+ask\s+again|remember|for\s+the\s+rest\s+of\s+the\s+session|allow\s+for\s+this\s+session)",
-        re.I,
-    )
-    selected_idx: int | None = None
-    remember_idx: int | None = None
-    for idx, line in enumerate(lines):
-        if re.match(r"^(?:[>❯●◉▶]|1[.)])\s+", line):
-            if selected_idx is None:
-                selected_idx = idx
-        if remember_re.search(line):
-            remember_idx = idx
-            if re.match(r"^2[.)]\s+", line):
-                return True
-    if selected_idx is not None and remember_idx is not None and remember_idx > selected_idx:
+_READONLY_GIT_SUBCOMMANDS = {
+    "status",
+    "diff",
+    "log",
+    "show",
+    "rev-parse",
+    "branch",
+    "ls-files",
+    "ls-remote",
+    "describe",
+    "shortlog",
+}
+_FORBIDDEN_GIT_BRANCH_FLAGS = {
+    "-d",
+    "-D",
+    "--delete",
+    "-m",
+    "-M",
+    "--move",
+    "-c",
+    "-C",
+    "--copy",
+    "--set-upstream-to",
+    "-u",
+    "--unset-upstream",
+    "--edit-description",
+}
+_FORBIDDEN_GIT_GLOBAL_PREFIXES = (
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--work-tree",
+    "--upload-pack",
+    "--receive-pack",
+    "--ext-diff",
+    "--textconv",
+    "--output",
+)
+
+
+def _is_safe_git_command(args: list[str]) -> bool:
+    idx = 0
+    while idx < len(args):
+        tok = args[idx]
+        if tok in {"--no-pager", "-P", "--no-optional-locks"}:
+            idx += 1
+            continue
+        if tok == "-C":
+            if idx + 1 >= len(args):
+                return False
+            if not _path_is_under_safe_roots(args[idx + 1], _safe_roots_for_target(include_target_cwd=False)):
+                return False
+            idx += 2
+            continue
+        if tok.startswith("-"):
+            return False
+        break
+    if idx >= len(args):
+        return False
+    subcmd = args[idx]
+    rest = args[idx + 1 :]
+    if subcmd not in _READONLY_GIT_SUBCOMMANDS:
+        return False
+    for flag in rest:
+        if any(flag == p or flag.startswith(p + "=") for p in _FORBIDDEN_GIT_GLOBAL_PREFIXES):
+            return False
+    if subcmd == "branch":
+        for flag in rest:
+            if flag in _FORBIDDEN_GIT_BRANCH_FLAGS or flag.startswith("--set-upstream-to="):
+                return False
+            if flag.startswith("-") and flag not in {"-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--list", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged"}:
+                return False
+    return True
+
+
+def _is_safe_gh_command(args: list[str]) -> bool:
+    if len(args) < 2:
+        return False
+    group, action = args[0], args[1]
+    rest = args[2:]
+    if group in {"pr", "issue", "run", "release", "repo"} and action in {"view", "list", "status", "checks", "diff"}:
+        for flag in rest:
+            if flag in {"-w", "--web"}:
+                return False
+        return True
+    if group == "status" and len(args) == 1:
+        return True
+    return False
+
+
+def _is_safe_herdr_command(args: list[str]) -> bool:
+    if not args:
+        return False
+    if args[0] == "status" and len(args) == 1:
+        return True
+    if len(args) >= 2 and args[0] == "pane" and args[1] in {"list", "get"}:
+        return True
+    if len(args) >= 2 and args[0] == "agent" and args[1] in {"list", "get", "read"}:
+        return True
+    if len(args) >= 2 and args[0] == "workspace" and args[1] == "list":
+        return True
+    return False
+
+
+def _is_safe_python_command(args: list[str]) -> bool:
+    if len(args) == 1 and args[0] in {"--version", "-V", "--help", "-h"}:
         return True
     return False
 
 
 def _is_whitelisted_command_segment(segment: str) -> bool:
     tokens = shlex.split(segment.strip()) if segment.strip() else []
-    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
-        tokens.pop(0)
     if not tokens:
+        return False
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        return False
+    if "/" in tokens[0] and Path(tokens[0]).parent not in {Path("/bin"), Path("/usr/bin"), Path("/usr/local/bin"), Path("/opt/homebrew/bin")}:
         return False
     binary = Path(tokens[0]).name
     if binary not in WHITELISTED_CMD_BINARIES:
         return False
-    lowered = [tok.lower() for tok in tokens[1:]]
+    args = tokens[1:]
+    if binary == "env":
+        return len(args) == 0
     if binary == "git":
-        if any(tok in FORBIDDEN_GIT_SUBCOMMANDS for tok in lowered):
+        return _is_safe_git_command(args)
+    if binary == "gh":
+        return _is_safe_gh_command(args)
+    if binary == "herdr":
+        return _is_safe_herdr_command(args)
+    if binary == "orca":
+        if len(args) < 3 or args[:2] != ["file", "open"]:
             return False
-    elif binary == "herdr":
-        for idx, tok in enumerate(lowered):
-            if tok == "server" and idx + 1 < len(lowered) and lowered[idx + 1] == "stop":
-                return False
-    elif binary == "orca":
-        if lowered[:2] != ["file", "open"]:
+        file_args = [a for a in args[2:] if a != "--focus"]
+        if len(file_args) != 1 or file_args[0].startswith("-"):
             return False
-    elif binary == "find":
-        if any(tok in {"-delete", "-exec", "-execdir", "-ok", "-okdir"} for tok in lowered):
-            return False
-    elif binary == "python3":
-        joined = " ".join(tokens[1:])
-        if re.search(r"\b(?:rm\s+-rf|shutil\.rmtree|os\.remove|os\.unlink)\b", joined):
-            return False
-    return True
+        return _path_is_under_safe_roots(file_args[0], _safe_roots_for_target(include_target_cwd=False))
+    if binary == "python3":
+        return _is_safe_python_command(args)
+    if binary == "find":
+        forbidden_find = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+        return not any(tok.lower() in forbidden_find or tok.lower().startswith("-fprint") or tok.lower().startswith("-fls") for tok in args)
+    if binary == "jq":
+        return not any(tok in {"-f", "--from-file", "-L"} for tok in args)
+    if binary in {"rg", "grep"}:
+        return not any(tok == "--pre" or tok.startswith("--pre=") or tok == "--pre-glob" or tok.startswith("--pre-glob=") for tok in args)
+    if binary == "sleep":
+        return len(args) == 1 and bool(re.match(r"^\d+(?:\.\d+)?$", args[0]))
+    if binary in {"date", "shasum", "ls", "cat", "head", "tail"}:
+        return not any(tok in {"-s", "--set"} for tok in args)
+    return False
 
 
 def _extract_candidate_commands(text: str) -> list[str]:
@@ -1651,18 +1766,22 @@ def _extract_candidate_commands(text: str) -> list[str]:
             commands.append(line[2:].strip().strip("`"))
             continue
         first_word = line.split()[0] if line.split() else ""
-        if Path(first_word).name in WHITELISTED_CMD_BINARIES or Path(first_word).name in {"rm", "sudo", "curl", "chmod", "chown", "mv", "cp", "kill", "pkill"}:
+        if Path(first_word).name in WHITELISTED_CMD_BINARIES or Path(first_word).name in {"rm", "sudo", "curl", "chmod", "chown", "mv", "cp", "kill", "pkill", "bash", "sh", "zsh"}:
             if not re.match(r"^(?:Allow|Confirm|Do you|Would you|Select|Choose)\b", line, re.I):
                 commands.append(line)
     return commands
 
 
 def _is_whitelisted_command(cmd_text: str) -> bool:
-    if not cmd_text.strip():
+    stripped = cmd_text.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
         return False
-    if re.search(r"`|\$\(|>\s*/|;\s*rm\b|\bsudo\b|\brm\s+-", cmd_text):
+    # Reject any shell redirections, expansions, command/process substitutions, subshells, backgrounding, or globs
+    if re.search(r"[`<>()$*{}\[\]\\]|;\s*|\|\|", stripped):
         return False
-    segments = [seg.strip() for seg in re.split(r"\s*(?:&&|\|\||;|\|)\s*", cmd_text) if seg.strip()]
+    if re.search(r"(?<!&)&(?!&)", stripped):
+        return False
+    segments = [seg.strip() for seg in re.split(r"\s*(?:&&|\|)\s*", stripped) if seg.strip()]
     if not segments:
         return False
     try:
@@ -1685,6 +1804,9 @@ def _classify_and_unblock_dialog(
     if not text:
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": ""}
 
+    non_empty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    active_window = "\n".join(non_empty_lines[-16:])
+
     # Business / Spec ask_user prompts must NEVER be auto-unblocked.
     if re.search(
         r"(?:\bask_user\b|NEED_GO|NEED_OWNER_DECISION|Owner\s+Gate|Owner\s+decision\s+required|"
@@ -1694,46 +1816,76 @@ def _classify_and_unblock_dialog(
     ):
         return {"action": "owner_decision", "kind": "ask_user", "keys": [], "blocked_reason": "owner_decision_required"}
 
-    safe_roots = _safe_roots_for_target(target_cwd)
+    baseline_roots = _safe_roots_for_target(include_target_cwd=False)
+    safe_roots = _safe_roots_for_target(target_cwd, include_target_cwd=True)
+
+    is_cmd_prompt = bool(
+        re.search(
+            r"(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
+            r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command)",
+            active_window,
+            re.I,
+        )
+    )
+    is_path_prompt = bool(
+        re.search(r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\baccess\s+to\b)", active_window, re.I)
+    )
+    is_folder_trust_prompt = bool(
+        re.search(
+            r"(?:Confirm\s+folder\s+trust|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|Trust\s+folder|Yes,\s*I\s+trust)",
+            active_window,
+            re.I,
+        )
+    )
+    is_curate_memory_prompt = bool(
+        re.search(r"(?:Curate\s+Memory|\bstore_memory\b|\bvote_memory\b)", active_window, re.I)
+        and re.search(r"(?:\?|[>❯●◉▶]|\bAllow\b|\bConfirm\b|\bYes\b|1[.)])", active_window, re.I)
+    )
+
+    matched_kinds = sum(bool(flag) for flag in (is_cmd_prompt, is_path_prompt, is_folder_trust_prompt, is_curate_memory_prompt))
+    if matched_kinds > 1:
+        return {"action": "owner_decision", "kind": "ambiguous_dialog", "keys": [], "blocked_reason": "owner_decision_required"}
+
     kind = ""
     keys: list[str] = []
 
-    if re.search(r"(?:Curate\s+Memory|\bstore_memory\b|\bvote_memory\b)", text, re.I):
-        kind = "curate_memory"
-        keys = ["down", "enter"] if _has_remember_option_below(text) else ["enter"]
-    elif re.search(r"(?:Confirm\s+folder\s+trust|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|Trust\s+folder|Yes,\s*I\s+trust)", text, re.I):
-        paths = _extract_dialog_paths(text)
-        if not paths or all(_path_is_under_safe_roots(p, safe_roots) for p in paths):
+    if is_cmd_prompt:
+        candidates = _extract_candidate_commands(active_window)
+        if candidates and all(_is_whitelisted_command(cmd) for cmd in candidates):
+            kind = "whitelisted_cmd_confirm"
+            keys = ["enter"]
+        else:
+            return {"action": "owner_decision", "kind": "non_whitelisted_cmd", "keys": [], "blocked_reason": "owner_decision_required"}
+    elif is_path_prompt:
+        paths = _extract_dialog_paths(active_window)
+        if paths and all(_path_is_under_safe_roots(p, safe_roots) for p in paths):
+            kind = "allow_path_access"
+            keys = ["enter"]
+        else:
+            return {"action": "owner_decision", "kind": "unsafe_path_access", "keys": [], "blocked_reason": "owner_decision_required"}
+    elif is_folder_trust_prompt:
+        paths = _extract_dialog_paths(active_window)
+        if paths:
+            if all(_path_is_under_safe_roots(p, baseline_roots) for p in paths):
+                kind = "confirm_folder_trust"
+                keys = ["enter"]
+            else:
+                return {"action": "owner_decision", "kind": "untrusted_folder", "keys": [], "blocked_reason": "owner_decision_required"}
+        elif target_cwd and _path_is_under_safe_roots(target_cwd, baseline_roots):
             kind = "confirm_folder_trust"
             keys = ["enter"]
         else:
             return {"action": "owner_decision", "kind": "untrusted_folder", "keys": [], "blocked_reason": "owner_decision_required"}
-    elif re.search(r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\baccess\s+to\b)", text, re.I):
-        paths = _extract_dialog_paths(text)
-        if paths and all(_path_is_under_safe_roots(p, safe_roots) for p in paths):
-            kind = "allow_path_access"
-            keys = ["down", "enter"] if _has_remember_option_below(text) else ["enter"]
-        else:
-            return {"action": "owner_decision", "kind": "unsafe_path_access", "keys": [], "blocked_reason": "owner_decision_required"}
-    elif re.search(
-        r"(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
-        r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command)",
-        text,
-        re.I,
-    ):
-        candidates = _extract_candidate_commands(text)
-        if candidates and all(_is_whitelisted_command(cmd) for cmd in candidates):
-            kind = "whitelisted_cmd_confirm"
-            keys = ["down", "enter"] if _has_remember_option_below(text) else ["enter"]
-        else:
-            return {"action": "owner_decision", "kind": "non_whitelisted_cmd", "keys": [], "blocked_reason": "owner_decision_required"}
+    elif is_curate_memory_prompt:
+        kind = "curate_memory"
+        keys = ["enter"]
 
     if not kind:
-        if re.search(r"(?:\?|\bconfirm\b|\bapprove\b|\bchoose\b|\bselect\b|\[y/n\])", text, re.I):
+        if re.search(r"(?:\?|\bconfirm\b|\bapprove\b|\bchoose\b|\bselect\b|\[y/n\])", active_window, re.I):
             return {"action": "owner_decision", "kind": "owner_prompt", "keys": [], "blocked_reason": "owner_decision_required"}
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": ""}
 
-    signature = f"{kind}:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}"
+    signature = f"{kind}:{hashlib.sha256(active_window.encode('utf-8')).hexdigest()[:12]}"
     if already_unblocked_signatures is not None and signature in already_unblocked_signatures:
         return {"action": "already_unblocked", "kind": kind, "keys": keys, "blocked_reason": ""}
 
@@ -1955,15 +2107,16 @@ def watch_dispatched_m2(
                 continue
 
             # Check if blocked/needs_input or visible text shows a permission dialog
+            active_tail = "\n".join([ln.strip() for ln in visible.splitlines() if ln.strip()][-16:]) if visible else ""
             has_dialog_cue = bool(
-                visible
+                active_tail
                 and re.search(
                     r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\bCurate\s+Memory\b|"
                     r"\bstore_memory\b|\bvote_memory\b|Confirm\s+folder\s+trust|"
                     r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|\bCMD_CONFIRM\b|"
                     r"Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
                     r"\bask_user\b|NEED_GO|NEED_OWNER_DECISION)",
-                    visible,
+                    active_tail,
                     re.I,
                 )
             )
