@@ -415,11 +415,14 @@ class M2RouterTests(unittest.TestCase):
         fixture = {"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]}
         with tempfile.TemporaryDirectory() as temp:
             fixture_path = Path(temp) / "agents.json"
+            preview_md = Path(temp) / "preview.md"
             fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
             result = subprocess.run([
                 str(ROUTER_PATH), "--plan", "--message", "inspect alpha", "--herdr-json", str(fixture_path),
-                "--no-dsh", "--json", "--mock-jev-json", json.dumps({"route": "ROUTE_SINGLE", "targets": [{"target_repo": "alpha"}]}),
+                "--no-dsh", "--no-open-preview", "--preview-md-file", str(preview_md), "--json",
+                "--mock-jev-json", json.dumps({"route": "ROUTE_SINGLE", "targets": [{"target_repo": "alpha"}]}),
             ], capture_output=True, text=True, check=False)
+            self.assertTrue(preview_md.is_file())
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["targets"][0]["m2_status"], "EXISTING_M2")
@@ -679,6 +682,392 @@ class M2RouterTests(unittest.TestCase):
             self.router._new_herdr_agent_name(en_risk["targets"][0]),
             self.router._new_herdr_agent_name(en_trading["targets"][0]),
         )
+
+    def test_default_model_context_and_tilde_cwd_expansion_across_pipeline(self):
+        domain_map = self.router.load_domain_map()
+        for topic in domain_map["topics"]:
+            self.assertFalse(topic["cwd"].startswith("~"), f"unexpanded cwd in domain map: {topic}")
+            self.assertTrue(topic["cwd"].startswith("/"))
+
+        normalized = self.router.normalize_session({
+            "session_id": "s1",
+            "name": "aidash-m2-r1",
+            "agent_status": "idle",
+            "cwd": "~/Development/AIDash",
+            "is_m2": True,
+        }, "herdr")
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["cwd"], str(Path("~/Development/AIDash").expanduser()))
+
+        with tempfile.TemporaryDirectory() as temp:
+            preview_path = Path(temp) / "plan-preview.md"
+            plan = self.router.build_plan(
+                "在 AIDash 和新项目 AlphaX 中分别检查状态",
+                [],
+                mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                    {"topic_id": "aidash-aidata", "target_repo": "AIDash", "sub_prompt": "检查 AIDash", "wave_order": 1, "dispatch_script": "/bin/echo"},
+                    {"topic_id": "NEW_UNMAPPED_DOMAIN", "target_repo": "AlphaX", "cwd": "~/Development/AlphaX", "sub_prompt": "初始化 AlphaX", "wave_order": 2, "dispatch_script": "/bin/echo"},
+                ]},
+                preview_md_file=preview_path,
+            )
+            self.assertEqual(plan["default_model"], "gemini-4-argon")
+            self.assertEqual(plan["default_context"], "long_context")
+            self.assertEqual(plan["default_model_label"], "Gemini 4 Argon · 983K context")
+            for target in plan["targets"]:
+                self.assertEqual(target["model"], "gemini-4-argon")
+                self.assertEqual(target["context"], "long_context")
+                self.assertEqual(target["model_label"], "Gemini 4 Argon · 983K context")
+                self.assertFalse(target["cwd"].startswith("~"))
+                self.assertTrue(target["cwd"].startswith("/"))
+
+            calls = []
+
+            def runner(args, **kwargs):
+                calls.append(args)
+                return SimpleNamespace(returncode=0, stdout='{"ok": true, "reused_existing": false, "pane_id": "w9:p1"}', stderr="")
+
+            result = self.router.apply_plan(plan, approve=True, plan_file=Path(temp) / "plan.json", runner=runner)
+            self.assertEqual(len(calls), 2)
+            for call_args, receipt in zip(calls, result["receipts"]):
+                self.assertIn("--cwd", call_args)
+                cwd_arg = call_args[call_args.index("--cwd") + 1]
+                self.assertFalse(cwd_arg.startswith("~"))
+                self.assertEqual( call_args[-5:], ["--", "--model", "gemini-4-argon", "--context", "long_context"])
+                self.assertEqual(receipt["model"], "gemini-4-argon")
+                self.assertEqual(receipt["context"], "long_context")
+                self.assertEqual(receipt["model_label"], "Gemini 4 Argon · 983K context")
+                self.assertEqual(receipt["cwd"], cwd_arg)
+            self.assertEqual(result["watchdog_copilot_cli"]["mode"], "async")
+            self.assertTrue(result["watchdog_copilot_cli"]["detach"])
+            self.assertEqual(result["watchdog_copilot_cli"]["shellId"], f"watch-m2-{plan['plan_id']}")
+            self.assertIn("--watch", result["watchdog_cmd"])
+
+        dsh_calls = []
+
+        def dsh_poster(url, payload, **kwargs):
+            dsh_calls.append((url, payload))
+            if url.endswith("/create-session"):
+                return {"ok": True, "session": {"sessionId": "dsh-new-1"}}
+            return {"ok": True}
+
+        dsh_plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-dsh",
+            "approval": {"approved": False},
+            "targets": [{
+                "target_repo": "BetaRepo",
+                "m2_status": "NEW_M2",
+                "transport": "dsh",
+                "base_url": "http://dsh.test",
+                "cwd": "~/Development/BetaRepo",
+                "sub_prompt": "start beta",
+                "wave_order": 1,
+            }],
+        }
+        dsh_res = self.router.apply_plan(dsh_plan, approve=True, poster=dsh_poster)
+        self.assertEqual(dsh_calls[0][1]["cwd"], str(Path("~/Development/BetaRepo").expanduser()))
+        self.assertEqual(dsh_res["receipts"][0]["cwd"], str(Path("~/Development/BetaRepo").expanduser()))
+
+    def test_plan_writes_markdown_preview_and_opens_orca_with_focus(self):
+        orca_calls = []
+
+        def ok_runner(args, **kwargs):
+            orca_calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="opened", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp:
+            md_path = Path(temp) / "m2-preview.md"
+            plan = self.router.build_plan(
+                "先检查通知开关，再写学习博客",
+                self._learning_sessions(),
+                mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                    {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查通知开关详情\n包含多行说明", "rag_context_hint": "upstream-notif-hint", "wave_order": 1},
+                    {"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "整理学习博客", "wave_order": 2},
+                ]},
+                preview_md_file=md_path,
+                open_preview=True,
+                orca_bin="/usr/local/bin/orca",
+                runner=ok_runner,
+            )
+            self.assertTrue(md_path.is_file())
+            self.assertEqual(plan["preview_markdown_path"], str(md_path))
+            self.assertTrue(plan["preview_open"]["ok"])
+            self.assertEqual(orca_calls, [["/usr/local/bin/orca", "file", "open", str(md_path), "--focus"]])
+            md_content = md_path.read_text(encoding="utf-8")
+            self.assertIn(f"# M2 Dispatch Plan · {plan['plan_id']} (ROUTE_CROSS_SESSION)", md_content)
+            self.assertIn("Gemini 4 Argon · 983K context", md_content)
+            self.assertIn("检查通知开关详情\n包含多行说明", md_content)
+            self.assertIn("upstream-notif-hint", md_content)
+            self.assertIn("## Stale / Duplicate M2 Cleanup Candidates", md_content)
+            self.assertIn(f"Preview Markdown: {md_path}", self.router.preview_text(plan))
+
+            # Verify graceful fallback when orca fails or is missing
+            fail_plan = self.router.build_plan(
+                "检查 AIDash",
+                [],
+                mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "AIDash", "sub_prompt": "check", "wave_order": 1}]},
+                preview_md_file=Path(temp) / "fail-preview.md",
+                open_preview=True,
+                orca_bin="/nonexistent/orca",
+                runner=lambda args, **kwargs: SimpleNamespace(returncode=127, stdout="", stderr="orca not found"),
+            )
+            self.assertFalse(fail_plan["preview_open"]["ok"])
+            self.assertIn("orca not found", fail_plan["preview_open"]["warning"])
+
+    def test_watch_auto_unblocks_safe_allow_dialogs_and_settles_on_idle(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-watch-allow",
+            "targets": [
+                {
+                    "wave_order": 1,
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "herdr_target": "m2-aidash-r1",
+                    "pane_id": "w5:p1",
+                    "transport": "herdr",
+                    "cwd": "~/Development/AIDash",
+                },
+                {
+                    "wave_order": 2,
+                    "topic_id": "learning-and-blog",
+                    "target_repo": "Personal",
+                    "herdr_target": "m2-personal-r1",
+                    "pane_id": "w6:p1",
+                    "transport": "herdr",
+                    "cwd": "~/Development/Personal",
+                },
+            ],
+        }
+        poll_state = {"step": 0}
+        sent_keys = []
+
+        def runner(args, **kwargs):
+            cmd = args[1:3]
+            step = poll_state["step"]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [
+                    {"pane_id": "w5:p1", "name": "m2-aidash-r1"},
+                    {"pane_id": "w6:p1", "name": "m2-personal-r1"},
+                ]}), stderr="")
+            if cmd == ["agent", "list"]:
+                if step == 0:
+                    # Target 1 blocked on Allow path access, Target 2 blocked on Curate Memory
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                        {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "blocked", "completion_seq": 1},
+                        {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "needs_input", "completion_seq": 1},
+                    ]}), stderr="")
+                if step == 1:
+                    # Target 1 blocked on Confirm folder trust, Target 2 blocked on whitelisted CMD_CONFIRM
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                        {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "blocked", "completion_seq": 1},
+                        {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "blocked", "completion_seq": 1},
+                    ]}), stderr="")
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "idle", "completion_seq": 2},
+                    {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "idle", "completion_seq": 2},
+                ]}), stderr="")
+            if cmd == ["agent", "read"]:
+                target_name = args[3]
+                if step == 0:
+                    if target_name == "m2-aidash-r1":
+                        return SimpleNamespace(returncode=0, stdout=(
+                            "Allow path access to ~/Development/AIDash/aidata?\n"
+                            "❯ 1. Yes\n"
+                            "  2. Yes, and remember for the rest of the session\n"
+                        ), stderr="")
+                    return SimpleNamespace(returncode=0, stdout="Curate Memory: store_memory entry?\n❯ 1. Allow\n", stderr="")
+                if step == 1:
+                    if target_name == "m2-aidash-r1":
+                        return SimpleNamespace(returncode=0, stdout="Confirm folder trust: Do you trust the files in this folder ~/Development/AIDash?\n❯ Yes, I trust\n", stderr="")
+                    return SimpleNamespace(returncode=0, stdout=(
+                        "CMD_CONFIRM: Do you want to run command?\n"
+                        "Command: git status && python3 cli.py digest\n"
+                        "❯ 1. Run once\n"
+                        "  2. Always allow for this session\n"
+                    ), stderr="")
+                return SimpleNamespace(returncode=0, stdout=f"{target_name} completed all checks.", stderr="")
+            if cmd == ["agent", "send-keys"]:
+                sent_keys.append(args[3:])
+                return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            raise AssertionError(f"unexpected command: {args}")
+
+        def sleep_fn(_):
+            poll_state["step"] += 1
+
+        watch_res = self.router.watch_dispatched_m2(
+            plan,
+            interval=0.01,
+            max_wait=10.0,
+            max_polls=5,
+            herdr_bin="herdr",
+            runner=runner,
+            sleep_fn=sleep_fn,
+        )
+        self.assertTrue(watch_res["ok"])
+        self.assertTrue(watch_res["all_settled"])
+        self.assertFalse(watch_res["needs_owner_attention"])
+        self.assertEqual(sent_keys, [
+            ["m2-aidash-r1", "down", "enter"],
+            ["m2-personal-r1", "enter"],
+            ["m2-aidash-r1", "enter"],
+            ["m2-personal-r1", "down", "enter"],
+        ])
+        aidash_report = watch_res["targets"][0]
+        personal_report = watch_res["targets"][1]
+        self.assertEqual([u["kind"] for u in aidash_report["auto_unblocked"]], ["allow_path_access", "confirm_folder_trust"])
+        self.assertEqual([u["kind"] for u in personal_report["auto_unblocked"]], ["curate_memory", "whitelisted_cmd_confirm"])
+        self.assertIn("completed all checks", aidash_report["visible_summary"])
+
+    def test_watch_preserves_business_ask_user_and_non_whitelisted_commands_for_owner(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-watch-owner",
+            "targets": [
+                {
+                    "wave_order": 1,
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "herdr_target": "m2-aidash-r1",
+                    "pane_id": "w5:p1",
+                    "transport": "herdr",
+                    "cwd": "~/Development/AIDash",
+                },
+                {
+                    "wave_order": 2,
+                    "topic_id": "learning-and-blog",
+                    "target_repo": "Personal",
+                    "herdr_target": "m2-personal-r1",
+                    "pane_id": "w6:p1",
+                    "transport": "herdr",
+                    "cwd": "~/Development/Personal",
+                },
+            ],
+        }
+        sent_keys = []
+
+        def runner(args, **kwargs):
+            cmd = args[1:3]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [
+                    {"pane_id": "w5:p1", "name": "m2-aidash-r1"},
+                    {"pane_id": "w6:p1", "name": "m2-personal-r1"},
+                ]}), stderr="")
+            if cmd == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": "blocked"},
+                    {"pane_id": "w6:p1", "name": "m2-personal-r1", "agent_status": "needs_input"},
+                ]}), stderr="")
+            if cmd == ["agent", "read"]:
+                target_name = args[3]
+                if target_name == "m2-aidash-r1":
+                    return SimpleNamespace(returncode=0, stdout="ask_user: 请选择方案 A 或方案 B (Owner decision required)", stderr="")
+                return SimpleNamespace(returncode=0, stdout="CMD_CONFIRM: Confirm command\nCommand: git push --force origin main\n", stderr="")
+            if cmd == ["agent", "send-keys"]:
+                sent_keys.append(args)
+                return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            raise AssertionError(f"unexpected command: {args}")
+
+        watch_res = self.router.watch_dispatched_m2(
+            plan,
+            interval=0.01,
+            max_wait=5.0,
+            max_polls=2,
+            herdr_bin="herdr",
+            runner=runner,
+            sleep_fn=lambda _: None,
+        )
+        self.assertEqual(sent_keys, [])
+        self.assertTrue(watch_res["all_settled"])
+        self.assertTrue(watch_res["needs_owner_attention"])
+        for t in watch_res["targets"]:
+            self.assertTrue(t["needs_owner_attention"])
+            self.assertEqual(t["blocked_reason"], "owner_decision_required")
+            self.assertEqual(t["auto_unblocked"], [])
+        self.assertIn("NEEDS OWNER (owner_decision_required)", watch_res["summary_markdown"])
+
+    def test_watch_handles_initial_idle_race_before_declaring_settled(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-watch-race",
+            "targets": [{
+                "wave_order": 1,
+                "topic_id": "aidash-aidata",
+                "target_repo": "AIDash",
+                "herdr_target": "m2-aidash-r1",
+                "pane_id": "w5:p1",
+                "transport": "herdr",
+                "cwd": "~/Development/AIDash",
+            }],
+        }
+        state = {"poll": 0}
+
+        def runner(args, **kwargs):
+            cmd = args[1:3]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w5:p1", "name": "m2-aidash-r1"}]}), stderr="")
+            if cmd == ["agent", "list"]:
+                p = state["poll"]
+                # Poll 0: still idle right after prompt; Poll 1: working; Poll 2: idle with completion_seq incremented
+                status = "idle" if p == 0 else ("working" if p == 1 else "idle")
+                seq = 10 if p < 2 else 11
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    {"pane_id": "w5:p1", "name": "m2-aidash-r1", "agent_status": status, "completion_seq": seq},
+                ]}), stderr="")
+            if cmd == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout=f"poll-{state['poll']}-output", stderr="")
+            raise AssertionError(args)
+
+        watch_res = self.router.watch_dispatched_m2(
+            plan,
+            interval=0.01,
+            max_wait=5.0,
+            max_polls=5,
+            herdr_bin="herdr",
+            runner=runner,
+            sleep_fn=lambda _: state.__setitem__("poll", state["poll"] + 1),
+        )
+        self.assertEqual(watch_res["polls"], 3)
+        self.assertTrue(watch_res["all_settled"])
+        self.assertEqual(watch_res["targets"][0]["status"], "idle")
+        self.assertEqual(watch_res["targets"][0]["completion_seq"], 11)
+        self.assertIn("poll-2-output", watch_res["targets"][0]["visible_summary"])
+
+    def test_cli_watch_mode_outputs_structured_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plan_path = Path(temp) / "plan.json"
+            receipt_path = Path(temp) / "receipt.json"
+            plan_path.write_text(json.dumps({
+                "schema_version": 1,
+                "plan_id": "m2p-cli-watch",
+                "targets": [{
+                    "wave_order": 1,
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "transport": "stdout",
+                }],
+            }), encoding="utf-8")
+            receipt_path.write_text(json.dumps({
+                "ok": True,
+                "plan_id": "m2p-cli-watch",
+                "receipts": [{
+                    "wave_order": 1,
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "method": "stdout",
+                    "target": "AIDash",
+                    "prompt": "simulated prompt",
+                }],
+            }), encoding="utf-8")
+            result = subprocess.run([
+                str(ROUTER_PATH), "--watch", "--plan-file", str(plan_path),
+                "--apply-receipt-file", str(receipt_path), "--max-polls", "1", "--json",
+            ], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["all_settled"])
+        self.assertEqual(payload["targets"][0]["status"], "done")
 
 
 if __name__ == "__main__":

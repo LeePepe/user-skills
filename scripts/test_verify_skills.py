@@ -303,6 +303,19 @@ class VerifySkillsTests(unittest.TestCase):
         expander = (SKILLS_DIR / "m2-dispatcher" / "scripts" / "skill-slash-expander.ts").read_text(encoding="utf-8")
         self.assertIn('skill: "personal-m2-assistant"', expander)
         self.assertIn("python3 skills/personal-m2-assistant/scripts/m2-router.py --plan", expander)
+        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        for token in (
+            "Gemini 4 Argon · 983K context",
+            "gemini-4-argon",
+            "long_context",
+            "orca file open",
+            "--watch",
+            "watchdog_copilot_cli",
+            "Allow path access",
+            "Curate Memory",
+            "Confirm folder trust",
+        ):
+            self.assertIn(token, skill_text)
 
     def test_design_case_surface_contains_no_project_private_identifiers(self) -> None:
         for rel_path in (
