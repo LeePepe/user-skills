@@ -1235,11 +1235,11 @@ def build_root_markdown(
             "",
             "## 🧭 当前推进水位 & 下一步行动清单 (Where We Are & Next Todo)",
             "",
-            f"- **📍 AI 当前水位判断**：当前处于 **`G2 代码封板与 PR 收口（进行中）`**（目标发版日 `{tdate}`）。37 条 QA Bug 中 ADO 已 Resolved/Closed `12` 条、在途 PR 已修待合入 `10` 条、非 Ship Blocker 外部网页/H5 依赖 `{ext_count}` 条；**真正待跟进的 Ship Blocker 仅剩 `{sb_count}` 条（3 条 `start-china` 远端配置 + 1 条 AI 搜索服务端禁用 + 1 条 On Hold）**。",
+            f"- **📍 AI 当前水位判断**：当前处于 **`G2 代码封板与收口（进行中）`**（目标发版日 `{tdate}`）。客户端代码侧已合入 `{merged}` 个 PR、在途 `{waiting + len(failing)}` 个 PR；**非 PR 可修项共 `{sb_count + ext_count}` 条（其中 `{sb_count}` 条带 Ship Blocker 需推远端配置/服务端，`{ext_count}` 条缺外部资源/PM 信息或属 H5 团队）**。",
             "",
             "### 👤 下一步需你出手 / 推动 (Owner Next Actions)",
-            f"- [{chk_pop_review}] **[催审 & PoP 合入]** 推动 Reviewer 审批评论已清零的 `{waiting}` 个在途 PR（{waiting_links}），Approve 后完成 PoP 合入并在 ADO 将对应 10 条 Bug 标为 Resolved",
-            f"- [{chk_bugs}] **[跟进 {sb_count} 条 Ship Blocker 远端配置/外部收口]** 推进 3 条 `start-china/ManageApps` 配置（`AB#11453356` 标签设置、`AB#11440561` AppStarter、`AB#11440609` Money 骨架屏）+ 确认 Evie 侧 `AB#11440530` AI 搜索禁用（详见子单 `Bugs & Devsync`）",
+            f"- [{chk_pop_review}] **[PR 侧：催审 & PoP 合入]** 推动 Reviewer 审批评论已清零的 `{waiting}` 个在途 PR（{waiting_links}），Approve 后完成 PoP 合入（详见子单 `PR & PoP`）",
+            f"- [{chk_bugs}] **[非 PR 侧：推进 5 条 Ship Blocker 配置/服务端 + 10 条缺信息/外部依赖]** ① 在 `ManageApps/start-china` 启用标签设置 (`11453356`)、AppStarter (`11440561`)、Money (`11440609`) 配置；② 确认 Evie 禁用 AI 搜索 (`11440530`)；③ 找 PM/设计补齐 `aka.ms` 新链接 (`11453157`)、FRE 透明贴图 (`11440359`) 及合规/H5 裁决（详见子单 `Bugs & Devsync`）",
         ]
         if has_tl:
             ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
@@ -1326,7 +1326,7 @@ def build_root_markdown(
 def _workstream_title(root_name: str, stream: str) -> str:
     suffixes = {
         "PR & PoP": "PR 监督、PoP 待合入与 S1/S2/S3 自愈清单",
-        "Bugs & Devsync": "37 条 Bug 全量 Link、devsync1030 与 Worktree 台账",
+        "Bugs & Devsync": "非 PR 可修卡点、远端配置与缺失信息清单",
         "Repo & Skill Sinks": "评测提取 (≥0.70) 与规则沉淀候选 Link",
     }
     return f"[{root_name} · {stream}] {suffixes[stream]}"
@@ -1454,68 +1454,63 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
                 seen_bug_ids.add(bid)
             unique_bugs.append(item)
 
-        def _fmt_bug_row(b: Mapping[str, Any]) -> str:
+        def _fmt_non_pr_row(b: Mapping[str, Any]) -> str:
             bid = str(b.get("id") or "")
             num = bid.removeprefix("AB#")
             link = _md_link(bid, f"https://msasg.visualstudio.com/SAN%20SA/_workitems/edit/{num}") if bid.startswith("AB#") else f"`{bid}`"
             sb = " 🚨`Ship Blocker`" if b.get("ship_blocker") else ""
-            ado_st = f"`ADO: {b.get('ado_state')}`" if b.get("ado_state") else ""
-            raw_st = str(b.get("status") or b.get("workflow_status") or "—")
-            if raw_st.startswith("EXTERNAL ("):
-                raw_st = "EXTERNAL"
-            st_txt = raw_st.replace("|", r"\|")
-            pr_num = b.get("pr_number")
-            owner_dom = str(b.get("owner_domain") or "").replace("`", "")
-            pr_part = _md_link(f"PR #{pr_num}", _item_pr_url(b)) if pr_num and not b.get("pr_closed") else (f"`PR #{pr_num} (Closed)`" if pr_num else (f"`{owner_dom}`" if owner_dom else "—"))
+            owner_dom = str(b.get("owner_domain") or b.get("raw_status") or "外部/配置").replace("`", "").replace("|", r"\|")
             title_txt = str(b.get("title") or "").replace("|", r"\|")
-            return f"| {link}{sb} | {ado_st} · `{st_txt}` | {pr_part} | {title_txt} |"
+            res_txt = str(b.get("resolution") or "—").replace("|", r"\|")
+            return f"| {link}{sb} | `{owner_dom}` | {title_txt} | {res_txt} |"
 
-        g1_ship_blockers = []
-        g2_in_flight_prs = []
-        g3_external_non_blockers = []
-        g4_ado_resolved = []
+        c1_remote_config = []
+        c2_missing_info_or_policy = []
+        c3_external_web_h5 = []
+        pr_tracked_count = 0
+        ado_closed_count = 0
+
         for b in unique_bugs:
             ado_st = str(b.get("ado_state") or "")
             st = str(b.get("status") or "")
+            raw_st = str(b.get("raw_status") or st)
+            dom = str(b.get("owner_domain") or "")
+            res = str(b.get("resolution") or "")
             if ado_st in {"Resolved", "Closed"} or st.startswith("RESOLVED"):
-                g4_ado_resolved.append(b)
-            elif b.get("pr_number") and not b.get("pr_closed") and "ON HOLD" not in st:
-                g2_in_flight_prs.append(b)
-            elif b.get("ship_blocker") or st in {"BLOCKING", "ON HOLD", "REMOTE CONFIG"}:
-                g1_ship_blockers.append(b)
+                ado_closed_count += 1
+            elif b.get("pr_number") and not b.get("pr_closed") and "ON HOLD" not in raw_st:
+                pr_tracked_count += 1
+            elif "REMOTE CONFIG" in raw_st or "配置" in dom or "AASA" in dom:
+                c1_remote_config.append(b)
+            elif any(k in f"{dom} {res} {raw_st}" for k in ("短链", "Lottie", "贴图", "架构特性缺失", "合规策略", "ON HOLD")):
+                c2_missing_info_or_policy.append(b)
             else:
-                g3_external_non_blockers.append(b)
+                c3_external_web_h5.append(b)
 
+        non_pr_total = len(c1_remote_config) + len(c2_missing_info_or_policy) + len(c3_external_web_h5)
         lines.extend([
-            f"> **37 条 QA Bug 真实对齐总览**：🚨 待收口 Ship Blockers (`{len(g1_ship_blockers)}`) · ⏳ 代码已修等 PR 合入 (`{len(g2_in_flight_prs)}`) · 🌐 非阻塞外部网页/H5 依赖 (`{len(g3_external_non_blockers)}`) · ✅ ADO 已 Resolved/Closed (`{len(g4_ado_resolved)}`)",
+            f"> **本单仅聚焦「非客户端 PR 可直接修复 / 缺少外部信息或配置」的 `{non_pr_total}` 条卡点**（其余已由 PR 追踪的 `{pr_tracked_count}` 条见子单 `PR & PoP`，已在 ADO 关单的 `{ado_closed_count}` 条不再重复列出）。",
             "",
-            f"## 1. 🚨 待收口 Ship Blockers — 远端配置 / 服务端开关 / Hold ({len(g1_ship_blockers)})",
+            f"## 1. ⚙️ 需改远端配置 / 服务端开关 (`start-china` / `ManageApps` / `AASA`，共 {len(c1_remote_config)} 条)",
             "",
-            "| Bug ID | ADO & 分类状态 | 归属 / PR | 问题描述 |",
+            "| Bug ID | 卡点类型 | 现象 | 为什么非 PR 可修 & 下一步怎么推 |",
             "| --- | --- | --- | --- |",
-            *(_fmt_bug_row(b) for b in g1_ship_blockers),
-            *(["| — | — | — | None |"] if not g1_ship_blockers else []),
+            *(_fmt_non_pr_row(b) for b in c1_remote_config),
+            *(["| — | — | — | None |"] if not c1_remote_config else []),
             "",
-            f"## 2. ⏳ 客户端已修，等在途 PR 合入后改 ADO 为 Resolved ({len(g2_in_flight_prs)})",
+            f"## 2. ❓ 缺少外部信息 / 资产 / 需 PM・合规拍板 (共 {len(c2_missing_info_or_policy)} 条)",
             "",
-            "| Bug ID | ADO & 分类状态 | 关联 Open PR | 问题描述 |",
+            "| Bug ID | 缺失项 / 状态 | 现象 | 缺什么信息 & 下一步找谁 |",
             "| --- | --- | --- | --- |",
-            *(_fmt_bug_row(b) for b in g2_in_flight_prs),
-            *(["| — | — | — | None |"] if not g2_in_flight_prs else []),
+            *(_fmt_non_pr_row(b) for b in c2_missing_info_or_policy),
+            *(["| — | — | — | None |"] if not c2_missing_info_or_policy else []),
             "",
-            f"## 3. 🌐 非 Ship Blocker 的外部网页 / H5 / 服务端依赖 — 无需客户端改码 ({len(g3_external_non_blockers)})",
+            f"## 3. 🌐 纯外部网页 / 远端 H5 团队职责 (非客户端代码，共 {len(c3_external_web_h5)} 条)",
             "",
-            "| Bug ID | ADO & 分类状态 | 外部责任方 | 问题描述 |",
+            "| Bug ID | 外部责任方 | 现象 | 根因证据 & 责任团队 |",
             "| --- | --- | --- | --- |",
-            *(_fmt_bug_row(b) for b in g3_external_non_blockers),
-            *(["| — | — | — | None |"] if not g3_external_non_blockers else []),
-            "",
-            f"## 4. ✅ ADO 已 Resolved / Closed ({len(g4_ado_resolved)})",
-            "",
-            "| Bug ID | ADO & 分类状态 | PR / 结论 | 问题描述 |",
-            "| --- | --- | --- | --- |",
-            *(_fmt_bug_row(b) for b in g4_ado_resolved),
-            *(["| — | — | — | None |"] if not g4_ado_resolved else []),
+            *(_fmt_non_pr_row(b) for b in c3_external_web_h5),
+            *(["| — | — | — | None |"] if not c3_external_web_h5 else []),
         ])
     else:
         lines.extend(["## Eval Sinks (score ≥ 0.70)", "", "| Sink | Score | PR | Landing options |", "| --- | ---: | --- | --- |"])
