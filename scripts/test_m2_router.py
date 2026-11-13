@@ -259,7 +259,11 @@ class M2RouterTests(unittest.TestCase):
     def test_domain_map_has_four_groups_and_23_topics(self):
         domain_map = self.router.load_domain_map()
         self.assertEqual(len(domain_map["groups"]), 4)
-        self.assertEqual(len(domain_map["topics"]), 23)
+        self.assertEqual(len(domain_map["topics"]), 25)
+        self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system"}, {"financial", "shared-design-system"})
+        self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
+        self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
+        self.assertTrue(all(topic.get("space") for topic in domain_map["topics"]))
         self.assertNotIn("app-ios", {topic["topic_id"] for topic in domain_map["topics"]})
         self.assertEqual(domain_map["topics"][0]["topic_id"], "sapphire-notification")
 
@@ -320,7 +324,7 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(registered["topics"]), 24)
+            self.assertEqual(len(registered["topics"]), 26)
             new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
             self.assertTrue(len(new_topic["keywords"]) > 0)
             self.assertEqual(len(new_domain_map["groups"]), 5)
@@ -727,8 +731,9 @@ class M2RouterTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout='{"ok": true, "reused_existing": false, "pane_id": "w9:p1"}', stderr="")
 
             result = self.router.apply_plan(plan, approve=True, plan_file=Path(temp) / "plan.json", runner=runner)
-            self.assertEqual(len(calls), 2)
-            for call_args, receipt in zip(calls, result["receipts"]):
+            dispatch_calls = [call for call in calls if "--cwd" in call]
+            self.assertEqual(len(dispatch_calls), 2)
+            for call_args, receipt in zip(dispatch_calls, result["receipts"]):
                 self.assertIn("--cwd", call_args)
                 cwd_arg = call_args[call_args.index("--cwd") + 1]
                 self.assertFalse(cwd_arg.startswith("~"))
@@ -1236,6 +1241,8 @@ class M2RouterTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w2:p1", "status": "idle", "name": "learn-stale"}]}), stderr="")
                 if args[1:3] == ["agent", "list"]:
                     return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p1", "agent_status": "idle", "name": "learn-stale"}]}), stderr="")
+                if args[1:3] == ["workspace", "list"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": []}), stderr="")
                 if args[1:3] == ["pane", "close"]:
                     return SimpleNamespace(returncode=0, stdout="closed", stderr="")
                 if args[0] == "/bin/fake-herdr-dispatch":
@@ -1526,6 +1533,308 @@ class M2RouterTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["all_settled"])
         self.assertEqual(payload["targets"][0]["status"], "done")
+
+
+    def test_done_interactive_session_and_workspace_label_are_reusable(self):
+        done = self.router.normalize_session({
+            "name": "aidash-m2-r1", "agent_status": "done", "repo": "AIDash",
+            "pane_id": "w1P:p1", "workspace_id": "w1P", "agent": "copilot", "cwd": "/repo/AIDash",
+        }, "herdr", allow_interactive_herdr=True)
+        self.assertIsNotNone(done)
+        self.assertEqual(done["status"], "done")
+        sessions, warning = self.router.discover_herdr(
+            pane_payload={"panes": [{"pane_id": "w1P:p1", "workspace_id": "w1P", "agent": "copilot", "cwd": "/repo/AIDash", "agent_status": "done", "name": "AIDash"}]},
+            workspace_payload={"workspaces": [{"workspace_id": "w1P", "label": "AIDash"}]},
+        )
+        self.assertIsNone(warning)
+        self.assertEqual(sessions[0]["workspace_label"], "AIDash")
+
+    def test_new_m2_uses_mapped_workspace_and_never_caller_pane(self):
+        calls = []
+        plan = {"schema_version": 1, "plan_id": "m2p-space", "approval": {"approved": False}, "discovery": {"workspaces": [{"workspace_id": "w1P", "label": "AIDash"}]}, "targets": [{
+            "wave_order": 1, "topic_id": "aidash-aidata", "target_repo": "AIDash", "space": "AIDash", "space_aliases": [],
+            "target_workspace_id": "w1P", "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/AIDash", "sub_prompt": "start", "dispatch_script": "/tmp/fake-dispatch",
+        }]}
+        def runner(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["workspace", "list"]:
+                return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": [{"workspace_id": "w1P", "label": "AIDash"}]}), stderr="")
+            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w1P", "tab_id": "t1", "pane_id": "w1P:p1"}), stderr="")
+        with patch.dict("os.environ", {"HERDR_PANE_ID": "w2J:p1"}):
+            result = self.router.apply_plan(plan, approve=True, runner=runner)
+        dispatch = next(call for call in calls if "--workspace" in call)
+        self.assertIn("--workspace", dispatch)
+        self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w1P")
+        self.assertEqual(dispatch[dispatch.index("--tab-label") + 1], "m2-aidash-aidata-r1")
+        self.assertNotIn("--pane", dispatch)
+        self.assertNotIn("w2J:p1", dispatch)
+        self.assertEqual(result["receipts"][0]["spawn_mode"], "workspace_tab")
+
+    def test_new_space_is_created_once_then_reused_for_same_space(self):
+        calls = []
+        targets = [{"wave_order": 1, "topic_id": "new-a", "target_repo": "Alpha", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Alpha", "sub_prompt": "a", "dispatch_script": "/tmp/fake-dispatch"}, {"wave_order": 1, "topic_id": "new-b", "target_repo": "Beta", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Beta", "sub_prompt": "b", "dispatch_script": "/tmp/fake-dispatch"}]
+        plan = {"schema_version": 1, "plan_id": "m2p-new-space", "approval": {"approved": False}, "discovery": {"workspaces": []}, "targets": targets}
+        def runner(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["workspace", "list"]:
+                return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-new", "pane_id": "w-new:p1"}), stderr="")
+        self.router.apply_plan(plan, approve=True, runner=runner)
+        dispatch_calls = [call for call in calls if "--new-workspace" in call or "--workspace" in call]
+        self.assertIn("--new-workspace", dispatch_calls[0])
+        self.assertIn("--workspace", dispatch_calls[1])
+        self.assertEqual(dispatch_calls[1][dispatch_calls[1].index("--workspace") + 1], "w-new")
+
+    def test_real_flow_preserves_embedded_workspaces_and_reuses_done_space_session(self):
+        sessions, warnings = self.router.discover_sessions(
+            herdr_payload={
+                "panes": [
+                    {"pane_id": "w-a:p1", "workspace_id": "w-a", "cwd": "/repo/other", "agent": "copilot", "name": "aidash-done", "agent_status": "done"},
+                    {"pane_id": "w-o:p1", "workspace_id": "w-o", "cwd": "/repo/AIDash", "agent": "copilot", "name": "大总管", "agent_status": "working"},
+                    {"pane_id": "w-g:p1", "workspace_id": "w-a", "cwd": "/repo/AIDash", "agent": "copilot", "name": "aidash-goal-tl-r1", "agent_status": "working"},
+                    {"pane_id": "w-x:p1", "workspace_id": "w-a", "cwd": "/repo/AIDash", "agent": "copilot", "name": "aidash-exited", "agent_status": "exited"},
+                ],
+                "workspaces": [
+                    {"workspace_id": "w-a", "label": "AIDash"},
+                    {"workspace_id": "w-o", "label": "大总管"},
+                ],
+            },
+            include_dsh=False,
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(sessions.workspaces[0]["workspace_id"], "w-a")
+        self.assertIn("aidash-done", {item["session_id"] for item in sessions})
+        self.assertNotIn("aidash-goal-tl-r1", {item["session_id"] for item in sessions})
+        self.assertNotIn("aidash-exited", {item["session_id"] for item in sessions})
+        plan = self.router.build_plan(
+            "继续处理 AIDash 指标",
+            sessions,
+            targets_json={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "aidash-aidata", "target_repo": "AIDash", "sub_prompt": "continue"}]},
+            write_preview_md=False,
+        )
+        self.assertEqual(plan["discovery"]["workspaces"][0]["label"], "AIDash")
+        self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
+        self.assertEqual(plan["targets"][0]["session_id"], "aidash-done")
+
+    def test_apply_revalidates_live_canonical_space_and_ignores_stale_workspace_id(self):
+        calls = []
+        plan = {
+            "schema_version": 1, "plan_id": "m2p-authority", "approval": {"approved": False},
+            "discovery": {"workspaces": [{"workspace_id": "w-stale", "label": "AIDash"}]},
+            "targets": [{
+                "wave_order": 1, "topic_id": "aidash-aidata", "target_repo": "AIDash",
+                "space": "Wrong Space", "space_aliases": ["Wrong Alias"], "target_workspace_id": "w-stale",
+                "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/AIDash",
+                "sub_prompt": "start", "dispatch_script": "/tmp/fake-dispatch",
+            }],
+        }
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["workspace", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": [{"workspace_id": "w-live", "label": "AIDash"}]}), stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-live"}), stderr="")
+
+        result = self.router.apply_plan(plan, approve=True, runner=runner)
+        dispatch = next(call for call in calls if "--workspace" in call)
+        self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w-live")
+        self.assertEqual(result["receipts"][0]["workspace_id"], "w-live")
+
+    def test_space_matching_and_markdown_include_alias_priority_and_workspace_state(self):
+        workspaces = [
+            {"workspace_id": "w-alias", "label": "Sapphire"},
+            {"workspace_id": "w-canonical", "label": "bing-growth-sapphire-app"},
+        ]
+        target = {"target_repo": "bing-growth-sapphire-app", "topic_id": "sapphire-notification"}
+        self.router.resolve_target_space(target, self.router._topic_by_id(self.router.load_domain_map())["sapphire-notification"], workspaces)
+        self.assertEqual(target["target_workspace_id"], "w-canonical")
+        sessions = [{
+            "session_id": "space-session", "target_repo": "unrelated", "title": "Notification",
+            "summary": "push notification", "status": "done", "source": "herdr",
+            "herdr_target": "space-session", "pane_id": "w-canonical:p1",
+            "workspace_id": "w-canonical", "workspace_label": "bing-growth-sapphire-app",
+        }]
+        self.assertEqual(self.router._target_session(target, self.router._topic_by_id(self.router.load_domain_map())["sapphire-notification"], sessions)["session_id"], "space-session")
+        plan = {"plan_id": "m2p-preview", "decision": {"route": "ROUTE_SINGLE"}, "targets": [{**target, "m2_status": "NEW_M2"}]}
+        markdown = self.router.render_preview_markdown(plan)
+        self.assertIn("| Space |", markdown)
+        self.assertIn("bing-growth-sapphire-app (w-canonical)", markdown)
+        self.assertIn("- **Space**:", markdown)
+
+    def test_discovered_mixed_case_spaces_and_aliases_reuse_mapped_sessions(self):
+        topics = self.router._topic_by_id(self.router.load_domain_map())
+        for topic_id in ("sapphire-notification", "dsh-plugins", "nas-smart-home", "aidash-aidata"):
+            topic = topics[topic_id]
+            for label in [topic["space"], *topic.get("space_aliases", [])]:
+                with self.subTest(topic=topic_id, label=label):
+                    sessions, warnings = self.router.discover_sessions(
+                        herdr_payload={
+                            "panes": [{"pane_id": "w-topic:p1", "workspace_id": "w-topic", "name": "topic-m2",
+                                       "agent": "copilot", "agent_status": "done", "cwd": "/repo/unrelated", "topic_id": topic_id}],
+                            "workspaces": [{"workspace_id": "w-topic", "label": label.swapcase()}],
+                        },
+                        include_dsh=False,
+                    )
+                    plan = self.router.build_plan(
+                        "continue", sessions, targets_json=[{"topic_id": topic_id}], write_preview_md=False,
+                    )
+                    self.assertEqual(warnings, [])
+                    self.assertEqual(plan["targets"][0]["target_workspace_id"], "w-topic")
+                    self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
+                    self.assertEqual(plan["targets"][0]["session_id"], "topic-m2")
+
+    def test_session_only_discovery_never_invents_workspace_inventory(self):
+        for collection in ("panes", "agents", "sessions"):
+            for workspace_label in ("", "AIDash"):
+                with self.subTest(collection=collection, label=workspace_label):
+                    record = {"pane_id": "w-a:p1", "workspace_id": "w-a", "name": "conversation-m2",
+                              "title": "Conversation", "agent": "copilot", "agent_status": "done",
+                              "cwd": "/repo/AIDash", "workspace_label": workspace_label}
+                    sessions, warnings = self.router.discover_sessions(
+                        herdr_payload={collection: [record]}, include_dsh=False,
+                    )
+                    self.assertEqual(warnings, [])
+                    self.assertEqual(sessions.workspaces, [])
+                    self.assertEqual(sessions[0]["workspace_label"], workspace_label)
+                    plan = self.router.build_plan(
+                        "continue", sessions, targets_json=[{"topic_id": "aidash-aidata"}], write_preview_md=False,
+                    )
+                    self.assertEqual(plan["discovery"]["workspaces"], [])
+                    self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
+                    self.assertEqual(plan["targets"][0]["session_id"], "conversation-m2")
+                    for payload in ([record], {collection: [record]}, {"result": {collection: [record]}}):
+                        self.assertEqual(self.router._workspace_records(payload), [])
+
+    def test_workspace_inventory_shapes_and_explicit_empty_discovery(self):
+        inventory = [{"workspace_id": "w-a", "label": "AIDash"}]
+        for payload in (inventory, {"workspaces": inventory}, {"result": {"workspaces": inventory}}, []):
+            with self.subTest(payload=payload):
+                sessions, warnings = self.router.discover_sessions(
+                    herdr_payload={
+                        "panes": [{"pane_id": "w-a:p1", "workspace_id": "w-a", "name": "conversation-m2",
+                                   "agent": "copilot", "agent_status": "done", "cwd": "/repo/AIDash"}],
+                        "workspaces": [{"workspace_id": "w-old", "label": "Stale"}],
+                    },
+                    workspace_payload=payload, include_dsh=False,
+                )
+                expected = inventory if payload else []
+                self.assertEqual(warnings, [])
+                self.assertEqual([item["workspace_id"] for item in sessions.workspaces], [item["workspace_id"] for item in expected])
+                self.assertEqual(sessions[0]["workspace_label"], "AIDash" if expected else "")
+                plan = self.router.build_plan(
+                    "continue", sessions, targets_json=[{"topic_id": "aidash-aidata"}], write_preview_md=False,
+                )
+                self.assertEqual(plan["discovery"]["workspaces"], sessions.workspaces)
+                empty_plan = self.router.build_plan(
+                    "continue", sessions, workspace_payload=[],
+                    targets_json=[{"topic_id": "aidash-aidata"}], write_preview_md=False,
+                )
+                self.assertEqual(empty_plan["discovery"]["workspaces"], [])
+
+    def test_unmapped_explicit_session_obeys_workspace_boundaries(self):
+        for topic_id in ("", self.router.NEW_UNMAPPED_DOMAIN, "new-topic-quantlab-risk"):
+            for label, workspace_id, expected in (
+                ("大总管", "w-owner", False), ("Other", "w-other", False),
+                ("", "w-other", False), ("QuantLab", "w-quant", True), ("", "w-quant", True),
+            ):
+                with self.subTest(topic=topic_id, label=label, workspace=workspace_id):
+                    sessions, _ = self.router.discover_sessions(
+                        herdr_payload={"panes": [{
+                            "name": "quant-m2", "pane_id": f"{workspace_id}:p1", "workspace_id": workspace_id,
+                            "workspace_label": label, "cwd": "/repo/QuantLab", "agent": "copilot", "agent_status": "done",
+                        }]}, include_dsh=False,
+                    )
+                    target = {"topic_id": topic_id, "target_repo": "QuantLab", "space": "QuantLab",
+                              "session_id": "quant-m2", "target_workspace_id": "w-quant"}
+                    self.assertEqual(self.router._target_session(target, None, sessions) is not None, expected)
+        unnamed = self.router.normalize_session({"session_id": "unlabelled", "target_repo": "QuantLab"}, "dsh")
+        self.assertEqual(self.router._target_session({"session_id": "unlabelled"}, None, [unnamed]), unnamed)
+
+    def test_apply_custom_domain_map_authority_and_new_domain_registration(self):
+        original_map = self.router.load_domain_map()
+        for mode in ("explicit", "plan_metadata", "default", "registration"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                map_path = Path(temp) / "custom-map.json"
+                custom_map = json.loads(Path(original_map["path"]).read_text(encoding="utf-8"))
+                for group in custom_map["groups"]:
+                    for topic in group["topics"]:
+                        if topic["topic_id"] == "aidash-aidata":
+                            topic.update(space="Custom Space", space_aliases=["Custom Alias"])
+                map_path.write_text(json.dumps(custom_map), encoding="utf-8")
+                registration = mode == "registration"
+                raw_target = {"topic_id": self.router.NEW_UNMAPPED_DOMAIN if registration else "aidash-aidata",
+                              "target_repo": "QuantLab" if registration else "AIDash", "sub_prompt": "continue",
+                              "space": "Registered Space", "space_aliases": ["Registered Alias"]}
+                plan = self.router.build_plan(
+                    "continue", [], targets_json=[raw_target], write_preview_md=False,
+                    domain_map_file=map_path if mode == "plan_metadata" else None,
+                )
+                target = plan["targets"][0]
+                target.update(space="Untrusted", space_aliases=["Untrusted"], transport="herdr", dispatch_script="/tmp/fake-dispatch")
+                if registration:
+                    target["proposed_domain"] = {**target["proposed_domain"], "space": "Untrusted", "space_aliases": ["Untrusted"]}
+                expected_space = "Registered Space" if registration else "AIDash" if mode == "default" else "Custom Space"
+                expected_alias = "Registered Alias" if registration else "AIDash" if mode == "default" else "Custom Alias"
+                calls = []
+
+                def runner(args, **kwargs):
+                    calls.append(args)
+                    stdout = {"workspaces": [{"workspace_id": "w-custom", "label": expected_alias}]} if args[1:3] == ["workspace", "list"] else {"ok": True, "workspace_id": "w-custom"}
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(stdout), stderr="")
+
+                result = self.router.apply_plan(
+                    plan, approve=True, register_new_domains=registration, runner=runner,
+                    domain_map_file=map_path if mode in {"explicit", "registration"} else None,
+                )
+                dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
+                self.assertIn("--workspace", dispatch)
+                self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w-custom")
+                self.assertEqual(result["receipts"][0]["space"], expected_space)
+                if registration:
+                    self.assertEqual(result["registered_new_domains"], [target["topic_id"]])
+                    registered_topic = self.router._topic_by_id(self.router.load_domain_map(map_path))[target["topic_id"]]
+                    self.assertEqual(registered_topic["space"], "Registered Space")
+                    self.assertEqual(registered_topic["space_aliases"], ["Registered Alias"])
+
+    def test_apply_distinguishes_empty_live_inventory_from_invalid_success(self):
+        canonical = {"workspace_id": "w-canonical", "label": "bing-growth-sapphire-app"}
+        alias = {"workspace_id": "w-alias", "label": "Sapphire"}
+        cases = [
+            ("[]", ""), ('{"workspaces": []}', ""), ('{"result": {"workspaces": []}}', ""),
+            (json.dumps([alias]), "w-alias"),
+            (json.dumps({"workspaces": [canonical, alias]}), "w-canonical"),
+            (json.dumps({"result": {"workspaces": [alias, canonical]}}), "w-canonical"),
+            ('[{"workspace_id": "w-unnamed", "label": ""}]', ""),
+            ('{"ok": true, "workspace_id": "w-receipt"}', "w-canonical"),
+            ('{"ok": true, "result": []}', "w-canonical"),
+            ('{"ok": false, "workspaces": []}', "w-canonical"),
+            ('{"error": "unavailable"}', "w-canonical"), ("not json", "w-canonical"),
+            ('{"workspaces": "invalid"}', "w-canonical"), ("[{}]", "w-canonical"),
+            ('{"result": {"agents": [{"name": "wrong", "workspace_id": "w-receipt"}]}}', "w-canonical"),
+        ]
+        for stdout, expected_workspace in cases:
+            with self.subTest(stdout=stdout):
+                plan = self.router.build_plan(
+                    "continue", [], workspace_payload=[alias, canonical],
+                    targets_json=[{"topic_id": "sapphire-notification", "transport": "herdr", "dispatch_script": "/tmp/fake-dispatch"}],
+                    write_preview_md=False,
+                )
+                calls = []
+
+                def runner(args, **kwargs):
+                    calls.append(args)
+                    return SimpleNamespace(returncode=0, stdout=stdout if args[1:3] == ["workspace", "list"] else '{"ok": true}', stderr="")
+
+                result = self.router.apply_plan(plan, approve=True, runner=runner)
+                dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
+                if expected_workspace:
+                    self.assertIn("--workspace", dispatch)
+                    self.assertEqual(dispatch[dispatch.index("--workspace") + 1], expected_workspace)
+                    self.assertEqual(result["receipts"][0]["spawn_mode"], "workspace_tab")
+                else:
+                    self.assertIn("--new-workspace", dispatch)
+                    self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], canonical["label"])
+                    self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
 
 
 if __name__ == "__main__":

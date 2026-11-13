@@ -11,8 +11,22 @@
           "title": "Sapphire Notification Center",
           "target_repo": "bing-growth-sapphire-app",
           "cwd": "~/Development/bing-growth-sapphire-app",
-          "keywords": ["Notification Center", "Push", "通知开关", "气象单位"],
-          "aliases": ["notification", "push", "weather units", "notification settings"]
+          "keywords": [
+            "Notification Center",
+            "Push",
+            "通知开关",
+            "气象单位"
+          ],
+          "aliases": [
+            "notification",
+            "push",
+            "weather units",
+            "notification settings"
+          ],
+          "space": "bing-growth-sapphire-app",
+          "space_aliases": [
+            "Sapphire"
+          ]
         },
         {
           "topic_id": "sapphire-smartbanner",
@@ -20,8 +34,21 @@
           "title": "Sapphire SmartBanner",
           "target_repo": "bing-growth-sapphire-app",
           "cwd": "~/Development/bing-growth-sapphire-app",
-          "keywords": ["SmartBanner", "Universal Link", "Adjust", "Upsell"],
-          "aliases": ["smart banner", "universal links", "upsell"]
+          "keywords": [
+            "SmartBanner",
+            "Universal Link",
+            "Adjust",
+            "Upsell"
+          ],
+          "aliases": [
+            "smart banner",
+            "universal links",
+            "upsell"
+          ],
+          "space": "bing-growth-sapphire-app",
+          "space_aliases": [
+            "Sapphire"
+          ]
         },
         {
           "topic_id": "sapphire-china-bugs",
@@ -29,8 +56,21 @@
           "title": "Sapphire China Bugs",
           "target_repo": "bing-growth-sapphire-app",
           "cwd": "~/Development/bing-growth-sapphire-app",
-          "keywords": ["China Bugs", "中国区 bug", "devsync", "Bug List"],
-          "aliases": ["china bugs", "china bug", "dev sync"]
+          "keywords": [
+            "China Bugs",
+            "中国区 bug",
+            "devsync",
+            "Bug List"
+          ],
+          "aliases": [
+            "china bugs",
+            "china bug",
+            "dev sync"
+          ],
+          "space": "bing-growth-sapphire-app",
+          "space_aliases": [
+            "Sapphire"
+          ]
         },
         {
           "topic_id": "sapphire-discovery-kumo",
@@ -38,8 +78,18 @@
           "title": "Sapphire Discovery Kumo",
           "target_repo": "bing-growth-sapphire-app",
           "cwd": "~/Development/bing-growth-sapphire-app",
-          "keywords": ["Discovery Feed", "Kumo 组件"],
-          "aliases": ["discovery feed", "kumo"]
+          "keywords": [
+            "Discovery Feed",
+            "Kumo 组件"
+          ],
+          "aliases": [
+            "discovery feed",
+            "kumo"
+          ],
+          "space": "bing-growth-sapphire-app",
+          "space_aliases": [
+            "Sapphire"
+          ]
         },
         {
           "topic_id": "sapphire-dsat-qa-de",
@@ -47,8 +97,22 @@
           "title": "Sapphire DSAT QA-DE",
           "target_repo": "bing-growth-sapphire-app",
           "cwd": "~/Development/bing-growth-sapphire-app",
-          "keywords": ["DSAT", "QA-DE", "Crash", "Postmortem", "线上反馈"],
-          "aliases": ["qa de", "crash", "user feedback"]
+          "keywords": [
+            "DSAT",
+            "QA-DE",
+            "Crash",
+            "Postmortem",
+            "线上反馈"
+          ],
+          "aliases": [
+            "qa de",
+            "crash",
+            "user feedback"
+          ],
+          "space": "bing-growth-sapphire-app",
+          "space_aliases": [
+            "Sapphire"
+          ]
         },
         {
           "topic_id": "webiq-search",
@@ -56,8 +120,18 @@
           "title": "WebIQ Search",
           "target_repo": "WebIQSearch",
           "cwd": "~/Development/WebIQSearch",
-          "keywords": ["WebIQSearch", "Aquamarine", "Query Lens", "智能搜索"],
-          "aliases": ["web iq", "aquamarine", "query lens"]
+          "keywords": [
+            "WebIQSearch",
+            "Aquamarine",
+            "Query Lens",
+            "智能搜索"
+          ],
+          "aliases": [
+            "web iq",
+            "aquamarine",
+            "query lens"
+          ],
+          "space": "WebIQSearch"
         },
         {
           "topic_id": "flightbook-status",
@@ -65,8 +139,18 @@
           "title": "FlightBook Status",
           "target_repo": "FlightBook",
           "cwd": "~/Development/FlightBook",
-          "keywords": ["FlightBook", "实验状态", "五面同步", "周报看板"],
-          "aliases": ["flight book", "experiment status", "weekly board"]
+          "keywords": [
+            "FlightBook",
+            "实验状态",
+            "五面同步",
+            "周报看板"
+          ],
+          "aliases": [
+            "flight book",
+            "experiment status",
+            "weekly board"
+          ],
+          "space": "FlightBook"
         },
         {
           "topic_id": "info-email",
@@ -74,8 +158,21 @@
           "title": "Work Information Email",
           "target_repo": "dsh-personal-plugins",
           "cwd": "~/Development/dsh-personal-plugins",
-          "keywords": ["workiq", "邮件汇总", "Outlook", "Email 投递 dsh"],
-          "aliases": ["email", "mail summary", "outlook"]
+          "keywords": [
+            "workiq",
+            "邮件汇总",
+            "Outlook",
+            "Email 投递 dsh"
+          ],
+          "aliases": [
+            "email",
+            "mail summary",
+            "outlook"
+          ],
+          "space": "dsh-personal-plugins",
+          "space_aliases": [
+            "Deepseek 插件开发"
+          ]
         },
         {
           "topic_id": "info-teams",
@@ -83,8 +180,20 @@
           "title": "Work Information Teams",
           "target_repo": "dsh-personal-plugins",
           "cwd": "~/Development/Personal/teams-cli",
-          "keywords": ["teams-cli", "Teams 消息汇总", "群聊回复"],
-          "aliases": ["teams", "teams cli", "group chat"]
+          "keywords": [
+            "teams-cli",
+            "Teams 消息汇总",
+            "群聊回复"
+          ],
+          "aliases": [
+            "teams",
+            "teams cli",
+            "group chat"
+          ],
+          "space": "dsh-personal-plugins",
+          "space_aliases": [
+            "Deepseek 插件开发"
+          ]
         }
       ]
     },
@@ -98,8 +207,19 @@
           "title": "Skills Workflow",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["workflow-hub", "howto", "m2-dispatcher", "team-lead", "linear-board"],
-          "aliases": ["workflow", "m2", "linear"]
+          "keywords": [
+            "workflow-hub",
+            "howto",
+            "m2-dispatcher",
+            "team-lead",
+            "linear-board"
+          ],
+          "aliases": [
+            "workflow",
+            "m2",
+            "linear"
+          ],
+          "space": "user-skills"
         },
         {
           "topic_id": "skills-design",
@@ -107,8 +227,18 @@
           "title": "Skills Design",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["my-designer", "design-studio", "impeccable", "taste-skill"],
-          "aliases": ["design", "designer", "visual"]
+          "keywords": [
+            "my-designer",
+            "design-studio",
+            "impeccable",
+            "taste-skill"
+          ],
+          "aliases": [
+            "design",
+            "designer",
+            "visual"
+          ],
+          "space": "user-skills"
         },
         {
           "topic_id": "skills-research-knowledge",
@@ -116,8 +246,19 @@
           "title": "Skills Research and Knowledge Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["deep-research", "knowledge-digest", "save-tool", "skill maintenance", "user-skills code"],
-          "aliases": ["research skill code", "knowledge skill maintenance", "digest implementation"]
+          "keywords": [
+            "deep-research",
+            "knowledge-digest",
+            "save-tool",
+            "skill maintenance",
+            "user-skills code"
+          ],
+          "aliases": [
+            "research skill code",
+            "knowledge skill maintenance",
+            "digest implementation"
+          ],
+          "space": "user-skills"
         },
         {
           "topic_id": "skills-retro-story",
@@ -125,8 +266,17 @@
           "title": "Skills Retro and Story Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["retro-loop", "story-craft", "skill maintenance", "user-skills code"],
-          "aliases": ["retro skill code", "story skill maintenance"]
+          "keywords": [
+            "retro-loop",
+            "story-craft",
+            "skill maintenance",
+            "user-skills code"
+          ],
+          "aliases": [
+            "retro skill code",
+            "story skill maintenance"
+          ],
+          "space": "user-skills"
         },
         {
           "topic_id": "skills-repo-ci",
@@ -134,8 +284,20 @@
           "title": "Skills Repository and CI",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
-          "keywords": ["skill-contract", "repo-kit", "code-review", "codebase-design", "shared-ci"],
-          "aliases": ["repo ci", "repository", "contracts", "ci"]
+          "keywords": [
+            "skill-contract",
+            "repo-kit",
+            "code-review",
+            "codebase-design",
+            "shared-ci"
+          ],
+          "aliases": [
+            "repo ci",
+            "repository",
+            "contracts",
+            "ci"
+          ],
+          "space": "user-skills"
         }
       ]
     },
@@ -149,8 +311,19 @@
           "title": "AIDash AIdata",
           "target_repo": "AIDash",
           "cwd": "~/Development/AIDash",
-          "keywords": ["AIDash", "aidata", "MenuBar", "Scheduled Pulse", "pew"],
-          "aliases": ["ai dash", "telemetry", "pulse"]
+          "keywords": [
+            "AIDash",
+            "aidata",
+            "MenuBar",
+            "Scheduled Pulse",
+            "pew"
+          ],
+          "aliases": [
+            "ai dash",
+            "telemetry",
+            "pulse"
+          ],
+          "space": "AIDash"
         },
         {
           "topic_id": "dsh-plugins",
@@ -158,8 +331,21 @@
           "title": "dsh Plugins",
           "target_repo": "dsh-personal-plugins",
           "cwd": "~/Development/dsh-personal-plugins",
-          "keywords": ["dsh", "deepseek-harness", "dsh-session-sink", "dsh-m2-omni-hub"],
-          "aliases": ["deepseek harness", "session sink", "omni hub"]
+          "keywords": [
+            "dsh",
+            "deepseek-harness",
+            "dsh-session-sink",
+            "dsh-m2-omni-hub"
+          ],
+          "aliases": [
+            "deepseek harness",
+            "session sink",
+            "omni hub"
+          ],
+          "space": "dsh-personal-plugins",
+          "space_aliases": [
+            "Deepseek 插件开发"
+          ]
         },
         {
           "topic_id": "gateway-herdr-jev",
@@ -167,8 +353,39 @@
           "title": "Gateway Herdr Jev",
           "target_repo": "raven",
           "cwd": "~/Development/raven",
-          "keywords": ["raven", "Magpie", "Falcon", "Jev", "agent-herdr"],
-          "aliases": ["gateway", "herdr", "falcon", "magpie"]
+          "keywords": [
+            "raven",
+            "Magpie",
+            "Falcon",
+            "Jev",
+            "agent-herdr"
+          ],
+          "aliases": [
+            "gateway",
+            "herdr",
+            "falcon",
+            "magpie"
+          ],
+          "space": "raven"
+        },
+        {
+          "topic_id": "shared-design-system",
+          "group": "personal-core-gateways",
+          "title": "Shared Design System",
+          "target_repo": "shared-design-system",
+          "cwd": "~/Development/shared-design-system",
+          "space": "shared-design-system",
+          "keywords": [
+            "shared-design-system",
+            "Design System",
+            "设计系统",
+            "Tokens",
+            "组件库"
+          ],
+          "aliases": [
+            "design system",
+            "shared design"
+          ]
         }
       ]
     },
@@ -182,8 +399,16 @@
           "title": "VoxPocket",
           "target_repo": "VoxPocket",
           "cwd": "~/Development/VoxPocket",
-          "keywords": ["VoxPocket", "语音输入", "快捷键录音"],
-          "aliases": ["voice input", "recording"]
+          "keywords": [
+            "VoxPocket",
+            "语音输入",
+            "快捷键录音"
+          ],
+          "aliases": [
+            "voice input",
+            "recording"
+          ],
+          "space": "VoxPocket"
         },
         {
           "topic_id": "vitalstride",
@@ -191,8 +416,16 @@
           "title": "VitalStride",
           "target_repo": "VitalStride",
           "cwd": "~/Development/VitalStride",
-          "keywords": ["VitalStride", "健康步态", "运动"],
-          "aliases": ["health gait", "fitness"]
+          "keywords": [
+            "VitalStride",
+            "健康步态",
+            "运动"
+          ],
+          "aliases": [
+            "health gait",
+            "fitness"
+          ],
+          "space": "VitalStride"
         },
         {
           "topic_id": "helix",
@@ -200,8 +433,11 @@
           "title": "Helix",
           "target_repo": "Helix",
           "cwd": "~/Development/Helix",
-          "keywords": ["Helix"],
-          "aliases": []
+          "keywords": [
+            "Helix"
+          ],
+          "aliases": [],
+          "space": "Helix"
         },
         {
           "topic_id": "davici",
@@ -209,8 +445,11 @@
           "title": "Davici",
           "target_repo": "Davici",
           "cwd": "~/Development/Davici",
-          "keywords": ["Davici"],
-          "aliases": []
+          "keywords": [
+            "Davici"
+          ],
+          "aliases": [],
+          "space": "Davici"
         },
         {
           "topic_id": "nas-smart-home",
@@ -218,8 +457,25 @@
           "title": "NAS Smart Home",
           "target_repo": "Nas",
           "cwd": "~/Development/Nas",
-          "keywords": ["Nas", "绿联", "Home Assistant", "Node-RED", "米家"],
-          "aliases": ["nas", "smart home", "home assistant", "node red", "mijia"]
+          "keywords": [
+            "Nas",
+            "绿联",
+            "Home Assistant",
+            "Node-RED",
+            "米家"
+          ],
+          "aliases": [
+            "nas",
+            "smart home",
+            "home assistant",
+            "node red",
+            "mijia"
+          ],
+          "space": "家庭智能",
+          "space_aliases": [
+            "Nas",
+            "NAS Smart Home"
+          ]
         },
         {
           "topic_id": "learning-and-blog",
@@ -227,8 +483,49 @@
           "title": "学习与写博客",
           "target_repo": "Personal",
           "cwd": "~/Development/Personal",
-          "keywords": ["学习", "写博客", "blog", "learn", "knowledge-digest", "story-craft", "save-tool", "knowledge-vault", "collected-tools", "技术博客"],
-          "aliases": ["learning", "blog writing", "knowledge vault", "technical blog", "daily digest"]
+          "keywords": [
+            "学习",
+            "写博客",
+            "blog",
+            "learn",
+            "knowledge-digest",
+            "story-craft",
+            "save-tool",
+            "knowledge-vault",
+            "collected-tools",
+            "技术博客"
+          ],
+          "aliases": [
+            "learning",
+            "blog writing",
+            "knowledge vault",
+            "technical blog",
+            "daily digest"
+          ],
+          "space": "Personal",
+          "space_aliases": [
+            "学习与写博客"
+          ]
+        },
+        {
+          "topic_id": "financial",
+          "group": "personal-products-home",
+          "title": "Financial",
+          "target_repo": "Financial",
+          "cwd": "~/Development/Financial",
+          "space": "Financial",
+          "keywords": [
+            "Financial",
+            "财务",
+            "基金",
+            "账户余额",
+            "记账"
+          ],
+          "aliases": [
+            "finance",
+            "personal finance",
+            "fund"
+          ]
         }
       ]
     }
