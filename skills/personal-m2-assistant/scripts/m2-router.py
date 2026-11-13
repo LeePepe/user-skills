@@ -81,6 +81,14 @@ class RouterError(RuntimeError):
     """A user-actionable planning or dispatch error."""
 
 
+class DiscoverySessions(list[dict[str, Any]]):
+    """List-compatible session results carrying the workspace inventory."""
+
+    def __init__(self, values: Iterable[dict[str, Any]] = (), *, workspaces: Iterable[dict[str, Any]] = ()):
+        super().__init__(values)
+        self.workspaces = list(workspaces)
+
+
 def _text(value: Any, default: str = "") -> str:
     return str(value).strip() if value is not None else default
 
@@ -267,18 +275,24 @@ def resolve_target_space(target: dict[str, Any], topic: dict[str, Any] | None = 
     space = _text((source or {}).get("space") or target.get("space") or target.get("target_repo"), "M2")
     aliases = list((source or {}).get("space_aliases") or target.get("space_aliases") or [])
     aliases = [_text(value) for value in aliases if _text(value)]
-    target_id = "" if topic is not None else _text(target.get("target_workspace_id"))
+    target_id = ""
     inventory = workspaces or []
-    if not target_id:
-        labels = {space.casefold()}
-        for alias in aliases:
-            labels.add(alias.casefold())
-        for item in inventory:
-            label = _text(item.get("label"))
-            if label and label.casefold() in labels and (label.casefold() != "大总管" or space.casefold() == "大总管"):
-                target_id = _text(item.get("workspace_id"))
-                if label.casefold() == space.casefold():
-                    break
+    labels = [space, *aliases]
+    for wanted in labels:
+        wanted_key = wanted.casefold()
+        if wanted_key == "大总管" and space.casefold() != "大总管":
+            continue
+        match = next(
+            (
+                item for item in inventory
+                if _text(item.get("label")).casefold() == wanted_key
+                and _text(item.get("workspace_id"))
+            ),
+            None,
+        )
+        if match:
+            target_id = _text(match.get("workspace_id"))
+            break
     target["space"] = space
     target["space_aliases"] = aliases
     target["target_workspace_id"] = target_id
@@ -332,7 +346,7 @@ def discover_herdr(
     if pane_payload is None and agent_payload is None and payload is None:
         binary = herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr")
         if not binary:
-            return [], None
+            return DiscoverySessions(workspaces=workspace_records), None
         try:
             pane_result = runner([binary, "pane", "list"], timeout=3.0)
             agent_result = runner([binary, "agent", "list"], timeout=3.0)
@@ -355,7 +369,7 @@ def discover_herdr(
         if ws and ws in workspace_by_id:
             item["workspace_label"] = workspace_by_id[ws].get("label", "")
     sessions = [normalize_session(item, "herdr", allow_interactive_herdr=True) for item in records]
-    return [item for item in sessions if item], None
+    return DiscoverySessions((item for item in sessions if item), workspaces=workspace_records), None
 
 
 def _fetch_json(url: str, *, token: str = "", timeout: float = 3.0) -> Any:
@@ -403,9 +417,11 @@ def discover_sessions(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     sessions: list[dict[str, Any]] = []
     warnings: list[str] = []
+    discovered_workspaces: list[dict[str, Any]] = []
     if include_herdr:
         found, warning = discover_herdr(payload=herdr_payload, pane_payload=herdr_pane_payload, agent_payload=herdr_agent_payload, workspace_payload=workspace_payload, herdr_workspace_payload=herdr_workspace_payload, herdr_bin=herdr_bin, runner=runner)
         sessions.extend(found)
+        discovered_workspaces = list(getattr(found, "workspaces", []))
         if warning:
             warnings.append(warning)
     if include_dsh:
@@ -416,7 +432,10 @@ def discover_sessions(
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for session in sessions:
         deduped[(session["source"], session["session_id"])] = session
-    return list(deduped.values()), warnings
+    workspace_inventory = _workspace_records(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
+    if not workspace_inventory:
+        workspace_inventory = discovered_workspaces
+    return DiscoverySessions(deduped.values(), workspaces=workspace_inventory), warnings
 
 
 def load_domain_map(path: str | Path | None = None) -> dict[str, Any]:
@@ -537,21 +556,23 @@ def _matching_topic_sessions(
     domain_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     repo = _clean_target_name(target.get("target_repo"))
-    candidates = [session for session in sessions if repo and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()]
     mapped_space = _text((topic or {}).get("space") or target.get("space") or target.get("target_repo"))
-    aliases = {_text(value).casefold() for value in ((topic or {}).get("space_aliases") or target.get("space_aliases") or []) if _text(value)}
+    aliases = [_text(value) for value in ((topic or {}).get("space_aliases") or target.get("space_aliases") or []) if _text(value)]
     allowed_spaces = {mapped_space.casefold(), *aliases}
     target_workspace_id = _text(target.get("target_workspace_id"))
-    filtered = []
-    for session in candidates:
+    candidates = []
+    for session in sessions:
+        repo_match = bool(repo) and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()
         label = _text(session.get("workspace_label")).casefold()
         ws_id = _text(session.get("workspace_id"))
-        if label and label not in allowed_spaces and (target_workspace_id and ws_id != target_workspace_id or not target_workspace_id):
+        space_match = bool(label and label in allowed_spaces)
+        workspace_match = bool(target_workspace_id and ws_id == target_workspace_id)
+        if label and label not in allowed_spaces:
             continue
-        if target_workspace_id and ws_id and ws_id != target_workspace_id and label and label not in allowed_spaces:
+        if target_workspace_id and ws_id and ws_id != target_workspace_id and not space_match:
             continue
-        filtered.append(session)
-    candidates = filtered
+        if repo_match or space_match or workspace_match:
+            candidates.append(session)
     effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
     if effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
         return candidates
@@ -778,6 +799,7 @@ def _extract_jev_plan(
     message: str,
     domain_map: dict[str, Any],
     jev_decision: dict[str, Any] | None = None,
+    workspaces: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     answers = _decision_answers(decision)
     jev_answers = _decision_answers(jev_decision or {})
@@ -843,6 +865,9 @@ def _extract_jev_plan(
             target["domain_status"] = NEW_DOMAIN_CANDIDATE
             target["proposed_domain"] = proposal
             candidates.append(proposal)
+        resolve_target_space(target, topic, workspaces, domain_map)
+        if isinstance(target.get("proposed_domain"), dict):
+            target["proposed_domain"]["space"] = _text(target["proposed_domain"].get("space")) or target["target_repo"]
         match = _target_session(target, topic, sessions, domain_map)
         session_id = _text(target.get("session_id") or target.get("sessionId"))
         if match:
@@ -990,6 +1015,7 @@ def classify(
     magpie_model: str = "",
     mock: Any = None,
     goal_id: str = "",
+    workspaces: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     jev = _jev_decision(message, sessions, domain_map, mock=mock, goal_id=goal_id)
     decision: dict[str, Any] | None = None
@@ -1016,7 +1042,7 @@ def classify(
             decision = None
             source = "offline-fallback"
     semantic = decision or (jev if _target_value(jev or {}) else {})
-    route, targets, metadata = _extract_jev_plan(semantic, sessions, message, domain_map, jev)
+    route, targets, metadata = _extract_jev_plan(semantic, sessions, message, domain_map, jev, workspaces)
     if semantic and metadata.get("source") == "deterministic_fallback" and source == "mock-magpie":
         metadata["source"] = "deterministic_fallback"
     else:
@@ -1068,8 +1094,8 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
         "",
         "## Target Dispatch Table",
         "",
-        "| Wave | Topic | Domain Status | Target Repo | M2 Status | Transport | Model / Context | CWD |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Wave | Topic | Domain Status | Target Repo | Space | M2 Status | Transport | Model / Context | CWD |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for target in plan.get("targets", []):
         model_label = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
@@ -1077,6 +1103,7 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
         lines.append(
             f"| {target.get('wave_order', 1)} | `{_text(target.get('topic_id'))}` | "
             f"`{_text(target.get('domain_status'))}` | `{_text(target.get('target_repo'), 'unspecified')}` | "
+            f"`{_text(target.get('space'), 'M2')} ({_text(target.get('target_workspace_id')) or 'new-space'})` | "
             f"`{_text(target.get('m2_status'))}` | `{_text(target.get('transport'), 'auto')}` | "
             f"`{model_label}` | `{cwd}` |"
         )
@@ -1086,6 +1113,7 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
             "",
             f"### {index}. Wave {target.get('wave_order', 1)} · `{_text(target.get('topic_id'))}` → `{_text(target.get('target_repo'), 'unspecified')}` ({_text(target.get('m2_status'))})",
             f"- **Model / Context**: `{_text(target.get('model_label'), DEFAULT_M2_MODEL_LABEL)}` (`{_text(target.get('model'), DEFAULT_M2_MODEL)}` / `{_text(target.get('context'), DEFAULT_M2_CONTEXT)}`)",
+            f"- **Space**: `{_text(target.get('space'), 'M2')} ({_text(target.get('target_workspace_id')) or 'new-space'})`",
             f"- **CWD**: `{_expand_cwd(target.get('cwd'))}`",
             f"- **Transport**: `{_text(target.get('transport'), 'auto')}`",
             "",
@@ -1200,6 +1228,9 @@ def build_plan(
         raise RouterError("message is required")
     plan_id = f"m2p-{uuid.uuid4().hex[:10]}"
     loaded_domain_map = domain_map or load_domain_map(domain_map_file)
+    workspace_inventory = _workspace_records(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
+    if not workspace_inventory:
+        workspace_inventory = list(getattr(sessions, "workspaces", []))
     route, targets, decision = classify(
         message,
         sessions,
@@ -1210,8 +1241,8 @@ def build_plan(
         magpie_model=magpie_model,
         mock=mock_jev,
         goal_id=plan_id,
+        workspaces=workspace_inventory,
     )
-    workspace_inventory = _workspace_records(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
     for target in targets:
         topic = _topic_by_id(loaded_domain_map).get(_text(target.get("topic_id")))
         resolve_target_space(target, topic, workspace_inventory, loaded_domain_map)
@@ -1395,6 +1426,62 @@ def _resolve_target_transport(target: dict[str, Any], plan: dict[str, Any], requ
     raise RouterError(f"cannot resolve delivery transport for NEW_M2 target {target.get('target_repo', 'unspecified')}; specify --transport herdr|dsh|stdout")
 
 
+def _apply_workspace_id(
+    mapped_space: str,
+    aliases: list[Any],
+    plan: dict[str, Any],
+    *,
+    binary: str,
+    runner: CommandRunner,
+    created_workspaces: dict[str, str] | None,
+) -> str:
+    space_key = mapped_space.casefold()
+    if created_workspaces and _text(created_workspaces.get(space_key)):
+        return _text(created_workspaces[space_key])
+
+    discovery = (plan.get("discovery") or {}).get("workspaces") or []
+    live_inventory: list[dict[str, Any]] | None = None
+    try:
+        result = runner([binary, "workspace", "list"], timeout=3.0)
+        if getattr(result, "returncode", 1) == 0:
+            live_inventory = _workspace_records(_parse_json_output(result.stdout))
+    except (OSError, subprocess.SubprocessError):
+        live_inventory = None
+    inventory = live_inventory if live_inventory is not None else discovery
+    labels = [mapped_space, *aliases]
+    for wanted in labels:
+        wanted_key = _text(wanted).casefold()
+        if wanted_key == "大总管" and space_key != "大总管":
+            continue
+        match = next(
+            (
+                item for item in inventory
+                if _text(item.get("label")).casefold() == wanted_key
+                and _text(item.get("workspace_id"))
+            ),
+            None,
+        )
+        if match:
+            return _text(match.get("workspace_id"))
+    return ""
+
+
+def _authoritative_apply_space(target: dict[str, Any], plan: dict[str, Any]) -> tuple[str, list[str]]:
+    topic_id = _text(target.get("topic_id"))
+    if topic_id and topic_id != NEW_UNMAPPED_DOMAIN:
+        try:
+            topic = _topic_by_id(load_domain_map(plan.get("domain_map_file"))).get(topic_id)
+        except RouterError:
+            topic = None
+        if topic:
+            return _text(topic.get("space")) or _text(topic.get("target_repo"), "M2"), list(topic.get("space_aliases") or [])
+    proposed = target.get("proposed_domain") if isinstance(target.get("proposed_domain"), dict) else {}
+    return (
+        _text(proposed.get("space") or target.get("space") or target.get("target_repo"), "M2"),
+        list(proposed.get("space_aliases") or target.get("space_aliases") or []),
+    )
+
+
 def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, index: int = 1, used_names: set[str] | None = None, created_workspaces: dict[str, str] | None = None) -> dict[str, Any]:
     binary = _herdr_binary(target)
     model = _text(target.get("model"), _text(plan.get("default_model"), DEFAULT_M2_MODEL))
@@ -1412,29 +1499,16 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
 
     name = _new_herdr_agent_name(target, index=index, used_names=used_names)
     dispatch = _text(target.get("dispatch_script") or os.environ.get("M2_ROUTER_HERDR_DISPATCH")) or str(Path.home() / "Development" / "user-skills" / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh")
-    mapped_space = _text(target.get("space") or (target.get("proposed_domain") or {}).get("space") or target.get("target_repo"), "M2")
+    mapped_space, space_aliases = _authoritative_apply_space(target, plan)
     space_key = mapped_space.casefold()
-    discovery_workspaces = (plan.get("discovery") or {}).get("workspaces") or []
-    workspace_id = _text(target.get("target_workspace_id"))
-    if not workspace_id and created_workspaces:
-        workspace_id = _text(created_workspaces.get(space_key))
-    if not workspace_id:
-        for item in discovery_workspaces:
-            label = _text(item.get("label"))
-            if label.casefold() == space_key or label.casefold() in {_text(v).casefold() for v in target.get("space_aliases", [])}:
-                workspace_id = _text(item.get("workspace_id"))
-                if label.casefold() == space_key:
-                    break
-    if not workspace_id and "workspaces" not in (plan.get("discovery") or {}):
-        try:
-            ws_result = runner([binary, "workspace", "list"], timeout=3.0)
-            if ws_result.returncode == 0:
-                for item in _workspace_records(_parse_json_output(ws_result.stdout)):
-                    if _text(item.get("label")).casefold() == space_key:
-                        workspace_id = _text(item.get("workspace_id"))
-                        break
-        except (OSError, subprocess.SubprocessError):
-            pass
+    workspace_id = _apply_workspace_id(
+        mapped_space,
+        space_aliases,
+        plan,
+        binary=binary,
+        runner=runner,
+        created_workspaces=created_workspaces,
+    )
     args = [dispatch, "--name", name, "--kind", _text(target.get("kind"), "copilot"), "--cwd", expanded_cwd, "--prompt", prompt]
     spawn_mode = "workspace_tab" if workspace_id else "new_workspace"
     if workspace_id:
