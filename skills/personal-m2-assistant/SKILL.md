@@ -11,7 +11,8 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 - 直接触发：`/personal-m2-assistant <跨 M2 指令>`。
 - 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
 - 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
-- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)。
+- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
+- 发现阶段读取公开的 `herdr workspace list`；交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
 
 ## 默认配置与强制 Owner Gate
 
@@ -48,7 +49,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 ## 安全与顺序
 
 - `wave_order` 只表示软顺序；真实上游结果通过 `rag_context_hint`/`context_pass` 传递，不伪造结果。
-- Herdr 只向已有 agent prompt；新 M2 通过安全 dispatch wrapper 启动并传入 `-- --model gemini-4-argon --context long_context`。dsh 优先 Session Sink，失败时回退到明确目标的 Omni Hub dispatch。
+- Herdr 只向已有 agent prompt；新 M2 通过安全 dispatch wrapper 启动并传入 `-- --model gemini-4-argon --context long_context`。Space 已存在时使用 `--workspace <workspace_id> --tab-label <name>` 创建 Tab，不存在时使用 `--new-workspace --workspace-label <space>`；绝不把调用方 `HERDR_PANE_ID` 作为 NEW_M2 分裂源。dsh 优先 Session Sink，失败时回退到明确目标的 Omni Hub dispatch。
 - `--cleanup-duplicates` 只清理安全的重复 idle M2；`--replace-stale-m2` 可关闭安全 idle 旧窗并重开。保护 `HERDR_PANE_ID`、`w1:p1` 与 working/blocked 窗格。
 - `stdout` transport 只输出 receipt，不产生副作用；`auto` 依据发现来源选择适配器。
 

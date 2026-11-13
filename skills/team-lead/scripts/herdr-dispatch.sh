@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   herdr-dispatch.sh --name <agent-name> --kind <kind> --cwd <worktree-or-dir> --prompt <text> \
-    [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace-label <label>] \
+    [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace <workspace-id>] [--tab-label <label>] [--workspace-label <label>] \
     [--role <role>] [--exclude-vendor <vendor>] [--gateway-mode auto|magpie|direct] \
     [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
@@ -20,6 +20,9 @@ DIRECTION="right"
 NEW_WORKSPACE=0
 WORKSPACE_LABEL=""
 NEW_WORKSPACE_ID=""
+TARGET_WORKSPACE_ID=""
+TAB_LABEL=""
+NEW_TAB_ID=""
 WAIT_FLAG=0
 TIMEOUT_MS=""
 ROLE=""
@@ -62,6 +65,16 @@ while [[ $# -gt 0 ]]; do
     --new-workspace)
       NEW_WORKSPACE=1
       shift
+      ;;
+    --workspace)
+      [[ $# -ge 2 ]] || { echo "Error: --workspace requires a value" >&2; exit 2; }
+      TARGET_WORKSPACE_ID="$2"
+      shift 2
+      ;;
+    --tab-label)
+      [[ $# -ge 2 ]] || { echo "Error: --tab-label requires a value" >&2; exit 2; }
+      TAB_LABEL="$2"
+      shift 2
       ;;
     --workspace-label)
       [[ $# -ge 2 ]] || { echo "Error: --workspace-label requires a value" >&2; exit 2; }
@@ -109,6 +122,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$NEW_WORKSPACE" -eq 1 && -n "$TARGET_WORKSPACE_ID" ]]; then
+  echo "Error: --workspace cannot be combined with --new-workspace" >&2
+  exit 2
+fi
+
 if [[ "$GATEWAY_MODE" != "auto" && "$GATEWAY_MODE" != "magpie" && "$GATEWAY_MODE" != "direct" ]]; then
   echo "Error: --gateway-mode must be 'auto', 'magpie', or 'direct' (got '$GATEWAY_MODE')" >&2
   exit 2
@@ -116,11 +134,11 @@ fi
 
 # Entry coordinators (normal CLI, Grok Bot local-exec-daemon, Cindy) launching a Goal Steering TL
 # outside a Herdr pane automatically bootstrap a background Herdr workspace.
-if [[ "$ROLE" == "team_lead" && ( "${HERDR_ENV:-}" != "1" || -z "$SRC_PANE" ) ]]; then
+if [[ "$ROLE" == "team_lead" && -z "$TARGET_WORKSPACE_ID" && ( "${HERDR_ENV:-}" != "1" || -z "$SRC_PANE" ) ]]; then
   NEW_WORKSPACE=1
 fi
 
-if [[ "$NEW_WORKSPACE" -eq 0 ]]; then
+if [[ "$NEW_WORKSPACE" -eq 0 && -z "$TARGET_WORKSPACE_ID" ]]; then
   if [[ "${HERDR_ENV:-}" != "1" ]]; then
     echo "Error: HERDR_ENV=1 is required to run herdr-dispatch.sh (or pass --new-workspace / --role team_lead)" >&2
     exit 1
@@ -716,8 +734,8 @@ if [[ "$KIND" == "copilot" ]]; then
   fi
 fi
 
-if [[ "$NEW_WORKSPACE" -eq 1 ]]; then
-  # Idempotent live-TL check: never spawn a second TL if <goal>-goal-tl-r1 is already working/idle/done.
+if [[ "$NEW_WORKSPACE" -eq 1 || -n "$TARGET_WORKSPACE_ID" ]]; then
+  # Idempotent live-agent check: never spawn a second TL if <goal>-goal-tl-r1 is already working/idle/done.
   EXISTING_INFO="$(
     herdr agent get "$NAME" 2>/dev/null | python3 -c '
 import json, sys
@@ -795,24 +813,51 @@ PY
     exit 0
   fi
 
-  # Normalize handoff/<goal> cwd to shared parent root so Herdr groups the workspace cleanly.
-  WS_CWD="$CWD"
-  if [[ "$(basename "$(dirname "$CWD")")" == "handoff" ]]; then
-    if [[ "$CWD" == /Volumes/SSD/* ]]; then
-      WS_CWD="$(dirname "$CWD")"
-    else
-      WS_CWD="$HOME/Development"
+  if [[ -n "$TARGET_WORKSPACE_ID" ]]; then
+    TAB_LABEL_EFFECTIVE="${TAB_LABEL:-${WORKSPACE_LABEL:-$NAME}}"
+    TAB_JSON="$(
+      herdr tab create \
+        --workspace "$TARGET_WORKSPACE_ID" \
+        --cwd "$CWD" \
+        --label "$TAB_LABEL_EFFECTIVE" \
+        --no-focus
+    )"
+    IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_TAB_ID NEW_PANE_ID <<< "$(
+      printf '%s' "$TAB_JSON" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+res = d.get("result") or {}
+tab = res.get("tab") or {}
+ws = tab.get("workspace_id") or sys.argv[1]
+tab_id = tab.get("tab_id") or ""
+pane = (res.get("root_pane") or {}).get("pane_id") or (res.get("pane") or {}).get("pane_id") or ""
+if not isinstance(pane, str) or not pane.strip():
+    sys.exit(1)
+print(f"{str(ws).strip()}\t{str(tab_id).strip()}\t{pane.strip()}")
+' "$TARGET_WORKSPACE_ID"
+    )"
+  else
+    # Normalize handoff/<goal> cwd to shared parent root so Herdr groups the workspace cleanly.
+    WS_CWD="$CWD"
+    if [[ "$(basename "$(dirname "$CWD")")" == "handoff" ]]; then
+      if [[ "$CWD" == /Volumes/SSD/* ]]; then
+        WS_CWD="$(dirname "$CWD")"
+      else
+        WS_CWD="$HOME/Development"
+      fi
     fi
-  fi
-  WS_LABEL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
-  WS_JSON="$(
-    herdr workspace create \
-      --cwd "$WS_CWD" \
-      --label "$WS_LABEL" \
-      --no-focus
-  )"
-  IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_PANE_ID <<< "$(
-    printf '%s' "$WS_JSON" | python3 -c '
+    WS_LABEL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
+    WS_JSON="$(
+      herdr workspace create \
+        --cwd "$WS_CWD" \
+        --label "$WS_LABEL" \
+        --no-focus
+    )"
+    IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_PANE_ID <<< "$(
+      printf '%s' "$WS_JSON" | python3 -c '
 import json, sys
 try:
     d = json.loads(sys.stdin.read())
@@ -828,7 +873,8 @@ if not isinstance(pane, str) or not pane.strip():
 ws = ws.strip() if isinstance(ws, str) and ws.strip() else (pane.split(":")[0] if ":" in pane else "")
 print(f"{ws}\t{pane.strip()}")
 '
-  )"
+    )"
+  fi
 else
   SPLIT_JSON="$(
     herdr pane split \
@@ -986,30 +1032,32 @@ if [[ "$ROLE" == "team_lead" || "$NEW_WORKSPACE" -eq 1 ]]; then
   WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$NEW_TAB_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" <<'PY'
 import json, sys
 payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
 if sys.argv[8]:
     payload["workspace_id"] = sys.argv[8]
-if sys.argv[12]:
-    payload["watchdog_cmd"] = sys.argv[12]
+if sys.argv[9]:
+    payload["tab_id"] = sys.argv[9]
+if sys.argv[13]:
+    payload["watchdog_cmd"] = sys.argv[13]
     payload["watchdog_copilot_cli"] = {
         "tool": "bash",
         "mode": "async",
         "detach": True,
-        "shellId": f"watch-{sys.argv[13]}",
-        "command": f"python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/{sys.argv[13]} --interval 15 --max-wait 2400 --json",
+        "shellId": f"watch-{sys.argv[14]}",
+        "command": f"python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/{sys.argv[14]} --interval 15 --max-wait 2400 --json",
     }
 if sys.argv[3] == "1" or sys.argv[7] == "1":
     payload.update({
-        "resolved_kind": sys.argv[9],
+        "resolved_kind": sys.argv[10],
         "logical_group": sys.argv[4],
         "resolved_model": sys.argv[5],
         "gateway_mode": "magpie" if sys.argv[6] == "1" else "direct_fallback",
     })
-if sys.argv[10] == "1":
-    payload["resolved_kind"] = sys.argv[9]
+if sys.argv[11] == "1":
+    payload["resolved_kind"] = sys.argv[10]
     payload["skipped_claude"] = True
-    payload["skipped_claude_reason"] = sys.argv[11]
+    payload["skipped_claude_reason"] = sys.argv[12]
 print(json.dumps(payload))
 PY
