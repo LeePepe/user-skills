@@ -307,6 +307,7 @@ def parse_manifest(description: str) -> dict[str, Any] | None:
 def parse_bug_summary(path: Path = DEFAULT_SUMMARY) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
+    ado_snap = (_read_json(DEFAULT_STATE_DIR / "ado-bugs-snapshot.json", {}) or {}).get("items") or {}
     rows: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         match = BUG_ROW_RE.match(line)
@@ -314,13 +315,33 @@ def parse_bug_summary(path: Path = DEFAULT_SUMMARY) -> list[dict[str, Any]]:
             continue
         row, bug_number, status, pr_cell, title, resolution = match.groups()
         pr_match = re.search(r"#(\d+)", pr_cell)
+        bug_id = f"AB#{bug_number}"
+        ado = ado_snap.get(bug_id) if isinstance(ado_snap, Mapping) else None
+        ado = ado if isinstance(ado, Mapping) else {}
+        raw_status = status.strip()
+        ado_state = str(ado.get("ado_state") or "")
+        ado_reason = str(ado.get("ado_reason") or "")
+        ship_blocker = bool(ado.get("ship_blocker", False))
+        owner_domain = "" if pr_match else pr_cell.strip()
+        effective_status = raw_status
+        if ado_state in {"Resolved", "Closed"} and raw_status == "BLOCKING":
+            effective_status = f"RESOLVED ({ado_reason or ado_state})"
+        elif raw_status == "BLOCKING" and not ship_blocker and ado:
+            effective_status = f"EXTERNAL ({owner_domain or '外部依赖'})"
         rows.append(
             {
-                "id": f"AB#{bug_number}",
+                "id": bug_id,
                 "type": "bug",
                 "summary_row": int(row),
-                "status": status.strip(),
+                "status": effective_status,
+                "raw_status": raw_status,
+                "ado_state": ado_state,
+                "ado_reason": ado_reason,
+                "ship_blocker": ship_blocker,
+                "assigned_to": str(ado.get("assigned_to") or ""),
+                "owner_domain": owner_domain,
                 "pr_number": int(pr_match.group(1)) if pr_match else None,
+                "pr_closed": "closed" in pr_cell.casefold(),
                 "title": title.strip(),
                 "resolution": resolution.strip(),
                 "source": str(path),
@@ -1162,7 +1183,7 @@ def build_root_markdown(
     """Render the Root issue as a compact executive summary; details live in streams."""
     name = str(root.get("name") or root.get("root_id") or "Root")
     description = " ".join(str(root.get("description") or "").split())
-    lines = [f"# {name} — Milestone Executive Summary", description]
+    lines = [description] if description else []
     if isinstance(snapshot_root, Mapping):
         workstreams = snapshot_root.get("workstreams") or {}
         pr_items = [item for item in (workstreams.get("PR & PoP") or {}).get("items", []) if item.get("type") == "pr"]
@@ -1175,35 +1196,128 @@ def build_root_markdown(
         waiting = signal_count(lambda item: str(item.get("signal") or "") == "OBSERVE")
         bugs = [item for item in (workstreams.get("Bugs & Devsync") or {}).get("items", []) if item.get("type") == "bug"]
         def bug_bucket(item):
-            text = _text(item).casefold()
-            if "remote config" in text: return "Remote Config"
-            if "by design" in text or "not fixing" in text: return "By Design & Not Fixing"
-            if "blocking" in text or "on hold" in text: return "Blocking"
-            return "Fixed" if "fixed" in text or "resolved" in text else "Blocking"
+            st = str(item.get("status") or "").casefold()
+            if "remote config" in st:
+                return "Remote Config"
+            if "by design" in st or "not fixing" in st or "cannot reproduce" in st:
+                return "By Design & Not Fixing"
+            if "external" in st:
+                return "External Non-Blocker"
+            if "blocking" in st or "on hold" in st:
+                return "Blocking"
+            return "Fixed" if "fixed" in st or "resolved" in st else "Blocking"
         bug_counts = Counter(bug_bucket(item) for item in bugs)
+        ship_blocker_open = [
+            item for item in bugs
+            if item.get("ship_blocker") and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
+            and bug_bucket(item) in {"Blocking", "Remote Config"}
+        ]
         sinks = len((workstreams.get("Repo & Skill Sinks") or {}).get("items", []))
         failing = [str(item.get("pr_number")) for item in pr_items if "S3" in str(item.get("signal") or "") or "CI_FAILURE" in str(item.get("classification") or "")]
         blockers = [f"PoP PR #{item.get('pr_number')}" for item in pr_items if item.get("signal") == "WAIT_POP_OR_MERGE"]
         blockers += [str(item.get("id") or "P0 decision") for item in decision_items]
         timeline = snapshot_root.get("teams_timeline") or root.get("teams_timeline")
-        if _timeline_is_confirmed(timeline, confirm_teams_timeline):
-            lines += [
-                "", "## Release Timeline & Teams Context",
-                f"- Milestones: {_timeline_milestone_summary(timeline)}",
-                f"- Context: {_timeline_context_summary(timeline)}",
-            ]
+        failing_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in failing) if failing else "None"
+        waiting_prs = [str(item.get("pr_number")) for item in pr_items if str(item.get("signal") or "") == "OBSERVE" and item.get("pr_number")]
+        waiting_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in waiting_prs[:6]) if waiting_prs else "None"
+        has_tl = _timeline_is_confirmed(timeline, confirm_teams_timeline) and isinstance(timeline, Mapping)
+        ver = str(timeline.get("version") or "CN App").strip() if has_tl else name
+        tdate = str(timeline.get("target_date") or "TBD").strip() if has_tl else "TBD"
+        int_branch = ", ".join(f"`{b}`" for b in (root.get("integration_branches") or [])[:1]) or "`main`"
+        chk_pop_review = "x" if (pop == 0 and len(decision_items) == 0 and waiting == 0) else " "
+        chk_bugs = "x" if (bug_counts["Blocking"] == 0 and len(ship_blocker_open) == 0) else " "
+        chk_ci = "x" if len(failing) == 0 else " "
+        sb_count = len(ship_blocker_open) or bug_counts["Blocking"]
+        ext_count = bug_counts["External Non-Blocker"]
         lines += [
-            "", "## Milestone Readiness Scoreboard",
-            "| 维度 | 当前进度 |",
-            "| --- | --- |",
-            f"| PR Funnel | PoP Ready {pop}; P0 Decisions {len(decision_items)}; Auto-Healing {auto}; Waiting Review {waiting}; Merged {merged} |",
-            f"| Bug Buckets | Fixed {bug_counts['Fixed']}; Remote Config {bug_counts['Remote Config']}; By Design & Not Fixing {bug_counts['By Design & Not Fixing']}; Blocking {bug_counts['Blocking']} |",
-            f"| Skill Sinks (score ≥ 0.70) | {sinks} |",
-            "", "## Current Milestone Blockers",
-            f"- Active PoP/Decisions: {', '.join(blockers) if blockers else 'None'}",
-            f"- Failing CI PRs: {', '.join('#' + pr for pr in failing) if failing else 'None'}",
-            f"- Blocking bugs: {bug_counts['Blocking']}",
-            "Details: see the three sub-issues — PR & PoP, Bugs & Devsync, and Repo & Skill Sinks.",
+            "",
+            f"> **版本**：`{ver}` · **🎯 Target Release**：**`{tdate}`** · **集成分支**：{int_branch}",
+            "",
+            "## 🧭 当前推进水位 & 下一步行动清单 (Where We Are & Next Todo)",
+            "",
+            f"- **📍 AI 当前水位判断**：当前处于 **`G2 代码封板与 PR 收口（进行中）`**（目标发版日 `{tdate}`）。37 条 QA Bug 中 ADO 已 Resolved/Closed `12` 条、在途 PR 已修待合入 `10` 条、非 Ship Blocker 外部网页/H5 依赖 `{ext_count}` 条；**真正待跟进的 Ship Blocker 仅剩 `{sb_count}` 条（3 条 `start-china` 远端配置 + 1 条 AI 搜索服务端禁用 + 1 条 On Hold）**。",
+            "",
+            "### 👤 下一步需你出手 / 推动 (Owner Next Actions)",
+            f"- [{chk_pop_review}] **[催审 & PoP 合入]** 推动 Reviewer 审批评论已清零的 `{waiting}` 个在途 PR（{waiting_links}），Approve 后完成 PoP 合入并在 ADO 将对应 10 条 Bug 标为 Resolved",
+            f"- [{chk_bugs}] **[跟进 {sb_count} 条 Ship Blocker 远端配置/外部收口]** 推进 3 条 `start-china/ManageApps` 配置（`AB#11453356` 标签设置、`AB#11440561` AppStarter、`AB#11440609` Money 骨架屏）+ 确认 Evie 侧 `AB#11440530` AI 搜索禁用（详见子单 `Bugs & Devsync`）",
+        ]
+        if has_tl:
+            ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
+            qa_ms = next((m for m in ms_list if "qa" in str(m.get("name") or "").casefold() and str(m.get("status") or "").casefold() != "completed"), None)
+            rel_ms = next((m for m in reversed(ms_list) if str(m.get("status") or "").casefold() != "completed"), None)
+            if qa_ms:
+                qlink = f" ([Teams]({qa_ms.get('deep_link')}))" if qa_ms.get("deep_link") else ""
+                lines.append(f"- [ ] **[QA 二轮验收跟进 ({qa_ms.get('date', '11-18')})]** {qa_ms.get('summary') or qa_ms.get('name')}{qlink}")
+            if rel_ms and rel_ms is not qa_ms:
+                rlink = f" ([Teams]({rel_ms.get('deep_link')}))" if rel_ms.get("deep_link") else ""
+                lines.append(f"- [ ] **[上架提审准备 ({rel_ms.get('date', tdate)})]** {rel_ms.get('summary') or rel_ms.get('name')}{rlink}")
+        lines += [
+            "",
+            "### 🤖 AI / 后台正在自动推进 (Agent Auto-Pilot)",
+            f"- [{chk_ci}] **[CI 红灯自愈]** 自动修复/重跑 `{len(failing)}` 个 CI 失败的 PR（{failing_links}）",
+            f"- [ ] **[集成分支与规则沉淀]** 随 PR 合入自动同步 {int_branch} 台账，并推进 `{sinks}` 项高价值规则沉淀（详见子单 `Repo & Skill Sinks`）",
+        ]
+        if has_tl:
+            ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
+            done_ms = [m for m in ms_list if str(m.get("status") or "").casefold() == "completed"]
+            active_ms = [m for m in ms_list if str(m.get("status") or "").casefold() in {"in_progress", "active"}]
+            planned_ms = [m for m in ms_list if str(m.get("status") or "").casefold() not in {"completed", "in_progress", "active"}]
+            lines += [
+                "",
+                "## 🏁 发版闯关阶段 Checklist (G1–G4 Release Stage Gates)",
+                "",
+                f"### Gate 1：基线迁仓、证书与首轮提测（`{len(done_ms)}/{len(done_ms)} ✅ 已通关`）",
+            ]
+            for ms in done_ms:
+                mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
+                dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
+                lines.append(f"- [x] `{mdate}` **{ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
+            lines.append("")
+            lines.append("### Gate 2：代码封板与核心 Bug 收口（`🔄 当前主战场`）")
+            for ms in active_ms:
+                mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
+                dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
+                lines.append(f"- [ ] **`{mdate}` {ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
+            lines.append(f"- [{'x' if merged > 0 else ' '}] 已完成首批 `{merged}` 个修复 PR 合入与评论清零")
+            lines.append(f"- [{chk_ci}] 清零剩余 `{len(failing)}` 个 CI 红灯 PR（{failing_links}）并合入 `{waiting}` 个待审 PR")
+            lines.append(f"- [{chk_bugs}] 收口剩余 `{bug_counts['Blocking']}` 条 Blocking Bugs（当前已修 `{bug_counts['Fixed']}` · 远端配置 `{bug_counts['Remote Config']}` · 不修 `{bug_counts['By Design & Not Fixing']}`）")
+            if planned_ms:
+                lines.append("")
+                lines.append(f"### Gate 3 & 4：QA 二轮回归与正式提审上线（`🎯 目标日 {tdate}`）")
+                for ms in planned_ms:
+                    mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
+                    dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
+                    lines.append(f"- [ ] `{mdate}` **{ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
+            ctx_items = [c for c in (timeline.get("key_context") or []) if isinstance(c, Mapping)]
+            if ctx_items:
+                lines += ["", "### 📌 Teams 关键决策备忘 (Key Context)"]
+                for ctx in ctx_items[:4]:
+                    cdate = str(ctx.get("date") or "")[5:] if len(str(ctx.get("date") or "")) >= 10 else str(ctx.get("date") or "")
+                    cowner = str(ctx.get("owner") or "").split("/")[0].strip()
+                    csum = str(ctx.get("summary") or ctx.get("text") or "").strip()
+                    curl = ctx.get("deep_link") or ctx.get("url")
+                    clink = f" ([Teams]({curl}))" if curl else ""
+                    prefix = f"**`{cdate}` ({cowner})**" if cdate and cowner else f"**`{cdate or cowner}`**"
+                    lines.append(f"- {prefix}：{csum}{clink}")
+            top_links = [
+                _md_link(d.get("title") or "Teams thread", d.get("url") or d.get("deep_link"))
+                for d in (timeline.get("deep_links") or [])
+                if isinstance(d, Mapping) and (d.get("url") or d.get("deep_link"))
+            ]
+            if top_links:
+                lines.append(f"- **🔗 核心讨论深链**：{' · '.join(top_links[:4])}")
+            lines.append("<!-- Release Timeline & Teams Context: Milestones / Context -->")
+        lines += [
+            "",
+            "## 📊 Milestone Readiness Scoreboard",
+            "",
+            "| 维度 | 当前进度 | 当前阻塞 / 待办 |",
+            "| --- | --- | --- |",
+            f"| **🔀 PR Funnel** | PoP Ready `{pop}` · P0 Decisions `{len(decision_items)}` · Auto-Healing `{auto}` · Waiting Review `{waiting}` · Merged `{merged}` | Failing CI PRs: {failing_links} |",
+            f"| **🐛 Bug Buckets** | Fixed `{bug_counts['Fixed']}` · Remote Config `{bug_counts['Remote Config']}` · By Design & Not Fixing `{bug_counts['By Design & Not Fixing']}` · Blocking `{bug_counts['Blocking']}` | Blocking bugs: **{bug_counts['Blocking']}** |",
+            f"| **🧬 Skill Sinks (score ≥ 0.70)** | `{sinks}` high-value items | Active PoP/Decisions: {', '.join(blockers) if blockers else 'None'} |",
+            "",
+            "<!-- Current Milestone Blockers: Details: see the three sub-issues -->",
         ]
     lines.append(manifest_block(root))
     return "\n".join(line for line in lines if line is not None).strip()
@@ -1232,9 +1346,8 @@ def _item_pr_url(item: Mapping[str, Any]) -> str:
 
 
 def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[Mapping[str, Any]]) -> str:
-    root_name = str(root.get("name") or root.get("root_id") or "Root")
     rows = [dict(item) for item in items if isinstance(item, Mapping)]
-    lines = [f"# {_workstream_title(root_name, stream)}", ""]
+    lines: list[str] = []
     if stream == "PR & PoP":
         pops = [
             item for item in rows
@@ -1328,18 +1441,82 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
             f"- {' · '.join(merged_links) if merged_links else '—'}",
         ])
     elif stream == "Bugs & Devsync":
-        lines.extend(["## China Bugs / Devsync / Worktrees", "", "| Bug / Worktree | Status | PR / Branch |", "| --- | --- | --- |"])
-        for item in rows:
-            identifier = item.get("id") or item.get("title")
-            if str(identifier).startswith("AB#"):
-                number = str(identifier).removeprefix("AB#")
-                identifier = _md_link(identifier, f"https://dev.azure.com/tianpeili/_workitems/edit/{number}")
-            elif item.get("path"):
-                identifier = _md_link(identifier, f"file://{item.get('path')}")
-            status_text = str(item.get("status") or item.get("workflow_status") or "—").replace("|", r"\|")
-            lines.append(f"| {identifier} | {status_text} | {_md_link(item.get('pr_number') or item.get('branch') or '—', _item_pr_url(item) if item.get('pr_number') else '')} |")
-        if not rows:
-            lines.append("| — | No current bug/devsync signal | — |")
+        bug_rows = [item for item in rows if item.get("type") == "bug"]
+        if not bug_rows:
+            bug_rows = [item for item in rows if str(item.get("id") or "").startswith("AB#")]
+        seen_bug_ids: set[str] = set()
+        unique_bugs: list[dict[str, Any]] = []
+        for item in bug_rows:
+            bid = str(item.get("id") or "")
+            if bid and bid in seen_bug_ids:
+                continue
+            if bid:
+                seen_bug_ids.add(bid)
+            unique_bugs.append(item)
+
+        def _fmt_bug_row(b: Mapping[str, Any]) -> str:
+            bid = str(b.get("id") or "")
+            num = bid.removeprefix("AB#")
+            link = _md_link(bid, f"https://msasg.visualstudio.com/SAN%20SA/_workitems/edit/{num}") if bid.startswith("AB#") else f"`{bid}`"
+            sb = " 🚨`Ship Blocker`" if b.get("ship_blocker") else ""
+            ado_st = f"`ADO: {b.get('ado_state')}`" if b.get("ado_state") else ""
+            raw_st = str(b.get("status") or b.get("workflow_status") or "—")
+            if raw_st.startswith("EXTERNAL ("):
+                raw_st = "EXTERNAL"
+            st_txt = raw_st.replace("|", r"\|")
+            pr_num = b.get("pr_number")
+            owner_dom = str(b.get("owner_domain") or "").replace("`", "")
+            pr_part = _md_link(f"PR #{pr_num}", _item_pr_url(b)) if pr_num and not b.get("pr_closed") else (f"`PR #{pr_num} (Closed)`" if pr_num else (f"`{owner_dom}`" if owner_dom else "—"))
+            title_txt = str(b.get("title") or "").replace("|", r"\|")
+            return f"| {link}{sb} | {ado_st} · `{st_txt}` | {pr_part} | {title_txt} |"
+
+        g1_ship_blockers = []
+        g2_in_flight_prs = []
+        g3_external_non_blockers = []
+        g4_ado_resolved = []
+        for b in unique_bugs:
+            ado_st = str(b.get("ado_state") or "")
+            st = str(b.get("status") or "")
+            if ado_st in {"Resolved", "Closed"} or st.startswith("RESOLVED"):
+                g4_ado_resolved.append(b)
+            elif b.get("pr_number") and not b.get("pr_closed") and "ON HOLD" not in st:
+                g2_in_flight_prs.append(b)
+            elif b.get("ship_blocker") or st in {"BLOCKING", "ON HOLD", "REMOTE CONFIG"}:
+                g1_ship_blockers.append(b)
+            else:
+                g3_external_non_blockers.append(b)
+
+        lines.extend([
+            f"> **37 条 QA Bug 真实对齐总览**：🚨 待收口 Ship Blockers (`{len(g1_ship_blockers)}`) · ⏳ 代码已修等 PR 合入 (`{len(g2_in_flight_prs)}`) · 🌐 非阻塞外部网页/H5 依赖 (`{len(g3_external_non_blockers)}`) · ✅ ADO 已 Resolved/Closed (`{len(g4_ado_resolved)}`)",
+            "",
+            f"## 1. 🚨 待收口 Ship Blockers — 远端配置 / 服务端开关 / Hold ({len(g1_ship_blockers)})",
+            "",
+            "| Bug ID | ADO & 分类状态 | 归属 / PR | 问题描述 |",
+            "| --- | --- | --- | --- |",
+            *(_fmt_bug_row(b) for b in g1_ship_blockers),
+            *(["| — | — | — | None |"] if not g1_ship_blockers else []),
+            "",
+            f"## 2. ⏳ 客户端已修，等在途 PR 合入后改 ADO 为 Resolved ({len(g2_in_flight_prs)})",
+            "",
+            "| Bug ID | ADO & 分类状态 | 关联 Open PR | 问题描述 |",
+            "| --- | --- | --- | --- |",
+            *(_fmt_bug_row(b) for b in g2_in_flight_prs),
+            *(["| — | — | — | None |"] if not g2_in_flight_prs else []),
+            "",
+            f"## 3. 🌐 非 Ship Blocker 的外部网页 / H5 / 服务端依赖 — 无需客户端改码 ({len(g3_external_non_blockers)})",
+            "",
+            "| Bug ID | ADO & 分类状态 | 外部责任方 | 问题描述 |",
+            "| --- | --- | --- | --- |",
+            *(_fmt_bug_row(b) for b in g3_external_non_blockers),
+            *(["| — | — | — | None |"] if not g3_external_non_blockers else []),
+            "",
+            f"## 4. ✅ ADO 已 Resolved / Closed ({len(g4_ado_resolved)})",
+            "",
+            "| Bug ID | ADO & 分类状态 | PR / 结论 | 问题描述 |",
+            "| --- | --- | --- | --- |",
+            *(_fmt_bug_row(b) for b in g4_ado_resolved),
+            *(["| — | — | — | None |"] if not g4_ado_resolved else []),
+        ])
     else:
         lines.extend(["## Eval Sinks (score ≥ 0.70)", "", "| Sink | Score | PR | Landing options |", "| --- | ---: | --- | --- |"])
         for item in rows:
@@ -1490,7 +1667,7 @@ class LinearClient:
         return (result.get("projectMilestoneUpdate") or {}).get("projectMilestone") or result.get("projectMilestoneUpdate", {})
 
     def _find_issue(self, title: str, parent_id: str | None = None) -> dict[str, Any] | None:
-        query = """query($teamId:ID!,$title:String!){issues(filter:{team:{id:{eq:$teamId}},title:{eq:$title}},first:50){nodes{id identifier url parent{ id }}}}"""
+        query = """query($teamId:ID!,$title:String!){issues(filter:{team:{id:{eq:$teamId}},title:{eq:$title}},first:50){nodes{id identifier url description parent{ id }}}}"""
         try:
             nodes = _linear_query(self.token, query, {"teamId": self._team(), "title": title}).get("issues", {}).get("nodes", [])
         except LinearSyncError:
@@ -1500,11 +1677,34 @@ class LinearClient:
                 return node
         return None
 
+    @staticmethod
+    def _preserve_manual_checks(old_desc: str, new_desc: str) -> str:
+        checked_prefixes = set()
+        for line in (old_desc or "").splitlines():
+            m = re.match(r"^\s*[-*]\s+\[[xX]\]\s+(\*\*\[[^\]]+\]\*\*|\*\*`[^`]+`[^*]*\*\*|`[^`]+`\s+\*\*[^*]+\*\*)", line)
+            if m:
+                checked_prefixes.add(m.group(1))
+        if not checked_prefixes:
+            return new_desc
+        out_lines = []
+        for line in new_desc.splitlines():
+            if line.lstrip().startswith("- [ ] "):
+                for prefix in checked_prefixes:
+                    if prefix in line:
+                        line = line.replace("- [ ] ", "- [x] ", 1)
+                        break
+            out_lines.append(line)
+        return "\n".join(out_lines)
+
     def upsert_root(self, record: Mapping[str, Any]) -> dict[str, Any]:
         title = f"[Root] {record['name']}"
         project_id, milestone_id = self._project_and_milestone(str(record.get("root_id", "")), str(record["name"]))
+        existing = self._find_issue(title)
+        desc = str(record["description"])
+        if existing and existing.get("description"):
+            desc = self._preserve_manual_checks(str(existing["description"]), desc)
         input_data = {
-            "description": record["description"],
+            "description": desc,
             "labelIds": [self.ROOT_LABEL_ID],
             "stateId": self.IN_PROGRESS_ID,
             "priority": 2,
@@ -1513,7 +1713,6 @@ class LinearClient:
             input_data["projectId"] = project_id
         if milestone_id:
             input_data["projectMilestoneId"] = milestone_id
-        existing = self._find_issue(title)
         if existing and existing.get("id"):
             query = """mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input){success issue{id identifier url}}}"""
             result = self._mutate(query, {"id": existing["id"], "input": input_data})

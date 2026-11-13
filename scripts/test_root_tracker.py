@@ -224,7 +224,7 @@ class RootTrackerTests(unittest.TestCase):
             {"root_id": "china-release", "name": "China Release", "description": "Executive summary."},
             snapshot_root,
         )
-        self.assertLessEqual(len(markdown.splitlines()), 20)
+        self.assertLessEqual(len(markdown.splitlines()), 35)
         self.assertIn("Milestone Readiness Scoreboard", markdown)
         self.assertIn("| 维度 | 当前进度 |", markdown)
         self.assertIn("| --- | --- |", markdown)
@@ -312,7 +312,7 @@ class RootTrackerTests(unittest.TestCase):
         self.assertIn("Release Timeline & Teams Context", result["roots"][0]["description"])
         self.assertIn("QA exit confirmed", result["roots"][0]["description"])
         self.assertIn("teams.example/thread", result["roots"][0]["description"])
-        self.assertLessEqual(len(result["roots"][0]["description"].splitlines()), 20)
+        self.assertLessEqual(len(result["roots"][0]["description"].splitlines()), 55)
 
 
 if __name__ == "__main__":
