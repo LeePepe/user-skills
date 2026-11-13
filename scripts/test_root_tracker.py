@@ -51,6 +51,12 @@ class RootTrackerTests(unittest.TestCase):
         result = root_tracker.classify_jev(item, self.roots, jev_function=lambda *args, **kwargs: None)
         self.assertEqual(result["root_id"], "other-root")
 
+    def test_china_release_does_not_match_repository_only_local_query_pr(self):
+        item = {"id": "PR#279", "repository": "san/bing-growth-sapphire-app", "title": "local query cleanup", "branch": "feature/local-query"}
+        china = {"root_id": "china-release", "name": "China Release", "repos": ["san/bing-growth-sapphire-app"], "branch_globs": ["*china*", "*ab114*"], "handoff_files": ["*china-summary*"], "integration_branches": ["devsync1030"], "keywords": ["china", "bingchina", "san/bing-growth-sapphire-app"]}
+        result = root_tracker.classify_jev(item, [china], jev_function=lambda *args, **kwargs: None)
+        self.assertEqual(result["root_id"], "NEW_ROOT_CANDIDATE")
+
     def test_discovery_kumo_topic_maps_to_sapphire_root(self):
         roots = self.roots + [{"root_id": "sapphire-discovery-kumo", "name": "Sapphire Discovery Kumo", "keywords": ["kumo"]}]
         result = root_tracker.classify_jev({"title": "Discovery Feed Kumo component", "repository": "repo/app"}, roots)
@@ -218,10 +224,13 @@ class RootTrackerTests(unittest.TestCase):
             {"root_id": "china-release", "name": "China Release", "description": "Executive summary."},
             snapshot_root,
         )
-        self.assertLessEqual(len(markdown.splitlines()), 15)
+        self.assertLessEqual(len(markdown.splitlines()), 20)
         self.assertIn("Milestone Readiness Scoreboard", markdown)
+        self.assertIn("| 维度 | 当前进度 |", markdown)
+        self.assertIn("| --- | --- |", markdown)
         self.assertIn("Current Milestone Blockers", markdown)
         self.assertIn("three sub-issues", markdown)
+        self.assertLess(markdown.index("Milestone Readiness Scoreboard"), markdown.index("Current Milestone Blockers"))
         self.assertNotIn("| PR | Signal", markdown)
         self.assertNotIn("| Bug ID | Status", markdown)
         self.assertNotIn("Repo & Skill Sinks（", markdown)

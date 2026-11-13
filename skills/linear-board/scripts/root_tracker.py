@@ -887,21 +887,36 @@ def _match_value(value: str, patterns: Iterable[str]) -> bool:
     return False
 
 
+CHINA_RELEASE_CONTEXT = ("china", "bingcn", "bingchina", "ab114", "devsync", "34.4")
+
+
+def _has_china_context(value: Any) -> bool:
+    text = _text(value).casefold()
+    normalized = re.sub(r"[^a-z0-9]+", "", text)
+    return any(pattern in text or pattern in normalized for pattern in CHINA_RELEASE_CONTEXT)
+
+
 def _root_match_score(item: Mapping[str, Any], root: Mapping[str, Any]) -> int:
     haystack = _text(item).casefold()
     normalized_haystack = re.sub(r"[^a-z0-9]+", "", haystack)
-    score = 0
-    if _match_value(str(item.get("repository") or item.get("repo") or ""), root.get("repos", [])):
-        score += 1
+    root_id = str(root.get("root_id") or "").casefold()
+    repository_match = _match_value(str(item.get("repository") or item.get("repo") or ""), root.get("repos", []))
+    contextual_match = _has_china_context(item)
+    if repository_match and root_id == "china-release" and not contextual_match:
+        repository_match = False
+    score = 1 if repository_match else 0
     if _match_value(str(item.get("branch") or ""), root.get("branch_globs", [])):
         score += 5
     if _match_value(str(item.get("integration_branch") or ""), root.get("integration_branches", [])):
         score += 5
     if _match_value(str(item.get("source") or ""), root.get("handoff_files", []) + root.get("bug_list_paths", [])):
         score += 4
+    keywords = root.get("keywords", [])
+    if root_id == "china-release":
+        keywords = [keyword for keyword in keywords if _has_china_context(keyword)]
     score += sum(
         1
-        for keyword in root.get("keywords", [])
+        for keyword in keywords
         if str(keyword).casefold() in haystack
         or re.sub(r"[^a-z0-9]+", "", str(keyword).casefold()) in normalized_haystack
     )
@@ -939,7 +954,9 @@ def classify_jev(item: Mapping[str, Any], roots: Sequence[Mapping[str, Any]], je
     mapped_root_id = TOPIC_TO_ROOT.get(topic_id)
     if mapped_root_id:
         mapped_root = next((root for root in roots if root.get("root_id") == mapped_root_id), None)
-        if mapped_root:
+        context_match = _has_china_context(item)
+        is_china_signal = str(item.get("type") or "") in {"bug", "devsync", "worktree"} or context_match
+        if mapped_root and (mapped_root_id != "china-release" or is_china_signal):
             return {"topic_id": topic_id, "root_id": mapped_root_id, "method": "m2-domain-map", "confidence": 1.0, "match_score": 100}
     deterministic = sorted(
         ((_root_match_score(item, root), root) for root in roots),
@@ -968,7 +985,10 @@ def classify_jev(item: Mapping[str, Any], roots: Sequence[Mapping[str, Any]], je
     lowered = _text(item).casefold()
     scores = []
     for root in roots:
-        score = sum(1 for keyword in root.get("keywords", []) if str(keyword).casefold() in lowered)
+        keywords = root.get("keywords", [])
+        if str(root.get("root_id") or "").casefold() == "china-release":
+            keywords = [keyword for keyword in keywords if _has_china_context(keyword)]
+        score = sum(1 for keyword in keywords if str(keyword).casefold() in lowered)
         score += sum(1 for branch in root.get("branch_globs", []) if str(branch).casefold().replace("*", "") in lowered)
         scores.append((score, root))
     scores.sort(key=lambda pair: pair[0], reverse=True)
@@ -1165,26 +1185,26 @@ def build_root_markdown(
         failing = [str(item.get("pr_number")) for item in pr_items if "S3" in str(item.get("signal") or "") or "CI_FAILURE" in str(item.get("classification") or "")]
         blockers = [f"PoP PR #{item.get('pr_number')}" for item in pr_items if item.get("signal") == "WAIT_POP_OR_MERGE"]
         blockers += [str(item.get("id") or "P0 decision") for item in decision_items]
+        timeline = snapshot_root.get("teams_timeline") or root.get("teams_timeline")
+        if _timeline_is_confirmed(timeline, confirm_teams_timeline):
+            lines += [
+                "", "## Release Timeline & Teams Context",
+                f"- Milestones: {_timeline_milestone_summary(timeline)}",
+                f"- Context: {_timeline_context_summary(timeline)}",
+            ]
         lines += [
             "", "## Milestone Readiness Scoreboard",
-            "| PR Funnel | PoP Ready | P0 Decisions | Auto-Healing | Waiting Review | Merged |",
-            f"| Count | {pop} | {len(decision_items)} | {auto} | {waiting} | {merged} |",
-            "| Bug Buckets | Fixed | Remote Config | By Design & Not Fixing | Blocking |",
-            f"| Count | {bug_counts['Fixed']} | {bug_counts['Remote Config']} | {bug_counts['By Design & Not Fixing']} | {bug_counts['Blocking']} |",
+            "| 维度 | 当前进度 |",
+            "| --- | --- |",
+            f"| PR Funnel | PoP Ready {pop}; P0 Decisions {len(decision_items)}; Auto-Healing {auto}; Waiting Review {waiting}; Merged {merged} |",
+            f"| Bug Buckets | Fixed {bug_counts['Fixed']}; Remote Config {bug_counts['Remote Config']}; By Design & Not Fixing {bug_counts['By Design & Not Fixing']}; Blocking {bug_counts['Blocking']} |",
             f"| Skill Sinks (score ≥ 0.70) | {sinks} |",
-            "## Current Milestone Blockers",
+            "", "## Current Milestone Blockers",
             f"- Active PoP/Decisions: {', '.join(blockers) if blockers else 'None'}",
             f"- Failing CI PRs: {', '.join('#' + pr for pr in failing) if failing else 'None'}",
             f"- Blocking bugs: {bug_counts['Blocking']}",
             "Details: see the three sub-issues — PR & PoP, Bugs & Devsync, and Repo & Skill Sinks.",
         ]
-        timeline = snapshot_root.get("teams_timeline") or root.get("teams_timeline")
-        if _timeline_is_confirmed(timeline, confirm_teams_timeline):
-            lines += [
-                "## Release Timeline & Teams Context",
-                f"- Milestones: {_timeline_milestone_summary(timeline)}",
-                f"- Context: {_timeline_context_summary(timeline)}",
-            ]
     lines.append(manifest_block(root))
     return "\n".join(line for line in lines if line is not None).strip()
 
