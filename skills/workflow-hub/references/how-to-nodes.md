@@ -125,3 +125,4 @@
 - **PointsTo**：本地 `state/root-tree-snapshot.json` → 单文件 HTML war-room；Owner 通过链接或复制命令自行完成 PoP/Merge、`record-feedback`、Sticky TL 自愈或 `devsync revert`。
 - **Trigger/Notify**：Manual/Pulse；P0 用 `P0_BLOCKING_DECISION`，P1 用 `WAIT_POP_OR_MERGE`，S1→S2→S3 串行自愈；Linear 是唯一可写追踪 DB，严禁向 FlightBook、ADO、GitHub/GHE PR 反向写入。
 - **Owned Paths**：`handoff/project-root-tracker/**` 与本 recipe；**验证**：`python3 -m unittest`、`python3 skills/skill-contract/scripts/skill_contract.py audit --strict`。
+- **Teams timeline extension**：I1 Teams 写入 `state/teams-china-release-timeline.json`（版本、Code Freeze/QA/Release、DRI、上下文与深链）；Root Tracker 先以 `--preview` 展示候选 `targetDate`/description 与 `TIA-365` L0，I5 Owner 确认后才由 G1 更新 China Release Project Milestone 和 `## Release Timeline & Teams Context`。未确认数据只进入本地 snapshot/dashboard，不进入 Linear。

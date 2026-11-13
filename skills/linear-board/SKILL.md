@@ -61,3 +61,14 @@ The layout separates merged PRs from active PoP, auto-heal, and review/CI queues
 resolved cross-session decisions are shown with `Resolve: TIA-34x` badges. The
 tracker reconciles a decision when discovery reports zero unresolved comments,
 no signals, and a new head, so stale owner prompts do not remain visible.
+
+### Teams milestone timeline gate
+
+`state/teams-china-release-timeline.json` is an offline-first input from `I1 Teams`.
+`collect` and `sync-teams-timeline --preview` normalize Code Freeze/QA/Release
+nodes, context owners, and clickable Teams links without writing Linear. Only
+`--confirm-teams-timeline` (or `sync-teams-timeline --confirm`, or a persisted
+`confirmed: true`) may update the Work Business / China Release Project Milestone
+`targetDate` and `description`, and the compact `TIA-365 [Root] China Release`
+`## Release Timeline & Teams Context` section. The confirmation gate is the
+`I1 Teams -> I5 Confirm -> G1 Linear Milestone & [Root] L0` contract.

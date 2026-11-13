@@ -244,6 +244,67 @@ class RootTrackerTests(unittest.TestCase):
             self.assertEqual(result["mode"], "dry-run")
             self.assertFalse(cache.exists())
 
+    def test_load_teams_timeline_normalizes_milestones_context_and_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "teams.json"
+            path.write_text(json.dumps({
+                "release_version": "34.4",
+                "timeline": [{"title": "Code Freeze", "targetDate": "2026-11-20", "dri": "Alice"}, {"name": "Release Date", "date": "2026-12-01"}],
+                "highlights": [{"text": "QA exit depends on China sign-off", "owner": "Bob", "deepLink": "https://teams.example/context"}],
+                "sources": [{"title": "China Release thread", "url": "https://teams.example/thread", "conversationId": "19:abc"}],
+            }), encoding="utf-8")
+            timeline = root_tracker.load_teams_timeline(path, persist=False)
+        self.assertEqual(timeline["version"], "34.4")
+        self.assertEqual(timeline["milestones"][0]["date"], "2026-11-20")
+        self.assertEqual(timeline["target_date"], "2026-12-01")
+        self.assertIn("QA exit", timeline["key_context"][0]["summary"])
+        self.assertTrue(any(link["url"].endswith("thread") for link in timeline["deep_links"]))
+
+    def test_unconfirmed_teams_timeline_does_not_update_linear_milestone(self):
+        class FakeClient:
+            boundary = "linear"
+            def __init__(self): self.milestones = []
+            def upsert_root(self, record): return {"id": "root"}
+            def upsert_workstream(self, parent, record, workstream): return {"id": workstream["stream"]}
+            def upsert_project_milestone(self, root_id, root_name, timeline): self.milestones.append(timeline); return {}
+        with tempfile.TemporaryDirectory() as directory:
+            timeline_path = Path(directory) / "teams.json"
+            timeline_path.write_text(json.dumps({"target_date": "2026-12-01", "milestones": [{"name": "Release Date", "date": "2026-12-01"}]}), encoding="utf-8")
+            client = FakeClient()
+            result = root_tracker.sync_linear(self.roots, cache_path=Path(directory) / "cache.json", client=client, teams_timeline_path=timeline_path, snapshot_roots={"china-release": {"workstreams": {}}})
+        self.assertEqual(client.milestones, [])
+        self.assertNotIn("Release Timeline & Teams Context", result["roots"][0]["description"])
+
+    def test_linear_client_project_milestone_update_writes_confirmed_fields(self):
+        client = root_tracker.LinearClient("token")
+        client._project_and_milestone = lambda root_id, root_name: ("project", "milestone")
+        calls = []
+        client._mutate = lambda mutation, variables: calls.append((mutation, variables)) or {"projectMilestoneUpdate": {"projectMilestone": {"id": "milestone"}}}
+        result = client.upsert_project_milestone("china-release", "China Release", {"target_date": "2026-12-01", "version": "34.4", "milestones": [], "key_context": [], "deep_links": []})
+        self.assertEqual(result["id"], "milestone")
+        self.assertIn("projectMilestoneUpdate", calls[0][0])
+        self.assertEqual(calls[0][1]["input"]["targetDate"], "2026-12-01")
+        self.assertIn("Release/version: 34.4", calls[0][1]["input"]["description"])
+
+    def test_confirmed_teams_timeline_updates_l0_and_project_milestone(self):
+        class FakeClient:
+            boundary = "linear"
+            def __init__(self): self.milestones = []
+            def upsert_root(self, record): return {"id": "root"}
+            def upsert_workstream(self, parent, record, workstream): return {"id": workstream["stream"]}
+            def upsert_project_milestone(self, root_id, root_name, timeline): self.milestones.append((root_id, root_name, timeline)); return {"id": "milestone"}
+        with tempfile.TemporaryDirectory() as directory:
+            timeline_path = Path(directory) / "teams.json"
+            timeline_path.write_text(json.dumps({"confirmed": True, "targetDate": "2026-12-01", "milestones": [{"name": "Release Date", "date": "2026-12-01"}], "key_context": [{"summary": "QA exit confirmed"}], "deep_links": [{"title": "Teams", "url": "https://teams.example/thread"}]}), encoding="utf-8")
+            client = FakeClient()
+            result = root_tracker.sync_linear(self.roots, cache_path=Path(directory) / "cache.json", client=client, teams_timeline_path=timeline_path, snapshot_roots={"china-release": {"workstreams": {}}})
+        self.assertEqual(len(client.milestones), 1)
+        self.assertEqual(client.milestones[0][2]["target_date"], "2026-12-01")
+        self.assertIn("Release Timeline & Teams Context", result["roots"][0]["description"])
+        self.assertIn("QA exit confirmed", result["roots"][0]["description"])
+        self.assertIn("teams.example/thread", result["roots"][0]["description"])
+        self.assertLessEqual(len(result["roots"][0]["description"].splitlines()), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

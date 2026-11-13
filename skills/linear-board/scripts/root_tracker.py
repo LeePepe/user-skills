@@ -48,6 +48,8 @@ DEFAULT_STATE_DIR = HANDOFF_DIR / "state"
 DEFAULT_SNAPSHOT = DEFAULT_STATE_DIR / "root-tree-snapshot.json"
 DEFAULT_CACHE = DEFAULT_STATE_DIR / "roots-cache.json"
 DEFAULT_DASHBOARD = HANDOFF_DIR / "dashboard/index.html"
+DEFAULT_TEAMS_TIMELINE = DEFAULT_STATE_DIR / "teams-china-release-timeline.json"
+TIMELINE_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 MANIFEST_RE = re.compile(r"<!--\s*ROOT-MANIFEST:v1\s+({.*?})\s*-->", re.DOTALL)
 BUG_ROW_RE = re.compile(
     r"^\|\s*(\d+)\s*\|\s*\[AB#(\d+)\]\([^)]*\)\s*\|\s*\*\*(.*?)\*\*\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$"
@@ -104,6 +106,169 @@ def _text(value: Any) -> str:
 
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+
+
+def _iso_date(value: Any) -> str:
+    match = TIMELINE_DATE_RE.search(str(value or ""))
+    return match.group(1) if match else ""
+
+
+def _first_value(data: Mapping[str, Any], keys: Sequence[str], default: Any = "") -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _timeline_items(raw: Any) -> list[Any]:
+    if isinstance(raw, Mapping):
+        return [{"name": key, **(value if isinstance(value, Mapping) else {"date": value})} for key, value in raw.items()]
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    return [raw] if raw not in (None, "") else []
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "confirmed", "y"}
+    return bool(value)
+
+
+def _normalize_timeline_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, Mapping):
+        name = _first_value(item, ("name", "title", "milestone", "stage", "event"), "Checkpoint")
+        summary = _first_value(item, ("summary", "description", "context", "notes"), "")
+        return {
+            "name": str(name),
+            "date": _iso_date(_first_value(item, ("date", "target_date", "targetDate", "release_date", "when"), "")),
+            "status": str(_first_value(item, ("status", "state"), "")),
+            "owner": str(_first_value(item, ("owner", "dri", "responsible", "lead"), "")),
+            "summary": str(summary),
+            "deep_link": str(_first_value(item, ("deep_link", "deepLink", "url", "link"), "")),
+        }
+    return {"name": str(item), "date": "", "status": "", "owner": "", "summary": "", "deep_link": ""}
+
+
+def _normalize_context_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, Mapping):
+        return {
+            "summary": str(_first_value(item, ("summary", "text", "context", "note", "description"), "")),
+            "owner": str(_first_value(item, ("owner", "dri", "responsible"), "")),
+            "date": _iso_date(_first_value(item, ("date", "updated_at", "updatedAt"), "")),
+            "deep_link": str(_first_value(item, ("deep_link", "deepLink", "url", "link"), "")),
+            "conversation": str(_first_value(item, ("conversation", "conversation_id", "conversationId", "thread"), "")),
+        }
+    return {"summary": str(item), "owner": "", "date": "", "deep_link": "", "conversation": ""}
+
+
+def _normalize_deep_link(item: Any) -> dict[str, Any]:
+    if isinstance(item, Mapping):
+        return {
+            "title": str(_first_value(item, ("title", "name", "label"), "Teams conversation")),
+            "url": str(_first_value(item, ("url", "deep_link", "deepLink", "link"), "")),
+            "conversation_id": str(_first_value(item, ("conversation_id", "conversationId", "thread", "id"), "")),
+        }
+    return {"title": "Teams conversation", "url": str(item), "conversation_id": ""}
+
+
+def _persist_timeline_confirmation(path: Path, timeline: Mapping[str, Any]) -> None:
+    raw = _read_json(path, {})
+    if not isinstance(raw, Mapping):
+        raw = {}
+    payload = dict(raw)
+    payload["root_id"] = timeline.get("root_id", "china-release")
+    payload["confirmed"] = True
+    payload["owner_confirmed"] = True
+    if timeline.get("target_date"):
+        payload["target_date"] = timeline["target_date"]
+    _write_json(path, payload)
+
+
+def load_teams_timeline(
+    path: Path = DEFAULT_TEAMS_TIMELINE,
+    *,
+    confirm: bool | None = None,
+    target_date: str | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Load flexible info-teams output into a stable, previewable timeline schema."""
+    requested = Path(path).expanduser()
+    source = requested if requested.is_file() else DEFAULT_TEAMS_TIMELINE
+    data = _read_json(source, {}) if source.is_file() else {}
+    if not isinstance(data, Mapping):
+        data = {}
+    nested = data.get("teams_timeline") or data.get("timeline_context")
+    if isinstance(nested, Mapping):
+        data = {**data, **nested}
+    milestone_raw = _first_value(data, ("milestones", "timeline", "nodes", "events", "stages"), [])
+    milestones = [_normalize_timeline_item(item) for item in _timeline_items(milestone_raw)]
+    context_raw = _first_value(data, ("key_context", "context", "highlights", "decisions", "notes"), [])
+    contexts = [_normalize_context_item(item) for item in _timeline_items(context_raw)]
+    links_raw = _first_value(data, ("deep_links", "links", "conversations", "sources"), [])
+    links = [_normalize_deep_link(item) for item in _timeline_items(links_raw)]
+    for item in milestones:
+        if item["deep_link"] and not any(link["url"] == item["deep_link"] for link in links):
+            links.append({"title": item["name"], "url": item["deep_link"], "conversation_id": ""})
+    for item in contexts:
+        if item["deep_link"] and not any(link["url"] == item["deep_link"] for link in links):
+            links.append({"title": item["summary"][:80] or "Teams context", "url": item["deep_link"], "conversation_id": item["conversation"]})
+    release_value = _first_value(data, ("release",), "")
+    release_map = release_value if isinstance(release_value, Mapping) else {}
+    release_date = _iso_date(_first_value(data, ("target_date", "targetDate", "release_date", "releaseDate"), ""))
+    release_date = release_date or _iso_date(_first_value(release_map, ("target_date", "targetDate", "date", "release_date"), ""))
+    if not release_date:
+        release_date = next((item["date"] for item in milestones if "release" in item["name"].casefold() and item["date"]), "")
+    version_value = _first_value(data, ("version", "release_version", "releaseVersion"), "")
+    version_value = version_value or _first_value(release_map, ("version", "name", "release_version"), "") or (release_value if not isinstance(release_value, Mapping) else "")
+    timeline = {
+        "schema_version": 1,
+        "root_id": str(_first_value(data, ("root_id", "rootId"), "china-release")),
+        "version": str(version_value),
+        "target_date": _iso_date(target_date) if target_date else release_date,
+        "confirmed": _as_bool(_first_value(data, ("confirmed", "owner_confirmed", "ownerConfirmed"), False)),
+        "milestones": milestones,
+        "key_context": contexts,
+        "deep_links": links,
+        "source": str(source),
+    }
+    if confirm is True:
+        timeline["confirmed"] = True
+        if persist and requested.is_file():
+            _persist_timeline_confirmation(requested, timeline)
+    if timeline["confirmed"] and persist and requested.is_file() and target_date:
+        _persist_timeline_confirmation(requested, timeline)
+    if persist and not DEFAULT_TEAMS_TIMELINE.is_file() and (source.is_file() or requested == DEFAULT_TEAMS_TIMELINE):
+        _write_json(DEFAULT_TEAMS_TIMELINE, timeline)
+    return timeline
+
+
+def _timeline_is_confirmed(timeline: Mapping[str, Any] | None, force: bool = False) -> bool:
+    return bool(force or (isinstance(timeline, Mapping) and timeline.get("confirmed") is True))
+
+
+def _timeline_milestone_summary(timeline: Mapping[str, Any]) -> str:
+    parts = []
+    for item in timeline.get("milestones") or []:
+        if not isinstance(item, Mapping):
+            continue
+        label = str(item.get("name") or "Checkpoint")
+        date = str(item.get("date") or "TBD")
+        parts.append(f"{label} {date}")
+    return " · ".join(parts) or "No milestones supplied"
+
+
+def _timeline_context_summary(timeline: Mapping[str, Any]) -> str:
+    contexts = [str(item.get("summary") or "").strip() for item in timeline.get("key_context") or [] if isinstance(item, Mapping)]
+    context = next((item for item in contexts if item), "No key context supplied")
+    links = [item for item in timeline.get("deep_links") or [] if isinstance(item, Mapping) and item.get("url")]
+    link_text = " · ".join(_md_link(item.get("title") or "Teams", item.get("url")) for item in links[:3])
+    return f"{context[:240]}" + (f" · {link_text}" if link_text else "")
+
+
+def _timeline_description(timeline: Mapping[str, Any]) -> str:
+    lines = [f"Release/version: {timeline.get('version') or '—'}", f"Milestones: {_timeline_milestone_summary(timeline)}", f"Context: {_timeline_context_summary(timeline)}"]
+    return "\n".join(lines)
 
 
 def load_roots(path: Path = DEFAULT_SEED) -> list[dict[str, Any]]:
@@ -827,8 +992,11 @@ def collect(
     latest_discovery_path: Path = DEFAULT_LATEST_DISCOVERY,
     aidash_eval_path: Path = DEFAULT_AIDASH_EVAL_ACTIONS,
     canonical_rules: Sequence[Mapping[str, Any]] | None = None,
+    teams_timeline_path: Path = DEFAULT_TEAMS_TIMELINE,
+    confirm_teams_timeline: bool = False,
 ) -> dict[str, Any]:
     roots = load_roots(roots_path)
+    teams_timeline = load_teams_timeline(teams_timeline_path, confirm=confirm_teams_timeline)
     bugs = parse_bug_summary(summary_path)
     devsync = parse_devsync(devsync_path)
     worktrees = discover_worktrees(worktrees_path)
@@ -847,6 +1015,7 @@ def collect(
             "manifest_block": manifest_block(root),
             "workstreams": _new_workstreams(),
             "summary": {},
+            **({"teams_timeline": teams_timeline} if root["root_id"] == teams_timeline.get("root_id", "china-release") else {}),
         }
         for root in roots
     ]
@@ -965,7 +1134,11 @@ def _linear_query(token: str, query: str, variables: Mapping[str, Any]) -> dict[
     return result.get("data", {})
 
 
-def build_root_markdown(root: Mapping[str, Any], snapshot_root: Mapping[str, Any] | None = None) -> str:
+def build_root_markdown(
+    root: Mapping[str, Any],
+    snapshot_root: Mapping[str, Any] | None = None,
+    confirm_teams_timeline: bool = False,
+) -> str:
     """Render the Root issue as a compact executive summary; details live in streams."""
     name = str(root.get("name") or root.get("root_id") or "Root")
     description = " ".join(str(root.get("description") or "").split())
@@ -1005,6 +1178,13 @@ def build_root_markdown(root: Mapping[str, Any], snapshot_root: Mapping[str, Any
             f"- Blocking bugs: {bug_counts['Blocking']}",
             "Details: see the three sub-issues — PR & PoP, Bugs & Devsync, and Repo & Skill Sinks.",
         ]
+        timeline = snapshot_root.get("teams_timeline") or root.get("teams_timeline")
+        if _timeline_is_confirmed(timeline, confirm_teams_timeline):
+            lines += [
+                "## Release Timeline & Teams Context",
+                f"- Milestones: {_timeline_milestone_summary(timeline)}",
+                f"- Context: {_timeline_context_summary(timeline)}",
+            ]
     lines.append(manifest_block(root))
     return "\n".join(line for line in lines if line is not None).strip()
 
@@ -1176,11 +1356,16 @@ def sync_linear(
     client=None,
     child_items: Sequence[Mapping[str, Any]] = (),
     snapshot_roots: Mapping[str, Mapping[str, Any]] | None = None,
+    teams_timeline_path: Path = DEFAULT_TEAMS_TIMELINE,
+    confirm_teams_timeline: bool = False,
 ) -> dict[str, Any]:
     """Upsert Linear roots and exactly three workstream children; never write sources."""
     desired = []
+    fallback_timeline = load_teams_timeline(teams_timeline_path, confirm=confirm_teams_timeline)
     for root in roots:
         snap_root = (snapshot_roots or {}).get(str(root["root_id"])) or {}
+        if str(root.get("root_id")) == str(fallback_timeline.get("root_id", "china-release")) and not snap_root.get("teams_timeline"):
+            snap_root = {**snap_root, "teams_timeline": fallback_timeline}
         streams = snap_root.get("workstreams") if isinstance(snap_root, Mapping) else {}
         streams = streams if isinstance(streams, Mapping) else {}
         desired.append({
@@ -1188,6 +1373,7 @@ def sync_linear(
             "name": root.get("name", root["root_id"]),
             "label": "root-tracker",
             "team": "TIA",
+            "teams_timeline": snap_root.get("teams_timeline"),
             "description": build_root_markdown(root, snap_root),
             "workstreams": [
                 {
@@ -1209,6 +1395,9 @@ def sync_linear(
     for record in desired:
         parent = client.upsert_root(record)
         record["linear"] = parent
+        timeline = record.get("teams_timeline")
+        if str(record.get("root_id")) == "china-release" and _timeline_is_confirmed(timeline) and hasattr(client, "upsert_project_milestone"):
+            record["project_milestone"] = client.upsert_project_milestone("china-release", str(record.get("name") or "China Release"), timeline)
         for workstream in record["workstreams"]:
             workstream["linear"] = client.upsert_workstream(parent, record, workstream)
         if hasattr(client, "enforce_tia83"):
@@ -1267,6 +1456,18 @@ class LinearClient:
         nodes = _linear_query(self.token, query, {"id": project["id"]}).get("project", {}).get("projectMilestones", {}).get("nodes", [])
         milestone = next((node for node in nodes if str(node.get("name", "")).casefold() == root_name.casefold()), None)
         return str(project["id"]), str(milestone["id"]) if milestone else None
+
+    def upsert_project_milestone(self, root_id: str, root_name: str, timeline: Mapping[str, Any]) -> dict[str, Any]:
+        """Update only the confirmed Teams timeline fields on the matching milestone."""
+        _, milestone_id = self._project_and_milestone(root_id, root_name)
+        if not milestone_id:
+            raise LinearSyncError(f"Linear milestone not found: {root_name}")
+        input_data = {"description": _timeline_description(timeline)}
+        if timeline.get("target_date"):
+            input_data["targetDate"] = str(timeline["target_date"])
+        mutation = """mutation($id:String!,$input:ProjectMilestoneUpdateInput!){projectMilestoneUpdate(id:$id,input:$input){success projectMilestone{id name targetDate description}}}"""
+        result = self._mutate(mutation, {"id": milestone_id, "input": input_data})
+        return (result.get("projectMilestoneUpdate") or {}).get("projectMilestone") or result.get("projectMilestoneUpdate", {})
 
     def _find_issue(self, title: str, parent_id: str | None = None) -> dict[str, Any] | None:
         query = """query($teamId:ID!,$title:String!){issues(filter:{team:{id:{eq:$teamId}},title:{eq:$title}},first:50){nodes{id identifier url parent{ id }}}}"""
@@ -1481,15 +1682,20 @@ class LinearClient:
 def render_html(snapshot: Mapping[str, Any], output: Path = DEFAULT_DASHBOARD) -> Path:
     data = json.dumps(snapshot, ensure_ascii=False, sort_keys=True).replace("</", "<\\/")
     root_cards = []
+    timeline_cards = []
     for root in snapshot.get("roots", []):
         total = sum(value for value in root.get("summary", {}).values() if isinstance(value, int))
         root_cards.append(f'<button class="root-card" data-root="{_escape(str(root.get("root_id")))}"><strong>{_escape(str(root.get("name")))}</strong><span>{total} signals</span></button>')
+        timeline = root.get("teams_timeline") or {}
+        if timeline:
+            links = " · ".join(f'<a target="_blank" rel="noreferrer" href="{_escape(str(link.get("url")))}">{_escape(str(link.get("title") or "Teams"))}</a>' for link in timeline.get("deep_links", []) if isinstance(link, Mapping) and link.get("url"))
+            timeline_cards.append(f'<article class="column"><h2>Release Timeline &amp; Teams Context</h2><p><strong>{_escape(str(timeline.get("version") or "China Release"))}</strong> · target { _escape(str(timeline.get("target_date") or "TBD")) }</p><p>{_escape(_timeline_milestone_summary(timeline))}</p><p>{_escape(_timeline_context_summary(timeline))}</p><p>{links or "No Teams deep links"}</p><span class="badge">{"Confirmed" if timeline.get("confirmed") else "Preview only"}</span></article>')
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Project Root Tracker</title>
 <style>
 :root{{--bg:#f4f7fb;--card:#fff;--ink:#172033;--muted:#60708a;--accent:#0b67d1;--danger:#b42318;--line:#dbe3ef}}[data-theme=dark]{{--bg:#111827;--card:#1f2937;--ink:#eef2ff;--muted:#a8b3c7;--accent:#80b8ff;--danger:#ff8b82;--line:#374151}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}}main{{max-width:1500px;margin:auto;padding:24px}}header{{display:flex;justify-content:space-between;align-items:center;gap:12px}}h1{{margin:.2em 0}}button,.pill{{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:10px 12px;cursor:pointer}}.root-picker,.filters{{display:flex;gap:10px;overflow:auto;padding:12px 0}}.root-card{{min-width:190px;text-align:left;display:grid;gap:5px}}.root-card.active{{outline:2px solid var(--accent)}}.root-card span,.muted{{color:var(--muted)}}.filters button.active{{background:var(--accent);color:white}}.grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}}.column{{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;min-height:180px}}.column h2{{font-size:15px;margin-top:0}}.item{{border-top:1px solid var(--line);padding:11px 0;cursor:pointer}}.item:first-of-type{{border-top:0}}.badge{{font-size:11px;border-radius:20px;padding:3px 7px;background:#e6eefb;color:#124c93;display:inline-block;margin:2px 3px 2px 0}}.danger{{color:var(--danger)}}#details{{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;min-height:80px}}a{{color:var(--accent)}}pre{{white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:8px}}@media(max-width:1000px){{.grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}@media(max-width:650px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}}}
 </style></head><body><main><header><div><div class="muted">Project Root Tracker · offline-first</div><h1>China Release War-Room</h1></div><button id="theme">Toggle theme</button></header>
-<section class="root-picker">{''.join(root_cards)}</section><section class="filters"><button data-filter="all" class="active">All signals</button>{''.join(f'<button data-filter="{_escape(signal)}">{_escape(signal)}</button>' for signal in SIGNALS)}</section>
+<section class="root-picker">{''.join(root_cards)}</section><section class="grid" aria-label="Release Timeline">{''.join(timeline_cards)}</section><section class="filters"><button data-filter="all" class="active">All signals</button>{''.join(f'<button data-filter="{_escape(signal)}">{_escape(signal)}</button>' for signal in SIGNALS)}</section>
 <section id="tree" class="grid"></section><section id="details"><span class="muted">Select a signal to inspect details, jump to its PR/Linear issue, or copy its action command.</span></section><section class="column" style="margin-top:18px"><h2>Operator command palette</h2><p class="muted">Safe, owner-mediated commands: <code>record-feedback</code> · <code>my_pr_supervisor</code> · <code>devsync revert</code></p></section></main>
 <script>const SNAPSHOT={data};const state={{root:SNAPSHOT.roots[0]?.root_id||'',filter:'all'}};const tree=document.querySelector('#tree'),details=document.querySelector('#details');
 function esc(v){{return String(v??'').replace(/[&<>\"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[c]))}}
@@ -1506,9 +1712,29 @@ def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def _timeline_preview(timeline: Mapping[str, Any], root: Mapping[str, Any] | None = None, snapshot_root: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    root = dict(root or {"root_id": "china-release", "name": "China Release"})
+    snapshot_root = dict(snapshot_root or {"teams_timeline": timeline, "workstreams": _new_workstreams()})
+    proposed = build_root_markdown(root, {**snapshot_root, "teams_timeline": {**timeline, "confirmed": True}})
+    return {
+        "confirmed": bool(timeline.get("confirmed")),
+        "version": timeline.get("version"),
+        "milestones": timeline.get("milestones", []),
+        "targetDate": timeline.get("target_date") or None,
+        "description": _timeline_description(timeline),
+        "root_l0_preview": proposed,
+        "deep_links": timeline.get("deep_links", []),
+    }
+
+
 def _cli() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest="command", required=True)
+
+    def add_timeline_args(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--teams-timeline", type=Path, default=DEFAULT_TEAMS_TIMELINE)
+        command_parser.add_argument("--confirm-teams-timeline", action="store_true")
+
     collect_parser = subs.add_parser("collect")
     collect_parser.add_argument("--roots", type=Path, default=DEFAULT_SEED)
     collect_parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
@@ -1517,8 +1743,11 @@ def _cli() -> int:
     collect_parser.add_argument("--supervisor", type=Path, default=DEFAULT_SUPERVISOR)
     collect_parser.add_argument("--eval-actions", type=Path, default=DEFAULT_EVAL_ACTIONS)
     collect_parser.add_argument("--output", type=Path, default=DEFAULT_SNAPSHOT)
+    collect_parser.add_argument("--dashboard", type=Path, default=DEFAULT_DASHBOARD)
+    add_timeline_args(collect_parser)
     for name in ("sync-linear", "sync-roots"):
         sync = subs.add_parser(name)
+        add_timeline_args(sync)
         sync.add_argument("--roots", type=Path, default=DEFAULT_SEED)
         sync.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
         sync.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
@@ -1546,6 +1775,18 @@ def _cli() -> int:
     refresh.add_argument("--offline", action="store_true")
     refresh.add_argument("--dry-run", action="store_true")
     refresh.add_argument("--token")
+    add_timeline_args(refresh)
+    timeline_sync = subs.add_parser("sync-teams-timeline")
+    timeline_sync.add_argument("--teams-timeline", type=Path, default=DEFAULT_TEAMS_TIMELINE)
+    timeline_sync.add_argument("--preview", action="store_true")
+    timeline_sync.add_argument("--confirm", action="store_true")
+    timeline_sync.add_argument("--target-date")
+    timeline_sync.add_argument("--dry-run", action="store_true")
+    timeline_sync.add_argument("--offline", action="store_true")
+    timeline_sync.add_argument("--token")
+    timeline_sync.add_argument("--roots", type=Path, default=DEFAULT_SEED)
+    timeline_sync.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
+    timeline_sync.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     args = parser.parse_args()
     if args.command == "refresh":
         if args.pull_remote and not args.offline and not args.dry_run:
@@ -1553,21 +1794,24 @@ def _cli() -> int:
             if sup_script.is_file():
                 subprocess.run([sys.executable, str(sup_script), "sync-linear-decisions", "--json"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run([sys.executable, str(sup_script), "discover", "--json"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        snapshot = collect(roots_path=args.roots, summary_path=args.summary, devsync_path=args.devsync, worktrees_path=args.worktrees, supervisor_path=args.supervisor, eval_path=args.eval_actions)
+        snapshot = collect(roots_path=args.roots, summary_path=args.summary, devsync_path=args.devsync, worktrees_path=args.worktrees, supervisor_path=args.supervisor, eval_path=args.eval_actions, teams_timeline_path=args.teams_timeline, confirm_teams_timeline=args.confirm_teams_timeline)
         _write_json(args.snapshot, snapshot)
         render_html(snapshot, args.dashboard)
         roots = load_roots(args.roots)
         snapshot_roots = {str(r.get("root_id")): r for r in snapshot.get("roots", []) if isinstance(r, Mapping)}
         token = args.token or _load_linear_token()
         client = LinearClient(token) if token and not args.offline and not args.dry_run else None
-        result = sync_linear(roots, cache_path=args.cache, dry_run=args.dry_run, offline=args.offline or not token, client=client, snapshot_roots=snapshot_roots)
+        result = sync_linear(roots, cache_path=args.cache, dry_run=args.dry_run, offline=args.offline or not token, client=client, snapshot_roots=snapshot_roots, teams_timeline_path=args.teams_timeline, confirm_teams_timeline=args.confirm_teams_timeline)
         print(json.dumps({"refreshed": True, "snapshot": str(args.snapshot), "dashboard": str(args.dashboard), "linear_mode": result.get("mode"), "roots_synced": len(result.get("roots", []))}, ensure_ascii=False, indent=2))
         return 0
     if args.command == "collect":
-        _write_json(args.output, collect(roots_path=args.roots, summary_path=args.summary, devsync_path=args.devsync, worktrees_path=args.worktrees, supervisor_path=args.supervisor, eval_path=args.eval_actions))
+        snapshot = collect(roots_path=args.roots, summary_path=args.summary, devsync_path=args.devsync, worktrees_path=args.worktrees, supervisor_path=args.supervisor, eval_path=args.eval_actions, teams_timeline_path=args.teams_timeline, confirm_teams_timeline=args.confirm_teams_timeline)
+        _write_json(args.output, snapshot)
+        render_html(snapshot, args.dashboard)
         return 0
     if args.command in {"sync-linear", "sync-roots"}:
         roots = load_roots(args.roots)
+        timeline = load_teams_timeline(args.teams_timeline, confirm=args.confirm_teams_timeline)
         snapshot = _read_json(args.snapshot, {})
         snapshot_roots = {}
         child_items = []
@@ -1582,10 +1826,31 @@ def _cli() -> int:
                             child = dict(item)
                             child["root_id"] = snapshot_root.get("root_id")
                             child_items.append(child)
+        if "china-release" not in snapshot_roots:
+            snapshot_roots["china-release"] = {"root_id": "china-release", "teams_timeline": timeline, "workstreams": _new_workstreams()}
+        else:
+            snapshot_roots["china-release"].setdefault("teams_timeline", timeline)
         token = args.token or _load_linear_token()
         client = LinearClient(token) if token and not args.offline and not args.dry_run else None
-        result = sync_linear(roots, cache_path=args.cache, dry_run=args.dry_run, offline=args.offline or not token, client=client, child_items=child_items, snapshot_roots=snapshot_roots)
+        result = sync_linear(roots, cache_path=args.cache, dry_run=args.dry_run, offline=args.offline or not token, client=client, child_items=child_items, snapshot_roots=snapshot_roots, teams_timeline_path=args.teams_timeline, confirm_teams_timeline=args.confirm_teams_timeline)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "sync-teams-timeline":
+        timeline = load_teams_timeline(args.teams_timeline, confirm=args.confirm, target_date=args.target_date, persist=not args.dry_run)
+        roots = load_roots(args.roots)
+        root = next((item for item in roots if item.get("root_id") == timeline.get("root_id")), {"root_id": "china-release", "name": "China Release"})
+        snapshot = _read_json(args.snapshot, {})
+        snapshot_root = next((item for item in snapshot.get("roots", []) if isinstance(item, Mapping) and item.get("root_id") == timeline.get("root_id")), None) if isinstance(snapshot, Mapping) else None
+        if args.preview or not timeline.get("confirmed") or args.dry_run or args.offline:
+            print(json.dumps(_timeline_preview(timeline, root, snapshot_root), ensure_ascii=False, indent=2))
+            if args.preview or not timeline.get("confirmed") or args.dry_run or args.offline:
+                return 0
+        token = args.token or _load_linear_token()
+        client = LinearClient(token) if token else None
+        snapshot_roots = {str(item.get("root_id")): item for item in snapshot.get("roots", []) if isinstance(item, Mapping)} if isinstance(snapshot, Mapping) else {}
+        snapshot_roots[str(timeline.get("root_id"))] = {**(snapshot_roots.get(str(timeline.get("root_id"))) or {}), "teams_timeline": timeline}
+        result = sync_linear(roots, cache_path=args.cache, client=client, offline=not token, snapshot_roots=snapshot_roots, teams_timeline_path=args.teams_timeline)
+        print(json.dumps({"synced": True, "timeline": timeline, "linear_mode": result.get("mode"), "writes": result.get("writes", 0)}, ensure_ascii=False, indent=2))
         return 0
     if args.command == "classify-jev":
         item = _read_json(Path(args.item_json), {}) if Path(args.item_json).is_file() else json.loads(args.item_json)
