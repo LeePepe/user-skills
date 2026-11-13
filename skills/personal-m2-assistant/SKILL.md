@@ -22,9 +22,9 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 4. **Orca 临时 `.md` 计划预览**：由于 `herdr` 不原生支持打开/渲染 `.md` 文件，`--plan` 自动生成 `/tmp/m2-plan-<plan_id>.md`（含完整 `sub_prompt`、wave 表、model/context/cwd、旧窗清理与新域候选）并调用 `orca file open <path> --focus` 聚焦预览（无 GUI/测试时可用 `--no-open-preview` 或自动优雅降级），同时通过 [`preview_text`](scripts/m2-router.py) 输出终端摘要。
 5. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 6. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
-7. **后台异步巡检与安全 Allow 自动解卡（`--watch`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`）并返回带 `--apply-receipt-file` 的 `watchdog_copilot_cli`（`mode="async", detach=true, shellId="watch-m2-<plan_id>"`），在后台运行 `m2-router.py --watch` 精确绑定已派发目标 ID 轮询至静默态（`idle`/`done`）：
-   - 仅当传入经校验的 `apply_receipt`（`ok=true`、`approved=true`、`plan_id` 与目标匹配）且目标处于 `blocked`/`needs_input` 时，对底部当前活动帧的安全权限弹窗（词法与 `resolve` 均落在安全基线/目标 `cwd` 且无符号链接越界的完整单路径 `Allow path access`/`Confirm folder trust`、`Curate Memory`，以及单行无元字符的严格只读参数白名单命令 `CMD_CONFIRM`）发送单次 `enter` 放行；无有效回执时保持纯被动只读观察（`auto_unblock_enabled=false`）；
-   - 遇到业务/Spec 级 `ask_user`、`Proceed with`、路径越界/多路径或非只读命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）；目标缺失或发现中断持续重试至超时后返回 `ok=false, all_settled=false, blocked_reason="target_missing_or_unreachable"`。
+7. **每个 M2 独立后台监督与增量滚动汇总（`--watch --watch-target` + `watchdog_tasks`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护共享监督状态账本 `m2-supervision-state.json`（或 `--state-file`），并为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）：
+   - **单 M2 独立完成即刻唤醒与累积汇总**：每个 M2 由各自独立的 background `bash` 任务运行 `m2-router.py --watch --watch-target <slot_id>`，任一 M2 进入静默态（`idle`/`done`）即立刻退出唤醒并更新账本，立即报告**本次完成项 + 当前所有已完成 M2 的累积汇总（`completed_rollup_code`）**。例如派发 `ABC`：`A` 完成报告 `A`，`B` 完成报告 `AB`；若此时新增 `D` 且向 `A` 追加新任务 `A2`（`A` 槽位转为运行 `A2`），随后 `C` 完成报告 `BC`，`A2` 完成报告 `A2BC`，`D` 完成报告 `A2BCD`。
+   - **安全 Allow 自动解卡与 Owner 决策门禁**：仅当传入经校验的 `apply_receipt`（`ok=true`、`approved=true`、`plan_id` 与目标匹配）且目标处于 `blocked`/`needs_input` 时，对底部当前活动帧的安全权限弹窗（词法与 `resolve` 均落在安全基线/目标 `cwd` 且无符号链接越界的完整单路径 `Allow path access`/`Confirm folder trust`、`Curate Memory`，以及单行无元字符的严格只读参数白名单命令 `CMD_CONFIRM`）发送单次 `enter` 放行；无有效回执时保持纯被动只读观察（`auto_unblock_enabled=false`）。遇到业务/Spec 级 `ask_user`、`Proceed with`、路径越界/多路径或非只读命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）；目标缺失或发现中断持续重试至超时后返回 `ok=false, all_settled=false, blocked_reason="target_missing_or_unreachable"`。
 
 ## CLI
 
@@ -35,13 +35,14 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --plan \
   --message '先检查通知开关，再写篇学习博客' --json > /tmp/m2-plan.json
 ```
 
-Owner 审阅拍板后派发并挂载后台 `--watch`：
+Owner 审阅拍板后派发，并按 `watchdog_tasks` 为每个目标 M2 单独挂载后台 `--watch --watch-target`：
 
 ```bash
 python3 skills/personal-m2-assistant/scripts/m2-router.py --apply \
   --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json --approve --json
 python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
-  --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json --interval 15 --max-wait 2400 --json
+  --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json \
+  --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
 
 常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`、`--no-open-preview`、`--transport stdout`。完整参数以脚本 `--help` 为准。

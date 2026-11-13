@@ -1836,6 +1836,159 @@ class M2RouterTests(unittest.TestCase):
                     self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], canonical["label"])
                     self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
 
+    def test_per_m2_watchdog_tasks_and_rolling_cumulative_rollup_abc_d_a2(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state_path = Path(temp) / "m2-supervision-state.json"
+            plan1_path = Path(temp) / "plan1.json"
+            receipt1_path = Path(temp) / "apply1.json"
+            plan1 = {
+                "schema_version": 1,
+                "plan_id": "m2p-wave1-abc",
+                "approval": {"approved": False},
+                "targets": [
+                    {"slot_id": "A", "topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "m2_status": "EXISTING_M2", "transport": "stdout", "sub_prompt": "Task A1", "wave_order": 1},
+                    {"slot_id": "B", "topic_id": "info-email", "target_repo": "dsh-personal-plugins", "m2_status": "EXISTING_M2", "transport": "stdout", "sub_prompt": "Task B", "wave_order": 1},
+                    {"slot_id": "C", "topic_id": "info-teams", "target_repo": "dsh-personal-plugins", "m2_status": "EXISTING_M2", "transport": "stdout", "sub_prompt": "Task C", "wave_order": 1},
+                ],
+            }
+            plan1_path.write_text(json.dumps(plan1), encoding="utf-8")
+            apply1 = self.router.apply_plan(
+                plan1,
+                approve=True,
+                plan_file=plan1_path,
+                apply_receipt_file=receipt1_path,
+                state_file=state_path,
+                transport="stdout",
+            )
+            self.assertEqual(len(apply1["watchdog_tasks"]), 3)
+            for idx, expected_slot in enumerate(["A", "B", "C"]):
+                task_meta = apply1["watchdog_tasks"][idx]
+                self.assertEqual(task_meta["slot_id"], expected_slot)
+                self.assertEqual(task_meta["run_seq"], 1)
+                self.assertEqual(task_meta["run_label"], expected_slot)
+                self.assertEqual(task_meta["watchdog_copilot_cli"]["mode"], "async")
+                self.assertTrue(task_meta["watchdog_copilot_cli"]["detach"])
+                self.assertIn(f"--watch-target {expected_slot}", task_meta["watchdog_cmd"])
+
+            # 1) A completes -> reports A
+            res_a = self.router.watch_dispatched_m2(
+                plan1,
+                apply_receipt=apply1,
+                watch_target="A",
+                state_file=state_path,
+                max_polls=1,
+            )
+            self.assertEqual(res_a["just_settled_labels"], ["A"])
+            self.assertEqual(res_a["completed_labels"], ["A"])
+            self.assertEqual(res_a["completed_rollup_code"], "A")
+            self.assertEqual(res_a["running_labels"], ["B", "C"])
+            self.assertFalse(res_a["all_board_settled"])
+            self.assertIn("Cumulative Completed Rollup**: `A`", res_a["summary_markdown"])
+
+            # 2) B completes -> reports AB
+            res_b = self.router.watch_dispatched_m2(
+                plan1,
+                apply_receipt=apply1,
+                watch_target="B",
+                state_file=state_path,
+                max_polls=1,
+            )
+            self.assertEqual(res_b["just_settled_labels"], ["B"])
+            self.assertEqual(res_b["completed_labels"], ["A", "B"])
+            self.assertEqual(res_b["completed_rollup_code"], "AB")
+            self.assertEqual(res_b["running_labels"], ["C"])
+            self.assertFalse(res_b["all_board_settled"])
+            self.assertIn("Cumulative Completed Rollup**: `AB`", res_b["summary_markdown"])
+
+            # 3) Add D and continue A with new task (A2) while C is still running
+            plan2_path = Path(temp) / "plan2.json"
+            receipt2_path = Path(temp) / "apply2.json"
+            plan2 = {
+                "schema_version": 1,
+                "plan_id": "m2p-wave2-da2",
+                "approval": {"approved": False},
+                "targets": [
+                    {"slot_id": "D", "topic_id": "learning-and-blog", "target_repo": "Personal", "m2_status": "NEW_M2", "transport": "stdout", "sub_prompt": "Task D", "wave_order": 1},
+                    {"slot_id": "A", "topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "m2_status": "EXISTING_M2", "transport": "stdout", "sub_prompt": "Task A2 follow-up", "wave_order": 1},
+                ],
+            }
+            plan2_path.write_text(json.dumps(plan2), encoding="utf-8")
+            apply2 = self.router.apply_plan(
+                plan2,
+                approve=True,
+                plan_file=plan2_path,
+                apply_receipt_file=receipt2_path,
+                state_file=state_path,
+                transport="stdout",
+            )
+            self.assertEqual(len(apply2["watchdog_tasks"]), 2)
+            a2_meta = next(t for t in apply2["watchdog_tasks"] if t["slot_id"] == "A")
+            self.assertEqual(a2_meta["run_seq"], 2)
+            self.assertEqual(a2_meta["run_label"], "A2")
+            self.assertEqual(apply2["board_rollup"]["completed_rollup_code"], "B")
+            self.assertEqual(apply2["board_rollup"]["running_labels"], ["A2", "C", "D"])
+
+            # Supersede guard: a stale run_seq=1 watch from plan1 for A must not overwrite A2's running state
+            stale_a1 = self.router.watch_dispatched_m2(
+                plan1,
+                apply_receipt=apply1,
+                watch_target="A",
+                state_file=state_path,
+                max_polls=1,
+            )
+            self.assertEqual(stale_a1["completed_rollup_code"], "B")
+            self.assertIn("A2", stale_a1["running_labels"])
+
+            # 4) C completes -> reports BC (since A is running A2 and D is running)
+            res_c = self.router.watch_dispatched_m2(
+                plan1,
+                apply_receipt=apply1,
+                watch_target="C",
+                state_file=state_path,
+                max_polls=1,
+            )
+            self.assertEqual(res_c["just_settled_labels"], ["C"])
+            self.assertEqual(res_c["completed_labels"], ["B", "C"])
+            self.assertEqual(res_c["completed_rollup_code"], "BC")
+            self.assertEqual(res_c["running_labels"], ["A2", "D"])
+            self.assertFalse(res_c["all_board_settled"])
+            self.assertIn("Cumulative Completed Rollup**: `BC`", res_c["summary_markdown"])
+
+            # 5) A2 completes -> reports A2BC
+            res_a2 = self.router.watch_dispatched_m2(
+                plan2,
+                apply_receipt=apply2,
+                watch_target="A",
+                state_file=state_path,
+                max_polls=1,
+            )
+            self.assertEqual(res_a2["just_settled_labels"], ["A2"])
+            self.assertEqual(res_a2["completed_labels"], ["A2", "B", "C"])
+            self.assertEqual(res_a2["completed_rollup_code"], "A2BC")
+            self.assertEqual(res_a2["running_labels"], ["D"])
+            self.assertFalse(res_a2["all_board_settled"])
+            self.assertIn("Cumulative Completed Rollup**: `A2BC`", res_a2["summary_markdown"])
+
+            # 6) D completes -> reports A2BCD via CLI --watch-target D
+            cli_res = subprocess.run([
+                str(ROUTER_PATH),
+                "--watch",
+                "--plan-file", str(plan2_path),
+                "--apply-receipt-file", str(receipt2_path),
+                "--state-file", str(state_path),
+                "--watch-target", "D",
+                "--max-polls", "1",
+                "--json",
+            ], capture_output=True, text=True, check=False)
+            self.assertEqual(cli_res.returncode, 0, cli_res.stderr)
+            res_d = json.loads(cli_res.stdout)
+            self.assertEqual(res_d["just_settled_labels"], ["D"])
+            self.assertEqual(res_d["completed_labels"], ["A2", "B", "C", "D"])
+            self.assertEqual(res_d["completed_rollup_code"], "A2BCD")
+            self.assertEqual(res_d["running_labels"], [])
+            self.assertTrue(res_d["all_board_settled"])
+            self.assertIn("Cumulative Completed Rollup**: `A2BCD`", res_d["summary_markdown"])
+
 
 if __name__ == "__main__":
     unittest.main()

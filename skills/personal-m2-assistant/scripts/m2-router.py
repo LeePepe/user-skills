@@ -9,6 +9,10 @@ and sends only the targets recorded in the plan.
 from __future__ import annotations
 
 import argparse
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 import hashlib
 import importlib.util
 import json
@@ -1659,7 +1663,161 @@ def _cleanup_stale(
     return receipts
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def _resolve_supervision_state_path(
+    state_file: str | Path | None = None,
+    *,
+    plan_file: str | Path | None = None,
+    apply_receipt_file: str | Path | None = None,
+    apply_receipt: dict[str, Any] | None = None,
+    safe_plan_id: str = "m2p-plan",
+    persist_by_default: bool = False,
+) -> Path | None:
+    if state_file:
+        return Path(state_file).expanduser()
+    if isinstance(apply_receipt, dict) and _text(apply_receipt.get("supervision_state_path")):
+        return Path(_text(apply_receipt.get("supervision_state_path"))).expanduser()
+    env_state = _text(os.environ.get("M2_SUPERVISION_STATE_FILE"))
+    if env_state:
+        return Path(env_state).expanduser()
+    if apply_receipt_file or plan_file:
+        anchor = Path(apply_receipt_file or plan_file).expanduser()
+        return anchor.parent / "m2-supervision-state.json"
+    if persist_by_default:
+        return Path(f"/tmp/m2-supervision-state-{safe_plan_id}.json")
+    return None
+
+
+def _with_locked_supervision_state(
+    state_path: Path | None,
+    mutator: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    reset: bool = False,
+) -> dict[str, Any]:
+    if state_path is None:
+        initial: dict[str, Any] = {"schema_version": 1, "slots": [], "events": []}
+        return mutator(initial)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            current: dict[str, Any] = {"schema_version": 1, "slots": [], "events": []}
+            if not reset and state_path.is_file():
+                try:
+                    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        current = {
+                            "schema_version": 1,
+                            "slots": [dict(s) for s in (loaded.get("slots") or []) if isinstance(s, dict)],
+                            "events": [dict(e) for e in (loaded.get("events") or []) if isinstance(e, dict)],
+                        }
+                except (OSError, ValueError):
+                    pass
+            updated = mutator(current)
+            temp_path = state_path.with_suffix(state_path.suffix + f".{os.getpid()}.tmp")
+            temp_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temp_path.replace(state_path)
+            return updated
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _match_existing_slot_index(
+    slots: list[dict[str, Any]],
+    rec: dict[str, Any],
+    target: dict[str, Any],
+) -> int | None:
+    explicit_slot = _text(target.get("slot_id") or rec.get("slot_id"))
+    if explicit_slot:
+        for idx, slot in enumerate(slots):
+            if _text(slot.get("slot_id")).casefold() == explicit_slot.casefold():
+                return idx
+        return None
+    explicit_label = _text(target.get("task_label") or rec.get("task_label"))
+    if explicit_label:
+        for idx, slot in enumerate(slots):
+            if _text(slot.get("slot_id")).casefold() == explicit_label.casefold() or _text(slot.get("base_label")).casefold() == explicit_label.casefold():
+                return idx
+        m_prefix = re.match(r"^(.+?)\d+$", explicit_label)
+        if m_prefix:
+            base_cand = m_prefix.group(1).strip()
+            for idx, slot in enumerate(slots):
+                if _text(slot.get("slot_id")).casefold() == base_cand.casefold() or _text(slot.get("base_label")).casefold() == base_cand.casefold():
+                    return idx
+        return None
+    topic_id = _text(rec.get("topic_id") or target.get("topic_id"))
+    has_named_topic = bool(topic_id and topic_id not in {"unspecified", NEW_UNMAPPED_DOMAIN} and not topic_id.startswith("new-topic-unspecified"))
+    pane_id = _text(rec.get("pane_id") or target.get("pane_id"))
+    if pane_id:
+        for idx, slot in enumerate(slots):
+            slot_topic = _text(slot.get("topic_id"))
+            if has_named_topic and slot_topic and slot_topic.casefold() != topic_id.casefold():
+                continue
+            if _text(slot.get("pane_id")) == pane_id:
+                return idx
+    is_stdout = _text(rec.get("method") or target.get("transport")).lower() == "stdout"
+    session_id = _text(rec.get("session_id") or target.get("session_id"))
+    if session_id and session_id.casefold() != "unspecified" and not (is_stdout and session_id == _text(rec.get("target_repo"))):
+        for idx, slot in enumerate(slots):
+            slot_topic = _text(slot.get("topic_id"))
+            if has_named_topic and slot_topic and slot_topic.casefold() != topic_id.casefold():
+                continue
+            if _text(slot.get("session_id")) == session_id or _text(slot.get("target")) == session_id:
+                return idx
+    target_ref = _text(rec.get("target") or target.get("herdr_target"))
+    if target_ref and target_ref.casefold() != "unspecified" and not (is_stdout and target_ref == _text(rec.get("target_repo"))):
+        for idx, slot in enumerate(slots):
+            slot_topic = _text(slot.get("topic_id"))
+            if has_named_topic and slot_topic and slot_topic.casefold() != topic_id.casefold():
+                continue
+            if _text(slot.get("target")) == target_ref or _text(slot.get("session_id")) == target_ref:
+                return idx
+    if has_named_topic:
+        for idx, slot in enumerate(slots):
+            if _text(slot.get("topic_id")).casefold() == topic_id.casefold() or _text(slot.get("slot_id")).casefold() == topic_id.casefold():
+                return idx
+    return None
+
+
+def _compute_board_rollup(
+    ledger: dict[str, Any],
+    *,
+    just_settled_slots: Iterable[str] = (),
+) -> dict[str, Any]:
+    slots = [dict(s) for s in (ledger.get("slots") or []) if isinstance(s, dict)]
+    settled_set = {s.casefold() for s in just_settled_slots if _text(s)}
+    completed_slots = [s for s in slots if _text(s.get("status")).lower() in {"idle", "done"}]
+    running_slots = [s for s in slots if _text(s.get("status")).lower() in {"running", "working"}]
+    blocked_slots = [
+        s for s in slots
+        if bool(s.get("needs_owner_attention")) or _text(s.get("status")).lower() in {"blocked", "needs_input", "missing"}
+    ]
+    completed_labels = [_text(s.get("run_label") or s.get("slot_id")) for s in completed_slots]
+    running_labels = [_text(s.get("run_label") or s.get("slot_id")) for s in running_slots]
+    blocked_labels = [_text(s.get("run_label") or s.get("slot_id")) for s in blocked_slots]
+    just_settled_labels = [
+        _text(s.get("run_label") or s.get("slot_id"))
+        for s in slots
+        if _text(s.get("slot_id")).casefold() in settled_set or _text(s.get("run_label")).casefold() in settled_set
+    ]
+    return {
+        "just_settled_labels": just_settled_labels,
+        "completed_labels": completed_labels,
+        "completed_rollup_code": "".join(completed_labels),
+        "completed_rollup_display": " + ".join(completed_labels) if completed_labels else "none",
+        "running_labels": running_labels,
+        "blocked_labels": blocked_labels,
+        "all_board_settled": len(running_slots) == 0 and len(blocked_slots) == 0,
+        "completed_targets": completed_slots,
+        "running_targets": running_slots,
+        "blocked_targets": blocked_slots,
+        "slots": slots,
+    }
+
+
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -1690,6 +1848,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     used_herdr_names: set[str] = set()
     created_workspaces: dict[str, str] = {}
     receipts: list[dict[str, Any]] = []
+    dispatched_targets: list[dict[str, Any]] = []
     target_seq = 0
     for wave in sorted({int(item.get("wave_order", 1)) for item in targets}):
         for target in [item for item in targets if int(item.get("wave_order", 1)) == wave]:
@@ -1725,22 +1884,174 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
                 else dispatch_target.get("pane_id")
             )
             session_id_val = _text(receipt.get("target")) if selected == "dsh" else _text(dispatch_target.get("session_id") or receipt.get("target"))
-            receipts.append({
+            rec_entry: dict[str, Any] = {
                 "wave_order": wave,
                 "topic_id": _text(target.get("topic_id")),
                 "target_repo": target.get("target_repo"),
                 "pane_id": pane_id_val,
                 "session_id": session_id_val,
                 **receipt,
-            })
+            }
+            if _text(target.get("slot_id")):
+                rec_entry["slot_id"] = _text(target.get("slot_id"))
+            if _text(target.get("task_label")):
+                rec_entry["task_label"] = _text(target.get("task_label"))
+            receipts.append(rec_entry)
+            dispatched_targets.append(dispatch_target)
     plan_id = _text(plan.get("plan_id"), "m2p-plan")
     safe_plan_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", plan_id).strip("-") or "m2p-plan"
     resolved_plan_file = _text(plan_file or plan.get("plan_file"), f"/tmp/m2-plan-{safe_plan_id}.json")
     resolved_receipt_path = Path(apply_receipt_file).expanduser() if apply_receipt_file else Path(f"/tmp/m2-apply-{safe_plan_id}.json")
+    resolved_state_path = _resolve_supervision_state_path(
+        state_file,
+        plan_file=plan_file,
+        apply_receipt_file=apply_receipt_file,
+        safe_plan_id=safe_plan_id,
+        persist_by_default=True,
+    )
+    assert resolved_state_path is not None
+
+    def _register_dispatched_slots(state: dict[str, Any]) -> dict[str, Any]:
+        slots = [dict(s) for s in (state.get("slots") or []) if isinstance(s, dict)]
+        events = [dict(e) for e in (state.get("events") or []) if isinstance(e, dict)]
+        used_slot_ids = {_text(s.get("slot_id")).casefold() for s in slots if _text(s.get("slot_id"))}
+        for idx, (rec, tgt) in enumerate(zip(receipts, dispatched_targets)):
+            match_idx = _match_existing_slot_index(slots, rec, tgt)
+            if match_idx is not None:
+                existing = dict(slots[match_idx])
+                history = [dict(h) for h in (existing.get("history") or []) if isinstance(h, dict)]
+                history.append({
+                    "run_seq": int(existing.get("run_seq") or 1),
+                    "run_label": _text(existing.get("run_label") or existing.get("slot_id")),
+                    "plan_id": _text(existing.get("plan_id")),
+                    "status": _text(existing.get("status")),
+                    "visible_summary": _text(existing.get("visible_summary")),
+                })
+                run_seq = int(existing.get("run_seq") or 1) + 1
+                slot_id = _text(existing.get("slot_id"))
+                base_label = _text(existing.get("base_label") or slot_id)
+                explicit_label = _text(tgt.get("task_label") or rec.get("task_label"))
+                run_label = explicit_label if explicit_label else f"{base_label}{run_seq}"
+                existing.update({
+                    "slot_id": slot_id,
+                    "base_label": base_label,
+                    "run_seq": run_seq,
+                    "run_label": run_label,
+                    "plan_id": plan_id,
+                    "wave_order": int(rec.get("wave_order") or 1),
+                    "topic_id": _text(rec.get("topic_id") or existing.get("topic_id")),
+                    "target_repo": _text(rec.get("target_repo") or existing.get("target_repo"), "unspecified"),
+                    "target": _text(rec.get("target") or existing.get("target")),
+                    "pane_id": _text(rec.get("pane_id") or existing.get("pane_id")),
+                    "session_id": _text(rec.get("session_id") or existing.get("session_id")),
+                    "status": "running",
+                    "raw_status": "running",
+                    "needs_owner_attention": False,
+                    "blocked_reason": "",
+                    "auto_unblocked": [],
+                    "visible_summary": "",
+                    "history": history,
+                })
+                slots[match_idx] = existing
+                rec["slot_id"] = slot_id
+                rec["run_seq"] = run_seq
+                rec["run_label"] = run_label
+            else:
+                explicit_slot = _text(tgt.get("slot_id") or rec.get("slot_id"))
+                explicit_label = _text(tgt.get("task_label") or rec.get("task_label"))
+                raw_slot = (
+                    explicit_slot
+                    or explicit_label
+                    or _text(rec.get("topic_id"))
+                    or _text(rec.get("target"))
+                    or _text(rec.get("target_repo"))
+                    or f"m2-{idx + 1}"
+                )
+                slot_id = raw_slot
+                suffix = 2
+                while slot_id.casefold() in used_slot_ids:
+                    slot_id = f"{raw_slot}-{suffix}"
+                    suffix += 1
+                used_slot_ids.add(slot_id.casefold())
+                base_label = explicit_slot or explicit_label or slot_id
+                run_label = explicit_label or base_label
+                run_seq = 1
+                slots.append({
+                    "slot_id": slot_id,
+                    "base_label": base_label,
+                    "run_seq": run_seq,
+                    "run_label": run_label,
+                    "plan_id": plan_id,
+                    "wave_order": int(rec.get("wave_order") or 1),
+                    "topic_id": _text(rec.get("topic_id")),
+                    "target_repo": _text(rec.get("target_repo"), "unspecified"),
+                    "target": _text(rec.get("target")),
+                    "pane_id": _text(rec.get("pane_id")),
+                    "session_id": _text(rec.get("session_id")),
+                    "status": "running",
+                    "raw_status": "running",
+                    "needs_owner_attention": False,
+                    "blocked_reason": "",
+                    "auto_unblocked": [],
+                    "visible_summary": "",
+                    "history": [],
+                })
+                rec["slot_id"] = slot_id
+                rec["run_seq"] = run_seq
+                rec["run_label"] = run_label
+        events.append({
+            "seq": len(events) + 1,
+            "type": "apply",
+            "plan_id": plan_id,
+            "dispatched_labels": [_text(r.get("run_label")) for r in receipts],
+        })
+        return {"schema_version": 1, "slots": slots, "events": events}
+
+    board_state = _with_locked_supervision_state(resolved_state_path, _register_dispatched_slots, reset=reset_state)
+    board_rollup = _compute_board_rollup(board_state)
+
+    watchdog_tasks: list[dict[str, Any]] = []
+    for rec in receipts:
+        slot_id = _text(rec.get("slot_id"), "m2")
+        run_seq = int(rec.get("run_seq") or 1)
+        run_label = _text(rec.get("run_label"), slot_id)
+        safe_slot = re.sub(r"[^a-zA-Z0-9_.-]+", "-", slot_id).strip("-") or "m2"
+        target_watch_cmd = (
+            f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
+            f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
+            f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
+            f"--state-file {shlex.quote(str(resolved_state_path))} "
+            f"--watch-target {shlex.quote(slot_id)} "
+            f"--interval 15 --max-wait 2400 --json"
+        )
+        target_cli = {
+            "tool": "bash",
+            "mode": "async",
+            "detach": True,
+            "shellId": f"watch-m2-{safe_plan_id}-{safe_slot}-r{run_seq}",
+            "description": f"Watch M2 {run_label} ({slot_id}) until quiescent and update cumulative rollup",
+            "command": target_watch_cmd,
+        }
+        rec["watchdog_cmd"] = target_watch_cmd
+        rec["watchdog_copilot_cli"] = target_cli
+        watchdog_tasks.append({
+            "slot_id": slot_id,
+            "run_seq": run_seq,
+            "run_label": run_label,
+            "topic_id": _text(rec.get("topic_id")),
+            "target_repo": _text(rec.get("target_repo")),
+            "target": _text(rec.get("target")),
+            "pane_id": _text(rec.get("pane_id")),
+            "session_id": _text(rec.get("session_id")),
+            "watchdog_cmd": target_watch_cmd,
+            "watchdog_copilot_cli": target_cli,
+        })
+
     watch_cmd = (
         f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
         f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
         f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
+        f"--state-file {shlex.quote(str(resolved_state_path))} "
         f"--interval 15 --max-wait 2400 --json"
     )
     payload: dict[str, Any] = {
@@ -1748,9 +2059,12 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         "plan_id": plan.get("plan_id"),
         "approved": True,
         "apply_receipt_path": str(resolved_receipt_path),
+        "supervision_state_path": str(resolved_state_path),
         "registered_new_domains": registered,
         "cleanup_receipts": cleanup_receipts,
         "receipts": receipts,
+        "watchdog_tasks": watchdog_tasks,
+        "board_rollup": board_rollup,
         "watchdog_cmd": watch_cmd,
         "watchdog_copilot_cli": {
             "tool": "bash",
@@ -2412,6 +2726,8 @@ def watch_dispatched_m2(
     plan: dict[str, Any],
     *,
     apply_receipt: dict[str, Any] | None = None,
+    watch_target: str = "",
+    state_file: str | Path | None = None,
     interval: float = 15.0,
     max_wait: float = 2400.0,
     max_polls: int | None = None,
@@ -2435,7 +2751,7 @@ def watch_dispatched_m2(
         and _text(apply_receipt.get("plan_id")) == _text(plan.get("plan_id"))
     )
 
-    monitored: list[dict[str, Any]] = []
+    all_monitored: list[dict[str, Any]] = []
     if has_apply_receipt:
         used_plan_indices: set[int] = set()
         for idx, rec in enumerate(receipt_items):
@@ -2464,7 +2780,24 @@ def watch_dispatched_m2(
                 and (target_ref or pane_id)
                 and _validate_apply_receipt_for_target(plan, apply_receipt, target_ref=target_ref, pane_id=pane_id)
             )
-            monitored.append({
+            slot_id = _text(
+                rec.get("slot_id")
+                or plan_match.get("slot_id")
+                or rec.get("task_label")
+                or plan_match.get("task_label")
+                or rec.get("topic_id")
+                or plan_match.get("topic_id")
+                or target_ref
+                or rec.get("target_repo")
+                or plan_match.get("target_repo"),
+                f"m2-{idx + 1}",
+            )
+            run_seq = int(rec.get("run_seq") or plan_match.get("run_seq") or 1)
+            run_label = _text(rec.get("run_label") or rec.get("task_label") or plan_match.get("task_label") or slot_id)
+            all_monitored.append({
+                "slot_id": slot_id,
+                "run_seq": run_seq,
+                "run_label": run_label,
                 "wave_order": int(rec.get("wave_order") or plan_match.get("wave_order") or 1),
                 "topic_id": _text(rec.get("topic_id") or plan_match.get("topic_id")),
                 "target_repo": _text(rec.get("target_repo") or plan_match.get("target_repo"), "unspecified"),
@@ -2492,7 +2825,20 @@ def watch_dispatched_m2(
             target_ref = _text(pt.get("herdr_target") or pt.get("session_id"))
             if not target_ref and transport == "herdr":
                 target_ref = _new_herdr_agent_name(pt, index=idx)
-            monitored.append({
+            slot_id = _text(
+                pt.get("slot_id")
+                or pt.get("task_label")
+                or pt.get("topic_id")
+                or target_ref
+                or pt.get("target_repo"),
+                f"m2-{idx}",
+            )
+            run_seq = int(pt.get("run_seq") or 1)
+            run_label = _text(pt.get("run_label") or pt.get("task_label") or slot_id)
+            all_monitored.append({
+                "slot_id": slot_id,
+                "run_seq": run_seq,
+                "run_label": run_label,
                 "wave_order": int(pt.get("wave_order") or 1),
                 "topic_id": _text(pt.get("topic_id")),
                 "target_repo": _text(pt.get("target_repo"), "unspecified"),
@@ -2514,6 +2860,26 @@ def watch_dispatched_m2(
                 "state_change_seq": None,
                 "unblocked_signatures": set(),
             })
+
+    watch_filter = _text(watch_target)
+    if watch_filter:
+        key_cf = watch_filter.casefold()
+        monitored = [
+            item for item in all_monitored
+            if key_cf in {
+                _text(item.get("slot_id")).casefold(),
+                _text(item.get("run_label")).casefold(),
+                _text(item.get("topic_id")).casefold(),
+                _text(item.get("target")).casefold(),
+                _text(item.get("pane_id")).casefold(),
+                _text(item.get("session_id")).casefold(),
+                _text(item.get("target_repo")).casefold(),
+            } - {""}
+        ]
+        if not monitored:
+            raise RouterError(f"watch target not found in plan: {watch_filter}")
+    else:
+        monitored = list(all_monitored)
 
     effective_dsh_url = _text(dsh_state_url or (plan.get("discovery") or {}).get("dsh_state_url") or os.environ.get("DSH_M2_STATE_URL"))
     started = time.monotonic()
@@ -2676,11 +3042,15 @@ def watch_dispatched_m2(
             item["needs_owner_attention"] = True
             item["blocked_reason"] = "target_missing_or_unreachable"
         target_reports.append({
+            "slot_id": item["slot_id"],
+            "run_seq": item["run_seq"],
+            "run_label": item["run_label"],
             "wave_order": item["wave_order"],
             "topic_id": item["topic_id"],
             "target_repo": item["target_repo"],
             "target": item["target"],
             "pane_id": item["pane_id"],
+            "session_id": item["session_id"],
             "status": item["status"],
             "auto_unblock_enabled": bool(item["auto_unblock_enabled"]),
             "needs_owner_attention": bool(item["needs_owner_attention"]),
@@ -2691,6 +3061,109 @@ def watch_dispatched_m2(
             "state_change_seq": item["state_change_seq"],
         })
 
+    resolved_state_path = _resolve_supervision_state_path(state_file, apply_receipt=apply_receipt)
+
+    def _update_settled_slots(state: dict[str, Any]) -> dict[str, Any]:
+        slots = [dict(s) for s in (state.get("slots") or []) if isinstance(s, dict)]
+        events = [dict(e) for e in (state.get("events") or []) if isinstance(e, dict)]
+        if not slots:
+            for item in all_monitored:
+                slots.append({
+                    "slot_id": item["slot_id"],
+                    "base_label": item["slot_id"],
+                    "run_seq": item["run_seq"],
+                    "run_label": item["run_label"],
+                    "plan_id": _text(plan.get("plan_id")),
+                    "wave_order": item["wave_order"],
+                    "topic_id": item["topic_id"],
+                    "target_repo": item["target_repo"],
+                    "target": item["target"],
+                    "pane_id": item["pane_id"],
+                    "session_id": item["session_id"],
+                    "status": "running",
+                    "raw_status": "running",
+                    "needs_owner_attention": False,
+                    "blocked_reason": "",
+                    "auto_unblocked": [],
+                    "visible_summary": "",
+                    "history": [],
+                })
+        just_settled_slot_ids: list[str] = []
+        for rep in target_reports:
+            match_idx = _match_existing_slot_index(slots, rep, rep)
+            if match_idx is not None:
+                existing = dict(slots[match_idx])
+                existing_run_seq = int(existing.get("run_seq") or 1)
+                rep_run_seq = int(rep.get("run_seq") or 1)
+                # Supersede guard: never let an older run overwrite a slot that has moved to a newer run_seq (e.g. A -> A2)
+                if existing_run_seq > rep_run_seq and _text(existing.get("plan_id")) != _text(plan.get("plan_id")):
+                    rep["superseded_by_run_seq"] = existing_run_seq
+                    rep["superseded_by_label"] = _text(existing.get("run_label"))
+                    continue
+                rep["slot_id"] = _text(existing.get("slot_id") or rep["slot_id"])
+                rep["run_seq"] = existing_run_seq
+                rep["run_label"] = _text(existing.get("run_label") or rep["run_label"])
+                existing.update({
+                    "target": _text(rep.get("target") or existing.get("target")),
+                    "pane_id": _text(rep.get("pane_id") or existing.get("pane_id")),
+                    "session_id": _text(rep.get("session_id") or existing.get("session_id")),
+                    "status": rep["status"],
+                    "raw_status": rep["status"],
+                    "needs_owner_attention": bool(rep["needs_owner_attention"]),
+                    "blocked_reason": rep["blocked_reason"],
+                    "auto_unblocked": list(rep["auto_unblocked"]),
+                    "visible_summary": rep["visible_summary"],
+                    "completion_seq": rep["completion_seq"],
+                    "state_change_seq": rep["state_change_seq"],
+                })
+                slots[match_idx] = existing
+                if rep["status"] in {"idle", "done"}:
+                    just_settled_slot_ids.append(rep["slot_id"])
+            else:
+                slots.append({
+                    "slot_id": rep["slot_id"],
+                    "base_label": rep["slot_id"],
+                    "run_seq": rep["run_seq"],
+                    "run_label": rep["run_label"],
+                    "plan_id": _text(plan.get("plan_id")),
+                    "wave_order": rep["wave_order"],
+                    "topic_id": rep["topic_id"],
+                    "target_repo": rep["target_repo"],
+                    "target": rep["target"],
+                    "pane_id": rep["pane_id"],
+                    "session_id": rep["session_id"],
+                    "status": rep["status"],
+                    "raw_status": rep["status"],
+                    "needs_owner_attention": bool(rep["needs_owner_attention"]),
+                    "blocked_reason": rep["blocked_reason"],
+                    "auto_unblocked": list(rep["auto_unblocked"]),
+                    "visible_summary": rep["visible_summary"],
+                    "completion_seq": rep["completion_seq"],
+                    "state_change_seq": rep["state_change_seq"],
+                    "history": [],
+                })
+                if rep["status"] in {"idle", "done"}:
+                    just_settled_slot_ids.append(rep["slot_id"])
+        snap = _compute_board_rollup({"slots": slots}, just_settled_slots=just_settled_slot_ids)
+        events.append({
+            "seq": len(events) + 1,
+            "type": "watch_settled",
+            "plan_id": _text(plan.get("plan_id")),
+            "watch_target": watch_filter,
+            "just_settled_labels": snap["just_settled_labels"],
+            "completed_labels": snap["completed_labels"],
+            "completed_rollup_code": snap["completed_rollup_code"],
+            "running_labels": snap["running_labels"],
+            "blocked_labels": snap["blocked_labels"],
+        })
+        return {"schema_version": 1, "slots": slots, "events": events}
+
+    updated_state = _with_locked_supervision_state(resolved_state_path, _update_settled_slots)
+    board_rollup = _compute_board_rollup(
+        updated_state,
+        just_settled_slots=[t["slot_id"] for t in target_reports if t["status"] in {"idle", "done"} and not t.get("superseded_by_run_seq")],
+    )
+
     any_missing = any(t["status"] == "missing" for t in target_reports)
     any_owner_attention = any(t["needs_owner_attention"] for t in target_reports)
     settled = (not any_missing) and all(
@@ -2699,28 +3172,51 @@ def watch_dispatched_m2(
     )
     overall_ok = settled and not any_missing
     any_auto_unblock = any(t["auto_unblock_enabled"] for t in target_reports)
+    header_suffix = f" · Target `{watch_filter}`" if watch_filter else ""
     summary_lines = [
-        f"### M2 Watch Summary · `{_text(plan.get('plan_id'), 'm2p-unknown')}`",
+        f"### M2 Watch Summary · `{_text(plan.get('plan_id'), 'm2p-unknown')}`{header_suffix}",
         f"- **All Settled**: `{settled}` · **Needs Owner Attention**: `{any_owner_attention}` · **Auto Unblock Enabled**: `{any_auto_unblock}` · **Polls**: `{polls}`",
+        (
+            f"- **Just Completed**: `{','.join(board_rollup['just_settled_labels']) or 'none'}` · "
+            f"**Cumulative Completed Rollup**: `{board_rollup['completed_rollup_code'] or 'none'}` (`{board_rollup['completed_rollup_display']}`) · "
+            f"**Still Running**: `{','.join(board_rollup['running_labels']) or 'none'}`"
+        ),
     ]
     for t in target_reports:
         unblocked_kinds = ",".join(u["kind"] for u in t["auto_unblocked"]) or "none"
         attn = f" · **NEEDS OWNER ({t['blocked_reason']})**" if t["needs_owner_attention"] else ""
         summary_lines.append(
             f"- Wave {t['wave_order']} `{t['topic_id']}` (`{t['target_repo']}` → `{t['target']}`): "
-            f"status=`{t['status']}` · auto_unblocked=`{unblocked_kinds}`{attn}"
+            f"status=`{t['status']}` · label=`{t['run_label']}` · auto_unblocked=`{unblocked_kinds}`{attn}"
         )
         if t["visible_summary"]:
             first_line = t["visible_summary"].splitlines()[-1].strip()
             summary_lines.append(f"  - Latest: `{first_line[:160]}`")
+    if board_rollup["completed_targets"]:
+        summary_lines.append(f"#### Cumulative Completed M2s (`{board_rollup['completed_rollup_code']}`)")
+        for cs in board_rollup["completed_targets"]:
+            cs_summary = _text(cs.get("visible_summary")).splitlines()[-1].strip()[:120] if _text(cs.get("visible_summary")) else ""
+            cs_tail = f" — `{cs_summary}`" if cs_summary else ""
+            summary_lines.append(
+                f"- `{_text(cs.get('run_label'))}` (`{_text(cs.get('topic_id') or cs.get('slot_id'))}` → `{_text(cs.get('target'))}`): status=`{_text(cs.get('status'))}`{cs_tail}"
+            )
     return {
         "ok": overall_ok,
         "plan_id": _text(plan.get("plan_id")),
+        "watch_target": watch_filter,
         "polls": polls,
         "auto_unblock_enabled": any_auto_unblock,
         "passive_only": not any_auto_unblock,
         "all_settled": settled,
         "needs_owner_attention": any_owner_attention,
+        "just_settled_labels": board_rollup["just_settled_labels"],
+        "completed_labels": board_rollup["completed_labels"],
+        "completed_rollup_code": board_rollup["completed_rollup_code"],
+        "completed_rollup_display": board_rollup["completed_rollup_display"],
+        "running_labels": board_rollup["running_labels"],
+        "blocked_labels": board_rollup["blocked_labels"],
+        "all_board_settled": board_rollup["all_board_settled"],
+        "board_rollup": board_rollup,
         "targets": target_reports,
         "summary_markdown": "\n".join(summary_lines),
     }
@@ -2736,6 +3232,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--message-file")
     parser.add_argument("--plan-file")
     parser.add_argument("--apply-receipt-file", help="optional apply receipt JSON file for --watch")
+    parser.add_argument("--state-file", help="optional supervision state JSON file for per-M2 cumulative rollup")
+    parser.add_argument("--reset-state", action="store_true", help="reset supervision state ledger before --apply")
+    parser.add_argument("--watch-target", "--target-id", dest="watch_target", default="", help="watch a single M2 target/slot and update cumulative rollup immediately on completion")
     parser.add_argument("--preview-md-file", help="optional markdown file path for --plan preview")
     parser.add_argument("--no-open-preview", action="store_true", help="do not invoke orca file open --focus during --plan")
     parser.add_argument("--orca-bin", help="optional path to orca binary")
@@ -2815,7 +3314,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, transport=args.transport)
+            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, state_file=args.state_file, reset_state=args.reset_state, transport=args.transport)
         else:
             if not args.plan_file:
                 raise RouterError("--watch requires --plan-file")
@@ -2828,6 +3327,8 @@ def main(argv: list[str] | None = None) -> int:
             watch_result = watch_dispatched_m2(
                 plan,
                 apply_receipt=apply_receipt,
+                watch_target=args.watch_target,
+                state_file=args.state_file,
                 interval=args.interval,
                 max_wait=args.max_wait,
                 max_polls=args.max_polls,

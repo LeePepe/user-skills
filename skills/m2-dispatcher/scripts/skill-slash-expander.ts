@@ -62,7 +62,7 @@ export const UNIVERSAL_SHORTCUT_MACROS: Readonly<Record<ShortcutMacroName, Short
 			const trimmed = rawArgs.trim();
 			return [
 				"/personal-m2-assistant",
-				"Shortcut `/m2`: run `python3 skills/personal-m2-assistant/scripts/m2-router.py --plan` first, show the per-M2 wave/status/sub-prompt preview, and use `ask_user` for the Owner Gate. Only after Owner approval, run `python3 skills/personal-m2-assistant/scripts/m2-router.py --apply --plan-file <approved-plan.json> --approve`.",
+				"Shortcut `/m2`: run `python3 skills/personal-m2-assistant/scripts/m2-router.py --plan` first, show the per-M2 wave/status/sub-prompt preview, and use `ask_user` for the Owner Gate. Only after Owner approval, run `python3 skills/personal-m2-assistant/scripts/m2-router.py --apply --plan-file <approved-plan.json> --approve`, start one separate background `--watch --watch-target <slot_id>` task per dispatched M2 from `watchdog_tasks`, and report the updated cumulative completed rollup immediately as each M2 finishes.",
 				...(trimmed ? [`Cross-M2 instruction: ${trimmed}`] : []),
 			].join("\n");
 		},
