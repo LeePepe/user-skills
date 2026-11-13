@@ -4,6 +4,12 @@ Load this file on demand when designing `layout-navigation` (`LN`), `component` 
 
 Never design a screen by dumping every feature or candidate component onto a single vertical scroll plane. Every screen in `design.md` MUST pass the **3 Orthogonal Axes (`X-Y-Z`) of Interactive Layering** below, synthesizing the 5 canonical HCI/design laws into one executable contract.
 
+## Direction-Lock & Tenfold Spec-Variant Gate (`B0 -> B2`)
+- **Known direction**: collect a reference app/screenshot, explicit direction, and anti-patterns; lock one `VS-*` + `CL-*` + `X-Y-Z` + `AppTheme` coordinate set, then author `design.md`.
+- **Ambiguous direction**: reject the first generic layout. For 1–3 rounds, propose 3–5 spec-only concepts varying `P0` focal hypothesis × Axis-Y folding mechanism A/B/C × `VS-*` archetype, with explicit anti-patterns. Every pair differs on at least two substantive axes; palette/radius swaps do not count.
+- Record the variant matrix, Owner selection, and feedback through `ask_user`; after selection freeze shared colors, spacing, font sizes, and native conventions before direct production implementation. If round three remains ambiguous, stop for Owner decision; never auto-lock.
+- This is markdown/spec work only: no `Prototype/` directory, throwaway HTML, or SwiftUI gallery. Preserve the existing No Code Demo, B4 Visual Traceback, and regression contracts. Consistency follows Dim 1/4 in [modernization-dimensions.md](modernization-dimensions.md).
+
 ---
 
 ## 1. The 5 Industry Layering Laws & Their Synthesis
