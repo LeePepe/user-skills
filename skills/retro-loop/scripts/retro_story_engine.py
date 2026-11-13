@@ -9,6 +9,7 @@ import contextlib
 import fcntl
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -160,10 +161,45 @@ def validate_hourly_report(report: dict[str, Any], manifest: dict[str, Any] | No
     return {"ok": not errors, "errors": errors}
 
 
+def _resolve_falcon_source_key(role: str = "retro-loop") -> str:
+    for name in ("FALCON_SOURCE_KEY", "FALCON_API_KEY", "JEV_API_KEY"):
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val
+    try:
+        data = json.loads((Path.home() / ".config" / "falcon" / "source-keys.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    if isinstance(data, dict):
+        for key in (role, "shared-ci", "team-lead", "goal-task"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return ""
+
+
 def _ask_jev(question: dict[str, Any], endpoint: str) -> dict[str, Any]:
-    request = Request(endpoint, data=json.dumps(question).encode(), headers={"Content-Type": "application/json"})
+    q_type = str(question.get("type", "noul")).lower()
+    q_spec: dict[str, Any] = {"type": q_type, "instructions": f"Evaluate hour {question.get('hour', 0)} claim."}
+    if q_type == "choice":
+        choices = question.get("choices") or ["supports", "contradicts", "unrelated"]
+        q_spec["criteria"] = {str(c): str(c) for c in choices}
+    payload = {
+        "model": "microsoft-decision-1",
+        "state": {"hour": question.get("hour"), "claim": question.get("claim", "")},
+        "questions": {"q": q_spec},
+    }
+    source_key = _resolve_falcon_source_key("retro-loop")
+    headers = {"Content-Type": "application/json", "X-Falcon-Agent": "retro-loop"}
+    if source_key:
+        headers["Authorization"] = f"Bearer {source_key}"
+        headers["X-Falcon-Source-Key"] = source_key
+    request = Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
     with urlopen(request, timeout=2) as response:
-        return json.loads(response.read().decode())
+        raw = json.loads(response.read().decode())
+    if isinstance(raw, dict) and isinstance(raw.get("answers"), dict) and isinstance(raw["answers"].get("q"), dict):
+        return raw["answers"]["q"]
+    return raw if isinstance(raw, dict) else {}
 
 
 def verify_citations_with_jev(

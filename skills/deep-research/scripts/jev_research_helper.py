@@ -128,11 +128,39 @@ def evaluate_r06_truth_table(step1: dict[str, Any], answers: dict[str, Any] | No
     return {"verdict": "INSUFFICIENT_EVIDENCE_ESCALATE", "confidence_cap": "CONTESTED"}
 
 
+def _resolve_falcon_source_key(source_key: str | None = None, role: str = "deep-research") -> str | None:
+    if source_key and source_key.strip():
+        return source_key.strip()
+    for name in ("FALCON_SOURCE_KEY", "FALCON_API_KEY", "JEV_API_KEY"):
+        val = os.environ.get(name)
+        if val and val.strip():
+            return val.strip()
+    path = Path.home() / ".config" / "falcon" / "source-keys.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if isinstance(data, dict):
+        for key in (role, "deep-research", "team-lead", "goal-task"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
 def call_systemone(payload: dict[str, Any], endpoint: str | None = None, source_key: str | None = None) -> dict[str, Any]:
     url = endpoint or os.environ.get("FALCON_BASE_URL", "http://127.0.0.1:19823")
     if not url.rstrip("/").endswith("/v1/systemone"):
         url = url.rstrip("/") + "/v1/systemone"
-    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {source_key}"} if source_key else {})})
+    resolved_key = _resolve_falcon_source_key(source_key, role="deep-research")
+    body = dict(payload)
+    body.setdefault("model", "microsoft-decision-1")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Falcon-Agent": "deep-research",
+        **({"Authorization": f"Bearer {resolved_key}", "X-Falcon-Source-Key": resolved_key} if resolved_key else {}),
+    }
+    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read().decode())
 

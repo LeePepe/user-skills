@@ -78,6 +78,21 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
                     jev_client._resolve_auth_token("http://127.0.0.1:19823", agent_role="knowledge-digest"),
                     ("flk_research", "flk_research"),
                 )
+            helper_path = ROOT / "skills" / "deep-research" / "scripts" / "jev_research_helper.py"
+            helper_spec = importlib.util.spec_from_file_location("jev_research_helper", helper_path)
+            helper_mod = importlib.util.module_from_spec(helper_spec)
+            helper_spec.loader.exec_module(helper_mod)
+            retro_path = ROOT / "skills" / "retro-loop" / "scripts" / "retro_story_engine.py"
+            retro_spec = importlib.util.spec_from_file_location("retro_story_engine", retro_path)
+            retro_mod = importlib.util.module_from_spec(retro_spec)
+            retro_spec.loader.exec_module(retro_mod)
+            with patch.object(helper_mod.Path, "home", return_value=home), patch.object(
+                retro_mod.Path, "home", return_value=home
+            ), patch.dict(
+                helper_mod.os.environ, {"FALCON_SOURCE_KEY": "", "FALCON_API_KEY": "", "JEV_API_KEY": ""}, clear=False
+            ):
+                self.assertEqual(helper_mod._resolve_falcon_source_key(), "flk_research")
+                self.assertEqual(retro_mod._resolve_falcon_source_key("retro-loop"), "flk_legacy_goal_task")
 
     def test_mode_resolution_and_watchdog(self):
         supervisor = load_supervisor()
