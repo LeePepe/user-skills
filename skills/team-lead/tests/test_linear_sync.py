@@ -178,6 +178,34 @@ class LinearSyncTests(unittest.TestCase):
         )
         self.assertEqual(linear_sync._infer_project_name(" Custom ", "Bing"), "Custom")
 
+    def test_domain_map_routes_goals_to_root_topics(self) -> None:
+        self.assertEqual(linear_sync._goal_topic("project-root-tracker", "", None)["topic_id"], "skills-workflow")
+        self.assertEqual(linear_sync._goal_topic("devsync1030", "", None)["topic_id"], "sapphire-china-bugs")
+        self.assertEqual(linear_sync._goal_topic("aidash-header-flat-toolbar", "", None)["topic_id"], "aidash-aidata")
+        self.assertEqual(linear_sync._goal_topic("fin-product-and-design-v2", "", None)["topic_id"], "financial")
+
+    def test_goal_route_resolves_project_milestone_without_root_parent(self) -> None:
+        class RouteClient:
+            def project_milestones(self, project_id: str):
+                self.project_id = project_id
+                return [{"id": "milestone-id", "name": "Skills Workflow"}]
+
+        client = RouteClient()
+        team = {"key": "TIA", "projects": {"nodes": [{"id": "skills-project", "name": "user-skills"}]}}
+        route = linear_sync._resolve_goal_route(client, team, "project-root-tracker", "", self.work)
+        self.assertEqual(route, {
+            "topic_id": "skills-workflow",
+            "project_id": "skills-project",
+            "milestone_id": "milestone-id",
+        })
+
+    def test_update_issue_can_clear_parent(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        client.update_issue("issue-id", clear_parent=True)
+        update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
+        self.assertIsNone(update_calls[-1][1]["input"]["parentId"])
+
     def test_aggregate_state_keeps_in_progress_when_partially_completed(self) -> None:
         team = FakeTransport()("query TeamMetadata", {})["data"]["teams"]["nodes"][0]
         tasks = [

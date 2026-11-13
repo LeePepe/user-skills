@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "manifest_format": "<!-- ROOT-MANIFEST:v1 { ... } -->",
+  "roots": [
+    {
+      "root_id": "china-release",
+      "name": "China Release",
+      "description": "Bing China release 37-bug war-room, integration branches, PR supervision, and reusable eval sinks.",
+      "repos": ["san/bing-growth-sapphire-app", "bing-growth-sapphire-app"],
+      "branch_globs": ["*china*", "*bingchina*", "*ab114*", "tianpli/ab*"],
+      "handoff_files": ["*bing-cn-1030-bugs-summary.md", "*handoff/devsync1030*", "*ab114*-tk1*"],
+      "bug_list_paths": ["*bing-cn-1030-bugs-summary.md"],
+      "integration_branches": ["devsync1030", "*china*", "*bingchina*"],
+      "keywords": ["china", "bing cn", "bingchina", "ab114", "san/bing-growth-sapphire-app", "start-china", "zh-cn"]
+    },
+    {
+      "root_id": "sapphire-notification",
+      "name": "Sapphire Notification",
+      "description": "Sapphire Notification Center and MAI notification delivery workstream.",
+      "repos": ["san/bing-growth-sapphire-app"],
+      "branch_globs": ["*notification*", "*mai-center*"],
+      "handoff_files": ["*notification*", "*sapphire-notification*"],
+      "bug_list_paths": [],
+      "integration_branches": ["*notification*", "*mai*"],
+      "keywords": ["notification center", "mai notification", "enablemainotifications", "notification"]
+    },
+    {
+      "root_id": "sapphire-smartbanner",
+      "name": "Sapphire SmartBanner",
+      "description": "Sapphire SmartBanner, universal-link, and launch-source integration workstream.",
+      "repos": ["san/bing-growth-sapphire-app"],
+      "branch_globs": ["*smartbanner*", "*universal-link*", "*universal_link*"],
+      "handoff_files": ["*smartbanner*", "*universal*"],
+      "bug_list_paths": [],
+      "integration_branches": ["*smartbanner*", "*universal*"],
+      "keywords": ["smartbanner", "universal link", "universal links", "launch source", "apple-app-site-association"]
+    },
+    {
+      "root_id": "sapphire-discovery-kumo",
+      "name": "Sapphire Discovery Kumo",
+      "description": "Discovery Feed and Kumo component delivery workstream.",
+      "repos": ["san/bing-growth-sapphire-app"],
+      "branch_globs": ["*discovery*", "*kumo*"],
+      "handoff_files": ["*discovery*", "*kumo*"],
+      "bug_list_paths": [],
+      "integration_branches": ["*discovery*", "*kumo*"],
+      "keywords": ["Discovery Feed", "Kumo", "Kumo 组件", "discovery feed"]
+    }
+  ]
+}

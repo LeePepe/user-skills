@@ -42,7 +42,7 @@ description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创�
 
 | 定时回路 | 驱动节点 | 触发与动作 |
 |---|---|---|
-| PR 自动审查与盯梢 | 环 5 | `local.pr-auto-review` 与 `local.my-pr-supervisor-precheck` 扫描 GHE / GitHub / ADO PR；未审 head SHA、CI 失败、评论或冲突时唤醒审查或 Sticky TL。 |
+| PR 自动审查与盯梢 | 环 5 | `local.pr-auto-review` 与 `local.my-pr-supervisor-precheck` 扫描 GHE / GitHub / ADO PR；未审 head SHA、CI 失败、评论或冲突时唤醒审查或 Sticky TL。`linear-board/scripts/root_tracker.py refresh` consumes the same scan, reconciles stale owner decisions, and links evidence-matched companion PRs. |
 | 多 Goal 租约与阻塞巡检 | 环 3 & 环 4 | `goal-supervisor.py scan --write-alerts` 扫描活动 `ledger.md` 与 Herdr 窗格；发现 `BLOCKED_AGENT` / `ZOMBIE_LEASE` / `ORPHAN_TL_WAIT` 时写告警并唤醒协调者。 |
 | 遥测/反馈巡检与任务回流 | 环 7 → 环 1 | 定时拉取性能、Crash、DSAT 与周期维护信号；退化时通过 `linear-board`（`linear-sync.py`）写入 `TIA` 看板，触发下一轮 Goal。 |
 

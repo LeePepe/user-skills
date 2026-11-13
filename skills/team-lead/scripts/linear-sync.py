@@ -348,6 +348,8 @@ class GraphQLClient:
           state {{ id name type }}
           team {{ id key name }}
           project {{ id name }}
+          projectMilestone {{ id name }}
+          parent {{ id identifier title }}
           labels {{ nodes {{ id name }} }}
           comments {{ nodes {{ id body }} }}
           {ISSUE_HISTORY_FIELDS}
@@ -401,6 +403,8 @@ class GraphQLClient:
         state_id: str | None = None,
         label_ids: list[str] | None = None,
         project_id: str | None = None,
+        project_milestone_id: str | None = None,
+        parent_id: str | None = None,
         create_as_user: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
@@ -414,6 +418,10 @@ class GraphQLClient:
             input_data["labelIds"] = label_ids
         if project_id:
             input_data["projectId"] = project_id
+        if project_milestone_id:
+            input_data["projectMilestoneId"] = project_milestone_id
+        if parent_id:
+            input_data["parentId"] = parent_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
         data = self.execute(
@@ -426,6 +434,8 @@ class GraphQLClient:
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
+                  projectMilestone {{ id name }}
+                  parent {{ id identifier title }}
                   labels {{ nodes {{ id name }} }}
                   comments {{ nodes {{ id body }} }}
                   {ISSUE_HISTORY_FIELDS}
@@ -448,6 +458,9 @@ class GraphQLClient:
         state_id: str | None = None,
         label_ids: list[str] | None = None,
         project_id: str | None = None,
+        project_milestone_id: str | None = None,
+        parent_id: str | None = None,
+        clear_parent: bool = False,
         title: str | None = None,
         priority: int | None = None,
     ) -> dict[str, Any]:
@@ -462,6 +475,10 @@ class GraphQLClient:
             input_data["labelIds"] = label_ids
         if project_id is not None:
             input_data["projectId"] = project_id
+        if project_milestone_id is not None:
+            input_data["projectMilestoneId"] = project_milestone_id
+        if parent_id is not None or clear_parent:
+            input_data["parentId"] = parent_id
         if priority is not None:
             input_data["priority"] = priority
         data = self.execute(
@@ -474,6 +491,8 @@ class GraphQLClient:
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
+                  projectMilestone {{ id name }}
+                  parent {{ id identifier title }}
                   labels {{ nodes {{ id name }} }}
                   comments {{ nodes {{ id body }} }}
                   {ISSUE_HISTORY_FIELDS}
@@ -531,6 +550,35 @@ class GraphQLClient:
                 and (not query or query.casefold() in f"{issue.get('identifier', '')} {issue.get('title', '')} {issue.get('description', '')}".casefold())
             )
         return [issue for issue in issues if isinstance(issue, dict) and matches(issue)]
+
+    def find_issue_by_title(self, team_key: str, title: str) -> dict[str, Any] | None:
+        data = self.execute(
+            """
+            query IssueByTitle($team: String!, $title: String!) {
+              issues(filter: {team: {key: {eq: $team}}, title: {eq: $title}}, first: 20) {
+                nodes {
+                  id identifier url title parent { id identifier title }
+                  project { id name } projectMilestone { id name }
+                  state { id name type } priority labels { nodes { id name } }
+                }
+              }
+            }
+            """,
+            {"team": team_key, "title": title},
+        )
+        nodes = data.get("issues", {}).get("nodes", [])
+        return nodes[0] if nodes else None
+
+    def project_milestones(self, project_id: str) -> list[dict[str, Any]]:
+        data = self.execute(
+            """
+            query ProjectMilestones($id: String!) {
+              project(id: $id) { projectMilestones { nodes { id name description targetDate } } }
+            }
+            """,
+            {"id": project_id},
+        )
+        return data.get("project", {}).get("projectMilestones", {}).get("nodes", [])
 
     def find_issue_by_dedup_marker(self, team_id: str, marker: str) -> dict[str, Any] | None:
         data = self.execute(
@@ -607,6 +655,85 @@ def _project_id(team: dict[str, Any], project_name: str | None) -> str | None:
             project_id = project.get("id")
             return str(project_id) if project_id else None
     return None
+
+
+DOMAIN_MAP_PATH = Path(__file__).resolve().parents[2] / "personal-m2-assistant" / "references" / "m2-domain-map.json"
+DOMAIN_PROJECT_NAMES = {
+    "work-business": "Work Business",
+    "user-skills": "user-skills",
+    "personal-core-gateways": "Personal Core & Gateways",
+    "personal-products-home": "Personal Products & Home",
+}
+EXTRA_TOPIC = {"topic_id": "financial", "group": "personal-products-home", "title": "Financial"}
+ROOT_NAME_OVERRIDES = {
+    "sapphire-china-bugs": "China Release",
+    "sapphire-notification": "Sapphire Notification",
+    "sapphire-smartbanner": "Sapphire SmartBanner",
+}
+
+
+def _domain_topics() -> list[dict[str, str]]:
+    try:
+        data = json.loads(DOMAIN_MAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    topics: list[dict[str, str]] = []
+    for group in data.get("groups", []) if isinstance(data, dict) else []:
+        if not isinstance(group, dict):
+            continue
+        for topic in group.get("topics", []) if isinstance(group.get("topics"), list) else []:
+            if isinstance(topic, dict) and topic.get("topic_id"):
+                topics.append({
+                    "topic_id": str(topic["topic_id"]),
+                    "group": str(topic.get("group") or ""),
+                    "title": str(topic.get("title") or topic["topic_id"]),
+                    "keywords": " ".join(str(x) for x in topic.get("keywords", [])),
+                    "aliases": " ".join(str(x) for x in topic.get("aliases", [])),
+                })
+    topics.append(EXTRA_TOPIC)
+    return topics
+
+
+def _goal_topic(goal_name: str, ledger_text: str, handoff_dir: Path | None = None) -> dict[str, str] | None:
+    goal_key = str(goal_name or "").strip().casefold()
+    topics = {topic["topic_id"]: topic for topic in _domain_topics()}
+    exact = {
+        "project-root-tracker": "skills-workflow",
+        "ios-snapshot-skill": "skills-repo-ci",
+        "devsync1030": "sapphire-china-bugs",
+    }
+    if goal_key in exact:
+        return topics.get(exact[goal_key])
+    text = f"{goal_name} {ledger_text} {handoff_dir or ''}".casefold()
+    explicit = (
+        ("sapphire-china-bugs", ("devsync", "china release", "bing cn", "bingchina", "ab114", "manageapps")),
+        ("sapphire-notification", ("notification", "push", "mai notification")),
+        ("sapphire-smartbanner", ("smartbanner", "universal link", "universal_link", "upsell")),
+        ("aidash-aidata", ("aidash", "aidata")),
+        ("dsh-plugins", ("dsh", "deepseek harness", "session sink", "omni hub")),
+        ("gateway-herdr-jev", ("herdr", "magpie", "falcon", "gateway", "copilot-bg-watch")),
+        ("financial", ("financial", "fin-", "fin product")),
+        ("voxpocket", ("voxpocket", "vox-pocket")),
+        ("vitalstride", ("vitalstride", "workout")),
+        ("helix", ("helix",)),
+        ("davici", ("davici",)),
+        ("nas-smart-home", ("nas", "home assistant", "node-red", "mijia")),
+        ("learning-and-blog", ("learning", "blog", "learn-", "knowledge vault")),
+        ("skills-design", ("designer", "design", "visual", "studio")),
+        ("skills-research-knowledge", ("research", "knowledge", "digest")),
+        ("skills-retro-story", ("retro", "story-craft", "story maintenance")),
+        ("skills-repo-ci", ("repo", "skill-contract", "snapshot", "ci", "precommit", "test")),
+    )
+    for topic_id, markers in explicit:
+        if any(marker in text for marker in markers):
+            return topics.get(topic_id) or {"topic_id": topic_id, "group": "", "title": topic_id}
+    if any(marker in text for marker in ("workflow", "m2", "linear", "team-lead", "dispatcher", "skills")):
+        return topics.get("skills-workflow")
+    return None
+
+
+def _root_name(topic: dict[str, str]) -> str:
+    return ROOT_NAME_OVERRIDES.get(topic.get("topic_id", ""), topic.get("title", topic.get("topic_id", "")))
 
 
 def _parse_events(text: str) -> list[dict[str, str]]:
@@ -1169,6 +1296,32 @@ def _ledger_tl(text: str) -> str | None:
     return match.group(1).strip() if match and match.group(1).strip() else None
 
 
+def _resolve_goal_route(
+    client: GraphQLClient,
+    team: dict[str, Any],
+    goal_name: str,
+    ledger_text: str,
+    handoff_dir: Path,
+) -> dict[str, str] | None:
+    topic = _goal_topic(goal_name, ledger_text, handoff_dir)
+    if not topic:
+        return None
+    project_name = DOMAIN_PROJECT_NAMES.get(topic.get("group", ""), "")
+    project_id = _project_id(team, project_name)
+    if not project_id:
+        return None
+    milestone_name = _root_name(topic)
+    milestones = client.project_milestones(project_id)
+    milestone = next((item for item in milestones if str(item.get("name", "")).casefold() == milestone_name.casefold()), None)
+    if not milestone or not milestone.get("id"):
+        return None
+    return {
+        "topic_id": topic.get("topic_id", ""),
+        "project_id": str(project_id),
+        "milestone_id": str(milestone["id"]),
+    }
+
+
 def _sync_issue(
     client: GraphQLClient,
     issue: dict[str, Any],
@@ -1185,7 +1338,18 @@ def _sync_issue(
     attribution = _collect_task_attribution(handoff_dir, ledger_text, tasks)
     inferred_project = _infer_project_name(project_name, ledger_text, str(handoff_dir))
     project_id = _project_id(team, inferred_project)
+    goal_route = None
+    if mode != "observe" and str(issue.get("title") or "").startswith("[Goal]"):
+        goal_route = _resolve_goal_route(client, team, goal_name, ledger_text, handoff_dir)
+        if goal_route:
+            project_id = goal_route["project_id"]
+            inferred_project = next(
+                (value for value in DOMAIN_PROJECT_NAMES.values() if _project_id(team, value) == project_id),
+                inferred_project,
+            )
     current_project_id = str((issue.get("project") or {}).get("id") or "")
+    current_milestone_id = str((issue.get("projectMilestone") or {}).get("id") or "")
+    current_parent_id = str((issue.get("parent") or {}).get("id") or "")
     explicit_project = bool(project_name and project_name.strip())
     description = _updated_description(
         issue.get("description"),
@@ -1208,14 +1372,19 @@ def _sync_issue(
     elif not blocking and blocked_labels:
         blocked_ids = {str(lbl["id"]) for lbl in blocked_labels}
         labels = [label_id for label_id in labels if label_id not in blocked_ids]
-    target_project_id = project_id if project_id and (explicit_project or not current_project_id) else None
+    target_project_id = project_id if project_id and (explicit_project or not current_project_id or goal_route) else None
+    target_milestone_id = goal_route.get("milestone_id") if goal_route and goal_route.get("milestone_id") else None
+    target_parent_id = None
+    clear_goal_parent = goal_route is not None
     current_state_id = str((issue.get("state") or {}).get("id") or "")
     current_labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
     state_changed = bool(target_state and str(target_state.get("id") or "") != current_state_id)
     labels_changed = set(labels) != set(current_labels)
     project_changed = bool(target_project_id and target_project_id != current_project_id)
+    milestone_changed = bool(target_milestone_id and target_milestone_id != current_milestone_id)
+    parent_changed = clear_goal_parent and bool(current_parent_id)
     description_changed = description != str(issue.get("description") or "")
-    has_field_changes = description_changed or state_changed or labels_changed or project_changed
+    has_field_changes = description_changed or state_changed or labels_changed or project_changed or milestone_changed or parent_changed
     planned_mutations: list[dict[str, Any]] = []
     if has_field_changes:
         planned_mutations.append({"operation": "UpdateIssue", "graphql_operation_name": "UpdateIssue", "variables": {
@@ -1224,6 +1393,8 @@ def _sync_issue(
                 "stateId": str(target_state["id"]) if target_state else None,
                 "labelIds": labels,
                 **({"projectId": target_project_id} if target_project_id else {}),
+                **({"projectMilestoneId": target_milestone_id} if target_milestone_id else {}),
+                **({"parentId": target_parent_id} if clear_goal_parent else {}),
             },
         }})
     if mode == "auto" and has_field_changes:
@@ -1231,6 +1402,8 @@ def _sync_issue(
             str(issue["id"]), description=description,
             state_id=str(target_state["id"]) if target_state else None,
             label_ids=labels, project_id=target_project_id,
+            project_milestone_id=target_milestone_id, parent_id=target_parent_id,
+            clear_parent=clear_goal_parent,
         )
     existing_comments = _issue_comment_bodies(issue)
     for event in blocking:
@@ -1287,7 +1460,7 @@ def _sync_issue(
         return {
             **issue,
             "diff": {"has_changes": has_field_changes, "issue_create": False,
-                     "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed)) if changed],
+                     "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed), ("milestone", milestone_changed), ("parent", parent_changed)) if changed],
                      "comments_to_create": [m["variables"]["input"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
                      "local_effects": []},
             "planned_mutations": planned_mutations,

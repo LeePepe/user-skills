@@ -116,3 +116,12 @@
 - **PointsTo**：`1:N` 目标 M2；新建目标返回 session/agent/workspace/pane 坐标，后续由目标 M2 按原合同处理。
 - **红线**：计划阶段不能创建或投递；不读取 dsh 私有 session 存储；wave 不伪装成事务顺序；Cindy 适配器复用同一 schema，不另造路由语义。
 - **验证**：`python3 -m unittest scripts/test_m2_router.py`、`skill_contract.py audit --strict`、`./scripts/verify`。
+
+### G1/E2/E10/I3/I5/P7 Project Root Tracker 组合配方
+
+- **Inbound**：外部 PR/ADO Bug、本地 handoff 清单、devsync 集成分支、Worktree、`my-pr-supervisor` PoP/S1-S2-S3 状态及 `pr_eval_extractor` 评测沉淀项。
+- **Internal**：按 Root Manifest 的 repo/branch/handoff/integration/keyword 锚点确定性归根；未命中时调用 I3 Jev，离线使用可解释的 keyword scorer 并标记 `NEW_ROOT_CANDIDATE`。在 Root → Workstream → Leaf 树中生成 Bugs、PR Supervision、P0 Blocking Decisions、Repo & Skill Sinks。
+- **Calls**：G1 只读/幂等 upsert Linear TIA Root Parent 与 child tracking；E2 导入 Bug/devsync；E10 读取 PR supervision；I3 分类；I5 生成 Owner 拍板/PoP 提醒；P7 接收评分 `>=0.70` 的三类 repo/skill sink。
+- **PointsTo**：本地 `state/root-tree-snapshot.json` → 单文件 HTML war-room；Owner 通过链接或复制命令自行完成 PoP/Merge、`record-feedback`、Sticky TL 自愈或 `devsync revert`。
+- **Trigger/Notify**：Manual/Pulse；P0 用 `P0_BLOCKING_DECISION`，P1 用 `WAIT_POP_OR_MERGE`，S1→S2→S3 串行自愈；Linear 是唯一可写追踪 DB，严禁向 FlightBook、ADO、GitHub/GHE PR 反向写入。
+- **Owned Paths**：`handoff/project-root-tracker/**` 与本 recipe；**验证**：`python3 -m unittest`、`python3 skills/skill-contract/scripts/skill_contract.py audit --strict`。

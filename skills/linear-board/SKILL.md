@@ -52,3 +52,12 @@ summarizing R10 receipts, run metrics, duration, tokens, and honest lower-bound
 costs. Credentials are stored in `~/.config/linear/credentials.json` with
 directory mode `0700` and file mode `0600`; use `linear-sync.py auth set`,
 `auth show`, or `auth remove`.
+
+## Project Root Tracker
+
+Run `python3 scripts/root_tracker.py refresh` to collect the offline-first root
+snapshot, render the four-section `PR & PoP` Markdown, and sync only to Linear.
+The layout separates merged PRs from active PoP, auto-heal, and review/CI queues;
+resolved cross-session decisions are shown with `Resolve: TIA-34x` badges. The
+tracker reconciles a decision when discovery reports zero unresolved comments,
+no signals, and a new head, so stale owner prompts do not remain visible.
