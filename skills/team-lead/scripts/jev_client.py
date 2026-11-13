@@ -82,6 +82,19 @@ def _read_local_auth_values(directory: Path) -> dict[str, str]:
     return values
 
 
+ROLE_SOURCE_KEY_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "team-lead": ("goal-task",),
+    "personal-m2-assistant": ("team-lead", "goal-task"),
+    "m2-dispatcher": ("team-lead", "goal-task"),
+    "writer": ("team-lead", "goal-task"),
+    "reviewer": ("team-lead", "goal-task"),
+    "explorer": ("team-lead", "goal-task"),
+    "knowledge-digest": ("deep-research",),
+    "design-studio": ("my-designer",),
+    "retro-loop": ("shared-ci", "team-lead", "goal-task"),
+}
+
+
 def _read_skill_source_key(directory: Path, agent_role: str) -> str | None:
     path = directory / "source-keys.json"
     try:
@@ -90,8 +103,12 @@ def _read_skill_source_key(directory: Path, agent_role: str) -> str | None:
         return None
     if not isinstance(data, dict):
         return None
-    value = data.get(agent_role)
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    candidates = (agent_role, *ROLE_SOURCE_KEY_FALLBACKS.get(agent_role, ()), "team-lead", "goal-task")
+    for key in candidates:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _resolve_auth_token(

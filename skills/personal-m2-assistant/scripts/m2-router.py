@@ -673,7 +673,7 @@ def _jev_decision(message: str, sessions: list[dict[str, Any]], domain_map: dict
             "primary_topic": {"type": "choice", "instructions": "Choose the primary business topic, or NEW_UNMAPPED_DOMAIN.", "criteria": {topic_id: topic_id for topic_id in topic_ids}},
             "has_unmapped_domain": {"type": "noul", "instructions": "Is any requested business topic missing from the domain map?"},
         }
-        result = module.jev_decide(state, questions, agent_role="team-lead", goal_id=goal_id, mock_response=None if mock is None else mock)
+        result = module.jev_decide(state, questions, agent_role="personal-m2-assistant", goal_id=goal_id, mock_response=None if mock is None else mock)
         return result if isinstance(result, dict) else None
     except (OSError, ImportError, TypeError, AssertionError):
         return None

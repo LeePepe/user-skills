@@ -53,6 +53,31 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
                     jev_client._resolve_auth_token("http://127.0.0.1:19823"),
                     ("flk_goal_task", "flk_goal_task"),
                 )
+            (falcon_dir / "source-keys.json").write_text(
+                json.dumps({"goal-task": "flk_legacy_goal_task", "deep-research": "flk_research"}),
+                encoding="utf-8",
+            )
+            with patch.object(jev_client.Path, "home", return_value=home), patch.dict(
+                jev_client.os.environ,
+                {
+                    "FALCON_API_KEY": "",
+                    "FALCON_SOURCE_KEY": "",
+                    "JEV_API_KEY": "",
+                },
+                clear=False,
+            ):
+                self.assertEqual(
+                    jev_client._resolve_auth_token("http://127.0.0.1:19823", agent_role="team-lead"),
+                    ("flk_legacy_goal_task", "flk_legacy_goal_task"),
+                )
+                self.assertEqual(
+                    jev_client._resolve_auth_token("http://127.0.0.1:19823", agent_role="personal-m2-assistant"),
+                    ("flk_legacy_goal_task", "flk_legacy_goal_task"),
+                )
+                self.assertEqual(
+                    jev_client._resolve_auth_token("http://127.0.0.1:19823", agent_role="knowledge-digest"),
+                    ("flk_research", "flk_research"),
+                )
 
     def test_mode_resolution_and_watchdog(self):
         supervisor = load_supervisor()
