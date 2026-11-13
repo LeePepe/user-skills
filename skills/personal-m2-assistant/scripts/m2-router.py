@@ -242,18 +242,31 @@ def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.Complet
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
 
 
-def _workspace_records(payload: Any) -> list[dict[str, Any]]:
-    records = _records(payload)
-    if isinstance(payload, dict) and isinstance(payload.get("workspaces"), list):
-        records = [item for item in payload["workspaces"] if isinstance(item, dict)]
-    elif isinstance(payload, dict) and isinstance(payload.get("result"), dict) and isinstance(payload["result"].get("workspaces"), list):
-        records = [item for item in payload["result"]["workspaces"] if isinstance(item, dict)]
+def _workspace_inventory(payload: Any) -> list[dict[str, Any]] | None:
+    """Distinguish a valid, possibly empty inventory from non-workspace output."""
+    if isinstance(payload, dict):
+        if payload.get("ok") is False or payload.get("error"):
+            return None
+        if "workspaces" in payload:
+            payload = payload["workspaces"]
+        elif isinstance(payload.get("result"), dict):
+            return _workspace_inventory(payload["result"])
+    if not isinstance(payload, list):
+        return None
     normalized = []
-    for item in records:
+    session_fields = {
+        "pane_id", "paneId", "session_id", "sessionId", "agent", "agent_name", "agentName",
+        "herdr_target", "herdrTarget", "isDshSession", "is_dsh_session", "foreground_cwd", "target_repo",
+    }
+    for item in payload:
+        if not isinstance(item, dict) or session_fields.intersection(item):
+            return None
+        if "cwd" in item and "label" not in item:
+            return None
         workspace_id = _text(item.get("workspace_id") or item.get("workspaceId") or item.get("id"))
         label = _text(item.get("label") or item.get("name") or item.get("title"))
-        if not workspace_id:
-            continue
+        if not workspace_id or not any(field in item for field in ("label", "name", "title")):
+            return None
         normalized.append({
             "workspace_id": workspace_id,
             "label": label,
@@ -263,6 +276,10 @@ def _workspace_records(payload: Any) -> list[dict[str, Any]]:
             "agent_status": _text(item.get("agent_status") or item.get("agentStatus") or item.get("status")),
         })
     return normalized
+
+
+def _workspace_records(payload: Any) -> list[dict[str, Any]]:
+    return _workspace_inventory(payload) or []
 
 
 def _workspace_map(workspaces: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -340,9 +357,10 @@ def discover_herdr(
         agent_records = _records(agent_payload)
     if workspace_payload is None:
         workspace_payload = herdr_workspace_payload
-    workspace_records = _workspace_records(workspace_payload) if workspace_payload is not None else []
-    if isinstance(payload, dict) and not workspace_records:
-        workspace_records = _workspace_records(payload)
+    workspace_inventory = _workspace_inventory(workspace_payload)
+    if isinstance(payload, dict) and workspace_inventory is None:
+        workspace_inventory = _workspace_inventory(payload)
+    workspace_records = workspace_inventory or []
     if pane_payload is None and agent_payload is None and payload is None:
         binary = herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr")
         if not binary:
@@ -352,9 +370,11 @@ def discover_herdr(
             agent_result = runner([binary, "agent", "list"], timeout=3.0)
             try:
                 workspace_result = runner([binary, "workspace", "list"], timeout=3.0)
-                workspace_records = _workspace_records(_parse_json_output(workspace_result.stdout)) if workspace_result.returncode == 0 else []
+                live_inventory = _workspace_inventory(_parse_json_output(workspace_result.stdout)) if workspace_result.returncode == 0 else None
+                if workspace_inventory is None and live_inventory is not None:
+                    workspace_records = live_inventory
             except (OSError, subprocess.SubprocessError):
-                workspace_records = []
+                pass
         except (OSError, subprocess.SubprocessError) as error:
             return [], f"herdr discovery failed: {error}"
         failures = [result for result in (pane_result, agent_result) if result.returncode != 0]
@@ -432,8 +452,8 @@ def discover_sessions(
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for session in sessions:
         deduped[(session["source"], session["session_id"])] = session
-    workspace_inventory = _workspace_records(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
-    if not workspace_inventory:
+    workspace_inventory = _workspace_inventory(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
+    if workspace_inventory is None:
         workspace_inventory = discovered_workspaces
     return DiscoverySessions(deduped.values(), workspaces=workspace_inventory), warnings
 
@@ -558,8 +578,13 @@ def _matching_topic_sessions(
     repo = _clean_target_name(target.get("target_repo"))
     mapped_space = _text((topic or {}).get("space") or target.get("space") or target.get("target_repo"))
     aliases = [_text(value) for value in ((topic or {}).get("space_aliases") or target.get("space_aliases") or []) if _text(value)]
-    allowed_spaces = {mapped_space.casefold(), *aliases}
+    allowed_spaces = {value.casefold() for value in [mapped_space, *aliases]}
+    if mapped_space.casefold() != "大总管":
+        allowed_spaces.discard("大总管")
     target_workspace_id = _text(target.get("target_workspace_id"))
+    effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
+    explicit_unmapped = not topic and effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}
+    session_id = _text(target.get("session_id") or target.get("sessionId"))
     candidates = []
     for session in sessions:
         repo_match = bool(repo) and _clean_target_name(session.get("target_repo")).casefold() == repo.casefold()
@@ -571,9 +596,8 @@ def _matching_topic_sessions(
             continue
         if target_workspace_id and ws_id and ws_id != target_workspace_id and not space_match:
             continue
-        if repo_match or space_match or workspace_match:
+        if repo_match or space_match or workspace_match or (explicit_unmapped and not repo and session_id == session["session_id"]):
             candidates.append(session)
-    effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
     if effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
         return candidates
     compatible = [session for session in candidates if not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == effective_topic_id]
@@ -618,19 +642,6 @@ def _target_session(
         match = next((session for session in candidates if session["session_id"] == session_id), None)
         if match:
             return match
-        effective_topic_id = _text((topic or {}).get("topic_id") or target.get("topic_id")).casefold()
-        if not topic and effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
-            repo = _clean_target_name(target.get("target_repo"))
-            fallback = next(
-                (
-                    session for session in sessions
-                    if session["session_id"] == session_id
-                    and (not repo or _clean_target_name(session.get("target_repo")).casefold() == repo.casefold())
-                ),
-                None,
-            )
-            if fallback:
-                return fallback
     if len(candidates) == 1:
         return candidates[0]
     if candidates:
@@ -1228,9 +1239,9 @@ def build_plan(
         raise RouterError("message is required")
     plan_id = f"m2p-{uuid.uuid4().hex[:10]}"
     loaded_domain_map = domain_map or load_domain_map(domain_map_file)
-    workspace_inventory = _workspace_records(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
-    if not workspace_inventory:
-        workspace_inventory = list(getattr(sessions, "workspaces", []))
+    workspace_inventory = _workspace_inventory(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
+    if workspace_inventory is None:
+        workspace_inventory = _workspace_records(getattr(sessions, "workspaces", []))
     route, targets, decision = classify(
         message,
         sessions,
@@ -1439,12 +1450,12 @@ def _apply_workspace_id(
     if created_workspaces and _text(created_workspaces.get(space_key)):
         return _text(created_workspaces[space_key])
 
-    discovery = (plan.get("discovery") or {}).get("workspaces") or []
+    discovery = _workspace_records((plan.get("discovery") or {}).get("workspaces"))
     live_inventory: list[dict[str, Any]] | None = None
     try:
         result = runner([binary, "workspace", "list"], timeout=3.0)
         if getattr(result, "returncode", 1) == 0:
-            live_inventory = _workspace_records(_parse_json_output(result.stdout))
+            live_inventory = _workspace_inventory(_parse_json_output(result.stdout))
     except (OSError, subprocess.SubprocessError):
         live_inventory = None
     inventory = live_inventory if live_inventory is not None else discovery
@@ -1466,11 +1477,11 @@ def _apply_workspace_id(
     return ""
 
 
-def _authoritative_apply_space(target: dict[str, Any], plan: dict[str, Any]) -> tuple[str, list[str]]:
+def _authoritative_apply_space(target: dict[str, Any], plan: dict[str, Any], domain_map_file: str | Path | None = None) -> tuple[str, list[str]]:
     topic_id = _text(target.get("topic_id"))
     if topic_id and topic_id != NEW_UNMAPPED_DOMAIN:
         try:
-            topic = _topic_by_id(load_domain_map(plan.get("domain_map_file"))).get(topic_id)
+            topic = _topic_by_id(load_domain_map(domain_map_file or plan.get("domain_map_file"))).get(topic_id)
         except RouterError:
             topic = None
         if topic:
@@ -1482,7 +1493,7 @@ def _authoritative_apply_space(target: dict[str, Any], plan: dict[str, Any]) -> 
     )
 
 
-def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, index: int = 1, used_names: set[str] | None = None, created_workspaces: dict[str, str] | None = None) -> dict[str, Any]:
+def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, index: int = 1, used_names: set[str] | None = None, created_workspaces: dict[str, str] | None = None, domain_map_file: str | Path | None = None) -> dict[str, Any]:
     binary = _herdr_binary(target)
     model = _text(target.get("model"), _text(plan.get("default_model"), DEFAULT_M2_MODEL))
     context = _text(target.get("context"), _text(plan.get("default_context"), DEFAULT_M2_CONTEXT))
@@ -1499,7 +1510,7 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
 
     name = _new_herdr_agent_name(target, index=index, used_names=used_names)
     dispatch = _text(target.get("dispatch_script") or os.environ.get("M2_ROUTER_HERDR_DISPATCH")) or str(Path.home() / "Development" / "user-skills" / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh")
-    mapped_space, space_aliases = _authoritative_apply_space(target, plan)
+    mapped_space, space_aliases = _authoritative_apply_space(target, plan, domain_map_file)
     space_key = mapped_space.casefold()
     workspace_id = _apply_workspace_id(
         mapped_space,
@@ -1703,7 +1714,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             if selected == "stdout":
                 receipt = {"ok": True, "method": "stdout", "target": dispatch_target.get("target_repo", "unspecified"), "created": False, "would_create": dispatch_target.get("m2_status") == "NEW_M2", "prompt": prompt}
             elif selected == "herdr":
-                receipt = _apply_herdr(dispatch_target, plan, prompt, runner=runner, index=target_seq, used_names=used_herdr_names, created_workspaces=created_workspaces)
+                receipt = _apply_herdr(dispatch_target, plan, prompt, runner=runner, index=target_seq, used_names=used_herdr_names, created_workspaces=created_workspaces, domain_map_file=domain_map_file)
             elif selected == "dsh":
                 receipt = _apply_dsh(dispatch_target, plan, prompt, poster=poster)
             else:
