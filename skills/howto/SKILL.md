@@ -19,7 +19,8 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 | 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
 | 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
 | 派发单仓 M1 Worktree | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` |
-| 跨仓多 M2 编排 | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `personal-m2-assistant ... --plan`，Owner Gate 后 `--apply` |
+| 跨仓多 M2 编排 | [`personal-m2-assistant/SKILL.md`](../personal-m2-assistant/SKILL.md) | `m2-router.py --plan`，Owner Gate 后 `--apply` |
+| 回归入口与触发边界 | [eval-cases.json](references/eval-cases.json) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill howto --strict` |
 
 ## 2. 新 Session 启动用法（3 种标准姿势）
 
@@ -48,14 +49,14 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ## 6. 四大标准素材库挂载判定矩阵与隔离红线
 
-只有同时满足 **高频累积性 × 跨会话 Top-3 检索复用 × 图文/公开沉淀价值** 才挂载素材库；否则留在当前 Goal/handoff。
+只有同时满足 **高频累积性 × 跨会话 Top-3 检索复用 × 图文/公开沉淀价值** 才挂载素材库；否则留在当前 Goal/handoff。下表为 `leepepe.github.io` 的候选消费路由，只有脱敏并获发布批准后才投递，登记不代表已上线。
 
-| Canonical Vault | 挂载路径 | 适合内容 |
-|---|---|---|
-| Design & Motion Vault | `/vault/` | 设计灵感、动效、测量卡 |
-| Collected Tools Vault | `/vault/` | 工具、Repo、使用入口 |
-| Personal Knowledge Vault | `/learn/` | 知识卡、文章/视频拆解 |
-| Retro & Story Vault | `/thoughts/` | 复盘、技术叙事、公开素材 |
+| Canonical Vault | 唯一写入技能 / 本地事实源 | Blog 挂载 | 适合内容 |
+|---|---|---|---|
+| Design & Motion Vault | `design-studio` / 该技能的 `references/vault/` | `/vault/` | 设计灵感、动效、测量卡 |
+| Collected Tools Vault | `save-tool` / `~/Development/Personal/collected-tools/` | `/vault/` | 工具、Repo、使用入口 |
+| Personal Knowledge Vault | `knowledge-digest` / `~/Development/Personal/knowledge-vault/` | `/learn/` | 知识卡、文章/视频拆解 |
+| Retro & Story Vault | `retro-loop` → `story-craft` / Goal 的已验收叙事 handoff | `/thoughts/` | 复盘、技术叙事、公开素材 |
 
 红线：`knowledge-vault` 永不自动同步 `design-studio`；AIDash 的 `Star` 永不自动发布；`save-tool` 只收藏与索引，**零执行**。
 
