@@ -1117,7 +1117,7 @@ def _blog_repo(args):
     return path.resolve()
 
 
-def _mount_blog(destination, args, manifest):
+def _blog_manifest(args, manifest):
     if getattr(args, "no_blog_mount", False):
         return None
     blog_repo = _blog_repo(args)
@@ -1126,13 +1126,21 @@ def _mount_blog(destination, args, manifest):
     blog_goal = blog_repo / "demos" / args.goal
     if blog_goal.exists() and blog_goal.is_symlink():
         raise ValueError("blog demo goal must not be a symlink")
+    manifest["blog_demo_dir"] = str(blog_goal)
+    manifest["blog_demo_url"] = f"https://leepepe.github.io/demos/{args.goal}/r{args.round}/"
+    return blog_repo, blog_goal
+
+
+def _mount_blog(destination, args, manifest):
+    prepared = _blog_manifest(args, manifest)
+    if prepared is None:
+        return None
+    blog_repo, blog_goal = prepared
     blog_round = blog_goal / f"r{args.round}"
     if blog_round.exists() or blog_round.is_symlink():
         raise ValueError(f"blog demo round already exists or is unsafe: {blog_round}")
     blog_round.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(destination, blog_round)
-    manifest["blog_demo_dir"] = str(blog_goal)
-    manifest["blog_demo_url"] = f"https://leepepe.github.io/demos/{args.goal}/r{args.round}/"
     save(blog_round / "manifest.json", manifest)
     (blog_goal / "index.html").write_text(
         f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -1150,24 +1158,37 @@ def _mount_blog(destination, args, manifest):
     return manifest
 
 
+def _reject_symlinks(root, label):
+    if root.is_symlink():
+        raise ValueError(f"refusing symlink {label}: {root}")
+    if not root.exists():
+        return
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in dirs + files:
+            path = current_path / name
+            if path.is_symlink():
+                raise ValueError(f"refusing symlink {label}: {path}")
+
+
 def _cleanup_paths(args):
     _safe_goal(args.goal)
-    handoff_root = Path(args.handoff_root).expanduser().resolve()
-    blog_repo = Path(args.blog_repo).expanduser().resolve() if args.blog_repo else _blog_repo(args)
-    if blog_repo and blog_repo.exists() and blog_repo.is_symlink():
+    handoff_root = Path(args.handoff_root).expanduser()
+    raw_blog_repo = Path(args.blog_repo).expanduser() if args.blog_repo else None
+    if raw_blog_repo is not None and raw_blog_repo.is_symlink():
         raise ValueError("blog repo must not be a symlink")
+    blog_repo = raw_blog_repo.resolve() if raw_blog_repo else _blog_repo(args)
     blog_goal = blog_repo / "demos" / args.goal if blog_repo else None
-    if blog_goal and blog_goal.exists() and blog_goal.is_symlink():
-        raise ValueError("blog demo goal must not be a symlink")
     goal_root = handoff_root / args.goal
-    if goal_root.exists() and goal_root.is_symlink():
+    if goal_root.is_symlink():
         raise ValueError("handoff goal must not be a symlink")
+    if blog_goal and blog_goal.exists():
+        _reject_symlinks(blog_goal, "blog demo tree")
     rounds = []
     if goal_root.is_dir():
         for child in goal_root.iterdir():
-            if re.fullmatch(r"(?:r|app-nav-r)\d+", child.name):
-                if child.is_symlink():
-                    raise ValueError(f"refusing symlink round: {child}")
+            if re.fullmatch(r"(?:r|app-nav-r)\d+|demos", child.name):
+                _reject_symlinks(child, "handoff demo tree")
                 rounds.append(child)
     return blog_repo, blog_goal, goal_root, rounds
 
@@ -1403,6 +1424,7 @@ def command_scaffold_app_nav(args):
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
     destination.mkdir(parents=True)
     manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    _blog_manifest(args, manifest)
     for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,args.platform,anti_patterns,overrides),encoding='utf-8')
     (destination/'current.html').write_text(_app_nav_html(schemes[0],0,args.platform,anti_patterns,overrides),encoding='utf-8')
     links=''.join(f'<li><a href="app{i:02d}.html">{escape(x["title"])}</a></li>' for i,x in enumerate(schemes,1))
@@ -1440,6 +1462,7 @@ def command_scaffold_gallery(args):
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
     manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    _blog_manifest(args, manifest)
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
     css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
