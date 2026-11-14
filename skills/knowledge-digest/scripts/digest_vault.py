@@ -1330,7 +1330,9 @@ def discover_topics(
         # Candidate selection is metadata-only and deterministic. Approval-time research
         # may use other services, but discovery must never call a network/LLM reranker.
         ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
-        eff_top = requested_quota if (propose_linear or top is not None) else (1 if propose_aidash else 1)
+        # Legacy AIDash callers retain their one/day contract even when they pass
+        # --top; the explicit Linear mode opts into the requested multi-topic quota.
+        eff_top = requested_quota if propose_linear else (1 if propose_aidash else max(1, top or 1))
         selected = ranked[:eff_top]
         for item in selected:
             item["learning_brief"] = _learning_brief(item)

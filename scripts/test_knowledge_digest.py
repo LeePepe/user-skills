@@ -39,7 +39,110 @@ def seed_ledger(vault: Path, source_ids: tuple[str, ...]) -> None:
     (vault / "topic-ledger.json").write_text(json.dumps({"topics": topics}), encoding="utf-8")
 
 
+class FakeLinearTransport:
+    def __init__(self, issues=None):
+        self.issues = list(issues or [])
+        self.created = []
+        self.updated = []
+
+    def list_issues(self, team_key, *, query="", limit=50):
+        return [issue for issue in self.issues if not query or query in issue.get("title", "")]
+
+    def team_metadata(self, team_key):
+        return {"id": "team-tia", "states": {"nodes": [{"id": "backlog", "type": "backlog"}]}}
+
+    def create_issue(self, **kwargs):
+        issue = {
+            "id": "issue-created",
+            "identifier": "TIA-900",
+            "url": "https://linear.test/TIA-900",
+            **kwargs,
+        }
+        self.created.append(issue)
+        self.issues.append(issue)
+        return issue
+
+    def update_issue(self, issue_id, **kwargs):
+        issue = next(issue for issue in self.issues if issue.get("id") == issue_id or issue.get("identifier") == issue_id)
+        issue.update(kwargs)
+        self.updated.append(issue)
+        return issue
+
+
 class KnowledgeDigestTests(unittest.TestCase):
+    def test_linear_three_topic_quota_and_structured_briefs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\nConcrete engineering gap.\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            transport = FakeLinearTransport()
+            result = DIGEST.discover_topics(
+                top=3,
+                propose_aidash=True,
+                propose_linear=True,
+                linear_transport=transport,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=root / "proposals.jsonl",
+                state_path=root / "state.json",
+                now_utc=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["selected_count"], 3)
+            self.assertEqual(len(transport.created), 1)
+            for topic in result["topics"]:
+                brief = topic["learning_brief"]
+                self.assertTrue(brief["why_now"])
+                self.assertEqual(len(brief["preview_questions"]), 3)
+                self.assertRegex(brief["recommended_command"], r"^/(learn|deep-research) ")
+
+    def test_linear_reconciles_remote_issue_when_local_daily_state_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\nConcrete engineering gap.\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            day = "2026-11-14"
+            title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
+            marker = f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->"
+            keys = ["jp-mixed-script-line-breaking", "bama-agent-cli-story-verification", "genjutsu-three-tier-choreography-gate"]
+            remote = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": title, "description": marker + "\\n" + "\\n".join(f"learning-topic://{key}" for key in keys)}
+            transport = FakeLinearTransport([remote])
+            result = DIGEST.discover_topics(
+                top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
+                vault_dir=vault, collected_tools_dir=tools, git_roots=(),
+                proposals_path=root / "proposals.jsonl", state_path=root / "missing-state.json",
+                now_utc=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["linear_issue"]["identifier"], "TIA-414")
+            self.assertEqual(len(transport.created), 0)
+            self.assertEqual(len(transport.updated), 1)
+            self.assertEqual(result["selected_count"], 3)
+            self.assertIn(marker, transport.updated[0]["description"])
+
+            rerun = DIGEST.discover_topics(
+                top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
+                vault_dir=vault, collected_tools_dir=tools, git_roots=(),
+                proposals_path=root / "proposals.jsonl", state_path=root / "missing-state.json",
+                now_utc=datetime(2026, 11, 14, 3, 0, tzinfo=timezone.utc),
+            )
+            self.assertEqual(rerun["selected_count"], 3)
+            self.assertEqual(len(transport.created), 0)
+            self.assertEqual(len(transport.updated), 2)
+            records = [json.loads(line) for line in (root / "proposals.jsonl").read_text().splitlines()]
+            self.assertEqual(len(records), 3)
+
     def test_propose_aidash_defaults_to_candidate_only_and_emits_learning_topic_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
