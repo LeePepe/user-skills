@@ -237,9 +237,9 @@
       }
     },
     "web": {
-      "label_zh": "Web 与视频渲染管线 (Backlog 冻结)",
-      "label_en": "Web & Code-to-Video Pipeline (Frozen Backlog)",
-      "status": "backlog-frozen",
+      "label_zh": "Web 与视频渲染管线",
+      "label_en": "Web & Code-to-Video Pipeline",
+      "status": "active-primary",
       "host_containers": [
         "Viewport",
         "DOM/Canvas/WebGL",
@@ -325,9 +325,9 @@
         "SwiftData"
       ],
       "jev_question": {
-        "id": "platform_is_web_or_video_backlog",
+        "id": "platform_is_web_or_video",
         "type": "noul",
-        "instructions": "Determine whether the user's prompt targets a browser-based Web interface (`Viewport`, `DOM/Canvas/WebGL`, SaaS dashboard, editorial blog) or an offline Code-to-Video rendering pipeline (`RemotionComposition`, `Three.js`, `Manim`, `FFmpeg`). Note that this platform track is currently `backlog-frozen`.",
+        "instructions": "Determine whether the user's prompt targets a browser-based Web interface (`Viewport`, `DOM/Canvas/WebGL`, SaaS dashboard, editorial blog) or an offline Code-to-Video rendering pipeline (`RemotionComposition`, `Three.js`, `Manim`, `FFmpeg`).",
         "criteria": {
           "true": "The prompt explicitly requests HTML/CSS/React/DOM web pages, WebGL 3D scenes in a browser, or offline programmatic video/audio generation via Remotion/Manim/FFmpeg.",
           "false": "The prompt requests native Apple platform UI, interactions, or data visualization for macOS (`desktop`) or iOS/iPadOS (`mobile`)."
@@ -1470,6 +1470,21 @@
         "别让新用户满"
       ],
       "typography-copy": []
+    }
+  },
+  "jev_verification_gates": {
+    "mobile": {
+      "q_mobile_single_p0_hierarchy": "Single P0 focal point per viewport; historical/ambient items demoted to P1/P2; <= 2–3 visual groups.",
+      "q_mobile_navigation_and_thumb_zone": "Native iOS NavigationStack, TabView, Sheet, safeAreaInset, >=44x44pt targets, thumb-zone CTA, no hover-only dependency.",
+      "q_mobile_two_layer_glass_and_native_isolation": "Glass only floating functional chrome Z=10..20, solid content Z=0, no web feDisplacementMap in native SwiftUI specs."
+    },
+    "desktop": {
+      "q_desktop_split_inspector_topology": "NavigationSplitView/Inspector/MenuBarExtra/NSPopover ergonomics, >=28x28pt targets, pointer hover and Cmd keyboard parity, no mobile bottom tabs.",
+      "q_desktop_window_glass_restraint": "Functional toolbar/sidebar glass with inactive-window dimming."
+    },
+    "web": {
+      "q_web_anti_slop_and_editorial_measure": "No box-in-box cages, decorative heading emojis, tracked-capital eyebrows, 60–72ch prose, natural CJK wrapping at 390px.",
+      "q_web_optical_liquid_glass": "Authentic GM-004 SVG feDisplacementMap squircle bezel refraction, chromatic dispersion, and Fresnel rim on floating chrome."
     }
   }
 }

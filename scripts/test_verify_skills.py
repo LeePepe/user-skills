@@ -2570,5 +2570,13 @@ try {
             self.assertLessEqual(len(inner_lines), 25)
 
 
+class JevGateTests(unittest.TestCase):
+    def test_negative_mock_jev_rejects_closed(self):
+        script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
+        result = subprocess.run([sys.executable, str(script), "jev-gate", "--platform", "desktop", "--stage", "traceback", "--spec-file", str(SKILLS_DIR / "my-designer" / "SKILL.md"), "--mock-jev-json", '{"score": -1}'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("REJECT_REVISE", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

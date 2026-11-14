@@ -1610,15 +1610,13 @@
     },
     {
       "id": "LN-003",
-      "name": "Pep AI 单一下一次用药焦点与 Tenfold 正交变体门禁 (P0 Next Dose Focal Hierarchy)",
+      "name": "移动端单屏唯一 P0 主焦点与次级信息降级法则 (Single P0 Focal Hierarchy & Secondary Demotion)",
       "aliases": [
-        "Pep AI",
         "Next Dose",
         "下一次用药",
         "Last Dose",
         "Medication Level",
         "P0 focal hierarchy",
-        "Tenfold",
         "spec-only variants",
         "anti-patterns",
         "方向锁定"
@@ -1633,8 +1631,8 @@
         "Read"
       ],
       "motion_tier": "M1",
-      "source_prompt_zh": "Pep AI 首页重设计案例：消除多张等权卡片竞争，将时间关键的下一次用药提升为唯一 P0 Hero Focal；Last Dose 与 Medication Level 降为紧凑的 P1/P2 次级行或胶囊。Tenfold 参考纪律：方向不明时先做 1–3 轮、每轮 3–5 个真正正交的 spec-only 概念，写清 anti-patterns，经 Owner 选择与反馈后才锁定方向。来源：https://x.com/adrian_partain/status/2116592792030106031、https://x.com/adrian_partain/status/2116593069361700887、https://x.com/adrian_partain/status/2104702468840128656、https://x.com/adrian_partain/status/2114866338829381727",
-      "canonical_prompt": "On a mobile home screen, make the single time-critical next action/state (Next Dose) the only P0 hero focal point; demote historical and ambient metrics (Last Dose, Medication Level) to compact P1/P2 secondary rows or pills. When direction is ambiguous, explore 3–5 genuinely orthogonal spec-only concepts for 1–3 rounds, varying P0 focal hypothesis, Axis-Y folding mechanism, and VS archetype, with explicit anti-patterns and Owner feedback before locking.",
+      "source_prompt_zh": "移动端首页重设计法则：消除多张等权卡片竞争，将时间关键的下一次行动提升为唯一 P0 Hero Focal；历史与环境指标降为紧凑的 P1/P2 次级行或胶囊。方向不明时先做 1–3 轮、每轮 10 个真正正交的 HTML 变体，写清 anti-patterns，经 Owner 选择与反馈后才锁定方向。",
+      "canonical_prompt": "On a mobile home screen, make the single time-critical next action/state the only P0 hero focal point; demote historical and ambient metrics to compact P1/P2 rows or pills. Always explore ten orthogonal interactive variants for 1–3 rounds before locking.",
       "apple_native_primitives": [
         "SwiftUI",
         "NavigationStack",

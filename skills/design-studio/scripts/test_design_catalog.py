@@ -103,6 +103,24 @@ class DesignCatalogTests(unittest.TestCase):
             self.assertNotIn("MP-002", ids)
 
 
+class AppNavigationGraphTests(unittest.TestCase):
+    def test_custom_app_graph_generates_four_bespoke_schemes(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            flow = Path(directory) / "flows.json"
+            schemes = []
+            for index in range(4):
+                schemes.append({"title": "Journey %d" % index, "navigation_model": "model-%d" % index, "screens": [
+                    {"id": "start%d" % index, "name": "Start", "p0_summary": "Capture", "transitions": [{"to": "end%d" % index, "type": "pushScreen"}]},
+                    {"id": "end%d" % index, "name": "End", "p0_summary": "Done", "actions": ["Save"]}
+                ]})
+            flow.write_text(json.dumps({"app_context": "Test domain", "schemes": schemes}), encoding="utf-8")
+            result = run("scaffold-gallery", "--goal", "graph-test-%d" % os.getpid(), "--round", "1", "--platform", "mobile", "--mode", "app-nav", "--app-flows-json", str(flow))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["manifest"]["mode"], "app-nav")
+            self.assertEqual([x["screens"][0]["id"] for x in data["manifest"]["schemes"]], ["start0", "start1", "start2", "start3"])
+
+
 class IngestTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT)

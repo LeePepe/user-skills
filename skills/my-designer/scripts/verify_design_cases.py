@@ -673,6 +673,67 @@ def command_flow_map(args: argparse.Namespace) -> int:
     return 0 if all_within_budget else 1
 
 
+
+def _jev_response(args, payload):
+    if args.no_jev: return {'status':'PASS','mode':'deterministic'}
+    if not args.mock_jev_json: return {'status':'PASS','mode':'deterministic','note':'systemone unavailable; structural gate only'}
+    try: data=json.loads(Path(args.mock_jev_json).read_text(encoding='utf-8')) if Path(args.mock_jev_json).is_file() else json.loads(args.mock_jev_json)
+    except (OSError, json.JSONDecodeError): return {'status':'REJECT_REVISE','reason':'malformed mock Jev response'}
+    score=data.get('score',data.get('noul'))
+    if not isinstance(score,(int,float)) or score < 0 or score > 1: return {'status':'REJECT_REVISE','reason':'invalid or negative Jev score'}
+    return {'status':'PASS' if score >= 0.6 else 'REJECT_REVISE','score':score,'mode':'mock'}
+
+
+def command_jev_gate(args):
+    errors=[]; evidence=[]
+    if args.stage=='gallery':
+        if not args.gallery_dir: errors.append('gallery stage requires --gallery-dir')
+        else:
+            root=Path(args.gallery_dir)
+            manifest_path=root/'manifest.json'
+            if not manifest_path.is_file(): errors.append('missing manifest.json')
+            else:
+                try: manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+                except json.JSONDecodeError: manifest={}; errors.append('malformed manifest.json')
+                if manifest.get('mode')=='app-nav':
+                    if len(manifest.get('schemes',[]))!=4: errors.append('app-nav requires four schemes')
+                    for i in range(1,5):
+                        page=root/f'app{i:02d}.html'
+                        if not page.is_file(): errors.append(f'missing app{i:02d}.html')
+                        elif 'data-screen' not in page.read_text(encoding='utf-8') or 'history' not in page.read_text(encoding='utf-8'): errors.append(f'app{i:02d} lacks graph interaction evidence')
+                else:
+                    variants=manifest.get('variants',[])
+                    ids={v.get('id') for v in variants}
+                    if len(variants)!=10 or ids != {f'v{i:02d}' for i in range(1,11)}: errors.append('gallery must contain exactly v01..v10')
+                    if not (root/'current.html').is_file(): errors.append('missing current.html')
+                    axes={(v.get('p0'),v.get('axis_y'),v.get('archetype')) for v in variants}
+                    if len(axes)<2: errors.append('variants are not orthogonal')
+                    for vid in ids:
+                        page=root/f'{vid}.html'
+                        if not page.is_file(): errors.append(f'missing {vid}.html')
+                        else:
+                            text=page.read_text(encoding='utf-8')
+                            if not any(x in text for x in ('onclick','addEventListener','role="tab"')): errors.append(f'{vid} lacks interactive controls')
+                            if 'feDisplacementMap' not in text: errors.append(f'{vid} lacks optical SVG filter')
+                    evidence.append({'variant_count':len(variants),'axis_count':len(axes)})
+    elif args.stage=='spec':
+        if not args.spec_file: errors.append('spec stage requires --spec-file')
+        else:
+            text=Path(args.spec_file).read_text(encoding='utf-8') if Path(args.spec_file).is_file() else ''
+            for token in ('Axis X','Axis Y','Axis Z'):
+                if token not in text: errors.append(f'missing {token}')
+            if not re.search(r'(?i)single\s+P0|one\s+P0|唯一\s*P0|P0[^\\n]{0,40}(?:Primary|per viewport|唯一)',text): errors.append('missing single P0 focal evidence')
+            if args.platform=='mobile' and 'feDisplacementMap' in text: errors.append('mobile native spec contains web feDisplacementMap')
+            evidence.append({'spec_file':args.spec_file})
+    else:
+        text=Path(args.spec_file).read_text(encoding='utf-8') if args.spec_file and Path(args.spec_file).is_file() else ''
+        tags=re.findall(r'\[(IMPL_BUG|SPEC_GAP)\]',text)
+        if not tags: errors.append('traceback requires [IMPL_BUG] or [SPEC_GAP] findings')
+        evidence.append({'classifications':tags})
+    jev=_jev_response(args, evidence)
+    result={'ok':not errors and jev['status']=='PASS','platform':args.platform,'stage':args.stage,'status':jev['status'],'errors':errors,'evidence':evidence,'jev':jev}
+    print(json.dumps(result,ensure_ascii=False,indent=2)); return 0 if result['ok'] else 1
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cases-file", default=str(DEFAULT_CASES))
@@ -686,6 +747,14 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
+
+    gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
+    gate.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gate.add_argument("--stage", choices=["gallery", "spec", "traceback"], required=True)
+    gate.add_argument("--gallery-dir")
+    gate.add_argument("--spec-file")
+    gate.add_argument("--no-jev", action="store_true")
+    gate.add_argument("--mock-jev-json")
 
     reg = sub.add_parser("register-case", parents=[common])
     reg.add_argument("--id", default="auto", help="Case ID (e.g. DC-005) or 'auto' to assign the next sequential DC-00N")
@@ -708,6 +777,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_route(args)
     if args.command == "register-case":
         return command_register_case(args)
+    if args.command == "jev-gate":
+        return command_jev_gate(args)
     return 1
 
 

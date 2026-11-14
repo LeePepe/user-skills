@@ -1261,7 +1261,63 @@ catch{const area=document.createElement('textarea');area.value=text;area.classNa
 <button id="copy-summary">Copy Round Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
 
 
+
+def _load_app_flows(args):
+    """Normalize bespoke app graph input into four independent navigation hypotheses."""
+    raw = None
+    if getattr(args, 'app_flows_json', None):
+        candidate = str(args.app_flows_json)
+        path = Path(candidate).expanduser()
+        raw = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else json.loads(candidate)
+    screens = csv_values(getattr(args, 'app_screens', ''))
+    context = getattr(args, 'app_context', '') or 'Target App'
+    if raw is None:
+        base = [{'id':'home','name':'Overview','p0_summary':f'Start {context}','actions':['Open']},
+                {'id':'create','name':'Create','p0_summary':f'Create in {context}','actions':['Save']},
+                {'id':'detail','name':'Detail','p0_summary':'Inspect the selected item','actions':['Back']}]
+        if screens:
+            base=[{'id':re.sub(r'[^a-z0-9]+','-',x.casefold()).strip('-') or f'screen{i}','name':x,'p0_summary':x,'actions':['Open']} for i,x in enumerate(screens,1)]
+        raw={'app_context':context,'schemes':[{'title':f'{context} · hypothesis {i}','navigation_model':model,'screens':base} for i,model in enumerate(('stack-first','tab-prominent','sheet-detail','dock-overflow'),1)]}
+    if isinstance(raw,list): raw={'app_context':context,'schemes':raw}
+    schemes=raw.get('schemes') or raw.get('flows') or []
+    if len(schemes)!=4: raise ValueError('--app-flows-json must define exactly four schemes')
+    normalized=[]
+    for idx, scheme in enumerate(schemes,1):
+        pages=scheme.get('screens') or []
+        if len(pages)<2: raise ValueError(f'scheme {idx} needs at least two screens')
+        clean=[]; ids=set()
+        for page in pages:
+            pid=str(page.get('id','')).strip()
+            if not re.fullmatch(r'[A-Za-z0-9_-]+',pid) or pid in ids: raise ValueError(f'invalid or duplicate screen id in scheme {idx}')
+            ids.add(pid)
+            transitions=page.get('transitions', page.get('edges', []))
+            clean.append({'id':pid,'name':str(page.get('name',page.get('title',pid))),'role':str(page.get('role',page.get('p0_summary','Screen'))),'p0_summary':str(page.get('p0_summary',page.get('role','Primary action'))),'actions':[str(a) for a in page.get('actions',[])],'transitions':transitions})
+        normalized.append({'id':f'app{idx:02d}','title':str(scheme.get('title',f'{context} · hypothesis {idx}')),'navigation_model':str(scheme.get('navigation_model','bespoke')),'screens':clean,'context':str(raw.get('app_context',context))})
+    return normalized
+
+
+def _app_nav_html(scheme, app_index, platform):
+    pages=scheme['screens']; first=pages[0]['id']
+    page_data=json.dumps({p['id']:p for p in pages},ensure_ascii=False).replace('<','\u003c')
+    buttons=''.join(f'<button class="tab" data-screen="{p["id"]}">{escape(p["name"])}</button>' for p in pages)
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><style>body{{margin:0;background:#edf2fb;color:#172033;font:16px system-ui;min-height:100vh}}main{{max-width:390px;min-height:844px;margin:auto;padding:24px;box-sizing:border-box}}.glass{{background:#ffffffb8;border:1px solid #ffffffed;border-radius:28px;backdrop-filter:blur(16px);box-shadow:0 12px 30px #1f294826}}nav{{position:sticky;bottom:16px;padding:12px;display:flex;gap:6px;flex-wrap:wrap}}button{{min-height:44px;border:0;border-radius:14px;padding:10px 12px;background:#fff;color:#172033}}.primary{{background:#3568d4;color:#fff}}#screen{{padding:22px;margin-top:24px;min-height:380px}}.meta{{color:#596476}}#sheet{{display:none;margin-top:12px;padding:16px}}.controls{{display:flex;gap:8px;flex-wrap:wrap}}</style></head><body><main><p class="meta">{escape(scheme['context'])} · {escape(scheme['navigation_model'])} · app{app_index:02d}</p><h1>{escape(scheme['title'])}</h1><section id="screen" class="glass" data-screen="{first}"></section><div class="controls"><button id="back">Back</button><button id="open-sheet">Sheet</button><button id="toggle-tab" class="primary">Prominent action</button></div><section id="sheet" class="glass"><button id="close-sheet">Close sheet</button><p>Detents: medium · large</p></section><nav class="glass" aria-label="App navigation">{buttons}<button id="overflow">⋯</button></nav></main><script>const P={page_data};let current='{first}',history=[],sheet=false;const el=document.querySelector('#screen');function render(id,push=true){{if(push&&current!==id)history.push(current);current=id;const p=P[id];el.dataset.screen=id;el.innerHTML='<h2>'+p.name+'</h2><p>'+p.p0_summary+'</p><p class="meta">'+(p.role||'')+'</p><div>'+p.actions.map(a=>'<button class="primary" data-action="'+a+'">'+a+'</button>').join(' ')+'</div>';document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-current',b.dataset.screen===id?'page':'false'));}}document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>render(b.dataset.screen));document.querySelector('#back').onclick=()=>history.length?render(history.pop(),false):render(current,false);document.querySelector('#open-sheet').onclick=()=>{{sheet=true;document.querySelector('#sheet').style.display='block';}};document.querySelector('#close-sheet').onclick=()=>{{sheet=false;document.querySelector('#sheet').style.display='none';}};document.querySelector('#toggle-tab').onclick=()=>render(Object.keys(P)[Math.min(1,Object.keys(P).length-1)]);document.querySelector('#overflow').onclick=()=>document.querySelector('#open-sheet').click();render(current,false);</script></body></html>'''
+
+
+def command_scaffold_app_nav(args):
+    schemes=_load_app_flows(args); destination=_gallery_paths(args.goal,args.round)
+    if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
+    destination.mkdir(parents=True)
+    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    save(destination/'manifest.json',manifest)
+    for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,args.platform),encoding='utf-8')
+    (destination/'current.html').write_text(_app_nav_html(schemes[0],0,args.platform),encoding='utf-8')
+    links=''.join(f'<li><a href="app{i:02d}.html">{escape(x["title"])}</a></li>' for i,x in enumerate(schemes,1))
+    (destination/'index.html').write_text(f'<!doctype html><meta charset="utf-8"><title>{escape(args.goal)}</title><h1>Bespoke app navigation hypotheses</h1><p>{escape(schemes[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>',encoding='utf-8')
+    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest},ensure_ascii=False,indent=2)); return 0
+
 def command_scaffold_gallery(args):
+    if getattr(args, 'mode', 'screen') == 'app-nav':
+        return command_scaffold_app_nav(args)
     anti_patterns = _json_or_csv(args.session_anti_patterns, kind="anti")
     overrides = _json_or_csv(args.style_overrides, kind="style")
     destination = _gallery_paths(args.goal, args.round)
@@ -1551,6 +1607,10 @@ def parser():
     gallery.add_argument("--goal", required=True)
     gallery.add_argument("--round", type=int, required=True)
     gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
+    gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
+    gallery.add_argument("--app-screens", default="", help="Comma-separated target App screens for the starter graph")
+    gallery.add_argument("--app-context", default="Target App", help="Target App domain and journey context used only for the no-input starter graph")
     gallery.add_argument("--session-anti-patterns", default="[]")
     gallery.add_argument("--style-overrides", default="{}")
 

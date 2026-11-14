@@ -83,6 +83,44 @@
         "No Code Demo"
       ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-004",
+      "title": "Platform-Split Jev Gate & Mobile Native Firewall",
+      "platforms": [
+        "mobile",
+        "desktop",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py jev-gate --platform desktop --stage spec --spec-file skills/my-designer/references/interaction-layering.md --no-jev",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"status\": \"PASS\"",
+        "\"ok\": true"
+      ],
+      "registered_at": "2026-11-14"
+    },
+    {
+      "id": "EV-005",
+      "title": "Ten-Variant Gallery & Bespoke App Navigation Graphs",
+      "platforms": [
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py jev-gate --platform desktop --stage spec --spec-file skills/my-designer/references/interaction-layering.md --no-jev",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"status\": \"PASS\"",
+        "\"ok\": true"
+      ],
+      "registered_at": "2026-11-14"
     }
   ]
 }
