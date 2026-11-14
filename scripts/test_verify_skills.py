@@ -16,6 +16,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from unittest.mock import patch
 
 
 os.environ.setdefault("GTT_LINEAR_SYNC", "0")
@@ -2574,6 +2575,297 @@ try {
 class SkillContractV2Tests(unittest.TestCase):
     def _script(self) -> Path:
         return SKILLS_DIR / "skill-contract" / "scripts" / "skill_contract.py"
+
+    def _module(self):
+        spec = importlib.util.spec_from_file_location("skill_contract_repair", self._script())
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def _cli(self, *args):
+        result = subprocess.run(
+            [sys.executable, "-B", str(self._script()), *map(str, args)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+            env={**os.environ, "GTT_JEV_MOCK_JSON": "null"},
+        )
+        self.assertNotIn("Traceback", result.stderr, result.stderr)
+        return result, json.loads(result.stdout)
+
+    def _package(self, root, name="demo", prefix="skills"):
+        package = root / prefix / name
+        (package / "references").mkdir(parents=True)
+        (package / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Audit progressive disclosure skill contracts.\n---\n"
+            "See [eval-cases.json](references/eval-cases.json).\n", encoding="utf-8",
+        )
+        return package
+
+    def _drawer(self, package, entries=None, triggers=None):
+        drawer = package / "references" / "eval-cases.json"
+        drawer.write_text(json.dumps({"active_cases": entries or [], "trigger_evals": triggers or []}), encoding="utf-8")
+        return drawer
+
+    def _star_db(self, path, source="demo"):
+        with sqlite3.connect(path) as con:
+            con.executescript(
+                "CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT);"
+                "CREATE TABLE requests (id INTEGER PRIMARY KEY, source_id INTEGER, summary_json TEXT, received_request TEXT, upstream_response TEXT, review_state TEXT);"
+                "CREATE TABLE reviews (request_id INTEGER, state TEXT);"
+            )
+            con.executemany("INSERT INTO sources VALUES (?, ?)", [(1, source), (2, "unrelated")])
+        return path
+
+    def _star_row(self, db, sid, marker="summary", source_id=1):
+        with sqlite3.connect(db) as con:
+            con.execute("INSERT INTO requests VALUES (?, ?, ?, ?, ?, ?)", (
+                sid, source_id, json.dumps({"starredAt": "2026-11-14"} if marker == "summary" else {}),
+                json.dumps({"state": {"input": "synthetic"}, "questions": {"q": {"type": "noul"}}}),
+                json.dumps({"answers": {"q": {"noul": 0.9}}}),
+                "starred" if marker == "request" else None,
+            ))
+            if marker == "review":
+                con.executemany("INSERT INTO reviews VALUES (?, ?)", [(sid, "starred"), (sid, "starred")])
+
+    def test_mock_truth_table_and_companion_boundaries(self) -> None:
+        module = self._module()
+        case = {"query": "audit progressive disclosure skill contracts", "should_trigger": True}
+        self.assertEqual(module._mock_trigger({"1": True, "3": True}, 2, case), (False, "incomplete mock truth table"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._package(root)
+            self._drawer(package, triggers=[case, {"id": "miss", "query": "Xcode simulator build", "should_trigger": False}])
+            run = ("description-eval", "--repo", root, "--skill", "demo", "--strict")
+            for value, expected, source in (
+                ({"choice": "yes", "noul": 0.1}, False, "mock"),
+                ({"choice": "no", "noul": 0.9}, False, "mock"),
+                ({"answers": {"choice": {"choice": "yes", "confidence": 0.8}, "noul": {"noul": 0.9}}}, True, "mock"),
+                *[({"choice": "yes", "noul": score}, True, "deterministic-fallback") for score in (0.3, 0.5, 0.7)],
+            ):
+                with self.subTest(value=value):
+                    result, payload = self._cli(*run, "--mock-jev-json", json.dumps({"1": value, "miss": False}))
+                    self.assertEqual(payload["decisions"][0]["matched"], expected)
+                    self.assertEqual(payload["decisions"][0]["source"], source)
+                    self.assertEqual(result.returncode, 0 if expected else 1)
+            for value in (None, {"choice": "yes"}, {"choice": "maybe", "noul": 0.9}, {"choice": "yes", "noul": None},
+                          {"noul": float("nan")}, {"noul": float("inf")}, {"noul": -0.1}, {"noul": 1.1}, {"confidence": True},
+                          {"choice": "yes", "noul": {"noul": 0.9, "confidence": float("nan")}}):
+                with self.subTest(malformed=value):
+                    result, payload = self._cli(*run, "--mock-jev-json", json.dumps({"1": value, "miss": False}))
+                    self.assertEqual(result.returncode, 1)
+                    self.assertTrue(any("error" in failure for failure in payload["failures"]))
+            for score in (0.3, 0.5, 0.7):
+                result, payload = self._cli(*run, "--mock-jev-json", json.dumps({"1": {"noul": score}, "miss": {"noul": score}}))
+                self.assertEqual(result.returncode, 0, payload)
+                self.assertEqual([d["matched"] for d in payload["decisions"]], [True, False])
+                self.assertTrue(all(d["source"] == "deterministic-fallback" for d in payload["decisions"]))
+            for mock in ({"1": True}, {"0": True, "1": False}, {"unknown": True}, None):
+                result, payload = self._cli(*run, "--mock-jev-json", json.dumps(mock))
+                self.assertEqual(result.returncode, 1, payload)
+            for mock in ([True, False], {case["query"]: True, "miss": False}):
+                mock_file = root / "mock.json"
+                mock_file.write_text(json.dumps(mock), encoding="utf-8")
+                result, payload = self._cli(*run, "--mock-jev-json", mock_file)
+                self.assertEqual(result.returncode, 0, payload)
+                self.assertEqual(payload["passed"], 2)
+            result, payload = self._cli("description-eval", "--skill", "howto", "--strict")
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(payload["passed"], 4)
+
+    def test_canonical_live_context_and_fallback(self) -> None:
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._package(root)
+            query = "audit progressive disclosure skill contracts"
+            self._drawer(package, triggers=[{"query": query, "should_trigger": True}])
+            args = module.parser().parse_args(["description-eval", "--repo", str(root), "--skill", "demo", "--strict"])
+            client = self._module()
+            for response, expected_rc, expected_source in (
+                ({"choice": {"choice": "yes"}, "noul": {"noul": 0.9}}, 0, "jev"),
+                ({"answers": {"choice": {"choice": "yes"}, "noul": {"noul": 0.1}}}, 1, "jev"),
+                ({"choice": "no", "noul": 0.9}, 1, "jev"),
+                ({"choice": "yes", "noul": 0.7}, 0, "deterministic-fallback"),
+                ({"choice": "yes"}, 0, "deterministic-fallback"),
+                (None, 0, "deterministic-fallback"),
+            ):
+                with self.subTest(response=response), patch("importlib.util.module_from_spec", return_value=client), \
+                     patch("importlib.util.spec_from_file_location") as spec_factory, \
+                     patch.object(client, "jev_decide", create=True, return_value=response) as decide, \
+                     patch("builtins.print") as printed:
+                    spec_factory.return_value.loader.exec_module.return_value = None
+                    self.assertEqual(module.description_eval(args), expected_rc)
+                    self.assertEqual(spec_factory.call_args.args[1], SKILLS_DIR / "team-lead" / "scripts" / "jev_client.py")
+                    state, questions = decide.call_args.args
+                    self.assertEqual(state, {"skill": "demo", "description": module._frontmatter_description(package / "SKILL.md"), "query": query})
+                    self.assertEqual(questions["choice"]["type"], "choice")
+                    self.assertEqual(set(questions["choice"]["criteria"]), {"yes", "no"})
+                    self.assertTrue(questions["choice"]["instructions"])
+                    self.assertEqual(questions["noul"]["type"], "noul")
+                    self.assertTrue(questions["noul"]["instructions"])
+                    self.assertEqual(decide.call_args.kwargs["timeout_sec"], 1.5)
+                    self.assertEqual(json.loads(printed.call_args.args[0])["decisions"][0]["source"], expected_source)
+            with patch.object(module, "_jev_trigger", side_effect=AssertionError("mock must not contact live client")), patch("builtins.print"):
+                args.mock_jev_json = '{"1": true}'
+                self.assertEqual(module.description_eval(args), 0)
+
+    def test_negative_only_registration_rejects_before_write(self) -> None:
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._package(root)
+            drawer = self._drawer(package)
+            run = ("add-case", "--repo", root, "--skill", "demo", "--title", "neg")
+            for exit_code, exact in ((3, 3), (7, None), (127, None)):
+                cmd = f"{sys.executable} -c 'import sys; print(\"genuine\", file=sys.stderr); raise SystemExit({exit_code})'"
+                result, payload = self._cli(*run, "--negative-cmd", cmd, *(("--expect-fail-exit", exact) if exact is not None else ()))
+                self.assertEqual(result.returncode, 0, payload)
+            before = (drawer.read_bytes(), drawer.stat().st_mtime_ns)
+            for command, exact in (("python3 -c 'raise SystemExit(0)'", None), ("python3 -c 'raise SystemExit(0)'", 0),
+                                   ("python3 -c 'raise SystemExit(3)'", 4), ("definitely-missing-binary-jev", None), ("   ", None), ("'", None)):
+                with self.subTest(command=command, exact=exact):
+                    result, payload = self._cli(*run, "--negative-cmd", command, *(("--expect-fail-exit", exact) if exact is not None else ()))
+                    self.assertEqual(result.returncode, 1, payload)
+                    self.assertEqual((drawer.read_bytes(), drawer.stat().st_mtime_ns), before)
+            for empty in ("", [], "   "):
+                self.assertTrue(module.evaluate_case({"id": "empty", "negative_cmd": empty}, package, root))
+            result, payload = self._cli("eval", "--repo", root, "--strict")
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(payload["cases_run"], 3)
+
+    def test_star_agents_path_refresh_and_snapshot_validation(self) -> None:
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._package(root, "agent-skill", ".agents/skills")
+            drawer = self._drawer(package)
+            db = self._star_db(root / "fixture.sqlite", "agent-skill")
+            self._star_row(db, 10)
+            run = ("sync-jev-stars", "--repo", root, "--skill", "agent-skill", "--db-path", db)
+            result, payload = self._cli(*run)
+            self.assertEqual(result.returncode, 0, payload)
+            doc = json.loads(drawer.read_text())
+            golden = doc["active_cases"][0]
+            self.assertEqual(golden["file"], ".agents/skills/agent-skill/SKILL.md")
+            custom = package / "assertion.txt"
+            custom.write_text("strong regression", encoding="utf-8")
+            golden.update({"title": "custom title", "file": ".agents/skills/agent-skill/assertion.txt", "must_contain": ["strong regression"],
+                           "must_not_contain": ["forbidden"], "cmd": [sys.executable, "-c", "print('preserved')"], "expect_exit": 0,
+                           "expect_stdout_contains": ["preserved"], "registered_at": "2020-01-01", "metadata": {"owner": "fixture"}})
+            ordinary = {"id": "EV-ordinary", "tags": ["ordinary"], "file": "SKILL.md"}
+            doc["active_cases"] = [golden, ordinary]
+            drawer.write_text(json.dumps(doc), encoding="utf-8")
+            result, payload = self._cli(*run)
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(json.loads(drawer.read_text())["active_cases"], [golden, ordinary])
+            for changes in ({"jev_questions": {}}, {"jev_questions": []}, {"mock_jev_response": {}}, {"mock_jev_response": []},
+                            {"mock_jev_response": {"wrong": 1}}, {"jev_questions": [{"id": "absent", "type": "noul"}]},
+                            {"jev_state": float("nan")}, {"jev_state": object()}):
+                with self.subTest(changes=changes):
+                    self.assertTrue(module.evaluate_case({**golden, **changes}, package, root))
+            malformed = {**golden, "jev_questions": {}}
+            drawer.write_text(json.dumps({"active_cases": [malformed]}), encoding="utf-8")
+            result, payload = self._cli("eval", "--repo", root, "--strict")
+            self.assertEqual(result.returncode, 1, payload)
+            self.assertIn("jev_questions", str(payload["failures"]))
+
+    def test_star_external_relative_package_and_cmd_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "repo"
+            external = self._package(base / "external", "demo")
+            (root / "skills").mkdir(parents=True)
+            (root / "skills" / "demo").symlink_to(os.path.relpath(external, root / "skills"))
+            drawer = self._drawer(external)
+            db = self._star_db(base / "fixture.sqlite")
+            self._star_row(db, 10)
+            run = ("sync-jev-stars", "--repo", root, "--skill", "demo", "--db-path", db)
+            result, payload = self._cli(*run)
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(json.loads(drawer.read_text())["active_cases"][0]["file"], "skills/demo/SKILL.md")
+            with sqlite3.connect(db) as con:
+                con.execute("UPDATE requests SET upstream_response=?", (json.dumps({"answers": {"q": {"noul": 0.9, "note": "quotes ' and ; $(not-a-command)"}}}),))
+            template = 'python3 -c "import json,sys; assert json.loads(sys.argv[1])[\'q\'][\'noul\'] == 0.9" {mock_json}'
+            for candidate in (template, template.replace("{mock_json}", '"{mock_json}"')):
+                result, payload = self._cli(*run, "--cmd-template", candidate)
+                self.assertEqual(result.returncode, 0, payload)
+                entry = json.loads(drawer.read_text())["active_cases"][0]
+                self.assertEqual(len(entry["cmd"]), 4)
+                self.assertEqual(json.loads(entry["cmd"][-1])["q"]["noul"], 0.9)
+            before = (drawer.read_bytes(), drawer.stat().st_mtime_ns)
+            result, payload = self._cli(*run, "--cmd-template", "python3 -c 'raise SystemExit(5)' {mock_json}")
+            self.assertEqual(result.returncode, 1, payload)
+            self.assertEqual((drawer.read_bytes(), drawer.stat().st_mtime_ns), before)
+
+    def test_star_markers_dedupe_fallback_eviction_and_saturation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._package(root, "howto")
+            ordinary = [{"id": f"EV-{i:03d}", "tags": ["ordinary"], "registered_at": f"2026-01-{16-i:02d}", "file": "SKILL.md"} for i in range(1, 16)]
+            drawer = self._drawer(package, ordinary)
+            db = self._star_db(root / "fixture.sqlite", "goal-task")
+            for sid, marker in ((10, "summary"), (11, "review"), (12, "request")):
+                self._star_row(db, sid, marker)
+            self._star_row(db, 99, source_id=2)
+            run = ("sync-jev-stars", "--repo", root, "--skill", "howto", "--db-path", db)
+            before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in (drawer, db)]
+            result, dry = self._cli(*run, "--dry-run")
+            self.assertEqual(result.returncode, 0, dry)
+            self.assertEqual([(p.read_bytes(), p.stat().st_mtime_ns) for p in (drawer, db)], before)
+            result, live = self._cli(*run)
+            self.assertEqual(result.returncode, 0, live)
+            self.assertEqual({k: v for k, v in dry.items() if k != "dry_run"}, {k: v for k, v in live.items() if k != "dry_run"})
+            self.assertEqual(live["added"], 3)
+            self.assertEqual(live["evicted"], ["EV-015", "EV-014", "EV-013"])
+            doc = json.loads(drawer.read_text())
+            self.assertEqual([c["jev_starred_id"] for c in doc["active_cases"] if "jev_starred_id" in c], [10, 11, 12])
+            self.assertEqual(doc["archived_cases"], list(reversed(ordinary[-3:])))
+            self.assertEqual((db.read_bytes(), db.stat().st_mtime_ns), before[1])
+            result, payload = self._cli(*run)
+            self.assertEqual(payload["added"], 0)
+            self.assertEqual(json.loads(drawer.read_text())["active_cases"], doc["active_cases"])
+            result, payload = self._cli(*run, "--source-name", "unrelated", "--dry-run")
+            self.assertEqual(payload["added"], 1)
+            golden = [{"id": f"EV-{i:03d}", "tags": ["jev-star"], "file": "SKILL.md", "metadata": i} for i in range(1, 16)]
+            drawer.write_text(json.dumps({"active_cases": golden}), encoding="utf-8")
+            result, payload = self._cli(*run)
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(payload["skipped"], ["10", "11", "12"])
+            self.assertEqual(payload["evicted"], [])
+            self.assertEqual(payload["added"], 0)
+            self.assertEqual(json.loads(drawer.read_text())["active_cases"], golden)
+
+    def test_single_skill_sibling_links_and_per_repo_script_forks(self) -> None:
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = self._package(root, "canonical")
+            consumer = self._package(root, "consumer")
+            (canonical / "references" / "shared.md").write_text("shared contract", encoding="utf-8")
+            (consumer / "SKILL.md").write_text((consumer / "SKILL.md").read_text() + "[shared](../canonical/references/shared.md)\n", encoding="utf-8")
+            result, payload = self._cli("audit", "--repo", root, "--skill", "canonical", "--strict")
+            self.assertEqual(result.returncode, 0, payload)
+            (consumer / "SKILL.md").write_text("---\ndescription: consumer\n---\nUnrelated bare shared stem.\n", encoding="utf-8")
+            result, payload = self._cli("audit", "--repo", root, "--skill", "canonical", "--strict")
+            self.assertIn("orphan-reference", str(payload["findings"]))
+            (consumer / "SKILL.md").write_text("---\ndescription: consumer\n---\n[shared](../canonical/references/shared.md)\n", encoding="utf-8")
+            wrapper = self._package(root, "wrapper")
+            for package in (canonical, consumer, wrapper):
+                (package / "scripts").mkdir()
+                (package / "scripts" / "same.py").write_text("_CANONICAL_PATH = '../canonical/scripts/same.py'\n" if package == wrapper else "print('real')\n", encoding="utf-8")
+            result, payload = self._cli("audit", "--repo", root, "--strict")
+            self.assertEqual(sum(f["code"] == "duplicate-script-fork" for f in payload["findings"]), 1)
+            (consumer / "scripts" / "same.py").unlink()
+            result, payload = self._cli("audit", "--repo", root, "--strict")
+            self.assertEqual(result.returncode, 0, payload)
+            other_root = root / "independent-repo"
+            other = self._package(other_root, "independent")
+            (other / "scripts").mkdir()
+            (other / "scripts" / "same.py").write_text("print('different repository')\n", encoding="utf-8")
+            args = module.parser().parse_args(["audit", "--all", "--strict"])
+            with patch.object(module, "_discover_packages", return_value=[canonical, consumer, wrapper, other]), patch("builtins.print") as printed:
+                self.assertEqual(module.audit(args), 0)
+                self.assertNotIn("duplicate-script-fork", printed.call_args.args[0])
 
     def test_audit_v2_description_symlink_and_duplicate_script_checks(self) -> None:
         script = self._script()

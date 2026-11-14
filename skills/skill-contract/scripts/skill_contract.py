@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timezone
 import json
+import math
 import os
 import re
 import shlex
@@ -134,13 +135,18 @@ def _lookup_dot_path(data: Any, dot_path: str) -> tuple[bool, Any]:
 
 
 def _run_command(command: Any, repo_root: Path) -> subprocess.CompletedProcess[str]:
-    argv = list(command) if isinstance(command, list) else shlex.split(str(command))
-    if argv and argv[0] in {"python", "python3"}:
-        argv[0] = sys.executable
+    argv: list[str] = []
     try:
+        argv = list(command) if isinstance(command, list) else shlex.split(str(command))
+        if not argv:
+            raise ValueError("empty command")
+        if argv[0] in {"python", "python3"}:
+            argv[0] = sys.executable
         return subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
-    except (OSError, ValueError) as exc:
-        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+    except (OSError, TypeError, ValueError) as exc:
+        result = subprocess.CompletedProcess(argv, 127, "", str(exc))
+        result.launch_error = str(exc)
+        return result
 
 
 def _frontmatter_fields(md: Path) -> dict[str, Any]:
@@ -195,9 +201,42 @@ def _load_json_argument(value: Any) -> Any:
         raise ValueError("mock JSON must be valid inline JSON or a readable JSON file")
 
 
+def _is_golden(case: dict[str, Any]) -> bool:
+    return case.get("jev_starred_id") is not None or "jev-star" in (case.get("tags") or [])
+
+
+def _snapshot_failures(case: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    questions = case.get("jev_questions")
+    answers = case.get("mock_jev_response")
+    if not isinstance(questions, (dict, list)) or not questions:
+        failures.append("jev_questions must be a nonempty dict/list")
+    if not isinstance(answers, dict) or not answers:
+        failures.append("mock_jev_response must be a nonempty answers dict")
+    if isinstance(questions, dict):
+        question_ids = list(questions)
+    elif isinstance(questions, list):
+        question_ids = [question["id"] for question in questions if isinstance(question, dict) and "id" in question]
+    else:
+        question_ids = []
+    if isinstance(answers, dict):
+        missing = [qid for qid in question_ids if not isinstance(qid, (str, int)) or str(qid) not in answers]
+        if missing:
+            failures.append(f"question IDs missing from mock_jev_response: {missing}")
+    try:
+        if "jev_state" not in case:
+            failures.append("jev_state is missing")
+        json.dumps({key: case.get(key) for key in ("jev_state", "jev_questions", "mock_jev_response")}, allow_nan=False)
+    except (TypeError, ValueError, OverflowError):
+        failures.append("golden snapshot state/questions/answers must be JSON-compatible")
+    return failures
+
+
 def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT) -> list[str]:
     reasons: list[str] = []
     cid = str(case.get("id", "<unidentified>"))
+    if _is_golden(case):
+        reasons.extend(f"{cid}: {reason}" for reason in _snapshot_failures(case))
     pattern_raw = case.get("forbidden_regex") or case.get("regex")
     bad_snippet = case.get("bad_snippet")
     good_snippet = case.get("good_snippet")
@@ -237,15 +276,19 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
                         reasons.append(f"{cid}: JSON {dot_key!r} expected {expected_val!r}, got {actual_val!r}")
 
     negative_cmd = case.get("negative_cmd")
-    if negative_cmd:
-        proc = _run_command(negative_cmd, repo_root)
+    if "negative_cmd" in case:
+        proc = _run_command(negative_cmd if negative_cmd is not None else "", repo_root)
         expected = case.get("expect_fail_exit")
-        if proc.returncode == 127 and proc.stderr:
+        if getattr(proc, "launch_error", None):
             reasons.append(f"{cid}: negative_cmd launch failed: {proc.stderr.strip()}")
-        elif expected is not None and proc.returncode != int(expected):
-            reasons.append(f"{cid}: negative_cmd exit {proc.returncode} != expect_fail_exit {expected}")
-        elif expected is None and proc.returncode == 0:
+        elif proc.returncode == 0:
             reasons.append(f"{cid}: negative_cmd unexpectedly succeeded")
+        elif expected is not None:
+            try:
+                if proc.returncode != int(expected):
+                    reasons.append(f"{cid}: negative_cmd exit {proc.returncode} != expect_fail_exit {expected}")
+            except (TypeError, ValueError):
+                reasons.append(f"{cid}: invalid expect_fail_exit {expected!r}")
         for token in case.get("negative_stdout_contains") or []:
             if str(token) not in proc.stdout:
                 reasons.append(f"{cid}: negative stdout missing expected substring {token!r}")
@@ -316,8 +359,8 @@ def add_case(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": "forbidden_regex requires both --bad-snippet and --good-snippet"}))
         return 1
 
-    if not args.forbidden_regex and not args.cmd and not args.file:
-        print(json.dumps({"ok": False, "error": "add-case requires at least one executable assertion (--forbidden-regex, --cmd, or --file)"}))
+    if not args.forbidden_regex and not args.cmd and not args.file and not args.negative_cmd:
+        print(json.dumps({"ok": False, "error": "add-case requires at least one executable assertion (--forbidden-regex, --cmd, --negative-cmd, or --file)"}))
         return 1
 
     default_schema = "apple-design-defect-cases/v1" if is_defect_drawer else "skill-eval-cases/v1"
@@ -695,53 +738,100 @@ def _fallback_trigger(description: str, query: str) -> bool:
     return len(query_tokens & desc_tokens) >= (2 if len(query_tokens) > 1 else 1)
 
 
-def _mock_trigger(mock: Any, index: int, case: dict[str, Any]) -> tuple[bool, str | None]:
-    if mock is None:
+def _trigger_decision(value: Any) -> tuple[bool | None, str | None]:
+    if isinstance(value, bool):
+        return value, None
+    if not isinstance(value, dict):
+        return False, "malformed mock decision"
+    if "answers" in value:
+        value = value["answers"]
+        if not isinstance(value, dict):
+            return False, "malformed mock answers"
+    choice = value.get("choice")
+    if isinstance(choice, dict):
+        if "confidence" in choice and not _valid_applicability(choice["confidence"]):
+            return False, "invalid choice confidence"
+        choice = choice.get("choice")
+    if "choice" in value:
+        if not isinstance(choice, str) or choice.lower() not in {"yes", "no", "true", "false"}:
+            return False, "malformed mock choice"
+        if "noul" not in value:
+            return False, "choice requires companion noul"
+    score_keys = [key for key in ("noul", "score", "confidence") if key in value]
+    scores: dict[str, float] = {}
+    for key in score_keys:
+        score = value[key]
+        if isinstance(score, dict):
+            if "confidence" in score and not _valid_applicability(score["confidence"]):
+                return False, f"invalid mock {key} confidence"
+            score = score.get(key)
+        if not _valid_applicability(score):
+            return False, f"invalid mock {key}: expected finite number in [0, 1]"
+        scores[key] = float(score)
+    if "choice" in value and choice.lower() in {"no", "false"}:
         return False, None
-    keys = [str(case.get("id", "")), str(index), str(index - 1), str(case.get("query", ""))]
-    value = mock
+    if scores:
+        score = scores[score_keys[0]]
+        if score > 0.70:
+            return True, None
+        if score < 0.30:
+            return False, None
+        return None, None
+    for key in ("should_trigger", "trigger"):
+        if isinstance(value.get(key), bool):
+            return value[key], None
+    return False, "malformed mock decision"
+
+
+def _valid_applicability(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 1 and math.isfinite(value)
+
+
+def _mock_trigger(mock: Any, index: int, case: dict[str, Any]) -> tuple[bool | None, str | None]:
+    keys = [str(case[key]) for key in ("id", "query") if case.get(key)] + [str(index)]
     if isinstance(mock, dict):
-        found = next((mock[key] for key in keys if key in mock), None)
-        if found is None and any(key in mock for key in keys):
-            return False, "missing mock decision"
-        value = found
+        key = next((key for key in keys if key in mock), None)
+        if key is None:
+            return False, "incomplete mock truth table"
+        value = mock[key]
     elif isinstance(mock, list):
         if index - 1 >= len(mock):
             return False, "incomplete mock truth table"
         value = mock[index - 1]
-    if isinstance(value, bool):
-        return value, None
-    if isinstance(value, dict):
-        if isinstance(value.get("should_trigger"), bool):
-            return value["should_trigger"], None
-        if isinstance(value.get("trigger"), bool):
-            return value["trigger"], None
-        choice = value.get("choice")
-        if isinstance(choice, str) and choice.lower() in {"yes", "no", "true", "false"}:
-            return choice.lower() in {"yes", "true"}, None
-        for candidate in ("noul", "score", "confidence"):
-            if isinstance(value.get(candidate), (int, float)):
-                return float(value[candidate]) >= 0.5, None
-    return False, "malformed mock decision"
+    else:
+        return False, "malformed mock truth table"
+    return _trigger_decision(value)
 
 
-def _jev_trigger(query: str) -> bool | None:
+def _jev_trigger(skill: str, description: str, query: str) -> tuple[bool | None, str | None]:
     client_path = ROOT / "skills" / "team-lead" / "scripts" / "jev_client.py"
-    if not client_path.is_file() or "unittest" in sys.modules:
-        return None
+    if not client_path.is_file():
+        return None, "Jev client unavailable"
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("skill_contract_jev_client", client_path)
         if spec is None or spec.loader is None:
-            return None
-        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        result = module.jev_decide(query, {"should_trigger": {"type": "noul"}}, timeout_sec=1.5)
+            return None, "Jev client unavailable"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = {"skill": skill, "description": description, "query": query}
+        questions = {
+            "choice": {
+                "type": "choice", "instructions": "Should this skill handle the query, based only on its description and exclusions? Choose yes or no.",
+                "criteria": {"yes": "The query falls within the described skill scope.", "no": "The query is excluded or outside the described skill scope."},
+            },
+            "noul": {"type": "noul", "instructions": "Score applicability of this skill to the query from 0 (not applicable) to 1 (fully applicable), respecting exclusions."},
+        }
+        result = module.jev_decide(state, questions, timeout_sec=1.5)
         if not isinstance(result, dict):
-            return None
-        value = result.get("should_trigger")
-        return float(value.get("noul")) >= 0.5 if isinstance(value, dict) and isinstance(value.get("noul"), (int, float)) else None
-    except (OSError, ImportError, TypeError, ValueError, AttributeError):
-        return None
+            return None, "Jev unavailable or missing answers"
+        answers = result.get("answers", result)
+        if not isinstance(answers, dict) or "choice" not in answers or "noul" not in answers:
+            return None, "Jev missing choice or companion noul"
+        matched, error = _trigger_decision(answers)
+        return (None, error) if error else (matched, "grey applicability" if matched is None else None)
+    except (OSError, ImportError, TypeError, ValueError, AttributeError) as exc:
+        return None, f"Jev unavailable: {type(exc).__name__}"
 
 
 def description_eval(args: argparse.Namespace) -> int:
@@ -752,37 +842,60 @@ def description_eval(args: argparse.Namespace) -> int:
     cases = doc.get("trigger_evals", [])
     failures: list[dict[str, Any]] = []
     mock = None
-    if args.mock_jev_json:
+    supplied_mock = args.mock_jev_json is not None
+    if supplied_mock:
         try:
             mock = _load_json_argument(args.mock_jev_json)
         except ValueError as exc:
             failures.append({"error": str(exc)})
+    if supplied_mock and not isinstance(mock, (dict, list)):
+        failures.append({"error": "malformed mock truth table"})
     if isinstance(mock, dict):
-        valid_keys = {str(i) for i in range(len(cases))} | {str(i + 1) for i in range(len(cases))} | {str(case.get("id", "")) for case in cases if isinstance(case, dict)} | {str(case.get("query", "")) for case in cases if isinstance(case, dict)}
+        valid_keys = {str(i) for i in range(1, len(cases) + 1)} | {str(case[key]) for case in cases if isinstance(case, dict) for key in ("id", "query") if case.get(key)}
         unknown = sorted(set(mock) - valid_keys)
         if unknown:
             failures.append({"error": f"unknown mock truth-table keys: {unknown}"})
+    if isinstance(mock, list) and len(mock) > len(cases):
+        failures.append({"error": "extra mock truth-table entries"})
     predicted: list[bool] = []
     expected_values: list[bool] = []
+    decisions: list[dict[str, Any]] = []
+    passed = 0
     for index, case in enumerate(cases, 1):
         if not isinstance(case, dict) or not isinstance(case.get("query"), str) or not isinstance(case.get("should_trigger"), bool):
             failures.append({"index": index, "error": "malformed trigger_eval"})
             continue
         query = case["query"]
-        matched = _jev_trigger(query)
-        if matched is None:
-            matched = _fallback_trigger(desc, query)
-        if mock is not None:
+        source = "mock" if supplied_mock else "jev"
+        error = None
+        fallback_reason = None
+        if supplied_mock:
             matched, error = _mock_trigger(mock, index, case)
             if error:
                 failures.append({"index": index, "query": query, "error": error})
-        predicted.append(matched); expected_values.append(case["should_trigger"])
+            elif matched is None:
+                fallback_reason = "grey applicability"
+        else:
+            matched, fallback_reason = _jev_trigger(args.skill, desc, query)
+        if matched is None:
+            matched = _fallback_trigger(desc, query)
+            source = "deterministic-fallback"
+        decision = {"index": index, "query": query, "matched": matched, "source": source}
+        if fallback_reason:
+            decision["fallback_reason"] = fallback_reason
+        if error:
+            decision["error"] = error
+        decisions.append(decision)
+        predicted.append(matched)
+        expected_values.append(case["should_trigger"])
         if matched != case["should_trigger"]:
             failures.append({"index": index, "query": query, "expected": case["should_trigger"], "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
+        elif not error:
+            passed += 1
     tp = sum(p and e for p, e in zip(predicted, expected_values)); fp = sum(p and not e for p, e in zip(predicted, expected_values)); fn = sum((not p) and e for p, e in zip(predicted, expected_values))
     precision = tp / (tp + fp) if tp + fp else 1.0
     recall = tp / (tp + fn) if tp + fn else 1.0
-    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(cases), "passed": max(0, len(cases) - len(failures)), "precision": precision, "recall": recall, "failures": failures}
+    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(cases), "passed": passed, "precision": precision, "recall": recall, "failures": failures, "decisions": decisions}
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if args.strict and not payload["ok"] else 0
 
@@ -808,7 +921,7 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
     if not db_path.is_file():
         print(json.dumps({"ok": False, "error": f"database not found: {db_path}"})); return 1
     try:
-        con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
+        con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True); con.row_factory = sqlite3.Row
         try:
             rows = con.execute("SELECT r.*, s.name AS source_name, rv.state AS review_state_joined FROM requests r LEFT JOIN sources s ON r.source_id=s.id LEFT JOIN reviews rv ON rv.request_id=r.id WHERE json_extract(CAST(r.summary_json AS TEXT), '$.starredAt') IS NOT NULL OR rv.state='starred' OR r.review_state='starred' ORDER BY r.id").fetchall()
         finally:
@@ -825,9 +938,17 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
             continue
         sid = str(row["id"])
         selected[sid] = row
+    repo_root = Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else ROOT
+    try:
+        default_file = str((target / "SKILL.md").relative_to(repo_root))
+    except ValueError:
+        default_file = "SKILL.md"
     existing = {str(item.get("jev_starred_id")): item for item in entries if item.get("jev_starred_id") is not None}
     planned: list[dict[str, Any]] = []
     skips: list[str] = []
+    archived = list(doc.get("archived_cases", []))
+    evicted: list[str] = []
+    added = 0
     for sid, row in selected.items():
         try:
             received = _json_value(row["received_request"])
@@ -837,44 +958,48 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
             questions = received.get("questions", {})
             state = received.get("state")
             answers = response.get("answers", response)
-            if not isinstance(questions, (dict, list)) or not isinstance(answers, dict):
-                raise ValueError("questions or answers has invalid shape")
-            entry = dict(existing.get(sid, {"id": _next_case_id(entries + planned, "EV")}))
-            entry.update({"title": f"Falcon starred decision {sid}", "tags": sorted(set(entry.get("tags", [])) | {"jev-star"}), "jev_starred_id": row["id"], "jev_state": state, "jev_questions": questions, "mock_jev_response": answers, "registered_at": date.today().isoformat()})
+            previous = existing.get(sid)
+            entry = dict(previous) if previous is not None else {
+                "id": _next_case_id(entries + archived + planned, "EV"),
+                "title": f"Falcon starred decision {sid}", "registered_at": date.today().isoformat(),
+            }
+            entry.update({"jev_starred_id": row["id"], "jev_state": state, "jev_questions": questions, "mock_jev_response": answers})
+            tags = list(entry.get("tags") or [])
+            if "jev-star" not in tags:
+                tags.append("jev-star")
+            entry["tags"] = tags
             if args.cmd_template:
-                rendered = args.cmd_template.replace("{mock_json}", shlex.quote(json.dumps(answers, ensure_ascii=False, separators=(",", ":"))))
-                entry["cmd"] = shlex.split(rendered); entry["expect_exit"] = 0
-            else:
-                entry["file"] = f"skills/{args.skill}/SKILL.md"
+                mock_json = json.dumps(answers, ensure_ascii=False, separators=(",", ":"))
+                entry["cmd"] = [arg.replace("{mock_json}", mock_json) for arg in shlex.split(args.cmd_template)]
+                entry.setdefault("expect_exit", 0)
+            elif not any(entry.get(key) for key in ("cmd", "negative_cmd", "file", "forbidden_regex", "regex")):
+                entry["file"] = default_file
                 entry["must_contain"] = [f"name: {args.skill}"]
-            reasons = evaluate_case(entry, target, Path(args.repo).resolve() if getattr(args, "repo", None) else ROOT)
+            reasons = evaluate_case(entry, target, repo_root)
             if reasons:
                 malformed.append(f"{sid}: {'; '.join(reasons)}")
                 continue
+            if previous is not None:
+                position = next(i for i, item in enumerate(entries) if str(item.get("jev_starred_id")) == sid)
+                entries[position] = entry
+            else:
+                if len(entries) >= 15:
+                    ordinary = [(i, item) for i, item in enumerate(entries) if not _is_golden(item)]
+                    if not ordinary:
+                        skips.append(sid)
+                        continue
+                    position, evicted_item = min(ordinary, key=lambda pair: (str(pair[1].get("registered_at", pair[1].get("date", ""))), str(pair[1].get("id", ""))))
+                    entries.pop(position)
+                    archived.append(evicted_item)
+                    evicted.append(str(evicted_item.get("id")))
+                entries.append(entry)
+                added += 1
             planned.append(entry)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             malformed.append(f"{sid}: {exc}")
-    by_id = {str(item.get("jev_starred_id")): item for item in entries if item.get("jev_starred_id") is not None}
-    ordinary = [item for item in entries if item.get("jev_starred_id") is None]
-    for item in planned:
-        by_id[str(item["jev_starred_id"])] = item
-    starred = list(by_id.values())
-    archived = list(doc.get("archived_cases", []))
-    evicted: list[str] = []
-    while len(starred) + len(ordinary) > 15 and ordinary:
-        ordinary.sort(key=lambda item: (str(item.get("registered_at", item.get("date", ""))), str(item.get("id", ""))))
-        evicted_item = ordinary.pop(0); archived.append(evicted_item); evicted.append(str(evicted_item.get("id")))
-    if len(starred) > 15:
-        overflow = sorted([item for item in starred if "jev-star" not in (item.get("tags") or [])], key=lambda item: str(item.get("registered_at", "")))
-        for item in overflow:
-            if len(starred) <= 15: break
-            starred.remove(item); archived.append(item); evicted.append(str(item.get("id")))
-        if len(starred) > 15:
-            skips.extend(str(item.get("jev_starred_id")) for item in planned if str(item.get("jev_starred_id")) not in {str(x.get("jev_starred_id")) for x in entries})
-            starred = [item for item in starred if str(item.get("jev_starred_id")) in {str(x.get("jev_starred_id")) for x in entries}]
-    payload = {"ok": not malformed, "dry_run": bool(args.dry_run), "skill": args.skill, "planned": len(planned), "added": sum(1 for item in planned if str(item.get("jev_starred_id")) not in existing), "evicted": evicted, "skipped": skips, "malformed": malformed, "active": min(15, len(ordinary) + len(starred))}
+    payload = {"ok": not malformed, "dry_run": bool(args.dry_run), "skill": args.skill, "planned": len(planned), "added": added, "evicted": evicted, "skipped": skips, "malformed": malformed, "active": len(entries)}
     if not args.dry_run and not malformed:
-        doc["active_cases"] = ordinary + starred; doc["archived_cases"] = archived; doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        doc["active_cases"] = entries; doc["archived_cases"] = archived; doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2)); return 1 if malformed else 0
 
 
@@ -929,8 +1054,8 @@ def parser() -> argparse.ArgumentParser:
     add_p.add_argument("--file", default="")
     add_p.add_argument("--must-contain", default="")
     add_p.add_argument("--must-not-contain", default="")
-    add_p.add_argument("--negative-cmd", default="")
-    add_p.add_argument("--expect-fail-exit", type=int, default=None)
+    add_p.add_argument("--negative-cmd", default="", help="Standalone command self-test requiring a genuine nonzero exit")
+    add_p.add_argument("--expect-fail-exit", type=int, default=None, help="Require this exact nonzero exit; otherwise any nonzero exit passes")
     add_p.add_argument("--negative-stdout-contains", default="")
     add_p.add_argument("--negative-stderr-contains", default="")
 
