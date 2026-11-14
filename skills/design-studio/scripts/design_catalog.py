@@ -7,6 +7,7 @@ import datetime as dt
 from functools import lru_cache
 from html import escape
 import json
+import importlib.util
 import math
 import re
 import struct
@@ -18,6 +19,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_nav_spec = importlib.util.spec_from_file_location('navigation_demo', ROOT / 'scripts' / 'navigation_demo.py')
+NAVIGATION = importlib.util.module_from_spec(_nav_spec)
+_nav_spec.loader.exec_module(NAVIGATION)
 DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
@@ -1204,6 +1208,7 @@ def _gallery_tokens():
 def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     width, height = (390, 844) if platform == "mobile" else (1280, 800)
     p0, fold, archetype = metadata["p0"], metadata["axis_y"], metadata["archetype"]
+    content = metadata.get('content') or 'Keep the next meaningful step in focus.'
     accent = f"var(--archetype-{archetype.removeprefix('VS-')})"
     fold_markup = {
         "accordion": '<details open><summary>Next steps</summary><p>One clear action, with supporting detail on demand.</p></details><details><summary>Recent context</summary><p>Earlier activity stays secondary.</p></details>',
@@ -1212,7 +1217,12 @@ def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     }[fold]
     metric, label = {"next-action": ("08:30", "Your next action"), "timeline": ("3", "Moments to explore"),
                      "context": ("82%", "Your context signal"), "recovery": ("Ready", "A clear way forward")}.get(p0, ("Now", "Your current direction"))
-    density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), "16px")
+    layout = metadata.get('layout', 'hero-top')
+    whitespace = metadata.get('whitespace', 'balanced')
+    glass_geometry = metadata.get('glass_geometry', 'wide')
+    density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), {"tight": "12px", "balanced": "16px", "open": "24px"}[whitespace])
+    config = {'schema': 'screen-page/v3', 'id': variant, 'platform': platform, 'metadata': metadata,
+              'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
     surface = {"warm": "var(--paper-warm)", "solid": "var(--paper)", "dark": "var(--paper-dark)"}.get(overrides.get("surface"), "var(--paper)")
     ink = "var(--ink-inverse)" if overrides.get("surface") == "dark" else "var(--ink)"
     muted = "var(--muted-inverse)" if overrides.get("surface") == "dark" else "var(--muted)"
@@ -1229,12 +1239,12 @@ document.querySelector('#continue').onclick=()=>document.querySelector('#action-
 if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) saturate(135%)');'''
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
-<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
+<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold} layout-{layout} whitespace-{whitespace} glass-{glass_geometry}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
 {_gallery_svg(342 if platform == 'mobile' else 560, 72)}
 <header><span class="eyebrow">{variant} · {archetype}</span><h1>{p0.replace('-', ' ').title()}</h1></header>
-<section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>Keep the next meaningful step in focus.</p></div><div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
+<section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>{escape(content)}</p></div><div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
 <nav class="glass-card" aria-label="Actions"><button id="reset-view">Reset view</button><span id="action-state" role="status">Choose a direction</span><button id="continue">Continue</button></nav>
-</main><script>{script}</script></body></html>'''
+</main><script id="page-config" type="application/json">{NAVIGATION.json_script(config)}</script><script>{script}</script></body></html>'''
 
 
 def _gallery_index(manifest):
@@ -1261,24 +1271,68 @@ catch{const area=document.createElement('textarea');area.value=text;area.classNa
 <button id="copy-summary">Copy Round Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
 
 
+
+def _load_app_flows(args):
+    return NAVIGATION.load_schemes(args)
+
+
+def _app_nav_html(scheme, app_index, platform, anti_patterns=None, overrides=None):
+    return NAVIGATION.app_html(scheme, app_index, platform, _gallery_svg(), anti_patterns, overrides)
+
+
+def command_scaffold_app_nav(args):
+    schemes = _load_app_flows(args)
+    destination = _gallery_paths(args.goal, args.round)
+    anti_patterns = _json_or_csv(args.session_anti_patterns, kind='anti')
+    overrides = _json_or_csv(args.style_overrides, kind='style')
+    NAVIGATION.presentation(overrides)
+    NAVIGATION.session_contract(anti_patterns, overrides)
+    if args.platform != 'mobile':
+        raise ValueError('app-nav requires --platform mobile')
+    if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
+    destination.mkdir(parents=True)
+    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    save(destination/'manifest.json',manifest)
+    for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,args.platform,anti_patterns,overrides),encoding='utf-8')
+    (destination/'current.html').write_text(_app_nav_html(schemes[0],0,args.platform,anti_patterns,overrides),encoding='utf-8')
+    links=''.join(f'<li><a href="app{i:02d}.html">{escape(x["title"])}</a></li>' for i,x in enumerate(schemes,1))
+    (destination/'index.html').write_text(f'<!doctype html><meta charset="utf-8"><title>{escape(args.goal)}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">{escape(schemes[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>',encoding='utf-8')
+    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest},ensure_ascii=False,indent=2)); return 0
+
 def command_scaffold_gallery(args):
+    if getattr(args, 'mode', 'screen') == 'app-nav':
+        return command_scaffold_app_nav(args)
     anti_patterns = _json_or_csv(args.session_anti_patterns, kind="anti")
     overrides = _json_or_csv(args.style_overrides, kind="style")
+    NAVIGATION.presentation(overrides)
+    NAVIGATION.session_contract(anti_patterns, overrides)
+    if getattr(args, 'direction', '') and args.direction not in {'VS-005', 'VS-006', 'VS-007', 'VS-008'}:
+        raise ValueError('supported depth directions: VS-005..VS-008')
     destination = _gallery_paths(args.goal, args.round)
     if destination.is_symlink() or destination.exists():
         raise ValueError(f"gallery round already exists or is unsafe: {destination}")
     destination.mkdir(parents=True, exist_ok=False)
     folds = ["accordion", "segmented-lens", "swwallet"]
-    archetypes = ["VS-005", "VS-006", "VS-007", "VS-008"]
+    archetypes = [args.direction] if getattr(args, 'direction', '') else ["VS-005", "VS-006", "VS-007", "VS-008"]
     focal = ["next-action", "timeline", "context", "recovery"]
     codebook = [(2, 0, 3), (3, 1, 2), (0, 2, 3), (1, 2, 2), (1, 1, 1), (0, 0, 1), (3, 2, 1), (1, 0, 0), (0, 1, 0), (2, 2, 0)]
-    variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold], "archetype": archetypes[arch], "selected": False, "starred": False, "notes": ""} for i, (p, fold, arch) in enumerate(codebook, 1)]
-    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "variants": variants}
+    # Preserve the distance-two code over focal/fold/layout even when archetype is fixed.
+    layouts = ['hero-top', 'hero-inline', 'hero-bottom', 'hero-center']
+    whitespace = ['tight', 'balanced', 'open']
+    geometry = ['wide', 'compact', 'rail', 'lifted']
+    variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold],
+                 "layout": layouts[arch], "whitespace": whitespace[(p + fold) % 3],
+                 "glass_geometry": geometry[(arch + p) % 4],
+                 "archetype": archetypes[arch % len(archetypes)],
+                 "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}',
+                 "selected": False, "starred": False, "notes": ""}
+                for i, (p, fold, arch) in enumerate(codebook, 1)]
+    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
     css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
     (destination / "screen.css").write_text(css, encoding="utf-8")
-    current_meta = {"p0": "current", "axis_y": "accordion", "archetype": "VS-005"}
+    current_meta = {"p0": "current", "axis_y": "accordion", "archetype": (archetypes[0] if archetypes else "VS-005"), "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen'}
     (destination / "current.html").write_text(_gallery_html(f"{args.goal} current", "current", args.platform, current_meta, anti_patterns, overrides), encoding="utf-8")
     for variant in variants:
         (destination / f"{variant['id']}.html").write_text(_gallery_html(f"{args.goal} {variant['id']}", variant["id"], args.platform, variant, anti_patterns, overrides), encoding="utf-8")
@@ -1551,8 +1605,14 @@ def parser():
     gallery.add_argument("--goal", required=True)
     gallery.add_argument("--round", type=int, required=True)
     gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
+    gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
+    gallery.add_argument("--app-screens", default="", help="Domain inventory; requires --app-flows-json, never guessed architectures")
+    gallery.add_argument("--app-context", default="", help="Domain context; requires four complete --app-flows-json architectures")
     gallery.add_argument("--session-anti-patterns", default="[]")
     gallery.add_argument("--style-overrides", default="{}")
+    gallery.add_argument("--direction", default="", help="Known VS-* archetype for depth exploration")
+    gallery.add_argument("--screen-content", default="", help="Domain content consumed by every screen variant")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
     vsearch.add_argument("--query", default="")

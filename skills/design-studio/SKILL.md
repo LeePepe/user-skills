@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Bash, Skill
 
 `design-studio` is **Entry A (`Ingest & Stockpile`)** of the Dual-Entry Design Flow (see [design-flow-architecture.md](references/design-flow-architecture.md)). Use it to classify and stockpile external design inspirations, reference apps, measured screenshot palettes, WWDC/HIG notes, interaction/motion patterns (`IP-*/MP-*`), reusable defect cases (`DC-*`), and `Video/Offline` Remotion pipelines.
 
-For product UI design, existing screen modernization (`No Code Demo`), `design.md`/`spec.md` authoring, and post-implementation screenshot verification (`Visual Traceback`), use **Entry B (`my-designer`)** (see [../my-designer/SKILL.md](../my-designer/SKILL.md)).
+For product UI design, existing screen modernization (`No Code Demo`), `design.md`/`spec.md` authoring, and post-implementation screenshot verification (`Visual Traceback`), use **Entry B (`my-designer`)** (see [../my-designer/SKILL.md](../my-designer/SKILL.md)). App/screen scaffold inputs and gate receipts follow [navigation-evidence-contract.md](../my-designer/references/navigation-evidence-contract.md).
 
 ## Entry A · Ingest & Stockpile Workflow (`A0..A4`)
 1. **A1 · Classify & Learn**: Score `desktop|mobile|web` × 8 dimensions (`CL,VS,CP,DV,GM,MI,LN,TC`) against [taxonomy-v2.json](references/taxonomy-v2.json), decomposing compound prompts into atomic cards and learning new trigger keywords.

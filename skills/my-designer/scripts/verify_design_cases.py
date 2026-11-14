@@ -6,12 +6,22 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import importlib.util
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+def _load_gate_module(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+EVIDENCE = _load_gate_module('design_evidence')
+JEV = _load_gate_module('design_jev')
 DEFAULT_CASES = ROOT / "references" / "defect-cases" / "index.json"
 DEFAULT_TAXONOMY = ROOT.parent / "design-studio" / "references" / "taxonomy-v2.json"
 EXT_REPOS_ROOT = "~/Development/Personal/collected-tools/repos"
@@ -79,6 +89,8 @@ PLAN_A_LENSES = [
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+TAXONOMY = _load_json(Path(DEFAULT_TAXONOMY)) if Path(DEFAULT_TAXONOMY).is_file() else {}
 
 
 def _save_json(path: Path, data: dict[str, Any]) -> None:
@@ -673,6 +685,72 @@ def command_flow_map(args: argparse.Namespace) -> int:
     return 0 if all_within_budget else 1
 
 
+
+def _jev_response(args, payload, platform):
+    return JEV.response(args, payload, platform, TAXONOMY)
+
+
+def _read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
+def _platform_errors(platform, text):
+    return EVIDENCE.platform_errors(platform, text)
+
+
+def _gallery_errors(root, manifest):
+    return EVIDENCE.gallery_errors(root, manifest)
+
+
+def command_jev_gate(args):
+    errors, evidence = [], []
+    if args.stage == 'gallery':
+        if not args.gallery_dir:
+            errors.append('gallery stage requires --gallery-dir')
+        else:
+            root = Path(args.gallery_dir)
+            manifest = _read_json(root / 'manifest.json')
+            if not isinstance(manifest, dict):
+                errors.append('missing or malformed manifest.json')
+            else:
+                if manifest.get('platform') != args.platform:
+                    errors.append('manifest platform does not match gate platform')
+                found, evidence = _gallery_errors(root, manifest)
+                errors.extend(found)
+    else:
+        try:
+            if not args.spec_file:
+                raise ValueError('spec/traceback stage requires --spec-file')
+            text = Path(args.spec_file).read_text(encoding='utf-8')
+            if args.stage == 'spec':
+                for token in ('Axis X', 'Axis Y', 'Axis Z'):
+                    if token not in text:
+                        errors.append(f'missing {token}')
+                if not re.search(r'(?i)(single\s+P0|one\s+P0|唯一\s*P0|P0[^\n]{0,40}(?:primary|per viewport|唯一))', text):
+                    errors.append('missing single P0 focal evidence')
+                errors.extend(_platform_errors(args.platform, text))
+                evidence = [{'spec_text': text, 'platform': args.platform}]
+            else:
+                found, evidence = EVIDENCE.traceback_errors(text)
+                errors.extend(found)
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+    taxonomy = _read_json(args.taxonomy)
+    if not isinstance(taxonomy, dict):
+        errors.append('missing/invalid taxonomy')
+        taxonomy = {}
+    payload = {'platform': args.platform, 'stage': args.stage, 'evidence': evidence, 'deterministic_errors': errors}
+    jev = JEV.response(args, payload, args.platform, taxonomy)
+    ok = not errors and jev['status'] == 'PASS'
+    result = {'ok': ok, 'platform': args.platform, 'stage': args.stage,
+              'status': 'PASS' if ok else 'REJECT_REVISE', 'errors': errors, 'evidence': evidence, 'jev': jev}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cases-file", default=str(DEFAULT_CASES))
@@ -686,6 +764,16 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
+
+    gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
+    gate.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gate.add_argument("--stage", choices=["gallery", "spec", "traceback"], required=True)
+    gate.add_argument("--gallery-dir")
+    gate.add_argument("--spec-file")
+    gate.add_argument("--no-jev", action="store_true")
+    gate.add_argument("--mock-jev-json")
+    gate.add_argument("--jev-url", default="http://127.0.0.1:19823/v1/systemone")
+    gate.add_argument("--jev-timeout", type=float, default=1.5)
 
     reg = sub.add_parser("register-case", parents=[common])
     reg.add_argument("--id", default="auto", help="Case ID (e.g. DC-005) or 'auto' to assign the next sequential DC-00N")
@@ -708,6 +796,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_route(args)
     if args.command == "register-case":
         return command_register_case(args)
+    if args.command == "jev-gate":
+        return command_jev_gate(args)
     return 1
 
 
