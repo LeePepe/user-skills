@@ -81,9 +81,30 @@ elif args[:2] == ["agent", "prompt"]:
 
     def test_gateway_groups_and_cross_vendor_mapping(self):
         text = PROFILES.read_text(encoding="utf-8")
-        for group in ("group/steering", "group/reviewing", "group/coding", "group/coding-escalated"):
+        for group in ("group/steering", "group/reviewing", "group/coding", "group/coding-escalated", "group/designer"):
             self.assertIn(group, text)
+        self.assertIn("grok-4.7: xai", text)
         self.assertIn("alt_by_excluded_vendor: {google: \"group/reviewing-openai\"", text)
+
+    def test_designer_online_and_offline_fallback(self):
+        online = self.run_dispatch("designer", online="1")
+        self.assertEqual(online.returncode, 0, online.stderr)
+        online_payload = json.loads(online.stdout)
+        self.assertEqual(online_payload["logical_group"], "group/designer")
+        self.assertEqual(online_payload["resolved_model"], "magpie/group/designer")
+        offline = self.run_dispatch("designer", online="0")
+        self.assertEqual(offline.returncode, 0, offline.stderr)
+        offline_payload = json.loads(offline.stdout)
+        self.assertEqual(offline_payload["logical_group"], "group/designer")
+        self.assertEqual(offline_payload["resolved_model"], "gpt-6.1-sol")
+
+    def test_designer_codex_fallback_and_no_vendor_collision(self):
+        result = self.run_dispatch("designer", kind="codex", online="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["logical_group"], "group/designer")
+        self.assertEqual(payload["resolved_model"], "gpt-6.1-sol")
+        self.assertNotIn("group/coding", result.stdout)
 
     def test_writer_online_and_offline(self):
         online = self.run_dispatch("writer", online="1")

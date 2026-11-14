@@ -41,10 +41,17 @@ gateway:
       stays: session
       default_vendor_family: [openai]
       fallback_models: {codex: "gpt-6.1-sol"}
+    designer:
+      id: "group/designer"
+      roles: [designer]
+      routing: order
+      stays: session
+      default_vendor_family: [openai, xai]
+      fallback_models: {copilot: "gpt-6.1-sol"}
 
 tiers:
   strong: [team_lead, arbitration]
-  mid: [planner, planner_reviewer, code_reviewer, writer_escalated]
+  mid: [planner, planner_reviewer, code_reviewer, writer_escalated, designer]
   worker: [writer, explorer, pr_monitor, mechanical]
   research: [research_primary, research_co]
 
@@ -55,6 +62,7 @@ vendors:
   mai-code-2-flash: microsoft
   gemini-4-argon: google
   kimi: moonshot
+  grok-4.7: xai
 
 common:
   herdr_kind_map:
@@ -124,6 +132,9 @@ machines:
         - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
         - {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, flags: "exec -m gpt-6.1-sol -c model_context_window=1000000 -s read-only"}
         - {cli: copilot, model: gpt-5.6-luna, vendor: openai, flags: "--model gpt-5.6-luna --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+      designer:
+        - {cli: copilot, model: gpt-6.1-sol, vendor: openai, effort: high, flags: "--model gpt-6.1-sol --reasoning-effort high --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+        - {cli: copilot, model: grok-4.7, vendor: xai, effort: high, flags: "--model grok-4.7 --reasoning-effort high --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
       writer_escalated: {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, sandbox: danger-full-access, flags: "-m gpt-6.1-sol -c model_context_window=1000000 -s danger-full-access -a never"}
     worker:
       writer:
@@ -157,6 +168,9 @@ machines:
         - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
         - {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, flags: "exec -m gpt-6.1-sol -c model_context_window=1000000 -s read-only"}
         - {cli: copilot, model: gpt-5.6-luna, vendor: openai, flags: "--model gpt-5.6-luna --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+      designer:
+        - {cli: copilot, model: gpt-6.1-sol, vendor: openai, effort: high, flags: "--model gpt-6.1-sol --reasoning-effort high --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+        - {cli: copilot, model: grok-4.7, vendor: xai, effort: high, flags: "--model grok-4.7 --reasoning-effort high --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
       writer_escalated: {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, sandbox: danger-full-access, flags: "-m gpt-6.1-sol -c model_context_window=1000000 -s danger-full-access -a never"}
     worker:
       writer:
