@@ -268,9 +268,11 @@ class GraphQLClient:
         self,
         api_key: str,
         transport: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        *, allow_refresh: bool = True,
     ) -> None:
         self.transport = transport or self._request
         self.api_key = api_key
+        self.allow_refresh = allow_refresh
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = self.transport(query, variables or {})
@@ -300,7 +302,7 @@ class GraphQLClient:
             with urlopen(request, timeout=20) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            if exc.code == 401 and not _retried:
+            if exc.code == 401 and not _retried and self.allow_refresh:
                 refreshed = refresh_oauth_credentials()
                 if refreshed:
                     self.api_key = refreshed
@@ -552,7 +554,11 @@ class GraphQLClient:
         page = comments.get("pageInfo") or {}
         if not page.get("hasNextPage"): return
         nodes = list(comments.get("nodes", [])); after = page.get("endCursor")
-        while after:
+        cursors: set[str] = set()
+        while page.get("hasNextPage"):
+            if not after or after in cursors:
+                raise LinearSyncError("Linear comment pagination did not advance")
+            cursors.add(after)
             data = self.execute(
                 """query IssueComments($id: String!, $after: String) {
                   issue(id: $id) { comments(first: 100, after: $after) {
@@ -561,64 +567,59 @@ class GraphQLClient:
                   } }
                 }""", {"id": str(issue.get("id")), "after": after})
             block = (data.get("issue") or {}).get("comments") or {}
-            nodes.extend(block.get("nodes", [])); after = block.get("pageInfo", {}).get("endCursor") if block.get("pageInfo", {}).get("hasNextPage") else None
+            nodes.extend(block.get("nodes", []))
+            page = block.get("pageInfo") or {}
+            after = page.get("endCursor")
         issue["comments"] = {"nodes": sorted(nodes, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or ""))), "pageInfo": {"hasNextPage": False}}
+
+    def issue_scope(self, identifier: str) -> dict[str, Any]:
+        data = self.execute(
+            """query IssueScope($id: String!) {
+              issue(id: $id) { id identifier title team { id key name }
+                project { id name } parent { id identifier title } }
+            }""", {"id": identifier})
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise LinearSyncError(f"Linear ancestor '{identifier}' was not found")
+        return issue
 
     def list_issues(
         self, team_key: str, *, state: str = "", project: str = "",
-        query: str = "", limit: int = 25,
+        query: str = "", limit: int | None = 25, updated_after: str = "",
     ) -> list[dict[str, Any]]:
-        data = self.execute(
-            """
-            query ListIssues($team: String!, $first: Int!, $after: String) {
-              issues(filter: {team: {key: {eq: $team}}}, first: $first, after: $after, orderBy: updatedAt) {
-                nodes {
-                  id identifier title url description priority updatedAt
-                  assignee { id name displayName }
-                  delegate { id name displayName }
-                  state { id name type } project { id name }
-                  team { id key name }
-                  parent { id identifier title project { id name } }
-                  comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } }
-                  labels { nodes { id name } }
-                }
-                pageInfo { hasNextPage endCursor }
-              }
-            }
-            """,
-            {"team": team_key, "first": min(limit, 100), "after": None},
-        )
-        issues = data.get("issues", {}).get("nodes", [])
-        page = data.get("issues", {}).get("pageInfo", {})
-        for issue in issues:
-            comments = issue.get("comments") or {}
-            if comments.get("pageInfo", {}).get("hasNextPage"):
-                after = comments.get("pageInfo", {}).get("endCursor")
-                nodes = list(comments.get("nodes", []))
-                while after:
-                    comment_data = self.execute(
-                        """
-                        query IssueComments($id: String!, $after: String) {
-                          issue(id: $id) { comments(first: 100, after: $after) { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } } }
-                        }
-                        """, {"id": str(issue.get("id")), "after": after})
-                    block = (comment_data.get("issue") or {}).get("comments") or {}
-                    nodes.extend(block.get("nodes", [])); after = block.get("pageInfo", {}).get("endCursor") if block.get("pageInfo", {}).get("hasNextPage") else None
-                issue["comments"] = {"nodes": sorted(nodes, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or ""))), "pageInfo": {"hasNextPage": False}}
-        while page.get("hasNextPage") and len(issues) < limit:
+        issue_filter: dict[str, Any] = {"team": {"key": {"eq": team_key}}}
+        if updated_after:
+            issue_filter["updatedAt"] = {"gte": updated_after}
+        issues: list[dict[str, Any]] = []
+        after = None
+        cursors: set[str] = set()
+        while limit is None or len(issues) < limit:
             data = self.execute(
-                """
-                query ListIssuesPage($team: String!, $first: Int!, $after: String) {
-                  issues(filter: {team: {key: {eq: $team}}}, first: $first, after: $after, orderBy: updatedAt) {
-                    nodes { id identifier title url description priority updatedAt assignee { id name displayName } delegate { id name displayName } state { id name type } project { id name } team { id key name } parent { id identifier title project { id name } } comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } } labels { nodes { id name } } }
+                """query ListIssues($filter: IssueFilter!, $first: Int!, $after: String) {
+                  issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {
+                    nodes {
+                      id identifier title url description priority updatedAt
+                      assignee { id name displayName } delegate { id name displayName }
+                      state { id name type } project { id name } team { id key name }
+                      parent { id identifier title project { id name } team { id key name } parent { id } }
+                      comments(first: 100) { nodes { id body createdAt updatedAt parent { id }
+                        user { id name displayName app } botActor { id name type } }
+                        pageInfo { hasNextPage endCursor } }
+                      labels { nodes { id name } }
+                    }
                     pageInfo { hasNextPage endCursor }
                   }
-                }
-                """,
-                {"team": team_key, "first": min(limit - len(issues), 100), "after": page.get("endCursor")},
+                }""",
+                {"filter": issue_filter, "first": 100 if limit is None else min(limit - len(issues), 100), "after": after},
             )
-            issues.extend(data.get("issues", {}).get("nodes", []))
-            page = data.get("issues", {}).get("pageInfo", {})
+            block = data.get("issues") or {}
+            issues.extend(block.get("nodes", []))
+            page = block.get("pageInfo") or {}
+            if not page.get("hasNextPage"): break
+            after = page.get("endCursor")
+            if not after or after in cursors:
+                raise LinearSyncError("Linear issue pagination did not advance")
+            cursors.add(after)
         for issue in issues:
             self._paginate_comments(issue)
         def matches(issue: dict[str, Any]) -> bool:

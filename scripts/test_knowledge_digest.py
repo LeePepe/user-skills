@@ -943,6 +943,32 @@ class KnowledgeDigestTests(unittest.TestCase):
                 "knowledge://jp-mixed-script-line-breaking",
             )
 
+    def test_daily_upsert_bot_footer_owner_default_and_inflight_assignment_are_idempotent(self):
+        owner_id = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        bot_id = "6105e16e-700a-4ea5-8283-67aec10daf20"
+        topics = digest_topics()
+        for assignee, delegate in ((None, None), ({"id": bot_id}, None), (None, {"id": bot_id})):
+            with self.subTest(assignee=assignee, delegate=delegate):
+                transport = FakeLinearTransport()
+                created = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+                self.assertEqual(created["assignee_id"], owner_id)
+                original = normalized_linear_markdown(created["description"]).replace("- [ ]", "- [x]", 1)
+                original = original.replace(DIGEST.DAILY_LINEAR_FOOTER, "") + "\nOwner notes: retain my exact follow-up."
+                remote = {"id": "daily", "title": created["title"], "description": original, "assignee": assignee, "delegate": delegate}
+                transport.issues = [remote]
+                updated = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=remote)
+                self.assertIn("- [x]", updated["description"])
+                self.assertIn("Owner notes: retain my exact follow-up.", updated["description"])
+                self.assertEqual(updated["description"].count(DIGEST.DAILY_LINEAR_FOOTER), 1)
+                if assignee is None and delegate is None:
+                    self.assertEqual(updated["assignee_id"], owner_id)
+                    remote["assignee"] = {"id": owner_id}
+                else:
+                    self.assertNotIn("assignee_id", updated)
+                mutations = len(transport.updated)
+                DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=remote)
+                self.assertEqual(len(transport.updated), mutations)
+
     def test_existing_unassigned_daily_issue_gets_owner_and_footer(self):
         class Transport:
             def __init__(self): self.updated = []

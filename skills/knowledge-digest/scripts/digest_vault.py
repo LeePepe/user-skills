@@ -1393,7 +1393,9 @@ def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any
             description = description.rstrip() + "\n\n" + DAILY_LINEAR_FOOTER + "\n"
         assignee = issue.get("assignee")
         assignee_id = assignee.get("id") if isinstance(assignee, dict) else None
-        needs_owner = "assignee" in issue and assignee_id not in {"6105e16e-700a-4ea5-8283-67aec10daf20", "0680d5e4-720a-4724-a1d4-b9660c0d1495"}
+        bot_id = "6105e16e-700a-4ea5-8283-67aec10daf20"
+        delegated_to_bot = (issue.get("delegate") or {}).get("id") == bot_id
+        needs_owner = "assignee" in issue and not delegated_to_bot and assignee_id not in {bot_id, "0680d5e4-720a-4724-a1d4-b9660c0d1495"}
         if description == existing and title == issue.get("title") and not needs_owner:
             return issue
         kwargs = {"title": title, "description": description}
