@@ -2085,24 +2085,26 @@ class M2RouterTests(unittest.TestCase):
     def test_visible_watchdog_goal_rebinds_stale_title_and_discovered_handoff(self):
         root = self.test_root / "handoff"
         old = root / "voxpocket-tenfold-r1"
-        current = root / "voxpocket-holistic"
+        current = root / "voxpocket-holistic-redesign"
         for path, issue, task, status in ((old, "TIA-409", "T1-old", "done"), (current, "TIA-420", "T4-two-stage-rebuild", "in_progress")):
             path.mkdir(parents=True)
+            tl = "voxpocket-holistic-goal-tl-r3" if path == current else f"{path.name}-goal-tl-r1"
             (path / "ledger.md").write_text(
-                f"# Goal: {path.name}\n- Linear: {issue} (Parent TIA-375)\n- TL: {path.name}-goal-tl-r1\n"
-                f"## Tasks\n| {task} | — | Stage 1 Designer -> Stage 2 Coding | writer | {status} | — |\n"
+                f"# Goal: {path.name}\n- Linear: {issue} (Parent TIA-375)\n- TL: {tl}\n"
+                f"## Tasks\n| {task} | — | Rebuild via strict 2-stage Designer (--role designer) -> Coding (--role writer) pipeline | writer | {status} | — |\n"
                 + ("## Events\n- EVT=GOAL_DONE\n" if status == "done" else ""), encoding="utf-8")
         record = {"name": "m2-voxpocket", "pane_id": "w9:p1", "agent_status": "idle", "terminal_title": f"RAG: {old}/r3/v02.html", "visible": "Working"}
         state_path = self.test_root / "rebind.json"
         initial = self.router.supervision_status(state_file=state_path, agent_records=[record], handoff_root=root)
         self.assertEqual(initial["slots"][0]["linear_issue"], "TIA-409")
         # Wide terminal padding and old RAG paths must not hide the current watchdog.
-        record["visible"] = "\n".join([" " * 300 + "┃"] * 5 + ["Watchdog watch-voxpocket-holistic-t4 is active" + " " * 250 + "┃", "1 background /tasks" + " " * 280 + "┃"])
+        record["visible"] = "\n".join([" " * 300 + "┃"] * 5 + ["Watchdog watch-voxpocket-holistic-t4 is active" + " " * 250 + "┃", "╻" + "▄" * 300, "╹" + "▀" * 300, "1 background /tasks" + " " * 280 + "┃"])
         refreshed = self.router.supervision_status(state_file=state_path, agent_records=[record], handoff_root=root)
         slot = refreshed["slots"][0]
         self.assertEqual(slot["linear_issue"], "TIA-420")
         self.assertEqual(slot["handoff_dir"], str(current))
         self.assertIn("T4-two-stage-rebuild (in_progress, writer)", slot["m1_progress"])
+        self.assertEqual(slot["m1_stage_summary"], "Stage 1 Designer -> Stage 2 Coding")
         self.assertIn("watch-voxpocket-holistic-t4", slot["visible_summary"])
         # An Owner-declared binding is authoritative, unlike a discovered binding.
         record["handoff_dir"] = str(old)

@@ -1790,7 +1790,10 @@ def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | No
             continue
         linear = re.search(r"^\s*-?\s*Linear\s*[:：]\s*[^\n]*?\b(TIA-\d+)\b", ledger_text, re.M | re.I)
         tl = re.search(r"^\s*-?\s*TL\s*[:：]\s*([^\s/|]+)", ledger_text, re.M)
-        goal_pattern = r"(?<!\w)" + re.escape(ledger_path.parent.name) + r"(?!\w)"
+        goal_names = [ledger_path.parent.name]
+        if tl and "-goal-tl" in tl.group(1):
+            goal_names.append(tl.group(1).split("-goal-tl", 1)[0])
+        goal_pattern = r"(?<!\w)(?:" + "|".join(re.escape(name) for name in goal_names) + r")(?!\w)"
         score = 0
         for key, weight in (("visible_summary", 100), ("sub_prompt", 80), ("terminal_title", 40), ("rag_context_hint", 20)):
             context = _text(slot.get(key))
@@ -1822,6 +1825,8 @@ def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | No
                     tasks.append(f"{cells[0]} ({cells[4]}, {cells[3]})")
         stages = list(dict.fromkeys(re.findall(r"Stage\s+\d+\s+[^\n|()<>]+?(?=\s*(?:->|→|\||\)|$))", ledger_text, re.I | re.M)))
         stage_summary = " -> ".join(stage.strip() for stage in stages)
+        if re.search(r"(?:two|2)[- ]stage[- ][^\n]*designer[^\n]*(?:->|→|-)\s*coding", ledger_text, re.I):
+            stage_summary = "Stage 1 Designer -> Stage 2 Coding"
         progress = ([f"TL: {tl.group(1)}"] if tl else []) + tasks
         if stage_summary:
             progress.append(stage_summary)
@@ -2871,7 +2876,7 @@ def _classify_and_unblock_dialog(
 
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
     lines = [re.sub(r"\s+", " ", line).strip(" ┃│") for line in _text(text).splitlines()]
-    return "\n".join([line for line in lines if line][-max_lines:])[-800:]
+    return "\n".join([line for line in lines if re.search(r"\w", line)][-max_lines:])[-800:]
 
 
 def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner = _run_command, lines: int = 40) -> str:
