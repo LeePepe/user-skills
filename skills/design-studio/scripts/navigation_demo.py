@@ -218,8 +218,9 @@ def presentation(overrides):
 
 
 def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overrides=None):
-    if platform != 'mobile':
-        raise ValueError('app-nav is an iOS topology sandbox; use --platform mobile')
+    platform = {'macos': 'desktop'}.get(platform, platform)
+    if platform not in {'mobile', 'desktop', 'web'}:
+        raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
     anti_patterns, overrides = anti_patterns or [], overrides or {}
     tokens = presentation(overrides)
     a = scheme['architecture']
@@ -251,7 +252,7 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
     style = ';'.join(f'--{k}:{v}' for k, v in tokens.items())
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><style>{css}</style></head>
-<body><main class="app architecture-{a['kind']}" style="{style}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
+<body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
 {optical_svg}
 <header class="large-title"><p>{escape(scheme['context'])}</p><h1 id="large-title">{escape(scheme['title'])}</h1></header>
 {chrome}

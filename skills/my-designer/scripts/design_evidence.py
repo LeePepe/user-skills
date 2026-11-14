@@ -106,10 +106,7 @@ def gallery_errors(root, manifest):
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))
-            links = ''.join(f'<li><a href="app{i:02d}.html">{c.escape(s["title"])}</a></li>' for i, s in enumerate(normalized, 1))
-            # App rounds publish a link index, not the screen comparison runtime.
-            index = f'<!doctype html><meta charset="utf-8"><title>{c.escape(manifest["goal"])}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{c.escape(json.dumps(anti, ensure_ascii=False))}" data-style-overrides="{c.escape(json.dumps(overrides, ensure_ascii=False))}">{c.escape(normalized[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>'
-            compare('index.html', index, coordinates=False)
+            compare('index.html', c._gallery_index(manifest), coordinates=False)
         else:
             variants = manifest.get('variants')
             if not isinstance(variants, list) or len(variants) != 10 or {v.get('id') for v in variants if isinstance(v, dict)} != {f'v{i:02d}' for i in range(1, 11)}:

@@ -10,7 +10,7 @@ allowed-tools: Read, Write, Edit, Bash, Skill
 
 For product UI design, existing screen modernization (`No Code Demo`), `design.md`/`spec.md` authoring, and post-implementation screenshot verification (`Visual Traceback`), use **Entry B (`my-designer`)** (see [../my-designer/SKILL.md](../my-designer/SKILL.md)). App/screen scaffold inputs and gate receipts follow [navigation-evidence-contract.md](../my-designer/references/navigation-evidence-contract.md).
 
-`scaffold-gallery` mounts ephemeral screen/app-nav rounds to `~/Development/leepepe.github.io/demos/<goal>/` with a latest-round redirect. After B3 freezes the direction, or when the Goal completes, immediately run `design_catalog.py cleanup-demo --goal <goal>`; it removes blog and handoff demo rounds while preserving receipts.
+`scaffold-gallery --platform mobile|desktop|macos|web` creates live iframe screen/app-nav rounds under `~/Development/leepepe.github.io/demos/<goal>` when mounted; `--category` and `--category-title` aggregate a multi-category portal with device bezels, filters, theme, and persisted chooser controls. After B3 or Goal completion, run `cleanup-demo --goal <goal>`; it removes all round/category demos while preserving receipts.
 
 ## Entry A · Ingest & Stockpile Workflow (`A0..A4`)
 1. **A1 · Classify & Learn**: Score `desktop|mobile|web` × 8 dimensions (`CL,VS,CP,DV,GM,MI,LN,TC`) against [taxonomy-v2.json](references/taxonomy-v2.json), decomposing compound prompts into atomic cards and learning new trigger keywords.

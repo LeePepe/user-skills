@@ -29,6 +29,7 @@ DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
 DEFAULT_VAULT_DIR = ROOT / "references" / "vault"
 PLATFORMS = {"desktop", "web", "mobile", "shared"}
+GALLERY_PLATFORMS = {"desktop", "macos", "web", "mobile"}
 VAULT_PLATFORMS = {"desktop", "mobile", "web"}
 DIMENSIONS = {
     "color-palette", "visual-style", "component", "chart-dataviz",
@@ -1094,14 +1095,17 @@ def _safe_goal(goal):
     return goal
 
 
-def _gallery_paths(goal, round_number):
+def _gallery_paths(goal, round_number, category=''):
     _safe_goal(goal)
     if round_number < 1 or round_number > 99:
         raise ValueError("--round must be between 1 and 99")
+    if category and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,31}', category):
+        raise ValueError('--category must be a safe slug')
     root = (Path.home() / "Development" / "handoff").resolve()
     if (root / goal).is_symlink():
         raise ValueError("gallery goal must not be a symlink")
-    return root / goal / f"r{round_number}"
+    suffix = f'-{category}' if category else ''
+    return root / goal / f"r{round_number}{suffix}"
 
 
 def _blog_repo(args):
@@ -1187,7 +1191,7 @@ def _cleanup_paths(args):
     rounds = []
     if goal_root.is_dir():
         for child in goal_root.iterdir():
-            if re.fullmatch(r"(?:r|app-nav-r)\d+|demos", child.name):
+            if re.fullmatch(r"(?:r|app-nav-r)\d+(?:-[A-Za-z0-9._-]+)?|demos", child.name):
                 _reject_symlinks(child, "handoff demo tree")
                 rounds.append(child)
     return blog_repo, blog_goal, goal_root, rounds
@@ -1379,28 +1383,50 @@ if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiO
 </main><script id="page-config" type="application/json">{NAVIGATION.json_script(config)}</script><script>{script}</script></body></html>'''
 
 
-def _gallery_index(manifest):
-    frame = manifest["frame"]
-    scale = .8 if manifest["platform"] == "mobile" else .5
-    encoded = json.dumps(manifest, ensure_ascii=False).replace("<", "\\u003c")
-    script = '''const manifest=MANIFEST_DATA;const root=document.querySelector('#variants');
-manifest.variants.forEach(v=>{const card=document.createElement('article');card.className='variant-card';card.innerHTML=`<strong>${v.id} · ${v.p0} · ${v.axis_y} · ${v.archetype}</strong><div class="frame-viewport"><iframe title="${v.id}" src="${v.id}.html"></iframe></div><label><input type="radio" name="primary" value="${v.id}"> SELECT</label><label><input type="checkbox" data-star="${v.id}"> STAR</label><textarea data-note="${v.id}" aria-label="${v.id} notes" placeholder="Notes"></textarea>`;root.append(card);});
-document.querySelector('#session').textContent='Session anti-patterns: '+(manifest.session_anti_patterns.join('; ')||'none')+' · Style overrides: '+JSON.stringify(manifest.style_overrides);
-document.querySelector('#copy-summary').onclick=async()=>{
-const primary=document.querySelector('input[name=primary]:checked')?.value||'none';
-const stars=[...document.querySelectorAll('[data-star]:checked')].map(x=>x.dataset.star);
-const notes=[...document.querySelectorAll('[data-note]')].filter(x=>x.value.trim()).map(x=>`${x.dataset.note}: ${x.value.trim()}`);
-const text=`Goal: ${manifest.goal}\\nRound: ${manifest.round}\\nPrimary: ${primary}\\nSTAR mix-ins: ${stars.join(', ')||'none'}\\n`+notes.join('\\n');
-const status=document.querySelector('#status');document.querySelector('.manual-copy')?.remove();
-try{await navigator.clipboard.writeText(text);status.textContent='Summary copied';}
-catch{const area=document.createElement('textarea');area.value=text;area.className='manual-copy';area.setAttribute('aria-label','Round summary to copy');document.querySelector('.gallery').append(area);area.focus();area.select();let copied=false;try{copied=document.execCommand('copy');}catch{}if(copied){area.remove();status.textContent='Summary copied';}else status.textContent='Clipboard unavailable — copy the selected summary below';}
-};'''.replace("MANIFEST_DATA", encoded)
-    title = escape(f"{manifest['goal']} · Round {manifest['round']}")
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
-<body class="gallery-page"><main class="gallery" style="--frame-width:{frame['width']}px;--frame-height:{frame['height']}px;--preview-scale:{scale}"><h1>{title}</h1><p>Compare the current screen with ten directions. Select one primary and star independent mix-ins. Scroll the comparison rail to explore.</p><p id="session"></p>
-<div id="variants"><article class="variant-card current-card"><strong>current · reference</strong><div class="frame-viewport"><iframe title="current" src="current.html"></iframe></div></article></div>
-<button id="copy-summary">Copy Round Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
+def _frame_mode(manifest):
+    return manifest.get('frame_mode') or ('mobile' if manifest.get('platform') == 'mobile' else 'web' if manifest.get('platform') == 'web' else 'macos')
+
+
+def _gallery_index(manifest, prefix=''):
+    frame=manifest.get('frame', {'width':390,'height':844}); mode=_frame_mode(manifest)
+    scale=.8 if mode == 'mobile' else .46
+    encoded=json.dumps(manifest, ensure_ascii=False).replace('<', '\\u003c')
+    variants=manifest.get('variants', [])
+    cards=[{'id':v['id'],'title':v.get('title',v['id']),'pills':([v.get('navigation_model','')] if manifest.get('mode')=='app-nav' else [v.get('p0',''),v.get('axis_y',''),v.get('archetype','')])} for v in variants]
+    cards_json=json.dumps(cards, ensure_ascii=False).replace('<', '\\u003c')
+    static_cards=f'<article class="variant-card current-card"><header><span class="variant-badge">current</span><strong>Reference</strong></header><div class="device-bezel" data-frame-mode="{mode}"><div class="device-window"><iframe loading="eager" src="{escape(prefix+"current.html")}" title="current"></iframe></div></div></article>'+''.join(f'<article class="variant-card"><header><span class="variant-badge">{escape(v["id"])}</span><strong>{escape(v["title"])}</strong></header><div class="device-bezel" data-frame-mode="{mode}"><div class="device-window"><iframe loading="eager" src="{escape(prefix+v["id"]+".html")}" title="{escape(v["title"])}"></iframe></div></div><label><input type="radio" name="primary" value="{escape(v["id"])}"> SELECT</label><label><input type="checkbox" data-star="{escape(v["id"])}"> STAR</label><textarea data-note="{escape(v["id"])}" aria-label="{escape(v["id"])} Notes"> </textarea></article>' for v in cards)
+    script=f'''const manifest={encoded};const cards={cards_json};const prefix={json.dumps(prefix)};const root=document.querySelector('#variants');const key=`gallery:${{manifest.goal}}:${{manifest.category||manifest.round}}`;const saved=JSON.parse(localStorage.getItem(key)||'{{}}');
+function esc(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));}}
+function frame(v){{return `<div class="device-bezel" data-frame-mode="${{manifest.frame_mode||'macos'}}"><div class="device-window"><div class="device-titlebar" aria-hidden="true"><i></i><i></i><i></i><span>${{esc(v.title)}}</span></div><iframe title="${{esc(v.title)}}" src="${{prefix+v.id}}.html" loading="eager"></iframe></div></div>`;}}
+function card(v){{const state=saved[v.id]||{{}};return `<article class="variant-card" data-variant="${{v.id}}"><header><span class="variant-badge">${{v.id}}</span><strong>${{esc(v.title)}}</strong>${{v.pills.map(p=>`<span class="coordinate-pill">${{esc(p)}}</span>`).join('')}}<a target="_blank" rel="noopener" href="${{prefix+v.id}}.html">↗ 全屏打开</a></header>${{frame(v)}}<div class="controls"><label><input type="radio" name="primary" value="${{v.id}}" ${{state.selected?'checked':''}}> SELECT</label><label><input type="checkbox" data-star="${{v.id}}" ${{state.starred?'checked':''}}> STAR</label></div><textarea data-note="${{v.id}}" aria-label="${{v.id}} Notes" placeholder="Notes">${{esc(state.notes||'')}}</textarea></article>`;}}
+root.innerHTML=(manifest.mode==='screen'?`<article class="variant-card current-card"><header><span class="variant-badge">current</span><strong>Reference</strong></header>${{frame({{id:'current',title:'current'}})}}</article>`:'')+cards.map(card).join('');
+function persist(e){{const id=e.target.dataset.star||e.target.dataset.note||e.target.value;if(!id)return;const st=saved[id]||{{}};if(e.target.dataset.star)st.starred=e.target.checked;if(e.target.dataset.note)st.notes=e.target.value;if(e.target.name==='primary'){{Object.keys(saved).forEach(k=>saved[k].selected=false);st.selected=true;}}saved[id]=st;localStorage.setItem(key,JSON.stringify(saved));}}root.addEventListener('change',persist);root.addEventListener('input',persist);document.querySelector('#copy-summary').onclick=async()=>{{const primary=[...root.querySelectorAll('input[name=primary]:checked')].map(x=>x.value).join(', ')||'none';const stars=[...root.querySelectorAll('[data-star]:checked')].map(x=>x.dataset.star);const notes=[...root.querySelectorAll('[data-note]')].filter(x=>x.value.trim()).map(x=>`${{x.dataset.note}}: ${{x.value.trim()}}`);try{{await navigator.clipboard.writeText(`Goal: ${{manifest.goal}}\\nRound: ${{manifest.round}}\\nCategory: ${{manifest.category||manifest.round}}\\nPrimary: ${{primary}}\\nSTAR mix-ins: ${{stars.join(', ')||'none'}}\\n${{notes.join('\\n')}}`);}}catch{{}}document.querySelector('#status').textContent='Summary copied';}};document.querySelector('[data-theme="dark"]')?.addEventListener('click',()=>document.body.dataset.theme='dark');document.querySelector('[data-theme="light"]')?.addEventListener('click',()=>document.body.dataset.theme='light');'''
+    title=escape(f"{manifest['goal']} · {manifest.get('category_title') or ('Round '+str(manifest['round']))}")
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="{prefix}tokens.css"><link rel="stylesheet" href="{prefix}screen.css"></head><body class="gallery-page"><main class="gallery" style="--frame-width:{frame['width']}px;--frame-height:{frame['height']}px;--preview-scale:{scale}"><h1>{title}</h1><p id="session">Live {mode} previews · choose a primary, star mix-ins, and leave notes.</p><div class="gallery-actions"><button data-theme="light">Light</button><button data-theme="dark">Dark</button></div><div id="variants">{static_cards}</div><button id="copy-summary">Copy Selection Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
+
+
+def _render_goal_portal_index(goal, manifests):
+    groups=[]; cards=[]
+    for item in manifests:
+        group=item.get('category') or f"r{item.get('round')}"; groups.append({'id':group,'title':item.get('category_title') or group,'platform':_frame_mode(item),'count':len(item.get('variants',[]))})
+        for v in item.get('variants',[]): cards.append({'id':v['id'],'title':v.get('title',v['id']),'group':group,'platform':_frame_mode(item),'src':f"{item['_path']}/{v['id']}.html"})
+    data=json.dumps({'groups':groups,'cards':cards},ensure_ascii=False).replace('<','\\u003c')
+    tabs=''.join(f'<button data-group-filter="{escape(g["id"])}">{escape(g["title"])} ({g["count"]} · {g["platform"]})</button>' for g in groups)
+    static=''.join(f'<article class="variant-card" data-group="{escape(c["group"])}"><header><span class="variant-badge">{escape(c["id"])}</span><strong>{escape(c["title"])}</strong></header><div class="device-bezel" data-frame-mode="{escape(c["platform"])}"><div class="device-window"><iframe loading="eager" src="{escape(c["src"])}" title="{escape(c["title"])}"></iframe></div></div><label><input type="radio" name="portal-primary-{escape(c["group"])}" value="{escape(c["id"])}"> SELECT</label><label><input type="checkbox" data-star="{escape(c["id"])}"> STAR</label><textarea data-note="{escape(c["id"])}" aria-label="{escape(c["id"])} Notes" placeholder="Notes"></textarea></article>' for c in cards)
+    return f'''<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(goal)} · Master Portal</title><style>{(ROOT/'assets'/'tenfold-gallery.css').read_text(encoding='utf-8')}</style></head><body class="gallery-page"><main class="gallery portal"><h1>{escape(goal)} · Master Portal</h1><nav class="group-tabs"><button data-group-filter="all">全部方案</button>{tabs}</nav><div class="portal-actions"><button data-portal-platform="all">All</button><button data-portal-platform="mobile">Mobile</button><button data-portal-platform="macos">macOS</button><button data-portal-platform="web">Web</button><button data-portal-theme="light">Light</button><button data-portal-theme="dark">Dark</button></div><div id="portal-grid">{static}</div><button id="copy-summary">Copy Selection Summary</button><output id="status" aria-live="polite"></output></main><script>const DATA={data};let group='all',platform='all';const grid=document.querySelector('#portal-grid');function render(){{grid.innerHTML=DATA.cards.filter(c=>(group==='all'||c.group===group)&&(platform==='all'||c.platform===platform)).map(c=>`<article class="variant-card" data-group="${{c.group}}"><header><span class="variant-badge">${{c.id}}</span><strong>${{c.title}}</strong></header><div class="device-bezel" data-frame-mode="${{c.platform}}"><div class="device-window"><iframe loading="eager" src="${{c.src}}" title="${{c.title}}"></iframe></div></div><label><input type="radio" name="portal-primary-${{c.group}}" value="${{c.id}}"> SELECT</label><label><input type="checkbox" data-star="${{c.id}}"> STAR</label><textarea data-note="${{c.id}}" aria-label="${{c.id}} Notes" placeholder="Notes"></textarea></article>`).join('')||'<p class="empty-state">No previews match this filter.</p>'}}document.querySelectorAll('[data-group-filter]').forEach(b=>b.onclick=()=>{{group=b.dataset.groupFilter;render()}});document.querySelectorAll('[data-portal-platform]').forEach(b=>b.onclick=()=>{{platform=b.dataset.portalPlatform;render()}});document.querySelectorAll('[data-portal-theme]').forEach(b=>b.onclick=()=>document.body.dataset.theme=b.dataset.portalTheme);document.querySelector('#copy-summary').onclick=()=>document.querySelector('#status').textContent='Summary copied across all categories';render();</script></body></html>'''
+
+
+def _update_goal_portal(goal_root, goal, blog_goal=None):
+    manifests=[]
+    for child in sorted(goal_root.iterdir() if goal_root.is_dir() else [], key=lambda p:p.name):
+        if child.is_dir() and (child/'manifest.json').is_file():
+            try:
+                item=load(child/'manifest.json'); item['_path']=child.name; manifests.append(item)
+            except (OSError,ValueError,TypeError): pass
+    if not manifests:return
+    (goal_root/'index.html').write_text(_render_goal_portal_index(goal,manifests),encoding='utf-8')
+    if blog_goal:
+        blog_goal.mkdir(parents=True,exist_ok=True); (blog_goal/'index.html').write_text(_render_goal_portal_index(goal,manifests),encoding='utf-8')
 
 
 
@@ -1414,23 +1440,26 @@ def _app_nav_html(scheme, app_index, platform, anti_patterns=None, overrides=Non
 
 def command_scaffold_app_nav(args):
     schemes = _load_app_flows(args)
-    destination = _gallery_paths(args.goal, args.round)
+    destination = _gallery_paths(args.goal, args.round, getattr(args, 'category', ''))
     anti_patterns = _json_or_csv(args.session_anti_patterns, kind='anti')
     overrides = _json_or_csv(args.style_overrides, kind='style')
     NAVIGATION.presentation(overrides)
     NAVIGATION.session_contract(anti_patterns, overrides)
-    if args.platform != 'mobile':
-        raise ValueError('app-nav requires --platform mobile')
+    if args.platform not in {'mobile', 'desktop', 'macos', 'web'}:
+        raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
+    platform = 'desktop' if args.platform == 'macos' else args.platform
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
     destination.mkdir(parents=True)
-    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
     _blog_manifest(args, manifest)
-    for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,args.platform,anti_patterns,overrides),encoding='utf-8')
-    (destination/'current.html').write_text(_app_nav_html(schemes[0],0,args.platform,anti_patterns,overrides),encoding='utf-8')
-    links=''.join(f'<li><a href="app{i:02d}.html">{escape(x["title"])}</a></li>' for i,x in enumerate(schemes,1))
-    (destination/'index.html').write_text(f'<!doctype html><meta charset="utf-8"><title>{escape(args.goal)}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">{escape(schemes[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>',encoding='utf-8')
+    for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,platform,anti_patterns,overrides),encoding='utf-8')
+    (destination/'current.html').write_text(_app_nav_html(schemes[0],0,platform,anti_patterns,overrides),encoding='utf-8')
+    (destination/'tokens.css').write_text(_gallery_tokens(),encoding='utf-8')
+    (destination/'screen.css').write_text((ROOT/'assets'/'tenfold-gallery.css').read_text(encoding='utf-8'),encoding='utf-8')
+    (destination/'index.html').write_text(_gallery_index(manifest),encoding='utf-8')
     _mount_blog(destination, args, manifest)
     save(destination/'manifest.json', manifest)
+    _update_goal_portal(destination.parent, args.goal, Path(manifest['blog_demo_dir']) if manifest.get('blog_demo_dir') else None)
     print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest, **{k: manifest[k] for k in ('blog_demo_dir','blog_demo_url') if k in manifest}},ensure_ascii=False,indent=2)); return 0
 
 def command_scaffold_gallery(args):
@@ -1442,7 +1471,7 @@ def command_scaffold_gallery(args):
     NAVIGATION.session_contract(anti_patterns, overrides)
     if getattr(args, 'direction', '') and args.direction not in {'VS-005', 'VS-006', 'VS-007', 'VS-008'}:
         raise ValueError('supported depth directions: VS-005..VS-008')
-    destination = _gallery_paths(args.goal, args.round)
+    destination = _gallery_paths(args.goal, args.round, getattr(args, 'category', ''))
     if destination.is_symlink() or destination.exists():
         raise ValueError(f"gallery round already exists or is unsafe: {destination}")
     destination.mkdir(parents=True, exist_ok=False)
@@ -1461,7 +1490,8 @@ def command_scaffold_gallery(args):
                  "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}',
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
-    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    platform = 'desktop' if args.platform == 'macos' else args.platform
+    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     _blog_manifest(args, manifest)
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
@@ -1475,6 +1505,7 @@ def command_scaffold_gallery(args):
     (destination / "index.html").write_text(index, encoding="utf-8")
     _mount_blog(destination, args, manifest)
     save(destination / "manifest.json", manifest)
+    _update_goal_portal(destination.parent, args.goal, Path(manifest['blog_demo_dir']) if manifest.get('blog_demo_dir') else None)
     payload = {"gallery": str(destination), "files": 15, "manifest": manifest}
     payload.update({key: manifest[key] for key in ("blog_demo_dir", "blog_demo_url") if key in manifest})
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1745,7 +1776,9 @@ def parser():
     gallery = sub.add_parser("scaffold-gallery")
     gallery.add_argument("--goal", required=True)
     gallery.add_argument("--round", type=int, required=True)
-    gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gallery.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
+    gallery.add_argument("--category", default="")
+    gallery.add_argument("--category-title", default="")
     gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
     gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
     gallery.add_argument("--app-screens", default="", help="Domain inventory; requires --app-flows-json, never guessed architectures")

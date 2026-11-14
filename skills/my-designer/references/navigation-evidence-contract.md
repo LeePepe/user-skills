@@ -1,6 +1,6 @@
 # Offline navigation and evidence contract
 
-Load for `scaffold-gallery --mode app-nav`, known-direction depth, `jev-gate`, or structured Visual Traceback. These are handoff-only HTML explorations, never native production code. `scaffold-gallery` may mount a round to `~/Development/leepepe.github.io/demos/<goal>/` (or an explicit `--blog-repo`); use `--no-blog-mount` for isolated verification. Run `cleanup-demo --goal <goal>` immediately after B3 freeze or Goal completion to remove ephemeral blog and handoff rounds while preserving receipts.
+Load for `scaffold-gallery --mode app-nav|screen --platform mobile|desktop|macos|web`, known-direction depth, `--category` portal aggregation, `jev-gate`, or structured Visual Traceback. These are handoff-only HTML explorations, never native production code. `scaffold-gallery` may mount a round to `~/Development/leepepe.github.io/demos/<goal>/` (or an explicit `--blog-repo`); use `--no-blog-mount` for isolated verification. Run `cleanup-demo --goal <goal>` immediately after B3 freeze or Goal completion to remove ephemeral blog and handoff rounds while preserving receipts.
 
 ## Bespoke full-app schemes
 
