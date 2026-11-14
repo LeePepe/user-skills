@@ -925,13 +925,35 @@ def command_vault_ingest(args):
     archetype_ref = getattr(args, "archetype_ref", None)
 
     try:
-        text = _read_ingest_source(args)
+        sources = []
+        if args.text is not None:
+            sources.append(args.text.strip())
+        if getattr(args, "file", None) is not None:
+            sources.append(Path(args.file).read_text(encoding="utf-8").strip())
+        if getattr(args, "image", None) is not None:
+            try:
+                sources.append(ocr_image(args.image).strip())
+            except ValueError:
+                if not sources and not measured_palette:
+                    raise
+        text = "\n".join(source for source in sources if source)
+        if not text:
+            raise ValueError("input prompt must not be empty")
     except ValueError:
         if measured_palette:
             hex_list = ", ".join(item["hex"] for item in measured_palette[:5])
             text = f"Screenshot measured color palette ({hex_list}) for {archetype_ref or 'AppTheme'}"
+        elif getattr(args, "url", []) or getattr(args, "source_url", []):
+            urls = (getattr(args, "url", []) or []) + (getattr(args, "source_url", []) or [])
+            text = "Web design inspiration: " + ", ".join(part for url in urls for part in csv_values(url))
         else:
             raise
+    source_urls = []
+    for raw_url in (getattr(args, "url", []) or []) + (getattr(args, "source_url", []) or []):
+        source_urls.extend(csv_values(raw_url))
+    source_urls = list(dict.fromkeys(source_urls))
+    html_recipe_ref = getattr(args, "html_recipe_ref", None)
+    image_assets = [str(Path(args.image).expanduser())] if getattr(args, "image", None) else []
     segments = [text] if args.no_split else (split_segments(text) or [text])
 
     vault_files = {
@@ -974,6 +996,12 @@ def command_vault_ingest(args):
                 entry["measured_palette"] = measured_palette
             if archetype_ref:
                 entry["archetype_ref"] = archetype_ref
+            if image_assets:
+                entry["image_assets"] = image_assets
+            if source_urls:
+                entry["source_urls"] = source_urls
+            if html_recipe_ref:
+                entry["html_recipe_ref"] = html_recipe_ref
             created_cards.append(entry)
             if not args.dry_run:
                 for plat in card["platforms"]:
@@ -999,7 +1027,74 @@ def command_vault_ingest(args):
         out["measured_palette"] = measured_palette
     if archetype_ref:
         out["archetype_ref"] = archetype_ref
+    if image_assets:
+        out["image_assets"] = image_assets
+    if source_urls:
+        out["source_urls"] = source_urls
+    if html_recipe_ref:
+        out["html_recipe_ref"] = html_recipe_ref
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _json_or_csv(value):
+    if value is None:
+        return []
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, (dict, list)) else parsed
+    except json.JSONDecodeError:
+        return csv_values(value)
+
+
+def _gallery_paths(goal, round_number):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", goal):
+        raise ValueError("--goal must be a safe slug (letters, numbers, _ or -)")
+    if round_number < 1 or round_number > 99:
+        raise ValueError("--round must be between 1 and 99")
+    return Path.home() / "Development" / "handoff" / goal / f"r{round_number}"
+
+
+def _gallery_svg():
+    return '''<svg class="optical-defs" aria-hidden="true" focusable="false" width="0" height="0" xmlns="http://www.w3.org/2000/svg">
+  <filter id="apple-liquid-glass" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+    <feImage href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='rgb(128,128,128)'/%3E%3Cpath d='M0 0h64v64H0z' fill='none' stroke='rgb(128,128,128)'/%3E%3C/svg%3E" result="squircle-map" />
+    <feDisplacementMap in="SourceGraphic" in2="squircle-map" scale="8" xChannelSelector="R" yChannelSelector="G" result="refracted" />
+    <feColorMatrix in="refracted" type="matrix" values="1.04 0 0 0 0  0 1.02 0 0 0  0 0 1.08 0 0  0 0 0 1 0" result="saturated" />
+    <feBlend in="saturated" in2="SourceGraphic" mode="screen" />
+  </filter>
+</svg>'''
+
+
+def _gallery_html(title, variant, platform):
+    frame_width, frame_height = ("390px", "844px") if platform == "mobile" else ("1280px", "800px")
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head><body><main class="mockup" style="--frame-width:{frame_width};--frame-height:{frame_height}">{_gallery_svg()}<header><span class="eyebrow">{variant}</span><h1>One clear next action</h1><p>Orthogonal starter concept for visual review.</p></header><section class="glass-card" data-concept="{variant}"><span class="metric">08:30</span><strong>Next action</strong><button>Continue</button></section><section class="secondary"><span>History</span><span>Ambient context</span></section></main></body></html>'''
+
+
+def command_scaffold_gallery(args):
+    destination = _gallery_paths(args.goal, args.round)
+    if destination.exists() and any(destination.iterdir()):
+        raise ValueError(f"gallery round already exists: {destination}")
+    destination.mkdir(parents=True, exist_ok=False)
+    platform = args.platform
+    anti_patterns = _json_or_csv(args.session_anti_patterns)
+    overrides = _json_or_csv(args.style_overrides)
+    variants = []
+    folds = ["accordion", "segmented-lens", "swwallet"]
+    archetypes = ["VS-005", "VS-006", "VS-007", "VS-008"]
+    focal = ["next-action", "timeline", "context", "recovery"]
+    for index in range(1, 11):
+        vid = f"v{index:02d}"
+        variants.append({"id": vid, "p0": focal[(index - 1) % len(focal)], "axis_y": folds[(index - 1) % len(folds)], "archetype": archetypes[(index - 1) % len(archetypes)], "selected": False, "starred": False, "notes": ""})
+    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": platform, "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "variants": variants}
+    save(destination / "manifest.json", manifest)
+    (destination / "tokens.css").write_text(":root{--ink:#172033;--muted:#667085;--accent:#5d5cf5;--glass:rgba(255,255,255,.48);--radius:28px;}\\n", encoding="utf-8")
+    (destination / "screen.css").write_text("""/* Apple recipe: feDisplacementMap uses a neutral 128/128 map, inward Snell normals, symmetric RGB dispersion; Blink url() is optional. Safari/Firefox retain blur/saturate fallback. Keep SVG live at zero size and never isolate backdrop roots. */
+*{box-sizing:border-box}.gallery{max-width:1400px;margin:auto}.gallery #variants{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.gallery iframe{display:block;width:100%;height:220px;border:0;border-radius:20px;background:#eef2ff}.gallery label{display:block;margin-top:8px}.gallery textarea{width:100%;min-height:64px;margin-top:10px;border:1px solid #ccd3e8;border-radius:12px;padding:8px}.gallery button{margin-top:18px;padding:12px 18px;border:0;border-radius:999px;background:var(--accent);color:white}.current-card{grid-column:1/-1}html,body{margin:0;min-height:100%;font:16px/1.4 system-ui;background:linear-gradient(135deg,#d9e7ff,#f7d9ec);color:var(--ink)}body{padding:24px}.mockup{width:min(100%,var(--frame-width,1280px));min-height:var(--frame-height,800px);max-width:100%;margin:auto;padding:32px;overflow:hidden;border-radius:36px;background:linear-gradient(145deg,rgba(255,255,255,.68),rgba(213,225,255,.4));box-shadow:0 24px 70px rgba(31,41,72,.2)}.optical-defs{position:absolute;width:0;height:0;overflow:hidden}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}h1{font-size:clamp(28px,5vw,56px);line-height:1.04;margin:12px 0 8px;max-width:11ch}p{color:var(--muted);max-width:42ch}.glass-card{position:relative;display:grid;gap:14px;margin-top:clamp(48px,12vh,140px);padding:28px;border:1px solid rgba(255,255,255,.7);border-radius:var(--radius);background:var(--glass);-webkit-backdrop-filter:blur(14px) saturate(165%);backdrop-filter:blur(14px) saturate(165%);box-shadow:0 18px 45px rgba(31,41,72,.18),inset 1px 1px rgba(255,255,255,.8)}.glass-card:focus-within,.glass-card:hover{filter:url(#apple-liquid-glass);transform:translateY(-2px)}.metric{font-size:clamp(44px,9vw,88px);font-weight:750}.glass-card button{width:max-content;border:0;border-radius:999px;padding:12px 20px;background:var(--accent);color:white;font-weight:700;cursor:pointer}.secondary{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px;color:var(--muted)}.secondary span{padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.35)}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;transform:none!important}}""", encoding="utf-8")
+    for name in ("current",) + tuple(f"v{i:02d}" for i in range(1, 11)):
+        (destination / f"{name}.html").write_text(_gallery_html(f"{args.goal} {name}", name, platform), encoding="utf-8")
+    (destination / "index.html").write_text(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{args.goal} gallery round {args.round}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head><body><main class="gallery"><h1>{args.goal} · Round {args.round}</h1><p>Choose one primary, star independent mix-ins, and leave notes.</p><div id="variants"><article class="glass-card current-card"><strong>current</strong><iframe title="current" src="current.html"></iframe></article></div><button id="copy-summary">Copy Round Summary</button><output id="status" aria-live="polite"></output></main><script>const manifest={json.dumps(manifest, ensure_ascii=False)};const root=document.querySelector('#variants');manifest.variants.forEach(v=>{{const card=document.createElement('article');card.className='glass-card';card.innerHTML=`<strong>${{v.id}} · ${{v.p0}}</strong><iframe title="${{v.id}}" src="${{v.id}}.html"></iframe><label><input type="radio" name="primary" value="${{v.id}}"> SELECT</label><label><input type="checkbox" data-star="${{v.id}}"> STAR</label><textarea aria-label="${{v.id}} notes" placeholder="Notes"></textarea>`;root.append(card)}});document.querySelector('#copy-summary').onclick=async()=>{{const primary=document.querySelector('input[name=primary]:checked')?.value||'none';const stars=[...document.querySelectorAll('[data-star]:checked')].map(x=>x.dataset.star);const text=`Round ${{manifest.round}}\\nPrimary: ${{primary}}\\nStars: ${{stars.join(', ')||'none'}}\\n`+[...document.querySelectorAll('textarea')].map(x=>x.value).filter(Boolean).join('\\n');try{{await navigator.clipboard.writeText(text)}}catch(e){{const area=document.createElement('textarea');area.value=text;document.body.append(area);area.select();document.execCommand('copy');area.remove()}}document.querySelector('#status').textContent='Summary copied';}};</script></body></html>''', encoding="utf-8")
+    print(json.dumps({"gallery": str(destination), "files": 16, "manifest": manifest}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1080,7 +1175,15 @@ def command(args):
     if args.command == "classify":
         return command_classify(args)
     if args.command == "vault-ingest":
+        if not any((args.text, args.file, args.image, args.url, args.source_url)):
+            raise ValueError("vault-ingest requires --text, --file, --image, or --url")
+        if args.file and args.text:
+            raise ValueError("--text and --file cannot be combined")
+        if args.measure_palette is not None and not (args.image or args.measure_palette is not True):
+            raise ValueError("--measure-palette requires --image or an explicit screenshot path")
         return command_vault_ingest(args)
+    if args.command == "scaffold-gallery":
+        return command_scaffold_gallery(args)
     if args.command == "vault-search":
         return command_vault_search(args)
     catalog_path, markdown_path = catalog_paths(args)
@@ -1243,16 +1346,25 @@ def parser():
     cls_parser.add_argument("--learn", action="store_true")
 
     vingest = sub.add_parser("vault-ingest", parents=[v2_common])
-    v_source = vingest.add_mutually_exclusive_group(required=True)
-    v_source.add_argument("--text")
-    v_source.add_argument("--file")
-    v_source.add_argument("--image")
+    vingest.add_argument("--text")
+    vingest.add_argument("--file")
+    vingest.add_argument("--image")
+    vingest.add_argument("--url", action="append", default=[])
+    vingest.add_argument("--source-url", action="append", default=[])
     vingest.add_argument("--measure-palette", nargs="?", const=True, default=None,
                          help="Measure screenshot hex palette via BAMA measure.swift or PNG fallback")
     vingest.add_argument("--archetype-ref", default=None,
                          help="Optional style archetype or cross-domain remix reference (e.g. VS-005)")
+    vingest.add_argument("--html-recipe-ref", default=None)
     vingest.add_argument("--no-split", action="store_true")
     vingest.add_argument("--dry-run", action="store_true")
+
+    gallery = sub.add_parser("scaffold-gallery")
+    gallery.add_argument("--goal", required=True)
+    gallery.add_argument("--round", type=int, required=True)
+    gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gallery.add_argument("--session-anti-patterns", default="[]")
+    gallery.add_argument("--style-overrides", default="{}")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
     vsearch.add_argument("--query", default="")

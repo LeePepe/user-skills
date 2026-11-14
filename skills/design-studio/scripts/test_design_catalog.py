@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -449,6 +450,44 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.assertTrue(payload["measured_palette"])
         self.assertEqual(payload["created_cards"][0]["archetype_ref"], "VS-005")
         self.assertTrue(payload["created_cards"][0]["measured_palette"])
+
+    def test_vault_ingest_multimodal_metadata_and_url_only(self):
+        image = self.directory / "shot.png"
+        image.write_bytes(b"not-an-image")
+        result = run("vault-ingest", "--text", "Liquid Glass mobile card", "--image", str(image),
+                     "--measure-palette", str(image), "--url", "https://example.com/a,https://example.com/a",
+                     "--source-url", "https://example.com/b", "--html-recipe-ref", "recipe-v1",
+                     "--archetype-ref", "VS-005", "--no-jev", "--taxonomy", str(self.taxonomy),
+                     "--vault-dir", str(self.vault_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        card = payload["created_cards"][0]
+        self.assertEqual(card["source_urls"], ["https://example.com/a", "https://example.com/b"])
+        self.assertEqual(card["html_recipe_ref"], "recipe-v1")
+        self.assertEqual(card["image_assets"], [str(image)])
+        url_only = run("vault-ingest", "--url", "https://example.com/only", "--no-jev",
+                       "--taxonomy", str(self.taxonomy), "--vault-dir", str(self.vault_dir), "--dry-run")
+        self.assertEqual(url_only.returncode, 0, url_only.stderr)
+        self.assertEqual(json.loads(url_only.stdout)["created_count"], 1)
+
+    def test_scaffold_gallery_writes_safe_interactive_bundle(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = os.environ.copy()
+            env["HOME"] = directory
+            result = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile",
+                         "--session-anti-patterns", "[\"no top capsule\"]", "--style-overrides", "{\"density\":\"airy\"}", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(directory) / "Development/handoff/goal-a/r1"
+            self.assertTrue((gallery / "index.html").is_file())
+            self.assertTrue((gallery / "screen.css").is_file())
+            self.assertIn("feDisplacementMap", (gallery / "screen.css").read_text())
+            self.assertIn("feDisplacementMap", (gallery / "v01.html").read_text())
+            manifest = json.loads((gallery / "manifest.json").read_text())
+            self.assertEqual(len(manifest["variants"]), 10)
+            self.assertEqual(manifest["session_anti_patterns"], ["no top capsule"])
+            self.assertEqual(manifest["style_overrides"], {"density": "airy"})
+            duplicate = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile", env=env)
+            self.assertNotEqual(duplicate.returncode, 0)
 
 
 if __name__ == "__main__":

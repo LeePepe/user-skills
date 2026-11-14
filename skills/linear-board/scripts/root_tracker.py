@@ -32,6 +32,7 @@ DEFAULT_EVAL_ACTIONS = Path.home() / "Development/job skills/my-pr-supervisor/co
 DEFAULT_AIDASH_EVAL_ACTIONS = Path.home() / "Library/Application Support/AIDash/jobs/my-pr-supervisor/eval-actions.jsonl"
 DEFAULT_SEED = HANDOFF_DIR / "roots-seed.json"
 DEFAULT_TOPIC_MAPS = (
+    SCRIPT_DIR.parents[1] / "personal-m2-assistant/references/m2-domain-map.json",
     Path.home() / ".agents/skills/personal-m2-assistant/references/m2-domain-map.json",
     Path.home() / "Development/user-skills/skills/personal-m2-assistant/references/m2-domain-map.json",
     Path.home() / "Development/worktrees/project-root-tracker-tk1/skills/personal-m2-assistant/references/m2-domain-map.json",

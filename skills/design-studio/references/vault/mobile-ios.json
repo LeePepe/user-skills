@@ -1647,7 +1647,7 @@
       ],
       "desktop_macos_implementation": "For a companion macOS surface, preserve one primary Next Dose focal stage and fold historical/ambient metrics into secondary inspector rows; reuse the same AppTheme coordinate set rather than inventing a desktop-only hierarchy.",
       "mobile_ios_implementation": "Render one prominent Next Dose hero with the primary action in the thumb-safe bottom/action region. Keep Last Dose and Medication Level as compact P1/P2 rows or pills, capped at 2–3 visual groups per viewport; use Dynamic Type, semantic colors, and Size Class adaptation.",
-      "native_guardrails": "Exactly one P0 focal point per viewport; do not give Last Dose and Medication Level equal card weight. Do not accept the first generic layout, palette-only variants, or throwaway HTML/SwiftUI demos. Record a markdown variant matrix, explicit anti-patterns, Owner selection/feedback, and freeze shared AppTheme tokens before production implementation. No measured palette or VS archetype is asserted.",
+      "native_guardrails": "Exactly one P0 focal point per viewport; do not give Last Dose and Medication Level equal card weight. Keep universal layering laws separate from session_anti_patterns/style_overrides. Do not create Prototype code in product repositories; when direction is ambiguous, use Mode A spec-matrix or the offline handoff scaffold-gallery, then record Owner selection/feedback and freeze shared AppTheme tokens before production implementation. No measured palette or VS archetype is asserted.",
       "usage_count": 0,
       "rating": "unrated",
       "last_used_at": null,
