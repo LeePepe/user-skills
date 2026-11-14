@@ -1240,10 +1240,17 @@ def _daily_topic_lines(item: dict[str, Any], *, with_brief: bool = True) -> list
     ]
 
 
+DAILY_LINEAR_FOOTER = (
+    "Owner 可评论 `@bot 1`、`@bot 都做`，或将 Assignee/Delegate 改为 Bot；"
+    "Bot 会展开主题、在评论中发布完整知识卡，并将 issue 重新分配给 Owner (`@ltp19941128`)。"
+)
+
+
 def _daily_digest_markdown(day: str, topics: list[dict[str, Any]]) -> str:
     lines = [f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->", f"<!-- KD-DAILY-START:{day} -->", "", _DAILY_NOTICE, ""]
     for item in topics:
         lines.extend(_daily_topic_lines(item))
+    lines.extend([DAILY_LINEAR_FOOTER, ""])
     return "\n".join([*lines, f"<!-- KD-DAILY-END:{day} -->", ""])
 
 
@@ -1380,13 +1387,19 @@ def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any
     description = _daily_digest_markdown(day, topics)
     if issue:
         existing = str(issue.get("description") or "")
-        description = _merge_daily_digest_description(existing, description, topics)
-        if description == existing and title == issue.get("title"):
+        desired = description if DAILY_LINEAR_FOOTER in existing else description.replace("\n" + DAILY_LINEAR_FOOTER + "\n", "\n")
+        description = _merge_daily_digest_description(existing, desired, topics)
+        assignee = issue.get("assignee")
+        needs_owner = isinstance(assignee, dict) and assignee.get("id") != "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        if description == existing and title == issue.get("title") and not needs_owner:
             return issue
-        return client.update_issue(issue.get("id") or issue.get("identifier"), title=title, description=description)
+        kwargs = {"title": title, "description": description}
+        if needs_owner:
+            kwargs["assignee_id"] = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        return client.update_issue(issue.get("id") or issue.get("identifier"), **kwargs)
     team = client.team_metadata("TIA")
     state_id = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if s.get("type") == "backlog"), None)
-    return client.create_issue(team_id=team["id"], title=title, description=description, state_id=state_id)
+    return client.create_issue(team_id=team["id"], title=title, description=description, state_id=state_id, assignee_id="0680d5e4-720a-4724-a1d4-b9660c0d1495")
 
 
 def _update_proposal_external_ids(proposals_path: Path, selected: list[dict[str, Any]], external_id: str) -> None:

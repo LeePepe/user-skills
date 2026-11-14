@@ -53,6 +53,14 @@ costs. Credentials are stored in `~/.config/linear/credentials.json` with
 directory mode `0700` and file mode `0600`; use `linear-sync.py auth set`,
 `auth show`, or `auth remove`.
 
+## Personal `@bot` bridge
+
+Run `scripts/linear-bot-bridge.py --once --json` for one incremental scan, or
+`--daemon --interval 20` for polling. It only considers personal TIA issues,
+ignores bot-authored comments, persists an atomic 0600 watermark, and reassigns
+verified M2 output to the Owner. `--dry-run` performs no Linear, Herdr, vault,
+or watermark writes. Webhooks bind to loopback and require `LINEAR_WEBHOOK_SECRET`.
+
 ## Project Root Tracker
 
 Run `python3 scripts/root_tracker.py refresh` to collect the offline-first root

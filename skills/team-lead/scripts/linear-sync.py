@@ -345,13 +345,15 @@ class GraphQLClient:
     def issue(self, identifier: str) -> dict[str, Any]:
         fields = f"""
           id identifier url title description priority updatedAt
+          assignee {{ id name displayName }}
+          delegate {{ id name displayName }}
           state {{ id name type }}
           team {{ id key name }}
           project {{ id name }}
           projectMilestone {{ id name }}
           parent {{ id identifier title }}
           labels {{ nodes {{ id name }} }}
-          comments {{ nodes {{ id body }} }}
+          comments {{ nodes {{ id body createdAt updatedAt parent {{ id }} user {{ id name displayName app }} botActor {{ id name type }} }} pageInfo {{ hasNextPage endCursor }} }}
           {ISSUE_HISTORY_FIELDS}
         """
         direct_query = f"""
@@ -405,6 +407,8 @@ class GraphQLClient:
         project_id: str | None = None,
         project_milestone_id: str | None = None,
         parent_id: str | None = None,
+        assignee_id: str | None = None,
+        delegate_id: str | None = None,
         create_as_user: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
@@ -422,6 +426,10 @@ class GraphQLClient:
             input_data["projectMilestoneId"] = project_milestone_id
         if parent_id:
             input_data["parentId"] = parent_id
+        if assignee_id:
+            input_data["assigneeId"] = assignee_id
+        if delegate_id:
+            input_data["delegateId"] = delegate_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
         data = self.execute(
@@ -431,6 +439,8 @@ class GraphQLClient:
                 success
                 issue {{
                   id identifier url title description priority updatedAt
+                  assignee {{ id name displayName }}
+                  delegate {{ id name displayName }}
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -463,6 +473,9 @@ class GraphQLClient:
         clear_parent: bool = False,
         title: str | None = None,
         priority: int | None = None,
+        assignee_id: str | None = None,
+        delegate_id: str | None = None,
+        clear_delegate: bool = False,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {}
         if description is not None:
@@ -481,6 +494,10 @@ class GraphQLClient:
             input_data["parentId"] = parent_id
         if priority is not None:
             input_data["priority"] = priority
+        if assignee_id is not None:
+            input_data["assigneeId"] = assignee_id
+        if delegate_id is not None or clear_delegate:
+            input_data["delegateId"] = delegate_id
         data = self.execute(
             f"""
             mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {{
@@ -488,6 +505,8 @@ class GraphQLClient:
                 success
                 issue {{
                   id identifier url title description priority updatedAt
+                  assignee {{ id name displayName }}
+                  delegate {{ id name displayName }}
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -507,14 +526,16 @@ class GraphQLClient:
             raise LinearSyncError("Linear did not update the issue")
         return result["issue"]
 
-    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None) -> None:
+    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None, parent_id: str | None = None) -> None:
         input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
+        if parent_id:
+            input_data["parentId"] = parent_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
         data = self.execute(
             """
             mutation CreateComment($input: CommentCreateInput!) {
-              commentCreate(input: $input) { success comment { id } }
+              commentCreate(input: $input) { success comment { id parent { id } } }
             }
             """,
             {"input": input_data},
@@ -528,19 +549,38 @@ class GraphQLClient:
     ) -> list[dict[str, Any]]:
         data = self.execute(
             """
-            query ListIssues($team: String!, $first: Int!) {
-              issues(filter: {team: {key: {eq: $team}}}, first: $first, orderBy: updatedAt) {
+            query ListIssues($team: String!, $first: Int!, $after: String) {
+              issues(filter: {team: {key: {eq: $team}}}, first: $first, after: $after, orderBy: updatedAt) {
                 nodes {
                   id identifier title url description priority updatedAt
+                  assignee { id name displayName }
+                  delegate { id name displayName }
                   state { id name type } project { id name }
+                  comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } }
                   labels { nodes { id name } }
                 }
+                pageInfo { hasNextPage endCursor }
               }
             }
             """,
-            {"team": team_key, "first": limit},
+            {"team": team_key, "first": min(limit, 100), "after": None},
         )
         issues = data.get("issues", {}).get("nodes", [])
+        page = data.get("issues", {}).get("pageInfo", {})
+        while page.get("hasNextPage") and len(issues) < limit:
+            data = self.execute(
+                """
+                query ListIssuesPage($team: String!, $first: Int!, $after: String) {
+                  issues(filter: {team: {key: {eq: $team}}}, first: $first, after: $after, orderBy: updatedAt) {
+                    nodes { id identifier title url description priority updatedAt assignee { id name displayName } delegate { id name displayName } state { id name type } project { id name } comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } } labels { nodes { id name } } }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+                """,
+                {"team": team_key, "first": min(limit - len(issues), 100), "after": page.get("endCursor")},
+            )
+            issues.extend(data.get("issues", {}).get("nodes", []))
+            page = data.get("issues", {}).get("pageInfo", {})
         def matches(issue: dict[str, Any]) -> bool:
             state_value = issue.get("state") or {}
             project_value = issue.get("project") or {}
@@ -1600,6 +1640,7 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
     requested = {
         key: value for key, value in {
             "title": args.title, "description": args.description, "priority": args.priority,
+            "assigneeId": args.assignee, "delegateId": args.delegate,
         }.items() if value is not None
     }
     if mode == "observe":
@@ -1648,6 +1689,7 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
         title=requested.get("title"), description=requested.get("description"),
         state_id=requested.get("stateId"), project_id=requested.get("projectId"),
         priority=requested.get("priority"), label_ids=requested.get("labelIds"),
+        assignee_id=requested.get("assigneeId"), delegate_id=requested.get("delegateId"),
     )
     return {"ok": True, "command": "update-issue", "mode": mode, "decision": "accept",
             "issue": _issue_detail(updated)}
@@ -1996,6 +2038,8 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--state")
     update.add_argument("--project")
     update.add_argument("--priority", type=int, choices=range(5))
+    update.add_argument("--assignee")
+    update.add_argument("--delegate")
     update.add_argument("--add-label", action="append", default=[])
     update.add_argument("--mode", choices=("off", "observe", "auto"))
 
