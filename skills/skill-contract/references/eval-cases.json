@@ -107,7 +107,7 @@
         "description-eval",
         "regression"
       ],
-      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill skill-contract --strict",
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill skill-contract --mock-jev-json '{\"1\":true,\"2\":false,\"3\":true}' --strict",
       "expect_exit": 0,
       "expect_json_subset": {
         "ok": true,
@@ -117,17 +117,13 @@
     },
     {
       "id": "EV-008",
-      "title": "Star sync command remains available for synthetic backflow",
+      "title": "Synthetic Star backflow validates snapshots, refresh and saturation",
       "tags": [
-        "jev-star",
+        "regression",
         "sync-jev-stars"
       ],
-      "file": "skills/skill-contract/scripts/skill_contract.py",
-      "must_contain": [
-        "sync_jev_stars",
-        "--dry-run",
-        "mock_jev_response"
-      ]
+      "cmd": "python3 -I -B scripts/test_verify_skills.py SkillContractV2Tests.test_star_agents_path_refresh_and_snapshot_validation SkillContractV2Tests.test_star_markers_dedupe_fallback_eviction_and_saturation",
+      "expect_exit": 0
     }
   ],
   "trigger_evals": [
