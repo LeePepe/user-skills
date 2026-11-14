@@ -625,18 +625,25 @@ def _matching_topic_sessions(
         for topic_id in sorted(mapped_topic_ids, key=len, reverse=True)
     ]
 
-    def encoded_topic(session: dict[str, Any]) -> str | None:
+    def encoded_topics(session: dict[str, Any]) -> set[str]:
+        matched_topics: set[str] = set()
         for key in ("session_id", "herdr_target", "title"):
             value = re.sub(r"_+", "-", _text(session.get(key)).casefold())
+            matched_spans: list[tuple[int, int]] = []
             for topic_id, pattern in topic_patterns:
-                if pattern.search(value):
-                    return topic_id
-        return None
+                for match in pattern.finditer(value):
+                    start, end = match.span()
+                    # A longer identity owns its span, not separate constituent topics.
+                    if any(start < prior_end and end > prior_start for prior_start, prior_end in matched_spans):
+                        continue
+                    matched_spans.append((start, end))
+                    matched_topics.add(topic_id)
+        return matched_topics
 
     compatible = [
         session for session in candidates
         if (not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == effective_topic_id)
-        and encoded_topic(session) in {None, effective_topic_id}
+        and not (encoded_topics(session) - {effective_topic_id})
     ]
     exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == effective_topic_id]
     if exact:
