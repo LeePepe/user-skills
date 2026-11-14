@@ -911,6 +911,23 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
                     gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'desktop' if requested == 'macos' else requested, '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
                     self.assertEqual(gate.returncode, 0, gate.stdout)
 
+    def test_blog_same_round_categories_and_corrupt_sibling_are_safe(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory); blog=Path(directory)/'blog'; blog.mkdir()
+            for category in ('A','B'):
+                result=run('scaffold-gallery','--goal','mounted','--round','1','--category',category,'--platform','mobile','--blog-repo',str(blog),'--no-blog-mount' if False else '--category-title',category,env=env)
+                self.assertEqual(result.returncode,0,result.stderr)
+            # The explicit --blog-repo path must mount both category directories.
+            # Re-run with mounting enabled after the isolated handoff assertion.
+            for category in ('A','B'):
+                result=run('scaffold-gallery','--goal','mounted-blog','--round','1','--category',category,'--category-title',category,'--platform','mobile','--blog-repo',str(blog),env=env)
+                self.assertEqual(result.returncode,0,result.stderr)
+            blog_root=blog/'demos'/'mounted-blog'; self.assertTrue((blog_root/'r1-A').is_dir()); self.assertTrue((blog_root/'r1-B').is_dir())
+            (Path(directory)/'Development/handoff/mounted-blog/bad/manifest.json').parent.mkdir(parents=True)
+            (Path(directory)/'Development/handoff/mounted-blog/bad/manifest.json').write_text('{broken',encoding='utf-8')
+            root=(Path(directory)/'Development/handoff/mounted-blog/index.html').read_text(encoding='utf-8')
+            self.assertIn('A',root); self.assertIn('B',root)
+
     def test_category_portal_and_cleanup_preserve_rounds(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = dict(os.environ, HOME=directory)

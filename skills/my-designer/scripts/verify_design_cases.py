@@ -122,6 +122,8 @@ def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: lis
 
 
 def command_route(args: argparse.Namespace) -> int:
+    if args.platform == 'macos':
+        args.platform = 'desktop'
     cases_doc = _load_json(Path(args.cases_file))
     taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
     dims = _csv(args.dimensions)

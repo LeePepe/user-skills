@@ -161,6 +161,12 @@ class VerifySkillsTests(unittest.TestCase):
         for path in (SKILLS_DIR / "my-designer" / "SKILL.md", SKILLS_DIR / "design-studio" / "SKILL.md"):
             self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 130)
 
+    def test_macos_route_normalizes_to_desktop(self) -> None:
+        result = subprocess.run([sys.executable, str(SKILLS_DIR / "my-designer/scripts/verify_design_cases.py"), "route", "--platform", "macos", "--dimensions", "layout-navigation"], capture_output=True, text=True, check=True)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["platform"], "desktop")
+        self.assertIn("allowed_native_sources", payload["external_skill_sources"])
+
     """Contract and integrity checks for skills, metadata, links, and hygiene."""
 
     def _load_ci_monitor(self):

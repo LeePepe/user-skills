@@ -243,6 +243,10 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
         chrome = f'<nav class="floating lens-toolbar">{back}<div class="lens-tabs">{destinations}</div>{more}</nav><nav class="floating safe-dock">{primary}{sheet_control}</nav>'
     else:
         chrome = f'<nav class="deck-nav" aria-label="Journey deck">{destinations}</nav><nav class="floating inspector-toolbar">{back}{sheet_control}{more}</nav><nav class="floating safe-dock">{primary}</nav>'
+    if platform == 'desktop':
+        chrome = f'<header class="desktop-toolbar"><span>Toolbar</span>{more}</header><aside class="desktop-sidebar" aria-label="NavigationSplitView">{destinations}</aside><aside class="desktop-inspector" aria-label="Inspector">Inspector · MenuBarExtra{sheet_control}</aside><nav class="desktop-actions">{back}{primary}</nav>'
+    elif platform == 'web':
+        chrome = f'<header class="web-header"><span>Web navigation</span>{more}</header><aside class="web-toc" aria-label="Table of contents">{destinations}</aside><nav class="web-actions">{back}{primary}</nav>'
     if not session_contract(anti_patterns, overrides):
         chrome = chrome.replace('class="floating stack-toolbar"', 'class="stack-toolbar"').replace('class="floating lens-toolbar"', 'class="lens-toolbar"').replace('class="floating inspector-toolbar"', 'class="inspector-toolbar"')
     responsive_toggle = '<button id="responsive-toggle" aria-pressed="false">Desktop 1280×800 ⇄ Mobile 390×844</button>' if platform == 'web' else ''
