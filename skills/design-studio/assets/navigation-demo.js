@@ -72,7 +72,14 @@ function render() {
   const back = document.getElementById('back');
   back.disabled = !state.overlay && !tabState().history.length;
   sheet.hidden = !(state.overlay?.kind === 'sheet');
-  menu.hidden = !(state.overlay?.kind === 'popover' || !state.overflowOpen);
+  if (state.overlay?.kind === 'sheet') {
+    sheet.dataset.detent = state.detent;
+    sheet.dataset.screen = state.overlay.screen;
+    screen.setAttribute('inert', '');
+  } else {
+    screen.removeAttribute('inert');
+  }
+  menu.hidden = !(state.overlay?.kind === 'popover' || state.overflowOpen);
   document.getElementById('overflow').setAttribute('aria-expanded', String(state.overflowOpen));
   if (state.overlay) {
     const host = state.overlay.kind === 'sheet' ? document.getElementById('sheet-content') : document.getElementById('popover-content');

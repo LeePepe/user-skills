@@ -66,6 +66,9 @@ def starter(manifest, variant, index):
         topology = {'stack': 'a vertical journey rail with a persistent Back affordance', 'tabs': 'a tab-local workspace strip with an isolated active room', 'lens': 'a comparison lens with two synchronized reading panes', 'deck': 'a horizontal card deck with a revealed inspector'}[a['kind']]
         surface_detail = {'stack': 'use a quiet paper surface and a single lifted journey rail', 'tabs': 'separate the selected workspace from the prominent action pill with solid surfaces', 'lens': 'use a cool analytical canvas with a crisp lens toolbar and no nested glass', 'deck': 'use broad solid cards with a restrained inspector edge and clear depth order'}[a['kind']]
         anti_focus = {'stack': 'do not hide Back or turn the journey rail into decorative chrome', 'tabs': 'do not merge tab history or make every room look like the root', 'lens': 'do not fabricate a comparison source or use an inert lens switcher', 'deck': 'do not imply depth with striped effects or duplicate cards'}[a['kind']]
+        candidate_detail = f"Candidate route {index + 1} uses {scheme['navigation_model']} with primary {p0}, destinations {','.join(a['destinations'])}, sheet {a['sheet'] or 'none'}, overflow {len(a['overflow'])}, and boot state {a['initial_state']['active_screen']}."
+        optical_detail = f"Tune the {a['kind']} chrome for route {index + 1}: {surface_detail}; keep the {a['initial_state']['active_screen']} boot state readable behind the declared chrome."
+        handoff_detail = f"Verify route {index + 1} from {a['initial_state']['active_screen']} using the declared {a['kind']} controls and no invented destinations."
     else:
         domain = variant['content']
         metaphor = SCREEN_METAPHORS[index]
@@ -79,6 +82,9 @@ def starter(manifest, variant, index):
         topology = ['a bento signal grid', 'a timeline rail with milestone nodes', 'a pulse matrix of live checkpoints', 'a ring gauge surrounded by evidence chips', 'a master-detail item rail', 'a split workbench with input and result panes', 'a floating action island over solid content', 'a stacked pocket deck', 'a command stage with keyboard focus', 'an editorial poster with a single headline'][index]
         surface_detail = ['cool paper with blue signal ink', 'warm paper with terracotta milestone marks', 'neutral canvas with emerald pulse accents', 'dark canvas with violet gauge highlights', 'solid ivory with a focused detail column', 'cool solid panels with a green workbench cue', 'warm solid paper and one lifted island', 'dark solid cards with restrained depth', 'neutral solid canvas with a command accent', 'editorial paper with high-contrast type'][index]
         anti_focus = ['avoid equal-weight tiles', 'avoid an unbounded scroll timeline', 'avoid decorative heartbeat animation', 'avoid a gauge without a readable value', 'avoid a detail pane detached from selection', 'avoid nested glass work surfaces', 'avoid floating chrome covering the P0', 'avoid fake card depth and clipped pockets', 'avoid a command palette with no real action', 'avoid poster copy that hides the next action'][index]
+        candidate_detail = f"Candidate composition {index + 1} gives {topology} a {variant['layout']} frame, {variant['whitespace']} breathing room, and {variant['glass_geometry']} functional chrome around {p0}."
+        optical_detail = f"Use candidate composition {index + 1}'s {variant['glass_geometry']} geometry with {surface_detail}; the optical rim must clarify the {p0} action rather than decorate content."
+        handoff_detail = f"Validate composition {index + 1} with the {topology} child structure, the {p0} action, and the declared {variant['axis_y']} fold before handoff."
     body = f'''# {variant['id']} — independent prototype prompt
 
 Status: scaffold starter, NOT Designer-approved. Stage 1 Designer must refine and approve this individual brief; Stage 2 Coding implements the approved brief.
@@ -86,7 +92,7 @@ Target: {platform}; domain: {domain}.
 Coordinates: {coordinates}.
 
 ## Visual metaphor
-{metaphor}. Build {topology}; translate the metaphor into a coherent hierarchy with one readable focal state, not decorative imagery repeated across every candidate.
+{metaphor}. Build {topology}; translate the metaphor into a coherent hierarchy with one readable focal state, not decorative imagery repeated across every candidate. {candidate_detail}
 
 ## Single P0 focal point
 Make “{p0}” the only primary focal object/action per viewport. Anchor it to the real domain “{domain}”; retain visible intent, commit feedback and a reversible return path.
@@ -99,7 +105,7 @@ Keep one P1 companion status inline; fold P2 context using {folding}. P3 configu
 Use {palette}; the candidate surface treatment is {surface_detail}. Light uses solid paper with dark ink; dark uses a deep solid canvas and bright ink. Preserve semantic contrast across both appearances; glass is functional floating chrome only, never content-on-glass.
 
 ## Liquid Glass optical parameters
-Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px displacement with chromatic channels), blur 2.5px and saturation 135–155%. Blink may use SVG backdrop-filter refraction; provide a soft radial ambient/specular rim fallback, reduced transparency and reduced motion. Glass never samples another glass layer.
+Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px displacement with chromatic channels), blur 2.5px and saturation 135–155%. Blink may use SVG backdrop-filter refraction; provide a soft radial ambient/specular rim fallback, reduced transparency and reduced motion. Glass never samples another glass layer. {optical_detail}
 
 ## Inline SVG iconography
 Author a small stroke-based inline SVG depicting {icon}, with a 24×24 viewBox, rounded joins, semantic currentColor and accessible text where meaningful. Do not use emoji or external icon fonts as UI substitutes.
@@ -108,7 +114,7 @@ Author a small stroke-based inline SVG depicting {icon}, with a 24×24 viewBox, 
 No .caustic-veil repeating-linear-gradient zebra stripes; never distort a striped overlay with url(#apple-liquid-glass). No .ruler 28×28 dashed boxes, Active / Matte debug bars, or duplicate inner platform/theme/viewport/selection controls. Candidate-specific guardrail: {anti_focus}. Keep legitimate navigation and product actions working. Outer choosers own gallery controls; prevent numeric truncation, clipped targets and raw localization keys.
 
 ## Stage 2 handoff
-Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval.
+Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval. {handoff_detail}
 '''
     return body
 

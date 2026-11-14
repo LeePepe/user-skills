@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import os
 import struct
 import subprocess
@@ -170,7 +171,7 @@ class AppNavigationGraphTests(unittest.TestCase):
             if i == 3: action.pop('transition'); action['commit'] = 'captured'
             states = [
                 {'active_screen': 'todo', 'history': ['capture'], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False},
-                {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': 'settings', 'detent': 'large', 'overflow_open': False, 'title_collapsed': False},
                 {'active_screen': 'capture', 'history': [], 'overlay': 'settings', 'detent': 'medium', 'overflow_open': False, 'title_collapsed': False},
                 {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': True},
             ]
@@ -196,7 +197,7 @@ class AppNavigationGraphTests(unittest.TestCase):
         for scheme in schemes:
             scheme['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None,
                                                         'detent': None, 'overflow_open': False, 'title_collapsed': False}
-        with self.assertRaisesRegex(ValueError, 'exactly four distinct'):
+        with self.assertRaisesRegex(ValueError, 'closed root baseline'):
             DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': schemes})))
         scheme = copy.deepcopy(navigation.starter_schemes('Recorder')[2])
         scheme['architecture']['collapse_title'] = False
@@ -233,7 +234,7 @@ class AppNavigationBehaviorTests(unittest.TestCase):
             result = run('scaffold-gallery', '--goal', 'initial-dom', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav', env=dict(os.environ, HOME=directory))
             self.assertEqual(result.returncode, 0, result.stderr)
             gallery = Path(json.loads(result.stdout)['gallery'])
-            expected = [('todo', 'capture', 'false'), ('todo', '', 'false'), ('todo', '', 'true'), ('capture', '', 'false'), ('capture', '', 'false')]
+            expected = [('todo', 'capture', 'false'), ('todo', '', 'false'), ('todo', '', 'true'), ('capture', '', 'true'), ('capture', '', 'false')]
             for i, (screen, history, collapsed) in enumerate(expected, 1):
                 page = gallery / f'app{i:02d}.html' if i < 5 else gallery / 'current.html'
                 assertions = f'''const n=window.navigationDemo;assert.equal(n.currentScreen(),{screen!r});assert.equal(document.querySelector('.app').dataset.initialScreen,{screen!r});assert.equal(document.querySelector('.app').classList.contains('title-collapsed'),{collapsed});'''
@@ -260,20 +261,24 @@ class AppNavigationBehaviorTests(unittest.TestCase):
             gallery = Path(json.loads(result.stdout)['gallery'])
             accepted = self.gate(gallery)
             self.assertEqual(accepted.returncode, 0, accepted.stdout)
-            assertions = r'''const n=window.navigationDemo;
+            assertions = r"""const n=window.navigationDemo;
 const click=s=>{const e=document.querySelector(s);assert.ok(e,s);e.click();};
 const current=()=>n.currentScreen();
-assert.ok(['capture','todo'].includes(current()));
-if(n.state.overlay){assert.equal(n.state.overlay.screen,'settings');click('#close-sheet');}
-n.switchTab('todo');click('.tab[data-screen="todo"]');assert.equal(current(),'todo');
-click('#screen [data-action-index="0"]');assert.equal(current(),'capture');
-assert.equal(n.state.commits.saved.count,1);
-click('#open-sheet');assert.equal(n.state.overlay.screen,'settings');
-click('#large-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'large');
-click('#medium-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
-click('#sheet [data-action-index="0"]');assert.equal(n.state.commits.configured.count,1);
-assert.equal(n.state.overlay,null);
-'''
+if(n.state.overlay){click('#close-sheet');}
+n.switchTab('capture');assert.equal(current(),'capture');
+const details=document.querySelector('#screen .secondary-actions');assert.ok(details);assert.equal(details.open,false);
+assert.equal(document.querySelector('#screen [data-frequency="P3"]'),null);details.open=true;
+click('#screen .secondary-actions [data-action-index="1"]');assert.equal(n.state.commits.configured.count,1);
+click('#overflow');assert.equal(document.querySelector('#overflow-menu').hidden,false);click('[data-overflow-action]');assert.equal(n.state.commits.archived.count,1);assert.equal(document.querySelector('#overflow-menu').hidden,true);
+click('#screen [data-action-index="0"]');assert.equal(current(),'todo');assert.equal(n.state.tabs.capture.history.join(','),'capture');
+n.performAction('todo',0);assert.equal(current(),'todo');n.popScreen();assert.equal(current(),'capture');assert.equal(n.state.commits.saved.count,1);
+const todoHistory=n.state.tabs.todo.history.length;n.switchTab('todo');assert.equal(n.state.tabs.todo.history.length,todoHistory);n.switchTab('capture');n.pushScreen('todo');assert.equal(n.state.tabs.capture.history.join(','),'capture');click('#back');assert.equal(current(),'capture');
+click('#open-sheet');assert.equal(n.state.overlay.screen,'settings');assert.equal(document.querySelector('#screen').getAttribute('inert'),'');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#large-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'large');click('#medium-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#sheet [data-transition-index="0"]');assert.equal(n.state.overlay.screen,'organize');click('#popover-content [data-action-index="0"]');assert.equal(n.state.commits.organized.count,1);assert.equal(n.state.overlay,null);
+click('#open-sheet');click('#sheet [data-action-index="0"]');assert.equal(n.state.commits.configured.count,2);assert.equal(n.state.overlay,null);assert.equal(document.querySelector('#screen').getAttribute('inert'),null);
+"""
+
 
             for i in range(1, 5):
                 self.node(gallery / f'app{i:02d}.html', assertions)
@@ -301,6 +306,12 @@ assert.equal(n.state.overlay,null);
                 self.assertGreaterEqual(evidence['minimum_distance'], 2)
                 manifest = json.loads((gallery / 'manifest.json').read_text())
                 if known: self.assertEqual({v['archetype'] for v in manifest['variants']}, {'VS-007'})
+                topology_signatures = []
+                for v in manifest['variants']:
+                    text = (gallery / f"{v['id']}.html").read_text()
+                    topology_signatures.append((re.search(r'class=\"[^\"]* (topology-[^ \" ]+)', text).group(1), text.count('class=\"topology-')))
+                self.assertEqual(len(set(topology_signatures)), 10)
+                extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
                 for v in manifest['variants']:
                     extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
                     self.node(gallery / (v['id'] + '.html'), extra + r'''const tabs=[...document.querySelectorAll('[role=tab]')];

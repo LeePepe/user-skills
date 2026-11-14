@@ -44,6 +44,11 @@ def _initial_state(architecture, pages, index, explicit=None):
     root = architecture['root']
     secondary = next((screen for screen in reversed(content) if screen != root), root)
     sheet = architecture.get('sheet')
+    push_edges = [a.get('transition') for p in pages for a in p.get('actions', [])]
+    push_edges += [t for p in pages for t in p.get('transitions', [])]
+    secondary_reachable = secondary != root and any((edge or {}).get('type') == 'pushScreen' and (edge or {}).get('to') == secondary for edge in push_edges)
+    if not secondary_reachable:
+        secondary = root
     if explicit is None:
         if architecture['kind'] == 'stack':
             state = {'active_screen': secondary, 'history': [root] if secondary != root else [],
@@ -60,12 +65,11 @@ def _initial_state(architecture, pages, index, explicit=None):
                      'overflow_open': bool(architecture['overflow']), 'title_collapsed': True}
         else:
             state = {'active_screen': root, 'history': [], 'overlay': None, 'detent': None,
-                     'overflow_open': False, 'title_collapsed': False}
+                     'overflow_open': False, 'title_collapsed': True}
             if sheet:
                 state['overlay'], state['detent'] = sheet, 'medium'
             elif secondary != root:
-                state['active_screen'] = secondary
-                state['title_collapsed'] = True
+                state['active_screen'] = root
     else:
         if not isinstance(explicit, dict):
             raise ValueError('initial_state must be an object')
@@ -86,6 +90,21 @@ def _initial_state(architecture, pages, index, explicit=None):
         raise ValueError('initial_state history must contain declared content screens')
     if state['overlay'] is not None and (state['overlay'] not in page_map or page_map[state['overlay']].get('role') not in {'sheet', 'popover'}):
         raise ValueError('initial_state overlay must reference a declared sheet or popover')
+    if state['overlay'] and page_map[state['overlay']].get('role') == 'sheet' and state['overlay'] != architecture.get('sheet'):
+        raise ValueError('initial_state sheet must equal architecture.sheet')
+    if state['overlay'] and page_map[state['overlay']].get('role') == 'popover':
+        toggles = [t for p in pages for t in p.get('transitions', []) if t.get('type') == 'togglePopover' and t.get('to') == state['overlay']]
+        toggles += [a['transition'] for p in pages for a in p.get('actions', []) if a.get('transition', {}).get('type') == 'togglePopover' and a['transition'].get('to') == state['overlay']]
+        if not toggles:
+            raise ValueError('initial_state popover must be reachable by togglePopover')
+    if state['active_screen'] in state['history']:
+        raise ValueError('initial_state history cannot contain active_screen')
+    sequence = state['history'] + [state['active_screen']]
+    for source, target in zip(sequence, sequence[1:]):
+        edges = [t for t in page_map[source].get('transitions', []) if t.get('type') == 'pushScreen']
+        edges += [a['transition'] for a in page_map[source].get('actions', []) if (a.get('transition') or {}).get('type') == 'pushScreen']
+        if not any(edge.get('to') == target for edge in edges):
+            raise ValueError('initial_state history requires ordered pushScreen edges')
     if state['detent'] not in {None, 'medium', 'large'} or (state['detent'] is not None and state['overlay'] is None):
         raise ValueError('initial_state detent requires an overlay and must be medium or large')
     if type(state['overflow_open']) is not bool or (state['overflow_open'] and not architecture['overflow']):
@@ -202,13 +221,22 @@ def validate_scheme(scheme, index, context):
 def initial_state_signature(scheme):
     """Compare showcase states by canonical graph positions, not screen labels."""
     a, pages = scheme['architecture'], {p['id']: p for p in scheme['screens']}
-    positions = {screen: index for index, screen in enumerate(a['destinations'])}
-    state = a['initial_state']
-    overlay = state['overlay']
+    order, seen = [], set()
+    queue = [a['root'], *a['destinations'], a.get('sheet'), *(r['screen'] for r in a['overflow'])]
+    while queue:
+        screen = queue.pop(0)
+        if screen is None or screen in seen or screen not in pages:
+            continue
+        seen.add(screen); order.append(screen)
+        edges = [a['transition'] for a in pages[screen]['actions'] if a.get('transition')] + pages[screen]['transitions']
+        queue.extend(t.get('to') for t in edges if t.get('to') is not None)
+    positions = {screen: index for index, screen in enumerate(order)}
+    state = a['initial_state']; overlay = state['overlay']
     role = pages[overlay]['role'] if overlay else None
     detent = state['detent'] if role == 'sheet' else None
     return (positions[state['active_screen']], tuple(positions[s] for s in state['history']),
-            role, detent, bool(state['overflow_open']), bool(state['title_collapsed']))
+            (role, positions.get(overlay)) if overlay else None, detent,
+            bool(state['overflow_open']), bool(state['title_collapsed']))
 
 
 def architecture_signature(scheme):
@@ -268,6 +296,12 @@ def load_schemes(args):
     if not isinstance(schemes, list) or len(schemes) != 4:
         raise ValueError('--app-flows-json must define exactly four schemes')
     normalized = [validate_scheme(s, i, context) for i, s in enumerate(schemes, 1)]
+    if any((s['architecture']['initial_state']['active_screen'] == s['architecture']['root']
+            and not s['architecture']['initial_state']['history']
+            and s['architecture']['initial_state']['overlay'] is None
+            and not s['architecture']['initial_state']['overflow_open']
+            and not s['architecture']['initial_state']['title_collapsed']) for s in normalized):
+        raise ValueError('app-nav initial_state cannot be a closed root baseline')
     if len({architecture_signature(s) for s in normalized}) != 4:
         raise ValueError('four operative architectures must differ, not just model labels')
     initial_signatures = {initial_state_signature(s) for s in normalized}

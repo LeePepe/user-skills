@@ -3236,6 +3236,12 @@ class SkillContractV2Tests(unittest.TestCase):
             errors = module.rendered_gallery_errors(root)
             self.assertTrue(any("meta-disclaimer" in error for error in errors))
             self.assertTrue(any("test-state select" in error for error in errors))
+            (root / "nested-bad.html").write_text('<p><span>mock </span><em>data</em></p>', encoding="utf-8")
+            nested_errors = module.rendered_gallery_errors(root)
+            self.assertTrue(any(error.startswith("nested-bad.html:") and "meta-disclaimer" in error for error in nested_errors))
+            (root / "valid.html").write_text('<!-- 模拟 --><script>mock data</script><div data-note="演示数据"><p>严禁使用演示数据或模拟状态</p><select aria-label="Error policy"><option value="ready-to-ship">Escalate on failure</option></select>', encoding="utf-8")
+            valid_errors = module.rendered_gallery_errors(root)
+            self.assertFalse(any(error.startswith("valid.html:") and ("meta-disclaimer" in error or "test-state select" in error) for error in valid_errors))
 
 
 if __name__ == "__main__":

@@ -59,15 +59,25 @@ class RenderedSurface(HTMLParser):
     def __init__(self, text):
         super().__init__()
         self.nodes, self.styles, self.links, self.labels = [], [], [], []
+        self.visible_chunks, self.option_tokens = [], []
         self.in_style = False
+        self.ignored_depth = 0
         self.button_text = None
+        self.control_stack = []
         self.feed(text)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         self.nodes.append((tag, attrs))
+        if tag in {'script', 'style'}:
+            self.ignored_depth += 1
         if tag == 'style':
             self.in_style = True
+        if tag in {'button', 'input', 'textarea', 'select', 'option'}:
+            self.control_stack.append((tag, attrs.get('value', ''), []))
+        for key in ('aria-label', 'title', 'placeholder'):
+            if attrs.get(key):
+                self.labels.append(' '.join(attrs[key].split()).casefold())
         if tag == 'link' and 'stylesheet' in attrs.get('rel', '').lower().split():
             self.links.append(attrs.get('href', ''))
         if attrs.get('style'):
@@ -78,12 +88,27 @@ class RenderedSurface(HTMLParser):
     def handle_data(self, text):
         if self.in_style:
             self.styles.append(text)
+        if self.ignored_depth:
+            return
+        if text.strip():
+            self.visible_chunks.append(text)
         if self.button_text is not None:
             self.button_text.append(text)
+        if self.control_stack:
+            self.control_stack[-1][2].append(text)
 
     def handle_endtag(self, tag):
         if tag == 'style':
             self.in_style = False
+        if tag in {'script', 'style'}:
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+        if self.control_stack and self.control_stack[-1][0] == tag:
+            _, value, chunks = self.control_stack.pop()
+            text = ' '.join(''.join(chunks).split()).casefold()
+            if tag == 'option':
+                self.option_tokens.append((text, ' '.join(value.split()).casefold()))
+            elif text:
+                self.labels.append(text)
         if tag == 'button' and self.button_text is not None:
             self.labels.append(' '.join(''.join(self.button_text).split()).casefold())
             self.button_text = None
@@ -138,12 +163,16 @@ def rendered_gallery_errors(root):
             continue
         try:
             html = path.read_text(encoding='utf-8')
-            visible = re.sub(r'<(?:script|style)\b[^>]*>.*?</(?:script|style)>', ' ', html, flags=re.I | re.S)
-            if re.search(r'(?:演示数据|非实时|模拟|示意阶段|非已证实失败|非成功/失败证明|仅在本页模拟|确认模拟|synthetic|demo only|mock data|placeholder stage)', visible, re.I):
-                errors.append(f'{path.name}: sandbox/meta-disclaimer copy is forbidden')
-            if re.search(r'<select\b[^>]*>.*?(?:ready|empty|stale|failed|loading|error|simulated).*?</select>', html, re.I | re.S):
-                errors.append(f'{path.name}: inline test-state select is forbidden')
             surface = RenderedSurface(html)
+            visible_blocks = [' '.join(''.join(surface.visible_chunks).split()).casefold(), *surface.labels]
+            banned = re.compile(r'(?:演示数据|非实时|模拟|示意|非已证实失败|非成功/失败证明|仅在本页模拟|确认模拟|synthetic|demo only|mock data|placeholder stage)', re.I)
+            for block in visible_blocks:
+                if banned.search(block) and not re.search(r'(?:禁止|严禁|不得|不要|never|must not|do not|no\\s+)', block, re.I):
+                    errors.append(f'{path.name}: sandbox/meta-disclaimer copy is forbidden')
+                    break
+            internal = {'ready', 'empty', 'stale', 'failed', 'loading', 'error', 'simulated'}
+            if any(text in internal or value in internal for text, value in surface.option_tokens):
+                errors.append(f'{path.name}: inline test-state select is forbidden')
             for tag, attrs in surface.nodes:
                 classes = set(attrs.get('class', '').split())
                 if classes & {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'} or attrs.get('id') in {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'}:
@@ -292,8 +321,21 @@ def gallery_errors(root, manifest):
                 if distance < 2:
                     errors.append(f'{a["id"]}/{b["id"]}: need two substantive axis differences')
             evidence.append({'variant_count': 10, 'checked_pairs': len(distances), 'minimum_distance': min(distances)})
+            topology_signatures = []
             for v in variants:
-                compare(v['id'] + '.html', c._gallery_html(f'{manifest["goal"]} {v["id"]}', v['id'], platform, v, anti, overrides))
+                name = v['id'] + '.html'
+                compare(name, c._gallery_html(f'{manifest["goal"]} {v["id"]}', v['id'], platform, v, anti, overrides))
+                path = root / name
+                try:
+                    surface = RenderedSurface(path.read_text(encoding='utf-8'))
+                    main = next(attrs for tag, attrs in surface.nodes if tag == 'main')
+                    topology = next((token for token in main.get('class', '').split() if token.startswith('topology-')), None)
+                    children = tuple((tag, attrs.get('class', ''), attrs.get('role', ''), attrs.get('id', '')) for tag, attrs in surface.nodes if 'topology-' in attrs.get('class', ''))
+                    topology_signatures.append((topology, children))
+                except (OSError, StopIteration):
+                    pass
+            if len(topology_signatures) != 10 or len(set(topology_signatures)) != 10:
+                errors.append('screen variants must have ten distinct DOM topology/child signatures')
             current_meta = {'p0': 'current', 'axis_y': 'accordion', 'archetype': variants[0]['archetype'],
                             'content': manifest.get('screen_content') or f'{manifest["goal"]} key screen'}
             # The first breadth variant is not necessarily the current archetype.
