@@ -2639,6 +2639,10 @@ class SkillContractV2Tests(unittest.TestCase):
             for value, expected, source in (
                 ({"choice": "yes", "noul": 0.1}, False, "mock"),
                 ({"choice": "no", "noul": 0.9}, False, "mock"),
+                ({"choice": {"choice": "no", "confidence": 0.098}, "noul": {"noul": 0.535}}, True, "deterministic-fallback"),
+                ({"choice": "no", "confidence": 0.098, "noul": 0.535}, True, "deterministic-fallback"),
+                ({"choice": "no", "noul": 0.535}, True, "deterministic-fallback"),
+                ({"choice": {"choice": "no", "confidence": 0.8}, "noul": 0.535}, False, "mock"),
                 ({"answers": {"choice": {"choice": "yes", "confidence": 0.8}, "noul": {"noul": 0.9}}}, True, "mock"),
                 *[({"choice": "yes", "noul": score}, True, "deterministic-fallback") for score in (0.3, 0.5, 0.7)],
             ):
@@ -2655,10 +2659,12 @@ class SkillContractV2Tests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1)
                     self.assertTrue(any("error" in failure for failure in payload["failures"]))
             for score in (0.3, 0.5, 0.7):
-                result, payload = self._cli(*run, "--mock-jev-json", json.dumps({"1": {"noul": score}, "miss": {"noul": score}}))
-                self.assertEqual(result.returncode, 0, payload)
-                self.assertEqual([d["matched"] for d in payload["decisions"]], [True, False])
-                self.assertTrue(all(d["source"] == "deterministic-fallback" for d in payload["decisions"]))
+                for value in ({"noul": score}, {"choice": {"choice": "no", "confidence": 0.098}, "noul": score}):
+                    with self.subTest(grey=value):
+                        result, payload = self._cli(*run, "--mock-jev-json", json.dumps({"1": value, "miss": value}))
+                        self.assertEqual(result.returncode, 0, payload)
+                        self.assertEqual([d["matched"] for d in payload["decisions"]], [True, False])
+                        self.assertTrue(all(d["source"] == "deterministic-fallback" for d in payload["decisions"]))
             for mock in ({"1": True}, {"0": True, "1": False}, {"unknown": True}, None):
                 result, payload = self._cli(*run, "--mock-jev-json", json.dumps(mock))
                 self.assertEqual(result.returncode, 1, payload)
@@ -2685,6 +2691,8 @@ class SkillContractV2Tests(unittest.TestCase):
                 ({"choice": {"choice": "yes"}, "noul": {"noul": 0.9}}, 0, "jev"),
                 ({"answers": {"choice": {"choice": "yes"}, "noul": {"noul": 0.1}}}, 1, "jev"),
                 ({"choice": "no", "noul": 0.9}, 1, "jev"),
+                ({"answers": {"choice": {"choice": "no", "confidence": 0.098, "probabilities": {"no": 0.549, "yes": 0.451}}, "noul": {"noul": 0.535}}}, 0, "deterministic-fallback"),
+                ({"choice": {"choice": "no", "confidence": 0.8}, "noul": 0.535}, 1, "jev"),
                 ({"choice": "yes", "noul": 0.7}, 0, "deterministic-fallback"),
                 ({"choice": "yes"}, 0, "deterministic-fallback"),
                 (None, 0, "deterministic-fallback"),
