@@ -106,6 +106,10 @@ def gallery_errors(root, manifest):
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))
+            for name, expected in [('tokens.css', c._gallery_tokens()), ('screen.css', (c.ROOT / 'assets' / 'tenfold-gallery.css').read_text())]:
+                path = root / name
+                if path.is_symlink() or not path.is_file() or path.read_text() != expected:
+                    errors.append(f'{name}: rendering assets differ from canonical renderer')
             compare('index.html', c._gallery_index(manifest), coordinates=False)
         else:
             variants = manifest.get('variants')

@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 _nav_spec = importlib.util.spec_from_file_location('navigation_demo', ROOT / 'scripts' / 'navigation_demo.py')
 NAVIGATION = importlib.util.module_from_spec(_nav_spec)
 _nav_spec.loader.exec_module(NAVIGATION)
+_chooser_spec = importlib.util.spec_from_file_location('gallery_chooser', ROOT / 'scripts' / 'gallery_chooser.py')
+CHOOSER = importlib.util.module_from_spec(_chooser_spec)
+_chooser_spec.loader.exec_module(CHOOSER)
 DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
@@ -1202,18 +1205,24 @@ def command_cleanup_demo(args):
         removed_blog = [str(path.relative_to(blog_repo)) for path in blog_goal.rglob("*") if path.is_file()]
         removed_blog.append(str(blog_goal.relative_to(blog_repo)))
     removed_rounds = [str(path) for path in rounds]
+    portal = goal_root / 'index.html'
+    if portal.is_symlink():
+        raise ValueError('refusing symlink handoff portal')
+    remove_portal = portal.is_file() and 'id="gallery-config"' in portal.read_text(encoding='utf-8')
     preserved = []
     if goal_root.is_dir():
         for path in goal_root.iterdir():
-            if path.name not in {item.name for item in rounds}:
+            if path.name not in {item.name for item in rounds} and not (remove_portal and path == portal):
                 preserved.append(str(path))
     receipt = {"ok": True, "goal": args.goal, "removed_blog_paths": removed_blog,
                "removed_handoff_rounds": removed_rounds, "preserved_handoff_files": preserved,
-               "blog_committed": False}
+               "blog_committed": False, "removed_handoff_portal": str(portal) if remove_portal else None}
     if args.dry_run:
         print(json.dumps(receipt, ensure_ascii=False, indent=2)); return 0
     for path in rounds:
         shutil.rmtree(path)
+    if remove_portal:
+        portal.unlink()
     if blog_goal and blog_goal.exists():
         shutil.rmtree(blog_goal)
     if blog_repo and (blog_repo / ".git").exists():
@@ -1332,6 +1341,7 @@ def _gallery_tokens():
         "glass-button": "#ffffffb8", "rim-primary": "#ffffffed",
         "paper-warm": "#fffaf2", "paper-dark": "#151d2b",
         "ink-inverse": "#f2f4ff", "muted-inverse": "#bac4d6",
+        "traffic-red": "#ef4444", "traffic-yellow": "#f59e0b", "traffic-green": "#22c55e",
         "archetype-005": "var(--focus)", "archetype-006": "#a84b29",
         "archetype-007": "#187160", "archetype-008": "#7145bc",
         "accent": "var(--archetype-005)", "glass": "var(--glass-veil)", "radius": "28px",
@@ -1385,47 +1395,51 @@ def _frame_mode(manifest):
     return manifest.get('frame_mode') or ('mobile' if manifest.get('platform') == 'mobile' else 'web' if manifest.get('platform') == 'web' else 'macos')
 
 
-def _gallery_index(manifest, prefix=''):
-    frame=manifest.get('frame', {'width':390,'height':844}); mode=_frame_mode(manifest)
-    scale=.8 if mode == 'mobile' else .46
-    encoded=json.dumps(manifest, ensure_ascii=False).replace('<', '\\u003c')
-    variants=manifest.get('variants', [])
-    cards=[{'id':v['id'],'title':v.get('title',v['id']),'pills':([v.get('navigation_model','')] if manifest.get('mode')=='app-nav' else [v.get('p0',''),v.get('axis_y',''),v.get('archetype','')])} for v in variants]
-    cards_json=json.dumps(cards, ensure_ascii=False).replace('<', '\\u003c')
-    static_cards=f'<article class="variant-card current-card"><header><span class="variant-badge">current</span><strong>Reference</strong></header><div class="device-bezel" data-frame-mode="{mode}"><div class="device-window"><iframe loading="eager" src="{escape(prefix+"current.html")}" title="current"></iframe></div></div></article>'+''.join(f'<article class="variant-card"><header><span class="variant-badge">{escape(v["id"])}</span><strong>{escape(v["title"])}</strong></header><div class="device-bezel" data-frame-mode="{mode}"><div class="device-window"><iframe loading="eager" src="{escape(prefix+v["id"]+".html")}" title="{escape(v["title"])}"></iframe></div></div><label><input type="radio" name="primary" value="{escape(v["id"])}"> SELECT</label><label><input type="checkbox" data-star="{escape(v["id"])}"> STAR</label><textarea data-note="{escape(v["id"])}" aria-label="{escape(v["id"])} Notes"> </textarea></article>' for v in cards)
-    script=f'''const manifest={encoded};const cards={cards_json};const prefix={json.dumps(prefix)};const root=document.querySelector('#variants');const key=`gallery:${{manifest.goal}}:${{manifest.category||manifest.round}}`;const saved=JSON.parse(localStorage.getItem(key)||'{{}}');
-function esc(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));}}
-function frame(v){{return `<div class="device-bezel" data-frame-mode="${{manifest.frame_mode||'macos'}}"><div class="device-window"><div class="device-titlebar" aria-hidden="true"><i></i><i></i><i></i><span>${{esc(v.title)}}</span></div><iframe title="${{esc(v.title)}}" src="${{prefix+v.id}}.html" loading="eager"></iframe></div></div>`;}}
-function card(v){{const state=saved[v.id]||{{}};return `<article class="variant-card" data-variant="${{v.id}}"><header><span class="variant-badge">${{v.id}}</span><strong>${{esc(v.title)}}</strong>${{v.pills.map(p=>`<span class="coordinate-pill">${{esc(p)}}</span>`).join('')}}<a target="_blank" rel="noopener" href="${{prefix+v.id}}.html">↗ 全屏打开</a></header>${{frame(v)}}<div class="controls"><label><input type="radio" name="primary" value="${{v.id}}" ${{state.selected?'checked':''}}> SELECT</label><label><input type="checkbox" data-star="${{v.id}}" ${{state.starred?'checked':''}}> STAR</label></div><textarea data-note="${{v.id}}" aria-label="${{v.id}} Notes" placeholder="Notes">${{esc(state.notes||'')}}</textarea></article>`;}}
-root.innerHTML=`<article class="variant-card current-card"><header><span class="variant-badge">current</span><strong>Reference</strong></header>${{frame({{id:'current',title:'current'}})}}</article>`+cards.map(card).join('');
-function persist(e){{const id=e.target.dataset.star||e.target.dataset.note||e.target.value;if(!id)return;const st=saved[id]||{{}};if(e.target.dataset.star)st.starred=e.target.checked;if(e.target.dataset.note)st.notes=e.target.value;if(e.target.name==='primary'){{Object.keys(saved).forEach(k=>saved[k].selected=false);st.selected=true;}}saved[id]=st;localStorage.setItem(key,JSON.stringify(saved));}}root.addEventListener('change',persist);root.addEventListener('input',persist);document.querySelector('#copy-summary').onclick=async()=>{{const primary=[...root.querySelectorAll('input[name=primary]:checked')].map(x=>x.value).join(', ')||'none';const stars=[...root.querySelectorAll('[data-star]:checked')].map(x=>x.dataset.star);const notes=[...root.querySelectorAll('[data-note]')].filter(x=>x.value.trim()).map(x=>`${{x.dataset.note}}: ${{x.value.trim()}}`);try{{await navigator.clipboard.writeText(`Goal: ${{manifest.goal}}\\nRound: ${{manifest.round}}\\nCategory: ${{manifest.category||manifest.round}}\\nPrimary: ${{primary}}\\nSTAR mix-ins: ${{stars.join(', ')||'none'}}\\n${{notes.join('\\n')}}`);}}catch{{}}document.querySelector('#status').textContent='Summary copied';}};function applyTheme(theme){{document.body.dataset.theme=theme;document.querySelectorAll('iframe').forEach(f=>{{f.addEventListener('load',()=>applyFrame(f,theme),{{once:true}});applyFrame(f,theme);}});}}function applyFrame(f,theme){{try{{f.contentDocument.documentElement.dataset.theme=theme;f.contentDocument.body.dataset.theme=theme;}}catch{{}}}}document.querySelector('[data-theme="dark"]')?.addEventListener('click',()=>applyTheme('dark'));document.querySelector('[data-theme="light"]')?.addEventListener('click',()=>applyTheme('light'));applyTheme('light');document.querySelector('#responsive-toggle')?.addEventListener('click',e=>{{const mobile=e.currentTarget.getAttribute('aria-pressed')!=='true';e.currentTarget.setAttribute('aria-pressed',String(mobile));document.querySelectorAll('.device-bezel[data-frame-mode="web"]').forEach(b=>b.style.setProperty('--preview-scale',mobile?'.28':'.46'));}});'''
-    title=escape(f"{manifest['goal']} · {manifest.get('category_title') or ('Round '+str(manifest['round']))}")
-    responsive = '<button id="responsive-toggle" aria-pressed="false">Desktop 1280×800 ⇄ Mobile 390×844</button>' if mode == 'web' else ''
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="{prefix}tokens.css"><link rel="stylesheet" href="{prefix}screen.css"></head><body class="gallery-page"><main class="gallery" style="--frame-width:{frame['width']}px;--frame-height:{frame['height']}px;--preview-scale:{scale}"><h1>{title}</h1><p id="session">Live {mode} previews · choose a primary, star mix-ins, and leave notes.</p><div class="gallery-actions"><button data-theme="light">Light</button><button data-theme="dark">Dark</button>{responsive}</div><div id="variants">{static_cards}</div><button id="copy-summary">Copy Selection Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
+def _gallery_index(manifest, prefix=""):
+    return CHOOSER.render(manifest["goal"], [manifest], _gallery_tokens(), prefix=prefix)
 
 
 def _render_goal_portal_index(goal, manifests):
-    groups=[]; cards=[]
-    for item in manifests:
-        group=item.get('category') or f"r{item.get('round')}"; groups.append({'id':group,'title':item.get('category_title') or group,'platform':_frame_mode(item),'count':len(item.get('variants',[]))})
-        for v in item.get('variants',[]): cards.append({'id':v['id'],'title':v.get('title',v['id']),'pills':[v.get('navigation_model','')] if item.get('mode')=='app-nav' else [v.get('p0',''),v.get('axis_y',''),v.get('archetype','')],'group':group,'platform':_frame_mode(item),'src':f"{item['_path']}/{v['id']}.html"})
-    data=json.dumps({'goal':goal,'groups':groups,'cards':cards},ensure_ascii=False).replace('<','\\u003c')
-    tabs=''.join(f'<button data-group-filter="{escape(g["id"])}">{escape(g["title"])} ({g["count"]} · {g["platform"]})</button>' for g in groups)
-    static=''.join(f'<article class="variant-card" data-group="{escape(c["group"])}"><header><span class="variant-badge">{escape(c["id"])}</span><strong>{escape(c["title"])}</strong>{''.join(f'<span class="coordinate-pill">{escape(p)}</span>' for p in c.get("pills",[]))}<a target="_blank" rel="noopener" href="{escape(c["src"])}">↗ 全屏打开</a></header><div class="device-bezel" data-frame-mode="{escape(c["platform"])}"><div class="device-window"><div class="device-titlebar" aria-hidden="true"><i></i><i></i><i></i><span>{escape(c["title"])}</span></div><iframe loading="eager" src="{escape(c["src"])}" title="{escape(c["title"])}"></iframe></div></div><label><input type="radio" name="portal-primary-{escape(c["group"])}" value="{escape(c["id"])}"> SELECT</label><label><input type="checkbox" data-star="{escape(c["id"])}"> STAR</label><textarea data-note="{escape(c["id"])}" aria-label="{escape(c["id"])} Notes" placeholder="Notes"></textarea></article>' for c in cards)
-    return f'''<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(goal)} · Master Portal</title><style>{(ROOT/'assets'/'tenfold-gallery.css').read_text(encoding='utf-8')}</style></head><body class="gallery-page"><main class="gallery portal"><h1>{escape(goal)} · Master Portal</h1><nav class="group-tabs"><button data-group-filter="all">全部方案</button>{tabs}</nav><div class="portal-actions"><button data-portal-platform="all">All</button><button data-portal-platform="mobile">Mobile</button><button data-portal-platform="macos">macOS</button><button data-portal-platform="web">Web</button><button data-portal-theme="light">Light</button><button data-portal-theme="dark">Dark</button></div><div id="portal-grid">{static}</div><button id="copy-summary">Copy Selection Summary</button><output id="status" aria-live="polite"></output></main><script>const DATA={data};let group='all',platform='all';const storageKey=`portal:${{DATA.goal}}`;const saved=JSON.parse(localStorage.getItem(storageKey)||'{{}}');DATA.groups.forEach(g=>{{const round=JSON.parse(localStorage.getItem(`gallery:${{DATA.goal}}:${{g.id}}`)||'{{}}');Object.entries(round).forEach(([id,value])=>{{saved[`${{g.id}}:${{id}}`]=saved[`${{g.id}}:${{id}}`]||value;}});}});const grid=document.querySelector('#portal-grid');const esc=v=>String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));const slot=c=>saved[`${{c.group}}:${{c.id}}`]||{{}};function render(){{grid.innerHTML=DATA.cards.filter(c=>(group==='all'||c.group===group)&&(platform==='all'||c.platform===platform)).map(c=>`<article class="variant-card" data-group="${{esc(c.group)}}"><header><span class="variant-badge">${{c.id}}</span><strong>${{esc(c.title)}}</strong>${{c.pills.map(p=>`<span class="coordinate-pill">${{esc(p)}}</span>`).join('')}}<a target="_blank" rel="noopener" href="${{esc(c.src)}}">↗ 全屏打开</a></header><div class="device-bezel" data-frame-mode="${{c.platform}}"><div class="device-window"><div class="device-titlebar" aria-hidden="true"><i></i><i></i><i></i><span>${{esc(c.title)}}</span></div><iframe loading="eager" src="${{esc(c.src)}}" title="${{esc(c.title)}}"></iframe></div></div><label><input type="radio" name="portal-primary-${{esc(c.group)}}" value="${{c.id}}" ${{slot(c).selected?'checked':''}}> SELECT</label><label><input type="checkbox" data-star="${{c.id}}" ${{slot(c).starred?'checked':''}}> STAR</label><textarea data-note="${{c.id}}" aria-label="${{c.id}} Notes" placeholder="Notes">${{esc(slot(c).notes||'')}}</textarea></article>`).join('')||'<p class="empty-state">No previews match this filter.</p>'}}applyTheme(document.body.dataset.theme||'light');grid.onchange=grid.oninput=e=>{{const id=e.target.dataset.star||e.target.dataset.note||e.target.value;const group=e.target.closest('[data-group]')?.dataset.group;if(!id||!group)return;const state=saved[`${{group}}:${{id}}`]||{{}};if(e.target.dataset.star)state.starred=e.target.checked;if(e.target.dataset.note)state.notes=e.target.value;if(e.target.name?.startsWith('portal-primary-')){{Object.keys(saved).forEach(k=>{{if(k.startsWith(`${{group}}:`)&&saved[k])saved[k].selected=false;}});state.selected=true;}}saved[`${{group}}:${{id}}`]=state;localStorage.setItem(storageKey,JSON.stringify(saved));const round=JSON.parse(localStorage.getItem(`gallery:${{DATA.goal}}:${{group}}`)||'{{}}');round[id]=state;localStorage.setItem(`gallery:${{DATA.goal}}:${{group}}`,JSON.stringify(round));}};document.querySelectorAll('[data-group-filter]').forEach(b=>b.onclick=()=>{{group=b.dataset.groupFilter;render()}});document.querySelectorAll('[data-portal-platform]').forEach(b=>b.onclick=()=>{{platform=b.dataset.portalPlatform;render()}});function applyTheme(theme){{document.body.dataset.theme=theme;document.querySelectorAll('#portal-grid iframe').forEach(f=>{{f.addEventListener('load',()=>applyFrame(f,theme),{{once:true}});applyFrame(f,theme);}});}}function applyFrame(f,theme){{try{{f.contentDocument.documentElement.dataset.theme=theme;f.contentDocument.body.dataset.theme=theme;}}catch{{}}}}document.querySelectorAll('[data-portal-theme]').forEach(b=>b.onclick=()=>applyTheme(b.dataset.portalTheme));document.querySelector('#copy-summary').onclick=()=>{{const primary=DATA.cards.filter(c=>slot(c).selected).map(c=>`${{c.group}}: ${{c.id}}`);const stars=DATA.cards.filter(c=>slot(c).starred).map(c=>`${{c.group}}: ${{c.id}}`);const notes=DATA.cards.filter(c=>slot(c).notes).map(c=>`${{c.group}}/${{c.id}}: ${{slot(c).notes}}`);const summary=`Goal: ${{DATA.goal}}\\nSELECT: ${{primary.join(', ')||'none'}}\\nSTAR: ${{stars.join(', ')||'none'}}\\n${{notes.join('\\n')}}`;navigator.clipboard?.writeText(summary);document.querySelector('#status').textContent='Summary copied across all categories';}};render();</script></body></html>'''
+    return CHOOSER.render(goal, manifests, _gallery_tokens(), portal=True)
+
+
+def _portal_manifests(root, goal):
+    manifests = []
+    for child in sorted(root.iterdir() if root.is_dir() else [], key=lambda p: p.name):
+        path = child / 'manifest.json'
+        if child.is_symlink() or not child.is_dir() or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            item = load(path)
+            if not isinstance(item, dict) or item.get('goal') != goal:
+                continue
+            if item.get('schema') not in {'tenfold-gallery/v1', 'design-gallery/v2'}:
+                continue
+            _safe_goal(item.get('category') or f'r{item["round"]}')
+            if type(item.get('round')) is not int or not 1 <= item['round'] <= 99:
+                continue
+            if item.get('platform') not in {'mobile', 'desktop', 'web'}:
+                continue
+            if not re.fullmatch(r'r\d+(?:-[A-Za-z0-9._-]+)?', child.name):
+                continue
+            expected = {f'app{i:02d}' for i in range(1, 5)} if item.get('mode') == 'app-nav' else {f'v{i:02d}' for i in range(1, 11)}
+            if {v['id'] for v in item['variants']} != expected:
+                continue
+            item['_path'] = child.name
+            CHOOSER.cards_for(item, child.name + '/', reference=False)
+            manifests.append(item)
+        except (OSError, ValueError, TypeError, KeyError, StopIteration):
+            continue
+    return manifests
 
 
 def _update_goal_portal(goal_root, goal, blog_goal=None):
-    manifests=[]
-    for child in sorted(goal_root.iterdir() if goal_root.is_dir() else [], key=lambda p:p.name):
-        if child.is_dir() and (child/'manifest.json').is_file():
-            try:
-                item=load(child/'manifest.json'); item['_path']=child.name; manifests.append(item)
-            except (OSError,ValueError,TypeError): pass
-    if not manifests:return
-    (goal_root/'index.html').write_text(_render_goal_portal_index(goal,manifests),encoding='utf-8')
-    if blog_goal:
-        blog_goal.mkdir(parents=True,exist_ok=True); (blog_goal/'index.html').write_text(_render_goal_portal_index(goal,manifests),encoding='utf-8')
+    for root in (goal_root, blog_goal):
+        if root is None:
+            continue
+        manifests = _portal_manifests(root, goal)
+        if manifests:
+            (root / "index.html").write_text(_render_goal_portal_index(goal, manifests), encoding="utf-8")
 
 
 

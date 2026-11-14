@@ -312,8 +312,8 @@ assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
                 replacements = ['<!doctype html><p>No variants or selection controls available.</p>',
                                 canonical.replace('screen', 'forged-screen') if mode == 'screen' else canonical.replace('app01.html', 'app99.html')]
                 if mode == 'screen':
-                    replacements.extend([canonical[:canonical.index('<script>')] + '</body></html>',
-                                         canonical.replace('Round: ${manifest.round}', 'Round: 99')])
+                    replacements.extend([canonical[:canonical.index('<script id="gallery-config"')] + '</body></html>',
+                                         canonical.replace('"round": 2', '"round": 99')])
                 for html in replacements:
                     with self.subTest(mode=mode, html=html[:80]):
                         index.write_text(html)
@@ -885,7 +885,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
                     "session_anti_patterns": [payload], "style_overrides": {"note": payload}}
         index = DESIGN_CATALOG._gallery_index(manifest)
         self.assertNotIn(payload, index)
-        self.assertEqual(index.count("</script>"), 1)
+        self.assertEqual(index.count("</script>"), 2)
         screen = DESIGN_CATALOG._gallery_html("title", "v01", "mobile",
                     {"p0": "next-action", "axis_y": "accordion", "archetype": "VS-005"},
                     [payload], {})
@@ -904,29 +904,74 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
                     gallery = Path(json.loads(result.stdout)['gallery'])
                     html = (gallery / 'index.html').read_text(encoding='utf-8')
                     expected = 11 if mode == 'screen' else 5
-                    self.assertGreaterEqual(html.count('<iframe'), expected)
-                    self.assertGreaterEqual(html.count('class="device-bezel"'), expected)
-                    self.assertIn('SELECT', html); self.assertIn('STAR', html); self.assertIn('Notes', html)
+                    from html.parser import HTMLParser
+                    class Structure(HTMLParser):
+                        def __init__(self):
+                            super().__init__(); self.stack = []; self.frames = []; self.controls = []
+                        def handle_starttag(self, tag, attrs):
+                            attrs = dict(attrs)
+                            if tag == 'iframe': self.frames.append((attrs, list(self.stack)))
+                            if tag in {'input', 'textarea'}: self.controls.append((tag, attrs, list(self.stack)))
+                            if tag not in {'input', 'meta', 'link', 'br', 'img'}: self.stack.append((tag, attrs))
+                        def handle_endtag(self, tag):
+                            for i in range(len(self.stack) - 1, -1, -1):
+                                if self.stack[i][0] == tag:
+                                    self.stack = self.stack[:i]; break
+                    parsed = Structure(); parsed.feed(html)
+                    self.assertEqual(len(parsed.frames), expected)
+                    frame_mode = 'macos' if requested in {'desktop', 'macos'} else requested
+                    for attrs, parents in parsed.frames:
+                        bezel = next(a for t, a in parents if 'device-bezel' in a.get('class', '').split())
+                        self.assertEqual(bezel['data-frame-mode'], frame_mode)
+                        self.assertEqual(attrs['loading'], 'eager')
+                        self.assertTrue(attrs['src'].endswith('.html'))
+                    for tag, attrs, parents in parsed.controls:
+                        self.assertFalse(any('current-card' in a.get('class', '') for t, a in parents))
+                    self.assertEqual(sum(tag == 'textarea' for tag, _, _ in parsed.controls), expected)  # candidates + summary
+                    self.assertEqual(sum(a.get('type') == 'radio' for _, a, _ in parsed.controls), expected - 1)
+                    self.assertEqual(html.count('class="device-titlebar"'), 0 if frame_mode != 'macos' else expected)
                     self.assertIn('data-theme="dark"', html); self.assertIn('copy-summary', html)
                     gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'desktop' if requested == 'macos' else requested, '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
                     self.assertEqual(gate.returncode, 0, gate.stdout)
 
     def test_blog_same_round_categories_and_corrupt_sibling_are_safe(self):
+        import shutil
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
-            env = dict(os.environ, HOME=directory); blog=Path(directory)/'blog'; blog.mkdir()
-            for category in ('A','B'):
-                result=run('scaffold-gallery','--goal','mounted','--round','1','--category',category,'--platform','mobile','--blog-repo',str(blog),'--no-blog-mount' if False else '--category-title',category,env=env)
-                self.assertEqual(result.returncode,0,result.stderr)
-            # The explicit --blog-repo path must mount both category directories.
-            # Re-run with mounting enabled after the isolated handoff assertion.
-            for category in ('A','B'):
-                result=run('scaffold-gallery','--goal','mounted-blog','--round','1','--category',category,'--category-title',category,'--platform','mobile','--blog-repo',str(blog),env=env)
-                self.assertEqual(result.returncode,0,result.stderr)
-            blog_root=blog/'demos'/'mounted-blog'; self.assertTrue((blog_root/'r1-A').is_dir()); self.assertTrue((blog_root/'r1-B').is_dir())
-            (Path(directory)/'Development/handoff/mounted-blog/bad/manifest.json').parent.mkdir(parents=True)
-            (Path(directory)/'Development/handoff/mounted-blog/bad/manifest.json').write_text('{broken',encoding='utf-8')
-            root=(Path(directory)/'Development/handoff/mounted-blog/index.html').read_text(encoding='utf-8')
-            self.assertIn('A',root); self.assertIn('B',root)
+            env = dict(os.environ, HOME=directory)
+            blog = Path(directory) / 'blog'
+            handoff = Path(directory) / 'Development/handoff/mounted-blog'
+            for category in ('old', 'A', 'B'):
+                if category == 'A':
+                    # The prior category remains mounted but is absent from local handoff.
+                    shutil.rmtree(handoff / 'r1-old')
+                    for parent in (handoff, blog / 'demos/mounted-blog'):
+                        bad = parent / 'r9-bad'
+                        bad.mkdir(parents=True)
+                        (bad / 'manifest.json').write_text('{broken', encoding='utf-8')
+                        unsafe = parent / 'r8-unsafe'
+                        unsafe.mkdir()
+                        (unsafe / 'manifest.json').write_text('[1,2]', encoding='utf-8')
+                result = run('scaffold-gallery', '--goal', 'mounted-blog', '--round', '1',
+                             '--category', category, '--platform', 'mobile', '--blog-repo', str(blog), env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            blog_root = blog / 'demos/mounted-blog'
+            for category in ('old', 'A', 'B'):
+                self.assertTrue((blog_root / f'r1-{category}/manifest.json').is_file())
+            mounted = (blog_root / 'index.html').read_text(encoding='utf-8')
+            local = (handoff / 'index.html').read_text(encoding='utf-8')
+            self.assertIn('src="r1-old/v01.html"', mounted)
+            self.assertNotIn('src="r1-old/v01.html"', local)
+            for text in (mounted, local):
+                self.assertIn('src="r1-A/v01.html"', text)
+                self.assertIn('src="r1-B/v01.html"', text)
+                self.assertNotIn('http-equiv="refresh"', text)
+                self.assertNotIn('r9-bad/', text)
+                self.assertNotIn('r8-unsafe/', text)
+
+    def test_shared_runtime_state_and_geometry_equations(self):
+        result = subprocess.run(['node', str(SCRIPT.with_name('gallery_chooser_test.cjs'))],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_category_portal_and_cleanup_preserve_rounds(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -938,10 +983,35 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
             portal = (root / 'index.html').read_text(encoding='utf-8')
             self.assertGreaterEqual(portal.count('data-group-filter'), 3)
             self.assertGreaterEqual(portal.count('data-frame-mode'), 20)
-            self.assertIn('portal:${DATA.goal}', portal); self.assertIn('localStorage', portal)
+            self.assertIn('design-gallery:${goal}', portal); self.assertIn('localStorage', portal)
             receipt = run('cleanup-demo', '--goal', 'portal-regression', '--handoff-root', str(Path(directory) / 'Development/handoff'), '--dry-run', env=env)
             self.assertEqual(receipt.returncode, 0, receipt.stderr)
             self.assertEqual(len(json.loads(receipt.stdout)['removed_handoff_rounds']), 2)
+            (root / 'receipts').mkdir()
+            (root / 'receipts/keep.json').write_text('{}', encoding='utf-8')
+            cleaned = run('cleanup-demo', '--goal', 'portal-regression', '--handoff-root', str(root.parent), env=env)
+            self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+            self.assertFalse((root / 'index.html').exists())
+            self.assertFalse((root / 'r1-A').exists())
+            self.assertFalse((root / 'r2-B').exists())
+            self.assertTrue((root / 'receipts/keep.json').is_file())
+
+    def test_category_path_rejects_before_writes_and_title_is_inert(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            base = ['scaffold-gallery', '--goal', 'safe-category', '--round', '1', '--platform', 'mobile', '--no-blog-mount']
+            for category in ('../escape', 'A/B', 'A" onmouseover="alert(1)', '..'):
+                result = run(*base, '--category', category, env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((Path(directory) / 'Development/handoff/safe-category').exists())
+            title = '</script><img src=x onerror=alert(1)>'
+            result = run(*base, '--category', 'A', '--category-title', title, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            root = Path(directory) / 'Development/handoff/safe-category'
+            portal = (root / 'index.html').read_text(encoding='utf-8')
+            self.assertNotIn(title, portal)
+            self.assertIn('&lt;/script&gt;&lt;img', portal)
+            self.assertEqual(portal.count('</script>'), 2)
 
 
 if __name__ == "__main__":

@@ -150,14 +150,19 @@ class VerifySkillsTests(unittest.TestCase):
     def test_multiplatform_gallery_contract_is_wired(self) -> None:
         catalog = SKILLS_DIR / "design-studio" / "scripts" / "design_catalog.py"
         evidence = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
-        source = catalog.read_text(encoding="utf-8")
-        evidence_source = evidence.read_text(encoding="utf-8")
-        for platform in ("mobile", "desktop", "macos", "web"):
-            self.assertIn(platform, source)
-        for token in ("device-bezel", "loading=\"eager\"", "data-frame-mode", "data-group-filter", "portal:", "localStorage"):
-            self.assertIn(token, source)
-        self.assertIn("c._gallery_index(manifest)", evidence_source)
-        self.assertNotIn("<ul>{links}</ul>", evidence_source)
+        result = subprocess.run(['node', str(catalog.with_name('gallery_chooser_test.cjs'))],
+                                capture_output=True, text=True, check=True)
+        self.assertIn('PASS:', result.stdout)
+        spec = importlib.util.spec_from_file_location('gallery_contract_test', catalog)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        manifest = {'goal': 'contract', 'round': 1, 'platform': 'web', 'variants': []}
+        chooser = module._gallery_index(manifest)
+        # Execute the renderer, not string-search its Python implementation.
+        self.assertIn('id="responsive-toggle"', chooser)
+        self.assertIn('src="current.html"', chooser)
+        self.assertIn(module._gallery_tokens(), chooser)
+        self.assertIn('c._gallery_index(manifest)', evidence.read_text(encoding='utf-8'))
         for path in (SKILLS_DIR / "my-designer" / "SKILL.md", SKILLS_DIR / "design-studio" / "SKILL.md"):
             self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 130)
 

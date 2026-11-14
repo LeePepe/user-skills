@@ -256,7 +256,7 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
     runtime = (ASSETS / 'navigation-demo.js').read_text(encoding='utf-8')
     style = ';'.join(f'--{k}:{v}' for k, v in tokens.items())
     return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><style>{css}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><link rel="stylesheet" href="tokens.css"><style>{css}</style></head>
 <body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
 {optical_svg}
 <header class="large-title"><p>{escape(scheme['context'])}</p><h1 id="large-title">{escape(scheme['title'])}</h1></header>
