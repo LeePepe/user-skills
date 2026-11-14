@@ -8,6 +8,7 @@ import json
 import importlib.util
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -2568,6 +2569,58 @@ try {
         for block in FENCED_CODE_RE.findall(context_text):
             inner_lines = block.splitlines()[1:-1]
             self.assertLessEqual(len(inner_lines), 25)
+
+
+class SkillContractV2Tests(unittest.TestCase):
+    def _script(self) -> Path:
+        return SKILLS_DIR / "skill-contract" / "scripts" / "skill_contract.py"
+
+    def test_audit_v2_description_symlink_and_duplicate_script_checks(self) -> None:
+        script = self._script()
+        spec = importlib.util.spec_from_file_location("skill_contract_audit_v2", script)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); first = root / "skills" / "one"; second = root / "skills" / "two"
+            for package in (first, second):
+                (package / "references").mkdir(parents=True); (package / "scripts").mkdir()
+                (package / "SKILL.md").write_text("---\nname: x\ndescription: " + ("x" * (321 if package is first else 1)) + "\n---\n", encoding="utf-8")
+                (package / "scripts" / "same.py").write_text("print(1)\n", encoding="utf-8")
+            (first / "references" / "missing.md").symlink_to(root / "absent.md")
+            findings = module.audit_package(first)
+            codes = {item["code"] for item in findings}
+            self.assertIn("description-length", codes); self.assertIn("broken-symlink", codes)
+            audit = subprocess.run([sys.executable, str(script), "audit", "--repo", str(root), "--strict"], capture_output=True, text=True)
+            self.assertIn("duplicate-script-fork", audit.stdout + audit.stderr)
+
+    def test_description_eval_and_negative_cmd(self) -> None:
+        script = self._script()
+        result = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        self.assertTrue(json.loads(result.stdout)["ok"])
+        case = {"id": "EV-test", "negative_cmd": f"{sys.executable} -c 'raise SystemExit(7)'", "expect_fail_exit": 7}
+        spec = importlib.util.spec_from_file_location("skill_contract_v2", script)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        self.assertEqual(module.evaluate_case(case, SKILLS_DIR / "skill-contract", REPO_ROOT), [])
+
+    def test_sync_jev_stars_fixture_is_idempotent_and_caps(self) -> None:
+        script = self._script()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "falcon.sqlite"
+            con = sqlite3.connect(db)
+            con.executescript("CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE requests (id INTEGER PRIMARY KEY, source_id INTEGER, summary_json TEXT, received_request TEXT, upstream_response TEXT, review_state TEXT); CREATE TABLE reviews (request_id INTEGER, state TEXT);")
+            con.execute("INSERT INTO sources VALUES (1, 'skill-contract')")
+            con.execute("INSERT INTO requests VALUES (1, 1, '{\"starredAt\":\"2026-11-14\"}', '{\"state\":\"ok\",\"questions\":[\"q\"]}', '{\"answers\":{\"a\":1}}', NULL)")
+            con.commit(); con.close()
+            target = Path(tmp) / "repo" / "skills" / "skill-contract" / "references"; target.mkdir(parents=True)
+            (target.parent / "SKILL.md").write_text("---\nname: skill-contract\ndescription: test\n---\n", encoding="utf-8")
+            (target / "eval-cases.json").write_text(json.dumps({"active_cases":[{"id":f"EV-{i:03d}","tags":["ordinary"]} for i in range(1,16)]}), encoding="utf-8")
+            run = [sys.executable, str(script), "sync-jev-stars", "--skill", "skill-contract", "--repo", str(Path(tmp)/"repo"), "--db-path", str(db)]
+            first = subprocess.run(run, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+            self.assertTrue(json.loads(first.stdout)["ok"])
+            second = subprocess.run(run, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+            self.assertTrue(json.loads(second.stdout)["ok"])
+            doc = json.loads((target / "eval-cases.json").read_text())
+            self.assertLessEqual(len(doc["active_cases"]), 15)
+            self.assertEqual(sum(1 for c in doc["active_cases"] if c.get("jev_starred_id") == 1), 1)
 
 
 if __name__ == "__main__":
