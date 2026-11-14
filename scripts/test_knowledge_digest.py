@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -70,7 +71,202 @@ class FakeLinearTransport:
         return issue
 
 
+def normalized_linear_markdown(description: str) -> str:
+    description = re.sub(r"\]\((?!<)([^)]+)\)", r"](<\1>)", description)
+    description = re.sub(r"(?m)^  - ", "  * ", description)
+    description = re.sub(r"(?m)^    1\. ", "    2. ", description)
+    return re.sub(r"(?<!\\)\[(\d+)\]", r"\\[\1\\]", description).rstrip()
+
+
+def digest_topics():
+    topics = []
+    for key, question in [
+        ("event-stream-order", "事件流如何用序列号恢复顺序而不重复执行副作用？"),
+        ("cache-budget", "缓存如何用容量预算约束淘汰而不破坏一致性？"),
+        ("schema-transition", "迁移器如何把旧模式转为新模式但保留回滚边界？"),
+    ]:
+        item = {"topic_key": key, "title": question, "question": question, "source_id": "fixture-engine", "source_uri": "https://example.test/engine", "why_now": "engine/contract.md:12（顺序与容量边界尚未验证）", "category": "工程与设计"}
+        item["learning_brief"] = DIGEST._learning_brief(item)
+        topics.append(item)
+    return topics
+
+
+def legacy_daily_description(topics):
+    lines = ["<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->", "", "## 今日学习清单", ""]
+    lines.extend(f"- [ ] **[{index}] {item['title']}** (`{item['topic_key']}`)" for index, item in enumerate(topics, 1))
+    for item in topics:
+        lines.extend(["", f"### {item['title']} (`{item['topic_key']}`)", "", f"**为什么现在值得学 (Why Now)**：Owner 编写的完整导读 {item['topic_key']}", "", "1. 原理与状态转换？", "2. 容量为何影响顺序？", "3. 如何构造失败用例？", "", f"**推荐展开命令**：`/learn {item['topic_key']}` 或 `/deep-research {item['topic_key']}`", "**来源与定位**：[engine](https://example.test/engine)"])
+    return "\n".join(lines)
+
+
+def old_appended_daily_description(topics):
+    lines = ["<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->", "", "候选学习仅在 Owner Gate 批准后展开；本 issue 不自动归档或发布。", ""]
+    for item in topics:
+        brief = DIGEST._legacy_automated_learning_brief(item)
+        lines.extend([f"- [ ] [{item['topic_key']}](learning-topic://{item['topic_key']}) {item['title']}", f"  - 为什么现在值得学：{brief['why_now']}", "  - 3 个核心痛点追问预览：", *[f"    1. {q}" for q in brief["preview_questions"]], f"  - 推荐展开命令：`{brief['recommended_command']}`", ""])
+    return "\n".join(lines)
+
+
 class KnowledgeDigestTests(unittest.TestCase):
+    def assert_daily_topics_once(self, description, topics):
+        rows = re.findall(r"(?m)^[-*+] \[[ xX]\] .+$", description)
+        self.assertEqual(len(rows), len(topics))
+        for item in topics:
+            self.assertEqual(sum(f"learning-topic://{item['topic_key']}" in row or f"`{item['topic_key']}`" in row for row in rows), 1)
+        self.assertEqual(description.count("KD-DAILY-START:2026-11-14"), 1)
+        self.assertEqual(description.count("KD-DAILY-END:2026-11-14"), 1)
+
+    def test_legacy_daily_adoption_preserves_rich_briefs_checks_and_notes(self):
+        topics = digest_topics()
+        original = normalized_linear_markdown(legacy_daily_description(topics)).replace("- [ ]", "* [X]", 1)
+        original += "\n\nOwner notes: preserve `custom_contract` and [link](<https://example.test/note>)."
+        merged = DIGEST._merge_daily_digest_description(original, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertIn("* [x]", merged)
+        self.assertIn("Owner notes: preserve `custom_contract`", merged)
+        self.assertEqual(merged.count("Owner 编写的完整导读"), 3)
+        for item in topics:
+            section = original[original.index(f"### {item['title']}"):].split("\n### ", 1)[0]
+            self.assertIn(section, merged)
+        self.assertEqual(DIGEST._merge_daily_digest_description(merged, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), merged)
+
+    def test_duplicate_daily_repair_recognizes_normalized_old_generated_fields(self):
+        topics = digest_topics()
+        legacy = legacy_daily_description(topics)
+        appended = old_appended_daily_description(topics).replace("- [ ]", "- [x]", 1)
+        appended = appended.replace(topics[0]["title"], topics[0]["title"] + " Owner inline note: keep this too.", 1)
+        appended = appended.replace("  - 3 个核心痛点追问预览：", "  - Owner note: keep my extra constraint.\n  - 3 个核心痛点追问预览：", 1)
+        original = normalized_linear_markdown(legacy + "\n\nOwner note between blocks.\n\n" + appended + "\nOwner final note.")
+        merged = DIGEST._merge_daily_digest_description(original, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertEqual(merged.count("Owner 编写的完整导读"), 3)
+        self.assertNotIn("3 个核心痛点追问预览：", merged)
+        self.assertEqual(merged.count("GTT-LINEAR-DEDUP:"), 1)
+        self.assertIn("- [x]", merged)
+        for note in ("Owner note between blocks.", "Owner note: keep my extra constraint.", "Owner inline note: keep this too.", "Owner final note."):
+            self.assertIn(note, merged)
+        roundtrip = normalized_linear_markdown(merged)
+        self.assertEqual(DIGEST._merge_daily_digest_description(roundtrip, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), roundtrip)
+
+    def test_duplicate_edited_guide_and_broken_boundaries_fail_safe(self):
+        topics = digest_topics()
+        edited = old_appended_daily_description(topics).replace("输入/输出边界是什么？", "Owner changed mechanism and evidence?", 1)
+        original = legacy_daily_description(topics) + "\n\n" + edited
+        issue = {"id": "issue-1", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": original}
+        transport = FakeLinearTransport([issue])
+        with self.assertRaisesRegex(ValueError, "Cannot safely remove"):
+            DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        self.assertEqual(transport.updated, [])
+        self.assertEqual(issue["description"], original)
+        broken = DIGEST._daily_digest_markdown("2026-11-14", topics).replace("<!-- KD-DAILY-END:2026-11-14 -->", "")
+        with self.assertRaisesRegex(ValueError, "boundaries"):
+            DIGEST._merge_daily_digest_description(broken, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+
+    def test_new_normalized_daily_issue_is_not_rewritten_after_owner_edits(self):
+        topics = digest_topics()
+        topics[0]["learning_guide"] = {"why_now": "Owner rich guide", "preview_questions": ["Specific input?", "Ordering constraint?", "Failure witness?"], "recommended_command": "/learn event-stream-order"}
+        topics[0]["learning_brief"] = DIGEST._learning_brief(topics[0])
+        transport = FakeLinearTransport()
+        issue = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        issue["description"] = normalized_linear_markdown(issue["description"]).replace("- [ ]", "- [x]", 1).replace("Owner rich guide", "Owner rich guide with new private evidence") + "\n\n## Owner notes\nDo not overwrite."
+        original = issue["description"]
+        rerun = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        self.assertEqual(rerun["description"], original)
+        self.assertEqual(len(transport.created), 1)
+        self.assertEqual(transport.updated, [])
+        self.assert_daily_topics_once(original, topics)
+        self.assertEqual(original.count("为什么现在值得学："), 3)
+
+    def test_generated_duplicate_without_legacy_heading_keeps_one_brief(self):
+        topics = digest_topics()
+        old = normalized_linear_markdown(old_appended_daily_description(topics))
+        merged = DIGEST._merge_daily_digest_description(old + "\n\n" + old, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertEqual(merged.count("为什么现在值得学："), 3)
+        self.assertEqual(DIGEST._merge_daily_digest_description(merged, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), merged)
+
+    def test_cli_legacy_repair_and_repeat_use_real_graphql_with_normalization(self):
+        self._exercise_normalized_cli(duplicate=True)
+
+    def test_cli_legacy_only_recovers_exact_keys_without_local_daily_state(self):
+        self._exercise_normalized_cli(duplicate=False)
+
+    def _exercise_normalized_cli(self, *, duplicate):
+        sync_mod = DIGEST._load_helper_module("normalized_linear_sync", ROOT / "skills/team-lead/scripts/linear-sync.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            seed_ledger(vault, source_ids)
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text("# Fixture source\n", encoding="utf-8")
+            topics = json.loads((vault / "topic-ledger.json").read_text())["topics"]
+            for item in topics:
+                item["learning_brief"] = DIGEST._learning_brief(item)
+            issue = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": normalized_linear_markdown(legacy_daily_description(topics) + ("\n\n" + old_appended_daily_description(topics) if duplicate else ""))}
+            writes = []
+            def boundary(query, variables):
+                if "ListIssues" in query:
+                    return {"data": {"issues": {"nodes": [dict(issue)]}}}
+                if "UpdateIssue" in query:
+                    writes.append(variables)
+                    issue.update(variables["input"])
+                    issue["description"] = normalized_linear_markdown(issue["description"])
+                    return {"data": {"issueUpdate": {"success": True, "issue": dict(issue)}}}
+                raise AssertionError("Unexpected network operation: " + query)
+            client = sync_mod.GraphQLClient("fixture-token", transport=boundary)
+            args = ["discover-topics", "--top", "3", "--propose-aidash", "--propose-linear", "--no-materialize", "--no-git", "--vault", str(vault), "--collected-tools-dir", str(tools), "--proposals-path", str(root / "proposals.jsonl"), "--state-path", str(root / "state.json")]
+            with mock.patch.object(DIGEST, "_linear_transport_from_repo", return_value=client), mock.patch.object(DIGEST, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = datetime(2026, 11, 14, 2, tzinfo=timezone.utc)
+                first_output = io.StringIO()
+                with contextlib.redirect_stdout(first_output):
+                    self.assertEqual(DIGEST.main(args), 0)
+                first = json.loads(first_output.getvalue())
+                self.assertEqual(first["selected_count"], 3)
+                repaired = issue["description"]
+                self.assert_daily_topics_once(repaired, topics)
+                self.assertEqual(repaired.count("Owner 编写的完整导读"), 3)
+                done_key = topics[0]["topic_key"]
+                done = DIGEST.handle_learning_event(action="Done", topic_key=done_key, event_id="owner-done", proposals_path=root / "proposals.jsonl", state_path=root / "state.json", vault_dir=vault, now_utc=datetime(2026, 11, 14, 2, 1, tzinfo=timezone.utc))
+                self.assertTrue(done["ok"])
+                issue["description"] = issue["description"].replace("- [ ]", "- [x]", 1) + "\nOwner related reference: [another topic](<learning-topic://not-a-daily-selection>)."
+                repaired = issue["description"]
+                # A changed CLI quota must not truncate an already fixed daily selection.
+                args[2] = "1"
+                second_output = io.StringIO()
+                with contextlib.redirect_stdout(second_output):
+                    self.assertEqual(DIGEST.main(args), 0)
+                second = json.loads(second_output.getvalue())
+            self.assertEqual(second["selected_count"], 3)
+            self.assertEqual(issue["description"], repaired)
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(second["proposals_written"], [])
+            self.assertEqual({topic["topic_key"] for topic in second["topics"]}, {topic["topic_key"] for topic in topics})
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual(set(state["daily_linear_issues"]["2026-11-14"]["topic_keys"]), {topic["topic_key"] for topic in topics})
+            self.assertEqual(state["topics"][done_key]["learning_state"], "learned")
+            self.assertEqual(state["topics"][done_key]["revision"], done["revision"])
+            self.assertFalse(state["topics"][done_key]["exploration_authorized"])
+            self.assertEqual(len((root / "proposals.jsonl").read_text().splitlines()), 4)
+            self.assertFalse((vault / "concepts").exists())
+            self.assertFalse((vault / "index.md").exists())
+            with mock.patch.object(client, "list_issues", return_value=[]):
+                missing = DIGEST.discover_topics(top=3, propose_linear=True, linear_transport=client, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "proposals.jsonl", state_path=root / "state.json", now_utc=datetime(2026, 11, 14, 3, tzinfo=timezone.utc))
+            self.assertFalse(missing["ok"])
+            self.assertIn("refusing to create a duplicate", missing["error"])
+            self.assertEqual(len(writes), 1)
+
+    def test_learning_questions_use_mechanism_constraint_and_evidence(self):
+        item = digest_topics()[0]
+        questions = item["learning_brief"]["preview_questions"]
+        self.assertEqual(len(set(questions)), 3)
+        self.assertNotIn(item["question"], "\n".join(questions))
+        self.assertIn("序列号恢复顺序", questions[0])
+        self.assertIn("重复执行副作用", questions[1])
+        self.assertIn("engine/contract.md:12", questions[2])
+
     def test_linear_three_topic_quota_and_structured_briefs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -214,7 +410,7 @@ class KnowledgeDigestTests(unittest.TestCase):
             )
             self.assertEqual(rerun["selected_count"], 3)
             self.assertEqual(len(transport.created), 0)
-            self.assertEqual(len(transport.updated), 2)
+            self.assertEqual(len(transport.updated), 1)
             records = [json.loads(line) for line in (root / "proposals.jsonl").read_text().splitlines()]
             self.assertEqual(len(records), 3)
 
