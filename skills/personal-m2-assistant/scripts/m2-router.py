@@ -1635,9 +1635,11 @@ def _resolve_supervision_state_path(
         return Path(env_state).expanduser()
     if apply_receipt_file or plan_file:
         anchor = Path(apply_receipt_file or plan_file).expanduser()
+        if anchor.parent in {Path("/tmp"), Path("/private/tmp")}:
+            return Path("/tmp/m2-supervision-state.json")
         return anchor.parent / "m2-supervision-state.json"
     if persist_by_default:
-        return Path(f"/tmp/m2-supervision-state-{safe_plan_id}.json")
+        return Path("/tmp/m2-supervision-state.json")
     return None
 
 
@@ -1735,12 +1737,197 @@ def _match_existing_slot_index(
     return None
 
 
+ROLLUP_METADATA_KEYS = (
+    "linear_issue", "parent_linear_issue", "handoff_dir", "goal_id", "depends_on",
+    "upstream_waves", "rag_context_hint", "sub_prompt", "terminal_title", "cwd",
+    "m1_progress", "m1_stage_summary", "_handoff_discovered",
+)
+
+
+def _has_active_visible_tail(visible_text: str, *, max_lines: int = 8) -> bool:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", visible_text)
+    raw_lines = text.splitlines()
+    nonempty_lines = [line for line in raw_lines if line.strip()]
+    tail = "\n".join(raw_lines[-max_lines:] + nonempty_lines[-max_lines:])
+    return bool(re.search(r"background\s+/tasks\b|ctrl\+c(?:\s|$)|\b(?:Working|Thinking)\b|\bRunning\s|\bWaiting for\b", tail, re.I))
+
+
+def _slot_metadata(source: dict[str, Any]) -> dict[str, Any]:
+    metadata = {key: source[key] for key in ROLLUP_METADATA_KEYS if key in source}
+    if (source.get("handoff_dir") or source.get("goal_id")) and "_handoff_discovered" not in source:
+        metadata["_handoff_discovered"] = False
+    return metadata
+
+
+def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | None = None, scan_default: bool = False) -> dict[str, Any]:
+    text = "\n".join(_text(slot.get(key)) for key in (
+        "target", "sub_prompt", "terminal_title", "visible_summary", "rag_context_hint", "goal_id", "linear_issue",
+    ))
+    parent = re.search(r"Parent(?:\s+Issue)?\s*[:=：]?\s*(TIA-\d+)", text, re.I)
+    if parent:
+        slot.setdefault("parent_linear_issue", parent.group(1).upper())
+    issues = re.findall(r"\bTIA-\d+\b", text, re.I)
+    primary = next((issue.upper() for issue in issues if issue.upper() != slot.get("parent_linear_issue")), "")
+    if primary:
+        slot.setdefault("linear_issue", primary)
+    root_value = handoff_root or os.environ.get("M2_HANDOFF_ROOT")
+    root = Path(root_value or "~/Development/handoff").expanduser()
+    explicit = "" if slot.get("_handoff_discovered") else _text(slot.get("handoff_dir"))
+    if not explicit and slot.get("goal_id") and not slot.get("_handoff_discovered"):
+        explicit = str(root / _text(slot["goal_id"]))
+    candidates = [Path(explicit).expanduser() / "ledger.md"] if explicit else []
+    if not explicit:
+        candidates.extend(Path(match.group(0)).expanduser() / "ledger.md" for match in re.finditer(r"(?:~/|/)[^\s`\"'<>|()]*handoff/([^/\s`\"'<>|()]+)", text))
+        if slot.get("handoff_dir"):
+            candidates.append(Path(slot["handoff_dir"]) / "ledger.md")
+        if (root_value or scan_default) and root.is_dir():
+            candidates.extend(sorted(root.glob("*/ledger.md")))
+    ranked = []
+    for ledger_path in dict.fromkeys(candidates):
+        try:
+            ledger_text = ledger_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        linear = re.search(r"^\s*-?\s*Linear\s*[:：]\s*[^\n]*?\b(TIA-\d+)\b", ledger_text, re.M | re.I)
+        tl = re.search(r"^\s*-?\s*TL\s*[:：]\s*([^\s/|]+)", ledger_text, re.M)
+        goal_names = [ledger_path.parent.name]
+        if tl and "-goal-tl" in tl.group(1):
+            goal_names.append(tl.group(1).split("-goal-tl", 1)[0])
+        goal_pattern = r"(?<!\w)(?:" + "|".join(re.escape(name) for name in goal_names) + r")(?!\w)"
+        score = 0
+        for key, weight in (("visible_summary", 100), ("sub_prompt", 80), ("terminal_title", 40), ("rag_context_hint", 20)):
+            context = _text(slot.get(key))
+            if re.search(goal_pattern, context) or (tl and tl.group(1) in context):
+                score += weight
+        if linear and linear.group(1).upper() == slot.get("linear_issue"):
+            score += 10
+        # Never associate by Parent Issue or by a shared repository alone.
+        if not explicit and not score:
+            continue
+        ranked.append((score, ledger_path, ledger_text, linear, tl))
+    for _, ledger_path, ledger_text, linear, tl in sorted(ranked, key=lambda candidate: candidate[0], reverse=True)[:1]:
+        slot["_handoff_discovered"] = not bool(explicit)
+        slot["handoff_dir"] = str(ledger_path.parent)
+        slot["goal_id"] = ledger_path.parent.name
+        if linear:
+            slot["linear_issue"] = linear.group(1).upper()
+        parent = re.search(r"Parent(?:\s+Issue)?\s*[:=：]?\s*(TIA-\d+)", ledger_text, re.I)
+        if parent:
+            slot["parent_linear_issue"] = parent.group(1).upper()
+        tasks = []
+        in_tasks = False
+        for line in ledger_text.splitlines():
+            if line.startswith("## "):
+                in_tasks = line.strip().casefold() == "## tasks"
+            if in_tasks and line.startswith("|"):
+                cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
+                if len(cells) >= 5 and cells[4] in {"planned", "ready", "in_progress", "done", "blocked", "in_review", "changes_requested"}:
+                    tasks.append(f"{cells[0]} ({cells[4]}, {cells[3]})")
+        stages = list(dict.fromkeys(re.findall(r"Stage\s+\d+\s+[^\n|()<>]+?(?=\s*(?:->|→|\||\)|$))", ledger_text, re.I | re.M)))
+        stage_summary = " -> ".join(stage.strip() for stage in stages)
+        if re.search(r"(?:two|2)[- ]stage[- ][^\n]*designer[^\n]*(?:->|→|-)\s*coding", ledger_text, re.I):
+            stage_summary = "Stage 1 Designer -> Stage 2 Coding"
+        progress = ([f"TL: {tl.group(1)}"] if tl else []) + tasks
+        if stage_summary:
+            progress.append(stage_summary)
+        events = [line.strip("- ") for line in ledger_text.splitlines() if "EVT=" in line]
+        if events:
+            progress.append(events[-1][:300])
+        slot["m1_progress"] = " | ".join(progress)
+        slot["m1_stage_summary"] = stage_summary
+        slot["handoff_in_progress"] = any("(in_progress," in task for task in tasks) and "EVT=GOAL_DONE" not in ledger_text
+        slot["goal_tl"] = tl.group(1) if tl else ""
+        break
+    return slot
+
+
+def _live_agent_records(binary: str, *, runner: CommandRunner = _run_command) -> list[dict[str, Any]]:
+    try:
+        result = runner([binary, "agent", "list"], timeout=5.0)
+        return _records(_parse_json_output(result.stdout)) if result.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _discover_and_enrich_global_m2_slots(
+    state: dict[str, Any], *, agent_records: Iterable[dict[str, Any]] = (),
+    runner: CommandRunner = _run_command, herdr_bin: str = "herdr",
+    handoff_root: str | Path | None = None, protected_slots: Iterable[str] = (),
+    visible_by_ref: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    slots = state.setdefault("slots", [])
+    records = list(agent_records)
+    scan_default = runner is _run_command and bool(records)
+    protected = set(protected_slots)
+    visible_cache = dict(visible_by_ref or {})
+    for live in records:
+        name = _text(live.get("name") or live.get("herdr_target") or live.get("id"))
+        pane = _text(live.get("pane_id") or live.get("paneId"))
+        if not _looks_like_m2(live, "herdr") or _herdr_background(live):
+            continue
+        status = _text(live.get("agent_status") or live.get("status"), "unknown").lower()
+        if status in HERDR_TERMINAL_STATUSES:
+            continue
+        slot = next((s for s in slots if (pane and s.get("pane_id") == pane) or (name and s.get("target") == name)), None)
+        is_new = slot is None
+        if slot is None:
+            slot_id = name or pane
+            if not slot_id:
+                continue
+            existing_ids = {s.get("slot_id") for s in slots}
+            while slot_id in existing_ids:
+                slot_id += "-live"
+            slot = {"slot_id": slot_id, "run_label": name or pane, "run_seq": 1, "plan_id": "discovered", "wave_order": int(live.get("wave_order") or 1)}
+        slot.update({"target": name or slot.get("target", ""), "pane_id": pane or slot.get("pane_id", ""), "target_repo": _repo_from(live) or slot.get("target_repo", ""), "topic_id": live.get("topic_id") or slot.get("topic_id", "")})
+        slot.update(_slot_metadata(live))
+        slot["terminal_title"] = _text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or slot.get("terminal_title"))
+        ref = name or pane
+        if ref not in visible_cache:
+            visible_cache[ref] = _text(live.get("visible") or live.get("visible_text")) or _read_herdr_visible(herdr_bin, ref, runner=runner)
+        visible = visible_cache[ref]
+        if visible:
+            slot["visible_summary"] = _summarize_visible_lines(visible)
+        _enrich_slot_metadata(slot, handoff_root=handoff_root, scan_default=scan_default)
+        if slot.get("slot_id") not in protected:
+            active = _has_active_visible_tail(visible) or slot.get("handoff_in_progress", False)
+            # Discovery cannot certify completion; only a target watchdog can do so.
+            if active or status in {"working", "running", "blocked", "needs_input"}:
+                slot["raw_status"] = "working" if active and status not in {"blocked", "needs_input"} else status
+                slot["status"] = slot["raw_status"]
+                slot["needs_owner_attention"] = status in {"blocked", "needs_input"}
+                slot["quiescent"] = False
+                slot["seen_working"] = active or status in {"working", "running"}
+            elif is_new:
+                continue
+        if is_new:
+            slots.append(slot)
+    for slot in slots:
+        _enrich_slot_metadata(slot, handoff_root=handoff_root, scan_default=scan_default)
+    return state
+
+
 def _compute_board_rollup(
     ledger: dict[str, Any],
     *,
     just_settled_slots: Iterable[str] = (),
 ) -> dict[str, Any]:
     slots = [dict(s) for s in (ledger.get("slots") or []) if isinstance(s, dict)]
+    for slot in slots:
+        slot.setdefault("wave_order", 1)
+        dependencies = slot.get("depends_on") or []
+        if isinstance(dependencies, str):
+            dependencies = [dependencies]
+        slot["depends_on"] = list(dependencies)
+        if not dependencies:
+            hint = _text(slot.get("rag_context_hint"))
+            for upstream in slots:
+                if upstream is slot or int(upstream.get("wave_order") or 1) >= int(slot["wave_order"] or 1):
+                    continue
+                identity = _text(upstream.get("linear_issue") or upstream.get("run_label") or upstream.get("slot_id"))
+                same_plan = slot.get("plan_id") and slot.get("plan_id") != "discovered" and upstream.get("plan_id") == slot.get("plan_id")
+                if identity and (same_plan or identity in hint):
+                    slot["depends_on"].append(identity)
+        slot["upstream_waves"] = sorted({int(s.get("wave_order") or 1) for s in slots if any(_text(s.get(key)) in slot["depends_on"] for key in ("slot_id", "run_label", "linear_issue"))})
     settled_set = {s.casefold() for s in just_settled_slots if _text(s)}
     completed_slots = [s for s in slots if _text(s.get("status")).lower() in {"idle", "done"}]
     running_slots = [s for s in slots if _text(s.get("status")).lower() in {"running", "working"}]
@@ -1756,14 +1943,45 @@ def _compute_board_rollup(
         for s in slots
         if _text(s.get("slot_id")).casefold() in settled_set or _text(s.get("run_label")).casefold() in settled_set
     ]
+    in_flight = [s for s in slots if s in running_slots or s in blocked_slots or _text(s.get("status")) in {"unknown", "ready"}]
+    detail_keys = ("slot_id", "run_label", "target", "pane_id", "topic_id", "target_repo", "wave_order", "depends_on", "upstream_waves", "linear_issue", "parent_linear_issue", "handoff_dir", "m1_progress", "m1_stage_summary", "raw_status", "status")
+    details = [{key: slot.get(key, "") for key in detail_keys} for slot in in_flight]
+
+    def node(slot: dict[str, Any]) -> str:
+        name = _text(slot.get("topic_id") or slot.get("target_repo") or slot.get("target") or slot.get("run_label"))
+        stages = _text(slot.get("m1_stage_summary"))
+        return f"{_text(slot.get('linear_issue') or slot.get('run_label') or slot.get('slot_id'))} ({name}{': ' + stages if stages else ''})"
+
+    waves = sorted({int(s.get("wave_order") or 1) for s in slots})
+    chain = " -> ".join(f"Wave {wave}: " + " + ".join(node(s) for s in slots if int(s.get("wave_order") or 1) == wave) for wave in waves)
+
+    def row(slot: dict[str, Any]) -> str:
+        deps = ", ".join(str(dep) for dep in slot.get("depends_on", [])) or "无"
+        upstream = ", ".join(f"Wave {w}" for w in slot.get("upstream_waves", []))
+        summary = _text(slot.get("m1_progress") or slot.get("visible_summary"), "—").replace("\n", " / ")
+        return (f"- `{slot.get('run_label', slot.get('slot_id', ''))}` · {slot.get('target', '')} · pane `{slot.get('pane_id', '')}` · "
+                f"Wave {slot.get('wave_order', 1)} · 依赖 {upstream + ': ' if upstream else ''}{deps} · "
+                f"{slot.get('linear_issue') or 'Linear 未绑定'} · status=`{slot.get('status', '')}` · {summary}")
+
+    markdown = ["### 📊 全局 M2 统一汇总看板 (Unified M2 Rollup)",
+                "#### 🔗 Wave 波次与上下游依赖链路（Wave & Dependency Topology）", chain or "无",
+                "#### 1. 🔔 本次完成（Just Completed）"]
+    markdown.extend([row(s) for s in completed_slots if _text(s.get("run_label")) in just_settled_labels] or ["无（状态巡检）"])
+    markdown.extend(["#### 2. ✅ 累计已完成（Completed Rollup）", f"`completed_rollup_code`: `{''.join(completed_labels) or 'none'}` · {' + '.join(completed_labels) or 'none'}"])
+    markdown.extend([row(s) for s in completed_slots] or ["无"])
+    markdown.append("#### 3. ⏳ 仍在运行中（In-Flight Active M2s）")
+    markdown.extend([row(s) for s in in_flight] or ["无"])
     return {
+        "unified_rollup_markdown": "\n".join(markdown),
+        "in_flight_details": details,
+        "wave_dependency_chain": chain,
         "just_settled_labels": just_settled_labels,
         "completed_labels": completed_labels,
         "completed_rollup_code": "".join(completed_labels),
         "completed_rollup_display": " + ".join(completed_labels) if completed_labels else "none",
         "running_labels": running_labels,
         "blocked_labels": blocked_labels,
-        "all_board_settled": len(running_slots) == 0 and len(blocked_slots) == 0,
+        "all_board_settled": not in_flight,
         "completed_targets": completed_slots,
         "running_targets": running_slots,
         "blocked_targets": blocked_slots,
@@ -1771,7 +1989,7 @@ def _compute_board_rollup(
     }
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -1864,6 +2082,10 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         persist_by_default=True,
     )
     assert resolved_state_path is not None
+    binary = _text(os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    live_records = agent_records
+    if live_records is None:
+        live_records = _live_agent_records(binary, runner=runner) if "herdr" in resolved_initial_transports and not is_stdout_only else []
 
     def _register_dispatched_slots(state: dict[str, Any]) -> dict[str, Any]:
         slots = [dict(s) for s in (state.get("slots") or []) if isinstance(s, dict)]
@@ -1953,17 +2175,27 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
                 rec["slot_id"] = slot_id
                 rec["run_seq"] = run_seq
                 rec["run_label"] = run_label
+            slot = slots[_match_existing_slot_index(slots, rec, tgt)]
+            for key in (*ROLLUP_METADATA_KEYS, "handoff_in_progress", "goal_tl"):
+                slot.pop(key, None)
+            slot.update(_slot_metadata(tgt))
         events.append({
             "seq": len(events) + 1,
             "type": "apply",
             "plan_id": plan_id,
             "dispatched_labels": [_text(r.get("run_label")) for r in receipts],
         })
-        return {"schema_version": 1, "slots": slots, "events": events}
+        state = _discover_and_enrich_global_m2_slots(
+            {"schema_version": 1, "slots": slots, "events": events}, agent_records=live_records,
+            runner=runner, herdr_bin=binary, handoff_root=handoff_root,
+        )
+        state["slots"] = _compute_board_rollup(state)["slots"]
+        return state
 
     board_state = _with_locked_supervision_state(resolved_state_path, _register_dispatched_slots, reset=reset_state)
     board_rollup = _compute_board_rollup(board_state)
 
+    handoff_watch_arg = f" --handoff-root {shlex.quote(str(handoff_root))}" if handoff_root else ""
     watchdog_tasks: list[dict[str, Any]] = []
     for rec in receipts:
         slot_id = _text(rec.get("slot_id"), "m2")
@@ -1976,7 +2208,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
             f"--state-file {shlex.quote(str(resolved_state_path))} "
             f"--watch-target {shlex.quote(slot_id)} "
-            f"--interval 15 --max-wait 2400 --json"
+            f"--interval 15 --max-wait 2400 --json{handoff_watch_arg}"
         )
         target_cli = {
             "tool": "bash",
@@ -2006,7 +2238,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
         f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
         f"--state-file {shlex.quote(str(resolved_state_path))} "
-        f"--interval 15 --max-wait 2400 --json"
+        f"--interval 15 --max-wait 2400 --json{handoff_watch_arg}"
     )
     payload: dict[str, Any] = {
         "ok": True,
@@ -2018,6 +2250,9 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         "cleanup_receipts": cleanup_receipts,
         "receipts": receipts,
         "watchdog_tasks": watchdog_tasks,
+        "unified_rollup_markdown": board_rollup["unified_rollup_markdown"],
+        "in_flight_details": board_rollup["in_flight_details"],
+        "wave_dependency_chain": board_rollup["wave_dependency_chain"],
         "board_rollup": board_rollup,
         "watchdog_cmd": watch_cmd,
         "watchdog_copilot_cli": {
@@ -2640,8 +2875,8 @@ def _classify_and_unblock_dialog(
 
 
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
-    lines = [line.rstrip() for line in _text(text).splitlines() if line.strip()]
-    return "\n".join(lines[-max_lines:])[:800]
+    lines = [re.sub(r"\s+", " ", line).strip(" ┃│") for line in _text(text).splitlines()]
+    return "\n".join([line for line in lines if re.search(r"\w", line)][-max_lines:])[-800:]
 
 
 def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner = _run_command, lines: int = 40) -> str:
@@ -2675,6 +2910,7 @@ def watch_dispatched_m2(
     apply_receipt: dict[str, Any] | None = None,
     watch_target: str = "",
     state_file: str | Path | None = None,
+    handoff_root: str | Path | None = None,
     interval: float = 15.0,
     max_wait: float = 2400.0,
     max_polls: int | None = None,
@@ -2753,6 +2989,8 @@ def watch_dispatched_m2(
                 "session_id": _text(rec.get("session_id") or target_ref),
                 "transport": transport,
                 "strict_receipt_identity": True,
+                **_slot_metadata(plan_match),
+                **_slot_metadata(rec),
                 "auto_unblock_enabled": target_unblock_enabled,
                 "cwd": _expand_cwd(rec.get("cwd") or plan_match.get("cwd")),
                 "status": "done" if transport == "stdout" else "unknown",
@@ -2794,6 +3032,7 @@ def watch_dispatched_m2(
                 "session_id": _text(pt.get("session_id") or target_ref),
                 "transport": transport,
                 "strict_receipt_identity": False,
+                **_slot_metadata(pt),
                 "auto_unblock_enabled": False,
                 "cwd": _expand_cwd(pt.get("cwd")),
                 "status": "done" if transport == "stdout" else "unknown",
@@ -2848,6 +3087,7 @@ def watch_dispatched_m2(
         if needs_dsh and effective_dsh_url:
             dsh_sessions, _ = discover_dsh(state_url=effective_dsh_url, token=dsh_token, fetcher=fetcher)
 
+        visible_by_ref: dict[str, str] = {}
         all_settled = True
         for item in monitored:
             if item["transport"] == "stdout":
@@ -2923,8 +3163,14 @@ def watch_dispatched_m2(
             visible = _read_herdr_visible(binary, item["target"] or item["pane_id"], runner=runner, lines=40)
             if not visible:
                 visible = _text(live.get("visible") or live.get("visible_text") or live.get("summary"))
+            visible_by_ref[item["target"] or item["pane_id"]] = visible
             if visible:
                 item["visible_summary"] = _summarize_visible_lines(visible)
+            item["terminal_title"] = _text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or item.get("terminal_title"))
+            _enrich_slot_metadata(item, handoff_root=handoff_root, scan_default=runner is _run_command)
+            tl_running = any(_text(rec.get("name")) == item.get("goal_tl") and _text(rec.get("agent_status") or rec.get("status")) in {"working", "running"} for rec in herdr_merged)
+            if status not in {"blocked", "needs_input"} and (_has_active_visible_tail(visible) or (item.get("handoff_in_progress") and tl_running)):
+                status = "working"
 
             if status in {"working", "running"}:
                 item["seen_working"] = True
@@ -2989,6 +3235,10 @@ def watch_dispatched_m2(
             item["needs_owner_attention"] = True
             item["blocked_reason"] = "target_missing_or_unreachable"
         target_reports.append({
+            **_slot_metadata(item),
+            "raw_status": item["status"],
+            "quiescent": item["status"] in {"idle", "done"},
+            "seen_working": item["seen_working"],
             "slot_id": item["slot_id"],
             "run_seq": item["run_seq"],
             "run_label": item["run_label"],
@@ -3035,6 +3285,10 @@ def watch_dispatched_m2(
                     "visible_summary": "",
                     "history": [],
                 })
+        for slot in slots:
+            source = next((item for item in all_monitored if item["slot_id"] == slot.get("slot_id") and int(item["run_seq"]) == int(slot.get("run_seq") or 1)), None)
+            if source:
+                slot.update(_slot_metadata(source))
         just_settled_slot_ids: list[str] = []
         for rep in target_reports:
             match_idx = _match_existing_slot_index(slots, rep, rep)
@@ -3051,6 +3305,9 @@ def watch_dispatched_m2(
                 rep["run_seq"] = existing_run_seq
                 rep["run_label"] = _text(existing.get("run_label") or rep["run_label"])
                 existing.update({
+                    **_slot_metadata(rep),
+                    "quiescent": rep["quiescent"],
+                    "seen_working": rep["seen_working"],
                     "target": _text(rep.get("target") or existing.get("target")),
                     "pane_id": _text(rep.get("pane_id") or existing.get("pane_id")),
                     "session_id": _text(rep.get("session_id") or existing.get("session_id")),
@@ -3068,6 +3325,9 @@ def watch_dispatched_m2(
                     just_settled_slot_ids.append(rep["slot_id"])
             else:
                 slots.append({
+                    **_slot_metadata(rep),
+                    "quiescent": rep["quiescent"],
+                    "seen_working": rep["seen_working"],
                     "slot_id": rep["slot_id"],
                     "base_label": rep["slot_id"],
                     "run_seq": rep["run_seq"],
@@ -3091,7 +3351,14 @@ def watch_dispatched_m2(
                 })
                 if rep["status"] in {"idle", "done"}:
                     just_settled_slot_ids.append(rep["slot_id"])
-        snap = _compute_board_rollup({"slots": slots}, just_settled_slots=just_settled_slot_ids)
+        state = _discover_and_enrich_global_m2_slots(
+            {"schema_version": 1, "slots": slots, "events": events}, agent_records=herdr_merged,
+            runner=runner, herdr_bin=binary, handoff_root=handoff_root,
+            protected_slots=[rep["slot_id"] for rep in target_reports if not rep.get("superseded_by_run_seq")],
+            visible_by_ref=visible_by_ref,
+        )
+        snap = _compute_board_rollup(state, just_settled_slots=just_settled_slot_ids)
+        slots = snap["slots"]
         events.append({
             "seq": len(events) + 1,
             "type": "watch_settled",
@@ -3147,7 +3414,11 @@ def watch_dispatched_m2(
             summary_lines.append(
                 f"- `{_text(cs.get('run_label'))}` (`{_text(cs.get('topic_id') or cs.get('slot_id'))}` → `{_text(cs.get('target'))}`): status=`{_text(cs.get('status'))}`{cs_tail}"
             )
+    summary_lines.extend(["", board_rollup["unified_rollup_markdown"]])
     return {
+        "unified_rollup_markdown": board_rollup["unified_rollup_markdown"],
+        "in_flight_details": board_rollup["in_flight_details"],
+        "wave_dependency_chain": board_rollup["wave_dependency_chain"],
         "ok": overall_ok,
         "plan_id": _text(plan.get("plan_id")),
         "watch_target": watch_filter,
@@ -3169,12 +3440,34 @@ def watch_dispatched_m2(
     }
 
 
+def supervision_status(
+    *, state_file: str | Path | None = None, plan_file: str | Path | None = None,
+    apply_receipt_file: str | Path | None = None, handoff_root: str | Path | None = None,
+    agent_records: list[dict[str, Any]] | None = None, herdr_bin: str | None = None,
+    runner: CommandRunner = _run_command, discover: bool = True,
+) -> dict[str, Any]:
+    state_path = _resolve_supervision_state_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file, persist_by_default=True)
+    binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    records = agent_records if agent_records is not None else (_live_agent_records(binary, runner=runner) if discover else [])
+
+    def refresh(state: dict[str, Any]) -> dict[str, Any]:
+        _discover_and_enrich_global_m2_slots(state, agent_records=records, runner=runner, herdr_bin=binary, handoff_root=handoff_root)
+        state["slots"] = _compute_board_rollup(state)["slots"]
+        return state
+
+    state = _with_locked_supervision_state(state_path, refresh)
+    board = _compute_board_rollup(state)
+    return {"ok": True, "supervision_state_path": str(state_path), **board, "board_rollup": board, "summary_markdown": board["unified_rollup_markdown"]}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plan and owner-gated dispatch for a unified M2 ingress")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true", help="build and print a dispatch preview")
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
+    mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
+    parser.add_argument("--handoff-root", help="Goal ledger root (default: M2_HANDOFF_ROOT or ~/Development/handoff)")
     parser.add_argument("--message")
     parser.add_argument("--message-file")
     parser.add_argument("--plan-file")
@@ -3252,13 +3545,20 @@ def main(argv: list[str] | None = None) -> int:
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url
             output: Any = plan if args.json else preview_text(plan)
+        elif args.status:
+            result = supervision_status(
+                state_file=args.state_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file,
+                handoff_root=args.handoff_root, herdr_bin=args.herdr_bin, discover=not args.no_herdr,
+                agent_records=_records(_json_value(args.herdr_agent_json or args.herdr_json)) if (args.herdr_agent_json or args.herdr_json) else None,
+            )
+            output = result if args.json else result["unified_rollup_markdown"]
         elif args.apply:
             if not args.plan_file:
                 raise RouterError("--apply requires --plan-file")
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, state_file=args.state_file, reset_state=args.reset_state, transport=args.transport)
+            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, state_file=args.state_file, reset_state=args.reset_state, handoff_root=args.handoff_root, agent_records=_records(_json_value(args.herdr_agent_json)) if args.herdr_agent_json else None, transport=args.transport)
         else:
             if not args.plan_file:
                 raise RouterError("--watch requires --plan-file")
@@ -3272,7 +3572,8 @@ def main(argv: list[str] | None = None) -> int:
                 plan,
                 apply_receipt=apply_receipt,
                 watch_target=args.watch_target,
-                state_file=args.state_file,
+                state_file=_resolve_supervision_state_path(args.state_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, apply_receipt=apply_receipt, persist_by_default=True),
+                handoff_root=args.handoff_root,
                 interval=args.interval,
                 max_wait=args.max_wait,
                 max_polls=args.max_polls,
