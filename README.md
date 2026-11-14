@@ -46,6 +46,13 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 `codebase-design`（含原 `domain-modeling`）衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；目录附上原始版权与许可文本。
 
+## 运维参考（非 marketplace 插件）
+
+[`NAS media-sync`](./skills/nas-smart-home/references/topology-and-backlog.md)
+记录夸克网盘到本地媒体库的定时增量下载合同。这里只发布脱敏的参考入口与服务说明；
+完整 `nas-smart-home` 技能及家庭设备拓扑保留在私有技能仓库，不作为本仓库可安装插件，
+也不要用公开参考入口覆盖既有私有技能安装。
+
 ## 安装
 
 Claude Code 使用 plugin marketplace：
