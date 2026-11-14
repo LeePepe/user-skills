@@ -157,7 +157,7 @@ def clauses(text):
         if scope == 'example':
             continue
         # Contrast and new imperative verbs start their own polarity scope.
-        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|\bwhile\b(?=\s+(?!\w+ing\b)[^,;.!?]*?\b(?:implements?|uses?|renders?|builds?|adds?|must|should|shall|is|are)\b)|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
+        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|\bwhile\b(?=\s+(?!\w+ing\b)(?:\b(?:react\s+dom|css\s+html|html|svg|css)\b|[^,;.!?]*?\b(?:implements?|uses?|renders?|builds?|adds?|must|should|shall|is|are)\b))|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
             clause = clause.strip().casefold()
             if clause:
                 yield clause
