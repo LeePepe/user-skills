@@ -1,6 +1,6 @@
 {
   "name": "howto",
-  "description": "howto skill",
+  "description": "梳理、细化、复盘、串联或新增个人与工作 How-To 流程的统一入口；复用 workflow-hub 节点图谱，保持 M2 五元组视角，并将 Jev/Falcon 判断、Skill 评测与 M1 细节实现按需路由。",
   "version": "1.0.0",
   "category": "workflow"
 }
