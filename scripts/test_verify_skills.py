@@ -2608,7 +2608,8 @@ class JevGateTests(unittest.TestCase):
             spec = self.specs[platform]
             for separator in (', whereas ', ' whereas ', ', while ', ' while '):
                 for directive in ('React DOM renders the native screen.', 'CSS HTML is used in native views.',
-                                  'React DOM powers the native screen.', 'CSS HTML supplies native views.'):
+                                  'React DOM powers the native screen.', 'CSS HTML supplies native views.',
+                                  'the native screen relies on React DOM.', 'native screens depend on CSS HTML.'):
                     with self.subTest(platform=platform, separator=separator, directive=directive):
                         errors = self.gate._platform_errors(platform, spec + '\nNever use SVG in native views' + separator + directive)
                         self.assertTrue(any('leaks Web primitives' in error for error in errors))
