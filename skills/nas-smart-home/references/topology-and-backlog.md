@@ -104,8 +104,11 @@ separate milestone from scheduler deployment.
    files beneath their mapped `library/tv/葬送的芙莉莲*` directory whose size is
    confirmed smaller than the corresponding remote file; preserve equal-size,
    unknown, or otherwise ambiguous files and all `绝望写手` files. Release the
-   lock before running `sync_to_library.sh` and confirm a successful round, not
-   a lock-held skip. Require every active `state=1` slot to contain `绝望写手S02`
+   lock before running `sync_to_library.sh` in the production container context
+   (`docker exec -w / quark-library-sync /volume1/docker/openlist/rclone/sync_to_library.sh`)
+   and confirm a successful round, not a lock-held skip. Direct unprivileged host
+   execution may fail on the root-owned lock; do not weaken its permissions.
+   Require every active `state=1` slot to contain `绝望写手S02`
    while its episodes remain, with `S03` and then Frieren submitted behind it;
    sample the same active task twice 10–15 seconds apart for progress growth,
    then require a second successful round to report `enqueued=0`. Record
