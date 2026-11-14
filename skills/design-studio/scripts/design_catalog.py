@@ -27,6 +27,9 @@ _nav_spec.loader.exec_module(NAVIGATION)
 _chooser_spec = importlib.util.spec_from_file_location('gallery_chooser', ROOT / 'scripts' / 'gallery_chooser.py')
 CHOOSER = importlib.util.module_from_spec(_chooser_spec)
 _chooser_spec.loader.exec_module(CHOOSER)
+_prompt_spec = importlib.util.spec_from_file_location('gallery_prompts', ROOT / 'scripts' / 'gallery_prompts.py')
+PROMPTS = importlib.util.module_from_spec(_prompt_spec)
+_prompt_spec.loader.exec_module(PROMPTS)
 DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
@@ -1380,7 +1383,7 @@ if(pockets.length){pocket(0);document.querySelector('#next-pocket').onclick=()=>
 const details=[...document.querySelectorAll('details')];details.forEach(item=>item.addEventListener('toggle',()=>{if(item.open)details.filter(other=>other!==item).forEach(other=>other.open=false);}));
 document.querySelector('#reset-view').onclick=()=>{if(tabs.length)activate(0);if(pockets.length)pocket(0);details.forEach((item,i)=>item.open=i===0);document.querySelector('#action-state').textContent='View reset';};
 document.querySelector('#continue').onclick=()=>document.querySelector('#action-state').textContent='Direction selected';
-if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) saturate(135%)');'''
+if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) blur(2.5px) saturate(135%)');'''
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
 <body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold} layout-{layout} whitespace-{whitespace} glass-{glass_geometry}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
@@ -1462,9 +1465,11 @@ def command_scaffold_app_nav(args):
         raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
     platform = 'desktop' if args.platform == 'macos' else args.platform
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
-    destination.mkdir(parents=True)
     manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
     _blog_manifest(args, manifest)
+    destination.mkdir(parents=True)
+    PROMPTS.write(destination, prompts)
     for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,platform,anti_patterns,overrides),encoding='utf-8')
     (destination/'current.html').write_text(_app_nav_html(schemes[0],0,platform,anti_patterns,overrides),encoding='utf-8')
     (destination/'tokens.css').write_text(_gallery_tokens(),encoding='utf-8')
@@ -1473,7 +1478,7 @@ def command_scaffold_app_nav(args):
     save(destination/'manifest.json', manifest)
     _mount_blog(destination, args, manifest)
     _update_goal_portal(destination.parent, args.goal, Path(manifest['blog_demo_dir']) if manifest.get('blog_demo_dir') else None)
-    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest, **{k: manifest[k] for k in ('blog_demo_dir','blog_demo_url') if k in manifest}},ensure_ascii=False,indent=2)); return 0
+    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':sum(p.is_file() for p in destination.rglob('*')),'manifest':manifest, **{k: manifest[k] for k in ('blog_demo_dir','blog_demo_url') if k in manifest}},ensure_ascii=False,indent=2)); return 0
 
 def command_scaffold_gallery(args):
     if getattr(args, 'mode', 'screen') == 'app-nav':
@@ -1487,7 +1492,6 @@ def command_scaffold_gallery(args):
     destination = _gallery_paths(args.goal, args.round, getattr(args, 'category', ''))
     if destination.is_symlink() or destination.exists():
         raise ValueError(f"gallery round already exists or is unsafe: {destination}")
-    destination.mkdir(parents=True, exist_ok=False)
     folds = ["accordion", "segmented-lens", "swwallet"]
     archetypes = [args.direction] if getattr(args, 'direction', '') else ["VS-005", "VS-006", "VS-007", "VS-008"]
     focal = ["next-action", "timeline", "context", "recovery"]
@@ -1505,7 +1509,10 @@ def command_scaffold_gallery(args):
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
     platform = 'desktop' if args.platform == 'macos' else args.platform
     manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
     _blog_manifest(args, manifest)
+    destination.mkdir(parents=True, exist_ok=False)
+    PROMPTS.write(destination, prompts)
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
     css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
@@ -1519,7 +1526,7 @@ def command_scaffold_gallery(args):
     _mount_blog(destination, args, manifest)
     save(destination / "manifest.json", manifest)
     _update_goal_portal(destination.parent, args.goal, Path(manifest['blog_demo_dir']) if manifest.get('blog_demo_dir') else None)
-    payload = {"gallery": str(destination), "files": 15, "manifest": manifest}
+    payload = {"gallery": str(destination), "files": sum(p.is_file() for p in destination.rglob('*')), "manifest": manifest}
     payload.update({key: manifest[key] for key in ("blog_demo_dir", "blog_demo_url") if key in manifest})
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -1792,6 +1799,7 @@ def parser():
     gallery.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     gallery.add_argument("--category", default="")
     gallery.add_argument("--category-title", default="")
+    gallery.add_argument("--prompts-dir", help="Directory of exact Designer-authored <variant>-prompt.md files; validated before writes")
     gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
     gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
     gallery.add_argument("--app-screens", default="", help="Domain inventory; requires --app-flows-json, never guessed architectures")

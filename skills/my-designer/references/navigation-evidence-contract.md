@@ -2,6 +2,11 @@
 
 Load for `scaffold-gallery --mode app-nav|screen --platform mobile|desktop|macos|web`, known-direction depth, `--category` portal aggregation, `jev-gate`, or structured Visual Traceback. These are handoff-only HTML explorations, never native production code. `scaffold-gallery` may mount a round to `~/Development/leepepe.github.io/demos/<goal>/` (or an explicit `--blog-repo`); use `--no-blog-mount` for isolated verification. Run `cleanup-demo --goal <goal>` immediately after B3 freeze or Goal completion to remove ephemeral blog and handoff rounds while preserving receipts.
 
+## Two-Stage Demo Pipeline and prompt binding
+
+Stage 1 **Designer** (`--role designer` → `magpie/group/designer`, Copilot `gpt-6.1-sol` + `grok-4.7`) authors TEN independent screen prompts or FOUR app-nav prompts, each specifying metaphor, single P0, P1/P2 folding, color/surface polarity, Liquid Glass optical parameters, inline SVG icons and anti-patterns. Stage 2 **Coding** (`--role writer` → `magpie/group/coding`) implements approved concrete HTML/CSS/JS, then production after Owner selection; Coding does not make the prototype design decisions. This only documents the upstream routing interface.
+`scaffold-gallery` writes `prompts/v01-prompt.md..v10-prompt.md` or `prompts/app01-prompt.md..app04-prompt.md`; `--prompts-dir <dir>` copies the exact expected UTF-8 files verbatim after validating the whole set (no missing/empty/symlink files or source-directory symlink). Manifest `prompt_file` and SHA-256 bind every candidate, never the current reference. `prompt_contract.source=starter|provided` is provenance, not design approval. Prompt Markdown is not rendered UI, and the deterministic CLI does not translate arbitrary prose into semantic layouts; Stage 2 implements that handoff explicitly.
+
 ## Bespoke full-app schemes
 
 Supply `--app-flows-json` (JSON or path) with `app_context` and exactly four `schemes`. Each scheme has a nonempty `navigation_model` label, `title`, `screens`, and a complete `architecture`. Labels never certify architecture. Custom labels are unrestricted; the operative primitives compose domain-specific hypotheses rather than four named app templates.
@@ -39,7 +44,7 @@ Action frequency controls disclosure: P0/P1 stay inline, P2 is collapsed behind 
 
 ## Material and geometry
 
-App HTML is self-contained. Content is always solid. Floating functional chrome uses the signed squircle Snell/Fresnel map, three chromatic displacement channels and CSS rims. Blink applies the SVG filter to the backdrop; WebKit does not support SVG backdrop filters and instead applies it to the caustic veil (`::before`) above solid content, with CSS Fresnel/chromatic rims and a blur backdrop. This documented fallback is not a claim of full optical equivalence to native Liquid Glass.
+App HTML and its round-local `tokens.css` keep content solid. Floating chrome uses the signed squircle Snell/Fresnel map, three chromatic displacement channels, blur/saturate and specular rims. Blink filters the backdrop; WebKit uses a soft ambient veil/rim and blur fallback, not native optical equivalence. Never use `.caustic-veil` repeating-linear-gradient zebra stripes or refract a striped overlay. No `.ruler` dashed debug boxes, Active / Matte bars, or duplicate inner platform/theme/viewport/selection controls; legitimate navigation/actions remain. `gallery_errors` inspects actual HTML/style nodes and linked local CSS (including imports), not benign prompt/prose prohibitions.
 
 Medium and large use explicit 45vh/80vh height and max-height, with a grabber and independently scrollable overlay. Mobile controls have minimum 44px dimensions; docks reserve safe-area padding. `surface=solid|warm|dark` and `density=regular|compact|airy` apply to chrome/content. Supported anti-patterns are `no glass on content`/`no content glass` (guaranteed) and `no top capsule`/`no top glass` (removes top floating material). Unknown anti-patterns/style keys reject rather than certify unimplemented preferences; `style_overrides.note` alone is inert.
 

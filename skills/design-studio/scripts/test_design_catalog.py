@@ -893,6 +893,122 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.assertIn("&lt;/script&gt;", screen)
 
 
+class PromptAndRenderedGuardTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('prompt_evidence_test', path)
+        cls.evidence = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.evidence)
+
+    def scaffold(self, directory, mode, *options):
+        return run('scaffold-gallery', '--goal', 'prompt-contract', '--round', '1', '--platform', 'web',
+                   '--mode', mode, *options, env=dict(os.environ, HOME=str(directory)))
+
+    def test_starter_and_supplied_prompts_bind_verbatim_and_mount(self):
+        import hashlib
+        for mode, prefix, count in (('screen', 'v', 10), ('app-nav', 'app', 4)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                root = Path(directory)
+                blog = root / 'blog'
+                result = self.scaffold(root, mode, '--blog-repo', str(blog))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                gallery = Path(output['gallery']); manifest = output['manifest']
+                self.assertEqual(manifest['prompt_contract']['source'], 'starter')
+                self.assertEqual(len(list((gallery / 'prompts').glob('*-prompt.md'))), count)
+                texts = []
+                for variant in manifest['variants']:
+                    relative = f'prompts/{variant["id"]}-prompt.md'
+                    self.assertEqual(variant['prompt_file'], relative)
+                    data = (gallery / relative).read_bytes()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), variant['prompt_sha256'])
+                    self.assertEqual(data, (blog / 'demos/prompt-contract/r1' / relative).read_bytes())
+                    text = data.decode('utf-8'); texts.append(text)
+                    for heading in ('Visual metaphor', 'Single P0', 'P1/P2 folding', 'Color and surface polarity', 'Liquid Glass optical parameters', 'Inline SVG', 'Explicit anti-patterns', 'Stage 2 handoff'):
+                        self.assertIn(heading, text)
+                    self.assertIn('NOT Designer-approved', text)
+                self.assertEqual(len(set(texts)), count)
+                metaphors = [text.split('## Visual metaphor\n', 1)[1].split('## Single P0', 1)[0].strip() for text in texts]
+                self.assertEqual(len(set(metaphors)), count)
+                self.assertEqual(output['files'], sum(p.is_file() for p in gallery.rglob('*')))
+                errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                self.assertEqual(errors, [])
+                # Preserve independently authored Unicode/CRLF bytes, including benign anti-pattern prose.
+                supplied = root / 'designer'; supplied.mkdir()
+                for i in range(1, count + 1):
+                    (supplied / f'{prefix}{i:02d}-prompt.md').write_bytes(f'# Independent {i}\r\nDesigner 意图 {i}: no .ruler or .caustic-veil repeating-linear-gradient.\r\n'.encode('utf-8'))
+                home = root / 'second-home'
+                result = self.scaffold(home, mode, '--prompts-dir', str(supplied), '--blog-repo', str(root / 'second-blog'))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout); gallery = Path(output['gallery']); manifest = output['manifest']
+                self.assertEqual(manifest['prompt_contract']['source'], 'provided')
+                for variant in manifest['variants']:
+                    expected_bytes = (supplied / Path(variant['prompt_file']).name).read_bytes()
+                    self.assertEqual((gallery / variant['prompt_file']).read_bytes(), expected_bytes)
+                    self.assertEqual((root / 'second-blog/demos/prompt-contract/r1' / variant['prompt_file']).read_bytes(), expected_bytes)
+                self.assertFalse((gallery / 'prompts/current-prompt.md').exists())
+                self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+                page = gallery / manifest['variants'][0]['prompt_file']
+                page.write_bytes(page.read_bytes() + b'modified')
+                self.assertTrue(any('prompt binding failed' in e for e in self.evidence.gallery_errors(gallery, manifest)[0]))
+
+    def test_invalid_prompt_sets_fail_before_gallery_or_blog_writes(self):
+        for mode, prefix, count in (('screen', 'v', 10), ('app-nav', 'app', 4)):
+            for invalid in ('missing', 'empty', 'non-utf8', 'file-symlink', 'directory-symlink'):
+                with self.subTest(mode=mode, invalid=invalid), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                    root = Path(directory); source = root / 'prompts'; source.mkdir()
+                    for i in range(1, count + 1):
+                        (source / f'{prefix}{i:02d}-prompt.md').write_text(f'Independent prompt {i}', encoding='utf-8')
+                    last = source / f'{prefix}{count:02d}-prompt.md'
+                    if invalid == 'missing': last.unlink()
+                    elif invalid == 'empty': last.write_text('   ', encoding='utf-8')
+                    elif invalid == 'non-utf8': last.write_bytes(b'\xff')
+                    elif invalid == 'file-symlink':
+                        last.unlink(); last.symlink_to(source / f'{prefix}01-prompt.md')
+                    else:
+                        link = root / 'linked'; link.symlink_to(source, target_is_directory=True); source = link
+                    result = self.scaffold(root, mode, '--prompts-dir', str(source), '--blog-repo', str(root / 'blog'))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((root / 'Development/handoff/prompt-contract').exists())
+                    self.assertFalse((root / 'blog').exists())
+
+    def test_rendered_html_and_linked_imported_css_reject_stripes_debug_and_inner_controls(self):
+        for mode in ('screen', 'app-nav'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                result = self.scaffold(directory, mode, '--no-blog-mount')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout); gallery = Path(output['gallery']); manifest = output['manifest']
+                page = gallery / (manifest['variants'][0]['id'] + '.html')
+                original = page.read_text(encoding='utf-8')
+                parsed = self.evidence.PageParser(original)
+                self.assertFalse(any(attrs.get('id') == 'responsive-toggle' for tag, attrs in parsed.nodes))
+                self.assertTrue(any(attrs.get('id') == 'toggle-tab' for tag, attrs in parsed.nodes) if mode == 'app-nav' else any(attrs.get('id') == 'continue' for tag, attrs in parsed.nodes))
+                attacks = [
+                    ('<style>.caustic-veil{background:repeating-linear-gradient(blue,white);filter:url(#apple-liquid-glass)}</style>', 'forbidden caustic-veil'),
+                    ('<div class="ruler" style="width:28px;height:28px;border:1px dashed">debug</div>', 'forbidden debug ruler'),
+                    ('<style>:root{--stripe:repeating-linear-gradient(blue,white)} .veil{background:var(--stripe);filter:url(#apple-liquid-glass)}</style>', 'forbidden refracted striped overlay'),
+                    ('<div class="caustic-veil" style="background:repeating-linear-gradient(blue,white)"></div>', 'forbidden caustic-veil'),
+                    ('<button>Active</button><button>Matte</button>', 'forbidden Active / Matte'),
+                    ('<button id="responsive-toggle">Mobile</button>', 'duplicate inner gallery control'),
+                ]
+                for extra, message in attacks:
+                    page.write_text(original.replace('</body>', extra + '</body>'), encoding='utf-8')
+                    errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                    self.assertTrue(any(message in e for e in errors), errors)
+                    self.assertTrue(any('canonical renderer' in e for e in errors), errors)
+                page.write_text(original + '<link rel="stylesheet" href="navigation.css">', encoding='utf-8')
+                (gallery / 'navigation.css').write_text('@import url("nested.css");', encoding='utf-8')
+                (gallery / 'nested.css').write_text('.caustic-veil {background:repeating-linear-gradient(blue,white)} .ruler{width:28px;height:28px;border:1px dashed}', encoding='utf-8')
+                errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                self.assertTrue(any('nested.css' in e and 'forbidden' in e for e in errors), errors)
+                (gallery / 'navigation.css').unlink(); (gallery / 'nested.css').unlink()
+                page.write_text(original.replace('</body>', '<p>Never use .ruler, Active / Matte, or .caustic-veil repeating-linear-gradient.</p></body>'), encoding='utf-8')
+                self.assertEqual(self.evidence.rendered_gallery_errors(gallery), [])
+                page.write_text(original, encoding='utf-8')
+                self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+
+
 class MultiplatformGalleryRegressionTests(unittest.TestCase):
     def test_all_platform_modes_render_canonical_live_bezels(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:

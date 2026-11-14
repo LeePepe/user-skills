@@ -166,6 +166,32 @@ class VerifySkillsTests(unittest.TestCase):
         for path in (SKILLS_DIR / "my-designer" / "SKILL.md", SKILLS_DIR / "design-studio" / "SKILL.md"):
             self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 130)
 
+    def test_two_stage_prompt_binding_and_linked_debug_css_gate(self) -> None:
+        catalog = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / 'designer'; source.mkdir()
+            for i in range(1, 5):
+                (source / f'app{i:02d}-prompt.md').write_bytes(f'# Independent {i}\r\nNever render .ruler or caustic stripes.\r\n'.encode())
+            env = dict(os.environ, HOME=directory)
+            result = subprocess.run([sys.executable, str(catalog), 'scaffold-gallery', '--goal', 'prompt-gate', '--round', '1', '--platform', 'web', '--mode', 'app-nav', '--prompts-dir', str(source), '--no-blog-mount'], env=env, capture_output=True, text=True, check=True)
+            payload = json.loads(result.stdout); gallery = Path(payload['gallery'])
+            for variant in payload['manifest']['variants']:
+                self.assertEqual((gallery / variant['prompt_file']).read_bytes(), (source / (variant['id'] + '-prompt.md')).read_bytes())
+            command = [sys.executable, str(gate), 'jev-gate', '--platform', 'web', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev']
+            accepted = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            html = gallery / 'app01.html'
+            html.write_text(html.read_text() + '<link rel="stylesheet" href="debug.css">', encoding='utf-8')
+            (gallery / 'debug.css').write_text('.ruler { width:28px; height:28px; border:1px dashed }', encoding='utf-8')
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertTrue(any('debug.css' in e and 'forbidden debug ruler' in e for e in json.loads(rejected.stdout)['errors']))
+        for name in ('SKILL.md', 'references/interaction-layering.md', 'references/design-flow-architecture.md', 'references/navigation-evidence-contract.md'):
+            text = (SKILLS_DIR / 'my-designer' / name).read_text(encoding='utf-8')
+            self.assertIn('magpie/group/designer', text); self.assertIn('magpie/group/coding', text)
+            self.assertLessEqual(len(text.splitlines()), 120 if name.endswith('design-flow-architecture.md') else 130)
+
     def test_macos_route_normalizes_to_desktop(self) -> None:
         result = subprocess.run([sys.executable, str(SKILLS_DIR / "my-designer/scripts/verify_design_cases.py"), "route", "--platform", "macos", "--dimensions", "layout-navigation"], capture_output=True, text=True, check=True)
         payload = json.loads(result.stdout)

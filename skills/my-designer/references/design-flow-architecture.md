@@ -15,7 +15,10 @@ This document defines the unified architecture connecting **Entry A (Ingest & St
 
 ---
 
-## 2. Change Impact Matrix (Where New Knowledge Must Land)
+## 2. Two-Stage Demo Pipeline & Change Impact
+
+Stage 1 **Designer** (`--role designer` → `magpie/group/designer`, Copilot `gpt-6.1-sol` + `grok-4.7`) authors TEN independent screen prompts or FOUR app-nav prompts: each owns a metaphor, one P0, P1/P2 folding, color/surface polarity, Liquid Glass optical parameters, inline SVG icons and anti-patterns. Stage 2 **Coding** (`--role writer` → `magpie/group/coding`) implements the approved HTML/CSS/JS, then production code after selection; Coding does not own ideation. Routing/config implementation is upstream and out of this skill's scope.
+`scaffold-gallery [--prompts-dir <dir>]` binds exact `prompts/v01-prompt.md..v10-prompt.md` or `prompts/app01-prompt.md..app04-prompt.md` via manifest `prompt_file`. Default scaffolds are independently useful but unapproved starters; the CLI does not semantically compile arbitrary prose. Outer choosers own gallery/theme/viewport controls; sub-pages prohibit caustic repeating stripes, rulers and Active / Matte debug bars.
 
 Whenever new external knowledge, inspirations, or defects arrive, follow this exact promotion table instead of bloating `SKILL.md`:
 

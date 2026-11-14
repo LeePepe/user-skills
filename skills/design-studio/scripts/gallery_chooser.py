@@ -18,13 +18,16 @@ def cards_for(manifest, prefix='', reference=True):
         result.append(dict(common, id='current', title='Current reference', pills=['Reference'],
                            src=prefix + 'current.html', reference=True))
     for variant in manifest['variants']:
+        if variant.get('prompt_file') is not None and variant['prompt_file'] != f'prompts/{variant["id"]}-prompt.md':
+            raise ValueError('unsafe variant prompt_file')
         if manifest.get('mode') == 'app-nav':
             scheme = next(s for s in manifest['schemes'] if s['id'] == variant['id'])
             pills = [variant['navigation_model'], scheme['architecture']['kind']]
         else:
             pills = [variant['p0'], variant['axis_y'], variant['archetype']]
         result.append(dict(common, id=variant['id'], title=variant.get('title', variant['id']),
-                           pills=pills, src=prefix + variant['id'] + '.html', reference=False))
+                           pills=pills, src=prefix + variant['id'] + '.html', reference=False,
+                           prompt=prefix + variant['prompt_file'] if variant.get('prompt_file') else ''))
     return result
 
 
@@ -50,9 +53,10 @@ def card_html(card):
 <label><input type="checkbox" data-star="{attr(card['id'])}"> STAR</label></div>
 <textarea data-note="{attr(card['id'])}" aria-label="{attr(card['id'])} Notes" placeholder="Notes"></textarea>'''
     current_class = ' current-card' if card['reference'] else ''
+    prompt_link = f'<a class="prompt-link" target="_blank" rel="noopener" href="{attr(card["prompt"])}">Design prompt</a>' if card.get('prompt') else ''
     return f'''<article class="variant-card{current_class}" data-group="{attr(card['category'])}" data-round="{card['round']}" data-variant="{attr(card['id'])}" data-platform="{card['platform']}">
 <header><span class="variant-badge">{attr(card['id'])}</span><strong>{attr(card['title'])}</strong>{pills}
-<a target="_blank" rel="noopener" href="{attr(card['src'])}">↗ 全屏打开</a></header>
+<a target="_blank" rel="noopener" href="{attr(card['src'])}">↗ 全屏打开</a>{prompt_link}</header>
 <div class="device-bezel" data-frame-mode="{card['platform']}" style="--frame-width:{width}px;--frame-height:{height}px;--preview-scale:{scale}">
 <div class="device-window">{chrome}<iframe loading="eager" src="{attr(card['src'])}" title="{attr(card['title'])}"></iframe>{home}</div></div>
 {controls}</article>'''
