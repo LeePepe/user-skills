@@ -121,6 +121,27 @@ class AppNavigationGraphTests(unittest.TestCase):
             self.assertEqual([x["screens"][0]["id"] for x in data["manifest"]["schemes"]], ["start0", "start1", "start2", "start3"])
 
 
+class AppNavigationBehaviorTests(unittest.TestCase):
+    def test_graph_schema_rejects_unknown_transition_and_preserves_domain_constraints(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            flow = Path(directory) / 'invalid.json'
+            flow.write_text(json.dumps({'schemes': [
+                {'screens': [{'id': 'home', 'name': 'Home', 'transitions': [{'type': 'bogus', 'to': 'missing'}]}, {'id': 'other'}]}
+            ] * 4}), encoding='utf-8')
+            result = run('scaffold-gallery', '--goal', 'invalid-%d' % os.getpid(), '--round', '1', '--platform', 'mobile', '--mode', 'app-nav', '--app-flows-json', str(flow))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('invalid transition', result.stderr)
+
+    def test_known_direction_consumes_content(self):
+        result = run('scaffold-gallery', '--goal', 'known-%d' % os.getpid(), '--round', '1', '--platform', 'mobile', '--direction', 'VS-007', '--screen-content', 'Transcript timeline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        gallery = Path(json.loads(result.stdout)['gallery'])
+        self.addCleanup(lambda: __import__('shutil').rmtree(gallery.parent, ignore_errors=True))
+        manifest = json.loads((gallery / 'manifest.json').read_text())
+        self.assertEqual({v['archetype'] for v in manifest['variants']}, {'VS-007'})
+        self.assertIn('Transcript timeline', (gallery / 'v01.html').read_text())
+
+
 class IngestTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT)

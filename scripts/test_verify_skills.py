@@ -2571,6 +2571,30 @@ try {
 
 
 class JevGateTests(unittest.TestCase):
+    def test_absent_jev_fails_closed(self):
+        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
+        spec = SKILLS_DIR / 'my-designer' / 'references' / 'interaction-layering.md'
+        result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(spec)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('REJECT_REVISE', result.stdout)
+
+    def test_boolean_and_incomplete_jev_fail(self):
+        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
+        spec = SKILLS_DIR / 'my-designer' / 'references' / 'interaction-layering.md'
+        for response in ('{"score":true}', '{"score":1}'):
+            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(spec), '--mock-jev-json', response], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, response)
+
+    def test_platform_firewall_and_traceback_attribution(self):
+        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
+        with tempfile.TemporaryDirectory() as directory:
+            bad = Path(directory) / 'bad.md'; bad.write_text('Axis X: single P0.\\nAxis Y: React DOM HTML.\\nAxis Z: content glass.')
+            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(bad), '--no-jev'], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            wrong = Path(directory) / 'wrong.md'; wrong.write_text('[SPEC_GAP] The implementation omitted the declared 44pt target; fix the implementation.')
+            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'traceback', '--spec-file', str(wrong), '--no-jev'], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_negative_mock_jev_rejects_closed(self):
         script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
         result = subprocess.run([sys.executable, str(script), "jev-gate", "--platform", "desktop", "--stage", "traceback", "--spec-file", str(SKILLS_DIR / "my-designer" / "SKILL.md"), "--mock-jev-json", '{"score": -1}'], capture_output=True, text=True)
