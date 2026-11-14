@@ -40,6 +40,8 @@ Minimal architecture fragment (provide screens/actions and four complete schemes
 
 `--app-screens` or `--app-context` alone is rejected: Designer must supply the operative domain schemes, not ask the scaffolder to invent journeys. A no-input smoke call supplies overridable starter schemes only. Unknown/missing architecture, invalid targets/roles/actions and label-only orthogonality reject before writing.
 
+**STRICT ANTI-FABRICATION RED-LINE:** Never invent fake screens or product features to pad route graphs (including `voice_notes`, `todo_detail`, `runner_status`, or extra history libraries). Every scheme is bounded to the App's declared real inventory, even when it has only 2–3 layers such as Recorder ⇄ Todo ⇄ Settings. Optional `initial_state` must reference declared content/overlay screens, valid history, supported detents, available overflow, and real transitions; generated showcase states must be reachable and distinct. Rendered HTML uses production copy only: sandbox disclaimers and internal ready/empty/stale/failed state `<select>` controls are rejected. Prompt files must not repeat >20% of non-heading paragraphs, and screen variants must expose ten distinct DOM morphologies.
+
 Action frequency controls disclosure: P0/P1 stay inline, P2 is collapsed behind details, P3 content actions must be routed through the declared overflow; overlay actions remain accessible. Action commits update domain counters and visible lists, and feedback survives navigation and overlay dismissal for the current sandbox session. Tabs restore their own pushed screen/history; Back never consumes another tab's history. Sheet and popover actions use the same dispatcher as content and chrome.
 
 ## Material and geometry

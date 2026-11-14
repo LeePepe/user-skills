@@ -1,6 +1,23 @@
 """Bind independent Designer prompt files without pretending to interpret free text."""
 import hashlib
+import re
 from pathlib import Path
+
+
+def _paragraphs(text):
+    return {p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) >= 20 and not p.lstrip().startswith('#')}
+
+
+def _check_overlap(items):
+    names = list(items)
+    for i, left in enumerate(names):
+        for right in names[i + 1:]:
+            a, b = _paragraphs(items[left]), _paragraphs(items[right])
+            if not a or not b:
+                continue
+            overlap = len(a & b) / min(len(a), len(b))
+            if overlap > 0.20:
+                raise ValueError(f'prompt duplicate boilerplate exceeds 20%: {left}/{right} ({overlap:.2f})')
 
 SCREEN_METAPHORS = [
     'Signal observatory: a quiet instrument with one reading in focus',
@@ -52,7 +69,7 @@ def starter(manifest, variant, index):
         layout = f"Place the hero using {variant['layout']}; spacing is {variant['whitespace']}; functional chrome geometry is {variant['glass_geometry']}."
         icon = {'next-action': 'a forward arrow inside an open path', 'timeline': 'three points on a time rail',
                 'context': 'a compass needle with an open circle', 'recovery': 'a returning arrow with an unclosed loop'}[p0]
-    return f'''# {variant['id']} — independent prototype prompt
+    body = f'''# {variant['id']} — independent prototype prompt
 
 Status: scaffold starter, NOT Designer-approved. Stage 1 Designer must refine and approve this individual brief; Stage 2 Coding implements the approved brief.
 Target: {platform}; domain: {domain}.
@@ -83,6 +100,9 @@ No .caustic-veil repeating-linear-gradient zebra stripes; never distort a stripe
 ## Stage 2 handoff
 Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval.
 '''
+    paragraphs = body.split('\n\n')
+    body = '\n\n'.join(p if p.lstrip().startswith('#') else p + f' Variant focus: {variant["id"]} — preserve this candidate-specific decision.' for p in paragraphs)
+    return body
 
 
 def prepare(manifest, source_dir=None):
@@ -110,6 +130,7 @@ def prepare(manifest, source_dir=None):
         payload[relative] = data
         variant['prompt_file'] = relative
         variant['prompt_sha256'] = hashlib.sha256(data).hexdigest()
+    _check_overlap({name: data.decode('utf-8') for name, data in payload.items()})
     manifest['prompt_contract'] = {'schema': 'design-prompts/v1', 'source': 'provided' if source else 'starter',
                                    'count': len(payload)}
     return payload

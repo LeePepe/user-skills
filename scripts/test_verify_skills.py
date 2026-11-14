@@ -3198,6 +3198,19 @@ class SkillContractV2Tests(unittest.TestCase):
         payload = json.loads(routed.stdout)
         self.assertEqual(payload["precision"], 1.0); self.assertEqual(payload["recall"], 1.0)
 
+    def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
+        evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
+        spec = importlib.util.spec_from_file_location("navigation_evidence", evidence_path)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad.html").write_text(
+                '<main><p>演示数据</p><select><option>ready</option></select></main>', encoding="utf-8"
+            )
+            errors = module.rendered_gallery_errors(root)
+            self.assertTrue(any("meta-disclaimer" in error for error in errors))
+            self.assertTrue(any("test-state select" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

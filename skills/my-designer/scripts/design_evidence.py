@@ -137,7 +137,13 @@ def rendered_gallery_errors(root):
             errors.append(f'unsafe rendered HTML: {path.name}')
             continue
         try:
-            surface = RenderedSurface(path.read_text(encoding='utf-8'))
+            html = path.read_text(encoding='utf-8')
+            visible = re.sub(r'<(?:script|style)\b[^>]*>.*?</(?:script|style)>', ' ', html, flags=re.I | re.S)
+            if re.search(r'(?:演示数据|非实时|模拟|示意阶段|非已证实失败|非成功/失败证明|仅在本页模拟|确认模拟|synthetic|demo only|mock data|placeholder stage)', visible, re.I):
+                errors.append(f'{path.name}: sandbox/meta-disclaimer copy is forbidden')
+            if re.search(r'<select\b[^>]*>.*?(?:ready|empty|stale|failed|loading|error|simulated).*?</select>', html, re.I | re.S):
+                errors.append(f'{path.name}: inline test-state select is forbidden')
+            surface = RenderedSurface(html)
             for tag, attrs in surface.nodes:
                 classes = set(attrs.get('class', '').split())
                 if classes & {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'} or attrs.get('id') in {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'}:
@@ -157,6 +163,10 @@ def rendered_gallery_errors(root):
     return errors
 
 
+def _prompt_paragraphs(text):
+    return {p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) >= 20 and not p.lstrip().startswith('#')}
+
+
 def prompt_errors(root, manifest):
     contract = manifest.get('prompt_contract')
     variants = manifest.get('variants', [])
@@ -165,6 +175,7 @@ def prompt_errors(root, manifest):
     if not isinstance(contract, dict) or contract.get('schema') != 'design-prompts/v1' or contract.get('source') not in {'starter', 'provided'} or contract.get('count') != len(variants):
         return ['invalid prompt_contract']
     errors = []
+    prompt_texts = {}
     for variant in variants:
         identifier = variant.get('id', '')
         expected = f'prompts/{identifier}-prompt.md'
@@ -176,10 +187,18 @@ def prompt_errors(root, manifest):
             if (root / 'prompts').is_symlink() or path.is_symlink() or not path.is_file():
                 raise ValueError('missing or unsafe prompt file')
             data = path.read_bytes()
-            if not data.decode('utf-8').strip() or hashlib.sha256(data).hexdigest() != variant.get('prompt_sha256'):
+            text = data.decode('utf-8')
+            if not text.strip() or hashlib.sha256(data).hexdigest() != variant.get('prompt_sha256'):
                 raise ValueError('empty or modified prompt file')
+            prompt_texts[identifier] = text
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f'{identifier}: prompt binding failed: {error}')
+    for left, right in itertools.combinations(prompt_texts, 2):
+        a, b = _prompt_paragraphs(prompt_texts[left]), _prompt_paragraphs(prompt_texts[right])
+        if a and b:
+            overlap = len(a & b) / min(len(a), len(b))
+            if overlap > 0.20:
+                errors.append(f'{left}/{right}: prompt duplicate boilerplate exceeds 20% ({overlap:.2f})')
     return errors
 
 
@@ -237,6 +256,14 @@ def gallery_errors(root, manifest):
                 errors.append('manifest variant summaries do not match operative schemes')
             if len({c.NAVIGATION.architecture_signature(s) for s in normalized}) != 4:
                 errors.append('app-nav architectures differ only in labels')
+            initial_signatures = {(s['architecture']['initial_state']['active_screen'],
+                                  tuple(s['architecture']['initial_state']['history']),
+                                  s['architecture']['initial_state']['overlay'],
+                                  s['architecture']['initial_state']['detent'],
+                                  s['architecture']['initial_state']['overflow_open'],
+                                  s['architecture']['initial_state']['title_collapsed']) for s in normalized}
+            if len(initial_signatures) < 3:
+                errors.append('app-nav schemes need at least three distinct initial states')
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))
