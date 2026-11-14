@@ -1,6 +1,6 @@
 ---
 name: skill-contract
-description: "Meta-skill for creating, refining, and auditing progressive-disclosure skill packages."
+description: "Meta-skill for creating, refining, auditing, and evaluating progressive-disclosure skill contracts and package drawers."
 allowed-tools: Read, Write, Edit, Bash
 ---
 
@@ -24,6 +24,6 @@ python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill
 python3 skills/skill-contract/scripts/skill_contract.py sync-jev-stars --skill <skill> [--db-path <sqlite>] [--dry-run]
 ```
 
-`audit` enforces S1/S2/S3 sharing checks: broken symlinks, cross-skill orphan references, and duplicate script forks. `description-eval` checks trigger and near-miss queries from `trigger_evals`; `negative_cmd` verifies expected command failures. `sync-jev-stars` imports synthetic or Falcon starred decisions idempotently and evicts the oldest non-star case when the active cap is full.
+`audit` enforces S1/S2/S3 sharing checks: broken symlinks, explicit cross-skill orphan references, and duplicate script forks. `description-eval` reports precision/recall for `trigger_evals`; `--mock-jev-json` accepts inline JSON or a file keyed by case id, query, or 1-based index, with boolean or `choice`/`noul` answers. Without a valid mock it uses bounded Jev when available, then a deterministic fallback. `negative_cmd` rejects launch failures and validates nonzero or exact exits plus optional output. `sync-jev-stars` imports deduplicated synthetic/Falcon decisions idempotently, preserves state/questions/answers, validates an executable file or safe `--cmd-template` assertion, shows the same plan in `--dry-run`, and evicts only the oldest ordinary case at the 15-case cap; saturated golden cases are skipped.
 
 Read [valves-and-metabolism.md](references/valves-and-metabolism.md) for repo-bound governance and drawer details. Keep deep procedures in references and deterministic gates in scripts.
