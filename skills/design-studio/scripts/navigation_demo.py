@@ -83,7 +83,7 @@ def validate_scheme(scheme, index, context):
             commit = a.get('commit')
             if commit is not None and (not isinstance(commit, str) or not commit.strip()):
                 raise ValueError('commit must be a nonempty domain key')
-            t = a.get('transition', transitions[i] if i < len(transitions) else None)
+            t = a.get('transition', transitions[i] if isinstance(action, str) and i < len(transitions) else None)
             normalized.append({'label': a['label'], 'frequency': frequency, 'commit': commit,
                                'transition': _edge(t, ids, roles) if t is not None else None})
         clean.append({'id': p['id'], 'name': str(p.get('name', p.get('title', p['id']))),
@@ -138,18 +138,37 @@ def validate_scheme(scheme, index, context):
 
 def architecture_signature(scheme):
     a = scheme['architecture']
-    positions = {p['id']: i for i, p in enumerate(scheme['screens'])}
-    def edge(t):
-        return (t['type'], positions.get(t.get('to'))) if t else None
+    pages = {p['id']: p for p in scheme['screens']}
+    def walk(seeds):
+        order = list(dict.fromkeys(s for s in seeds if s is not None))
+        seen = set(order)
+        for screen in order:
+            p = pages[screen]
+            for t in [action['transition'] for action in p['actions']] + p['transitions']:
+                target = t.get('to') if t else None
+                if target is not None and target not in seen:
+                    seen.add(target)
+                    order.append(target)
+        return order
+    def graph(order):
+        positions = {screen: i for i, screen in enumerate(order)}
+        def edge(t):
+            return (t['type'], positions.get(t.get('to'))) if t else None
+        return tuple((pages[s]['role'] if pages[s]['role'] in {'sheet', 'popover'} else 'content',
+                      tuple((action['frequency'], bool(action['commit']), edge(action['transition'])) for action in pages[s]['actions']),
+                      tuple(edge(t) for t in pages[s]['transitions'])) for s in order)
+    # Ordered chrome and edges, not backing record order, assign canonical IDs.
+    order = walk([a['root'], *a['destinations'], a['primary']['screen'], a['sheet'],
+                  *(r['screen'] for r in a['overflow'])])
+    positions = {screen: i for i, screen in enumerate(order)}
     def reference(r):
         return (positions[r['screen']], r['action'])
-    graph = tuple((p['role'] if p['role'] in {'sheet', 'popover'} else 'content',
-                   tuple((action['frequency'], bool(action['commit']), edge(action['transition'])) for action in p['actions']),
-                   tuple(edge(t) for t in p['transitions'])) for p in scheme['screens'])
-    # Renaming screen IDs/model/role labels is not a new architecture. Compare
-    # executable topology, action disclosure, commit operations and chrome entry.
+    # Retain unreferenced graph components as an order-independent multiset of
+    # rooted, ordered traversals; no label-based sorting or permutation search.
+    detached = tuple(sorted((graph(walk([*order, s])) for s in pages if s not in positions), key=json.dumps))
     return (a['kind'], tuple(positions[d] for d in a['destinations']), positions[a['root']],
-            a['collapse_title'], reference(a['primary']), tuple(reference(r) for r in a['overflow']), graph)
+            a['collapse_title'], reference(a['primary']), tuple(reference(r) for r in a['overflow']),
+            positions.get(a['sheet']), graph(order), detached)
 
 
 def load_schemes(args):

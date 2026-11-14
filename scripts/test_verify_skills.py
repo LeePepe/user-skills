@@ -2601,6 +2601,63 @@ class JevGateTests(unittest.TestCase):
         for separator in ('; ', ', ', '. ', ' but ', ' and '):
             self.assertTrue(g._platform_errors('mobile', self.specs['mobile'] + '\nNever use feDisplacementMap' + separator + 'implement React DOM and CSS HTML.'))
 
+    def test_native_contrast_clauses_and_temporal_while_keep_independent_polarity(self):
+        for platform in ('mobile', 'desktop'):
+            spec = self.specs[platform]
+            for separator in (', whereas ', ' whereas ', ', while ', ' while '):
+                for directive in ('React DOM renders the native screen.', 'CSS HTML is used in native views.'):
+                    with self.subTest(platform=platform, separator=separator, directive=directive):
+                        errors = self.gate._platform_errors(platform, spec + '\nNever use SVG in native views' + separator + directive)
+                        self.assertTrue(any('leaks Web primitives' in error for error in errors))
+                self.assertEqual(self.gate._platform_errors(platform, spec + '\nNever use SVG' + separator + 'never use React DOM or CSS HTML.'), [])
+            for temporal in ('Never use SVG while rendering HTML sandbox examples.',
+                             'Never use CSS HTML while migrating native views.',
+                             'Avoid SVG while inspecting CSS HTML migration examples.'):
+                with self.subTest(platform=platform, temporal=temporal):
+                    self.assertEqual(self.gate._platform_errors(platform, spec + '\n' + temporal), [])
+
+    def test_total_deadline_stops_trickled_headers_and_body_io(self):
+        import http.server
+        import threading
+        import time
+        from unittest import mock
+        disconnected = threading.Event()
+        writes = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                encoded = json.dumps({q: {'noul': 1} for q in body['questions']}).encode()
+                try:
+                    self.wfile.write(b'HTTP/1.0 200 OK\r\n')
+                    if body['state']['phase'] == 'headers':
+                        for i in range(12):
+                            self.wfile.write(f'X-Delay-{i}: ready\r\n'.encode()); self.wfile.flush()
+                            writes.append(i); time.sleep(.035)
+                    self.wfile.write(f'Content-Length: {len(encoded)}\r\n\r\n'.encode()); self.wfile.flush()
+                    if body['state']['phase'] == 'body':
+                        for byte in encoded:
+                            self.wfile.write(bytes([byte])); self.wfile.flush()
+                            writes.append(byte); time.sleep(.035)
+                    else: self.wfile.write(encoded)
+                except (BrokenPipeError, ConnectionResetError): disconnected.set()
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/v1/systemone'
+        try:
+            with mock.patch.object(self.gate.JEV, '_auth', return_value=(None, None)):
+                for phase in ('headers', 'body'):
+                    disconnected.clear(); writes.clear()
+                    start = time.monotonic()
+                    with self.assertRaises(OSError):
+                        self.gate.JEV.live_response(url, .1, {'evidence': [{'spec_text': self.specs['mobile']}], 'phase': phase},
+                                                    self.gate.TAXONOMY['jev_verification_gates']['mobile'])
+                    self.assertLess(time.monotonic() - start, .25, phase)
+                    self.assertTrue(disconnected.wait(.3), 'deadline must close actual network I/O')
+                    self.assertLess(len(writes), 12, phase)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_required_answers_truth_table_and_final_structural_rejection(self):
         import types
         g = self.gate
@@ -2660,6 +2717,8 @@ class JevGateTests(unittest.TestCase):
                 self.assertEqual(set(requests[0][1]['questions']), set(questions))
                 self.assertEqual(requests[0][1]['state'], state)
                 self.assertTrue(all(q['type'] == 'noul' and q['criteria'] for q in requests[0][1]['questions'].values()))
+                response = g.JEV.live_response(url.replace('127.0.0.1', 'LOCALHOST'), .5, state, questions)
+                self.assertEqual(g.JEV.validate_response(response, questions, 'live')['status'], 'PASS')
                 response = g.JEV.live_response(url, .5, dict(state, missing=True), questions)
                 self.assertEqual(g.JEV.validate_response(response, questions, 'live')['status'], 'REJECT_REVISE')
                 with self.assertRaises(OSError): g.JEV.live_response(url, .01, dict(state, slow=True), questions)

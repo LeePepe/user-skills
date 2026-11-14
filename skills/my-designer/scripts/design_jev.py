@@ -1,8 +1,10 @@
 """Bounded loopback SystemOne evaluator; never certifies absent evidence."""
+import http.client
 import ipaddress
 import json
 import math
 import os
+import socket
 import time
 from pathlib import Path
 import urllib.error
@@ -75,6 +77,61 @@ def _auth():
     return token or source, source
 
 
+class _DeadlineSocket(socket.socket):
+    def __init__(self, family, deadline):
+        super().__init__(family, socket.SOCK_STREAM)
+        self.deadline = deadline
+
+    def _bound(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('SystemOne total response deadline exceeded')
+        self.settimeout(remaining)
+
+    def connect(self, address):
+        self._bound()
+        return super().connect(address)
+
+    def sendall(self, data, flags=0):
+        self._bound()
+        return super().sendall(data, flags)
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        # Buffered status/header readline calls SocketIO.recv_into repeatedly.
+        # Rebound each actual receive, so trickled bytes cannot renew the budget.
+        self._bound()
+        return super().recv_into(buffer, nbytes, flags)
+
+
+class _DeadlineConnection(http.client.HTTPConnection):
+    def __init__(self, host, deadline, **kwargs):
+        super().__init__(host, **kwargs)
+        self.deadline = deadline
+
+    def connect(self):
+        # The authorized localhost alias needs no potentially unbounded DNS.
+        hosts = ('127.0.0.1', '::1') if self.host.casefold() == 'localhost' else (self.host,)
+        for host in hosts:
+            sock = _DeadlineSocket(socket.AF_INET6 if ':' in host else socket.AF_INET, self.deadline)
+            try:
+                sock.connect((host, self.port))
+                self.sock = sock
+                return
+            except OSError:
+                sock.close()
+                if host == hosts[-1]:
+                    raise
+
+
+class _DeadlineHandler(urllib.request.HTTPHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self.deadline = deadline
+
+    def http_open(self, request):
+        return self.do_open(lambda host, **kwargs: _DeadlineConnection(host, self.deadline, **kwargs), request)
+
+
 def live_response(url, timeout, state, questions):
     parsed = urllib.parse.urlsplit(url)
     try:
@@ -97,8 +154,8 @@ def live_response(url, timeout, state, questions):
     if source: headers['X-Falcon-Source-Key'] = source
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method='POST')
     # Ignore ambient proxies: evidence never leaves the loopback client path.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     deadline = time.monotonic() + timeout
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), _DeadlineHandler(deadline))
     chunks, length = [], 0
     with opener.open(request, timeout=timeout) as response:
         sock = response.fp.raw._sock

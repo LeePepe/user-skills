@@ -104,6 +104,38 @@ class DesignCatalogTests(unittest.TestCase):
 
 
 class AppNavigationGraphTests(unittest.TestCase):
+    def test_screen_declaration_order_and_renaming_do_not_create_architectures(self):
+        import copy
+        import itertools
+        navigation = DESIGN_CATALOG.NAVIGATION
+        original = navigation.starter_schemes('Voice notes')[0]
+        original['screens'].append({'id': 'unused', 'name': 'Unused', 'actions': []})
+        expected = navigation.architecture_signature(navigation.validate_scheme(original, 1, 'Voice notes'))
+        clones = []
+        for order in itertools.permutations(range(len(original['screens']))):
+            scheme = copy.deepcopy(original)
+            scheme['screens'] = [scheme['screens'][i] for i in order]
+            ids = {p['id']: 'renamed-' + p['id'] for p in scheme['screens']}
+            def rename(value):
+                if isinstance(value, dict): return {k: rename(v) for k, v in value.items()}
+                if isinstance(value, list): return [rename(v) for v in value]
+                return ids.get(value, value) if isinstance(value, str) else value
+            scheme = rename(scheme)
+            self.assertEqual(navigation.architecture_signature(navigation.validate_scheme(scheme, 1, 'Voice notes')), expected)
+            if len(clones) < 4: clones.append(scheme)
+        with self.assertRaisesRegex(ValueError, 'four operative architectures must differ'):
+            DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': clones})))
+        for change in ('destination-order', 'action-order', 'operation'):
+            scheme = copy.deepcopy(original)
+            if change == 'destination-order': scheme['architecture']['destinations'].reverse()
+            elif change == 'action-order':
+                scheme['screens'][0]['actions'].append({'label': 'Capture directly', 'frequency': 'P0', 'commit': 'captured'})
+                before = navigation.architecture_signature(navigation.validate_scheme(scheme, 1, 'Voice notes'))
+                scheme['screens'][0]['actions'].reverse()
+            else: scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+            with self.subTest(change=change):
+                self.assertNotEqual(navigation.architecture_signature(navigation.validate_scheme(scheme, 1, 'Voice notes')), before if change == 'action-order' else expected)
+
     def test_custom_architecture_is_required_not_inferred_from_names(self):
         schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
         for i, scheme in enumerate(schemes):
@@ -237,6 +269,54 @@ document.getElementById('continue').click();assert.equal(document.getElementById
 document.getElementById('reset-view').click();assert.equal(document.getElementById('action-state').textContent,'View reset');''')
                 for i in range(2, 11): (gallery / f'v{i:02d}.html').write_text((gallery / 'v01.html').read_text())
                 self.assertNotEqual(self.gate(gallery).returncode, 0)
+
+    def test_object_commit_only_and_legacy_edge_fallback_execute_as_authored(self):
+        schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
+        for scheme in schemes:
+            scheme['screens'][0]['transitions'] = [{'type': 'pushScreen', 'to': 'review'}]
+        schemes[0]['screens'][0]['actions'] = [{'label': 'Record note', 'frequency': 'P0', 'commit': 'captured-only'}]
+        schemes[1]['screens'][0]['actions'] = ['Legacy capture']
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            result = run('scaffold-gallery', '--goal', 'optional-action', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
+                         '--app-flows-json', json.dumps({'schemes': schemes}), env=dict(os.environ, HOME=directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(json.loads(result.stdout)['gallery'])
+            self.assertEqual(self.gate(gallery).returncode, 0)
+            self.node(gallery / 'app01.html', r'''const n=window.navigationDemo;
+document.getElementById('toggle-tab').click();
+assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);
+assert.equal(n.state.commits['captured-only'].count,1);
+document.querySelector('#screen [data-transition-index="0"]').click();
+assert.equal(n.currentScreen(),'review');assert.equal(n.state.tabs.capture.history.join(','),'capture');
+document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');
+assert.equal(n.state.commits['captured-only'].count,1);''')
+            for i in (2, 3, 4):
+                self.node(gallery / f'app{i:02d}.html', r'''const n=window.navigationDemo;
+document.getElementById('toggle-tab').click();assert.equal(n.currentScreen(),'review');
+assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
+
+    def test_both_gallery_indexes_require_canonical_round_bindings(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            for mode in ('screen', 'app-nav'):
+                result = run('scaffold-gallery', '--goal', mode, '--round', '2', '--platform', 'mobile', '--mode', mode, env=dict(os.environ, HOME=directory))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                gallery = Path(json.loads(result.stdout)['gallery'])
+                index = gallery / 'index.html'
+                canonical = index.read_text()
+                self.assertEqual(self.gate(gallery).returncode, 0)
+                replacements = ['<!doctype html><p>No variants or selection controls available.</p>',
+                                canonical.replace('screen', 'forged-screen') if mode == 'screen' else canonical.replace('app01.html', 'app99.html')]
+                if mode == 'screen':
+                    replacements.extend([canonical[:canonical.index('<script>')] + '</body></html>',
+                                         canonical.replace('Round: ${manifest.round}', 'Round: 99')])
+                for html in replacements:
+                    with self.subTest(mode=mode, html=html[:80]):
+                        index.write_text(html)
+                        rejected = self.gate(gallery)
+                        self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
+                        self.assertTrue(any('index.html' in error for error in json.loads(rejected.stdout)['errors']))
+                index.write_text(canonical)
+                self.assertEqual(self.gate(gallery).returncode, 0)
 
     def test_invalid_graph_rejects_before_artifact_creation(self):
         schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes()

@@ -59,7 +59,7 @@ def gallery_errors(root, manifest):
     anti, overrides = manifest.get('session_anti_patterns', []), manifest.get('style_overrides', {})
     if platform not in {'mobile', 'desktop', 'web'} or not isinstance(anti, list) or not all(isinstance(a, str) for a in anti) or not isinstance(overrides, dict):
         return ['invalid platform/session configuration'], []
-    def compare(name, expected):
+    def compare(name, expected, coordinates=True):
         path = root / name
         if path.is_symlink() or not path.is_file():
             errors.append(f'missing or unsafe {name}')
@@ -67,10 +67,14 @@ def gallery_errors(root, manifest):
         actual = path.read_text(encoding='utf-8')
         try:
             parsed, canonical = PageParser(actual), PageParser(expected)
-            if parsed.coordinates() != canonical.coordinates():
+            if coordinates and parsed.coordinates() != canonical.coordinates():
                 errors.append(f'{name}: embedded graph/coordinates do not match manifest')
             if actual != expected:
                 errors.append(f'{name}: DOM/CSS/executable bindings differ from canonical renderer; regenerate the round')
+            if not coordinates:
+                evidence.append({'page': name, 'canonical_round_bindings': actual == expected,
+                                 'variant_ids': [v['id'] for v in manifest['variants']], 'round': manifest['round']})
+                return
             evidence.append({'page': name, 'coordinates': parsed.coordinates(),
                              'controls': sum(t == 'button' for t, _ in parsed.nodes),
                              'optics': {'displacement_channels': sum(t == 'fedisplacementmap' for t, _ in parsed.nodes),
@@ -102,6 +106,10 @@ def gallery_errors(root, manifest):
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))
+            links = ''.join(f'<li><a href="app{i:02d}.html">{c.escape(s["title"])}</a></li>' for i, s in enumerate(normalized, 1))
+            # App rounds publish a link index, not the screen comparison runtime.
+            index = f'<!doctype html><meta charset="utf-8"><title>{c.escape(manifest["goal"])}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{c.escape(json.dumps(anti, ensure_ascii=False))}" data-style-overrides="{c.escape(json.dumps(overrides, ensure_ascii=False))}">{c.escape(normalized[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>'
+            compare('index.html', index, coordinates=False)
         else:
             variants = manifest.get('variants')
             if not isinstance(variants, list) or len(variants) != 10 or {v.get('id') for v in variants if isinstance(v, dict)} != {f'v{i:02d}' for i in range(1, 11)}:
@@ -133,8 +141,7 @@ def gallery_errors(root, manifest):
             for name, expected in [('tokens.css', c._gallery_tokens()), ('screen.css', (c.ROOT / 'assets' / 'tenfold-gallery.css').read_text())]:
                 if not (root / name).is_file() or (root / name).read_text() != expected:
                     errors.append(f'{name}: rendering assets do not implement the declared axes/optics')
-        if not (root / 'index.html').is_file():
-            errors.append('missing index.html')
+            compare('index.html', c._gallery_index(manifest), coordinates=False)
     except (KeyError, ValueError, TypeError, OSError) as e:
         errors.append(f'invalid gallery contract: {e}')
     return errors, evidence
@@ -150,7 +157,7 @@ def clauses(text):
         if scope == 'example':
             continue
         # Contrast and new imperative verbs start their own polarity scope.
-        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet)\b|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
+        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|\bwhile\b(?=\s+(?!\w+ing\b)[^,;.!?]*?\b(?:implements?|uses?|renders?|builds?|adds?|must|should|shall|is|are)\b)|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
             clause = clause.strip().casefold()
             if clause:
                 yield clause
