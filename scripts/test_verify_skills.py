@@ -747,6 +747,8 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("handoff-only", designer_text)
         self.assertIn("Entry B", designer_text)
         self.assertIn("Entry A", studio_text)
+        self.assertIn("cleanup-demo --goal <goal>", designer_text)
+        self.assertIn("leepepe.github.io/demos/<goal>", studio_text)
         self.assertNotIn("艺术家", goal_text)
         self.assertNotIn("艺术家", agents_text)
         self.assertNotIn("执行设计总审门禁", agents_text)
