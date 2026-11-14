@@ -351,6 +351,108 @@ def _normalized_payload(value: object) -> object:
     return value
 
 
+def _token_meter_from_event(event: dict[str, Any]) -> dict[str, int]:
+    """Normalize common dsh token-meter shapes without retaining raw secrets."""
+    found: dict[str, int] = {}
+    aliases = {
+        "input": "input_tokens", "prompt": "input_tokens", "prompt_tokens": "input_tokens",
+        "input_tokens": "input_tokens", "output": "output_tokens", "completion": "output_tokens",
+        "completion_tokens": "output_tokens", "output_tokens": "output_tokens",
+        "total": "total_tokens", "total_tokens": "total_tokens",
+        "reasoning": "reasoning_tokens", "reasoning_tokens": "reasoning_tokens",
+    }
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized_key = str(key).replace("-", "_").lower()
+                target = aliases.get(normalized_key)
+                if target and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    found[target] = int(item)
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(event)
+    return found
+
+
+def _event_field(event: dict[str, Any], *names: str) -> object:
+    for name in names:
+        if name in event:
+            return event[name]
+    return None
+
+
+def export_dsh_session_envelopes(dsh_sessions_dir: str | Path, machine_id: str) -> list[dict[str, Any]]:
+    """Export redacted TelemetryEnvelope v1 records from dsh session JSONL logs."""
+    root = safe_root(dsh_sessions_dir)
+    if not root.is_dir():
+        return []
+    alias = normalized_machine_id(machine_id)
+    records: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("session.v*.jsonl")):
+        ensure_safe_file(path, root)
+        if path.is_symlink() or not path.is_file():
+            continue
+        default_session_id = path.parent.name
+        for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(_event_field(event, "type", "event", "kind", "event_type") or "").strip()
+            event_type_lower = event_type.lower()
+            session_id = str(_event_field(event, "session_id", "sessionId", "session") or default_session_id)
+            attempt = _event_field(event, "attempt", "attempt_id", "attemptId")
+            message = _event_field(event, "message", "text", "content")
+            tokens = _token_meter_from_event(event)
+            relevant = (
+                "assistant/attempt" in event_type_lower
+                or "assistant/message" in event_type_lower
+                or "token-meter" in event_type_lower
+                or "token_meter" in event_type_lower
+                or bool(tokens)
+                or attempt is not None
+                or message is not None
+            )
+            if not relevant:
+                continue
+            observed_at = str(_event_field(event, "timestamp", "created_at", "createdAt", "at") or _iso(path.stat().st_mtime))
+            payload: dict[str, Any] = {"event_type": event_type or "unknown", "line": line_number}
+            if attempt is not None:
+                payload["attempt"] = attempt
+            if message is not None:
+                payload["message"] = message
+            if tokens:
+                payload["token_meter"] = tokens
+            redacted_line = normalized_text(line)
+            record: dict[str, Any] = {
+                "schema_version": 1,
+                "collector": "dsh",
+                "record_type": "dsh_session",
+                "machine_id": alias,
+                "machine_alias": alias,
+                "session_id": session_id,
+                "goal_id": session_id,
+                "scope_id": session_id,
+                "session_path": str(path.relative_to(root)).replace(os.sep, "/"),
+                "event_type": event_type or "unknown",
+                "observed_at": observed_at,
+                "content_sha256": hashlib.sha256(redacted_line.encode()).hexdigest(),
+                "content": redacted_line,
+                "payload": _normalized_payload(payload),
+            }
+            if attempt is not None:
+                record["attempt"] = attempt
+            if tokens:
+                record["tokens"] = tokens
+                record["token_meter"] = tokens
+            records.append(record)
+    return records
+
+
 def _azure_entity_args(entity: dict[str, object]) -> list[str]:
     return [
         f"{key}={','.join(sorted(value)) if isinstance(value, list) else value}"
@@ -502,7 +604,7 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
            azure_account: str = "", azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
            azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None,
            quota_precheck_path: Path | None = None, quota_path: Path | None = None,
-           daily_evidence_out: Path | None = None) -> int:
+           daily_evidence_out: Path | None = None, dsh_sessions_dir: Path | None = None) -> int:
     machine_id = normalized_machine_id(machine_id)
     state_dir = sync_state_dir or (state_path.parent if state_path else None)
     state_dir = state_dir.expanduser() if state_dir else None
@@ -528,6 +630,9 @@ def export(roots: list[Path], machine_id: str, output: Path, state_path: Path | 
         collectors_dir or (state_dir / "collectors.d" if state_dir else Path("__no_collectors__")),
         quota_precheck_path or quota_path,
     )
+    if dsh_sessions_dir is not None:
+        records.extend(export_dsh_session_envelopes(dsh_sessions_dir, machine_id))
+        records = assign_evidence_ids(records)
     if daily_evidence_out is not None:
         atomic_write(
             daily_evidence_out,
@@ -583,7 +688,7 @@ def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: st
            collectors_dir: Path | None = None, azure_account: str = "",
            azure_container: str = "telemetry-raw", azure_table: str = "AidataSyncIndex",
            azure_prefix: str = "aidata-sync/v1", rsync_to: str | None = None,
-           daily_evidence_out: Path | None = None) -> int:
+           daily_evidence_out: Path | None = None, dsh_sessions_dir: Path | None = None) -> int:
     sync_state_dir.mkdir(parents=True, exist_ok=True)
     signal = sync_state_dir / "notify.signal"
     signal.touch()
@@ -600,7 +705,8 @@ def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: st
             export(export_roots, machine_id or socket.gethostname(), export_output, state_path, incremental,
                    sync_state_dir, collectors_dir, quota_precheck_path=None,
                    azure_account=azure_account, azure_container=azure_container, azure_table=azure_table,
-                   azure_prefix=azure_prefix, rsync_to=rsync_to, daily_evidence_out=daily_evidence_out)
+                   azure_prefix=azure_prefix, rsync_to=rsync_to, daily_evidence_out=daily_evidence_out,
+                   dsh_sessions_dir=dsh_sessions_dir)
             if signal.stat().st_mtime_ns <= before:
                 break
         return 0
@@ -614,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file")
     parser.add_argument("--sync-state-dir")
     parser.add_argument("--collectors-dir")
+    parser.add_argument("--dsh-sessions-dir", help="Directory containing dsh session.v*.jsonl logs.")
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--azure-account", default="")
     parser.add_argument("--azure-container", default="telemetry-raw")
@@ -632,11 +739,13 @@ def main(argv: list[str] | None = None) -> int:
                       output, state, args.incremental,
                       Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
                       args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to,
-                      daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None)
+                      daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None,
+                      dsh_sessions_dir=Path(args.dsh_sessions_dir).expanduser() if args.dsh_sessions_dir else None)
     count = export(roots, args.machine_id, output, state, args.incremental, sync_dir,
                    Path(args.collectors_dir).expanduser() if args.collectors_dir else None,
                    args.azure_account, args.azure_container, args.azure_table, args.azure_prefix, args.rsync_to,
-                   daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None)
+                   daily_evidence_out=Path(args.daily_evidence_out).expanduser() if args.daily_evidence_out else None,
+                   dsh_sessions_dir=Path(args.dsh_sessions_dir).expanduser() if args.dsh_sessions_dir else None)
     print(f"exported {count} record(s) to {output}")
     return 0
 

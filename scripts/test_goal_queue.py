@@ -931,6 +931,67 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             )
             self.assertEqual(missing_selector["disposition"], "needs_tl_eval")
 
+    def test_revision_scope_warning_blocked_reason_and_cas(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            handoff_dir = Path(tmp_dir) / "revision"
+            enqueued = json.loads(
+                self.enqueue(
+                    handoff_dir,
+                    ["TK1", "TK2"],
+                    paths="src/shared/**",
+                ).stdout
+            )
+            self.assertEqual(len(enqueued["write_scope_warnings"]), 1)
+            self.assertEqual(enqueued["write_scope_warnings"][0]["task_ids"], ["TK1", "TK2"])
+            self.run_queue(handoff_dir, "next-wave", "--mark-in-progress")
+            queue_data = json.loads((handoff_dir / "queue.json").read_text())
+            current_revision = queue_data["tasks"][0]["revision"]
+            result = json.loads(
+                self.run_queue(
+                    handoff_dir,
+                    "set-status", "--task-id", "TK1", "--status", "blocked",
+                    "--expected-revision", str(current_revision),
+                    "--blocked-code", "OWNER_DECISION", "--blocked-message", "Needs owner input",
+                ).stdout
+            )
+            self.assertEqual(result["blocked_reason"], {"code": "OWNER_DECISION", "message": "Needs owner input"})
+            stale = self.run_queue(
+                handoff_dir,
+                "set-status", "--task-id", "TK1", "--status", "ready",
+                "--expected-revision", str(current_revision), check=False,
+            )
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertIn("CAS conflict", stale.stderr)
+            with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
+                revision, blocked_reason = db.execute(
+                    "SELECT revision, blocked_reason_json FROM tasks WHERE task_id='TK1'"
+                ).fetchone()
+                self.assertEqual(revision, current_revision + 1)
+                self.assertIn("OWNER_DECISION", blocked_reason)
+
+    def test_dsh_session_envelopes_extract_tokens_and_redact(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+            sessions = Path(tmp_dir) / "sessions" / "session-1"
+            sessions.mkdir(parents=True)
+            (sessions / "session.v4.jsonl").write_text(
+                json.dumps({
+                    "type": "assistant/attempt", "session_id": "session-1", "attempt": 2,
+                    "usage": {"input_tokens": 9, "output_tokens": 4, "total_tokens": 13},
+                }) + "\n" + json.dumps({
+                    "type": "assistant/message", "message": "hi user@example.com",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            telemetry_path = REPO_ROOT / "skills" / "team-lead" / "scripts" / "gtt-telemetry-export.py"
+            spec = importlib.util.spec_from_file_location("gtt_telemetry_test", telemetry_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            records = module.export_dsh_session_envelopes(sessions.parent, "MacBook")
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0]["tokens"]["total_tokens"], 13)
+            self.assertIn("[REDACTED_EMAIL]", records[1]["content"])
+
     def test_state_sqlite_tables_effect_coalescing_and_later(self) -> None:
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
             handoff_dir = Path(tmp_dir) / "state"

@@ -1,16 +1,31 @@
 {
   "schema": "workflow-hub-sub-workflow-specs/v1",
-  "version": 1,
+  "version": 2,
   "updated": "2026-11-10",
-  "description": "Dual-Entry L2 JSON drawer archiving SW0-SW5 Phase 0 research specs, interface contracts, and bootstrap prompts for workflow-hub.",
+  "description": "Dual-Entry L2 JSON drawer archiving SW0-SW5 Phase 0 research specs, interface contracts, bootstrap prompts, and dsh mechanism alignment.",
   "active_specs": [
     {
       "id": "SW0",
       "title": "Agent Gateway & System One Infrastructure (Raven + Magpie + Falcon)",
-      "rings": ["all"],
-      "stages": ["Stage 1"],
-      "domains": ["gateway", "systemone", "routing"],
-      "tags": ["R10", "R17", "raven", "magpie", "falcon"],
+      "rings": [
+        "all"
+      ],
+      "stages": [
+        "Stage 1"
+      ],
+      "domains": [
+        "gateway",
+        "systemone",
+        "routing"
+      ],
+      "tags": [
+        "R10",
+        "R17",
+        "raven",
+        "magpie",
+        "falcon",
+        "dsh"
+      ],
       "herdr_space": "w2P",
       "tl_agent": "sw0-gateway-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw0-gateway-research/spec.md",
@@ -22,10 +37,13 @@
       "interfaces": {
         "produces": [
           "http://127.0.0.1:3425/v1 logical groups: group/steering, group/reviewing, group/coding (with replyNamingOf & quota scheduling)",
-          "http://127.0.0.1:19823/v1/systemone (Falcon -> Raven :7024/v1/systemone) Choice/Noul/Score/Box + jev_decide(state, questions, source_key)"
+          "http://127.0.0.1:19823/v1/systemone (Falcon -> Raven :7024/v1/systemone) Choice/Noul/Score/Box + jev_decide(state, questions, source_key)",
+          "dsh profile cordis.patch.yml: @deepseek-ai/dsh-llm-pi-ai openai-completions routes for Magpie group/steering|reviewing|coding|coding-escalated and Raven :7024/v1",
+          "dsh-skill-filesystem mount aligned to ~/.agents/skills (agentsHome ~/.agents)"
         ],
         "consumes": [
-          "Copilot / GHE OAuth tokens, Claude/Codex native subscriptions, FALCON_SOURCE_KEY"
+          "Copilot / GHE OAuth tokens, Claude/Codex native subscriptions, FALCON_SOURCE_KEY",
+          "~/.dsh/profiles/{headless,web}/cordis.patch.yml and local MAGPIE_API_KEY/RAVEN_API_KEY references"
         ]
       },
       "bootstrap_prompt": "Load /workflow-hub, /deep-research, and /team-lead. Audit ~/Development/raven (:7024 vs v3.2.0 origin/main), yetone/magpie & nocoo/magpie (:3425 group/steering|reviewing|coding, Intent Routing, Session Affinity, replyNamingOf), and nocoo/falcon (:19823 SQLite 7d retention & /v1/systemone relay). Output Phase 0 spec to ~/Development/handoff/sw0-gateway-research/spec.md."
@@ -33,10 +51,24 @@
     {
       "id": "SW1",
       "title": "Linear Board, Observe-First Previews & Run Cost Attribution",
-      "rings": ["Ring 1"],
-      "stages": ["Stage 1"],
-      "domains": ["board", "linear", "cost-attribution"],
-      "tags": ["R01", "R12", "linear-board", "multica"],
+      "rings": [
+        "Ring 1"
+      ],
+      "stages": [
+        "Stage 1"
+      ],
+      "domains": [
+        "board",
+        "linear",
+        "cost-attribution"
+      ],
+      "tags": [
+        "R01",
+        "R12",
+        "linear-board",
+        "multica",
+        "dsh"
+      ],
       "herdr_space": "w2Q",
       "tl_agent": "sw1-linear-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw1-linear-research/spec.md",
@@ -60,10 +92,27 @@
     {
       "id": "SW2",
       "title": "Phase 0 Co-Design, Proposal Checkpoints & Jev-Assisted Research",
-      "rings": ["Ring 2"],
-      "stages": ["Stage 3", "Stage 4"],
-      "domains": ["co-design", "ui-ux", "research"],
-      "tags": ["R05", "R06", "R09", "R19", "arena", "his.fm"],
+      "rings": [
+        "Ring 2"
+      ],
+      "stages": [
+        "Stage 3",
+        "Stage 4"
+      ],
+      "domains": [
+        "co-design",
+        "ui-ux",
+        "research"
+      ],
+      "tags": [
+        "R05",
+        "R06",
+        "R09",
+        "R19",
+        "arena",
+        "his.fm",
+        "dsh"
+      ],
       "herdr_space": "w2R",
       "tl_agent": "sw2-codesign-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw2-codesign-research/spec.md",
@@ -79,10 +128,13 @@
           "Proposal -> Checkpoint -> Pop structured Phase 0 decision table",
           "4-level Prompt Slots (Global Redlines > Category Slot > Task Intent > Upstream Tokens) + optimistic lock version & spec_sha",
           "deep-research R06 Citation Check (Choice: supports|contradicts|unrelated) & R09 Score reranking",
-          "UI 4-state x 2-appearance R05 visual Noul + Box truncation/collision detection"
+          "UI 4-state x 2-appearance R05 visual Noul + Box truncation/collision detection",
+          "dsh PTC run_code contract: bounded deterministic execution, worktree/path fencing, redacted result handback",
+          "dsh-prose-standard and test:snapshot acceptance records for spec/design artifacts"
         ],
         "consumes": [
-          "SW0 Falcon :19823 /v1/systemone Choice/Noul/Score/Box API"
+          "SW0 Falcon :19823 /v1/systemone Choice/Noul/Score/Box API",
+          "dsh Cordis patch composition and run_code result envelope from SW0"
         ]
       },
       "bootstrap_prompt": "Load /workflow-hub, /my-designer, /deep-research, and /codebase-design. Audit nocoo/arena & nocoo/his.fm prompt slots/optimistic locking, separate objective script gates from category slots across design skills, and design R06/R09 for deep-research plus R05 Box checks for UI snapshots. Output Phase 0 spec to ~/Development/handoff/sw2-codesign-research/spec.md."
@@ -90,10 +142,36 @@
     {
       "id": "SW3",
       "title": "Team-Lead Orchestration Kernel, Gateway Routing & Thin Harness Compaction",
-      "rings": ["Ring 3", "Ring 4"],
-      "stages": ["Stage 1", "Stage 2", "Stage 3", "Stage 4"],
-      "domains": ["orchestration", "state-machine", "context-compaction"],
-      "tags": ["R02", "R03", "R08", "R11", "R12", "R13", "R14", "R15", "R16", "R17", "R18", "R20"],
+      "rings": [
+        "Ring 3",
+        "Ring 4"
+      ],
+      "stages": [
+        "Stage 1",
+        "Stage 2",
+        "Stage 3",
+        "Stage 4"
+      ],
+      "domains": [
+        "orchestration",
+        "state-machine",
+        "context-compaction"
+      ],
+      "tags": [
+        "R02",
+        "R03",
+        "R08",
+        "R11",
+        "R12",
+        "R13",
+        "R14",
+        "R15",
+        "R16",
+        "R17",
+        "R18",
+        "R20",
+        "dsh"
+      ],
       "herdr_space": "w2S",
       "tl_agent": "sw3-goaltask-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw3-goaltask-research/spec.md",
@@ -108,10 +186,13 @@
           "R11 model-surface byte budget gates & Thin Harness compacted SKILL.md",
           "R13 attention-first goal-supervisor.py status --check (needs a person top screen)",
           "R14 Live Steering fan-out & out-of-scope handback, R15 Mandate spec_sha lock, R16 maxWorkers+1 human slot",
-          "R18 single-writer state.sqlite + effects queue, goalx --intent evolve, and Jev R02/R03/R08 helpers"
+          "R18 single-writer state.sqlite + effects queue, goalx --intent evolve, and Jev R02/R03/R08 helpers",
+          "dsh CAS fields: queue/task/goal revision, expected-revision conflict, normalized write_scope_warnings, blocked_reason {code,message}",
+          "subagent_oar handoff record: task_id, owned_paths, command, attempt, result, and R10 receipt"
         ],
         "consumes": [
-          "SW0 Magpie (:3425) group/steering, group/reviewing, group/coding and Falcon (:19823) /v1/systemone"
+          "SW0 Magpie (:3425) group/steering, group/reviewing, group/coding and Falcon (:19823) /v1/systemone",
+          "dsh-goal/dsh-agent-team state transitions and external CLI handback semantics"
         ]
       },
       "bootstrap_prompt": "Load /workflow-hub and /team-lead. Audit team-lead/SKILL.md, bots-and-agents.md, m2-dispatcher/SKILL.md, and scripts/{goal-supervisor.py,goal-queue.py,herdr-dispatch.sh}; design R11 model-surface compaction, R12-R16 pi-superagent/Multica kernel mechanics, R17 Magpie routing, R18 state.sqlite + effects, and R02/R03/R08 Jev helpers. Output Phase 0 spec to ~/Development/handoff/sw3-goaltask-research/spec.md."
@@ -119,10 +200,27 @@
     {
       "id": "SW4",
       "title": "PR Review, 3-Tier CI Funnel & Cross-Repo Architecture Locks",
-      "rings": ["Ring 5"],
-      "stages": ["Stage 2", "Stage 3"],
-      "domains": ["ci-gates", "code-review", "pr-monitoring"],
-      "tags": ["R01", "R05", "R07", "R17", "shared-ci", "base-ci"],
+      "rings": [
+        "Ring 5"
+      ],
+      "stages": [
+        "Stage 2",
+        "Stage 3"
+      ],
+      "domains": [
+        "ci-gates",
+        "code-review",
+        "pr-monitoring"
+      ],
+      "tags": [
+        "R01",
+        "R05",
+        "R07",
+        "R17",
+        "shared-ci",
+        "base-ci",
+        "dsh"
+      ],
       "herdr_space": "w2T",
       "tl_agent": "sw4-sharedci-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw4-sharedci-research/spec.md",
@@ -136,10 +234,13 @@
         "produces": [
           "R01 3-tier PR comment/CI funnel (0-Token poll -> 150ms Jev Choice: requires_code_change|question_only|ack_or_noise -> CLI worker)",
           "R17 shared-ci review scripts routed via Magpie group/reviewing",
-          "R05 UI Box visual gate, R07 Jev Semantic Linter, and base-ci release-source provenance checks"
+          "R05 UI Box visual gate, R07 Jev Semantic Linter, and base-ci release-source provenance checks",
+          "verify-tool-catalog and test:snapshot gates for dsh plugin/profile catalogs",
+          "dsh-prose-standard budget gate for workflow-hub references"
         ],
         "consumes": [
-          "SW0 Magpie (:3425) group/reviewing and Falcon (:19823) /v1/systemone"
+          "SW0 Magpie (:3425) group/reviewing and Falcon (:19823) /v1/systemone",
+          "SW0 Cordis provider routes and SW3 subagent_oar/R10 evidence"
         ]
       },
       "bootstrap_prompt": "Load /workflow-hub, /code-review, and /auto-review-merge. Audit ~/Development/shared-ci 10-layer architecture vs nocoo/base-ci; design R01 3-tier PR comment funnel with observe mode, R17 group/reviewing adapter for codex-review.sh/kimi-review.sh, and R05/R07 visual/semantic linters. Output Phase 0 spec to ~/Development/handoff/sw4-sharedci-research/spec.md."
@@ -147,10 +248,31 @@
     {
       "id": "SW5",
       "title": "AIDash Unified Situation Center, 3-Layer Skills Snapshot & Narrative Flywheel",
-      "rings": ["Ring 6", "Ring 7"],
-      "stages": ["Stage 3", "Stage 4"],
-      "domains": ["aidash", "retro-loop", "story-craft", "config-snapshot"],
-      "tags": ["R04", "R06", "R13", "R19", "eagle", "pew", "otter", "showtime"],
+      "rings": [
+        "Ring 6",
+        "Ring 7"
+      ],
+      "stages": [
+        "Stage 3",
+        "Stage 4"
+      ],
+      "domains": [
+        "aidash",
+        "retro-loop",
+        "story-craft",
+        "config-snapshot"
+      ],
+      "tags": [
+        "R04",
+        "R06",
+        "R13",
+        "R19",
+        "eagle",
+        "pew",
+        "otter",
+        "showtime",
+        "dsh"
+      ],
       "herdr_space": "w2V",
       "tl_agent": "sw5-aidash-goal-tl-r1",
       "spec_path": "~/Development/handoff/sw5-aidash-research/spec.md",
@@ -164,11 +286,13 @@
           "AIDash Needs-a-Person top card (from goal-supervisor.py status --json + mark done writeback)",
           "eagle-daily-zh-v2 23:59 24h evidence-cited daily report card (with R06 Citation Check)",
           "pew + Magpie/Raven/Falcon token/cache/quota card (with star writeback for Jev regression samples)",
-          "nocoo/otter 3-layer skills & 4-CLI drift alerts + Showtime 4K demo recording integration"
+          "nocoo/otter 3-layer skills & 4-CLI drift alerts + Showtime 4K demo recording integration",
+          "TelemetryEnvelope v1 from ~/.dsh/sessions/*/session.v*.jsonl: session_id, assistant/attempt, assistant/message, token-meter"
         ],
         "consumes": [
           "SW3 goal-supervisor.py status --json & gtt-telemetry-export.py",
-          "SW0 Magpie/Raven/Falcon usage & Jev logs"
+          "SW0 Magpie/Raven/Falcon usage & Jev logs",
+          "SW3 gtt-telemetry-export.py --dsh-sessions-dir redacted session envelopes"
         ]
       },
       "bootstrap_prompt": "Load /workflow-hub, /retro-loop, and /story-craft. Audit ~/Development/AIDash (aidata L1-L5 -> aidash CLI -> XPC -> SwiftData/CloudKit -> macOS/iOS cards & UserEvent writeback) vs nocoo/{eagle,pew,codo,falcon,otter,showtime}; design AIDash card extensions, eagle-daily-zh-v2 + R06 retro-loop pipeline, and otter 3-layer skill snapshot governance. Output Phase 0 spec to ~/Development/handoff/sw5-aidash-research/spec.md."

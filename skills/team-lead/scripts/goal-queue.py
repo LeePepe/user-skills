@@ -471,6 +471,53 @@ def _paths_overlap(paths_a: Sequence[str], paths_b: Sequence[str]) -> bool:
     return False
 
 
+def _task_revision(task: Mapping[str, Any]) -> int:
+    try:
+        return max(1, int(task.get("revision") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _bump_task_revision(task: dict[str, Any]) -> int:
+    revision = _task_revision(task) + 1
+    task["revision"] = revision
+    return revision
+
+
+def _bump_queue_revision(queue_data: dict[str, Any]) -> int:
+    try:
+        revision = max(1, int(queue_data.get("revision") or 1)) + 1
+    except (TypeError, ValueError):
+        revision = 2
+    queue_data["revision"] = revision
+    return revision
+
+
+def _write_scope_warnings(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Report unfinished same-repository Owned Path overlaps before dispatch."""
+    warnings: list[dict[str, Any]] = []
+    unfinished = [task for task in tasks if str(task.get("status")) not in TERMINAL_STATUSES]
+    for index, left in enumerate(unfinished):
+        for right in unfinished[index + 1:]:
+            if str(left.get("repo") or "").strip() != str(right.get("repo") or "").strip():
+                continue
+            overlaps: list[dict[str, str]] = []
+            for left_path in left.get("paths") or []:
+                for right_path in right.get("paths") or []:
+                    if _single_path_overlap(str(left_path), str(right_path)):
+                        overlaps.append({
+                            "left": _normalize_path_pattern(str(left_path)),
+                            "right": _normalize_path_pattern(str(right_path)),
+                        })
+            if overlaps:
+                warnings.append({
+                    "repo": str(left.get("repo") or ""),
+                    "task_ids": [str(left.get("task_id")), str(right.get("task_id"))],
+                    "overlapping_paths": overlaps,
+                })
+    return warnings
+
+
 def _tasks_conflict(task_a: dict[str, Any], task_b: dict[str, Any]) -> bool:
     repo_a = str(task_a.get("repo") or "").strip()
     repo_b = str(task_b.get("repo") or "").strip()
@@ -484,10 +531,14 @@ def _tasks_conflict(task_a: dict[str, Any], task_b: dict[str, Any]) -> bool:
 def _load_queue(handoff_dir: Path) -> dict[str, Any]:
     queue_path = handoff_dir / "queue.json"
     if not queue_path.exists():
-        return {"goal": handoff_dir.name, "version": 1, "tasks": []}
+        return {"goal": handoff_dir.name, "version": 1, "revision": 1, "tasks": []}
     data = json.loads(queue_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
         raise ValueError(f"Corrupt queue.json in {handoff_dir}")
+    data["revision"] = max(1, int(data.get("revision") or 1))
+    for task in data["tasks"]:
+        if isinstance(task, dict):
+            task["revision"] = _task_revision(task)
     return data
 
 
@@ -646,14 +697,15 @@ def _sync_ledger(
 def _refresh_ready_statuses(tasks: list[dict[str, Any]]) -> None:
     tasks_by_id = {str(t["task_id"]): t for t in tasks}
     for task in tasks:
+        task["revision"] = _task_revision(task)
         current_status = str(task.get("status", "planned"))
         if current_status not in PENDING_STATUSES:
             continue
         deps = [str(d) for d in (task.get("depends_on") or []) if str(d).strip()]
-        if all(_dependency_satisfied(task, dep, tasks_by_id) for dep in deps):
-            task["status"] = "ready"
-        else:
-            task["status"] = "planned"
+        next_status = "ready" if all(_dependency_satisfied(task, dep, tasks_by_id) for dep in deps) else "planned"
+        if next_status != current_status:
+            task["status"] = next_status
+            _bump_task_revision(task)
 
 
 def _queue_metrics(tasks: Sequence[dict[str, Any]]) -> tuple[int, int, bool]:
@@ -800,6 +852,7 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "planned",
                 "pr": "—",
                 "priority": str(spec.get("priority") or "normal"),
+                "revision": 1,
                 }
             )
             if candidate["priority"] not in {"normal", "human"}:
@@ -831,6 +884,12 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
             candidate["auto_depends_on"] = list(auto_deps_for_task)
 
             tasks.append(candidate)
+            task_index = {str(task["task_id"]): task for task in tasks}
+            if all(
+                _dependency_satisfied(candidate, dependency, task_index)
+                for dependency in candidate["depends_on"]
+            ):
+                candidate["status"] = "ready"
             existing_ids.add(task_id)
             auto_dependencies[task_id] = auto_deps_for_task
             enqueued_tasks.append(candidate)
@@ -879,10 +938,12 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
 
+        _bump_queue_revision(queue_data)
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, tasks, new_events)
         sync_to_sqlite(handoff_dir, queue_data, new_events)
         in_progress_count, pending_count, drained = _queue_metrics(tasks)
+        write_scope_warnings = _write_scope_warnings(tasks)
 
     return {
         "ok": True,
@@ -894,6 +955,8 @@ def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
         "pending_count": pending_count,
         "drained": drained,
         "feedback_validation": feedback_validation,
+        "revision": int(queue_data.get("revision") or 1),
+        "write_scope_warnings": write_scope_warnings,
     }
 
 
@@ -907,6 +970,7 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
 
         if _budget_exhausted(queue_data):
             queue_data["status"] = "done"
+            _bump_queue_revision(queue_data)
             _save_queue(handoff_dir, queue_data)
             _sync_ledger(
                 handoff_dir,
@@ -924,6 +988,8 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                 "budget_exhausted": True,
                 "stop_reason": "BUDGET_EXHAUSTED",
                 "feedback_validation": feedback_validation,
+                "revision": int(queue_data.get("revision") or 1),
+                "write_scope_warnings": _write_scope_warnings(tasks),
             }
 
         tasks_by_id = {str(t["task_id"]): t for t in tasks}
@@ -935,7 +1001,9 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
             valid, reason = _revalidate_mandate(handoff_dir, task)
             if not valid:
                 task["status"] = "blocked"
-                task["block_reason"] = "spec_drift"
+                task["blocked_reason"] = {"code": "spec_drift", "message": reason}
+                task.pop("block_reason", None)
+                _bump_task_revision(task)
                 new_events.append(
                     {
                         "evt": "INPUT_BLOCKED",
@@ -994,6 +1062,7 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
         if args.mark_in_progress and selected_wave:
             for task in selected_wave:
                 task["status"] = "in_progress"
+                _bump_task_revision(task)
                 new_events.append(
                     {
                         "evt": "DISPATCHED",
@@ -1002,9 +1071,12 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                         "note": f"wave dispatch ({task.get('repo') or 'default'})",
                     }
                 )
+            _bump_queue_revision(queue_data)
             _save_queue(handoff_dir, queue_data)
             _sync_ledger(handoff_dir, tasks, new_events)
         else:
+            if new_events:
+                _bump_queue_revision(queue_data)
             _save_queue(handoff_dir, queue_data)
             if new_events:
                 _sync_ledger(handoff_dir, tasks, new_events)
@@ -1022,6 +1094,7 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
                 "brief": str(t.get("brief") or ""),
                 "status": str(t.get("status") or "ready"),
                 "priority": str(t.get("priority") or "normal"),
+                "revision": _task_revision(t),
             }
             for t in selected_wave
         ]
@@ -1034,6 +1107,8 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
         "pending_count": pending_count,
         "drained": drained,
         "feedback_validation": feedback_validation,
+        "revision": int(queue_data.get("revision") or 1),
+        "write_scope_warnings": _write_scope_warnings(tasks),
     }
     if max_workers is not None:
         payload.update(
@@ -1075,6 +1150,16 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         staged_tasks = deepcopy(tasks)
         target_task = staged_tasks[target_index]
         original_target = tasks[target_index]
+        current_revision = _task_revision(original_target)
+        if args.expected_revision is not None and int(args.expected_revision) != current_revision:
+            raise ValueError(
+                f"CAS conflict for task '{args.task_id}': expected revision "
+                f"{args.expected_revision}, current revision {current_revision}"
+            )
+        has_blocked_code = bool(args.blocked_code)
+        has_blocked_message = bool(args.blocked_message)
+        if has_blocked_code != has_blocked_message:
+            raise ValueError("--blocked-code and --blocked-message must be provided together")
         if getattr(args, "run_metrics_json", ""):
             metrics = parse_json_argument(args.run_metrics_json, "--run-metrics-json")
             if isinstance(metrics, dict):
@@ -1163,6 +1248,14 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             target_task["status"] = "in_progress" if args.keep_working else "handback"
         else:
             target_task["status"] = args.status
+        if has_blocked_code and has_blocked_message:
+            target_task["blocked_reason"] = {
+                "code": str(args.blocked_code),
+                "message": str(args.blocked_message),
+            }
+            target_task.pop("block_reason", None)
+        elif args.status != "blocked":
+            target_task.pop("blocked_reason", None)
         if args.pr is not None:
             target_task["pr"] = args.pr
         if effective_reason is not None:
@@ -1185,7 +1278,9 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             for task in staged_tasks:
                 attach_task_mapping(task, mappings[str(task["task_id"])])
 
+        _bump_task_revision(target_task)
         _refresh_ready_statuses(staged_tasks)
+        _bump_queue_revision(queue_data)
         queue_data["tasks"] = staged_tasks
         if feedback_validation == FEEDBACK_VALIDATION_VERIFIED:
             _feedback_validation(queue_data, staged_tasks)
@@ -1237,6 +1332,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "task_id": args.task_id,
         "status": str(target_task.get("status") or args.status),
+        "revision": _task_revision(target_task),
+        "blocked_reason": target_task.get("blocked_reason"),
         "in_progress_count": in_progress_count,
         "pending_count": pending_count,
         "drained": drained,
@@ -1318,12 +1415,19 @@ def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             mandate["spec_sha"] = _sha256_file(handoff_dir / "spec.md")
             mandate["brief_sha"] = _sha256_file(handoff_dir / str(task.get("brief") or ""))
-            if str(task.get("status")) == "blocked" and task.get("block_reason") == "spec_drift":
+            blocked_reason = task.get("blocked_reason")
+            if str(task.get("status")) == "blocked" and (
+                task.get("block_reason") == "spec_drift"
+                or (isinstance(blocked_reason, dict) and blocked_reason.get("code") == "spec_drift")
+            ):
                 task["status"] = "ready"
                 task.pop("block_reason", None)
+                task.pop("blocked_reason", None)
                 changed.append(str(task["task_id"]))
+            _bump_task_revision(task)
         _refresh_ready_statuses(queue_data["tasks"])
         queue_data["tasks"] = queue_data["tasks"]
+        _bump_queue_revision(queue_data)
         event = {"evt": "RESOLVED", "task": args.task_id or "", "note": "spec mandate acknowledged"}
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
@@ -1353,6 +1457,8 @@ def cmd_ruling(args: argparse.Namespace) -> dict[str, Any]:
                 "at": _now_iso(),
             }
         )
+        _bump_task_revision(task)
+        _bump_queue_revision(queue_data)
         event = {"evt": "RULING", "task": args.task_id, "note": args.decision}
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
@@ -1396,6 +1502,8 @@ def cmd_steer(args: argparse.Namespace) -> dict[str, Any]:
         target.setdefault("inputs", []).append(
             {"trigger_id": trigger_id, "message": args.message, "action": action, "at": _now_iso()}
         )
+        _bump_task_revision(target)
+        _bump_queue_revision(queue_data)
         event = {"evt": "STEERED", "task": str(target["task_id"]), "ref": trigger_id, "note": args.message}
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
@@ -1436,6 +1544,7 @@ def cmd_init_goal(args: argparse.Namespace) -> dict[str, Any]:
             queue_data["budget"] = budget
         if args.max_workers is not None:
             queue_data["max_workers"] = args.max_workers
+        _bump_queue_revision(queue_data)
         _save_queue(handoff_dir, queue_data)
         sync_to_sqlite(handoff_dir, queue_data)
     return {"ok": True, "intent": queue_data["intent"], "budget": queue_data.get("budget", {})}
@@ -1457,6 +1566,7 @@ def cmd_budget(args: argparse.Namespace) -> dict[str, Any]:
         if args.elapsed_sec is not None:
             budget["elapsed_sec"] = args.elapsed_sec
         queue_data["budget"] = budget
+        _bump_queue_revision(queue_data)
         _save_queue(handoff_dir, queue_data)
         sync_to_sqlite(handoff_dir, queue_data)
     return {"ok": True, "budget": budget}
@@ -1682,6 +1792,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Run metrics JSON object/list to attach to the Task.",
     )
+    status_parser.add_argument(
+        "--expected-revision",
+        type=int,
+        default=None,
+        help="Require this task revision before applying the mutation (CAS).",
+    )
+    status_parser.add_argument("--blocked-code", default="")
+    status_parser.add_argument("--blocked-message", default="")
     status_parser.add_argument("--trigger-id", default=None)
     status_parser.add_argument("--keep-working", action="store_true")
 
