@@ -21,7 +21,9 @@ import sys
 import tempfile
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socket
 from typing import Any
 
 BOT_ACTOR_ID = "6105e16e-700a-4ea5-8283-67aec10daf20"
@@ -57,32 +59,50 @@ def excluded_scope(issue: dict[str, Any]) -> bool:
     values: list[str] = []
     def collect(value: Any) -> None:
         if isinstance(value, dict):
-            for key in ("name", "displayName", "key"):
-                if value.get(key):
-                    values.append(str(value[key]))
+            for key in ("name", "displayName", "key", "title"):
+                if value.get(key): values.append(str(value[key]))
             for child in value.values():
-                if isinstance(child, (dict, list)):
-                    collect(child)
+                if isinstance(child, (dict, list)): collect(child)
         elif isinstance(value, list):
-            for child in value:
-                collect(child)
+            for child in value: collect(child)
     collect(issue.get("project")); collect(issue.get("team")); collect(issue.get("parent"))
+    # Missing hierarchy is fail-closed when it looks like a restricted title.
     return any(any(term in value.casefold() for term in EXCLUDED_NAMES) for value in values)
+
+
+def _topic_rows(description: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    pattern = re.compile(r"(?mi)^\s*[-*+]\s*\[([ xX])\]\s*(?:\*{1,2})?\\?\[?(\d+)\\?\]?\s*(?:\*{1,2})?(.+?)\s*$")
+    for match in pattern.finditer(description):
+        text = re.sub(r"[*`]", "", match.group(3)).strip()
+        slug_match = re.search(r"(?:learning-topic://|\(`?)([a-z0-9][a-z0-9-]+)", text, re.I)
+        slug = slug_match.group(1) if slug_match else ""
+        if not slug:
+            slug_match = re.search(r"\(([a-z0-9][a-z0-9-]+)\)", text, re.I)
+            slug = slug_match.group(1) if slug_match else ""
+        rows.append({"number": match.group(2), "slug": slug, "text": text, "checked": match.group(1).casefold() == "x"})
+    return rows
+
+
+def _selectors(body: str) -> list[str]:
+    text = body.casefold()
+    if re.search(r"(?:^|\s|@bot)(?:all|都做|全部)(?:$|\s|[，。,．.!！])", text): return ["all"]
+    return list(dict.fromkeys(re.findall(r"(?<!\d)([123])(?!\d)", text)))
+
+
+def topic_selection(issue: dict[str, Any], comment: dict[str, Any] | None = None) -> list[str]:
+    rows = _topic_rows(str(issue.get("description") or ""))
+    body = str((comment or {}).get("body") or "")
+    selected = _selectors(body)
+    if selected == ["all"]: return [r["slug"] or r["text"] for r in rows] or ["all"]
+    if selected: return [r["slug"] or r["text"] for r in rows if r["number"] in selected] or selected
+    checked = [r["slug"] or r["text"] for r in rows if r["checked"]]
+    return checked or ([rows[0]["slug"] or rows[0]["text"]] if rows else ["1"])
 
 
 def is_daily(issue: dict[str, Any]) -> bool:
     return "[daily learn" in str(issue.get("title") or "").casefold() or "KD-DAILY-START" in str(issue.get("description") or "")
 
-
-def topic_selection(issue: dict[str, Any], comment: dict[str, Any] | None = None) -> list[str]:
-    body = str((comment or {}).get("body") or "")
-    if re.search(r"\b(?:all|都做|全部)\b", body, re.I):
-        return ["all"]
-    numbers = re.findall(r"(?<!\d)([123])(?!\d)", body)
-    if numbers:
-        return list(dict.fromkeys(numbers))
-    checked = re.findall(r"(?mi)^\s*-\s*\[[xX]\]\s*(?:\[[^]]+\]\s*)?(.+?)\s*$", str(issue.get("description") or ""))
-    return checked or ["1"]
 
 
 def thread_context(issue: dict[str, Any], comment: dict[str, Any]) -> str:
@@ -136,121 +156,209 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
 
 
+def _herdr_payload(stdout: str) -> dict[str, Any]:
+    try: return json.loads(stdout)
+    except (ValueError, json.JSONDecodeError): return {}
+
+
 def resolve_learning_agent() -> str | None:
-    result = _run(["herdr", "agent", "list", "--json"], 10)
-    if result.returncode:
-        return None
-    try:
-        payload = json.loads(result.stdout)
-    except (ValueError, json.JSONDecodeError):
-        return None
-    agents = payload if isinstance(payload, list) else payload.get("agents", []) if isinstance(payload, dict) else []
+    result = _run(["herdr", "agent", "list"], 10)
+    if result.returncode: return None
+    payload = _herdr_payload(result.stdout)
+    root = payload.get("result", payload) if isinstance(payload, dict) else {}
+    agents = root.get("agents", []) if isinstance(root, dict) else []
     for agent in agents:
-        name = str(agent.get("name") or agent.get("id") or "") if isinstance(agent, dict) else ""
-        if name.startswith("m2-learning-and-blog"):
-            return name
+        name = str(agent.get("name") or "") if isinstance(agent, dict) else ""
+        if name.startswith("m2-learning-and-blog"): return name
     return None
 
 
-def _fresh_cards(before: float) -> list[Path]:
+def _agent_state(name: str) -> dict[str, Any]:
+    result = _run(["herdr", "agent", "get", name], 10)
+    payload = _herdr_payload(result.stdout)
+    return payload.get("result", {}).get("agent", payload.get("agent", {})) if isinstance(payload, dict) else {}
+
+
+def _fresh_cards(before: float, slugs: list[str] | None = None) -> list[Path]:
     if not VAULT.is_dir(): return []
-    return sorted((p for p in VAULT.rglob("*.md") if p.stat().st_mtime > before), key=lambda p: p.stat().st_mtime)
+    roots = [VAULT / part for part in ("concepts", "craft", "thoughts")]
+    found = [p for root in roots if root.is_dir() for p in root.rglob("*.md") if p.name != "index.md" and p.stat().st_mtime > before]
+    if slugs:
+        wanted = {s.casefold() for s in slugs if s and s != "all"}
+        found = [p for p in found if p.stem.casefold() in wanted or any(s in p.stem.casefold() for s in wanted)]
+    return sorted(found, key=lambda p: p.stat().st_mtime)
 
 
-def dispatch(issue: dict[str, Any], directive: str, dry_run: bool, before: float) -> tuple[bool, str, dict[str, Any]]:
+def dispatch(issue: dict[str, Any], directive: str, dry_run: bool, before: float, slugs: list[str] | None = None) -> tuple[bool, str, dict[str, Any]]:
     payload = thread_context(issue, {"body": directive})
     if is_daily(issue):
         agent = resolve_learning_agent()
         if not agent: return False, "registered learning M2 not found", {}
-        argv = ["herdr", "agent", "prompt", agent, f"/learn {directive}\n\n{payload}"]
-    else:
-        plan = [sys.executable, str(ROUTER_PATH), "--plan", "--message", payload, "--json"]
-        if dry_run: return True, "dry-run router plan", {"argv": plan}
-        planned = _run(plan, 30)
-        if planned.returncode: return False, planned.stderr[-1000:], {"argv": plan}
-        try: parsed = json.loads(planned.stdout)
-        except (ValueError, json.JSONDecodeError): return False, "router returned invalid JSON", {"argv": plan}
-        plan_file = Path(tempfile.mkstemp(prefix="bot-bridge-plan-", suffix=".json")[1])
-        plan_file.write_text(json.dumps(parsed), encoding="utf-8")
-        argv = [sys.executable, str(ROUTER_PATH), "--apply", "--plan-file", str(plan_file), "--approve", "--json"]
-    if dry_run: return True, "dry-run dispatch", {"argv": argv}
-    sent = _run(argv, 30)
-    if sent.returncode: return False, sent.stderr[-1000:], {"argv": argv}
-    # Wait/read only after this dispatch; old idle output is never accepted.
-    target = argv[3] if argv[0] == "herdr" else ""
-    if target:
-        waited = _run(["herdr", "agent", "wait", target, "--timeout", "60000"], 70)
-        if waited.returncode: return False, "target did not complete", {"argv": argv}
-        read = _run(["herdr", "agent", "read", target, "--source", "recent-unwrapped", "--lines", "200"], 15)
+        prior = _agent_state(agent)
+        prior_seq = int(prior.get("completion_seq") or prior.get("completionSeq") or 0)
+        prompt = "/learn " + " ".join(slugs or [directive]) + "\n\n" + payload
+        argv = ["herdr", "agent", "prompt", agent, prompt, "--wait", "--until", "idle", "--until", "done", "--timeout", "60000"]
+        if dry_run: return True, "dry-run dispatch", {"argv": argv, "agent": agent, "prior_completion_seq": prior_seq}
+        sent = _run(argv, 75)
+        after = _agent_state(agent)
+        after_seq = int(after.get("completion_seq") or after.get("completionSeq") or 0)
+        status = str(after.get("agent_status") or after.get("status") or "").casefold()
+        if sent.returncode or status in {"blocked", "unknown"} or after_seq <= prior_seq:
+            return False, "target did not produce a fresh completion", {"argv": argv, "agent": agent, "prior_completion_seq": prior_seq, "completion_seq": after_seq, "status": status}
+        read = _run(["herdr", "agent", "read", agent, "--source", "recent-unwrapped", "--lines", "400"], 15)
         output = read.stdout.strip() if read.returncode == 0 else ""
-    else:
-        output = sent.stdout.strip()
-    cards = _fresh_cards(before) if is_daily(issue) else []
-    result = "\n\n".join(p.read_text(encoding="utf-8") for p in cards) if cards else output
-    return bool(result), result or "no verified output", {"argv": argv, "agent": target, "cards": [str(p) for p in cards]}
+        cards = _fresh_cards(before, slugs)
+        result = "\n\n".join(p.read_text(encoding="utf-8") for p in cards)
+        if not result: result = output
+        return bool(result), result or "no verified output", {"argv": argv, "agent": agent, "cards": [str(p) for p in cards], "completion_seq": after_seq}
+
+    plan_argv = [sys.executable, str(ROUTER_PATH), "--plan", "--message", payload, "--json"]
+    if dry_run: return True, "dry-run router plan", {"argv": plan_argv}
+    planned = _run(plan_argv, 30)
+    if planned.returncode: return False, planned.stderr[-1000:], {"argv": plan_argv}
+    parsed = _herdr_payload(planned.stdout)
+    if not parsed: return False, "router returned invalid JSON", {"argv": plan_argv}
+    plan_fd, plan_name = tempfile.mkstemp(prefix="bot-bridge-plan-", suffix=".json")
+    os.close(plan_fd)
+    receipt_fd, receipt_name = tempfile.mkstemp(prefix="bot-bridge-receipt-", suffix=".json")
+    os.close(receipt_fd)
+    plan_file, receipt_file = Path(plan_name), Path(receipt_name)
+    try:
+        plan_file.write_text(json.dumps(parsed), encoding="utf-8"); os.chmod(plan_file, 0o600)
+        apply_argv = [sys.executable, str(ROUTER_PATH), "--apply", "--plan-file", str(plan_file), "--apply-receipt-file", str(receipt_file), "--approve", "--json"]
+        applied = _run(apply_argv, 45)
+        if applied.returncode: return False, applied.stderr[-1000:], {"argv": apply_argv}
+        watch_argv = [sys.executable, str(ROUTER_PATH), "--watch", "--plan-file", str(plan_file), "--apply-receipt-file", str(receipt_file), "--json", "--interval", "1", "--max-wait", "60"]
+        watched = _run(watch_argv, 75)
+        if watched.returncode: return False, watched.stderr[-1000:], {"argv": watch_argv}
+        watched_payload = _herdr_payload(watched.stdout)
+        output = str(watched_payload.get("completed_rollup") or watched_payload.get("summary") or watched_payload.get("result") or "").strip()
+        if not output: return False, "router completed without a verified summary", {"argv": watch_argv}
+        return True, output, {"argv": watch_argv, "apply": apply_argv, "receipt": str(receipt_file)}
+    finally:
+        for path in (plan_file, receipt_file):
+            try: path.unlink()
+            except OSError: pass
+
+
+def _root_comment(comment: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    current = comment
+    seen: set[str] = set()
+    while True:
+        parent_id = str((current.get("parent") or {}).get("id") or "")
+        if not parent_id or parent_id in seen or parent_id not in by_id: return current
+        seen.add(parent_id); current = by_id[parent_id]
+
+
+def _latest_owner(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    owner = [c for c in comments if str((c.get("user") or {}).get("id") or "") == OWNER_USER_ID and not is_bot_comment(c)]
+    return max(owner, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or "")), default=None)
+
+
+def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    if is_daily(issue):
+        source = trigger if trigger.get("id") else (_latest_owner(comments) or trigger)
+        slugs = topic_selection(issue, source)
+        return ", ".join(slugs), slugs
+    if trigger.get("id"): return str(trigger.get("body") or ""), []
+    return str(issue.get("description") or issue.get("title") or "assigned issue"), []
 
 
 def process_once(client: Any, state: State, *, dry_run: bool = False) -> dict[str, Any]:
     issues = client.list_issues("TIA", limit=250)
     report: list[dict[str, Any]] = []
-    for issue in issues:
-        if not isinstance(issue, dict) or excluded_scope(issue): continue
+    for issue in sorted((i for i in issues if isinstance(i, dict)), key=lambda i: str(i.get("updatedAt") or "")):
+        if excluded_scope(issue): continue
         state_value = issue.get("state") or {}
         if str(state_value.get("type") or state_value.get("name") or "").casefold() in {"completed", "canceled", "cancelled", "done"}: continue
         comments = (issue.get("comments") or {}).get("nodes", [])
-        comment_by_id = {str(c.get("id")): c for c in comments if isinstance(c, dict)}
-        triggers: list[dict[str, Any]] = []
-        for comment in comments if isinstance(comments, list) else []:
-            if not isinstance(comment, dict) or is_bot_comment(comment) or str(comment.get("id")) in state.data["processed_comment_ids"]: continue
-            parent = comment.get("parent") or {}
-            parent_comment = comment_by_id.get(str(parent.get("id")))
-            mentions = "@bot" in str(comment.get("body") or "").casefold()
-            reply_to_bot = bool(parent_comment and is_bot_comment(parent_comment))
-            if mentions or reply_to_bot:
-                triggers.append(comment)
+        comments = sorted((c for c in comments if isinstance(c, dict)), key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or "")))
+        by_id = {str(c.get("id")): c for c in comments}
+        unprocessed = [c for c in comments if not is_bot_comment(c) and str(c.get("id")) not in state.data["processed_comment_ids"]]
+        triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold() or ((c.get("parent") or {}).get("id") and is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {})))]
         assignee = issue.get("assignee") or {}; delegate = issue.get("delegate") or {}
         assigned = str(assignee.get("id") or "") == BOT_ACTOR_ID or str(delegate.get("id") or "") == BOT_ACTOR_ID
-        assignment_key = f"{issue.get('id')}:{assignee.get('id','')}:{delegate.get('id','')}:{issue.get('updatedAt','')}"
-        if assigned and not triggers and state.data["issue_assignments"].get(str(issue.get("id"))) != assignment_key:
-            triggers.append({"id": None, "body": "assigned to bot", "assignment": True})
-        for trigger in triggers:
-            issue_id = str(issue.get("id") or issue.get("identifier"))
-            pending = state.data["pending"].get(issue_id)
-            if pending and pending.get("trigger") == trigger.get("id"):
-                report.append({"issue": issue.get("identifier") or issue_id, "trigger": trigger.get("id"), "ok": False, "pending": True})
-                continue
-            state.data["pending"][issue_id] = {"started_at": time.time(), "trigger": trigger.get("id"), "assignment_key": assignment_key}
+        latest_event = str((unprocessed[-1] if unprocessed else {}).get("id") or "")
+        assignment_key = f"{issue.get('id')}:{assignee.get('id','')}:{delegate.get('id','')}:{latest_event}"
+        issue_id = str(issue.get("id") or issue.get("identifier"))
+        if not assigned:
+            state.data["issue_assignments"].pop(issue_id, None)
+        if assigned and not triggers and state.data["issue_assignments"].get(issue_id) != assignment_key:
+            triggers = [{"id": None, "body": "assigned to bot", "assignment": True}]
+        if not triggers: continue
+        # One turn per issue: consume all eligible comments and use the newest directive.
+        trigger = triggers[-1]; root = _root_comment(trigger, by_id) if trigger.get("id") else trigger
+        pending = state.data["pending"].get(issue_id)
+        resuming = bool(pending and pending.get("phase") == "ack" and time.time() - float(pending.get("started_at", 0)) < 600)
+        if pending and not resuming and time.time() - float(pending.get("started_at", 0)) < 600:
+            report.append({"issue": issue.get("identifier") or issue_id, "pending": True, "phase": pending.get("phase")})
+            continue
+        if resuming:
+            trigger_ids = pending.get("trigger_ids", [])
+            trigger = by_id.get(str(trigger_ids[-1]), trigger) if trigger_ids else trigger
+            root = _root_comment(trigger, by_id) if trigger.get("id") else trigger
+        else:
+            directive, slugs = _directive(issue, trigger, comments)
+            pending = {"started_at": time.time(), "trigger_ids": [c.get("id") for c in triggers if c.get("id")], "assignment_key": assignment_key, "phase": "ack"}
+            state.data["pending"][issue_id] = pending; state.save()
+        if resuming:
+            directive, slugs = _directive(issue, trigger, comments)
+        marker = f"{BOT_MARKER}ack:{issue_id}:{latest_event} -->"
+        ack_id = None
+        if not dry_run:
+            existing_ack = next((c for c in comments if marker in str(c.get("body") or "")), None)
+            if not existing_ack:
+                ack_id = client.create_comment(issue_id, f"{ACK}\n{marker}", parent_id=root.get("id") if root.get("id") else None)
+            team = client.team_metadata("TIA"); in_progress = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if str(s.get("name", "")).casefold() == "in progress"), None)
+            if in_progress: client.update_issue(issue_id, state_id=in_progress)
+        pending.update({"phase": "dispatch", "ack_id": ack_id}); state.data["pending"][issue_id] = pending; state.save()
+        before = time.time()
+        ok, output, detail = dispatch(issue, directive, dry_run, before, slugs)
+        entry = {"issue": issue.get("identifier") or issue_id, "trigger_ids": pending["trigger_ids"], "ok": ok, "detail": detail}
+        if ok and not dry_run:
+            pending["phase"] = "result-comment"; state.save()
+            result_marker = f"{BOT_MARKER}result:{issue_id}:{latest_event} -->"
+            existing_result = next((c for c in comments if result_marker in str(c.get("body") or "")), None)
+            if not existing_result:
+                client.create_comment(issue_id, f"@ltp19941128\n\n{output}\n{result_marker}", parent_id=root.get("id") if root.get("id") else None)
+            pending["phase"] = "owner-reassign"; state.save()
+            client.update_issue(issue_id, assignee_id=OWNER_USER_ID, clear_delegate=True)
+            state.data["pending"].pop(issue_id, None); state.data["issue_assignments"][issue_id] = assignment_key
+            state.data["processed_comment_ids"].extend(x for x in pending["trigger_ids"] if x and x not in state.data["processed_comment_ids"])
             state.save()
-            if not dry_run:
-                client.create_comment(issue_id, ACK, parent_id=trigger.get("id") if trigger.get("id") else None)
-                team = client.team_metadata("TIA"); in_progress = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if str(s.get("name", "")).casefold() == "in progress"), None)
-                if in_progress: client.update_issue(issue_id, state_id=in_progress)
-            before = time.time()
-            ok, output, detail = dispatch(issue, ", ".join(topic_selection(issue, trigger)), dry_run, before)
-            entry = {"issue": issue.get("identifier") or issue_id, "trigger": trigger.get("id"), "ok": ok, "detail": detail}
-            if ok and not dry_run:
-                client.create_comment(issue_id, f"@ltp19941128\n\n{output}", parent_id=trigger.get("id") if trigger.get("id") else None)
-                client.update_issue(issue_id, assignee_id=OWNER_USER_ID, clear_delegate=True)
-                state.data["pending"].pop(issue_id, None); state.data["processed_comment_ids"].append(trigger.get("id")) if trigger.get("id") else None
-                if assigned: state.data["issue_assignments"][issue_id] = assignment_key
-                state.save()
-            report.append(entry)
+        report.append(entry)
     return {"ok": True, "dry_run": dry_run, "triggers": report}
 
 
 def serve_webhook(port: int, client: Any, state: State) -> None:
     secret = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
     if not secret: raise SystemExit("LINEAR_WEBHOOK_SECRET is required")
-    bridge = (client, state)
+    bridge = (client, state); seen: dict[str, float] = {}; max_age = 300
     class Handler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup(); self.connection.settimeout(5)
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "-1"))
+            try: length = int(self.headers.get("Content-Length", "-1"))
+            except (TypeError, ValueError): self.send_error(400); return
             if length < 0 or length > 1_000_000: self.send_error(413); return
-            body = self.rfile.read(length)
-            if not verify_signature(secret, body, self.headers.get("Linear-Signature", "")): self.send_error(401); return
-            process_once(*bridge); self.send_response(202); self.end_headers()
+            try: body = self.rfile.read(length)
+            except (TimeoutError, socket.timeout): self.send_error(408); return
+            if len(body) != length or not verify_signature(secret, body, self.headers.get("Linear-Signature", "")): self.send_error(401); return
+            try: payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError): self.send_error(400); return
+            stamp = payload.get("webhookTimestamp") or payload.get("timestamp")
+            if stamp is not None:
+                try: stamp_num = float(stamp) / (1000 if float(stamp) > 10_000_000_000 else 1)
+                except (TypeError, ValueError): self.send_error(400); return
+                now = time.time()
+                if abs(now - stamp_num) > max_age: self.send_error(408); return
+                delivery = self.headers.get("Linear-Delivery") or hashlib.sha256(body).hexdigest()
+                if delivery in seen and now - seen[delivery] < max_age: self.send_error(409); return
+                seen[delivery] = now
+            threading.Thread(target=process_once, args=bridge, daemon=True).start()
+            self.send_response(202); self.end_headers()
         def log_message(self, *_: Any) -> None: pass
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler); server.daemon_threads = True; server.serve_forever()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -291,7 +291,7 @@ class GraphQLClient:
             API_URL,
             data=body,
             headers={
-                "Authorization": self.api_key,
+                "Authorization": (f"Bearer {self.api_key}" if _oauth_app_enabled() and not self.api_key.startswith("Bearer ") else self.api_key),
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -394,6 +394,7 @@ class GraphQLClient:
             )
         if not issue:
             raise LinearSyncError(f"Linear issue '{identifier}' was not found")
+        self._paginate_comments(issue)
         return issue
 
     def create_issue(
@@ -475,6 +476,7 @@ class GraphQLClient:
         priority: int | None = None,
         assignee_id: str | None = None,
         delegate_id: str | None = None,
+        clear_assignee: bool = False,
         clear_delegate: bool = False,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {}
@@ -494,7 +496,7 @@ class GraphQLClient:
             input_data["parentId"] = parent_id
         if priority is not None:
             input_data["priority"] = priority
-        if assignee_id is not None:
+        if assignee_id is not None or clear_assignee:
             input_data["assigneeId"] = assignee_id
         if delegate_id is not None or clear_delegate:
             input_data["delegateId"] = delegate_id
@@ -526,7 +528,7 @@ class GraphQLClient:
             raise LinearSyncError("Linear did not update the issue")
         return result["issue"]
 
-    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None, parent_id: str | None = None) -> None:
+    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None, parent_id: str | None = None) -> str | None:
         input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
         if parent_id:
             input_data["parentId"] = parent_id
@@ -540,8 +542,27 @@ class GraphQLClient:
             """,
             {"input": input_data},
         )
-        if not data.get("commentCreate", {}).get("success"):
+        result = data.get("commentCreate", {})
+        if not result.get("success"):
             raise LinearSyncError("Linear did not create the comment")
+        return (result.get("comment") or {}).get("id")
+
+    def _paginate_comments(self, issue: dict[str, Any]) -> None:
+        comments = issue.get("comments") or {}
+        page = comments.get("pageInfo") or {}
+        if not page.get("hasNextPage"): return
+        nodes = list(comments.get("nodes", [])); after = page.get("endCursor")
+        while after:
+            data = self.execute(
+                """query IssueComments($id: String!, $after: String) {
+                  issue(id: $id) { comments(first: 100, after: $after) {
+                    nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } }
+                    pageInfo { hasNextPage endCursor }
+                  } }
+                }""", {"id": str(issue.get("id")), "after": after})
+            block = (data.get("issue") or {}).get("comments") or {}
+            nodes.extend(block.get("nodes", [])); after = block.get("pageInfo", {}).get("endCursor") if block.get("pageInfo", {}).get("hasNextPage") else None
+        issue["comments"] = {"nodes": sorted(nodes, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or ""))), "pageInfo": {"hasNextPage": False}}
 
     def list_issues(
         self, team_key: str, *, state: str = "", project: str = "",
@@ -556,6 +577,8 @@ class GraphQLClient:
                   assignee { id name displayName }
                   delegate { id name displayName }
                   state { id name type } project { id name }
+                  team { id key name }
+                  parent { id identifier title project { id name } }
                   comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } }
                   labels { nodes { id name } }
                 }
@@ -567,12 +590,27 @@ class GraphQLClient:
         )
         issues = data.get("issues", {}).get("nodes", [])
         page = data.get("issues", {}).get("pageInfo", {})
+        for issue in issues:
+            comments = issue.get("comments") or {}
+            if comments.get("pageInfo", {}).get("hasNextPage"):
+                after = comments.get("pageInfo", {}).get("endCursor")
+                nodes = list(comments.get("nodes", []))
+                while after:
+                    comment_data = self.execute(
+                        """
+                        query IssueComments($id: String!, $after: String) {
+                          issue(id: $id) { comments(first: 100, after: $after) { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } } }
+                        }
+                        """, {"id": str(issue.get("id")), "after": after})
+                    block = (comment_data.get("issue") or {}).get("comments") or {}
+                    nodes.extend(block.get("nodes", [])); after = block.get("pageInfo", {}).get("endCursor") if block.get("pageInfo", {}).get("hasNextPage") else None
+                issue["comments"] = {"nodes": sorted(nodes, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or ""))), "pageInfo": {"hasNextPage": False}}
         while page.get("hasNextPage") and len(issues) < limit:
             data = self.execute(
                 """
                 query ListIssuesPage($team: String!, $first: Int!, $after: String) {
                   issues(filter: {team: {key: {eq: $team}}}, first: $first, after: $after, orderBy: updatedAt) {
-                    nodes { id identifier title url description priority updatedAt assignee { id name displayName } delegate { id name displayName } state { id name type } project { id name } comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } } labels { nodes { id name } } }
+                    nodes { id identifier title url description priority updatedAt assignee { id name displayName } delegate { id name displayName } state { id name type } project { id name } team { id key name } parent { id identifier title project { id name } } comments { nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } } pageInfo { hasNextPage endCursor } } labels { nodes { id name } } }
                     pageInfo { hasNextPage endCursor }
                   }
                 }
@@ -581,6 +619,8 @@ class GraphQLClient:
             )
             issues.extend(data.get("issues", {}).get("nodes", []))
             page = data.get("issues", {}).get("pageInfo", {})
+        for issue in issues:
+            self._paginate_comments(issue)
         def matches(issue: dict[str, Any]) -> bool:
             state_value = issue.get("state") or {}
             project_value = issue.get("project") or {}
@@ -1632,15 +1672,23 @@ def _update_mutation(issue: dict[str, Any], input_data: dict[str, Any]) -> dict[
     }
 
 
+def _normalize_optional_id(value: str | None) -> tuple[str | None, bool]:
+    if value is None: return None, False
+    if value.strip().casefold() in {"", "null", "none"}: return None, True
+    return value, False
+
+
 def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
     mode, skipped = resolve_mode(args.mode, subcommand="update-issue")
+    assignee_value, clear_assignee = _normalize_optional_id(args.assignee)
+    delegate_value, clear_delegate = _normalize_optional_id(args.delegate)
     if mode == "off":
         return {"ok": True, "command": "update-issue", "mode": "off", "decision": "off (skipped)",
                 "skipped": skipped or "mode_off", "planned_mutations": []}
     requested = {
         key: value for key, value in {
             "title": args.title, "description": args.description, "priority": args.priority,
-            "assigneeId": args.assignee, "delegateId": args.delegate,
+            "assigneeId": assignee_value, "delegateId": delegate_value,
         }.items() if value is not None
     }
     if mode == "observe":
@@ -1676,8 +1724,10 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
             requested["labelIds"] = labels
     else:
         issue = {"id": args.id, "identifier": args.id}
-    if not requested:
+    if not requested and not (clear_assignee or clear_delegate):
         raise LinearSyncError("update-issue requires at least one update option")
+    if clear_assignee: requested["assigneeId"] = None
+    if clear_delegate: requested["delegateId"] = None
     mutation = _update_mutation(issue, requested)
     if mode == "observe":
         return {"ok": True, "command": "update-issue", "mode": mode,
@@ -1690,6 +1740,7 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
         state_id=requested.get("stateId"), project_id=requested.get("projectId"),
         priority=requested.get("priority"), label_ids=requested.get("labelIds"),
         assignee_id=requested.get("assigneeId"), delegate_id=requested.get("delegateId"),
+        clear_assignee=clear_assignee, clear_delegate=clear_delegate,
     )
     return {"ok": True, "command": "update-issue", "mode": mode, "decision": "accept",
             "issue": _issue_detail(updated)}

@@ -943,6 +943,18 @@ class KnowledgeDigestTests(unittest.TestCase):
                 "knowledge://jp-mixed-script-line-breaking",
             )
 
+    def test_existing_unassigned_daily_issue_gets_owner_and_footer(self):
+        class Transport:
+            def __init__(self): self.updated = []
+            def update_issue(self, issue_id, **kwargs): self.updated.append((issue_id, kwargs)); return kwargs
+        transport = Transport()
+        topics = [{"topic_key": "topic-one", "title": "Topic one", "learning_brief": {"why_now": "why", "preview_questions": ["q1", "q2", "q3"], "recommended_command": "/learn topic-one"}}]
+        existing = {"id": "i", "title": "old", "description": "<!-- KD-DAILY-START:2026-11-14 -->\n- [x] old owner check\n<!-- KD-DAILY-END:2026-11-14 -->\n", "assignee": None}
+        result = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=existing)
+        self.assertEqual(transport.updated[0][1]["assignee_id"], "0680d5e4-720a-4724-a1d4-b9660c0d1495")
+        self.assertIn("@bot 1", transport.updated[0][1]["description"])
+        self.assertIn("old owner check", transport.updated[0][1]["description"])
+
 
 if __name__ == "__main__":
     unittest.main()

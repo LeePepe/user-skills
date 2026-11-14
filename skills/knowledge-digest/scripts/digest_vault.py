@@ -1387,10 +1387,13 @@ def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any
     description = _daily_digest_markdown(day, topics)
     if issue:
         existing = str(issue.get("description") or "")
-        desired = description if DAILY_LINEAR_FOOTER in existing else description.replace("\n" + DAILY_LINEAR_FOOTER + "\n", "\n")
+        desired = description
         description = _merge_daily_digest_description(existing, desired, topics)
+        if DAILY_LINEAR_FOOTER not in description:
+            description = description.rstrip() + "\n\n" + DAILY_LINEAR_FOOTER + "\n"
         assignee = issue.get("assignee")
-        needs_owner = isinstance(assignee, dict) and assignee.get("id") != "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        assignee_id = assignee.get("id") if isinstance(assignee, dict) else None
+        needs_owner = "assignee" in issue and assignee_id not in {"6105e16e-700a-4ea5-8283-67aec10daf20", "0680d5e4-720a-4724-a1d4-b9660c0d1495"}
         if description == existing and title == issue.get("title") and not needs_owner:
             return issue
         kwargs = {"title": title, "description": description}
