@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -187,6 +188,16 @@ class RetroStoryEngineTests(unittest.TestCase):
             self.assertEqual(len(lines_after), 7)
 
     def test_skill_roi_freshness_window_anchor_and_cli_auto_propose(self) -> None:
+        class FixtureClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                instant = cls(2026, 10, 20, 12, tzinfo=timezone.utc)
+                return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+        # Keep the fixed October observations inside the live metric window.
+        clock = mock.patch.object(ENGINE, "datetime", FixtureClock)
+        clock.start()
+        self.addCleanup(clock.stop)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wh_stale = root / "warehouse-stale.db"

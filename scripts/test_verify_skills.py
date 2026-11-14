@@ -123,6 +123,28 @@ def tracked_and_candidate_files() -> tuple[Path, ...]:
 
 
 class VerifySkillsTests(unittest.TestCase):
+    def test_web_liquid_glass_capability_isolated_from_mobile(self) -> None:
+        catalog = SKILLS_DIR / "design-studio" / "scripts" / "design_catalog.py"
+        taxonomy = SKILLS_DIR / "design-studio" / "references" / "taxonomy-v2.json"
+        vault = SKILLS_DIR / "design-studio" / "references" / "vault"
+        def run_catalog(platform: str) -> dict:
+            result = subprocess.run([sys.executable, str(catalog), "vault-search", "--platform", platform, "--dimension", "glass-material", "--query", "Liquid Glass", "--taxonomy", str(taxonomy), "--vault-dir", str(vault)], capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)
+        web = run_catalog("web")
+        gm = next(item for item in web["matches"] if item["id"] == "GM-004")
+        self.assertIn("feDisplacementMap", gm["web_implementation"])
+        self.assertIn("html_recipe_ref", gm)
+        mobile_text = json.dumps(run_catalog("mobile"), ensure_ascii=False)
+        for forbidden in ("GM-004", "feDisplacementMap", "apple-liquid-glass-html-recipe"):
+            self.assertNotIn(forbidden, mobile_text)
+        route = subprocess.run([sys.executable, str(SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"), "route", "--platform", "web", "--dimensions", "glass-material"], capture_output=True, text=True, check=True)
+        self.assertIn("apple_liquid_glass_web", json.loads(route.stdout)["external_skill_sources"]["allowed_web"])
+        mobile_route = subprocess.run([sys.executable, str(SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"), "route", "--platform", "mobile", "--dimensions", "glass-material"], capture_output=True, text=True, check=True)
+        mobile_route_text = mobile_route.stdout
+        self.assertIn("apple_liquid_glass_web", mobile_route_text)
+        self.assertNotIn("feDisplacementMap", mobile_route_text)
+        self.assertNotIn("apple-liquid-glass-html-recipe", mobile_route_text)
+
     """Contract and integrity checks for skills, metadata, links, and hygiene."""
 
     def _load_ci_monitor(self):

@@ -1255,6 +1255,47 @@
       "desktop_macos_implementation": "Desktop Web (1280x800 / 1440x900): deal 3 material themes via theme.mjs deal, build cold-reviewed hero + job-driven macrostructure, and pass sloplint.mjs --render Floor & Reflex gates.",
       "mobile_ios_implementation": "Mobile Web (375x812 / 390x844): multi-viewport sloplint.mjs --render verification ensuring zero horizontal overflow, >=44x44px touch targets, and preserved interactive wiring (sloplint --before / --kept).",
       "native_guardrails": "Enforce Hallmark Floor & Reflex gates via sloplint.mjs --render across 8 widths: ban tracked-capital eyebrows above every heading (DC-009), ban non-functional fake submit forms (DC-010), ban single-word headline color highlights, and require 100% factual content inventory."
+    },
+    {
+      "id": "GM-004",
+      "name": "HTML/CSS + Inline SVG Apple Liquid Glass optical refraction and dispersion recipe",
+      "aliases": [
+        "apple_liquid_glass_web",
+        "Snell squircle",
+        "feDisplacementMap",
+        "Fresnel rim"
+      ],
+      "category": "glass-material",
+      "platforms": [
+        "web"
+      ],
+      "platforms_v2": [
+        "web"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read",
+        "Persuade",
+        "Experience"
+      ],
+      "motion_tier": "M2",
+      "primary_dimension": "glass-material",
+      "secondary_dimensions": [
+        "visual-style",
+        "motion-interaction"
+      ],
+      "sub_category": "glass-refraction-specular",
+      "source_prompt_zh": "Web HTML/CSS + Inline SVG 还原 Apple Liquid Glass 光学透镜折射与色散配方。",
+      "canonical_prompt": "Render Apple Liquid Glass on Web with a Snell convex-squircle displacement map, neutral RGB(128,128,128) center, symmetric RGB dispersion, blue caustic shade, dual Fresnel rims, and safe blur fallback.",
+      "html_recipe_ref": "~/Development/handoff/apple-liquid-glass-html-recipe/",
+      "web_implementation": "Use inline zero-size SVG feImage with a generated Snell squircle RGBA map; compose three symmetric feDisplacementMap channels (S-2D/S/S+2D), isolate RGB with feColorMatrix, merge with arithmetic/screen blends, saturate, and apply mask-composite: exclude Fresnel rims plus aura caustics. Blink may use backdrop-filter:url(#apple-liquid-glass) blur(4px) saturate(155%); Safari/Firefox retain low-blur fallback.",
+      "mobile_ios_implementation": "Not applicable: web-only capability is intentionally isolated from native vaults.",
+      "desktop_macos_implementation": "Not applicable: use native SwiftUI Liquid Glass on Apple platforms.",
+      "native_guardrails": "Web-only. Never route this recipe to mobile/native capabilities; keep HTML/SVG shader details out of native route payloads. Reduce transparency/motion gracefully.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": []
     }
   ]
 }

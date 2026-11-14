@@ -139,6 +139,7 @@ class ProgressiveRouterTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         allowed_web = payload["external_skill_sources"]["allowed_web"]
         expected_repos = {
+            "apple_liquid_glass_web",
             "impeccable",
             "taste_skill",
             "emilkowalski",

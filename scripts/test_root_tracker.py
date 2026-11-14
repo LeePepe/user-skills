@@ -57,6 +57,17 @@ class RootTrackerTests(unittest.TestCase):
         result = root_tracker.classify_jev(item, [china], jev_function=lambda *args, **kwargs: None)
         self.assertEqual(result["root_id"], "NEW_ROOT_CANDIDATE")
 
+    def test_repo_relative_topic_map_survives_empty_home(self):
+        repo_map = Path(root_tracker.SCRIPT_DIR).parents[1] / "personal-m2-assistant/references/m2-domain-map.json"
+        self.assertTrue(repo_map.is_file())
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.object(root_tracker.Path, "home", return_value=Path(home)), mock.patch.object(
+                root_tracker, "DEFAULT_TOPIC_MAPS", (repo_map, Path(home) / "missing.json")
+            ):
+                topics = root_tracker._load_topic_map()
+        self.assertGreater(len(topics), 0)
+        self.assertTrue(any(topic.get("topic_id") == "sapphire-discovery-kumo" for topic in topics))
+
     def test_discovery_kumo_topic_maps_to_sapphire_root(self):
         roots = self.roots + [{"root_id": "sapphire-discovery-kumo", "name": "Sapphire Discovery Kumo", "keywords": ["kumo"]}]
         result = root_tracker.classify_jev({"title": "Discovery Feed Kumo component", "repository": "repo/app"}, roots)
@@ -86,7 +97,7 @@ class RootTrackerTests(unittest.TestCase):
             evals.write_text(json.dumps({"itemId": "e1", "pr_number": 543, "score": 0.8, "title": "Bing CN reusable test gap"}) + "\n" + json.dumps({"itemId": "e2", "score": 0.6}) + "\n", encoding="utf-8")
             roots = base / "roots.json"
             roots.write_text(json.dumps({"roots": self.roots}), encoding="utf-8")
-            snapshot = root_tracker.collect(roots_path=roots, summary_path=summary, devsync_path=devsync, worktrees_path=worktrees, supervisor_path=supervisor, eval_path=evals, latest_discovery_path=base / "missing-latest.json", aidash_eval_path=base / "missing-aidash.json", canonical_rules=[])
+            snapshot = root_tracker.collect(roots_path=roots, summary_path=summary, devsync_path=devsync, worktrees_path=worktrees, supervisor_path=supervisor, eval_path=evals, latest_discovery_path=base / "missing-latest.json", aidash_eval_path=base / "missing-aidash.json", teams_timeline_path=base / "teams-timeline.json", canonical_rules=[])
             china = snapshot["roots"][0]
             self.assertEqual(china["workstreams"]["Bugs & Devsync"]["count"], 3)
             self.assertEqual(china["workstreams"]["PR & PoP"]["items"][0]["signal"], "P0_BLOCKING_DECISION")
@@ -110,7 +121,7 @@ class RootTrackerTests(unittest.TestCase):
             aidash.write_text(json.dumps({"id": "E1", "score": 0.9, "title": "China duplicate"}) + "\n" + json.dumps({"id": "E2", "score": 0.8, "title": "China two"}) + "\n", encoding="utf-8")
             roots = base / "roots.json"
             roots.write_text(json.dumps({"roots": self.roots}), encoding="utf-8")
-            snapshot = root_tracker.collect(roots_path=roots, supervisor_path=supervisor, eval_path=eval_path, latest_discovery_path=latest, aidash_eval_path=aidash, summary_path=base / "missing-summary.md", devsync_path=base / "missing-devsync", worktrees_path=base / "missing-worktrees", canonical_rules=[])
+            snapshot = root_tracker.collect(roots_path=roots, supervisor_path=supervisor, eval_path=eval_path, latest_discovery_path=latest, aidash_eval_path=aidash, summary_path=base / "missing-summary.md", devsync_path=base / "missing-devsync", worktrees_path=base / "missing-worktrees", teams_timeline_path=base / "teams-timeline.json", canonical_rules=[])
         pr_numbers = {item.get("pr_number") for item in snapshot["roots"][0]["workstreams"]["PR & PoP"]["items"]}
         self.assertIn(580, pr_numbers)
         sink_ids = [item["id"] for item in snapshot["roots"][0]["workstreams"]["Repo & Skill Sinks"]["items"]]
@@ -242,8 +253,9 @@ class RootTrackerTests(unittest.TestCase):
             def upsert_root(self, record):
                 raise AssertionError("must not be called")
 
-        with self.assertRaises(root_tracker.OneWayBoundaryError):
-            root_tracker.sync_linear(self.roots, client=ForbiddenClient(), offline=False)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(root_tracker.OneWayBoundaryError):
+                root_tracker.sync_linear(self.roots, client=ForbiddenClient(), offline=False, teams_timeline_path=Path(directory) / "teams.json")
 
     def test_dry_run_does_not_open_network_or_write_cache(self):
         with tempfile.TemporaryDirectory() as directory:

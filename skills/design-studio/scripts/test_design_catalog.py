@@ -1,13 +1,18 @@
+import base64
 import contextlib
 import importlib.util
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
+import zlib
+from unittest import mock
 from pathlib import Path
 
 
@@ -470,6 +475,19 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.assertEqual(url_only.returncode, 0, url_only.stderr)
         self.assertEqual(json.loads(url_only.stdout)["created_count"], 1)
 
+    def test_curated_text_skips_ocr_and_missing_image_writes_nothing(self):
+        image = self.directory / "existing.png"
+        image.write_bytes(b"valid-path-placeholder")
+        args = DESIGN_CATALOG.parser().parse_args(["vault-ingest", "--text", "curated visual note", "--image", str(image), "--no-jev", "--taxonomy", str(self.taxonomy), "--vault-dir", str(self.vault_dir)])
+        with mock.patch.object(DESIGN_CATALOG, "ocr_image", side_effect=AssertionError("OCR must not run")):
+            self.assertEqual(DESIGN_CATALOG.command(args), 0)
+        stored = json.loads((self.vault_dir / "mobile-ios.json").read_text())
+        self.assertTrue(any(card.get("image_assets") == [str(image)] for card in stored["inspirations"]))
+        before = {path.name: path.read_bytes() for path in self.vault_dir.glob("*.json")}
+        missing = run("vault-ingest", "--text", "note", "--image", str(self.directory / "missing.png"), "--no-jev", "--taxonomy", str(self.taxonomy), "--vault-dir", str(self.vault_dir))
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.vault_dir.glob("*.json")})
+        self.assertNotEqual(missing.returncode, 0)
+
     def test_scaffold_gallery_writes_safe_interactive_bundle(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = os.environ.copy()
@@ -488,6 +506,101 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
             self.assertEqual(manifest["style_overrides"], {"density": "airy"})
             duplicate = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile", env=env)
             self.assertNotEqual(duplicate.returncode, 0)
+
+    def test_web_optical_recipe_ingest_cannot_contaminate_native_vaults(self):
+        recipe = "~/Development/handoff/apple-liquid-glass-html-recipe/"
+        taxonomy_before = self.taxonomy.read_bytes()
+        inputs = [("iOS SwiftUI liquid glass control", ["--html-recipe-ref", recipe]),
+                  ("iOS SwiftUI liquid glass control", ["--source-url", "https://example.org/apple-liquid-glass-html-recipe/"]),
+                  ("iOS SwiftUI feDisplacementMap liquid glass control", [])]
+        for text, extra in inputs:
+            with self.subTest(extra=extra, text=text):
+                result = run("vault-ingest", "--text", text, *extra, "--no-jev",
+                             "--taxonomy", str(self.taxonomy), "--vault-dir", str(self.vault_dir))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                cards = json.loads(result.stdout)["created_cards"]
+                self.assertTrue(cards)
+                for card in cards:
+                    self.assertEqual(card["platforms"], ["web"])
+                    self.assertIn("web_implementation", card)
+                    self.assertNotIn("apple_native_primitives", card)
+                for name in ("mobile-ios.json", "desktop-macos.json"):
+                    native = (self.vault_dir / name).read_text()
+                    self.assertNotIn("apple-liquid-glass-html-recipe", native)
+                    self.assertNotIn("feDisplacementMap", native)
+                self.assertEqual(self.taxonomy.read_bytes(), taxonomy_before)
+
+    def test_gallery_optical_map_has_inward_normals_and_clear_center(self):
+        svg = ET.fromstring(DESIGN_CATALOG._gallery_svg(192, 96))
+        ns = {"s": "http://www.w3.org/2000/svg"}
+        image = svg.find(".//s:feImage", ns)
+        png = base64.b64decode(image.attrib["href"].split(",", 1)[1])
+        width, height = struct.unpack("!II", png[16:24])
+        compressed = bytearray()
+        offset = 8
+        while offset < len(png):
+            size = struct.unpack("!I", png[offset:offset + 4])[0]
+            if png[offset + 4:offset + 8] == b"IDAT":
+                compressed.extend(png[offset + 8:offset + 8 + size])
+            offset += size + 12
+        raw = zlib.decompress(compressed)
+        stride = width * 4 + 1
+
+        def pixel(x, y):
+            self.assertEqual(raw[y * stride], 0)
+            start = y * stride + 1 + x * 4
+            return tuple(raw[start:start + 4])
+
+        self.assertEqual(pixel(width // 2, height // 2), (128, 128, 128, 255))
+        left, right = pixel(2, height // 2), pixel(width - 3, height // 2)
+        top, bottom = pixel(width // 2, 2), pixel(width // 2, height - 3)
+        self.assertGreater(left[0], 128)
+        self.assertLess(right[0], 128)
+        self.assertEqual((left[1], right[1]), (128, 128))
+        self.assertGreater(top[1], 128)
+        self.assertLess(bottom[1], 128)
+        self.assertEqual((top[0], bottom[0]), (128, 128))
+        self.assertTrue(all(value > 128 for value in pixel(10, 10)[:2]))
+        self.assertGreater(len({pixel(x, height // 2)[0] for x in range(1, 12)}), 5)
+        light = [pixel(x, y)[2] for y in range(height) for x in range(width)]
+        self.assertLess(min(light), 128)
+        self.assertGreater(max(light), 128)
+        scales = [float(node.attrib["scale"]) for node in svg.findall(".//s:feDisplacementMap", ns)]
+        self.assertEqual(len(scales), 3)
+        self.assertAlmostEqual(scales[0] + scales[2], 2 * scales[1])
+
+    def test_gallery_rejects_unsafe_session_data_and_parent_symlink_before_writing(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            base = ["scaffold-gallery", "--goal", "safe-goal", "--round", "1", "--platform", "web"]
+            for option, value in (("--style-overrides", "{bad"),
+                                  ("--style-overrides", '{"density":{}}'),
+                                  ("--session-anti-patterns", "[1]")):
+                rejected = run(*base, option, value, env=env)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertFalse((Path(directory) / "Development/handoff/safe-goal").exists())
+            root = Path(directory) / "Development/handoff"
+            root.mkdir(parents=True)
+            outside = Path(directory) / "product"
+            outside.mkdir()
+            (root / "safe-goal").symlink_to(outside, target_is_directory=True)
+            rejected = run(*base, env=env)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_gallery_keeps_session_text_inert_in_html_and_inline_script(self):
+        payload = '</script><img src=x onerror="window.injected=true">'
+        manifest = {"goal": "safe-goal", "round": 1, "platform": "mobile",
+                    "frame": {"width": 390, "height": 844}, "variants": [],
+                    "session_anti_patterns": [payload], "style_overrides": {"note": payload}}
+        index = DESIGN_CATALOG._gallery_index(manifest)
+        self.assertNotIn(payload, index)
+        self.assertEqual(index.count("</script>"), 1)
+        screen = DESIGN_CATALOG._gallery_html("title", "v01", "mobile",
+                    {"p0": "next-action", "axis_y": "accordion", "archetype": "VS-005"},
+                    [payload], {})
+        self.assertNotIn(payload, screen)
+        self.assertIn("&lt;/script&gt;", screen)
 
 
 if __name__ == "__main__":
