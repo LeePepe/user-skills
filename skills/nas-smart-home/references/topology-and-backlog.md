@@ -35,8 +35,10 @@ not because downloads still use `rclone copy`. Downloads land in
   output, or public receipts.
 - Recursively scan `/quark/来自：分享`, retaining its child directory structure
   under `library/tv`; also scan eligible user content under `/quark` without
-  visiting the shared prefix twice. Prioritize directories containing `芙莉莲`
-  before other series when submitting new tasks.
+  visiting the shared prefix twice. Submit paths containing `绝望写手` first
+  (`绝望写手S02` → `绝望写手S03`), then `芙莉莲`, then other series. Within each
+  priority, sort by relative path, including the zero-padded episode filename.
+  This controls new submissions; it does not preempt existing Alist tasks.
 - Prune `夸克精选壁纸`, `夸克自动转存测试`, `夸克网盘使用指南*`,
   `夸克网盘能干什么.mp4`, and names containing `招新` before media selection.
 - Include only videos (`mp4`, `mkv`, `avi`, `mov`, `ts`, `flv`, `webm`, `m4v`,
@@ -95,7 +97,24 @@ separate milestone from scheduler deployment.
    (matching the `:5244/@manage/tasks/copy` UI), showing actual progress/byte
    growth for a running task. A new directory, queue entry, or preallocated file
    size alone does **not** prove a live download.
-7. For rollback, stop only `quark-library-sync` and restore the timestamped
+7. For an explicitly approved live queue reprioritization, hold the existing
+   submission lock while updating the script and canceling current undone tasks
+   through authenticated `POST /api/admin/task/copy/cancel?tid=<id>`. Confirm old
+   copies have stopped before cleanup. Remove only regular, non-symlink Frieren
+   files beneath their mapped `library/tv/葬送的芙莉莲*` directory whose size is
+   confirmed smaller than the corresponding remote file; preserve equal-size,
+   unknown, or otherwise ambiguous files and all `绝望写手` files. Release the
+   lock before running `sync_to_library.sh` in the production container context
+   (`docker exec -w / quark-library-sync /volume1/docker/openlist/rclone/sync_to_library.sh`)
+   and confirm a successful round, not a lock-held skip. Direct unprivileged host
+   execution may fail on the root-owned lock; do not weaken its permissions.
+   Require every active `state=1` slot to contain `绝望写手S02`
+   while its episodes remain, with `S03` and then Frieren submitted behind it;
+   sample the same active task twice 10–15 seconds apart for progress growth,
+   then require a second successful round to report `enqueued=0`. Record
+   completed-file size/mtime/inode preservation and keep Alist concurrency and
+   unrelated containers unchanged. This one-off cleanup is not an hourly rule.
+8. For rollback, stop only `quark-library-sync` and restore the timestamped
    configuration/script backups. Keep downloaded media and unrelated services.
 
 ## Backlog boundaries
