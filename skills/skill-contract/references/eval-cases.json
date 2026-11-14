@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-14",
   "active_cases": [
     {
       "id": "EV-001",
@@ -88,6 +88,32 @@
         "retro_story_engine.py agent-efficiency --auto-propose"
       ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-006",
+      "title": "Negative command rejects unknown subcommand",
+      "tags": [
+        "cli",
+        "negative"
+      ],
+      "expect_fail_exit": 2,
+      "registered_at": "2026-11-14",
+      "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py definitely-not-a-command"
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "audit progressive disclosure skill package budgets",
+      "should_trigger": true
+    },
+    {
+      "query": "run a quick Xcode simulator build",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "evaluate a skill contract drawer",
+      "should_trigger": true
     }
   ]
 }

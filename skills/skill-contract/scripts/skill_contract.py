@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 import json
+import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -131,6 +133,13 @@ def _lookup_dot_path(data: Any, dot_path: str) -> tuple[bool, Any]:
     return True, cur
 
 
+def _run_command(command: Any, repo_root: Path) -> subprocess.CompletedProcess[str]:
+    argv = list(command) if isinstance(command, list) else shlex.split(str(command))
+    if argv and argv[0] in {"python", "python3"}:
+        argv[0] = sys.executable
+    return subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
+
+
 def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT) -> list[str]:
     reasons: list[str] = []
     cid = str(case.get("id", "<unidentified>"))
@@ -152,10 +161,7 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
 
     cmd_raw = case.get("cmd")
     if cmd_raw:
-        argv = list(cmd_raw) if isinstance(cmd_raw, list) else shlex.split(str(cmd_raw))
-        if argv and argv[0] in {"python", "python3"}:
-            argv[0] = sys.executable
-        proc = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
+        proc = _run_command(cmd_raw, repo_root)
         expect_exit = int(case.get("expect_exit", 0))
         if proc.returncode != expect_exit:
             reasons.append(f"{cid}: cmd exit {proc.returncode} != expect_exit {expect_exit} ({proc.stderr.strip()})")
@@ -174,6 +180,15 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
                     found, actual_val = _lookup_dot_path(parsed_json, str(dot_key))
                     if not found or actual_val != expected_val:
                         reasons.append(f"{cid}: JSON {dot_key!r} expected {expected_val!r}, got {actual_val!r}")
+
+    negative_cmd = case.get("negative_cmd")
+    if negative_cmd:
+        proc = _run_command(negative_cmd, repo_root)
+        expected = case.get("expect_fail_exit")
+        if expected is not None and proc.returncode != int(expected):
+            reasons.append(f"{cid}: negative_cmd exit {proc.returncode} != expect_fail_exit {expected}")
+        elif expected is None and proc.returncode == 0:
+            reasons.append(f"{cid}: negative_cmd unexpectedly succeeded")
 
     file_ref = case.get("file")
     if file_ref:
@@ -333,6 +348,7 @@ def run_eval(args: argparse.Namespace) -> int:
                 has_assertion = bool(
                     (case.get("forbidden_regex") or case.get("regex")) and (case.get("bad_snippet") is not None or case.get("good_snippet") is not None)
                     or case.get("cmd")
+                    or case.get("negative_cmd")
                     or case.get("file")
                 )
                 if not has_assertion:
@@ -456,28 +472,68 @@ def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]], pkg_di
                     findings.append({"skill": skill, "code": "missing-coordinate", "file": rel, "id": entry.get("id"), "fields": missing})
 
 
-def audit_package(path: Path, design: bool = False, repo_bound: bool = False) -> list[dict[str, Any]]:
+def _frontmatter_description(md: Path) -> str:
+    lines = md.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.strip().startswith("description:"):
+            return line.split(":", 1)[1].strip().strip("\"'")
+    return ""
+
+
+def _thin_wrapper(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return len(text.splitlines()) <= 25 and ("_CANONICAL_PATH" in text or "CANONICAL" in text)
+
+
+def audit_package(path: Path, design: bool = False, repo_bound: bool = False, sibling_corpus: str = "") -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     skill = path.name
     md = path / "SKILL.md"
     if not md.exists():
         return [{"skill": skill, "code": "missing-skill"}]
     text = md.read_text(encoding="utf-8")
-    all_md = text
+    desc = _frontmatter_description(md)
+    if not desc or len(desc) > 320:
+        findings.append({"skill": skill, "code": "description-length", "value": len(desc), "cap": 320})
+    manifest = path / ".claude-plugin" / "plugin.json"
+    if manifest.is_file():
+        try:
+            manifest_desc = json.loads(manifest.read_text(encoding="utf-8")).get("description", "")
+            if manifest_desc and len(manifest_desc) > 320:
+                findings.append({"skill": skill, "code": "description-length", "value": len(manifest_desc), "cap": 320, "file": str(manifest)})
+        except (OSError, json.JSONDecodeError):
+            pass
     refs = path / "references"
-    if refs.is_dir():
-        all_md += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in refs.glob("*.md"))
+    ref_docs = [p for p in refs.glob("*.md") if p.is_file()] if refs.is_dir() else []
+    all_md = text + "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in ref_docs)
     if not repo_bound and PRIVATE.search(all_md):
         findings.append({"skill": skill, "code": "private-identifier"})
     raw_regex_lines = [line for line in all_md.splitlines() if "forbidden_regex" in line or "regex-gate" in line]
     if len(raw_regex_lines) > 1:
         findings.append({"skill": skill, "code": "raw-regex-gates-in-markdown"})
     md_rel = f"{skill}/SKILL.md"
-    if md_rel not in BUDGET_EXEMPTIONS and len(md.read_text(encoding="utf-8").splitlines()) > (80 if (design or skill in {"my-designer", "design-studio"}) else 180):
+    if md_rel not in BUDGET_EXEMPTIONS and len(text.splitlines()) > (80 if (design or skill in {"my-designer", "design-studio"}) else 180):
         findings.append({"skill": skill, "code": "l0-lines"})
     if md_rel not in BUDGET_EXEMPTIONS and md.stat().st_size > 16 * 1024:
         findings.append({"skill": skill, "code": "l0-bytes"})
-    for ref in refs.glob("*") if refs.is_dir() else []:
+    for base in (refs, path / "scripts"):
+        if base.is_dir():
+            for link in base.rglob("*"):
+                if link.is_symlink() and (os.readlink(link).startswith("/") or not link.exists()):
+                    findings.append({"skill": skill, "code": "broken-symlink", "file": str(link)})
+    corpus = all_md + "\n" + sibling_corpus
+    if (path / "scripts").is_dir():
+        corpus += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (path / "scripts").glob("*.py"))
+    for ref in (refs.glob("*") if refs.is_dir() else []):
+        if ref.is_symlink() and not ref.exists():
+            continue
         if ref.suffix not in {".md", ".json"}:
             continue
         ref_rel = f"{skill}/references/{ref.name}"
@@ -492,8 +548,6 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False) ->
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})
                     break
         _audit_drawer(skill, ref, findings, pkg_dir=path)
-        corpus = text + "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in refs.glob("*.md"))
-        corpus += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (path / "scripts").glob("*.py")) if (path / "scripts").is_dir() else ""
         if ref.name not in corpus and ref.stem not in corpus:
             findings.append({"skill": skill, "code": "orphan-reference", "file": str(ref)})
     return findings
@@ -508,11 +562,105 @@ def audit(args: argparse.Namespace) -> int:
     names: dict[str, list[str]] = {}
     for package in packages:
         names.setdefault(package.name, []).append(str(package))
-        findings.extend(audit_package(package, repo_bound=bool(repo_arg)))
+    sibling_corpus = "\n".join(
+        p.read_text(encoding="utf-8", errors="replace")
+        for package in packages
+        for p in [package / "SKILL.md", *((p for p in (package / "references").glob("*.md") if p.is_file()) if (package / "references").is_dir() else [])]
+    )
+    for package in packages:
+        findings.extend(audit_package(package, repo_bound=bool(repo_arg), sibling_corpus=sibling_corpus))
     findings.extend({"code": "duplicate-skill", "name": name, "paths": paths} for name, paths in names.items() if len(paths) > 1)
+    scripts: dict[str, list[Path]] = {}
+    for package in packages:
+        for script in (package / "scripts").glob("*.py") if (package / "scripts").is_dir() else []:
+            if not script.is_symlink():
+                scripts.setdefault(script.name, []).append(script)
+    for name, paths in scripts.items():
+        if len(paths) > 1 and not any(_thin_wrapper(path) for path in paths):
+            findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in paths]})
     result = {"ok": not findings, "skills": len(packages), "findings": findings}
     print(json.dumps(result, indent=2))
     return 1 if findings and args.strict else 0
+
+
+def description_eval(args: argparse.Namespace) -> int:
+    target = _resolve_skill_dir(args.skill, repo=getattr(args, "repo", None), create=False)
+    desc = _frontmatter_description(target / "SKILL.md")
+    drawer = target / "references" / "eval-cases.json"
+    doc = json.loads(drawer.read_text(encoding="utf-8")) if drawer.is_file() else {}
+    failures: list[dict[str, Any]] = []
+    for index, case in enumerate(doc.get("trigger_evals", []), 1):
+        query = str(case.get("query", ""))
+        words = set(re.findall(r"[\w-]+", query.lower()))
+        description_words = set(re.findall(r"[\w-]+", desc.lower()))
+        matched = bool(words & description_words)
+        expected = bool(case.get("should_trigger"))
+        if matched != expected:
+            failures.append({"index": index, "query": query, "expected": expected, "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
+    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(doc.get("trigger_evals", [])), "passed": len(doc.get("trigger_evals", [])) - len(failures), "failures": failures}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if args.strict and not payload["ok"] else 0
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return value
+
+
+def sync_jev_stars(args: argparse.Namespace) -> int:
+    target = _resolve_skill_dir(args.skill, repo=getattr(args, "repo", None), create=False)
+    drawer = target / "references" / "eval-cases.json"
+    doc = json.loads(drawer.read_text(encoding="utf-8")) if drawer.is_file() else {"schema": "skill-eval-cases/v1", "version": 1, "active_cases": []}
+    entries = doc.setdefault("active_cases", [])
+    db_path = Path(args.db_path).expanduser() if args.db_path else Path.home() / "Library/Application Support/Falcon/falcon.sqlite"
+    if not db_path.is_file():
+        print(json.dumps({"ok": False, "error": f"database not found: {db_path}"}))
+        return 1
+    con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute("SELECT r.*, s.name AS source_name, rv.state AS review_state_joined FROM requests r LEFT JOIN sources s ON r.source_id=s.id LEFT JOIN reviews rv ON rv.request_id=r.id WHERE json_extract(CAST(r.summary_json AS TEXT), '$.starredAt') IS NOT NULL OR rv.state='starred' OR r.review_state='starred'").fetchall()
+    finally:
+        con.close()
+    source_filter = args.source_name or args.skill
+    mapping = {"howto": {"goal-task", "team-lead"}}
+    allowed = mapping.get(args.skill, {source_filter})
+    rows = [row for row in rows if not source_filter or row["source_name"] in allowed or row["source_name"] == source_filter]
+    existing = {str(item.get("jev_starred_id")): item for item in entries if isinstance(item, dict) and item.get("jev_starred_id") is not None}
+    additions = []
+    for row in rows:
+        sid = str(row["id"])
+        received = _json_value(row["received_request"])
+        response = _json_value(row["upstream_response"])
+        questions = received.get("questions", received) if isinstance(received, dict) else received
+        state = received.get("state") if isinstance(received, dict) else None
+        answers = response.get("answers", response) if isinstance(response, dict) else response
+        entry = existing.get(sid, {"id": _next_case_id(entries + additions, "EV")})
+        entry.update({"title": f"Falcon starred decision {sid}", "tags": ["jev-star"], "jev_starred_id": row["id"], "jev_state": state, "jev_questions": questions, "mock_jev_response": answers, "file": f"skills/{args.skill}/SKILL.md", "registered_at": date.today().isoformat()})
+        if args.cmd_template:
+            entry["cmd"] = args.cmd_template.replace("{mock_json}", json.dumps(answers, ensure_ascii=False)); entry["expect_exit"] = 0
+        additions.append(entry)
+    if args.dry_run:
+        print(json.dumps({"ok": True, "dry_run": True, "added": len(additions), "skill": args.skill}, ensure_ascii=False)); return 0
+    by_id = {str(item.get("jev_starred_id")): item for item in entries if isinstance(item, dict) and item.get("jev_starred_id") is not None}
+    ordinary = [item for item in entries if not (isinstance(item, dict) and item.get("jev_starred_id") is not None)]
+    starred = list(by_id.values())
+    for item in additions:
+        by_id[str(item["jev_starred_id"])] = item
+    starred = list(by_id.values())
+    archived = doc.setdefault("archived_cases", [])
+    while len(starred) + len(ordinary) > 15 and ordinary:
+        archived.append(ordinary.pop(0))
+    while len(starred) + len(ordinary) > 15:
+        archived.append(starred.pop(0))
+    doc["active_cases"] = ordinary + starred
+    doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"ok": True, "skill": args.skill, "added": len(additions), "active": len(doc["active_cases"])}, ensure_ascii=False)); return 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -575,6 +723,20 @@ def parser() -> argparse.ArgumentParser:
     eval_p.add_argument("--json", action="store_true")
     eval_p.add_argument("--strict", action="store_true")
 
+    desc_p = sub.add_parser("description-eval")
+    desc_p.add_argument("--skill", required=True)
+    desc_p.add_argument("--repo", default=None)
+    desc_p.add_argument("--mock-jev-json", default=None)
+    desc_p.add_argument("--strict", action="store_true")
+
+    star_p = sub.add_parser("sync-jev-stars")
+    star_p.add_argument("--skill", required=True)
+    star_p.add_argument("--repo", default=None)
+    star_p.add_argument("--db-path", default=None)
+    star_p.add_argument("--source-name", default=None)
+    star_p.add_argument("--cmd-template", default=None)
+    star_p.add_argument("--dry-run", action="store_true")
+
     audit_parser = sub.add_parser("audit")
     group = audit_parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--all", action="store_true")
@@ -592,6 +754,8 @@ def main() -> int:
         "sink-rule": sink_rule,
         "add-case": add_case,
         "eval": run_eval,
+        "description-eval": description_eval,
+        "sync-jev-stars": sync_jev_stars,
         "audit": audit,
     }[args.command](args)
 
