@@ -147,6 +147,20 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertNotIn("feDisplacementMap", mobile_route_text)
         self.assertNotIn("apple-liquid-glass-html-recipe", mobile_route_text)
 
+    def test_multiplatform_gallery_contract_is_wired(self) -> None:
+        catalog = SKILLS_DIR / "design-studio" / "scripts" / "design_catalog.py"
+        evidence = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
+        source = catalog.read_text(encoding="utf-8")
+        evidence_source = evidence.read_text(encoding="utf-8")
+        for platform in ("mobile", "desktop", "macos", "web"):
+            self.assertIn(platform, source)
+        for token in ("device-bezel", "loading=\"eager\"", "data-frame-mode", "data-group-filter", "portal:", "localStorage"):
+            self.assertIn(token, source)
+        self.assertIn("c._gallery_index(manifest)", evidence_source)
+        self.assertNotIn("<ul>{links}</ul>", evidence_source)
+        for path in (SKILLS_DIR / "my-designer" / "SKILL.md", SKILLS_DIR / "design-studio" / "SKILL.md"):
+            self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 130)
+
     """Contract and integrity checks for skills, metadata, links, and hygiene."""
 
     def _load_ci_monitor(self):

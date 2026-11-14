@@ -159,6 +159,12 @@ if (openSheet) openSheet.onclick = () => toggleSheet();
 document.getElementById('close-sheet').onclick = () => {closeOverlays(); render();};
 document.getElementById('medium-sheet').onclick = () => setDetent('medium');
 document.getElementById('large-sheet').onclick = () => setDetent('large');
+const responsiveToggle = document.getElementById('responsive-toggle');
+if (responsiveToggle) responsiveToggle.onclick = () => {
+  const mobile = document.querySelector('.app').dataset.responsive === 'mobile';
+  document.querySelector('.app').dataset.responsive = mobile ? 'desktop' : 'mobile';
+  responsiveToggle.setAttribute('aria-pressed', String(!mobile));
+};
 document.getElementById('overflow').onclick = () => {
   const open = menu.hidden;
   closeOverlays();

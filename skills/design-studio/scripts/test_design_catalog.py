@@ -893,5 +893,39 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.assertIn("&lt;/script&gt;", screen)
 
 
+class MultiplatformGalleryRegressionTests(unittest.TestCase):
+    def test_all_platform_modes_render_canonical_live_bezels(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            for mode in ('screen', 'app-nav'):
+                for requested in ('mobile', 'desktop', 'macos', 'web'):
+                    result = run('scaffold-gallery', '--goal', f'{mode}-{requested}', '--round', '1', '--platform', requested, '--mode', mode, '--no-blog-mount', env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    gallery = Path(json.loads(result.stdout)['gallery'])
+                    html = (gallery / 'index.html').read_text(encoding='utf-8')
+                    expected = 11 if mode == 'screen' else 5
+                    self.assertGreaterEqual(html.count('<iframe'), expected)
+                    self.assertGreaterEqual(html.count('class="device-bezel"'), expected)
+                    self.assertIn('SELECT', html); self.assertIn('STAR', html); self.assertIn('Notes', html)
+                    self.assertIn('data-theme="dark"', html); self.assertIn('copy-summary', html)
+                    gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'desktop' if requested == 'macos' else requested, '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
+                    self.assertEqual(gate.returncode, 0, gate.stdout)
+
+    def test_category_portal_and_cleanup_preserve_rounds(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            for round_number, category in ((1, 'A'), (2, 'B')):
+                result = run('scaffold-gallery', '--goal', 'portal-regression', '--round', str(round_number), '--category', category, '--platform', 'web', '--category-title', category, '--no-blog-mount', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            root = Path(directory) / 'Development/handoff/portal-regression'
+            portal = (root / 'index.html').read_text(encoding='utf-8')
+            self.assertGreaterEqual(portal.count('data-group-filter'), 3)
+            self.assertGreaterEqual(portal.count('data-frame-mode'), 20)
+            self.assertIn('portal:${DATA.goal}', portal); self.assertIn('localStorage', portal)
+            receipt = run('cleanup-demo', '--goal', 'portal-regression', '--handoff-root', str(Path(directory) / 'Development/handoff'), '--dry-run', env=env)
+            self.assertEqual(receipt.returncode, 0, receipt.stderr)
+            self.assertEqual(len(json.loads(receipt.stdout)['removed_handoff_rounds']), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

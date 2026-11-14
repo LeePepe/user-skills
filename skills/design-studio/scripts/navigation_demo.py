@@ -245,6 +245,7 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
         chrome = f'<nav class="deck-nav" aria-label="Journey deck">{destinations}</nav><nav class="floating inspector-toolbar">{back}{sheet_control}{more}</nav><nav class="floating safe-dock">{primary}</nav>'
     if not session_contract(anti_patterns, overrides):
         chrome = chrome.replace('class="floating stack-toolbar"', 'class="stack-toolbar"').replace('class="floating lens-toolbar"', 'class="lens-toolbar"').replace('class="floating inspector-toolbar"', 'class="inspector-toolbar"')
+    responsive_toggle = '<button id="responsive-toggle" aria-pressed="false">Desktop 1280×800 ⇄ Mobile 390×844</button>' if platform == 'web' else ''
     config = {'schema': 'navigation-page/v3', 'id': 'current' if app_index == 0 else scheme['id'],
               'platform': platform, 'scheme': scheme, 'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
     css = (ASSETS / 'navigation-demo.css').read_text(encoding='utf-8')
@@ -255,7 +256,7 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
 <body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
 {optical_svg}
 <header class="large-title"><p>{escape(scheme['context'])}</p><h1 id="large-title">{escape(scheme['title'])}</h1></header>
-{chrome}
+{chrome}{responsive_toggle}
 <section id="screen" class="content-solid" aria-live="polite"></section>
 <output id="action-state" role="status"></output>
 <section id="sheet" class="floating overlay" role="dialog" aria-modal="true" aria-label="Tools" hidden><div class="grabber" aria-hidden="true"></div><div class="detents"><button id="close-sheet">Close</button><button id="medium-sheet">Medium</button><button id="large-sheet">Large</button></div><div id="sheet-content"></div></section>
