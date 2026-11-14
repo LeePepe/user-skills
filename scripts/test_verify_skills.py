@@ -659,7 +659,7 @@ class VerifySkillsTests(unittest.TestCase):
             isolated.mkdir()
             self.assertTrue(queue_module._is_isolated_handoff_dir(isolated))
 
-    def test_thin_three_group_role_routing_without_designer_subagent(self) -> None:
+    def test_designer_role_routing_and_demo_contract(self) -> None:
         skill_path = SKILLS_DIR / "team-lead" / "SKILL.md"
         agents_path = skill_path.parent / "references" / "bots-and-agents.md"
         profiles_path = skill_path.parent / "references" / "runtime-profiles.yaml"
@@ -678,11 +678,16 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertIn("R10", text)
             self.assertIn('my-designer', text)
             self.assertIn("Explorer", text)
+            self.assertIn("Designer", text)
+            self.assertIn("10", text)
+            self.assertIn("Prompt", text)
             self.assertNotIn("设计者（Designer）", text)
-            self.assertNotIn("Designer 派遣与反内联守卫", text)
             self.assertNotIn("艺术家", text)
             self.assertNotIn("writer_stays_and_cleans_own_worktree", text)
             self.assertNotIn("weekly_remaining_pct", text)
+        self.assertIn("group/designer", profiles_text)
+        self.assertIn("grok-4.7", profiles_text)
+        self.assertIn("designer", profiles_text)
         self.assertNotIn("quota_precheck:", profiles_text)
 
     def test_five_layer_design_skills_and_cli_pipeline_contract(self) -> None:

@@ -210,6 +210,7 @@ case "$ROLE" in
     ;;
   writer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
   writer_escalated) LOGICAL_GROUP="group/coding-escalated" ;;
+  designer) LOGICAL_GROUP="group/designer" ;;
   *) echo "Error: unsupported --role '$ROLE'" >&2; exit 2 ;;
 esac
 
@@ -471,6 +472,9 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
       ;;
     group/coding-escalated)
       [[ "$KIND" == "codex" ]] && FALLBACK_MODEL="gpt-6.1-sol"
+      ;;
+    group/designer)
+      case "$KIND" in copilot|codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac
       ;;
   esac
   [[ -n "$FALLBACK_MODEL" ]] || FALLBACK_MODEL="$REQUESTED_MODEL"
