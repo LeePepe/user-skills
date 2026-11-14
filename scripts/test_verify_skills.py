@@ -3198,6 +3198,32 @@ class SkillContractV2Tests(unittest.TestCase):
         payload = json.loads(routed.stdout)
         self.assertEqual(payload["precision"], 1.0); self.assertEqual(payload["recall"], 1.0)
 
+    def test_prompt_overlap_exact_boundary_and_provided_duplicate_rejection(self) -> None:
+        prompts_path = SKILLS_DIR / "design-studio" / "scripts" / "gallery_prompts.py"
+        spec = importlib.util.spec_from_file_location("gallery_prompts_correction", prompts_path)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        paragraphs = [f"Candidate paragraph {i} contains enough semantic text for the overlap gate." for i in range(5)]
+        self.assertEqual(module._overlap_ratio(set(paragraphs), {paragraphs[0], *(f"Other paragraph {i} has independent semantic content." for i in range(4))}), 0.2)
+        self.assertEqual(module._paragraphs("# Heading\n\nshort\n\n" + paragraphs[0]), {paragraphs[0]})
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            duplicate = "# Candidate\n\n" + "\n\n".join(paragraphs)
+            for name in ("v01", "v02"):
+                (source / f"{name}-prompt.md").write_text(duplicate, encoding="utf-8")
+            manifest = {"platform": "web", "mode": "screen", "variants": [{"id": "v01"}, {"id": "v02"}]}
+            with self.assertRaisesRegex(ValueError, "exceeds 20%"):
+                module.prepare(manifest, source)
+            evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
+            evidence_spec = importlib.util.spec_from_file_location("navigation_evidence_prompt", evidence_path)
+            evidence = importlib.util.module_from_spec(evidence_spec); assert evidence_spec.loader is not None; evidence_spec.loader.exec_module(evidence)
+            root = source / "gallery"; (root / "prompts").mkdir(parents=True)
+            evidence_manifest = {"prompt_contract": {"schema": "design-prompts/v1", "source": "provided", "count": 2}, "variants": []}
+            import hashlib
+            for name in ("v01", "v02"):
+                data = duplicate.encode(); (root / "prompts" / f"{name}-prompt.md").write_bytes(data)
+                evidence_manifest["variants"].append({"id": name, "prompt_file": f"prompts/{name}-prompt.md", "prompt_sha256": hashlib.sha256(data).hexdigest()})
+            self.assertTrue(any("exceeds 20%" in error for error in evidence.prompt_errors(root, evidence_manifest)))
+
     def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
         evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
         spec = importlib.util.spec_from_file_location("navigation_evidence", evidence_path)

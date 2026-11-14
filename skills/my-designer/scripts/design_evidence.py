@@ -167,6 +167,10 @@ def _prompt_paragraphs(text):
     return {p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) >= 20 and not p.lstrip().startswith('#')}
 
 
+def _overlap_ratio(left, right):
+    return len(left & right) / min(len(left), len(right)) if left and right else 0.0
+
+
 def prompt_errors(root, manifest):
     contract = manifest.get('prompt_contract')
     variants = manifest.get('variants', [])
@@ -196,7 +200,7 @@ def prompt_errors(root, manifest):
     for left, right in itertools.combinations(prompt_texts, 2):
         a, b = _prompt_paragraphs(prompt_texts[left]), _prompt_paragraphs(prompt_texts[right])
         if a and b:
-            overlap = len(a & b) / min(len(a), len(b))
+            overlap = _overlap_ratio(a, b)
             if overlap > 0.20:
                 errors.append(f'{left}/{right}: prompt duplicate boilerplate exceeds 20% ({overlap:.2f})')
     return errors
@@ -256,14 +260,9 @@ def gallery_errors(root, manifest):
                 errors.append('manifest variant summaries do not match operative schemes')
             if len({c.NAVIGATION.architecture_signature(s) for s in normalized}) != 4:
                 errors.append('app-nav architectures differ only in labels')
-            initial_signatures = {(s['architecture']['initial_state']['active_screen'],
-                                  tuple(s['architecture']['initial_state']['history']),
-                                  s['architecture']['initial_state']['overlay'],
-                                  s['architecture']['initial_state']['detent'],
-                                  s['architecture']['initial_state']['overflow_open'],
-                                  s['architecture']['initial_state']['title_collapsed']) for s in normalized}
-            if len(initial_signatures) < 3:
-                errors.append('app-nav schemes need at least three distinct initial states')
+            initial_signatures = {c.NAVIGATION.initial_state_signature(s) for s in normalized}
+            if len(initial_signatures) != 4:
+                errors.append('app-nav schemes need exactly four distinct initial states')
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))

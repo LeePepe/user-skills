@@ -136,7 +136,6 @@ class AppNavigationGraphTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertNotEqual(navigation.architecture_signature(navigation.validate_scheme(scheme, 1, 'Voice notes')), before if change == 'action-order' else expected)
 
-    @unittest.skip('legacy review/library/tools fixture superseded by minimal real-screen starter')
     def test_custom_architecture_is_required_not_inferred_from_names(self):
         schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
         for i, scheme in enumerate(schemes):
@@ -166,9 +165,16 @@ class AppNavigationGraphTests(unittest.TestCase):
         for i, scheme in enumerate(tailored):
             scheme['architecture']['kind'] = 'stack'
             action = scheme['screens'][0]['actions'][0]
-            if i == 1: action['transition'] = {'type': 'switchTab', 'to': 'review'}
-            if i == 2: action['transition'] = {'type': 'toggleSheet', 'to': 'tools'}
+            if i == 1: action['transition'] = {'type': 'switchTab', 'to': 'todo'}
+            if i == 2: action['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
             if i == 3: action.pop('transition'); action['commit'] = 'captured'
+            states = [
+                {'active_screen': 'todo', 'history': ['capture'], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': 'settings', 'detent': 'medium', 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': True},
+            ]
+            scheme['architecture']['initial_state'] = states[i]
         self.assertEqual(len(DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': tailored})))), 4)
 
     def test_minimal_real_screens_have_four_distinct_initial_states(self):
@@ -180,8 +186,35 @@ class AppNavigationGraphTests(unittest.TestCase):
                        tuple(s['architecture']['initial_state']['history']),
                        s['architecture']['initial_state']['overlay'],
                        s['architecture']['initial_state']['title_collapsed']) for s in normalized}
-        self.assertGreaterEqual(len(signatures), 3)
+        self.assertEqual(len(signatures), 4)
         self.assertTrue(all('review' not in {p['id'] for p in s['screens']} for s in normalized))
+
+    def test_four_closed_root_states_are_rejected_and_collapse_capability_is_enforced(self):
+        import copy
+        navigation = DESIGN_CATALOG.NAVIGATION
+        schemes = copy.deepcopy(navigation.starter_schemes('Recorder'))
+        for scheme in schemes:
+            scheme['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None,
+                                                        'detent': None, 'overflow_open': False, 'title_collapsed': False}
+        with self.assertRaisesRegex(ValueError, 'exactly four distinct'):
+            DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': schemes})))
+        scheme = copy.deepcopy(navigation.starter_schemes('Recorder')[2])
+        scheme['architecture']['collapse_title'] = False
+        scheme['architecture']['initial_state'] = {'active_screen': 'todo', 'history': [], 'overlay': None,
+                                                    'detent': None, 'overflow_open': False, 'title_collapsed': True}
+        with self.assertRaisesRegex(ValueError, 'collapse_title'):
+            navigation.validate_scheme(scheme, 3, 'Recorder')
+
+    def test_two_screen_single_destination_passes_every_kind(self):
+        navigation = DESIGN_CATALOG.NAVIGATION
+        for kind in ('stack', 'tabs', 'lens', 'deck'):
+            scheme = {'title': 'Recorder', 'navigation_model': kind, 'screens': [
+                {'id': 'recorder', 'name': 'Recorder', 'actions': [{'label': 'Record', 'frequency': 'P0'}]},
+                {'id': 'settings', 'name': 'Settings', 'role': 'sheet', 'actions': [{'label': 'Save', 'frequency': 'P1'}]}],
+                'architecture': {'kind': kind, 'root': 'recorder', 'destinations': ['recorder'],
+                                 'primary': {'screen': 'recorder', 'action': 0}, 'sheet': 'settings', 'overflow': []}}
+            normalized = navigation.validate_scheme(scheme, 1, 'Recorder')
+            self.assertEqual(normalized['architecture']['initial_state']['overlay'], 'settings' if kind in {'stack', 'tabs', 'deck'} else None)
 
 
 class AppNavigationBehaviorTests(unittest.TestCase):
@@ -195,7 +228,19 @@ class AppNavigationBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)['ok'])
 
-    @unittest.skip('legacy review/library/tools fixture superseded by minimal real-screen starter')
+    def test_four_showcase_pages_and_current_boot_expected_first_dom_state(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            result = run('scaffold-gallery', '--goal', 'initial-dom', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav', env=dict(os.environ, HOME=directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(json.loads(result.stdout)['gallery'])
+            expected = [('todo', 'capture', 'false'), ('todo', '', 'false'), ('todo', '', 'true'), ('capture', '', 'false'), ('capture', '', 'false')]
+            for i, (screen, history, collapsed) in enumerate(expected, 1):
+                page = gallery / f'app{i:02d}.html' if i < 5 else gallery / 'current.html'
+                assertions = f'''const n=window.navigationDemo;assert.equal(n.currentScreen(),{screen!r});assert.equal(document.querySelector('.app').dataset.initialScreen,{screen!r});assert.equal(document.querySelector('.app').classList.contains('title-collapsed'),{collapsed});'''
+                if history:
+                    assertions += f"assert.equal(n.state.tabs.todo.history[0],{history!r});assert.equal(document.getElementById('back').disabled,false);"
+                self.node(page, assertions)
+
     def test_bespoke_runtime_primary_commit_all_surfaces_and_tab_owned_history(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
@@ -207,7 +252,7 @@ class AppNavigationBehaviorTests(unittest.TestCase):
                 scheme['architecture']['overflow'].append({'screen': 'capture', 'action': 2})
                 scheme['screens'].append({'id': 'organize', 'name': 'Organize notes', 'role': 'popover',
                     'p0_summary': 'Change the note collection', 'actions': [{'label': 'Organize', 'frequency': 'P3', 'commit': 'organized', 'transition': {'type': 'dismissOverlay'}}]})
-                scheme['screens'][2]['transitions'].append({'type': 'togglePopover', 'to': 'organize'})
+                scheme['screens'][2].setdefault('transitions', []).append({'type': 'togglePopover', 'to': 'organize'})
             result = run('scaffold-gallery', '--goal', 'runtime', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
                          '--app-flows-json', json.dumps({'app_context': 'Voice capture', 'schemes': schemes}),
                          '--session-anti-patterns', '["no glass on content"]', '--style-overrides', '{"surface":"dark","density":"compact"}', env=dict(os.environ, HOME=directory))
@@ -218,36 +263,18 @@ class AppNavigationBehaviorTests(unittest.TestCase):
             assertions = r'''const n=window.navigationDemo;
 const click=s=>{const e=document.querySelector(s);assert.ok(e,s);e.click();};
 const current=()=>n.currentScreen();
-assert.equal(document.querySelector('#screen .secondary-actions').open,false);
-assert.equal(document.querySelector('#screen [data-frequency="P3"]'),null);
-document.querySelector('#screen .secondary-actions').open=true;
-click('#screen .secondary-actions [data-action-index="1"]');assert.equal(n.state.commits.configured.count,1);
-click('#toggle-tab'); assert.equal(current(),'review');
-click('#screen [data-action-index="0"]'); assert.equal(current(),'library');
+assert.ok(['capture','todo'].includes(current()));
+if(n.state.overlay){assert.equal(n.state.overlay.screen,'settings');click('#close-sheet');}
+n.switchTab('todo');click('.tab[data-screen="todo"]');assert.equal(current(),'todo');
+click('#screen [data-action-index="0"]');assert.equal(current(),'capture');
 assert.equal(n.state.commits.saved.count,1);
-assert.match(document.querySelector('#action-state').textContent,/Save item committed/);
-assert.match(document.querySelector('#screen .commit-list').textContent,/Save item/);
-click('#screen [data-transition-index="0"]'); assert.equal(current(),'review');
-click('#back'); assert.equal(current(),'capture');
-click('#toggle-tab'); assert.equal(current(),'review');
-click('#overflow'); click('.tab[data-screen="library"]'); assert.equal(current(),'library');
-click('#back'); assert.equal(current(),'library');
-click('.tab[data-screen="capture"]'); assert.equal(current(),'review');
-click('#back'); assert.equal(current(),'capture');
-n.switchTab('library'); click('#screen [data-transition-index="1"]');
-assert.equal(current(),'library'); assert.equal(n.state.overlay.screen,'tools');
-assert.equal(document.querySelector('#sheet').hidden,false);
-click('#large-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'large');
-click('#medium-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
-click('#sheet [data-action-index="0"]'); assert.equal(n.state.commits.exported.count,1);
-assert.equal(n.state.overlay,null); assert.equal(current(),'library');
-click('#overflow'); click('[data-overflow-action]'); assert.equal(n.state.commits.exported.count,2);
-assert.equal(document.querySelector('#overflow-menu').hidden,true);
-click('#overflow');click('[data-overflow-action][data-action-screen="capture"]');assert.equal(n.state.commits.archived.count,1);
-click('#screen [data-transition-index="2"]'); assert.equal(n.state.overlay.screen,'organize');
-click('#popover-content [data-action-index="0"]'); assert.equal(n.state.commits.organized.count,1);
-assert.equal(n.state.overlay,null); assert.equal(current(),'library');
+click('#open-sheet');assert.equal(n.state.overlay.screen,'settings');
+click('#large-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'large');
+click('#medium-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#sheet [data-action-index="0"]');assert.equal(n.state.commits.configured.count,1);
+assert.equal(n.state.overlay,null);
 '''
+
             for i in range(1, 5):
                 self.node(gallery / f'app{i:02d}.html', assertions)
             original = (gallery / 'app02.html').read_text()
@@ -284,12 +311,11 @@ document.getElementById('reset-view').click();assert.equal(document.getElementBy
                 for i in range(2, 11): (gallery / f'v{i:02d}.html').write_text((gallery / 'v01.html').read_text())
                 self.assertNotEqual(self.gate(gallery).returncode, 0)
 
-    @unittest.skip('legacy review/library/tools fixture superseded by minimal real-screen starter')
     def test_object_commit_only_and_legacy_edge_fallback_execute_as_authored(self):
         schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
         for scheme in schemes:
-            scheme['screens'][0]['transitions'] = [{'type': 'pushScreen', 'to': 'review'}]
-        schemes[0]['screens'][0]['actions'] = [{'label': 'Record note', 'frequency': 'P0', 'commit': 'captured-only'}]
+            scheme['screens'][0]['transitions'] = [{'type': 'pushScreen', 'to': 'todo'}]
+        schemes[0]['screens'][0]['actions'] = [{'label': 'Record note', 'frequency': 'P0', 'commit': 'captured-only', 'transition': {'type': 'pushScreen', 'to': 'todo'}}]
         schemes[1]['screens'][0]['actions'] = ['Legacy capture']
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             result = run('scaffold-gallery', '--goal', 'optional-action', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
@@ -298,17 +324,13 @@ document.getElementById('reset-view').click();assert.equal(document.getElementBy
             gallery = Path(json.loads(result.stdout)['gallery'])
             self.assertEqual(self.gate(gallery).returncode, 0)
             self.node(gallery / 'app01.html', r'''const n=window.navigationDemo;
-document.getElementById('toggle-tab').click();
-assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);
-assert.equal(n.state.commits['captured-only'].count,1);
-document.querySelector('#screen [data-transition-index="0"]').click();
-assert.equal(n.currentScreen(),'review');assert.equal(n.state.tabs.capture.history.join(','),'capture');
-document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');
-assert.equal(n.state.commits['captured-only'].count,1);''')
+assert.equal(n.currentScreen(),'todo');document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');
+assert.equal(n.state.commits['captured-only'],undefined);document.querySelector('#screen [data-action-index="0"]').click();
+assert.equal(n.currentScreen(),'todo');assert.equal(n.state.commits['captured-only'].count,1);
+document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');''')
             for i in (2, 3, 4):
                 self.node(gallery / f'app{i:02d}.html', r'''const n=window.navigationDemo;
-document.getElementById('toggle-tab').click();assert.equal(n.currentScreen(),'review');
-assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
+assert.ok(['capture','todo'].includes(n.currentScreen()));''')
 
     def test_both_gallery_indexes_require_canonical_round_bindings(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -439,9 +461,9 @@ class IngestTests(unittest.TestCase):
             self.assertEqual({item["id"] for item in data["duplicate_matches"]}, {"IP-001", "IP-099"})
             self.assertFalse(data["created"])
             self.assertEqual(self.snapshot(), before)
-        preview = self.ingest("--text", existing["source_prompt_zh"], "--force", "--dry-run")
-        self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertEqual(json.loads(preview.stdout)["duplicate_decision"], "forced")
+        ptodo = self.ingest("--text", existing["source_prompt_zh"], "--force", "--dry-run")
+        self.assertEqual(ptodo.returncode, 0, ptodo.stderr)
+        self.assertEqual(json.loads(ptodo.stdout)["duplicate_decision"], "forced")
         self.assertEqual(self.snapshot(), before)
         forced = self.ingest("--text", existing["source_prompt_zh"], "--force")
         self.assertEqual(forced.returncode, 0, forced.stderr)

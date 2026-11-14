@@ -48,17 +48,24 @@ def _initial_state(architecture, pages, index, explicit=None):
         if architecture['kind'] == 'stack':
             state = {'active_screen': secondary, 'history': [root] if secondary != root else [],
                      'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
+            if sheet and secondary == root:
+                state['overlay'], state['detent'] = sheet, 'medium'
         elif architecture['kind'] == 'tabs':
             state = {'active_screen': secondary, 'history': [], 'overlay': None, 'detent': None,
                      'overflow_open': False, 'title_collapsed': False}
-        elif architecture['kind'] == 'lens':
-            state = {'active_screen': root, 'history': [], 'overlay': None, 'detent': None,
-                     'overflow_open': bool(architecture['overflow']), 'title_collapsed': False}
-        else:
-            state = {'active_screen': secondary, 'history': [], 'overlay': None, 'detent': None,
-                     'overflow_open': False, 'title_collapsed': True}
             if sheet and secondary == root:
+                state['overlay'], state['detent'] = sheet, 'large'
+        elif architecture['kind'] == 'lens':
+            state = {'active_screen': secondary, 'history': [], 'overlay': None, 'detent': None,
+                     'overflow_open': bool(architecture['overflow']), 'title_collapsed': True}
+        else:
+            state = {'active_screen': root, 'history': [], 'overlay': None, 'detent': None,
+                     'overflow_open': False, 'title_collapsed': False}
+            if sheet:
                 state['overlay'], state['detent'] = sheet, 'medium'
+            elif secondary != root:
+                state['active_screen'] = secondary
+                state['title_collapsed'] = True
     else:
         if not isinstance(explicit, dict):
             raise ValueError('initial_state must be an object')
@@ -85,6 +92,8 @@ def _initial_state(architecture, pages, index, explicit=None):
         raise ValueError('initial_state overflow_open requires overflow actions')
     if type(state['title_collapsed']) is not bool:
         raise ValueError('initial_state title_collapsed must be boolean')
+    if state['title_collapsed'] and not architecture.get('collapse_title', True):
+        raise ValueError('initial_state title_collapsed requires collapse_title support')
     if state['active_screen'] != root and not state['history'] and architecture['kind'] == 'stack':
         raise ValueError('initial_state pushed stack screen requires history')
     return state
@@ -190,6 +199,18 @@ def validate_scheme(scheme, index, context):
             'navigation_model': model, 'architecture': a, 'screens': clean, 'context': context}
 
 
+def initial_state_signature(scheme):
+    """Compare showcase states by canonical graph positions, not screen labels."""
+    a, pages = scheme['architecture'], {p['id']: p for p in scheme['screens']}
+    positions = {screen: index for index, screen in enumerate(a['destinations'])}
+    state = a['initial_state']
+    overlay = state['overlay']
+    role = pages[overlay]['role'] if overlay else None
+    detent = state['detent'] if role == 'sheet' else None
+    return (positions[state['active_screen']], tuple(positions[s] for s in state['history']),
+            role, detent, bool(state['overflow_open']), bool(state['title_collapsed']))
+
+
 def architecture_signature(scheme):
     a = scheme['architecture']
     pages = {p['id']: p for p in scheme['screens']}
@@ -249,15 +270,9 @@ def load_schemes(args):
     normalized = [validate_scheme(s, i, context) for i, s in enumerate(schemes, 1)]
     if len({architecture_signature(s) for s in normalized}) != 4:
         raise ValueError('four operative architectures must differ, not just model labels')
-    initial_signatures = {
-        (s['architecture']['initial_state']['active_screen'],
-         tuple(s['architecture']['initial_state']['history']),
-         s['architecture']['initial_state']['overlay'],
-         s['architecture']['initial_state']['detent'],
-         s['architecture']['initial_state']['overflow_open'],
-         s['architecture']['initial_state']['title_collapsed']) for s in normalized}
-    if len(initial_signatures) < 3:
-        raise ValueError('four app-nav schemes need at least three distinct initial states')
+    initial_signatures = {initial_state_signature(s) for s in normalized}
+    if len(initial_signatures) != 4:
+        raise ValueError('four app-nav schemes need exactly four distinct initial states')
     return normalized
 
 

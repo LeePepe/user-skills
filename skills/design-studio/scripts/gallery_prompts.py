@@ -8,6 +8,10 @@ def _paragraphs(text):
     return {p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) >= 20 and not p.lstrip().startswith('#')}
 
 
+def _overlap_ratio(left, right):
+    return len(left & right) / min(len(left), len(right)) if left and right else 0.0
+
+
 def _check_overlap(items):
     names = list(items)
     for i, left in enumerate(names):
@@ -15,7 +19,7 @@ def _check_overlap(items):
             a, b = _paragraphs(items[left]), _paragraphs(items[right])
             if not a or not b:
                 continue
-            overlap = len(a & b) / min(len(a), len(b))
+            overlap = _overlap_ratio(a, b)
             if overlap > 0.20:
                 raise ValueError(f'prompt duplicate boilerplate exceeds 20%: {left}/{right} ({overlap:.2f})')
 
@@ -59,6 +63,9 @@ def starter(manifest, variant, index):
         palette = 'solid neutral content, semantic light/dark ink, one restrained action accent'
         layout = 'Use the supplied graph and platform-native chrome; retain tab-local history and reversible push/pop.'
         icon = 'a connected path with one highlighted destination'
+        topology = {'stack': 'a vertical journey rail with a persistent Back affordance', 'tabs': 'a tab-local workspace strip with an isolated active room', 'lens': 'a comparison lens with two synchronized reading panes', 'deck': 'a horizontal card deck with a revealed inspector'}[a['kind']]
+        surface_detail = {'stack': 'use a quiet paper surface and a single lifted journey rail', 'tabs': 'separate the selected workspace from the prominent action pill with solid surfaces', 'lens': 'use a cool analytical canvas with a crisp lens toolbar and no nested glass', 'deck': 'use broad solid cards with a restrained inspector edge and clear depth order'}[a['kind']]
+        anti_focus = {'stack': 'do not hide Back or turn the journey rail into decorative chrome', 'tabs': 'do not merge tab history or make every room look like the root', 'lens': 'do not fabricate a comparison source or use an inert lens switcher', 'deck': 'do not imply depth with striped effects or duplicate cards'}[a['kind']]
     else:
         domain = variant['content']
         metaphor = SCREEN_METAPHORS[index]
@@ -69,6 +76,9 @@ def starter(manifest, variant, index):
         layout = f"Place the hero using {variant['layout']}; spacing is {variant['whitespace']}; functional chrome geometry is {variant['glass_geometry']}."
         icon = {'next-action': 'a forward arrow inside an open path', 'timeline': 'three points on a time rail',
                 'context': 'a compass needle with an open circle', 'recovery': 'a returning arrow with an unclosed loop'}[p0]
+        topology = ['a bento signal grid', 'a timeline rail with milestone nodes', 'a pulse matrix of live checkpoints', 'a ring gauge surrounded by evidence chips', 'a master-detail item rail', 'a split workbench with input and result panes', 'a floating action island over solid content', 'a stacked pocket deck', 'a command stage with keyboard focus', 'an editorial poster with a single headline'][index]
+        surface_detail = ['cool paper with blue signal ink', 'warm paper with terracotta milestone marks', 'neutral canvas with emerald pulse accents', 'dark canvas with violet gauge highlights', 'solid ivory with a focused detail column', 'cool solid panels with a green workbench cue', 'warm solid paper and one lifted island', 'dark solid cards with restrained depth', 'neutral solid canvas with a command accent', 'editorial paper with high-contrast type'][index]
+        anti_focus = ['avoid equal-weight tiles', 'avoid an unbounded scroll timeline', 'avoid decorative heartbeat animation', 'avoid a gauge without a readable value', 'avoid a detail pane detached from selection', 'avoid nested glass work surfaces', 'avoid floating chrome covering the P0', 'avoid fake card depth and clipped pockets', 'avoid a command palette with no real action', 'avoid poster copy that hides the next action'][index]
     body = f'''# {variant['id']} — independent prototype prompt
 
 Status: scaffold starter, NOT Designer-approved. Stage 1 Designer must refine and approve this individual brief; Stage 2 Coding implements the approved brief.
@@ -76,17 +86,17 @@ Target: {platform}; domain: {domain}.
 Coordinates: {coordinates}.
 
 ## Visual metaphor
-{metaphor}. Translate this metaphor into a coherent hierarchy, not decorative imagery repeated across every candidate.
+{metaphor}. Build {topology}; translate the metaphor into a coherent hierarchy with one readable focal state, not decorative imagery repeated across every candidate.
 
 ## Single P0 focal point
 Make “{p0}” the only primary focal object/action per viewport. Anchor it to the real domain “{domain}”; retain visible intent, commit feedback and a reversible return path.
 
 ## P1/P2 folding
-Keep one P1 companion status inline; fold P2 context using {folding}. P3 configuration stays behind the declared tools/overflow affordance. Do not stack all secondary modules vertically.
+Keep one P1 companion status inline; fold P2 context using {folding}. P3 configuration stays behind a declared tools/overflow affordance only when the graph declares one. Shape the content around {topology}; do not stack all secondary modules vertically.
 {layout}
 
 ## Color and surface polarity
-Use {palette}. Light uses solid paper with dark ink; dark uses a deep solid canvas and bright ink. Preserve semantic contrast across both appearances; glass is functional floating chrome only, never content-on-glass.
+Use {palette}; the candidate surface treatment is {surface_detail}. Light uses solid paper with dark ink; dark uses a deep solid canvas and bright ink. Preserve semantic contrast across both appearances; glass is functional floating chrome only, never content-on-glass.
 
 ## Liquid Glass optical parameters
 Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px displacement with chromatic channels), blur 2.5px and saturation 135–155%. Blink may use SVG backdrop-filter refraction; provide a soft radial ambient/specular rim fallback, reduced transparency and reduced motion. Glass never samples another glass layer.
@@ -95,13 +105,11 @@ Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px disp
 Author a small stroke-based inline SVG depicting {icon}, with a 24×24 viewBox, rounded joins, semantic currentColor and accessible text where meaningful. Do not use emoji or external icon fonts as UI substitutes.
 
 ## Explicit anti-patterns
-No .caustic-veil repeating-linear-gradient zebra stripes; never distort a striped overlay with url(#apple-liquid-glass). No .ruler 28×28 dashed boxes, Active / Matte debug bars, or duplicate inner platform/theme/viewport/selection controls. Keep legitimate navigation and product actions working. Outer choosers own gallery controls; prevent numeric truncation, clipped targets and raw localization keys.
+No .caustic-veil repeating-linear-gradient zebra stripes; never distort a striped overlay with url(#apple-liquid-glass). No .ruler 28×28 dashed boxes, Active / Matte debug bars, or duplicate inner platform/theme/viewport/selection controls. Candidate-specific guardrail: {anti_focus}. Keep legitimate navigation and product actions working. Outer choosers own gallery controls; prevent numeric truncation, clipped targets and raw localization keys.
 
 ## Stage 2 handoff
 Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval.
 '''
-    paragraphs = body.split('\n\n')
-    body = '\n\n'.join(p if p.lstrip().startswith('#') else p + f' Variant focus: {variant["id"]} — preserve this candidate-specific decision.' for p in paragraphs)
     return body
 
 
