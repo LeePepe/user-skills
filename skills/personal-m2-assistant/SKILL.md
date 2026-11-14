@@ -23,8 +23,14 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 5. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 6. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
 7. **每个 M2 独立后台监督与增量滚动汇总（`--watch --watch-target` + `watchdog_tasks`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护共享监督状态账本 `m2-supervision-state.json`（或 `--state-file`），并为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）：
-   - **单 M2 独立完成即刻唤醒与累积汇总**：每个 M2 由各自独立的 background `bash` 任务运行 `m2-router.py --watch --watch-target <slot_id>`，任一 M2 进入静默态（`idle`/`done`）即立刻退出唤醒并更新账本，立即报告**本次完成项 + 当前所有已完成 M2 的累积汇总（`completed_rollup_code`）**。例如派发 `ABC`：`A` 完成报告 `A`，`B` 完成报告 `AB`；若此时新增 `D` 且向 `A` 追加新任务 `A2`（`A` 槽位转为运行 `A2`），随后 `C` 完成报告 `BC`，`A2` 完成报告 `A2BC`，`D` 完成报告 `A2BCD`。
+   - **单 M2 独立完成即刻唤醒与累积汇总**：每个 M2 由各自独立的 background `bash` 任务运行 `m2-router.py --watch --watch-target <slot_id>`，任一 M2 经真静默判定（`idle`/`done` 且无活动尾部）后退出唤醒并更新账本，输出完整 `unified_rollup_markdown`，同时保留累积汇总码 `completed_rollup_code`。例如派发 `ABC`：`A` 完成报告 `A`，`B` 完成报告 `AB`；若此时新增 `D` 且向 `A` 追加新任务 `A2`（`A` 槽位转为运行 `A2`），随后 `C` 完成报告 `BC`，`A2` 完成报告 `A2BC`，`D` 完成报告 `A2BCD`。
    - **安全 Allow 自动解卡与 Owner 决策门禁**：仅当传入经校验的 `apply_receipt`（`ok=true`、`approved=true`、`plan_id` 与目标匹配）且目标处于 `blocked`/`needs_input` 时，对底部当前活动帧的安全权限弹窗（词法与 `resolve` 均落在安全基线/目标 `cwd` 且无符号链接越界的完整单路径 `Allow path access`/`Confirm folder trust`、`Curate Memory`，以及单行无元字符的严格只读参数白名单命令 `CMD_CONFIRM`）发送单次 `enter` 放行；无有效回执时保持纯被动只读观察（`auto_unblock_enabled=false`）。遇到业务/Spec 级 `ask_user`、`Proceed with`、路径越界/多路径或非只读命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）；目标缺失或发现中断持续重试至超时后返回 `ok=false, all_settled=false, blocked_reason="target_missing_or_unreachable"`。
+
+## 真静默与全局统一汇总
+
+- **True Quiescence Detection**：检查可见尾部最后 8 行（原始行及非空行）；出现 `background /tasks`、`ctrl+c `、`Working`、`Thinking`、`Running `、`Waiting for` 即覆盖 `idle`/`done` 为 `working`（非静默），绝不提前退出 `--watch`。关联 Goal 的任务仍 `in_progress` 且 TL 运行中时同样保持监督。
+- **跨轮次共享账本**：默认 `/tmp/m2-supervision-state.json`，自动合并公开 `herdr agent list` 活跃 M2 与关联 Goal `ledger.md`，保留 Linear 主 Issue/Parent、M1 子阶段进度；`--state-file` 可隔离状态，`--handoff-root`（或 `M2_HANDOFF_ROOT`）可指定台账根目录。自定义目录的 plan/receipt 默认使用同目录账本。
+- **强制三段式汇报**：每次后台 `--watch` 唤醒向 Owner 汇报或调用 `--status` 时，直接输出完整 `unified_rollup_markdown`：**Wave 波次与上下游依赖链路** → **1. 🔔 本次完成** → **2. ✅ 累计已完成** → **3. ⏳ 仍在运行中**。逐项包含 M2、pane、Wave/依赖、Linear `TIA-*`、M1 当前进度（含内部 Stage 链路），严禁只报单条而遗漏其他跨轮次在途或 blocked M2。结构化详情见 `in_flight_details` / `wave_dependency_chain`。
 
 ## CLI
 
@@ -44,6 +50,8 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json \
   --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
+
+随时巡检：`python3 skills/personal-m2-assistant/scripts/m2-router.py --status`（加 `--json` 返回结构化全局汇总）。
 
 常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`（显式导出）、`--transport stdout`。完整参数以脚本 `--help` 为准。
 

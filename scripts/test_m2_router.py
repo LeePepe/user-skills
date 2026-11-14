@@ -26,6 +26,17 @@ class M2RouterTests(unittest.TestCase):
     def setUpClass(cls):
         cls.router = load_router()
 
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.test_root = Path(temp.name)
+        env = patch.dict("os.environ", {
+            "M2_SUPERVISION_STATE_FILE": str(self.test_root / "state.json"),
+            "M2_HANDOFF_ROOT": str(self.test_root / "handoff"),
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_canonical_router_is_source_and_legacy_path_delegates(self):
         canonical = load_router(CANONICAL_ROUTER_PATH)
         self.assertEqual(self.router.SCHEMA_VERSION, canonical.SCHEMA_VERSION)
@@ -373,7 +384,7 @@ class M2RouterTests(unittest.TestCase):
         result = self.router.apply_plan(plan, approve=True, cleanup_duplicates=True, runner=runner)
         self.assertEqual([item["pane_id"] for item in result["cleanup_receipts"]], ["w2:p2"])
         self.assertTrue(any(cmd[-3:] == ["pane", "close", "w2:p2"] for cmd in calls))
-        self.assertEqual(calls[-1][1:3], ["agent", "prompt"])
+        self.assertEqual(len([cmd for cmd in calls if cmd[1:3] == ["agent", "prompt"]]), 1)
 
     def test_cleanup_protects_current_pane_and_w1_p1(self):
         sessions = [
@@ -412,8 +423,8 @@ class M2RouterTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
         result = self.router.apply_plan(plan, approve=True, replace_stale_m2=True, runner=runner)
         self.assertEqual({item["pane_id"] for item in result["cleanup_receipts"]}, {"w2:p1", "w2:p2"})
-        self.assertEqual(calls[-1][0], "/tmp/fake-herdr-dispatch")
-        self.assertTrue("--new-workspace" in calls[-1] or "--pane" in calls[-1])
+        dispatch = next(cmd for cmd in calls if cmd[0] == "/tmp/fake-herdr-dispatch")
+        self.assertTrue("--new-workspace" in dispatch or "--pane" in dispatch)
 
     def test_cli_plan_outputs_json_without_dispatch_or_temp_markdown(self):
         fixture = {"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]}
@@ -1976,6 +1987,117 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(res_d["running_labels"], [])
             self.assertTrue(res_d["all_board_settled"])
             self.assertIn("Cumulative Completed Rollup**: `A2BCD`", res_d["summary_markdown"])
+
+    def test_watch_requires_true_quiescence_for_all_visible_activity_markers(self):
+        markers = ["1 background /tasks", "2 background /tasks", "esc/ctrl+c to interrupt", "Working", "Thinking", "Running tests", "Waiting for reviewer"]
+        plan = {"plan_id": "tail-watch", "targets": [{"slot_id": "A", "herdr_target": "m2-tail", "transport": "herdr", "pane_id": "w8:p1"}]}
+        for marker in markers:
+            with self.subTest(marker=marker):
+                poll = [0]
+
+                def runner(args, **kwargs):
+                    if args[1:3] == ["pane", "list"]:
+                        payload = {"panes": []}
+                    elif args[1:3] == ["agent", "list"]:
+                        payload = {"agents": [{"name": "m2-tail", "pane_id": "w8:p1", "agent_status": "idle"}]}
+                    elif args[1:3] == ["agent", "read"]:
+                        return SimpleNamespace(returncode=0, stdout=(marker + "\n" * 10) if poll[0] < 2 else "Delivered successfully", stderr="")
+                    else:
+                        self.fail(str(args))
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+                active = self.router.watch_dispatched_m2(plan, runner=runner, max_polls=1)
+                self.assertFalse(active["all_settled"])
+                target = active["targets"][0]
+                self.assertEqual((target["raw_status"], target["status"]), ("working", "working"))
+                self.assertFalse(target["quiescent"])
+                self.assertTrue(target["seen_working"])
+                settled = self.router.watch_dispatched_m2(plan, runner=runner, max_polls=4, interval=0, sleep_fn=lambda _: poll.__setitem__(0, poll[0] + 1))
+                self.assertEqual(settled["polls"], 3)
+                self.assertTrue(settled["all_settled"])
+                self.assertIn("A", settled["just_settled_labels"])
+        self.assertFalse(self.router._has_active_visible_tail("Working\n" + "\n".join(["finished"] * 8)))
+        self.assertTrue(self.router._has_active_visible_tail("\x1b[32mThinking\x1b[0m"))
+
+    def test_global_rollup_discovers_cross_plan_m2s_and_handoff_dependency_stages(self):
+        root = self.test_root / "handoff"
+        goal = root / "voxpocket-holistic"
+        goal.mkdir(parents=True)
+        (goal / "ledger.md").write_text(
+            "# Goal: voxpocket-holistic\n- Linear: TIA-420 (Parent TIA-375)\n- TL: voxpocket-goal-tl-r3\n"
+            "## Tasks\n| ID | 依赖 | 标题 | 负责 | 状态 | PR |\n"
+            "| T4-rebuild | — | Stage 1 Designer -> Stage 2 Coding | writer-r1 | in_progress | — |\n"
+            "## Events\n- EVT=IN_PROGRESS | Stage 1 Designer -> Stage 2 Coding\n", encoding="utf-8")
+        state_path = self.test_root / "global.json"
+        upstream_plan = {"schema_version": 1, "plan_id": "round-1", "targets": [
+            {"slot_id": "A", "topic_id": "team-lead", "sub_prompt": "TIA-426", "transport": "stdout", "wave_order": 1},
+            {"slot_id": "B", "topic_id": "my-designer", "sub_prompt": "TIA-424", "transport": "stdout", "wave_order": 1},
+        ]}
+        receipt = self.router.apply_plan(upstream_plan, approve=True, state_file=state_path, apply_receipt_file=self.test_root / "r1.json", transport="stdout")
+        self.router.watch_dispatched_m2(upstream_plan, apply_receipt=receipt, watch_target="A", state_file=state_path, max_polls=1)
+        current_plan = {"schema_version": 1, "plan_id": "round-2", "targets": [
+            {"slot_id": "C", "topic_id": "VoxPocket", "sub_prompt": f"Parent TIA-375; Goal TIA-420 {goal}", "transport": "stdout", "wave_order": 2, "depends_on": ["TIA-426", "TIA-424"]},
+        ]}
+        receipt2 = self.router.apply_plan(current_plan, approve=True, state_file=state_path, apply_receipt_file=self.test_root / "r2.json", transport="stdout", handoff_root=root)
+        self.assertIn("Wave 2: TIA-420", receipt2["wave_dependency_chain"])
+        records = [
+            {"name": "m2-voxpocket", "pane_id": "w9:p1", "topic_id": "VoxPocket", "agent_status": "idle", "terminal_title": "TIA-420", "visible": "Delivered\n1 background /tasks", "wave_order": 2, "depends_on": ["TIA-426", "TIA-424"]},
+            {"name": "m2-linear", "pane_id": "w10:p1", "agent_status": "working", "terminal_title": "TIA-18", "visible": "Running bridge"},
+            {"name": "other-writer-r1", "pane_id": "w11:p1", "agent_status": "working"},
+        ]
+        # Bind the live pane to the prior-plan slot, which was once misclassified idle.
+        state = json.loads(state_path.read_text())
+        slot = next(s for s in state["slots"] if s["slot_id"] == "C")
+        slot.update(target="m2-voxpocket", pane_id="w9:p1", status="idle")
+        state_path.write_text(json.dumps(state))
+        result = self.router.supervision_status(state_file=state_path, agent_records=records, handoff_root=root)
+        self.assertEqual([s["slot_id"] for s in result["in_flight_details"]], ["B", "C", "m2-linear"])
+        vox = next(s for s in result["in_flight_details"] if s["slot_id"] == "C")
+        self.assertEqual(vox["linear_issue"], "TIA-420")
+        self.assertEqual(vox["parent_linear_issue"], "TIA-375")
+        self.assertEqual(vox["raw_status"], "working")
+        self.assertIn("T4-rebuild (in_progress, writer-r1)", vox["m1_progress"])
+        self.assertIn("Stage 1 Designer -> Stage 2 Coding", vox["m1_progress"])
+        chain = result["wave_dependency_chain"]
+        self.assertIn("Wave 1: TIA-426 (team-lead) + TIA-424 (my-designer)", chain)
+        self.assertIn("-> Wave 2: TIA-420 (VoxPocket: Stage 1 Designer -> Stage 2 Coding)", chain)
+        md = result["unified_rollup_markdown"]
+        for section in ("🔔 本次完成", "✅ 累计已完成", "⏳ 仍在运行中", "TIA-18", "依赖 Wave 1: TIA-426, TIA-424", "w9:p1"):
+            self.assertIn(section, md)
+        self.assertEqual(json.loads(state_path.read_text())["slots"][2]["status"], "working")
+        # A running handoff also keeps an idle M2 in-flight after its visible marker disappears.
+        records[0]["visible"] = "Delivered"
+        self.assertEqual(next(s for s in self.router.supervision_status(state_file=state_path, agent_records=records, handoff_root=root)["slots"] if s["slot_id"] == "C")["status"], "working")
+        # A target watchdog that just verified true quiescence wins over stale ledger tasks.
+        watch_plan = {"plan_id": "round-2", "targets": [{"slot_id": "C", "herdr_target": "m2-voxpocket", "pane_id": "w9:p1", "transport": "herdr", "handoff_dir": str(goal)}]}
+
+        def runner(args, **kwargs):
+            payload = {"agents": records} if args[1:3] == ["agent", "list"] else {"panes": []}
+            if args[1:3] == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout="Delivered", stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+        completed = self.router.watch_dispatched_m2(watch_plan, watch_target="C", state_file=state_path, handoff_root=root, runner=runner, max_polls=1)
+        self.assertIn("C", completed["completed_labels"])
+        self.assertIn("m2-linear", completed["running_labels"])
+        self.assertIn(completed["unified_rollup_markdown"], completed["summary_markdown"])
+
+    def test_status_cli_and_shared_default_state_paths(self):
+        with patch.dict("os.environ", {"M2_SUPERVISION_STATE_FILE": ""}):
+            for anchor in (None, "/tmp/plan-round1.json", "/private/tmp/plan-round2.json"):
+                self.assertEqual(self.router._resolve_supervision_state_path(plan_file=anchor, persist_by_default=True), Path("/tmp/m2-supervision-state.json"))
+            self.assertEqual(self.router._resolve_supervision_state_path(plan_file=self.test_root / "plan.json"), self.test_root / "m2-supervision-state.json")
+        state_path = self.test_root / "cli-state.json"
+        fixture = [{"name": "m2-cli", "agent_status": "done", "pane_id": "w17:p1", "terminal_title": "TIA-18", "visible": "1 background /tasks"}]
+        cmd = [str(ROUTER_PATH), "--status", "--state-file", str(state_path), "--handoff-root", str(self.test_root / "handoff"), "--herdr-agent-json", json.dumps(fixture)]
+        result = subprocess.run(cmd + ["--json"], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["in_flight_details"][0]["linear_issue"], "TIA-18")
+        self.assertEqual(payload["in_flight_details"][0]["raw_status"], "working")
+        md = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(md.returncode, 0, md.stderr)
+        self.assertIn("Unified M2 Rollup", md.stdout)
 
 
 if __name__ == "__main__":
