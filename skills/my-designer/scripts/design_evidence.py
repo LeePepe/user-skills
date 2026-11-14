@@ -157,7 +157,7 @@ def clauses(text):
         if scope == 'example':
             continue
         # Independent contrast clauses reset polarity; temporal gerunds do not.
-        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|\bwhile\b(?=\s+(?!\w+ing\b))|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
+        for clause in re.split(r'[;。!?\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|\bwhile\b(?!\s+\w+ing\b)(?=\s+\S)|,\s*(?=(?:implement|use|render|build|add)\b)|\band\s+(?=(?:implement|use|render|build|add)\b)', line, flags=re.I):
             clause = clause.strip().casefold()
             if clause:
                 yield clause

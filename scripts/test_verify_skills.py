@@ -2617,8 +2617,10 @@ class JevGateTests(unittest.TestCase):
             for temporal in ('Never use SVG while rendering HTML sandbox examples.',
                              'Never use CSS HTML while migrating native views.',
                              'Avoid SVG while inspecting CSS HTML migration examples.'):
-                with self.subTest(platform=platform, temporal=temporal):
-                    self.assertEqual(self.gate._platform_errors(platform, spec + '\n' + temporal), [])
+                for spacing in (' ', '  ', '\t', ' \t '):
+                    with self.subTest(platform=platform, temporal=temporal, spacing=spacing):
+                        text = temporal.replace('while ', 'while' + spacing)
+                        self.assertEqual(self.gate._platform_errors(platform, spec + '\n' + text), [])
 
     def test_total_deadline_stops_trickled_headers_and_body_io(self):
         import http.server
