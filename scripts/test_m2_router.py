@@ -1015,6 +1015,7 @@ class M2RouterTests(unittest.TestCase):
             "herdr server stop",
             "orca file open /etc/passwd --focus",
             "orca file open /tmp/m2-plan-test.md",
+            "orca file open /tmp/m2-plan-test.md --focus",
             "python3 -c 'import os'",
             "python3 -m http.server",
             "python3 arbitrary_script.py",
