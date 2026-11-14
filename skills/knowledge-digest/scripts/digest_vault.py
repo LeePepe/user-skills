@@ -1160,10 +1160,67 @@ def _topic_exclusion_reason(
     return None
 
 
+def _learning_brief(item: dict[str, Any]) -> dict[str, Any]:
+    question = str(item.get("question") or item.get("title") or "").strip()
+    title = str(item.get("title") or question).strip()
+    why_now = str(item.get("why_now") or item.get("excerpt") or "").strip()
+    source = str(item.get("source_id") or item.get("source_uri") or "").strip()
+    return {
+        "why_now": f"{why_now} 来源/缺口：{source}。",
+        "preview_questions": [
+            f"底层机制是什么，为什么会出现“{question}”这一现象？",
+            f"最容易误判的边界条件是什么，怎样用一个工程例子验证“{title}”？",
+            f"落地时最小可行的检查或实验是什么，结果应如何解释？",
+        ],
+        "recommended_command": f"/deep-research {title}" if item.get("source_kind") == "git_tech_stack" else f"/learn {title}",
+    }
+
+
+def _daily_digest_markdown(day: str, topics: list[dict[str, Any]]) -> str:
+    lines = [f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->", "", "候选学习仅在 Owner Gate 批准后展开；本 issue 不自动归档或发布。", ""]
+    for item in topics:
+        brief = item["learning_brief"]
+        lines.extend([
+            f"- [ ] [{item['topic_key']}](learning-topic://{item['topic_key']}) {item['title']}",
+            f"  - 为什么现在值得学：{brief['why_now']}",
+            "  - 3 个核心痛点追问预览：",
+            *[f"    1. {q}" for q in brief["preview_questions"]],
+            f"  - 推荐展开命令：`{brief['recommended_command']}`",
+            "",
+        ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _linear_transport_from_repo() -> Any:
+    path = SKILLS_ROOT / "team-lead" / "scripts" / "linear-sync.py"
+    mod = _load_helper_module("knowledge_digest_linear_sync", path)
+    if mod is None or not getattr(mod, "load_api_key", None):
+        raise RuntimeError("Linear transport is unavailable")
+    token = mod.load_api_key()
+    if not token:
+        raise RuntimeError("Linear credentials are not configured; use the existing team-lead credential setup")
+    return mod.LinearClient(token)
+
+
+def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any]]) -> dict[str, Any]:
+    title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
+    marker = f"GTT-LINEAR-DEDUP:daily-learn-{day}"
+    issues = client.list_issues("TIA", query=title, limit=50)
+    issue = next((x for x in issues if marker in str(x.get("description") or "") or x.get("title") == title), None)
+    description = _daily_digest_markdown(day, topics)
+    if issue:
+        return client.update_issue(issue.get("id") or issue.get("identifier"), title=title, description=description)
+    team = client.team_metadata("TIA")
+    state_id = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if s.get("type") == "backlog"), None)
+    return client.create_issue(team_id=team["id"], title=title, description=description, state_id=state_id)
+
+
 def discover_topics(
     *,
     top: int | None = None,
     propose_aidash: bool = False,
+    propose_linear: bool = False,
+    linear_transport: Any | None = None,
     vault_dir: Path = DEFAULT_VAULT_DIR,
     collected_tools_dir: Path = DEFAULT_COLLECTED_TOOLS_DIR,
     git_roots: tuple[Path, ...] = DEFAULT_GIT_ROOTS,
@@ -1176,6 +1233,7 @@ def discover_topics(
     now_utc: datetime | None = None,
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    propose_aidash = propose_aidash or propose_linear
     with _proposal_lock(proposals_path):
         now_dt = now_utc or datetime.now(timezone.utc)
         if now_dt.tzinfo is None:
@@ -1204,6 +1262,20 @@ def discover_topics(
             _scan_collected_tools_candidates(collected_tools_dir, existing_corpus, vault_dir=vault_dir, ledger_entries=ledger_entries)
             + ([] if propose_aidash else _scan_git_tech_stack_candidates(git_roots, existing_corpus))
         )
+        daily_topics = registry.get("daily_linear_issues", {}).get(_cst_day_str(now_dt), {})
+        daily_topic_keys = set(daily_topics.get("topic_keys", [])) if isinstance(daily_topics, dict) else set()
+        linear_client = linear_transport
+        if propose_linear:
+            try:
+                linear_client = linear_client or _linear_transport_from_repo()
+                day_title = f"[Daily Learn {_cst_day_str(now_dt)}] 今日 3 个推荐学习主题"
+                remote_issues = linear_client.list_issues("TIA", query=day_title, limit=50)
+                remote = next((x for x in remote_issues if f"GTT-LINEAR-DEDUP:daily-learn-{_cst_day_str(now_dt)}" in str(x.get("description") or "") or x.get("title") == day_title), None)
+                if remote and not daily_topic_keys:
+                    daily_topic_keys = set(re.findall(r"learning-topic://([a-z0-9-]+)", str(remote.get("description") or "")))
+                    registry.setdefault("daily_linear_issues", {})[_cst_day_str(now_dt)] = {"topic_keys": sorted(daily_topic_keys), "external_id": f"linear://{remote.get('identifier') or remote.get('id')}", "url": remote.get("url")}
+            except Exception as exc:
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest lookup failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": []}
         deduped: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         seen_questions: set[str] = set()
@@ -1219,14 +1291,18 @@ def discover_topics(
                 continue
             seen_keys |= aliases
             seen_questions.add(question_key)
-            if aliases & excluded_topics:
+            if aliases & excluded_topics and not (propose_linear and t_key in daily_topic_keys):
                 excluded_count += 1
                 continue
             deduped.append(cand)
 
-        # Cap pending learning topics at 3 and daily new proposals at 1 per Asia/Shanghai day
-        daily_cap_reached = propose_aidash and len(proposed_today_cst) >= 1
-        pending_cap_reached = propose_aidash and len(pending_topics) >= 3
+        # Explicit multi-topic/Linear mode opts into a larger daily quota; legacy AIDash
+        # mode remains one candidate per CST day and pending cap 3.
+        requested_quota = max(1, top or (3 if propose_linear else 1))
+        daily_cap_reached = propose_aidash and not propose_linear and len(proposed_today_cst) >= 1
+        pending_cap_reached = propose_aidash and not propose_linear and len(pending_topics) >= 3
+        if propose_linear and daily_topic_keys:
+            deduped = [c for c in deduped if c.get("topic_key") in daily_topic_keys] or deduped
         if daily_cap_reached or pending_cap_reached or not deduped:
             reason = (
                 "pending_cap_reached"
@@ -1254,8 +1330,10 @@ def discover_topics(
         # Candidate selection is metadata-only and deterministic. Approval-time research
         # may use other services, but discovery must never call a network/LLM reranker.
         ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
-        eff_top = 1 if propose_aidash else max(1, top or 1)
+        eff_top = requested_quota if (propose_linear or top is not None) else (1 if propose_aidash else 1)
         selected = ranked[:eff_top]
+        for item in selected:
+            item["learning_brief"] = _learning_brief(item)
         if not selected:
             return {
                 "ok": True,
@@ -1326,11 +1404,34 @@ def discover_topics(
                     "priority": "P2",
                     "status": "pending",
                 }
-                _append_valid_proposal(proposals_path, record)
-                proposals_written.append(record)
+                if not prior.get("proposal_id") or slug not in history["by_topic"]:
+                    _append_valid_proposal(proposals_path, record)
+                    proposals_written.append(record)
+                else:
+                    record = {**prior, **record, "revision": int(prior.get("revision") or 1)}
                 registry["topics"][slug] = {**prior, **item, **record, "proposal_id": record["id"]}
 
-        if proposals_written:
+        linear_issue = None
+        if propose_linear:
+            try:
+                client = linear_client or linear_transport or _linear_transport_from_repo()
+                day = _cst_day_str(now_dt)
+                linear_issue = _upsert_linear_daily_issue(client, day, selected)
+                daily_registry = registry.setdefault("daily_linear_issues", {})
+                daily_registry[day] = {
+                    "external_id": f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}",
+                    "url": linear_issue.get("url"),
+                    "topic_keys": [str(x.get("topic_key")) for x in selected],
+                    "updated_at": now_iso,
+                }
+                for item in selected:
+                    entry = registry["topics"].get(item["topic_key"], {})
+                    entry["daily_linear_issue"] = daily_registry[day]["external_id"]
+                    registry["topics"][item["topic_key"]] = entry
+            except Exception as exc:
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": proposals_written}
+
+        if proposals_written or linear_issue:
             _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
 
         return {
@@ -1346,6 +1447,7 @@ def discover_topics(
             "topics": selected,
             "archived_cards": archived_cards,
             "proposals_written": proposals_written,
+            "linear_issue": linear_issue,
         }
 
 
@@ -2167,6 +2269,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_disc = sub.add_parser("discover-topics", help="Scan git tech stack, collected-tools, and vault gaps with R09")
     p_disc.add_argument("--top", type=int, default=None)
     p_disc.add_argument("--propose-aidash", action="store_true")
+    p_disc.add_argument("--propose-linear", action="store_true", help="Explicitly create/update the daily TIA digest issue")
     p_disc.add_argument("--no-materialize", action="store_true")
     p_disc.add_argument("--materialize-before-approval", action="store_true", help="Deprecated; cannot override candidate-only gate")
     p_disc.add_argument("--materialize", action="store_true", help="Explicit standalone archival only")
@@ -2225,6 +2328,7 @@ def main(argv: list[str] | None = None) -> int:
         res = discover_topics(
             top=args.top,
             propose_aidash=args.propose_aidash,
+            propose_linear=args.propose_linear,
             vault_dir=args.vault_dir,
             collected_tools_dir=args.collected_tools_dir,
             git_roots=() if getattr(args, "no_git", False) else DEFAULT_GIT_ROOTS,
