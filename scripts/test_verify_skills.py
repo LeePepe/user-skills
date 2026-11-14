@@ -2886,8 +2886,12 @@ class SkillContractV2Tests(unittest.TestCase):
 
     def test_description_eval_and_negative_cmd(self) -> None:
         script = self._script()
-        result = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        result = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--mock-jev-json", '{"1":true,"2":false,"3":true}', "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(result.stdout)["ok"])
+        stored_cases = json.loads((SKILLS_DIR / "skill-contract" / "references" / "eval-cases.json").read_text())["active_cases"]
+        routing_fixture = next(case for case in stored_cases if case["id"] == "EV-007")
+        with patch.dict(os.environ, {"GTT_JEV_MOCK_JSON": '{"choice":"no","noul":0.9}', "GTT_JEV_LIVE": "1"}):
+            self.assertEqual(self._module().evaluate_case(routing_fixture, SKILLS_DIR / "skill-contract", REPO_ROOT), [])
         case = {"id": "EV-test", "negative_cmd": f"{sys.executable} -c 'raise SystemExit(7)'", "expect_fail_exit": 7}
         spec = importlib.util.spec_from_file_location("skill_contract_v2", script)
         module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
