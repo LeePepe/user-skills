@@ -29,7 +29,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 ## 真静默与全局统一汇总
 
 - **True Quiescence Detection**：检查可见尾部最后 8 行（原始行及非空行）；出现 `background /tasks`、`ctrl+c `、`Working`、`Thinking`、`Running `、`Waiting for` 即覆盖 `idle`/`done` 为 `working`（非静默），绝不提前退出 `--watch`。关联 Goal 的任务仍 `in_progress` 且 TL 运行中时同样保持监督。
-- **跨轮次共享账本**：默认 `/tmp/m2-supervision-state.json`，自动合并公开 `herdr agent list` 活跃 M2 与关联 Goal `ledger.md`，保留 Linear 主 Issue/Parent、M1 子阶段进度；`--state-file` 可隔离状态，`--handoff-root`（或 `M2_HANDOFF_ROOT`）可指定台账根目录。自定义目录的 plan/receipt 默认使用同目录账本。
+- **跨轮次共享账本**：默认 `/tmp/m2-supervision-state.json`，自动合并公开 `herdr agent list` 活跃 M2 与关联 Goal `ledger.md`，保留 Linear 主 Issue/Parent、M1 子阶段进度（自动关联优先当前可见 Goal，不被旧标题/RAG 路径锁定；显式 `handoff_dir` 仍为准）；`--state-file` 可隔离状态，`--handoff-root`（或 `M2_HANDOFF_ROOT`）可指定台账根目录。自定义目录的 plan/receipt 默认使用同目录账本。
 - **强制三段式汇报**：每次后台 `--watch` 唤醒向 Owner 汇报或调用 `--status` 时，直接输出完整 `unified_rollup_markdown`：**Wave 波次与上下游依赖链路** → **1. 🔔 本次完成** → **2. ✅ 累计已完成** → **3. ⏳ 仍在运行中**。逐项包含 M2、pane、Wave/依赖、Linear `TIA-*`、M1 当前进度（含内部 Stage 链路），严禁只报单条而遗漏其他跨轮次在途或 blocked M2。结构化详情见 `in_flight_details` / `wave_dependency_chain`。
 
 ## CLI

@@ -1740,7 +1740,7 @@ def _match_existing_slot_index(
 ROLLUP_METADATA_KEYS = (
     "linear_issue", "parent_linear_issue", "handoff_dir", "goal_id", "depends_on",
     "upstream_waves", "rag_context_hint", "sub_prompt", "terminal_title", "cwd",
-    "m1_progress", "m1_stage_summary",
+    "m1_progress", "m1_stage_summary", "_handoff_discovered",
 )
 
 
@@ -1753,7 +1753,10 @@ def _has_active_visible_tail(visible_text: str, *, max_lines: int = 8) -> bool:
 
 
 def _slot_metadata(source: dict[str, Any]) -> dict[str, Any]:
-    return {key: source[key] for key in ROLLUP_METADATA_KEYS if key in source}
+    metadata = {key: source[key] for key in ROLLUP_METADATA_KEYS if key in source}
+    if (source.get("handoff_dir") or source.get("goal_id")) and "_handoff_discovered" not in source:
+        metadata["_handoff_discovered"] = False
+    return metadata
 
 
 def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | None = None, scan_default: bool = False) -> dict[str, Any]:
@@ -1769,29 +1772,38 @@ def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | No
         slot.setdefault("linear_issue", primary)
     root_value = handoff_root or os.environ.get("M2_HANDOFF_ROOT")
     root = Path(root_value or "~/Development/handoff").expanduser()
-    explicit = _text(slot.get("handoff_dir"))
-    path_match = re.search(r"(?:~/|/)[^\s`\"'<>|()]*handoff/([^/\s`\"'<>|()]+)", text)
-    if not explicit and path_match:
-        explicit = path_match.group(0)
-    if not explicit and slot.get("goal_id"):
+    explicit = "" if slot.get("_handoff_discovered") else _text(slot.get("handoff_dir"))
+    if not explicit and slot.get("goal_id") and not slot.get("_handoff_discovered"):
         explicit = str(root / _text(slot["goal_id"]))
     candidates = [Path(explicit).expanduser() / "ledger.md"] if explicit else []
-    if not candidates and (root_value or scan_default) and root.is_dir():
-        candidates = sorted(root.glob("*/ledger.md"))
-    for ledger_path in candidates:
+    if not explicit:
+        candidates.extend(Path(match.group(0)).expanduser() / "ledger.md" for match in re.finditer(r"(?:~/|/)[^\s`\"'<>|()]*handoff/([^/\s`\"'<>|()]+)", text))
+        if slot.get("handoff_dir"):
+            candidates.append(Path(slot["handoff_dir"]) / "ledger.md")
+        if (root_value or scan_default) and root.is_dir():
+            candidates.extend(sorted(root.glob("*/ledger.md")))
+    ranked = []
+    for ledger_path in dict.fromkeys(candidates):
         try:
             ledger_text = ledger_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
         linear = re.search(r"^\s*-?\s*Linear\s*[:：]\s*[^\n]*?\b(TIA-\d+)\b", ledger_text, re.M | re.I)
         tl = re.search(r"^\s*-?\s*TL\s*[:：]\s*([^\s/|]+)", ledger_text, re.M)
+        goal_pattern = r"(?<!\w)" + re.escape(ledger_path.parent.name) + r"(?!\w)"
+        score = 0
+        for key, weight in (("visible_summary", 100), ("sub_prompt", 80), ("terminal_title", 40), ("rag_context_hint", 20)):
+            context = _text(slot.get(key))
+            if re.search(goal_pattern, context) or (tl and tl.group(1) in context):
+                score += weight
+        if linear and linear.group(1).upper() == slot.get("linear_issue"):
+            score += 10
         # Never associate by Parent Issue or by a shared repository alone.
-        if not explicit and not (
-            re.search(r"(?<![\w-])" + re.escape(ledger_path.parent.name) + r"(?![\w-])", text)
-            or (linear and linear.group(1).upper() == slot.get("linear_issue"))
-            or (tl and tl.group(1) in text)
-        ):
+        if not explicit and not score:
             continue
+        ranked.append((score, ledger_path, ledger_text, linear, tl))
+    for _, ledger_path, ledger_text, linear, tl in sorted(ranked, key=lambda candidate: candidate[0], reverse=True)[:1]:
+        slot["_handoff_discovered"] = not bool(explicit)
         slot["handoff_dir"] = str(ledger_path.parent)
         slot["goal_id"] = ledger_path.parent.name
         if linear:
@@ -2858,8 +2870,8 @@ def _classify_and_unblock_dialog(
 
 
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
-    lines = [line.rstrip() for line in _text(text).splitlines() if line.strip()]
-    return "\n".join(lines[-max_lines:])[:800]
+    lines = [re.sub(r"\s+", " ", line).strip(" ┃│") for line in _text(text).splitlines()]
+    return "\n".join([line for line in lines if line][-max_lines:])[-800:]
 
 
 def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner = _run_command, lines: int = 40) -> str:
