@@ -1,6 +1,6 @@
 ---
 name: codebase-design
-description: Shared vocabulary and discipline for designing deep modules and sharpening domain models. Use when designing or improving module interfaces, finding deepening opportunities, deciding seam placement, making code more testable or AI-navigable, refining ubiquitous language, writing or editing CONTEXT.md, or recording an ADR.
+description: "Design deep modules and sharpen domain models: interfaces, seams, ubiquitous language, CONTEXT.md, and ADRs. Use when improving architecture or testability. Not for implementation by itself."
 ---
 
 # Codebase Design & Domain Modeling

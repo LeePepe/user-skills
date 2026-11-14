@@ -56,7 +56,7 @@
 |---|---|---|---|---|---|
 | I1 Teams | Manual/Pulse | teams-cli、群/频道、watermark、深链 | I3,I4 | I5→I6；G1/G2 | 认证、watermark、一键回复 |
 | I2 Email | Manual/Pulse | workiq只读、watermark、最小元数据 | I3,I4 | I5/G1；证据→G2；告警→E10 | 采集与证据收件箱 |
-| I3 Classify | 被I1/I2/E2/E4a/E5/E10/P1 | Jev正交标签：内容/动作/紧急度/置信度 | — | 标签返调用方 | 多标签与人工回写 |
+| I3 Classify | 被I1/I2/E2/E4a/E5/E10/P1 | Jev正交标签：内容/动作/紧急度/置信度；Star 样本经 `sync-jev-stars` 回流 | — | 标签返调用方 | 多标签与人工回写；TK-07 闭环 |
 | I4 Summarize | 被I1/I2/E5/Q3/G2/P1/P5 | 事实、影响、责任人、截止、引用、脱敏 | — | 有出处摘要 | 跨渠道Schema |
 | I5 Notify | 被几乎所有节点 | P0拍板/P1回执/P2日报，去重并落唯一落点 | — | User decision→Waiting Node | event_id与回调桥 |
 | I6 Reply Teams | I1草稿+I5确认 | 幂等发送、回读消息深链 | — | I5已回复 | 待实装 |
@@ -74,7 +74,7 @@
 | P4 Save Resource | Manual | 工具/repo链接去重，写收藏与索引 | — | 条件P5 | 已成型 |
 | P5 Digest Knowledge | Manual | 检索或拆解；TL;DR/FAQ/清单/叙事归档 | 条件E5,I4 | P6 | — |
 | P6 Public Story | Manual/P1/P5 | Provenance、Delta、Pivot、Takeaway，脱敏产出 | I4、条件E9 | I5 | 敏感词回归 |
-| P7 Make Skill | Manual/P1/Q3 | 四层归位、init、预算、sink-rule、audit、四端同步 | 条件E4/E9/E10 | 能力加固；漂移→I5 | 自动漂移修复 |
+| P7 Make Skill | Manual/P1/Q3 | 四层归位、init、预算、sink-rule、audit、`description-eval`、S1/S2/S3 零冗余共享、四端同步 | 条件E4/E9/E10 | 能力加固；漂移→I5 | 自动漂移修复；描述≤320字符 |
 | P8 Standardize Repo | Manual | init/adopt/split、AGENTS、verify、shared-ci、CODEOWNERS | E4,E9,E10 | E9/E10能力 | 版本 pin/ruleset |
 | P9 Layered Warehouse | Manual | ORM/DDL/派生管线→ODS/DWD/DIM/DWS/ADS、SCD/血缘 | E5,E6 | G1→E1 | — |
 | O1–O4 Azure/Feeds | Manual/Pulse | 成本、观测、RBAC、受保护包源 | O1/O2→E8 | G1→E4；故障→Q3 | 按需调用 |
@@ -90,7 +90,7 @@
 | TK-04 | E1→E6→E4 | Feature；未拆解P0 | codebase-design、team-lead | 四层复用表+Owned Paths/Interfaces |
 | TK-05 | E1→E5→I5 | Phase 0；缺件P0 | Notification/SmartBanner handoff | 实例/hash/AASA/Adjust闭合才派E4 |
 | TK-06 | E1→E3/E2回流 | QA/联调；阻塞P0 | team-lead、goal-queue | 热追加修复后回E1验收 |
-| TK-07 | I3正交标签/回写 | 被多节点；低置信P0 | Jev client、handoff | tags/actions/urgency/confidence+样本 |
+| TK-07 | I3正交标签/回写 | 被多节点；低置信P0 | Jev client、handoff、`sync-jev-stars` | tags/actions/urgency/confidence+Star样本闭环 |
 | TK-08 | I1→I3→I4→I5→I6 | Pulse/Manual；确认后P1 | teams-cli adapter | watermark→草稿→确认发送→深链 |
 | TK-09 | I2→I3→I4 | workiq Pulse；Actionable P0 | workiq、handoff | 只读state.json增量，无发信路径 |
 | TK-10 | I2/E10/E12→G2 | Hook/周五Pulse | flightbook skill/handoff | 幂等 evidence inbox→五面读回 |
@@ -98,15 +98,16 @@
 | TK-12 | I5→Waiting Node | 所有节点；P0/P1/P2 | notify/wake/AIDash | event_id跨通道一次，点击可解封 |
 | TK-13 | P1→G1/P7/P6/I3 | UI Hook；成功P1 | AIDash、retro/linear/story | Promote/Star幂等回流 |
 | TK-14 | Q1→Q2→E10→E12→E8 | DE/Pulse；退化P0 | DSAT/QA-DE/Postmortem | 观察窗验证DSAT下降且无回归 |
-| TK-15 | P7/P8→E9/四端 | Hook/漂移Pulse | skill-contract、drift、repo-kit | 无未解释漂移、verify/shared-ci对齐 |
+| TK-15 | P7/P8→E9/四端 | Hook/漂移Pulse | skill-contract、drift、repo-kit | S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper；`description-eval` 与 verify/shared-ci 对齐 |
 | TK-16 | E4网关/租约/回收 | Herdr Hook/scan | m2/team-lead scripts | 回退、ZOMBIE告警、GOAL_DONE回收读回 |
 
 ## §5 新增 How-To 与独立 Skill 判定
 
 1. 注册五元组：`Inbound / Internal / Calls / PointsTo / Trigger&Notify`；先写输入、专有逻辑、复用边、输出和通知，不孤立建节点。
 2. **组合配方**：Internal 薄、只串现有节点→追加本抽屉一行/ recipe；不新建 Skill。
-3. **独立 Skill**：有厚领域知识、外部 CLI/API、可复用确定性门禁→按四层归位，运行 `skill_contract.py init`，把 regex/AST/水位/Schema/像素/几何检查下沉 `scripts/*.py` 或 shared-ci，再跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
+3. **独立 Skill**：有厚领域知识、外部 CLI/API、可复用确定性门禁→按四层归位，运行 `skill_contract.py init`，把 regex/AST/水位/Schema/像素/几何检查下沉 `scripts/*.py` 或 shared-ci；共享只允许 S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper，且 `description <= 320`，再跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
 4. 入口 L0 只保留路由；完整节点表放本 L1；机器可读状态放 L2。新节点必须附 `Owned Paths`、验证命令、缺口与 P0/P1/P2 落点。
+5. **四大素材库挂载**：仅当内容高频累积、跨会话 Top-3 可复用且具图文/公开沉淀价值时，按 `/vault/`（Design & Motion、Collected Tools）、`/learn/`（Personal Knowledge）、`/thoughts/`（Retro & Story）挂载；不得自动跨库同步、Star 自动发布或执行收藏工具。
 
 ### I7 Unified M2 Ingress 组合配方
 
@@ -116,6 +117,7 @@
 - **PointsTo**：`1:N` 目标 M2；新建目标返回 session/agent/workspace/pane 坐标，后续由目标 M2 按原合同处理。
 - **红线**：计划阶段不能创建或投递；不读取 dsh 私有 session 存储；wave 不伪装成事务顺序；Cindy 适配器复用同一 schema，不另造路由语义。
 - **验证**：`python3 -m unittest scripts/test_m2_router.py`、`skill_contract.py audit --strict`、`./scripts/verify`。
+- **共享/评测**：P7 通过 `description-eval`；Jev Star 通过 `sync-jev-stars` 回写 `references/eval-cases.json`。
 
 ### G1/E2/E10/I3/I5/P7 Project Root Tracker 组合配方
 
