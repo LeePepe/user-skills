@@ -39,6 +39,9 @@ class FakeTransport:
             "url": "https://linear.app/tianpeili/issue/TIA-19",
             "title": "Goal",
             "description": "Owner notes",
+            "priority": 2,
+            "createdAt": "2026-11-01T10:00:00Z",
+            "updatedAt": "2026-11-02T12:00:00Z",
             "state": {"id": "todo", "name": "Todo", "type": "unstarted"},
             "team": {"id": "team-id", "key": "TIA", "name": "Tianpeili"},
             "project": None,
@@ -250,14 +253,39 @@ class LinearSyncTests(unittest.TestCase):
 
     def test_board_read_commands_return_structured_issue_fields(self) -> None:
         transport = FakeTransport()
+        transport.issue["labels"] = {"nodes": [{"id": "l1", "name": "Blocked"}, {"id": "l2", "name": ""}]}
         client = linear_sync.GraphQLClient("not-a-secret", transport)
         with mock.patch.object(linear_sync, "_client_or_fail", return_value=client):
             listed = linear_sync.cmd_list_issues(linear_sync.build_parser().parse_args(["list-issues"]))
             detail = linear_sync.cmd_get_issue(linear_sync.build_parser().parse_args(["get-issue", "--id", "TIA-19"]))
-        self.assertEqual(listed["issues"][0]["identifier"], "TIA-19")
+            idea = linear_sync.cmd_idea(
+                linear_sync.build_parser().parse_args(["idea", "--title", "Voice todo", "--mode", "auto"])
+            )
+        summary = listed["issues"][0]
+        self.assertEqual(summary["id"], "issue-id")
+        self.assertEqual(summary["identifier"], "TIA-19")
+        self.assertEqual(summary["state"], "Todo")
+        self.assertEqual(summary["stateType"], "unstarted")
+        self.assertEqual(summary["createdAt"], "2026-11-01T10:00:00Z")
+        self.assertEqual(summary["updatedAt"], "2026-11-02T12:00:00Z")
+        self.assertEqual(summary["labels"], ["Blocked"])
         self.assertEqual(detail["issue"]["description"], "Owner notes")
+        self.assertEqual(detail["issue"]["stateType"], "unstarted")
+        self.assertEqual(detail["issue"]["createdAt"], "2026-11-01T10:00:00Z")
+        self.assertEqual(detail["issue"]["labels"], ["Blocked"])
         self.assertIn("comments", detail["issue"])
         self.assertIn("history", detail["issue"])
+        self.assertTrue(idea["ok"])
+        self.assertEqual(idea["command"], "idea")
+        self.assertEqual(idea["issue"]["identifier"], "TIA-20")
+        self.assertEqual(idea["issue"]["id"], "issue-id")
+        self.assertEqual(idea["issue"]["stateType"], "unstarted")
+        self.assertEqual(idea["issue"]["createdAt"], "2026-11-01T10:00:00Z")
+        self.assertEqual(idea["issue"]["labels"], ["Blocked"])
+        list_query = next(q for q, _ in transport.calls if "ListIssues" in q)
+        create_query = next(q for q, _ in transport.calls if "CreateIssue" in q)
+        self.assertIn("createdAt", list_query)
+        self.assertIn("createdAt", create_query)
 
     def test_update_and_comment_modes_are_side_effect_safe(self) -> None:
         update_args = linear_sync.build_parser().parse_args([
