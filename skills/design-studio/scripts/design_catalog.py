@@ -9,7 +9,9 @@ from html import escape
 import json
 import importlib.util
 import math
+import os
 import re
+import shutil
 import struct
 import subprocess
 import zlib
@@ -1086,15 +1088,145 @@ def _json_or_csv(value, *, kind):
     return csv_values(raw)
 
 
+def _safe_goal(goal):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", goal) or ".." in goal:
+        raise ValueError("--goal must be a safe slug (letters, numbers, ., _ or -)")
+    return goal
+
+
 def _gallery_paths(goal, round_number):
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", goal):
-        raise ValueError("--goal must be a safe slug (letters, numbers, _ or -)")
+    _safe_goal(goal)
     if round_number < 1 or round_number > 99:
         raise ValueError("--round must be between 1 and 99")
     root = (Path.home() / "Development" / "handoff").resolve()
     if (root / goal).is_symlink():
         raise ValueError("gallery goal must not be a symlink")
     return root / goal / f"r{round_number}"
+
+
+def _blog_repo(args):
+    explicit = getattr(args, "blog_repo", None)
+    value = explicit or os.environ.get("DESIGN_DEMO_BLOG_REPO")
+    if not value:
+        value = str(Path.home() / "Development" / "leepepe.github.io")
+    path = Path(value).expanduser()
+    if path.exists() and path.is_symlink():
+        raise ValueError("blog repo must not be a symlink")
+    if not path.exists() and not explicit and not os.environ.get("DESIGN_DEMO_BLOG_REPO"):
+        return None
+    return path.resolve()
+
+
+def _blog_manifest(args, manifest):
+    if getattr(args, "no_blog_mount", False):
+        return None
+    blog_repo = _blog_repo(args)
+    if blog_repo is None:
+        return None
+    blog_goal = blog_repo / "demos" / args.goal
+    if blog_goal.exists() and blog_goal.is_symlink():
+        raise ValueError("blog demo goal must not be a symlink")
+    manifest["blog_demo_dir"] = str(blog_goal)
+    manifest["blog_demo_url"] = f"https://leepepe.github.io/demos/{args.goal}/r{args.round}/"
+    return blog_repo, blog_goal
+
+
+def _mount_blog(destination, args, manifest):
+    prepared = _blog_manifest(args, manifest)
+    if prepared is None:
+        return None
+    blog_repo, blog_goal = prepared
+    blog_round = blog_goal / f"r{args.round}"
+    if blog_round.exists() or blog_round.is_symlink():
+        raise ValueError(f"blog demo round already exists or is unsafe: {blog_round}")
+    blog_round.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(destination, blog_round)
+    save(blog_round / "manifest.json", manifest)
+    (blog_goal / "index.html").write_text(
+        f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<meta http-equiv="refresh" content="0; url=r{args.round}/index.html"><title>{escape(args.goal)}</title>'
+        f'<p><a href="r{args.round}/index.html">Open latest design demo</a></p>\n', encoding="utf-8")
+    if getattr(args, "push_blog", False) and (blog_repo / ".git").exists():
+        subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "-C", str(blog_repo), "commit", "--only", "-m",
+                        f"chore(demos): mount ephemeral demo {args.goal} r{args.round}", "-m",
+                        "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+                        "--", f"demos/{args.goal}"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "-C", str(blog_repo), "push"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return manifest
+
+
+def _reject_symlinks(root, label):
+    if root.is_symlink():
+        raise ValueError(f"refusing symlink {label}: {root}")
+    if not root.exists():
+        return
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in dirs + files:
+            path = current_path / name
+            if path.is_symlink():
+                raise ValueError(f"refusing symlink {label}: {path}")
+
+
+def _cleanup_paths(args):
+    _safe_goal(args.goal)
+    handoff_root = Path(args.handoff_root).expanduser()
+    raw_blog_repo = Path(args.blog_repo).expanduser() if args.blog_repo else None
+    if raw_blog_repo is not None and raw_blog_repo.is_symlink():
+        raise ValueError("blog repo must not be a symlink")
+    blog_repo = raw_blog_repo.resolve() if raw_blog_repo else _blog_repo(args)
+    blog_goal = blog_repo / "demos" / args.goal if blog_repo else None
+    goal_root = handoff_root / args.goal
+    if goal_root.is_symlink():
+        raise ValueError("handoff goal must not be a symlink")
+    if blog_goal and blog_goal.exists():
+        _reject_symlinks(blog_goal, "blog demo tree")
+    rounds = []
+    if goal_root.is_dir():
+        for child in goal_root.iterdir():
+            if re.fullmatch(r"(?:r|app-nav-r)\d+|demos", child.name):
+                _reject_symlinks(child, "handoff demo tree")
+                rounds.append(child)
+    return blog_repo, blog_goal, goal_root, rounds
+
+
+def command_cleanup_demo(args):
+    blog_repo, blog_goal, goal_root, rounds = _cleanup_paths(args)
+    removed_blog = []
+    if blog_goal and blog_goal.exists():
+        removed_blog = [str(path.relative_to(blog_repo)) for path in blog_goal.rglob("*") if path.is_file()]
+        removed_blog.append(str(blog_goal.relative_to(blog_repo)))
+    removed_rounds = [str(path) for path in rounds]
+    preserved = []
+    if goal_root.is_dir():
+        for path in goal_root.iterdir():
+            if path.name not in {item.name for item in rounds}:
+                preserved.append(str(path))
+    receipt = {"ok": True, "goal": args.goal, "removed_blog_paths": removed_blog,
+               "removed_handoff_rounds": removed_rounds, "preserved_handoff_files": preserved,
+               "blog_committed": False}
+    if args.dry_run:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2)); return 0
+    for path in rounds:
+        shutil.rmtree(path)
+    if blog_goal and blog_goal.exists():
+        shutil.rmtree(blog_goal)
+    if blog_repo and (blog_repo / ".git").exists():
+        check = subprocess.run(["git", "-C", str(blog_repo), "status", "--porcelain", "--",
+                                f"demos/{args.goal}"], check=True, stdout=subprocess.PIPE, text=True)
+        if check.stdout.strip():
+            subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}"], check=True)
+            subprocess.run(["git", "-C", str(blog_repo), "commit", "--only", "-m",
+                            f"chore(demos): cleanup ephemeral demo {args.goal}", "-m",
+                            "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+                            "--", f"demos/{args.goal}"], check=True)
+            receipt["blog_committed"] = True
+            if args.push_blog:
+                subprocess.run(["git", "-C", str(blog_repo), "push"], check=True)
+    print(json.dumps(receipt, ensure_ascii=False, indent=2)); return 0
 
 
 @lru_cache(maxsize=8)
@@ -1292,12 +1424,14 @@ def command_scaffold_app_nav(args):
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
     destination.mkdir(parents=True)
     manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
-    save(destination/'manifest.json',manifest)
+    _blog_manifest(args, manifest)
     for i,scheme in enumerate(schemes,1): (destination/f'app{i:02d}.html').write_text(_app_nav_html(scheme,i,args.platform,anti_patterns,overrides),encoding='utf-8')
     (destination/'current.html').write_text(_app_nav_html(schemes[0],0,args.platform,anti_patterns,overrides),encoding='utf-8')
     links=''.join(f'<li><a href="app{i:02d}.html">{escape(x["title"])}</a></li>' for i,x in enumerate(schemes,1))
     (destination/'index.html').write_text(f'<!doctype html><meta charset="utf-8"><title>{escape(args.goal)}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">{escape(schemes[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>',encoding='utf-8')
-    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest},ensure_ascii=False,indent=2)); return 0
+    _mount_blog(destination, args, manifest)
+    save(destination/'manifest.json', manifest)
+    print(json.dumps({'gallery':str(destination),'mode':'app-nav','files':7,'manifest':manifest, **{k: manifest[k] for k in ('blog_demo_dir','blog_demo_url') if k in manifest}},ensure_ascii=False,indent=2)); return 0
 
 def command_scaffold_gallery(args):
     if getattr(args, 'mode', 'screen') == 'app-nav':
@@ -1328,6 +1462,7 @@ def command_scaffold_gallery(args):
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
     manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    _blog_manifest(args, manifest)
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
     css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
@@ -1338,7 +1473,11 @@ def command_scaffold_gallery(args):
         (destination / f"{variant['id']}.html").write_text(_gallery_html(f"{args.goal} {variant['id']}", variant["id"], args.platform, variant, anti_patterns, overrides), encoding="utf-8")
     index = _gallery_index(manifest)
     (destination / "index.html").write_text(index, encoding="utf-8")
-    print(json.dumps({"gallery": str(destination), "files": 15, "manifest": manifest}, ensure_ascii=False, indent=2))
+    _mount_blog(destination, args, manifest)
+    save(destination / "manifest.json", manifest)
+    payload = {"gallery": str(destination), "files": 15, "manifest": manifest}
+    payload.update({key: manifest[key] for key in ("blog_demo_dir", "blog_demo_url") if key in manifest})
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1427,6 +1566,8 @@ def command(args):
         return command_vault_ingest(args)
     if args.command == "scaffold-gallery":
         return command_scaffold_gallery(args)
+    if args.command == "cleanup-demo":
+        return command_cleanup_demo(args)
     if args.command == "vault-search":
         return command_vault_search(args)
     catalog_path, markdown_path = catalog_paths(args)
@@ -1613,6 +1754,16 @@ def parser():
     gallery.add_argument("--style-overrides", default="{}")
     gallery.add_argument("--direction", default="", help="Known VS-* archetype for depth exploration")
     gallery.add_argument("--screen-content", default="", help="Domain content consumed by every screen variant")
+    gallery.add_argument("--blog-repo", default=None)
+    gallery.add_argument("--no-blog-mount", action="store_true")
+    gallery.add_argument("--push-blog", action="store_true")
+
+    cleanup = sub.add_parser("cleanup-demo")
+    cleanup.add_argument("--goal", required=True)
+    cleanup.add_argument("--handoff-root", default=str(Path.home() / "Development" / "handoff"))
+    cleanup.add_argument("--blog-repo", default=None)
+    cleanup.add_argument("--push-blog", action="store_true")
+    cleanup.add_argument("--dry-run", action="store_true")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
     vsearch.add_argument("--query", default="")

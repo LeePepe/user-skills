@@ -297,13 +297,18 @@ assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
 
     def test_both_gallery_indexes_require_canonical_round_bindings(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            blog = Path(directory) / 'blog'
+            blog.mkdir()
             for mode in ('screen', 'app-nav'):
-                result = run('scaffold-gallery', '--goal', mode, '--round', '2', '--platform', 'mobile', '--mode', mode, env=dict(os.environ, HOME=directory))
+                result = run('scaffold-gallery', '--goal', mode, '--round', '2', '--platform', 'mobile', '--mode', mode,
+                             '--blog-repo', str(blog), env=dict(os.environ, HOME=directory))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 gallery = Path(json.loads(result.stdout)['gallery'])
+                blog_gallery = blog / 'demos' / mode / 'r2'
                 index = gallery / 'index.html'
                 canonical = index.read_text()
                 self.assertEqual(self.gate(gallery).returncode, 0)
+                self.assertEqual(self.gate(blog_gallery).returncode, 0)
                 replacements = ['<!doctype html><p>No variants or selection controls available.</p>',
                                 canonical.replace('screen', 'forged-screen') if mode == 'screen' else canonical.replace('app01.html', 'app99.html')]
                 if mode == 'screen':
@@ -728,6 +733,69 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
             self.assertEqual(manifest["style_overrides"], {"density": "airy"})
             duplicate = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile", env=env)
             self.assertNotEqual(duplicate.returncode, 0)
+
+    def test_gallery_mounts_screen_and_app_nav_to_explicit_blog_repo(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            home = Path(directory)
+            blog = home / "blog"
+            blog.mkdir()
+            env = dict(os.environ, HOME=str(home))
+            screen = run("scaffold-gallery", "--goal", "mount-screen", "--round", "1", "--platform", "mobile",
+                         "--blog-repo", str(blog), env=env)
+            self.assertEqual(screen.returncode, 0, screen.stderr)
+            payload = json.loads(screen.stdout)
+            self.assertEqual(payload["blog_demo_url"], "https://leepepe.github.io/demos/mount-screen/r1/")
+            self.assertTrue((blog / "demos/mount-screen/r1/index.html").is_file())
+            self.assertEqual((blog / "demos/mount-screen/r1/v01.html").read_bytes(),
+                             (home / "Development/handoff/mount-screen/r1/v01.html").read_bytes())
+            app = run("scaffold-gallery", "--goal", "mount-app", "--round", "2", "--platform", "mobile",
+                      "--mode", "app-nav", "--blog-repo", str(blog), env=env)
+            self.assertEqual(app.returncode, 0, app.stderr)
+            self.assertTrue((blog / "demos/mount-app/r2/index.html").is_file())
+            self.assertIn("blog_demo_url", json.loads(app.stdout))
+
+    def test_cleanup_demo_preserves_handoff_receipts_and_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory)
+            handoff = root / "handoff" / "goal-clean"
+            (handoff / "r1").mkdir(parents=True)
+            (handoff / "app-nav-r2").mkdir()
+            (handoff / "demos/nested").mkdir(parents=True)
+            (handoff / "receipts").mkdir()
+            for name in ("spec.md", "ledger.md"):
+                (handoff / name).write_text(name)
+            blog = root / "blog"
+            (blog / "demos/goal-clean/r1").mkdir(parents=True)
+            result = run("cleanup-demo", "--goal", "goal-clean", "--handoff-root", str(root / "handoff"),
+                         "--blog-repo", str(blog))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((blog / "demos/goal-clean").exists())
+            self.assertFalse((handoff / "r1").exists())
+            self.assertFalse((handoff / "app-nav-r2").exists())
+            self.assertFalse((handoff / "demos").exists())
+            self.assertTrue((handoff / "spec.md").is_file())
+            self.assertTrue((handoff / "ledger.md").is_file())
+            self.assertTrue((handoff / "receipts").is_dir())
+            unsafe = run("cleanup-demo", "--goal", "../escape", "--handoff-root", str(root / "handoff"),
+                         "--blog-repo", str(blog))
+            self.assertNotEqual(unsafe.returncode, 0)
+
+    def test_cleanup_demo_rejects_nested_symlink_without_mutation(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory)
+            handoff = root / "handoff" / "goal-links"
+            (handoff / "r1/assets").mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            (handoff / "r1/assets/escape").symlink_to(outside, target_is_directory=True)
+            (handoff / "spec.md").write_text("keep")
+            blog = root / "blog"
+            (blog / "demos/goal-links/r1").mkdir(parents=True)
+            result = run("cleanup-demo", "--goal", "goal-links", "--handoff-root", str(root / "handoff"),
+                         "--blog-repo", str(blog))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((handoff / "r1/assets/escape").is_symlink())
+            self.assertTrue((blog / "demos/goal-links/r1").is_dir())
 
     def test_web_optical_recipe_ingest_cannot_contaminate_native_vaults(self):
         recipe = "~/Development/handoff/apple-liquid-glass-html-recipe/"
