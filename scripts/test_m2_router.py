@@ -415,21 +415,21 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(calls[-1][0], "/tmp/fake-herdr-dispatch")
         self.assertTrue("--new-workspace" in calls[-1] or "--pane" in calls[-1])
 
-    def test_cli_plan_outputs_json_without_dispatch(self):
+    def test_cli_plan_outputs_json_without_dispatch_or_temp_markdown(self):
         fixture = {"agents": [{"name": "alpha-m2-r1", "agent_status": "working", "repo": "alpha"}]}
         with tempfile.TemporaryDirectory() as temp:
             fixture_path = Path(temp) / "agents.json"
-            preview_md = Path(temp) / "preview.md"
             fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
             result = subprocess.run([
                 str(ROUTER_PATH), "--plan", "--message", "inspect alpha", "--herdr-json", str(fixture_path),
-                "--no-dsh", "--no-open-preview", "--preview-md-file", str(preview_md), "--json",
+                "--no-dsh", "--json",
                 "--mock-jev-json", json.dumps({"route": "ROUTE_SINGLE", "targets": [{"target_repo": "alpha"}]}),
             ], capture_output=True, text=True, check=False)
-            self.assertTrue(preview_md.is_file())
+            self.assertEqual(list(Path(temp).glob("*.md")), [])
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["targets"][0]["m2_status"], "EXISTING_M2")
+        self.assertIn("preview_markdown", payload)
         self.assertFalse(payload["approval"]["approved"])
 
     def test_apply_requires_explicit_approve_flag_even_if_plan_claims_approved(self):
@@ -773,51 +773,39 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(dsh_calls[0][1]["cwd"], str(Path("~/Development/BetaRepo").expanduser()))
         self.assertEqual(dsh_res["receipts"][0]["cwd"], str(Path("~/Development/BetaRepo").expanduser()))
 
-    def test_plan_writes_markdown_preview_and_opens_orca_with_focus(self):
-        orca_calls = []
-
-        def ok_runner(args, **kwargs):
-            orca_calls.append(args)
-            return SimpleNamespace(returncode=0, stdout="opened", stderr="")
+    def test_plan_renders_linear_markdown_and_terminal_preview_without_orca_or_temp_md(self):
+        plan = self.router.build_plan(
+            "先检查通知开关，再写学习博客",
+            self._learning_sessions(),
+            mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
+                {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查通知开关详情\n包含多行说明", "rag_context_hint": "upstream-notif-hint", "wave_order": 1},
+                {"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "整理学习博客", "wave_order": 2},
+            ]},
+        )
+        self.assertNotIn("preview_markdown_path", plan)
+        self.assertNotIn("preview_open", plan)
+        markdown = plan["preview_markdown"]
+        self.assertIn(f"# M2 Dispatch Plan · {plan['plan_id']} (ROUTE_CROSS_SESSION)", markdown)
+        self.assertIn("Gemini 4 Argon · 983K context", markdown)
+        self.assertIn("检查通知开关详情\n包含多行说明", markdown)
+        self.assertIn("upstream-notif-hint", markdown)
+        self.assertIn("## Stale / Duplicate M2 Cleanup Candidates", markdown)
+        terminal = self.router.preview_text(plan)
+        self.assertIn("wave | topic_id | space", terminal)
+        self.assertIn("检查通知开关详情", terminal)
+        self.assertIn("rag_context_hint: upstream-notif-hint", terminal)
+        self.assertIn("upstream-notif-hint", markdown)
 
         with tempfile.TemporaryDirectory() as temp:
-            md_path = Path(temp) / "m2-preview.md"
-            plan = self.router.build_plan(
-                "先检查通知开关，再写学习博客",
-                self._learning_sessions(),
-                mock_magpie={"route": "ROUTE_CROSS_SESSION", "targets": [
-                    {"topic_id": "sapphire-notification", "target_repo": "bing-growth-sapphire-app", "sub_prompt": "检查通知开关详情\n包含多行说明", "rag_context_hint": "upstream-notif-hint", "wave_order": 1},
-                    {"topic_id": "learning-and-blog", "target_repo": "Personal", "sub_prompt": "整理学习博客", "wave_order": 2},
-                ]},
-                preview_md_file=md_path,
-                open_preview=True,
-                orca_bin="/usr/local/bin/orca",
-                runner=ok_runner,
-            )
-            self.assertTrue(md_path.is_file())
-            self.assertEqual(plan["preview_markdown_path"], str(md_path))
-            self.assertTrue(plan["preview_open"]["ok"])
-            self.assertEqual(orca_calls, [["/usr/local/bin/orca", "file", "open", str(md_path), "--focus"]])
-            md_content = md_path.read_text(encoding="utf-8")
-            self.assertIn(f"# M2 Dispatch Plan · {plan['plan_id']} (ROUTE_CROSS_SESSION)", md_content)
-            self.assertIn("Gemini 4 Argon · 983K context", md_content)
-            self.assertIn("检查通知开关详情\n包含多行说明", md_content)
-            self.assertIn("upstream-notif-hint", md_content)
-            self.assertIn("## Stale / Duplicate M2 Cleanup Candidates", md_content)
-            self.assertIn(f"Preview Markdown: {md_path}", self.router.preview_text(plan))
-
-            # Verify graceful fallback when orca fails or is missing
-            fail_plan = self.router.build_plan(
+            explicit_path = Path(temp) / "linear-preview.md"
+            exported = self.router.build_plan(
                 "检查 AIDash",
                 [],
                 mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"target_repo": "AIDash", "sub_prompt": "check", "wave_order": 1}]},
-                preview_md_file=Path(temp) / "fail-preview.md",
-                open_preview=True,
-                orca_bin="/nonexistent/orca",
-                runner=lambda args, **kwargs: SimpleNamespace(returncode=127, stdout="", stderr="orca not found"),
+                preview_md_file=explicit_path,
             )
-            self.assertFalse(fail_plan["preview_open"]["ok"])
-            self.assertIn("orca not found", fail_plan["preview_open"]["warning"])
+            self.assertTrue(explicit_path.is_file())
+            self.assertEqual(exported["preview_markdown"], explicit_path.read_text(encoding="utf-8"))
 
     def test_watch_auto_unblocks_safe_allow_dialogs_and_settles_on_idle(self):
         plan = {
@@ -1061,7 +1049,6 @@ class M2RouterTests(unittest.TestCase):
             "herdr agent get m2-aidash-r1",
             "herdr agent read m2-aidash-r1 --source visible --lines 40",
             "herdr agent wait m2-aidash-r1 --timeout 60000",
-            "orca file open /tmp/m2-plan-test.md --focus",
             "python3 --version",
             "python3 -m unittest scripts/test_m2_router.py",
             "env",

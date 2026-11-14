@@ -15,7 +15,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 
 跨 M2 的唯一总入口已独立为 [`personal-m2-assistant`](../personal-m2-assistant/SKILL.md)。
 
-- `/m2 <跨M2指令>` 展开到 `personal-m2-assistant`，调用其 canonical `m2-router.py --plan`，展示每个话题 M2 的 wave、状态、transport 与完整子指令。
+- `/m2 <跨M2指令>` 展开到 `personal-m2-assistant`，调用其 canonical `m2-router.py --plan`，在终端展示每个话题 M2 的 wave、状态、transport 与完整子指令，并将 `preview_markdown` 同步到 Linear Team TIA。
 - `/personal-m2-assistant <跨M2指令>` 是跨仓/跨会话显式入口；AI 必须先 `ask_user`，只有 Owner 明确批准后才可 `--apply --approve`。
 - `/m2-dispatcher` 仅保留本技能的单仓 M2↔M1 生命周期、Spec 对齐、热追加、巡检解卡与 Goal 回收职责。
 
@@ -35,7 +35,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 
 | 口令 | 目标路由 | 执行动作 |
 |---|---|---|
-| `/m2 <跨M2指令>` | `personal-m2-assistant` | 先运行 canonical `m2-router.py --plan` 展示预览并 `ask_user` 拍板；确认后才运行 `--apply --approve` |
+| `/m2 <跨M2指令>` | `personal-m2-assistant` | 先运行 canonical `m2-router.py --plan` 展示终端摘要并将 Markdown 同步到 Linear Team TIA，再 `ask_user` 拍板；确认后才运行 `--apply --approve` |
 | `/status` | `m2-dispatcher` | 直接运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py status --check` 展示 `needs a person` 置顶视图 |
 | `/ingest <text_or_image>` | `design-studio` | 调 `design_catalog.py vault-ingest`（图片路径自动附带 `--measure-palette`） |
 | `/learn <topic_or_url>` | `knowledge-digest` | 执行双通道拆解归档至 `~/Development/Personal/knowledge-vault/` 并同步 `knowledge-vault/index.md` |
@@ -46,7 +46,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
   - **强制 Worktree 派发与宿主看门狗**：凡改代码或其他文件，`M2` 落盘 `spec.md` 后必经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude --cwd <repo_or_dev_root> --prompt "..."` 派后台 `Steering` 在独立 Worktree（`~/Development/worktrees/<task>` 或 `herdr worktree create`）修改提交，绝不在主 checkout `main` 直改（macOS 项目允许本地 `main` 合入后构建安装 `/Applications/<App>.app`，首次经 `ask_user` 确认记录）。同步 shell 宿主启动后运行 `python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 600 --json`；**Copilot CLI 宿主**必须用 `bash(command="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/<goal> --interval 15 --max-wait 2400 --json", mode="async", detach=true, shellId="watch-<goal>")`，立即结束 Turn 进入 `session.idle`，让用户继续对话，退出时由 `<system_notification>` 唤醒。`--cwd` 传仓根／worktree 或 `~/Development`／`/Volumes/SSD/Development/handoff`，禁传 `handoff/<goal>`。
 - **幂等复用与热追加**：`<goal>-goal-tl-r1` 为 `working`、`idle` 或 `done` 时绝不再开第二个 TL；改用 [`goal-queue.py`](../team-lead/scripts/goal-queue.py) `enqueue` 记录 `EVT=HOT_APPEND`，`idle`／`done` 时唤醒。
 - **产品 UI/UX 设计与模型路由**：在本 Goal 内按 [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md) 运行设计流水线；模型由 [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) 与 `herdr-dispatch.sh` 调度：`--kind claude` 走 `direct_quota_gated`（`~/.config/magpie/quotas.json` `<80%` 且 OAuth 正常时原生 `opus` 直连；超限或 `401/403/429` 自动剥离 `--allowedTools` 改派 `copilot --model magpie/group/steering`），`codex`/`copilot` 绑定 `Magpie (:3425)` `group/steering`。
-- **Parent ≥ Child Allowlist**：父 TL 传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`~/orca`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 并合并 `extra_add_dirs`。Mac mini 上 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD` 以覆盖 `/Volumes/SSD/.../handoff/<goal>` 兄弟目录 realpath；handoff 父目录不在基线时自动补进 trust 与 `--add-dir`。
+- **Parent ≥ Child Allowlist**：父 TL 传入基线 `~/Development`、`~/.copilot`、`~/.agents`、`~/.codex`、`/Volumes/SSD`、`/tmp`、`/private/tmp`、`/var/folders`、`/private/var/folders` 并合并 `extra_add_dirs`。计划与 Spec 拆解统一直接展示在终端并同步到 Linear Team TIA，不弹窗打开 Orca。Mac mini 上 `BASELINE_ADD_DIRS` 须带 `/Volumes/SSD` 以覆盖 `/Volumes/SSD/.../handoff/<goal>` 兄弟目录 realpath；handoff 父目录不在基线时自动补进 trust 与 `--add-dir`。
 
 ## 1.5 Cross-M2 handoff
 

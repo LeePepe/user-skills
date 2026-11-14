@@ -19,7 +19,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 1. 只读发现公开的 Herdr `pane/agent list` 与 dsh Omni Hub 状态；不读取 dsh 私有 session 存储。
 2. 调用 Jev/Falcon 做枚举选路，再由 Magpie 语义拆解并绑定已有会话；离线或网关不可达时只使用确定性兜底。
 3. **默认模型/Context 与 `~` 展开**：所有目标 M2 默认使用 `Gemini 4 Argon · 983K context`（`--model gemini-4-argon --context long_context`）；所有 `cwd`（含 `m2-domain-map.json`、会话发现、新话题候选与派发参数）统一先展开 `~` 为绝对路径再传给 `herdr-dispatch.sh` 或 `dsh create-session`。
-4. **Orca 临时 `.md` 计划预览**：由于 `herdr` 不原生支持打开/渲染 `.md` 文件，`--plan` 自动生成 `/tmp/m2-plan-<plan_id>.md`（含完整 `sub_prompt`、wave 表、model/context/cwd、旧窗清理与新域候选）并调用 `orca file open <path> --focus` 聚焦预览（无 GUI/测试时可用 `--no-open-preview` 或自动优雅降级），同时通过 [`preview_text`](scripts/m2-router.py) 输出终端摘要。
+4. **Linear Team TIA 同步与终端摘要预览**：`--plan` 生成结构化 `plan.json`，其中 `preview_markdown` 保留完整 Markdown 正文，`preview_text(plan)` 提供终端摘要；计划与 Spec 拆解直接同步/展示在 Linear Team TIA（对应 Root/Goal Issue，如 `TIA-375`）及终端，不生成临时 `.md` 或打开 Orca。需要文件时只能显式传入 `--preview-md-file`。
 5. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 6. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
 7. **每个 M2 独立后台监督与增量滚动汇总（`--watch --watch-target` + `watchdog_tasks`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护共享监督状态账本 `m2-supervision-state.json`（或 `--state-file`），并为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）：
@@ -28,7 +28,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 
 ## CLI
 
-生成计划并在 Orca 打开 `.md` 预览：
+生成计划 JSON（含 `preview_markdown`）并输出终端摘要；随后同步到 Linear Team TIA：
 
 ```bash
 python3 skills/personal-m2-assistant/scripts/m2-router.py --plan \
@@ -45,7 +45,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
 
-常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`、`--no-open-preview`、`--transport stdout`。完整参数以脚本 `--help` 为准。
+常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`（显式导出）、`--transport stdout`。完整参数以脚本 `--help` 为准。
 
 ## 安全与顺序
 

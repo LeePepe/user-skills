@@ -56,7 +56,6 @@ SAFE_BASELINE_ROOTS = (
     "~/.copilot",
     "~/.agents",
     "~/.codex",
-    "~/orca",
 )
 WHITELISTED_CMD_BINARIES = {
     "gh",
@@ -64,7 +63,6 @@ WHITELISTED_CMD_BINARIES = {
     "python3",
     "jq",
     "herdr",
-    "orca",
     "shasum",
     "date",
     "sleep",
@@ -1179,44 +1177,6 @@ def write_preview_markdown(plan: dict[str, Any], path: str | Path | None = None)
     return preview_path
 
 
-def open_preview_in_orca(
-    preview_path: str | Path,
-    *,
-    orca_bin: str | None = None,
-    runner: CommandRunner = _run_command,
-) -> dict[str, Any]:
-    resolved_path = str(Path(preview_path).expanduser())
-    binary = _text(orca_bin or os.environ.get("ORCA_BIN") or shutil.which("orca"), "orca")
-    command = [binary, "file", "open", resolved_path, "--focus"]
-    try:
-        result = runner(command, timeout=5.0)
-    except (OSError, subprocess.SubprocessError) as error:
-        return {
-            "ok": False,
-            "path": resolved_path,
-            "command": command,
-            "returncode": -1,
-            "warning": f"orca preview open failed: {error}",
-        }
-    returncode = int(getattr(result, "returncode", 1))
-    if returncode != 0:
-        stderr = _text(getattr(result, "stderr", "")) or _text(getattr(result, "stdout", ""))
-        return {
-            "ok": False,
-            "path": resolved_path,
-            "command": command,
-            "returncode": returncode,
-            "warning": stderr or f"orca exited {returncode}",
-        }
-    return {
-        "ok": True,
-        "path": resolved_path,
-        "command": command,
-        "returncode": 0,
-        "stdout": _text(getattr(result, "stdout", "")),
-    }
-
-
 def build_plan(
     message: str,
     sessions: list[dict[str, Any]],
@@ -1233,9 +1193,7 @@ def build_plan(
     mock_jev: Any = None,
     transport: str = "auto",
     preview_md_file: str | Path | None = None,
-    write_preview_md: bool = True,
-    open_preview: bool = False,
-    orca_bin: str | None = None,
+    write_preview_md: bool = False,
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     message = _text(message)
@@ -1300,15 +1258,8 @@ def build_plan(
         "approval": {"required": True, "approved": False},
     }
     plan["preview_markdown"] = render_preview_markdown(plan)
-    preview_path = Path(preview_md_file).expanduser() if preview_md_file else _default_preview_path(plan_id)
-    if write_preview_md or preview_md_file is not None or open_preview:
-        preview_path = write_preview_markdown(plan, preview_path)
-    else:
-        plan["preview_markdown_path"] = str(preview_path)
-    if open_preview:
-        plan["preview_open"] = open_preview_in_orca(preview_path, orca_bin=orca_bin, runner=runner)
-    else:
-        plan["preview_open"] = {"ok": False, "skipped": True, "path": str(preview_path)}
+    if write_preview_md or preview_md_file is not None:
+        write_preview_markdown(plan, preview_md_file)
     return plan
 
 
@@ -1329,6 +1280,9 @@ def preview_text(plan: dict[str, Any]) -> str:
     for target in plan.get("targets", []):
         marker = " [NEW_DOMAIN_CANDIDATE]" if target.get("domain_status") == NEW_DOMAIN_CANDIDATE else ""
         lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('space', 'M2')} ({target.get('target_workspace_id') or 'new-space'}) | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
+        hint = _text(target.get("rag_context_hint"))
+        if hint:
+            lines.append(f"  rag_context_hint: {hint}")
     stale = plan.get("stale_m2_candidates", [])
     if stale:
         lines.extend(["", "Stale / Duplicate M2 Cleanup Candidates:"])
@@ -2348,13 +2302,6 @@ def _is_whitelisted_command_segment(segment: str) -> bool:
         return _is_safe_gh_command(args)
     if binary == "herdr":
         return _is_safe_herdr_command(args)
-    if binary == "orca":
-        if len(args) != 4 or args[:2] != ["file", "open"] or "--focus" not in args[2:]:
-            return False
-        file_args = [a for a in args[2:] if a != "--focus"]
-        if len(file_args) != 1 or file_args[0].startswith("-"):
-            return False
-        return _path_is_under_safe_roots(file_args[0], _safe_roots_for_target(include_target_cwd=False))
     if binary == "python3":
         return _is_safe_python_command(args)
     if binary == "find":
@@ -3235,9 +3182,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-file", help="optional supervision state JSON file for per-M2 cumulative rollup")
     parser.add_argument("--reset-state", action="store_true", help="reset supervision state ledger before --apply")
     parser.add_argument("--watch-target", "--target-id", dest="watch_target", default="", help="watch a single M2 target/slot and update cumulative rollup immediately on completion")
-    parser.add_argument("--preview-md-file", help="optional markdown file path for --plan preview")
-    parser.add_argument("--no-open-preview", action="store_true", help="do not invoke orca file open --focus during --plan")
-    parser.add_argument("--orca-bin", help="optional path to orca binary")
+    parser.add_argument("--preview-md-file", help="optional explicit markdown export path for --plan preview")
+    parser.add_argument("--no-open-preview", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--orca-bin", help=argparse.SUPPRESS)
     parser.add_argument("--interval", type=float, default=15.0, help="polling interval in seconds for --watch")
     parser.add_argument("--max-wait", type=float, default=2400.0, help="max wait in seconds for --watch")
     parser.add_argument("--max-polls", type=int, default=None, help="optional max poll iterations for --watch")
@@ -3301,9 +3248,6 @@ def main(argv: list[str] | None = None) -> int:
                 mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None,
                 transport=args.transport,
                 preview_md_file=args.preview_md_file,
-                write_preview_md=True,
-                open_preview=not args.no_open_preview,
-                orca_bin=args.orca_bin,
             )
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url
