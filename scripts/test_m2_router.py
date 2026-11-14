@@ -259,13 +259,66 @@ class M2RouterTests(unittest.TestCase):
     def test_domain_map_has_four_groups_and_23_topics(self):
         domain_map = self.router.load_domain_map()
         self.assertEqual(len(domain_map["groups"]), 4)
-        self.assertEqual(len(domain_map["topics"]), 25)
+        self.assertEqual(len(domain_map["topics"]), 32)
+        user_topics = {topic["topic_id"]: topic for topic in domain_map["topics"] if topic["group"] == "user-skills"}
+        self.assertEqual(len(user_topics), 12)
+        self.assertEqual(user_topics["skills-design"]["space"], "skills-design")
+        self.assertEqual(user_topics["skills-design"]["space_aliases"], ["design", "my-designer", "design-studio"])
+        self.assertIn("skills-research-knowledge", user_topics["skill-knowledge-digest"]["aliases"])
+        legacy_plan = self.router.build_plan(
+            "深度研究并整理知识",
+            [],
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "skills-research-knowledge", "sub_prompt": "deep-research", "wave_order": 1}]},
+        )
+        self.assertEqual(legacy_plan["targets"][0]["topic_id"], "skill-deep-research")
         self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system"}, {"financial", "shared-design-system"})
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
         self.assertTrue(all(topic.get("space") for topic in domain_map["topics"]))
         self.assertNotIn("app-ios", {topic["topic_id"] for topic in domain_map["topics"]})
         self.assertEqual(domain_map["topics"][0]["topic_id"], "sapphire-notification")
+
+    def test_per_topic_isolation_excludes_foreign_encoded_session(self):
+        domain_map = self.router.load_domain_map()
+        knowledge = next(topic for topic in domain_map["topics"] if topic["topic_id"] == "skill-knowledge-digest")
+        design_session = {
+            "session_id": "m2-skills-design-user-skills-r1",
+            "target_repo": "user-skills",
+            "title": "m2-skills-design-user-skills-r1",
+            "summary": "design work",
+            "status": "working",
+            "workspace_label": "user-skills",
+        }
+        self.assertEqual(self.router._matching_topic_sessions(
+            {"topic_id": "skill-knowledge-digest", "target_repo": "user-skills"},
+            knowledge,
+            [design_session],
+            domain_map,
+        ), [])
+
+    def test_same_topic_encoded_session_reuses_and_design_uses_dedicated_space(self):
+        domain_map = self.router.load_domain_map()
+        deep_research = next(topic for topic in domain_map["topics"] if topic["topic_id"] == "skill-deep-research")
+        deep_session = {
+            "session_id": "m2-skill-deep-research-user-skills-r1",
+            "target_repo": "user-skills",
+            "title": "m2-skill-deep-research-user-skills-r1",
+            "status": "working",
+            "workspace_label": "user-skills",
+        }
+        self.assertEqual([item["session_id"] for item in self.router._matching_topic_sessions(
+            {"topic_id": "skill-deep-research", "target_repo": "user-skills"},
+            deep_research,
+            [deep_session],
+            domain_map,
+        )], [deep_session["session_id"]])
+        plan = self.router.build_plan(
+            "改善设计技能",
+            [],
+            mock_magpie={"route": "ROUTE_SINGLE", "targets": [{"topic_id": "skills-design", "sub_prompt": "改善设计技能", "wave_order": 1}]},
+        )
+        self.assertEqual(plan["targets"][0]["space"], "skills-design")
+        self.assertEqual(plan["targets"][0]["space_aliases"], ["design", "my-designer", "design-studio"])
 
     def test_legacy_domain_map_matches_canonical_domain_map(self):
         legacy_path = ROOT / "skills" / "m2-dispatcher" / "references" / "m2-domain-map.json"
@@ -324,7 +377,7 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(registered["topics"]), 26)
+            self.assertEqual(len(registered["topics"]), 33)
             new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
             self.assertTrue(len(new_topic["keywords"]) > 0)
             self.assertEqual(len(new_domain_map["groups"]), 5)
