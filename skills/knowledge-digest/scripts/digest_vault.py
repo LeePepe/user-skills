@@ -1161,18 +1161,25 @@ def _topic_exclusion_reason(
 
 
 def _learning_brief(item: dict[str, Any]) -> dict[str, Any]:
+    key = str(item.get("topic_key") or item.get("slug") or "").strip()
     question = str(item.get("question") or item.get("title") or "").strip()
-    title = str(item.get("title") or question).strip()
-    why_now = str(item.get("why_now") or item.get("excerpt") or "").strip()
     source = str(item.get("source_id") or item.get("source_uri") or "").strip()
+    guide = item.get("learning_guide")
+    if isinstance(guide, dict) and len(guide.get("preview_questions", [])) == 3:
+        return {
+            "why_now": str(guide.get("why_now") or item.get("why_now") or item.get("excerpt") or "").strip(),
+            "preview_questions": list(guide["preview_questions"]),
+            "recommended_command": str(guide.get("recommended_command") or f"/learn {key}"),
+        }
+    why_now = str(item.get("why_now") or item.get("excerpt") or "").strip()
     return {
-        "why_now": f"{why_now} 来源/缺口：{source}。",
+        "why_now": f"{why_now} 来源 {source}，待核对缺口是：{question}。",
         "preview_questions": [
-            f"底层机制是什么，为什么会出现“{question}”这一现象？",
-            f"最容易误判的边界条件是什么，怎样用一个工程例子验证“{title}”？",
-            f"落地时最小可行的检查或实验是什么，结果应如何解释？",
+            f"针对 {source}，{question} 的底层机制与输入/输出边界是什么？",
+            f"为什么 {source} 的实现会在“{question}”这个场景出现反直觉结果？",
+            f"如何用一个最小工程实验验证 {key} 的关键假设，并判断结果是否可迁移？",
         ],
-        "recommended_command": f"/deep-research {title}" if item.get("source_kind") == "git_tech_stack" else f"/learn {title}",
+        "recommended_command": f"/deep-research {key}" if item.get("source_kind") == "git_tech_stack" else f"/learn {key}",
     }
 
 
@@ -1191,6 +1198,15 @@ def _daily_digest_markdown(day: str, topics: list[dict[str, Any]]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _merge_daily_digest_description(existing: str, generated: str, topics: list[dict[str, Any]]) -> str:
+    if not existing.strip():
+        return generated
+    keys = [str(topic.get("topic_key")) for topic in topics]
+    if all(f"learning-topic://{key}" in existing for key in keys):
+        return existing
+    return existing.rstrip() + "\n\n" + generated
+
+
 def _linear_transport_from_repo() -> Any:
     path = SKILLS_ROOT / "team-lead" / "scripts" / "linear-sync.py"
     mod = _load_helper_module("knowledge_digest_linear_sync", path)
@@ -1199,7 +1215,10 @@ def _linear_transport_from_repo() -> Any:
     token = mod.load_api_key()
     if not token:
         raise RuntimeError("Linear credentials are not configured; use the existing team-lead credential setup")
-    return mod.LinearClient(token)
+    client_cls = getattr(mod, "GraphQLClient", None)
+    if client_cls is None:
+        raise RuntimeError("Linear transport does not expose GraphQLClient")
+    return client_cls(token)
 
 
 def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1209,10 +1228,23 @@ def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any
     issue = next((x for x in issues if marker in str(x.get("description") or "") or x.get("title") == title), None)
     description = _daily_digest_markdown(day, topics)
     if issue:
+        description = _merge_daily_digest_description(str(issue.get("description") or ""), description, topics)
         return client.update_issue(issue.get("id") or issue.get("identifier"), title=title, description=description)
     team = client.team_metadata("TIA")
     state_id = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if s.get("type") == "backlog"), None)
     return client.create_issue(team_id=team["id"], title=title, description=description, state_id=state_id)
+
+
+def _update_proposal_external_ids(proposals_path: Path, selected: list[dict[str, Any]], external_id: str) -> None:
+    if not proposals_path.is_file():
+        return
+    keys = {str(item.get("topic_key")) for item in selected}
+    lines = proposals_path.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines if line.strip()]
+    for record in records:
+        if record.get("topic_key") in keys:
+            record["external_id"] = external_id
+    proposals_path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
 
 
 def discover_topics(
@@ -1233,6 +1265,8 @@ def discover_topics(
     now_utc: datetime | None = None,
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if top is not None and top <= 0:
+        return {"ok": False, "status": "invalid_quota", "error": "--top must be a positive integer", "selected_count": 0, "topics": [], "proposals_written": []}
     propose_aidash = propose_aidash or propose_linear
     with _proposal_lock(proposals_path):
         now_dt = now_utc or datetime.now(timezone.utc)
@@ -1262,8 +1296,11 @@ def discover_topics(
             _scan_collected_tools_candidates(collected_tools_dir, existing_corpus, vault_dir=vault_dir, ledger_entries=ledger_entries)
             + ([] if propose_aidash else _scan_git_tech_stack_candidates(git_roots, existing_corpus))
         )
-        daily_topics = registry.get("daily_linear_issues", {}).get(_cst_day_str(now_dt), {})
-        daily_topic_keys = set(daily_topics.get("topic_keys", [])) if isinstance(daily_topics, dict) else set()
+        day = _cst_day_str(now_dt)
+        daily_map = registry.get("daily_linear_issues", {})
+        legacy_map = registry.get("daily_linear_digests", {})
+        daily_topics = {**(legacy_map.get(day, {}) if isinstance(legacy_map.get(day, {}), dict) else {}), **(daily_map.get(day, {}) if isinstance(daily_map.get(day, {}), dict) else {})}
+        daily_topic_keys = set(daily_topics.get("topic_keys", []))
         linear_client = linear_transport
         if propose_linear:
             try:
@@ -1273,9 +1310,23 @@ def discover_topics(
                 remote = next((x for x in remote_issues if f"GTT-LINEAR-DEDUP:daily-learn-{_cst_day_str(now_dt)}" in str(x.get("description") or "") or x.get("title") == day_title), None)
                 if remote and not daily_topic_keys:
                     daily_topic_keys = set(re.findall(r"learning-topic://([a-z0-9-]+)", str(remote.get("description") or "")))
-                    registry.setdefault("daily_linear_issues", {})[_cst_day_str(now_dt)] = {"topic_keys": sorted(daily_topic_keys), "external_id": f"linear://{remote.get('identifier') or remote.get('id')}", "url": remote.get("url")}
+                    recovered = {"topic_keys": sorted(daily_topic_keys), "external_id": f"linear://{remote.get('identifier') or remote.get('id')}", "url": remote.get("url"), "identifier": remote.get("identifier"), "title": remote.get("title")}
+                    registry.setdefault("daily_linear_issues", {})[day] = {**daily_topics, **recovered}
+                    registry.setdefault("daily_linear_digests", {})[day] = {**daily_topics, **recovered, "date": day, "dedup_key": f"daily-learn-{day}"}
             except Exception as exc:
                 return {"ok": False, "status": "linear_error", "error": f"Linear daily digest lookup failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": []}
+        if daily_topic_keys:
+            known = {str(c.get("topic_key")) for c in raw_candidates}
+            for key in sorted(daily_topic_keys):
+                if key in known or key not in ledger_entries:
+                    continue
+                item = ledger_entries[key]
+                raw_candidates.append({"slug": key, "topic_key": key, "source_id": item.get("source_id", key), "source_uri": item.get("source_uri", ""), "source_fingerprint": item.get("source_fingerprint", ""), "aliases": list(item.get("aliases", [])), "title": item.get("title") or item.get("question") or key, "question": item.get("question") or key, "category": item.get("category", "工程与设计"), "source_kind": item.get("source_kind", "collected_tools"), "source_ref": item.get("source_uri", ""), "why_now": item.get("why_now") or item.get("excerpt") or f"Daily digest topic {key}", "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": item.get("excerpt") or item.get("question") or key, "rank": int(item.get("rank") or 99), "scope": item.get("scope", "personal"), "learning_guide": item.get("learning_guide")})
+        if daily_topic_keys:
+            reconstructable = {str(c.get("topic_key")) for c in raw_candidates}
+            missing_daily = sorted(daily_topic_keys - reconstructable)
+            if missing_daily:
+                return {"ok": False, "status": "daily_reconciliation_error", "error": f"Unable to reconstruct existing daily topics: {', '.join(missing_daily)}", "selected_count": 0, "topics": [], "proposals_written": []}
         deduped: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         seen_questions: set[str] = set()
@@ -1299,10 +1350,16 @@ def discover_topics(
         # Explicit multi-topic/Linear mode opts into a larger daily quota; legacy AIDash
         # mode remains one candidate per CST day and pending cap 3.
         requested_quota = max(1, top or (3 if propose_linear else 1))
-        daily_cap_reached = propose_aidash and not propose_linear and len(proposed_today_cst) >= 1
-        pending_cap_reached = propose_aidash and not propose_linear and len(pending_topics) >= 3
-        if propose_linear and daily_topic_keys:
-            deduped = [c for c in deduped if c.get("topic_key") in daily_topic_keys] or deduped
+        explicit_multi = propose_linear or (top is not None and top >= 3)
+        quota = requested_quota if explicit_multi else 1
+        daily_cap_reached = propose_aidash and not daily_topic_keys and len(proposed_today_cst) >= quota
+        pending_cap_reached = propose_aidash and not daily_topic_keys and len(pending_topics) >= 3
+        if daily_topic_keys:
+            deduped = [c for c in deduped if c.get("topic_key") in daily_topic_keys]
+        if pending_cap_reached:
+            quota = 0
+        elif propose_aidash and not daily_topic_keys:
+            quota = min(quota, max(0, 3 - len(pending_topics)))
         if daily_cap_reached or pending_cap_reached or not deduped:
             reason = (
                 "pending_cap_reached"
@@ -1332,7 +1389,7 @@ def discover_topics(
         ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
         # Legacy AIDash callers retain their one/day contract even when they pass
         # --top; the explicit Linear mode opts into the requested multi-topic quota.
-        eff_top = requested_quota if propose_linear else (1 if propose_aidash else max(1, top or 1))
+        eff_top = quota if propose_aidash else max(1, top or 1)
         selected = ranked[:eff_top]
         for item in selected:
             item["learning_brief"] = _learning_brief(item)
@@ -1414,22 +1471,24 @@ def discover_topics(
                 registry["topics"][slug] = {**prior, **item, **record, "proposal_id": record["id"]}
 
         linear_issue = None
+        if proposals_written:
+            _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
         if propose_linear:
             try:
                 client = linear_client or linear_transport or _linear_transport_from_repo()
                 day = _cst_day_str(now_dt)
                 linear_issue = _upsert_linear_daily_issue(client, day, selected)
+                external_id = f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}"
                 daily_registry = registry.setdefault("daily_linear_issues", {})
-                daily_registry[day] = {
-                    "external_id": f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}",
-                    "url": linear_issue.get("url"),
-                    "topic_keys": [str(x.get("topic_key")) for x in selected],
-                    "updated_at": now_iso,
-                }
+                daily_registry[day] = {**daily_registry.get(day, {}), "external_id": external_id, "url": linear_issue.get("url"), "identifier": linear_issue.get("identifier"), "title": linear_issue.get("title"), "topic_keys": [str(x.get("topic_key")) for x in selected], "updated_at": now_iso}
+                registry.setdefault("daily_linear_digests", {})[day] = {**registry.get("daily_linear_digests", {}).get(day, {}), **daily_registry[day], "date": day, "dedup_key": f"daily-learn-{day}"}
                 for item in selected:
                     entry = registry["topics"].get(item["topic_key"], {})
-                    entry["daily_linear_issue"] = daily_registry[day]["external_id"]
+                    entry["external_id"] = external_id
+                    entry["daily_linear_issue"] = external_id
                     registry["topics"][item["topic_key"]] = entry
+                _update_proposal_external_ids(proposals_path, selected, external_id)
+                _save_topic_ledger(vault_dir, registry["topics"], topic_ledger_path=topic_ledger_path)
             except Exception as exc:
                 return {"ok": False, "status": "linear_error", "error": f"Linear daily digest failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": proposals_written}
 
@@ -2342,7 +2401,7 @@ def main(argv: list[str] | None = None) -> int:
             include_unreconciled_repos=args.include_unreconciled_repos,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if res.get("ok", True) else 1
     if args.command in {"handle-learning-event", "handle-decision", "explore-topic"}:
         res = handle_learning_event(
             action=args.action,

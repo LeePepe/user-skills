@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -102,6 +103,73 @@ class KnowledgeDigestTests(unittest.TestCase):
                 self.assertEqual(len(brief["preview_questions"]), 3)
                 self.assertRegex(brief["recommended_command"], r"^/(learn|deep-research) ")
 
+    def test_explicit_top_three_without_linear_and_default_one_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, vault, tools = Path(tmp), Path(tmp) / "vault", Path(tmp) / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            result = DIGEST.discover_topics(top=3, propose_aidash=True, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "proposals.jsonl", state_path=root / "state.json", now_utc=datetime(2026, 11, 14, 2, tzinfo=timezone.utc))
+            self.assertEqual(result["selected_count"], 3)
+            default = DIGEST.discover_topics(propose_aidash=True, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "other.jsonl", state_path=root / "other-state.json", now_utc=datetime(2026, 11, 15, 2, tzinfo=timezone.utc))
+            self.assertEqual(default["selected_count"], 1)
+
+    def test_real_repository_linear_transport_and_adapter_boundary(self) -> None:
+        sync_path = ROOT / "skills" / "team-lead" / "scripts" / "linear-sync.py"
+        sync_mod = DIGEST._load_helper_module("real_linear_sync_for_test", sync_path)
+        self.assertIsNotNone(sync_mod)
+        with mock.patch.object(DIGEST, "_load_helper_module", return_value=sync_mod), mock.patch.object(sync_mod, "load_api_key", return_value="test-token"):
+            client = DIGEST._linear_transport_from_repo()
+        self.assertIsInstance(client, sync_mod.GraphQLClient)
+        self.assertEqual(client.api_key, "test-token")
+
+        issue = {"id": "issue-1", "identifier": "TIA-1", "url": "https://linear.test/TIA-1", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": "<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->\\nlearning-topic://bama-agent-cli-story-verification"}
+        calls = []
+        def boundary(query, variables):
+            calls.append((query, variables))
+            if "ListIssues" in query:
+                return {"data": {"issues": {"nodes": [issue]}}}
+            if "UpdateIssue" in query:
+                return {"data": {"issueUpdate": {"success": True, "issue": issue}}}
+            if "TeamMetadata" in query:
+                return {"data": {"teams": {"nodes": [{"id": "team", "states": {"nodes": []}}]}}}
+            if "CreateIssue" in query:
+                return {"data": {"issueCreate": {"success": True, "issue": {**issue, "id": "issue-2", "identifier": "TIA-2"}}}}
+            raise AssertionError(query)
+
+        real_client = sync_mod.GraphQLClient("test-token", transport=boundary)
+        topic = {"topic_key": "bama-agent-cli-story-verification", "title": "BAMA", "learning_brief": {"why_now": "source gap", "preview_questions": ["q1", "q2", "q3"], "recommended_command": "/learn bama-agent-cli-story-verification"}}
+        updated = DIGEST._upsert_linear_daily_issue(real_client, "2026-11-14", [topic])
+        self.assertEqual(updated["identifier"], "TIA-1")
+        self.assertTrue(any("UpdateIssue" in query for query, _ in calls))
+        calls.clear()
+        empty_client = sync_mod.GraphQLClient("test-token", transport=lambda q, v: {"data": {"issues": {"nodes": []}}} if "ListIssues" in q else {"data": {"teams": {"nodes": [{"id": "team", "states": {"nodes": []}}]}}} if "TeamMetadata" in q else {"data": {"issueCreate": {"success": True, "issue": {**issue, "identifier": "TIA-2"}}}})
+        created = DIGEST._upsert_linear_daily_issue(empty_client, "2026-11-14", [topic])
+        self.assertEqual(created["identifier"], "TIA-2")
+
+    def test_linear_failure_persists_registry_and_cli_returns_nonzero(self) -> None:
+        class FailingTransport(FakeLinearTransport):
+            def create_issue(self, **kwargs):
+                raise RuntimeError("Linear credentials are not configured")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, vault, tools = Path(tmp), Path(tmp) / "vault", Path(tmp) / "tools"
+            readme = tools / "repos" / "awesome-cjk-design-md" / "README.md"
+            readme.parent.mkdir(parents=True)
+            readme.write_text("# source\\n", encoding="utf-8")
+            seed_ledger(vault, ("awesome-cjk-design-md",))
+            proposals, state = root / "proposals.jsonl", root / "state.json"
+            result = DIGEST.discover_topics(top=3, propose_aidash=True, propose_linear=True, linear_transport=FailingTransport(), vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=proposals, state_path=state, now_utc=datetime(2026, 11, 14, 2, tzinfo=timezone.utc))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], "linear_error")
+            self.assertTrue(proposals.exists())
+            self.assertTrue(state.exists())
+        with mock.patch.object(DIGEST, "discover_topics", return_value={"ok": False, "error": "safe failure"}):
+            self.assertEqual(DIGEST.main(["discover-topics"]), 1)
+
     def test_linear_reconciles_remote_issue_when_local_daily_state_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -116,7 +184,7 @@ class KnowledgeDigestTests(unittest.TestCase):
             title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
             marker = f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->"
             keys = ["jp-mixed-script-line-breaking", "bama-agent-cli-story-verification", "genjutsu-three-tier-choreography-gate"]
-            remote = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": title, "description": marker + "\\n" + "\\n".join(f"learning-topic://{key}" for key in keys)}
+            remote = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": title, "description": marker + "\\n- [x] owner checked bama\\nOwner note: preserve this guide.\\n" + "\\n".join(f"learning-topic://{key}" for key in keys)}
             transport = FakeLinearTransport([remote])
             result = DIGEST.discover_topics(
                 top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
@@ -130,6 +198,13 @@ class KnowledgeDigestTests(unittest.TestCase):
             self.assertEqual(len(transport.updated), 1)
             self.assertEqual(result["selected_count"], 3)
             self.assertIn(marker, transport.updated[0]["description"])
+            state = json.loads((root / "missing-state.json").read_text())
+            self.assertEqual(state["daily_linear_digests"][day]["external_id"], "linear://TIA-414")
+            self.assertEqual({state["topics"][key]["external_id"] for key in keys}, {"linear://TIA-414"})
+            ledger = json.loads((vault / "topic-ledger.json").read_text())
+            self.assertEqual({item["external_id"] for item in ledger["topics"]}, {"linear://TIA-414"})
+            self.assertIn("- [x] owner checked bama", transport.updated[0]["description"])
+            self.assertIn("Owner note: preserve this guide.", transport.updated[0]["description"])
 
             rerun = DIGEST.discover_topics(
                 top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
