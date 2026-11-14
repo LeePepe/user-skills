@@ -55,6 +55,21 @@ directory mode `0700` and file mode `0600`; use `linear-sync.py auth set`,
 
 ## Personal `@bot` bridge
 
+The OAuth app must be installed with `app:assignable` and `app:mentionable` for
+native delegation/mentions ([Linear agent setup](https://linear.app/developers/agents)).
+An existing automation-only grant may return `App user not valid`; refreshing it
+cannot add scopes. A workspace admin must explicitly reauthorize:
+
+```bash
+python3 scripts/linear-sync.py auth oauth-login --agent-scopes
+```
+
+This opens an approval flow using saved client credentials; it never grants scopes
+without admin consent. Linear now assigns agents as **Delegate**, retaining the
+human Assignee; the bridge also recognizes legacy Bot assignees. Literal `@bot`
+comments remain pollable, but do not claim native ingress/live handoff verified or
+close the Goal until the admin grant and a real Owner-triggered turn are confirmed.
+
 Run `scripts/linear-bot-bridge.py --once --json` for one incremental scan, or
 `--daemon --interval 20` for polling. It only considers personal TIA issues,
 ignores bot-authored comments, persists an atomic 0600 watermark, and reassigns

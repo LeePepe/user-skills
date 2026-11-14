@@ -2113,6 +2113,7 @@ def build_parser() -> argparse.ArgumentParser:
     oauth_login.add_argument("--client-id", default="")
     oauth_login.add_argument("--client-secret", default="")
     oauth_login.add_argument("--port", type=int, default=8765)
+    oauth_login.add_argument("--agent-scopes", action="store_true", help="Request app:assignable/app:mentionable; requires workspace-admin approval.")
     auth_sub.add_parser("refresh")
     auth_sub.add_parser("show")
     auth_remove = auth_sub.add_parser("remove")
@@ -2120,7 +2121,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 8765) -> dict[str, Any]:
+def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 8765, *, agent_scopes: bool = False) -> dict[str, Any]:
     import http.server
     import subprocess
 
@@ -2130,11 +2131,14 @@ def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 876
     if not (cid and csec):
         raise LinearSyncError("oauth-login requires --client-id and --client-secret (or saved clientId/clientSecret)")
     redirect_uri = f"http://127.0.0.1:{port}/callback"
+    scopes = "read,write,issues:create,comments:create"
+    if agent_scopes:
+        scopes += ",app:assignable,app:mentionable"
     auth_url = f"{OAUTH_AUTHORIZE_URL}?" + urlencode({
         "client_id": cid,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": "read,write,issues:create,comments:create",
+        "scope": scopes,
         "actor": "app",
     })
     result: dict[str, Any] = {}
@@ -2236,7 +2240,8 @@ def main(argv: list[str] | None = None) -> int:
                 saved = save_credentials(key, args.header, actor=actor)
                 payload = {"ok": True, "command": f"auth {args.auth_command}", "path": str(saved), "mode": "0600", "masked_key": mask_value(key), **({"actor": actor} if actor else {})}
             elif args.auth_command == "oauth-login":
-                payload = _oauth_interactive_login(args.client_id, args.client_secret, args.port)
+                options = {"agent_scopes": True} if args.agent_scopes else {}
+                payload = _oauth_interactive_login(args.client_id, args.client_secret, args.port, **options)
             elif args.auth_command == "refresh":
                 refreshed = refresh_oauth_credentials()
                 if not refreshed:

@@ -17,6 +17,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / "skills/linear-board/scripts/linear-bot-bridge.py"
@@ -83,6 +84,30 @@ class FakeClient:
         if kwargs.get("assignee_id"): issue["assignee"] = {"id": kwargs["assignee_id"]}
         if kwargs.get("clear_delegate"): issue["delegate"] = None
         return issue
+
+
+class OAuthAgentScopeTests(unittest.TestCase):
+    def test_agent_capabilities_require_explicit_login_and_admin_approval(self):
+        for enabled in (False, True):
+            with self.subTest(agent_scopes=enabled), mock.patch.object(SYNC, "_credential_record", return_value={}), \
+                    mock.patch("http.server.HTTPServer") as server, mock.patch("subprocess.run") as opened, \
+                    mock.patch.object(SYNC, "save_credentials") as saved, mock.patch.object(SYNC, "urlopen") as exchanged:
+                server.return_value.handle_request.side_effect = RuntimeError("approval gate")
+                with self.assertRaisesRegex(RuntimeError, "approval gate"):
+                    SYNC._oauth_interactive_login("client", "secret", agent_scopes=enabled)
+                query = parse_qs(urlsplit(opened.call_args.args[0][1]).query)
+                self.assertEqual(query["actor"], ["app"])
+                scopes = set(query["scope"][0].split(","))
+                self.assertEqual("app:assignable" in scopes, enabled)
+                self.assertEqual("app:mentionable" in scopes, enabled)
+                self.assertTrue({"read", "write", "issues:create", "comments:create"} <= scopes)
+                saved.assert_not_called()
+                exchanged.assert_not_called()
+        for flags, options in (([], {}), (["--agent-scopes"], {"agent_scopes": True})):
+            with self.subTest(flags=flags), mock.patch.object(SYNC, "_oauth_interactive_login", return_value={"ok": True}) as login, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(SYNC.main(["auth", "oauth-login", *flags]), 0)
+                login.assert_called_once_with("", "", 8765, **options)
 
 
 class Runtime:
