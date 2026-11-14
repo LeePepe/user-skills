@@ -2622,6 +2622,23 @@ class SkillContractV2Tests(unittest.TestCase):
             self.assertLessEqual(len(doc["active_cases"]), 15)
             self.assertEqual(sum(1 for c in doc["active_cases"] if c.get("jev_starred_id") == 1), 1)
 
+    def test_v2_frontmatter_negative_and_mock_boundaries(self) -> None:
+        script = self._script()
+        spec = importlib.util.spec_from_file_location("skill_contract_boundary", script)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); skill = root / "skills" / "sample"; (skill / ".claude-plugin").mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: sample\ndescription: >-\n  folded Unicode ✓\n  continuation\nother: ignored\n---\n", encoding="utf-8")
+            (skill / ".claude-plugin" / "plugin.json").write_text('{"description": ""}', encoding="utf-8")
+            self.assertEqual(module._frontmatter_description(skill / "SKILL.md"), "folded Unicode ✓ continuation")
+            codes = {item["code"] for item in module.audit_package(skill)}
+            self.assertIn("description-length", codes)
+            launch_fail = {"id": "EV-launch", "negative_cmd": "definitely-missing-binary-jev"}
+            self.assertTrue(module.evaluate_case(launch_fail, skill, root))
+        routed = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--mock-jev-json", '{"1":true,"2":false,"3":true}', "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        payload = json.loads(routed.stdout)
+        self.assertEqual(payload["precision"], 1.0); self.assertEqual(payload["recall"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

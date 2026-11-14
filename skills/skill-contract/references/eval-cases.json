@@ -99,6 +99,35 @@
       "expect_fail_exit": 2,
       "registered_at": "2026-11-14",
       "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py definitely-not-a-command"
+    },
+    {
+      "id": "EV-007",
+      "title": "Description evaluation reports routing metrics",
+      "tags": [
+        "description-eval",
+        "regression"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill skill-contract --strict",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "id": "EV-008",
+      "title": "Star sync command remains available for synthetic backflow",
+      "tags": [
+        "jev-star",
+        "sync-jev-stars"
+      ],
+      "file": "skills/skill-contract/scripts/skill_contract.py",
+      "must_contain": [
+        "sync_jev_stars",
+        "--dry-run",
+        "mock_jev_response"
+      ]
     }
   ],
   "trigger_evals": [

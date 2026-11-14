@@ -137,7 +137,62 @@ def _run_command(command: Any, repo_root: Path) -> subprocess.CompletedProcess[s
     argv = list(command) if isinstance(command, list) else shlex.split(str(command))
     if argv and argv[0] in {"python", "python3"}:
         argv[0] = sys.executable
-    return subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def _frontmatter_fields(md: Path) -> dict[str, Any]:
+    """Parse the small YAML subset used by skill frontmatter without dependencies."""
+    try:
+        lines = md.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    fields: dict[str, Any] = {}
+    index = 1
+    while index < len(lines) and lines[index].strip() != "---":
+        line = lines[index]
+        match = re.match(r"^([A-Za-z0-9_-]+):(?:[ \t]*(.*))?$", line)
+        if not match:
+            index += 1
+            continue
+        key, raw = match.group(1), match.group(2) or ""
+        if raw.startswith(("|", ">")):
+            folded = raw.startswith(">")
+            chunks: list[str] = []
+            index += 1
+            while index < len(lines) and lines[index].strip() != "---" and (not lines[index] or lines[index][0].isspace()):
+                chunks.append(lines[index].strip())
+                index += 1
+            value = (" ".join(chunks) if folded else "\n".join(chunks))
+            fields[key] = value.rstrip() + ("\n" if raw.endswith("+") else "")
+            continue
+        value = raw.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            if value[0] == '"':
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = value[1:-1]
+            else:
+                value = value[1:-1]
+        fields[key] = value
+        index += 1
+    return fields
+
+
+def _load_json_argument(value: Any) -> Any:
+    if value is None:
+        return None
+    path = Path(str(value)).expanduser()
+    try:
+        raw = path.read_text(encoding="utf-8") if path.is_file() else str(value)
+        return json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+        raise ValueError("mock JSON must be valid inline JSON or a readable JSON file")
 
 
 def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT) -> list[str]:
@@ -185,10 +240,18 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
     if negative_cmd:
         proc = _run_command(negative_cmd, repo_root)
         expected = case.get("expect_fail_exit")
-        if expected is not None and proc.returncode != int(expected):
+        if proc.returncode == 127 and proc.stderr:
+            reasons.append(f"{cid}: negative_cmd launch failed: {proc.stderr.strip()}")
+        elif expected is not None and proc.returncode != int(expected):
             reasons.append(f"{cid}: negative_cmd exit {proc.returncode} != expect_fail_exit {expected}")
         elif expected is None and proc.returncode == 0:
             reasons.append(f"{cid}: negative_cmd unexpectedly succeeded")
+        for token in case.get("negative_stdout_contains") or []:
+            if str(token) not in proc.stdout:
+                reasons.append(f"{cid}: negative stdout missing expected substring {token!r}")
+        for token in case.get("negative_stderr_contains") or []:
+            if str(token) not in proc.stderr:
+                reasons.append(f"{cid}: negative stderr missing expected substring {token!r}")
 
     file_ref = case.get("file")
     if file_ref:
@@ -241,6 +304,9 @@ def add_case(args: argparse.Namespace) -> int:
         args.must_contain,
         args.must_not_contain,
         args.expect_contains,
+        args.negative_cmd,
+        args.negative_stdout_contains,
+        args.negative_stderr_contains,
     ]
     if not repo_arg and any(PRIVATE.search(val or "") for val in text_fields):
         print(json.dumps({"ok": False, "error": "project-private identifiers are forbidden in cases"}))
@@ -298,6 +364,14 @@ def add_case(args: argparse.Namespace) -> int:
         entry["must_contain"] = _csv(args.must_contain)
     if args.must_not_contain:
         entry["must_not_contain"] = _csv(args.must_not_contain)
+    if args.negative_cmd:
+        entry["negative_cmd"] = args.negative_cmd
+        if args.expect_fail_exit is not None:
+            entry["expect_fail_exit"] = args.expect_fail_exit
+    if args.negative_stdout_contains:
+        entry["negative_stdout_contains"] = _csv(args.negative_stdout_contains)
+    if args.negative_stderr_contains:
+        entry["negative_stderr_contains"] = _csv(args.negative_stderr_contains)
     entry["registered_at"] = date.today().isoformat()
 
     failures = evaluate_case(entry, target, repo_root)
@@ -462,6 +536,9 @@ def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]], pkg_di
         if len(entries) > 15:
             findings.append({"skill": skill, "code": "top-3-disclosure-cap", "file": rel, "value": len(entries), "cap": 15})
         for entry in entries:
+            if not isinstance(entry, dict):
+                findings.append({"skill": skill, "code": "invalid-case", "file": rel})
+                continue
             if required is None:
                 has_any = any(isinstance(entry.get(k), list) and len(entry.get(k)) > 0 for k in COORDINATE_KEYS)
                 if not has_any:
@@ -473,15 +550,8 @@ def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]], pkg_di
 
 
 def _frontmatter_description(md: Path) -> str:
-    lines = md.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        if line.strip().startswith("description:"):
-            return line.split(":", 1)[1].strip().strip("\"'")
-    return ""
+    value = _frontmatter_fields(md).get("description", "")
+    return value if isinstance(value, str) else ""
 
 
 def _thin_wrapper(path: Path) -> bool:
@@ -505,14 +575,20 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     manifest = path / ".claude-plugin" / "plugin.json"
     if manifest.is_file():
         try:
-            manifest_desc = json.loads(manifest.read_text(encoding="utf-8")).get("description", "")
-            if manifest_desc and len(manifest_desc) > 320:
-                findings.append({"skill": skill, "code": "description-length", "value": len(manifest_desc), "cap": 320, "file": str(manifest)})
-        except (OSError, json.JSONDecodeError):
-            pass
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest_desc = manifest_data.get("description") if isinstance(manifest_data, dict) else None
+            if not isinstance(manifest_desc, str) or not manifest_desc or len(manifest_desc) > 320:
+                findings.append({"skill": skill, "code": "description-length", "value": len(manifest_desc) if isinstance(manifest_desc, str) else 0, "cap": 320, "file": str(manifest)})
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            findings.append({"skill": skill, "code": "invalid-manifest", "file": str(manifest)})
     refs = path / "references"
-    ref_docs = [p for p in refs.glob("*.md") if p.is_file()] if refs.is_dir() else []
-    all_md = text + "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in ref_docs)
+    ref_docs = [p for p in refs.glob("*.md") if p.is_file() and not p.is_symlink()] if refs.is_dir() else []
+    def safe_text(file: Path) -> str:
+        try:
+            return file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return ""
+    all_md = text + "\n" + "\n".join(safe_text(p) for p in ref_docs)
     if not repo_bound and PRIVATE.search(all_md):
         findings.append({"skill": skill, "code": "private-identifier"})
     raw_regex_lines = [line for line in all_md.splitlines() if "forbidden_regex" in line or "regex-gate" in line]
@@ -526,18 +602,23 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     for base in (refs, path / "scripts"):
         if base.is_dir():
             for link in base.rglob("*"):
-                if link.is_symlink() and (os.readlink(link).startswith("/") or not link.exists()):
-                    findings.append({"skill": skill, "code": "broken-symlink", "file": str(link)})
+                if link.is_symlink():
+                    try:
+                        target = os.readlink(link)
+                        if target.startswith("/") or not link.exists():
+                            findings.append({"skill": skill, "code": "broken-symlink", "file": str(link)})
+                    except OSError:
+                        findings.append({"skill": skill, "code": "broken-symlink", "file": str(link)})
     corpus = all_md + "\n" + sibling_corpus
     if (path / "scripts").is_dir():
-        corpus += "\n" + "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (path / "scripts").glob("*.py"))
+        corpus += "\n" + "\n".join(safe_text(p) for p in (path / "scripts").glob("*.py") if p.is_file())
     for ref in (refs.glob("*") if refs.is_dir() else []):
         if ref.is_symlink() and not ref.exists():
             continue
-        if ref.suffix not in {".md", ".json"}:
+        if ref.is_dir() or not ref.is_file() or ref.suffix not in {".md", ".json"}:
             continue
         ref_rel = f"{skill}/references/{ref.name}"
-        ref_text = ref.read_text(encoding="utf-8")
+        ref_text = safe_text(ref)
         if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and len(ref_text.splitlines()) > 160:
             findings.append({"skill": skill, "code": "l1-lines", "file": str(ref)})
         if ref.suffix == ".md" and ref_rel not in BUDGET_EXEMPTIONS and ref.stat().st_size > 16 * 1024:
@@ -548,7 +629,9 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})
                     break
         _audit_drawer(skill, ref, findings, pkg_dir=path)
-        if ref.name not in corpus and ref.stem not in corpus:
+        local_link = re.search(rf"(?<![A-Za-z0-9_-])(?:references/)?{re.escape(ref.name)}(?![A-Za-z0-9_.-])", all_md)
+        canonical_link = re.search(rf"(?:\.\./)?{re.escape(skill)}/references/{re.escape(ref.name)}", sibling_corpus)
+        if not local_link and not canonical_link:
             findings.append({"skill": skill, "code": "orphan-reference", "file": str(ref)})
     return findings
 
@@ -557,30 +640,108 @@ def audit(args: argparse.Namespace) -> int:
     if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
         raise SystemExit("audit requires one of --all, --skill, or --repo")
     repo_arg = getattr(args, "repo", None)
-    packages = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
+    selected = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
+    all_packages = _discover_packages(repo=repo_arg)
+    selected_set = {p.resolve() for p in selected}
     findings: list[dict[str, Any]] = []
-    names: dict[str, list[str]] = {}
-    for package in packages:
-        names.setdefault(package.name, []).append(str(package))
-    sibling_corpus = "\n".join(
-        p.read_text(encoding="utf-8", errors="replace")
-        for package in packages
-        for p in [package / "SKILL.md", *((p for p in (package / "references").glob("*.md") if p.is_file()) if (package / "references").is_dir() else [])]
-    )
-    for package in packages:
-        findings.extend(audit_package(package, repo_bound=bool(repo_arg), sibling_corpus=sibling_corpus))
-    findings.extend({"code": "duplicate-skill", "name": name, "paths": paths} for name, paths in names.items() if len(paths) > 1)
-    scripts: dict[str, list[Path]] = {}
-    for package in packages:
-        for script in (package / "scripts").glob("*.py") if (package / "scripts").is_dir() else []:
-            if not script.is_symlink():
-                scripts.setdefault(script.name, []).append(script)
-    for name, paths in scripts.items():
-        if len(paths) > 1 and not any(_thin_wrapper(path) for path in paths):
-            findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in paths]})
-    result = {"ok": not findings, "skills": len(packages), "findings": findings}
+    groups: dict[Path, list[Path]] = {}
+    for package in all_packages:
+        groups.setdefault(package.parent.resolve(), []).append(package)
+    for group in groups.values():
+        group_corpus = "\n".join(
+            (p / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+            + "\n" + "\n".join(q.read_text(encoding="utf-8", errors="replace") for q in (p / "references").glob("*.md") if q.is_file() and not q.is_symlink())
+            for p in group
+        )
+        for package in group:
+            if package.resolve() in selected_set:
+                findings.extend(audit_package(package, repo_bound=bool(repo_arg), sibling_corpus=group_corpus))
+        names: dict[str, list[str]] = {}
+        for package in group:
+            names.setdefault(package.name, []).append(str(package))
+        findings.extend({"code": "duplicate-skill", "name": name, "paths": paths} for name, paths in names.items() if len(paths) > 1)
+        scripts: dict[str, list[Path]] = {}
+        for package in group:
+            for script in (package / "scripts").glob("*.py") if (package / "scripts").is_dir() else []:
+                if not script.is_symlink():
+                    scripts.setdefault(script.name, []).append(script)
+        for name, paths in scripts.items():
+            real = [path for path in paths if not _thin_wrapper(path)]
+            if len(real) >= 2:
+                findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in real]})
+    result = {"ok": not findings, "skills": len(selected), "findings": findings}
     print(json.dumps(result, indent=2))
     return 1 if findings and args.strict else 0
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    stop = {"a", "an", "and", "are", "for", "from", "how", "into", "not", "the", "this", "with", "when", "use", "your", "skill"}
+    tokens: set[str] = set()
+    for token in re.findall(r"[\w-]+", text.lower()):
+        if len(token) <= 2 or token in stop:
+            continue
+        tokens.add(token)
+        for suffix in ("ing", "ed", "es", "s"):
+            if token.endswith(suffix) and len(token) - len(suffix) > 2:
+                tokens.add(token[:-len(suffix)])
+                break
+    return tokens
+
+
+def _fallback_trigger(description: str, query: str) -> bool:
+    positive = description.split("Not for", 1)[0].split("not for", 1)[0]
+    query_tokens = _meaningful_tokens(query)
+    desc_tokens = _meaningful_tokens(positive)
+    return len(query_tokens & desc_tokens) >= (2 if len(query_tokens) > 1 else 1)
+
+
+def _mock_trigger(mock: Any, index: int, case: dict[str, Any]) -> tuple[bool, str | None]:
+    if mock is None:
+        return False, None
+    keys = [str(case.get("id", "")), str(index), str(index - 1), str(case.get("query", ""))]
+    value = mock
+    if isinstance(mock, dict):
+        found = next((mock[key] for key in keys if key in mock), None)
+        if found is None and any(key in mock for key in keys):
+            return False, "missing mock decision"
+        value = found
+    elif isinstance(mock, list):
+        if index - 1 >= len(mock):
+            return False, "incomplete mock truth table"
+        value = mock[index - 1]
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, dict):
+        if isinstance(value.get("should_trigger"), bool):
+            return value["should_trigger"], None
+        if isinstance(value.get("trigger"), bool):
+            return value["trigger"], None
+        choice = value.get("choice")
+        if isinstance(choice, str) and choice.lower() in {"yes", "no", "true", "false"}:
+            return choice.lower() in {"yes", "true"}, None
+        for candidate in ("noul", "score", "confidence"):
+            if isinstance(value.get(candidate), (int, float)):
+                return float(value[candidate]) >= 0.5, None
+    return False, "malformed mock decision"
+
+
+def _jev_trigger(query: str) -> bool | None:
+    client_path = ROOT / "skills" / "team-lead" / "scripts" / "jev_client.py"
+    if not client_path.is_file() or "unittest" in sys.modules:
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("skill_contract_jev_client", client_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        result = module.jev_decide(query, {"should_trigger": {"type": "noul"}}, timeout_sec=1.5)
+        if not isinstance(result, dict):
+            return None
+        value = result.get("should_trigger")
+        return float(value.get("noul")) >= 0.5 if isinstance(value, dict) and isinstance(value.get("noul"), (int, float)) else None
+    except (OSError, ImportError, TypeError, ValueError, AttributeError):
+        return None
 
 
 def description_eval(args: argparse.Namespace) -> int:
@@ -588,16 +749,40 @@ def description_eval(args: argparse.Namespace) -> int:
     desc = _frontmatter_description(target / "SKILL.md")
     drawer = target / "references" / "eval-cases.json"
     doc = json.loads(drawer.read_text(encoding="utf-8")) if drawer.is_file() else {}
+    cases = doc.get("trigger_evals", [])
     failures: list[dict[str, Any]] = []
-    for index, case in enumerate(doc.get("trigger_evals", []), 1):
-        query = str(case.get("query", ""))
-        words = set(re.findall(r"[\w-]+", query.lower()))
-        description_words = set(re.findall(r"[\w-]+", desc.lower()))
-        matched = bool(words & description_words)
-        expected = bool(case.get("should_trigger"))
-        if matched != expected:
-            failures.append({"index": index, "query": query, "expected": expected, "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
-    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(doc.get("trigger_evals", [])), "passed": len(doc.get("trigger_evals", [])) - len(failures), "failures": failures}
+    mock = None
+    if args.mock_jev_json:
+        try:
+            mock = _load_json_argument(args.mock_jev_json)
+        except ValueError as exc:
+            failures.append({"error": str(exc)})
+    if isinstance(mock, dict):
+        valid_keys = {str(i) for i in range(len(cases))} | {str(i + 1) for i in range(len(cases))} | {str(case.get("id", "")) for case in cases if isinstance(case, dict)} | {str(case.get("query", "")) for case in cases if isinstance(case, dict)}
+        unknown = sorted(set(mock) - valid_keys)
+        if unknown:
+            failures.append({"error": f"unknown mock truth-table keys: {unknown}"})
+    predicted: list[bool] = []
+    expected_values: list[bool] = []
+    for index, case in enumerate(cases, 1):
+        if not isinstance(case, dict) or not isinstance(case.get("query"), str) or not isinstance(case.get("should_trigger"), bool):
+            failures.append({"index": index, "error": "malformed trigger_eval"})
+            continue
+        query = case["query"]
+        matched = _jev_trigger(query)
+        if matched is None:
+            matched = _fallback_trigger(desc, query)
+        if mock is not None:
+            matched, error = _mock_trigger(mock, index, case)
+            if error:
+                failures.append({"index": index, "query": query, "error": error})
+        predicted.append(matched); expected_values.append(case["should_trigger"])
+        if matched != case["should_trigger"]:
+            failures.append({"index": index, "query": query, "expected": case["should_trigger"], "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
+    tp = sum(p and e for p, e in zip(predicted, expected_values)); fp = sum(p and not e for p, e in zip(predicted, expected_values)); fn = sum((not p) and e for p, e in zip(predicted, expected_values))
+    precision = tp / (tp + fp) if tp + fp else 1.0
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(cases), "passed": max(0, len(cases) - len(failures)), "precision": precision, "recall": recall, "failures": failures}
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if args.strict and not payload["ok"] else 0
 
@@ -616,51 +801,81 @@ def _json_value(value: Any) -> Any:
 def sync_jev_stars(args: argparse.Namespace) -> int:
     target = _resolve_skill_dir(args.skill, repo=getattr(args, "repo", None), create=False)
     drawer = target / "references" / "eval-cases.json"
-    doc = json.loads(drawer.read_text(encoding="utf-8")) if drawer.is_file() else {"schema": "skill-eval-cases/v1", "version": 1, "active_cases": []}
-    entries = doc.setdefault("active_cases", [])
+    original = drawer.read_text(encoding="utf-8") if drawer.is_file() else None
+    doc = json.loads(original) if original else {"schema": "skill-eval-cases/v1", "version": 1, "active_cases": []}
+    entries = [item for item in doc.get("active_cases", []) if isinstance(item, dict)]
     db_path = Path(args.db_path).expanduser() if args.db_path else Path.home() / "Library/Application Support/Falcon/falcon.sqlite"
     if not db_path.is_file():
-        print(json.dumps({"ok": False, "error": f"database not found: {db_path}"}))
-        return 1
-    con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
+        print(json.dumps({"ok": False, "error": f"database not found: {db_path}"})); return 1
     try:
-        rows = con.execute("SELECT r.*, s.name AS source_name, rv.state AS review_state_joined FROM requests r LEFT JOIN sources s ON r.source_id=s.id LEFT JOIN reviews rv ON rv.request_id=r.id WHERE json_extract(CAST(r.summary_json AS TEXT), '$.starredAt') IS NOT NULL OR rv.state='starred' OR r.review_state='starred'").fetchall()
-    finally:
-        con.close()
-    source_filter = args.source_name or args.skill
-    mapping = {"howto": {"goal-task", "team-lead"}}
-    allowed = mapping.get(args.skill, {source_filter})
-    rows = [row for row in rows if not source_filter or row["source_name"] in allowed or row["source_name"] == source_filter]
-    existing = {str(item.get("jev_starred_id")): item for item in entries if isinstance(item, dict) and item.get("jev_starred_id") is not None}
-    additions = []
+        con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute("SELECT r.*, s.name AS source_name, rv.state AS review_state_joined FROM requests r LEFT JOIN sources s ON r.source_id=s.id LEFT JOIN reviews rv ON rv.request_id=r.id WHERE json_extract(CAST(r.summary_json AS TEXT), '$.starredAt') IS NOT NULL OR rv.state='starred' OR r.review_state='starred' ORDER BY r.id").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        print(json.dumps({"ok": False, "error": f"database query failed: {exc}"})); return 1
+    fallbacks = {"team-lead": {"goal-task"}, "personal-m2-assistant": {"team-lead", "goal-task"}, "m2-dispatcher": {"team-lead", "goal-task"}, "writer": {"team-lead", "goal-task"}, "reviewer": {"team-lead", "goal-task"}, "explorer": {"team-lead", "goal-task"}, "knowledge-digest": {"deep-research"}, "design-studio": {"my-designer"}, "retro-loop": {"shared-ci", "team-lead", "goal-task"}, "howto": {"goal-task", "team-lead"}}
+    requested = args.source_name
+    allowed = {requested} if requested else {args.skill} | fallbacks.get(args.skill, set())
+    selected: dict[str, sqlite3.Row] = {}
+    malformed: list[str] = []
     for row in rows:
+        if row["source_name"] not in allowed:
+            continue
         sid = str(row["id"])
-        received = _json_value(row["received_request"])
-        response = _json_value(row["upstream_response"])
-        questions = received.get("questions", received) if isinstance(received, dict) else received
-        state = received.get("state") if isinstance(received, dict) else None
-        answers = response.get("answers", response) if isinstance(response, dict) else response
-        entry = existing.get(sid, {"id": _next_case_id(entries + additions, "EV")})
-        entry.update({"title": f"Falcon starred decision {sid}", "tags": ["jev-star"], "jev_starred_id": row["id"], "jev_state": state, "jev_questions": questions, "mock_jev_response": answers, "file": f"skills/{args.skill}/SKILL.md", "registered_at": date.today().isoformat()})
-        if args.cmd_template:
-            entry["cmd"] = args.cmd_template.replace("{mock_json}", json.dumps(answers, ensure_ascii=False)); entry["expect_exit"] = 0
-        additions.append(entry)
-    if args.dry_run:
-        print(json.dumps({"ok": True, "dry_run": True, "added": len(additions), "skill": args.skill}, ensure_ascii=False)); return 0
-    by_id = {str(item.get("jev_starred_id")): item for item in entries if isinstance(item, dict) and item.get("jev_starred_id") is not None}
-    ordinary = [item for item in entries if not (isinstance(item, dict) and item.get("jev_starred_id") is not None)]
-    starred = list(by_id.values())
-    for item in additions:
+        selected[sid] = row
+    existing = {str(item.get("jev_starred_id")): item for item in entries if item.get("jev_starred_id") is not None}
+    planned: list[dict[str, Any]] = []
+    skips: list[str] = []
+    for sid, row in selected.items():
+        try:
+            received = _json_value(row["received_request"])
+            response = _json_value(row["upstream_response"])
+            if not isinstance(received, dict) or not isinstance(response, dict):
+                raise ValueError("request/response is not an object")
+            questions = received.get("questions", {})
+            state = received.get("state")
+            answers = response.get("answers", response)
+            if not isinstance(questions, (dict, list)) or not isinstance(answers, dict):
+                raise ValueError("questions or answers has invalid shape")
+            entry = dict(existing.get(sid, {"id": _next_case_id(entries + planned, "EV")}))
+            entry.update({"title": f"Falcon starred decision {sid}", "tags": sorted(set(entry.get("tags", [])) | {"jev-star"}), "jev_starred_id": row["id"], "jev_state": state, "jev_questions": questions, "mock_jev_response": answers, "registered_at": date.today().isoformat()})
+            if args.cmd_template:
+                rendered = args.cmd_template.replace("{mock_json}", shlex.quote(json.dumps(answers, ensure_ascii=False, separators=(",", ":"))))
+                entry["cmd"] = shlex.split(rendered); entry["expect_exit"] = 0
+            else:
+                entry["file"] = f"skills/{args.skill}/SKILL.md"
+                entry["must_contain"] = [f"name: {args.skill}"]
+            reasons = evaluate_case(entry, target, Path(args.repo).resolve() if getattr(args, "repo", None) else ROOT)
+            if reasons:
+                malformed.append(f"{sid}: {'; '.join(reasons)}")
+                continue
+            planned.append(entry)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            malformed.append(f"{sid}: {exc}")
+    by_id = {str(item.get("jev_starred_id")): item for item in entries if item.get("jev_starred_id") is not None}
+    ordinary = [item for item in entries if item.get("jev_starred_id") is None]
+    for item in planned:
         by_id[str(item["jev_starred_id"])] = item
     starred = list(by_id.values())
-    archived = doc.setdefault("archived_cases", [])
+    archived = list(doc.get("archived_cases", []))
+    evicted: list[str] = []
     while len(starred) + len(ordinary) > 15 and ordinary:
-        archived.append(ordinary.pop(0))
-    while len(starred) + len(ordinary) > 15:
-        archived.append(starred.pop(0))
-    doc["active_cases"] = ordinary + starred
-    doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "skill": args.skill, "added": len(additions), "active": len(doc["active_cases"])}, ensure_ascii=False)); return 0
+        ordinary.sort(key=lambda item: (str(item.get("registered_at", item.get("date", ""))), str(item.get("id", ""))))
+        evicted_item = ordinary.pop(0); archived.append(evicted_item); evicted.append(str(evicted_item.get("id")))
+    if len(starred) > 15:
+        overflow = sorted([item for item in starred if "jev-star" not in (item.get("tags") or [])], key=lambda item: str(item.get("registered_at", "")))
+        for item in overflow:
+            if len(starred) <= 15: break
+            starred.remove(item); archived.append(item); evicted.append(str(item.get("id")))
+        if len(starred) > 15:
+            skips.extend(str(item.get("jev_starred_id")) for item in planned if str(item.get("jev_starred_id")) not in {str(x.get("jev_starred_id")) for x in entries})
+            starred = [item for item in starred if str(item.get("jev_starred_id")) in {str(x.get("jev_starred_id")) for x in entries}]
+    payload = {"ok": not malformed, "dry_run": bool(args.dry_run), "skill": args.skill, "planned": len(planned), "added": sum(1 for item in planned if str(item.get("jev_starred_id")) not in existing), "evicted": evicted, "skipped": skips, "malformed": malformed, "active": min(15, len(ordinary) + len(starred))}
+    if not args.dry_run and not malformed:
+        doc["active_cases"] = ordinary + starred; doc["archived_cases"] = archived; doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False, indent=2)); return 1 if malformed else 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -714,6 +929,10 @@ def parser() -> argparse.ArgumentParser:
     add_p.add_argument("--file", default="")
     add_p.add_argument("--must-contain", default="")
     add_p.add_argument("--must-not-contain", default="")
+    add_p.add_argument("--negative-cmd", default="")
+    add_p.add_argument("--expect-fail-exit", type=int, default=None)
+    add_p.add_argument("--negative-stdout-contains", default="")
+    add_p.add_argument("--negative-stderr-contains", default="")
 
     eval_p = sub.add_parser("eval")
     eval_group = eval_p.add_mutually_exclusive_group(required=False)

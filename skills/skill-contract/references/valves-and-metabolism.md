@@ -24,4 +24,6 @@ Business repositories may colocate skills under `<repo>/skills/*` or `<repo>/.ag
 
 ## Falcon Star backflow
 
-`sync-jev-stars` reads starred rows from an injected SQLite database (default Falcon path), maps source names, writes `jev_starred_id`, `jev_state`, `jev_questions`, `mock_jev_response`, and an executable assertion, and is safe with `--dry-run`. Updates are idempotent and archive the oldest non-star case when the 15-case cap is exceeded.
+`sync-jev-stars` reads starred rows from an injected SQLite database (default Falcon path), applies the canonical source fallback map, deduplicates joined review rows, and writes `jev_starred_id`, `jev_state`, `jev_questions`, `mock_jev_response`, and a meaningful executable assertion. `--cmd-template` stores the mock JSON as one safely quoted argument and runs the assertion before writing; otherwise the actual skill-relative file plus a content token is checked. `--dry-run` reports the same plan without changing bytes or mtimes. Updates retain IDs and metadata, archive only the oldest ordinary case at 15, and skip new Stars when all active cases are golden.
+
+`description-eval --mock-jev-json` accepts inline JSON or a file. Truth-table entries may be keyed by case ID, query, or 1-based index and use a boolean or `choice`/`noul` object; unknown, malformed, or incomplete keys fail. Live Jev is optional and bounded; deterministic token matching is reported as fallback. Negative assertions accept any nonzero exit by default, with optional exact exit and stdout/stderr checks; missing executables always fail.
