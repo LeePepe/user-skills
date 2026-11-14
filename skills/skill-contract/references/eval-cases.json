@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-14",
   "active_cases": [
     {
       "id": "EV-001",
@@ -88,6 +88,57 @@
         "retro_story_engine.py agent-efficiency --auto-propose"
       ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-006",
+      "title": "Negative command rejects unknown subcommand",
+      "tags": [
+        "cli",
+        "negative"
+      ],
+      "expect_fail_exit": 2,
+      "registered_at": "2026-11-14",
+      "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py definitely-not-a-command"
+    },
+    {
+      "id": "EV-007",
+      "title": "Description evaluation reports routing metrics",
+      "tags": [
+        "description-eval",
+        "regression"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill skill-contract --mock-jev-json '{\"1\":true,\"2\":false,\"3\":true}' --strict",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "id": "EV-008",
+      "title": "Synthetic Star backflow validates snapshots, refresh and saturation",
+      "tags": [
+        "regression",
+        "sync-jev-stars"
+      ],
+      "cmd": "python3 -I -B scripts/test_verify_skills.py SkillContractV2Tests.test_star_agents_path_refresh_and_snapshot_validation SkillContractV2Tests.test_star_markers_dedupe_fallback_eviction_and_saturation",
+      "expect_exit": 0
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "audit progressive disclosure skill package budgets",
+      "should_trigger": true
+    },
+    {
+      "query": "run a quick Xcode simulator build",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "evaluate a skill contract drawer",
+      "should_trigger": true
     }
   ]
 }

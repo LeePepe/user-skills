@@ -87,3 +87,12 @@ python3 ~/Development/user-skills/skills/team-lead/scripts/jev_client.py \
 **常见故障速查**：
 - **Falcon 记录不增长（被绕过）**：检查 `~/.config/falcon/source-keys.json` 是否包含当前 `agent_role`；缺失时旧逻辑会跳过 `:19823` 直连 `:7024`。
 - **`Falcon storage is full.`**：并非 `falcon.sqlite` 满了，而是 macOS 磁盘可用空间耗尽触发了 Falcon 的磁盘余量保护；清理 `~/Library/Developer/Xcode/DerivedData` 等缓存即可恢复。
+
+## §5 Skill 标准化接入 Jev 四件套与 Falcon Star 样本回流（TK-07）
+
+1. **零拷贝客户端**：直接复用 `skills/team-lead/scripts/jev_client.py` 的 `jev_decide()`，不复制 HTTP、鉴权或 fallback 实现。
+2. **注册来源**：在本机 `~/.config/falcon/source-keys.json` 登记角色 key；客户端的 `ROLE_SOURCE_KEY_FALLBACKS` 负责旧键兼容，文件权限保持 `0600`。
+3. **离线自测**：用同一份 state/questions 运行 truth table，并以 `--mock-jev-json` 注入答案，覆盖确定性 fallback、阈值与 Null Case。
+4. **Star 回流**：在 Falcon UI 用 `⌘Return` 审阅并点 **Star**；随后执行 `python3 skills/skill-contract/scripts/skill_contract.py sync-jev-stars --skill <name>`，将黄金样本幂等写入该 Skill 的 `references/eval-cases.json`。
+
+回流遵守 One-In-One-Out 与最多 15 条活跃用例；样本必须带 `jev_starred_id`、`mock_jev_response`、可执行 `cmd`/`file`，不得把密钥或私有原文写入仓库。

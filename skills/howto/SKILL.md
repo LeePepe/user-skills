@@ -11,6 +11,17 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 底层 30 个标准节点（`E1–E12, Q1–Q3, I1–I6, G1–G2, P1–P9, O1–O6`）、四层 Skills/Repos 归位表与 `TK-01..TK-16` 断链清册，直接复用 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)。Jev / Falcon (`POST /v1/systemone`) 写题范式、Source Key 角色映射与排障抽屉见 [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md)。不在本文件复制节点表；长文案例底稿按需读取 `~/Development/handoff/howto-atlas/spec.md`。
 
+### 1.5 L0 → L1/L2 按需下钻路由表（When-to-Read & CLI Routing）
+
+| 触发 | L1 精确抽屉 | L2 CLI / 动作 |
+|---|---|---|
+| 查 30 节点与 TK-01..16 断链 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill workflow-hub --strict` |
+| 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
+| 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
+| 派发单仓 M1 Worktree | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` |
+| 跨仓多 M2 编排 | [`personal-m2-assistant/SKILL.md`](../personal-m2-assistant/SKILL.md) | `m2-router.py --plan`，Owner Gate 后 `--apply` |
+| 回归入口与触发边界 | [eval-cases.json](references/eval-cases.json) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill howto --strict` |
+
 ## 2. 新 Session 启动用法（3 种标准姿势）
 
 - **姿势 A：细化具体任务 / 补断链**：`/howto 细化：<任务描述，如：做 email 每日总结并展示在 dsh 或 cindy 的 session 中>`
@@ -30,7 +41,26 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 `✅ workiq + jev_client` 已就绪；`🔴 TK-09 水位采集脚本` 与 `🔴 dsh/Cindy session 投递机制` 交 M1 调查。确认后按四步 SOP 回写图谱或独立下沉实现，不在 M2 直接翻代码。
 
-## 5. How to Use Jev & Falcon（`I3 Classify` 毫秒级判断标准姿势）
+## 5. 三层省 Token 漏斗准入准则（Layer 0 → Layer 1 → Layer 2）
+
+- **Layer 0 Script**：节点规则可由 regex/AST/schema/watermark 完整表达时使用；目标 `<10ms`、`$0`、可复现，先做确定性筛选与校验。
+- **Layer 1 Jev**：需要 `70–500ms` 的封闭世界事实判断时使用；通过 Falcon `:19823`，题型为 `choice+noul`、`noul`、`score` 或 `box`，Python truth table 落决定；网关超时 `1.5s` 时走确定性 fallback。
+- **Layer 2 Heavy LLM**：开放式生成、跨资料综合或 Layer 1 `0.30~0.70` 灰区才唤醒；预算约 `5–180s`，不得用它替代可执行规则。
+
+## 6. 四大标准素材库挂载判定矩阵与隔离红线
+
+只有同时满足 **高频累积性 × 跨会话 Top-3 检索复用 × 图文/公开沉淀价值** 才挂载素材库；否则留在当前 Goal/handoff。下表为 `leepepe.github.io` 的候选消费路由，只有脱敏并获发布批准后才投递，登记不代表已上线。
+
+| Canonical Vault | 唯一写入技能 / 本地事实源 | Blog 挂载 | 适合内容 |
+|---|---|---|---|
+| Design & Motion Vault | `design-studio` / 该技能的 `references/vault/` | `/vault/` | 设计灵感、动效、测量卡 |
+| Collected Tools Vault | `save-tool` / `~/Development/Personal/collected-tools/` | `/vault/` | 工具、Repo、使用入口 |
+| Personal Knowledge Vault | `knowledge-digest` / `~/Development/Personal/knowledge-vault/` | `/learn/` | 知识卡、文章/视频拆解 |
+| Retro & Story Vault | `retro-loop` → `story-craft` / Goal 的已验收叙事 handoff | `/thoughts/` | 复盘、技术叙事、公开素材 |
+
+红线：`knowledge-vault` 永不自动同步 `design-studio`；AIDash 的 `Star` 永不自动发布；`save-tool` 只收藏与索引，**零执行**。
+
+## 7. How to Use Jev & Falcon（`I3 Classify` 毫秒级判断标准姿势）
 
 凡节点需在 `0-Token 确定性脚本`（Layer 0）与 `唤醒重型大模型/CLI`（Layer 2）之间插入 **70–500ms 快思考判断（Layer 1）**，统一走 [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md)：
 

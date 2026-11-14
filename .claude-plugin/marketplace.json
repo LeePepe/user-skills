@@ -55,25 +55,25 @@
       "name": "code-review",
       "source": "./skills/code-review",
       "category": "repo",
-      "description": "Review a branch, PR, worktree, or implementation handoff against both repository standards and feature intent. Use for implementer self-review or independent review when the target repo may contain Spec Kit artifacts and repo-kit files; preserves separate Standards and Spec axes, fans Standards review out by changed layer, checks cross-layer dependency direction, and reports cited findings without editing code."
+      "description": "Review a branch, PR, worktree, or handoff against repository standards and feature intent. Use for independent two-axis review with cited findings. Not for editing code."
     },
     {
       "name": "xcode-cli",
       "source": "./skills/xcode-cli",
       "category": "repo",
-      "description": "Route Apple-platform builds, tests, simulator runs, and result inspection through Swift and Xcode command-line tools. Use when Codex needs to build or test a Swift package, Xcode project, or workspace; diagnose Apple build failures; run an iOS simulator; choose between swift build/test and xcodebuild; or parse xcresult output. Package-only changes stay on SwiftPM commands and escalate to xcodebuild only when the diff includes app/Xcode integration work or the user explicitly requests integration verification. Not for Xcode MCP or GUI automation."
+      "description": "Use for Apple-platform builds, tests, simulator runs, and xcresult inspection through Swift/Xcode CLI. Choose SwiftPM for package-only changes; escalate to xcodebuild for app integration. Not for Xcode GUI automation."
     },
     {
       "name": "deep-research",
       "source": "./skills/deep-research",
       "category": "research",
-      "description": "对任意主题做深度、多来源、经交叉核查的调研,产出带引用、按置信度分级的报告。五阶段流水线:把问题分解成 4-8 个子问题 → 跨渠道(web/github/news/academic)并行 fan-out 调研 → 对每个发现做对抗式核查(证伪而非确认,发现者≠核查者)→ 交叉验证+圆桌综合、标注分歧 → 输出 HIGH/MEDIUM/LOW/CONTESTED 分级的引用报告。Provider-agnostic:同一份 skill 在 Claude Code、Kimi(kimi -p)、Codex(codex exec)三端都成立;fan-out 与核查阶段可跨模型互查(claude 的发现让 codex/kimi 证伪,反之亦然),对方模型作独立第二视角。当用户想「深度调研 / deep research / 全面调研 / 多角度调研 / research roundtable / 帮我把某主题查透并给带引用的报告」时使用。调用前:若问题欠具体(如「买什么车」却无预算/用途/地区),先问 2-3 个澄清问题收窄范围,再把澄清结果织进 args。"
+      "description": "Use for deep, multi-source research with citations and adversarial verification. Break questions into subproblems, cross-check sources, grade confidence, and synthesize disagreements. Not for quick factual lookups."
     },
     {
       "name": "codebase-design",
       "source": "./skills/codebase-design",
       "category": "repo",
-      "description": "Shared vocabulary and discipline for designing deep modules and sharpening domain models. Use when designing or improving module interfaces, finding deepening opportunities, deciding seam placement, making code more testable or AI-navigable, refining ubiquitous language, writing or editing CONTEXT.md, or recording an ADR."
+      "description": "Design deep modules and sharpen domain models: interfaces, seams, ubiquitous language, CONTEXT.md, and ADRs. Use when improving architecture or testability. Not for implementation by itself."
     },
     {
       "name": "my-designer",
