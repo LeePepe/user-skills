@@ -169,12 +169,11 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') {closeOverla
 window.addEventListener('scroll', () => {
   document.querySelector('.app').classList.toggle('title-collapsed', A.collapse_title && window.scrollY > 32);
 });
-// SVG backdrop filters are supported by Blink, not WebKit. WebKit still applies
-// the same signed squircle map to a caustic veil, with CSS Fresnel/chromatic rims.
+// Blink refracts the real backdrop; WebKit retains the ambient veil and rim.
 const blink = /(?:Chrome|Chromium|Edg|OPR)\//.test(navigator.userAgent) && !/(?:CriOS|EdgiOS)/.test(navigator.userAgent);
 document.querySelectorAll('.floating').forEach(e => {
-  e.dataset.opticalMode = blink ? 'backdrop-refraction' : 'webkit-caustic-fallback';
-  if (blink) e.style.setProperty('--optical-backdrop', 'url(#apple-liquid-glass) saturate(135%)');
+  e.dataset.opticalMode = blink ? 'backdrop-refraction' : 'webkit-ambient-fallback';
+  if (blink) e.style.setProperty('--optical-backdrop', 'url(#apple-liquid-glass) blur(2.5px) saturate(135%)');
 });
 render();
 window.navigationDemo = {state, pushScreen, popScreen, switchTab, toggleSheet, performAction, dispatch, currentScreen};

@@ -5,11 +5,13 @@ arbitrary JavaScript tokens. It parses embedded coordinates and then compares ea
 page and its executable assets with a fresh rendering of the validated manifest.
 """
 from html.parser import HTMLParser
+import hashlib
 import importlib.util
 import itertools
 import json
 from pathlib import Path
 import re
+from urllib.parse import unquote, urlsplit
 
 CATALOG_PATH = Path(__file__).resolve().parents[2] / 'design-studio' / 'scripts' / 'design_catalog.py'
 
@@ -52,6 +54,135 @@ class PageParser(HTMLParser):
         return result
 
 
+class RenderedSurface(HTMLParser):
+    """Inspect rendered structure/styles, never inert JSON, scripts, or prompt prose."""
+    def __init__(self, text):
+        super().__init__()
+        self.nodes, self.styles, self.links, self.labels = [], [], [], []
+        self.in_style = False
+        self.button_text = None
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.nodes.append((tag, attrs))
+        if tag == 'style':
+            self.in_style = True
+        if tag == 'link' and 'stylesheet' in attrs.get('rel', '').lower().split():
+            self.links.append(attrs.get('href', ''))
+        if attrs.get('style'):
+            self.styles.append('*{' + attrs['style'] + '}')
+        if tag == 'button':
+            self.button_text = []
+
+    def handle_data(self, text):
+        if self.in_style:
+            self.styles.append(text)
+        if self.button_text is not None:
+            self.button_text.append(text)
+
+    def handle_endtag(self, tag):
+        if tag == 'style':
+            self.in_style = False
+        if tag == 'button' and self.button_text is not None:
+            self.labels.append(' '.join(''.join(self.button_text).split()).casefold())
+            self.button_text = None
+
+
+def rendered_gallery_errors(root):
+    root = root.resolve()
+    errors, visited = [], set()
+
+    def css_rules(text, label):
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+        variables = dict(re.findall(r'(--[\w-]+)\s*:\s*([^;{}]+)', text))
+        for match in re.finditer(r'([^{}]+)\{([^{}]*)\}', text):
+            selector, body = match.groups()
+            for _ in range(8):
+                expanded = re.sub(r'var\(\s*(--[\w-]+)\s*\)', lambda m: variables.get(m.group(1), m.group(0)), body)
+                if expanded == body:
+                    break
+                body = expanded
+            repeated = 'repeating-linear-gradient' in body.casefold()
+            if re.search(r'\.ruler\b|\.(?:debug-bar|debug-controls|optical-debug)\b', selector, re.I):
+                errors.append(f'{label}: forbidden debug ruler/bar CSS')
+            if re.search(r'\.caustic-veil\b', selector, re.I) and repeated:
+                errors.append(f'{label}: forbidden caustic-veil repeating-linear-gradient stripes')
+            if 'repeating-linear-gradient' in body.casefold() and re.search(r'url\([\s\"\x27]*#apple-liquid-glass', body, re.I):
+                errors.append(f'{label}: forbidden refracted striped overlay')
+        return text
+
+    def stylesheet(href, base):
+        url = urlsplit(href)
+        if url.scheme or url.netloc or not url.path:
+            errors.append(f'unsafe local stylesheet: {href}')
+            return
+        raw = base / unquote(url.path)
+        path = raw.resolve()
+        if not path.is_relative_to(root) or any(p.is_symlink() for p in (raw, *raw.parents) if p.is_relative_to(root)):
+            errors.append(f'unsafe local stylesheet: {href}')
+            return
+        if path in visited:
+            return
+        visited.add(path)
+        try:
+            text = css_rules(path.read_text(encoding='utf-8'), str(path.relative_to(root)))
+            for match in re.finditer(r'@import\s+(?:url\(\s*)?[\"\x27]([^\"\x27]+)[\"\x27]|@import\s+url\(\s*([^\s)]+)\s*\)', text, re.I):
+                stylesheet(match.group(1) or match.group(2), path.parent)
+        except (OSError, UnicodeError) as error:
+            errors.append(f'missing/invalid local stylesheet {href}: {error}')
+
+    for path in sorted(root.glob('*.html')):
+        if path.is_symlink():
+            errors.append(f'unsafe rendered HTML: {path.name}')
+            continue
+        try:
+            surface = RenderedSurface(path.read_text(encoding='utf-8'))
+            for tag, attrs in surface.nodes:
+                classes = set(attrs.get('class', '').split())
+                if classes & {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'} or attrs.get('id') in {'ruler', 'debug-bar', 'debug-controls', 'optical-debug'}:
+                    errors.append(f'{path.name}: forbidden debug ruler/bar node')
+                if 'caustic-veil' in classes and 'repeating-linear-gradient' in attrs.get('style', '').casefold():
+                    errors.append(f'{path.name}: forbidden caustic-veil repeating-linear-gradient stripes')
+                if path.name != 'index.html' and tag in {'button', 'input', 'textarea', 'select', 'nav'}:
+                    if attrs.get('id') in {'responsive-toggle', 'copy-summary'} or any(k in attrs for k in ('data-theme', 'data-portal-theme', 'data-portal-platform', 'data-group-filter', 'data-select', 'data-star', 'data-note')):
+                        errors.append(f'{path.name}: duplicate inner gallery control')
+            if {'active', 'matte'} <= set(surface.labels) or 'active / matte' in surface.labels:
+                errors.append(f'{path.name}: forbidden Active / Matte debug controls')
+            css_rules('\n'.join(surface.styles), path.name)
+            for href in surface.links:
+                stylesheet(href, path.parent)
+        except (OSError, UnicodeError, ValueError) as error:
+            errors.append(f'{path.name}: invalid rendered surface: {error}')
+    return errors
+
+
+def prompt_errors(root, manifest):
+    contract = manifest.get('prompt_contract')
+    variants = manifest.get('variants', [])
+    if contract is None:
+        return ['prompt metadata requires prompt_contract'] if any('prompt_file' in v or 'prompt_sha256' in v for v in variants if isinstance(v, dict)) else []
+    if not isinstance(contract, dict) or contract.get('schema') != 'design-prompts/v1' or contract.get('source') not in {'starter', 'provided'} or contract.get('count') != len(variants):
+        return ['invalid prompt_contract']
+    errors = []
+    for variant in variants:
+        identifier = variant.get('id', '')
+        expected = f'prompts/{identifier}-prompt.md'
+        if not re.fullmatch(r'(?:v|app)\d{2}', identifier) or variant.get('prompt_file') != expected:
+            errors.append(f'{identifier}: missing/unsafe prompt_file binding')
+            continue
+        path = root / expected
+        try:
+            if (root / 'prompts').is_symlink() or path.is_symlink() or not path.is_file():
+                raise ValueError('missing or unsafe prompt file')
+            data = path.read_bytes()
+            if not data.decode('utf-8').strip() or hashlib.sha256(data).hexdigest() != variant.get('prompt_sha256'):
+                raise ValueError('empty or modified prompt file')
+        except (OSError, UnicodeError, ValueError) as error:
+            errors.append(f'{identifier}: prompt binding failed: {error}')
+    return errors
+
+
 def gallery_errors(root, manifest):
     errors, evidence = [], []
     c = catalog()
@@ -79,7 +210,7 @@ def gallery_errors(root, manifest):
                              'controls': sum(t == 'button' for t, _ in parsed.nodes),
                              'optics': {'displacement_channels': sum(t == 'fedisplacementmap' for t, _ in parsed.nodes),
                                         'recipe': 'signed squircle Snell/chromatic/Fresnel map',
-                                        'application': 'floating backdrop (Blink) or filtered caustic veil (WebKit)'},
+                                        'application': 'floating backdrop (Blink) or ambient veil/specular rim (WebKit)'},
                              'content_material': 'solid' if actual == expected else 'unverified',
                              'declared_minimum_target_px': 44 if platform == 'mobile' else None,
                              'canonical_operations': actual == expected})
@@ -88,6 +219,8 @@ def gallery_errors(root, manifest):
     try:
         if manifest.get('schema') not in {'design-gallery/v2', 'tenfold-gallery/v1'}:
             raise ValueError('unsupported gallery schema')
+        errors.extend(rendered_gallery_errors(root))
+        errors.extend(prompt_errors(root, manifest))
         c.NAVIGATION.session_contract(anti, overrides)
         if manifest.get('mode') == 'app-nav':
             schemes = manifest.get('schemes')
@@ -99,17 +232,19 @@ def gallery_errors(root, manifest):
                 errors.append('manifest schemes are not normalized operative graphs')
             expected_variants = [{'id': s['id'], 'title': s['title'], 'navigation_model': s['navigation_model'],
                                   'screens': [p['id'] for p in s['screens']]} for s in normalized]
-            if manifest.get('variants') != expected_variants:
+            actual_variants = [{k: v for k, v in variant.items() if k not in {'prompt_file', 'prompt_sha256'}} for variant in manifest.get('variants', [])]
+            if actual_variants != expected_variants:
                 errors.append('manifest variant summaries do not match operative schemes')
             if len({c.NAVIGATION.architecture_signature(s) for s in normalized}) != 4:
                 errors.append('app-nav architectures differ only in labels')
             for i, scheme in enumerate(normalized, 1):
                 compare(f'app{i:02d}.html', c._app_nav_html(scheme, i, platform, anti, overrides))
             compare('current.html', c._app_nav_html(normalized[0], 0, platform, anti, overrides))
-            links = ''.join(f'<li><a href="app{i:02d}.html">{c.escape(s["title"])}</a></li>' for i, s in enumerate(normalized, 1))
-            # App rounds publish a link index, not the screen comparison runtime.
-            index = f'<!doctype html><meta charset="utf-8"><title>{c.escape(manifest["goal"])}</title><h1>Bespoke app navigation hypotheses</h1><p data-session-anti-patterns="{c.escape(json.dumps(anti, ensure_ascii=False))}" data-style-overrides="{c.escape(json.dumps(overrides, ensure_ascii=False))}">{c.escape(normalized[0]["context"])} · graph-driven screens and transitions</p><ul>{links}</ul>'
-            compare('index.html', index, coordinates=False)
+            for name, expected in [('tokens.css', c._gallery_tokens()), ('screen.css', (c.ROOT / 'assets' / 'tenfold-gallery.css').read_text())]:
+                path = root / name
+                if path.is_symlink() or not path.is_file() or path.read_text() != expected:
+                    errors.append(f'{name}: rendering assets differ from canonical renderer')
+            compare('index.html', c._gallery_index(manifest), coordinates=False)
         else:
             variants = manifest.get('variants')
             if not isinstance(variants, list) or len(variants) != 10 or {v.get('id') for v in variants if isinstance(v, dict)} != {f'v{i:02d}' for i in range(1, 11)}:

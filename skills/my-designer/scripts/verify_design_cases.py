@@ -122,6 +122,8 @@ def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: lis
 
 
 def command_route(args: argparse.Namespace) -> int:
+    if args.platform == 'macos':
+        args.platform = 'desktop'
     cases_doc = _load_json(Path(args.cases_file))
     taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
     dims = _csv(args.dimensions)
@@ -706,6 +708,8 @@ def _gallery_errors(root, manifest):
 
 
 def command_jev_gate(args):
+    if args.platform == 'macos':
+        args.platform = 'desktop'
     errors, evidence = [], []
     if args.stage == 'gallery':
         if not args.gallery_dir:
@@ -761,12 +765,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("flow-map", parents=[common])
 
     route = sub.add_parser("route", parents=[common])
-    route.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    route.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
 
     gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
-    gate.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gate.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     gate.add_argument("--stage", choices=["gallery", "spec", "traceback"], required=True)
     gate.add_argument("--gallery-dir")
     gate.add_argument("--spec-file")

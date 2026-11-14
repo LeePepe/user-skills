@@ -312,8 +312,8 @@ assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
                 replacements = ['<!doctype html><p>No variants or selection controls available.</p>',
                                 canonical.replace('screen', 'forged-screen') if mode == 'screen' else canonical.replace('app01.html', 'app99.html')]
                 if mode == 'screen':
-                    replacements.extend([canonical[:canonical.index('<script>')] + '</body></html>',
-                                         canonical.replace('Round: ${manifest.round}', 'Round: 99')])
+                    replacements.extend([canonical[:canonical.index('<script id="gallery-config"')] + '</body></html>',
+                                         canonical.replace('"round": 2', '"round": 99')])
                 for html in replacements:
                     with self.subTest(mode=mode, html=html[:80]):
                         index.write_text(html)
@@ -885,12 +885,249 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
                     "session_anti_patterns": [payload], "style_overrides": {"note": payload}}
         index = DESIGN_CATALOG._gallery_index(manifest)
         self.assertNotIn(payload, index)
-        self.assertEqual(index.count("</script>"), 1)
+        self.assertEqual(index.count("</script>"), 2)
         screen = DESIGN_CATALOG._gallery_html("title", "v01", "mobile",
                     {"p0": "next-action", "axis_y": "accordion", "archetype": "VS-005"},
                     [payload], {})
         self.assertNotIn(payload, screen)
         self.assertIn("&lt;/script&gt;", screen)
+
+
+class PromptAndRenderedGuardTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('prompt_evidence_test', path)
+        cls.evidence = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.evidence)
+
+    def scaffold(self, directory, mode, *options):
+        return run('scaffold-gallery', '--goal', 'prompt-contract', '--round', '1', '--platform', 'web',
+                   '--mode', mode, *options, env=dict(os.environ, HOME=str(directory)))
+
+    def test_starter_and_supplied_prompts_bind_verbatim_and_mount(self):
+        import hashlib
+        for mode, prefix, count in (('screen', 'v', 10), ('app-nav', 'app', 4)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                root = Path(directory)
+                blog = root / 'blog'
+                result = self.scaffold(root, mode, '--blog-repo', str(blog))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                gallery = Path(output['gallery']); manifest = output['manifest']
+                self.assertEqual(manifest['prompt_contract']['source'], 'starter')
+                self.assertEqual(len(list((gallery / 'prompts').glob('*-prompt.md'))), count)
+                texts = []
+                for variant in manifest['variants']:
+                    relative = f'prompts/{variant["id"]}-prompt.md'
+                    self.assertEqual(variant['prompt_file'], relative)
+                    data = (gallery / relative).read_bytes()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), variant['prompt_sha256'])
+                    self.assertEqual(data, (blog / 'demos/prompt-contract/r1' / relative).read_bytes())
+                    text = data.decode('utf-8'); texts.append(text)
+                    for heading in ('Visual metaphor', 'Single P0', 'P1/P2 folding', 'Color and surface polarity', 'Liquid Glass optical parameters', 'Inline SVG', 'Explicit anti-patterns', 'Stage 2 handoff'):
+                        self.assertIn(heading, text)
+                    self.assertIn('NOT Designer-approved', text)
+                self.assertEqual(len(set(texts)), count)
+                metaphors = [text.split('## Visual metaphor\n', 1)[1].split('## Single P0', 1)[0].strip() for text in texts]
+                self.assertEqual(len(set(metaphors)), count)
+                self.assertEqual(output['files'], sum(p.is_file() for p in gallery.rglob('*')))
+                errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                self.assertEqual(errors, [])
+                # Preserve independently authored Unicode/CRLF bytes, including benign anti-pattern prose.
+                supplied = root / 'designer'; supplied.mkdir()
+                for i in range(1, count + 1):
+                    (supplied / f'{prefix}{i:02d}-prompt.md').write_bytes(f'# Independent {i}\r\nDesigner 意图 {i}: no .ruler or .caustic-veil repeating-linear-gradient.\r\n'.encode('utf-8'))
+                home = root / 'second-home'
+                result = self.scaffold(home, mode, '--prompts-dir', str(supplied), '--blog-repo', str(root / 'second-blog'))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout); gallery = Path(output['gallery']); manifest = output['manifest']
+                self.assertEqual(manifest['prompt_contract']['source'], 'provided')
+                for variant in manifest['variants']:
+                    expected_bytes = (supplied / Path(variant['prompt_file']).name).read_bytes()
+                    self.assertEqual((gallery / variant['prompt_file']).read_bytes(), expected_bytes)
+                    self.assertEqual((root / 'second-blog/demos/prompt-contract/r1' / variant['prompt_file']).read_bytes(), expected_bytes)
+                self.assertFalse((gallery / 'prompts/current-prompt.md').exists())
+                self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+                page = gallery / manifest['variants'][0]['prompt_file']
+                page.write_bytes(page.read_bytes() + b'modified')
+                self.assertTrue(any('prompt binding failed' in e for e in self.evidence.gallery_errors(gallery, manifest)[0]))
+
+    def test_invalid_prompt_sets_fail_before_gallery_or_blog_writes(self):
+        for mode, prefix, count in (('screen', 'v', 10), ('app-nav', 'app', 4)):
+            for invalid in ('missing', 'empty', 'non-utf8', 'file-symlink', 'directory-symlink'):
+                with self.subTest(mode=mode, invalid=invalid), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                    root = Path(directory); source = root / 'prompts'; source.mkdir()
+                    for i in range(1, count + 1):
+                        (source / f'{prefix}{i:02d}-prompt.md').write_text(f'Independent prompt {i}', encoding='utf-8')
+                    last = source / f'{prefix}{count:02d}-prompt.md'
+                    if invalid == 'missing': last.unlink()
+                    elif invalid == 'empty': last.write_text('   ', encoding='utf-8')
+                    elif invalid == 'non-utf8': last.write_bytes(b'\xff')
+                    elif invalid == 'file-symlink':
+                        last.unlink(); last.symlink_to(source / f'{prefix}01-prompt.md')
+                    else:
+                        link = root / 'linked'; link.symlink_to(source, target_is_directory=True); source = link
+                    result = self.scaffold(root, mode, '--prompts-dir', str(source), '--blog-repo', str(root / 'blog'))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((root / 'Development/handoff/prompt-contract').exists())
+                    self.assertFalse((root / 'blog').exists())
+
+    def test_rendered_html_and_linked_imported_css_reject_stripes_debug_and_inner_controls(self):
+        for mode in ('screen', 'app-nav'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                result = self.scaffold(directory, mode, '--no-blog-mount')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout); gallery = Path(output['gallery']); manifest = output['manifest']
+                page = gallery / (manifest['variants'][0]['id'] + '.html')
+                original = page.read_text(encoding='utf-8')
+                parsed = self.evidence.PageParser(original)
+                self.assertFalse(any(attrs.get('id') == 'responsive-toggle' for tag, attrs in parsed.nodes))
+                self.assertTrue(any(attrs.get('id') == 'toggle-tab' for tag, attrs in parsed.nodes) if mode == 'app-nav' else any(attrs.get('id') == 'continue' for tag, attrs in parsed.nodes))
+                attacks = [
+                    ('<style>.caustic-veil{background:repeating-linear-gradient(blue,white);filter:url(#apple-liquid-glass)}</style>', 'forbidden caustic-veil'),
+                    ('<div class="ruler" style="width:28px;height:28px;border:1px dashed">debug</div>', 'forbidden debug ruler'),
+                    ('<style>:root{--stripe:repeating-linear-gradient(blue,white)} .veil{background:var(--stripe);filter:url(#apple-liquid-glass)}</style>', 'forbidden refracted striped overlay'),
+                    ('<div class="caustic-veil" style="background:repeating-linear-gradient(blue,white)"></div>', 'forbidden caustic-veil'),
+                    ('<button>Active</button><button>Matte</button>', 'forbidden Active / Matte'),
+                    ('<button id="responsive-toggle">Mobile</button>', 'duplicate inner gallery control'),
+                ]
+                for extra, message in attacks:
+                    page.write_text(original.replace('</body>', extra + '</body>'), encoding='utf-8')
+                    errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                    self.assertTrue(any(message in e for e in errors), errors)
+                    self.assertTrue(any('canonical renderer' in e for e in errors), errors)
+                page.write_text(original + '<link rel="stylesheet" href="navigation.css">', encoding='utf-8')
+                (gallery / 'navigation.css').write_text('@import url("nested.css");', encoding='utf-8')
+                (gallery / 'nested.css').write_text('.caustic-veil {background:repeating-linear-gradient(blue,white)} .ruler{width:28px;height:28px;border:1px dashed}', encoding='utf-8')
+                errors, _ = self.evidence.gallery_errors(gallery, manifest)
+                self.assertTrue(any('nested.css' in e and 'forbidden' in e for e in errors), errors)
+                (gallery / 'navigation.css').unlink(); (gallery / 'nested.css').unlink()
+                page.write_text(original.replace('</body>', '<p>Never use .ruler, Active / Matte, or .caustic-veil repeating-linear-gradient.</p></body>'), encoding='utf-8')
+                self.assertEqual(self.evidence.rendered_gallery_errors(gallery), [])
+                page.write_text(original, encoding='utf-8')
+                self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+
+
+class MultiplatformGalleryRegressionTests(unittest.TestCase):
+    def test_all_platform_modes_render_canonical_live_bezels(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            for mode in ('screen', 'app-nav'):
+                for requested in ('mobile', 'desktop', 'macos', 'web'):
+                    result = run('scaffold-gallery', '--goal', f'{mode}-{requested}', '--round', '1', '--platform', requested, '--mode', mode, '--no-blog-mount', env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    gallery = Path(json.loads(result.stdout)['gallery'])
+                    html = (gallery / 'index.html').read_text(encoding='utf-8')
+                    expected = 11 if mode == 'screen' else 5
+                    from html.parser import HTMLParser
+                    class Structure(HTMLParser):
+                        def __init__(self):
+                            super().__init__(); self.stack = []; self.frames = []; self.controls = []
+                        def handle_starttag(self, tag, attrs):
+                            attrs = dict(attrs)
+                            if tag == 'iframe': self.frames.append((attrs, list(self.stack)))
+                            if tag in {'input', 'textarea'}: self.controls.append((tag, attrs, list(self.stack)))
+                            if tag not in {'input', 'meta', 'link', 'br', 'img'}: self.stack.append((tag, attrs))
+                        def handle_endtag(self, tag):
+                            for i in range(len(self.stack) - 1, -1, -1):
+                                if self.stack[i][0] == tag:
+                                    self.stack = self.stack[:i]; break
+                    parsed = Structure(); parsed.feed(html)
+                    self.assertEqual(len(parsed.frames), expected)
+                    frame_mode = 'macos' if requested in {'desktop', 'macos'} else requested
+                    for attrs, parents in parsed.frames:
+                        bezel = next(a for t, a in parents if 'device-bezel' in a.get('class', '').split())
+                        self.assertEqual(bezel['data-frame-mode'], frame_mode)
+                        self.assertEqual(attrs['loading'], 'eager')
+                        self.assertTrue(attrs['src'].endswith('.html'))
+                    for tag, attrs, parents in parsed.controls:
+                        self.assertFalse(any('current-card' in a.get('class', '') for t, a in parents))
+                    self.assertEqual(sum(tag == 'textarea' for tag, _, _ in parsed.controls), expected)  # candidates + summary
+                    self.assertEqual(sum(a.get('type') == 'radio' for _, a, _ in parsed.controls), expected - 1)
+                    self.assertEqual(html.count('class="device-titlebar"'), 0 if frame_mode != 'macos' else expected)
+                    self.assertIn('data-theme="dark"', html); self.assertIn('copy-summary', html)
+                    gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'desktop' if requested == 'macos' else requested, '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
+                    self.assertEqual(gate.returncode, 0, gate.stdout)
+
+    def test_blog_same_round_categories_and_corrupt_sibling_are_safe(self):
+        import shutil
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            blog = Path(directory) / 'blog'
+            handoff = Path(directory) / 'Development/handoff/mounted-blog'
+            for category in ('old', 'A', 'B'):
+                if category == 'A':
+                    # The prior category remains mounted but is absent from local handoff.
+                    shutil.rmtree(handoff / 'r1-old')
+                    for parent in (handoff, blog / 'demos/mounted-blog'):
+                        bad = parent / 'r9-bad'
+                        bad.mkdir(parents=True)
+                        (bad / 'manifest.json').write_text('{broken', encoding='utf-8')
+                        unsafe = parent / 'r8-unsafe'
+                        unsafe.mkdir()
+                        (unsafe / 'manifest.json').write_text('[1,2]', encoding='utf-8')
+                result = run('scaffold-gallery', '--goal', 'mounted-blog', '--round', '1',
+                             '--category', category, '--platform', 'mobile', '--blog-repo', str(blog), env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            blog_root = blog / 'demos/mounted-blog'
+            for category in ('old', 'A', 'B'):
+                self.assertTrue((blog_root / f'r1-{category}/manifest.json').is_file())
+            mounted = (blog_root / 'index.html').read_text(encoding='utf-8')
+            local = (handoff / 'index.html').read_text(encoding='utf-8')
+            self.assertIn('src="r1-old/v01.html"', mounted)
+            self.assertNotIn('src="r1-old/v01.html"', local)
+            for text in (mounted, local):
+                self.assertIn('src="r1-A/v01.html"', text)
+                self.assertIn('src="r1-B/v01.html"', text)
+                self.assertNotIn('http-equiv="refresh"', text)
+                self.assertNotIn('r9-bad/', text)
+                self.assertNotIn('r8-unsafe/', text)
+
+    def test_shared_runtime_state_and_geometry_equations(self):
+        result = subprocess.run(['node', str(SCRIPT.with_name('gallery_chooser_test.cjs'))],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_category_portal_and_cleanup_preserve_rounds(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            for round_number, category in ((1, 'A'), (2, 'B')):
+                result = run('scaffold-gallery', '--goal', 'portal-regression', '--round', str(round_number), '--category', category, '--platform', 'web', '--category-title', category, '--no-blog-mount', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            root = Path(directory) / 'Development/handoff/portal-regression'
+            portal = (root / 'index.html').read_text(encoding='utf-8')
+            self.assertGreaterEqual(portal.count('data-group-filter'), 3)
+            self.assertGreaterEqual(portal.count('data-frame-mode'), 20)
+            self.assertIn('design-gallery:${goal}', portal); self.assertIn('localStorage', portal)
+            receipt = run('cleanup-demo', '--goal', 'portal-regression', '--handoff-root', str(Path(directory) / 'Development/handoff'), '--dry-run', env=env)
+            self.assertEqual(receipt.returncode, 0, receipt.stderr)
+            self.assertEqual(len(json.loads(receipt.stdout)['removed_handoff_rounds']), 2)
+            (root / 'receipts').mkdir()
+            (root / 'receipts/keep.json').write_text('{}', encoding='utf-8')
+            cleaned = run('cleanup-demo', '--goal', 'portal-regression', '--handoff-root', str(root.parent), env=env)
+            self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+            self.assertFalse((root / 'index.html').exists())
+            self.assertFalse((root / 'r1-A').exists())
+            self.assertFalse((root / 'r2-B').exists())
+            self.assertTrue((root / 'receipts/keep.json').is_file())
+
+    def test_category_path_rejects_before_writes_and_title_is_inert(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            base = ['scaffold-gallery', '--goal', 'safe-category', '--round', '1', '--platform', 'mobile', '--no-blog-mount']
+            for category in ('../escape', 'A/B', 'A" onmouseover="alert(1)', '..'):
+                result = run(*base, '--category', category, env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((Path(directory) / 'Development/handoff/safe-category').exists())
+            title = '</script><img src=x onerror=alert(1)>'
+            result = run(*base, '--category', 'A', '--category-title', title, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            root = Path(directory) / 'Development/handoff/safe-category'
+            portal = (root / 'index.html').read_text(encoding='utf-8')
+            self.assertNotIn(title, portal)
+            self.assertIn('&lt;/script&gt;&lt;img', portal)
+            self.assertEqual(portal.count('</script>'), 2)
 
 
 if __name__ == "__main__":

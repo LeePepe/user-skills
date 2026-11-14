@@ -218,8 +218,9 @@ def presentation(overrides):
 
 
 def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overrides=None):
-    if platform != 'mobile':
-        raise ValueError('app-nav is an iOS topology sandbox; use --platform mobile')
+    platform = {'macos': 'desktop'}.get(platform, platform)
+    if platform not in {'mobile', 'desktop', 'web'}:
+        raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
     anti_patterns, overrides = anti_patterns or [], overrides or {}
     tokens = presentation(overrides)
     a = scheme['architecture']
@@ -242,6 +243,10 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
         chrome = f'<nav class="floating lens-toolbar">{back}<div class="lens-tabs">{destinations}</div>{more}</nav><nav class="floating safe-dock">{primary}{sheet_control}</nav>'
     else:
         chrome = f'<nav class="deck-nav" aria-label="Journey deck">{destinations}</nav><nav class="floating inspector-toolbar">{back}{sheet_control}{more}</nav><nav class="floating safe-dock">{primary}</nav>'
+    if platform == 'desktop':
+        chrome = f'<header class="desktop-toolbar"><span>Toolbar</span>{more}</header><aside class="desktop-sidebar" aria-label="NavigationSplitView">{destinations}</aside><aside class="desktop-inspector" aria-label="Inspector">Inspector · MenuBarExtra{sheet_control}</aside><nav class="desktop-actions">{back}{primary}</nav>'
+    elif platform == 'web':
+        chrome = f'<header class="web-header"><span>Web navigation</span>{more}</header><aside class="web-toc" aria-label="Table of contents">{destinations}</aside><nav class="web-actions">{back}{primary}</nav>'
     if not session_contract(anti_patterns, overrides):
         chrome = chrome.replace('class="floating stack-toolbar"', 'class="stack-toolbar"').replace('class="floating lens-toolbar"', 'class="lens-toolbar"').replace('class="floating inspector-toolbar"', 'class="inspector-toolbar"')
     config = {'schema': 'navigation-page/v3', 'id': 'current' if app_index == 0 else scheme['id'],
@@ -250,8 +255,8 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
     runtime = (ASSETS / 'navigation-demo.js').read_text(encoding='utf-8')
     style = ';'.join(f'--{k}:{v}' for k, v in tokens.items())
     return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><style>{css}</style></head>
-<body><main class="app architecture-{a['kind']}" style="{style}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><link rel="stylesheet" href="tokens.css"><style>{css}</style></head>
+<body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
 {optical_svg}
 <header class="large-title"><p>{escape(scheme['context'])}</p><h1 id="large-title">{escape(scheme['title'])}</h1></header>
 {chrome}
