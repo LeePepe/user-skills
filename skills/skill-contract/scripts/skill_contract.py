@@ -748,9 +748,11 @@ def _trigger_decision(value: Any) -> tuple[bool | None, str | None]:
         if not isinstance(value, dict):
             return False, "malformed mock answers"
     choice = value.get("choice")
+    choice_confidence = None
     if isinstance(choice, dict):
         if "confidence" in choice and not _valid_applicability(choice["confidence"]):
             return False, "invalid choice confidence"
+        choice_confidence = choice.get("confidence")
         choice = choice.get("choice")
     if "choice" in value:
         if not isinstance(choice, str) or choice.lower() not in {"yes", "no", "true", "false"}:
@@ -768,10 +770,14 @@ def _trigger_decision(value: Any) -> tuple[bool | None, str | None]:
         if not _valid_applicability(score):
             return False, f"invalid mock {key}: expected finite number in [0, 1]"
         scores[key] = float(score)
-    if "choice" in value and choice.lower() in {"no", "false"}:
-        return False, None
     if scores:
         score = scores[score_keys[0]]
+        if "choice" in value and choice.lower() in {"no", "false"}:
+            if choice_confidence is None:
+                choice_confidence = scores.get("confidence")
+            if 0.30 <= score <= 0.70 and (choice_confidence is None or choice_confidence < 0.40):
+                return None, None
+            return False, None
         if score > 0.70:
             return True, None
         if score < 0.30:
@@ -817,10 +823,10 @@ def _jev_trigger(skill: str, description: str, query: str) -> tuple[bool | None,
         state = {"skill": skill, "description": description, "query": query}
         questions = {
             "choice": {
-                "type": "choice", "instructions": "Should this skill handle the query, based only on its description and exclusions? Choose yes or no.",
-                "criteria": {"yes": "The query falls within the described skill scope.", "no": "The query is excluded or outside the described skill scope."},
+                "type": "choice", "instructions": "Does the query request a capability permitted by this skill description?",
+                "criteria": {"yes": "The query falls within the permitted skill scope.", "no": "The query falls outside the permitted skill scope."},
             },
-            "noul": {"type": "noul", "instructions": "Score applicability of this skill to the query from 0 (not applicable) to 1 (fully applicable), respecting exclusions."},
+            "noul": {"type": "noul", "instructions": "Is the query within the skill's permitted scope?"},
         }
         result = module.jev_decide(state, questions, timeout_sec=1.5)
         if not isinstance(result, dict):
