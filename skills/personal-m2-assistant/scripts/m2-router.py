@@ -627,7 +627,7 @@ def _matching_topic_sessions(
 
     def encoded_topic(session: dict[str, Any]) -> str | None:
         for key in ("session_id", "herdr_target", "title"):
-            value = _text(session.get(key)).casefold()
+            value = re.sub(r"_+", "-", _text(session.get(key)).casefold())
             for topic_id, pattern in topic_patterns:
                 if pattern.search(value):
                     return topic_id

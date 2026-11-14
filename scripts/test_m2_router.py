@@ -320,6 +320,32 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(plan["targets"][0]["space"], "skills-design")
         self.assertEqual(plan["targets"][0]["space_aliases"], ["design", "my-designer", "design-studio"])
 
+    def test_deep_research_and_knowledge_digest_never_reuse_design_sessions(self):
+        for session_id in ("m2-skills-design-user-skills-r1", "m2_skills_design_user_skills_r1"):
+            sessions = [{
+                "session_id": session_id,
+                "target_repo": "user-skills",
+                "title": session_id,
+                "status": "working",
+                "workspace_label": "user-skills",
+            }]
+            for topic_id, instruction in (
+                ("skill-knowledge-digest", "整理 knowledge-digest"),
+                ("skill-deep-research", "执行 deep-research"),
+            ):
+                plan = self.router.build_plan(
+                    instruction,
+                    sessions,
+                    mock_magpie={"route": "ROUTE_SINGLE", "targets": [{
+                        "topic_id": topic_id,
+                        "target_repo": "user-skills",
+                        "sub_prompt": instruction,
+                        "wave_order": 1,
+                    }]},
+                )
+                self.assertEqual(plan["targets"][0]["m2_status"], "NEW_M2")
+                self.assertEqual(plan["targets"][0].get("session_id", ""), "")
+
     def test_legacy_domain_map_matches_canonical_domain_map(self):
         legacy_path = ROOT / "skills" / "m2-dispatcher" / "references" / "m2-domain-map.json"
         canonical_path = ROOT / "skills" / "personal-m2-assistant" / "references" / "m2-domain-map.json"
