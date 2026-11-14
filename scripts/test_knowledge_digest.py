@@ -10,8 +10,10 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +41,379 @@ def seed_ledger(vault: Path, source_ids: tuple[str, ...]) -> None:
     (vault / "topic-ledger.json").write_text(json.dumps({"topics": topics}), encoding="utf-8")
 
 
+class FakeLinearTransport:
+    def __init__(self, issues=None):
+        self.issues = list(issues or [])
+        self.created = []
+        self.updated = []
+
+    def list_issues(self, team_key, *, query="", limit=50):
+        return [issue for issue in self.issues if not query or query in issue.get("title", "")]
+
+    def team_metadata(self, team_key):
+        return {"id": "team-tia", "states": {"nodes": [{"id": "backlog", "type": "backlog"}]}}
+
+    def create_issue(self, **kwargs):
+        issue = {
+            "id": "issue-created",
+            "identifier": "TIA-900",
+            "url": "https://linear.test/TIA-900",
+            **kwargs,
+        }
+        self.created.append(issue)
+        self.issues.append(issue)
+        return issue
+
+    def update_issue(self, issue_id, **kwargs):
+        issue = next(issue for issue in self.issues if issue.get("id") == issue_id or issue.get("identifier") == issue_id)
+        issue.update(kwargs)
+        self.updated.append(issue)
+        return issue
+
+
+def normalized_linear_markdown(description: str) -> str:
+    description = re.sub(r"\]\((?!<)([^)]+)\)", r"](<\1>)", description)
+    description = re.sub(r"(?m)^  - ", "  * ", description)
+    description = re.sub(r"(?m)^    1\. ", "    2. ", description)
+    return re.sub(r"(?<!\\)\[(\d+)\]", r"\\[\1\\]", description).rstrip()
+
+
+def digest_topics():
+    topics = []
+    for key, question in [
+        ("event-stream-order", "事件流如何用序列号恢复顺序而不重复执行副作用？"),
+        ("cache-budget", "缓存如何用容量预算约束淘汰而不破坏一致性？"),
+        ("schema-transition", "迁移器如何把旧模式转为新模式但保留回滚边界？"),
+    ]:
+        item = {"topic_key": key, "title": question, "question": question, "source_id": "fixture-engine", "source_uri": "https://example.test/engine", "why_now": "engine/contract.md:12（顺序与容量边界尚未验证）", "category": "工程与设计"}
+        item["learning_brief"] = DIGEST._learning_brief(item)
+        topics.append(item)
+    return topics
+
+
+def legacy_daily_description(topics):
+    lines = ["<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->", "", "## 今日学习清单", ""]
+    lines.extend(f"- [ ] **[{index}] {item['title']}** (`{item['topic_key']}`)" for index, item in enumerate(topics, 1))
+    for item in topics:
+        lines.extend(["", f"### {item['title']} (`{item['topic_key']}`)", "", f"**为什么现在值得学 (Why Now)**：Owner 编写的完整导读 {item['topic_key']}", "", "1. 原理与状态转换？", "2. 容量为何影响顺序？", "3. 如何构造失败用例？", "", f"**推荐展开命令**：`/learn {item['topic_key']}` 或 `/deep-research {item['topic_key']}`", "**来源与定位**：[engine](https://example.test/engine)"])
+    return "\n".join(lines)
+
+
+def old_appended_daily_description(topics):
+    lines = ["<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->", "", "候选学习仅在 Owner Gate 批准后展开；本 issue 不自动归档或发布。", ""]
+    for item in topics:
+        brief = DIGEST._legacy_automated_learning_brief(item)
+        lines.extend([f"- [ ] [{item['topic_key']}](learning-topic://{item['topic_key']}) {item['title']}", f"  - 为什么现在值得学：{brief['why_now']}", "  - 3 个核心痛点追问预览：", *[f"    1. {q}" for q in brief["preview_questions"]], f"  - 推荐展开命令：`{brief['recommended_command']}`", ""])
+    return "\n".join(lines)
+
+
 class KnowledgeDigestTests(unittest.TestCase):
+    def assert_daily_topics_once(self, description, topics):
+        rows = re.findall(r"(?m)^[-*+] \[[ xX]\] .+$", description)
+        self.assertEqual(len(rows), len(topics))
+        for item in topics:
+            self.assertEqual(sum(f"learning-topic://{item['topic_key']}" in row or f"`{item['topic_key']}`" in row for row in rows), 1)
+        self.assertEqual(description.count("KD-DAILY-START:2026-11-14"), 1)
+        self.assertEqual(description.count("KD-DAILY-END:2026-11-14"), 1)
+
+    def test_legacy_daily_adoption_preserves_rich_briefs_checks_and_notes(self):
+        topics = digest_topics()
+        original = normalized_linear_markdown(legacy_daily_description(topics)).replace("- [ ]", "* [X]", 1)
+        original += "\n\nOwner notes: preserve `custom_contract` and [link](<https://example.test/note>)."
+        merged = DIGEST._merge_daily_digest_description(original, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertIn("* [x]", merged)
+        self.assertIn("Owner notes: preserve `custom_contract`", merged)
+        self.assertEqual(merged.count("Owner 编写的完整导读"), 3)
+        for item in topics:
+            section = original[original.index(f"### {item['title']}"):].split("\n### ", 1)[0]
+            self.assertIn(section, merged)
+        self.assertEqual(DIGEST._merge_daily_digest_description(merged, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), merged)
+
+    def test_duplicate_daily_repair_recognizes_normalized_old_generated_fields(self):
+        topics = digest_topics()
+        legacy = legacy_daily_description(topics)
+        appended = old_appended_daily_description(topics).replace("- [ ]", "- [x]", 1)
+        appended = appended.replace(topics[0]["title"], topics[0]["title"] + " Owner inline note: keep this too.", 1)
+        appended = appended.replace("  - 3 个核心痛点追问预览：", "  - Owner note: keep my extra constraint.\n  - 3 个核心痛点追问预览：", 1)
+        original = normalized_linear_markdown(legacy + "\n\nOwner note between blocks.\n\n" + appended + "\nOwner final note.")
+        merged = DIGEST._merge_daily_digest_description(original, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertEqual(merged.count("Owner 编写的完整导读"), 3)
+        self.assertNotIn("3 个核心痛点追问预览：", merged)
+        self.assertEqual(merged.count("GTT-LINEAR-DEDUP:"), 1)
+        self.assertIn("- [x]", merged)
+        for note in ("Owner note between blocks.", "Owner note: keep my extra constraint.", "Owner inline note: keep this too.", "Owner final note."):
+            self.assertIn(note, merged)
+        roundtrip = normalized_linear_markdown(merged)
+        self.assertEqual(DIGEST._merge_daily_digest_description(roundtrip, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), roundtrip)
+
+    def test_duplicate_edited_guide_and_broken_boundaries_fail_safe(self):
+        topics = digest_topics()
+        edited = old_appended_daily_description(topics).replace("输入/输出边界是什么？", "Owner changed mechanism and evidence?", 1)
+        original = legacy_daily_description(topics) + "\n\n" + edited
+        issue = {"id": "issue-1", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": original}
+        transport = FakeLinearTransport([issue])
+        with self.assertRaisesRegex(ValueError, "Cannot safely remove"):
+            DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        self.assertEqual(transport.updated, [])
+        self.assertEqual(issue["description"], original)
+        broken = DIGEST._daily_digest_markdown("2026-11-14", topics).replace("<!-- KD-DAILY-END:2026-11-14 -->", "")
+        with self.assertRaisesRegex(ValueError, "boundaries"):
+            DIGEST._merge_daily_digest_description(broken, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+
+    def test_new_normalized_daily_issue_is_not_rewritten_after_owner_edits(self):
+        topics = digest_topics()
+        topics[0]["learning_guide"] = {"why_now": "Owner rich guide", "preview_questions": ["Specific input?", "Ordering constraint?", "Failure witness?"], "recommended_command": "/learn event-stream-order"}
+        topics[0]["learning_brief"] = DIGEST._learning_brief(topics[0])
+        transport = FakeLinearTransport()
+        issue = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        issue["description"] = normalized_linear_markdown(issue["description"]).replace("- [ ]", "- [x]", 1).replace("Owner rich guide", "Owner rich guide with new private evidence") + "\n\n## Owner notes\nDo not overwrite."
+        original = issue["description"]
+        rerun = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+        self.assertEqual(rerun["description"], original)
+        self.assertEqual(len(transport.created), 1)
+        self.assertEqual(transport.updated, [])
+        self.assert_daily_topics_once(original, topics)
+        self.assertEqual(original.count("为什么现在值得学："), 3)
+
+    def test_generated_duplicate_without_legacy_heading_keeps_one_brief(self):
+        topics = digest_topics()
+        old = normalized_linear_markdown(old_appended_daily_description(topics))
+        merged = DIGEST._merge_daily_digest_description(old + "\n\n" + old, DIGEST._daily_digest_markdown("2026-11-14", topics), topics)
+        self.assert_daily_topics_once(merged, topics)
+        self.assertEqual(merged.count("为什么现在值得学："), 3)
+        self.assertEqual(DIGEST._merge_daily_digest_description(merged, DIGEST._daily_digest_markdown("2026-11-14", topics), topics), merged)
+
+    def test_cli_legacy_repair_and_repeat_use_real_graphql_with_normalization(self):
+        self._exercise_normalized_cli(duplicate=True)
+
+    def test_cli_legacy_only_recovers_exact_keys_without_local_daily_state(self):
+        self._exercise_normalized_cli(duplicate=False)
+
+    def _exercise_normalized_cli(self, *, duplicate):
+        sync_mod = DIGEST._load_helper_module("normalized_linear_sync", ROOT / "skills/team-lead/scripts/linear-sync.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            seed_ledger(vault, source_ids)
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text("# Fixture source\n", encoding="utf-8")
+            topics = json.loads((vault / "topic-ledger.json").read_text())["topics"]
+            for item in topics:
+                item["learning_brief"] = DIGEST._learning_brief(item)
+            issue = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": normalized_linear_markdown(legacy_daily_description(topics) + ("\n\n" + old_appended_daily_description(topics) if duplicate else ""))}
+            writes = []
+            def boundary(query, variables):
+                if "ListIssues" in query:
+                    return {"data": {"issues": {"nodes": [dict(issue)]}}}
+                if "UpdateIssue" in query:
+                    writes.append(variables)
+                    issue.update(variables["input"])
+                    issue["description"] = normalized_linear_markdown(issue["description"])
+                    return {"data": {"issueUpdate": {"success": True, "issue": dict(issue)}}}
+                raise AssertionError("Unexpected network operation: " + query)
+            client = sync_mod.GraphQLClient("fixture-token", transport=boundary)
+            args = ["discover-topics", "--top", "3", "--propose-aidash", "--propose-linear", "--no-materialize", "--no-git", "--vault", str(vault), "--collected-tools-dir", str(tools), "--proposals-path", str(root / "proposals.jsonl"), "--state-path", str(root / "state.json")]
+            with mock.patch.object(DIGEST, "_linear_transport_from_repo", return_value=client), mock.patch.object(DIGEST, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = datetime(2026, 11, 14, 2, tzinfo=timezone.utc)
+                first_output = io.StringIO()
+                with contextlib.redirect_stdout(first_output):
+                    self.assertEqual(DIGEST.main(args), 0)
+                first = json.loads(first_output.getvalue())
+                self.assertEqual(first["selected_count"], 3)
+                repaired = issue["description"]
+                self.assert_daily_topics_once(repaired, topics)
+                self.assertEqual(repaired.count("Owner 编写的完整导读"), 3)
+                done_key = topics[0]["topic_key"]
+                done = DIGEST.handle_learning_event(action="Done", topic_key=done_key, event_id="owner-done", proposals_path=root / "proposals.jsonl", state_path=root / "state.json", vault_dir=vault, now_utc=datetime(2026, 11, 14, 2, 1, tzinfo=timezone.utc))
+                self.assertTrue(done["ok"])
+                issue["description"] = issue["description"].replace("- [ ]", "- [x]", 1) + "\nOwner related reference: [another topic](<learning-topic://not-a-daily-selection>)."
+                repaired = issue["description"]
+                # A changed CLI quota must not truncate an already fixed daily selection.
+                args[2] = "1"
+                second_output = io.StringIO()
+                with contextlib.redirect_stdout(second_output):
+                    self.assertEqual(DIGEST.main(args), 0)
+                second = json.loads(second_output.getvalue())
+            self.assertEqual(second["selected_count"], 3)
+            self.assertEqual(issue["description"], repaired)
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(second["proposals_written"], [])
+            self.assertEqual({topic["topic_key"] for topic in second["topics"]}, {topic["topic_key"] for topic in topics})
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual(set(state["daily_linear_issues"]["2026-11-14"]["topic_keys"]), {topic["topic_key"] for topic in topics})
+            self.assertEqual(state["topics"][done_key]["learning_state"], "learned")
+            self.assertEqual(state["topics"][done_key]["revision"], done["revision"])
+            self.assertFalse(state["topics"][done_key]["exploration_authorized"])
+            self.assertEqual(len((root / "proposals.jsonl").read_text().splitlines()), 4)
+            self.assertFalse((vault / "concepts").exists())
+            self.assertFalse((vault / "index.md").exists())
+            with mock.patch.object(client, "list_issues", return_value=[]):
+                missing = DIGEST.discover_topics(top=3, propose_linear=True, linear_transport=client, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "proposals.jsonl", state_path=root / "state.json", now_utc=datetime(2026, 11, 14, 3, tzinfo=timezone.utc))
+            self.assertFalse(missing["ok"])
+            self.assertIn("refusing to create a duplicate", missing["error"])
+            self.assertEqual(len(writes), 1)
+
+    def test_learning_questions_use_mechanism_constraint_and_evidence(self):
+        item = digest_topics()[0]
+        questions = item["learning_brief"]["preview_questions"]
+        self.assertEqual(len(set(questions)), 3)
+        self.assertNotIn(item["question"], "\n".join(questions))
+        self.assertIn("序列号恢复顺序", questions[0])
+        self.assertIn("重复执行副作用", questions[1])
+        self.assertIn("engine/contract.md:12", questions[2])
+
+    def test_linear_three_topic_quota_and_structured_briefs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\nConcrete engineering gap.\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            transport = FakeLinearTransport()
+            result = DIGEST.discover_topics(
+                top=3,
+                propose_aidash=True,
+                propose_linear=True,
+                linear_transport=transport,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=root / "proposals.jsonl",
+                state_path=root / "state.json",
+                now_utc=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["selected_count"], 3)
+            self.assertEqual(len(transport.created), 1)
+            for topic in result["topics"]:
+                brief = topic["learning_brief"]
+                self.assertTrue(brief["why_now"])
+                self.assertEqual(len(brief["preview_questions"]), 3)
+                self.assertRegex(brief["recommended_command"], r"^/(learn|deep-research) ")
+
+    def test_explicit_top_three_without_linear_and_default_one_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, vault, tools = Path(tmp), Path(tmp) / "vault", Path(tmp) / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            result = DIGEST.discover_topics(top=3, propose_aidash=True, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "proposals.jsonl", state_path=root / "state.json", now_utc=datetime(2026, 11, 14, 2, tzinfo=timezone.utc))
+            self.assertEqual(result["selected_count"], 3)
+            default = DIGEST.discover_topics(propose_aidash=True, vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=root / "other.jsonl", state_path=root / "other-state.json", now_utc=datetime(2026, 11, 15, 2, tzinfo=timezone.utc))
+            self.assertEqual(default["selected_count"], 1)
+
+    def test_real_repository_linear_transport_and_adapter_boundary(self) -> None:
+        sync_path = ROOT / "skills" / "team-lead" / "scripts" / "linear-sync.py"
+        sync_mod = DIGEST._load_helper_module("real_linear_sync_for_test", sync_path)
+        self.assertIsNotNone(sync_mod)
+        with mock.patch.object(DIGEST, "_load_helper_module", return_value=sync_mod), mock.patch.object(sync_mod, "load_api_key", return_value="test-token"):
+            client = DIGEST._linear_transport_from_repo()
+        self.assertIsInstance(client, sync_mod.GraphQLClient)
+        self.assertEqual(client.api_key, "test-token")
+
+        issue = {"id": "issue-1", "identifier": "TIA-1", "url": "https://linear.test/TIA-1", "title": "[Daily Learn 2026-11-14] 今日 3 个推荐学习主题", "description": "<!-- GTT-LINEAR-DEDUP:daily-learn-2026-11-14 -->\\nlearning-topic://bama-agent-cli-story-verification"}
+        calls = []
+        def boundary(query, variables):
+            calls.append((query, variables))
+            if "ListIssues" in query:
+                return {"data": {"issues": {"nodes": [issue]}}}
+            if "UpdateIssue" in query:
+                return {"data": {"issueUpdate": {"success": True, "issue": issue}}}
+            if "TeamMetadata" in query:
+                return {"data": {"teams": {"nodes": [{"id": "team", "states": {"nodes": []}}]}}}
+            if "CreateIssue" in query:
+                return {"data": {"issueCreate": {"success": True, "issue": {**issue, "id": "issue-2", "identifier": "TIA-2"}}}}
+            raise AssertionError(query)
+
+        real_client = sync_mod.GraphQLClient("test-token", transport=boundary)
+        topic = {"topic_key": "bama-agent-cli-story-verification", "title": "BAMA", "learning_brief": {"why_now": "source gap", "preview_questions": ["q1", "q2", "q3"], "recommended_command": "/learn bama-agent-cli-story-verification"}}
+        updated = DIGEST._upsert_linear_daily_issue(real_client, "2026-11-14", [topic])
+        self.assertEqual(updated["identifier"], "TIA-1")
+        self.assertTrue(any("UpdateIssue" in query for query, _ in calls))
+        calls.clear()
+        empty_client = sync_mod.GraphQLClient("test-token", transport=lambda q, v: {"data": {"issues": {"nodes": []}}} if "ListIssues" in q else {"data": {"teams": {"nodes": [{"id": "team", "states": {"nodes": []}}]}}} if "TeamMetadata" in q else {"data": {"issueCreate": {"success": True, "issue": {**issue, "identifier": "TIA-2"}}}})
+        created = DIGEST._upsert_linear_daily_issue(empty_client, "2026-11-14", [topic])
+        self.assertEqual(created["identifier"], "TIA-2")
+
+    def test_linear_failure_persists_registry_and_cli_returns_nonzero(self) -> None:
+        class FailingTransport(FakeLinearTransport):
+            def create_issue(self, **kwargs):
+                raise RuntimeError("Linear credentials are not configured")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, vault, tools = Path(tmp), Path(tmp) / "vault", Path(tmp) / "tools"
+            readme = tools / "repos" / "awesome-cjk-design-md" / "README.md"
+            readme.parent.mkdir(parents=True)
+            readme.write_text("# source\\n", encoding="utf-8")
+            seed_ledger(vault, ("awesome-cjk-design-md",))
+            proposals, state = root / "proposals.jsonl", root / "state.json"
+            result = DIGEST.discover_topics(top=3, propose_aidash=True, propose_linear=True, linear_transport=FailingTransport(), vault_dir=vault, collected_tools_dir=tools, git_roots=(), proposals_path=proposals, state_path=state, now_utc=datetime(2026, 11, 14, 2, tzinfo=timezone.utc))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], "linear_error")
+            self.assertTrue(proposals.exists())
+            self.assertTrue(state.exists())
+        with mock.patch.object(DIGEST, "discover_topics", return_value={"ok": False, "error": "safe failure"}):
+            self.assertEqual(DIGEST.main(["discover-topics"]), 1)
+
+    def test_linear_reconciles_remote_issue_when_local_daily_state_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("awesome-cjk-design-md", "bama", "genjutsu")
+            for source_id in source_ids:
+                readme = tools / "repos" / source_id / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {source_id}\\nConcrete engineering gap.\\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+            day = "2026-11-14"
+            title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
+            marker = f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->"
+            keys = ["jp-mixed-script-line-breaking", "bama-agent-cli-story-verification", "genjutsu-three-tier-choreography-gate"]
+            remote = {"id": "issue-existing", "identifier": "TIA-414", "url": "https://linear.test/TIA-414", "title": title, "description": marker + "\\n- [x] owner checked bama\\nOwner note: preserve this guide.\\n" + "\\n".join(f"learning-topic://{key}" for key in keys)}
+            transport = FakeLinearTransport([remote])
+            result = DIGEST.discover_topics(
+                top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
+                vault_dir=vault, collected_tools_dir=tools, git_roots=(),
+                proposals_path=root / "proposals.jsonl", state_path=root / "missing-state.json",
+                now_utc=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["linear_issue"]["identifier"], "TIA-414")
+            self.assertEqual(len(transport.created), 0)
+            self.assertEqual(len(transport.updated), 1)
+            self.assertEqual(result["selected_count"], 3)
+            self.assertIn(marker, transport.updated[0]["description"])
+            state = json.loads((root / "missing-state.json").read_text())
+            self.assertEqual(state["daily_linear_digests"][day]["external_id"], "linear://TIA-414")
+            self.assertEqual({state["topics"][key]["external_id"] for key in keys}, {"linear://TIA-414"})
+            ledger = json.loads((vault / "topic-ledger.json").read_text())
+            self.assertEqual({item["external_id"] for item in ledger["topics"]}, {"linear://TIA-414"})
+            self.assertIn("- [x] owner checked bama", transport.updated[0]["description"])
+            self.assertIn("Owner note: preserve this guide.", transport.updated[0]["description"])
+
+            rerun = DIGEST.discover_topics(
+                top=3, propose_aidash=True, propose_linear=True, linear_transport=transport,
+                vault_dir=vault, collected_tools_dir=tools, git_roots=(),
+                proposals_path=root / "proposals.jsonl", state_path=root / "missing-state.json",
+                now_utc=datetime(2026, 11, 14, 3, 0, tzinfo=timezone.utc),
+            )
+            self.assertEqual(rerun["selected_count"], 3)
+            self.assertEqual(len(transport.created), 0)
+            self.assertEqual(len(transport.updated), 1)
+            records = [json.loads(line) for line in (root / "proposals.jsonl").read_text().splitlines()]
+            self.assertEqual(len(records), 3)
+
     def test_propose_aidash_defaults_to_candidate_only_and_emits_learning_topic_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -568,6 +942,44 @@ class KnowledgeDigestTests(unittest.TestCase):
                 jp_saved["aidash_card_preview"]["ref"],
                 "knowledge://jp-mixed-script-line-breaking",
             )
+
+    def test_daily_upsert_bot_footer_owner_default_and_inflight_assignment_are_idempotent(self):
+        owner_id = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        bot_id = "6105e16e-700a-4ea5-8283-67aec10daf20"
+        topics = digest_topics()
+        for assignee, delegate in ((None, None), ({"id": bot_id}, None), (None, {"id": bot_id})):
+            with self.subTest(assignee=assignee, delegate=delegate):
+                transport = FakeLinearTransport()
+                created = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics)
+                self.assertEqual(created["assignee_id"], owner_id)
+                original = normalized_linear_markdown(created["description"]).replace("- [ ]", "- [x]", 1)
+                original = original.replace(DIGEST.DAILY_LINEAR_FOOTER, "") + "\nOwner notes: retain my exact follow-up."
+                remote = {"id": "daily", "title": created["title"], "description": original, "assignee": assignee, "delegate": delegate}
+                transport.issues = [remote]
+                updated = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=remote)
+                self.assertIn("- [x]", updated["description"])
+                self.assertIn("Owner notes: retain my exact follow-up.", updated["description"])
+                self.assertEqual(updated["description"].count(DIGEST.DAILY_LINEAR_FOOTER), 1)
+                if assignee is None and delegate is None:
+                    self.assertEqual(updated["assignee_id"], owner_id)
+                    remote["assignee"] = {"id": owner_id}
+                else:
+                    self.assertNotIn("assignee_id", updated)
+                mutations = len(transport.updated)
+                DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=remote)
+                self.assertEqual(len(transport.updated), mutations)
+
+    def test_existing_unassigned_daily_issue_gets_owner_and_footer(self):
+        class Transport:
+            def __init__(self): self.updated = []
+            def update_issue(self, issue_id, **kwargs): self.updated.append((issue_id, kwargs)); return kwargs
+        transport = Transport()
+        topics = [{"topic_key": "topic-one", "title": "Topic one", "learning_brief": {"why_now": "why", "preview_questions": ["q1", "q2", "q3"], "recommended_command": "/learn topic-one"}}]
+        existing = {"id": "i", "title": "old", "description": "<!-- KD-DAILY-START:2026-11-14 -->\n- [x] old owner check\n<!-- KD-DAILY-END:2026-11-14 -->\n", "assignee": None}
+        result = DIGEST._upsert_linear_daily_issue(transport, "2026-11-14", topics, existing_issue=existing)
+        self.assertEqual(transport.updated[0][1]["assignee_id"], "0680d5e4-720a-4724-a1d4-b9660c0d1495")
+        self.assertIn("@bot 1", transport.updated[0][1]["description"])
+        self.assertIn("old owner check", transport.updated[0][1]["description"])
 
 
 if __name__ == "__main__":

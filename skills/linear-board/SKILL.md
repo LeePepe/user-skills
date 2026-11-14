@@ -53,6 +53,53 @@ costs. Credentials are stored in `~/.config/linear/credentials.json` with
 directory mode `0700` and file mode `0600`; use `linear-sync.py auth set`,
 `auth show`, or `auth remove`.
 
+## Personal `@bot` bridge
+
+The OAuth app must be installed with `app:assignable` and `app:mentionable` for
+native delegation/mentions ([Linear agent setup](https://linear.app/developers/agents)).
+An existing automation-only grant may return `App user not valid`; refreshing it
+cannot add scopes. A workspace admin must explicitly reauthorize:
+
+```bash
+python3 scripts/linear-sync.py auth oauth-login --agent-scopes
+```
+
+This opens an approval flow using saved client credentials; it never grants scopes
+without admin consent. Linear now assigns agents as **Delegate**, retaining the
+human Assignee; the bridge also recognizes legacy Bot assignees. Literal `@bot`
+comments remain pollable, but do not claim native ingress/live handoff verified or
+close the Goal until the admin grant and a real Owner-triggered turn are confirmed.
+
+Run `scripts/linear-bot-bridge.py --once --json` for one incremental scan, or
+`--daemon --interval 20` for polling. It only considers personal TIA issues,
+ignores bot-authored comments, persists an atomic 0600 watermark, and reassigns
+verified M2 output to the Owner (clearing Bot delegation). Startup paginates old
+issues/comments; subsequent scans use an overlapping updated-at cursor plus saved
+pending/retry/follow-up issue IDs. Titles, teams, projects and the full parent chain exclude
+Work Business/Bing/Workplace before routing; personal descriptions are not keyword-blocked.
+`--dry-run` performs no Linear, Herdr, vault, credential-refresh, lock or watermark
+writes. Webhooks bind to loopback, require `LINEAR_WEBHOOK_SECRET` and a signed,
+fresh `webhookTimestamp`, reject replays, and coalesce deliveries into one scan worker.
+
+Each turn saves its directive, topic slugs, root comment, markers and dispatch
+handle under a process/thread lock. Busy learning targets defer until idle.
+Router apply is only delivery: only the saved receipt/watch and this turn's framed
+target output authorize a handoff. The prompt requests unique standalone response
+markers; terminal prompt echoes, prior output and router rollups alone never count.
+Fresh selected cards come only from concepts/craft/thoughts; otherwise the actual
+M2 response is used. A real blocked M2 question is labelled **Owner decision
+required**, not task completion.
+
+Retries resume ack → dispatch → wait → result-comment → owner-reassign, preserving
+output before posting. Timeouts keep watching the original handle; an Owner update
+failure retries only reassignment. Transient per-issue errors back off independently.
+State and pending router files are private 0600; router files are removed on completion.
+An `ambiguous`/legacy pending diagnostic never auto-replays delivery: inspect the
+saved handle and target, restore a verified router apply receipt when available,
+or wait for the correlated response. Only after independently proving no delivery
+occurred may an operator reset that turn to `dispatch`; never delete active state
+merely to retry. New comments wait for the active turn to finish.
+
 ## Project Root Tracker
 
 Run `python3 scripts/root_tracker.py refresh` to collect the offline-first root

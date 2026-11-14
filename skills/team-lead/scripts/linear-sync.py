@@ -268,9 +268,11 @@ class GraphQLClient:
         self,
         api_key: str,
         transport: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        *, allow_refresh: bool = True,
     ) -> None:
         self.transport = transport or self._request
         self.api_key = api_key
+        self.allow_refresh = allow_refresh
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = self.transport(query, variables or {})
@@ -291,7 +293,7 @@ class GraphQLClient:
             API_URL,
             data=body,
             headers={
-                "Authorization": self.api_key,
+                "Authorization": (f"Bearer {self.api_key}" if _oauth_app_enabled() and not self.api_key.startswith("Bearer ") else self.api_key),
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -300,7 +302,7 @@ class GraphQLClient:
             with urlopen(request, timeout=20) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            if exc.code == 401 and not _retried:
+            if exc.code == 401 and not _retried and self.allow_refresh:
                 refreshed = refresh_oauth_credentials()
                 if refreshed:
                     self.api_key = refreshed
@@ -345,13 +347,15 @@ class GraphQLClient:
     def issue(self, identifier: str) -> dict[str, Any]:
         fields = f"""
           id identifier url title description priority updatedAt
+          assignee {{ id name displayName }}
+          delegate {{ id name displayName }}
           state {{ id name type }}
           team {{ id key name }}
           project {{ id name }}
           projectMilestone {{ id name }}
           parent {{ id identifier title }}
           labels {{ nodes {{ id name }} }}
-          comments {{ nodes {{ id body }} }}
+          comments {{ nodes {{ id body createdAt updatedAt parent {{ id }} user {{ id name displayName app }} botActor {{ id name type }} }} pageInfo {{ hasNextPage endCursor }} }}
           {ISSUE_HISTORY_FIELDS}
         """
         direct_query = f"""
@@ -392,6 +396,7 @@ class GraphQLClient:
             )
         if not issue:
             raise LinearSyncError(f"Linear issue '{identifier}' was not found")
+        self._paginate_comments(issue)
         return issue
 
     def create_issue(
@@ -405,6 +410,8 @@ class GraphQLClient:
         project_id: str | None = None,
         project_milestone_id: str | None = None,
         parent_id: str | None = None,
+        assignee_id: str | None = None,
+        delegate_id: str | None = None,
         create_as_user: str | None = None,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
@@ -422,6 +429,10 @@ class GraphQLClient:
             input_data["projectMilestoneId"] = project_milestone_id
         if parent_id:
             input_data["parentId"] = parent_id
+        if assignee_id:
+            input_data["assigneeId"] = assignee_id
+        if delegate_id:
+            input_data["delegateId"] = delegate_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
         data = self.execute(
@@ -431,6 +442,8 @@ class GraphQLClient:
                 success
                 issue {{
                   id identifier url title description priority updatedAt
+                  assignee {{ id name displayName }}
+                  delegate {{ id name displayName }}
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -463,6 +476,10 @@ class GraphQLClient:
         clear_parent: bool = False,
         title: str | None = None,
         priority: int | None = None,
+        assignee_id: str | None = None,
+        delegate_id: str | None = None,
+        clear_assignee: bool = False,
+        clear_delegate: bool = False,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {}
         if description is not None:
@@ -481,6 +498,10 @@ class GraphQLClient:
             input_data["parentId"] = parent_id
         if priority is not None:
             input_data["priority"] = priority
+        if assignee_id is not None or clear_assignee:
+            input_data["assigneeId"] = assignee_id
+        if delegate_id is not None or clear_delegate:
+            input_data["delegateId"] = delegate_id
         data = self.execute(
             f"""
             mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {{
@@ -488,6 +509,8 @@ class GraphQLClient:
                 success
                 issue {{
                   id identifier url title description priority updatedAt
+                  assignee {{ id name displayName }}
+                  delegate {{ id name displayName }}
                   state {{ id name type }}
                   team {{ id key name }}
                   project {{ id name }}
@@ -507,40 +530,98 @@ class GraphQLClient:
             raise LinearSyncError("Linear did not update the issue")
         return result["issue"]
 
-    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None) -> None:
+    def create_comment(self, issue_id: str, body: str, create_as_user: str | None = None, parent_id: str | None = None) -> str | None:
         input_data: dict[str, Any] = {"issueId": issue_id, "body": body}
+        if parent_id:
+            input_data["parentId"] = parent_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
         data = self.execute(
             """
             mutation CreateComment($input: CommentCreateInput!) {
-              commentCreate(input: $input) { success comment { id } }
+              commentCreate(input: $input) { success comment { id parent { id } } }
             }
             """,
             {"input": input_data},
         )
-        if not data.get("commentCreate", {}).get("success"):
+        result = data.get("commentCreate", {})
+        if not result.get("success"):
             raise LinearSyncError("Linear did not create the comment")
+        return (result.get("comment") or {}).get("id")
+
+    def _paginate_comments(self, issue: dict[str, Any]) -> None:
+        comments = issue.get("comments") or {}
+        page = comments.get("pageInfo") or {}
+        if not page.get("hasNextPage"): return
+        nodes = list(comments.get("nodes", [])); after = page.get("endCursor")
+        cursors: set[str] = set()
+        while page.get("hasNextPage"):
+            if not after or after in cursors:
+                raise LinearSyncError("Linear comment pagination did not advance")
+            cursors.add(after)
+            data = self.execute(
+                """query IssueComments($id: String!, $after: String) {
+                  issue(id: $id) { comments(first: 100, after: $after) {
+                    nodes { id body createdAt updatedAt parent { id } user { id name displayName app } botActor { id name type } }
+                    pageInfo { hasNextPage endCursor }
+                  } }
+                }""", {"id": str(issue.get("id")), "after": after})
+            block = (data.get("issue") or {}).get("comments") or {}
+            nodes.extend(block.get("nodes", []))
+            page = block.get("pageInfo") or {}
+            after = page.get("endCursor")
+        issue["comments"] = {"nodes": sorted(nodes, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or ""))), "pageInfo": {"hasNextPage": False}}
+
+    def issue_scope(self, identifier: str) -> dict[str, Any]:
+        data = self.execute(
+            """query IssueScope($id: String!) {
+              issue(id: $id) { id identifier title team { id key name }
+                project { id name } parent { id identifier title } }
+            }""", {"id": identifier})
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise LinearSyncError(f"Linear ancestor '{identifier}' was not found")
+        return issue
 
     def list_issues(
         self, team_key: str, *, state: str = "", project: str = "",
-        query: str = "", limit: int = 25,
+        query: str = "", limit: int | None = 25, updated_after: str = "",
     ) -> list[dict[str, Any]]:
-        data = self.execute(
-            """
-            query ListIssues($team: String!, $first: Int!) {
-              issues(filter: {team: {key: {eq: $team}}}, first: $first, orderBy: updatedAt) {
-                nodes {
-                  id identifier title url description priority updatedAt
-                  state { id name type } project { id name }
-                  labels { nodes { id name } }
-                }
-              }
-            }
-            """,
-            {"team": team_key, "first": limit},
-        )
-        issues = data.get("issues", {}).get("nodes", [])
+        issue_filter: dict[str, Any] = {"team": {"key": {"eq": team_key}}}
+        if updated_after:
+            issue_filter["updatedAt"] = {"gte": updated_after}
+        issues: list[dict[str, Any]] = []
+        after = None
+        cursors: set[str] = set()
+        while limit is None or len(issues) < limit:
+            data = self.execute(
+                """query ListIssues($filter: IssueFilter!, $first: Int!, $after: String) {
+                  issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {
+                    nodes {
+                      id identifier title url description priority updatedAt
+                      assignee { id name displayName } delegate { id name displayName }
+                      state { id name type } project { id name } team { id key name }
+                      parent { id identifier title project { id name } team { id key name } parent { id } }
+                      comments(first: 100) { nodes { id body createdAt updatedAt parent { id }
+                        user { id name displayName app } botActor { id name type } }
+                        pageInfo { hasNextPage endCursor } }
+                      labels { nodes { id name } }
+                    }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }""",
+                {"filter": issue_filter, "first": 100 if limit is None else min(limit - len(issues), 100), "after": after},
+            )
+            block = data.get("issues") or {}
+            issues.extend(block.get("nodes", []))
+            page = block.get("pageInfo") or {}
+            if not page.get("hasNextPage"): break
+            after = page.get("endCursor")
+            if not after or after in cursors:
+                raise LinearSyncError("Linear issue pagination did not advance")
+            cursors.add(after)
+        for issue in issues:
+            self._paginate_comments(issue)
         def matches(issue: dict[str, Any]) -> bool:
             state_value = issue.get("state") or {}
             project_value = issue.get("project") or {}
@@ -1592,14 +1673,23 @@ def _update_mutation(issue: dict[str, Any], input_data: dict[str, Any]) -> dict[
     }
 
 
+def _normalize_optional_id(value: str | None) -> tuple[str | None, bool]:
+    if value is None: return None, False
+    if value.strip().casefold() in {"", "null", "none"}: return None, True
+    return value, False
+
+
 def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
     mode, skipped = resolve_mode(args.mode, subcommand="update-issue")
+    assignee_value, clear_assignee = _normalize_optional_id(args.assignee)
+    delegate_value, clear_delegate = _normalize_optional_id(args.delegate)
     if mode == "off":
         return {"ok": True, "command": "update-issue", "mode": "off", "decision": "off (skipped)",
                 "skipped": skipped or "mode_off", "planned_mutations": []}
     requested = {
         key: value for key, value in {
             "title": args.title, "description": args.description, "priority": args.priority,
+            "assigneeId": assignee_value, "delegateId": delegate_value,
         }.items() if value is not None
     }
     if mode == "observe":
@@ -1635,8 +1725,10 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
             requested["labelIds"] = labels
     else:
         issue = {"id": args.id, "identifier": args.id}
-    if not requested:
+    if not requested and not (clear_assignee or clear_delegate):
         raise LinearSyncError("update-issue requires at least one update option")
+    if clear_assignee: requested["assigneeId"] = None
+    if clear_delegate: requested["delegateId"] = None
     mutation = _update_mutation(issue, requested)
     if mode == "observe":
         return {"ok": True, "command": "update-issue", "mode": mode,
@@ -1648,6 +1740,8 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
         title=requested.get("title"), description=requested.get("description"),
         state_id=requested.get("stateId"), project_id=requested.get("projectId"),
         priority=requested.get("priority"), label_ids=requested.get("labelIds"),
+        assignee_id=requested.get("assigneeId"), delegate_id=requested.get("delegateId"),
+        clear_assignee=clear_assignee, clear_delegate=clear_delegate,
     )
     return {"ok": True, "command": "update-issue", "mode": mode, "decision": "accept",
             "issue": _issue_detail(updated)}
@@ -1996,6 +2090,8 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--state")
     update.add_argument("--project")
     update.add_argument("--priority", type=int, choices=range(5))
+    update.add_argument("--assignee")
+    update.add_argument("--delegate")
     update.add_argument("--add-label", action="append", default=[])
     update.add_argument("--mode", choices=("off", "observe", "auto"))
 
@@ -2017,6 +2113,7 @@ def build_parser() -> argparse.ArgumentParser:
     oauth_login.add_argument("--client-id", default="")
     oauth_login.add_argument("--client-secret", default="")
     oauth_login.add_argument("--port", type=int, default=8765)
+    oauth_login.add_argument("--agent-scopes", action="store_true", help="Request app:assignable/app:mentionable; requires workspace-admin approval.")
     auth_sub.add_parser("refresh")
     auth_sub.add_parser("show")
     auth_remove = auth_sub.add_parser("remove")
@@ -2024,7 +2121,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 8765) -> dict[str, Any]:
+def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 8765, *, agent_scopes: bool = False) -> dict[str, Any]:
     import http.server
     import subprocess
 
@@ -2034,11 +2131,14 @@ def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 876
     if not (cid and csec):
         raise LinearSyncError("oauth-login requires --client-id and --client-secret (or saved clientId/clientSecret)")
     redirect_uri = f"http://127.0.0.1:{port}/callback"
+    scopes = "read,write,issues:create,comments:create"
+    if agent_scopes:
+        scopes += ",app:assignable,app:mentionable"
     auth_url = f"{OAUTH_AUTHORIZE_URL}?" + urlencode({
         "client_id": cid,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": "read,write,issues:create,comments:create",
+        "scope": scopes,
         "actor": "app",
     })
     result: dict[str, Any] = {}
@@ -2140,7 +2240,8 @@ def main(argv: list[str] | None = None) -> int:
                 saved = save_credentials(key, args.header, actor=actor)
                 payload = {"ok": True, "command": f"auth {args.auth_command}", "path": str(saved), "mode": "0600", "masked_key": mask_value(key), **({"actor": actor} if actor else {})}
             elif args.auth_command == "oauth-login":
-                payload = _oauth_interactive_login(args.client_id, args.client_secret, args.port)
+                options = {"agent_scopes": True} if args.agent_scopes else {}
+                payload = _oauth_interactive_login(args.client_id, args.client_secret, args.port, **options)
             elif args.auth_command == "refresh":
                 refreshed = refresh_oauth_credentials()
                 if not refreshed:

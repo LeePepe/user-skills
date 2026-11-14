@@ -1160,10 +1160,271 @@ def _topic_exclusion_reason(
     return None
 
 
+def _learning_brief(item: dict[str, Any]) -> dict[str, Any]:
+    key = str(item.get("topic_key") or item.get("slug") or "").strip()
+    question = str(item.get("question") or item.get("title") or "").strip()
+    source = str(item.get("source_id") or item.get("source_uri") or "").strip()
+    guide = item.get("learning_guide")
+    if isinstance(guide, dict) and len(guide.get("preview_questions", [])) == 3:
+        return {
+            "why_now": str(guide.get("why_now") or item.get("why_now") or item.get("excerpt") or "").strip(),
+            "preview_questions": list(guide["preview_questions"]),
+            "recommended_command": str(guide.get("recommended_command") or f"/learn {key}"),
+        }
+    brief = _legacy_automated_learning_brief(item)
+    body = re.split(r"如何|怎样|怎么|为什么|为何", question, maxsplit=1)[-1]
+    body = re.sub(r"^(?:通过|用|把)", "", body).strip("？?。 ")
+    parts = re.split(r"转为|转换成|区分|而不|同时|但", body, maxsplit=1)
+    mechanism = parts[0][:80] or source
+    constraint = parts[-1][:80] if len(parts) > 1 else str(item.get("category") or "输入/输出边界")
+    evidence = str(item.get("why_now") or item.get("source_ref") or source).split("（")[0][:100]
+    brief["preview_questions"] = [
+        f"「{mechanism}」依赖哪些最小状态与转换规则，才能满足「{constraint}」的输出契约？",
+        f"为什么「{constraint}」局部验收通过，仍可能因输入约束变化而让「{mechanism}」整体失效？",
+        f"针对 {evidence}，如何只改变一个输入或约束做对照实验，用失败用例界定「{mechanism}」的适用范围？",
+    ]
+    return brief
+
+
+def _legacy_automated_learning_brief(item: dict[str, Any]) -> dict[str, Any]:
+    # Recognize the pre-boundary writer's defaults when repairing an appended duplicate.
+    key = str(item.get("topic_key") or item.get("slug") or "").strip()
+    question = str(item.get("question") or item.get("title") or "").strip()
+    source = str(item.get("source_id") or item.get("source_uri") or "").strip()
+    why_now = str(item.get("why_now") or item.get("excerpt") or "").strip()
+    return {
+        "why_now": f"{why_now} 来源 {source}，待核对缺口是：{question}。",
+        "preview_questions": [
+            f"针对 {source}，{question} 的底层机制与输入/输出边界是什么？",
+            f"为什么 {source} 的实现会在“{question}”这个场景出现反直觉结果？",
+            f"如何用一个最小工程实验验证 {key} 的关键假设，并判断结果是否可迁移？",
+        ],
+        "recommended_command": f"/deep-research {key}" if item.get("source_kind") == "git_tech_stack" else f"/learn {key}",
+    }
+
+
+_DAILY_TASK = re.compile(r"^[-*+] \[([ xX])\] (.*)$")
+_DAILY_NOTICE = "候选学习仅在 Owner Gate 批准后展开；本 issue 不自动归档或发布。"
+
+
+def _daily_line_keys(line: str) -> set[str]:
+    keys = set(re.findall(r"learning-topic://([a-z0-9]+(?:-[a-z0-9]+)*)", line))
+    if _DAILY_TASK.match(line) or re.match(r"^#{1,6} ", line):
+        keys.update(re.findall(r"\(`([a-z0-9]+(?:-[a-z0-9]+)*)`\)\s*$", line))
+    return keys
+
+
+def _daily_description_keys(description: str) -> set[str]:
+    structured = set().union(*(_daily_line_keys(line) for line in description.splitlines() if _DAILY_TASK.match(line) or re.match(r"^#{1,6} ", line)))
+    structured.update(re.findall(r"<!-- KD-TOPIC-START:([a-z0-9]+(?:-[a-z0-9]+)*) -->", description))
+    return structured or set(re.findall(r"learning-topic://([a-z0-9]+(?:-[a-z0-9]+)*)", description))
+
+
+def _daily_brief_lines(brief: dict[str, Any]) -> list[str]:
+    return [
+        f"  - 为什么现在值得学：{brief['why_now']}",
+        "  - 3 个核心痛点追问预览：",
+        *[f"    1. {q}" for q in brief["preview_questions"]],
+        f"  - 推荐展开命令：`{brief['recommended_command']}`",
+    ]
+
+
+def _daily_topic_lines(item: dict[str, Any], *, with_brief: bool = True) -> list[str]:
+    key = item["topic_key"]
+    return [
+        f"<!-- KD-TOPIC-START:{key} -->",
+        f"- [ ] [{key}](learning-topic://{key}) {item['title']}",
+        *(_daily_brief_lines(item["learning_brief"]) if with_brief else []),
+        f"<!-- KD-TOPIC-END:{key} -->",
+        "",
+    ]
+
+
+DAILY_LINEAR_FOOTER = (
+    "Owner 可评论 `@bot 1`、`@bot 都做`，或将 Assignee/Delegate 改为 Bot；"
+    "Bot 会展开主题、在评论中发布完整知识卡，并将 issue 重新分配给 Owner (`@ltp19941128`)。"
+)
+
+
+def _daily_digest_markdown(day: str, topics: list[dict[str, Any]]) -> str:
+    lines = [f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->", f"<!-- KD-DAILY-START:{day} -->", "", _DAILY_NOTICE, ""]
+    for item in topics:
+        lines.extend(_daily_topic_lines(item))
+    lines.extend([DAILY_LINEAR_FOOTER, ""])
+    return "\n".join([*lines, f"<!-- KD-DAILY-END:{day} -->", ""])
+
+
+def _daily_semantic_text(line: str) -> str:
+    text = re.sub(r"^\s*(?:[-*+] |\d+[.)] )", "", line)
+    text = re.sub(r"\\([\\`*{}\[\]()#+.!_>~-])", r"\1", text)
+    text = re.sub(r"<([a-z][a-z0-9+.-]*://[^>]+)>", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", lambda match: match[2] if match[1] == match[2] else f"{match[1]} ({match[2]})", text)
+    return " ".join(text.strip().split())
+
+
+def _automated_daily_fields(lines: list[str], start: int, end: int, item: dict[str, Any]) -> set[int] | None:
+    for label in ("为什么现在值得学：", "3 个核心痛点追问预览：", "推荐展开命令："):
+        if sum(_daily_semantic_text(line).startswith(label) for line in lines[start + 1:end]) != 1:
+            return None
+    variants = [_legacy_automated_learning_brief(item)]
+    if not item.get("learning_guide"):
+        variants.append(item["learning_brief"])
+    for brief in variants:
+        expected = [_daily_semantic_text(line) for line in _daily_brief_lines(brief)]
+        matched: list[int] = []
+        for index in range(start + 1, end):
+            if lines[index].startswith("  ") and _daily_semantic_text(lines[index]) == expected[len(matched)]:
+                matched.append(index)
+                if len(matched) == len(expected):
+                    return set(matched)
+    return None
+
+
+def _merge_daily_digest_description(existing: str, generated: str, topics: list[dict[str, Any]]) -> str:
+    if not existing.strip():
+        return generated
+    day = re.search(r"KD-DAILY-START:(\d{4}-\d{2}-\d{2})", generated).group(1)
+    marker = f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->"
+    begin, finish = f"<!-- KD-DAILY-START:{day} -->", f"<!-- KD-DAILY-END:{day} -->"
+    lines = existing.splitlines()
+    bounded = begin in lines or finish in lines
+    if bounded and (lines.count(begin) != 1 or lines.count(finish) != 1 or lines.index(begin) >= lines.index(finish)):
+        raise ValueError("Ambiguous daily digest boundaries; refusing to alter Owner content")
+    by_key = {str(item["topic_key"]): item for item in topics}
+    tasks: dict[str, list[tuple[int, int, bool]]] = {key: [] for key in by_key}
+    headings: dict[str, list[int]] = {key: [] for key in by_key}
+    for index, line in enumerate(lines):
+        task = _DAILY_TASK.match(line)
+        heading = re.match(r"^#{1,6} ", line)
+        if not task and not heading:
+            continue
+        keys = _daily_line_keys(line) & by_key.keys()
+        if len(keys) > 1:
+            raise ValueError("Ambiguous daily topic identity; refusing to alter Owner content")
+        for key in keys:
+            if heading:
+                headings[key].append(index)
+            else:
+                end = index + 1
+                while end < len(lines) and (not lines[end].strip() or lines[end].startswith("  ")):
+                    end += 1
+                tasks[key].append((index, end, task.group(1).lower() == "x"))
+    removed: set[int] = set()
+    replacements: dict[int, str] = {}
+    additions: list[str] = []
+    for key, item in by_key.items():
+        rows = tasks[key]
+        if len(headings[key]) > 1:
+            raise ValueError(f"Multiple unowned learning briefs for {key}; manual reconciliation required")
+        if headings[key]:
+            heading_start = headings[key][0]
+            heading_end = next((index for index in range(heading_start + 1, len(lines)) if re.match(r"^#{1,6} ", lines[index])), len(lines))
+            body = lines[heading_start + 1:heading_end]
+            if not any("为什么现在值得学" in line or "Why Now" in line for line in body) or not any("推荐展开命令" in line or "Recommended Command" in line for line in body):
+                raise ValueError(f"Unrecognized learning guide for {key}; manual reconciliation required")
+        row_fields = {start: any("为什么现在值得学：" in line or "3 个核心痛点追问预览：" in line for line in lines[start + 1:end]) for start, end, _ in rows}
+        keeper = next((start for start, _, _ in rows if row_fields[start] and not headings[key]), rows[0][0] if rows else None)
+        has_brief = bool(headings[key])
+        for start, end, _ in rows:
+            has_fields = row_fields[start]
+            if has_fields and has_brief:
+                fields = _automated_daily_fields(lines, start, end, item)
+                if fields is None:
+                    raise ValueError(f"Cannot safely remove an edited/unowned duplicate brief for {key}")
+                removed.update(fields)
+            elif has_fields:
+                has_brief = True
+            if start != keeper:
+                label = _DAILY_TASK.match(lines[start]).group(2)
+                generated_label = f"[{key}](learning-topic://{key}) {item['title']}"
+                if _daily_semantic_text(label) == _daily_semantic_text(generated_label):
+                    removed.add(start)
+                else:
+                    replacements[start] = label
+        if keeper is not None and any(done for _, _, done in rows):
+            replacements[keeper] = re.sub(r"\[[ xX]\]", "[x]", lines[keeper], count=1)
+        if keeper is None:
+            additions.extend(_daily_topic_lines(item, with_brief=not has_brief))
+        elif not has_brief:
+            _, end, _ = next(row for row in rows if row[0] == keeper)
+            if any(line.strip() for line in lines[keeper + 1:end]):
+                raise ValueError(f"Unrecognized learning guide for {key}; manual reconciliation required")
+            replacements[keeper] = replacements.get(keeper, lines[keeper]) + "\n" + "\n".join(_daily_brief_lines(item["learning_brief"]))
+    if not bounded:
+        removed.update(index for index, line in enumerate(lines) if line == marker)
+    # Remove only recognized redundant generated fields/rows, never their surrounding prose.
+    result = [replacements.get(index, line) for index, line in enumerate(lines) if index not in removed]
+    if bounded:
+        if additions:
+            result[result.index(finish):result.index(finish)] = additions
+    else:
+        result = [marker, begin, *result, *additions, finish]
+    merged = "\n".join(result)
+    return existing if merged == existing.rstrip("\n") else merged.rstrip() + "\n"
+
+
+def _linear_transport_from_repo() -> Any:
+    path = SKILLS_ROOT / "team-lead" / "scripts" / "linear-sync.py"
+    mod = _load_helper_module("knowledge_digest_linear_sync", path)
+    if mod is None or not getattr(mod, "load_api_key", None):
+        raise RuntimeError("Linear transport is unavailable")
+    token = mod.load_api_key()
+    if not token:
+        raise RuntimeError("Linear credentials are not configured; use the existing team-lead credential setup")
+    client_cls = getattr(mod, "GraphQLClient", None)
+    if client_cls is None:
+        raise RuntimeError("Linear transport does not expose GraphQLClient")
+    return client_cls(token)
+
+
+def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any]], *, existing_issue: dict[str, Any] | None = None) -> dict[str, Any]:
+    title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
+    marker = f"GTT-LINEAR-DEDUP:daily-learn-{day}"
+    issue = existing_issue
+    if issue is None:
+        issues = client.list_issues("TIA", query=title, limit=50)
+        issue = next((x for x in issues if marker in str(x.get("description") or "") or x.get("title") == title), None)
+    description = _daily_digest_markdown(day, topics)
+    if issue:
+        existing = str(issue.get("description") or "")
+        desired = description
+        description = _merge_daily_digest_description(existing, desired, topics)
+        if DAILY_LINEAR_FOOTER not in description:
+            description = description.rstrip() + "\n\n" + DAILY_LINEAR_FOOTER + "\n"
+        assignee = issue.get("assignee")
+        assignee_id = assignee.get("id") if isinstance(assignee, dict) else None
+        bot_id = "6105e16e-700a-4ea5-8283-67aec10daf20"
+        delegated_to_bot = (issue.get("delegate") or {}).get("id") == bot_id
+        needs_owner = "assignee" in issue and not delegated_to_bot and assignee_id not in {bot_id, "0680d5e4-720a-4724-a1d4-b9660c0d1495"}
+        if description == existing and title == issue.get("title") and not needs_owner:
+            return issue
+        kwargs = {"title": title, "description": description}
+        if needs_owner:
+            kwargs["assignee_id"] = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+        return client.update_issue(issue.get("id") or issue.get("identifier"), **kwargs)
+    team = client.team_metadata("TIA")
+    state_id = next((s.get("id") for s in team.get("states", {}).get("nodes", []) if s.get("type") == "backlog"), None)
+    return client.create_issue(team_id=team["id"], title=title, description=description, state_id=state_id, assignee_id="0680d5e4-720a-4724-a1d4-b9660c0d1495")
+
+
+def _update_proposal_external_ids(proposals_path: Path, selected: list[dict[str, Any]], external_id: str) -> None:
+    if not proposals_path.is_file():
+        return
+    keys = {str(item.get("topic_key")) for item in selected}
+    lines = proposals_path.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines if line.strip()]
+    for record in records:
+        if record.get("topic_key") in keys:
+            record["external_id"] = external_id
+    proposals_path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
+
+
 def discover_topics(
     *,
     top: int | None = None,
     propose_aidash: bool = False,
+    propose_linear: bool = False,
+    linear_transport: Any | None = None,
     vault_dir: Path = DEFAULT_VAULT_DIR,
     collected_tools_dir: Path = DEFAULT_COLLECTED_TOOLS_DIR,
     git_roots: tuple[Path, ...] = DEFAULT_GIT_ROOTS,
@@ -1176,6 +1437,9 @@ def discover_topics(
     now_utc: datetime | None = None,
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if top is not None and top <= 0:
+        return {"ok": False, "status": "invalid_quota", "error": "--top must be a positive integer", "selected_count": 0, "topics": [], "proposals_written": []}
+    propose_aidash = propose_aidash or propose_linear
     with _proposal_lock(proposals_path):
         now_dt = now_utc or datetime.now(timezone.utc)
         if now_dt.tzinfo is None:
@@ -1204,6 +1468,44 @@ def discover_topics(
             _scan_collected_tools_candidates(collected_tools_dir, existing_corpus, vault_dir=vault_dir, ledger_entries=ledger_entries)
             + ([] if propose_aidash else _scan_git_tech_stack_candidates(git_roots, existing_corpus))
         )
+        day = _cst_day_str(now_dt)
+        daily_map = registry.get("daily_linear_issues", {})
+        legacy_map = registry.get("daily_linear_digests", {})
+        daily_topics = {**(legacy_map.get(day, {}) if isinstance(legacy_map.get(day, {}), dict) else {}), **(daily_map.get(day, {}) if isinstance(daily_map.get(day, {}), dict) else {})}
+        daily_topic_keys = set(daily_topics.get("topic_keys", []))
+        linear_client = linear_transport
+        if propose_linear:
+            try:
+                linear_client = linear_client or _linear_transport_from_repo()
+                day_title = f"[Daily Learn {_cst_day_str(now_dt)}] 今日 3 个推荐学习主题"
+                remote_issues = linear_client.list_issues("TIA", query=day_title, limit=50)
+                remote = next((x for x in remote_issues if f"GTT-LINEAR-DEDUP:daily-learn-{_cst_day_str(now_dt)}" in str(x.get("description") or "") or x.get("title") == day_title), None)
+                if daily_topics and not remote:
+                    raise ValueError("Saved daily issue was not found; refusing to create a duplicate")
+                remote_keys = _daily_description_keys(str(remote.get("description") or "")) if remote else set()
+                if remote_keys and daily_topic_keys and remote_keys != daily_topic_keys:
+                    raise ValueError("Remote daily topics conflict with saved topic keys; manual reconciliation required")
+                if remote and not daily_topic_keys:
+                    if not remote_keys:
+                        raise ValueError("Existing daily issue has no recoverable topic keys; refusing to replace its topics")
+                    daily_topic_keys = remote_keys
+                    recovered = {"topic_keys": sorted(daily_topic_keys), "external_id": f"linear://{remote.get('identifier') or remote.get('id')}", "url": remote.get("url"), "identifier": remote.get("identifier"), "title": remote.get("title")}
+                    registry.setdefault("daily_linear_issues", {})[day] = {**daily_topics, **recovered}
+                    registry.setdefault("daily_linear_digests", {})[day] = {**daily_topics, **recovered, "date": day, "dedup_key": f"daily-learn-{day}"}
+            except Exception as exc:
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest lookup failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": []}
+        if daily_topic_keys:
+            known = {str(c.get("topic_key")) for c in raw_candidates}
+            for key in sorted(daily_topic_keys):
+                if key in known or key not in ledger_entries:
+                    continue
+                item = ledger_entries[key]
+                raw_candidates.append({"slug": key, "topic_key": key, "source_id": item.get("source_id", key), "source_uri": item.get("source_uri", ""), "source_fingerprint": item.get("source_fingerprint", ""), "aliases": list(item.get("aliases", [])), "title": item.get("title") or item.get("question") or key, "question": item.get("question") or key, "category": item.get("category", "工程与设计"), "source_kind": item.get("source_kind", "collected_tools"), "source_ref": item.get("source_uri", ""), "why_now": item.get("why_now") or item.get("excerpt") or f"Daily digest topic {key}", "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": item.get("excerpt") or item.get("question") or key, "rank": int(item.get("rank") or 99), "scope": item.get("scope", "personal"), "learning_guide": item.get("learning_guide")})
+        if daily_topic_keys:
+            reconstructable = {str(c.get("topic_key")) for c in raw_candidates}
+            missing_daily = sorted(daily_topic_keys - reconstructable)
+            if missing_daily:
+                return {"ok": False, "status": "daily_reconciliation_error", "error": f"Unable to reconstruct existing daily topics: {', '.join(missing_daily)}", "selected_count": 0, "topics": [], "proposals_written": []}
         deduped: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         seen_questions: set[str] = set()
@@ -1219,14 +1521,24 @@ def discover_topics(
                 continue
             seen_keys |= aliases
             seen_questions.add(question_key)
-            if aliases & excluded_topics:
+            if aliases & excluded_topics and not (propose_linear and t_key in daily_topic_keys):
                 excluded_count += 1
                 continue
             deduped.append(cand)
 
-        # Cap pending learning topics at 3 and daily new proposals at 1 per Asia/Shanghai day
-        daily_cap_reached = propose_aidash and len(proposed_today_cst) >= 1
-        pending_cap_reached = propose_aidash and len(pending_topics) >= 3
+        # Explicit multi-topic/Linear mode opts into a larger daily quota; legacy AIDash
+        # mode remains one candidate per CST day and pending cap 3.
+        requested_quota = max(1, top or (3 if propose_linear else 1))
+        explicit_multi = propose_linear or (top is not None and top >= 3)
+        quota = requested_quota if explicit_multi else 1
+        daily_cap_reached = propose_aidash and not daily_topic_keys and len(proposed_today_cst) >= quota
+        pending_cap_reached = propose_aidash and not daily_topic_keys and len(pending_topics) >= 3
+        if daily_topic_keys:
+            deduped = [c for c in deduped if c.get("topic_key") in daily_topic_keys]
+        if pending_cap_reached:
+            quota = 0
+        elif propose_aidash and not daily_topic_keys:
+            quota = min(quota, max(0, 3 - len(pending_topics)))
         if daily_cap_reached or pending_cap_reached or not deduped:
             reason = (
                 "pending_cap_reached"
@@ -1254,8 +1566,12 @@ def discover_topics(
         # Candidate selection is metadata-only and deterministic. Approval-time research
         # may use other services, but discovery must never call a network/LLM reranker.
         ranked = sorted(deduped, key=lambda item: (int(item.get("rank", 99)), str(item.get("topic_key", ""))))
-        eff_top = 1 if propose_aidash else max(1, top or 1)
+        # Legacy AIDash callers retain their one/day contract even when they pass
+        # --top; the explicit Linear mode opts into the requested multi-topic quota.
+        eff_top = len(daily_topic_keys) if propose_linear and daily_topic_keys else quota if propose_aidash else max(1, top or 1)
         selected = ranked[:eff_top]
+        for item in selected:
+            item["learning_brief"] = _learning_brief(item)
         if not selected:
             return {
                 "ok": True,
@@ -1326,11 +1642,36 @@ def discover_topics(
                     "priority": "P2",
                     "status": "pending",
                 }
-                _append_valid_proposal(proposals_path, record)
-                proposals_written.append(record)
+                if not prior.get("proposal_id") or slug not in history["by_topic"]:
+                    _append_valid_proposal(proposals_path, record)
+                    proposals_written.append(record)
+                else:
+                    record = {**prior, **record, "learning_state": prior.get("learning_state", "proposed"), "status": prior.get("status", "pending"), "revision": int(prior.get("revision") or 1)}
                 registry["topics"][slug] = {**prior, **item, **record, "proposal_id": record["id"]}
 
+        linear_issue = None
         if proposals_written:
+            _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
+        if propose_linear:
+            try:
+                client = linear_client or linear_transport or _linear_transport_from_repo()
+                day = _cst_day_str(now_dt)
+                linear_issue = _upsert_linear_daily_issue(client, day, selected, existing_issue=remote)
+                external_id = f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}"
+                daily_registry = registry.setdefault("daily_linear_issues", {})
+                daily_registry[day] = {**daily_registry.get(day, {}), "external_id": external_id, "url": linear_issue.get("url"), "identifier": linear_issue.get("identifier"), "title": linear_issue.get("title"), "topic_keys": [str(x.get("topic_key")) for x in selected], "updated_at": now_iso}
+                registry.setdefault("daily_linear_digests", {})[day] = {**registry.get("daily_linear_digests", {}).get(day, {}), **daily_registry[day], "date": day, "dedup_key": f"daily-learn-{day}"}
+                for item in selected:
+                    entry = registry["topics"].get(item["topic_key"], {})
+                    entry["external_id"] = external_id
+                    entry["daily_linear_issue"] = external_id
+                    registry["topics"][item["topic_key"]] = entry
+                _update_proposal_external_ids(proposals_path, selected, external_id)
+                _save_topic_ledger(vault_dir, registry["topics"], topic_ledger_path=topic_ledger_path)
+            except Exception as exc:
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": proposals_written}
+
+        if proposals_written or linear_issue:
             _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
 
         return {
@@ -1346,6 +1687,7 @@ def discover_topics(
             "topics": selected,
             "archived_cards": archived_cards,
             "proposals_written": proposals_written,
+            "linear_issue": linear_issue,
         }
 
 
@@ -2167,6 +2509,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_disc = sub.add_parser("discover-topics", help="Scan git tech stack, collected-tools, and vault gaps with R09")
     p_disc.add_argument("--top", type=int, default=None)
     p_disc.add_argument("--propose-aidash", action="store_true")
+    p_disc.add_argument("--propose-linear", action="store_true", help="Explicitly create/update the daily TIA digest issue")
     p_disc.add_argument("--no-materialize", action="store_true")
     p_disc.add_argument("--materialize-before-approval", action="store_true", help="Deprecated; cannot override candidate-only gate")
     p_disc.add_argument("--materialize", action="store_true", help="Explicit standalone archival only")
@@ -2225,6 +2568,7 @@ def main(argv: list[str] | None = None) -> int:
         res = discover_topics(
             top=args.top,
             propose_aidash=args.propose_aidash,
+            propose_linear=args.propose_linear,
             vault_dir=args.vault_dir,
             collected_tools_dir=args.collected_tools_dir,
             git_roots=() if getattr(args, "no_git", False) else DEFAULT_GIT_ROOTS,
@@ -2236,7 +2580,7 @@ def main(argv: list[str] | None = None) -> int:
             include_unreconciled_repos=args.include_unreconciled_repos,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if res.get("ok", True) else 1
     if args.command in {"handle-learning-event", "handle-decision", "explore-topic"}:
         res = handle_learning_event(
             action=args.action,
