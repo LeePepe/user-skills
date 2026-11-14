@@ -66,6 +66,10 @@ user-invocable: true
 └── raw/                  # 原始好素材与脚本拆解存档（保留原始摘录与溯源信息）
 ```
 
+### 每日候选导读与 Linear（Daily Digest）
+
+`discover-topics --top 3 --propose-aidash --propose-linear --no-materialize` 在显式联网授权下，为每个候选生成 `why_now`、恰好 3 个 `preview_questions` 与 `/learn` 或 `/deep-research` 命令，并按 CST 日幂等更新 TIA 父 issue。默认发现仍为单候选、候选-only；`--propose-linear` 才允许 Linear 网络读写。父 issue 使用 `GTT-LINEAR-DEDUP:daily-learn-YYYY-MM-DD` 与 `KD-DAILY-START/END` 边界，缺失本地状态时先按 marker/title 与 canonical topic key 对账远端；迁移旧清单并修复可识别的生成重复，保留勾选、Owner 笔记和完整导读，无法安全区分时拒绝写入。Markdown 规范化不影响去重，语义未变则不更新 issue；重跑保留原日主题，不按新 quota 截断。
+
 ### 门类划分（Category Taxonomy）
 
 在 `index.md` 与卡片 frontmatter 中使用清晰的一级门类标识：
