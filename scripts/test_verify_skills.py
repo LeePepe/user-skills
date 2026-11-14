@@ -2571,35 +2571,136 @@ try {
 
 
 class JevGateTests(unittest.TestCase):
-    def test_absent_jev_fails_closed(self):
-        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
-        spec = SKILLS_DIR / 'my-designer' / 'references' / 'interaction-layering.md'
-        result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(spec)], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('REJECT_REVISE', result.stdout)
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('design_gate_tests', SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py')
+        cls.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gate)
+        cls.specs = {
+            'mobile': 'Axis X: single P0 per viewport.\nAxis Y: NavigationStack; 48pt targets; bottom CTA.\nAxis Z: solid content Z=0; floating native glass Z=10..20.',
+            'desktop': 'Axis X: single P0 per viewport.\nAxis Y: NavigationSplitView Inspector with 28x28pt targets and Cmd keyboard parity.\nAxis Z: functional glass dimming in inactive windows.',
+            'web': 'Axis X: single P0 per viewport.\nAxis Y: editorial prose at 60–72ch, natural CJK wrapping at 390px.\nAxis Z: GM-004 SVG feDisplacementMap squircle bezel refraction on floating chrome.'}
 
-    def test_boolean_and_incomplete_jev_fail(self):
-        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
-        spec = SKILLS_DIR / 'my-designer' / 'references' / 'interaction-layering.md'
-        for response in ('{"score":true}', '{"score":1}'):
-            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(spec), '--mock-jev-json', response], capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0, response)
+    def test_every_platform_clause_polarity_and_native_firewall(self):
+        g = self.gate
+        prohibitions = {'mobile': 'Never use feDisplacementMap or HTML SVG. No hover-only actions.',
+                        'desktop': 'No mobile bottom tabs on desktop. Never use HTML or CSS.',
+                        'web': 'No box-in-box cages or decorative heading emojis. Avoid tracked-capital eyebrows.'}
+        violations = {'mobile': ['Implement React DOM and CSS HTML.', 'Use SVG feDisplacementMap.', 'No NavigationStack or TabView or sheet; use hover-only actions.'],
+                      'desktop': ['Implement the native screen with React DOM and CSS HTML.', 'Use mobile bottom tabs.', '20x20pt targets.', 'No keyboard parity or inactive dimming.'],
+                      'web': ['Use box-in-box cages or decorative heading emojis.', '150ch prose.', 'No CJK wrapping.', 'Never use feDisplacementMap.']}
+        for platform, spec in self.specs.items():
+            self.assertEqual(g._platform_errors(platform, spec + '\n' + prohibitions[platform]), [])
+            for directive in violations[platform]:
+                with self.subTest(platform=platform, directive=directive):
+                    # Remove required baseline when testing an explicit lack of it.
+                    text = spec + '\n' + prohibitions[platform] + '\n' + directive
+                    if directive.startswith('No Navigation'): text = 'Axis X: single P0. Axis Y: 44x44pt targets. Axis Z: solid content. ' + directive
+                    self.assertTrue(g._platform_errors(platform, text), text)
+        self.assertEqual(g._platform_errors('mobile', self.specs['mobile'] + '\n## HTML sandbox\nUse React DOM SVG feDisplacementMap.\n## Native implementation\nNever use HTML.'), [])
+        for separator in ('; ', ', ', '. ', ' but ', ' and '):
+            self.assertTrue(g._platform_errors('mobile', self.specs['mobile'] + '\nNever use feDisplacementMap' + separator + 'implement React DOM and CSS HTML.'))
 
-    def test_platform_firewall_and_traceback_attribution(self):
-        script = SKILLS_DIR / 'my-designer' / 'scripts' / 'verify_design_cases.py'
+    def test_required_answers_truth_table_and_final_structural_rejection(self):
+        import types
+        g = self.gate
+        for platform in self.specs:
+            questions = g.TAXONOMY['jev_verification_gates'][platform]
+            positive = {q: {'status': 'PASS', 'noul': 1} for q in questions}
+            self.assertEqual(g.JEV.validate_response(positive, questions, 'mock')['status'], 'PASS')
+            for invalid in ({}, {'noul': True}, {'noul': 'bad'}, {'noul': float('nan')}, {'noul': 2}, {'noul': 0},
+                            {'noul': 0, 'status': 'PASS'}, {'noul': 1, 'status': 'REJECT_REVISE'},
+                            {'score': 1, 'noul': 0}, {'score': 1, 'decision': 'REJECT_REVISE'}):
+                for q in questions:
+                    data = dict(positive, score=1); data[q] = invalid
+                    with self.subTest(platform=platform, question=q, invalid=invalid):
+                        self.assertEqual(g.JEV.validate_response(data, questions, 'mock')['status'], 'REJECT_REVISE')
+            for data in ({'score': 1}, dict(positive, score=True), dict(positive, status='REJECT_REVISE'), {'answers': []}):
+                self.assertEqual(g.JEV.validate_response(data, questions, 'mock')['status'], 'REJECT_REVISE')
+        args = types.SimpleNamespace(no_jev=True, mock_jev_json=None)
+        self.assertFalse(g._jev_response(args, [], 'mobile')['certified_by_jev'])
+        args.mock_jev_json = '{"score":1}'
+        self.assertEqual(g._jev_response(args, [], 'mobile')['status'], 'REJECT_REVISE')
         with tempfile.TemporaryDirectory() as directory:
-            bad = Path(directory) / 'bad.md'; bad.write_text('Axis X: single P0.\\nAxis Y: React DOM HTML.\\nAxis Z: content glass.')
-            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(bad), '--no-jev'], capture_output=True, text=True)
+            path = Path(directory) / 'bad.md'; path.write_text(self.specs['mobile'] + '\nImplement React DOM HTML.')
+            answers = {q: {'noul': 1} for q in g.TAXONOMY['jev_verification_gates']['mobile']}
+            result = subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'spec', '--spec-file', str(path), '--mock-jev-json', json.dumps(answers)], text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
-            wrong = Path(directory) / 'wrong.md'; wrong.write_text('[SPEC_GAP] The implementation omitted the declared 44pt target; fix the implementation.')
-            result = subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'traceback', '--spec-file', str(wrong), '--no-jev'], capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)['status'], 'REJECT_REVISE')
 
-    def test_negative_mock_jev_rejects_closed(self):
-        script = SKILLS_DIR / "my-designer" / "scripts" / "verify_design_cases.py"
-        result = subprocess.run([sys.executable, str(script), "jev-gate", "--platform", "desktop", "--stage", "traceback", "--spec-file", str(SKILLS_DIR / "my-designer" / "SKILL.md"), "--mock-jev-json", '{"score": -1}'], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("REJECT_REVISE", result.stdout)
+    def test_live_loopback_systemone_request_missing_timeout_and_rejection(self):
+        import http.server
+        import threading
+        import time
+        from unittest import mock
+        g = self.gate
+        requests = []
+        questions = g.TAXONOMY['jev_verification_gates']['mobile']
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                requests.append((self.path, body))
+                if body['state'].get('slow'): time.sleep(.08)
+                answers = {q: {'noul': 1, 'status': 'PASS'} for q in body['questions']}
+                if body['state'].get('missing'): answers.pop(next(iter(answers)))
+                encoded = json.dumps(answers).encode()
+                self.send_response(200); self.send_header('Content-Length', str(len(encoded))); self.end_headers()
+                try: self.wfile.write(encoded)
+                except BrokenPipeError: pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/v1/systemone'
+        try:
+            with mock.patch.object(g.JEV, '_auth', return_value=(None, None)):
+                state = {'platform': 'mobile', 'stage': 'spec', 'evidence': [{'spec_text': self.specs['mobile']}]}
+                response = g.JEV.live_response(url, .5, state, questions)
+                self.assertEqual(g.JEV.validate_response(response, questions, 'live')['status'], 'PASS')
+                self.assertEqual(requests[0][0], '/v1/systemone')
+                self.assertEqual(set(requests[0][1]['questions']), set(questions))
+                self.assertEqual(requests[0][1]['state'], state)
+                self.assertTrue(all(q['type'] == 'noul' and q['criteria'] for q in requests[0][1]['questions'].values()))
+                response = g.JEV.live_response(url, .5, dict(state, missing=True), questions)
+                self.assertEqual(g.JEV.validate_response(response, questions, 'live')['status'], 'REJECT_REVISE')
+                with self.assertRaises(OSError): g.JEV.live_response(url, .01, dict(state, slow=True), questions)
+                with self.assertRaises(ValueError): g.JEV.live_response('https://example.org/v1/systemone', .5, state, questions)
+                with self.assertRaises(ValueError): g.JEV.live_response(url, .5, {'evidence': []}, questions)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+        with self.assertRaises(OSError): g.JEV.live_response(url, .05, state, questions)
+
+    def test_traceback_evidence_relationship_and_routing_not_vocabulary(self):
+        import copy
+        g = self.gate
+        violation = {'classification': 'IMPL_BUG', 'constraint': {'declared': True, 'source': 'spec.md:12', 'requirement': '48pt hit targets'},
+                     'implementation': {'source': 'screen.png#button', 'observation': 'Measured 36pt', 'conforms': False, 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 36}},
+                     'route': {'owner': 'Writer', 'amend_spec_first': False}}
+        gap = {'classification': 'SPEC_GAP', 'constraint': {'declared': False, 'source': 'spec.md#copy', 'requirement': 'Follows every declared constraint', 'missing_requirement': 'CJK wrapping at 390px'},
+               'implementation': {'source': 'screen.png#copy', 'observation': 'Declared layout followed; CJK copy overflows', 'conforms': True},
+               'route': {'owner': 'Steering', 'amend_spec_first': True}}
+        def check(f): return g.EVIDENCE.traceback_errors(json.dumps({'schema': 'visual-traceback/v1', 'findings': [f]}))[0]
+        self.assertEqual(check(violation), [])
+        self.assertEqual(check(gap), [])
+        wrong = copy.deepcopy(violation); wrong['classification'] = 'SPEC_GAP'
+        self.assertTrue(check(wrong))
+        wrong = copy.deepcopy(gap); wrong['route']['owner'] = 'Writer'
+        self.assertTrue(check(wrong))
+        wrong = copy.deepcopy(violation); wrong['implementation']['conforms'] = True
+        self.assertTrue(check(wrong))
+        clean = {'schema': 'visual-traceback/v1', 'findings': [], 'clean': {'spec_source': 'spec.md:12', 'implementation_source': 'screen.png#button', 'checks': [{'requirement': '48pt targets', 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 48}}]}}
+        self.assertEqual(g.EVIDENCE.traceback_errors(json.dumps(clean))[0], [])
+        self.assertTrue(g.EVIDENCE.traceback_errors('Allowed words [IMPL_BUG] and [SPEC_GAP]')[0])
+        import types
+        answers = {q: {'noul': 1} for q in g.TAXONOMY['jev_verification_gates']['mobile']}
+        args = types.SimpleNamespace(no_jev=False, mock_jev_json=json.dumps(answers), stage='traceback')
+        self.assertEqual(g._jev_response(args, [gap], 'mobile')['status'], 'REJECT_REVISE')
+        answers['q_traceback_evidence_attribution'] = {'noul': 1}
+        args.mock_jev_json = json.dumps(answers)
+        self.assertEqual(g._jev_response(args, [gap], 'mobile')['status'], 'PASS')
+        answers['q_traceback_evidence_attribution'] = {'noul': 0, 'status': 'PASS'}
+        args.mock_jev_json = json.dumps(answers)
+        self.assertEqual(g._jev_response(args, [gap], 'mobile')['status'], 'REJECT_REVISE')
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,56 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; font: 16px/1.4 system-ui; }
+body { background: #111827; }
+.app { background: var(--surface); color: var(--ink); width: min(100%, 390px); min-height: 100vh; margin: auto; padding: 16px var(--density) 156px; position: relative; }
+.optical-defs { position: absolute; width: 0; height: 0; pointer-events: none; }
+button { font: inherit; min-width: 44px; min-height: 44px; border: 0; border-radius: 14px; padding: 8px 10px; color: #172033; background: #fff; cursor: pointer; overflow-wrap: anywhere; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible { outline: 3px solid #3568d4; outline-offset: 2px; }
+button.primary { color: #fff; background: #3568d4; }
+p { margin: 8px 0; }
+h1, h2 { overflow-wrap: anywhere; line-height: 1.1; }
+h1 { font-size: 34px; margin: 12px 0; transition: font-size .15s; }
+h2 { font-size: 26px; }
+.large-title p { opacity: .7; font-size: 13px; }
+.title-collapsed h1 { font-size: 22px; }
+.content-solid { position: relative; z-index: 0; min-height: 400px; padding: 18px; border-radius: 24px; background: var(--surface); }
+.actions, .edges, .detents { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.edges button { font-size: 13px; }
+.commit-list { padding-left: 20px; font-size: 14px; }
+.secondary-actions summary { min-width: 44px; min-height: 44px; padding: 10px; cursor: pointer; }
+.secondary-actions button { margin: 4px; }
+#action-state { display: block; font-size: 14px; padding: 8px 4px; min-height: 36px; }
+.floating { position: relative; isolation: isolate; z-index: 10; background: linear-gradient(135deg, #ffffff40, #ffffff16); border: 1px solid #ffffffad; border-radius: 26px; box-shadow: 0 12px 30px #1f294826, inset .5px .5px #ffffffed, inset -.5px -.5px #92b7ff66; -webkit-backdrop-filter: blur(2.5px) saturate(155%); backdrop-filter: var(--optical-backdrop, blur(2.5px) saturate(155%)); }
+/* The refracted veil is actually filtered on WebKit; content never samples glass.
+   Blink additionally refracts the backdrop. Rims preserve chromatic/Fresnel cues
+   when WebKit cannot use SVG as a backdrop-filter. */
+.floating::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1; background: linear-gradient(135deg, #ffffff60, #88baff18 55%, #ffb0ad30); filter: url(#apple-liquid-glass); }
+.floating::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; padding: 1px; background: linear-gradient(135deg, #ffffffed, transparent 38%, #7dbeff80 65%, #ffbbb0ad); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude; }
+.stack-toolbar { position: sticky; top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; }
+#compact-title { flex: 1; font-weight: 650; font-size: 14px; }
+.safe-dock { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom)); width: min(362px, calc(100% - 28px)); display: flex; justify-content: space-between; gap: 8px; padding: 10px; }
+.safe-dock .primary { flex: 1; }
+.tab-chrome { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom)); width: min(370px, calc(100% - 20px)); display: flex; align-items: stretch; gap: 8px; z-index: 10; }
+.tab-pill { display: flex; flex: 1; overflow-x: auto; gap: 6px; padding: 8px; }
+.tab-pill button { flex: 1; min-width: 64px; font-size: 13px; }
+.prominent-pill { display: flex; align-items: center; padding: 8px; width: 112px; }
+.prominent-pill button { width: 100%; font-size: 13px; }
+.tab[aria-selected="true"] { background: #3568d4; color: white; }
+.lens-toolbar { position: sticky; top: 8px; display: flex; gap: 6px; align-items: center; padding: 8px; }
+.lens-tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
+.lens-tabs button { flex: 1; font-size: 13px; }
+.architecture-lens .content-solid { border-top: 3px solid #3568d4; }
+.deck-nav { display: flex; overflow-x: auto; padding: 8px 4px 20px; gap: 10px; }
+.deck-nav button { flex: 0 0 66%; min-height: 88px; border: 1px solid #8e9bb5; box-shadow: 4px 8px 0 #3568d426; font-size: 20px; text-align: left; }
+.inspector-toolbar { position: sticky; top: 8px; display: flex; gap: 8px; justify-content: space-between; padding: 8px; }
+.architecture-deck .content-solid { border-left: 4px solid #3568d4; }
+.overlay { position: fixed; z-index: 20; left: 50%; bottom: 0; transform: translateX(-50%); width: min(390px, 100%); padding: 12px 20px max(16px, env(safe-area-inset-bottom)); border-radius: 26px 26px 0 0; overflow-y: auto; }
+#sheet[data-detent="medium"] { height: 45vh; max-height: 45vh; }
+#sheet[data-detent="large"] { height: 80vh; max-height: 80vh; }
+.grabber { width: 40px; height: 5px; border-radius: 4px; margin: 0 auto 12px; background: #8e9bb5; }
+#overflow-menu { position: fixed; z-index: 15; right: max(12px, calc((100vw - 366px) / 2)); top: 148px; width: min(320px, calc(100% - 24px)); max-height: 65vh; padding: 12px; overflow-y: auto; }
+#overflow-menu nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+#overflow-menu > button { width: 100%; margin-bottom: 6px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-transparency: reduce) { .floating { background: #edf2fb; backdrop-filter: none; -webkit-backdrop-filter: none; } .floating::before, .floating::after { display: none; } }

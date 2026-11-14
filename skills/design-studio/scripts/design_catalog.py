@@ -7,6 +7,7 @@ import datetime as dt
 from functools import lru_cache
 from html import escape
 import json
+import importlib.util
 import math
 import re
 import struct
@@ -18,6 +19,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_nav_spec = importlib.util.spec_from_file_location('navigation_demo', ROOT / 'scripts' / 'navigation_demo.py')
+NAVIGATION = importlib.util.module_from_spec(_nav_spec)
+_nav_spec.loader.exec_module(NAVIGATION)
 DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
@@ -1213,7 +1217,12 @@ def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     }[fold]
     metric, label = {"next-action": ("08:30", "Your next action"), "timeline": ("3", "Moments to explore"),
                      "context": ("82%", "Your context signal"), "recovery": ("Ready", "A clear way forward")}.get(p0, ("Now", "Your current direction"))
-    density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), "16px")
+    layout = metadata.get('layout', 'hero-top')
+    whitespace = metadata.get('whitespace', 'balanced')
+    glass_geometry = metadata.get('glass_geometry', 'wide')
+    density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), {"tight": "12px", "balanced": "16px", "open": "24px"}[whitespace])
+    config = {'schema': 'screen-page/v3', 'id': variant, 'platform': platform, 'metadata': metadata,
+              'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
     surface = {"warm": "var(--paper-warm)", "solid": "var(--paper)", "dark": "var(--paper-dark)"}.get(overrides.get("surface"), "var(--paper)")
     ink = "var(--ink-inverse)" if overrides.get("surface") == "dark" else "var(--ink)"
     muted = "var(--muted-inverse)" if overrides.get("surface") == "dark" else "var(--muted)"
@@ -1230,12 +1239,12 @@ document.querySelector('#continue').onclick=()=>document.querySelector('#action-
 if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) saturate(135%)');'''
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
-<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
+<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold} layout-{layout} whitespace-{whitespace} glass-{glass_geometry}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
 {_gallery_svg(342 if platform == 'mobile' else 560, 72)}
 <header><span class="eyebrow">{variant} · {archetype}</span><h1>{p0.replace('-', ' ').title()}</h1></header>
 <section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>{escape(content)}</p></div><div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
 <nav class="glass-card" aria-label="Actions"><button id="reset-view">Reset view</button><span id="action-state" role="status">Choose a direction</span><button id="continue">Continue</button></nav>
-</main><script>{script}</script></body></html>'''
+</main><script id="page-config" type="application/json">{NAVIGATION.json_script(config)}</script><script>{script}</script></body></html>'''
 
 
 def _gallery_index(manifest):
@@ -1264,89 +1273,22 @@ catch{const area=document.createElement('textarea');area.value=text;area.classNa
 
 
 def _load_app_flows(args):
-    """Normalize bespoke app graph input into four independent navigation hypotheses."""
-    raw = None
-    if getattr(args, 'app_flows_json', None):
-        candidate = str(args.app_flows_json)
-        path = Path(candidate).expanduser()
-        raw = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else json.loads(candidate)
-    screens = csv_values(getattr(args, 'app_screens', ''))
-    context = getattr(args, 'app_context', '') or 'Target App'
-    if raw is None:
-        base = [{'id':'home','name':'Overview','p0_summary':f'Start {context}','actions':['Open']},
-                {'id':'create','name':'Create','p0_summary':f'Create in {context}','actions':['Save']},
-                {'id':'detail','name':'Detail','p0_summary':'Inspect the selected item','actions':['Back']}]
-        if screens:
-            base=[{'id':re.sub(r'[^a-z0-9]+','-',x.casefold()).strip('-') or f'screen{i}','name':x,'p0_summary':x,'actions':['Open']} for i,x in enumerate(screens,1)]
-        raw={'app_context':context,'schemes':[{'title':f'{context} · hypothesis {i}','navigation_model':model,'screens':base} for i,model in enumerate(('stack-first','tab-prominent','sheet-detail','dock-overflow'),1)]}
-    if isinstance(raw,list): raw={'app_context':context,'schemes':raw}
-    schemes=raw.get('schemes') or raw.get('flows') or []
-    if len(schemes)!=4: raise ValueError('--app-flows-json must define exactly four schemes')
-    normalized=[]
-    for idx, scheme in enumerate(schemes,1):
-        pages=scheme.get('screens') or []
-        if len(pages)<2: raise ValueError(f'scheme {idx} needs at least two screens')
-        clean=[]; ids=set()
-        for page in pages:
-            pid=str(page.get('id','')).strip()
-            if not re.fullmatch(r'[A-Za-z0-9_-]+',pid) or pid in ids: raise ValueError(f'invalid or duplicate screen id in scheme {idx}')
-            ids.add(pid)
-            transitions=page.get('transitions', page.get('edges', []))
-            if not isinstance(transitions, list): raise ValueError(f'scheme {idx} transitions must be an array')
-            clean_transitions=[]
-            for transition in transitions:
-                if not isinstance(transition, dict) or transition.get('type') not in {'pushScreen','popScreen','switchTab','toggleSheet'} or not isinstance(transition.get('to'), str):
-                    raise ValueError(f'invalid transition in scheme {idx}')
-                clean_transitions.append({'type':transition['type'],'to':transition['to']})
-            clean.append({'id':pid,'name':str(page.get('name',page.get('title',pid))),'role':str(page.get('role',page.get('p0_summary','Screen'))),'p0_summary':str(page.get('p0_summary',page.get('role','Primary action'))),'actions':[str(a) for a in page.get('actions',[])],'transitions':clean_transitions})
-        known = {p['id'] for p in clean}
-        if any(t['to'] not in known for p in clean for t in p['transitions']): raise ValueError(f'scheme {idx} transition target is not declared')
-        normalized.append({'id':f'app{idx:02d}','title':str(scheme.get('title',f'{context} · hypothesis {idx}')),'navigation_model':str(scheme.get('navigation_model','bespoke')),'screens':clean,'context':str(raw.get('app_context',context))})
-    return normalized
+    return NAVIGATION.load_schemes(args)
 
 
 def _app_nav_html(scheme, app_index, platform, anti_patterns=None, overrides=None):
-    """Render a domain graph with model-specific chrome and real state operations."""
-    anti_patterns = anti_patterns or []
-    overrides = overrides or {}
-    pages = scheme['screens']; first = pages[0]['id']
-    page_data = json.dumps({p['id']: p for p in pages}, ensure_ascii=False).replace('</', '<\\/')
-    model = scheme['navigation_model'].casefold()
-    model_class = 'model-' + re.sub(r'[^a-z0-9]+', '-', model).strip('-')
-    buttons = ''.join(f'<button class="tab" data-screen="{p["id"]}">{escape(p["name"])}</button>' for p in pages if p.get('role') != 'sheet')
-    dark = overrides.get('surface') == 'dark'; compact = overrides.get('density') == 'compact'
-    no_content_glass = any('no glass on content' in str(x).casefold() for x in anti_patterns)
-    content_class = 'content-solid' if no_content_glass or True else 'content-glass'
-    style = f"--density:{'8px' if compact else '14px'};--surface:{'#111827' if dark else '#edf2fb'};--ink:{'#f2f4ff' if dark else '#172033'};"
-    sheet_pages = [p for p in pages if p.get('role','').casefold() == 'sheet']
-    sheet_id = sheet_pages[0]['id'] if sheet_pages else first
-    sheet_title = sheet_pages[0]['name'] if sheet_pages else 'Tools'
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title>
-<style>
-:root{{color-scheme:{'dark' if dark else 'light'}}}*{{box-sizing:border-box}}body{{margin:0;background:var(--surface);color:var(--ink);font:16px system-ui;min-height:100vh}}main{{position:relative;max-width:390px;min-height:844px;margin:auto;padding:20px var(--density) 104px;overflow-x:hidden}}.content-solid{{background:var(--surface);border-radius:24px;padding:22px;min-height:390px}}.floating{{background:#ffffffb8;border:1px solid #ffffffed;border-radius:22px;backdrop-filter:blur(16px);box-shadow:0 12px 30px #1f294826;position:relative;z-index:10}}button{{min-width:44px;min-height:44px;border:0;border-radius:14px;padding:10px 12px;background:#fff;color:#172033;cursor:pointer}}button.primary{{background:#3568d4;color:#fff}}.controls,.chrome{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}}#screen h2{{font-size:clamp(24px,7vw,34px);margin:8px 0}}.meta{{opacity:.7}}#sheet{{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(390px,100%);padding:16px 20px 28px;display:none;z-index:20;border-radius:24px 24px 0 0;max-height:80vh}}#sheet.open{{display:block}}#sheet .grabber{{width:40px;height:5px;border-radius:3px;background:#8e9bb5;margin:0 auto 12px}}#overflow-menu{{display:none;position:absolute;right:12px;bottom:72px;padding:8px;z-index:15}}#overflow-menu.open{{display:grid}}.detent-medium{{max-height:45vh}}.detent-large{{max-height:80vh}}svg.optical{{position:absolute;width:0;height:0}}
-</style></head><body class="{'dark' if dark else ''}"><main class="{model_class}" style="{style}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
-<svg class="optical" aria-hidden="true"><filter id="apple-liquid-glass"><feTurbulence baseFrequency="0.01" numOctaves="2" result="noise"/><feDisplacementMap in="SourceGraphic" in2="noise" scale="6"/><feGaussianBlur stdDeviation="0.6"/></filter></svg>
-<p class="meta">{escape(scheme['context'])} · {escape(scheme['navigation_model'])} · app{app_index:02d}</p><header class="chrome floating"><h1>{escape(scheme['title'])}</h1></header><section id="screen" class="{content_class}" data-screen="{first}" aria-live="polite"></section>
-<div class="controls"><button id="back">Back</button><button id="open-sheet">Sheet</button><button id="toggle-tab" class="primary">Primary action</button></div>
-<section id="sheet" class="floating" aria-label="{escape(sheet_title)}"><div class="grabber" aria-hidden="true"></div><button id="close-sheet">Close sheet</button><button id="medium-sheet">Medium</button><button id="large-sheet">Large</button><h2>{escape(sheet_title)}</h2><p>{escape(sheet_pages[0]['p0_summary'] if sheet_pages else 'Secondary tools for this domain flow.')}</p></section>
-<div id="overflow-menu" class="floating"><button data-overflow-action="low-frequency">Export / Organize</button></div><nav class="chrome floating" aria-label="{escape(scheme['navigation_model'])}">{buttons}<button id="overflow" aria-label="More actions">⋯</button></nav></main>
-<script>
-const P={page_data}; const first='{first}'; let current=first; let history=[]; let sheetOpen=false; let detent='medium';
-const screen=document.querySelector('#screen'), sheet=document.querySelector('#sheet'), menu=document.querySelector('#overflow-menu');
-function page(id){{if(!P[id]) throw new Error('Unknown screen: '+id);return P[id];}}
-function render(id, push=false){{const next=page(id);if(push&&id!==current) history.push(current);current=id;screen.dataset.screen=id;screen.innerHTML='<h2>'+next.name+'</h2><p>'+next.p0_summary+'</p><p class="meta">'+(next.role||'Domain screen')+'</p><div class="actions">'+(next.actions||[]).map((a,i)=>'<button class="primary" data-action-index="'+i+'">'+a+'</button>').join(' ')+'</div><div class="edges">'+(next.transitions||[]).map((t,i)=>'<button data-transition-index="'+i+'">'+t.type+'</button>').join(' ')+'</div>';bind();document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-current',b.dataset.screen===current?'page':'false'));}}
-function feedback(message){{let old=screen.querySelector('[role=status]');if(!old){{old=document.createElement('p');old.setAttribute('role','status');screen.append(old)}}old.textContent=message;}}
-function dispatch(t){{if(!t||!P[t.to]){{feedback('Rejected invalid transition');return}}if(t.type==='pushScreen') render(t.to,true);else if(t.type==='popScreen'){{if(history.length) render(history.pop(),false); else feedback('Nothing to pop')}}else if(t.type==='switchTab') render(t.to,false);else if(t.type==='toggleSheet') openSheet(t.to);else feedback('Rejected transition type')}}
-function openSheet(id){{const target=page(id);sheet.dataset.screen=id;sheet.querySelector('h2').textContent=target.name;sheet.querySelector('p').textContent=target.p0_summary;sheet.className='floating detent-'+detent+' open';sheetOpen=true;}}
-function closeSheet(){{sheet.classList.remove('open');sheetOpen=false;}}
-function bind(){{const next=page(current);document.querySelectorAll('[data-action-index]').forEach(b=>b.onclick=()=>{{const i=Number(b.dataset.actionIndex);feedback(next.actions[i]+' committed');const t=(next.transitions||[])[i];if(t) dispatch(t)}});document.querySelectorAll('[data-transition-index]').forEach(b=>b.onclick=()=>dispatch(next.transitions[Number(b.dataset.transitionIndex)]));}}
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>render(b.dataset.screen,false));document.querySelector('#back').onclick=()=>history.length?render(history.pop(),false):feedback('Nothing to pop');document.querySelector('#open-sheet').onclick=()=>openSheet('{sheet_id}');document.querySelector('#close-sheet').onclick=closeSheet;document.querySelector('#medium-sheet').onclick=()=>{{detent='medium';openSheet(sheet.dataset.screen||'{sheet_id}')}};document.querySelector('#large-sheet').onclick=()=>{{detent='large';openSheet(sheet.dataset.screen||'{sheet_id}')}};document.querySelector('#overflow').onclick=()=>menu.classList.toggle('open');
-render(first,false);
-</script></body></html>"""
+    return NAVIGATION.app_html(scheme, app_index, platform, _gallery_svg(), anti_patterns, overrides)
 
 
 def command_scaffold_app_nav(args):
-    schemes=_load_app_flows(args); destination=_gallery_paths(args.goal,args.round); anti_patterns=_json_or_csv(args.session_anti_patterns, kind='anti'); overrides=_json_or_csv(args.style_overrides, kind='style')
+    schemes = _load_app_flows(args)
+    destination = _gallery_paths(args.goal, args.round)
+    anti_patterns = _json_or_csv(args.session_anti_patterns, kind='anti')
+    overrides = _json_or_csv(args.style_overrides, kind='style')
+    NAVIGATION.presentation(overrides)
+    NAVIGATION.session_contract(anti_patterns, overrides)
+    if args.platform != 'mobile':
+        raise ValueError('app-nav requires --platform mobile')
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
     destination.mkdir(parents=True)
     manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':args.platform,'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
@@ -1362,6 +1304,10 @@ def command_scaffold_gallery(args):
         return command_scaffold_app_nav(args)
     anti_patterns = _json_or_csv(args.session_anti_patterns, kind="anti")
     overrides = _json_or_csv(args.style_overrides, kind="style")
+    NAVIGATION.presentation(overrides)
+    NAVIGATION.session_contract(anti_patterns, overrides)
+    if getattr(args, 'direction', '') and args.direction not in {'VS-005', 'VS-006', 'VS-007', 'VS-008'}:
+        raise ValueError('supported depth directions: VS-005..VS-008')
     destination = _gallery_paths(args.goal, args.round)
     if destination.is_symlink() or destination.exists():
         raise ValueError(f"gallery round already exists or is unsafe: {destination}")
@@ -1370,8 +1316,18 @@ def command_scaffold_gallery(args):
     archetypes = [args.direction] if getattr(args, 'direction', '') else ["VS-005", "VS-006", "VS-007", "VS-008"]
     focal = ["next-action", "timeline", "context", "recovery"]
     codebook = [(2, 0, 3), (3, 1, 2), (0, 2, 3), (1, 2, 2), (1, 1, 1), (0, 0, 1), (3, 2, 1), (1, 0, 0), (0, 1, 0), (2, 2, 0)]
-    variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold], "archetype": archetypes[arch % len(archetypes)], "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}', "selected": False, "starred": False, "notes": ""} for i, (p, fold, arch) in enumerate(codebook, 1)]
-    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "variants": variants}
+    # Preserve the distance-two code over focal/fold/layout even when archetype is fixed.
+    layouts = ['hero-top', 'hero-inline', 'hero-bottom', 'hero-center']
+    whitespace = ['tight', 'balanced', 'open']
+    geometry = ['wide', 'compact', 'rail', 'lifted']
+    variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold],
+                 "layout": layouts[arch], "whitespace": whitespace[(p + fold) % 3],
+                 "glass_geometry": geometry[(arch + p) % 4],
+                 "archetype": archetypes[arch % len(archetypes)],
+                 "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}',
+                 "selected": False, "starred": False, "notes": ""}
+                for i, (p, fold, arch) in enumerate(codebook, 1)]
+    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     save(destination / "manifest.json", manifest)
     (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
     css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
@@ -1651,8 +1607,8 @@ def parser():
     gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
     gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
     gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
-    gallery.add_argument("--app-screens", default="", help="Comma-separated target App screens for the starter graph")
-    gallery.add_argument("--app-context", default="Target App", help="Target App domain and journey context used only for the no-input starter graph")
+    gallery.add_argument("--app-screens", default="", help="Domain inventory; requires --app-flows-json, never guessed architectures")
+    gallery.add_argument("--app-context", default="", help="Domain context; requires four complete --app-flows-json architectures")
     gallery.add_argument("--session-anti-patterns", default="[]")
     gallery.add_argument("--style-overrides", default="{}")
     gallery.add_argument("--direction", default="", help="Known VS-* archetype for depth exploration")

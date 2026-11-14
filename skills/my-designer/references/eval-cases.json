@@ -96,11 +96,11 @@
         "layout-navigation",
         "glass-material"
       ],
-      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py jev-gate --platform mobile --stage spec --spec-file skills/my-designer/references/interaction-layering.md --no-jev",
+      "cmd": "python3 -m unittest scripts.test_verify_skills.JevGateTests",
       "expect_exit": 0,
       "expect_stdout_contains": [
-        "\"status\": \"PASS\"",
-        "\"ok\": true"
+        "Ran",
+        "OK"
       ],
       "registered_at": "2026-11-14"
     },
@@ -114,7 +114,7 @@
         "layout-navigation",
         "motion-interaction"
       ],
-      "cmd": "python3 -m unittest skills.design-studio.scripts.test_design_catalog.AppNavigationBehaviorTests",
+      "cmd": "python3 -m unittest skills.design-studio.scripts.test_design_catalog.AppNavigationGraphTests skills.design-studio.scripts.test_design_catalog.AppNavigationBehaviorTests",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "Ran",

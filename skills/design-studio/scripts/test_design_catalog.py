@@ -104,42 +104,145 @@ class DesignCatalogTests(unittest.TestCase):
 
 
 class AppNavigationGraphTests(unittest.TestCase):
-    def test_custom_app_graph_generates_four_bespoke_schemes(self):
-        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
-            flow = Path(directory) / "flows.json"
-            schemes = []
-            for index in range(4):
-                schemes.append({"title": "Journey %d" % index, "navigation_model": "model-%d" % index, "screens": [
-                    {"id": "start%d" % index, "name": "Start", "p0_summary": "Capture", "transitions": [{"to": "end%d" % index, "type": "pushScreen"}]},
-                    {"id": "end%d" % index, "name": "End", "p0_summary": "Done", "actions": ["Save"]}
-                ]})
-            flow.write_text(json.dumps({"app_context": "Test domain", "schemes": schemes}), encoding="utf-8")
-            result = run("scaffold-gallery", "--goal", "graph-test-%d" % os.getpid(), "--round", "1", "--platform", "mobile", "--mode", "app-nav", "--app-flows-json", str(flow))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            data = json.loads(result.stdout)
-            self.assertEqual(data["manifest"]["mode"], "app-nav")
-            self.assertEqual([x["screens"][0]["id"] for x in data["manifest"]["schemes"]], ["start0", "start1", "start2", "start3"])
+    def test_custom_architecture_is_required_not_inferred_from_names(self):
+        schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
+        for i, scheme in enumerate(schemes):
+            scheme['navigation_model'] = 'bespoke-journey-%d' % i
+        args = types.SimpleNamespace(app_flows_json=json.dumps({'schemes': schemes}), app_context='', app_screens='')
+        self.assertEqual(len(DESIGN_CATALOG._load_app_flows(args)), 4)
+        for invalid in ('missing', 'empty', 'unknown', 'same-chrome', 'renamed-graph'):
+            data = json.loads(args.app_flows_json)
+            if invalid == 'missing': data['schemes'][0].pop('architecture')
+            elif invalid == 'empty': data['schemes'][0]['navigation_model'] = ''
+            elif invalid == 'unknown': data['schemes'][0]['architecture']['kind'] = 'unimplemented'
+            else:
+                for i, scheme in enumerate(data['schemes']):
+                    scheme['architecture']['kind'] = 'tabs'
+                    if invalid == 'renamed-graph':
+                        ids = {p['id']: 'renamed%d-%s' % (i, p['id']) for p in scheme['screens']}
+                        def rename(value):
+                            if isinstance(value, dict): return {k: rename(v) for k, v in value.items()}
+                            if isinstance(value, list): return [rename(v) for v in value]
+                            return ids.get(value, value) if isinstance(value, str) else value
+                        data['schemes'][i] = rename(scheme)
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps(data)))
+        # Four app-tailored graph hypotheses can share a chrome primitive; labels
+        # do not force the four starter kinds, but the actual operations must vary.
+        tailored = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
+        for i, scheme in enumerate(tailored):
+            scheme['architecture']['kind'] = 'stack'
+            action = scheme['screens'][0]['actions'][0]
+            if i == 1: action['transition'] = {'type': 'switchTab', 'to': 'review'}
+            if i == 2: action['transition'] = {'type': 'toggleSheet', 'to': 'tools'}
+            if i == 3: action.pop('transition'); action['commit'] = 'captured'
+        self.assertEqual(len(DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': tailored})))), 4)
 
 
 class AppNavigationBehaviorTests(unittest.TestCase):
-    def test_graph_schema_rejects_unknown_transition_and_preserves_domain_constraints(self):
-        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
-            flow = Path(directory) / 'invalid.json'
-            flow.write_text(json.dumps({'schemes': [
-                {'screens': [{'id': 'home', 'name': 'Home', 'transitions': [{'type': 'bogus', 'to': 'missing'}]}, {'id': 'other'}]}
-            ] * 4}), encoding='utf-8')
-            result = run('scaffold-gallery', '--goal', 'invalid-%d' % os.getpid(), '--round', '1', '--platform', 'mobile', '--mode', 'app-nav', '--app-flows-json', str(flow))
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('invalid transition', result.stderr)
+    def gate(self, gallery):
+        script = SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'
+        return subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], text=True, capture_output=True)
 
-    def test_known_direction_consumes_content(self):
-        result = run('scaffold-gallery', '--goal', 'known-%d' % os.getpid(), '--round', '1', '--platform', 'mobile', '--direction', 'VS-007', '--screen-content', 'Transcript timeline')
+    def node(self, page, assertions):
+        result = subprocess.run(['node', str(SCRIPT.with_name('navigation_dom_harness.js'))],
+                                input=json.dumps({'html': page.read_text(), 'assertions': assertions}), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        gallery = Path(json.loads(result.stdout)['gallery'])
-        self.addCleanup(lambda: __import__('shutil').rmtree(gallery.parent, ignore_errors=True))
-        manifest = json.loads((gallery / 'manifest.json').read_text())
-        self.assertEqual({v['archetype'] for v in manifest['variants']}, {'VS-007'})
-        self.assertIn('Transcript timeline', (gallery / 'v01.html').read_text())
+        self.assertTrue(json.loads(result.stdout)['ok'])
+
+    def test_bespoke_runtime_primary_commit_all_surfaces_and_tab_owned_history(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
+            for i, scheme in enumerate(schemes):
+                scheme['navigation_model'] = 'capture-hypothesis-%d' % i
+                scheme['screens'][0]['actions'].extend([
+                    {'label': 'Recording options', 'frequency': 'P2', 'commit': 'configured'},
+                    {'label': 'Archive note', 'frequency': 'P3', 'commit': 'archived'}])
+                scheme['architecture']['overflow'].append({'screen': 'capture', 'action': 2})
+                scheme['screens'].append({'id': 'organize', 'name': 'Organize notes', 'role': 'popover',
+                    'p0_summary': 'Change the note collection', 'actions': [{'label': 'Organize', 'frequency': 'P3', 'commit': 'organized', 'transition': {'type': 'dismissOverlay'}}]})
+                scheme['screens'][2]['transitions'].append({'type': 'togglePopover', 'to': 'organize'})
+            result = run('scaffold-gallery', '--goal', 'runtime', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
+                         '--app-flows-json', json.dumps({'app_context': 'Voice capture', 'schemes': schemes}),
+                         '--session-anti-patterns', '["no glass on content"]', '--style-overrides', '{"surface":"dark","density":"compact"}', env=dict(os.environ, HOME=directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(json.loads(result.stdout)['gallery'])
+            accepted = self.gate(gallery)
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            assertions = r'''const n=window.navigationDemo;
+const click=s=>{const e=document.querySelector(s);assert.ok(e,s);e.click();};
+const current=()=>n.currentScreen();
+assert.equal(document.querySelector('#screen .secondary-actions').open,false);
+assert.equal(document.querySelector('#screen [data-frequency="P3"]'),null);
+document.querySelector('#screen .secondary-actions').open=true;
+click('#screen .secondary-actions [data-action-index="1"]');assert.equal(n.state.commits.configured.count,1);
+click('#toggle-tab'); assert.equal(current(),'review');
+click('#screen [data-action-index="0"]'); assert.equal(current(),'library');
+assert.equal(n.state.commits.saved.count,1);
+assert.match(document.querySelector('#action-state').textContent,/Save item committed/);
+assert.match(document.querySelector('#screen .commit-list').textContent,/Save item/);
+click('#screen [data-transition-index="0"]'); assert.equal(current(),'review');
+click('#back'); assert.equal(current(),'capture');
+click('#toggle-tab'); assert.equal(current(),'review');
+click('#overflow'); click('.tab[data-screen="library"]'); assert.equal(current(),'library');
+click('#back'); assert.equal(current(),'library');
+click('.tab[data-screen="capture"]'); assert.equal(current(),'review');
+click('#back'); assert.equal(current(),'capture');
+n.switchTab('library'); click('#screen [data-transition-index="1"]');
+assert.equal(current(),'library'); assert.equal(n.state.overlay.screen,'tools');
+assert.equal(document.querySelector('#sheet').hidden,false);
+click('#large-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'large');
+click('#medium-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#sheet [data-action-index="0"]'); assert.equal(n.state.commits.exported.count,1);
+assert.equal(n.state.overlay,null); assert.equal(current(),'library');
+click('#overflow'); click('[data-overflow-action]'); assert.equal(n.state.commits.exported.count,2);
+assert.equal(document.querySelector('#overflow-menu').hidden,true);
+click('#overflow');click('[data-overflow-action][data-action-screen="capture"]');assert.equal(n.state.commits.archived.count,1);
+click('#screen [data-transition-index="2"]'); assert.equal(n.state.overlay.screen,'organize');
+click('#popover-content [data-action-index="0"]'); assert.equal(n.state.commits.organized.count,1);
+assert.equal(n.state.overlay,null); assert.equal(current(),'library');
+'''
+            for i in range(1, 5):
+                self.node(gallery / f'app{i:02d}.html', assertions)
+            original = (gallery / 'app02.html').read_text()
+            (gallery / 'app02.html').write_text((gallery / 'app01.html').read_text())
+            self.assertNotEqual(self.gate(gallery).returncode, 0)
+            (gallery / 'app02.html').write_text(original)
+            page = gallery / 'app01.html'
+            text = page.read_text()
+            runtime = DESIGN_CATALOG.NAVIGATION.ASSETS / 'navigation-demo.js'
+            page.write_text(text.replace(runtime.read_text(), '/* .onclick= addEventListener */'))
+            self.assertNotEqual(self.gate(gallery).returncode, 0)
+
+    def test_known_and_open_gallery_rounds_gate_runtime_and_correspondence(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            for known in (False, True):
+                options = ['--direction', 'VS-007', '--screen-content', 'Transcript timeline'] if known else []
+                result = run('scaffold-gallery', '--goal', 'known' if known else 'open', '--round', '1', '--platform', 'mobile', *options, env=dict(os.environ, HOME=directory))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                gallery = Path(json.loads(result.stdout)['gallery'])
+                accepted = self.gate(gallery)
+                self.assertEqual(accepted.returncode, 0, accepted.stdout)
+                evidence = json.loads(accepted.stdout)['evidence'][0]
+                self.assertEqual(evidence['checked_pairs'], 45)
+                self.assertGreaterEqual(evidence['minimum_distance'], 2)
+                manifest = json.loads((gallery / 'manifest.json').read_text())
+                if known: self.assertEqual({v['archetype'] for v in manifest['variants']}, {'VS-007'})
+                for v in manifest['variants']:
+                    extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
+                    self.node(gallery / (v['id'] + '.html'), extra + r'''const tabs=[...document.querySelectorAll('[role=tab]')];
+if(tabs.length){tabs[1].click();assert.equal(tabs[1].getAttribute('aria-selected'),'true');assert.equal(document.getElementById('panel-detail').hidden,false);}
+const next=document.getElementById('next-pocket');if(next){const before=document.querySelector('.stack button').dataset.depth;next.click();assert.notEqual(document.querySelector('.stack button').dataset.depth,before);}
+document.getElementById('continue').click();assert.equal(document.getElementById('action-state').textContent,'Direction selected');
+document.getElementById('reset-view').click();assert.equal(document.getElementById('action-state').textContent,'View reset');''')
+                for i in range(2, 11): (gallery / f'v{i:02d}.html').write_text((gallery / 'v01.html').read_text())
+                self.assertNotEqual(self.gate(gallery).returncode, 0)
+
+    def test_invalid_graph_rejects_before_artifact_creation(self):
+        schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes()
+        schemes[0]['screens'][0]['transitions'] = [{'type': 'bogus', 'to': 'missing'}]
+        with self.assertRaisesRegex(ValueError, 'invalid transition'):
+            DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': schemes})))
 
 
 class IngestTests(unittest.TestCase):
