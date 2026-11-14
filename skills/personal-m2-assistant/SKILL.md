@@ -11,7 +11,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 - 直接触发：`/personal-m2-assistant <跨 M2 指令>`。
 - 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
 - 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
-- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
+- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。无关 user-skills 按 topic 隔离，`my-designer` + `design-studio` 共用专属 `skills-design` Space，同时兼容旧的粗粒度 topic alias。
 - 发现阶段读取公开的 `herdr workspace list`；交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
 
 ## 默认配置与强制 Owner Gate

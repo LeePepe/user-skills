@@ -519,6 +519,16 @@ def _topic_for_target(target: dict[str, Any], message: str, domain_map: dict[str
     explicit = _text(target.get("topic_id"))
     if explicit in by_id:
         return by_id[explicit]
+    if explicit:
+        alias_matches = [
+            topic for topic in domain_map.get("topics", [])
+            if explicit.casefold() in {_text(alias).casefold() for alias in (topic.get("aliases") or [])}
+        ]
+        if alias_matches:
+            target_text = " ".join(_text(target.get(key)) for key in ("target_repo", "title", "sub_prompt", "rag_context_hint"))
+            text = target_text if len(jev.get("targets", [])) > 1 else (target_text + " " + message)
+            ranked = sorted(((_topic_match_score(text, item), item) for item in alias_matches), key=lambda item: item[0], reverse=True)
+            return ranked[0][1]
     primary = jev.get("primary_topic")
     if isinstance(primary, dict):
         primary = primary.get("choice")
@@ -604,13 +614,42 @@ def _matching_topic_sessions(
             candidates.append(session)
     if effective_topic_id in {"", NEW_UNMAPPED_DOMAIN.lower()}:
         return candidates
-    compatible = [session for session in candidates if not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == effective_topic_id]
+    active_map = domain_map or load_domain_map()
+    mapped_topic_ids = {
+        _text(item.get("topic_id")).casefold()
+        for item in active_map.get("topics", [])
+        if _text(item.get("topic_id"))
+    }
+    topic_patterns = [
+        (topic_id, re.compile(rf"(?<![a-z0-9]){re.escape(topic_id)}(?![a-z0-9])"))
+        for topic_id in sorted(mapped_topic_ids, key=len, reverse=True)
+    ]
+
+    def encoded_topics(session: dict[str, Any]) -> set[str]:
+        matched_topics: set[str] = set()
+        for key in ("session_id", "herdr_target", "title"):
+            value = re.sub(r"_+", "-", _text(session.get(key)).casefold())
+            matched_spans: list[tuple[int, int]] = []
+            for topic_id, pattern in topic_patterns:
+                for match in pattern.finditer(value):
+                    start, end = match.span()
+                    # A longer identity owns its span, not separate constituent topics.
+                    if any(start < prior_end and end > prior_start for prior_start, prior_end in matched_spans):
+                        continue
+                    matched_spans.append((start, end))
+                    matched_topics.add(topic_id)
+        return matched_topics
+
+    compatible = [
+        session for session in candidates
+        if (not _text(session.get("topic_id")) or _text(session.get("topic_id")).casefold() == effective_topic_id)
+        and not (encoded_topics(session) - {effective_topic_id})
+    ]
     exact = [session for session in compatible if _text(session.get("topic_id")).casefold() == effective_topic_id]
     if exact:
         return exact
     if not topic:
         return compatible
-    active_map = domain_map or load_domain_map()
     repo_topics = [
         item for item in active_map.get("topics", [])
         if repo and _clean_target_name(item.get("target_repo")).casefold() == repo.casefold()
@@ -620,7 +659,7 @@ def _matching_topic_sessions(
     topic_terms = [
         term
         for term in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", " ".join(_text(value) for value in topic_values).casefold())
-        if len(term) > 1 and term not in repo_tokens and term not in {"app", "ios", "macos", "web", "m2"}
+        if len(term) > 1 and term not in repo_tokens and term not in {"app", "ios", "macos", "web", "m2", "skill", "skills", "user", "code", "maintenance"}
     ]
     scored: list[tuple[int, dict[str, Any]]] = []
     for session in compatible:

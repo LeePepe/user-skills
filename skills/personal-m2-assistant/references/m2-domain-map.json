@@ -204,9 +204,9 @@
         {
           "topic_id": "skills-workflow",
           "group": "user-skills",
-          "title": "Skills Workflow",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
+          "title": "Skills Workflow",
           "keywords": [
             "workflow-hub",
             "howto",
@@ -224,9 +224,9 @@
         {
           "topic_id": "skills-design",
           "group": "user-skills",
-          "title": "Skills Design",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
+          "title": "Skills Design",
           "keywords": [
             "my-designer",
             "design-studio",
@@ -238,64 +238,170 @@
             "designer",
             "visual"
           ],
+          "space": "skills-design",
+          "space_aliases": [
+            "design",
+            "my-designer",
+            "design-studio"
+          ]
+        },
+        {
+          "topic_id": "skill-knowledge-digest",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Knowledge Digest",
+          "keywords": [
+            "knowledge-digest",
+            "knowledge-vault"
+          ],
+          "aliases": [
+            "digest",
+            "skills-research-knowledge"
+          ],
           "space": "user-skills"
         },
         {
-          "topic_id": "skills-research-knowledge",
+          "topic_id": "skill-deep-research",
           "group": "user-skills",
-          "title": "Skills Research and Knowledge Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
+          "title": "Deep Research",
           "keywords": [
             "deep-research",
-            "knowledge-digest",
-            "save-tool",
-            "skill maintenance",
-            "user-skills code"
+            "research"
           ],
           "aliases": [
-            "research skill code",
-            "knowledge skill maintenance",
-            "digest implementation"
+            "research",
+            "skills-research-knowledge"
           ],
           "space": "user-skills"
         },
         {
-          "topic_id": "skills-retro-story",
+          "topic_id": "skill-save-tool",
           "group": "user-skills",
-          "title": "Skills Retro and Story Maintenance",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
+          "title": "Save Tool",
+          "keywords": [
+            "save-tool",
+            "collected-tools"
+          ],
+          "aliases": [
+            "save tools",
+            "collect tools",
+            "skills-research-knowledge"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-retro-loop",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Retro Loop",
           "keywords": [
             "retro-loop",
-            "story-craft",
-            "skill maintenance",
-            "user-skills code"
+            "retro"
           ],
           "aliases": [
-            "retro skill code",
-            "story skill maintenance"
+            "retro",
+            "skills-retro-story"
           ],
           "space": "user-skills"
         },
         {
-          "topic_id": "skills-repo-ci",
+          "topic_id": "skill-story-craft",
           "group": "user-skills",
-          "title": "Skills Repository and CI",
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
+          "title": "Story Craft",
           "keywords": [
-            "skill-contract",
+            "story-craft",
+            "story"
+          ],
+          "aliases": [
+            "story",
+            "skills-retro-story"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-linear-board",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Linear Board",
+          "keywords": [
+            "linear-board",
+            "Linear"
+          ],
+          "aliases": [
+            "linear board"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-repo-kit",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Repo Kit",
+          "keywords": [
             "repo-kit",
-            "code-review",
-            "codebase-design",
             "shared-ci"
           ],
           "aliases": [
-            "repo ci",
-            "repository",
+            "repo",
+            "skills-repo-ci"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-code-review",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Code Review",
+          "keywords": [
+            "code-review",
+            "review"
+          ],
+          "aliases": [
+            "review code",
+            "skills-repo-ci"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-codebase-design",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Codebase Design",
+          "keywords": [
+            "codebase-design",
+            "domain modeling"
+          ],
+          "aliases": [
+            "codebase",
+            "skills-repo-ci"
+          ],
+          "space": "user-skills"
+        },
+        {
+          "topic_id": "skill-skill-contract",
+          "group": "user-skills",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "title": "Skill Contract",
+          "keywords": [
+            "skill-contract",
+            "skill contract"
+          ],
+          "aliases": [
             "contracts",
-            "ci"
+            "skills-repo-ci"
           ],
           "space": "user-skills"
         }
