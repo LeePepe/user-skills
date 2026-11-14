@@ -312,11 +312,12 @@ def command_route(args: argparse.Namespace) -> int:
             "allowed_native": allowed_native,
             "allowed_native_sources": allowed_native,
             "blocked_web_only_sources": [
-                "taste-skill (design-taste-frontend: 100% Web HTML/CSS/Shader/Chrome Stop-hook)",
-                "ui-ux-pro-max-skill Web sub-skills (ui-styling, banner-design, slides, design-system CSS tokens)",
-                "impeccable Web detector/live overlay",
-                "expo-skills React Native / JS router skills",
-                *(["bama (macOS desktop only)"] if args.platform == "mobile" else []),
+                "taste-skill",
+                "ui_ux_pro_max_web",
+                "impeccable_web",
+                "expo_web",
+                "apple_liquid_glass_web",
+                *( ["bama_macos_only"] if args.platform == "mobile" else []),
             ],
         }
     else:
@@ -440,6 +441,15 @@ def command_route(args: argparse.Namespace) -> int:
 
         web_design_md_root = f"{ext_root}/awesome-web-design-md/design-md"
         allowed_web = {
+            "apple_liquid_glass_web": {
+                "root": "~/Development/handoff/apple-liquid-glass-html-recipe",
+                "focused_files": [
+                    "~/Development/handoff/apple-liquid-glass-html-recipe/liquid-glass-recipe.css",
+                    "~/Development/handoff/apple-liquid-glass-html-recipe/liquid-glass-engine.js",
+                    "~/Development/handoff/apple-liquid-glass-html-recipe/standalone-snippet.html",
+                ],
+                "note": "Web HTML demo capability only; never included in native routes.",
+            },
             "impeccable": {
                 "root": impeccable_root,
                 "focused_files": impeccable_focused,

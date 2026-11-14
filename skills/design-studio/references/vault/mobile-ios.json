@@ -1607,6 +1607,62 @@
       "usage_count": 0,
       "rating": "unrated",
       "last_used_at": null
+    },
+    {
+      "id": "LN-003",
+      "name": "Pep AI 单一下一次用药焦点与 Tenfold 正交变体门禁 (P0 Next Dose Focal Hierarchy)",
+      "aliases": [
+        "Pep AI",
+        "Next Dose",
+        "下一次用药",
+        "Last Dose",
+        "Medication Level",
+        "P0 focal hierarchy",
+        "Tenfold",
+        "spec-only variants",
+        "anti-patterns",
+        "方向锁定"
+      ],
+      "category": "layout-craft",
+      "platforms": [
+        "mobile",
+        "shared"
+      ],
+      "surface_modes": [
+        "Operate",
+        "Read"
+      ],
+      "motion_tier": "M1",
+      "source_prompt_zh": "Pep AI 首页重设计案例：消除多张等权卡片竞争，将时间关键的下一次用药提升为唯一 P0 Hero Focal；Last Dose 与 Medication Level 降为紧凑的 P1/P2 次级行或胶囊。Tenfold 参考纪律：方向不明时先做 1–3 轮、每轮 3–5 个真正正交的 spec-only 概念，写清 anti-patterns，经 Owner 选择与反馈后才锁定方向。来源：https://x.com/adrian_partain/status/2116592792030106031、https://x.com/adrian_partain/status/2116593069361700887、https://x.com/adrian_partain/status/2104702468840128656、https://x.com/adrian_partain/status/2114866338829381727",
+      "canonical_prompt": "On a mobile home screen, make the single time-critical next action/state (Next Dose) the only P0 hero focal point; demote historical and ambient metrics (Last Dose, Medication Level) to compact P1/P2 secondary rows or pills. When direction is ambiguous, explore 3–5 genuinely orthogonal spec-only concepts for 1–3 rounds, varying P0 focal hypothesis, Axis-Y folding mechanism, and VS archetype, with explicit anti-patterns and Owner feedback before locking.",
+      "apple_native_primitives": [
+        "SwiftUI",
+        "NavigationStack",
+        "safeAreaInset",
+        "ContentUnavailableView"
+      ],
+      "hig_routes": [
+        "layout.md",
+        "accessibility.md"
+      ],
+      "desktop_macos_implementation": "For a companion macOS surface, preserve one primary Next Dose focal stage and fold historical/ambient metrics into secondary inspector rows; reuse the same AppTheme coordinate set rather than inventing a desktop-only hierarchy.",
+      "mobile_ios_implementation": "Render one prominent Next Dose hero with the primary action in the thumb-safe bottom/action region. Keep Last Dose and Medication Level as compact P1/P2 rows or pills, capped at 2–3 visual groups per viewport; use Dynamic Type, semantic colors, and Size Class adaptation.",
+      "native_guardrails": "Exactly one P0 focal point per viewport; do not give Last Dose and Medication Level equal card weight. Keep universal layering laws separate from session_anti_patterns/style_overrides. Do not create Prototype code in product repositories; when direction is ambiguous, use Mode A spec-matrix or the offline handoff scaffold-gallery, then record Owner selection/feedback and freeze shared AppTheme tokens before production implementation. No measured palette or VS archetype is asserted.",
+      "usage_count": 0,
+      "rating": "unrated",
+      "last_used_at": null,
+      "usage_history": [],
+      "platforms_v2": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "primary_dimension": "layout-navigation",
+      "secondary_dimensions": [
+        "visual-style",
+        "component"
+      ],
+      "sub_category": "priority-focal-hierarchy"
     }
   ]
 }

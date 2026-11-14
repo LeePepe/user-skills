@@ -30,7 +30,7 @@ description: M2-Dispatcher 编排内核：管理交互式入口（M2）与后台
 ## 1. 开 TL、热追加与路由
 
 - **两径简单 Spec 对齐**：Owner 确认（`ask_user`）始终留在 `M2-Dispatcher`。**路径 A（清晰边界）**：`M2-Dispatcher` 快速只读探查、用 `ask_user` 确认 1–3 个决策并落盘 `~/Development/handoff/<goal>/spec.md`（`design.md`）；**路径 B（跨仓/复杂需求）**：先调 `herdr-dispatch.sh` 让后台 `<goal>-goal-tl-r1`（M1）只读梳理 `spec.md` 草案与 `NEED_GO`，再由 `M2-Dispatcher` 与 Owner 拍板回传 M1。
-- **灵感/截图/色板一键摄取（`m2-dispatcher` ↔ `design-studio`）**：收到单条灵感、参考 App 或截图时，`M2-Dispatcher` 直接前台调 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..."`（或 `--image <shot.png> --measure-palette --archetype-ref <VS-ID>` 做 Vision OCR + BAMA 测色板；动效用 `ingest`）入库；批量母体聚类或落地项目走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering`。
+- **灵感/截图/色板一键摄取（`m2-dispatcher` ↔ `design-studio`）**：收到单条灵感、参考 App 或截图时，`M2-Dispatcher` 直接前台调 `python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text "..." --image <shot.png> --measure-palette --url <url> --archetype-ref <VS-ID>`；`--text`、`--image`、`--url` 可组合，URL-only 也会入库，元数据写入卡片；动效用 `ingest`。批量母体聚类或落地项目走 `herdr-dispatch.sh --new-workspace --role team_lead` 派后台 `Steering`。
 - **跨端统一快捷口令（Universal Shortcut Macros — Copilot / Claude / Codex / Pi / Cindy）**：由 [`skill-slash-expander.ts`](scripts/skill-slash-expander.ts) 展开并经 [`install-pi-harness.sh`](scripts/install-pi-harness.sh) 同步至 `~/.pi/agent` 与 `CindyGlobal/pi-package-home`（重算 `cindy-pi-package-fingerprint-v1`）：
 
 | 口令 | 目标路由 | 执行动作 |

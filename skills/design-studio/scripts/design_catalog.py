@@ -2,10 +2,16 @@
 """Manage the design-studio tool and interaction-pattern catalog."""
 
 import argparse
+import base64
 import datetime as dt
+from functools import lru_cache
+from html import escape
 import json
+import math
 import re
+import struct
 import subprocess
+import zlib
 import sys
 import urllib.error
 import urllib.request
@@ -915,6 +921,10 @@ def command_vault_ingest(args):
     taxonomy_path = Path(args.taxonomy)
     vault_dir = Path(args.vault_dir)
     taxonomy = load(taxonomy_path)
+    if getattr(args, "image", None):
+        image_path = Path(args.image).expanduser()
+        if not image_path.is_file():
+            raise ValueError(f"image not found: {args.image}")
 
     palette_target = None
     if getattr(args, "measure_palette", None):
@@ -925,13 +935,39 @@ def command_vault_ingest(args):
     archetype_ref = getattr(args, "archetype_ref", None)
 
     try:
-        text = _read_ingest_source(args)
+        sources = []
+        if args.text is not None:
+            sources.append(args.text.strip())
+        if getattr(args, "file", None) is not None:
+            sources.append(Path(args.file).read_text(encoding="utf-8").strip())
+        if getattr(args, "image", None) is not None and not sources:
+            try:
+                sources.append(ocr_image(args.image).strip())
+            except ValueError:
+                if not measured_palette:
+                    raise
+        text = "\n".join(source for source in sources if source)
+        if not text:
+            raise ValueError("input prompt must not be empty")
     except ValueError:
         if measured_palette:
             hex_list = ", ".join(item["hex"] for item in measured_palette[:5])
             text = f"Screenshot measured color palette ({hex_list}) for {archetype_ref or 'AppTheme'}"
+        elif getattr(args, "url", []) or getattr(args, "source_url", []):
+            urls = (getattr(args, "url", []) or []) + (getattr(args, "source_url", []) or [])
+            text = "Web design inspiration: " + ", ".join(part for url in urls for part in csv_values(url))
         else:
             raise
+    source_urls = []
+    for raw_url in (getattr(args, "url", []) or []) + (getattr(args, "source_url", []) or []):
+        source_urls.extend(csv_values(raw_url))
+    source_urls = list(dict.fromkeys(source_urls))
+    html_recipe_ref = getattr(args, "html_recipe_ref", None)
+    optical_source = " ".join([text, html_recipe_ref or "", *source_urls]).casefold()
+    web_only_optics = any(marker in optical_source for marker in (
+        "gm-004", "fedisplacementmap", "apple_liquid_glass_web", "apple-liquid-glass-html-recipe",
+    ))
+    image_assets = [str(Path(args.image).expanduser())] if getattr(args, "image", None) else []
     segments = [text] if args.no_split else (split_segments(text) or [text])
 
     vault_files = {
@@ -974,12 +1010,26 @@ def command_vault_ingest(args):
                 entry["measured_palette"] = measured_palette
             if archetype_ref:
                 entry["archetype_ref"] = archetype_ref
+            if image_assets:
+                entry["image_assets"] = image_assets
+            if source_urls:
+                entry["source_urls"] = source_urls
+            if html_recipe_ref:
+                entry["html_recipe_ref"] = html_recipe_ref
+            if web_only_optics:
+                entry.update(platforms=["web"], platforms_v2=["web"],
+                             html_recipe_ref=html_recipe_ref or "~/Development/handoff/apple-liquid-glass-html-recipe/",
+                             web_implementation="Use the linked HTML/CSS/inline SVG optical recipe for Web demos only.",
+                             token_guardrails="Keep the WebKit/Gecko fallback; never expose Web shader details to native routing.")
+                for key in ("apple_native_primitives", "hig_routes", "desktop_macos_implementation",
+                            "mobile_ios_implementation", "native_guardrails"):
+                    entry.pop(key, None)
             created_cards.append(entry)
             if not args.dry_run:
-                for plat in card["platforms"]:
+                for plat in entry["platforms"]:
                     if plat in vaults:
                         vaults[plat]["inspirations"].append(entry)
-        if not args.dry_run and res.get("needs_llm_fallback"):
+        if not args.dry_run and not web_only_optics and res.get("needs_llm_fallback"):
             if _apply_learned_keywords(taxonomy, taxonomy_path, res.get("learned_keywords_candidate", {})):
                 learned_written = True
 
@@ -999,7 +1049,242 @@ def command_vault_ingest(args):
         out["measured_palette"] = measured_palette
     if archetype_ref:
         out["archetype_ref"] = archetype_ref
+    if image_assets:
+        out["image_assets"] = image_assets
+    if source_urls:
+        out["source_urls"] = source_urls
+    if html_recipe_ref:
+        out["html_recipe_ref"] = html_recipe_ref
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _json_or_csv(value, *, kind):
+    if value is None or not str(value).strip():
+        return [] if kind == "anti" else {}
+    raw = str(value).strip()
+    if raw[:1] in "[{":
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON for {kind}") from error
+        if kind == "anti" and (not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed)):
+            raise ValueError("--session-anti-patterns JSON must be an array of strings")
+        if kind == "style":
+            if not isinstance(parsed, dict):
+                raise ValueError("--style-overrides JSON must be an object")
+            for key in ("density", "surface"):
+                if key in parsed and not isinstance(parsed[key], str):
+                    raise ValueError(f"--style-overrides {key} must be a string")
+        return parsed
+    if kind == "style":
+        raise ValueError("--style-overrides must be a JSON object")
+    return csv_values(raw)
+
+
+def _gallery_paths(goal, round_number):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", goal):
+        raise ValueError("--goal must be a safe slug (letters, numbers, _ or -)")
+    if round_number < 1 or round_number > 99:
+        raise ValueError("--round must be between 1 and 99")
+    root = (Path.home() / "Development" / "handoff").resolve()
+    if (root / goal).is_symlink():
+        raise ValueError("gallery goal must not be a symlink")
+    return root / goal / f"r{round_number}"
+
+
+@lru_cache(maxsize=8)
+def _gallery_map_png(width, height):
+    """Encode a rounded-rectangle lens: inward Snell offsets in RG, signed light in B."""
+    radius = min(28, min(width, height) / 2 - 1)
+    bezel = min(12, radius / 2)
+    direction_radius = min(radius + bezel, min(width, height) / 2 - .5)
+
+    def profile(depth):
+        if depth >= bezel:
+            return 0.0, .04
+        t = max(.0001, depth / bezel)
+        q = 1 - t
+        height_factor = (1 - q ** 4) ** .25
+        slope = q ** 3 / (1 - q ** 4) ** .75
+        alpha = math.atan(slope)
+        beta = math.asin(math.sin(alpha) / 1.5)
+        offset = (4 + bezel * height_factor) * math.tan(alpha - beta)
+        ca, cb = math.cos(alpha), math.cos(beta)
+        fresnel = (((ca - 1.5 * cb) / (ca + 1.5 * cb)) ** 2
+                   + ((1.5 * ca - cb) / (1.5 * ca + cb)) ** 2) / 2
+        return offset, fresnel
+
+    def distance(x, y, r):
+        qx, qy = abs(x) - (width / 2 - r), abs(y) - (height / 2 - r)
+        return math.hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - r
+
+    rows = bytearray()
+    for row in range(height):
+        rows.append(0)
+        y = row + .5 - height / 2
+        for column in range(width):
+            x = column + .5 - width / 2
+            depth = -distance(x, y, radius)
+            if depth <= 0 or depth >= bezel:
+                rows.extend((128, 128, 128, 255))
+                continue
+            # A wider direction field prevents diagonal seams near rounded corners.
+            qx = max(abs(x) - (width / 2 - direction_radius), 0)
+            qy = max(abs(y) - (height / 2 - direction_radius), 0)
+            length = math.hypot(qx, qy)
+            nx = math.copysign(qx / length, x)
+            ny = math.copysign(qy / length, y)
+            offset, fresnel = profile(depth)
+            magnitude = min(offset / 12, 1)
+            before, after = max(.0001, depth - .05), min(bezel, depth + .05)
+            derivative = (profile(after)[0] - profile(before)[0]) / (after - before)
+            transmission = max(.25, min(1, 1 + derivative)) ** (1 / 2.2)
+            facing = -(nx + ny) / math.sqrt(2)
+            illumination = max(facing, 0) + .38 * max(-facing, 0)
+            light = .8 * fresnel * illumination - .65 * (1 - transmission)
+            values = (128 - 127 * nx * magnitude, 128 - 127 * ny * magnitude,
+                      128 + 127 * light)
+            rows.extend((*[max(0, min(255, round(v))) for v in values], 255))
+
+    def chunk(kind, data):
+        return struct.pack('!I', len(data)) + kind + data + struct.pack('!I', zlib.crc32(kind + data))
+
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('!2I5B', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(bytes(rows))) + chunk(b'IEND', b''))
+
+
+def _gallery_svg(width=342, height=72):
+    encoded = base64.b64encode(_gallery_map_png(width, height)).decode()
+    return f'''<svg class="optical-defs" aria-hidden="true" focusable="false" width="0" height="0" xmlns="http://www.w3.org/2000/svg">
+  <filter id="apple-liquid-glass" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+    <feImage href="data:image/png;base64,{encoded}" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="squircle-map" />
+    <feGaussianBlur in="SourceGraphic" stdDeviation="0.55" result="soft" />
+    <feColorMatrix in="soft" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0 1" result="opaque" />
+    <feDisplacementMap in="opaque" in2="squircle-map" scale="22.8" xChannelSelector="R" yChannelSelector="G" result="red-offset" />
+    <feDisplacementMap in="opaque" in2="squircle-map" scale="24" xChannelSelector="R" yChannelSelector="G" result="green-offset" />
+    <feDisplacementMap in="opaque" in2="squircle-map" scale="25.2" xChannelSelector="R" yChannelSelector="G" result="blue-offset" />
+    <feColorMatrix in="red-offset" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0" result="red-channel" />
+    <feColorMatrix in="green-offset" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1 0" result="green-channel" />
+    <feColorMatrix in="blue-offset" values="0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 1 0" result="blue-channel" />
+    <feComposite in="red-channel" in2="green-channel" operator="arithmetic" k2="1" k3="1" result="rg" />
+    <feComposite in="rg" in2="blue-channel" operator="arithmetic" k2="1" k3="1" result="rgb" />
+    <feColorMatrix in="rgb" type="saturate" values="1.35" result="saturated" />
+    <feColorMatrix in="squircle-map" values="0 0 2 0 0 0 0 2 0 0 0 0 2 0 0 0 0 0 0 1" result="transmission" />
+    <feBlend in="saturated" in2="transmission" mode="multiply" result="caustic" />
+    <feColorMatrix in="squircle-map" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 2 0 -1" result="fresnel" />
+    <feComposite in="fresnel" in2="caustic" operator="over" />
+  </filter>
+</svg>'''
+
+
+def _gallery_tokens():
+    colors = {
+        "ink": "#172033", "muted": "#596476", "focus": "#3568d4",
+        "shadow-faint": "#1f294812", "shadow-soft": "#1f294819",
+        "shadow-solid": "#1f294826", "shadow-glass": "#1f29482b",
+        "action": "#355fc1", "eyebrow": "#4f5c73", "divider": "#8e9bb540",
+        "border-control": "#8e9bb560", "border-strong": "#bec9db", "border": "#d5deed",
+        "wallpaper-cool": "#93b7f5", "wallpaper-warm": "#f4bca7",
+        "gallery-canvas": "#edf1f8", "canvas": "#edf2fb", "paper": "#f8fafc",
+        "white": "#fff", "mask-opaque": "#000", "glass-clear": "#ffffff12",
+        "caustic-inset": "#ffffff30", "glass-veil": "#ffffff38", "rim-dim": "#ffffff40",
+        "rim-bounce": "#ffffff66", "rim-secondary": "#ffffffad",
+        "glass-button": "#ffffffb8", "rim-primary": "#ffffffed",
+        "paper-warm": "#fffaf2", "paper-dark": "#151d2b",
+        "ink-inverse": "#f2f4ff", "muted-inverse": "#bac4d6",
+        "archetype-005": "var(--focus)", "archetype-006": "#a84b29",
+        "archetype-007": "#187160", "archetype-008": "#7145bc",
+        "accent": "var(--archetype-005)", "glass": "var(--glass-veil)", "radius": "28px",
+    }
+    return ":root {\n" + "\n".join(f"  --{name}: {value};" for name, value in colors.items()) + "\n}\n"
+
+
+def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
+    width, height = (390, 844) if platform == "mobile" else (1280, 800)
+    p0, fold, archetype = metadata["p0"], metadata["axis_y"], metadata["archetype"]
+    accent = f"var(--archetype-{archetype.removeprefix('VS-')})"
+    fold_markup = {
+        "accordion": '<details open><summary>Next steps</summary><p>One clear action, with supporting detail on demand.</p></details><details><summary>Recent context</summary><p>Earlier activity stays secondary.</p></details>',
+        "segmented-lens": '<div class="lens" role="tablist" aria-label="Context lens"><button role="tab" id="tab-focus" aria-selected="true" aria-controls="panel-focus">Focus</button><button role="tab" id="tab-detail" aria-selected="false" aria-controls="panel-detail" tabindex="-1">Breakdown</button></div><div role="tabpanel" id="panel-focus" aria-labelledby="tab-focus">One next step, ready when you are.</div><div role="tabpanel" id="panel-detail" aria-labelledby="tab-detail" hidden>Three supporting signals, shown only on request.</div>',
+        "swwallet": '<div class="stack" aria-label="Context pockets"><button data-depth="0">Front pocket · next step</button><button data-depth="1" tabindex="-1">Middle pocket · context</button><button data-depth="2" tabindex="-1">Back pocket · history</button></div><button id="next-pocket">Next pocket</button>',
+    }[fold]
+    metric, label = {"next-action": ("08:30", "Your next action"), "timeline": ("3", "Moments to explore"),
+                     "context": ("82%", "Your context signal"), "recovery": ("Ready", "A clear way forward")}.get(p0, ("Now", "Your current direction"))
+    density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), "16px")
+    surface = {"warm": "var(--paper-warm)", "solid": "var(--paper)", "dark": "var(--paper-dark)"}.get(overrides.get("surface"), "var(--paper)")
+    ink = "var(--ink-inverse)" if overrides.get("surface") == "dark" else "var(--ink)"
+    muted = "var(--muted-inverse)" if overrides.get("surface") == "dark" else "var(--muted)"
+    anti = escape(" ".join(str(item) for item in anti_patterns))
+    script = '''const tabs=[...document.querySelectorAll('[role=tab]')];
+function activate(i){tabs.forEach((tab,j)=>{tab.setAttribute('aria-selected',j===i);tab.tabIndex=j===i?0:-1;document.getElementById(tab.getAttribute('aria-controls')).hidden=j!==i;});}
+tabs.forEach((tab,i)=>{tab.onclick=()=>activate(i);tab.onkeydown=e=>{let j;if(e.key==='ArrowRight')j=(i+1)%tabs.length;else if(e.key==='ArrowLeft')j=(i+tabs.length-1)%tabs.length;else if(e.key==='Home')j=0;else if(e.key==='End')j=tabs.length-1;else return;e.preventDefault();activate(j);tabs[j].focus();};});
+const pockets=[...document.querySelectorAll('.stack button')];let front=0;
+function pocket(i){front=i;pockets.forEach((card,j)=>{const depth=(j-i+pockets.length)%pockets.length;card.dataset.depth=depth;card.tabIndex=depth===0?0:-1;card.setAttribute('aria-label',`Pocket ${j+1} of ${pockets.length}${depth===0?', front':''}`);});}
+if(pockets.length){pocket(0);document.querySelector('#next-pocket').onclick=()=>pocket((front+1)%pockets.length);pockets.forEach(card=>card.onclick=()=>pocket((front+1)%pockets.length));}
+const details=[...document.querySelectorAll('details')];details.forEach(item=>item.addEventListener('toggle',()=>{if(item.open)details.filter(other=>other!==item).forEach(other=>other.open=false);}));
+document.querySelector('#reset-view').onclick=()=>{if(tabs.length)activate(0);if(pockets.length)pocket(0);details.forEach((item,i)=>item.open=i===0);document.querySelector('#action-state').textContent='View reset';};
+document.querySelector('#continue').onclick=()=>document.querySelector('#action-state').textContent='Direction selected';
+if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) saturate(135%)');'''
+    return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
+<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
+{_gallery_svg(342 if platform == 'mobile' else 560, 72)}
+<header><span class="eyebrow">{variant} · {archetype}</span><h1>{p0.replace('-', ' ').title()}</h1></header>
+<section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>Keep the next meaningful step in focus.</p></div><div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
+<nav class="glass-card" aria-label="Actions"><button id="reset-view">Reset view</button><span id="action-state" role="status">Choose a direction</span><button id="continue">Continue</button></nav>
+</main><script>{script}</script></body></html>'''
+
+
+def _gallery_index(manifest):
+    frame = manifest["frame"]
+    scale = .8 if manifest["platform"] == "mobile" else .5
+    encoded = json.dumps(manifest, ensure_ascii=False).replace("<", "\\u003c")
+    script = '''const manifest=MANIFEST_DATA;const root=document.querySelector('#variants');
+manifest.variants.forEach(v=>{const card=document.createElement('article');card.className='variant-card';card.innerHTML=`<strong>${v.id} · ${v.p0} · ${v.axis_y} · ${v.archetype}</strong><div class="frame-viewport"><iframe title="${v.id}" src="${v.id}.html"></iframe></div><label><input type="radio" name="primary" value="${v.id}"> SELECT</label><label><input type="checkbox" data-star="${v.id}"> STAR</label><textarea data-note="${v.id}" aria-label="${v.id} notes" placeholder="Notes"></textarea>`;root.append(card);});
+document.querySelector('#session').textContent='Session anti-patterns: '+(manifest.session_anti_patterns.join('; ')||'none')+' · Style overrides: '+JSON.stringify(manifest.style_overrides);
+document.querySelector('#copy-summary').onclick=async()=>{
+const primary=document.querySelector('input[name=primary]:checked')?.value||'none';
+const stars=[...document.querySelectorAll('[data-star]:checked')].map(x=>x.dataset.star);
+const notes=[...document.querySelectorAll('[data-note]')].filter(x=>x.value.trim()).map(x=>`${x.dataset.note}: ${x.value.trim()}`);
+const text=`Goal: ${manifest.goal}\\nRound: ${manifest.round}\\nPrimary: ${primary}\\nSTAR mix-ins: ${stars.join(', ')||'none'}\\n`+notes.join('\\n');
+const status=document.querySelector('#status');document.querySelector('.manual-copy')?.remove();
+try{await navigator.clipboard.writeText(text);status.textContent='Summary copied';}
+catch{const area=document.createElement('textarea');area.value=text;area.className='manual-copy';area.setAttribute('aria-label','Round summary to copy');document.querySelector('.gallery').append(area);area.focus();area.select();let copied=false;try{copied=document.execCommand('copy');}catch{}if(copied){area.remove();status.textContent='Summary copied';}else status.textContent='Clipboard unavailable — copy the selected summary below';}
+};'''.replace("MANIFEST_DATA", encoded)
+    title = escape(f"{manifest['goal']} · Round {manifest['round']}")
+    return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
+<body class="gallery-page"><main class="gallery" style="--frame-width:{frame['width']}px;--frame-height:{frame['height']}px;--preview-scale:{scale}"><h1>{title}</h1><p>Compare the current screen with ten directions. Select one primary and star independent mix-ins. Scroll the comparison rail to explore.</p><p id="session"></p>
+<div id="variants"><article class="variant-card current-card"><strong>current · reference</strong><div class="frame-viewport"><iframe title="current" src="current.html"></iframe></div></article></div>
+<button id="copy-summary">Copy Round Summary</button><output id="status" aria-live="polite"></output></main><script>{script}</script></body></html>'''
+
+
+def command_scaffold_gallery(args):
+    anti_patterns = _json_or_csv(args.session_anti_patterns, kind="anti")
+    overrides = _json_or_csv(args.style_overrides, kind="style")
+    destination = _gallery_paths(args.goal, args.round)
+    if destination.is_symlink() or destination.exists():
+        raise ValueError(f"gallery round already exists or is unsafe: {destination}")
+    destination.mkdir(parents=True, exist_ok=False)
+    folds = ["accordion", "segmented-lens", "swwallet"]
+    archetypes = ["VS-005", "VS-006", "VS-007", "VS-008"]
+    focal = ["next-action", "timeline", "context", "recovery"]
+    codebook = [(2, 0, 3), (3, 1, 2), (0, 2, 3), (1, 2, 2), (1, 1, 1), (0, 0, 1), (3, 2, 1), (1, 0, 0), (0, 1, 0), (2, 2, 0)]
+    variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold], "archetype": archetypes[arch], "selected": False, "starred": False, "notes": ""} for i, (p, fold, arch) in enumerate(codebook, 1)]
+    manifest = {"schema": "tenfold-gallery/v1", "goal": args.goal, "round": args.round, "platform": args.platform, "frame": {"width": 390, "height": 844} if args.platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "variants": variants}
+    save(destination / "manifest.json", manifest)
+    (destination / "tokens.css").write_text(_gallery_tokens(), encoding="utf-8")
+    css = (ROOT / "assets" / "tenfold-gallery.css").read_text(encoding="utf-8")
+    (destination / "screen.css").write_text(css, encoding="utf-8")
+    current_meta = {"p0": "current", "axis_y": "accordion", "archetype": "VS-005"}
+    (destination / "current.html").write_text(_gallery_html(f"{args.goal} current", "current", args.platform, current_meta, anti_patterns, overrides), encoding="utf-8")
+    for variant in variants:
+        (destination / f"{variant['id']}.html").write_text(_gallery_html(f"{args.goal} {variant['id']}", variant["id"], args.platform, variant, anti_patterns, overrides), encoding="utf-8")
+    index = _gallery_index(manifest)
+    (destination / "index.html").write_text(index, encoding="utf-8")
+    print(json.dumps({"gallery": str(destination), "files": 15, "manifest": manifest}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1036,6 +1321,7 @@ def command_vault_search(args):
                         "desktop_macos_implementation": item.get("desktop_macos_implementation", ""),
                         "mobile_ios_implementation": item.get("mobile_ios_implementation", item.get("mobile_implementation", "")),
                         "native_guardrails": item.get("native_guardrails", item.get("token_guardrails", "")),
+                        **({"web_implementation": item.get("web_implementation", ""), "html_recipe_ref": item.get("html_recipe_ref", "")} if plat == "web" else {}),
                     }
     ranked = sorted(seen.values(), key=lambda x: (-x["score"], x["id"]))[: args.top]
     active_dims = {r["primary_dimension"] for r in ranked if r.get("primary_dimension")}
@@ -1080,10 +1366,15 @@ def command(args):
     if args.command == "classify":
         return command_classify(args)
     if args.command == "vault-ingest":
+        if not any((args.text, args.file, args.image, args.url, args.source_url)):
+            raise ValueError("vault-ingest requires --text, --file, --image, or --url")
+        if args.measure_palette is not None and not (args.image or args.measure_palette is not True):
+            raise ValueError("--measure-palette requires --image or an explicit screenshot path")
         return command_vault_ingest(args)
+    if args.command == "scaffold-gallery":
+        return command_scaffold_gallery(args)
     if args.command == "vault-search":
         return command_vault_search(args)
-    catalog_path, markdown_path = catalog_paths(args)
     catalog_path, markdown_path = catalog_paths(args)
     catalog = validate(load(catalog_path))
     if args.command == "ingest":
@@ -1243,16 +1534,25 @@ def parser():
     cls_parser.add_argument("--learn", action="store_true")
 
     vingest = sub.add_parser("vault-ingest", parents=[v2_common])
-    v_source = vingest.add_mutually_exclusive_group(required=True)
-    v_source.add_argument("--text")
-    v_source.add_argument("--file")
-    v_source.add_argument("--image")
+    vingest.add_argument("--text")
+    vingest.add_argument("--file")
+    vingest.add_argument("--image")
+    vingest.add_argument("--url", action="append", default=[])
+    vingest.add_argument("--source-url", action="append", default=[])
     vingest.add_argument("--measure-palette", nargs="?", const=True, default=None,
                          help="Measure screenshot hex palette via BAMA measure.swift or PNG fallback")
     vingest.add_argument("--archetype-ref", default=None,
                          help="Optional style archetype or cross-domain remix reference (e.g. VS-005)")
+    vingest.add_argument("--html-recipe-ref", default=None)
     vingest.add_argument("--no-split", action="store_true")
     vingest.add_argument("--dry-run", action="store_true")
+
+    gallery = sub.add_parser("scaffold-gallery")
+    gallery.add_argument("--goal", required=True)
+    gallery.add_argument("--round", type=int, required=True)
+    gallery.add_argument("--platform", choices=["desktop", "mobile", "web"], required=True)
+    gallery.add_argument("--session-anti-patterns", default="[]")
+    gallery.add_argument("--style-overrides", default="{}")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
     vsearch.add_argument("--query", default="")
