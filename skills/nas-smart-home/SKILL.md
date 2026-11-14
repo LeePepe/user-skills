@@ -13,8 +13,9 @@ authentication, and smart-home control contracts belong to the owner's private
 skill source, not this directory.
 
 Use the reference when checking an already-approved `quark-library-sync`
-deployment: startup execution, hourly-after-completion scheduling, incremental
-copy filters, readable files, live progress, and targeted rollback.
+deployment: startup execution, hourly-after-completion scheduling, Alist native
+`/api/fs/copy` task queueing (`:5244/@manage/tasks/copy`), undone/same-size
+idempotency, readable files, live progress, and targeted rollback.
 
 Before NAS access, require the owner's authenticated SSH alias and run a single
 connectivity check with `ConnectTimeout=5` and `BatchMode=yes`. If it fails, stop;
