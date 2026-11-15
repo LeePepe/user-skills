@@ -193,6 +193,14 @@ class DailyBriefTests(unittest.TestCase):
         self.assertTrue(any("25 visible" in error for error in errors))
         self.assertTrue(any("code spans" in error or "clickable" in error for error in errors))
         self.assertTrue(any("total" in error for error in errors))
+        fenced = valid + "\n```markdown\n[TIA-9](https://linear.app/tianpeili/issue/TIA-9)\n```\n"
+        self.assertTrue(any("fenced code" in error for error in daily_brief.validate_markdown(fenced)))
+
+    def test_markdown_sink_accepts_real_stage_bearing_render(self):
+        data = [issue("TIA-446", "[Goal] 新增每日 05:00 Linear「", state="Blocked", url="https://linear.app/tianpeili/issue/TIA-446/goal")]
+        active = [{"identifier": "TIA-446", "goal": "linear-daily-brief", "task": "T6", "state": "in_progress", "stage": "Writer", "group": "needs"}]
+        markdown, _ = daily_brief.render_brief(TODAY, data, [], [], [], ledger_active=active)
+        self.assertEqual(daily_brief.validate_markdown(markdown), [])
 
     def test_four_layers_classify_mixed_sources_and_generic_projects_by_intent(self):
         data = [issue("TIA-1", "Ship app", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"}),

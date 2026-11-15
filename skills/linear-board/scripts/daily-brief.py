@@ -738,7 +738,7 @@ def validate_markdown(markdown: str) -> list[str]:
     todo_numbers: list[int] = []
     recommendation_count = 0
     current_bucket = ""
-    todo_pattern = re.compile(r"^- \[[ x]\] \*\*\[(\d+)\] (.+)\*\* · (.+) · (.+)$")
+    todo_pattern = re.compile(r"^- \[[ x]\] \*\*\[(\d+)\] (.+?)\*\* · (.+?) · (.+)$")
     for line in lines:
         if line.startswith("**") and line.endswith("**"):
             label = line[2:-2]
@@ -789,9 +789,26 @@ def validate_markdown(markdown: str) -> list[str]:
         if heading_indexes != sorted(heading_indexes): errors.append("completed layers must remain in fixed order")
         if sum(1 for line in lines if line.startswith("| **")) != expected_total:
             errors.append("completed heading total does not match table rows")
-    # Code spans are literal text: a link-looking token inside one is not clickable.
-    if re.search(r"`[^`]*\[(?:TIA-\d+|#\d+)\]\([^)]*\)[^`]*`", markdown):
-        errors.append("issue/PR links hidden in code spans are not clickable")
+    # Code spans and fenced blocks are literal text: link-looking references inside
+    # them are not clickable. Inspect line-local spans to avoid crossing newlines.
+    in_fence = False
+    fence_has_ref = False
+    for line in lines:
+        fence = re.match(r"^\s*(```|~~~)", line)
+        if fence:
+            if in_fence:
+                if fence_has_ref: errors.append("issue/PR links hidden in fenced code are not clickable")
+                in_fence = False; fence_has_ref = False
+            else:
+                in_fence = True; fence_has_ref = bool(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", line))
+            continue
+        if in_fence:
+            fence_has_ref |= bool(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", line))
+            continue
+        spans = re.findall(r"`([^`]*)`", line)
+        if any(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", span) for span in spans):
+            errors.append("issue/PR links hidden in code spans are not clickable")
+    if in_fence and fence_has_ref: errors.append("issue/PR links hidden in fenced code are not clickable")
     # Catch bare references anywhere in the rendered contract, including source rows.
     links_removed = re.sub(r"\[([^]]+)\]\([^)]*\)", "", markdown)
     if REFERENCE_RE.search(links_removed): errors.append("all displayed TIA/# references must be clickable")
