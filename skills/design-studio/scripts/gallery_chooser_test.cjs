@@ -23,6 +23,14 @@ assert.equal(state[entryKey(A)].selected,true);
 assert.match(selectionSummary('goal',state),/Category: A[\s\S]*r1\/v01/);
 assert.match(selectionSummary('goal',state),/changed in round/);
 assert.match(selectionSummary('goal',state),/r2\/v02/);
+const domInput = (checked, value) => ({checked, value,});
+const domNode = {__galleryCard: B, querySelector: selector => selector === '[data-select]' ? domInput(true, '') : selector === '[data-star]' ? domInput(true, '') : domInput(false, '  dom note  ')};
+const domRoot = {querySelectorAll: selector => selector === '.variant-card' ? [domNode] : []};
+const mergedSummary = selectionSummary('goal', state, domRoot);
+assert.equal((mergedSummary.match(/r1\/v01/g) || []).length, 4, 'stored entry is merged once across category/select/star/note');
+assert.equal((mergedSummary.match(/r1\/v01: dom note/g) || []).length, 1, 'DOM note is not duplicated');
+assert.deepEqual(readState(null,'goal'),{});
+assert.deepEqual(readState({getItem: () => 'null'},'goal'),{});
 assert.deepEqual(readState(storage,'another-goal'),{});
 values.set('design-gallery:invalid','{broken'); assert.deepEqual(readState(storage,'invalid'),{});
 for (const mode of ['mobile','macos','web']) for (const available of [328, 390, 600]) {

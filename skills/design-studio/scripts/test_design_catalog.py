@@ -1401,6 +1401,38 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
             self.assertFalse((root / 'r2-B').exists())
             self.assertTrue((root / 'receipts/keep.json').is_file())
 
+    def test_hub_breadcrumbs_telemetry_and_cleanup_are_canonical(self):
+        import shutil
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            env = dict(os.environ, HOME=directory)
+            blog = Path(directory) / 'blog'
+            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '1', '--category', 'first', '--platform', 'web', '--blog-repo', str(blog), env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '2', '--category', 'second', '--platform', 'web', '--blog-repo', str(blog), env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            portal = (blog / 'demos/hub-contract/index.html').read_text(encoding='utf-8')
+            round_index = (blog / 'demos/hub-contract/r1-first/index.html')
+            self.assertIn('href="../index.html"', round_index.read_text(encoding='utf-8'))
+            self.assertIn('href="/"', portal); self.assertIn('href="/demos/"', portal)
+            self.assertIn('data-group-filter="first" aria-pressed="true"', portal)
+            self.assertIn('data-group-filter="all" aria-pressed="false"', portal)
+            self.assertGreaterEqual(portal.count('hidden aria-hidden="true"'), 10)
+            hub = (blog / 'demos/index.html').read_text(encoding='utf-8')
+            for token in ('data-demo-goal="hub-contract"', 'data-copy-goal="hub-contract"', 'copy-all-demos-summary', 'localStorage', 'NOTES:', 'aidash-cards-r2:', "parts[0] === 'selection'", "parts[0] === 'star'", "parts[0] === 'note'"):
+                self.assertIn(token, hub)
+            cleanup = run('cleanup-demo', '--goal', 'hub-contract', '--handoff-root', str(Path(directory) / 'Development/handoff'), '--blog-repo', str(blog), env=env)
+            self.assertEqual(cleanup.returncode, 0, cleanup.stderr)
+            self.assertNotIn('hub-contract', (blog / 'demos/index.html').read_text(encoding='utf-8'))
+            self.assertFalse((blog / 'demos/hub-contract').exists())
+
+    def test_portal_gate_rejects_summary_and_hiding_mutations(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory); (root / 'index.html').write_text('<main><nav class="gallery-breadcrumbs"><a href="/demos/">Demos</a></nav><button id="copy-summary">Copy</button><p id="selection-telemetry"></p><article class="variant-card" data-group="a" data-select data-star data-note aria-hidden="true"></article><article class="variant-card" data-group="b" hidden aria-hidden="true"></article><script>const text="SELECT:";</script></main>', encoding='utf-8')
+            evidence_path = SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py'
+            spec = importlib.util.spec_from_file_location('repair_evidence', evidence_path); evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+            errors = evidence.portal_errors(root)
+            self.assertTrue(any('summary' in error for error in errors)); self.assertTrue(any('hidden' in error for error in errors))
+
     def test_category_path_rejects_before_writes_and_title_is_inert(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = dict(os.environ, HOME=directory)
