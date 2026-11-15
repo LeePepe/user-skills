@@ -39,6 +39,30 @@ class DesignCatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog["patterns"]), 17)
         self.assertEqual(run("render", "--check").returncode, 0)
 
+    def test_variant_summary_is_rendered_and_synthesized_in_chinese(self):
+        manifest = {
+            'goal': '摘要测试', 'round': 1, 'platform': 'web', 'mode': 'screen',
+            'variants': [{'id': 'v01', 'p0': 'next-action', 'axis_y': 'accordion',
+                          'archetype': 'VS-005', 'layout': 'hero-top',
+                          'glass_geometry': 'wide'}],
+        }
+        cards = DESIGN_CATALOG.CHOOSER.cards_for(manifest)
+        self.assertIn('variant-summary', DESIGN_CATALOG.CHOOSER.card_html(cards[1]))
+        self.assertRegex(cards[1]['summary'], r'[\\u4e00-\\u9fff]')
+        self.assertGreaterEqual(len(cards[1]['summary']), 10)
+
+    def test_portal_gate_rejects_missing_short_and_duplicate_summaries(self):
+        shell = '<nav class="gallery-breadcrumbs"><a href="/demos/">Demos</a></nav><p id="selection-telemetry"></p><button id="copy-summary"></button>'
+        shell += '<input data-select><input data-star><textarea data-note></textarea>'
+        article = lambda summary: f'<article class="variant-card" data-group="r1"><header>Header</header>{summary}<div class="device-bezel"></div></article>'
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory)
+            (root / 'index.html').write_text(shell + article('<p class="variant-summary">重复摘要内容</p>') + article('<p class="variant-summary">重复摘要内容</p>'), encoding='utf-8')
+            errors = EVIDENCE.portal_errors(root)
+            self.assertTrue(any('duplicate candidate' in error for error in errors))
+            (root / 'index.html').write_text(shell + article('') , encoding='utf-8')
+            self.assertTrue(any('correctly placed' in error for error in EVIDENCE.portal_errors(root)))
+
     def test_search_prompts(self):
         for query, expected in (
             ("揭角", "MP-001"),

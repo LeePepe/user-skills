@@ -281,6 +281,32 @@ def portal_errors(goal_root):
         errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
     if not all(token in html for token in ('SELECT:', 'STAR:', 'NOTES:', '[data-star]', '[data-note]')):
         errors.append('index.html: executable summary must include SELECT, STAR, and NOTES from star/note controls')
+    cards = list(re.finditer(r'<article\b[^>]*class="variant-card[^\"]*"[^>]*>.*?</article>', html, re.I | re.S))
+    summaries_by_category = {}
+    for match in cards:
+        card = match.group(0)
+        card_class = re.search(r'class="([^\"]*)"', card, re.I)
+        category_match = re.search(r'data-group="([^\"]+)"', card, re.I)
+        summary_match = re.search(r'<p\b[^>]*class="variant-summary"[^>]*>(.*?)</p>', card, re.I | re.S)
+        header_end = card.lower().find('</header>')
+        bezel_start = card.lower().find('<div class="device-bezel"')
+        summary_start = summary_match.start() if summary_match else -1
+        summary_end = summary_match.end() if summary_match else -1
+        if not summary_match or header_end < 0 or bezel_start < 0 or not (header_end < summary_start < summary_end <= bezel_start):
+            errors.append('index.html: every variant-card requires a correctly placed variant-summary')
+            continue
+        summary = re.sub(r'<[^>]+>', '', summary_match.group(1)).strip()
+        if len(summary) < 10:
+            errors.append('index.html: variant-summary must contain at least 10 characters')
+        if not re.search(r'[\u4e00-\u9fff]', summary):
+            errors.append('index.html: variant-summary must contain Chinese text')
+        if card_class and 'current-card' not in card_class.group(1).split():
+            category = category_match.group(1) if category_match else ''
+            summaries_by_category.setdefault(category, []).append(summary)
+    for category, summaries in summaries_by_category.items():
+        if len(summaries) != len(set(summaries)):
+            errors.append(f'index.html: duplicate candidate variant-summary in category {category}')
+
     groups = re.findall(r'data-group-filter="([^"]+)"[^>]*aria-pressed="([^"]+)"', html)
     categories = re.findall(r'class="variant-card[^\"]*"[^>]*data-group="([^"]+)"', html)
     unique_categories = list(dict.fromkeys(categories))
@@ -397,7 +423,7 @@ def gallery_errors(root, manifest):
                 errors.append('manifest schemes are not normalized operative graphs')
             expected_variants = [{'id': s['id'], 'title': s['title'], 'navigation_model': s['navigation_model'],
                                   'screens': [p['id'] for p in s['screens']]} for s in normalized]
-            actual_variants = [{k: v for k, v in variant.items() if k not in {'prompt_file', 'prompt_sha256'}} for variant in manifest.get('variants', [])]
+            actual_variants = [{k: v for k, v in variant.items() if k not in {'prompt_file', 'prompt_sha256', 'summary', 'one_liner', 'summary_zh'}} for variant in manifest.get('variants', [])]
             if actual_variants != expected_variants:
                 errors.append('manifest variant summaries do not match operative schemes')
             if len({c.NAVIGATION.architecture_signature(s) for s in normalized}) != 4:
