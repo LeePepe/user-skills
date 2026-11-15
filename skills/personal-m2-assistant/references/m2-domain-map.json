@@ -315,8 +315,7 @@
             "AIDash",
             "aidata",
             "MenuBar",
-            "Scheduled Pulse",
-            "pew"
+            "Scheduled Pulse"
           ],
           "aliases": [
             "ai dash",
@@ -324,6 +323,21 @@
             "pulse"
           ],
           "space": "AIDash"
+        },
+        {
+          "topic_id": "pew-telemetry",
+          "group": "personal-core-gateways",
+          "title": "Pew CLI Telemetry",
+          "target_repo": "pew",
+          "cwd": "~/Development/handoff/pew-copilot-hermes-fix",
+          "space": "pew",
+          "keywords": [
+            "pew",
+            "pew sync",
+            "token upload",
+            "accounting-queue"
+          ],
+          "aliases": []
         },
         {
           "topic_id": "dsh-plugins",

@@ -267,10 +267,10 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(result["receipts"][0]["method"], "dsh.omni-hub.dispatch")
         self.assertTrue(calls[-1][0].endswith("/m2-omni-hub/api/dispatch"))
 
-    def test_domain_map_has_four_groups_and_23_topics(self):
+    def test_domain_map_has_four_groups_and_26_topics(self):
         domain_map = self.router.load_domain_map()
         self.assertEqual(len(domain_map["groups"]), 4)
-        self.assertEqual(len(domain_map["topics"]), 25)
+        self.assertEqual(len(domain_map["topics"]), 26)
         self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system"}, {"financial", "shared-design-system"})
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
@@ -285,6 +285,35 @@ class M2RouterTests(unittest.TestCase):
             json.loads(legacy_path.read_text(encoding="utf-8")),
             json.loads(canonical_path.read_text(encoding="utf-8")),
         )
+
+    def test_pew_telemetry_routes_independently_from_aidash(self):
+        domain_map = self.router.load_domain_map()
+        raw_map = json.loads(self.router.DEFAULT_DOMAIN_MAP_PATH.read_text(encoding="utf-8"))
+        topics = {topic["topic_id"]: topic for group in raw_map["groups"] for topic in group["topics"]}
+        pew = topics["pew-telemetry"]
+        self.assertEqual(pew["group"], "personal-core-gateways")
+        self.assertEqual(pew["title"], "Pew CLI Telemetry")
+        self.assertEqual(pew["target_repo"], "pew")
+        self.assertEqual(pew["cwd"], "~/Development/handoff/pew-copilot-hermes-fix")
+        self.assertEqual(pew["space"], "pew")
+        self.assertEqual(pew["keywords"], ["pew", "pew sync", "token upload", "accounting-queue"])
+        self.assertNotIn("pew", topics["aidash-aidata"]["keywords"])
+        for topic_id in ("pew-telemetry", "aidash-aidata"):
+            topic = topics[topic_id]
+            for keyword in topic["keywords"]:
+                with self.subTest(keyword=keyword):
+                    plan = self.router.build_plan(
+                        f"检查 {keyword} 状态", [], domain_map=domain_map,
+                        mock_jev={}, mock_magpie={"route": "ROUTE_SINGLE", "targets": []},
+                    )
+                    self.assertEqual(plan["decision"]["source"], "deterministic_fallback")
+                    self.assertEqual(len(plan["targets"]), 1)
+                    target = plan["targets"][0]
+                    self.assertEqual(target["topic_id"], topic_id)
+                    self.assertEqual(target["target_repo"], topic["target_repo"])
+                    self.assertEqual(target["space"], topic["space"])
+                    self.assertEqual(target["cwd"], str(Path(topic["cwd"]).expanduser()))
+                    self.assertEqual(target["domain_status"], "MAPPED_DOMAIN")
 
     def test_topic_routing_distinguishes_same_repo_business_panes(self):
         sessions = [
@@ -335,7 +364,7 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(registered["topics"]), 26)
+            self.assertEqual(len(registered["topics"]), 27)
             new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
             self.assertTrue(len(new_topic["keywords"]) > 0)
             self.assertEqual(len(new_domain_map["groups"]), 5)
@@ -1242,6 +1271,8 @@ class M2RouterTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w2:p1", "agent_status": "idle", "name": "learn-stale"}]}), stderr="")
                 if args[1:3] == ["workspace", "list"]:
                     return SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": []}), stderr="")
+                if args[1:3] == ["agent", "read"]:
+                    return SimpleNamespace(returncode=0, stdout="completed", stderr="")
                 if args[1:3] == ["pane", "close"]:
                     return SimpleNamespace(returncode=0, stdout="closed", stderr="")
                 if args[0] == "/bin/fake-herdr-dispatch":
@@ -2110,6 +2141,81 @@ class M2RouterTests(unittest.TestCase):
         record["handoff_dir"] = str(old)
         declared = self.router.supervision_status(state_file=state_path, agent_records=[record], handoff_root=root)
         self.assertEqual(declared["slots"][0]["linear_issue"], "TIA-409")
+
+    def test_context_eviction_requires_effective_completion_and_both_jev_answers(self):
+        goal = self.test_root / "handoff" / "old-goal"
+        goal.mkdir(parents=True)
+        (goal / "ledger.md").write_text("- status: done\n- Linear: TIA-999\n", encoding="utf-8")
+        session = {"session_id": "old", "pane_id": "w9:p1", "title": "Old goal", "summary": "old", "handoff_dir": str(goal)}
+        target = {"topic_id": "pew-telemetry"}
+        session["summary"] = "Context 100%; different Issue TIA-123"
+        self.assertEqual(self.router._evaluate_m2_context_continuity(target, session, "feedback on old goal", mock_jev={"answers": {"is_same_goal_continuation": {"noul": 0.85}, "prior_context_value": {"choice": "helpful"}}})["m2_action"], "REUSE_EXISTING_M2")
+        strict = self.router._evaluate_m2_context_continuity(target, session, "brand new task", mock_jev={"answers": {"is_same_goal_continuation": {"noul": 0.1}, "prior_context_value": {"choice": "noise_or_irrelevant"}}})
+        self.assertEqual(strict["m2_action"], "REPLACE_STALE_M2")
+        for partial in (
+            {"answers": {"is_same_goal_continuation": {"noul": 0.1}}},
+            {"answers": {"prior_context_value": {"choice": "noise_or_irrelevant"}}},
+            {"answers": {"is_same_goal_continuation": {"noul": 0.1}, "prior_context_value": {"choice": "helpful"}}},
+        ):
+            self.assertEqual(self.router._evaluate_m2_context_continuity(target, session, "new", mock_jev=partial)["m2_action"], "REUSE_EXISTING_M2")
+        (goal / "ledger.md").write_text("EVT=GOAL_DONE\nstatus: in_progress\n", encoding="utf-8")
+        self.assertEqual(self.router._evaluate_m2_context_continuity(target, session, "new", mock_jev={"answers": {"is_same_goal_continuation": {"noul": 0.1}, "prior_context_value": {"choice": "noise_or_irrelevant"}}})["m2_action"], "REUSE_EXISTING_M2")
+
+    def test_gc_dry_run_protects_active_and_owner_panes(self):
+        records = [
+            {"name": "old-goal-tl-r1", "pane_id": "w3:p1", "agent_status": "done", "visible": "done"},
+            {"name": "m2-a", "pane_id": "w4:p1", "agent_status": "idle", "is_m2": True, "space": "pew"},
+            {"name": "m2-b", "pane_id": "w5:p1", "agent_status": "idle", "is_m2": True, "space": "pew"},
+            {"name": "active", "pane_id": "w1:p1", "agent_status": "working", "is_m2": True},
+            {"name": "watching", "pane_id": "w6:p1", "agent_status": "idle", "is_m2": True, "visible": "1 background /tasks"},
+        ]
+        result = self.router.run_gc(records)
+        self.assertTrue(result["dry_run"])
+        self.assertNotIn("w1:p1", {item["pane_id"] for item in result["gc_candidates"]})
+        self.assertNotIn("w6:p1", {item["pane_id"] for item in result["gc_candidates"]})
+        self.assertIn("w5:p1", {item["pane_id"] for item in result["gc_candidates"]})
+
+    def test_gc_protects_w2j_cindy_and_active_siblings_and_distinct_topics(self):
+        records = [
+            {"name": "old-goal-tl-r1", "pane_id": "w3:p1", "workspace_id": "w3", "agent_status": "done", "visible": "done"},
+            {"name": "child", "pane_id": "w3:p2", "workspace_label": "space", "agent_status": "idle", "visible": "1 background /tasks"},
+            {"name": "w2", "pane_id": "w2J:p1", "agent_status": "idle", "is_m2": True, "visible": "done"},
+            {"name": "cindy", "pane_id": "w8:p1", "workspace_label": "Cindy", "agent_status": "idle", "is_m2": True, "visible": "done"},
+            {"name": "a", "pane_id": "w9:p1", "agent_status": "idle", "is_m2": True, "space": "shared", "topic_id": "topic-a", "visible": "done"},
+            {"name": "b", "pane_id": "w9:p2", "agent_status": "idle", "is_m2": True, "space": "shared", "topic_id": "topic-b", "visible": "done"},
+        ]
+        found = self.router.discover_gc_candidates(records)
+        panes = {item["pane_id"] for item in found}
+        self.assertNotIn("w3:p1", panes)
+        self.assertNotIn("w2J:p1", panes)
+        self.assertNotIn("w8:p1", panes)
+        self.assertNotIn("w9:p2", panes)
+
+    def test_context_boundary_and_numeric_companion_conflict_reuse(self):
+        session = {"session_id": "old", "pane_id": "w9:p1", "goal_done": True, "summary": "done"}
+        target = {"topic_id": "pew-telemetry"}
+        boundary = {"answers": {"is_same_goal_continuation": {"noul": 0.35}, "prior_context_value": {"choice": "noise_or_irrelevant"}}}
+        conflict = {"answers": {"is_same_goal_continuation": {"noul": 0.1}, "prior_context_value": {"choice": "noise_or_irrelevant"}, "prior_context_value_match": {"noul": 0.85}}}
+        self.assertEqual(self.router._evaluate_m2_context_continuity(target, session, "new", mock_jev=boundary)["m2_action"], "REUSE_EXISTING_M2")
+        self.assertEqual(self.router._evaluate_m2_context_continuity(target, session, "new", mock_jev=conflict)["m2_action"], "REUSE_EXISTING_M2")
+
+    def test_gc_approved_prunes_only_matching_slot_ids(self):
+        state = self.test_root / "state.json"
+        state.write_text(json.dumps({"slots": [{"slot_id": "closed", "pane_id": "w9:p1", "session_id": "old"}, {"slot_id": "keep", "pane_id": "w9:p2", "session_id": "other"}]}), encoding="utf-8")
+        records = [{"name": "m2-old", "pane_id": "w9:p1", "session_id": "old", "agent_status": "idle", "is_m2": True, "space": "pew", "visible": "done", "goal_done": True}]
+        def runner(args, **kwargs):
+            if args[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w9:p1", "status": "idle", "visible": "done"}]}), stderr="")
+            if args[1:3] == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w9:p1", "agent_status": "idle", "name": "m2-old", "session_id": "old", "visible": "done"}]}), stderr="")
+            if args[1:3] == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout="done", stderr="")
+            if args[1:3] == ["pane", "close"]:
+                return SimpleNamespace(returncode=0, stdout="closed", stderr="")
+            raise AssertionError(args)
+        result = self.router.run_gc(records, approve=True, state_file=state, runner=runner)
+        self.assertEqual(result["pruned_state_slots"], ["closed"])
+        self.assertEqual([slot["slot_id"] for slot in json.loads(state.read_text())["slots"]], ["keep"])
 
     def test_status_cli_and_shared_default_state_paths(self):
         with patch.dict("os.environ", {"M2_SUPERVISION_STATE_FILE": ""}):

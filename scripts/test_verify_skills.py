@@ -174,6 +174,36 @@ class VerifySkillsTests(unittest.TestCase):
         for path in (SKILLS_DIR / "my-designer" / "SKILL.md", SKILLS_DIR / "design-studio" / "SKILL.md"):
             self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 130)
 
+    def test_gallery_portal_gate_rejects_actual_runtime_and_binding_mutations(self) -> None:
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            return module
+        chooser = load('verify_chooser', SKILLS_DIR / 'design-studio/scripts/gallery_chooser.py')
+        evidence = load('verify_gallery_evidence', SKILLS_DIR / 'my-designer/scripts/design_evidence.py')
+        manifests = [{'goal': 'verify', 'category': category, 'round': 2, 'platform': 'web', '_path': category,
+                      'variants': [{'id': 'v01', 'title': title, 'summary': summary, 'p0': 'task', 'axis_y': 'rail', 'archetype': 'declared'}]}
+                     for category, title, summary in [('A', 'Alpha', '任务轨道清楚展示真实观察与后续决策。'), ('B', 'Beta', '独立内容面板保持实际备注与分类归属。')]]
+        html = chooser.render('verify', manifests, '', portal=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); index = root / 'index.html'
+            index.write_text(html, encoding='utf-8')
+            self.assertEqual(evidence.portal_errors(root), [])
+            for old, new, expected in [
+                ('data-note="A/v01"', 'data-note="v01"', 'data-note'),
+                ('aria-label="A/v01 Notes"', 'aria-label="B/v01 Notes"', 'aria-label'),
+                ('data-variant="A/v01"', 'data-variant="v01"', 'data-variant'),
+                ("return lines.join('\\n');", "return lines.join('\\n') + '\\nNOTES:\\nflat';", 'runtime'),
+                ('root, config.cards)', 'root)', 'runtime'),
+                ('const scoped = all.filter(s => s.category === category)', 'const scoped = all', 'runtime'),
+                ('const text = selectionSummary(config.goal, currentState(), root, config.cards)',
+                 "const text = (false ? selectionSummary(config.goal, currentState(), root, config.cards) : 'legacy flat summary')", 'runtime'),
+            ]:
+                with self.subTest(expected=expected, mutation=old):
+                    mutated = html.replace(old, new, 1); self.assertNotEqual(html, mutated)
+                    index.write_text(mutated, encoding='utf-8')
+                    self.assertTrue(any(expected in error for error in evidence.portal_errors(root)))
+
     def test_two_stage_prompt_binding_and_linked_debug_css_gate(self) -> None:
         catalog = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
         gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'

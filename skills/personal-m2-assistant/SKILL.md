@@ -51,7 +51,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
 
-随时巡检：`python3 skills/personal-m2-assistant/scripts/m2-router.py --status`（加 `--json` 返回结构化全局汇总）。
+随时巡检：`python3 skills/personal-m2-assistant/scripts/m2-router.py --status`（加 `--json` 返回结构化全局汇总）。全局回收默认只读预览：`--gc [--approve] [--json]`，仅 Owner 批准后关闭已完成孤儿 M1、重复静默 M2、已完成 Goal 的静默 M2，并清理对应监督槽位。
 
 常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`（显式导出）、`--transport stdout`。完整参数以脚本 `--help` 为准。
 
@@ -59,7 +59,8 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 
 - `wave_order` 只表示软顺序；真实上游结果通过 `rag_context_hint`/`context_pass` 传递，不伪造结果。
 - Herdr 只向已有 agent prompt；新 M2 通过安全 dispatch wrapper 启动并传入 `-- --model gemini-4-argon --context long_context`。Space 已存在时使用 `--workspace <workspace_id> --tab-label <name>` 创建 Tab，不存在时使用 `--new-workspace --workspace-label <space>`；绝不把调用方 `HERDR_PANE_ID` 作为 NEW_M2 分裂源。dsh 优先 Session Sink，失败时回退到明确目标的 Omni Hub dispatch。
-- `--cleanup-duplicates` 只清理安全的重复 idle M2；`--replace-stale-m2` 可关闭安全 idle 旧窗并重开。保护 `HERDR_PANE_ID`、`w1:p1` 与 working/blocked 窗格。
+- `--cleanup-duplicates` 只清理安全的重复 idle M2；`--replace-stale-m2` 可关闭安全 idle 旧窗并重开。保护 `HERDR_PANE_ID`、`w1:p1`、`w2J:p1`、Cindy/大总管与 working/blocked 窗格。
+- Context Eviction 只有严格 AND 才成立：旧 Goal 当前有效完成且无 review/Owner decision，且 Jev 同时给出 `is_same_goal_continuation < 0.35` 与 `prior_context_value=noise_or_irrelevant`。缺失、无效、部分或冲突语义一律 `REUSE_EXISTING_M2`；Context 使用量、百分比或不同 Issue 单独绝不触发替换。
 - `stdout` transport 只输出 receipt，不产生副作用；`auto` 依据发现来源选择适配器。
 
 ## 相关节点与验证
