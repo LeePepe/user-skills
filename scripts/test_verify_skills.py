@@ -23,6 +23,14 @@ os.environ.setdefault("GTT_LINEAR_SYNC", "0")
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 SKILLS_DIR: Path = REPO_ROOT / "skills"
+
+
+def _png_fixture(width=390, height=844):
+    import struct, zlib, binascii
+    raw = b''.join(b'\x00' + b'\xff\xff\xff\xff' * width for _ in range(height))
+    def chunk(kind, payload):
+        return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', binascii.crc32(kind + payload) & 0xffffffff)
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
 FENCED_CODE_RE: re.Pattern[str] = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE: re.Pattern[str] = re.compile(r"`[^`\n]+`")
 MARKDOWN_LINK_RE: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -2989,7 +2997,7 @@ class JevGateTests(unittest.TestCase):
         import copy
         g = self.gate
         image_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-        image_file.write(bytes.fromhex('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082'))
+        image_file.write(_png_fixture())
         image_file.close()
         image_source = image_file.name + '#button'
         violation = {'classification': 'IMPL_BUG', 'constraint': {'declared': True, 'source': 'spec.md:12', 'requirement': '48pt hit targets'},
@@ -3044,7 +3052,7 @@ class JevGateTests(unittest.TestCase):
 
     def test_traceback_requires_real_image_for_direct_and_jev_paths(self):
         g = self.gate
-        png = bytes.fromhex('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082')
+        png = _png_fixture()
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
             root = Path(tmp); image = root / 'screen.png'; image.write_bytes(png); source = str(image) + '#button'
             base = {'schema': 'visual-traceback/v1', 'findings': [], 'rendered_evidence': [{'kind': 'screenshot', 'source': source, 'observation': 'real rendered viewport inspected'}], 'clean': {'spec_source': 'spec.md:1', 'implementation_source': source, 'checks': [{'requirement': 'target', 'assertion': {'operator': 'minimum', 'required': 1, 'observed': 1}}]}}
@@ -3055,11 +3063,17 @@ class JevGateTests(unittest.TestCase):
             self.assertEqual(run(base, ('--no-jev',)).returncode, 0)
             answers = {q: {'noul': 1} for q in g.TAXONOMY['jev_verification_gates']['mobile']}; answers['q_traceback_evidence_attribution'] = {'noul': 1}
             self.assertEqual(run(base, ('--mock-jev-json', json.dumps(answers))).returncode, 0)
+            undersized = root / 'small.png'; undersized.write_bytes(_png_fixture(1, 1))
+            truncated = root / 'truncated.png'; truncated.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 24)
+            jpeg = root / 'truncated.jpg'; jpeg.write_bytes(b'\xff\xd8\xff')
             for bad in (
                 {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(root / 'phantom.png') + '#button', 'observation': 'real'}]},
                 {**base, 'rendered_evidence': [{'kind': 'observation', 'source': 'View.swift:42', 'observation': 'code only'}]},
                 {**base, 'clean': {**base['clean'], 'status': 'UNVALIDATED'}},
                 {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(root / 'not-image.txt'), 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(undersized) + '#button', 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(truncated) + '#button', 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(jpeg) + '#button', 'observation': 'real'}]},
             ):
                 self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(bad), base_dir=root)[0])
                 self.assertNotEqual(run(bad, ('--no-jev',)).returncode, 0)

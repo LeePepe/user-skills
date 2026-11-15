@@ -719,7 +719,7 @@ def _unvalidated_marker(value):
     return isinstance(value, str) and 'unvalidated' in value.casefold()
 
 
-def _image_path(source, base_dir):
+def _image_path(source, base_dir, platform=None):
     raw = re.split(r'[#]', source, maxsplit=1)[0]
     path = Path(raw)
     if not path.is_absolute():
@@ -728,16 +728,47 @@ def _image_path(source, base_dir):
     if path.is_symlink() or not path.is_file() or any(parent.is_symlink() for parent in path.parents):
         raise ValueError(f'screenshot artifact is missing or symlinked: {source}')
     data = path.read_bytes()
+    width = height = None
     if data.startswith(b'\x89PNG\r\n\x1a\n'):
-        if len(data) < 24 or data[12:16] != b'IHDR' or int.from_bytes(data[16:20], 'big') < 1 or int.from_bytes(data[20:24], 'big') < 1:
-            raise ValueError(f'screenshot PNG has invalid dimensions: {source}')
-        return path
-    if data.startswith(b'\xff\xd8\xff'):
-        return path
-    raise ValueError(f'screenshot artifact is not PNG or JPEG: {source}')
+        if len(data) < 33 or data[12:16] != b'IHDR' or int.from_bytes(data[16:20], 'big') < 1 or int.from_bytes(data[20:24], 'big') < 1 or b'IEND' not in data:
+            raise ValueError(f'screenshot PNG is truncated or has invalid dimensions: {source}')
+        width, height = int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big')
+    elif data.startswith(b'\xff\xd8\xff'):
+        index = 2
+        while index + 9 < len(data):
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            index += 2
+            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                continue
+            if index + 2 > len(data):
+                break
+            length = int.from_bytes(data[index:index + 2], 'big')
+            if length < 2 or index + length > len(data):
+                break
+            if marker in set(range(0xC0, 0xC4)) | set(range(0xC5, 0xC8)) | set(range(0xC9, 0xCC)) | set(range(0xCD, 0xD0)):
+                if length >= 7:
+                    height = int.from_bytes(data[index + 3:index + 5], 'big')
+                    width = int.from_bytes(data[index + 5:index + 7], 'big')
+                break
+            index += length
+        if not width or not height:
+            raise ValueError(f'screenshot JPEG dimensions are unverifiable: {source}')
+    else:
+        raise ValueError(f'screenshot artifact is not PNG or JPEG: {source}')
+    bounds = {'mobile': (390, 844), 'desktop': (1280, 800)}
+    if platform in bounds:
+        minimum_width, minimum_height = bounds[platform]
+        if width < minimum_width or height < minimum_height:
+            raise ValueError(f'screenshot is below {platform} viewport {minimum_width}x{minimum_height}: {source}')
+    elif (width < 390 or height < 844) and (width < 1280 or height < 800):
+        raise ValueError(f'screenshot is below supported viewport minimum: {source}')
+    return path
 
 
-def traceback_errors(text, base_dir=None):
+def traceback_errors(text, base_dir=None, platform=None):
     errors, evidence = [], []
     try:
         # JSON file or one fenced JSON record in a report. Prose is not evidence.
@@ -757,14 +788,14 @@ def traceback_errors(text, base_dir=None):
             if item.get('kind') == 'screenshot':
                 if not re.search(r'\.(?:png|jpe?g)(?:#|$)', item['source'], re.I):
                     raise ValueError('screenshot evidence must cite a PNG or JPEG source')
-                screenshots.append(_image_path(item['source'], Path(base_dir) if base_dir else None))
+                screenshots.append(_image_path(item['source'], Path(base_dir) if base_dir else None, platform))
         if not screenshots:
             raise ValueError('at least one real screenshot evidence entry is required')
         screenshot_sources = {str(path) for path in screenshots}
         def require_screenshot_source(source):
             if not isinstance(source, str) or not re.search(r'\.(?:png|jpe?g)(?:#|$)', source, re.I):
                 raise ValueError('implementation evidence must cite a screenshot artifact')
-            path = _image_path(source, Path(base_dir) if base_dir else None)
+            path = _image_path(source, Path(base_dir) if base_dir else None, platform)
             if str(path) not in screenshot_sources:
                 raise ValueError('implementation screenshot is not listed in rendered_evidence')
         findings = data['findings']
