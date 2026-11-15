@@ -180,6 +180,19 @@ class DailyBriefSelectionTests(unittest.TestCase):
             self.assertFalse(any("state_id" in kwargs for _, kwargs in client.updates))
             self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
 
+    def test_owner_direct_comments_trigger_without_mention_for_daily_brief_and_daily_learn(self):
+        issue = self.brief()
+        issue["comments"] = {"nodes": [owner_comment("1, 2", "brief-owner")]}
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"))
+        self.assertIsNotNone(pending)
+        self.assertIn("TIA-10", pending["directive"])
+        self.assertIn("TIA-11", pending["directive"])
+        learning = personal_issue(daily=True, comments=[owner_comment("1, 3", "learn-owner")])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(learning, bridge.State(Path(tmp) / "state.json"))
+        self.assertEqual(pending["slugs"], ["first-topic"])
+
     def test_all_and_invalid_selection_never_fall_back_to_whole_issue(self):
         issue = self.brief()
         selected = bridge.brief_selection(issue, owner_comment("@bot 全部"))
@@ -192,6 +205,133 @@ class DailyBriefSelectionTests(unittest.TestCase):
         self.assertIn("Owner decision required", bridge.brief_selection(issue))
         learning = personal_issue(daily=True)
         self.assertEqual(bridge._directive(learning, owner_comment("@bot 执行 2"), [])[1], ["second-topic"])
+
+
+class OwnerIngressTests(unittest.TestCase):
+    def test_owner_top_level_comment_triggers_for_real_api_shaped_bot_created_issue(self):
+        issue = personal_issue(comments=[owner_comment("inspect", "owner-created", created="2")])
+        transport = mock.Mock(return_value={"data": {"issue": {"creator": {"id": bridge.BOT_ACTOR_ID, "app": True}}}})
+        client = SYNC.GraphQLClient("test", transport)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = bridge.State(Path(tmp) / "state.json")
+            pending = bridge._new_turn(issue, state, client)
+            self.assertIsNotNone(bridge._new_turn(issue, state, client))
+        self.assertIsNotNone(pending)
+        transport.assert_called_once()
+        query, variables = transport.call_args.args
+        self.assertEqual(" ".join(query.split()),
+                         "query BotIssueProvenance($id: String!) { issue(id: $id) { creator { id app } } }")
+        self.assertEqual(variables, {"id": issue["id"]})
+        self.assertIn("owner-created", pending["trigger_ids"])
+
+    def test_bot_metadata_history_does_not_make_human_issue_bot_created(self):
+        for embedded_creator in (False, True):
+            with self.subTest(embedded_creator=embedded_creator), tempfile.TemporaryDirectory() as tmp:
+                creator = {"id": bridge.OWNER_USER_ID, "app": False}
+                issue = personal_issue(comments=[owner_comment("inspect")])
+                issue["history"] = {"nodes": [{"actor": {"id": bridge.BOT_ACTOR_ID, "app": True},
+                                               "botActor": {"id": bridge.BOT_ACTOR_ID},
+                                               "toStateId": "progress", "addedLabelIds": ["synced"]}]}
+                if embedded_creator: issue["creator"] = creator
+                transport = mock.Mock(return_value={"data": {"issue": {"creator": creator}}})
+                client = SYNC.GraphQLClient("test", transport)
+                self.assertIsNone(bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client))
+                self.assertEqual(transport.call_count, 0 if embedded_creator else 1)
+
+    def test_known_creator_identity_requires_bot_id_not_app_flag(self):
+        for field in ("creator", "createdBy", "creatorId"):
+            for actor_id in (bridge.BOT_ACTOR_ID, bridge.OWNER_USER_ID, "unrelated-app"):
+                with self.subTest(field=field, actor_id=actor_id), tempfile.TemporaryDirectory() as tmp:
+                    issue = personal_issue(comments=[owner_comment("inspect")])
+                    issue[field] = actor_id if field == "creatorId" else {"id": actor_id, "app": True}
+                    client = mock.Mock(spec=["execute"])
+                    pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+                    self.assertEqual(pending is not None, actor_id == bridge.BOT_ACTOR_ID)
+                    client.execute.assert_not_called()
+
+    def test_scans_without_eligible_owner_comment_do_not_query_creator(self):
+        bot = {"id": "bot-root", "body": "Prior response", "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}
+        other = {"id": "other", "body": "inspect", "user": {"id": "someone"}, "createdAt": "2"}
+        cases = [
+            ("empty", [], [], False),
+            ("processed", [owner_comment("inspect")], ["owner"], False),
+            ("bot-only", [bot], [], False),
+            ("non-owner", [other], [], False),
+            ("processed-owner-new-non-owner", [owner_comment("inspect"), other], ["owner"], False),
+            ("mention", [owner_comment("@bot inspect")], [], True),
+            ("daily-learn", [owner_comment("都做")], [], True),
+            ("daily-brief", [owner_comment("1, 2")], [], True),
+            ("prior-bot", [bot, owner_comment("inspect")], [], True),
+            ("bot-parent", [bot, owner_comment("inspect", parent="bot-root")], [], True),
+            ("bot-root", [bot, owner_comment("earlier", "reply", "bot-root"),
+                          owner_comment("inspect", parent="reply")], ["reply"], True),
+            ("ordinary-reply", [owner_comment("inspect", parent="human-root")], [], False),
+            ("delegated", [], [], True),
+        ]
+        for name, comments, processed, triggered in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                issue = personal_issue(comments=comments, daily=name == "daily-learn")
+                if name == "daily-brief": issue["title"] = "[Daily Brief 2026-11-15]"
+                if name == "delegated": issue["delegate"] = {"id": bridge.BOT_ACTOR_ID}
+                client, state = FakeClient(issue), bridge.State(Path(tmp) / "state.json")
+                client.execute = mock.Mock()
+                state.data["processed_comment_ids"] = processed
+                report = bridge.process_once(client, state, dry_run=True)
+                self.assertTrue(report["ok"])
+                self.assertEqual(bool(report["triggers"]), triggered)
+                client.execute.assert_not_called()
+                self.assertFalse(client.comments or client.updates)
+
+    def test_creator_lookup_failure_or_unknown_identity_preserves_explicit_ingress(self):
+        responses = [{"data": {"issue": None}}, {"data": {"issue": {"creator": None}}},
+                     {"data": {"issue": {"creator": {"app": True}}}},
+                     {"data": {"issue": {"creator": {"id": "unrelated-app", "app": True}}}},
+                     {"errors": [{"message": "creator unavailable"}]}, OSError("offline")]
+        for response in responses:
+            for ingress in ("plain", "mention", "delegated"):
+                with self.subTest(response=response, ingress=ingress), tempfile.TemporaryDirectory() as tmp:
+                    issue = personal_issue(comments=[owner_comment("@bot inspect" if ingress == "mention" else "inspect")])
+                    if ingress == "delegated": issue["delegate"] = {"id": bridge.BOT_ACTOR_ID}
+                    transport = mock.Mock(side_effect=response) if isinstance(response, Exception) else mock.Mock(return_value=response)
+                    client = SYNC.GraphQLClient("test", transport)
+                    pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+                    self.assertEqual(pending is not None, ingress != "plain")
+                    if ingress == "mention": transport.assert_not_called()
+                    else: transport.assert_called_once()
+
+    def test_paginated_bot_comments_enable_owner_ingress_without_creator_query(self):
+        issue = personal_issue(comments=[owner_comment("inspect")])
+        issue["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "next-comment"}
+        def transport(query, variables):
+            if "ListIssues" in query:
+                return {"data": {"issues": {"nodes": [issue], "pageInfo": {"hasNextPage": False}}}}
+            if "IssueComments" in query:
+                return {"data": {"issue": {"comments": {"nodes": [
+                    {"id": "old-bot", "body": "Prior response", "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}],
+                    "pageInfo": {"hasNextPage": False}}}}}
+            self.fail(f"Unexpected creator query: {query}")
+        requests = mock.Mock(side_effect=transport)
+        client = SYNC.GraphQLClient("test", requests)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = bridge.process_once(client, bridge.State(Path(tmp) / "state.json"), dry_run=True)
+        self.assertTrue(report["ok"])
+        self.assertEqual([turn["directive"] for turn in report["triggers"]], ["inspect"])
+        self.assertEqual(requests.call_count, 2)
+        self.assertEqual(requests.call_args.args[1], {"id": issue["id"], "after": "next-comment"})
+
+    def test_owner_top_level_comment_triggers_after_bot_participation_without_mention(self):
+        bot = {"id": "bot-root", "body": bridge.ACK, "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}
+        issue = personal_issue(comments=[bot, owner_comment("执行 1", "owner-followup", created="2")])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"))
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["directive"], "执行 1")
+        self.assertIn("owner-followup", pending["trigger_ids"])
+
+    def test_non_owner_top_level_comment_does_not_get_no_mention_bypass(self):
+        issue = personal_issue(daily=True, comments=[{"id": "other", "body": "1", "user": {"id": "someone"}, "createdAt": "2"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json")))
 
 
 class OAuthAgentScopeTests(unittest.TestCase):
@@ -326,8 +466,13 @@ class BridgeTests(unittest.TestCase):
     def assert_handoff(self, client, text=None):
         self.assertEqual(self.runtime.dispatches, 1)
         self.assertEqual(len(client.comments), 2)
-        self.assertIn(text or self.runtime.text, client.comments[-1][1])
-        self.assertIn("@ltp19941128", client.comments[-1][1])
+        result_body = client.comments[-1][1]
+        if bridge.is_daily(client.issues[client.comments[-1][0]]):
+            self.assertIn("Daily Learn blog receipt:", result_body)
+            self.assertNotIn(self.runtime.text, result_body)
+        else:
+            self.assertIn(text or self.runtime.text, result_body)
+        self.assertIn("@ltp19941128", result_body)
         self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
         self.assertFalse(self.state.data["pending"])
 
@@ -381,7 +526,7 @@ class BridgeTests(unittest.TestCase):
                 (self.vault / name).write_text("# Fresh selected card" if name == "concepts/second-topic.md" else "DO NOT POST " + name)
         self.runtime.on_send = write_cards
         client = FakeClient(issue); self.scan(client)
-        self.assert_handoff(client, "# Fresh selected card")
+        self.assert_handoff(client)
         self.assertNotIn("DO NOT POST", client.comments[-1][1])
         self.assertTrue(self.runtime.prompts[0].startswith("/learn second-topic\n"))
         self.assertIn("selection", self.state.data["processed_comment_ids"])
@@ -389,6 +534,57 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(issue["delegate"])
         self.restart(); self.scan(client)
         self.assertEqual(self.runtime.dispatches, 1)
+
+    def test_daily_learn_requests_blog_publication_and_posts_compact_verified_receipt(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "learn-one")])
+        self.runtime.text = ("- [Second Topic](https://leepepe.github.io/learn/second-topic/) — Inline summary.\n"
+                             "# Full Card Body Sentinel\nprivate body")
+        def write_card():
+            card = self.vault / "concepts" / "second-topic.md"
+            card.parent.mkdir(parents=True, exist_ok=True)
+            card.write_text("---\ntitle: Second Topic\ninsight: One-line card summary\n---\n# Full Card Body Sentinel")
+        self.runtime.on_send = write_card
+        client = FakeClient(issue)
+        self.scan(client)
+        body = client.comments[-1][1]
+        self.assertIn("[Second Topic](https://leepepe.github.io/learn/second-topic/)", body)
+        self.assertIn("Inline summary", body)
+        self.assertNotIn("Full Card Body Sentinel", body)
+        self.assertNotIn("private body", body)
+        self.assertIn("publish", self.runtime.prompts[0].casefold())
+        self.assertIn("leepepe.github.io", self.runtime.prompts[0])
+
+    def test_legacy_daily_result_comment_retry_compacts_saved_full_card_output(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "legacy-owner")])
+        client = FakeClient(issue)
+        pending = bridge._new_turn(issue, self.state)
+        pending.update(phase="result-comment", result_kind="completed",
+                       output="# Full Card Body Sentinel\nhttps://leepepe.github.io/learn/second-topic/\nprivate body",
+                       root_id=None)
+        result = bridge._advance_turn(client, self.state, issue, pending)
+        body = client.comments[-1][1]
+        self.assertTrue(result["ok"])
+        self.assertIn("Blog publication pending Owner readback", body)
+        self.assertNotIn("Full Card Body Sentinel", body)
+        self.assertNotIn("private body", body)
+
+    def test_inline_receipt_associates_multiple_articles_without_body_fallback(self):
+        output = ("- [First](https://leepepe.github.io/learn/first/) — First summary.\n"
+                  "- [Second](https://leepepe.github.io/learn/second/) — Second summary.\n"
+                  "private body")
+        receipt = bridge._compact_daily_receipt(output, [], ["first", "second"])
+        self.assertIn("[First](https://leepepe.github.io/learn/first/) — First summary.", receipt)
+        self.assertIn("[Second](https://leepepe.github.io/learn/second/) — Second summary.", receipt)
+        self.assertNotIn("private body", receipt)
+
+    def test_idle_owner_decision_response_preserves_decision_result_kind(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "decision-owner")])
+        self.runtime.text = "Owner decision required: publication is unsafe; confirm a public-safe rewrite."
+        client = FakeClient(issue)
+        report = self.scan(client)
+        self.assertEqual(report["triggers"][0]["result_kind"], "owner-decision")
+        self.assertIn("Owner decision required", client.comments[-1][1])
+        self.assertIn("publication is unsafe", client.comments[-1][1])
 
     def test_busy_learning_target_defers_and_previous_completion_never_counts(self):
         client = FakeClient(personal_issue(daily=True, assigned=True, comments=[]))

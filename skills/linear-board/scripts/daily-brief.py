@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render and optionally publish the personal Linear daily brief."""
 from __future__ import annotations
-import argparse, importlib.util, json, os, re, subprocess, sys
+import argparse, importlib.util, json, math, os, re, subprocess, sys
 from contextlib import contextmanager
+from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -145,7 +146,7 @@ def collect_prs(repos: tuple[str, ...], target: date, *, runner: Callable[..., A
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
                 warnings.append(f"PR metrics unavailable: {repo}")
                 detail = {}
-            rows.append({"repo": _repo_name(repo), "title": pr.get("title", ""), "url": pr.get("html_url", ""), **{k: detail.get(k) for k in ("additions", "deletions", "changed_files")}})
+            rows.append({"repo": repo, "number": number, "title": pr.get("title", ""), "url": pr.get("html_url", ""), **{k: detail.get(k) for k in ("additions", "deletions", "changed_files")}})
     return rows, warnings
 
 def _ledger_header(lines: list[str]) -> dict[str, str]:
@@ -211,11 +212,11 @@ def _ledger_snapshot(path: Path, target: date, client: Any, cache: dict[str, Any
         if not fields.get("note"):
             fields["note"] = " · ".join(part.strip() for part in match["body"].split(" | ") if "=" not in part)
         fields.update({"timestamp": stamp.isoformat(), "line": line.strip(), "goal": path.parent.name,
-                       "title": title, "identifier": identifier, "ledger": path.as_uri()})
+                       "title": title, "identifier": identifier, "ledger": path.as_uri(), "repo": header.get("repo", ""), "project": header.get("project", "")})
         events.append(fields)
     events.sort(key=lambda event: _timestamp(event["timestamp"]))
     return {"goal": path.parent.name, "title": title, "identifier": identifier, "ledger": path.as_uri(),
-            "header": header, "tasks": _ledger_tasks(lines), "events": events}, warnings
+            "header": header, "repo": header.get("repo", ""), "project": header.get("project", ""), "tasks": _ledger_tasks(lines), "events": events}, warnings
 
 def _parse_ledger(path: Path, target: date) -> tuple[list[dict[str, str]], list[str]]:
     snapshot, warnings = _ledger_snapshot(path, target, None, {})
@@ -261,7 +262,7 @@ def collect_handoff(handoff_root: Path, target: date, *, client: Any = None, sco
             stage = task["state"]
             for event in task_events:
                 stage = event.get("state", event.get("status", stage_events.get(event["EVT"].upper(), stage))).casefold().replace(" ", "_")
-            context = {key: str(snapshot[key]) for key in ("goal", "title", "identifier", "ledger")}
+            context = {key: str(snapshot[key]) for key in ("goal", "title", "identifier", "ledger", "repo", "project")}
             context.update(task); context["state"] = stage
             for field in ("stage", "note", "ref", "pr"):
                 newest = next((event[field] for event in reversed(task_events) if event.get(field)), "")
@@ -323,15 +324,254 @@ def _link(url: Any, label: str) -> str:
     if not re.match(r"^(?:https?://|file:///)", url) or re.search(r"[\s<>]", url): return ""
     return f"[{_plain(label)}]({url.replace('|', '%7C').replace('(', '%28').replace(')', '%29')})"
 
+LAYERS = (
+    ("Products & Apps", "产品与应用", ("voxpocket", "aidash", "financial", "vitalstride", "webiqsearch", "nas", "nascontrol")),
+    ("Shared Foundations", "共享底座", ("shared-design-system", "designsystem", "shared-ci", "shared-telemetry", "raven", "agent-herdr")),
+    ("Engineering Workflows", "工程工作流与技能", ("user-skills", "linear-board", "m2-dispatcher", "personal-m2-assistant", "team-lead", "my-designer", "design-studio", "code-review", "repo-kit", "skill-contract", "workflow-hub")),
+    ("Knowledge & Narrative", "知识沉淀与叙事", ("knowledge-digest", "daily learn", "knowledge", "retro-loop", "story-craft", "save-tool", "leepepe.github.io", "blog demos")),
+)
+REFERENCE_RE = re.compile(r"\bTIA-\d+\b|(?<![\w])(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|PR)?#\d+\b")
+PR_URL_RE = re.compile(r"https://github\.com/([^/\s()]+/[^/\s()]+)/pull/(\d+)\b")
+EXPLICIT_PR_RE = re.compile(r"^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|PR)?#(\d+)$", re.I)
+
+
+def _pr_url(reference: str, repo: str = "") -> str:
+    match = EXPLICIT_PR_RE.fullmatch(reference)
+    if not match: return ""
+    owner_repo, number = match.groups()
+    destination = owner_repo or repo
+    return f"https://github.com/{destination}/pull/{number}" if destination else ""
+
+
+def _reference_label(reference: str) -> str:
+    match = EXPLICIT_PR_RE.fullmatch(reference)
+    return f"#{match[2]}" if match else reference
+
+
+def _has_reference_link(text: str, reference: str) -> bool:
+    label = _reference_label(reference)
+    return bool(re.search(r"\[" + re.escape(reference) + r"\]\([^)]*\)", text)
+                or (label != reference and re.search(r"\[" + re.escape(label) + r"\]\([^)]*\)", text)))
+
+
+def _layer(project: str, item: dict[str, Any]) -> int:
+    def match(text: str, tokens: tuple[str, ...]) -> bool:
+        return any(re.search(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])", text.casefold()) for token in tokens)
+    # A concrete product/foundation/knowledge destination outranks incidental title mentions.
+    destination = " ".join((project, str(item.get("repo") or ""), str(item.get("project") or "")))
+    for index in (0, 1, 3):
+        if match(destination, LAYERS[index][2]): return index
+    context = " ".join(str(item.get(key) or "") for key in ("goal", "title", "subject", "note"))
+    for index in (3, 0, 1, 2):
+        if match(context, LAYERS[index][2]): return index
+    if re.search(r"(?i)\b(?:demo gallery|ui gallery|gallery)\b", context): return 0
+    return 2
+
+def _reference_context(item: dict[str, Any], project: str = "") -> str:
+    text = " ".join(str(item.get(key) or "") for key in ("url", "ref", "pr", "note", "title", "subject"))
+    repo = str(item.get("repo") or "")
+    if repo and not repo.startswith("/") and repo.count("/") == 1: return repo
+    known = PERSONAL_REPOS + ("VitalStride", "WebIQSearch", "Nas", "NasControl", "shared-ci", "shared-telemetry", "raven", "agent-herdr")
+    if repo and _repo_name(repo).casefold() in {token.casefold() for token in known}: return f"LeePepe/{_repo_name(repo)}"
+    match = PR_URL_RE.search(text)
+    if match: return match[1]
+    name = _repo_name(project)
+    if name.casefold() in {token.casefold() for token in known}: return f"LeePepe/{name}"
+    context = " ".join((project, str(item.get("goal") or ""), str(item.get("title") or "")))
+    matches = [token for token in known if re.search(r"(?<![a-z0-9])" + re.escape(token.casefold()) + r"(?![a-z0-9])", context.casefold())]
+    return f"LeePepe/{matches[0]}" if len(matches) == 1 else ""
+
+def _reference_urls(items: list[dict[str, Any]]) -> dict[str, str]:
+    urls = {}
+    for item in items:
+        identifier = str(item.get("identifier") or "")
+        if re.fullmatch(r"TIA-\d+", identifier) and _link(item.get("url"), identifier): urls[identifier] = item["url"]
+        for value in item.values():
+            if not isinstance(value, str): continue
+            for label, url in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", value):
+                if re.fullmatch(r"TIA-\d+", label) and _link(url, label): urls.setdefault(label, url)
+    return urls
+
+def _linked_text(value: Any, issue_urls: dict[str, str], repo: str = "", *, limit: int | None = None) -> str:
+    text = _plain(value)
+    pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(str(value or ""))}
+    for reference in REFERENCE_RE.findall(text):
+        url = _pr_url(reference, repo)
+        if url: pr_urls[reference] = url
+    if limit is not None:
+        # Do not turn a cut TIA-1234/#1234 token into a different ticket/PR.
+        end = limit
+        for match in REFERENCE_RE.finditer(text):
+            if match.start() < end < match.end(): end = match.start(); break
+        text = text[:end].strip()
+    def replace(match: re.Match[str]) -> str:
+        label = match[0]
+        if label.startswith("TIA-"):
+            return _link(issue_urls.get(label) or f"https://linear.app/tianpeili/issue/{label}", label)
+        url = pr_urls.get(label) or _pr_url(label, repo)
+        return _link(url, _reference_label(label)) or "PR"
+    # URLs are destinations, not text tokens to rewrite inside a destination.
+    return "".join(_link(part, "链接") if re.match(r"^(?:https?://|file:///)", part) else REFERENCE_RE.sub(replace, part)
+                   for part in re.split(r"((?:https?://|file:///)[^\s]+)", text))
+
+def _source_refs(item: dict[str, Any], issue_urls: dict[str, str], repo: str) -> list[str]:
+    text = " ".join(str(item.get(key) or "") for key in ("identifier", "task", "title", "subject", "note", "ref", "pr"))
+    labels = list(dict.fromkeys(REFERENCE_RE.findall(text)))
+    for match in PR_URL_RE.finditer(text):
+        label = f"#{match[2]}"
+        if label not in labels: labels.append(label)
+    pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(text)}
+    return [_link(pr_urls[label], label) if label in pr_urls else _linked_text(label, issue_urls, repo) for label in labels]
+
+TODO_BUCKETS = {
+    "needs": "🚨 待你拍板（Needs Decision）",
+    "active": "🔨 在途跟进（In Progress）",
+    "planned": "📌 今日计划（Planned & Learn）",
+    "recommended": "💡 昨日完结顺推（Recommended Next-Hop）",
+}
+
+def _area(project: str, item: dict[str, Any]) -> str:
+    generic = {"", "personal", "personal project", "agent workflow", "handoff"}
+    layer = _layer(project, item)
+    destination = _repo_name(str(item.get("repo") or project))
+    context = " ".join(str(item.get(key) or "") for key in ("goal", "title", "subject"))
+    if destination.casefold() not in generic | {"user-skills"}: context = destination + " " + context
+    for token in LAYERS[layer][2]:
+        if re.search(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])", context.casefold()):
+            return {"voxpocket": "VoxPocket", "aidash": "AIDash", "financial": "Financial", "vitalstride": "VitalStride", "webiqsearch": "WebIQSearch", "nas": "Nas", "nascontrol": "NasControl"}.get(token, destination if destination.casefold() == token else token)
+    return destination if destination.casefold() not in generic else _plain(item.get("goal") or item.get("title") or item.get("identifier") or "完成事项")
+
+def _completed_sources(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
+    sources = [((item.get("project") or {}).get("name") or "Personal", item, "Linear")
+               for item in linear if _issue_is_completed(item, yesterday) and not _brief_issue(item) and not _excluded_text([str(item.get("title") or ""), str((item.get("project") or {}).get("name") or "")], root_self=True)]
+    sources += [(_repo_name(item["repo"]), item, "Git") for item in commits if not item.get("timestamp") or _date_in(item["timestamp"], yesterday)]
+    sources += [(_repo_name(item["repo"]), item, "PR") for item in prs if not item.get("merged_at") or _date_in(item["merged_at"], yesterday)]
+    sources += [(item.get("goal", "Handoff"), item, "ledger") for item in events
+                if (not item.get("timestamp") or _date_in(item["timestamp"], yesterday)) and item.get("EVT", "DONE").upper() in {"DONE", "PR_MERGED", "GOAL_DONE"}]
+    return sources
+
+@lru_cache(maxsize=1)
+def _load_jev_runner() -> Callable[..., Any]:
+    path = Path(__file__).resolve().parents[2] / "team-lead/scripts/jev_client.py"
+    spec = importlib.util.spec_from_file_location("daily_brief_jev", path)
+    if not spec or not spec.loader: raise ImportError("Canonical Jev client unavailable")
+    module = importlib.util.module_from_spec(spec)
+    old_flag = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally: sys.dont_write_bytecode = old_flag
+    return module.jev_decide
+
+def _terminal_next_hop(text: str) -> bool:
+    return bool(re.search(r"(?i)(?:清理(?:归档)?|归档|archive|archival|cleanup|clean up|close stale|cancel stale).{0,60}(?:过期|旧单|obsolete|stale|tickets?|issues?|单据|工单)|(?:过期|obsolete|stale).{0,30}(?:归档|cleanup|archive)|(?:fix typo|修正错别字|纯治理)", text))
+
+def _probability(value: Any, key: str) -> float | None:
+    if isinstance(value, dict): value = value.get(key, value.get("value"))
+    if isinstance(value, bool): return None
+    try: score = float(value)
+    except (ValueError, TypeError, OverflowError): return None
+    return score if math.isfinite(score) and 0 <= score <= 1 else None
+
+def _next_hop_decision(item: dict[str, Any], jev_runner: Callable[..., Any] | None) -> tuple[str, float, str] | None:
+    if item["gallery"]: fallback_kind = "gallery_pick"
+    elif item["layer"] == 3 or len(item["identities"]) >= 2: fallback_kind = "story_or_retro"
+    elif item["layer"] == 1: fallback_kind = "downstream_adopt"
+    else: fallback_kind = "live_e2e_verify"
+    fallback_priority = 1.0 if item["gallery"] else 0.8 - item["layer"] * 0.1
+    fallback = None if item["terminal"] else (fallback_kind, fallback_priority, "deterministic_fallback")
+    questions = {
+        "has_actionable_next_hop": {"type": "noul", "instructions": "Does this completion have a concrete non-trivial follow-up needed today?"},
+        "next_hop_kind": {"type": "choice", "instructions": "Classify the observable follow-up context.", "criteria": {
+            "gallery_pick": "A completed gallery awaits Owner selection.",
+            "downstream_adopt": "A shared foundation change needs downstream adoption verification.",
+            "live_e2e_verify": "A delivered app, bridge, scheduled job needs live readback.",
+            "story_or_retro": "A completed milestone has reusable narrative evidence."}},
+        "next_hop_kind_match": {"type": "noul", "instructions": "Does this completion match a supplied follow-up category?"},
+        "next_hop_priority": {"type": "score", "instructions": "Score observable follow-up urgency from 0.0 (none) to 1.0 (highest)."},
+    }
+    try:
+        runner = jev_runner if jev_runner is not None else _load_jev_runner()
+        response = runner(state={"area": item["area"], "layer": LAYERS[item["layer"]][0], "gallery": item["gallery"],
+                                 "completed_items": len(item["identities"]), "source_context": [_plain(part)[:500] for part in item["parts"]]},
+                          questions=questions, agent_role="linear_board", goal_id="linear-daily-brief", timeout_sec=1.5, falcon_only=True)
+    except Exception: return fallback
+    if not isinstance(response, dict) or response.get("fallback_reason"): return fallback
+    answers = response.get("answers", response)
+    if not isinstance(answers, dict) or answers.get("fallback_reason"): return fallback
+    actionable = _probability(answers.get("has_actionable_next_hop"), "noul")
+    if actionable is None: return fallback
+    if actionable < 0.50: return None
+    matched = _probability(answers.get("next_hop_kind_match"), "noul")
+    kind = answers.get("next_hop_kind")
+    if isinstance(kind, dict): kind = kind.get("choice")
+    if matched is None or matched < 0.50 or not isinstance(kind, str) or kind not in questions["next_hop_kind"]["criteria"]: kind = fallback_kind
+    priority = _probability(answers.get("next_hop_priority"), "score")
+    return kind, fallback_priority if priority is None else priority, "jev_truth_table"
+
+def _recommendations(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]], entries: dict[str, dict[str, Any]], issue_urls: dict[str, str], jev_runner: Callable[..., Any] | None = None) -> list[dict[str, Any]]:
+    covered_ids = set(REFERENCE_RE.findall(" ".join(str(entry["ref"]) + " " + " ".join(entry["parts"]) for entry in entries.values())))
+    covered_topics = {topic for entry in entries.values() for topic in entry["topics"]}
+    areas: dict[str, dict[str, Any]] = {}
+    for project, item, source in _completed_sources(yesterday, linear, commits, events, prs):
+        area = _area(project, item); key = area.casefold()
+        labels = _source_refs(item, issue_urls, _reference_context(item, project))
+        identifiers = set(re.findall(r"\bTIA-\d+\b", " ".join(labels)))
+        if key in covered_topics or identifiers & covered_ids: continue
+        repo = _reference_context(item, project)
+        pr_match = PR_URL_RE.search(" ".join(str(item.get(k) or "") for k in ("url", "ref", "pr")))
+        identifier = str(item.get("identifier") or next(iter(sorted(identifiers)), ""))
+        if source == "PR" or pr_match:
+            number = str(item.get("number") or (pr_match[2] if pr_match else ""))
+            url = pr_match[0] if pr_match else (f"https://github.com/{repo}/pull/{number}" if repo and number else "")
+            action = _link(url, f"#{number}" if number else "PR"); identity = identifier or url; priority = 0
+        elif identifier:
+            action = _linked_text(identifier, issue_urls); identity = identifier; priority = 1
+        elif source == "Git" and repo and item.get("sha"):
+            action = _link(f"https://github.com/{repo}/commit/{item['sha']}", str(item["sha"])); identity = f"{repo}:{item['sha']}"; priority = 3
+        else:
+            action = _link(item.get("ledger"), "记录"); identity = str(item.get("task") or item.get("id") or item.get("goal")); priority = 2
+        if not action: continue
+        layer = _layer(project, item)
+        gallery = layer == 0 and bool(re.search(r"(?i)\b(?:demo|gallery)\b|画廊|原型", " ".join(str(item.get(k) or "") for k in ("goal", "title", "subject", "note"))))
+        source_text = " ".join(str(item.get(k) or "") for k in ("title", "subject", "note")) or str(item.get("goal") or "")
+        candidate = {"area": area, "layer": layer, "gallery": gallery, "terminal": _terminal_next_hop(source_text), "identities": {identity}, "priority": priority,
+                     "action": action, "ref": identifier or " · ".join(labels) or area, "repo": repo,
+                     "parts": [_item(_issue_context(item) if source == "Linear" else _ledger_context(item) if source == "ledger" else f"{area}: {item.get('title') or item.get('subject') or ''} {action}", source)]}
+        if key not in areas: areas[key] = candidate; continue
+        current = areas[key]
+        current["gallery"] |= gallery; current["terminal"] &= candidate["terminal"]
+        current["identities"].add(identity); current["parts"].extend(candidate["parts"])
+        if (priority, action) < (current["priority"], current["action"]):
+            for field in ("priority", "action", "ref", "repo"): current[field] = candidate[field]
+    eligible = []
+    for item in areas.values():
+        decision = _next_hop_decision(item, jev_runner)
+        if decision is None: continue
+        item["next_hop_kind"], item["next_hop_priority"], item["decision_source"] = decision
+        eligible.append(item)
+    result = []
+    for item in sorted(eligible, key=lambda row: (-row["next_hop_priority"], not row["gallery"], row["layer"], row["area"].casefold()))[:3]:
+        area = item["area"]
+        if item["next_hop_kind"] == "gallery_pick": summary = f"拍板 {area} 画廊并进实现"
+        elif item["next_hop_kind"] == "story_or_retro": summary = f"提炼 {area} 复盘/技术博客"
+        elif item["next_hop_kind"] == "downstream_adopt": summary = f"验证 {area} 下游接入与门禁"
+        elif item["layer"] == 0: summary = f"验证 {area} 本地安装/构建读回"
+        else: summary = f"实测 {area} 首轮端到端链路"
+        result.append({**item, "group": "recommended", "summary": summary, "action": "源自昨日 " + item["action"], "stages": [], "topics": [area.casefold()],
+                       "parts": [summary, *item["parts"]]})
+    return result
+
 def _brief_title(target: date) -> str:
     yesterday = target - timedelta(days=1)
     return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
 
-def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None) -> tuple[str, list[dict[str, Any]]]:
+def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None) -> tuple[str, list[dict[str, Any]]]:
     yesterday = target - timedelta(days=1)
     lines = [f"<!-- GTT-LINEAR-DEDUP:daily-brief-{target.isoformat()} -->", "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）", ""]
     entries: dict[str, dict[str, Any]] = {}
     by_identifier = {str(issue.get("identifier")): issue for issue in linear if issue.get("identifier")}
+    issue_urls = _reference_urls([*linear, *commits, *events, *(prs or []), *(ledger_active or [])])
     for index, issue in enumerate(linear):
         if _closed_issue(issue) or _brief_issue(issue): continue
         state = str((issue.get("state") or {}).get("name") or (issue.get("state") or {}).get("type") or "").casefold()
@@ -345,7 +585,9 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         if group:
             key = str(issue.get("identifier") or issue.get("id") or f"linear-{index}")
             entries[key] = {"group": group, "parts": [_item(_issue_context(issue), "Linear TIA")],
-                            "summary": issue.get("title") or key, "action": _link(issue.get("url"), "打开"), "ref": key, "stages": []}
+                            "summary": issue.get("title") or key, "action": _link(issue.get("url") or issue_urls.get(key) or (f"https://linear.app/tianpeili/issue/{key}" if re.fullmatch(r"TIA-\d+", key) else ""), "打开"),
+                            "ref": key, "repo": _reference_context(issue, (issue.get("project") or {}).get("name", "")),
+                            "topics": [_area((issue.get("project") or {}).get("name", ""), issue).casefold()], "stages": []}
     rank = {"needs": 0, "active": 1, "planned": 2}
     for item in ledger_active or []:
         identifier = item.get("identifier", "")
@@ -357,50 +599,74 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         if key not in entries:
             parts = [_item(_issue_context(bound_issue), "Linear TIA")] if bound_issue else []
             entries[key] = {"group": group, "parts": parts, "summary": (bound_issue or {}).get("title") or item.get("title") or item.get("goal"),
-                            "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"), "stages": []}
+                            "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"),
+                            "repo": _reference_context(item, item.get("goal", "")), "topics": [], "stages": []}
         entry = entries[key]
+        entry["topics"].append(_area(item.get("goal", ""), item).casefold())
+        if not entry["repo"]: entry["repo"] = _reference_context(item, item.get("goal", ""))
         if rank[group] < rank[entry["group"]]: entry["group"] = group
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
         if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
+    for index, item in enumerate(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner)):
+        entries[f"recommended:{index}"] = item
     todos = []
-    for group in rank:
+    for group, heading in TODO_BUCKETS.items():
+        if not any(entry["group"] == group for entry in entries.values()): continue
+        if lines[-1]: lines.append("")
+        lines += [f"**{heading}**", ""]
         for entry in entries.values():
             if entry["group"] != group: continue
             number = len(todos) + 1
-            summary = _short(entry["summary"], 25) or "待办"
+            summary = _linked_text(entry["summary"], issue_urls, entry["repo"], limit=25) or "待办"
             refs = " / ".join([entry["ref"], *dict.fromkeys(entry["stages"])])
+            reference = _linked_text(entry["ref"], issue_urls, entry["repo"])
+            if not REFERENCE_RE.search(entry["ref"]): reference = _code(entry["ref"])
+            for stage in dict.fromkeys(entry["stages"]):
+                reference += " · " + (_linked_text(stage, issue_urls, entry["repo"]) if REFERENCE_RE.search(stage) else _code(stage))
             action = entry["action"] or _code(f"@bot {number}")
-            lines.append(f"- [ ] **[{number}] {summary}** · {action} · {_code(refs)}")
+            lines.append(f"- [ ] **[{number}] {summary}** · {action} · {reference}")
             todos.append({"number": number, "text": " · ".join(dict.fromkeys(entry["parts"])), "summary": summary,
-                          "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"]))})
+                          "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"])),
+                          **{key: entry[key] for key in ("next_hop_kind", "next_hop_priority", "decision_source") if key in entry}})
     if not todos: lines.append("- 无已核实待办。")
-    rollup: dict[str, list[tuple[str, str]]] = {}
+    rollup: list[list[tuple[str, str, str]]] = [[] for _ in LAYERS]
+    def add_row(project: str, item: dict[str, Any], primary: str, result: Any) -> None:
+        repo = _reference_context(item, project)
+        refs = list(dict.fromkeys([primary, *_source_refs(item, issue_urls, repo)]))
+        rollup[_layer(project, item)].append((_linked_text(project, issue_urls, repo), " · ".join(ref for ref in refs if ref), _linked_text(result, issue_urls, repo, limit=20)))
     for issue in linear:
         if not _issue_is_completed(issue, yesterday): continue
         project = (issue.get("project") or {}).get("name") or "Personal"
-        ref = _link(issue.get("url"), str(issue.get("identifier") or "Linear")) or _code(issue.get("identifier") or issue.get("id") or "Linear")
-        rollup.setdefault(project, []).append((ref, _short(issue.get("title"), 20)))
+        identifier = str(issue.get("identifier") or issue.get("id") or "Linear")
+        ref = _linked_text(identifier, issue_urls) if REFERENCE_RE.search(identifier) else _link(issue.get("url"), identifier) or _code(identifier)
+        add_row(project, issue, ref, issue.get("title"))
     for commit in commits:
-        project = _repo_name(commit["repo"])
-        rollup.setdefault(project, []).append((_code(commit["sha"]), _short(commit["subject"], 20)))
+        add_row(_repo_name(commit["repo"]), commit, _code(commit["sha"]), commit["subject"])
     for pr in prs or []:
-        project = _repo_name(pr["repo"])
-        number = str(pr.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
-        ref = _link(pr.get("url"), f"#{number}" if number.isdigit() else "PR") or "PR"
+        repo = _reference_context(pr, pr["repo"])
+        number = str(pr.get("number") or str(pr.get("url", "")).rstrip("/").rsplit("/", 1)[-1])
+        ref = _link(pr.get("url"), f"#{number}" if number.isdigit() else "PR") or (_linked_text(f"#{number}", issue_urls, repo) if number.isdigit() else "PR")
         metrics = ", ".join(f"{k}={pr[k]}" for k in ("additions", "deletions", "changed_files") if pr.get(k) is not None)
-        if metrics: ref += f" · {_code(metrics)}"
-        rollup.setdefault(project, []).append((ref, _short(pr.get("title"), 20)))
+        add_row(_repo_name(pr["repo"]), pr, ref, pr.get("title"))
+        if metrics:
+            layer = rollup[_layer(_repo_name(pr["repo"]), pr)]
+            project, refs, result = layer[-1]
+            layer[-1] = (project, refs + f" · {_code(metrics)}", result)
     for event in events:
-        ref = event.get("identifier") or event.get("task") or event.get("id") or event.get("EVT", "event")
-        link = _link(event.get("ref") or event.get("pr") or event.get("ledger"), ref) or _code(ref)
+        ref = str(event.get("identifier") or event.get("task") or event.get("id") or event.get("EVT", "event"))
+        repo = _reference_context(event, event.get("goal", ""))
+        link = _linked_text(ref, issue_urls, repo) if REFERENCE_RE.search(ref) else _link(event.get("ref") or event.get("pr") or event.get("ledger"), ref) or _code(ref)
         result = event.get("note") or event.get("title") or event.get("EVT", "完成")
-        rollup.setdefault(event.get("goal", "Handoff"), []).append((link, _short(result, 20)))
-    count = sum(len(rows) for rows in rollup.values())
-    lines += ["", "---", "", f"## 📊 昨日完成 ({yesterday:%m-%d} · {count} 项)", "", "| 项目 | 单据 / PR | 一句话结果 |", "|---|---|---|"]
-    for project, rows in rollup.items():
-        for ref, result in rows: lines.append(f"| **{_plain(project)}** | {ref} | {result} |")
-    if warnings: lines += ["", "**Source warnings:**", *[f"- {_plain(warning)}" for warning in sorted(set(warnings))]]
+        add_row(event.get("goal", "Handoff"), event, link, result)
+    count = sum(len(rows) for rows in rollup)
+    lines += ["", "---", "", f"## 📊 昨日完成 ({yesterday:%m-%d} · {count} 项 · workflow-hub 四大方向)"]
+    for index, ((name, translation, _), rows) in enumerate(zip(LAYERS, rollup), 1):
+        lines += ["", f"### {index}. {name}（{translation} · {len(rows)} 项）", ""]
+        if not rows: lines.append("_无_"); continue
+        lines += ["| 项目 | 单据 / PR | 一句话结果 |", "|---|---|---|"]
+        for project, ref, result in rows: lines.append(f"| **{project}** | {ref} | {result} |")
+    if warnings: lines += ["", "**Source warnings:**", *[f"- {_linked_text(warning, issue_urls)}" for warning in sorted(set(warnings))]]
     return "\n".join(lines).rstrip() + "\n", todos
 
 def _load_linear_client(*, dry_run: bool = False) -> Any:
@@ -455,14 +721,14 @@ def propose(client: Any, title: str, markdown: str, parent: str = DEFAULT_PARENT
     kwargs["team_id"] = team["id"]; kwargs["state_id"] = todo["id"]
     return client.create_issue(**kwargs)
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output) -> dict[str, Any]:
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
     available_repos = tuple(f"LeePepe/{r}" for r in PERSONAL_REPOS if (dev_root / r).exists())
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
-    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active)
+    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
     issue = None; ok = True; warnings = w1 + w2 + w3 + w4
     if propose_linear and not dry_run:
         try:
@@ -476,8 +742,120 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
             markdown += f"\n**Publication warning:** {warning}\n"
     return {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
 
+def validate_markdown(markdown: str) -> list[str]:
+    """Validate the published Plan A sink without network, credentials, or Jev."""
+    errors: list[str] = []
+    lines = markdown.splitlines()
+    if not lines or not re.fullmatch(r"<!-- GTT-LINEAR-DEDUP:daily-brief-\d{4}-\d{2}-\d{2} -->", lines[0] if lines else ""):
+        errors.append("line 1 must be a dated GTT-LINEAR-DEDUP marker")
+    todo_heading = "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）"
+    completed_match = next((match for line in lines if (match := re.fullmatch(r"## 📊 昨日完成 \((\d{2}-\d{2}) · (\d+) 项 · workflow-hub 四大方向\)", line))), None)
+    if todo_heading not in lines:
+        errors.append("missing Todo heading")
+    if completed_match is None:
+        errors.append("missing completed heading with date and total")
+    elif lines.index(todo_heading) > lines.index(completed_match.group(0)):
+        errors.append("Todo section must precede completed section")
+
+    bucket_indexes = {label: index for index, label in enumerate(TODO_BUCKETS.values())}
+    seen_buckets: list[int] = []
+    todo_numbers: list[int] = []
+    recommendation_count = 0
+    current_bucket = ""
+    todo_pattern = re.compile(r"^- \[[ x]\] \*\*\[(\d+)\] (.+?)\*\* · (.+?) · (.+)$")
+    for line in lines:
+        if line.startswith("**") and line.endswith("**"):
+            label = line[2:-2]
+            if label in bucket_indexes:
+                current_bucket = label
+                seen_buckets.append(bucket_indexes[label])
+        match = todo_pattern.fullmatch(line)
+        if not match: continue
+        if current_bucket == TODO_BUCKETS["recommended"]: recommendation_count += 1
+        number, summary, action, reference = int(match[1]), match[2], match[3], match[4]
+        todo_numbers.append(number)
+        if len(_plain(summary)) > 25: errors.append(f"Todo [{number}] summary exceeds 25 visible characters")
+        if len(re.findall(r"\]\(", action)) > 1: errors.append(f"Todo [{number}] has multiple action links")
+        if number > 0 and not re.search(r"\]\(", action) and not action.startswith("`"):
+            errors.append(f"Todo [{number}] has no direct link or command")
+        if number > 0 and not re.search(r"\]\(", reference) and REFERENCE_RE.search(reference):
+            errors.append(f"Todo [{number}] reference is not clickable")
+        if number > 0 and REFERENCE_RE.search(line):
+            for token in REFERENCE_RE.findall(line):
+                if not _has_reference_link(line, token): errors.append(f"Todo [{number}] reference {token} is not clickable")
+    if seen_buckets != sorted(set(seen_buckets)):
+        errors.append("Todo buckets must be nonempty and remain in fixed order")
+    if todo_numbers and todo_numbers != list(range(1, len(todo_numbers) + 1)):
+        errors.append("Todo numbering must be continuous from [1]")
+    if recommendation_count > 3: errors.append("recommended Todo bucket exceeds 3 items")
+
+    if completed_match:
+        expected_total = int(completed_match.group(2))
+        heading_indexes = []
+        for number, (name, _, _) in enumerate(LAYERS, 1):
+            prefix = f"### {number}. {name}（"
+            matches = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+            if len(matches) != 1:
+                errors.append(f"completed layer {number} heading missing or duplicated")
+                continue
+            heading_indexes.append(matches[0])
+            start = matches[0] + 1
+            end = next((i for i in range(start, len(lines)) if lines[i].startswith("### ") or lines[i].startswith("## ")), len(lines))
+            section = lines[start:end]
+            table_rows = [line for line in section if line.startswith("| **")]
+            if not table_rows and "_无_" not in section: errors.append(f"completed layer {number} must contain a table or _无_")
+            for row in table_rows:
+                cells = row.strip("|").split("|")
+                if len(cells) != 3: errors.append(f"completed layer {number} has malformed table row")
+                elif len(_plain(cells[2].strip())) > 20: errors.append(f"completed layer {number} result exceeds 20 visible characters")
+                for token in REFERENCE_RE.findall(row):
+                    if not _has_reference_link(row, token): errors.append(f"completed reference {token} is not clickable")
+        if heading_indexes != sorted(heading_indexes): errors.append("completed layers must remain in fixed order")
+        if sum(1 for line in lines if line.startswith("| **")) != expected_total:
+            errors.append("completed heading total does not match table rows")
+    # Code spans and fenced blocks are literal text: link-looking references inside
+    # them are not clickable. Inspect line-local spans to avoid crossing newlines.
+    in_fence = False
+    fence_has_ref = False
+    for line in lines:
+        fence = re.match(r"^\s*(```|~~~)", line)
+        if fence:
+            if in_fence:
+                if fence_has_ref: errors.append("issue/PR links hidden in fenced code are not clickable")
+                in_fence = False; fence_has_ref = False
+            else:
+                in_fence = True; fence_has_ref = bool(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", line))
+            continue
+        if in_fence:
+            fence_has_ref |= bool(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", line))
+            continue
+        spans = re.findall(r"`([^`]*)`", line)
+        if any(re.search(r"\[(?:TIA-\d+|#\d+)\]\([^)]*\)", span) for span in spans):
+            errors.append("issue/PR links hidden in code spans are not clickable")
+    if in_fence and fence_has_ref: errors.append("issue/PR links hidden in fenced code are not clickable")
+    # Catch bare references anywhere in the rendered contract, including source rows.
+    links_removed = re.sub(r"\[([^]]+)\]\([^)]*\)", "", markdown)
+    if REFERENCE_RE.search(links_removed): errors.append("all displayed TIA/# references must be clickable")
+    return list(dict.fromkeys(errors))
+
+
+def _read_verification_input(path: str) -> str:
+    if path == "-": return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true"); parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--json", action="store_true"); args = parser.parse_args(argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true")
+    parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true"); parser.add_argument("--verify-markdown", metavar="PATH")
+    args = parser.parse_args(argv)
+    if args.verify_markdown is not None:
+        try: errors = validate_markdown(_read_verification_input(args.verify_markdown))
+        except (OSError, UnicodeError) as exc: errors = [f"cannot read Markdown input: {type(exc).__name__}"]
+        if errors:
+            print("Markdown verification failed: " + "; ".join(errors), file=sys.stderr); return 1
+        print("Markdown verification passed"); return 0
     try: client = _load_linear_client(dry_run=args.dry_run)
     except Exception: client = None
     result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue)
