@@ -320,6 +320,56 @@ class DailyBriefTests(unittest.TestCase):
         self.assertNotIn("**💡 昨日完结顺推（Recommended Next-Hop）**", markdown)
         self.assertNotIn("**🚨 待你拍板（Needs Decision）**", markdown)
 
+    def test_jev_drops_terminal_low_actionability_and_null_case_uses_layer_mapping(self):
+        completed = issue("TIA-10", "清理归档过期单据", "Done", "completed", completedAt="2026-11-14", project={"name": "user-skills"})
+        runner = mock.Mock(return_value={"has_actionable_next_hop": {"noul": 0.49}})
+        markdown, todos = daily_brief.render_brief(TODAY, [completed], [], [], [], jev_runner=runner)
+        self.assertFalse(todos); self.assertNotIn("**💡", markdown); runner.assert_called_once()
+        completed = issue("TIA-11", "Library shipped", "Done", "completed", completedAt="2026-11-14", project={"name": "shared-ci"})
+        runner.return_value = {"has_actionable_next_hop": {"noul": 0.50}, "next_hop_kind": {"choice": "gallery_pick"}, "next_hop_kind_match": {"noul": 0.49}, "next_hop_priority": {"score": 0.8}}
+        _, todos = daily_brief.render_brief(TODAY, [completed], [], [], [], jev_runner=runner)
+        self.assertEqual(todos[0]["summary"], "验证 shared-ci 下游接入与门禁")
+        self.assertEqual(todos[0]["decision_source"], "jev_truth_table")
+        kwargs = runner.call_args.kwargs
+        self.assertEqual(kwargs["agent_role"], "linear_board"); self.assertEqual(kwargs["timeout_sec"], 1.5)
+        self.assertTrue(kwargs["falcon_only"])
+        self.assertEqual(kwargs["questions"]["next_hop_kind"]["type"], "choice")
+        self.assertEqual(kwargs["questions"]["next_hop_kind_match"]["type"], "noul")
+        self.assertEqual(set(kwargs["questions"]), {"has_actionable_next_hop", "next_hop_kind", "next_hop_kind_match", "next_hop_priority"})
+
+    def test_jev_truth_table_maps_all_kinds_and_ranks_before_top_three_cap(self):
+        completed = issue("TIA-10", "Evidence ready", "Done", "completed", completedAt="2026-11-14", project={"name": "linear-board"})
+        for kind, expected in (("gallery_pick", "拍板 linear-board 画廊并进实现"), ("downstream_adopt", "验证 linear-board 下游接入与门禁"),
+                               ("live_e2e_verify", "实测 linear-board 首轮端到端链路"), ("story_or_retro", "提炼 linear-board 复盘/技术博客")):
+            with self.subTest(kind=kind):
+                response = {"answers": {"has_actionable_next_hop": {"noul": 0.75}, "next_hop_kind": {"choice": kind}, "next_hop_kind_match": {"noul": 0.70}, "next_hop_priority": {"score": 0.9}}}
+                _, todos = daily_brief.render_brief(TODAY, [completed], [], [], [], jev_runner=mock.Mock(return_value=response))
+                self.assertEqual(todos[0]["summary"], expected); self.assertEqual(todos[0]["next_hop_kind"], kind)
+        data = [issue(f"TIA-{n}", "Feature done", "Done", "completed", completedAt="2026-11-14", project={"name": project})
+                for n, project in enumerate(("VoxPocket", "shared-ci", "linear-board", "Knowledge"), 1)]
+        priorities = {"VoxPocket": 0.1, "shared-ci": 0.3, "linear-board": 0.9, "Knowledge": 0.7}
+        def judge(**kwargs):
+            return {"has_actionable_next_hop": {"noul": 0.8}, "next_hop_kind": {"choice": "live_e2e_verify"}, "next_hop_kind_match": {"noul": 0.9}, "next_hop_priority": {"score": priorities[kwargs["state"]["area"]]}}
+        _, todos = daily_brief.render_brief(TODAY, data, [], [], [], jev_runner=judge)
+        self.assertEqual([row["next_hop_priority"] for row in todos], [0.9, 0.7, 0.3])
+        self.assertEqual([row["number"] for row in todos], [1, 2, 3])
+        self.assertTrue(todos[0]["summary"].startswith("实测 linear-board"))
+
+    def test_jev_offline_invalid_and_exception_fallback_is_deterministic_and_drops_pure_cleanup(self):
+        data = [issue("TIA-1", "清理归档过期单据", "Done", "completed", completedAt="2026-11-14", project={"name": "user-skills"}),
+                issue("TIA-2", "Demo gallery", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"})]
+        for response in (None, {"fallback_reason": "Falcon offline"}, {"answers": []}, {"has_actionable_next_hop": {"noul": float("nan")}}):
+            with self.subTest(response=response):
+                _, todos = daily_brief.render_brief(TODAY, data, [], [], [], jev_runner=mock.Mock(return_value=response))
+                self.assertEqual(len(todos), 1); self.assertEqual(todos[0]["summary"], "拍板 VoxPocket 画廊并进实现")
+                self.assertEqual(todos[0]["decision_source"], "deterministic_fallback")
+        _, todos = daily_brief.render_brief(TODAY, data, [], [], [], jev_runner=mock.Mock(side_effect=TimeoutError("offline")))
+        self.assertEqual(len(todos), 1)
+        # Mixed useful delivery and archival noise in one area still has a concrete fallback.
+        commits = [{"repo": "user-skills", "sha": "a", "subject": "Cleanup stale tickets"}, {"repo": "user-skills", "sha": "b", "subject": "Ship bridge"}]
+        _, todos = daily_brief.render_brief(TODAY, [], commits, [], [], jev_runner=mock.Mock(return_value={"fallback_reason": "offline"}))
+        self.assertEqual(len(todos), 1)
+
     def test_resolved_event_without_task_does_not_resurrect_blocked_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

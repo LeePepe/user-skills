@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render and optionally publish the personal Linear daily brief."""
 from __future__ import annotations
-import argparse, importlib.util, json, os, re, subprocess, sys
+import argparse, importlib.util, json, math, os, re, subprocess, sys
 from contextlib import contextmanager
+from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -425,7 +426,66 @@ def _completed_sources(yesterday: date, linear: list[dict[str, Any]], commits: l
                 if (not item.get("timestamp") or _date_in(item["timestamp"], yesterday)) and item.get("EVT", "DONE").upper() in {"DONE", "PR_MERGED", "GOAL_DONE"}]
     return sources
 
-def _recommendations(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]], entries: dict[str, dict[str, Any]], issue_urls: dict[str, str]) -> list[dict[str, Any]]:
+@lru_cache(maxsize=1)
+def _load_jev_runner() -> Callable[..., Any]:
+    path = Path(__file__).resolve().parents[2] / "team-lead/scripts/jev_client.py"
+    spec = importlib.util.spec_from_file_location("daily_brief_jev", path)
+    if not spec or not spec.loader: raise ImportError("Canonical Jev client unavailable")
+    module = importlib.util.module_from_spec(spec)
+    old_flag = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally: sys.dont_write_bytecode = old_flag
+    return module.jev_decide
+
+def _terminal_next_hop(text: str) -> bool:
+    return bool(re.search(r"(?i)(?:清理(?:归档)?|归档|archive|archival|cleanup|clean up|close stale|cancel stale).{0,60}(?:过期|旧单|obsolete|stale|tickets?|issues?|单据|工单)|(?:过期|obsolete|stale).{0,30}(?:归档|cleanup|archive)|(?:fix typo|修正错别字|纯治理)", text))
+
+def _probability(value: Any, key: str) -> float | None:
+    if isinstance(value, dict): value = value.get(key, value.get("value"))
+    if isinstance(value, bool): return None
+    try: score = float(value)
+    except (ValueError, TypeError, OverflowError): return None
+    return score if math.isfinite(score) and 0 <= score <= 1 else None
+
+def _next_hop_decision(item: dict[str, Any], jev_runner: Callable[..., Any] | None) -> tuple[str, float, str] | None:
+    if item["gallery"]: fallback_kind = "gallery_pick"
+    elif item["layer"] == 3 or len(item["identities"]) >= 2: fallback_kind = "story_or_retro"
+    elif item["layer"] == 1: fallback_kind = "downstream_adopt"
+    else: fallback_kind = "live_e2e_verify"
+    fallback_priority = 1.0 if item["gallery"] else 0.8 - item["layer"] * 0.1
+    fallback = None if item["terminal"] else (fallback_kind, fallback_priority, "deterministic_fallback")
+    questions = {
+        "has_actionable_next_hop": {"type": "noul", "instructions": "Does this completion have a concrete non-trivial follow-up needed today?"},
+        "next_hop_kind": {"type": "choice", "instructions": "Classify the observable follow-up context.", "criteria": {
+            "gallery_pick": "A completed gallery awaits Owner selection.",
+            "downstream_adopt": "A shared foundation change needs downstream adoption verification.",
+            "live_e2e_verify": "A delivered app, bridge, scheduled job needs live readback.",
+            "story_or_retro": "A completed milestone has reusable narrative evidence."}},
+        "next_hop_kind_match": {"type": "noul", "instructions": "Does this completion match a supplied follow-up category?"},
+        "next_hop_priority": {"type": "score", "instructions": "Score observable follow-up urgency from 0.0 (none) to 1.0 (highest)."},
+    }
+    try:
+        runner = jev_runner if jev_runner is not None else _load_jev_runner()
+        response = runner(state={"area": item["area"], "layer": LAYERS[item["layer"]][0], "gallery": item["gallery"],
+                                 "completed_items": len(item["identities"]), "source_context": [_plain(part)[:500] for part in item["parts"]]},
+                          questions=questions, agent_role="linear_board", goal_id="linear-daily-brief", timeout_sec=1.5, falcon_only=True)
+    except Exception: return fallback
+    if not isinstance(response, dict) or response.get("fallback_reason"): return fallback
+    answers = response.get("answers", response)
+    if not isinstance(answers, dict) or answers.get("fallback_reason"): return fallback
+    actionable = _probability(answers.get("has_actionable_next_hop"), "noul")
+    if actionable is None: return fallback
+    if actionable < 0.50: return None
+    matched = _probability(answers.get("next_hop_kind_match"), "noul")
+    kind = answers.get("next_hop_kind")
+    if isinstance(kind, dict): kind = kind.get("choice")
+    if matched is None or matched < 0.50 or not isinstance(kind, str) or kind not in questions["next_hop_kind"]["criteria"]: kind = fallback_kind
+    priority = _probability(answers.get("next_hop_priority"), "score")
+    return kind, fallback_priority if priority is None else priority, "jev_truth_table"
+
+def _recommendations(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]], entries: dict[str, dict[str, Any]], issue_urls: dict[str, str], jev_runner: Callable[..., Any] | None = None) -> list[dict[str, Any]]:
     covered_ids = set(REFERENCE_RE.findall(" ".join(str(entry["ref"]) + " " + " ".join(entry["parts"]) for entry in entries.values())))
     covered_topics = {topic for entry in entries.values() for topic in entry["topics"]}
     areas: dict[str, dict[str, Any]] = {}
@@ -450,21 +510,29 @@ def _recommendations(yesterday: date, linear: list[dict[str, Any]], commits: lis
         if not action: continue
         layer = _layer(project, item)
         gallery = layer == 0 and bool(re.search(r"(?i)\b(?:demo|gallery)\b|画廊|原型", " ".join(str(item.get(k) or "") for k in ("goal", "title", "subject", "note"))))
-        candidate = {"area": area, "layer": layer, "gallery": gallery, "identities": {identity}, "priority": priority,
+        source_text = " ".join(str(item.get(k) or "") for k in ("title", "subject", "note")) or str(item.get("goal") or "")
+        candidate = {"area": area, "layer": layer, "gallery": gallery, "terminal": _terminal_next_hop(source_text), "identities": {identity}, "priority": priority,
                      "action": action, "ref": identifier or " · ".join(labels) or area, "repo": repo,
                      "parts": [_item(_issue_context(item) if source == "Linear" else _ledger_context(item) if source == "ledger" else f"{area}: {item.get('title') or item.get('subject') or ''} {action}", source)]}
         if key not in areas: areas[key] = candidate; continue
         current = areas[key]
-        current["gallery"] |= gallery; current["identities"].add(identity); current["parts"].extend(candidate["parts"])
+        current["gallery"] |= gallery; current["terminal"] &= candidate["terminal"]
+        current["identities"].add(identity); current["parts"].extend(candidate["parts"])
         if (priority, action) < (current["priority"], current["action"]):
             for field in ("priority", "action", "ref", "repo"): current[field] = candidate[field]
+    eligible = []
+    for item in areas.values():
+        decision = _next_hop_decision(item, jev_runner)
+        if decision is None: continue
+        item["next_hop_kind"], item["next_hop_priority"], item["decision_source"] = decision
+        eligible.append(item)
     result = []
-    for item in sorted(areas.values(), key=lambda row: (not row["gallery"], row["layer"], row["area"].casefold()))[:3]:
+    for item in sorted(eligible, key=lambda row: (-row["next_hop_priority"], not row["gallery"], row["layer"], row["area"].casefold()))[:3]:
         area = item["area"]
-        if item["gallery"]: summary = f"拍板 {area} 画廊并进实现"
-        elif item["layer"] == 3 or len(item["identities"]) >= 2: summary = f"提炼 {area} 复盘/技术博客"
+        if item["next_hop_kind"] == "gallery_pick": summary = f"拍板 {area} 画廊并进实现"
+        elif item["next_hop_kind"] == "story_or_retro": summary = f"提炼 {area} 复盘/技术博客"
+        elif item["next_hop_kind"] == "downstream_adopt": summary = f"验证 {area} 下游接入与门禁"
         elif item["layer"] == 0: summary = f"验证 {area} 本地安装/构建读回"
-        elif item["layer"] == 1: summary = f"验证 {area} 下游接入与门禁"
         else: summary = f"实测 {area} 首轮端到端链路"
         result.append({**item, "group": "recommended", "summary": summary, "action": "源自昨日 " + item["action"], "stages": [], "topics": [area.casefold()],
                        "parts": [summary, *item["parts"]]})
@@ -474,7 +542,7 @@ def _brief_title(target: date) -> str:
     yesterday = target - timedelta(days=1)
     return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
 
-def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None) -> tuple[str, list[dict[str, Any]]]:
+def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None) -> tuple[str, list[dict[str, Any]]]:
     yesterday = target - timedelta(days=1)
     lines = [f"<!-- GTT-LINEAR-DEDUP:daily-brief-{target.isoformat()} -->", "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）", ""]
     entries: dict[str, dict[str, Any]] = {}
@@ -516,7 +584,7 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
         if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
-    for index, item in enumerate(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls)):
+    for index, item in enumerate(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner)):
         entries[f"recommended:{index}"] = item
     todos = []
     for group, heading in TODO_BUCKETS.items():
@@ -535,7 +603,8 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
             action = entry["action"] or _code(f"@bot {number}")
             lines.append(f"- [ ] **[{number}] {summary}** · {action} · {reference}")
             todos.append({"number": number, "text": " · ".join(dict.fromkeys(entry["parts"])), "summary": summary,
-                          "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"]))})
+                          "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"])),
+                          **{key: entry[key] for key in ("next_hop_kind", "next_hop_priority", "decision_source") if key in entry}})
     if not todos: lines.append("- 无已核实待办。")
     rollup: list[list[tuple[str, str, str]]] = [[] for _ in LAYERS]
     def add_row(project: str, item: dict[str, Any], primary: str, result: Any) -> None:
@@ -628,14 +697,14 @@ def propose(client: Any, title: str, markdown: str, parent: str = DEFAULT_PARENT
     kwargs["team_id"] = team["id"]; kwargs["state_id"] = todo["id"]
     return client.create_issue(**kwargs)
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output) -> dict[str, Any]:
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
     available_repos = tuple(f"LeePepe/{r}" for r in PERSONAL_REPOS if (dev_root / r).exists())
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
-    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active)
+    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
     issue = None; ok = True; warnings = w1 + w2 + w3 + w4
     if propose_linear and not dry_run:
         try:
