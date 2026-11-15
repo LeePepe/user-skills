@@ -62,6 +62,8 @@ class DesignCatalogTests(unittest.TestCase):
             self.assertTrue(any('duplicate candidate' in error for error in errors))
             (root / 'index.html').write_text(shell + article('') , encoding='utf-8')
             self.assertTrue(any('correctly placed' in error for error in EVIDENCE.portal_errors(root)))
+            (root / 'index.html').write_text(shell + article('<p class="variant-summary">This English summary is long enough</p>'), encoding='utf-8')
+            self.assertTrue(any('Chinese text' in error for error in EVIDENCE.portal_errors(root)))
 
     def test_search_prompts(self):
         for query, expected in (
