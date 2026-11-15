@@ -100,6 +100,17 @@ or wait for the correlated response. Only after independently proving no deliver
 occurred may an operator reset that turn to `dispatch`; never delete active state
 merely to retry. New comments wait for the active turn to finish.
 
+## Daily Brief
+
+`skills/linear-board/scripts/daily-brief.py` renders the personal CST daily brief: yesterday's verified Linear/Git/ledger rollup, today's numbered todos, and the textual `@bot` command bar. It uses the canonical `linear-sync.py` credential loader and never mutates Linear during `--dry-run`.
+
+```bash
+python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run
+python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --parent-issue TIA-375 --json
+```
+
+The first line is `GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD`; the issue title and three sections are stable. Personal scope excludes Work Business, Bing, Workplace, `[Root]`, and excluded ledger streams. Missing sources are reported as warnings rather than fabricated successes.
+
 ## Project Root Tracker
 
 Run `python3 scripts/root_tracker.py refresh` to collect the offline-first root
