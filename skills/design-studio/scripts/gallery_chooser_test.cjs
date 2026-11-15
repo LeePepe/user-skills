@@ -7,7 +7,7 @@ function edit(goal, item, field, value) {
   const state = updateState(readState(storage, goal), item, field, value);
   storage.setItem(`design-gallery:${goal}`, JSON.stringify(state));
 }
-const A = card('A',1,'v01'), B = card('B',1,'v01'), newer = card('B',2,'v02');
+const A = {...card('A',1,'v01'), title:'Alpha'}, B = {...card('B',1,'v01'), title:'Beta'}, newer = {...card('B',2,'v02'), title:'Newer'};
 edit('goal',A,'selected',true); edit('goal',B,'selected',true);
 edit('goal',B,'starred',true); edit('goal',B,'notes','portal note');
 // Round and portal use exactly the same read/write transaction, not stale snapshots.
@@ -20,15 +20,19 @@ edit('goal',newer,'selected',true);
 state = readState(storage,'goal');
 assert.equal(state[entryKey(B)].selected,false); assert.equal(state[entryKey(newer)].selected,true);
 assert.equal(state[entryKey(A)].selected,true);
-assert.match(selectionSummary('goal',state),/Category: A[\s\S]*r1\/v01/);
-assert.match(selectionSummary('goal',state),/changed in round/);
-assert.match(selectionSummary('goal',state),/r2\/v02/);
+const activeSummary = selectionSummary('goal', state, undefined, [A, newer]);
+assert.match(activeSummary,/Category: A[\s\S]*A\/v01/);
+assert.doesNotMatch(activeSummary,/B\/v01|changed in round/);
+assert.match(activeSummary,/B\/v02/);
+assert.match(selectionSummary('goal',state),/A\/v01/);
 const domInput = (checked, value) => ({checked, value,});
 const domNode = {__galleryCard: B, querySelector: selector => selector === '[data-select]' ? domInput(true, '') : selector === '[data-star]' ? domInput(true, '') : domInput(false, '  dom note  ')};
 const domRoot = {querySelectorAll: selector => selector === '.variant-card' ? [domNode] : []};
-const mergedSummary = selectionSummary('goal', state, domRoot);
-assert.equal((mergedSummary.match(/r1\/v01/g) || []).length, 4, 'stored entry is merged once across category/select/star/note');
-assert.equal((mergedSummary.match(/r1\/v01: dom note/g) || []).length, 1, 'DOM note is not duplicated');
+const mergedSummary = selectionSummary('goal', state, domRoot, [B]);
+assert.match(mergedSummary,/B\/v01/);
+assert.match(mergedSummary,/  - B\/v01 \(Beta\): dom note/);
+assert.doesNotMatch(mergedSummary,/NOTES:\n.*NOTES:/s);
+assert.equal(selectionSummary('goal', state, undefined, []).split('\n').filter(line => line.includes('Category:')).length, 0, 'explicit empty cards means zero');
 assert.deepEqual(readState(null,'goal'),{});
 assert.deepEqual(readState({getItem: () => 'null'},'goal'),{});
 assert.deepEqual(readState(storage,'another-goal'),{});

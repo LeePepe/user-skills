@@ -66,9 +66,15 @@ class DesignCatalogTests(unittest.TestCase):
                           'glass_geometry': 'wide'}],
         }
         cards = DESIGN_CATALOG.CHOOSER.cards_for(manifest)
-        self.assertIn('variant-summary', DESIGN_CATALOG.CHOOSER.card_html(cards[1]))
+        rendered = DESIGN_CATALOG.CHOOSER.card_html(cards[1])
+        self.assertIn('variant-summary', rendered)
+        self.assertIn('data-star="r1/v01"', rendered)
+        self.assertIn('data-note="r1/v01"', rendered)
+        self.assertIn('value="r1/v01"', rendered)
+        self.assertEqual(rendered.count('variant-summary'), 1)
         self.assertRegex(cards[1]['summary'], r'[\\u4e00-\\u9fff]')
         self.assertGreaterEqual(len(cards[1]['summary']), 10)
+        self.assertNotIn('Bento', cards[1]['summary'])
 
     def test_portal_gate_rejects_missing_short_and_duplicate_summaries(self):
         shell = '<nav class="gallery-breadcrumbs"><a href="/demos/">Demos</a></nav><p id="selection-telemetry"></p><button id="copy-summary"></button>'

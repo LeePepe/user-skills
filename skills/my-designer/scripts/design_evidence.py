@@ -410,13 +410,20 @@ def portal_errors(goal_root):
         errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
     if not all(token in html for token in ('SELECT:', 'STAR:', 'NOTES:', '[data-star]', '[data-note]')):
         errors.append('index.html: executable summary must include SELECT, STAR, and NOTES from star/note controls')
+    if 'Category: ${category}' not in html or '  - ${label(s)} (${s.title || s.id}): ${s.notes.trim()}' not in html:
+        errors.append('index.html: runtime summary must segment notes inside each category block')
+    if re.search(r"lines\.push\(['\"]NOTES:\s*['\"]\)\s*;[^;]*all\.filter", html):
+        errors.append('index.html: runtime summary must not flatten NOTES outside category blocks')
     cards = list(re.finditer(r'<article\b[^>]*class="variant-card[^\"]*"[^>]*>.*?</article>', html, re.I | re.S))
     summaries_by_category = {}
     for match in cards:
         card = match.group(0)
         card_class = re.search(r'class="([^\"]*)"', card, re.I)
         category_match = re.search(r'data-group="([^\"]+)"', card, re.I)
-        summary_match = re.search(r'<p\b[^>]*class="variant-summary"[^>]*>(.*?)</p>', card, re.I | re.S)
+        summary_matches = list(re.finditer(r'<p\b[^>]*class="[^"]*\bvariant-summary\b[^"]*"[^>]*>(.*?)</p>', card, re.I | re.S))
+        summary_match = summary_matches[0] if summary_matches else None
+        if len(summary_matches) > 1:
+            errors.append('index.html: every variant-card may contain only one variant-summary')
         header_end = card.lower().find('</header>')
         bezel_start = card.lower().find('<div class="device-bezel"')
         summary_start = summary_match.start() if summary_match else -1
@@ -432,6 +439,18 @@ def portal_errors(goal_root):
         if card_class and 'current-card' not in card_class.group(1).split():
             category = category_match.group(1) if category_match else ''
             summaries_by_category.setdefault(category, []).append(summary)
+            variant_match = re.search(r'data-variant="([^"]+)"', card, re.I)
+            expected = f'{category}/{variant_match.group(1).split("/", 1)[-1]}' if variant_match else ''
+            select_input = re.search(r'<input[^>]*data-select[^>]*>', card, re.I)
+            select_value = re.search(r'\bvalue="([^"]+)"', select_input.group(0), re.I) if select_input else None
+            controls = {
+                'data-star': re.search(r'data-star="([^"]+)"', card, re.I),
+                'data-note': re.search(r'data-note="([^"]+)"', card, re.I),
+                'select value': select_value,
+            }
+            for label, control in controls.items():
+                if not control or control.group(1) != expected:
+                    errors.append(f'index.html: {label} must use category-prefixed id {expected}')
     for category, summaries in summaries_by_category.items():
         if len(summaries) != len(set(summaries)):
             errors.append(f'index.html: duplicate candidate variant-summary in category {category}')
