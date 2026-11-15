@@ -210,17 +210,114 @@ class DailyBriefSelectionTests(unittest.TestCase):
 class OwnerIngressTests(unittest.TestCase):
     def test_owner_top_level_comment_triggers_for_real_api_shaped_bot_created_issue(self):
         issue = personal_issue(comments=[owner_comment("inspect", "owner-created", created="2")])
-        class ProvenanceClient:
-            def __init__(self): self.queries = []
-            def execute(self, query, variables):
-                self.queries.append((query, variables))
-                return {"issue": {"history": {"nodes": [{"actor": {"id": bridge.BOT_ACTOR_ID}, "botActor": {"id": bridge.BOT_ACTOR_ID}}]}}}
-        client = ProvenanceClient()
+        transport = mock.Mock(return_value={"data": {"issue": {"creator": {"id": bridge.BOT_ACTOR_ID, "app": True}}}})
+        client = SYNC.GraphQLClient("test", transport)
         with tempfile.TemporaryDirectory() as tmp:
-            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+            state = bridge.State(Path(tmp) / "state.json")
+            pending = bridge._new_turn(issue, state, client)
+            self.assertIsNotNone(bridge._new_turn(issue, state, client))
         self.assertIsNotNone(pending)
-        self.assertEqual(len(client.queries), 1)
+        transport.assert_called_once()
+        query, variables = transport.call_args.args
+        self.assertEqual(" ".join(query.split()),
+                         "query BotIssueProvenance($id: String!) { issue(id: $id) { creator { id app } } }")
+        self.assertEqual(variables, {"id": issue["id"]})
         self.assertIn("owner-created", pending["trigger_ids"])
+
+    def test_bot_metadata_history_does_not_make_human_issue_bot_created(self):
+        for embedded_creator in (False, True):
+            with self.subTest(embedded_creator=embedded_creator), tempfile.TemporaryDirectory() as tmp:
+                creator = {"id": bridge.OWNER_USER_ID, "app": False}
+                issue = personal_issue(comments=[owner_comment("inspect")])
+                issue["history"] = {"nodes": [{"actor": {"id": bridge.BOT_ACTOR_ID, "app": True},
+                                               "botActor": {"id": bridge.BOT_ACTOR_ID},
+                                               "toStateId": "progress", "addedLabelIds": ["synced"]}]}
+                if embedded_creator: issue["creator"] = creator
+                transport = mock.Mock(return_value={"data": {"issue": {"creator": creator}}})
+                client = SYNC.GraphQLClient("test", transport)
+                self.assertIsNone(bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client))
+                self.assertEqual(transport.call_count, 0 if embedded_creator else 1)
+
+    def test_known_creator_identity_requires_bot_id_not_app_flag(self):
+        for field in ("creator", "createdBy", "creatorId"):
+            for actor_id in (bridge.BOT_ACTOR_ID, bridge.OWNER_USER_ID, "unrelated-app"):
+                with self.subTest(field=field, actor_id=actor_id), tempfile.TemporaryDirectory() as tmp:
+                    issue = personal_issue(comments=[owner_comment("inspect")])
+                    issue[field] = actor_id if field == "creatorId" else {"id": actor_id, "app": True}
+                    client = mock.Mock(spec=["execute"])
+                    pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+                    self.assertEqual(pending is not None, actor_id == bridge.BOT_ACTOR_ID)
+                    client.execute.assert_not_called()
+
+    def test_scans_without_eligible_owner_comment_do_not_query_creator(self):
+        bot = {"id": "bot-root", "body": "Prior response", "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}
+        other = {"id": "other", "body": "inspect", "user": {"id": "someone"}, "createdAt": "2"}
+        cases = [
+            ("empty", [], [], False),
+            ("processed", [owner_comment("inspect")], ["owner"], False),
+            ("bot-only", [bot], [], False),
+            ("non-owner", [other], [], False),
+            ("processed-owner-new-non-owner", [owner_comment("inspect"), other], ["owner"], False),
+            ("mention", [owner_comment("@bot inspect")], [], True),
+            ("daily-learn", [owner_comment("都做")], [], True),
+            ("daily-brief", [owner_comment("1, 2")], [], True),
+            ("prior-bot", [bot, owner_comment("inspect")], [], True),
+            ("bot-parent", [bot, owner_comment("inspect", parent="bot-root")], [], True),
+            ("bot-root", [bot, owner_comment("earlier", "reply", "bot-root"),
+                          owner_comment("inspect", parent="reply")], ["reply"], True),
+            ("ordinary-reply", [owner_comment("inspect", parent="human-root")], [], False),
+            ("delegated", [], [], True),
+        ]
+        for name, comments, processed, triggered in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                issue = personal_issue(comments=comments, daily=name == "daily-learn")
+                if name == "daily-brief": issue["title"] = "[Daily Brief 2026-11-15]"
+                if name == "delegated": issue["delegate"] = {"id": bridge.BOT_ACTOR_ID}
+                client, state = FakeClient(issue), bridge.State(Path(tmp) / "state.json")
+                client.execute = mock.Mock()
+                state.data["processed_comment_ids"] = processed
+                report = bridge.process_once(client, state, dry_run=True)
+                self.assertTrue(report["ok"])
+                self.assertEqual(bool(report["triggers"]), triggered)
+                client.execute.assert_not_called()
+                self.assertFalse(client.comments or client.updates)
+
+    def test_creator_lookup_failure_or_unknown_identity_preserves_explicit_ingress(self):
+        responses = [{"data": {"issue": None}}, {"data": {"issue": {"creator": None}}},
+                     {"data": {"issue": {"creator": {"app": True}}}},
+                     {"data": {"issue": {"creator": {"id": "unrelated-app", "app": True}}}},
+                     {"errors": [{"message": "creator unavailable"}]}, OSError("offline")]
+        for response in responses:
+            for ingress in ("plain", "mention", "delegated"):
+                with self.subTest(response=response, ingress=ingress), tempfile.TemporaryDirectory() as tmp:
+                    issue = personal_issue(comments=[owner_comment("@bot inspect" if ingress == "mention" else "inspect")])
+                    if ingress == "delegated": issue["delegate"] = {"id": bridge.BOT_ACTOR_ID}
+                    transport = mock.Mock(side_effect=response) if isinstance(response, Exception) else mock.Mock(return_value=response)
+                    client = SYNC.GraphQLClient("test", transport)
+                    pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+                    self.assertEqual(pending is not None, ingress != "plain")
+                    if ingress == "mention": transport.assert_not_called()
+                    else: transport.assert_called_once()
+
+    def test_paginated_bot_comments_enable_owner_ingress_without_creator_query(self):
+        issue = personal_issue(comments=[owner_comment("inspect")])
+        issue["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "next-comment"}
+        def transport(query, variables):
+            if "ListIssues" in query:
+                return {"data": {"issues": {"nodes": [issue], "pageInfo": {"hasNextPage": False}}}}
+            if "IssueComments" in query:
+                return {"data": {"issue": {"comments": {"nodes": [
+                    {"id": "old-bot", "body": "Prior response", "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}],
+                    "pageInfo": {"hasNextPage": False}}}}}
+            self.fail(f"Unexpected creator query: {query}")
+        requests = mock.Mock(side_effect=transport)
+        client = SYNC.GraphQLClient("test", requests)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = bridge.process_once(client, bridge.State(Path(tmp) / "state.json"), dry_run=True)
+        self.assertTrue(report["ok"])
+        self.assertEqual([turn["directive"] for turn in report["triggers"]], ["inspect"])
+        self.assertEqual(requests.call_count, 2)
+        self.assertEqual(requests.call_args.args[1], {"id": issue["id"], "after": "next-comment"})
 
     def test_owner_top_level_comment_triggers_after_bot_participation_without_mention(self):
         bot = {"id": "bot-root", "body": bridge.ACK, "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}

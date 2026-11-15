@@ -544,36 +544,32 @@ def _is_owner_comment(comment: dict[str, Any]) -> bool:
     return not is_bot_comment(comment) and bool(user_id) and (not OWNER_USER_ID or user_id == OWNER_USER_ID)
 
 
-def _bot_participated(issue: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+def _creator_id(issue: dict[str, Any]) -> str:
     for key in ("creator", "createdBy"):
-        value = issue.get(key) or {}
-        if isinstance(value, dict) and (str(value.get("id") or "") == BOT_ACTOR_ID or value.get("app")):
-            return True
-    if str(issue.get("creatorId") or "") == BOT_ACTOR_ID:
-        return True
-    for event in (issue.get("history") or {}).get("nodes", []):
-        actor, bot_actor = event.get("actor") or {}, event.get("botActor") or {}
-        if str(actor.get("id") or "") == BOT_ACTOR_ID or bot_actor:
-            return True
-    return any(is_bot_comment(comment) for comment in comments)
+        value = issue.get(key)
+        if isinstance(value, dict) and value.get("id"):
+            return str(value["id"])
+    return str(issue.get("creatorId") or "")
+
+
+def _bot_participated(issue: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+    return _creator_id(issue) == BOT_ACTOR_ID or any(is_bot_comment(comment) for comment in comments)
 
 
 def _hydrate_bot_provenance(client: Any, issue: dict[str, Any]) -> None:
     execute = getattr(client, "execute", None)
-    if not callable(execute) or _bot_participated(issue, _comments(issue)): return
+    if not callable(execute): return
     query = """query BotIssueProvenance($id: String!) {
-      issue(id: $id) {
-        creator { id app }
-        history { nodes { actor { id app } botActor { id } } }
-      }
+      issue(id: $id) { creator { id app } }
     }"""
     try:
         result = execute(query, {"id": str(issue.get("id"))})
     except Exception:
         return
     provenance = result.get("issue") if isinstance(result, dict) else None
-    if isinstance(provenance, dict):
-        issue.update({key: value for key, value in provenance.items() if value is not None})
+    creator = provenance.get("creator") if isinstance(provenance, dict) else None
+    if isinstance(creator, dict):
+        issue["creator"] = creator
 
 
 def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -596,11 +592,14 @@ def _comments(issue: dict[str, Any]) -> list[dict[str, Any]]:
 def _new_turn(issue: dict[str, Any], state: State, client: Any | None = None) -> dict[str, Any] | None:
     issue_id = str(issue["id"])
     comments = _comments(issue)
-    if client is not None and not (is_daily(issue) or is_daily_brief(issue)):
-        _hydrate_bot_provenance(client, issue)
     by_id = {str(c["id"]): c for c in comments}
     unprocessed = [c for c in comments if not is_bot_comment(c) and str(c["id"]) not in state.data["processed_comment_ids"]]
     no_mention_scope = is_daily(issue) or is_daily_brief(issue) or _bot_participated(issue, comments)
+    if (client is not None and not no_mention_scope and not _creator_id(issue)
+            and any(_is_owner_comment(c) and not (c.get("parent") or {}).get("id")
+                    and "@bot" not in str(c.get("body") or "").casefold() for c in unprocessed)):
+        _hydrate_bot_provenance(client, issue)
+        no_mention_scope = _bot_participated(issue, comments)
     triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold()
                 or (no_mention_scope and _is_owner_comment(c) and not (c.get("parent") or {}).get("id"))
                 or is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {}))
