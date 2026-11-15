@@ -109,7 +109,7 @@ python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run
 python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --parent-issue TIA-375 --json
 ```
 
-The first line is `GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD`; the issue title and three sections are stable. Personal scope excludes Work Business, Bing, Workplace, `[Root]`, and excluded ledger streams. Missing sources are reported as warnings rather than fabricated successes.
+The first line is `<!-- GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD -->`; the issue title and three sections are stable. Personal scope excludes Work Business, Bing, Workplace, `[Root]`, and excluded ledger streams. Textual `@bot` comments are pollable; native Delegate/mention requires workspace-admin `app:assignable`/`app:mentionable` grants. Missing sources are reported as warnings rather than fabricated successes.
 
 ## Project Root Tracker
 

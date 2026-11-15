@@ -20,7 +20,10 @@ class DailyBriefTests(unittest.TestCase):
         self.assertIn("今日 Todo 与待拍板清单（Today's Actionable Todos · 2026-11-15）", markdown)
         self.assertIn("## 🤖 @bot 一键点单指令栏", markdown)
         self.assertEqual([item["number"] for item in todos], list(range(1, len(todos) + 1)))
+        populated = [{"identifier": "TIA-1", "title": "Needs Decision", "state": {"name": "Blocked", "type": "backlog"}, "labels": {"nodes": []}}]
+        markdown, todos = daily_brief.render_brief(date(2026, 11, 15), populated, [], [], [])
         self.assertIn("- [ ] **[1]**", markdown)
+        self.assertIn("TIA-1 Needs Decision", markdown)
 
     def test_scope_and_ledger_filtering(self):
         self.assertTrue(daily_brief._excluded_issue({"title": "[Root] Work Business goal"}))
@@ -35,6 +38,22 @@ class DailyBriefTests(unittest.TestCase):
             events, warnings = daily_brief.collect_ledgers(root, date(2026, 11, 14))
         self.assertEqual(len(events), 1)
         self.assertEqual(warnings, [])
+
+    def test_cst_boundary_and_scope(self):
+        self.assertTrue(daily_brief._date_in("2026-11-13T16:30:00Z", date(2026, 11, 14)))
+        self.assertFalse(daily_brief._date_in("2026-11-14T16:00:00Z", date(2026, 11, 14)))
+        root_child = {"title": "Personal child", "parent": {"title": "[Root]"}}
+        self.assertFalse(daily_brief._excluded_issue(root_child))
+        self.assertFalse(daily_brief._excluded_issue({"title": "probing ideas", "project": None}))
+        self.assertTrue(daily_brief._excluded_issue({"title": "Personal", "parent": {"title": "Bing roadmap"}}))
+
+    def test_ledger_timestamp_and_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); goal = root / "personal-goal"; goal.mkdir()
+            (goal / "ledger.md").write_text("- 2026-11-13T15:59:00Z | EVT=DONE | note=2026-11-14\n- 2026-11-14T01:00:00+08:00 | EVT=GOAL_DONE | id=x\n")
+            events, warnings = daily_brief.collect_ledgers(root, date(2026, 11, 14))
+        self.assertEqual(len(events), 1); self.assertFalse(warnings)
+        self.assertEqual(daily_brief._active_events([{"EVT": "NEED_GO", "id": "x"}, {"EVT": "RESOLVED", "id": "x"}]), [])
 
     def test_dry_run_does_not_propose(self):
         with mock.patch.object(daily_brief, "propose") as propose:
