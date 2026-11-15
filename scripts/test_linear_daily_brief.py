@@ -1,83 +1,493 @@
+import contextlib
 import importlib.util
+import io
 import json
+import os
+import re
+import subprocess
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("daily_brief", Path(__file__).parents[1] / "skills/linear-board/scripts/daily-brief.py")
+ROOT = Path(__file__).parents[1]
+SPEC = importlib.util.spec_from_file_location("daily_brief", ROOT / "skills/linear-board/scripts/daily-brief.py")
 daily_brief = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(daily_brief)
+SYNC_SPEC = importlib.util.spec_from_file_location("brief_test_linear_sync", ROOT / "skills/team-lead/scripts/linear-sync.py")
+linear_sync = importlib.util.module_from_spec(SYNC_SPEC)
+assert SYNC_SPEC.loader
+SYNC_SPEC.loader.exec_module(linear_sync)
+
+TODAY = date(2026, 11, 15)
+YESTERDAY = date(2026, 11, 14)
+MARKER = "<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-15 -->"
+TITLE = "[Daily Brief 2026-11-15] 昨日汇总 (11-14) 与今日 Todo (11-15)"
+
+
+def issue(identifier, title="Personal goal", state="Todo", state_type="unstarted", **kwargs):
+    return {"id": identifier, "identifier": identifier, "title": title, "url": f"https://linear.app/test/{identifier}",
+            "description": "", "state": {"name": state, "type": state_type}, "priority": 3,
+            "project": None, "team": {"id": "tia", "key": "TIA", "name": "Personal"},
+            "parent": None, "labels": {"nodes": []}, **kwargs}
+
+
+class FakeClient:
+    def __init__(self, issues=(), scopes=None):
+        self.issues = list(issues)
+        self.scopes = scopes or {}
+        self.scope_calls = []
+        self.list_calls = []
+        self.mutations = []
+        self.states = [{"id": "todo", "name": "Todo", "type": "unstarted"}]
+        self.parent = issue("parent", "[Root] Skills Workflow")
+        self.read_error = None
+
+    def list_issues(self, key, *, limit):
+        self.list_calls.append((key, limit))
+        if self.read_error: raise self.read_error
+        return self.issues
+
+    def issue_scope(self, identifier):
+        self.scope_calls.append(identifier)
+        value = self.scopes[identifier]
+        if isinstance(value, Exception): raise value
+        return value
+
+    def team_metadata(self, key):
+        if key != "TIA": raise AssertionError(key)
+        return {"id": "tia", "key": "TIA", "states": {"nodes": self.states}}
+
+    def issue(self, identifier):
+        if identifier != "TIA-375": raise AssertionError(identifier)
+        return self.parent
+
+    def create_issue(self, **kwargs):
+        result = {"id": "created", **kwargs}
+        self.mutations.append(("create", result))
+        self.issues.append(issue("created", kwargs["title"], description=kwargs["description"]))
+        return result
+
+    def update_issue(self, identifier, **kwargs):
+        result = {"id": identifier, **kwargs}
+        self.mutations.append(("update", result))
+        return result
+
+    def find_issue_by_dedup_marker(self, *args):
+        raise AssertionError("Unsafe closed-issue fallback")
+
+    def find_issue_by_title(self, *args):
+        raise AssertionError("Unsafe title fallback")
+
+
+def ledger(root, name, text):
+    path = root / name / "ledger.md"
+    path.parent.mkdir()
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 class DailyBriefTests(unittest.TestCase):
-    def test_render_has_contract_and_sequential_groups(self):
-        markdown, todos = daily_brief.render_brief(date(2026, 11, 15), [], [], [], [])
-        self.assertTrue(markdown.startswith("<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-15 -->"))
-        self.assertIn("昨日交付汇总（Yesterday's Rollup · 2026-11-14）", markdown)
-        self.assertIn("今日 Todo 与待拍板清单（Today's Actionable Todos · 2026-11-15）", markdown)
-        self.assertIn("## 🤖 @bot 一键点单指令栏", markdown)
-        self.assertEqual([item["number"] for item in todos], list(range(1, len(todos) + 1)))
-        populated = [{"identifier": "TIA-1", "title": "Needs Decision", "state": {"name": "Blocked", "type": "backlog"}, "labels": {"nodes": []}}]
-        markdown, todos = daily_brief.render_brief(date(2026, 11, 15), populated, [], [], [])
-        self.assertIn("- [ ] **[1]**", markdown)
-        self.assertIn("TIA-1 Needs Decision", markdown)
+    def test_render_has_populated_continuous_groups_and_only_open_todos(self):
+        data = [issue("TIA-1", "Choose palette", labels={"nodes": [{"name": "Needs Decision"}]}),
+                issue("TIA-2", "Implement", "In Progress", "started", project={"name": "Personal project"}),
+                issue("TIA-3", "Ship", priority=2),
+                issue("TIA-4", "[Daily Learn 2026-11-15] optics"),
+                issue("TIA-5", "Needs Decision", "Done", "completed", completedAt="2026-11-14T01:00:00+08:00"),
+                issue("TIA-6", "[Daily Learn 2026-11-15] finished", "Done", "completed"),
+                issue("TIA-7", TITLE, "In Progress", "started"),
+                issue("TIA-8", "Renamed brief", priority=1, description=MARKER),
+                issue("TIA-9", "Blocked", "Canceled", "unstarted"),
+                issue("TIA-10", "Blocked", "Done", "unstarted"),
+                issue("TIA-11", "[Daily Learn 2026-11-14] old"),
+                issue("TIA-12", "Earlier brief", description="<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-14 -->", labels={"nodes": [{"name": "Blocked"}]})]
+        markdown, todos = daily_brief.render_brief(TODAY, data, [], [], [])
+        self.assertTrue(markdown.startswith(MARKER))
+        self.assertEqual(markdown.splitlines()[1], "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）")
+        self.assertIn("## 📊 昨日完成 (11-14 · 1 项)", markdown)
+        self.assertEqual([row["number"] for row in todos], [1, 2, 3, 4])
+        self.assertEqual([re.search(r"TIA-\d+", row["text"])[0] for row in todos], ["TIA-1", "TIA-2", "TIA-3", "TIA-4"])
+        self.assertIn("[Personal project] https://linear.app/test/TIA-2", todos[1]["text"])
+        self.assertIn("[TIA-5](https://linear.app/test/TIA-5) | Needs Decision |", markdown)
+        self.assertEqual([row["group"] for row in todos], ["needs", "active", "planned", "planned"])
+        self.assertIn("- [ ] **[2] Implement**", markdown)
+        self.assertIn("- [ ] **[3] Ship**", markdown)
+        self.assertNotIn("###", markdown)
+        self.assertNotIn("## 🤖", markdown)
+        self.assertNotIn("# " + TITLE, markdown)
 
-    def test_scope_and_ledger_filtering(self):
-        self.assertTrue(daily_brief._excluded_issue({"title": "[Root] Work Business goal"}))
-        self.assertFalse(daily_brief._excluded_issue({"title": "Personal goal", "project": {"name": "Personal project"}}))
+    def test_explicit_demo_decision_clauses_not_generic_narrative(self):
+        data = [issue("TIA-1", "Gallery", description="Demo gallery awaiting Owner selection: v01 or v02"),
+                issue("TIA-2", "Demo 待选 v01/v02"), issue("TIA-3", "选型：待拍板"),
+                issue("TIA-4", "Waiting", state="Needs Decision"), issue("TIA-5", "Review", state="In Review"),
+                issue("TIA-6", "Demo selected; gallery implementation finished"),
+                issue("TIA-7", "Narrative", description="We once built a Demo gallery. Now write a story about selection."),
+                issue("TIA-8", "Backlog pick", state="Backlog", priority=1)]
+        markdown, todos = daily_brief.render_brief(TODAY, data, [], [], [])
+        self.assertEqual(len(todos), 6)
+        needs = str([row for row in todos if row["group"] == "needs"])
+        for identifier in ("TIA-1", "TIA-2", "TIA-3", "TIA-4"): self.assertIn(identifier, needs)
+        self.assertEqual([row["group"] for row in todos], ["needs"] * 4 + ["active", "planned"])
+        self.assertNotIn("TIA-6", str(todos)); self.assertNotIn("TIA-7", str(todos))
+
+    def test_plan_a_single_line_budgets_table_count_and_boilerplate_removal(self):
+        long_title = "**这是一个非常长的标题用于验证严格压缩而不是输出多行背景说明**\n第二段 | 更多背景"
+        data = [issue("TIA-1", long_title, "Blocked", description="Long explanation\nwith paragraphs", priority=1),
+                issue("TIA-2", long_title, "Done", "completed", completedAt="2026-11-14", project={"name": "Learning | Stream"})]
+        commits = [{"repo": "user-skills", "sha": "abc", "subject": "A long commit result. Multiple sentences\nwith | pipe"}]
+        prs = [{"repo": "LeePepe/user-skills", "title": long_title, "url": "https://github.com/LeePepe/user-skills/pull/148", "additions": 100, "deletions": 30, "changed_files": 5}]
+        events = [{"goal": "personal-ledger", "id": "E1", "EVT": "DONE", "ledger": "file:///tmp/ledger.md", "note": long_title}]
+        active = [{"goal": "standalone", "task": "T1", "title": long_title, "state": "in_review", "stage": "Reviewer", "group": "active", "ledger": "file:///tmp/standalone/ledger.md"}]
+        markdown, todos = daily_brief.render_brief(TODAY, data, commits, events, [], prs, active)
+        lines = markdown.splitlines()
+        self.assertEqual(lines[0], MARKER)
+        self.assertEqual(lines[1], "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）")
+        self.assertLess(lines.index("---"), lines.index("## 📊 昨日完成 (11-14 · 4 项)"))
+        self.assertEqual([line for line in lines if line.startswith("## ")], [lines[1], "## 📊 昨日完成 (11-14 · 4 项)"])
+        todo_lines = [line for line in lines if line.startswith("- [ ]")]
+        self.assertEqual(len(todo_lines), len(todos))
+        for number, line in enumerate(todo_lines, 1):
+            match = re.fullmatch(r"- \[ \] \*\*\[(\d+)\] (.+)\*\* · (.+) · `([^`]+)`", line)
+            self.assertIsNotNone(match)
+            self.assertEqual(int(match[1]), number); self.assertLessEqual(len(match[2]), 25)
+            self.assertLessEqual(len(re.findall(r"\]\(", match[3])), 1)
+            self.assertTrue(match[3].startswith("[") or match[3].startswith("`"))
+        self.assertIn("| 项目 | 单据 / PR | 一句话结果 |", markdown)
+        rows = [line for line in lines if line.startswith("| **")]
+        self.assertEqual(len(rows), 4)
+        for row in rows:
+            cells = row.strip("|").split("|")
+            self.assertEqual(len(cells), 3)
+            result = cells[2].strip()
+            self.assertLessEqual(len(result), 20); self.assertNotIn("\n", result)
+        self.assertIn("additions=100, deletions=30, changed_files=5", markdown)
+        self.assertIn("T1: in_review/Reviewer", markdown)
+        self.assertFalse(any(line.startswith(">") or line.startswith("###") for line in lines))
+        self.assertNotIn("## 🤖", markdown); self.assertNotIn("统计口径", markdown)
+        self.assertNotIn("Long explanation", markdown)
+
+    def test_empty_plan_a_has_honest_zero_rows_and_no_placeholder_actions(self):
+        markdown, todos = daily_brief.render_brief(TODAY, [], [], [], [])
+        self.assertFalse(todos)
+        self.assertIn("## 📊 昨日完成 (11-14 · 0 项)", markdown)
+        self.assertIn("| 项目 | 单据 / PR | 一句话结果 |\n|---|---|---|", markdown)
+        self.assertNotIn("- [ ]", markdown)
+        self.assertNotIn("| **", markdown)
+
+    def test_resolved_event_without_task_does_not_resurrect_blocked_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "personal").mkdir()
-            (root / "work").mkdir()
-            line = "- 2026-11-14 | EVT=DONE | delivered"
-            (root / "personal" / "ledger.md").write_text(line)
-            (root / "work" / "ledger.md").write_text(line)
-            events, warnings = daily_brief.collect_ledgers(root, date(2026, 11, 14))
-        self.assertEqual(len(events), 1)
-        self.assertEqual(warnings, [])
+            ledger(root, "personal", "## Tasks\n| ID | Title | Status |\n| --- | --- | --- |\n| T1 | Await approval | blocked |\n## Events\n- 2026-11-15T01:00:00+08:00 | EVT=NEED_GO | id=B1 | task=T1\n- 2026-11-15T02:00:00+08:00 | EVT=ACK | id=B1\n")
+            _, active, warnings = daily_brief.collect_handoff(root, TODAY)
+        self.assertFalse(active); self.assertFalse(warnings)
 
-    def test_cst_boundary_and_scope(self):
-        self.assertTrue(daily_brief._date_in("2026-11-13T16:30:00Z", date(2026, 11, 14)))
-        self.assertFalse(daily_brief._date_in("2026-11-14T16:00:00Z", date(2026, 11, 14)))
-        root_child = {"title": "Personal child", "parent": {"title": "[Root]"}}
-        self.assertFalse(daily_brief._excluded_issue(root_child))
-        self.assertFalse(daily_brief._excluded_issue({"title": "probing ideas", "project": None}))
-        self.assertTrue(daily_brief._excluded_issue({"title": "Personal", "parent": {"title": "Bing roadmap"}}))
+    def test_generate_uses_issue_title_not_first_visible_plan_a_heading(self):
+        client = FakeClient([issue("TIA-1", priority=1)])
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(daily_brief, "_proposal_lock", return_value=contextlib.nullcontext()):
+            result = daily_brief.generate(TODAY, dev_root=Path(tmp), handoff_root=Path(tmp), client=client, propose_linear=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["title"], TITLE)
+        self.assertEqual(client.mutations[0][1]["title"], TITLE)
+        self.assertTrue(client.mutations[0][1]["description"].startswith(MARKER + "\n## 🎯 今日 Todo"))
 
-    def test_ledger_timestamp_and_resolution(self):
+    def test_cst_boundary_and_naive_timestamps_are_host_independent(self):
+        self.addCleanup(time.tzset)
+        for tz in ("UTC", "America/Los_Angeles"):
+            with self.subTest(tz=tz), mock.patch.dict(os.environ, {"TZ": tz}):
+                time.tzset()
+                self.assertTrue(daily_brief._date_in("2026-11-13T16:00:00Z", YESTERDAY))
+                self.assertFalse(daily_brief._date_in("2026-11-13T15:59:59Z", YESTERDAY))
+                self.assertFalse(daily_brief._date_in("2026-11-14T16:00:00Z", YESTERDAY))
+                self.assertTrue(daily_brief._date_in("2026-11-14", YESTERDAY))
+                self.assertTrue(daily_brief._date_in("2026-11-14T23:59:59", YESTERDAY))
+                self.assertEqual(daily_brief._timestamp("2026-11-14").isoformat(), "2026-11-14T00:00:00+08:00")
+
+    def test_completion_boundary_and_fallback_not_cancellation(self):
+        data = [issue("TIA-1", state="Done", state_type="completed", completedAt="2026-11-13T16:00:00Z", updatedAt="2026-11-15T01:00:00+08:00"),
+                issue("TIA-2", state="Done", state_type="completed", updatedAt="2026-11-14T15:59:59Z"),
+                issue("TIA-3", state="Done", state_type="completed", completedAt="2026-11-14T16:00:00Z"),
+                issue("TIA-4", state="Canceled", state_type="canceled", completedAt="2026-11-14"),
+                issue("TIA-5", state="In Progress", state_type="started", updatedAt="2026-11-14"),
+                issue("TIA-6", state="Canceled", state_type="unstarted", completedAt="2026-11-14"),
+                issue("TIA-7", state="Done", state_type="unstarted", updatedAt="2026-11-14")]
+        self.assertEqual([daily_brief._issue_is_completed(row, YESTERDAY) for row in data], [True, True, False, False, False, False, True])
+
+    def test_scope_personal_root_null_project_and_english_allowed(self):
+        root = issue("root", "[Root] Personal learning", project=None)
+        client = FakeClient([root, issue("child", "probing and describing ideas", parent=root)])
+        rows, warnings = daily_brief.collect_linear(client, TODAY)
+        self.assertEqual([row["id"] for row in rows], ["child"])
+        self.assertFalse(warnings); self.assertFalse(client.scope_calls)
+        self.assertEqual(client.list_calls, [("TIA", None)])
+
+    def test_deep_ancestor_lookup_and_cache_excludes_work_grandparent(self):
+        personal = issue("personal-root", "[Root] Personal")
+        work = issue("work-root", "[Root] Work Business")
+        client = FakeClient([issue("a", parent={"id": "middle"}), issue("b", parent={"id": "middle"})],
+                            {"middle": issue("middle", parent={"id": "work-root"}), "work-root": work})
+        rows, warnings = daily_brief.collect_linear(client, TODAY)
+        self.assertFalse(rows); self.assertFalse(warnings)
+        self.assertEqual(client.scope_calls, ["middle", "work-root"])
+        client = FakeClient([issue("a", parent={"id": "middle"})], {"middle": issue("middle", parent={"id": "personal-root"}), "personal-root": personal})
+        rows, warnings = daily_brief.collect_linear(client, TODAY)
+        self.assertEqual(len(rows), 1); self.assertFalse(warnings)
+
+    def test_scope_cycles_and_lookup_failures_fail_closed_with_sanitized_warning(self):
+        for scopes in ({"b": issue("b", parent={"id": "a"})}, {"b": RuntimeError("secret-token server response")}, {"b": {"id": "b", "title": "Personal"}}):
+            client = FakeClient([issue("a", parent={"id": "b"})], scopes)
+            rows, warnings = daily_brief.collect_linear(client, TODAY)
+            self.assertFalse(rows); self.assertTrue(warnings)
+            self.assertNotIn("secret-token", str(warnings))
+        self.assertTrue(daily_brief._excluded_issue(issue("a", parent={"id": "a"})))
+        warnings = []
+        self.assertTrue(daily_brief._excluded_issue(issue("a", parent={"title": "Unknown ancestor"}), warnings=warnings))
+        self.assertTrue(warnings)
+
+    def test_scope_uses_cached_complete_parent_even_without_client(self):
+        root = issue("r", "[Root] Personal")
+        client = FakeClient(scopes={"r": RuntimeError("offline")})
+        self.assertFalse(daily_brief._excluded_issue(issue("a", parent={"id": "r"}), client, {"r": root}))
+        self.assertFalse(client.scope_calls)
+
+    def test_ledger_work_headers_prefixes_and_personal_prose(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); goal = root / "personal-goal"; goal.mkdir()
-            (goal / "ledger.md").write_text("- 2026-11-13T15:59:00Z | EVT=DONE | note=2026-11-14\n- 2026-11-14T01:00:00+08:00 | EVT=GOAL_DONE | id=x\n")
-            events, warnings = daily_brief.collect_ledgers(root, date(2026, 11, 14))
-        self.assertEqual(len(events), 1); self.assertFalse(warnings)
-        self.assertEqual(daily_brief._active_events([{"EVT": "NEED_GO", "id": "x"}, {"EVT": "RESOLVED", "id": "x"}]), [])
+            root = Path(tmp)
+            for name in ("bingDemo", "sapphireUI", "flightbook2", "webiqTools", "devsyncM1", "work-goal", "_watch"):
+                ledger(root, name, "- 2026-11-14 | EVT=DONE | note=excluded\n")
+            for index, header in enumerate(("- Project: Bing", "- Repo: /work/Workplace/project", "- Linear: Work Business", "* Project: Workplace", "+ Repo: LeePepe/sapphireUI", "# Goal: bingDemo UI", "- Repo: LeePepe/BingDemo")):
+                ledger(root, f"neutral{index}", header + "\n- 2026-11-14 | EVT=DONE | note=excluded\n")
+            ledger(root, "personal", "# Goal: Personal narrative\n- Project: Personal project\nDescription mentions Bing, but is personal.\n- 2026-11-14 | EVT=DONE | note=personal delivery\n")
+            rows, warnings = daily_brief.collect_ledgers(root, YESTERDAY)
+        self.assertEqual([row["goal"] for row in rows], ["personal"]); self.assertFalse(warnings)
 
-    def test_dry_run_does_not_propose(self):
-        with mock.patch.object(daily_brief, "propose") as propose:
-            result = daily_brief.generate(date(2026, 11, 15), dev_root=Path("/missing"), handoff_root=Path("/missing"), client=object(), propose_linear=True, dry_run=True)
-        propose.assert_not_called()
-        self.assertIsNone(result["linear_issue"])
-        self.assertEqual(result["date"], "2026-11-15")
+    def test_ledger_only_event_timestamp_not_date_in_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger(root, "personal", "- 2026-11-13T15:59:00Z | EVT=DONE | note=2026-11-14\n- not-a-date | EVT=DONE | note=2026-11-14\n- narrative on 2026-11-14 | EVT=DONE\n- 2026-11-13T16:00:00Z | EVT=DONE | note=start\n- 2026-11-14T16:00:00Z | EVT=DONE | note=end\n- 2026-11-14 | EVT=DONE | note=CST date\n")
+            rows, warnings = daily_brief.collect_ledgers(root, YESTERDAY)
+        self.assertEqual([row["note"] for row in rows], ["start", "CST date"]); self.assertFalse(warnings)
 
-    def test_propose_updates_existing_issue_preserving_state(self):
-        class Fake:
-            def team_metadata(self, key):
-                return {"id": "team", "states": {"nodes": [{"id": "todo", "name": "Todo"}]}}
-            def find_issue_by_dedup_marker(self, team, marker):
-                return {"id": "issue", "state": {"type": "started"}}
-            def find_issue_by_title(self, team, title):
-                return None
-            def issue(self, identifier):
-                return {"id": "parent"}
-            def update_issue(self, issue_id, **kwargs):
-                kwargs["issue_id"] = issue_id
-                return kwargs
-        result = daily_brief.propose(Fake(), "[Daily Brief 2026-11-15] title", "body", "TIA-375")
-        self.assertEqual(result["parent_id"], "parent")
-        self.assertEqual(result["assignee_id"], daily_brief.OWNER_ID)
+    def test_blocker_reconciliation_namespaced_and_matching_resolution_only(self):
+        events = [{"goal": goal, "EVT": "NEED_GO", "id": identifier, "task": task} for goal in ("alpha", "beta", "finished") for identifier, task in (("B1", "T1"), ("E1", "T2"))]
+        events += [{"goal": "alpha", "EVT": "ACK", "id": "B1", "task": "T2"},
+                   {"goal": "beta", "EVT": "REVIEW_PASS", "task": "T2"},
+                   {"goal": "finished", "EVT": "GOAL_DONE", "id": "G1"}]
+        active = daily_brief._active_events(events)
+        self.assertEqual([(row["goal"], row["id"]) for row in active], [("alpha", "E1"), ("beta", "B1")])
+        self.assertFalse(daily_brief._active_events(active + [{"goal": "alpha", "EVT": "RESOLVED", "id": "E1"}, {"goal": "beta", "EVT": "DONE", "task": "T1"}]))
+
+    def test_active_tasks_stages_bound_goal_enrichment_and_completed_goal(self):
+        tasks = "## Tasks\n| ID | Title | Status | Stage | Note | PR/head |\n| --- | --- | --- | --- | --- | --- |\n| T1 | Build feature | in_progress | Writer | implementing | receipts/writer.md |\n| T2 | Validate | in_review | Reviewer | checking | https://github.com/LeePepe/user-skills/pull/148 |\n| T3 | Later | ready | Writer | pending | |\n| T4 | Complete | done | Writer | finished | |\n## Events\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger(root, "alpha", "# Goal: Palette\n- Linear: TIA-10\n" + tasks + "- 2026-11-15T01:00:00+08:00 | EVT=NEED_OWNER_DECISION | id=B1 | task=T1 | note=Choose v01 or v02 | ref=design.md\n")
+            ledger(root, "beta", tasks + "- 2026-11-15T01:00:00+08:00 | EVT=NEED_GO | id=B1 | task=T1 | note=Approve API\n- 2026-11-15T02:00:00+08:00 | EVT=RESOLVED | id=B1 | task=T1\n")
+            ledger(root, "finished", tasks + "- 2026-11-14 | EVT=NEED_GO | id=B1 | task=T1\n- 2026-11-14T23:00:00+08:00 | EVT=GOAL_DONE | id=G1\n")
+            data = [issue("TIA-10", "Palette", "In Progress", "started")]
+            client = FakeClient(data)
+            cache = {}; rows, _ = daily_brief.collect_linear(client, TODAY, scope_cache=cache)
+            rollup, active, warnings = daily_brief.collect_handoff(root, TODAY, client=client, scope_cache=cache)
+            markdown, todos = daily_brief.render_brief(TODAY, rows, [], rollup, warnings, ledger_active=active)
+        self.assertFalse(warnings); self.assertFalse(client.scope_calls)
+        self.assertEqual(len(todos), 2)
+        self.assertEqual(sum("TIA-10" in row["text"] for row in todos), 1)
+        self.assertIn("Choose v01 or v02", todos[0]["text"])
+        self.assertIn("M1: in_review / Reviewer", todos[0]["text"])
+        self.assertIn("ledger.md", todos[0]["text"])
+        self.assertIn("beta", todos[1]["text"])
+        self.assertNotIn("finished", str(todos)); self.assertNotIn("Later", str(todos)); self.assertNotIn("Complete", str(todos))
+        self.assertIn("| **finished** |", markdown.split("## 📊 昨日完成")[1])
+        self.assertNotIn("| **Handoff** |", markdown)
+        self.assertIn("T2: in_review/Reviewer", markdown)
+
+    def test_latest_task_event_and_goal_state_override_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = "## Tasks\n| ID | Title | Status | Stage |\n| --- | --- | --- | --- |\n| T1 | Repair | in_progress | Writer |\n| T2 | Review | planned | Writer |\n## Events\n"
+            ledger(root, "active", tasks + "- 2026-11-15T01:00:00+08:00 | EVT=DONE | task=T1\n- 2026-11-15T02:00:00+08:00 | EVT=TASK_STATE | task=T2 | state=in_review | stage=Reviewer\n")
+            ledger(root, "complete", tasks + "- 2026-11-15 | EVT=GOAL_STATE | state=done\n")
+            _, active, warnings = daily_brief.collect_handoff(root, TODAY)
+        self.assertEqual([(row["goal"], row["task"], row["state"], row["stage"]) for row in active], [("active", "T2", "in_review", "Reviewer")])
+        self.assertFalse(warnings)
+
+    def test_bound_ledger_uses_personal_scope_and_lookup_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = "- Linear: TIA-10\n## Tasks\n| ID | Title | Status |\n| --- | --- | --- |\n| T1 | Active | in_progress |\n"
+            ledger(root, "bound", text)
+            work = issue("TIA-10", parent={"id": "work"})
+            client = FakeClient(scopes={"TIA-10": work, "work": issue("work", "[Root] Work Business")})
+            rollup, active, warnings = daily_brief.collect_handoff(root, TODAY, client=client)
+            self.assertFalse(rollup); self.assertFalse(active); self.assertFalse(warnings)
+            client = FakeClient(scopes={"TIA-10": RuntimeError("secret-scope-error")})
+            _, active, warnings = daily_brief.collect_handoff(root, TODAY, client=client)
+            self.assertFalse(active); self.assertTrue(warnings); self.assertNotIn("secret", str(warnings))
+
+    def test_paginated_pr_collection_filters_cst_and_fetches_only_matched_metrics(self):
+        calls = []
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            if "--paginate" in command:
+                return json.dumps([[{"number": 1, "title": "start", "html_url": "https://github.com/LeePepe/user-skills/pull/1", "merged_at": "2026-11-13T11:00:00-05:00"}, {"number": 2, "merged_at": "2026-11-13T15:59:59Z"}],
+                                   [{"number": 3, "merged_at": "2026-11-14T16:00:00Z"}, {"number": 4, "title": "late", "html_url": "pr4", "merged_at": "2026-11-15T00:59:59+09:00"}, {"number": 5, "merged_at": None}]])
+            return json.dumps({"additions": 10, "deletions": 3, "changed_files": 2})
+        rows, warnings = daily_brief.collect_prs(("LeePepe/user-skills",), YESTERDAY, runner=run)
+        self.assertFalse(warnings)
+        self.assertEqual([row["title"] for row in rows], ["start", "late"])
+        self.assertEqual([call[0][-1] for call in calls[1:]], ["repos/LeePepe/user-skills/pulls/1", "repos/LeePepe/user-skills/pulls/4"])
+        self.assertTrue(all(call[1]["timeout"] == 15 for call in calls))
+        markdown, _ = daily_brief.render_brief(TODAY, [], [{"repo": "user-skills", "sha": "abc", "subject": "commit"}], [], [], rows)
+        self.assertEqual(markdown.count("| **user-skills** |"), 3)
+        self.assertNotIn("**LeePepe/user-skills**", markdown)
+        self.assertIn("additions=10, deletions=3, changed_files=2", markdown)
+
+    def test_source_failures_and_missing_pr_metrics_are_explicit_sanitized(self):
+        def run(command, **kwargs):
+            if "--paginate" in command: return json.dumps([[{"number": 1, "merged_at": "2026-11-14"}]])
+            raise subprocess.TimeoutExpired(command, 15, output="secret-server-error")
+        rows, warnings = daily_brief.collect_prs(("LeePepe/user-skills",), YESTERDAY, runner=run)
+        self.assertEqual(len(rows), 1); self.assertIsNone(rows[0]["additions"])
+        self.assertIn("PR metrics unavailable", str(warnings)); self.assertNotIn("secret", str(warnings))
+        rows, warnings = daily_brief.collect_prs(("LeePepe/user-skills",), YESTERDAY, runner=lambda *a, **kw: "{bad json")
+        self.assertFalse(rows); self.assertTrue(warnings)
+        rows, warnings = daily_brief.collect_git(Path("/missing-brief-repositories"), YESTERDAY)
+        self.assertFalse(rows); self.assertEqual(len(warnings), len(daily_brief.PERSONAL_REPOS))
+
+    def test_git_exact_cst_half_open_committer_bounds_and_bounded_runner(self):
+        calls = []
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return "a\tbefore\tbefore\t2026-11-13T15:59:59Z\nb\tstart\tstart\t2026-11-13T16:00:00Z\nc\tlate\tlate\t2026-11-14T15:59:59Z\nd\tend\tend\t2026-11-14T16:00:00Z\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root / "user-skills" / ".git").mkdir(parents=True)
+            with mock.patch.object(daily_brief, "PERSONAL_REPOS", ("user-skills",)):
+                rows, warnings = daily_brief.collect_git(root, YESTERDAY, runner=run)
+        self.assertEqual([row["sha"] for row in rows], ["start", "late"]); self.assertFalse(warnings)
+        command, kwargs = calls[0]
+        self.assertIn("--all", command); self.assertIn("--since-as-filter", command)
+        self.assertEqual(command[command.index("--since-as-filter") + 1], "2026-11-14 00:00 +0800")
+        self.assertEqual(command[command.index("--until") + 1], "2026-11-15 00:00 +0800")
+        self.assertIn("%cI", command[-1]); self.assertNotIn("%aI", command[-1]); self.assertEqual(kwargs["timeout"], 15)
+
+    def test_real_git_author_date_does_not_control_rollup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); repo = root / "user-skills"; repo.mkdir()
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
+            subprocess.run(["git", "init", "--quiet", str(repo)], env=env, check=True, capture_output=True)
+            for subject, stamp in (("before", "2026-11-13T15:59:59Z"), ("start", "2026-11-13T16:00:00Z"), ("late", "2026-11-14T15:59:59Z"), ("end", "2026-11-14T16:00:00Z")):
+                commit_env = {**env, "GIT_AUTHOR_DATE": "2020-01-01T00:00:00Z", "GIT_COMMITTER_DATE": stamp}
+                subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", subject], env=commit_env, check=True, capture_output=True)
+            with mock.patch.object(daily_brief, "PERSONAL_REPOS", ("user-skills",)):
+                rows, warnings = daily_brief.collect_git(root, YESTERDAY)
+        self.assertEqual([row["subject"] for row in rows], ["late", "start"]); self.assertFalse(warnings)
+
+    def test_canonical_paginated_linear_collection_includes_closed_and_personal_children(self):
+        class Paged(linear_sync.GraphQLClient):
+            def __init__(self): self.requests = []
+            def execute(self, query, variables):
+                self.requests.append(variables)
+                if variables["after"] is None:
+                    return {"issues": {"nodes": [issue("done", state="Done", state_type="completed"), issue("root", "[Root] Personal")], "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}
+                return {"issues": {"nodes": [issue("child", parent={"id": "root"})], "pageInfo": {"hasNextPage": False}}}
+        client = Paged()
+        rows, warnings = daily_brief.collect_linear(client, TODAY)
+        self.assertEqual([row["id"] for row in rows], ["done", "child"]); self.assertFalse(warnings)
+        self.assertEqual([call["after"] for call in client.requests], [None, "next"])
+
+    def test_propose_creates_then_updates_idempotently_with_correct_parent_owner(self):
+        client = FakeClient()
+        first = daily_brief.propose(client, TITLE, MARKER + "\nbody", "TIA-375")
+        second = daily_brief.propose(client, TITLE, MARKER + "\nupdated", "TIA-375")
+        self.assertEqual([kind for kind, _ in client.mutations], ["create", "update"])
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["team_id"], "tia"); self.assertEqual(first["state_id"], "todo")
+        for row in (first, second):
+            self.assertEqual(row["parent_id"], "parent")
+            self.assertEqual(row["assignee_id"], "0680d5e4-720a-4724-a1d4-b9660c0d1495")
+        self.assertNotIn("state_id", second)
+        self.assertEqual(client.list_calls, [("TIA", None), ("TIA", None)])
+
+    def test_exact_comment_not_prose_and_marker_preferred_over_title(self):
+        prose = issue("TIA-446", "Implement generator", description="Mentions daily-brief-2026-11-15 in prose")
+        title_only = issue("fallback", TITLE)
+        marked = issue("marked", "Renamed", description=MARKER)
+        client = FakeClient([prose, title_only, marked])
+        result = daily_brief.propose(client, TITLE, MARKER)
+        self.assertEqual(result["id"], "marked")
+        self.assertEqual(client.mutations[0][0], "update")
+        client = FakeClient([prose])
+        self.assertEqual(daily_brief.propose(client, TITLE, MARKER)["id"], "created")
+
+    def test_duplicate_preference_title_fallback_and_state_preservation(self):
+        for state, state_type in (("In Progress", "started"), ("In Review", "started"), ("Done", "completed")):
+            with self.subTest(state=state):
+                canceled = issue("canceled", TITLE, "Canceled", "canceled", description=MARKER)
+                active = issue("existing", TITLE, state, state_type, description=MARKER)
+                client = FakeClient([canceled, active])
+                result = daily_brief.propose(client, TITLE, MARKER)
+                self.assertEqual(result["id"], "existing"); self.assertNotIn("state_id", result)
+        client = FakeClient([issue("old", TITLE, "Canceled", "canceled"), issue("fallback", TITLE, "Done", "completed")])
+        result = daily_brief.propose(client, TITLE, MARKER)
+        self.assertEqual(result["id"], "fallback"); self.assertNotIn("state_id", result)
+        client = FakeClient([issue("canceled-marker", "Old title", "Canceled", "unstarted", description=MARKER), issue("title-active", TITLE)])
+        result = daily_brief.propose(client, TITLE, MARKER)
+        self.assertEqual(result["id"], "canceled-marker"); self.assertEqual(result["state_id"], "todo")
+
+    def test_wrong_or_unverifiable_parent_and_missing_todo_do_not_mutate(self):
+        for team in ({"key": "OTHER", "id": "other"}, {}, {"id": "other"}):
+            client = FakeClient(); client.parent["team"] = team
+            with self.assertRaises(ValueError): daily_brief.propose(client, TITLE, MARKER)
+            self.assertFalse(client.mutations)
+        for existing in ([], [issue("old", TITLE, "Canceled", "canceled", description=MARKER)]):
+            client = FakeClient(existing); client.states = []
+            with self.assertRaises(ValueError): daily_brief.propose(client, TITLE, MARKER)
+            self.assertFalse(client.mutations)
+        client = FakeClient([issue("done", TITLE, "Done", "completed", description=MARKER)]); client.states = []
+        self.assertNotIn("state_id", daily_brief.propose(client, TITLE, MARKER))
+
+    def test_candidate_enumeration_failure_never_uses_unsafe_fallback(self):
+        client = FakeClient(); client.read_error = RuntimeError("secret-api-token")
+        with self.assertRaises(RuntimeError): daily_brief.propose(client, TITLE, MARKER)
+        self.assertFalse(client.mutations)
+
+    def test_generate_publication_no_client_no_result_and_errors_fail_sanitized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for client, proposal in ((None, None), (FakeClient(), None), (FakeClient(), RuntimeError("secret-token"))):
+                with self.subTest(client=client), mock.patch.object(daily_brief, "_proposal_lock", return_value=contextlib.nullcontext()), mock.patch.object(daily_brief, "propose", side_effect=proposal if isinstance(proposal, Exception) else None, return_value=proposal):
+                    result = daily_brief.generate(TODAY, dev_root=root, handoff_root=root, client=client, propose_linear=True)
+                self.assertFalse(result["ok"]); self.assertIn("publication failed", str(result["warnings"]))
+                self.assertIn("Publication warning", result["markdown"]); self.assertNotIn("secret", json.dumps(result))
+
+    def test_main_missing_credentials_publication_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"LINEAR_DAILY_BRIEF_DEV_ROOT": tmp, "LINEAR_DAILY_BRIEF_HANDOFF_ROOT": tmp}), mock.patch.object(daily_brief, "_load_linear_client", return_value=None), contextlib.redirect_stdout(io.StringIO()) as output:
+            code = daily_brief.main(["--date", "2026-11-15", "--propose-linear", "--json"])
+        self.assertEqual(code, 1); self.assertFalse(json.loads(output.getvalue())["ok"])
+
+    def test_loader_dry_run_passes_no_refresh_and_reads_without_writes(self):
+        client = FakeClient([issue("TIA-1", priority=1)])
+        module = mock.Mock()
+        module.load_api_key.return_value = "fixture-key"
+        module.GraphQLClient.return_value = client
+        with mock.patch.object(daily_brief.importlib.util, "module_from_spec", return_value=module), mock.patch.object(daily_brief.importlib.util, "spec_from_file_location") as spec:
+            def execute_module(module):
+                self.assertTrue(daily_brief.sys.dont_write_bytecode)
+            spec.return_value.loader.exec_module.side_effect = execute_module
+            with mock.patch.object(daily_brief.sys, "dont_write_bytecode", False):
+                loaded = daily_brief._load_linear_client(dry_run=True)
+                self.assertFalse(daily_brief.sys.dont_write_bytecode)
+        module.GraphQLClient.assert_called_once_with("fixture-key", allow_refresh=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(os.environ, {"LINEAR_DAILY_BRIEF_LOCK": str(root / "must-not-create" / "lock")}), mock.patch.object(daily_brief, "_proposal_lock", side_effect=AssertionError("Dry-run lock")), mock.patch.object(daily_brief, "propose", side_effect=AssertionError("Dry-run publication")):
+                result = daily_brief.generate(TODAY, dev_root=root, handoff_root=root, client=loaded, propose_linear=True, dry_run=True)
+            self.assertFalse(list(root.iterdir()))
+        self.assertTrue(result["ok"]); self.assertIsNone(result["linear_issue"])
+        self.assertEqual(len(result["todo_items"]), 1)
+        self.assertEqual(client.list_calls, [("TIA", None)]); self.assertFalse(client.mutations)
 
 
 if __name__ == "__main__":
