@@ -4,7 +4,7 @@
 
 `daily-brief.py` is offline-first and uses the canonical `team-lead` Linear client. `--dry-run` never refreshes credentials or mutates files, Linear, Herdr, or the router. `--verify-markdown PATH| -` is a deterministic sink and must run before credentials, network, collection, or Jev.
 
-The first line is `<!-- GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD -->`. The first section is `## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）`. Nonempty buckets appear in this order and share global numbering; empty buckets are omitted:
+The first line is `<!-- GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD -->`. The first section is `## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）`. The heading is retained for compatibility; on Daily Learn/Daily Brief, an Owner top-level comment such as `1, 2`, `执行 1`, or `都做` also works without `@bot`. Nonempty buckets appear in this order and share global numbering; empty buckets are omitted:
 
 1. `🚨 待你拍板（Needs Decision）`
 2. `🔨 在途跟进（In Progress）`
@@ -35,7 +35,9 @@ Layer 0 deduplicates yesterday's issue/topic/PR/commit/ledger identities and sup
 
 The bridge scans only personal TIA issues and excludes Work Business/Bing/Workplace through the full ancestry; personal children of personal `[Root]` remain eligible. It ignores bot-authored comments, keeps an atomic private watermark, and retains pending/retry/follow-up issue IDs across overlapping cursors. `--dry-run` performs no refresh, lock, router, credential, Herdr, or watermark writes.
 
-A Daily Brief selection is `@bot 执行 1, 2` or checked `- [x]` items. Selection is parsed against the brief's global numbers; malformed or out-of-range numbers are ignored. The bridge acknowledges, dispatches the saved target, waits for the correlated standalone marker, posts the full result, then reassigns the issue to `@ltp19941128`. A blocked M2 result is **Owner decision required**, never completion.
+A Daily Brief selection is `@bot 执行 1, 2`, direct Owner `执行 1, 2`, or checked `- [x]` items. Selection is parsed against the brief's global numbers; malformed or out-of-range numbers are ignored. The bridge acknowledges, dispatches the saved target, waits for the correlated standalone marker, posts the full result, then reassigns the issue to `@ltp19941128`. A blocked M2 result is **Owner decision required**, never completion.
+
+Daily Learn completion receipts are compact: card title, verified clickable `leepepe.github.io` Blog URL, and one-line summary only. Unverified publication is reported as pending; knowledge-vault Markdown is never pasted into Linear.
 
 Ack → dispatch → wait → result-comment → owner-reassign is retryable. Timeouts keep watching the original handle. Reassignment retries only reassignment. Ambiguous legacy pending state never auto-replays: inspect the saved handle and verified receipt first. Native Delegate/mention requires admin-approved `app:assignable` and `app:mentionable`; textual `@bot` remains pollable. OAuth admin consent is explicit and never inferred.
 

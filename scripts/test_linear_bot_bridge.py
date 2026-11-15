@@ -180,6 +180,19 @@ class DailyBriefSelectionTests(unittest.TestCase):
             self.assertFalse(any("state_id" in kwargs for _, kwargs in client.updates))
             self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
 
+    def test_owner_direct_comments_trigger_without_mention_for_daily_brief_and_daily_learn(self):
+        issue = self.brief()
+        issue["comments"] = {"nodes": [owner_comment("1, 2", "brief-owner")]}
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"))
+        self.assertIsNotNone(pending)
+        self.assertIn("TIA-10", pending["directive"])
+        self.assertIn("TIA-11", pending["directive"])
+        learning = personal_issue(daily=True, comments=[owner_comment("1, 3", "learn-owner")])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(learning, bridge.State(Path(tmp) / "state.json"))
+        self.assertEqual(pending["slugs"], ["first-topic"])
+
     def test_all_and_invalid_selection_never_fall_back_to_whole_issue(self):
         issue = self.brief()
         selected = bridge.brief_selection(issue, owner_comment("@bot 全部"))
@@ -192,6 +205,22 @@ class DailyBriefSelectionTests(unittest.TestCase):
         self.assertIn("Owner decision required", bridge.brief_selection(issue))
         learning = personal_issue(daily=True)
         self.assertEqual(bridge._directive(learning, owner_comment("@bot 执行 2"), [])[1], ["second-topic"])
+
+
+class OwnerIngressTests(unittest.TestCase):
+    def test_owner_top_level_comment_triggers_after_bot_participation_without_mention(self):
+        bot = {"id": "bot-root", "body": bridge.ACK, "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}
+        issue = personal_issue(comments=[bot, owner_comment("执行 1", "owner-followup", created="2")])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"))
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["directive"], "执行 1")
+        self.assertIn("owner-followup", pending["trigger_ids"])
+
+    def test_non_owner_top_level_comment_does_not_get_no_mention_bypass(self):
+        issue = personal_issue(daily=True, comments=[{"id": "other", "body": "1", "user": {"id": "someone"}, "createdAt": "2"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json")))
 
 
 class OAuthAgentScopeTests(unittest.TestCase):
@@ -326,8 +355,13 @@ class BridgeTests(unittest.TestCase):
     def assert_handoff(self, client, text=None):
         self.assertEqual(self.runtime.dispatches, 1)
         self.assertEqual(len(client.comments), 2)
-        self.assertIn(text or self.runtime.text, client.comments[-1][1])
-        self.assertIn("@ltp19941128", client.comments[-1][1])
+        result_body = client.comments[-1][1]
+        if bridge.is_daily(client.issues[client.comments[-1][0]]):
+            self.assertIn("Daily Learn blog receipt:", result_body)
+            self.assertNotIn(self.runtime.text, result_body)
+        else:
+            self.assertIn(text or self.runtime.text, result_body)
+        self.assertIn("@ltp19941128", result_body)
         self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
         self.assertFalse(self.state.data["pending"])
 
@@ -381,7 +415,7 @@ class BridgeTests(unittest.TestCase):
                 (self.vault / name).write_text("# Fresh selected card" if name == "concepts/second-topic.md" else "DO NOT POST " + name)
         self.runtime.on_send = write_cards
         client = FakeClient(issue); self.scan(client)
-        self.assert_handoff(client, "# Fresh selected card")
+        self.assert_handoff(client)
         self.assertNotIn("DO NOT POST", client.comments[-1][1])
         self.assertTrue(self.runtime.prompts[0].startswith("/learn second-topic\n"))
         self.assertIn("selection", self.state.data["processed_comment_ids"])
@@ -389,6 +423,37 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(issue["delegate"])
         self.restart(); self.scan(client)
         self.assertEqual(self.runtime.dispatches, 1)
+
+    def test_daily_learn_requests_blog_publication_and_posts_compact_verified_receipt(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "learn-one")])
+        self.runtime.text = "# Full Card Body Sentinel\\nhttps://leepepe.github.io/learn/second-topic/\\nA concise verified summary."
+        def write_card():
+            card = self.vault / "concepts" / "second-topic.md"
+            card.parent.mkdir(parents=True, exist_ok=True)
+            card.write_text("---\\ntitle: Second Topic\\ninsight: One-line card summary\\n---\\n# Full Card Body Sentinel")
+        self.runtime.on_send = write_card
+        client = FakeClient(issue)
+        self.scan(client)
+        body = client.comments[-1][1]
+        self.assertIn("[second-topic](https://leepepe.github.io/learn/second-topic/)", body)
+        self.assertIn("full summary", body)
+        self.assertNotIn("Full Card Body Sentinel", body)
+        self.assertIn("publish", self.runtime.prompts[0].casefold())
+        self.assertIn("leepepe.github.io", self.runtime.prompts[0])
+
+    def test_legacy_daily_result_comment_retry_compacts_saved_full_card_output(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "legacy-owner")])
+        client = FakeClient(issue)
+        pending = bridge._new_turn(issue, self.state)
+        pending.update(phase="result-comment", result_kind="completed",
+                       output="# Full Card Body Sentinel\\nhttps://leepepe.github.io/learn/second-topic/\\nprivate body",
+                       root_id=None)
+        result = bridge._advance_turn(client, self.state, issue, pending)
+        body = client.comments[-1][1]
+        self.assertTrue(result["ok"])
+        self.assertIn("https://leepepe.github.io/learn/second-topic/", body)
+        self.assertNotIn("Full Card Body Sentinel", body)
+        self.assertNotIn("private body", body)
 
     def test_busy_learning_target_defers_and_previous_completion_never_counts(self):
         client = FakeClient(personal_issue(daily=True, assigned=True, comments=[]))

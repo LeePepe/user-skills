@@ -304,6 +304,53 @@ def _output_instruction(token: str) -> str:
             "Do not repeat this instruction in the response.")
 
 
+def _frontmatter(card: Path) -> dict[str, str]:
+    try:
+        text = card.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if not text.startswith("---"):
+        return {}
+    block = text.split("---", 2)[1]
+    result: dict[str, str] = {}
+    for line in block.splitlines():
+        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*[\"']?(.*?)[\"']?\s*$", line)
+        if match and match.group(2): result[match.group(1).casefold()] = match.group(2)
+    return result
+
+
+def _compact_daily_receipt(output: str, cards: list[Path], slugs: list[str]) -> str:
+    """Keep Daily Learn Linear receipts to publication links and one-line summaries."""
+    if output.lstrip().startswith("Daily Learn blog receipt:"):
+        return output.strip()
+    urls = re.findall(r"https://leepepe\.github\.io/(?:learn|thoughts)/[A-Za-z0-9_./#-]+", output)
+    lines: list[str] = []
+    for index, slug in enumerate(slugs):
+        card = cards[index] if index < len(cards) else next(
+            (candidate for folder in ("concepts", "craft", "thoughts")
+             for candidate in [VAULT / folder / f"{slug}.md"] if candidate.is_file()), None)
+        meta = _frontmatter(card) if card else {}
+        title = meta.get("title") or slug
+        matching = next((url.rstrip(".,)") for url in urls if slug.casefold() in url.casefold()), None)
+        if not matching and index < len(urls): matching = urls[index].rstrip(".,)")
+        if not matching:
+            lines.append(f"- **{title}** — Blog publication pending Owner readback.")
+            continue
+        summary = meta.get("insight") or meta.get("subtitle")
+        if not summary and matching:
+            url_index = next((pos for pos, line in enumerate(output.splitlines()) if matching in line), -1)
+            if url_index >= 0:
+                candidate = next((line.strip() for line in output.splitlines()[url_index + 1:]
+                                  if line.strip() and not line.lstrip().startswith(("#", "http"))), "")
+                summary = candidate or None
+        summary = summary or "Published knowledge card; see the article for the full summary."
+        summary = re.sub(r"\s+", " ", summary).strip().rstrip(".") + "."
+        lines.append(f"- [{title}]({matching}) — {summary}")
+    if lines:
+        return "Daily Learn blog receipt:\n" + "\n".join(lines)
+    return "Daily Learn blog receipt: publication pending Owner readback."
+
+
 def _framed_output(text: str, token: str) -> str:
     begin, end = _output_markers(token)
     matches = re.findall(r"(?ms)^[ \t]*" + re.escape(begin) + r"[ \t]*\n(.*?)^[ \t]*" + re.escape(end) + r"[ \t]*$", text)
@@ -349,8 +396,13 @@ def _prepare_dispatch(state: State, pending: dict[str, Any]) -> None:
         name = resolve_learning_agent()
         if not name: raise RuntimeError("registered learning M2 not found")
         baseline = _baseline(name)
+        publication = (" Generate the selected knowledge cards, then publish each sanitized card as a "
+                       "leepepe.github.io blog article. Return one predictable line per article in the form "
+                       "- [title](https://leepepe.github.io/learn/<slug>/) — one-line summary, plus only verified "
+                       "online Blog URLs; never claim publication without online readback. If publication is unsafe "
+                       "or unverified, return an Owner-decision/pending receipt instead.")
         handle = {"kind": "herdr", "agent": name, "baseline": baseline,
-                  "prompt": "/learn " + " ".join(pending["slugs"]) + "\n\n" + payload + _output_instruction(pending["turn_id"])}
+                  "prompt": "/learn " + " ".join(pending["slugs"]) + "\n\n" + publication + "\n\n" + payload + _output_instruction(pending["turn_id"])}
     else:
         planned = _run([sys.executable, str(ROUTER_PATH), "--plan", "--message", payload,
                         "--no-dsh", "--transport", "herdr", "--json"], 30)
@@ -428,8 +480,8 @@ def _watch_dispatch(state: State, pending: dict[str, Any]) -> bool:
         if not output or not _advanced(live, handle["baseline"]): return False
         decision = status in {"blocked", "needs_input"}
         cards = [] if decision else _fresh_cards(pending["before"], pending["slugs"])
-        if cards:
-            output = "\n\n".join(p.read_text(encoding="utf-8") for p in cards)
+        if not decision:
+            output = _compact_daily_receipt(output, cards, pending["slugs"])
         detail = {"agent": name, "state": live, "cards": [str(p) for p in cards]}
     else:
         if not handle.get("receipt"): return False
@@ -483,8 +535,24 @@ def _root_comment(comment: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> 
 
 
 def _latest_owner(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
-    owner = [c for c in comments if str((c.get("user") or {}).get("id") or "") == OWNER_USER_ID and not is_bot_comment(c)]
+    owner = [c for c in comments if _is_owner_comment(c)]
     return max(owner, key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or "")), default=None)
+
+
+def _is_owner_comment(comment: dict[str, Any]) -> bool:
+    user = comment.get("user") or {}
+    user_id = str(user.get("id") or "")
+    return not is_bot_comment(comment) and bool(user_id) and (not OWNER_USER_ID or user_id == OWNER_USER_ID)
+
+
+def _bot_participated(issue: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+    for key in ("creator", "createdBy"):
+        value = issue.get(key) or {}
+        if isinstance(value, dict) and (str(value.get("id") or "") == BOT_ACTOR_ID or value.get("app")):
+            return True
+    if str(issue.get("creatorId") or "") == BOT_ACTOR_ID:
+        return True
+    return any(is_bot_comment(comment) for comment in comments)
 
 
 def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -509,7 +577,9 @@ def _new_turn(issue: dict[str, Any], state: State) -> dict[str, Any] | None:
     comments = _comments(issue)
     by_id = {str(c["id"]): c for c in comments}
     unprocessed = [c for c in comments if not is_bot_comment(c) and str(c["id"]) not in state.data["processed_comment_ids"]]
+    no_mention_scope = is_daily(issue) or is_daily_brief(issue) or _bot_participated(issue, comments)
     triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold()
+                or (no_mention_scope and _is_owner_comment(c) and not (c.get("parent") or {}).get("id"))
                 or is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {}))
                 or is_bot_comment(_root_comment(c, by_id))]
     assignee, delegate = issue.get("assignee") or {}, issue.get("delegate") or {}
@@ -574,8 +644,13 @@ def _advance_turn(client: Any, state: State, issue: dict[str, Any], pending: dic
         existing = next((c for c in comments if pending["result_marker"] in str(c.get("body") or "")), None)
         if not pending.get("result_id"):
             label = "Owner decision required — task is not completed.\n\n" if pending["result_kind"] == "owner-decision" else ""
+            output = str(pending.get("output") or "")
+            if is_daily(issue) and pending.get("result_kind") != "owner-decision":
+                output = _compact_daily_receipt(output, [], pending.get("slugs") or [])
+                pending["output"] = output
+                state.save()
             pending["result_id"] = existing["id"] if existing else client.create_comment(
-                issue_id, f"@ltp19941128\n\n{label}{pending['output']}\n{pending['result_marker']}", parent_id=pending["root_id"])
+                issue_id, f"@ltp19941128\n\n{label}{output}\n{pending['result_marker']}", parent_id=pending["root_id"])
         pending["phase"] = "owner-reassign"; state.save()
     if pending["phase"] == "owner-reassign":
         client.update_issue(issue_id, assignee_id=OWNER_USER_ID, clear_delegate=True)
