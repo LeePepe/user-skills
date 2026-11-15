@@ -155,12 +155,13 @@ def brief_selection(issue: dict[str, Any], comment: dict[str, Any] | None = None
         f"[{number}] {text}" for number, text in chosen)
 
 
-def thread_context(issue: dict[str, Any], comment: dict[str, Any]) -> str:
+def thread_context(issue: dict[str, Any], comment: dict[str, Any], *, resolved_directive: str | None = None) -> str:
     comments = issue.get("comments") or {}
     nodes = comments.get("nodes", []) if isinstance(comments, dict) else comments
     if is_daily_brief(issue):
-        directive, _ = _directive(issue, comment, nodes if isinstance(nodes, list) else [])
-        return f"Issue: {issue.get('title', '')}\nCurrent directive:\n{directive}"
+        if resolved_directive is None:
+            resolved_directive, _ = _directive(issue, comment, nodes if isinstance(nodes, list) else [])
+        return f"Issue: {issue.get('title', '')}\nCurrent directive:\n{resolved_directive}"
     lines = [f"Issue: {issue.get('title', '')}", "Description:", str(issue.get("description") or ""), "Comment thread:"]
     for item in nodes if isinstance(nodes, list) else []:
         if isinstance(item, dict):
@@ -341,7 +342,7 @@ def _valid_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> bool:
 
 def _prepare_dispatch(state: State, pending: dict[str, Any]) -> None:
     issue = pending["issue"]
-    payload = thread_context(issue, {"body": pending["directive"]})
+    payload = thread_context(issue, {"body": pending["directive"]}, resolved_directive=pending["directive"])
     if is_daily(issue):
         if not pending["slugs"]:
             raise RuntimeError("no canonical Daily Learn topic matches the selection")
@@ -543,6 +544,10 @@ def _advance_turn(client: Any, state: State, issue: dict[str, Any], pending: dic
     if "turn_id" not in pending:
         # v1 pending did not save its dispatch handle/output; delivery cannot be inferred.
         raise RuntimeError("legacy pending turn requires delivery reconciliation; unsafe to redispatch")
+    if (pending["phase"] == "ack" and is_daily_brief(issue)
+            and pending["directive"].startswith("Owner decision required:")):
+        pending.update(phase="result-comment", result_kind="owner-decision", output=pending["directive"])
+        state.save()
     if pending["phase"] == "ack":
         existing = next((c for c in comments if pending["ack_marker"] in str(c.get("body") or "")), None)
         if not pending.get("ack_id"):

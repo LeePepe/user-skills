@@ -121,6 +121,65 @@ class DailyBriefSelectionTests(unittest.TestCase):
         self.assertIn("TIA-12 Financial", directive)
         self.assertNotIn("TIA-11", directive)
 
+    def test_plan_a_compact_lines_support_comments_and_checked_boxes(self):
+        issue = self.brief()
+        issue["description"] = (
+            "<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-15 -->\n"
+            "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）\n\n"
+            "- [ ] **[1] VoxPocket 三分类方案拍板** · [打开画廊](https://example.test/demos/v02/) · `TIA-420`\n"
+            "- [x] **[2] AIDash 双卡 R2 观察** · [打开画廊](https://example.test/demos/r2/) · `TIA-432`\n"
+            "- [ ] **[3] Financial 补录期初锚点** · `finance accounts --anchor` · `TIA-430`\n\n"
+            "---\n## 📊 昨日完成 (11-14 · 1 项)\n"
+            "| 项目 | 单据 / PR | 一句话结果 |\n|---|---|---|\n"
+            "| VoxPocket | `TIA-410` | 昨日已交付 |\n")
+        for body in ("@bot 1, 3", "@bot 执行 1, 3"):
+            directive, slugs = bridge._directive(issue, owner_comment(body), [])
+            self.assertEqual(slugs, [])
+            self.assertIn("TIA-420", directive)
+            self.assertIn("finance accounts --anchor", directive)
+            self.assertNotIn("TIA-432", directive)
+            self.assertNotIn("TIA-410", directive)
+        checked = bridge.brief_selection(issue)
+        self.assertIn("TIA-432", checked)
+        self.assertNotIn("TIA-420", checked)
+
+    def test_resolved_selection_survives_real_dispatch_payload(self):
+        for assignment in (False, True):
+            with self.subTest(assignment=assignment), tempfile.TemporaryDirectory() as tmp:
+                issue = self.brief()
+                issue["description"] = issue["description"].replace("fix daily brief", "fix daily brief at 5:00, limit 100")
+                issue["comments"] = {"nodes": [] if assignment else [owner_comment("@bot 执行 2")]}
+                if assignment:
+                    issue["delegate"] = {"id": bridge.BOT_ACTOR_ID}
+                client, state, runtime = FakeClient(issue), bridge.State(Path(tmp) / "state.json"), Runtime()
+                pending = bridge._new_turn(issue, state)
+                self.assertIsNotNone(pending)
+                with mock.patch.object(bridge, "_run", side_effect=runtime.run):
+                    bridge._advance_turn(client, state, issue, pending)
+                plan_call = next(call for call in runtime.calls if "--plan" in call)
+                payload = plan_call[plan_call.index("--message") + 1]
+                self.assertIn("TIA-11 user-skills: fix daily brief at 5:00, limit 100", payload)
+                self.assertNotIn("Owner decision required", payload)
+                self.assertNotIn("TIA-10", payload)
+                self.assertNotIn("TIA-12", payload)
+
+    def test_invalid_selection_returns_owner_question_without_dispatch_or_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = self.brief()
+            issue["state"] = {"name": "Todo", "type": "unstarted"}
+            issue["comments"] = {"nodes": [owner_comment("@bot 执行 1, 9")]}
+            client, state = FakeClient(issue), bridge.State(Path(tmp) / "state.json")
+            pending = bridge._new_turn(issue, state)
+            with mock.patch.object(bridge, "_run") as run:
+                result = bridge._advance_turn(client, state, issue, pending)
+            run.assert_not_called()
+            self.assertEqual(result["result_kind"], "owner-decision")
+            self.assertEqual(result["phase"], "complete")
+            self.assertEqual(len(client.comments), 1)
+            self.assertIn("Owner decision required", client.comments[0][1])
+            self.assertFalse(any("state_id" in kwargs for _, kwargs in client.updates))
+            self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
+
     def test_all_and_invalid_selection_never_fall_back_to_whole_issue(self):
         issue = self.brief()
         selected = bridge.brief_selection(issue, owner_comment("@bot 全部"))
