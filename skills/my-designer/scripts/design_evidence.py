@@ -172,6 +172,131 @@ def disclaimer_copy(text):
     return False
 
 
+def _css_blocks(text):
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return [(selector.strip(), re.sub(r'\s+', ' ', body).strip()) for selector, body in re.findall(r'([^{}]+)\{([^{}]*)\}', text) if selector.strip() and body.strip()]
+
+
+def _hex(value, variables, seen=None):
+    seen = set() if seen is None else seen
+    value = value.strip().lower()
+    if value.startswith('var('):
+        name = re.match(r'var\(\s*(--[\w-]+)', value)
+        if name and name.group(1) not in seen and name.group(1) in variables:
+            return _hex(variables[name.group(1)], variables, seen | {name.group(1)})
+    value = value.split()[0].rstrip(';,')
+    if re.fullmatch(r'#[0-9a-f]{3}', value):
+        return '#' + ''.join(c * 2 for c in value[1:])
+    return value if re.fullmatch(r'#[0-9a-f]{6}(?:[0-9a-f]{2})?', value) else None
+
+
+def anti_clone_css_and_layout_errors(root):
+    """Reject copied screen variants while ignoring shared gallery chrome."""
+    root = Path(root).resolve()
+    counts = [count for count in (4, 10) if all((root / f'v{i:02d}.html').is_file() and not (root / f'v{i:02d}.html').is_symlink() for i in range(1, count + 1))]
+    if not counts:
+        return []
+    count = 10 if 10 in counts else 4
+    paths = [root / f'v{i:02d}.html' for i in range(1, count + 1)]
+    errors, records, all_variant_classes = [], [], set()
+    for path in paths:
+        html = path.read_text(encoding='utf-8')
+        surface = RenderedSurface(html)
+        mains = [node for node in surface.tree.get('children', []) if node.get('tag') == 'html']
+        main_nodes = [node for node in surface.tree.get('children', []) if node.get('tag') == 'main']
+        main = main_nodes[0] if main_nodes else next((n for n in surface.nodes if n[0] == 'main'), (None, {}))[1]
+        classes = set(main.get('class', '').split()) if isinstance(main, dict) else set()
+        for _, attrs in surface.nodes:
+            classes.update(attrs.get('class', '').split())
+        all_variant_classes.update(classes)
+        records.append({'path': path, 'html': html, 'surface': surface, 'main': main, 'classes': classes})
+    css_cache = {}
+    def local_css(record):
+        texts = list(record['surface'].styles)
+        for href in record['surface'].links:
+            url = urlsplit(href)
+            if url.scheme or url.netloc or not url.path:
+                continue
+            candidate = (record['path'].parent / unquote(url.path)).resolve()
+            if candidate.is_relative_to(root) and candidate.is_file() and not candidate.is_symlink():
+                if candidate not in css_cache:
+                    css_cache[candidate] = candidate.read_text(encoding='utf-8')
+                texts.append(css_cache[candidate])
+        return texts
+    class_pattern = re.compile(r'\.([A-Za-z_][\w-]*)')
+    morphology_name = re.compile(r'(?:bento|timeline|pulse|inset|glass[-_]?row|ledger|pro[-_]?table|morph|variant|layout|stage|grid|rail|stack|panel|card)', re.I)
+    class_counts = {}
+    def is_variant_alias(selector):
+        parts = [part.strip() for part in selector.split(',')]
+        names = {next(iter(class_pattern.findall(part)), '') for part in parts if class_pattern.findall(part)}
+        unique_names = {name for name in names if class_counts.get(name) == 1}
+        return len(names) >= 2 and (len(unique_names) >= 2 or sum(bool(morphology_name.search(name)) for name in names) >= 3)
+    for record in records:
+        for cls in record['classes']:
+            class_counts[cls] = class_counts.get(cls, 0) + 1
+    geometry_keys = ('display:', 'grid-template-', 'grid-auto-', 'flex-', 'flex-direction:', 'order:', 'place-', 'position:', 'inset:', 'justify-', 'align-')
+    for record in records:
+        unique_classes = {cls for cls in record['classes'] if class_counts.get(cls) == 1}
+        blocks, variables = [], {}
+        for text in local_css(record) + [record['html']]:
+            for name, value in re.findall(r'(--[\w-]+)\s*:\s*([^;{}]+)', text):
+                variables[name] = value.strip()
+            if text == record['html']:
+                styles = re.findall(r'<style[^>]*>(.*?)</style>', text, re.S | re.I)
+                parsed = [block for style in styles for block in _css_blocks(style)]
+            else:
+                parsed = _css_blocks(text)
+            for selector, body in parsed:
+                selector_classes = set(class_pattern.findall(selector))
+                if is_variant_alias(selector):
+                    errors.append(f"{record['path'].name}: comma-aliased variant selector shell")
+                variant_classes = selector_classes & unique_classes
+                if not variant_classes:
+                    continue
+                if any(c.startswith(('topology-', 'archetype-', 'layout-', 'fold-', 'whitespace-', 'glass-', 'bento-', 'timeline-', 'pulse-', 'ring-', 'master-', 'split-', 'floating-', 'pocket-', 'command-', 'editorial-')) for c in variant_classes) or any(key in body for key in geometry_keys):
+                    blocks.append(re.sub(r'\s+', '', body).lower())
+        inline = re.search(r'<main\b[^>]*\bstyle=[\"\x27]([^\"\x27]*)', record['html'], re.I)
+        inline_style = inline.group(1) if inline else ''
+        for name, value in re.findall(r'(--[\w-]+)\s*:\s*([^;]+)', inline_style):
+            variables[name] = value.strip()
+        accent = _hex(variables.get('--variant-accent', variables.get('--accent', '')), variables)
+        surface_hex = _hex(variables.get('--content-surface', variables.get('--surface', variables.get('--bg', variables.get('--paper', '')))), variables)
+        geometry = []
+        for block in blocks:
+            if any(key in block for key in geometry_keys):
+                geometry.append(block)
+        records[paths.index(record['path'])].update({'blocks': set(blocks), 'palette': (surface_hex, accent), 'accent': accent, 'geometry': tuple(sorted(set(geometry)))})
+    for selector, body in [block for record in records for text in local_css(record) for block in _css_blocks(text)]:
+        if is_variant_alias(selector):
+            errors.append('linked stylesheet: comma-aliased variant selector shell')
+    for left, right in itertools.combinations(records, 2):
+        union = left['blocks'] | right['blocks']
+        overlap = len(left['blocks'] & right['blocks']) / len(union) if union else 0
+        if overlap > 0.35:
+            errors.append(f"{left['path'].name}/{right['path'].name}: normalized CSS overlap {overlap:.2f} > 0.35")
+    palettes, accents = {}, {}
+    for record in records:
+        palettes.setdefault(record['palette'], []).append(record['path'].name)
+        accents.setdefault(record['accent'], []).append(record['path'].name)
+        if record['palette'] == (None, None):
+            errors.append(f"{record['path'].name}: missing effective surface/accent palette")
+    for palette, names in palettes.items():
+        if palette != (None, None) and len(names) > 2:
+            errors.append(f"palette {palette} reused by {', '.join(names)}")
+    for accent, names in accents.items():
+        if accent is not None and len(names) > 2:
+            errors.append(f"accent {accent} reused by {', '.join(names)}")
+    signatures = {record['geometry'] for record in records}
+    minimum = 6 if count == 10 else 4
+    if len(signatures) < minimum:
+        errors.append(f'layout diversity requires {minimum} spatial signatures, found {len(signatures)}')
+    return list(dict.fromkeys(errors))
+
+
+def layout_diversity_errors(root):
+    return [error for error in anti_clone_css_and_layout_errors(root) if 'layout diversity' in error or 'spatial signatures' in error]
+
+
 def rendered_gallery_errors(root):
     root = root.resolve()
     errors, visited = [], set()
@@ -243,6 +368,8 @@ def rendered_gallery_errors(root):
                 stylesheet(href, path.parent)
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f'{path.name}: invalid rendered surface: {error}')
+    if any(all((root / f'v{i:02d}.html').is_file() for i in range(1, count + 1)) for count in (4, 10)):
+        errors.extend(anti_clone_css_and_layout_errors(root))
     errors.extend(portal_errors(root))
     manifest_path = root / 'manifest.json'
     if manifest_path.is_file() and not manifest_path.is_symlink():
@@ -441,8 +568,9 @@ def gallery_errors(root, manifest):
             compare('index.html', c._gallery_index(manifest), coordinates=False)
         else:
             variants = manifest.get('variants')
-            if not isinstance(variants, list) or len(variants) != 10 or {v.get('id') for v in variants if isinstance(v, dict)} != {f'v{i:02d}' for i in range(1, 11)}:
-                return ['gallery must contain exactly v01..v10'], []
+            count = manifest.get('count', len(variants) if isinstance(variants, list) else 0)
+            if not isinstance(variants, list) or count not in {4, 10} or len(variants) != count or {v.get('id') for v in variants if isinstance(v, dict)} != {f'v{i:02d}' for i in range(1, count + 1)}:
+                return ['gallery must contain exactly contiguous v01..v04 or v01..v10'], []
             axes = ('p0', 'axis_y', 'archetype', 'layout', 'whitespace', 'glass_geometry')
             allowed = {'p0': {'next-action', 'timeline', 'context', 'recovery'},
                        'axis_y': {'accordion', 'segmented-lens', 'swwallet'},
@@ -473,8 +601,8 @@ def gallery_errors(root, manifest):
                         errors.append(f'{name}: inner DOM topology/child tree does not match the declared morphology')
                 except (OSError, ValueError) as error:
                     errors.append(f'{name}: invalid DOM topology: {error}')
-            if len(set(topology_names)) != 10 or len(set(topology_trees)) != 10:
-                errors.append('screen variants must have ten distinct DOM topology/child trees independent of cosmetic IDs/classes')
+            if len(set(topology_names)) != count or len(set(topology_trees)) != count:
+                errors.append(f'screen variants must have {count} distinct DOM topology/child trees independent of cosmetic IDs/classes')
             current_meta = {'p0': 'current', 'axis_y': 'accordion', 'archetype': variants[0]['archetype'],
                             'content': manifest.get('screen_content') or f'{manifest["goal"]} key screen'}
             # The first breadth variant is not necessarily the current archetype.

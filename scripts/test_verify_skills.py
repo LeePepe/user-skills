@@ -3465,7 +3465,7 @@ class SkillContractV2Tests(unittest.TestCase):
                         if i == 2: scheme['screens'][0]['actions'][0]['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
                         if i == 3: scheme['screens'][0]['actions'][0] = {'label': 'Start capture', 'frequency': 'P0', 'commit': 'captured'}
                     options = ['--app-flows-json', json.dumps(schemes)]
-                command = [sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode, '--no-blog-mount', *options]
+                command = [sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode, *(['--count', '10'] if mode == 'screen' else []), '--no-blog-mount', *options]
                 result = subprocess.run(command, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
@@ -3506,6 +3506,54 @@ class SkillContractV2Tests(unittest.TestCase):
                 self.assertEqual(len({catalog.NAVIGATION.initial_state_signature(s) for s in manifest['schemes']}), 4)
                 manifest['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
                 self.assertTrue(any('closed root baseline' in e for e in evidence.gallery_errors(root, manifest)[0]))
+
+    def test_d4_default_four_gallery_and_explicit_ten_gate(self) -> None:
+        catalog_path = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('d4_count_evidence', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            env = dict(os.environ, HOME=tmp)
+            for extra, count in (([], 4), (['--count', '10'], 10)):
+                result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'd4-count-{count}', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--no-blog-mount', *extra], env=env, capture_output=True, text=True, check=True)
+                root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+                self.assertEqual(manifest['count'], count)
+                self.assertEqual(evidence.gallery_errors(root, manifest)[0], [])
+                accepted = subprocess.run([sys.executable, str(gate), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+                self.assertEqual(accepted.returncode, 0, accepted.stdout)
+
+    def test_d4_anti_clone_gallery_gate_and_jev_gallery_stage(self) -> None:
+        catalog_path = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('d4_evidence', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            env = dict(os.environ, HOME=tmp)
+            result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', 'd4-gate', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--count', '10', '--no-blog-mount'], env=env, capture_output=True, text=True, check=True)
+            root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+            self.assertEqual(evidence.anti_clone_css_and_layout_errors(root), [])
+            self.assertEqual(evidence.rendered_gallery_errors(root), [])
+            gate = subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+            self.assertEqual(gate.returncode, 0, gate.stdout)
+            screen = root / 'screen.css'; original_css = screen.read_text()
+            screen.write_text(original_css + '\n.inset-group-card, .glass-row-stack, .ledger-strip-body { display:grid; }\n')
+            self.assertTrue(any('comma-aliased' in error for error in evidence.rendered_gallery_errors(root)))
+            gate = subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+            self.assertNotEqual(gate.returncode, 0)
+            screen.write_text(original_css)
+            for i in range(1, 4):
+                path = root / f'v{i:02d}.html'; text = path.read_text(); text = re.sub(r'--variant-accent:[^;]+', '--variant-accent:#112233', text); path.write_text(text)
+            self.assertTrue(any('palette' in error or 'accent' in error for error in evidence.anti_clone_css_and_layout_errors(root)))
+            for i in range(1, 11):
+                path = root / f'v{i:02d}.html'; text = path.read_text()
+                classes = ' '.join(f'clone-v{i:02d}-{j}' for j in range(10))
+                rules = ''.join(f'.clone-v{i:02d}-{j}{{display:grid;grid-template-columns:repeat({j + 1},1fr);}}' for j in range(10))
+                text = re.sub(r'<main class="', '<main class="' + classes + ' ', text, count=1)
+                path.write_text(text.replace('</head>', '<style>' + rules + '</style></head>'))
+            self.assertTrue(any('overlap' in error for error in evidence.anti_clone_css_and_layout_errors(root)))
+            screen.write_text('.mockup{display:grid;grid-template-columns:1fr 1fr;}')
+            self.assertTrue(any('spatial signatures' in error for error in evidence.layout_diversity_errors(root)))
 
     def test_gallery_portal_gate_and_hub_contract(self) -> None:
         chooser = SKILLS_DIR / 'design-studio/scripts/gallery_chooser.py'

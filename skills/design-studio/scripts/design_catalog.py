@@ -1358,7 +1358,14 @@ def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     width, height = (390, 844) if platform == "mobile" else (1280, 800)
     p0, fold, archetype = metadata["p0"], metadata["axis_y"], metadata["archetype"]
     content = metadata.get('content') or 'Keep the next meaningful step in focus.'
-    accent = f"var(--archetype-{archetype.removeprefix('VS-')})"
+    palettes = {
+        'v01': ('#f7f1e8', '#b94f45'), 'v02': ('#eef5f2', '#187160'),
+        'v03': ('#f0eef9', '#7145bc'), 'v04': ('#edf4fb', '#3568d4'),
+        'v05': ('#fff3e5', '#a84b29'), 'v06': ('#eef7fa', '#1d7185'),
+        'v07': ('#f6f0e9', '#b44774'), 'v08': ('#eff4ea', '#557c3e'),
+        'v09': ('#f3f0e8', '#66543a'), 'v10': ('#f7edf2', '#9d3f72'),
+    }
+    surface_hex, accent = palettes.get(variant, ('#f8fafc', '#3568d4'))
     fold_markup = {
         "accordion": '<details open><summary>Next steps</summary><p>One clear action, with supporting detail on demand.</p></details><details><summary>Recent context</summary><p>Earlier activity stays secondary.</p></details>',
         "segmented-lens": '<div class="lens" role="tablist" aria-label="Context lens"><button role="tab" id="tab-focus" aria-selected="true" aria-controls="panel-focus">Focus</button><button role="tab" id="tab-detail" aria-selected="false" aria-controls="panel-detail" tabindex="-1">Breakdown</button></div><div role="tabpanel" id="panel-focus" aria-labelledby="tab-focus">One next step, ready when you are.</div><div role="tabpanel" id="panel-detail" aria-labelledby="tab-detail" hidden>Three supporting signals, shown only on request.</div>',
@@ -1385,7 +1392,7 @@ def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     topology, topology_markup = morphologies.get(variant, ('reference-stage', '<div class="reference-stage">Current direction</div>'))
     config = {'schema': 'screen-page/v3', 'id': variant, 'platform': platform, 'metadata': metadata,
               'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
-    surface = {"warm": "var(--paper-warm)", "solid": "var(--paper)", "dark": "var(--paper-dark)"}.get(overrides.get("surface"), "var(--paper)")
+    surface = surface_hex
     ink = "var(--ink-inverse)" if overrides.get("surface") == "dark" else "var(--ink)"
     muted = "var(--muted-inverse)" if overrides.get("surface") == "dark" else "var(--muted)"
     anti = escape(" ".join(str(item) for item in anti_patterns))
@@ -1440,7 +1447,13 @@ def _portal_manifests(root, goal):
                 continue
             if not re.fullmatch(r'(?:r\d+(?:-[A-Za-z0-9._-]+)?|[A-Za-z0-9][A-Za-z0-9._-]{0,63})', child.name):
                 continue
-            expected = {f'app{i:02d}' for i in range(1, 5)} if item.get('mode') == 'app-nav' else {f'v{i:02d}' for i in range(1, 11)}
+            if item.get('mode') == 'app-nav':
+                expected = {f'app{i:02d}' for i in range(1, 5)}
+            else:
+                count = item.get('count', len(item.get('variants', [])))
+                expected = {f'v{i:02d}' for i in range(1, count + 1)} if count in {4, 10} else set()
+                if len(item.get('variants', [])) not in {4, 10}:
+                    expected = set()
             if {v['id'] for v in item['variants']} != expected:
                 continue
             item['_path'] = child.name
@@ -1528,6 +1541,8 @@ def command_scaffold_gallery(args):
     layouts = ['hero-top', 'hero-inline', 'hero-bottom', 'hero-center']
     whitespace = ['tight', 'balanced', 'open']
     geometry = ['wide', 'compact', 'rail', 'lifted']
+    count = getattr(args, 'count', 4)
+    codebook = codebook[:count]
     variants = [{"id": f"v{i:02d}", "p0": focal[p], "axis_y": folds[fold],
                  "layout": layouts[arch], "whitespace": whitespace[(p + fold) % 3],
                  "glass_geometry": geometry[(arch + p) % 4],
@@ -1536,7 +1551,7 @@ def command_scaffold_gallery(args):
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
     platform = 'desktop' if args.platform == 'macos' else args.platform
-    manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "count": count, "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     for variant in variants:
         variant['summary'] = CHOOSER._summary_for(manifest, variant)
     prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
@@ -1830,7 +1845,8 @@ def parser():
     gallery.add_argument("--category", default="")
     gallery.add_argument("--category-title", default="")
     gallery.add_argument("--prompts-dir", help="Directory of exact Designer-authored <variant>-prompt.md files; validated before writes")
-    gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: ten single-screen variants (default); app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
+    gallery.add_argument("--mode", choices=["screen", "app-nav"], default="screen", help="screen: four high-craft variants by default; app-nav: four bespoke graph-driven full-app schemes tailored to the target App")
+    gallery.add_argument("--count", type=int, choices=[4, 10], default=4, help="screen candidate count (default: 4; explicit 10 remains supported)")
     gallery.add_argument("--app-flows-json", help="Path or JSON object defining exactly four bespoke app navigation graphs")
     gallery.add_argument("--app-screens", default="", help="Domain inventory; requires --app-flows-json, never guessed architectures")
     gallery.add_argument("--app-context", default="", help="Domain context; requires four complete --app-flows-json architectures")
