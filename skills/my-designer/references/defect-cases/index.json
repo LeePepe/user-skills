@@ -227,6 +227,50 @@
       "fix_rule": "Every shipped form must wire to a real submission endpoint/handler with 8 interactive states; if no backend exists yet, replace the fake form with a real action link (mailto:, GitHub issue, RSS) or explicit slot.",
       "forbidden_regex": "<form[^>]*onsubmit=[\"'](?:event\\.)?preventDefault\\(\\)\\s*;?\\s*[\"']",
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-011",
+      "title": "Fabricated .glassEffect(.prominent) & Post-Glass Layout Modifier Order Bug",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "glass-material",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "TabView",
+        "NSPopover"
+      ],
+      "symptom": "Hallucinating non-existent .glassEffect(.prominent) or applying padding/frame after .glassEffect(), corrupting lens curvature and hit-target bounds.",
+      "fix_rule": "Use only .regular, .clear, or .identity inside .glassEffect(); use .buttonStyle(.glassProminent) for emphasis, group adjacent controls in GlassEffectContainer, and apply padding/frame/font before glassEffect.",
+      "forbidden_regex": "\\.glassEffect\\(\\s*\\.prominent\\b|\\.glassEffect\\([^)]*\\)\\s*\\.\\s*(?:padding|frame)\\s*\\(",
+      "registered_at": "2026-11-15"
+    },
+    {
+      "id": "DC-012",
+      "title": "Multi-Boolean .sheet(isPresented:) State Collision & Custom Material Bottom Bar",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "TabView",
+        "Sheet"
+      ],
+      "symptom": "Stacking multiple boolean .sheet(isPresented:) modifiers or hand-rolling an ultraThinMaterial bottom tab bar instead of native TabView/sidebarAdaptable.",
+      "fix_rule": "Consolidate modal presentations into one Identifiable enum bound to one .sheet(item:) modifier and use native TabView with .tabViewStyle(.sidebarAdaptable).",
+      "forbidden_regex": "\\.sheet\\(\\s*isPresented\\s*:[^)]+\\)[\\s\\S]{0,240}?\\.sheet\\(\\s*isPresented\\s*:",
+      "registered_at": "2026-11-15"
     }
   ],
   "archived_templates": [

@@ -23,6 +23,14 @@ os.environ.setdefault("GTT_LINEAR_SYNC", "0")
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 SKILLS_DIR: Path = REPO_ROOT / "skills"
+
+
+def _png_fixture(width=390, height=844):
+    import struct, zlib, binascii
+    raw = b''.join(b'\x00' + b'\xff\xff\xff\xff' * width for _ in range(height))
+    def chunk(kind, payload):
+        return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', binascii.crc32(kind + payload) & 0xffffffff)
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
 FENCED_CODE_RE: re.Pattern[str] = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE: re.Pattern[str] = re.compile(r"`[^`\n]+`")
 MARKDOWN_LINK_RE: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -2988,13 +2996,18 @@ class JevGateTests(unittest.TestCase):
     def test_traceback_evidence_relationship_and_routing_not_vocabulary(self):
         import copy
         g = self.gate
+        image_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        image_file.write(_png_fixture())
+        image_file.close()
+        image_source = image_file.name + '#button'
         violation = {'classification': 'IMPL_BUG', 'constraint': {'declared': True, 'source': 'spec.md:12', 'requirement': '48pt hit targets'},
-                     'implementation': {'source': 'screen.png#button', 'observation': 'Measured 36pt', 'conforms': False, 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 36}},
+                     'implementation': {'source': image_source, 'observation': 'Measured 36pt', 'conforms': False, 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 36}},
                      'route': {'owner': 'Writer', 'amend_spec_first': False}}
         gap = {'classification': 'SPEC_GAP', 'constraint': {'declared': False, 'source': 'spec.md#copy', 'requirement': 'Follows every declared constraint', 'missing_requirement': 'CJK wrapping at 390px'},
-               'implementation': {'source': 'screen.png#copy', 'observation': 'Declared layout followed; CJK copy overflows', 'conforms': True},
+               'implementation': {'source': image_file.name + '#copy', 'observation': 'Declared layout followed; CJK copy overflows', 'conforms': True},
                'route': {'owner': 'Steering', 'amend_spec_first': True}}
-        def check(f): return g.EVIDENCE.traceback_errors(json.dumps({'schema': 'visual-traceback/v1', 'findings': [f]}))[0]
+        rendered = {'rendered_evidence': [{'kind': 'screenshot', 'source': image_source, 'observation': 'Rendered viewport inspected'}]}
+        def check(f): return g.EVIDENCE.traceback_errors(json.dumps({'schema': 'visual-traceback/v1', 'findings': [f], **rendered}))[0]
         self.assertEqual(check(violation), [])
         self.assertEqual(check(gap), [])
         wrong = copy.deepcopy(violation); wrong['classification'] = 'SPEC_GAP'
@@ -3003,7 +3016,7 @@ class JevGateTests(unittest.TestCase):
         self.assertTrue(check(wrong))
         wrong = copy.deepcopy(violation); wrong['implementation']['conforms'] = True
         self.assertTrue(check(wrong))
-        clean = {'schema': 'visual-traceback/v1', 'findings': [], 'clean': {'spec_source': 'spec.md:12', 'implementation_source': 'screen.png#button', 'checks': [{'requirement': '48pt targets', 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 48}}]}}
+        clean = {'schema': 'visual-traceback/v1', 'findings': [], **rendered, 'clean': {'spec_source': 'spec.md:12', 'implementation_source': image_source, 'checks': [{'requirement': '48pt targets', 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 48}}]}}
         self.assertEqual(g.EVIDENCE.traceback_errors(json.dumps(clean))[0], [])
         self.assertTrue(g.EVIDENCE.traceback_errors('Allowed words [IMPL_BUG] and [SPEC_GAP]')[0])
         import types
@@ -3016,6 +3029,54 @@ class JevGateTests(unittest.TestCase):
         answers['q_traceback_evidence_attribution'] = {'noul': 0, 'status': 'PASS'}
         args.mock_jev_json = json.dumps(answers)
         self.assertEqual(g._jev_response(args, [gap], 'mobile')['status'], 'REJECT_REVISE')
+        Path(image_file.name).unlink(missing_ok=True)
+
+
+    def test_swift_audit_masks_comments_strings_and_reports_native_defects(self):
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        bad = '/* .glassEffect(.prominent) */\nText(".glassEffect(.prominent)").padding().glassEffect(.prominent)'
+        result = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'mobile', '--path', 'snippet.swift', '--snippet', bad], cwd=REPO_ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('DC-011', result.stdout)
+        self.assertIn('line', result.stdout)
+        good = 'Text("x").padding().frame(width: 44).glassEffect(.regular)'
+        result = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'mobile', '--path', 'snippet.swift', '--snippet', good], cwd=REPO_ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_traceback_rejects_unvalidated_or_missing_rendered_evidence(self):
+        g = self.gate
+        payload = {'schema': 'visual-traceback/v1', 'findings': [], 'status': 'UNVALIDATED'}
+        self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(payload))[0])
+        payload['status'] = 'PASS'
+        self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(payload))[0])
+
+    def test_traceback_requires_real_image_for_direct_and_jev_paths(self):
+        g = self.gate
+        png = _png_fixture()
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            root = Path(tmp); image = root / 'screen.png'; image.write_bytes(png); source = str(image) + '#button'
+            base = {'schema': 'visual-traceback/v1', 'findings': [], 'rendered_evidence': [{'kind': 'screenshot', 'source': source, 'observation': 'real rendered viewport inspected'}], 'clean': {'spec_source': 'spec.md:1', 'implementation_source': source, 'checks': [{'requirement': 'target', 'assertion': {'operator': 'minimum', 'required': 1, 'observed': 1}}]}}
+            def run(payload, extra=()):
+                path = root / 'trace.json'; path.write_text(json.dumps(payload), encoding='utf-8')
+                return subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'traceback', '--spec-file', str(path), *extra], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(g.EVIDENCE.traceback_errors(json.dumps(base), base_dir=root)[0], [])
+            self.assertEqual(run(base, ('--no-jev',)).returncode, 0)
+            answers = {q: {'noul': 1} for q in g.TAXONOMY['jev_verification_gates']['mobile']}; answers['q_traceback_evidence_attribution'] = {'noul': 1}
+            self.assertEqual(run(base, ('--mock-jev-json', json.dumps(answers))).returncode, 0)
+            undersized = root / 'small.png'; undersized.write_bytes(_png_fixture(1, 1))
+            truncated = root / 'truncated.png'; truncated.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 24)
+            jpeg = root / 'truncated.jpg'; jpeg.write_bytes(b'\xff\xd8\xff')
+            for bad in (
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(root / 'phantom.png') + '#button', 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'observation', 'source': 'View.swift:42', 'observation': 'code only'}]},
+                {**base, 'clean': {**base['clean'], 'status': 'UNVALIDATED'}},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(root / 'not-image.txt'), 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(undersized) + '#button', 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(truncated) + '#button', 'observation': 'real'}]},
+                {**base, 'rendered_evidence': [{'kind': 'screenshot', 'source': str(jpeg) + '#button', 'observation': 'real'}]},
+            ):
+                self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(bad), base_dir=root)[0])
+                self.assertNotEqual(run(bad, ('--no-jev',)).returncode, 0)
 
 
 class SkillContractV2Tests(unittest.TestCase):
@@ -3445,7 +3506,7 @@ class SkillContractV2Tests(unittest.TestCase):
                         if i == 2: scheme['screens'][0]['actions'][0]['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
                         if i == 3: scheme['screens'][0]['actions'][0] = {'label': 'Start capture', 'frequency': 'P0', 'commit': 'captured'}
                     options = ['--app-flows-json', json.dumps(schemes)]
-                command = [sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode, '--no-blog-mount', *options]
+                command = [sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode, *(['--count', '10'] if mode == 'screen' else []), '--no-blog-mount', *options]
                 result = subprocess.run(command, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
@@ -3486,6 +3547,57 @@ class SkillContractV2Tests(unittest.TestCase):
                 self.assertEqual(len({catalog.NAVIGATION.initial_state_signature(s) for s in manifest['schemes']}), 4)
                 manifest['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
                 self.assertTrue(any('closed root baseline' in e for e in evidence.gallery_errors(root, manifest)[0]))
+
+    def test_d4_default_four_gallery_and_explicit_ten_gate(self) -> None:
+        catalog_path = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('d4_count_evidence', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            env = dict(os.environ, HOME=tmp)
+            for extra, count in (([], 4), (['--count', '10'], 10)):
+                result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'd4-count-{count}', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--no-blog-mount', *extra], env=env, capture_output=True, text=True, check=True)
+                root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+                self.assertEqual(manifest['count'], count)
+                self.assertEqual(evidence.gallery_errors(root, manifest)[0], [])
+                accepted = subprocess.run([sys.executable, str(gate), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+                self.assertEqual(accepted.returncode, 0, accepted.stdout)
+                payload = json.loads(accepted.stdout)
+                gallery_evidence = next(item for item in payload['evidence'] if 'variant_count' in item)
+                self.assertEqual(gallery_evidence['variant_count'], count)
+
+    def test_d4_anti_clone_gallery_gate_and_jev_gallery_stage(self) -> None:
+        catalog_path = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('d4_evidence', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            env = dict(os.environ, HOME=tmp)
+            result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', 'd4-gate', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--count', '10', '--no-blog-mount'], env=env, capture_output=True, text=True, check=True)
+            root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+            self.assertEqual(evidence.anti_clone_css_and_layout_errors(root), [])
+            self.assertEqual(evidence.rendered_gallery_errors(root), [])
+            gate = subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+            self.assertEqual(gate.returncode, 0, gate.stdout)
+            screen = root / 'screen.css'; original_css = screen.read_text()
+            screen.write_text(original_css + '\n.inset-group-card, .glass-row-stack, .ledger-strip-body { display:grid; }\n')
+            self.assertTrue(any('comma-aliased' in error for error in evidence.rendered_gallery_errors(root)))
+            gate = subprocess.run([sys.executable, str(SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'], capture_output=True, text=True)
+            self.assertNotEqual(gate.returncode, 0)
+            screen.write_text(original_css)
+            for i in range(1, 4):
+                path = root / f'v{i:02d}.html'; text = path.read_text(); text = re.sub(r'--variant-accent:[^;]+', '--variant-accent:#112233', text); path.write_text(text)
+            self.assertTrue(any('palette' in error or 'accent' in error for error in evidence.anti_clone_css_and_layout_errors(root)))
+            for i in range(1, 11):
+                path = root / f'v{i:02d}.html'; text = path.read_text()
+                classes = ' '.join(f'clone-v{i:02d}-{j}' for j in range(10))
+                rules = ''.join(f'.clone-v{i:02d}-{j}{{display:grid;grid-template-columns:repeat({j + 1},1fr);}}' for j in range(10))
+                text = re.sub(r'<main class="', '<main class="' + classes + ' ', text, count=1)
+                path.write_text(text.replace('</head>', '<style>' + rules + '</style></head>'))
+            self.assertTrue(any('overlap' in error for error in evidence.anti_clone_css_and_layout_errors(root)))
+            screen.write_text('.mockup{display:grid;grid-template-columns:1fr 1fr;}')
+            self.assertTrue(any('spatial signatures' in error for error in evidence.layout_diversity_errors(root)))
 
     def test_gallery_portal_gate_and_hub_contract(self) -> None:
         chooser = SKILLS_DIR / 'design-studio/scripts/gallery_chooser.py'

@@ -32,6 +32,25 @@ def run(*args, **kwargs):
 
 
 class DesignCatalogTests(unittest.TestCase):
+    def test_blog_builder_strata_precedence_and_safe_fallback(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            blog = Path(directory) / 'blog'; (blog / 'demos').mkdir(parents=True)
+            builder = blog / 'build_site.py'
+            builder.write_text('from pathlib import Path\nPath("demos/index.html").write_text("BUILT-STRATA")\n', encoding='utf-8')
+            hub = DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertEqual(hub.read_text(), 'BUILT-STRATA')
+            builder.unlink(); hub.unlink()
+            DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertIn('data-strata-brand="yellow"', hub.read_text())
+            hub.write_text('KEEP-OLD-HUB', encoding='utf-8')
+            builder.symlink_to(blog / 'missing-builder.py')
+            DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertEqual(hub.read_text(), 'KEEP-OLD-HUB')
+            builder.unlink()
+            builder.write_text('raise SystemExit("builder failed")', encoding='utf-8')
+            with self.assertRaises(subprocess.CalledProcessError):
+                DESIGN_CATALOG._update_demos_hub(blog)
+
     def test_repository_schema_and_render(self):
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
         self.assertIsInstance(catalog, dict)
@@ -382,7 +401,7 @@ assert.equal(document.getElementById('overflow-menu').hidden,true);
                         if i == 3: scheme['screens'][0]['actions'][0] = {'label': 'Start capture', 'frequency': 'P0', 'commit': 'captured'}
                     options = ['--app-flows-json', json.dumps(schemes)]
                 result = run('scaffold-gallery', '--goal', f'prose-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode,
-                             '--no-blog-mount', *options, env=dict(os.environ, HOME=directory))
+                             *(['--count', '10'] if mode == 'screen' else []), '--no-blog-mount', *options, env=dict(os.environ, HOME=directory))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 gallery = Path(json.loads(result.stdout)['gallery'])
                 manifest = json.loads((gallery / 'manifest.json').read_text())
@@ -414,7 +433,7 @@ assert.equal(document.getElementById('overflow-menu').hidden,true);
 
     def test_inner_morphology_clones_and_swaps_fail_independently_of_wrapper(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
-            result = run('scaffold-gallery', '--goal', 'morphology', '--round', '1', '--platform', 'mobile', '--no-blog-mount', env=dict(os.environ, HOME=directory))
+            result = run('scaffold-gallery', '--goal', 'morphology', '--round', '1', '--platform', 'mobile', '--count', '10', '--no-blog-mount', env=dict(os.environ, HOME=directory))
             self.assertEqual(result.returncode, 0, result.stderr)
             gallery = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((gallery / 'manifest.json').read_text())
             self.assertEqual(EVIDENCE.gallery_errors(gallery, manifest)[0], [])
@@ -554,7 +573,7 @@ click('#open-sheet');click('#sheet [data-action-index="0"]');assert.equal(n.stat
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             for known in (False, True):
                 options = ['--direction', 'VS-007', '--screen-content', 'Transcript timeline'] if known else []
-                result = run('scaffold-gallery', '--goal', 'known' if known else 'open', '--round', '1', '--platform', 'mobile', *options, env=dict(os.environ, HOME=directory))
+                result = run('scaffold-gallery', '--goal', 'known' if known else 'open', '--round', '1', '--platform', 'mobile', '--count', '10', *options, env=dict(os.environ, HOME=directory))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 gallery = Path(json.loads(result.stdout)['gallery'])
                 accepted = self.gate(gallery)
@@ -1031,7 +1050,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = os.environ.copy()
             env["HOME"] = directory
-            result = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile",
+            result = run("scaffold-gallery", "--goal", "goal-a", "--round", "1", "--platform", "mobile", "--count", "10",
                          "--session-anti-patterns", "[\"no top capsule\"]", "--style-overrides", "{\"density\":\"airy\"}", env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             gallery = Path(directory) / "Development/handoff/goal-a/r1"
@@ -1214,8 +1233,27 @@ class PromptAndRenderedGuardTests(unittest.TestCase):
         spec.loader.exec_module(cls.evidence)
 
     def scaffold(self, directory, mode, *options):
+        count = ['--count', '10'] if mode == 'screen' else []
         return run('scaffold-gallery', '--goal', 'prompt-contract', '--round', '1', '--platform', 'web',
-                   '--mode', mode, *options, env=dict(os.environ, HOME=str(directory)))
+                   '--mode', mode, *count, *options, env=dict(os.environ, HOME=str(directory)))
+
+    def test_default_four_screen_count_and_explicit_ten_compatibility(self):
+        for extra, expected in (([], 4), (['--count', '10'], 10)):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+                result = run('scaffold-gallery', '--goal', f'count-{expected}', '--round', '1', '--platform', 'mobile', '--no-blog-mount', *extra, env=dict(os.environ, HOME=directory))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout); gallery = Path(output['gallery']); manifest = output['manifest']
+                self.assertEqual(manifest['count'], expected)
+                self.assertEqual([v['id'] for v in manifest['variants']], [f'v{i:02d}' for i in range(1, expected + 1)])
+                self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+                index = (gallery / 'index.html').read_text()
+                for asset in ('/assets/colors.css', '/assets/strata-theme.css', '/assets/blog.css'):
+                    self.assertLess(index.index(asset), index.index('<style>'))
+                self.assertIn('data-lp-theme="light"', index)
+                self.assertIn('class="site-header shell"', index)
+                self.assertIn('class="gallery-breadcrumbs site-nav"', index)
+                gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
+                self.assertEqual(gate.returncode, 0, gate.stdout)
 
     def test_starter_and_supplied_prompts_bind_verbatim_and_mount(self):
         import hashlib
@@ -1330,7 +1368,7 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
             env = dict(os.environ, HOME=directory)
             for mode in ('screen', 'app-nav'):
                 for requested in ('mobile', 'desktop', 'macos', 'web'):
-                    result = run('scaffold-gallery', '--goal', f'{mode}-{requested}', '--round', '1', '--platform', requested, '--mode', mode, '--no-blog-mount', env=env)
+                    result = run('scaffold-gallery', '--goal', f'{mode}-{requested}', '--round', '1', '--platform', requested, '--mode', mode, *(['--count', '10'] if mode == 'screen' else []), '--no-blog-mount', env=env)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     gallery = Path(json.loads(result.stdout)['gallery'])
                     html = (gallery / 'index.html').read_text(encoding='utf-8')
@@ -1408,7 +1446,7 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = dict(os.environ, HOME=directory)
             for round_number, category in ((1, 'A'), (2, 'B')):
-                result = run('scaffold-gallery', '--goal', 'portal-regression', '--round', str(round_number), '--category', category, '--platform', 'web', '--category-title', category, '--no-blog-mount', env=env)
+                result = run('scaffold-gallery', '--goal', 'portal-regression', '--round', str(round_number), '--category', category, '--platform', 'web', '--count', '10', '--category-title', category, '--no-blog-mount', env=env)
                 self.assertEqual(result.returncode, 0, result.stderr)
             root = Path(directory) / 'Development/handoff/portal-regression'
             portal = (root / 'index.html').read_text(encoding='utf-8')
@@ -1432,9 +1470,9 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             env = dict(os.environ, HOME=directory)
             blog = Path(directory) / 'blog'
-            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '1', '--category', 'first', '--platform', 'web', '--blog-repo', str(blog), env=env)
+            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '1', '--category', 'first', '--platform', 'web', '--count', '10', '--blog-repo', str(blog), env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '2', '--category', 'second', '--platform', 'web', '--blog-repo', str(blog), env=env)
+            result = run('scaffold-gallery', '--goal', 'hub-contract', '--round', '2', '--category', 'second', '--platform', 'web', '--count', '10', '--blog-repo', str(blog), env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             portal = (blog / 'demos/hub-contract/index.html').read_text(encoding='utf-8')
             round_index = (blog / 'demos/hub-contract/r1-first/index.html')
