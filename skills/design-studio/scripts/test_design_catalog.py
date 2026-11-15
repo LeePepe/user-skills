@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import os
 import struct
 import subprocess
@@ -103,7 +104,102 @@ class DesignCatalogTests(unittest.TestCase):
             self.assertNotIn("MP-002", ids)
 
 
+EVIDENCE_SPEC = importlib.util.spec_from_file_location('round2_evidence', SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py')
+EVIDENCE = importlib.util.module_from_spec(EVIDENCE_SPEC)
+EVIDENCE_SPEC.loader.exec_module(EVIDENCE)
+
+
+def minimal_schemes(sheet=False):
+    schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Recorder')
+    for scheme in schemes:
+        if sheet:
+            scheme['screens'] = [scheme['screens'][0], scheme['screens'][2]]
+            scheme['screens'][0]['actions'][0].pop('transition')
+            scheme['architecture']['destinations'] = ['capture']
+        else:
+            scheme['screens'].pop()
+            scheme['architecture']['sheet'] = None
+            if scheme['architecture']['kind'] != 'stack':
+                scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+    return schemes
+
+
 class AppNavigationGraphTests(unittest.TestCase):
+    def test_initial_history_ownership_edges_overlays_and_canonical_walk(self):
+        import copy
+        navigation = DESIGN_CATALOG.NAVIGATION
+        scheme = navigation.starter_schemes()[0]
+        scheme['screens'].insert(1, {'id': 'detail', 'name': 'Detail', 'actions': []})
+        scheme['screens'][0]['actions'][0]['transition']['to'] = 'detail'
+        scheme['architecture']['initial_state'] = {'active_screen': 'detail', 'history': ['capture']}
+        normalized = navigation.validate_scheme(scheme, 1, 'Recorder')
+        self.assertEqual(normalized['architecture']['initial_state']['active_screen'], 'detail')
+        for invalid, state in (
+            ('ordered pushScreen', {'active_screen': 'todo', 'history': ['capture']}),
+            ('visible destination', {'active_screen': 'detail', 'history': []}),
+            ('visible destination', {'active_screen': 'todo', 'history': ['detail']}),
+            ('active_screen', {'active_screen': 'capture', 'history': ['capture']}),
+            ('architecture.sheet', {'overlay': 'settings'}),
+            ('togglePopover', {'overlay': 'organize'}),
+            ('open together', {'overlay': 'settings', 'overflow_open': True}),
+        ):
+            bad = copy.deepcopy(scheme)
+            bad['architecture']['initial_state'] = state
+            if invalid == 'architecture.sheet': bad['architecture']['sheet'] = None
+            if invalid == 'togglePopover':
+                bad['screens'].extend([{'id': 'organize', 'role': 'popover', 'actions': []},
+                                       {'id': 'detached', 'actions': [], 'transitions': [{'type': 'togglePopover', 'to': 'organize'}]}])
+            if invalid == 'open together':
+                bad['architecture']['overflow'] = [{'screen': 'capture', 'action': 0}]
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, invalid):
+                navigation.validate_scheme(bad, 1, 'Recorder')
+        scheme['screens'].extend([
+            {'id': 'primary-owner', 'actions': [{'label': 'Commit', 'frequency': 'P0'}]},
+            {'id': 'organize', 'role': 'popover', 'actions': []},
+            {'id': 'other-popover', 'role': 'popover', 'actions': []},
+        ])
+        scheme['architecture']['primary'] = {'screen': 'primary-owner', 'action': 0}
+        scheme['screens'][1]['transitions'] = [{'type': 'togglePopover', 'to': 'organize'}, {'type': 'togglePopover', 'to': 'other-popover'}]
+        scheme['architecture']['initial_state']['overlay'] = 'organize'
+        normalized = navigation.validate_scheme(scheme, 1, 'Recorder')
+        expected = (navigation.architecture_signature(normalized), navigation.initial_state_signature(normalized))
+        ids = {p['id']: f'renamed-{i}' for i, p in enumerate(scheme['screens'])}
+        def rename(value):
+            if isinstance(value, dict): return {k: rename(v) for k, v in value.items()}
+            if isinstance(value, list): return [rename(v) for v in value]
+            return ids.get(value, value) if isinstance(value, str) else value
+        renamed = rename(copy.deepcopy(scheme)); renamed['screens'].reverse()
+        actual = navigation.validate_scheme(renamed, 1, 'Recorder')
+        self.assertEqual((navigation.architecture_signature(actual), navigation.initial_state_signature(actual)), expected)
+        scheme['architecture']['initial_state']['overlay'] = 'other-popover'
+        other = navigation.validate_scheme(scheme, 1, 'Recorder')
+        self.assertNotEqual(navigation.initial_state_signature(other), expected[1])
+        # Primary owner is a chrome seed even when it is not a destination.
+        self.assertEqual(navigation.initial_state_signature(normalized)[2][1], 5)
+
+    def test_automatic_collision_resolution_respects_available_capabilities(self):
+        navigation = DESIGN_CATALOG.NAVIGATION
+        for sheet in (False, True):
+            schemes = minimal_schemes(sheet)
+            if not sheet:
+                # Stack uses destination switching; another declared journey supplies
+                # the fourth observable state through a real push path.
+                schemes[0]['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+                schemes[1]['screens'][0]['actions'][0]['transition']['type'] = 'pushScreen'
+            normalized = navigation.load_schemes(types.SimpleNamespace(app_flows_json=json.dumps(schemes)))
+            self.assertEqual(len({navigation.initial_state_signature(s) for s in normalized}), 4)
+            self.assertTrue(all(len(s['screens']) == 2 for s in normalized))
+        schemes = minimal_schemes(False)
+        for scheme in schemes:
+            scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+        with self.assertRaisesRegex(ValueError, 'insufficient.*four distinct'):
+            navigation.load_schemes(types.SimpleNamespace(app_flows_json=json.dumps(schemes)))
+        for scheme in schemes:
+            scheme['architecture']['collapse_title'] = False
+            scheme['screens'][0]['actions'][0].pop('transition')
+        with self.assertRaisesRegex(ValueError, 'insufficient.*four distinct'):
+            navigation.load_schemes(types.SimpleNamespace(app_flows_json=json.dumps(schemes)))
+
     def test_screen_declaration_order_and_renaming_do_not_create_architectures(self):
         import copy
         import itertools
@@ -165,13 +261,176 @@ class AppNavigationGraphTests(unittest.TestCase):
         for i, scheme in enumerate(tailored):
             scheme['architecture']['kind'] = 'stack'
             action = scheme['screens'][0]['actions'][0]
-            if i == 1: action['transition'] = {'type': 'switchTab', 'to': 'review'}
-            if i == 2: action['transition'] = {'type': 'toggleSheet', 'to': 'tools'}
+            if i == 1: action['transition'] = {'type': 'switchTab', 'to': 'todo'}
+            if i == 2: action['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
             if i == 3: action.pop('transition'); action['commit'] = 'captured'
+            states = [
+                {'active_screen': 'todo', 'history': ['capture'], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': 'settings', 'detent': 'large', 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': 'settings', 'detent': 'medium', 'overflow_open': False, 'title_collapsed': False},
+                {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': True},
+            ]
+            scheme['architecture']['initial_state'] = states[i]
         self.assertEqual(len(DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': tailored})))), 4)
+
+    def test_minimal_real_screens_have_four_distinct_initial_states(self):
+        navigation = DESIGN_CATALOG.NAVIGATION
+        schemes = navigation.starter_schemes('Recorder')
+        normalized = [navigation.validate_scheme(scheme, i, 'Recorder') for i, scheme in enumerate(schemes, 1)]
+        self.assertEqual({len(s['screens']) for s in normalized}, {3})
+        signatures = {(s['architecture']['initial_state']['active_screen'],
+                       tuple(s['architecture']['initial_state']['history']),
+                       s['architecture']['initial_state']['overlay'],
+                       s['architecture']['initial_state']['title_collapsed']) for s in normalized}
+        self.assertEqual(len(signatures), 4)
+        self.assertTrue(all('review' not in {p['id'] for p in s['screens']} for s in normalized))
+
+    def test_four_closed_root_states_are_rejected_and_collapse_capability_is_enforced(self):
+        import copy
+        navigation = DESIGN_CATALOG.NAVIGATION
+        schemes = copy.deepcopy(navigation.starter_schemes('Recorder'))
+        for scheme in schemes:
+            scheme['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None,
+                                                        'detent': None, 'overflow_open': False, 'title_collapsed': False}
+        with self.assertRaisesRegex(ValueError, 'closed root baseline'):
+            DESIGN_CATALOG._load_app_flows(types.SimpleNamespace(app_flows_json=json.dumps({'schemes': schemes})))
+        scheme = copy.deepcopy(navigation.starter_schemes('Recorder')[2])
+        scheme['architecture']['collapse_title'] = False
+        scheme['architecture']['initial_state'] = {'active_screen': 'todo', 'history': [], 'overlay': None,
+                                                    'detent': None, 'overflow_open': False, 'title_collapsed': True}
+        with self.assertRaisesRegex(ValueError, 'collapse_title'):
+            navigation.validate_scheme(scheme, 3, 'Recorder')
+
+    def test_two_screen_single_destination_passes_every_kind(self):
+        navigation = DESIGN_CATALOG.NAVIGATION
+        for kind in ('stack', 'tabs', 'lens', 'deck'):
+            scheme = {'title': 'Recorder', 'navigation_model': kind, 'screens': [
+                {'id': 'recorder', 'name': 'Recorder', 'actions': [{'label': 'Record', 'frequency': 'P0'}]},
+                {'id': 'settings', 'name': 'Settings', 'role': 'sheet', 'actions': [{'label': 'Save', 'frequency': 'P1'}]}],
+                'architecture': {'kind': kind, 'root': 'recorder', 'destinations': ['recorder'],
+                                 'primary': {'screen': 'recorder', 'action': 0}, 'sheet': 'settings', 'overflow': []}}
+            normalized = navigation.validate_scheme(scheme, 1, 'Recorder')
+            self.assertEqual(normalized['architecture']['initial_state']['overlay'], 'settings' if kind in {'stack', 'tabs', 'deck'} else None)
 
 
 class AppNavigationBehaviorTests(unittest.TestCase):
+    def test_two_screen_sets_scaffold_gate_and_reject_one_closed_candidate(self):
+        import copy
+        navigation = DESIGN_CATALOG.NAVIGATION
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            for sheet in (False, True):
+                result = run('scaffold-gallery', '--goal', f'minimal-{sheet}', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
+                             '--app-flows-json', json.dumps(minimal_schemes(sheet)), '--no-blog-mount', env=dict(os.environ, HOME=directory))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                gallery = Path(json.loads(result.stdout)['gallery'])
+                manifest = json.loads((gallery / 'manifest.json').read_text())
+                self.assertEqual(self.gate(gallery).returncode, 0)
+                self.assertEqual(len({navigation.initial_state_signature(s) for s in manifest['schemes']}), 4)
+                for scheme in manifest['schemes']:
+                    state = scheme['architecture']['initial_state']
+                    self.node(gallery / (scheme['id'] + '.html'), f'''const n=window.navigationDemo;
+assert.equal(n.currentScreen(),{state['active_screen']!r});assert.equal(n.state.titleCollapsed,{json.dumps(state['title_collapsed'])});
+assert.equal(document.getElementById('sheet').hidden,{json.dumps(state['overlay'] is None)});
+assert.equal(document.getElementById('screen').hasAttribute('inert'),{json.dumps(state['overlay'] is not None)});
+assert.equal(document.getElementById('overflow-menu').hidden,true);
+''' + (f"assert.equal(document.getElementById('sheet').dataset.detent,{state['detent']!r});" if state['overlay'] else ''))
+                bad = copy.deepcopy(manifest)
+                bad['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
+                self.assertTrue(any('closed root baseline' in e for e in EVIDENCE.gallery_errors(gallery, bad)[0]))
+                with self.assertRaisesRegex(ValueError, 'closed root baseline'):
+                    navigation.load_schemes(types.SimpleNamespace(app_flows_json=json.dumps(bad['schemes'])))
+
+    def test_prompt_bodies_same_kind_scaffold_and_inner_morphology_gate(self):
+        import itertools
+        prompts = DESIGN_CATALOG.PROMPTS
+        self.assertEqual(prompts._paragraphs('# Heading\nA substantive body without a separating blank line.'), {'A substantive body without a separating blank line.'})
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            for mode in ('screen', 'app-nav'):
+                options = []
+                if mode == 'app-nav':
+                    schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes()
+                    for i, scheme in enumerate(schemes):
+                        scheme['architecture']['kind'] = 'stack'
+                        if i == 1: scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+                        if i == 2: scheme['screens'][0]['actions'][0]['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
+                        if i == 3: scheme['screens'][0]['actions'][0] = {'label': 'Start capture', 'frequency': 'P0', 'commit': 'captured'}
+                    options = ['--app-flows-json', json.dumps(schemes)]
+                result = run('scaffold-gallery', '--goal', f'prose-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode,
+                             '--no-blog-mount', *options, env=dict(os.environ, HOME=directory))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                gallery = Path(json.loads(result.stdout)['gallery'])
+                manifest = json.loads((gallery / 'manifest.json').read_text())
+                self.assertEqual(self.gate(gallery).returncode, 0)
+                bodies = []
+                for v in manifest['variants']:
+                    text = (gallery / v['prompt_file']).read_text()
+                    text = re.sub(r'\b(?:app|v)\d{2}\b|\d+(?:\.\d+)?', '', text)
+                    paragraphs = prompts._paragraphs(text)
+                    self.assertGreaterEqual(len(paragraphs), 8)
+                    self.assertEqual(paragraphs, EVIDENCE._prompt_paragraphs(text))
+                    bodies.append(paragraphs)
+                self.assertTrue(all(prompts._overlap_ratio(a, b) <= .2 for a, b in itertools.combinations(bodies, 2)))
+                if mode == 'screen':
+                    structures = [EVIDENCE.topology_signature((gallery / (v['id'] + '.html')).read_text())[1] for v in manifest['variants']]
+                    self.assertEqual(len(set(structures)), 10)
+                    page = gallery / 'v02.html'; original = page.read_text()
+                    morphology = '<ol class="timeline-rail"><li>Captured</li><li>Reviewed</li><li>Ready</li></ol>'
+                    for replacement in ('<div class="cosmetic"><article>Signal</article><article>Next step</article></div>',
+                                        '<ol class="timeline-rail"><li>Captured<li>Reviewed<li>Ready</ol>'):
+                        page.write_text(original.replace(morphology, replacement))
+                        self.assertTrue(any('topology' in e for e in EVIDENCE.gallery_errors(gallery, manifest)[0]))
+                    page.write_text(original)
+                    # Parentage, not a flattened tag list, is part of morphology.
+                    frame = '<main class="topology-bento-grid"><section class="content">{}</section></main>'
+                    a = EVIDENCE.topology_signature(frame.format('<div><article></article><article></article></div>'))[1]
+                    b = EVIDENCE.topology_signature(frame.format('<div><article><article></article></article></div>'))[1]
+                    self.assertNotEqual(a, b)
+
+    def test_inner_morphology_clones_and_swaps_fail_independently_of_wrapper(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            result = run('scaffold-gallery', '--goal', 'morphology', '--round', '1', '--platform', 'mobile', '--no-blog-mount', env=dict(os.environ, HOME=directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((gallery / 'manifest.json').read_text())
+            self.assertEqual(EVIDENCE.gallery_errors(gallery, manifest)[0], [])
+            a, b = gallery / 'v01.html', gallery / 'v02.html'; first, second = a.read_text(), b.read_text()
+            grid = '<div class="bento-grid"><article>Signal</article><article>Next step</article></div>'
+            rail = '<ol class="timeline-rail"><li>Captured</li><li>Reviewed</li><li>Ready</li></ol>'
+            for swapped in (False, True):
+                a.write_text(first.replace(grid, rail) if swapped else first)
+                b.write_text(second.replace(rail, grid))
+                errors = EVIDENCE.gallery_errors(gallery, manifest)[0]
+                self.assertTrue(any('topology' in e for e in errors), errors)
+                self.assertIn('topology-bento-grid', a.read_text()); self.assertIn('topology-timeline-rail', b.read_text())
+
+    def test_initial_nonroot_destination_owns_pushed_content_history(self):
+        scheme = DESIGN_CATALOG.NAVIGATION.starter_schemes()[1]
+        scheme['screens'].append({'id': 'detail', 'name': 'Detail', 'actions': []})
+        scheme['screens'][1]['actions'][0]['transition'] = {'type': 'pushScreen', 'to': 'detail'}
+        scheme['architecture']['initial_state'] = {'active_screen': 'detail', 'history': ['todo']}
+        normalized = DESIGN_CATALOG.NAVIGATION.validate_scheme(scheme, 1, 'Recorder')
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            page = Path(directory) / 'app01.html'; page.write_text(DESIGN_CATALOG._app_nav_html(normalized, 1, 'mobile'))
+            self.node(page, '''const n=window.navigationDemo;assert.equal(n.state.activeTab,'todo');assert.equal(n.currentScreen(),'detail');
+assert.equal(n.state.tabs.todo.history.join(','),'todo');assert.equal(n.state.tabs.capture.history.length,0);
+document.getElementById('back').click();assert.equal(n.currentScreen(),'todo');assert.equal(n.state.tabs.todo.history.length,0);
+document.querySelector('.tab[data-screen="capture"]').click();assert.equal(n.currentScreen(),'capture');''')
+
+    def test_rendered_current_copy_is_block_and_clause_local(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory); page = root / 'current.html'
+            invalid = ['<p>No items yet</p><button>Run Now · 模拟</button>',
+                       '<p>严禁使用模拟状态；现在显示演示数据</p>', '<p>Do not use mock data, but synthetic results are shown.</p>',
+                       '<p><span>演示</span><span>数据</span></p>', '<p>mock <em>data</em></p>',
+                       '<input type="button" value="确认模拟"><p>Saved</p>', '<button aria-label="示意">Run</button>',
+                       '<select><option value="error">Error policy</option></select>']
+            for text in invalid:
+                with self.subTest(text=text):
+                    page.write_text(text)
+                    self.assertTrue(EVIDENCE.rendered_gallery_errors(root))
+            valid = '<!-- 模拟 --><script>mock data</script><style>.note{--label:"synthetic"}</style><div data-note="演示数据"><p>No items yet</p><p>严禁使用演示数据或模拟状态</p><p>Do not use mock data.</p><p>mock</p><p>data</p><input value="Saved"><select aria-label="Error policy"><option value="ready-to-ship">Production release</option></select></div>'
+            page.write_text(valid)
+            self.assertEqual(EVIDENCE.rendered_gallery_errors(root), [])
+
     def gate(self, gallery):
         script = SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'
         return subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], text=True, capture_output=True)
@@ -181,6 +440,32 @@ class AppNavigationBehaviorTests(unittest.TestCase):
                                 input=json.dumps({'html': page.read_text(), 'assertions': assertions}), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)['ok'])
+
+    def test_four_showcase_pages_and_current_boot_expected_first_dom_state(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes()
+            for scheme in schemes:
+                scheme['screens'][0]['actions'].append({'label': 'Archive', 'frequency': 'P3', 'commit': 'archived'})
+                scheme['architecture']['overflow'] = [{'screen': 'capture', 'action': 1}]
+            result = run('scaffold-gallery', '--goal', 'initial-dom', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
+                         '--app-flows-json', json.dumps(schemes), '--no-blog-mount', env=dict(os.environ, HOME=directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            gallery = Path(json.loads(result.stdout)['gallery'])
+            expected = [('todo', 'capture', 'false'), ('todo', '', 'false'), ('todo', '', 'true'), ('capture', '', 'true'), ('capture', '', 'false')]
+            for i, (screen, history, collapsed) in enumerate(expected, 1):
+                page = gallery / f'app{i:02d}.html' if i < 5 else gallery / 'current.html'
+                assertions = f'''const n=window.navigationDemo;assert.equal(n.currentScreen(),{screen!r});assert.equal(document.querySelector('.app').dataset.initialScreen,{screen!r});assert.equal(document.querySelector('.app').classList.contains('title-collapsed'),{collapsed});'''
+                assertions += f'''assert.equal(document.getElementById('sheet').hidden,{str(i != 4).lower()});
+assert.equal(document.getElementById('screen').hasAttribute('inert'),{str(i == 4).lower()});
+assert.equal(document.getElementById('overflow-menu').hidden,{str(i != 3).lower()});
+'''
+                if i == 4:
+                    assertions += "assert.equal(document.getElementById('sheet').dataset.detent,'medium');assert.equal(document.getElementById('sheet').dataset.screen,'settings');document.getElementById('close-sheet').click();assert.equal(document.getElementById('sheet').hidden,true);assert.equal(document.getElementById('screen').hasAttribute('inert'),false);"
+                if i == 3:
+                    assertions += "document.getElementById('overflow').click();assert.equal(document.getElementById('overflow-menu').hidden,true);"
+                if history:
+                    assertions += f"assert.equal(n.state.tabs.capture.history[0],{history!r});assert.equal(document.getElementById('back').disabled,false);document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);"
+                self.node(page, assertions)
 
     def test_bespoke_runtime_primary_commit_all_surfaces_and_tab_owned_history(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -193,7 +478,7 @@ class AppNavigationBehaviorTests(unittest.TestCase):
                 scheme['architecture']['overflow'].append({'screen': 'capture', 'action': 2})
                 scheme['screens'].append({'id': 'organize', 'name': 'Organize notes', 'role': 'popover',
                     'p0_summary': 'Change the note collection', 'actions': [{'label': 'Organize', 'frequency': 'P3', 'commit': 'organized', 'transition': {'type': 'dismissOverlay'}}]})
-                scheme['screens'][2]['transitions'].append({'type': 'togglePopover', 'to': 'organize'})
+                scheme['screens'][2].setdefault('transitions', []).append({'type': 'togglePopover', 'to': 'organize'})
             result = run('scaffold-gallery', '--goal', 'runtime', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
                          '--app-flows-json', json.dumps({'app_context': 'Voice capture', 'schemes': schemes}),
                          '--session-anti-patterns', '["no glass on content"]', '--style-overrides', '{"surface":"dark","density":"compact"}', env=dict(os.environ, HOME=directory))
@@ -201,39 +486,32 @@ class AppNavigationBehaviorTests(unittest.TestCase):
             gallery = Path(json.loads(result.stdout)['gallery'])
             accepted = self.gate(gallery)
             self.assertEqual(accepted.returncode, 0, accepted.stdout)
-            assertions = r'''const n=window.navigationDemo;
+            assertions = r"""const n=window.navigationDemo;
 const click=s=>{const e=document.querySelector(s);assert.ok(e,s);e.click();};
 const current=()=>n.currentScreen();
-assert.equal(document.querySelector('#screen .secondary-actions').open,false);
-assert.equal(document.querySelector('#screen [data-frequency="P3"]'),null);
-document.querySelector('#screen .secondary-actions').open=true;
+const initial=CONFIG.initial_state;
+assert.equal(document.querySelector('#sheet').hidden,initial.overlay!=='settings');
+assert.equal(document.querySelector('#screen').hasAttribute('inert'),initial.overlay==='settings');
+assert.equal(document.querySelector('#overflow-menu').hidden,!initial.overflow_open);
+if(initial.overlay==='settings'){assert.equal(document.querySelector('#sheet').dataset.detent,initial.detent);assert.equal(document.querySelector('#sheet').dataset.screen,'settings');}
+if(n.state.overlay){click('#close-sheet');}
+while(n.state.tabs[n.state.activeTab].history.length){click('#back');}
+if(A.kind==='stack'&&document.querySelector('#overflow-menu').hidden){click('#overflow');}
+click('.tab[data-screen="capture"]');assert.equal(current(),'capture');
+const details=document.querySelector('#screen .secondary-actions');assert.ok(details);assert.equal(details.open,false);
+assert.equal(document.querySelector('#screen [data-frequency="P3"]'),null);details.open=true;
 click('#screen .secondary-actions [data-action-index="1"]');assert.equal(n.state.commits.configured.count,1);
-click('#toggle-tab'); assert.equal(current(),'review');
-click('#screen [data-action-index="0"]'); assert.equal(current(),'library');
-assert.equal(n.state.commits.saved.count,1);
-assert.match(document.querySelector('#action-state').textContent,/Save item committed/);
-assert.match(document.querySelector('#screen .commit-list').textContent,/Save item/);
-click('#screen [data-transition-index="0"]'); assert.equal(current(),'review');
-click('#back'); assert.equal(current(),'capture');
-click('#toggle-tab'); assert.equal(current(),'review');
-click('#overflow'); click('.tab[data-screen="library"]'); assert.equal(current(),'library');
-click('#back'); assert.equal(current(),'library');
-click('.tab[data-screen="capture"]'); assert.equal(current(),'review');
-click('#back'); assert.equal(current(),'capture');
-n.switchTab('library'); click('#screen [data-transition-index="1"]');
-assert.equal(current(),'library'); assert.equal(n.state.overlay.screen,'tools');
-assert.equal(document.querySelector('#sheet').hidden,false);
-click('#large-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'large');
-click('#medium-sheet'); assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
-click('#sheet [data-action-index="0"]'); assert.equal(n.state.commits.exported.count,1);
-assert.equal(n.state.overlay,null); assert.equal(current(),'library');
-click('#overflow'); click('[data-overflow-action]'); assert.equal(n.state.commits.exported.count,2);
-assert.equal(document.querySelector('#overflow-menu').hidden,true);
-click('#overflow');click('[data-overflow-action][data-action-screen="capture"]');assert.equal(n.state.commits.archived.count,1);
-click('#screen [data-transition-index="2"]'); assert.equal(n.state.overlay.screen,'organize');
-click('#popover-content [data-action-index="0"]'); assert.equal(n.state.commits.organized.count,1);
-assert.equal(n.state.overlay,null); assert.equal(current(),'library');
-'''
+click('#overflow');assert.equal(document.querySelector('#overflow-menu').hidden,false);click('[data-overflow-action]');assert.equal(n.state.commits.archived.count,1);assert.equal(document.querySelector('#overflow-menu').hidden,true);
+click('#screen [data-action-index="0"]');assert.equal(current(),'todo');assert.equal(n.state.tabs.capture.history.join(','),'capture');
+n.performAction('todo',0);assert.equal(current(),'todo');n.popScreen();assert.equal(current(),'capture');assert.equal(n.state.commits.saved.count,1);
+const todoHistory=n.state.tabs.todo.history.length;n.switchTab('todo');assert.equal(n.state.tabs.todo.history.length,todoHistory);n.switchTab('capture');n.pushScreen('todo');assert.equal(n.state.tabs.capture.history.join(','),'capture');click('#back');assert.equal(current(),'capture');
+click('#open-sheet');assert.equal(n.state.overlay.screen,'settings');assert.equal(document.querySelector('#screen').getAttribute('inert'),'');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#large-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'large');click('#medium-sheet');assert.equal(document.querySelector('#sheet').dataset.detent,'medium');
+click('#sheet [data-transition-index="0"]');assert.equal(n.state.overlay.screen,'organize');click('#popover-content [data-action-index="0"]');assert.equal(n.state.commits.organized.count,1);assert.equal(n.state.overlay,null);
+click('#open-sheet');click('#sheet [data-action-index="0"]');assert.equal(n.state.commits.configured.count,2);assert.equal(n.state.overlay,null);assert.equal(document.querySelector('#screen').getAttribute('inert'),null);
+"""
+
+
             for i in range(1, 5):
                 self.node(gallery / f'app{i:02d}.html', assertions)
             original = (gallery / 'app02.html').read_text()
@@ -260,6 +538,12 @@ assert.equal(n.state.overlay,null); assert.equal(current(),'library');
                 self.assertGreaterEqual(evidence['minimum_distance'], 2)
                 manifest = json.loads((gallery / 'manifest.json').read_text())
                 if known: self.assertEqual({v['archetype'] for v in manifest['variants']}, {'VS-007'})
+                topology_signatures = []
+                for v in manifest['variants']:
+                    text = (gallery / f"{v['id']}.html").read_text()
+                    topology_signatures.append(EVIDENCE.topology_signature(text)[1])
+                self.assertEqual(len(set(topology_signatures)), 10)
+                extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
                 for v in manifest['variants']:
                     extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
                     self.node(gallery / (v['id'] + '.html'), extra + r'''const tabs=[...document.querySelectorAll('[role=tab]')];
@@ -273,9 +557,10 @@ document.getElementById('reset-view').click();assert.equal(document.getElementBy
     def test_object_commit_only_and_legacy_edge_fallback_execute_as_authored(self):
         schemes = DESIGN_CATALOG.NAVIGATION.starter_schemes('Voice notes')
         for scheme in schemes:
-            scheme['screens'][0]['transitions'] = [{'type': 'pushScreen', 'to': 'review'}]
+            scheme['screens'][0]['transitions'] = [{'type': 'pushScreen', 'to': 'todo'}]
         schemes[0]['screens'][0]['actions'] = [{'label': 'Record note', 'frequency': 'P0', 'commit': 'captured-only'}]
-        schemes[1]['screens'][0]['actions'] = ['Legacy capture']
+        for scheme in schemes[1:]:
+            scheme['screens'][0]['actions'] = ['Legacy capture']
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             result = run('scaffold-gallery', '--goal', 'optional-action', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav',
                          '--app-flows-json', json.dumps({'schemes': schemes}), env=dict(os.environ, HOME=directory))
@@ -283,17 +568,18 @@ document.getElementById('reset-view').click();assert.equal(document.getElementBy
             gallery = Path(json.loads(result.stdout)['gallery'])
             self.assertEqual(self.gate(gallery).returncode, 0)
             self.node(gallery / 'app01.html', r'''const n=window.navigationDemo;
-document.getElementById('toggle-tab').click();
-assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);
-assert.equal(n.state.commits['captured-only'].count,1);
-document.querySelector('#screen [data-transition-index="0"]').click();
-assert.equal(n.currentScreen(),'review');assert.equal(n.state.tabs.capture.history.join(','),'capture');
-document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');
-assert.equal(n.state.commits['captured-only'].count,1);''')
+assert.equal(n.currentScreen(),'todo');document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');
+const tabsBefore=JSON.stringify(n.state.tabs);assert.equal(n.state.commits['captured-only'],undefined);document.querySelector('#screen [data-action-index="0"]').click();assert.equal(JSON.stringify(n.state.tabs),tabsBefore);
+assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);assert.equal(n.state.commits['captured-only'].count,1);
+assert.equal(n.state.activeTab,'capture');assert.equal(n.state.overlay,null);
+document.querySelector('#screen [data-action-index="0"]').click();assert.equal(n.state.commits['captured-only'].count,2);assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);''')
             for i in (2, 3, 4):
                 self.node(gallery / f'app{i:02d}.html', r'''const n=window.navigationDemo;
-document.getElementById('toggle-tab').click();assert.equal(n.currentScreen(),'review');
-assert.equal(n.state.tabs.capture.history.join(','),'capture');''')
+if(n.state.overlay)document.getElementById('close-sheet').click();
+document.querySelector('.tab[data-screen="capture"]').click();assert.equal(n.currentScreen(),'capture');
+const action=document.querySelector('#screen [data-action-index="0"]');assert.equal(action.textContent,'Legacy capture');action.click();
+assert.equal(n.currentScreen(),'todo');assert.equal(n.state.activeTab,'capture');assert.equal(n.state.tabs.capture.history.join(','),'capture');
+document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);''')
 
     def test_both_gallery_indexes_require_canonical_round_bindings(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -424,9 +710,9 @@ class IngestTests(unittest.TestCase):
             self.assertEqual({item["id"] for item in data["duplicate_matches"]}, {"IP-001", "IP-099"})
             self.assertFalse(data["created"])
             self.assertEqual(self.snapshot(), before)
-        preview = self.ingest("--text", existing["source_prompt_zh"], "--force", "--dry-run")
-        self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertEqual(json.loads(preview.stdout)["duplicate_decision"], "forced")
+        ptodo = self.ingest("--text", existing["source_prompt_zh"], "--force", "--dry-run")
+        self.assertEqual(ptodo.returncode, 0, ptodo.stderr)
+        self.assertEqual(json.loads(ptodo.stdout)["duplicate_decision"], "forced")
         self.assertEqual(self.snapshot(), before)
         forced = self.ingest("--text", existing["source_prompt_zh"], "--force")
         self.assertEqual(forced.returncode, 0, forced.stderr)
@@ -955,7 +1241,7 @@ class PromptAndRenderedGuardTests(unittest.TestCase):
 
     def test_invalid_prompt_sets_fail_before_gallery_or_blog_writes(self):
         for mode, prefix, count in (('screen', 'v', 10), ('app-nav', 'app', 4)):
-            for invalid in ('missing', 'empty', 'non-utf8', 'file-symlink', 'directory-symlink'):
+            for invalid in ('missing', 'empty', 'non-utf8', 'file-symlink', 'directory-symlink', 'duplicate'):
                 with self.subTest(mode=mode, invalid=invalid), tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
                     root = Path(directory); source = root / 'prompts'; source.mkdir()
                     for i in range(1, count + 1):
@@ -966,6 +1252,9 @@ class PromptAndRenderedGuardTests(unittest.TestCase):
                     elif invalid == 'non-utf8': last.write_bytes(b'\xff')
                     elif invalid == 'file-symlink':
                         last.unlink(); last.symlink_to(source / f'{prefix}01-prompt.md')
+                    elif invalid == 'duplicate':
+                        for path in source.iterdir():
+                            path.write_text('# Candidate\nAn identical substantive section body that must not evade overlap checks.')
                     else:
                         link = root / 'linked'; link.symlink_to(source, target_is_directory=True); source = link
                     result = self.scaffold(root, mode, '--prompts-dir', str(source), '--blog-repo', str(root / 'blog'))

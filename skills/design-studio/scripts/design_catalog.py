@@ -1368,6 +1368,19 @@ def _gallery_html(title, variant, platform, metadata, anti_patterns, overrides):
     whitespace = metadata.get('whitespace', 'balanced')
     glass_geometry = metadata.get('glass_geometry', 'wide')
     density = {"airy": "20px", "compact": "12px"}.get(overrides.get("density"), {"tight": "12px", "balanced": "16px", "open": "24px"}[whitespace])
+    morphologies = {
+        'v01': ('bento-grid', '<div class="bento-grid"><article>Signal</article><article>Next step</article></div>'),
+        'v02': ('timeline-rail', '<ol class="timeline-rail"><li>Captured</li><li>Reviewed</li><li>Ready</li></ol>'),
+        'v03': ('pulse-matrix', '<div class="pulse-matrix"><span>Now</span><span>Later</span><span>Done</span></div>'),
+        'v04': ('ring-gauge', '<div class="ring-gauge" role="img" aria-label="Progress 82 percent">82%</div>'),
+        'v05': ('master-detail', '<div class="master-detail"><nav>Items</nav><article>Selected item</article></div>'),
+        'v06': ('split-workbench', '<div class="split-workbench"><aside>Inputs</aside><section>Workspace</section></div>'),
+        'v07': ('floating-island', '<div class="floating-island"><button>Primary island action</button></div>'),
+        'v08': ('pocket-deck', '<div class="pocket-deck"><div>Front</div><div>Context</div><div>History</div></div>'),
+        'v09': ('command-stage', '<div class="command-stage"><label>Command</label><kbd>⌘K</kbd></div>'),
+        'v10': ('editorial-poster', '<figure class="editorial-poster"><figcaption>Today\'s direction</figcaption></figure>'),
+    }
+    topology, topology_markup = morphologies.get(variant, ('reference-stage', '<div class="reference-stage">Current direction</div>'))
     config = {'schema': 'screen-page/v3', 'id': variant, 'platform': platform, 'metadata': metadata,
               'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
     surface = {"warm": "var(--paper-warm)", "solid": "var(--paper)", "dark": "var(--paper-dark)"}.get(overrides.get("surface"), "var(--paper)")
@@ -1386,10 +1399,10 @@ document.querySelector('#continue').onclick=()=>document.querySelector('#action-
 if(/(?:Chrome|Chromium|Edg|OPR)\\//.test(navigator.userAgent)&&!/(?:Firefox|FxiOS|EdgiOS|CriOS)/.test(navigator.userAgent))document.querySelector('.glass-card').style.setProperty('--lg-backdrop-filter','url(#apple-liquid-glass) blur(2.5px) saturate(135%)');'''
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="screen.css"></head>
-<body class="preview"><main class="mockup archetype-{archetype.lower()} fold-{fold} layout-{layout} whitespace-{whitespace} glass-{glass_geometry}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
+<body class="preview"><main class="mockup topology-{topology} archetype-{archetype.lower()} fold-{fold} layout-{layout} whitespace-{whitespace} glass-{glass_geometry}" style="--frame-width:{width}px;--frame-height:{height}px;--variant-accent:{accent};--space:{density};--content-surface:{surface};--content-ink:{ink};--content-muted:{muted}" data-p0="{p0}" data-axis-y="{fold}" data-archetype="{archetype}" data-session-anti-patterns="{anti}">
 {_gallery_svg(342 if platform == 'mobile' else 560, 72)}
 <header><span class="eyebrow">{variant} · {archetype}</span><h1>{p0.replace('-', ' ').title()}</h1></header>
-<section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>{escape(content)}</p></div><div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
+<section class="content"><div class="hero"><span class="metric">{metric}</span><strong>{label}</strong><p>{escape(content)}</p></div>{topology_markup}<div class="fold-panel">{fold_markup}</div><div class="secondary"><span>History · yesterday</span><span>Ambient context</span></div></section>
 <nav class="glass-card" aria-label="Actions"><button id="reset-view">Reset view</button><span id="action-state" role="status">Choose a direction</span><button id="continue">Continue</button></nav>
 </main><script id="page-config" type="application/json">{NAVIGATION.json_script(config)}</script><script>{script}</script></body></html>'''
 

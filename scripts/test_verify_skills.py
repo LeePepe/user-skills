@@ -171,8 +171,14 @@ class VerifySkillsTests(unittest.TestCase):
         gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root / 'designer'; source.mkdir()
-            for i in range(1, 5):
-                (source / f'app{i:02d}-prompt.md').write_bytes(f'# Independent {i}\r\nNever render .ruler or caustic stripes.\r\n'.encode())
+            intents = [
+                'Keep Back beside the itinerary rail so committed work has a clear return.',
+                'Separate room destinations from the primary action pill to protect context.',
+                'Place the lens toolbar above solid task content with explicit tool ownership.',
+                'Make deck destination edges readable without clipped inspector controls.',
+            ]
+            for i, intent in enumerate(intents, 1):
+                (source / f'app{i:02d}-prompt.md').write_bytes(f'# Independent {i}\r\n{intent} Never render .ruler or caustic stripes.\r\n'.encode())
             env = dict(os.environ, HOME=directory)
             result = subprocess.run([sys.executable, str(catalog), 'scaffold-gallery', '--goal', 'prompt-gate', '--round', '1', '--platform', 'web', '--mode', 'app-nav', '--prompts-dir', str(source), '--no-blog-mount'], env=env, capture_output=True, text=True, check=True)
             payload = json.loads(result.stdout); gallery = Path(payload['gallery'])
@@ -3197,6 +3203,132 @@ class SkillContractV2Tests(unittest.TestCase):
         routed = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--mock-jev-json", '{"1":true,"2":false,"3":true}', "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
         payload = json.loads(routed.stdout)
         self.assertEqual(payload["precision"], 1.0); self.assertEqual(payload["recall"], 1.0)
+
+    def test_prompt_overlap_exact_boundary_and_provided_duplicate_rejection(self) -> None:
+        prompts_path = SKILLS_DIR / "design-studio" / "scripts" / "gallery_prompts.py"
+        spec = importlib.util.spec_from_file_location("gallery_prompts_correction", prompts_path)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        paragraphs = [f"Candidate paragraph {i} contains enough semantic text for the overlap gate." for i in range(5)]
+        self.assertEqual(module._overlap_ratio(set(paragraphs), {paragraphs[0], *(f"Other paragraph {i} has independent semantic content." for i in range(4))}), 0.2)
+        self.assertEqual(module._paragraphs("# Heading\n\nshort\n\n" + paragraphs[0]), {paragraphs[0]})
+        left = '\n\n'.join('# Heading\n' + p for p in paragraphs)
+        right = '\n\n'.join([paragraphs[0], *(f'Other paragraph {i} has independent semantic content.' for i in range(4))])
+        module._check_overlap({'left': left, 'right': right})
+        with self.assertRaisesRegex(ValueError, 'exceeds 20%'):
+            module._check_overlap({'left': left, 'right': right.replace('Other paragraph 0 has independent semantic content.', paragraphs[1])})
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            duplicate = "# Candidate\n\n" + "\n\n".join(paragraphs)
+            for name in ("v01", "v02"):
+                (source / f"{name}-prompt.md").write_text(duplicate, encoding="utf-8")
+            manifest = {"platform": "web", "mode": "screen", "variants": [{"id": "v01"}, {"id": "v02"}]}
+            with self.assertRaisesRegex(ValueError, "exceeds 20%"):
+                module.prepare(manifest, source)
+            evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
+            evidence_spec = importlib.util.spec_from_file_location("navigation_evidence_prompt", evidence_path)
+            evidence = importlib.util.module_from_spec(evidence_spec); assert evidence_spec.loader is not None; evidence_spec.loader.exec_module(evidence)
+            root = source / "gallery"; (root / "prompts").mkdir(parents=True)
+            evidence_manifest = {"prompt_contract": {"schema": "design-prompts/v1", "source": "provided", "count": 2}, "variants": []}
+            import hashlib
+            for name in ("v01", "v02"):
+                data = duplicate.encode(); (root / "prompts" / f"{name}-prompt.md").write_bytes(data)
+                evidence_manifest["variants"].append({"id": name, "prompt_file": f"prompts/{name}-prompt.md", "prompt_sha256": hashlib.sha256(data).hexdigest()})
+            self.assertTrue(any("exceeds 20%" in error for error in evidence.prompt_errors(root, evidence_manifest)))
+
+    def test_round2_prompt_topology_and_two_screen_end_to_end(self) -> None:
+        import itertools
+        catalog_path = SKILLS_DIR / 'design-studio/scripts/design_catalog.py'
+        spec = importlib.util.spec_from_file_location('round2_catalog', catalog_path)
+        catalog = importlib.util.module_from_spec(spec); spec.loader.exec_module(catalog)
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('round2_evidence', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+        self.assertEqual(catalog.PROMPTS._paragraphs('# Heading\nSubstantive prose immediately beneath a heading.'), {'Substantive prose immediately beneath a heading.'})
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            env = dict(os.environ, HOME=tmp)
+            for mode in ('screen', 'app-nav'):
+                schemes = catalog.NAVIGATION.starter_schemes()
+                options = []
+                if mode == 'app-nav':
+                    for i, scheme in enumerate(schemes):
+                        scheme['architecture']['kind'] = 'stack'
+                        if i == 1: scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+                        if i == 2: scheme['screens'][0]['actions'][0]['transition'] = {'type': 'toggleSheet', 'to': 'settings'}
+                        if i == 3: scheme['screens'][0]['actions'][0] = {'label': 'Start capture', 'frequency': 'P0', 'commit': 'captured'}
+                    options = ['--app-flows-json', json.dumps(schemes)]
+                command = [sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-{mode}', '--round', '1', '--platform', 'mobile', '--mode', mode, '--no-blog-mount', *options]
+                result = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+                self.assertEqual(evidence.gallery_errors(root, manifest)[0], [])
+                bodies = []
+                for v in manifest['variants']:
+                    text = re.sub(r'\b(?:app|v)\d{2}\b|\d+(?:\.\d+)?', '', (root / v['prompt_file']).read_text())
+                    paragraphs = catalog.PROMPTS._paragraphs(text)
+                    self.assertGreaterEqual(len(paragraphs), 8)
+                    self.assertEqual(paragraphs, evidence._prompt_paragraphs(text))
+                    bodies.append(paragraphs)
+                self.assertTrue(all(catalog.PROMPTS._overlap_ratio(a, b) <= .2 for a, b in itertools.combinations(bodies, 2)))
+                if mode == 'screen':
+                    self.assertEqual(len({evidence.topology_signature((root / (v['id'] + '.html')).read_text())[1] for v in manifest['variants']}), 10)
+                    first, second = root / 'v01.html', root / 'v02.html'
+                    a, b = first.read_text(), second.read_text()
+                    grid = '<div class="bento-grid"><article>Signal</article><article>Next step</article></div>'
+                    rail = '<ol class="timeline-rail"><li>Captured</li><li>Reviewed</li><li>Ready</li></ol>'
+                    second.write_text(b.replace(rail, grid.replace('bento-grid', 'cosmetic')))
+                    self.assertTrue(any('topology' in e for e in evidence.gallery_errors(root, manifest)[0]))
+                    first.write_text(a.replace(grid, rail)); second.write_text(b.replace(rail, grid))
+                    self.assertTrue(any('topology' in e for e in evidence.gallery_errors(root, manifest)[0]))
+            for sheet in (True, False):
+                schemes = catalog.NAVIGATION.starter_schemes('Recorder')
+                for scheme in schemes:
+                    if sheet:
+                        scheme['screens'] = [scheme['screens'][0], scheme['screens'][2]]
+                        scheme['screens'][0]['actions'][0].pop('transition')
+                        scheme['architecture']['destinations'] = ['capture']
+                    else:
+                        scheme['screens'].pop(); scheme['architecture']['sheet'] = None
+                        if scheme['architecture']['kind'] != 'stack':
+                            scheme['screens'][0]['actions'][0]['transition']['type'] = 'switchTab'
+                result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'round2-minimal-{sheet}', '--round', '1', '--platform', 'mobile', '--mode', 'app-nav', '--app-flows-json', json.dumps(schemes), '--no-blog-mount'], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
+                self.assertEqual(evidence.gallery_errors(root, manifest)[0], [])
+                self.assertEqual(len({catalog.NAVIGATION.initial_state_signature(s) for s in manifest['schemes']}), 4)
+                manifest['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
+                self.assertTrue(any('closed root baseline' in e for e in evidence.gallery_errors(root, manifest)[0]))
+
+    def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
+        evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
+        spec = importlib.util.spec_from_file_location("navigation_evidence", evidence_path)
+        module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad.html").write_text(
+                '<main><p>演示数据</p><select><option>ready</option></select></main>', encoding="utf-8"
+            )
+            errors = module.rendered_gallery_errors(root)
+            self.assertTrue(any("meta-disclaimer" in error for error in errors))
+            self.assertTrue(any("test-state select" in error for error in errors))
+            (root / "nested-bad.html").write_text('<p><span>mock </span><em>data</em></p>', encoding="utf-8")
+            nested_errors = module.rendered_gallery_errors(root)
+            self.assertTrue(any(error.startswith("nested-bad.html:") and "meta-disclaimer" in error for error in nested_errors))
+            (root / "valid.html").write_text('<!-- 模拟 --><script>mock data</script><div data-note="演示数据"><p>严禁使用演示数据或模拟状态</p><select aria-label="Error policy"><option value="ready-to-ship">Escalate on failure</option></select>', encoding="utf-8")
+            valid_errors = module.rendered_gallery_errors(root)
+            self.assertFalse(any(error.startswith("valid.html:") and ("meta-disclaimer" in error or "test-state select" in error) for error in valid_errors))
+            current = root / 'current.html'
+            for text in ('<p>No items yet</p><button>Run Now · 模拟</button>',
+                         '<p>Never use mock data; synthetic results are shown.</p>',
+                         '<p>禁止使用模拟状态，但现在是演示数据</p>',
+                         '<p><span>演示</span><span>数据</span></p>',
+                         '<p>mock <em>data</em></p>', '<input type="button" value="确认模拟">',
+                         '<input placeholder="示意"><button>Save</button>', '<button title="非实时">Run</button>',
+                         '<select><option value="stale">Last run</option></select>'):
+                with self.subTest(text=text):
+                    current.write_text(text)
+                    self.assertTrue(any(e.startswith('current.html:') for e in module.rendered_gallery_errors(root)))
+            current.write_text('<!-- 模拟 --><style>.x{--copy:"synthetic"}</style><script>mock data</script><main data-copy="演示数据"><p>No items yet</p><p>Do not use synthetic or mock data.</p><p>严禁使用模拟或示意</p><p>mock</p><p>data</p><input value="Saved"><select aria-label="Error policy"><option value="ready-to-ship">Production release</option></select></main>')
+            self.assertFalse(any(e.startswith('current.html:') for e in module.rendered_gallery_errors(root)))
 
 
 if __name__ == "__main__":

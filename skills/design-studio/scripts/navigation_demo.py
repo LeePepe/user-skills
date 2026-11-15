@@ -21,27 +21,195 @@ def json_script(value):
 def starter_schemes(context='Target App'):
     screens = [
         {'id': 'capture', 'name': 'Capture', 'p0_summary': f'Capture an item in {context}',
-         'actions': [{'label': 'Start capture', 'frequency': 'P0', 'transition': {'type': 'pushScreen', 'to': 'review'}}]},
-        {'id': 'review', 'name': 'Review', 'p0_summary': 'Review before saving',
-         'actions': [{'label': 'Save item', 'frequency': 'P0', 'commit': 'saved', 'transition': {'type': 'pushScreen', 'to': 'library'}}]},
-        {'id': 'library', 'name': 'Library', 'p0_summary': 'Your saved items',
-         'actions': [{'label': 'New item', 'frequency': 'P1', 'transition': {'type': 'switchTab', 'to': 'capture'}}],
-         'transitions': [{'type': 'popScreen', 'to': 'review'}, {'type': 'toggleSheet', 'to': 'tools'}]},
-        {'id': 'tools', 'name': 'Tools', 'role': 'sheet', 'p0_summary': 'Export the selected item',
-         'actions': [{'label': 'Export item', 'frequency': 'P3', 'commit': 'exported', 'transition': {'type': 'dismissOverlay'}}]},
+         'actions': [{'label': 'Start capture', 'frequency': 'P0', 'transition': {'type': 'pushScreen', 'to': 'todo'}}]},
+        {'id': 'todo', 'name': 'Todo', 'p0_summary': 'Keep the next task in focus',
+         'actions': [{'label': 'Save task', 'frequency': 'P0', 'commit': 'saved', 'transition': {'type': 'switchTab', 'to': 'capture'}}],
+         'transitions': [{'type': 'popScreen'}]},
+        {'id': 'settings', 'name': 'Settings', 'role': 'sheet', 'p0_summary': 'Adjust capture preferences',
+         'actions': [{'label': 'Save settings', 'frequency': 'P1', 'commit': 'configured', 'transition': {'type': 'dismissOverlay'}}]},
     ]
-    return [{'title': f'{context} · {kind} journey', 'navigation_model': f'{context} {kind}',
-             'architecture': {'kind': kind, 'root': 'capture', 'destinations': ['capture', 'library'],
-                              'primary': {'screen': 'capture', 'action': 0}, 'sheet': 'tools',
-                              'overflow': [{'screen': 'tools', 'action': 0}], 'collapse_title': True},
-             'screens': deepcopy(screens)} for kind in ('stack', 'tabs', 'lens', 'deck')]
+    schemes = []
+    for kind in ('stack', 'tabs', 'lens', 'deck'):
+        schemes.append({'title': f'{context} · {kind} journey', 'navigation_model': f'{context} {kind}',
+                        'architecture': {'kind': kind, 'root': 'capture', 'destinations': ['capture', 'todo'],
+                                         'primary': {'screen': 'capture', 'action': 0}, 'sheet': 'settings',
+                                         'overflow': [], 'collapse_title': True},
+                        'screens': deepcopy(screens)})
+    return schemes
+
+
+def _edges(page):
+    return [a['transition'] for a in page['actions'] if a.get('transition')] + page['transitions']
+
+
+def canonical_walk(scheme, seeds=None):
+    """Ordered chrome and edges assign IDs identically for graph and state signatures."""
+    a = scheme['architecture']
+    pages = {p['id']: p for p in scheme['screens']}
+    if seeds is None:
+        seeds = [a['root'], *a['destinations'], a['primary']['screen'], a.get('sheet'),
+                 *(r['screen'] for r in a['overflow'])]
+    order = list(dict.fromkeys(s for s in seeds if s in pages))
+    seen = set(order)
+    for screen in order:
+        for edge in _edges(pages[screen]):
+            target = edge.get('to')
+            if target in pages and target not in seen:
+                seen.add(target)
+                order.append(target)
+    return order
+
+
+def _reachable_pages(architecture, pages):
+    page_map = {p['id']: p for p in pages}
+    refs = [architecture['primary'], *architecture['overflow']]
+    targets = [(page_map[r['screen']]['actions'][r['action']].get('transition') or {}).get('to') for r in refs]
+    return canonical_walk({'architecture': architecture, 'screens': pages},
+                          [*architecture['destinations'], architecture.get('sheet'), *targets])
+
+
+def _popover_targets(architecture, pages, active):
+    page_map = {p['id']: p for p in pages}
+    sources = list(dict.fromkeys(s for s in [active, architecture.get('sheet')] if s is not None))
+    edges = [page_map[r['screen']]['actions'][r['action']].get('transition')
+             for r in [architecture['primary'], *architecture['overflow']]]
+    targets = set()
+    for source in sources:
+        edges.extend(_edges(page_map[source]))
+        for edge in edges:
+            if edge and edge['type'] == 'togglePopover' and edge['to'] not in targets:
+                targets.add(edge['to'])
+                sources.append(edge['to'])
+        edges = []
+    return targets
+
+
+def _content_paths(architecture, pages):
+    page_map = {p['id']: p for p in pages}
+    def visit(path):
+        yield path
+        for edge in _edges(page_map[path[-1]]):
+            target = edge.get('to')
+            if edge['type'] == 'pushScreen' and target not in path:
+                yield from visit([*path, target])
+    for destination in architecture['destinations']:
+        yield from visit([destination])
+
+
+def _validate_initial(architecture, pages, explicit):
+    if not isinstance(explicit, dict):
+        raise ValueError('initial_state must be an object')
+    state = {'active_screen': architecture['root'], 'history': [], 'overlay': None,
+             'detent': None, 'overflow_open': False, 'title_collapsed': False}
+    if set(explicit) - set(state):
+        raise ValueError('initial_state contains unsupported fields')
+    state.update(deepcopy(explicit))
+    page_map = {p['id']: p for p in pages}
+    content = {p['id'] for p in pages if p['role'] not in {'sheet', 'popover'}}
+    if state['active_screen'] not in content:
+        raise ValueError('initial_state active_screen must be a declared content screen')
+    history = state['history']
+    if not isinstance(history, list) or any(s not in content for s in history) or len(set(history)) != len(history):
+        raise ValueError('initial_state history must contain distinct declared content screens')
+    if state['active_screen'] in history:
+        raise ValueError('initial_state history cannot contain active_screen')
+    sequence = history + [state['active_screen']]
+    if sequence[0] not in architecture['destinations']:
+        raise ValueError('initial_state history/active screen must start at a visible destination')
+    for source, target in zip(sequence, sequence[1:]):
+        if not any(e['type'] == 'pushScreen' and e.get('to') == target for e in _edges(page_map[source])):
+            raise ValueError('initial_state history requires ordered pushScreen edges')
+    overlay = state['overlay']
+    if overlay is not None and (overlay not in page_map or page_map[overlay]['role'] not in {'sheet', 'popover'}):
+        raise ValueError('initial_state overlay must reference a declared sheet or popover')
+    if overlay and page_map[overlay]['role'] == 'sheet' and overlay != architecture.get('sheet'):
+        raise ValueError('initial_state sheet must equal architecture.sheet')
+    if overlay and page_map[overlay]['role'] == 'popover':
+        if overlay not in _popover_targets(architecture, pages, state['active_screen']):
+            raise ValueError('initial_state popover must be reachable by togglePopover without changing active content')
+    if state['detent'] not in {None, 'medium', 'large'} or (state['detent'] is not None and overlay is None):
+        raise ValueError('initial_state detent requires an overlay and must be medium or large')
+    if overlay and page_map[overlay]['role'] == 'sheet' and state['detent'] is None:
+        state['detent'] = 'medium'
+    if type(state['overflow_open']) is not bool or (state['overflow_open'] and not architecture['overflow']):
+        raise ValueError('initial_state overflow_open requires overflow actions')
+    if state['overflow_open'] and overlay:
+        raise ValueError('initial_state overflow and overlay cannot be open together')
+    if type(state['title_collapsed']) is not bool or (state['title_collapsed'] and not architecture['collapse_title']):
+        raise ValueError('initial_state title_collapsed requires collapse_title support')
+    if (state['active_screen'] == architecture['root'] and not history and overlay is None
+            and not state['overflow_open'] and not state['title_collapsed']):
+        raise ValueError('app-nav initial_state cannot be a closed root baseline')
+    return state
+
+
+def _showcase_states(architecture, pages):
+    root, sheet = architecture['root'], architecture.get('sheet')
+    paths = list(_content_paths(architecture, pages))
+    secondary = next((d for d in reversed(architecture['destinations']) if d != root), root)
+    pushed = next((p for p in paths if len(p) > 1 and p[0] == root), None)
+    preferred = {'active_screen': secondary}
+    if architecture['kind'] == 'stack':
+        preferred = {'active_screen': pushed[-1], 'history': pushed[:-1]} if pushed else {'overlay': sheet, 'detent': 'medium'} if sheet else preferred
+    elif architecture['kind'] == 'tabs' and sheet and secondary == root:
+        preferred = {'overlay': sheet, 'detent': 'large'}
+    elif architecture['kind'] == 'lens':
+        preferred.update(title_collapsed=architecture['collapse_title'], overflow_open=bool(architecture['overflow']))
+    elif architecture['kind'] == 'deck':
+        preferred = {'active_screen': root, 'title_collapsed': architecture['collapse_title']}
+        if sheet:
+            preferred.update(overlay=sheet, detent='medium')
+    states = []
+    def add(value):
+        try:
+            state = _validate_initial(architecture, pages, value)
+            if state not in states:
+                states.append(state)
+        except ValueError:
+            pass
+    add(preferred)
+    popovers = list(dict.fromkeys(e['to'] for s in _reachable_pages(architecture, pages)
+                                 for e in _edges(next(p for p in pages if p['id'] == s)) if e['type'] == 'togglePopover'))
+    overlays = [(None, None)] + ([(sheet, 'medium'), (sheet, 'large')] if sheet else []) + [(p, None) for p in popovers]
+    for path in paths:
+        for overlay, detent in overlays:
+            for collapsed in ([False, True] if architecture['collapse_title'] else [False]):
+                for overflow in ([False, True] if architecture['overflow'] else [False]):
+                    add({'active_screen': path[-1], 'history': path[:-1], 'overlay': overlay,
+                         'detent': detent, 'title_collapsed': collapsed, 'overflow_open': overflow})
+    return states
+
+
+def _initial_state(architecture, pages, index, explicit=None):
+    if explicit is not None:
+        return _validate_initial(architecture, pages, explicit)
+    states = _showcase_states(architecture, pages)
+    if not states:
+        raise ValueError('insufficient declared capabilities for a non-baseline initial state')
+    return states[0]
+
+
+def _assign_showcases(schemes, explicit):
+    choices = [[s['architecture']['initial_state']] if fixed else _showcase_states(s['architecture'], s['screens'])
+               for s, fixed in zip(schemes, explicit)]
+    def assign(index, seen):
+        if index == len(schemes):
+            return True
+        for state in choices[index]:
+            schemes[index]['architecture']['initial_state'] = state
+            signature = initial_state_signature(schemes[index])
+            if signature not in seen and assign(index + 1, seen | {signature}):
+                return True
+        return False
+    if not assign(0, set()):
+        raise ValueError('insufficient declared capabilities for four distinct non-baseline initial states')
 
 
 def _edge(value, ids, roles):
     if not isinstance(value, dict) or value.get('type') not in OPERATIONS:
         raise ValueError('invalid transition type')
     kind, target = value['type'], value.get('to')
-    if kind != 'dismissOverlay' and target not in ids:
+    if kind not in {'dismissOverlay', 'popScreen'} and target not in ids:
         raise ValueError('transition target is not declared')
     if kind in {'pushScreen', 'switchTab'} and roles.get(target) in {'sheet', 'popover'}:
         raise ValueError('overlay screens require overlay transitions')
@@ -104,8 +272,8 @@ def validate_scheme(scheme, index, context):
     if (not isinstance(destinations, list) or not destinations or len(set(destinations)) != len(destinations)
             or any(d not in ids or roles[d] in {'sheet', 'popover'} for d in destinations)):
         raise ValueError('architecture destinations must be distinct content screens')
-    if root not in destinations or (a['kind'] != 'stack' and len(destinations) < 2):
-        raise ValueError('architecture requires root and at least two non-stack destinations')
+    if root not in destinations:
+        raise ValueError('architecture destinations must include root')
     page_map = {p['id']: p for p in clean}
     def reference(ref):
         if (not isinstance(ref, dict) or ref.get('screen') not in ids or type(ref.get('action')) is not int
@@ -132,24 +300,27 @@ def validate_scheme(scheme, index, context):
                     raise ValueError('P3 content actions must be routed through architecture.overflow')
     a = {'kind': a['kind'], 'root': root, 'destinations': destinations, 'primary': primary,
          'sheet': sheet, 'overflow': overflow, 'collapse_title': collapse}
+    a['initial_state'] = _initial_state(a, clean, index, architecture.get('initial_state'))
     return {'id': f'app{index:02d}', 'title': str(scheme.get('title', f'{context} · {index}')),
             'navigation_model': model, 'architecture': a, 'screens': clean, 'context': context}
+
+
+def initial_state_signature(scheme):
+    """Compare showcase states by canonical graph positions, not screen labels."""
+    a, pages = scheme['architecture'], {p['id']: p for p in scheme['screens']}
+    order = canonical_walk(scheme)
+    positions = {screen: index for index, screen in enumerate(order)}
+    state = a['initial_state']; overlay = state['overlay']
+    role = pages[overlay]['role'] if overlay else None
+    detent = state['detent'] if role == 'sheet' else None
+    return (positions[state['active_screen']], tuple(positions[s] for s in state['history']),
+            (role, positions.get(overlay)) if overlay else None, detent,
+            bool(state['overflow_open']), bool(state['title_collapsed']))
 
 
 def architecture_signature(scheme):
     a = scheme['architecture']
     pages = {p['id']: p for p in scheme['screens']}
-    def walk(seeds):
-        order = list(dict.fromkeys(s for s in seeds if s is not None))
-        seen = set(order)
-        for screen in order:
-            p = pages[screen]
-            for t in [action['transition'] for action in p['actions']] + p['transitions']:
-                target = t.get('to') if t else None
-                if target is not None and target not in seen:
-                    seen.add(target)
-                    order.append(target)
-        return order
     def graph(order):
         positions = {screen: i for i, screen in enumerate(order)}
         def edge(t):
@@ -158,14 +329,13 @@ def architecture_signature(scheme):
                       tuple((action['frequency'], bool(action['commit']), edge(action['transition'])) for action in pages[s]['actions']),
                       tuple(edge(t) for t in pages[s]['transitions'])) for s in order)
     # Ordered chrome and edges, not backing record order, assign canonical IDs.
-    order = walk([a['root'], *a['destinations'], a['primary']['screen'], a['sheet'],
-                  *(r['screen'] for r in a['overflow'])])
+    order = canonical_walk(scheme)
     positions = {screen: i for i, screen in enumerate(order)}
     def reference(r):
         return (positions[r['screen']], r['action'])
     # Retain unreferenced graph components as an order-independent multiset of
     # rooted, ordered traversals; no label-based sorting or permutation search.
-    detached = tuple(sorted((graph(walk([*order, s])) for s in pages if s not in positions), key=json.dumps))
+    detached = tuple(sorted((graph(canonical_walk(scheme, [*order, s])) for s in pages if s not in positions), key=json.dumps))
     return (a['kind'], tuple(positions[d] for d in a['destinations']), positions[a['root']],
             a['collapse_title'], reference(a['primary']), tuple(reference(r) for r in a['overflow']),
             positions.get(a['sheet']), graph(order), detached)
@@ -195,6 +365,7 @@ def load_schemes(args):
     normalized = [validate_scheme(s, i, context) for i, s in enumerate(schemes, 1)]
     if len({architecture_signature(s) for s in normalized}) != 4:
         raise ValueError('four operative architectures must differ, not just model labels')
+    _assign_showcases(normalized, [s['architecture'].get('initial_state') is not None for s in schemes])
     return normalized
 
 
@@ -249,14 +420,17 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
         chrome = f'<header class="web-header"><span>Web navigation</span>{more}</header><aside class="web-toc" aria-label="Table of contents">{destinations}</aside><nav class="web-actions">{back}{primary}</nav>'
     if not session_contract(anti_patterns, overrides):
         chrome = chrome.replace('class="floating stack-toolbar"', 'class="stack-toolbar"').replace('class="floating lens-toolbar"', 'class="lens-toolbar"').replace('class="floating inspector-toolbar"', 'class="inspector-toolbar"')
+    initial = {'active_screen': a['root'], 'history': [], 'overlay': None, 'detent': None,
+               'overflow_open': False, 'title_collapsed': False} if app_index == 0 else a['initial_state']
     config = {'schema': 'navigation-page/v3', 'id': 'current' if app_index == 0 else scheme['id'],
-              'platform': platform, 'scheme': scheme, 'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
+              'platform': platform, 'scheme': scheme, 'initial_state': initial,
+              'session_anti_patterns': anti_patterns, 'style_overrides': overrides}
     css = (ASSETS / 'navigation-demo.css').read_text(encoding='utf-8')
     runtime = (ASSETS / 'navigation-demo.js').read_text(encoding='utf-8')
     style = ';'.join(f'--{k}:{v}' for k, v in tokens.items())
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(scheme['title'])}</title><link rel="stylesheet" href="tokens.css"><style>{css}</style></head>
-<body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
+<body><main class="app architecture-{a['kind']}" style="{style}" data-platform="{escape(platform)}" data-navigation-model="{escape(scheme['navigation_model'])}" data-initial-screen="{escape(initial['active_screen'])}" data-initial-overlay="{escape(initial['overlay'] or '')}" data-initial-detent="{escape(initial['detent'] or '')}" data-initial-overflow="{str(initial['overflow_open']).lower()}" data-session-anti-patterns="{escape(json.dumps(anti_patterns, ensure_ascii=False))}" data-style-overrides="{escape(json.dumps(overrides, ensure_ascii=False))}">
 {optical_svg}
 <header class="large-title"><p>{escape(scheme['context'])}</p><h1 id="large-title">{escape(scheme['title'])}</h1></header>
 {chrome}

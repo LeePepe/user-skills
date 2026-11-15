@@ -1,6 +1,34 @@
 """Bind independent Designer prompt files without pretending to interpret free text."""
 import hashlib
+import re
 from pathlib import Path
+
+
+def _paragraphs(text):
+    bodies = set()
+    for block in re.split(r'\n\s*\n', text):
+        body = ' '.join(line.strip() for line in block.splitlines()
+                        if not re.match(r'^\s*#{1,6}\s', line))
+        body = ' '.join(body.split())
+        if len(body) >= 20:
+            bodies.add(body)
+    return bodies
+
+
+def _overlap_ratio(left, right):
+    return len(left & right) / min(len(left), len(right)) if left and right else 0.0
+
+
+def _check_overlap(items):
+    names = list(items)
+    for i, left in enumerate(names):
+        for right in names[i + 1:]:
+            a, b = _paragraphs(items[left]), _paragraphs(items[right])
+            if not a or not b:
+                continue
+            overlap = _overlap_ratio(a, b)
+            if overlap > 0.20:
+                raise ValueError(f'prompt duplicate boilerplate exceeds 20%: {left}/{right} ({overlap:.2f})')
 
 SCREEN_METAPHORS = [
     'Signal observatory: a quiet instrument with one reading in focus',
@@ -14,12 +42,6 @@ SCREEN_METAPHORS = [
     'Launch pad: one committed next action with an alternate detail lens',
     'Context compass: one orienting signal within a navigable spatial stack',
 ]
-APP_METAPHORS = {
-    'stack': 'Guided trail: each committed step reveals the next destination',
-    'tabs': 'Workspaces: independent rooms retain their own unfinished journeys',
-    'lens': 'Observatory: switch perspectives without duplicating the content stage',
-    'deck': 'Card atlas: reveal destinations spatially and keep tools in an inspector',
-}
 PALETTES = {
     'VS-005': 'cool paper, dark editorial ink, a restrained blue focal accent',
     'VS-006': 'warm paper, charcoal monospace ink, a restrained terracotta accent',
@@ -36,12 +58,29 @@ def starter(manifest, variant, index):
         primary = next(p for p in scheme['screens'] if p['id'] == a['primary']['screen'])
         p0 = primary['actions'][a['primary']['action']]['label']
         domain = scheme['context']
-        metaphor = APP_METAPHORS[a['kind']]
+        profile = [
+            ('Trail ledger: read the committed journey from its return anchor', 'an ordered itinerary with the next step aligned to Back', 'ivory ledger panels with a narrow blue journey rule', 'keep the return anchor visible beside the committed step', 'a branching trail ending at an open return bracket'),
+            ('Room landing: orient around a destination before taking an action', 'a landing map with separate destination and commit regions', 'warm solid room panels with a terracotta location marker', 'never blend destination selection with the primary commit target', 'an open doorway with an inset location dot'),
+            ('Tool hinge: reveal supporting work without replacing the task', 'a hinged tool panel adjoining the content rail', 'cool solid task paper with a violet tool-panel boundary', 'show the owned tool boundary without creating a second task root', 'a hinge joining a solid task square to a tool outline'),
+            ('Journey passport: keep context above a compact route register', 'a passport header over a compact destination register', 'charcoal route cards with one emerald context edge', 'preserve the selected route when the context header condenses', 'a route register beneath a single compass tick'),
+        ][index]
+        metaphor, composition, candidate_surface, candidate_guard, candidate_icon = profile
         folding = f"{a['kind']} journey; destinations {', '.join(a['destinations'])}; sheet {a['sheet'] or 'none'}"
         coordinates = f"{scheme['navigation_model']} / {a['kind']} / root {a['root']}"
         palette = 'solid neutral content, semantic light/dark ink, one restrained action accent'
         layout = 'Use the supplied graph and platform-native chrome; retain tab-local history and reversible push/pop.'
-        icon = 'a connected path with one highlighted destination'
+        topology = {'stack': 'a vertical journey rail with a persistent Back affordance', 'tabs': 'a tab-local workspace strip with an isolated active room', 'lens': 'a comparison lens with two synchronized reading panes', 'deck': 'a horizontal card deck with a revealed inspector'}[a['kind']]
+        surface_detail = {'stack': 'use a quiet paper surface and a single lifted journey rail', 'tabs': 'separate the selected workspace from the prominent action pill with solid surfaces', 'lens': 'use a cool analytical canvas with a crisp lens toolbar and no nested glass', 'deck': 'use broad solid cards with a restrained inspector edge and clear depth order'}[a['kind']]
+        anti_focus = {'stack': 'do not hide Back or turn the journey rail into decorative chrome', 'tabs': 'do not merge tab history or make every room look like the root', 'lens': 'do not fabricate a comparison source or use an inert lens switcher', 'deck': 'do not imply depth with striped effects or duplicate cards'}[a['kind']]
+        topology += f'; compose it as {composition}'
+        surface_detail += f'; distinguish the route with {candidate_surface}'
+        anti_focus += f'; {candidate_guard}'
+        icon = candidate_icon
+        candidate_detail = f"The {composition} uses {scheme['navigation_model']} with primary {p0}, destinations {','.join(a['destinations'])}, sheet {a['sheet'] or 'none'}, overflow {len(a['overflow'])}, and boot state {a['initial_state']['active_screen']}."
+        boot = a['initial_state']
+        candidate_detail += f" Start with history {boot['history']}, overlay {boot['overlay'] or 'none'}, detent {boot['detent'] or 'none'}, overflow {'open' if boot['overflow_open'] else 'closed'}, and title {'compact' if boot['title_collapsed'] else 'expanded'}."
+        optical_detail = f"Tune the {composition} chrome: {surface_detail}; keep the {boot['active_screen']} boot state readable behind the declared chrome."
+        handoff_detail = f"Verify the {composition} from {boot['active_screen']} using the declared {a['kind']} controls. The route-specific acceptance guard is: {candidate_guard}; never invent destinations to satisfy the composition."
     else:
         domain = variant['content']
         metaphor = SCREEN_METAPHORS[index]
@@ -52,37 +91,44 @@ def starter(manifest, variant, index):
         layout = f"Place the hero using {variant['layout']}; spacing is {variant['whitespace']}; functional chrome geometry is {variant['glass_geometry']}."
         icon = {'next-action': 'a forward arrow inside an open path', 'timeline': 'three points on a time rail',
                 'context': 'a compass needle with an open circle', 'recovery': 'a returning arrow with an unclosed loop'}[p0]
-    return f'''# {variant['id']} — independent prototype prompt
+        topology = ['a bento signal grid', 'a timeline rail with milestone nodes', 'a pulse matrix of live checkpoints', 'a ring gauge surrounded by evidence chips', 'a master-detail item rail', 'a split workbench with input and result panes', 'a floating action island over solid content', 'a stacked pocket deck', 'a command stage with keyboard focus', 'an editorial poster with a single headline'][index]
+        surface_detail = ['cool paper with blue signal ink', 'warm paper with terracotta milestone marks', 'neutral canvas with emerald pulse accents', 'dark canvas with violet gauge highlights', 'solid ivory with a focused detail column', 'cool solid panels with a green workbench cue', 'warm solid paper and one lifted island', 'dark solid cards with restrained depth', 'neutral solid canvas with a command accent', 'editorial paper with high-contrast type'][index]
+        anti_focus = ['avoid equal-weight tiles', 'avoid an unbounded scroll timeline', 'avoid decorative heartbeat animation', 'avoid a gauge without a readable value', 'avoid a detail pane detached from selection', 'avoid nested glass work surfaces', 'avoid floating chrome covering the P0', 'avoid fake card depth and clipped pockets', 'avoid a command palette with no real action', 'avoid poster copy that hides the next action'][index]
+        candidate_detail = f"Candidate composition {index + 1} gives {topology} a {variant['layout']} frame, {variant['whitespace']} breathing room, and {variant['glass_geometry']} functional chrome around {p0}."
+        optical_detail = f"Use candidate composition {index + 1}'s {variant['glass_geometry']} geometry with {surface_detail}; the optical rim must clarify the {p0} action rather than decorate content."
+        handoff_detail = f"Validate composition {index + 1} with the {topology} child structure, the {p0} action, and the declared {variant['axis_y']} fold before handoff."
+    body = f'''# {variant['id']} — independent prototype prompt
 
 Status: scaffold starter, NOT Designer-approved. Stage 1 Designer must refine and approve this individual brief; Stage 2 Coding implements the approved brief.
 Target: {platform}; domain: {domain}.
 Coordinates: {coordinates}.
 
 ## Visual metaphor
-{metaphor}. Translate this metaphor into a coherent hierarchy, not decorative imagery repeated across every candidate.
+{metaphor}. Build {topology}; translate the metaphor into a coherent hierarchy with one readable focal state, not decorative imagery repeated across every candidate. {candidate_detail}
 
 ## Single P0 focal point
-Make “{p0}” the only primary focal object/action per viewport. Anchor it to the real domain “{domain}”; retain visible intent, commit feedback and a reversible return path.
+Frame “{p0}” as the single primary object inside {topology}. In the real domain “{domain}”, this arrangement must connect its focal placement to visible intent, commit feedback and the reversible return path; the surrounding {surface_detail} stays subordinate.
 
 ## P1/P2 folding
-Keep one P1 companion status inline; fold P2 context using {folding}. P3 configuration stays behind the declared tools/overflow affordance. Do not stack all secondary modules vertically.
+Keep one P1 companion status inline; fold P2 context using {folding}. P3 configuration stays behind a declared tools/overflow affordance only when the graph declares one. Shape the content around {topology}; do not stack all secondary modules vertically.
 {layout}
 
 ## Color and surface polarity
-Use {palette}. Light uses solid paper with dark ink; dark uses a deep solid canvas and bright ink. Preserve semantic contrast across both appearances; glass is functional floating chrome only, never content-on-glass.
+Use {palette}; the candidate surface treatment is {surface_detail}. Light uses solid paper with dark ink; dark uses a deep solid canvas and bright ink. Preserve semantic contrast across both appearances; glass is functional floating chrome only, never content-on-glass.
 
 ## Liquid Glass optical parameters
-Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px displacement with chromatic channels), blur 2.5px and saturation 135–155%. Blink may use SVG backdrop-filter refraction; provide a soft radial ambient/specular rim fallback, reduced transparency and reduced motion. Glass never samples another glass layer.
+Use a signed squircle Snell/Fresnel backdrop map (IOR 1.5, 12px bevel, 24px displacement with chromatic channels), blur 2.5px and saturation 135–155%. Blink may use SVG backdrop-filter refraction; provide a soft radial ambient/specular rim fallback, reduced transparency and reduced motion. Glass never samples another glass layer. {optical_detail}
 
 ## Inline SVG iconography
-Author a small stroke-based inline SVG depicting {icon}, with a 24×24 viewBox, rounded joins, semantic currentColor and accessible text where meaningful. Do not use emoji or external icon fonts as UI substitutes.
+Draw {icon} as a stroke-based inline SVG for {topology}; match its optical weight to {surface_detail}. Use a 24×24 viewBox, rounded joins, semantic currentColor and accessible text where meaningful, rather than emoji or external icon fonts.
 
 ## Explicit anti-patterns
-No .caustic-veil repeating-linear-gradient zebra stripes; never distort a striped overlay with url(#apple-liquid-glass). No .ruler 28×28 dashed boxes, Active / Matte debug bars, or duplicate inner platform/theme/viewport/selection controls. Keep legitimate navigation and product actions working. Outer choosers own gallery controls; prevent numeric truncation, clipped targets and raw localization keys.
+No .caustic-veil repeating-linear-gradient zebra stripes; never distort a striped overlay with url(#apple-liquid-glass). No .ruler 28×28 dashed boxes, Active / Matte debug bars, or duplicate inner platform/theme/viewport/selection controls. Candidate-specific guardrail: {anti_focus}. Keep legitimate navigation and product actions working. Outer choosers own gallery controls; prevent numeric truncation, clipped targets and raw localization keys.
 
 ## Stage 2 handoff
-Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval.
+Designer owns the decisions above. Coding implements the approved concrete HTML/CSS/JS and, after Owner selection, production code. The deterministic scaffold binds this Markdown as evidence; it does not semantically implement arbitrary supplied prose or certify design approval. {handoff_detail}
 '''
+    return body
 
 
 def prepare(manifest, source_dir=None):
@@ -110,6 +156,7 @@ def prepare(manifest, source_dir=None):
         payload[relative] = data
         variant['prompt_file'] = relative
         variant['prompt_sha256'] = hashlib.sha256(data).hexdigest()
+    _check_overlap({name: data.decode('utf-8') for name, data in payload.items()})
     manifest['prompt_contract'] = {'schema': 'design-prompts/v1', 'source': 'provided' if source else 'starter',
                                    'count': len(payload)}
     return payload

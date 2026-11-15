@@ -3,11 +3,17 @@ const CONFIG = JSON.parse(document.getElementById('page-config').textContent);
 const S = CONFIG.scheme;
 const A = S.architecture;
 const P = Object.fromEntries(S.screens.map(p => [p.id, p]));
+const initial = CONFIG.initial_state || A.initial_state || {active_screen: A.root, history: [], overlay: null, detent: null, overflow_open: false, title_collapsed: false};
+const initialTab = initial.history?.length ? initial.history[0] : initial.active_screen;
 const state = {
-  activeTab: A.root,
+  activeTab: initialTab,
   tabs: Object.fromEntries(A.destinations.map(id => [id, {current: id, history: []}])),
-  overlay: null, detent: 'medium', commits: {}, feedback: ''
+  overlay: initial.overlay ? {kind: P[initial.overlay]?.role, screen: initial.overlay} : null,
+  detent: initial.detent || 'medium', overflowOpen: Boolean(initial.overflow_open),
+  titleCollapsed: Boolean(initial.title_collapsed), commits: {}, feedback: ''
 };
+state.tabs[initialTab].current = initial.active_screen;
+state.tabs[initialTab].history = [...(initial.history || [])];
 const screen = document.getElementById('screen');
 const sheet = document.getElementById('sheet');
 const menu = document.getElementById('overflow-menu');
@@ -54,6 +60,7 @@ function renderPage(host, id) {
 }
 function render() {
   renderPage(screen, currentScreen());
+  document.querySelector('.app').classList.toggle('title-collapsed', state.titleCollapsed);
   document.getElementById('large-title').textContent = P[currentScreen()].name;
   const compact = document.getElementById('compact-title');
   if (compact) compact.textContent = P[currentScreen()].name;
@@ -64,6 +71,16 @@ function render() {
   });
   const back = document.getElementById('back');
   back.disabled = !state.overlay && !tabState().history.length;
+  sheet.hidden = !(state.overlay?.kind === 'sheet');
+  if (state.overlay?.kind === 'sheet') {
+    sheet.dataset.detent = state.detent;
+    sheet.dataset.screen = state.overlay.screen;
+    screen.setAttribute('inert', '');
+  } else {
+    screen.removeAttribute('inert');
+  }
+  menu.hidden = !(state.overlay?.kind === 'popover' || state.overflowOpen);
+  document.getElementById('overflow').setAttribute('aria-expanded', String(state.overflowOpen));
   if (state.overlay) {
     const host = state.overlay.kind === 'sheet' ? document.getElementById('sheet-content') : document.getElementById('popover-content');
     renderPage(host, state.overlay.screen);
@@ -93,6 +110,7 @@ function switchTab(id) {
 }
 function closeOverlays() {
   state.overlay = null;
+  state.overflowOpen = false;
   sheet.hidden = true;
   menu.hidden = true;
   screen.removeAttribute('inert');
@@ -160,10 +178,12 @@ document.getElementById('close-sheet').onclick = () => {closeOverlays(); render(
 document.getElementById('medium-sheet').onclick = () => setDetent('medium');
 document.getElementById('large-sheet').onclick = () => setDetent('large');
 document.getElementById('overflow').onclick = () => {
-  const open = menu.hidden;
+  const open = !state.overflowOpen;
   closeOverlays();
+  state.overflowOpen = open;
   menu.hidden = !open;
-  document.getElementById('overflow').setAttribute('aria-expanded', open);
+  document.getElementById('overflow').setAttribute('aria-expanded', String(open));
+  render();
 };
 document.addEventListener('keydown', e => { if (e.key === 'Escape') {closeOverlays(); render();} });
 window.addEventListener('scroll', () => {
