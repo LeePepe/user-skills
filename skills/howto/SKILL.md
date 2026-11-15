@@ -1,6 +1,6 @@
 ---
 name: howto
-description: 梳理、细化、复盘、串联或新增个人与工作 How-To 流程的统一入口（如 how to fix bug / bug list、check teams、check/classify email、build feature、make a skill、怎么用 Jev / Falcon / System One 写题与排障，或针对具体任务做节点拆解与断链诊断）。复用 workflow-hub 底层节点图谱，保持 M2 全局五元组视角并将细节调查交由 M1 落实。
+description: 梳理、细化、复盘、串联或新增个人与工作 How-To 流程的统一入口（如 how to fix bug / bug list、check teams、check/classify email、build feature、make a skill、给 AIDash 新增 AI metrics 并扩展 aidata L1–L5、用 Jev / Falcon / System One 写题与排障，或任务节点拆解与断链诊断）。复用 workflow-hub 图谱，保持 M2 全局五元组并将细节调查交由 M1。
 ---
 
 # How-To 统一入口
@@ -16,6 +16,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 | 触发 | L1 精确抽屉 | L2 CLI / 动作 |
 |---|---|---|
 | 查 30 节点与 TK-01..16 断链 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill workflow-hub --strict` |
+| AIDash 新增/扩展 AI 指标（aidata L1–L5） | [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) | 加载独立 `aidash-metrics` Skill；按其 inspector → Owner → designer → data-before-UI gates 路由；实现另派 M1 |
 | 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
 | 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
 | 派发单仓 M1 Worktree | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` |
@@ -40,6 +41,13 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 `Inbound`（每日 Pulse / 手动）→ `I2 Process Email`（`workiq` 只读 watermark）→ `Calls`：`I3 Jev 分桶` + `I4 总结` → `PointsTo`：`I5 Notify User`（`dsh` / `Cindy` session adapter）。
 
 `✅ workiq + jev_client` 已就绪；`🔴 TK-09 水位采集脚本` 与 `🔴 dsh/Cindy session 投递机制` 交 M1 调查。确认后按四步 SOP 回写图谱或独立下沉实现，不在 M2 直接翻代码。
+
+### 4.5 P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
+
+- **Inbound**：Owner 新增/重构指标或 P3 复盘提案；厚领域流程由独立 `aidash-metrics` Skill 接管。
+- **Internal**：aidata L1–L5 血缘、确定性 inspector 与四道门禁由独立 [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) 承载；本节点只保留编排与交接。
+- **Calls**：加载 `aidash-metrics` → I5 Owner 拍板 → E7 UI/Visual → E4 Code Task + E9 Verify 6DQ；实际实现另派 M1。
+- **PointsTo / Trigger & Notify**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；Manual/P3 提案，口径/设计 P0，快照/PR 合入 P1。
 
 ## 5. 三层省 Token 漏斗准入准则（Layer 0 → Layer 1 → Layer 2）
 

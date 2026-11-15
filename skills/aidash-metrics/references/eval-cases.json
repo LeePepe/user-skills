@@ -1,0 +1,75 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "aidash-metrics",
+  "trigger_evals": [
+    {
+      "query": "add an AI metrics card to AIDash",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "diagnose Skills ROI and extend aidata L1-L5",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "design a generic SwiftUI animation",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    },
+    {
+      "query": "build a warehouse with SCD dimensions",
+      "should_trigger": false,
+      "near_miss_skill": "layered-data-warehouse"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Inspector help contract",
+      "tags": [
+        "contract"
+      ],
+      "cmd": "python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "aidata-root"
+      ],
+      "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-002",
+      "title": "Inspector contract failure is explicit",
+      "tags": [
+        "contract"
+      ],
+      "cmd": "python3 -c \"import subprocess; r=subprocess.run(['python3','skills/aidash-metrics/scripts/inspect_aidata_pipeline.py','--aidata-root','/definitely/missing','--check-contract'], text=True, capture_output=True); assert r.returncode == 2 and 'missing' in r.stderr\"",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-003",
+      "title": "L0 and lineage routing",
+      "tags": [
+        "contract"
+      ],
+      "cmd": "python3 -c \"from pathlib import Path; p=Path('skills/aidash-metrics/SKILL.md').read_text(); assert all(x in p for x in ['When-to-Read & CLI Routing','Four mandatory gates','aidata-l1-l5-lineage.md','/layered-data-warehouse','../my-designer/SKILL.md'])\"",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-004",
+      "title": "Invalid root fails closed",
+      "tags": [
+        "contract"
+      ],
+      "negative_cmd": "python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --aidata-root /definitely/missing --json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "missing"
+      ],
+      "registered_at": "2026-11-15"
+    }
+  ],
+  "updated": "2026-11-15"
+}

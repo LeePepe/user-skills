@@ -317,6 +317,191 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(result["status"], "PR_CHECK_FAILED")
             self.assertIn("job failed", failed_receipt.read_text(encoding="utf-8"))
 
+    def _aidata_fixture(self, root: Path, *, detailed: bool = False) -> None:
+        def write(rel: str, text: str) -> None:
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+        turn_ddl = "CREATE TABLE turn(turn_uuid TEXT PRIMARY KEY, session_id TEXT, skill_names TEXT, attribution_skill TEXT, input_tokens INTEGER, output_tokens INTEGER, tool_calls TEXT);"
+        if detailed:
+            turn_ddl += 'CREATE TABLE tool_observation(reference_path TEXT, script_path TEXT, duration_ms INTEGER); CREATE TABLE eval_event(eval_case TEXT, interception INTEGER, "escape" INTEGER);'
+        write("adapters/claude_jsonl.py", 'SOURCE = "claude_jsonl"\ndef collect():\n    return [{"sessionId": "session", "skill_names": ["team-lead"], "usage": {"input_tokens": 1, "output_tokens": 1}, "tool_calls": ["Read"]}]\n_CLEAN_DDL = ' + repr(turn_ddl) + '\ndef normalize():\n    return []\n')
+        records = [{"sessionId": "session", "skill_names": ["team-lead"], "usage": {"input_tokens": 11, "output_tokens": 7}, "tool_calls": ["Read", "Bash"], "note": "reference_path duration_ms eval_case interception escape"}]
+        if detailed:
+            records.extend([
+                {"sessionId": "session", "reference_path": "references/a.md", "reference_hits": 1},
+                {"sessionId": "session", "script_path": "scripts/a.py", "duration_ms": 12},
+                {"sessionId": "session", "eval_case": "EV-1", "interception": True, "escape": False},
+            ])
+        write("L1_collect/raw/claude_jsonl/2026-11-15.jsonl", "".join(json.dumps(record) + "\n" for record in records))
+        (root / "L2_normalize/clean").mkdir(parents=True)
+        with sqlite3.connect(root / "L2_normalize/clean/claude_jsonl.db") as db:
+            db.executescript(turn_ddl)
+        warehouse_ddl = "CREATE TABLE fact_turn(turn_uuid TEXT PRIMARY KEY, session_id TEXT, skill_names TEXT, input_tokens INTEGER, output_tokens INTEGER, tool_calls TEXT);"
+        sql = "SELECT skill_names AS skill, input_tokens + output_tokens AS tokens FROM fact_turn;"
+        snapshot = 'def build_snapshot(report, daily):\n    return {"skills_daily": daily, "coverage_status": report.get("coverage_status"), "source_as_of": report.get("source_as_of")}\n'
+        if detailed:
+            warehouse_ddl += 'CREATE TABLE reference_hit(reference_path TEXT); CREATE TABLE script_call(script_path TEXT, duration_ms INTEGER); CREATE TABLE fact_gtt_event(eval_case TEXT, interception INTEGER, "escape" INTEGER);'
+            sql += '\nSELECT count(*) AS reference_hits, reference_path FROM reference_hit GROUP BY reference_path;\nSELECT avg(duration_ms) AS script_latency, duration_ms, max(duration_ms) AS p95_ms FROM script_call;\nSELECT count(*) AS eval_effect, interception, "escape" FROM fact_gtt_event;'
+            snapshot = 'def build_snapshot(report, daily):\n    return {"skills_daily": daily, "coverage_status": report.get("coverage_status"), "source_as_of": report.get("source_as_of"), "reference_hits": {"reference_path": report.get("reference_path")}, "script_latency": {"duration_ms": report.get("duration_ms"), "p95_ms": report.get("p95_ms")}, "eval_effect": {"interception": report.get("interception"), "escape": report.get("escape")}}\n'
+        write("schema/warehouse.sql", warehouse_ddl)
+        (root / "L3_merge").mkdir()
+        with sqlite3.connect(root / "L3_merge/warehouse.db") as db:
+            db.executescript(warehouse_ddl)
+        write("L4_serve/queries/retro/skill_roi_diagnostics.sql", sql)
+        write("L5_apps/digest/skills_roi_snapshot.py", snapshot)
+
+    def _inspect_aidata(self, root: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SKILLS_DIR / "aidash-metrics/scripts/inspect_aidata_pipeline.py"), "--aidata-root", str(root), *args, "--json"], check=False, capture_output=True, text=True)
+
+    def _aidata_tree(self, root: Path) -> dict:
+        return {str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None for path in root.rglob("*")}
+
+    def test_aidash_metrics_inspector_classifies_hermetic_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._aidata_fixture(root, detailed=True)
+            before = self._aidata_tree(root)
+            ready = self._inspect_aidata(root, "--check-contract", "--metrics", "skills_roi,reference_hits,script_latency,eval_effect")
+            self.assertEqual(ready.returncode, 0, ready.stderr)
+            payload = json.loads(ready.stdout)
+            self.assertEqual(payload["status"], "ready")
+            for metric in ("skills_roi", "reference_hits", "script_latency", "eval_effect"):
+                self.assertEqual(payload["metrics"][metric]["status"], "ready", metric)
+                self.assertTrue(all(item["complete"] for item in payload["metrics"][metric]["coverage"].values()), metric)
+                self.assertEqual(payload["metrics"][metric]["coverage"]["l1"]["status"], "observed")
+                self.assertEqual(payload["metrics"][metric]["coverage"]["l2"]["status"], "observed")
+            self.assertIn("L2_normalize/clean/claude_jsonl.db", payload["layers"]["l2"])
+            l2 = payload["metrics"]["skills_roi"]["coverage"]["l2"]["evidence"]
+            self.assertTrue(any(entry["table"] == "turn" and entry["kind"] == "observed" and entry["complete"] for entry in l2))
+            self.assertEqual(before, self._aidata_tree(root))
+
+            (root / "L4_serve/queries/retro/skill_roi_diagnostics.sql").write_text("SELECT 1 AS unrelated;", encoding="utf-8")
+            amber = self._inspect_aidata(root)
+            self.assertEqual(amber.returncode, 0, amber.stderr)
+            for metric, item in json.loads(amber.stdout)["metrics"].items():
+                self.assertEqual(item["status"], "needs_l2_l4_extension", metric)
+            raw = root / "L1_collect/raw/claude_jsonl/2026-11-15.jsonl"
+            raw.write_text("", encoding="utf-8")
+            red = self._inspect_aidata(root)
+            self.assertEqual(red.returncode, 0, red.stderr)
+            for metric, item in json.loads(red.stdout)["metrics"].items():
+                self.assertEqual(item["status"], "needs_l1_collection", metric)
+            raw.unlink()
+            missing = self._inspect_aidata(root, "--metric", "skills_roi")
+            self.assertEqual(json.loads(missing.stdout)["status"], "needs_l1_collection")
+
+    def test_aidash_metrics_inspector_scopes_sources_and_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._aidata_fixture(root)
+            baseline = self._inspect_aidata(root, "--check-contract")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            original = json.loads(baseline.stdout)
+            self.assertEqual(original["metrics"]["skills_roi"]["status"], "ready")
+            for metric in ("reference_hits", "script_latency", "eval_effect"):
+                self.assertEqual(original["metrics"][metric]["status"], "needs_l1_collection")
+            for source in ("local_git", "github_repo", "workspace_hygiene", "linear_issue"):
+                raw = root / f"L1_collect/raw/{source}/2026-11-15.jsonl"
+                raw.parent.mkdir(parents=True)
+                raw.write_text(json.dumps({"file_path": "references/a.md", "reference_path": "references/a.md", "script_path": "scripts/a.py", "duration_ms": 1, "eval_case": "EV-1", "interception": True, "escape": True}) + "\n", encoding="utf-8")
+            vendor = root / "L1_collect/.venv/lib/decoy.jsonl"
+            vendor.parent.mkdir(parents=True)
+            vendor.write_text("this is not JSON\n", encoding="utf-8")
+            snapshot = root / "L5_apps/digest/skills_roi_snapshot.py"
+            snapshot.write_text(snapshot.read_text(encoding="utf-8") + '\n# reference_hits script_latency eval_effect\nnote = "reference_path duration_ms p95_ms interception escape"\n', encoding="utf-8")
+            adapter = root / "adapters/claude_jsonl.py"
+            adapter.write_text(adapter.read_text(encoding="utf-8") + '\ndef unused_normalizer():\n    return {"reference_path": "references/a.md", "script_path": "scripts/a.py", "duration_ms": 1, "eval_case": "EV-1", "interception": True, "escape": False}\n', encoding="utf-8")
+            decoys = self._inspect_aidata(root)
+            self.assertEqual(decoys.returncode, 0, decoys.stderr)
+            self.assertEqual(original["metrics"], json.loads(decoys.stdout)["metrics"])
+
+            raw = root / "L1_collect/raw/claude_jsonl/2026-11-15.jsonl"
+            raw.write_text(json.dumps({"sessionId": "session", "attributionSkill": "team-lead", "usage": {"input_tokens": 11, "output_tokens": 7}}) + "\n", encoding="utf-8")
+            alias = self._inspect_aidata(root, "--metric", "skills_roi")
+            item = json.loads(alias.stdout)["metrics"]["skills_roi"]
+            self.assertEqual(item["status"], "ready")
+            self.assertIn("attributionskill", item["coverage"]["l1"]["fields"])
+            raw.write_text(json.dumps({"sessionId": "session", "skill_names": ["team-lead"], "usage": {"input_tokens": 11}}) + "\n", encoding="utf-8")
+            partial = self._inspect_aidata(root, "--metric", "skills_roi")
+            item = json.loads(partial.stdout)["metrics"]["skills_roi"]
+            self.assertEqual(item["status"], "needs_l2_l4_extension")
+            self.assertEqual(item["coverage"]["l1"]["status"], "declared")
+            self.assertFalse(item["raw_retained"])
+            raw.write_text(json.dumps({"sessionId": "session", "note": "x" * 2_000_001}) + "\n", encoding="utf-8")
+            limited = self._inspect_aidata(root, "--check-contract", "--metric", "skills_roi")
+            self.assertEqual(limited.returncode, 0, limited.stderr)
+            payload = json.loads(limited.stdout)
+            self.assertEqual(payload["status"], "needs_l1_collection")
+            self.assertIn(str(raw.relative_to(root)), payload["sampling"]["limit_reached_shards"])
+
+    def test_aidash_metrics_inspector_source_only_ddl_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._aidata_fixture(root)
+            (root / "L3_merge/warehouse.db").unlink()
+            (root / "L2_normalize/clean/claude_jsonl.db").unlink()
+            (root / "L1_collect/raw/claude_jsonl/2026-11-15.jsonl").unlink()
+            before = self._aidata_tree(root)
+            for args in ((), ("--check-contract",)):
+                result = self._inspect_aidata(root, *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["status"], "needs_l1_collection")
+                self.assertEqual(payload["layers"]["l3"], ["schema/warehouse.sql"])
+                self.assertIn("adapters/claude_jsonl.py", payload["layers"]["l1"])
+                self.assertEqual(payload["metrics"]["skills_roi"]["coverage"]["l2"]["status"], "declared")
+                self.assertIn("skill_names", payload["metrics"]["skills_roi"]["coverage"]["l2"]["fields"])
+                self.assertEqual(before, self._aidata_tree(root))
+            for rel in ("schema/warehouse.sql", "L4_serve/queries/retro/skill_roi_diagnostics.sql", "L5_apps/digest/skills_roi_snapshot.py", "adapters/claude_jsonl.py"):
+                path = root / rel
+                text = path.read_text(encoding="utf-8")
+                path.unlink()
+                failed = self._inspect_aidata(root, "--check-contract")
+                self.assertEqual(failed.returncode, 3, rel)
+                self.assertTrue(failed.stderr)
+                path.write_text(text, encoding="utf-8")
+
+    def test_aidash_metrics_inspector_fails_closed(self) -> None:
+        inspector = SKILLS_DIR / "aidash-metrics" / "scripts" / "inspect_aidata_pipeline.py"
+        for args, expected in (
+            (["--aidata-root", "/definitely/missing"], 2),
+            (["--aidata-root", ".", "--metric", "unknown"], 2),
+            (["--aidata-root", ".", "--metrics", "unknown"], 2),
+        ):
+            result = subprocess.run([sys.executable, str(inspector), *args], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected)
+            self.assertTrue(result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._aidata_fixture(root)
+            collector = root / "adapters/claude_jsonl.py"
+            text = collector.read_text(encoding="utf-8")
+            collector.unlink()
+            failed = self._inspect_aidata(root, "--check-contract")
+            self.assertEqual(failed.returncode, 3, failed.stderr)
+            collector.write_text(text, encoding="utf-8")
+            for rel, invalid in (
+                ("L2_normalize/clean/claude_jsonl.db", b"not SQLite"),
+                ("L1_collect/raw/claude_jsonl/2026-11-15.jsonl", b'{"usage":'),
+                ("schema/warehouse.sql", b"not SQL"),
+                ("schema/warehouse.sql", b"\xff"),
+                ("schema/warehouse.sql", b" " * 2_000_001),
+                ("L4_serve/queries/retro/skill_roi_diagnostics.sql", b"skill_roi"),
+                ("L5_apps/digest/skills_roi_snapshot.py", b"def broken(:"),
+                ("adapters/claude_jsonl.py", b"def broken(:"),
+            ):
+                path = root / rel
+                content = path.read_bytes()
+                path.write_bytes(invalid)
+                before = self._aidata_tree(root)
+                failed = self._inspect_aidata(root, "--check-contract")
+                self.assertEqual(failed.returncode, 3, rel)
+                self.assertTrue(failed.stderr)
+                self.assertEqual(before, self._aidata_tree(root))
+                path.write_bytes(content)
+
     def test_json_files_valid_and_plugin_manifests_consistent(self) -> None:
         json_files = [
             path
@@ -2937,7 +3122,11 @@ class SkillContractV2Tests(unittest.TestCase):
                 self.assertEqual(payload["passed"], 2)
             result, payload = self._cli("description-eval", "--skill", "howto", "--strict")
             self.assertEqual(result.returncode, 0, payload)
-            self.assertEqual(payload["passed"], 4)
+            trigger_evals = json.loads((SKILLS_DIR / "howto" / "references" / "eval-cases.json").read_text())["trigger_evals"]
+            self.assertGreaterEqual(len(trigger_evals), 5)
+            self.assertEqual(payload["total"], len(trigger_evals))
+            self.assertEqual(payload["passed"], len(trigger_evals))
+            self.assertEqual(payload["failures"], [])
 
     def test_canonical_live_context_and_fallback(self) -> None:
         module = self._module()

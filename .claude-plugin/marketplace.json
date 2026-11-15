@@ -16,6 +16,12 @@
       "description": "总工作流开放能力图谱：把 Idea、共创、Goal/Task 开发、PR、产品交付、复盘与叙事连接成可验收闭环。"
     },
     {
+      "name": "aidash-metrics",
+      "source": "./skills/aidash-metrics",
+      "category": "workflow",
+      "description": "凡涉及新增、修改、诊断或重设计 AIDash 的 AI 指标、Skills 效能/ROI、Token/Context 消耗、工具调用或遥测看板卡片时必须加载；强制先探查与扩展 aidata (L1_raw -> L2_clean -> L3_model -> L4_serve SQL -> L5_apps Snapshot)，严禁跳过 aidata 直接在 UI 层硬编码或堆砌无意义的学术编号。"
+    },
+    {
       "name": "linear-board",
       "source": "./skills/linear-board",
       "category": "workflow",

@@ -103,11 +103,18 @@
 
 ## §5 新增 How-To 与独立 Skill 判定
 
-1. 注册五元组：`Inbound / Internal / Calls / PointsTo / Trigger&Notify`；先写输入、专有逻辑、复用边、输出和通知，不孤立建节点。
-2. **组合配方**：Internal 薄、只串现有节点→追加本抽屉一行/ recipe；不新建 Skill。
-3. **独立 Skill**：有厚领域知识、外部 CLI/API、可复用确定性门禁→按四层归位，运行 `skill_contract.py init`，把 regex/AST/水位/Schema/像素/几何检查下沉 `scripts/*.py` 或 shared-ci；共享只允许 S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper，且 `description <= 320`，再跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
-4. 入口 L0 只保留路由；完整节点表放本 L1；机器可读状态放 L2。新节点必须附 `Owned Paths`、验证命令、缺口与 P0/P1/P2 落点。
-5. **四大素材库挂载**：仅当内容高频累积、跨会话 Top-3 可复用且具图文/公开沉淀价值时，按 `/vault/`（Design & Motion、Collected Tools）、`/learn/`（Personal Knowledge）、`/thoughts/`（Retro & Story）挂载；不得自动跨库同步、Star 自动发布或执行收藏工具。
+1. 五元组 `Inbound / Internal / Calls / PointsTo / Trigger&Notify` 登记输入、专有逻辑、复用边、输出、通知；不孤立建节点。
+2. Internal 薄→本抽屉追加组合 recipe，不建 Skill；厚领域知识/CLI/API/确定性门禁→四层归位，`skill_contract.py init`，regex/AST/水位/Schema/像素/几何下沉 `scripts/*.py` 或 shared-ci。
+3. 共享仅 S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper；`description <= 320`，跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
+4. L0 路由/L1 节点表/L2 机器状态；新节点附 `Owned Paths`、验证、缺口、P0/P1/P2 落点。
+5. 四库挂载须高频累积×跨会话 Top-3 复用×图文/公开价值：`/vault/`（Design & Motion、Collected Tools）、`/learn/`（Personal Knowledge）、`/thoughts/`（Retro & Story）；禁自动跨库同步、Star 发布、执行收藏工具。
+
+### P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
+
+- **Inbound**：Owner 新增/重构 AI 指标；厚领域流程由独立 [`../../aidash-metrics/SKILL.md`](../../aidash-metrics/SKILL.md) 承载。
+- **Internal**：编排只负责调用 `aidash-metrics` 的确定性 inspector 与 Owner Gate；不要在本节点复制 aidata 血缘或指标实现。
+- **Calls**：`aidash-metrics` → I5 拍板 → E7 UI/Visual → E4 Code Task + E9 Verify 6DQ；**PointsTo**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回。
+- **Trigger & Notify**：Manual/P3 retro-loop 提案；口径/设计 P0，快照/PR 合入 P1。实际实现与验证由 M1 按独立 Skill 交接。
 
 ### I7 Unified M2 Ingress 组合配方
 
