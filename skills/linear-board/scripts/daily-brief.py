@@ -330,8 +330,29 @@ LAYERS = (
     ("Engineering Workflows", "工程工作流与技能", ("user-skills", "linear-board", "m2-dispatcher", "personal-m2-assistant", "team-lead", "my-designer", "design-studio", "code-review", "repo-kit", "skill-contract", "workflow-hub")),
     ("Knowledge & Narrative", "知识沉淀与叙事", ("knowledge-digest", "daily learn", "knowledge", "retro-loop", "story-craft", "save-tool", "leepepe.github.io", "blog demos")),
 )
-REFERENCE_RE = re.compile(r"\bTIA-\d+\b|(?<![\w])#\d+\b")
+REFERENCE_RE = re.compile(r"\bTIA-\d+\b|(?<![\w])(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|PR)?#\d+\b")
 PR_URL_RE = re.compile(r"https://github\.com/([^/\s()]+/[^/\s()]+)/pull/(\d+)\b")
+EXPLICIT_PR_RE = re.compile(r"^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|PR)?#(\d+)$", re.I)
+
+
+def _pr_url(reference: str, repo: str = "") -> str:
+    match = EXPLICIT_PR_RE.fullmatch(reference)
+    if not match: return ""
+    owner_repo, number = match.groups()
+    destination = owner_repo or repo
+    return f"https://github.com/{destination}/pull/{number}" if destination else ""
+
+
+def _reference_label(reference: str) -> str:
+    match = EXPLICIT_PR_RE.fullmatch(reference)
+    return f"#{match[2]}" if match else reference
+
+
+def _has_reference_link(text: str, reference: str) -> bool:
+    label = _reference_label(reference)
+    return bool(re.search(r"\[" + re.escape(reference) + r"\]\([^)]*\)", text)
+                or (label != reference and re.search(r"\[" + re.escape(label) + r"\]\([^)]*\)", text)))
+
 
 def _layer(project: str, item: dict[str, Any]) -> int:
     def match(text: str, tokens: tuple[str, ...]) -> bool:
@@ -374,6 +395,9 @@ def _reference_urls(items: list[dict[str, Any]]) -> dict[str, str]:
 def _linked_text(value: Any, issue_urls: dict[str, str], repo: str = "", *, limit: int | None = None) -> str:
     text = _plain(value)
     pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(str(value or ""))}
+    for reference in REFERENCE_RE.findall(text):
+        url = _pr_url(reference, repo)
+        if url: pr_urls[reference] = url
     if limit is not None:
         # Do not turn a cut TIA-1234/#1234 token into a different ticket/PR.
         end = limit
@@ -384,8 +408,8 @@ def _linked_text(value: Any, issue_urls: dict[str, str], repo: str = "", *, limi
         label = match[0]
         if label.startswith("TIA-"):
             return _link(issue_urls.get(label) or f"https://linear.app/tianpeili/issue/{label}", label)
-        url = pr_urls.get(label) or (f"https://github.com/{repo}/pull/{label[1:]}" if repo else "")
-        return _link(url, label) or "PR"
+        url = pr_urls.get(label) or _pr_url(label, repo)
+        return _link(url, _reference_label(label)) or "PR"
     # URLs are destinations, not text tokens to rewrite inside a destination.
     return "".join(_link(part, "链接") if re.match(r"^(?:https?://|file:///)", part) else REFERENCE_RE.sub(replace, part)
                    for part in re.split(r"((?:https?://|file:///)[^\s]+)", text))
@@ -758,7 +782,7 @@ def validate_markdown(markdown: str) -> list[str]:
             errors.append(f"Todo [{number}] reference is not clickable")
         if number > 0 and REFERENCE_RE.search(line):
             for token in REFERENCE_RE.findall(line):
-                if not re.search(r"\[" + re.escape(token) + r"\]\([^)]*\)", line): errors.append(f"Todo [{number}] reference {token} is not clickable")
+                if not _has_reference_link(line, token): errors.append(f"Todo [{number}] reference {token} is not clickable")
     if seen_buckets != sorted(set(seen_buckets)):
         errors.append("Todo buckets must be nonempty and remain in fixed order")
     if todo_numbers and todo_numbers != list(range(1, len(todo_numbers) + 1)):
@@ -785,7 +809,7 @@ def validate_markdown(markdown: str) -> list[str]:
                 if len(cells) != 3: errors.append(f"completed layer {number} has malformed table row")
                 elif len(_plain(cells[2].strip())) > 20: errors.append(f"completed layer {number} result exceeds 20 visible characters")
                 for token in REFERENCE_RE.findall(row):
-                    if not re.search(r"\[" + re.escape(token) + r"\]\([^)]*\)", row): errors.append(f"completed reference {token} is not clickable")
+                    if not _has_reference_link(row, token): errors.append(f"completed reference {token} is not clickable")
         if heading_indexes != sorted(heading_indexes): errors.append("completed layers must remain in fixed order")
         if sum(1 for line in lines if line.startswith("| **")) != expected_total:
             errors.append("completed heading total does not match table rows")

@@ -267,6 +267,16 @@ class DailyBriefTests(unittest.TestCase):
         self.assertIn("[#8](https://github.com/Other/shared-ci/pull/8)", markdown)
         self.assertIn("generic-delivery", markdown.split("### 2.")[1].split("### 3.")[0])
 
+    def test_adjacent_and_explicit_pr_refs_link_to_their_qualified_repositories_beyond_truncation(self):
+        commits = [{"repo": "user-skills", "sha": "abc",
+                    "subject": "Fix PR#42 with TIA-7 and Other/Financial#27 after a long result " + "x" * 80}]
+        markdown, _ = daily_brief.render_brief(TODAY, [], commits, [], [])
+        self.assertIn("[#42](https://github.com/LeePepe/user-skills/pull/42)", markdown)
+        self.assertIn("[#27](https://github.com/Other/Financial/pull/27)", markdown)
+        self.assertNotIn("PR#42", markdown)
+        self.assertNotIn("Other/Financial#27", markdown)
+        self.assertEqual(daily_brief.validate_markdown(markdown), [])
+
     def test_truncation_does_not_change_issue_or_pr_identity_and_unknown_repo_is_not_invented(self):
         commits = [{"repo": "VoxPocket", "sha": "abc", "subject": "A" * 15 + " TIA-123456"},
                    {"repo": "user-skills", "sha": "def", "subject": "A" * 16 + " #123456"}]
