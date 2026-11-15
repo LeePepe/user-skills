@@ -1154,13 +1154,14 @@ def _mount_blog(destination, args, manifest):
     shutil.copytree(destination, blog_round)
     save(blog_round / "manifest.json", manifest)
     _update_goal_portal(destination.parent, args.goal, blog_goal)
+    _update_demos_hub(blog_repo)
     if getattr(args, "push_blog", False) and (blog_repo / ".git").exists():
-        subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}"], check=True,
+        subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}", "demos/index.html"], check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         subprocess.run(["git", "-C", str(blog_repo), "commit", "--only", "-m",
                         f"chore(demos): mount ephemeral demo {args.goal} r{args.round}", "-m",
                         "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
-                        "--", f"demos/{args.goal}"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        "--", f"demos/{args.goal}", "demos/index.html"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         subprocess.run(["git", "-C", str(blog_repo), "push"], check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return manifest
@@ -1228,15 +1229,16 @@ def command_cleanup_demo(args):
         portal.unlink()
     if blog_goal and blog_goal.exists():
         shutil.rmtree(blog_goal)
+    _update_demos_hub(blog_repo)
     if blog_repo and (blog_repo / ".git").exists():
-        check = subprocess.run(["git", "-C", str(blog_repo), "status", "--porcelain", "--",
-                                f"demos/{args.goal}"], check=True, stdout=subprocess.PIPE, text=True)
+        check = subprocess.run(["git", "-C", str(blog_repo), "status", "--porcelain", "--", "demos/index.html", f"demos/{args.goal}"],
+                                check=True, stdout=subprocess.PIPE, text=True)
         if check.stdout.strip():
-            subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}"], check=True)
+            subprocess.run(["git", "-C", str(blog_repo), "add", "-A", f"demos/{args.goal}", "demos/index.html"], check=True)
             subprocess.run(["git", "-C", str(blog_repo), "commit", "--only", "-m",
                             f"chore(demos): cleanup ephemeral demo {args.goal}", "-m",
                             "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
-                            "--", f"demos/{args.goal}"], check=True)
+                            "--", f"demos/{args.goal}", "demos/index.html"], check=True)
             receipt["blog_committed"] = True
             if args.push_blog:
                 subprocess.run(["git", "-C", str(blog_repo), "push"], check=True)
@@ -1436,7 +1438,7 @@ def _portal_manifests(root, goal):
                 continue
             if item.get('platform') not in {'mobile', 'desktop', 'web'}:
                 continue
-            if not re.fullmatch(r'r\d+(?:-[A-Za-z0-9._-]+)?', child.name):
+            if not re.fullmatch(r'(?:r\d+(?:-[A-Za-z0-9._-]+)?|[A-Za-z0-9][A-Za-z0-9._-]{0,63})', child.name):
                 continue
             expected = {f'app{i:02d}' for i in range(1, 5)} if item.get('mode') == 'app-nav' else {f'v{i:02d}' for i in range(1, 11)}
             if {v['id'] for v in item['variants']} != expected:
@@ -1456,6 +1458,16 @@ def _update_goal_portal(goal_root, goal, blog_goal=None):
         manifests = _portal_manifests(root, goal)
         if manifests:
             (root / "index.html").write_text(_render_goal_portal_index(goal, manifests), encoding="utf-8")
+
+
+def _update_demos_hub(blog_repo):
+    if blog_repo is None:
+        return None
+    demos = Path(blog_repo).resolve() / 'demos'
+    demos.mkdir(parents=True, exist_ok=True)
+    hub = demos / 'index.html'
+    hub.write_text(CHOOSER.render_demos_hub(demos, _gallery_tokens()), encoding='utf-8')
+    return hub
 
 
 

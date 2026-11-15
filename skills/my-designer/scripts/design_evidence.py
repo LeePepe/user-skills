@@ -243,6 +243,45 @@ def rendered_gallery_errors(root):
                 stylesheet(href, path.parent)
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f'{path.name}: invalid rendered surface: {error}')
+    errors.extend(portal_errors(root))
+    return errors
+
+
+def portal_errors(goal_root):
+    """Fail closed on chooser controls and true hidden-card filtering."""
+    index = Path(goal_root) / 'index.html'
+    if not index.is_file() or index.is_symlink():
+        return []
+    try:
+        html = index.read_text(encoding='utf-8')
+    except (OSError, UnicodeError) as error:
+        return [f'index.html: unreadable portal surface: {error}']
+    required = {
+        'gallery-breadcrumbs': 'class="gallery-breadcrumbs"',
+        'demos breadcrumb': 'href="/demos/"',
+        'selection telemetry': 'id="selection-telemetry"',
+        'copy summary': 'id="copy-summary"',
+        'select controls': 'data-select',
+        'star controls': 'data-star',
+        'note controls': 'data-note',
+    }
+    errors = [f'index.html: missing {label}' for label, token in required.items() if token not in html]
+    if 'aria-hidden="true"' in html and not re.search(r'(?:\.variant-card\[hidden\]|\.variant-card\[aria-hidden=["\']true["\']\])\s*\{[^}]*display\s*:\s*none', html, re.I | re.S):
+        errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
+    if 'selectionSummary' in html and ('data-star' not in html or 'data-note' not in html):
+        errors.append('index.html: summary generation omits star or note evidence')
+    if '"portal": true' in html or '"portal":true' in html:
+        try:
+            evidence_catalog = catalog()
+            config_match = re.search(r'<script id="gallery-config"[^>]*>(.*?)</script>', html, re.S)
+            config = json.loads(config_match.group(1)) if config_match else {}
+            goal = config.get('goal')
+            manifests = evidence_catalog._portal_manifests(Path(goal_root), goal) if goal else []
+            expected = evidence_catalog._render_goal_portal_index(goal, manifests)
+            if manifests and html != expected:
+                errors.append('index.html: portal DOM/CSS/runtime drifted from canonical renderer')
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            errors.append('index.html: invalid portal canonical evidence')
     return errors
 
 
