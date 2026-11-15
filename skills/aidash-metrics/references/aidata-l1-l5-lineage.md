@@ -19,6 +19,7 @@ This drawer records the observed AIDash source contract. Physical names are auth
 - `eval-cases.json` and `fact_gtt_event` can support interception/escape only when their event grain and coverage are explicit.
 - `skills_roi_snapshot.py` consumes the canonical producer report and `skills/daily`; it is not a direct consumer of ROI SQL.
 - Missing L1 collection is a red state, while retained but unmodeled records are an amber L2–L4 extension.
+- Inspector evidence is bounded to canonical `L1_collect`, `L2_normalize`, `L3_merge`, `L4_serve`, `L5_apps`, `schema`, and `adapters` paths; it samples field names and SQLite metadata, never executes SQL/Python or treats vendor filenames as evidence. A field is ready only when the metric-specific key/column is observed at every required layer; generic words such as `path`, `script`, or `duration` are not proof. This is source/contract readiness, not population freshness or a claim that detailed user-requested metrics already exist.
 
 ## Required gate order
 

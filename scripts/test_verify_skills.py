@@ -321,42 +321,36 @@ class VerifySkillsTests(unittest.TestCase):
         inspector = SKILLS_DIR / "aidash-metrics" / "scripts" / "inspect_aidata_pipeline.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for path in (
-                "L1_collect/raw/fixture.jsonl",
-                "L2_normalize/clean/source.db",
-                "L3_merge/warehouse.db",
-                "L4_serve/queries/retro/skill_roi_diagnostics.sql",
-                "L5_apps/digest/skills_roi_snapshot.py",
-            ):
-                target = root / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text("skills_roi reference script latency eval interception escape fact_gtt_event\n", encoding="utf-8")
+            (root / "L1_collect/raw/fixture.jsonl").parent.mkdir(parents=True)
+            (root / "L1_collect/raw/fixture.jsonl").write_text(json.dumps({"skill_names": ["skills_roi"], "skill_roi": True, "reference_path": "references/a.md", "reference_hits": 1, "file_path": "references/a.md", "script_path": "scripts/a.py", "script_latency": 12, "duration_ms": 12, "eval_case": "EV-1", "interception": True, "escape": False}) + "\n", encoding="utf-8")
+            (root / "L2_normalize/clean/source.json").parent.mkdir(parents=True)
+            (root / "L2_normalize/clean/source.json").write_text("skill_names skill_roi usage reference_path reference_hits file_path script_path script_latency duration_ms eval_case interception escape",  encoding="utf-8")
+            (root / "schema/warehouse.sql").parent.mkdir(parents=True)
+            (root / "schema/warehouse.sql").write_text('CREATE TABLE fact_turn(skill_names TEXT, token_count INT, reference_hit TEXT, reference_path TEXT, file_path TEXT, script_call TEXT, script_path TEXT, duration_ms INT, p95_ms INT); CREATE TABLE fact_gtt_event(interception INT, "escape" INT);', encoding="utf-8")
+            import sqlite3
+            (root / "L3_merge").mkdir(parents=True)
+            with sqlite3.connect(root / "L3_merge/warehouse.db") as db:
+                db.execute("create table fact_turn(skill_names text, token_count integer, reference_hit text, reference_path text, file_path text, script_call text, script_path text, duration_ms integer, p95_ms integer)")
+                db.execute('create table fact_gtt_event(interception integer, "escape" integer)')
+            (root / "L4_serve/queries/retro").mkdir(parents=True)
+            (root / "L4_serve/queries/retro/skill_roi_diagnostics.sql").write_text("skill_roi skill_name tokens reference_hits file_path script_latency duration_ms p95_ms fact_gtt_event interception escape", encoding="utf-8")
+            (root / "L5_apps/digest").mkdir(parents=True)
+            (root / "L5_apps/digest/skills_roi_snapshot.py").write_text("SkillsRoi skills_roi coverage freshness reference_hits reference_path script_latency duration_ms p95_ms eval_effect interception escape", encoding="utf-8")
+            (root / ".venv/lib/python/site-packages/decoy.py").parent.mkdir(parents=True)
+            (root / ".venv/lib/python/site-packages/decoy.py").write_text("reference script latency eval", encoding="utf-8")
             before = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
-            ready = subprocess.run(
-                [sys.executable, str(inspector), "--aidata-root", str(root), "--metrics", "skills_roi,reference_hits,script_latency,eval_effect", "--json"],
-                check=False, capture_output=True, text=True,
-            )
+            ready = subprocess.run([sys.executable, str(inspector), "--aidata-root", str(root), "--metrics", "skills_roi,reference_hits,script_latency,eval_effect", "--json"], check=False, capture_output=True, text=True)
+            payload = json.loads(ready.stdout)
             self.assertEqual(ready.returncode, 0, ready.stderr)
-            self.assertEqual(json.loads(ready.stdout)["status"], "ready")
+            self.assertEqual(payload["status"], "ready")
+            self.assertEqual(payload["metrics"]["reference_hits"]["status"], "ready")
             self.assertEqual(before, sorted(str(path.relative_to(root)) for path in root.rglob("*")))
 
-            for path in (
-                "L3_merge/warehouse.db",
-                "L4_serve/queries/retro/skill_roi_diagnostics.sql",
-                "L5_apps/digest/skills_roi_snapshot.py",
-            ):
-                (root / path).write_text("select 1", encoding="utf-8")
-            amber = subprocess.run(
-                [sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"],
-                check=False, capture_output=True, text=True,
-            )
+            (root / "L4_serve/queries/retro/skill_roi_diagnostics.sql").write_text("skill_roi", encoding="utf-8")
+            amber = subprocess.run([sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"], check=False, capture_output=True, text=True)
             self.assertEqual(json.loads(amber.stdout)["status"], "needs_l2_l4_extension")
-
             (root / "L1_collect/raw/fixture.jsonl").unlink()
-            red = subprocess.run(
-                [sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"],
-                check=False, capture_output=True, text=True,
-            )
+            red = subprocess.run([sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"], check=False, capture_output=True, text=True)
             self.assertEqual(json.loads(red.stdout)["status"], "needs_l1_collection")
 
     def test_aidash_metrics_inspector_fails_closed(self) -> None:
