@@ -1,0 +1,187 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-15",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "L0 routes Daily Brief and drawer",
+      "cmd": "grep -q 'daily-brief-and-bot.md' skills/linear-board/SKILL.md && grep -q 'eval-cases.json' skills/linear-board/SKILL.md",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief"
+      ],
+      "routes": [
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-002",
+      "title": "L1 records four buckets, four layers, and bridge safety",
+      "cmd": "grep -q 'Jev truth table' skills/linear-board/references/daily-brief-and-bot.md && grep -q 'Ack → dispatch → wait → result-comment → owner-reassign' skills/linear-board/references/daily-brief-and-bot.md",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief"
+      ],
+      "routes": [
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-003",
+      "title": "Markdown sink validates generated contract",
+      "cmd": "python3 -m unittest scripts.test_linear_daily_brief.DailyBriefTests.test_markdown_sink_rejects_malformed_links_budgets_numbers_and_counts",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief"
+      ],
+      "routes": [
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-004",
+      "title": "Bridge exposes offline CLI",
+      "cmd": "python3 skills/linear-board/scripts/linear-bot-bridge.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--dry-run",
+        "--once"
+      ],
+      "registered_at": "2026-11-15",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief"
+      ],
+      "routes": [
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-005",
+      "title": "Jev truth table regression remains executable",
+      "cmd": "python3 -m unittest scripts.test_linear_daily_brief.DailyBriefTests.test_jev_truth_table_maps_all_kinds_and_ranks_before_top_three_cap",
+      "expect_exit": 0,
+      "registered_at": "2026-11-15",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief"
+      ],
+      "routes": [
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "生成今日 Daily Brief 昨日汇总与今日 Todo",
+      "should_trigger": true
+    },
+    {
+      "query": "在 Linear Daily Brief 评论 @bot 1, 2 派发任务",
+      "should_trigger": true
+    },
+    {
+      "query": "把 Idea 提升为 Linear Goal 并同步 ledger.md",
+      "should_trigger": true
+    },
+    {
+      "query": "修改 AIDash AI 指标 SQL",
+      "should_trigger": false
+    },
+    {
+      "query": "设计 10 套 iOS 玻璃态 UI Demo",
+      "should_trigger": false
+    },
+    {
+      "query": "配置 Xcode TestFlight 签名",
+      "should_trigger": false
+    }
+  ]
+}

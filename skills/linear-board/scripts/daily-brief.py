@@ -718,8 +718,103 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
             markdown += f"\n**Publication warning:** {warning}\n"
     return {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
 
+def validate_markdown(markdown: str) -> list[str]:
+    """Validate the published Plan A sink without network, credentials, or Jev."""
+    errors: list[str] = []
+    lines = markdown.splitlines()
+    if not lines or not re.fullmatch(r"<!-- GTT-LINEAR-DEDUP:daily-brief-\d{4}-\d{2}-\d{2} -->", lines[0] if lines else ""):
+        errors.append("line 1 must be a dated GTT-LINEAR-DEDUP marker")
+    todo_heading = "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）"
+    completed_match = next((match for line in lines if (match := re.fullmatch(r"## 📊 昨日完成 \((\d{2}-\d{2}) · (\d+) 项 · workflow-hub 四大方向\)", line))), None)
+    if todo_heading not in lines:
+        errors.append("missing Todo heading")
+    if completed_match is None:
+        errors.append("missing completed heading with date and total")
+    elif lines.index(todo_heading) > lines.index(completed_match.group(0)):
+        errors.append("Todo section must precede completed section")
+
+    bucket_indexes = {label: index for index, label in enumerate(TODO_BUCKETS.values())}
+    seen_buckets: list[int] = []
+    todo_numbers: list[int] = []
+    recommendation_count = 0
+    current_bucket = ""
+    todo_pattern = re.compile(r"^- \[[ x]\] \*\*\[(\d+)\] (.+)\*\* · (.+) · (.+)$")
+    for line in lines:
+        if line.startswith("**") and line.endswith("**"):
+            label = line[2:-2]
+            if label in bucket_indexes:
+                current_bucket = label
+                seen_buckets.append(bucket_indexes[label])
+        match = todo_pattern.fullmatch(line)
+        if not match: continue
+        if current_bucket == TODO_BUCKETS["recommended"]: recommendation_count += 1
+        number, summary, action, reference = int(match[1]), match[2], match[3], match[4]
+        todo_numbers.append(number)
+        if len(_plain(summary)) > 25: errors.append(f"Todo [{number}] summary exceeds 25 visible characters")
+        if len(re.findall(r"\]\(", action)) > 1: errors.append(f"Todo [{number}] has multiple action links")
+        if number > 0 and not re.search(r"\]\(", action) and not action.startswith("`"):
+            errors.append(f"Todo [{number}] has no direct link or command")
+        if number > 0 and not re.search(r"\]\(", reference) and REFERENCE_RE.search(reference):
+            errors.append(f"Todo [{number}] reference is not clickable")
+        if number > 0 and REFERENCE_RE.search(line):
+            for token in REFERENCE_RE.findall(line):
+                if not re.search(r"\[" + re.escape(token) + r"\]\([^)]*\)", line): errors.append(f"Todo [{number}] reference {token} is not clickable")
+    if seen_buckets != sorted(set(seen_buckets)):
+        errors.append("Todo buckets must be nonempty and remain in fixed order")
+    if todo_numbers and todo_numbers != list(range(1, len(todo_numbers) + 1)):
+        errors.append("Todo numbering must be continuous from [1]")
+    if recommendation_count > 3: errors.append("recommended Todo bucket exceeds 3 items")
+
+    if completed_match:
+        expected_total = int(completed_match.group(2))
+        heading_indexes = []
+        for number, (name, _, _) in enumerate(LAYERS, 1):
+            prefix = f"### {number}. {name}（"
+            matches = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+            if len(matches) != 1:
+                errors.append(f"completed layer {number} heading missing or duplicated")
+                continue
+            heading_indexes.append(matches[0])
+            start = matches[0] + 1
+            end = next((i for i in range(start, len(lines)) if lines[i].startswith("### ") or lines[i].startswith("## ")), len(lines))
+            section = lines[start:end]
+            table_rows = [line for line in section if line.startswith("| **")]
+            if not table_rows and "_无_" not in section: errors.append(f"completed layer {number} must contain a table or _无_")
+            for row in table_rows:
+                cells = row.strip("|").split("|")
+                if len(cells) != 3: errors.append(f"completed layer {number} has malformed table row")
+                elif len(_plain(cells[2].strip())) > 20: errors.append(f"completed layer {number} result exceeds 20 visible characters")
+                for token in REFERENCE_RE.findall(row):
+                    if not re.search(r"\[" + re.escape(token) + r"\]\([^)]*\)", row): errors.append(f"completed reference {token} is not clickable")
+        if heading_indexes != sorted(heading_indexes): errors.append("completed layers must remain in fixed order")
+        if sum(1 for line in lines if line.startswith("| **")) != expected_total:
+            errors.append("completed heading total does not match table rows")
+    # Code spans are literal text: a link-looking token inside one is not clickable.
+    if re.search(r"`[^`]*\[(?:TIA-\d+|#\d+)\]\([^)]*\)[^`]*`", markdown):
+        errors.append("issue/PR links hidden in code spans are not clickable")
+    # Catch bare references anywhere in the rendered contract, including source rows.
+    links_removed = re.sub(r"\[([^]]+)\]\([^)]*\)", "", markdown)
+    if REFERENCE_RE.search(links_removed): errors.append("all displayed TIA/# references must be clickable")
+    return list(dict.fromkeys(errors))
+
+
+def _read_verification_input(path: str) -> str:
+    if path == "-": return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true"); parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--json", action="store_true"); args = parser.parse_args(argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true")
+    parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true"); parser.add_argument("--verify-markdown", metavar="PATH")
+    args = parser.parse_args(argv)
+    if args.verify_markdown is not None:
+        try: errors = validate_markdown(_read_verification_input(args.verify_markdown))
+        except (OSError, UnicodeError) as exc: errors = [f"cannot read Markdown input: {type(exc).__name__}"]
+        if errors:
+            print("Markdown verification failed: " + "; ".join(errors), file=sys.stderr); return 1
+        print("Markdown verification passed"); return 0
     try: client = _load_linear_client(dry_run=args.dry_run)
     except Exception: client = None
     result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue)

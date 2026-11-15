@@ -182,6 +182,18 @@ class DailyBriefTests(unittest.TestCase):
         self.assertNotIn("- [ ]", markdown)
         self.assertNotIn("| **", markdown)
 
+    def test_markdown_sink_rejects_malformed_links_budgets_numbers_and_counts(self):
+        valid, _ = daily_brief.render_brief(TODAY, [issue("TIA-1", "Plan", priority=1)], [], [], [])
+        self.assertEqual(daily_brief.validate_markdown(valid), [])
+        malformed = valid.replace("[1] Plan", "[2] " + "x" * 26)
+        malformed = malformed.replace("[TIA-1](https://linear.app/test/TIA-1)", "`[TIA-1](https://linear.app/test/TIA-1)`")
+        malformed = malformed.replace("0 项", "1 项")
+        errors = daily_brief.validate_markdown(malformed)
+        self.assertTrue(any("numbering" in error for error in errors))
+        self.assertTrue(any("25 visible" in error for error in errors))
+        self.assertTrue(any("code spans" in error or "clickable" in error for error in errors))
+        self.assertTrue(any("total" in error for error in errors))
+
     def test_four_layers_classify_mixed_sources_and_generic_projects_by_intent(self):
         data = [issue("TIA-1", "Ship app", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"}),
                 issue("TIA-2", "[Daily Learn 2026-11-14] optics", "Done", "completed", completedAt="2026-11-14", project={"name": "Agent Workflow"})]
