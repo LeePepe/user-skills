@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,42 @@ def load_jev_client():
 
 
 class GoalSupervisorAndJevTests(unittest.TestCase):
+    def test_jev_falcon_only_skips_raven_fallback(self):
+        jev_client = load_jev_client()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"decision": "raven"}'
+        with patch.object(jev_client, "_unittest_active", return_value=False), patch.object(
+            jev_client, "_resolve_auth_token", return_value=("token", None)
+        ), patch.dict(
+            jev_client.os.environ,
+            {
+                "FALCON_BASE_URL": "http://falcon.test:19823",
+                "RAVEN_BASE_URL": "http://raven.test:7024",
+            },
+            clear=False,
+        ), patch.object(jev_client.urllib.request, "urlopen", side_effect=OSError("offline")) as urlopen:
+            result = jev_client.jev_decide("state", {}, falcon_only=True)
+        self.assertIsNone(result)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertIn("falcon.test:19823", urlopen.call_args.args[0].full_url)
+
+        with patch.object(jev_client, "_unittest_active", return_value=False), patch.object(
+            jev_client, "_resolve_auth_token", return_value=("token", None)
+        ), patch.dict(
+            jev_client.os.environ,
+            {
+                "FALCON_BASE_URL": "http://falcon.test:19823",
+                "RAVEN_BASE_URL": "http://raven.test:7024",
+            },
+            clear=False,
+        ), patch.object(
+            jev_client.urllib.request, "urlopen", side_effect=[OSError("offline"), response]
+        ) as urlopen:
+            result = jev_client.jev_decide("state", {})
+        self.assertEqual(result, {"decision": "raven"})
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertIn("raven.test:7024", urlopen.call_args.args[0].full_url)
+
     def test_jev_resolves_skill_keyed_falcon_source_key(self):
         jev_client = load_jev_client()
         with tempfile.TemporaryDirectory() as temp:

@@ -175,6 +175,7 @@ def jev_decide(
     goal_id: str = "",
     model: str = "microsoft-decision-1",
     timeout_sec: float = 1.5,
+    falcon_only: bool = False,
     mock_response: Any = None,
 ) -> dict[str, Any] | None:
     try:
@@ -195,10 +196,9 @@ def jev_decide(
         "X-Falcon-Run-ID": goal_id,
         "Authorization": "******",
     }
-    bases = (
-        os.environ.get("FALCON_BASE_URL", "http://127.0.0.1:19823"),
-        os.environ.get("RAVEN_BASE_URL", "http://127.0.0.1:7024"),
-    )
+    bases = (os.environ.get("FALCON_BASE_URL", "http://127.0.0.1:19823"),)
+    if not falcon_only:
+        bases += (os.environ.get("RAVEN_BASE_URL", "http://127.0.0.1:7024"),)
     for base in bases:
         try:
             token, resolved_source_key = _resolve_auth_token(
