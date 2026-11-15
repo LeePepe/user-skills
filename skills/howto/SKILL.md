@@ -16,7 +16,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 | 触发 | L1 精确抽屉 | L2 CLI / 动作 |
 |---|---|---|
 | 查 30 节点与 TK-01..16 断链 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill workflow-hub --strict` |
-| AIDash 新增/扩展 AI 指标（aidata L1–L5） | [how-to-nodes.md §5 配方](../workflow-hub/references/how-to-nodes.md#p9p2--p1--e7--e4-aidash-ai-指标新增与扩展配方) | `/layered-data-warehouse`（L2 `layered-data-warehouse/SKILL.md`）Phase 0 → [my-designer/SKILL.md](../my-designer/SKILL.md)；实现另派 M1 |
+| AIDash 新增/扩展 AI 指标（aidata L1–L5） | [how-to-nodes.md §5 配方](../workflow-hub/references/how-to-nodes.md#p9p2-p1-e7-e4-aidash-ai-指标新增与扩展配方) | `/layered-data-warehouse`（L2 `layered-data-warehouse/SKILL.md`）Phase 0 → [my-designer/SKILL.md](../my-designer/SKILL.md)；实现另派 M1 |
 | 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
 | 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
 | 派发单仓 M1 Worktree | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` |

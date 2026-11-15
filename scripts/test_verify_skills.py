@@ -2937,7 +2937,11 @@ class SkillContractV2Tests(unittest.TestCase):
                 self.assertEqual(payload["passed"], 2)
             result, payload = self._cli("description-eval", "--skill", "howto", "--strict")
             self.assertEqual(result.returncode, 0, payload)
-            self.assertEqual(payload["passed"], 4)
+            trigger_evals = json.loads((SKILLS_DIR / "howto" / "references" / "eval-cases.json").read_text())["trigger_evals"]
+            self.assertGreaterEqual(len(trigger_evals), 5)
+            self.assertEqual(payload["total"], len(trigger_evals))
+            self.assertEqual(payload["passed"], len(trigger_evals))
+            self.assertEqual(payload["failures"], [])
 
     def test_canonical_live_context_and_fallback(self) -> None:
         module = self._module()
