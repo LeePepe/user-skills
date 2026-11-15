@@ -86,11 +86,11 @@
     },
     {
       "id": "EV-004",
-      "title": "AIDash AI Metric Extension Recipe & Two Mandatory Gates",
+      "title": "AIDash routes to the dedicated metrics skill",
       "tags": [
         "contract"
       ],
-      "cmd": "python3 -c \"from pathlib import Path; tokens=[\\\"L1_raw\\\",\\\"L2_clean\\\",\\\"L3_model\\\",\\\"L4_serve\\\",\\\"L5_apps\\\",\\\"skill_roi_diagnostics.sql\\\",\\\"skills_roi_snapshot.py\\\",\\\"LiveDashboardTelemetryReader\\\",\\\"强制门禁 1\\\",\\\"强制门禁 2\\\",\\\"Phase 0\\\",\\\"Owner 指标对齐\\\",\\\"两阶段画廊\\\",\\\"SwiftUI 绑定\\\",\\\"group/designer\\\",\\\"group/coding\\\",\\\"design.md\\\",\\\"Visual Traceback\\\",\\\"P0\\\",\\\"P1\\\",\\\"硬编码假数据\\\",\\\"S1..S12\\\"]; files=[\\\"skills/workflow-hub/references/how-to-nodes.md\\\",\\\"skills/howto/SKILL.md\\\"]; assert all(token in Path(file).read_text() for file in files for token in tokens)\"",
+      "cmd": "python3 -c \"from pathlib import Path; assert all(x in Path('skills/howto/SKILL.md').read_text() for x in ['aidash-metrics','../aidash-metrics/SKILL.md']); assert all(x in Path('skills/workflow-hub/references/how-to-nodes.md').read_text() for x in ['aidash-metrics','厚领域流程'])\"",
       "expect_exit": 0,
       "registered_at": "2026-11-15"
     }

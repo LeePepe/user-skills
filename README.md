@@ -2,6 +2,8 @@
 
 面向 Claude Code、Codex 等 CLI agent 的公开通用 skills，可独立使用，不依赖特定项目。
 
+[`aidash-metrics`](./skills/aidash-metrics/SKILL.md) 是 AIDash AI 指标的独立证据门禁：先探查 aidata L1–L5，再进入 Owner 口径、设计和数据契约阶段。
+
 [`workflow-hub`](./skills/workflow-hub/SKILL.md) 是 1-Hub + Open Capability Graph：
 当前挂载 `linear-board`、Phase 0 Co-Design、Autonomous Build, Review & Merge、
 Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点。节点按
@@ -59,6 +61,7 @@ Claude Code 使用 plugin marketplace：
 
 ```text
 /plugin marketplace add LeePepe/user-skills
+/plugin install aidash-metrics@user-skills
 /plugin install workflow-hub@user-skills
 /plugin install linear-board@user-skills
 /plugin install team-lead@user-skills

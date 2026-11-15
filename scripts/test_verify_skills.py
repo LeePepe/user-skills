@@ -317,6 +317,58 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertEqual(result["status"], "PR_CHECK_FAILED")
             self.assertIn("job failed", failed_receipt.read_text(encoding="utf-8"))
 
+    def test_aidash_metrics_inspector_classifies_hermetic_fixtures(self) -> None:
+        inspector = SKILLS_DIR / "aidash-metrics" / "scripts" / "inspect_aidata_pipeline.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for path in (
+                "L1_collect/raw/fixture.jsonl",
+                "L2_normalize/clean/source.db",
+                "L3_merge/warehouse.db",
+                "L4_serve/queries/retro/skill_roi_diagnostics.sql",
+                "L5_apps/digest/skills_roi_snapshot.py",
+            ):
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("skills_roi reference script latency eval interception escape fact_gtt_event\n", encoding="utf-8")
+            before = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+            ready = subprocess.run(
+                [sys.executable, str(inspector), "--aidata-root", str(root), "--metrics", "skills_roi,reference_hits,script_latency,eval_effect", "--json"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(ready.returncode, 0, ready.stderr)
+            self.assertEqual(json.loads(ready.stdout)["status"], "ready")
+            self.assertEqual(before, sorted(str(path.relative_to(root)) for path in root.rglob("*")))
+
+            for path in (
+                "L3_merge/warehouse.db",
+                "L4_serve/queries/retro/skill_roi_diagnostics.sql",
+                "L5_apps/digest/skills_roi_snapshot.py",
+            ):
+                (root / path).write_text("select 1", encoding="utf-8")
+            amber = subprocess.run(
+                [sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(json.loads(amber.stdout)["status"], "needs_l2_l4_extension")
+
+            (root / "L1_collect/raw/fixture.jsonl").unlink()
+            red = subprocess.run(
+                [sys.executable, str(inspector), "--aidata-root", str(root), "--metric", "skills_roi", "--json"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(json.loads(red.stdout)["status"], "needs_l1_collection")
+
+    def test_aidash_metrics_inspector_fails_closed(self) -> None:
+        inspector = SKILLS_DIR / "aidash-metrics" / "scripts" / "inspect_aidata_pipeline.py"
+        for args, expected in (
+            (["--aidata-root", "/definitely/missing"], 2),
+            (["--aidata-root", ".", "--metric", "unknown"], 2),
+        ):
+            result = subprocess.run([sys.executable, str(inspector), *args], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected)
+            self.assertTrue(result.stderr)
+
     def test_json_files_valid_and_plugin_manifests_consistent(self) -> None:
         json_files = [
             path

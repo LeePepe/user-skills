@@ -16,7 +16,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 | 触发 | L1 精确抽屉 | L2 CLI / 动作 |
 |---|---|---|
 | 查 30 节点与 TK-01..16 断链 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill workflow-hub --strict` |
-| AIDash 新增/扩展 AI 指标（aidata L1–L5） | [how-to-nodes.md §5 配方](../workflow-hub/references/how-to-nodes.md#p9p2-p1-e7-e4-aidash-ai-指标新增与扩展配方) | `/layered-data-warehouse`（L2 `layered-data-warehouse/SKILL.md`）Phase 0 → [my-designer/SKILL.md](../my-designer/SKILL.md)；实现另派 M1 |
+| AIDash 新增/扩展 AI 指标（aidata L1–L5） | [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) | 加载独立 `aidash-metrics` Skill；按其 inspector → Owner → designer → data-before-UI gates 路由；实现另派 M1 |
 | 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
 | 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
 | 派发单仓 M1 Worktree | [`m2-dispatcher/SKILL.md`](../m2-dispatcher/SKILL.md) | `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` |
@@ -44,10 +44,10 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ### 4.5 P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
 
-- **Inbound**：Owner 新增/重构指标或 P3 复盘提案；例：Prompt→L0→References/Scripts 命中率、Token、0 命中文件，脚本次数/平均/P95 `ms`/成功率，eval 通过率与拦截/逃逸。
-- **Internal · 强制门禁 1（先调研 aidata）**：M1 按 `/layered-data-warehouse` Phase 0 读主分支真实模型：`L1_raw (L1_collect)` → `L2_clean (L2_normalize)` → `L3_model (L3_merge: fact_turn / tool_calls)` → `L4_serve/queries/retro/skill_roi_diagnostics.sql` → `L5_apps/digest/skills_roi_snapshot.py` Snapshot JSON → `LiveDashboardTelemetryReader`。`tool_calls` 当前是 JSON 工具名列，不是逐调用表；先区分 Session 日志、L1/L3 已有字段与待扩列/多 grain 事实、L4 SQL/L5 字段。复用既有派生 SSOT，缺采集不冒充 0；严禁跳过调研在 UI 硬编码假数据或展示裸 `S1..S12`。
-- **Internal · 强制门禁 2（Owner 指标对齐 → 两阶段画廊 → SwiftUI 绑定）**：I5 P0 锁定人话指标口径、分岔/下钻粒度 → `/my-designer`：`group/designer` 独立 10-variant Prompt，`group/coding` 常驻 DOM 交互画廊 → Owner 选型冻结 `design.md` → 独立 Worktree 同步 aidata L3–L5 快照与 AIDash Reader/SwiftUI；本配方只编排，数仓技能止于蓝图。
-- **Calls**：P9/P2 调研 → I5 拍板 → E7 UI/Visual + Visual Traceback → E4 Code Task + E9 Verify 6DQ；**PointsTo**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；**Trigger & Notify**：Manual/P3 提案，口径/画廊 P0，快照/PR 合入 P1。
+- **Inbound**：Owner 新增/重构指标或 P3 复盘提案；厚领域流程由独立 `aidash-metrics` Skill 接管。
+- **Internal**：aidata L1–L5 血缘、确定性 inspector 与四道门禁由独立 [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) 承载；本节点只保留编排与交接。
+- **Calls**：加载 `aidash-metrics` → I5 Owner 拍板 → E7 UI/Visual → E4 Code Task + E9 Verify 6DQ；实际实现另派 M1。
+- **PointsTo / Trigger & Notify**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；Manual/P3 提案，口径/设计 P0，快照/PR 合入 P1。
 
 ## 5. 三层省 Token 漏斗准入准则（Layer 0 → Layer 1 → Layer 2）
 

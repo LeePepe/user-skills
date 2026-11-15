@@ -111,11 +111,10 @@
 
 ### P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
 
-- **Inbound**：Owner 新增/重构 AI 指标：Prompt→L0→References/Scripts 命中率/Token/0 命中文件、脚本次数/平均/P95 `ms`/成功率、eval 通过率与拦截/逃逸。
-- **Internal · 强制门禁 1（先调研 aidata）**：M1 按 `/layered-data-warehouse` Phase 0 读主分支：`L1_raw (L1_collect)` → `L2_clean (L2_normalize)` → `L3_model (L3_merge: fact_turn / tool_calls)` → `L4_serve/queries/retro/skill_roi_diagnostics.sql` → `L5_apps/digest/skills_roi_snapshot.py` Snapshot JSON → `LiveDashboardTelemetryReader`。当前 `tool_calls` 是 JSON 工具名列，非逐调用表；Session 日志→L1 已裁剪参数，文件路径/耗时/结果须核实后补采集。列清已具备/待补 L1–L3 字段或多 grain 事实、L4 SQL/L5 字段，复用派生 SSOT；缺采集非 0，严禁跳过调研在 UI 硬编码假数据或展示裸 `S1..S12`。
-- **Internal · 强制门禁 2（Owner 指标对齐 → 两阶段画廊 → SwiftUI 绑定）**：I5 P0 锁定人话指标口径与分岔/下钻粒度 → `/my-designer`：`group/designer` 独立 10-variant Prompt + `group/coding` 常驻 DOM 交互画廊 → Owner 选型冻结 `design.md` → 独立 Worktree 同步 aidata L3–L5 快照与 AIDash Reader/SwiftUI；数仓技能止于蓝图，实现另走 E4。
-- **Calls**：P9/P2 调研 → I5 拍板 → E7 UI/Visual + Visual Traceback → E4 Code Task + E9 Verify 6DQ；**PointsTo**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；**Trigger & Notify**：Manual/P3 retro-loop 提案，口径/画廊 P0，快照/PR 合入 P1。
-- **Owned Paths / 验证**：实际受影响的 aidata L1–L5 与 AIDash Reader/SwiftUI；逐层脱敏/幂等、口径/快照契约、E9 与 Visual Traceback，缺口交 M1，不在 M2 翻代码。
+- **Inbound**：Owner 新增/重构 AI 指标；厚领域流程由独立 [`../../aidash-metrics/SKILL.md`](../../aidash-metrics/SKILL.md) 承载。
+- **Internal**：编排只负责调用 `aidash-metrics` 的确定性 inspector 与 Owner Gate；不要在本节点复制 aidata 血缘或指标实现。
+- **Calls**：`aidash-metrics` → I5 拍板 → E7 UI/Visual → E4 Code Task + E9 Verify 6DQ；**PointsTo**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回。
+- **Trigger & Notify**：Manual/P3 retro-loop 提案；口径/设计 P0，快照/PR 合入 P1。实际实现与验证由 M1 按独立 Skill 交接。
 
 ### I7 Unified M2 Ingress 组合配方
 
