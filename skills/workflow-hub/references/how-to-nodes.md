@@ -103,11 +103,19 @@
 
 ## §5 新增 How-To 与独立 Skill 判定
 
-1. 注册五元组：`Inbound / Internal / Calls / PointsTo / Trigger&Notify`；先写输入、专有逻辑、复用边、输出和通知，不孤立建节点。
-2. **组合配方**：Internal 薄、只串现有节点→追加本抽屉一行/ recipe；不新建 Skill。
-3. **独立 Skill**：有厚领域知识、外部 CLI/API、可复用确定性门禁→按四层归位，运行 `skill_contract.py init`，把 regex/AST/水位/Schema/像素/几何检查下沉 `scripts/*.py` 或 shared-ci；共享只允许 S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper，且 `description <= 320`，再跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
-4. 入口 L0 只保留路由；完整节点表放本 L1；机器可读状态放 L2。新节点必须附 `Owned Paths`、验证命令、缺口与 P0/P1/P2 落点。
-5. **四大素材库挂载**：仅当内容高频累积、跨会话 Top-3 可复用且具图文/公开沉淀价值时，按 `/vault/`（Design & Motion、Collected Tools）、`/learn/`（Personal Knowledge）、`/thoughts/`（Retro & Story）挂载；不得自动跨库同步、Star 自动发布或执行收藏工具。
+1. 五元组 `Inbound / Internal / Calls / PointsTo / Trigger&Notify` 登记输入、专有逻辑、复用边、输出、通知；不孤立建节点。
+2. Internal 薄→本抽屉追加组合 recipe，不建 Skill；厚领域知识/CLI/API/确定性门禁→四层归位，`skill_contract.py init`，regex/AST/水位/Schema/像素/几何下沉 `scripts/*.py` 或 shared-ci。
+3. 共享仅 S1 相对 Markdown link、S2 相对 git symlink、S3 ≤25L `_CANONICAL_PATH` wrapper；`description <= 320`，跑 `sink-rule`、`audit --all --strict`、`description-eval` 与四端同步。
+4. L0 路由/L1 节点表/L2 机器状态；新节点附 `Owned Paths`、验证、缺口、P0/P1/P2 落点。
+5. 四库挂载须高频累积×跨会话 Top-3 复用×图文/公开价值：`/vault/`（Design & Motion、Collected Tools）、`/learn/`（Personal Knowledge）、`/thoughts/`（Retro & Story）；禁自动跨库同步、Star 发布、执行收藏工具。
+
+### P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
+
+- **Inbound**：Owner 新增/重构 AI 指标：Prompt→L0→References/Scripts 命中率/Token/0 命中文件、脚本次数/平均/P95 `ms`/成功率、eval 通过率与拦截/逃逸。
+- **Internal · 强制门禁 1（先调研 aidata）**：M1 按 `/layered-data-warehouse` Phase 0 读主分支：`L1_raw (L1_collect)` → `L2_clean (L2_normalize)` → `L3_model (L3_merge: fact_turn / tool_calls)` → `L4_serve/queries/retro/skill_roi_diagnostics.sql` → `L5_apps/digest/skills_roi_snapshot.py` Snapshot JSON → `LiveDashboardTelemetryReader`。当前 `tool_calls` 是 JSON 工具名列，非逐调用表；Session 日志→L1 已裁剪参数，文件路径/耗时/结果须核实后补采集。列清已具备/待补 L1–L3 字段或多 grain 事实、L4 SQL/L5 字段，复用派生 SSOT；缺采集非 0，严禁跳过调研在 UI 硬编码假数据或展示裸 `S1..S12`。
+- **Internal · 强制门禁 2（Owner 指标对齐 → 两阶段画廊 → SwiftUI 绑定）**：I5 P0 锁定人话指标口径与分岔/下钻粒度 → `/my-designer`：`group/designer` 独立 10-variant Prompt + `group/coding` 常驻 DOM 交互画廊 → Owner 选型冻结 `design.md` → 独立 Worktree 同步 aidata L3–L5 快照与 AIDash Reader/SwiftUI；数仓技能止于蓝图，实现另走 E4。
+- **Calls**：P9/P2 调研 → I5 拍板 → E7 UI/Visual + Visual Traceback → E4 Code Task + E9 Verify 6DQ；**PointsTo**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；**Trigger & Notify**：Manual/P3 retro-loop 提案，口径/画廊 P0，快照/PR 合入 P1。
+- **Owned Paths / 验证**：实际受影响的 aidata L1–L5 与 AIDash Reader/SwiftUI；逐层脱敏/幂等、口径/快照契约、E9 与 Visual Traceback，缺口交 M1，不在 M2 翻代码。
 
 ### I7 Unified M2 Ingress 组合配方
 
