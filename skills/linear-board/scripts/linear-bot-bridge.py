@@ -320,9 +320,15 @@ def _frontmatter(card: Path) -> dict[str, str]:
 
 
 def _compact_daily_receipt(output: str, cards: list[Path], slugs: list[str]) -> str:
-    """Keep Daily Learn Linear receipts to publication links and one-line summaries."""
+    """Keep Daily Learn Linear receipts to verified inline links and summaries."""
     if output.lstrip().startswith("Daily Learn blog receipt:"):
         return output.strip()
+    inline = {}
+    pattern = re.compile(r"^\s*[-*+]\s+\[([^]]+)\]\((https://leepepe\.github\.io/(?:learn|thoughts)/[^)]+)\)\s*[—–-]\s*(.+?)\s*$")
+    for line in output.splitlines():
+        match = pattern.match(line)
+        if match:
+            inline[match[2].rstrip(".,)")] = (match[1].strip(), match[3].strip())
     urls = re.findall(r"https://leepepe\.github\.io/(?:learn|thoughts)/[A-Za-z0-9_./#-]+", output)
     lines: list[str] = []
     for index, slug in enumerate(slugs):
@@ -330,25 +336,17 @@ def _compact_daily_receipt(output: str, cards: list[Path], slugs: list[str]) -> 
             (candidate for folder in ("concepts", "craft", "thoughts")
              for candidate in [VAULT / folder / f"{slug}.md"] if candidate.is_file()), None)
         meta = _frontmatter(card) if card else {}
-        title = meta.get("title") or slug
         matching = next((url.rstrip(".,)") for url in urls if slug.casefold() in url.casefold()), None)
         if not matching and index < len(urls): matching = urls[index].rstrip(".,)")
-        if not matching:
+        parsed = inline.get(matching or "")
+        title = (parsed[0] if parsed else "") or meta.get("title") or slug
+        summary = (parsed[1] if parsed else "") or meta.get("insight") or meta.get("subtitle")
+        if matching and summary:
+            summary = re.sub(r"\s+", " ", summary).strip().rstrip(".") + "."
+            lines.append(f"- [{title}]({matching}) — {summary}")
+        else:
             lines.append(f"- **{title}** — Blog publication pending Owner readback.")
-            continue
-        summary = meta.get("insight") or meta.get("subtitle")
-        if not summary and matching:
-            url_index = next((pos for pos, line in enumerate(output.splitlines()) if matching in line), -1)
-            if url_index >= 0:
-                candidate = next((line.strip() for line in output.splitlines()[url_index + 1:]
-                                  if line.strip() and not line.lstrip().startswith(("#", "http"))), "")
-                summary = candidate or None
-        summary = summary or "Published knowledge card; see the article for the full summary."
-        summary = re.sub(r"\s+", " ", summary).strip().rstrip(".") + "."
-        lines.append(f"- [{title}]({matching}) — {summary}")
-    if lines:
-        return "Daily Learn blog receipt:\n" + "\n".join(lines)
-    return "Daily Learn blog receipt: publication pending Owner readback."
+    return "Daily Learn blog receipt:\n" + "\n".join(lines) if lines else "Daily Learn blog receipt: publication pending Owner readback."
 
 
 def _framed_output(text: str, token: str) -> str:
@@ -478,7 +476,7 @@ def _watch_dispatch(state: State, pending: dict[str, Any]) -> bool:
         text = _read_agent(name)
         output = _framed_output(text, token)
         if not output or not _advanced(live, handle["baseline"]): return False
-        decision = status in {"blocked", "needs_input"}
+        decision = status in {"blocked", "needs_input"} or bool(re.search(r"owner decision required", output, re.I))
         cards = [] if decision else _fresh_cards(pending["before"], pending["slugs"])
         if not decision:
             output = _compact_daily_receipt(output, cards, pending["slugs"])
@@ -507,6 +505,7 @@ def _watch_dispatch(state: State, pending: dict[str, Any]) -> bool:
             outputs.append(f"### {name}\n\n{output}")
         decision = bool(result.get("needs_owner_attention")) or any(t.get("status") in {"blocked", "needs_input"} for t in targets)
         output = str(result.get("summary_markdown") or "").strip() + "\n\n" + "\n\n".join(outputs)
+        decision = decision or bool(re.search(r"owner decision required", output, re.I))
         detail = {"watch": result, "completed_rollup_display": result.get("completed_rollup_display")}
     pending.update(output=output.strip(), result_kind="owner-decision" if decision else "completed",
                    detail=detail, phase="result-comment")
@@ -552,7 +551,29 @@ def _bot_participated(issue: dict[str, Any], comments: list[dict[str, Any]]) -> 
             return True
     if str(issue.get("creatorId") or "") == BOT_ACTOR_ID:
         return True
+    for event in (issue.get("history") or {}).get("nodes", []):
+        actor, bot_actor = event.get("actor") or {}, event.get("botActor") or {}
+        if str(actor.get("id") or "") == BOT_ACTOR_ID or bot_actor:
+            return True
     return any(is_bot_comment(comment) for comment in comments)
+
+
+def _hydrate_bot_provenance(client: Any, issue: dict[str, Any]) -> None:
+    execute = getattr(client, "execute", None)
+    if not callable(execute) or _bot_participated(issue, _comments(issue)): return
+    query = """query BotIssueProvenance($id: String!) {
+      issue(id: $id) {
+        creator { id app }
+        history { nodes { actor { id app } botActor { id } } }
+      }
+    }"""
+    try:
+        result = execute(query, {"id": str(issue.get("id"))})
+    except Exception:
+        return
+    provenance = result.get("issue") if isinstance(result, dict) else None
+    if isinstance(provenance, dict):
+        issue.update({key: value for key, value in provenance.items() if value is not None})
 
 
 def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -572,9 +593,11 @@ def _comments(issue: dict[str, Any]) -> list[dict[str, Any]]:
                   key=lambda c: (str(c.get("createdAt") or ""), str(c.get("id") or "")))
 
 
-def _new_turn(issue: dict[str, Any], state: State) -> dict[str, Any] | None:
+def _new_turn(issue: dict[str, Any], state: State, client: Any | None = None) -> dict[str, Any] | None:
     issue_id = str(issue["id"])
     comments = _comments(issue)
+    if client is not None and not (is_daily(issue) or is_daily_brief(issue)):
+        _hydrate_bot_provenance(client, issue)
     by_id = {str(c["id"]): c for c in comments}
     unprocessed = [c for c in comments if not is_bot_comment(c) and str(c["id"]) not in state.data["processed_comment_ids"]]
     no_mention_scope = is_daily(issue) or is_daily_brief(issue) or _bot_participated(issue, comments)
@@ -704,7 +727,7 @@ def _scan(client: Any, state: State, dry_run: bool) -> dict[str, Any]:
             if ({str(workflow.get("type") or "").casefold(), str(workflow.get("name") or "").casefold()}
                     & {"completed", "canceled", "cancelled", "done"}): continue
             pending = state.data["pending"].get(issue_id)
-            if not pending: pending = _new_turn(issue, state)
+            if not pending: pending = _new_turn(issue, state, client)
             if pending:
                 if dry_run:
                     report.append({"issue": issue.get("identifier") or issue_id, "dry_run": True,

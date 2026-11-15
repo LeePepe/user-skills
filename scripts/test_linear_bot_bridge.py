@@ -208,6 +208,20 @@ class DailyBriefSelectionTests(unittest.TestCase):
 
 
 class OwnerIngressTests(unittest.TestCase):
+    def test_owner_top_level_comment_triggers_for_real_api_shaped_bot_created_issue(self):
+        issue = personal_issue(comments=[owner_comment("inspect", "owner-created", created="2")])
+        class ProvenanceClient:
+            def __init__(self): self.queries = []
+            def execute(self, query, variables):
+                self.queries.append((query, variables))
+                return {"issue": {"history": {"nodes": [{"actor": {"id": bridge.BOT_ACTOR_ID}, "botActor": {"id": bridge.BOT_ACTOR_ID}}]}}}
+        client = ProvenanceClient()
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = bridge._new_turn(issue, bridge.State(Path(tmp) / "state.json"), client)
+        self.assertIsNotNone(pending)
+        self.assertEqual(len(client.queries), 1)
+        self.assertIn("owner-created", pending["trigger_ids"])
+
     def test_owner_top_level_comment_triggers_after_bot_participation_without_mention(self):
         bot = {"id": "bot-root", "body": bridge.ACK, "user": {"id": bridge.BOT_ACTOR_ID}, "createdAt": "1"}
         issue = personal_issue(comments=[bot, owner_comment("执行 1", "owner-followup", created="2")])
@@ -426,18 +440,20 @@ class BridgeTests(unittest.TestCase):
 
     def test_daily_learn_requests_blog_publication_and_posts_compact_verified_receipt(self):
         issue = personal_issue(daily=True, comments=[owner_comment("2", "learn-one")])
-        self.runtime.text = "# Full Card Body Sentinel\\nhttps://leepepe.github.io/learn/second-topic/\\nA concise verified summary."
+        self.runtime.text = ("- [Second Topic](https://leepepe.github.io/learn/second-topic/) — Inline summary.\n"
+                             "# Full Card Body Sentinel\nprivate body")
         def write_card():
             card = self.vault / "concepts" / "second-topic.md"
             card.parent.mkdir(parents=True, exist_ok=True)
-            card.write_text("---\\ntitle: Second Topic\\ninsight: One-line card summary\\n---\\n# Full Card Body Sentinel")
+            card.write_text("---\ntitle: Second Topic\ninsight: One-line card summary\n---\n# Full Card Body Sentinel")
         self.runtime.on_send = write_card
         client = FakeClient(issue)
         self.scan(client)
         body = client.comments[-1][1]
-        self.assertIn("[second-topic](https://leepepe.github.io/learn/second-topic/)", body)
-        self.assertIn("full summary", body)
+        self.assertIn("[Second Topic](https://leepepe.github.io/learn/second-topic/)", body)
+        self.assertIn("Inline summary", body)
         self.assertNotIn("Full Card Body Sentinel", body)
+        self.assertNotIn("private body", body)
         self.assertIn("publish", self.runtime.prompts[0].casefold())
         self.assertIn("leepepe.github.io", self.runtime.prompts[0])
 
@@ -446,14 +462,32 @@ class BridgeTests(unittest.TestCase):
         client = FakeClient(issue)
         pending = bridge._new_turn(issue, self.state)
         pending.update(phase="result-comment", result_kind="completed",
-                       output="# Full Card Body Sentinel\\nhttps://leepepe.github.io/learn/second-topic/\\nprivate body",
+                       output="# Full Card Body Sentinel\nhttps://leepepe.github.io/learn/second-topic/\nprivate body",
                        root_id=None)
         result = bridge._advance_turn(client, self.state, issue, pending)
         body = client.comments[-1][1]
         self.assertTrue(result["ok"])
-        self.assertIn("https://leepepe.github.io/learn/second-topic/", body)
+        self.assertIn("Blog publication pending Owner readback", body)
         self.assertNotIn("Full Card Body Sentinel", body)
         self.assertNotIn("private body", body)
+
+    def test_inline_receipt_associates_multiple_articles_without_body_fallback(self):
+        output = ("- [First](https://leepepe.github.io/learn/first/) — First summary.\n"
+                  "- [Second](https://leepepe.github.io/learn/second/) — Second summary.\n"
+                  "private body")
+        receipt = bridge._compact_daily_receipt(output, [], ["first", "second"])
+        self.assertIn("[First](https://leepepe.github.io/learn/first/) — First summary.", receipt)
+        self.assertIn("[Second](https://leepepe.github.io/learn/second/) — Second summary.", receipt)
+        self.assertNotIn("private body", receipt)
+
+    def test_idle_owner_decision_response_preserves_decision_result_kind(self):
+        issue = personal_issue(daily=True, comments=[owner_comment("2", "decision-owner")])
+        self.runtime.text = "Owner decision required: publication is unsafe; confirm a public-safe rewrite."
+        client = FakeClient(issue)
+        report = self.scan(client)
+        self.assertEqual(report["triggers"][0]["result_kind"], "owner-decision")
+        self.assertIn("Owner decision required", client.comments[-1][1])
+        self.assertIn("publication is unsafe", client.comments[-1][1])
 
     def test_busy_learning_target_defers_and_previous_completion_never_counts(self):
         client = FakeClient(personal_issue(daily=True, assigned=True, comments=[]))
