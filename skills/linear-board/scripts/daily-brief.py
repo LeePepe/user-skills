@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""Render and optionally publish the personal Linear daily brief."""
+from __future__ import annotations
+import argparse, importlib.util, json, os, re, subprocess, sys
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+CST = timezone(timedelta(hours=8))
+OWNER_ID = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+DEFAULT_PARENT = "TIA-375"
+PERSONAL_REPOS = ("user-skills", "VoxPocket", "AIDash", "shared-design-system", "Financial", "leepepe.github.io")
+EXCLUDED_TERMS = ("work business", "bing", "workplace")
+LEDGER_TOKENS = ("work", "sapphire", "flightbook", "webiq", "bing", "devsync")
+BLOCKING = {"NEED_GO", "NEED_OWNER_DECISION", "TASK_BLOCKED", "INPUT_BLOCKED", "REVIEW_FAIL"}
+EVENT_RE = re.compile(r"^\s*[-*]\s+(?P<stamp>\S+)\s+\|\s+(?P<body>.*)$")
+
+def parse_date(value: str) -> date:
+    return datetime.now(CST).date() if value == "today" else date.fromisoformat(value)
+
+def _timestamp(value: str) -> datetime | None:
+    if not value: return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=CST)
+        return parsed.astimezone(CST)
+    except (AttributeError, TypeError, ValueError): return None
+
+def _date_in(value: str, target: date) -> bool:
+    parsed = _timestamp(value)
+    return parsed is not None and parsed.date() == target
+
+def _excluded_text(values: list[str], root_self: bool = False) -> bool:
+    text = " ".join(values)
+    if root_self and re.search(r"(?<!\w)\[root\](?!\w)", text, re.I): return True
+    pattern = r"(?<!\w)(?:" + "|".join(re.escape(x) for x in EXCLUDED_TERMS) + r")(?!\w)"
+    return bool(re.search(pattern, text, re.I))
+
+def _scope_complete(issue: Any) -> bool:
+    return isinstance(issue, dict) and all(k in issue for k in ("title", "parent", "team", "project"))
+
+def _scope_lookup(identifier: str, client: Any, cache: dict[str, Any], warnings: list[str]) -> dict[str, Any] | None:
+    cached = cache.get(identifier)
+    if _scope_complete(cached): return cached
+    try:
+        scope = client.issue_scope(identifier) if client is not None else None
+        if not _scope_complete(scope): raise ValueError("Incomplete scope")
+        for key in (identifier, scope.get("id"), scope.get("identifier")):
+            if key: cache[str(key)] = scope
+        return scope
+    except Exception:
+        warnings.append("Linear scope lookup unavailable or incomplete; affected items excluded")
+        return None
+
+def _excluded_issue(issue: dict[str, Any], client: Any = None, cache: dict[str, Any] | None = None, warnings: list[str] | None = None) -> bool:
+    cache = {} if cache is None else cache
+    warnings = [] if warnings is None else warnings
+    current = issue
+    seen = {str(issue.get("id") or "")} - {""}
+    first = True
+    while isinstance(current, dict):
+        project, team = current.get("project") or {}, current.get("team") or {}
+        if _excluded_text([str(current.get("title") or ""), str(project.get("name") or ""), str(team.get("name") or "")], root_self=first): return True
+        first = False
+        parent = current.get("parent")
+        if parent is None: return False
+        if not isinstance(parent, dict):
+            warnings.append("Linear ancestor scope incomplete; affected items excluded")
+            return True
+        parent_id = str(parent.get("id") or parent.get("identifier") or "")
+        if not parent_id or parent_id in seen:
+            warnings.append("Linear ancestor scope incomplete or cyclic; affected items excluded")
+            return True
+        seen.add(parent_id)
+        if not _scope_complete(parent):
+            parent = _scope_lookup(parent_id, client, cache, warnings)
+            if parent is None: return True
+        current = parent
+    warnings.append("Linear ancestor scope incomplete; affected items excluded")
+    return True
+
+def _issue_is_completed(issue: dict[str, Any], target: date) -> bool:
+    state = str((issue.get("state") or {}).get("type") or "").casefold()
+    name = str((issue.get("state") or {}).get("name") or "").casefold()
+    if state in {"canceled", "cancelled"} or name in {"canceled", "cancelled"}: return False
+    completed = str(issue.get("completedAt") or "")
+    if completed: return _date_in(completed, target)
+    return (state == "completed" or name == "done") and _date_in(str(issue.get("updatedAt") or ""), target)
+
+def collect_linear(client: Any, target: date, *, scope_cache: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    if client is None: return [], ["Linear source unavailable; no issue data was fabricated"]
+    try: issues = client.list_issues("TIA", limit=None)
+    except Exception: return [], ["Linear source unavailable; no issue data was fabricated"]
+    cache = scope_cache if scope_cache is not None else {}
+    warnings: list[str] = []
+    for issue in issues:
+        if _scope_complete(issue):
+            for key in (issue.get("id"), issue.get("identifier")):
+                if key: cache[str(key)] = issue
+    eligible = [i for i in issues if isinstance(i, dict) and not _excluded_issue(i, client, cache, warnings)]
+    return eligible, warnings
+
+def _run(command: list[str], *, timeout: int = 15, runner: Callable[..., Any] = subprocess.check_output) -> str:
+    return str(runner(command, text=True, stderr=subprocess.DEVNULL, timeout=timeout))
+
+def collect_git(dev_root: Path, target: date, *, runner: Callable[..., Any] = subprocess.check_output) -> tuple[list[dict[str, str]], list[str]]:
+    rows, warnings = [], []
+    start, end = f"{target} 00:00 +0800", f"{target + timedelta(days=1)} 00:00 +0800"
+    for name in PERSONAL_REPOS:
+        repo = dev_root / name
+        if not (repo / ".git").exists():
+            warnings.append(f"Git source unavailable: {name}")
+            continue
+        try: out = _run(["git", "-C", str(repo), "log", "--all", "--since-as-filter", start, "--until", end, "--format=%H%x09%h%x09%s%x09%cI"], runner=runner)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired): warnings.append(f"Git source unavailable: {name}"); continue
+        for line in out.splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) == 4 and _date_in(parts[3], target): rows.append({"repo": name, "sha": parts[1], "subject": parts[2], "timestamp": parts[3]})
+    return rows, warnings
+
+def _repo_name(repo: str) -> str:
+    return repo.rstrip("/").rsplit("/", 1)[-1]
+
+def collect_prs(repos: tuple[str, ...], target: date, *, runner: Callable[..., Any] = subprocess.check_output) -> tuple[list[dict[str, Any]], list[str]]:
+    rows, warnings = [], []
+    for repo in repos:
+        try:
+            raw = _run(["gh", "api", "--paginate", "--slurp", f"repos/{repo}/pulls?state=closed&per_page=100"], runner=runner)
+            data = json.loads(raw)
+            if isinstance(data, list) and data and all(isinstance(page, list) for page in data): data = [item for page in data for item in page]
+            if not isinstance(data, list) or any(not isinstance(pr, dict) for pr in data): raise ValueError("Invalid PR pages")
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError): warnings.append(f"PR source unavailable: {repo}"); continue
+        seen = set()
+        for pr in data:
+            if not _date_in(pr.get("merged_at"), target): continue
+            number = pr.get("number")
+            if number in seen: continue
+            seen.add(number)
+            detail = {}
+            try:
+                if not isinstance(number, int): raise ValueError("Missing PR number")
+                detail = json.loads(_run(["gh", "api", f"repos/{repo}/pulls/{number}"], runner=runner))
+                if not isinstance(detail, dict) or any(detail.get(k) is None for k in ("additions", "deletions", "changed_files")): raise ValueError("Missing PR metrics")
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+                warnings.append(f"PR metrics unavailable: {repo}")
+                detail = {}
+            rows.append({"repo": _repo_name(repo), "title": pr.get("title", ""), "url": pr.get("html_url", ""), **{k: detail.get(k) for k in ("additions", "deletions", "changed_files")}})
+    return rows, warnings
+
+def _ledger_header(lines: list[str]) -> dict[str, str]:
+    header = {}
+    for line in lines:
+        if line.startswith("## "): break
+        goal = re.match(r"^#\s*Goal:\s*(.*)$", line, re.I)
+        if goal: header["goal"] = goal[1].strip()
+        match = re.match(r"^\s*(?:[-*+]\s*)?(project|repo|linear(?: issue)?|goal|status|state|stage|m1)\s*:\s*(.*)$", line, re.I)
+        if match: header[match[1].casefold()] = match[2].strip()
+    return header
+
+def _ledger_excluded(path: Path, lines: list[str]) -> bool:
+    name = path.parent.name.casefold()
+    if name.startswith("_watch"): return True
+    if re.match(r"^work(?:[-_]|$)", name) or any(name.startswith(token) for token in LEDGER_TOKENS if token != "work"): return True
+    header = _ledger_header(lines)
+    return any(_excluded_text([value]) or re.search(r"(?i)(?<!\w)(?:bing|sapphire|flightbook|webiq|devsync)\w*", value)
+               for key, value in header.items() if key in {"project", "repo", "linear", "linear issue", "goal"})
+
+def _ledger_tasks(lines: list[str]) -> list[dict[str, str]]:
+    tasks, columns = [], {}
+    in_tasks = False
+    aliases = {"id": "task", "task id": "task", "task": "task", "title": "title", "标题": "title",
+               "status": "state", "状态": "state", "state": "state", "stage": "stage", "m1": "stage",
+               "owner": "owner", "writer": "owner", "note": "note", "notes": "note",
+               "pr": "ref", "pr/head": "ref", "receipts": "receipts", "ref": "ref"}
+    for line in lines:
+        if line.strip() == "## Tasks": in_tasks = True; continue
+        if in_tasks and line.startswith("## "): break
+        if not in_tasks or not line.lstrip().startswith("|"): continue
+        cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
+        if all(not cell or set(cell) <= {"-", ":"} for cell in cells): continue
+        if cells[0].casefold() in {"id", "task", "task id"}:
+            columns = {aliases[cell.casefold()]: index for index, cell in enumerate(cells) if cell.casefold() in aliases}
+            continue
+        if not columns: continue
+        row = {key: cells[index] for key, index in columns.items() if index < len(cells)}
+        if row.get("task"):
+            row["state"] = row.get("state", "").casefold().replace(" ", "_")
+            tasks.append(row)
+    return tasks
+
+def _ledger_snapshot(path: Path, target: date, client: Any, cache: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    try: lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError: return None, ["Handoff ledger unreadable; affected goal excluded"]
+    if _ledger_excluded(path, lines): return None, []
+    header, warnings = _ledger_header(lines), []
+    bound = re.search(r"\bTIA-\d+\b", header.get("linear issue", header.get("linear", "")))
+    identifier = bound[0] if bound else ""
+    if identifier:
+        scope = _scope_lookup(identifier, client, cache, warnings)
+        if scope is None or _excluded_issue(scope, client, cache, warnings): return None, warnings
+    title = next((line.split(":", 1)[1].strip() for line in lines if re.match(r"^#\s*Goal:", line)), path.parent.name)
+    events = []
+    for line in lines:
+        match = EVENT_RE.match(line)
+        if not match: continue
+        stamp = _timestamp(match["stamp"])
+        if stamp is None or stamp.date() > target: continue
+        fields = {k.strip(): v.strip() for k, v in (part.split("=", 1) for part in match["body"].split(" | ") if "=" in part)}
+        if "EVT" not in fields: continue
+        if not fields.get("note"):
+            fields["note"] = " · ".join(part.strip() for part in match["body"].split(" | ") if "=" not in part)
+        fields.update({"timestamp": stamp.isoformat(), "line": line.strip(), "goal": path.parent.name,
+                       "title": title, "identifier": identifier, "ledger": path.as_uri()})
+        events.append(fields)
+    events.sort(key=lambda event: _timestamp(event["timestamp"]))
+    return {"goal": path.parent.name, "title": title, "identifier": identifier, "ledger": path.as_uri(),
+            "header": header, "tasks": _ledger_tasks(lines), "events": events}, warnings
+
+def _parse_ledger(path: Path, target: date) -> tuple[list[dict[str, str]], list[str]]:
+    snapshot, warnings = _ledger_snapshot(path, target, None, {})
+    return (snapshot["events"] if snapshot else []), warnings
+
+def _active_events(events: list[dict[str, str]]) -> list[dict[str, str]]:
+    active: dict[tuple[str, str, str], dict[str, str]] = {}
+    for index, event in enumerate(events):
+        typ, goal = event.get("EVT", "").upper(), event.get("goal", "")
+        if typ in BLOCKING:
+            key = (goal, event.get("id", ""), event.get("task") or ("" if event.get("id") else str(index)))
+            active[key] = event
+        elif typ == "GOAL_DONE":
+            active = {key: item for key, item in active.items() if key[0] != goal}
+        elif typ in {"ACK", "RESOLVED"} and event.get("id"):
+            active = {key: item for key, item in active.items() if not (key[0] == goal and item.get("id") == event["id"])}
+        elif typ in {"DONE", "TASK_DONE", "REVIEW_PASS", "PR_MERGED"} and event.get("task"):
+            active = {key: item for key, item in active.items() if not (key[0] == goal and item.get("task") == event["task"])}
+    return list(active.values())
+
+def collect_handoff(handoff_root: Path, target: date, *, client: Any = None, scope_cache: dict[str, Any] | None = None) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
+    rollup, active, warnings = [], [], []
+    cache = {} if scope_cache is None else scope_cache
+    if not handoff_root.exists(): return [], [], ["Handoff ledger source unavailable"]
+    stage_events = {"TASK_STARTED": "in_progress", "IN_PROGRESS": "in_progress", "REVIEW_STARTED": "in_review",
+                    "IN_REVIEW": "in_review", "TASK_BLOCKED": "blocked", "REVIEW_FAIL": "blocked",
+                    "TASK_PLANNED": "planned", "TASK_READY": "ready", "TASK_DONE": "done",
+                    "DONE": "done", "REVIEW_PASS": "done", "PR_MERGED": "done"}
+    for ledger in sorted(handoff_root.glob("*/ledger.md")):
+        snapshot, warns = _ledger_snapshot(ledger.resolve(), target, client, cache)
+        warnings.extend(warns)
+        if snapshot is None: continue
+        events = snapshot["events"]
+        rollup.extend(event for event in events if _date_in(event["timestamp"], target - timedelta(days=1)) and event["EVT"].upper() in {"DONE", "PR_MERGED", "GOAL_DONE"})
+        goal_events = [event for event in events if event["EVT"].upper().startswith("GOAL_") or (not event.get("task") and (event.get("state") or event.get("status")))]
+        latest = goal_events[-1] if goal_events else {}
+        inferred_state = {"GOAL_STARTED": "in_progress", "GOAL_IN_PROGRESS": "in_progress", "GOAL_IN_REVIEW": "in_review", "GOAL_DONE": "done"}.get(latest.get("EVT", "").upper(), snapshot["header"].get("state", snapshot["header"].get("status", "")))
+        goal_state = latest.get("state", latest.get("status", inferred_state)).casefold()
+        if latest.get("EVT", "").upper() == "GOAL_DONE" or goal_state in {"done", "completed", "canceled", "cancelled"}: continue
+        blockers = _active_events(events)
+        for task in snapshot["tasks"]:
+            task_events = [event for event in events if event.get("task") == task["task"]]
+            stage = task["state"]
+            for event in task_events:
+                stage = event.get("state", event.get("status", stage_events.get(event["EVT"].upper(), stage))).casefold().replace(" ", "_")
+            context = {key: str(snapshot[key]) for key in ("goal", "title", "identifier", "ledger")}
+            context.update(task); context["state"] = stage
+            for field in ("stage", "note", "ref", "pr"):
+                newest = next((event[field] for event in reversed(task_events) if event.get(field)), "")
+                if newest: context[field] = newest
+            context["stage"] = context.get("stage") or snapshot["header"].get("m1", snapshot["header"].get("stage", ""))
+            if stage in {"in_progress", "in_review"} and not any(event.get("task") == task["task"] for event in blockers): active.append({**context, "group": "active"})
+            elif stage == "blocked" and not any(event.get("task") == task["task"] for event in blockers):
+                # Do not resurrect a resolved event from an older blocked task snapshot.
+                if not any(event["EVT"].upper() in BLOCKING for event in task_events):
+                    active.append({**context, "EVT": "TASK_BLOCKED", "group": "needs"})
+        for event in blockers:
+            task = next((task for task in snapshot["tasks"] if task["task"] == event.get("task")), {})
+            context = {**task, **event, "state": "blocked", "group": "needs"}
+            context["stage"] = event.get("stage") or task.get("stage") or snapshot["header"].get("m1", snapshot["header"].get("stage", ""))
+            if task.get("title"): context["title"] = f"{snapshot['title']} / {task['title']}"
+            active.append(context)
+    return rollup, active, warnings
+
+def collect_ledgers(handoff_root: Path, target: date) -> tuple[list[dict[str, str]], list[str]]:
+    rollup, _, warnings = collect_handoff(handoff_root, target + timedelta(days=1))
+    return rollup, warnings
+
+def _closed_issue(issue: dict[str, Any]) -> bool:
+    state = issue.get("state") or {}
+    return str(state.get("type") or "").casefold() in {"completed", "canceled", "cancelled"} or str(state.get("name") or "").casefold() in {"done", "canceled", "cancelled"}
+
+def _brief_issue(issue: dict[str, Any]) -> bool:
+    return bool(re.match(r"\[Daily Brief\b", str(issue.get("title") or ""), re.I) or re.search(r"<!-- GTT-LINEAR-DEDUP:daily-brief-\d{4}-\d{2}-\d{2} -->", str(issue.get("description") or "")))
+
+def _needs_decision(issue: dict[str, Any], labels: str, state: str) -> bool:
+    title = str(issue.get("title") or "")
+    if re.search(r"(?i)\b(blocked|needs decision|owner decision)\b|待拍板|待选型", f"{title} {labels} {state}"): return True
+    clauses = f"{title}\n{issue.get('description') or ''}"
+    return bool(re.search(r"(?i)(?:demo|gallery|选型)[^\n.!。]{0,100}(?:awaiting|waiting for|pending|待拍板|待选|待你选择)|(?:awaiting|waiting for|pending|待拍板|待选)[^\n.!。]{0,100}(?:demo|gallery|选型)", clauses))
+
+def _ledger_context(item: dict[str, str]) -> str:
+    stage = " / ".join(value for value in (item.get("state", ""), item.get("stage", "")) if value)
+    details = " · ".join(str(item[key]) for key in ("task", "title", "EVT", "note", "ref", "pr", "receipts", "owner") if item.get(key))
+    if not details: details = item.get("line", "")
+    return f"{item.get('goal', 'goal')}: {details}" + (f" [M1: {stage}]" if stage else "") + f" {item.get('ledger', '')}"
+
+def _item(text: str, source: str) -> str: return f"{text} _(source: {source})_"
+def _issue_context(issue: dict[str, Any]) -> str:
+    project = (issue.get("project") or {}).get("name") or "personal"
+    return f"{issue.get('identifier', 'Linear')} {issue.get('title', '')} [{project}] {issue.get('url', '')}".strip()
+
+def _plain(value: Any) -> str:
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(value or ""))
+    return re.sub(r"\s+", " ", re.sub(r"[*`<>|]", "", text)).strip()
+
+def _short(value: Any, limit: int) -> str:
+    return _plain(value)[:limit].strip()
+
+def _code(value: Any) -> str:
+    return f"`{_plain(value)}`"
+
+def _link(url: Any, label: str) -> str:
+    url = str(url or "")
+    if not re.match(r"^(?:https?://|file:///)", url) or re.search(r"[\s<>]", url): return ""
+    return f"[{_plain(label)}]({url.replace('|', '%7C').replace('(', '%28').replace(')', '%29')})"
+
+def _brief_title(target: date) -> str:
+    yesterday = target - timedelta(days=1)
+    return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
+
+def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None) -> tuple[str, list[dict[str, Any]]]:
+    yesterday = target - timedelta(days=1)
+    lines = [f"<!-- GTT-LINEAR-DEDUP:daily-brief-{target.isoformat()} -->", "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）", ""]
+    entries: dict[str, dict[str, Any]] = {}
+    by_identifier = {str(issue.get("identifier")): issue for issue in linear if issue.get("identifier")}
+    for index, issue in enumerate(linear):
+        if _closed_issue(issue) or _brief_issue(issue): continue
+        state = str((issue.get("state") or {}).get("name") or (issue.get("state") or {}).get("type") or "").casefold()
+        raw_labels = issue.get("labels") or {}
+        label_nodes = raw_labels.get("nodes", []) if isinstance(raw_labels, dict) else raw_labels
+        labels = " ".join(str(x.get("name", "")) for x in label_nodes)
+        group = None
+        if _needs_decision(issue, labels, state): group = "needs"
+        elif state in {"in progress", "in review", "started", "inprogress", "in_review"}: group = "active"
+        elif (state in {"todo", "backlog"} and issue.get("priority") in {1, 2}) or re.match(rf"\[Daily Learn {re.escape(target.isoformat())}\]", str(issue.get("title", ""))): group = "planned"
+        if group:
+            key = str(issue.get("identifier") or issue.get("id") or f"linear-{index}")
+            entries[key] = {"group": group, "parts": [_item(_issue_context(issue), "Linear TIA")],
+                            "summary": issue.get("title") or key, "action": _link(issue.get("url"), "打开"), "ref": key, "stages": []}
+    rank = {"needs": 0, "active": 1, "planned": 2}
+    for item in ledger_active or []:
+        identifier = item.get("identifier", "")
+        bound_issue = by_identifier.get(identifier)
+        if bound_issue and (_closed_issue(bound_issue) or _brief_issue(bound_issue)): continue
+        group = item.get("group", "needs")
+        if group not in rank: continue
+        key = identifier or f"ledger:{item.get('goal', '')}"
+        if key not in entries:
+            parts = [_item(_issue_context(bound_issue), "Linear TIA")] if bound_issue else []
+            entries[key] = {"group": group, "parts": parts, "summary": (bound_issue or {}).get("title") or item.get("title") or item.get("goal"),
+                            "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"), "stages": []}
+        entry = entries[key]
+        if rank[group] < rank[entry["group"]]: entry["group"] = group
+        entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
+        stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
+        if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
+    todos = []
+    for group in rank:
+        for entry in entries.values():
+            if entry["group"] != group: continue
+            number = len(todos) + 1
+            summary = _short(entry["summary"], 25) or "待办"
+            refs = " / ".join([entry["ref"], *dict.fromkeys(entry["stages"])])
+            action = entry["action"] or _code(f"@bot {number}")
+            lines.append(f"- [ ] **[{number}] {summary}** · {action} · {_code(refs)}")
+            todos.append({"number": number, "text": " · ".join(dict.fromkeys(entry["parts"])), "summary": summary,
+                          "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"]))})
+    if not todos: lines.append("- 无已核实待办。")
+    rollup: dict[str, list[tuple[str, str]]] = {}
+    for issue in linear:
+        if not _issue_is_completed(issue, yesterday): continue
+        project = (issue.get("project") or {}).get("name") or "Personal"
+        ref = _link(issue.get("url"), str(issue.get("identifier") or "Linear")) or _code(issue.get("identifier") or issue.get("id") or "Linear")
+        rollup.setdefault(project, []).append((ref, _short(issue.get("title"), 20)))
+    for commit in commits:
+        project = _repo_name(commit["repo"])
+        rollup.setdefault(project, []).append((_code(commit["sha"]), _short(commit["subject"], 20)))
+    for pr in prs or []:
+        project = _repo_name(pr["repo"])
+        number = str(pr.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
+        ref = _link(pr.get("url"), f"#{number}" if number.isdigit() else "PR") or "PR"
+        metrics = ", ".join(f"{k}={pr[k]}" for k in ("additions", "deletions", "changed_files") if pr.get(k) is not None)
+        if metrics: ref += f" · {_code(metrics)}"
+        rollup.setdefault(project, []).append((ref, _short(pr.get("title"), 20)))
+    for event in events:
+        ref = event.get("identifier") or event.get("task") or event.get("id") or event.get("EVT", "event")
+        link = _link(event.get("ref") or event.get("pr") or event.get("ledger"), ref) or _code(ref)
+        result = event.get("note") or event.get("title") or event.get("EVT", "完成")
+        rollup.setdefault(event.get("goal", "Handoff"), []).append((link, _short(result, 20)))
+    count = sum(len(rows) for rows in rollup.values())
+    lines += ["", "---", "", f"## 📊 昨日完成 ({yesterday:%m-%d} · {count} 项)", "", "| 项目 | 单据 / PR | 一句话结果 |", "|---|---|---|"]
+    for project, rows in rollup.items():
+        for ref, result in rows: lines.append(f"| **{_plain(project)}** | {ref} | {result} |")
+    if warnings: lines += ["", "**Source warnings:**", *[f"- {_plain(warning)}" for warning in sorted(set(warnings))]]
+    return "\n".join(lines).rstrip() + "\n", todos
+
+def _load_linear_client(*, dry_run: bool = False) -> Any:
+    path = Path(__file__).resolve().parents[2] / "team-lead/scripts/linear-sync.py"; spec = importlib.util.spec_from_file_location("linear_sync", path)
+    if not spec or not spec.loader: return None
+    module = importlib.util.module_from_spec(spec)
+    old_bytecode_flag = sys.dont_write_bytecode
+    try:
+        if dry_run: sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = old_bytecode_flag
+    key = module.load_api_key()
+    return module.GraphQLClient(key, allow_refresh=not dry_run) if key else None
+
+@contextmanager
+def _proposal_lock():
+    import fcntl
+    path = Path(os.environ.get("LINEAR_DAILY_BRIEF_LOCK", "~/.cache/linear-daily-brief/propose.lock")).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try: yield
+        finally: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+def _canceled_issue(issue: dict[str, Any]) -> bool:
+    state = issue.get("state") or {}
+    return any(str(state.get(key) or "").casefold() in {"canceled", "cancelled"} for key in ("type", "name"))
+
+def propose(client: Any, title: str, markdown: str, parent: str = DEFAULT_PARENT, dedup_key: str | None = None) -> dict[str, Any] | None:
+    if client is None: return None
+    team = client.team_metadata("TIA")
+    match = re.search(r"\d{4}-\d{2}-\d{2}", title)
+    marker = dedup_key or (f"daily-brief-{match[0]}" if match else "")
+    if not re.fullmatch(r"daily-brief-\d{4}-\d{2}-\d{2}", marker): raise ValueError("Invalid Daily Brief marker")
+    exact_comment = f"<!-- GTT-LINEAR-DEDUP:{marker} -->"
+    # Enumeration includes closed issues; narrower marker helpers can create duplicates.
+    issues = client.list_issues("TIA", limit=None)
+    marker_matches = [issue for issue in issues if exact_comment in str(issue.get("description") or "")]
+    candidates = marker_matches or [issue for issue in issues if issue.get("title") == title]
+    existing = min(candidates, key=_canceled_issue) if candidates else None
+    todo = next((s for s in team.get("states", {}).get("nodes", []) if str(s.get("name", "")).casefold() == "todo" and s.get("id")), None)
+    if (not existing or _canceled_issue(existing)) and todo is None: raise ValueError("TIA Todo state unavailable")
+    parent_issue = client.issue(parent)
+    parent_team = parent_issue.get("team") or {}
+    if not parent_issue.get("id") or not (parent_team.get("key") == "TIA" or (not parent_team.get("key") and parent_team.get("id") == team["id"])):
+        raise ValueError("Daily Brief parent is not verified in team TIA")
+    kwargs = {"title": title, "description": markdown, "parent_id": parent_issue["id"], "assignee_id": OWNER_ID}
+    if existing:
+        if _canceled_issue(existing): kwargs["state_id"] = todo["id"]
+        return client.update_issue(existing["id"], **kwargs)
+    kwargs["team_id"] = team["id"]; kwargs["state_id"] = todo["id"]
+    return client.create_issue(**kwargs)
+
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output) -> dict[str, Any]:
+    yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
+    linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
+    commits, w2 = collect_git(dev_root, yesterday, runner=runner)
+    available_repos = tuple(f"LeePepe/{r}" for r in PERSONAL_REPOS if (dev_root / r).exists())
+    prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
+    events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
+    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active)
+    issue = None; ok = True; warnings = w1 + w2 + w3 + w4
+    if propose_linear and not dry_run:
+        try:
+            if client is None: raise ValueError("Linear client unavailable")
+            with _proposal_lock(): issue = propose(client, _brief_title(target), markdown, parent, f"daily-brief-{target.isoformat()}")
+            if not isinstance(issue, dict) or not issue.get("id"): raise ValueError("Publication not confirmed")
+        except Exception:
+            ok = False
+            warning = "Linear publication failed; brief was not published"
+            warnings.append(warning)
+            markdown += f"\n**Publication warning:** {warning}\n"
+    return {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(); parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true"); parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--json", action="store_true"); args = parser.parse_args(argv)
+    try: client = _load_linear_client(dry_run=args.dry_run)
+    except Exception: client = None
+    result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue)
+    print(json.dumps(result, ensure_ascii=False) if args.json else result["markdown"], end="" if args.json else ""); return 0 if result["ok"] else 1
+if __name__ == "__main__": raise SystemExit(main())

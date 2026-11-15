@@ -100,6 +100,21 @@ or wait for the correlated response. Only after independently proving no deliver
 occurred may an operator reset that turn to `dispatch`; never delete active state
 merely to retry. New comments wait for the active turn to finish.
 
+## Daily Brief
+
+`skills/linear-board/scripts/daily-brief.py` renders the personal CST daily brief in Plan A's ultra-compact layout: today's flat numbered todos first, then yesterday's verified Linear/Git/ledger table. It uses the canonical `linear-sync.py` credential loader and never mutates Linear during `--dry-run`.
+
+```bash
+python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run
+python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --parent-issue TIA-375 --json
+```
+
+Line 1 is `<!-- GTT-LINEAR-DEDUP:daily-brief-YYYY-MM-DD -->`; the issue title is separate from its description. The first visible heading is ``## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）``. Each flat line is ``- [ ] **[N] summary** · link/command · `Issue ID/ref` `` with a single-line summary of at most 25 characters and one action. Needs Decision → In Progress → Planned/Daily Learn share continuous numbering. Then `---` precedes `## 📊 昨日完成 (MM-DD · N 项)` and the three-column `项目 | 单据 / PR | 一句话结果` table; each result is at most 20 characters and N counts actual rows. No top title/scope blockquote, subgroup headings or bottom Bot tutorial is rendered.
+
+Yesterday's CST half-open rollup groups Linear deliveries, Git committer timestamps, merged PR metrics and ledger events by project/repo/goal; full PR metrics stay in the reference column. Today's open issues and active `## Tasks` R8/M1 stages are deduplicated by bound Linear identity. Compact refs retain task stages; JSON `todo_items` keeps full source context. Completed/canceled and Daily Brief issues never become todos; resolved blockers and completed goals disappear. Work Business/Bing/Workplace ancestry and work ledger metadata/prefixes are excluded; personal children of personal `[Root]` containers remain eligible. Incomplete/cyclic scope fails closed with sanitized warnings.
+
+Reply `@bot 执行 1, 2`, or check selected `- [x]` boxes and comment/assign/delegate/mention `@bot`. The bridge wakes the corresponding M2, posts full Markdown after verified output, and reassigns to `@ltp19941128`; **Owner decision required** is not completion. Textual comments are pollable; native Delegate/mention requires workspace-admin `app:assignable`/`app:mentionable` grants. Publication enumerates all candidates (including closed), prefers exact marker comments over exact-title fallback, retains noncanceled state and reopens canceled briefs in Todo. Parent membership in TIA and Todo for creation are mandatory. Missing sources are explicit warnings; unconfirmed publication exits nonzero. Dry-run performs paginated reads without refresh, locks, files or mutations.
+
 ## Project Root Tracker
 
 Run `python3 scripts/root_tracker.py refresh` to collect the offline-first root
