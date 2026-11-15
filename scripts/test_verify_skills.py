@@ -3298,6 +3298,22 @@ class SkillContractV2Tests(unittest.TestCase):
                 manifest['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
                 self.assertTrue(any('closed root baseline' in e for e in evidence.gallery_errors(root, manifest)[0]))
 
+    def test_gallery_portal_gate_and_hub_contract(self) -> None:
+        chooser = SKILLS_DIR / 'design-studio/scripts/gallery_chooser.py'
+        source = chooser.read_text(encoding='utf-8')
+        for token in ('gallery-breadcrumbs', 'selection-telemetry', 'render_demos_hub', 'data-copy-goal', 'aidash-cards-r2:'):
+            self.assertIn(token, source)
+        css = (SKILLS_DIR / 'design-studio/assets/tenfold-gallery.css').read_text(encoding='utf-8')
+        self.assertIn('.variant-card[hidden]', css); self.assertIn('min-height:44px', css)
+        evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
+        spec = importlib.util.spec_from_file_location('portal_gate_contract', evidence_path)
+        evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'index.html').write_text('<nav class="gallery-breadcrumbs"><a href="/demos/">Demos</a></nav><button id="copy-summary"></button><p id="selection-telemetry"></p><article class="variant-card" data-group="a" data-select data-star data-note></article><article class="variant-card" data-group="b" aria-hidden="true"></article><script>STAR: no NOTES: no</script>', encoding='utf-8')
+            errors = evidence.portal_errors(root)
+            self.assertTrue(any('hidden' in error for error in errors))
+            self.assertTrue(any('multi-category' in error for error in errors))
+
     def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
         evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
         spec = importlib.util.spec_from_file_location("navigation_evidence", evidence_path)

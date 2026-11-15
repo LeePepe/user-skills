@@ -244,6 +244,17 @@ def rendered_gallery_errors(root):
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f'{path.name}: invalid rendered surface: {error}')
     errors.extend(portal_errors(root))
+    manifest_path = root / 'manifest.json'
+    if manifest_path.is_file() and not manifest_path.is_symlink():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            parent = root.parent
+            if parent != root and (parent / 'index.html').is_file() and not (parent / 'index.html').is_symlink():
+                sibling_manifests = catalog()._portal_manifests(parent, manifest.get('goal'))
+                if len(sibling_manifests) > 1:
+                    errors.extend(f'portal: {error}' for error in portal_errors(parent))
+        except (OSError, UnicodeError, ValueError, TypeError):
+            pass
     return errors
 
 
@@ -268,8 +279,18 @@ def portal_errors(goal_root):
     errors = [f'index.html: missing {label}' for label, token in required.items() if token not in html]
     if 'aria-hidden="true"' in html and not re.search(r'(?:\.variant-card\[hidden\]|\.variant-card\[aria-hidden=["\']true["\']\])\s*\{[^}]*display\s*:\s*none', html, re.I | re.S):
         errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
-    if 'selectionSummary' in html and ('data-star' not in html or 'data-note' not in html):
-        errors.append('index.html: summary generation omits star or note evidence')
+    if not all(token in html for token in ('SELECT:', 'STAR:', 'NOTES:', '[data-star]', '[data-note]')):
+        errors.append('index.html: executable summary must include SELECT, STAR, and NOTES from star/note controls')
+    groups = re.findall(r'data-group-filter="([^"]+)"[^>]*aria-pressed="([^"]+)"', html)
+    categories = re.findall(r'class="variant-card[^\"]*"[^>]*data-group="([^"]+)"', html)
+    unique_categories = list(dict.fromkeys(categories))
+    if len(unique_categories) > 1:
+        if not groups or groups[0][0] != unique_categories[0] or groups[0][1] != 'true' or not any(group == 'all' and pressed == 'false' for group, pressed in groups):
+            errors.append('index.html: multi-category portal must activate first category and deactivate all tab')
+        for category in unique_categories[1:]:
+            if not re.search(rf'data-group="{re.escape(category)}"[^>]*\bhidden\b[^>]*aria-hidden="true"', html):
+                errors.append(f'index.html: initial cards for category {category} are not hidden')
+                break
     if '"portal": true' in html or '"portal":true' in html:
         try:
             evidence_catalog = catalog()

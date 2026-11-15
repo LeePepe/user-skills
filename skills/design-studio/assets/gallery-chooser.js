@@ -3,19 +3,31 @@
   'use strict';
   function readState(storage, goal) {
     if (!storage) return {};
-    try { const state = JSON.parse(storage.getItem(`design-gallery:${goal}`) || '{}'); return state && typeof state === 'object' && !Array.isArray(state) ? state : {}; } catch { return {}; }
+    try {
+      const state = JSON.parse(storage.getItem(`design-gallery:${goal}`) || '{}');
+      if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
+      return Object.fromEntries(Object.entries(state).filter(([, value]) => value && typeof value === 'object' && !Array.isArray(value)));
+    } catch { return {}; }
   }
   const entryKey = card => JSON.stringify([card.category, card.round, card.id]);
   function updateState(state, card, field, value) {
-    const next = Object.assign({}, state);
+    const next = Object.fromEntries(Object.entries(state || {}).filter(([, item]) => item && typeof item === 'object'));
     if (field === 'selected' && value) Object.entries(next).forEach(([key, old]) => { if (old.category === card.category) next[key] = {...old, selected: false}; });
     const key = entryKey(card); next[key] = {...next[key], category: card.category, round: card.round, id: card.id, [field]: value}; return next;
   }
   function selectionSummary(goal, state, root) {
-    const entries = Object.values(state || {}), label = s => `r${s.round}/${s.id}`;
-    const selected = entries.filter(s => s.selected === true), starred = entries.filter(s => s.starred === true);
-    if (root) root.querySelectorAll('.variant-card').forEach(node => { const card = node.__galleryCard; if (!card || card.reference) return; const key = entryKey(card), value = state[key] || {}; const note = node.querySelector('[data-note]')?.value.trim(); if (node.querySelector('[data-select]')?.checked) value.selected = true; if (node.querySelector('[data-star]')?.checked) value.starred = true; if (note) value.notes = note; if (value.selected || value.starred || value.notes) entries.push({...value, category: card.category, round: card.round, id: card.id}); });
-    const all = entries.length ? entries : [], categories = [...new Set(all.map(s => s.category).filter(Boolean))].sort(); const lines = [`Goal: ${goal}`];
+    const byKey = new Map(Object.entries(state || {}).filter(([, item]) => item && typeof item === 'object').map(([key, item]) => [key, {...item}]));
+    if (root) root.querySelectorAll('.variant-card').forEach(node => {
+      const card = node.__galleryCard; if (!card || card.reference) return;
+      const key = entryKey(card), value = {...(byKey.get(key) || {}), category: card.category, round: card.round, id: card.id};
+      const select = node.querySelector('[data-select]'), star = node.querySelector('[data-star]'), note = node.querySelector('[data-note]');
+      if (select) value.selected = !!select.checked;
+      if (star) value.starred = !!star.checked;
+      if (note) value.notes = note.value.trim();
+      byKey.set(key, value);
+    });
+    const all = [...byKey.values()], label = s => `r${s.round}/${s.id}`, categories = [...new Set(all.map(s => s.category).filter(Boolean))].sort();
+    const lines = [`Goal: ${goal}`];
     categories.forEach(category => { const scoped = all.filter(s => s.category === category); lines.push(`Category: ${category}`, `SELECT: ${scoped.filter(s => s.selected === true).map(label).join(', ') || 'none'}`, `STAR: ${scoped.filter(s => s.starred === true).map(label).join(', ') || 'none'}`); });
     if (!categories.length) lines.push('SELECT: none', 'STAR: none');
     lines.push('NOTES:'); all.filter(s => typeof s.notes === 'string' && s.notes.trim()).forEach(s => lines.push(`${label(s)}: ${s.notes.trim()}`)); return lines.join('\n');
@@ -25,13 +37,13 @@
   if (typeof document === 'undefined') return;
   const config = JSON.parse(document.getElementById('gallery-config').textContent), root = document.getElementById(config.portal ? 'portal-grid' : 'variants');
   const articles = [...root.children], cards = new Map(articles.map((node, i) => { node.__galleryCard = config.cards[i]; return [node, config.cards[i]]; }));
-  const status = document.getElementById('status'), telemetry = document.getElementById('selection-telemetry'); let group = config.portal ? config.firstGroup : 'all', platform = 'all', theme = 'light', mobileWeb = false;
+  const status = document.getElementById('status'), telemetry = document.getElementById('selection-telemetry'); let group = config.portal ? config.firstGroup : 'all', platform = 'all', theme = 'light', mobileWeb = false, memoryState = {};
   function storage() { try { return window.localStorage; } catch { return null; } }
-  function currentState() { return readState(storage(), config.goal); }
+  function currentState() { const stored = readState(storage(), config.goal); return Object.keys(stored).length ? {...memoryState, ...stored} : {...memoryState}; }
   function updateTelemetry(state) { if (!telemetry) return; const values = Object.values(state || {}); telemetry.textContent = `已记录 ${values.filter(s => typeof s.notes === 'string' && s.notes.trim()).length} 条观察 · ${values.filter(s => s.starred === true).length} 个收藏 · ${values.filter(s => s.selected === true).length} 个选择`; }
-  function restoreControls() { const state = currentState(); cards.forEach((card, node) => { if (card.reference) return; const value = state[entryKey(card)] || {}; node.querySelector('[data-select]').checked = !!value.selected; node.querySelector('[data-star]').checked = !!value.starred; node.querySelector('[data-note]').value = value.notes || ''; }); updateTelemetry(state); filter(); }
+  function restoreControls() { const state = currentState(); memoryState = {...state}; cards.forEach((card, node) => { if (card.reference) return; const value = state[entryKey(card)] || {}; node.querySelector('[data-select]').checked = !!value.selected; node.querySelector('[data-star]').checked = !!value.starred; node.querySelector('[data-note]').value = value.notes || ''; }); updateTelemetry(state); filter(); }
   root.addEventListener('input', persist); root.addEventListener('change', persist);
-  function persist(event) { const node = event.target.closest('.variant-card'), card = cards.get(node), input = event.target; if (!card || card.reference) return; const field = input.hasAttribute('data-select') ? 'selected' : input.hasAttribute('data-star') ? 'starred' : input.hasAttribute('data-note') ? 'notes' : null; if (!field) return; const state = updateState(currentState(), card, field, field === 'notes' ? input.value : input.checked); try { const store = storage(); if (!store) throw new Error('Storage unavailable'); store.setItem(`design-gallery:${config.goal}`, JSON.stringify(state)); restoreControls(); } catch { updateTelemetry(state); status.textContent = 'Local storage unavailable — changes cannot persist in this browser context.'; } }
+  function persist(event) { const node = event.target.closest('.variant-card'), card = cards.get(node), input = event.target; if (!card || card.reference) return; const field = input.hasAttribute('data-select') ? 'selected' : input.hasAttribute('data-star') ? 'starred' : input.hasAttribute('data-note') ? 'notes' : null; if (!field) return; const state = updateState(currentState(), card, field, field === 'notes' ? input.value : input.checked); memoryState = state; try { const store = storage(); if (!store) throw new Error('Storage unavailable'); store.setItem(`design-gallery:${config.goal}`, JSON.stringify(state)); } catch { status.textContent = 'Local storage unavailable — changes cannot persist in this browser context.'; } restoreControls(); }
   function applyFrame(frame) { try { const doc = frame.contentDocument; if (!doc?.body) return; doc.documentElement.dataset.theme = theme; doc.body.dataset.theme = theme; } catch { status.textContent = 'Preview appearance unavailable across origins; open via a same-origin HTTP server.'; } }
   function applyTheme(value) { theme = value; document.body.dataset.theme = theme; root.querySelectorAll('iframe').forEach(applyFrame); }
   function fitFrames() { root.querySelectorAll('.device-bezel').forEach(bezel => { const card = bezel.closest('.variant-card'), m = frameMetrics(bezel.dataset.frameMode, mobileWeb, card.clientWidth); bezel.style.setProperty('--frame-width', `${m.width}px`); bezel.style.setProperty('--frame-height', `${m.height}px`); bezel.style.setProperty('--preview-scale', m.scale); }); }
