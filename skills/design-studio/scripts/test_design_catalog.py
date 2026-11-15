@@ -90,6 +90,89 @@ class DesignCatalogTests(unittest.TestCase):
             (root / 'index.html').write_text(shell + article('<p class="variant-summary">This English summary is long enough</p>'), encoding='utf-8')
             self.assertTrue(any('Chinese text' in error for error in EVIDENCE.portal_errors(root)))
 
+    def test_summary_wrappers_and_duplicate_fragments_are_plain_single_nodes(self):
+        chooser = DESIGN_CATALOG.CHOOSER
+        text = '围绕真实布局组织任务观察，保持选择路径清晰。'
+        manifest = {'goal': 'summary', 'round': 1, 'platform': 'web', 'variants': []}
+        for value in (text, f'<p class="variant-summary">{text}</p>',
+                      f'<header><p class="variant-summary">{text}</p></header><p class="variant-summary">{text}</p>'):
+            with self.subTest(value=value):
+                variant = {'id': 'v01', 'summary': value}
+                self.assertEqual(chooser._summary_for(manifest, variant), text)
+                card = {'category': 'A', 'round': 1, 'id': 'v01', 'platform': 'web', 'pills': [],
+                        'title': '真实标题', 'src': 'v01.html', 'reference': False, 'summary': value}
+                html = chooser.card_html(card)
+                surface = EVIDENCE.RenderedSurface(html)
+                self.assertEqual(sum('variant-summary' in attrs.get('class', '').split() for _, attrs in surface.nodes), 1)
+                self.assertIn(f'<p class="variant-summary">{text}</p>', html)
+                self.assertNotIn('&lt;p', html)
+
+    def test_portal_gate_behavior_and_composite_binding_mutations(self):
+        chooser = DESIGN_CATALOG.CHOOSER
+        manifests = [{'goal': 'gate', 'category': category, 'round': 2, 'platform': 'web', '_path': category,
+                      'variants': [{'id': 'v01', 'title': title, 'summary': summary, 'p0': 'observe', 'axis_y': 'rail', 'archetype': 'declared'}]}
+                     for category, title, summary in [('A', 'Alpha', '使用任务轨道展示真实观察，突出下一步决策。'),
+                                                      ('B', 'Beta', '使用独立内容面板比较实际记录，保持备注归属。')]]
+        html = chooser.render('gate', manifests, '', portal=True)
+        mutations = [
+            ('only one', html.replace('<p class="variant-summary">', '<p class="variant-summary">第二段真实摘要不应重复插入。</p><p class="variant-summary">', 1)),
+            *[(label, html.replace(f'{attr}="A/v01{suffix}"', f'{attr}="{bad}{suffix}"', 1))
+              for attr, suffix, label in [('data-star', '', 'data-star'), ('data-note', '', 'data-note'),
+                                          ('value', '', 'select value'), ('aria-label', ' Notes', 'aria-label'),
+                                          ('data-variant', '', 'data-variant')]
+              for bad in ('v01', 'B/v01')],
+            ('runtime', html.replace("return lines.join('\\n');", "return lines.join('\\n') + '\\nNOTES:\\nflattened';")),
+            ('runtime', html.replace('const scoped = all.filter(s => s.category === category)', 'const scoped = all')),
+            ('runtime', html.replace("return lines.join('\\n');", "const exports = lines; exports.push('NOTES:', 'flat'); return exports.join('\\n');")),
+            *[(attr, html.replace(f'{attr}="A/v01"', attr, 1)) for attr in ('data-star', 'data-note')],
+            ('runtime', html.replace('root, config.cards)', 'root)')),
+            ('runtime', html.replace('const explicitCards = activeCards !== undefined', 'const explicitCards = false')),
+            ('runtime', html.replace('const text = selectionSummary(config.goal, currentState(), root, config.cards)',
+                                     "const text = (false ? selectionSummary(config.goal, currentState(), root, config.cards) : 'legacy flat summary')")),
+        ]
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory); index = root / 'index.html'
+            index.write_text(html, encoding='utf-8')
+            self.assertEqual(EVIDENCE.portal_errors(root), [])
+            for label, mutated in mutations:
+                with self.subTest(label=label, mutation=mutated[-250:]):
+                    self.assertNotEqual(mutated, html)
+                    index.write_text(mutated, encoding='utf-8')
+                    self.assertTrue(any(label in error for error in EVIDENCE.portal_errors(root)), label)
+
+    def test_hub_uses_manifest_inventory_for_exports_and_telemetry(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            root = Path(directory)
+            for category in ('A', 'B'):
+                child = root / 'goal' / category; child.mkdir(parents=True)
+                manifest = {'schema': 'design-gallery/v2', 'goal': 'goal', 'category': category, 'round': 2, 'platform': 'web',
+                            'variants': [{'id': 'v01', 'title': category + ' title', 'p0': 'task', 'axis_y': 'rail', 'archetype': 'declared'}]}
+                (child / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+            html = DESIGN_CATALOG.CHOOSER.render_demos_hub(root, '')
+            config = json.loads(re.search(r'<script id="hub-config"[^>]*>(.*?)</script>', html, re.S).group(1))
+            self.assertEqual([(c['category'], c['id']) for c in config[0]['cards']], [('A', 'v01'), ('B', 'v01')])
+            self.assertTrue(all(not c['reference'] for c in config[0]['cards']))
+            scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
+            probe = """const vm = require('node:vm'), assert = require('node:assert/strict');
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const cards = input.config[0].cards, key = c => JSON.stringify([c.category,c.round,c.id]);
+const state = Object.fromEntries(cards.map(c => [key(c), {...c,selected:true,starred:true,notes:c.category+' note'}]));
+state.stale = {category:'B',round:4,id:'v04',selected:true,starred:true,notes:'STALE'};
+const telemetry = {}, area = {}, events = {};
+const context = {window:{addEventListener(){}},document:{getElementById:id=>id==='hub-config'?{textContent:JSON.stringify(input.config)}:id==='hub-summary-text'?area:null,querySelector:()=>telemetry,addEventListener:(k,fn)=>events[k]=fn},localStorage:{getItem:k=>k==='design-gallery:goal'?JSON.stringify(state):null,length:0},CSS:{escape:s=>s},navigator:{clipboard:{writeText:text=>context.copied=text}}};
+vm.createContext(context); input.scripts.forEach(s=>vm.runInContext(s,context,{timeout:1000}));
+assert.equal(telemetry.textContent,'已记录 2 条观察 · 2 个收藏 · 2 个选择');
+context.event={target:{closest:()=>({dataset:{copyGoal:'goal'}})}}; context.click=events.click;
+vm.runInContext('click(event)',context,{timeout:1000});
+assert.match(context.copied,/A\\/v01 \\(A title\\): A note/); assert.match(context.copied,/B\\/v01 \\(B title\\): B note/);
+assert.doesNotMatch(context.copied,/v04|STALE/);
+input.config[0].cards=[]; input.scripts.forEach(s=>vm.runInContext(s,context,{timeout:1000}));
+context.click=events.click; vm.runInContext('click(event)',context,{timeout:1000});
+assert.equal(context.copied,'Goal: goal\\nSELECT: none\\nSTAR: none\\nNOTES: none');
+assert.equal(telemetry.textContent,'已记录 0 条观察 · 0 个收藏 · 0 个选择');"""
+            result = subprocess.run(['node', '-e', probe], input=json.dumps({'config': config, 'scripts': scripts}), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_search_prompts(self):
         for query, expected in (
             ("揭角", "MP-001"),

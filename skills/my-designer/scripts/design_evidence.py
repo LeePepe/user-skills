@@ -11,6 +11,7 @@ import itertools
 import json
 from pathlib import Path
 import re
+import subprocess
 from urllib.parse import unquote, urlsplit
 
 CATALOG_PATH = Path(__file__).resolve().parents[2] / 'design-studio' / 'scripts' / 'design_catalog.py'
@@ -410,19 +411,40 @@ def portal_errors(goal_root):
         errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
     if not all(token in html for token in ('SELECT:', 'STAR:', 'NOTES:', '[data-star]', '[data-note]')):
         errors.append('index.html: executable summary must include SELECT, STAR, and NOTES from star/note controls')
-    if 'Category: ${category}' not in html or '  - ${label(s)} (${s.title || s.id}): ${s.notes.trim()}' not in html:
-        errors.append('index.html: runtime summary must segment notes inside each category block')
-    if re.search(r"lines\.push\(['\"]NOTES:\s*['\"]\)\s*;[^;]*all\.filter", html):
-        errors.append('index.html: runtime summary must not flatten NOTES outside category blocks')
+    scripts = [body for attrs, body in re.findall(r'<script\b([^>]*)>(.*?)</script>', html, re.I | re.S)
+               if not re.search(r'type=["\']application/json["\']', attrs, re.I)]
+    runtime = '\n'.join(scripts)
+    if not re.search(r'selectionSummary\(\s*config\.goal\s*,\s*currentState\(\)\s*,\s*root\s*,\s*config\.cards\s*\)', runtime):
+        errors.append('index.html: runtime copy-summary must pass explicit config.cards')
+    if not all(re.search(rf'function\s+{name}\s*\(', runtime) for name in ('selectionSummary', 'updateTelemetry')):
+        errors.append('index.html: runtime summary/telemetry identifiers are missing')
+    try:
+        if not runtime or len(runtime) > 512_000:
+            raise ValueError('missing or oversized embedded runtime')
+        probe = subprocess.run(['node', str(CATALOG_PATH.with_name('gallery_chooser_test.cjs')), '--verify-runtime'],
+                               input=json.dumps({'source': runtime}), text=True, capture_output=True, timeout=5)
+        if probe.returncode:
+            errors.append('index.html: runtime behavior failed active inventory, category notes or control/telemetry verification')
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        errors.append(f'index.html: runtime behavioral verification unavailable: {error}')
+    try:
+        config_match = re.search(r'<script id="gallery-config"[^>]*>(.*?)</script>', html, re.S)
+        config_cards = json.loads(config_match.group(1)).get('cards', []) if config_match else []
+        if not isinstance(config_cards, list):
+            raise ValueError('cards must be an array')
+    except (ValueError, TypeError, AttributeError):
+        config_cards = []
+        errors.append('index.html: invalid gallery-config inventory')
     cards = list(re.finditer(r'<article\b[^>]*class="variant-card[^\"]*"[^>]*>.*?</article>', html, re.I | re.S))
     summaries_by_category = {}
-    for match in cards:
+    for index, match in enumerate(cards):
         card = match.group(0)
         card_class = re.search(r'class="([^\"]*)"', card, re.I)
         category_match = re.search(r'data-group="([^\"]+)"', card, re.I)
         summary_matches = list(re.finditer(r'<p\b[^>]*class="[^"]*\bvariant-summary\b[^"]*"[^>]*>(.*?)</p>', card, re.I | re.S))
         summary_match = summary_matches[0] if summary_matches else None
-        if len(summary_matches) > 1:
+        nodes = RenderedSurface(card).nodes
+        if sum('variant-summary' in attrs.get('class', '').split() for _, attrs in nodes) > 1:
             errors.append('index.html: every variant-card may contain only one variant-summary')
         header_end = card.lower().find('</header>')
         bezel_start = card.lower().find('<div class="device-bezel"')
@@ -440,16 +462,22 @@ def portal_errors(goal_root):
             category = category_match.group(1) if category_match else ''
             summaries_by_category.setdefault(category, []).append(summary)
             variant_match = re.search(r'data-variant="([^"]+)"', card, re.I)
-            expected = f'{category}/{variant_match.group(1).split("/", 1)[-1]}' if variant_match else ''
-            select_input = re.search(r'<input[^>]*data-select[^>]*>', card, re.I)
-            select_value = re.search(r'\bvalue="([^"]+)"', select_input.group(0), re.I) if select_input else None
+            identity = config_cards[index] if index < len(config_cards) and isinstance(config_cards[index], dict) else {}
+            expected = f'{identity.get("category", category)}/{identity.get("id", variant_match.group(1).split("/", 1)[-1] if variant_match else "")}'
+            if not variant_match or variant_match.group(1) != expected:
+                errors.append(f'index.html: data-variant must use category-prefixed id {expected}')
+            select = [attrs for tag, attrs in nodes if tag == 'input' and 'data-select' in attrs]
+            star = [attrs for tag, attrs in nodes if tag == 'input' and 'data-star' in attrs]
+            note = [attrs for tag, attrs in nodes if tag == 'textarea' and 'data-note' in attrs]
             controls = {
-                'data-star': re.search(r'data-star="([^"]+)"', card, re.I),
-                'data-note': re.search(r'data-note="([^"]+)"', card, re.I),
-                'select value': select_value,
+                'data-star': [attrs.get('data-star') for attrs in star],
+                'data-note': [attrs.get('data-note') for attrs in note],
+                'select value': [attrs.get('value') for attrs in select],
+                'aria-label': [attrs.get('aria-label') for attrs in note],
             }
-            for label, control in controls.items():
-                if not control or control.group(1) != expected:
+            for label, values in controls.items():
+                target = expected + ' Notes' if label == 'aria-label' else expected
+                if values != [target]:
                     errors.append(f'index.html: {label} must use category-prefixed id {expected}')
     for category, summaries in summaries_by_category.items():
         if len(summaries) != len(set(summaries)):

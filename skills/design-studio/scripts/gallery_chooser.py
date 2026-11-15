@@ -1,5 +1,6 @@
 """One card, bezel, and runtime contract for round choosers and goal portals."""
 from html import escape
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
@@ -16,8 +17,33 @@ def frame_mode(manifest):
 _CHINESE = re.compile(r'[\u4e00-\u9fff]')
 
 
+def _summary_text(value):
+    class SummaryParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text, self.summaries, self.current = [], [], None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'p' and 'variant-summary' in dict(attrs).get('class', '').split():
+                self.current = []
+
+        def handle_endtag(self, tag):
+            if tag == 'p' and self.current is not None:
+                self.summaries.append(''.join(self.current).strip())
+                self.current = None
+
+        def handle_data(self, data):
+            self.text.append(data)
+            if self.current is not None:
+                self.current.append(data)
+
+    parser = SummaryParser()
+    parser.feed(str(value or ''))
+    return next((text for text in parser.summaries if text), ''.join(parser.text).strip())
+
+
 def _usable_summary(value):
-    text = str(value or '').strip()
+    text = _summary_text(value)
     return text if len(text) >= 10 and _CHINESE.search(text) else ''
 
 
@@ -115,7 +141,7 @@ def card_html(card, hidden=False):
     return f'''<article class="variant-card{current_class}" data-group="{attr(card['category'])}" data-round="{card['round']}" data-variant="{attr(card['category'] + '/' + card['id'])}" data-platform="{card['platform']}"{hidden_attr}>
 <header><span class="variant-badge">{attr(card['id'])}</span><strong>{attr(card['title'])}</strong>{pills}
 <a target="_blank" rel="noopener" href="{attr(card['src'])}">↗ 全屏打开</a>{prompt_link}</header>
-<p class="variant-summary">{escape(card['summary'])}</p>
+<p class="variant-summary">{escape(_summary_text(card['summary']))}</p>
 <div class="device-bezel" data-frame-mode="{card['platform']}" style="--frame-width:{width}px;--frame-height:{height}px;--preview-scale:{scale}">
 <div class="device-window">{chrome}<iframe loading="eager" src="{attr(card['src'])}" title="{attr(card['title'])}"></iframe>{home}</div></div>
 {controls}</article>'''
@@ -191,18 +217,22 @@ def render_demos_hub(demos_root, tokens):
                             or not isinstance(manifest.get('variants'), list) or not manifest['variants']
                             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', str(category))):
                         continue
-                    items.append((manifest, category))
-                except (OSError, UnicodeError, ValueError, TypeError):
+                    active_cards = cards_for(manifest, reference=False, root_dir=child)
+                    items.append((manifest, category, active_cards))
+                except (OSError, UnicodeError, ValueError, TypeError, KeyError, StopIteration):
                     continue
             if items:
                 goals.append((goal_dir.name, items))
-    cards = []
+    cards, inventories = [], []
     for goal, items in goals:
-        categories = ' · '.join(escape(category) for _, category in items)
-        count = sum(len(manifest['variants']) for manifest, _ in items)
-        platforms = '/'.join(sorted({frame_mode(manifest) for manifest, _ in items}))
+        active_cards = [card for _, _, inventory in items for card in inventory]
+        inventories.append({'goal': goal, 'cards': active_cards})
+        categories = ' · '.join(escape(category) for _, category, _ in items)
+        count = len(active_cards)
+        platforms = '/'.join(sorted({card['platform'] for card in active_cards}))
         safe = escape(goal, quote=True)
         cards.append(f'<article class="demo-goal-card" data-demo-goal="{safe}"><h2>{escape(goal)}</h2><p>{categories} · {count} variants · {platforms}</p><p data-goal-telemetry="{safe}">已记录 0 条观察 · 0 个收藏 · 0 个选择</p><a href="{safe}/index.html">进入画廊 →</a> <button data-copy-goal="{safe}">复制该项目观察摘要</button></article>')
-    config = json.dumps([goal for goal, _ in goals], ensure_ascii=False).replace('<', '\\u003c')
-    runtime = r"""(() => { const goals = JSON.parse(document.getElementById('hub-config').textContent); const safeObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}; const parse = goal => { const merged = {}; for (const key of [`design-gallery:${goal}`, `design-gallery-${goal}`]) { try { Object.assign(merged, safeObject(JSON.parse(localStorage.getItem(key) || '{}'))); } catch {} } if (goal === 'aidash-cards-redesign') { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i) || ''; if (!key.startsWith('aidash-cards-r2:')) continue; const parts = key.slice('aidash-cards-r2:'.length).split(':'); if (parts[0] === 'selection' && parts[1]) { const category = parts[1].replace(/^select-/, ''), id = String(localStorage.getItem(key) || ''); if (id) { const entry = JSON.stringify([category, 2, id]); merged[entry] = {...merged[entry], category, round: 2, id, selected: true}; } } else if ((parts[0] === 'star' || parts[0] === 'note') && parts.length >= 3) { const category = parts[1], id = parts.slice(2).join(':'), entry = JSON.stringify([category, 2, id]), item = {...merged[entry], category, round: 2, id}; if (parts[0] === 'star' && localStorage.getItem(key) === '1') item.starred = true; if (parts[0] === 'note') item.notes = String(localStorage.getItem(key) || ''); merged[entry] = item; } } } return merged; }; const summary = (goal, state) => { const values = Object.values(state), label = s => `${s.category}/${s.id}`, categories = [...new Set(values.map(s => s.category).filter(Boolean))].sort(), lines = [`Goal: ${goal}`]; categories.forEach(category => { const scoped = values.filter(s => s.category === category); lines.push(`Category: ${category}`, `SELECT: ${scoped.filter(s => s.selected === true).map(label).join(', ') || 'none'}`, `STAR: ${scoped.filter(s => s.starred === true).map(label).join(', ') || 'none'}`, 'NOTES:'); scoped.filter(s => typeof s.notes === 'string' && s.notes.trim()).forEach(s => lines.push(`  - ${label(s)} (${s.title || s.id}): ${s.notes.trim()}`)); }); return lines.join('\n'); }; const update = () => goals.forEach(goal => { let state = {}; try { state = parse(goal); } catch {} const values = Object.values(state), node = document.querySelector(`[data-goal-telemetry="${CSS.escape(goal)}"]`); if (node) node.textContent = `已记录 ${values.filter(s => typeof s.notes === 'string' && s.notes.trim()).length} 条观察 · ${values.filter(s => s.starred === true).length} 个收藏 · ${values.filter(s => s.selected === true).length} 个选择`; }); const copy = async text => { try { await navigator.clipboard.writeText(text); } catch { const area = document.getElementById('hub-summary-text'); area.hidden = false; area.value = text; area.focus(); area.select(); } }; document.addEventListener('click', event => { const button = event.target.closest('[data-copy-goal],#copy-all-demos-summary'); if (!button) return; copy(button.id ? goals.map(goal => summary(goal, parse(goal))).join('\n\n') : summary(button.dataset.copyGoal, parse(button.dataset.copyGoal))); }); window.addEventListener('storage', update); window.addEventListener('pageshow', update); update(); })();"""
-    return f'''<!doctype html><html lang="zh-CN" {ROOT_ATTRS}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design Demos 总目录 · Active Ephemeral Galleries</title>{STRATA_HEAD}<style>.gallery-page .site-header{{isolation:isolate}}.gallery-page .gallery-breadcrumbs{{display:flex;gap:8px;margin-bottom:18px}}.demo-goal-card{{padding:20px;margin:16px 0;border:1px solid var(--border);border-radius:18px;background:var(--white)}}.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{margin-right:12px;min-height:28px;display:inline-flex;align-items:center}}button{{padding:10px 14px}}@media(max-width:480px){{.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{min-height:44px}}}}</style></head><body class="gallery-page"><main class="gallery"><header class="site-header shell"><div class="site-header__bar"><a class="brand" href="/">Lee Pepe</a><nav class="gallery-breadcrumbs site-nav" aria-label="Breadcrumb"><a href="/">Home</a><span>·</span><a href="/demos/">Demos 总目录</a></nav></div></header><h1>Design Demos 总目录 · Active Ephemeral Galleries</h1><div id="demo-goals">{"".join(cards)}</div><button id="copy-all-demos-summary">📋 复制全部项目观察摘要</button><textarea id="hub-summary-text" readonly hidden></textarea></main><script id="hub-config" type="application/json">{config}</script><script>{runtime}</script></body></html>'''
+    config = json.dumps(inventories, ensure_ascii=False).replace('<', '\\u003c')
+    shared_runtime = (ASSETS / 'gallery-chooser.js').read_text(encoding='utf-8')
+    runtime = r"""(() => { const config = JSON.parse(document.getElementById('hub-config').textContent), goals = config.map(item => item.goal), inventories = new Map(config.map(item => [item.goal, item.cards])), {activeItems, telemetryText, selectionSummary} = window.galleryChooser; const safeObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}; const parse = goal => { const merged = {}; for (const key of [`design-gallery:${goal}`, `design-gallery-${goal}`]) { try { Object.assign(merged, safeObject(JSON.parse(localStorage.getItem(key) || '{}'))); } catch {} } if (goal === 'aidash-cards-redesign') { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i) || ''; if (!key.startsWith('aidash-cards-r2:')) continue; const parts = key.slice('aidash-cards-r2:'.length).split(':'); if (parts[0] === 'selection' && parts[1]) { const category = parts[1].replace(/^select-/, ''), id = String(localStorage.getItem(key) || ''); if (id) { const entry = JSON.stringify([category, 2, id]); merged[entry] = {...merged[entry], category, round: 2, id, selected: true}; } } else if ((parts[0] === 'star' || parts[0] === 'note') && parts.length >= 3) { const category = parts[1], id = parts.slice(2).join(':'), entry = JSON.stringify([category, 2, id]), item = {...merged[entry], category, round: 2, id}; if (parts[0] === 'star' && localStorage.getItem(key) === '1') item.starred = true; if (parts[0] === 'note') item.notes = String(localStorage.getItem(key) || ''); merged[entry] = item; } } } return merged; }; const summary = (goal, state) => selectionSummary(goal, state, undefined, inventories.get(goal) || []); const update = () => goals.forEach(goal => { let state = {}; try { state = parse(goal); } catch {} const node = document.querySelector(`[data-goal-telemetry="${CSS.escape(goal)}"]`); if (node) node.textContent = telemetryText(activeItems(state, undefined, inventories.get(goal) || [])); }); const copy = async text => { try { await navigator.clipboard.writeText(text); } catch { const area = document.getElementById('hub-summary-text'); area.hidden = false; area.value = text; area.focus(); area.select(); } }; document.addEventListener('click', event => { const button = event.target.closest('[data-copy-goal],#copy-all-demos-summary'); if (!button) return; copy(button.id ? goals.map(goal => summary(goal, parse(goal))).join('\n\n') : summary(button.dataset.copyGoal, parse(button.dataset.copyGoal))); }); window.addEventListener('storage', update); window.addEventListener('pageshow', update); update(); })();"""
+    return f'''<!doctype html><html lang="zh-CN" {ROOT_ATTRS}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design Demos 总目录 · Active Ephemeral Galleries</title>{STRATA_HEAD}<style>.gallery-page .site-header{{isolation:isolate}}.gallery-page .gallery-breadcrumbs{{display:flex;gap:8px;margin-bottom:18px}}.demo-goal-card{{padding:20px;margin:16px 0;border:1px solid var(--border);border-radius:18px;background:var(--white)}}.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{margin-right:12px;min-height:28px;display:inline-flex;align-items:center}}button{{padding:10px 14px}}@media(max-width:480px){{.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{min-height:44px}}}}</style></head><body class="gallery-page"><main class="gallery"><header class="site-header shell"><div class="site-header__bar"><a class="brand" href="/">Lee Pepe</a><nav class="gallery-breadcrumbs site-nav" aria-label="Breadcrumb"><a href="/">Home</a><span>·</span><a href="/demos/">Demos 总目录</a></nav></div></header><h1>Design Demos 总目录 · Active Ephemeral Galleries</h1><div id="demo-goals">{"".join(cards)}</div><button id="copy-all-demos-summary">📋 复制全部项目观察摘要</button><textarea id="hub-summary-text" readonly hidden></textarea></main><script id="hub-config" type="application/json">{config}</script><script>{shared_runtime}</script><script>{runtime}</script></body></html>'''

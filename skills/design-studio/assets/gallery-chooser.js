@@ -15,7 +15,7 @@
     if (field === 'selected' && value) Object.entries(next).forEach(([key, old]) => { if (old.category === card.category) next[key] = {...old, selected: false}; });
     const key = entryKey(card); next[key] = {...next[key], category: card.category, round: card.round, id: card.id, [field]: value}; return next;
   }
-  function selectionSummary(goal, state, root, activeCards) {
+  function activeItems(state, root, activeCards) {
     const stored = new Map(Object.entries(state || {}).filter(([, item]) => item && typeof item === 'object').map(([key, item]) => [key, {...item}]));
     const explicitCards = activeCards !== undefined;
     const cards = explicitCards ? (activeCards || []) : root ? [...root.querySelectorAll('.variant-card')].map(node => node.__galleryCard).filter(Boolean) : null;
@@ -23,12 +23,13 @@
     if (cards) {
       active = cards.filter(card => card && !card.reference);
     } else {
-      const latest = new Map();
-      stored.forEach(item => { if (!item.category || !item.id) return; const key = `${item.category}/${item.id}`, old = latest.get(key); if (!old || Number(item.round) >= Number(old.round)) latest.set(key, item); });
+      const rounds = new Map(), latest = new Map();
+      stored.forEach(item => { if (item.category && item.id && !item.reference) rounds.set(item.category, Math.max(rounds.get(item.category) ?? -Infinity, Number(item.round) || 0)); });
+      stored.forEach(item => { if (!item.category || !item.id || item.reference || (Number(item.round) || 0) !== rounds.get(item.category)) return; latest.set(`${item.category}/${item.id}`, item); });
       active = [...latest.values()];
     }
-    const all = active.map(card => {
-      const key = entryKey(card), item = {...(stored.get(key) || {}), category: card.category, round: card.round, id: card.id,
+    return active.map(card => {
+      const key = entryKey(card), item = {...card, ...(stored.get(key) || {}), category: card.category, round: card.round, id: card.id,
         title: card.title || stored.get(key)?.title || card.id};
       if (root) {
         const node = [...root.querySelectorAll('.variant-card')].find(candidate => candidate.__galleryCard && entryKey(candidate.__galleryCard) === key);
@@ -37,22 +38,28 @@
       }
       return item;
     });
+  }
+  function telemetryText(items) { return `已记录 ${items.filter(s => typeof s.notes === 'string' && s.notes.trim()).length} 条观察 · ${items.filter(s => s.starred === true).length} 个收藏 · ${items.filter(s => s.selected === true).length} 个选择`; }
+  function selectionSummary(goal, state, root, activeCards) {
+    const all = activeItems(state, root, activeCards);
     const label = s => `${s.category}/${s.id}`, categories = [...new Set(all.map(s => s.category).filter(Boolean))].sort();
     const lines = [`Goal: ${goal}`];
-    categories.forEach(category => { const scoped = all.filter(s => s.category === category); lines.push(`Category: ${category}`, `SELECT: ${scoped.filter(s => s.selected === true).map(label).join(', ') || 'none'}`, `STAR: ${scoped.filter(s => s.starred === true).map(label).join(', ') || 'none'}`, 'NOTES:');
-      scoped.filter(s => typeof s.notes === 'string' && s.notes.trim()).forEach(s => lines.push(`  - ${label(s)} (${s.title || s.id}): ${s.notes.trim()}`)); });
-    if (!categories.length) lines.push('SELECT: none', 'STAR: none');
+    categories.forEach(category => { const scoped = all.filter(s => s.category === category), notes = scoped.filter(s => typeof s.notes === 'string' && s.notes.trim()); lines.push(`Category: ${category}`, `SELECT: ${scoped.filter(s => s.selected === true).map(label).join(', ') || 'none'}`, `STAR: ${scoped.filter(s => s.starred === true).map(label).join(', ') || 'none'}`, notes.length ? 'NOTES:' : 'NOTES: none');
+      notes.forEach(s => lines.push(`  - ${label(s)} (${s.title || s.id}): ${s.notes.trim()}`)); });
+    if (!categories.length) lines.push('SELECT: none', 'STAR: none', 'NOTES: none');
     return lines.join('\n');
   }
   function frameMetrics(mode, mobileWeb, cardWidth) { const compact = mode === 'mobile' || (mobileWeb && mode === 'web'); const width = compact ? 390 : 1280, height = compact ? 844 : 800, padding = mode === 'mobile' ? 12 : 10; return {width, height, padding, scale: Math.max(.05, Math.min(compact ? .8 : .46, (cardWidth - 24 - padding * 2) / width)), chrome: mode === 'mobile' ? 0 : 28}; }
-  if (typeof module !== 'undefined') module.exports = {readState, entryKey, updateState, selectionSummary, frameMetrics};
-  if (typeof document === 'undefined') return;
+  const api = {readState, entryKey, updateState, activeItems, telemetryText, selectionSummary, frameMetrics};
+  if (typeof module !== 'undefined') module.exports = api;
+  if (typeof window !== 'undefined') window.galleryChooser = api;
+  if (typeof document === 'undefined' || !document.getElementById('gallery-config')) return;
   const config = JSON.parse(document.getElementById('gallery-config').textContent), root = document.getElementById(config.portal ? 'portal-grid' : 'variants');
   const articles = [...root.children], cards = new Map(articles.map((node, i) => { node.__galleryCard = config.cards[i]; return [node, config.cards[i]]; }));
   const status = document.getElementById('status'), telemetry = document.getElementById('selection-telemetry'); let group = config.portal ? config.firstGroup : 'all', platform = 'all', theme = 'light', mobileWeb = false, memoryState = {};
   function storage() { try { return window.localStorage; } catch { return null; } }
   function currentState() { const stored = readState(storage(), config.goal); return Object.keys(stored).length ? {...memoryState, ...stored} : {...memoryState}; }
-  function updateTelemetry(state) { if (!telemetry) return; const active = new Set(config.cards.filter(card => card && !card.reference).map(entryKey)); const values = Object.entries(state || {}).filter(([key, item]) => active.has(key) && item && typeof item === 'object').map(([, item]) => item); telemetry.textContent = `已记录 ${values.filter(s => typeof s.notes === 'string' && s.notes.trim()).length} 条观察 · ${values.filter(s => s.starred === true).length} 个收藏 · ${values.filter(s => s.selected === true).length} 个选择`; }
+  function updateTelemetry(state) { if (telemetry) telemetry.textContent = telemetryText(activeItems(state, root, config.cards)); }
   function restoreControls() { const state = currentState(); memoryState = {...state}; cards.forEach((card, node) => { if (card.reference) return; const value = state[entryKey(card)] || {}; node.querySelector('[data-select]').checked = !!value.selected; node.querySelector('[data-star]').checked = !!value.starred; node.querySelector('[data-note]').value = value.notes || ''; }); updateTelemetry(state); filter(); }
   root.addEventListener('input', persist); root.addEventListener('change', persist);
   function persist(event) { const node = event.target.closest('.variant-card'), card = cards.get(node), input = event.target; if (!card || card.reference) return; const field = input.hasAttribute('data-select') ? 'selected' : input.hasAttribute('data-star') ? 'starred' : input.hasAttribute('data-note') ? 'notes' : null; if (!field) return; const state = updateState(currentState(), card, field, field === 'notes' ? input.value : input.checked); memoryState = state; try { const store = storage(); if (!store) throw new Error('Storage unavailable'); store.setItem(`design-gallery:${config.goal}`, JSON.stringify(state)); } catch { status.textContent = 'Local storage unavailable — changes cannot persist in this browser context.'; } restoreControls(); }
