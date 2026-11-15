@@ -145,7 +145,7 @@ def collect_prs(repos: tuple[str, ...], target: date, *, runner: Callable[..., A
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
                 warnings.append(f"PR metrics unavailable: {repo}")
                 detail = {}
-            rows.append({"repo": _repo_name(repo), "title": pr.get("title", ""), "url": pr.get("html_url", ""), **{k: detail.get(k) for k in ("additions", "deletions", "changed_files")}})
+            rows.append({"repo": repo, "number": number, "title": pr.get("title", ""), "url": pr.get("html_url", ""), **{k: detail.get(k) for k in ("additions", "deletions", "changed_files")}})
     return rows, warnings
 
 def _ledger_header(lines: list[str]) -> dict[str, str]:
@@ -211,11 +211,11 @@ def _ledger_snapshot(path: Path, target: date, client: Any, cache: dict[str, Any
         if not fields.get("note"):
             fields["note"] = " · ".join(part.strip() for part in match["body"].split(" | ") if "=" not in part)
         fields.update({"timestamp": stamp.isoformat(), "line": line.strip(), "goal": path.parent.name,
-                       "title": title, "identifier": identifier, "ledger": path.as_uri()})
+                       "title": title, "identifier": identifier, "ledger": path.as_uri(), "repo": header.get("repo", ""), "project": header.get("project", "")})
         events.append(fields)
     events.sort(key=lambda event: _timestamp(event["timestamp"]))
     return {"goal": path.parent.name, "title": title, "identifier": identifier, "ledger": path.as_uri(),
-            "header": header, "tasks": _ledger_tasks(lines), "events": events}, warnings
+            "header": header, "repo": header.get("repo", ""), "project": header.get("project", ""), "tasks": _ledger_tasks(lines), "events": events}, warnings
 
 def _parse_ledger(path: Path, target: date) -> tuple[list[dict[str, str]], list[str]]:
     snapshot, warnings = _ledger_snapshot(path, target, None, {})
@@ -261,7 +261,7 @@ def collect_handoff(handoff_root: Path, target: date, *, client: Any = None, sco
             stage = task["state"]
             for event in task_events:
                 stage = event.get("state", event.get("status", stage_events.get(event["EVT"].upper(), stage))).casefold().replace(" ", "_")
-            context = {key: str(snapshot[key]) for key in ("goal", "title", "identifier", "ledger")}
+            context = {key: str(snapshot[key]) for key in ("goal", "title", "identifier", "ledger", "repo", "project")}
             context.update(task); context["state"] = stage
             for field in ("stage", "note", "ref", "pr"):
                 newest = next((event[field] for event in reversed(task_events) if event.get(field)), "")
@@ -323,6 +323,81 @@ def _link(url: Any, label: str) -> str:
     if not re.match(r"^(?:https?://|file:///)", url) or re.search(r"[\s<>]", url): return ""
     return f"[{_plain(label)}]({url.replace('|', '%7C').replace('(', '%28').replace(')', '%29')})"
 
+LAYERS = (
+    ("Products & Apps", "产品与应用", ("voxpocket", "aidash", "financial", "vitalstride", "webiqsearch", "nas", "nascontrol")),
+    ("Shared Foundations", "共享底座", ("shared-design-system", "designsystem", "shared-ci", "shared-telemetry", "raven", "agent-herdr")),
+    ("Engineering Workflows", "工程工作流与技能", ("user-skills", "linear-board", "m2-dispatcher", "personal-m2-assistant", "team-lead", "my-designer", "design-studio", "code-review", "repo-kit", "skill-contract", "workflow-hub")),
+    ("Knowledge & Narrative", "知识沉淀与叙事", ("knowledge-digest", "daily learn", "knowledge", "retro-loop", "story-craft", "save-tool", "leepepe.github.io", "blog demos")),
+)
+REFERENCE_RE = re.compile(r"\bTIA-\d+\b|(?<![\w])#\d+\b")
+PR_URL_RE = re.compile(r"https://github\.com/([^/\s()]+/[^/\s()]+)/pull/(\d+)\b")
+
+def _layer(project: str, item: dict[str, Any]) -> int:
+    def match(text: str, tokens: tuple[str, ...]) -> bool:
+        return any(re.search(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])", text.casefold()) for token in tokens)
+    # A concrete product/foundation/knowledge destination outranks incidental title mentions.
+    destination = " ".join((project, str(item.get("repo") or ""), str(item.get("project") or "")))
+    for index in (0, 1, 3):
+        if match(destination, LAYERS[index][2]): return index
+    context = " ".join(str(item.get(key) or "") for key in ("goal", "title", "subject", "note"))
+    for index in (3, 0, 1, 2):
+        if match(context, LAYERS[index][2]): return index
+    if re.search(r"(?i)\b(?:demo gallery|ui gallery|gallery)\b", context): return 0
+    return 2
+
+def _reference_context(item: dict[str, Any], project: str = "") -> str:
+    text = " ".join(str(item.get(key) or "") for key in ("url", "ref", "pr", "note", "title", "subject"))
+    repo = str(item.get("repo") or "")
+    if repo and not repo.startswith("/") and repo.count("/") == 1: return repo
+    known = PERSONAL_REPOS + ("VitalStride", "WebIQSearch", "Nas", "NasControl", "shared-ci", "shared-telemetry", "raven", "agent-herdr")
+    if repo and _repo_name(repo).casefold() in {token.casefold() for token in known}: return f"LeePepe/{_repo_name(repo)}"
+    match = PR_URL_RE.search(text)
+    if match: return match[1]
+    name = _repo_name(project)
+    if name.casefold() in {token.casefold() for token in known}: return f"LeePepe/{name}"
+    context = " ".join((project, str(item.get("goal") or ""), str(item.get("title") or "")))
+    matches = [token for token in known if re.search(r"(?<![a-z0-9])" + re.escape(token.casefold()) + r"(?![a-z0-9])", context.casefold())]
+    return f"LeePepe/{matches[0]}" if len(matches) == 1 else ""
+
+def _reference_urls(items: list[dict[str, Any]]) -> dict[str, str]:
+    urls = {}
+    for item in items:
+        identifier = str(item.get("identifier") or "")
+        if re.fullmatch(r"TIA-\d+", identifier) and _link(item.get("url"), identifier): urls[identifier] = item["url"]
+        for value in item.values():
+            if not isinstance(value, str): continue
+            for label, url in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", value):
+                if re.fullmatch(r"TIA-\d+", label) and _link(url, label): urls.setdefault(label, url)
+    return urls
+
+def _linked_text(value: Any, issue_urls: dict[str, str], repo: str = "", *, limit: int | None = None) -> str:
+    text = _plain(value)
+    pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(str(value or ""))}
+    if limit is not None:
+        # Do not turn a cut TIA-1234/#1234 token into a different ticket/PR.
+        end = limit
+        for match in REFERENCE_RE.finditer(text):
+            if match.start() < end < match.end(): end = match.start(); break
+        text = text[:end].strip()
+    def replace(match: re.Match[str]) -> str:
+        label = match[0]
+        if label.startswith("TIA-"):
+            return _link(issue_urls.get(label) or f"https://linear.app/tianpeili/issue/{label}", label)
+        url = pr_urls.get(label) or (f"https://github.com/{repo}/pull/{label[1:]}" if repo else "")
+        return _link(url, label) or "PR"
+    # URLs are destinations, not text tokens to rewrite inside a destination.
+    return "".join(_link(part, "链接") if re.match(r"^(?:https?://|file:///)", part) else REFERENCE_RE.sub(replace, part)
+                   for part in re.split(r"((?:https?://|file:///)[^\s]+)", text))
+
+def _source_refs(item: dict[str, Any], issue_urls: dict[str, str], repo: str) -> list[str]:
+    text = " ".join(str(item.get(key) or "") for key in ("identifier", "task", "title", "subject", "note", "ref", "pr"))
+    labels = list(dict.fromkeys(REFERENCE_RE.findall(text)))
+    for match in PR_URL_RE.finditer(text):
+        label = f"#{match[2]}"
+        if label not in labels: labels.append(label)
+    pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(text)}
+    return [_link(pr_urls[label], label) if label in pr_urls else _linked_text(label, issue_urls, repo) for label in labels]
+
 def _brief_title(target: date) -> str:
     yesterday = target - timedelta(days=1)
     return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
@@ -332,6 +407,7 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
     lines = [f"<!-- GTT-LINEAR-DEDUP:daily-brief-{target.isoformat()} -->", "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）", ""]
     entries: dict[str, dict[str, Any]] = {}
     by_identifier = {str(issue.get("identifier")): issue for issue in linear if issue.get("identifier")}
+    issue_urls = _reference_urls([*linear, *commits, *events, *(prs or []), *(ledger_active or [])])
     for index, issue in enumerate(linear):
         if _closed_issue(issue) or _brief_issue(issue): continue
         state = str((issue.get("state") or {}).get("name") or (issue.get("state") or {}).get("type") or "").casefold()
@@ -345,7 +421,8 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         if group:
             key = str(issue.get("identifier") or issue.get("id") or f"linear-{index}")
             entries[key] = {"group": group, "parts": [_item(_issue_context(issue), "Linear TIA")],
-                            "summary": issue.get("title") or key, "action": _link(issue.get("url"), "打开"), "ref": key, "stages": []}
+                            "summary": issue.get("title") or key, "action": _link(issue.get("url") or issue_urls.get(key) or (f"https://linear.app/tianpeili/issue/{key}" if re.fullmatch(r"TIA-\d+", key) else ""), "打开"),
+                            "ref": key, "repo": _reference_context(issue, (issue.get("project") or {}).get("name", "")), "stages": []}
     rank = {"needs": 0, "active": 1, "planned": 2}
     for item in ledger_active or []:
         identifier = item.get("identifier", "")
@@ -357,8 +434,10 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         if key not in entries:
             parts = [_item(_issue_context(bound_issue), "Linear TIA")] if bound_issue else []
             entries[key] = {"group": group, "parts": parts, "summary": (bound_issue or {}).get("title") or item.get("title") or item.get("goal"),
-                            "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"), "stages": []}
+                            "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"),
+                            "repo": _reference_context(item, item.get("goal", "")), "stages": []}
         entry = entries[key]
+        if not entry["repo"]: entry["repo"] = _reference_context(item, item.get("goal", ""))
         if rank[group] < rank[entry["group"]]: entry["group"] = group
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
@@ -368,39 +447,54 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         for entry in entries.values():
             if entry["group"] != group: continue
             number = len(todos) + 1
-            summary = _short(entry["summary"], 25) or "待办"
+            summary = _linked_text(entry["summary"], issue_urls, entry["repo"], limit=25) or "待办"
             refs = " / ".join([entry["ref"], *dict.fromkeys(entry["stages"])])
+            reference = _linked_text(entry["ref"], issue_urls, entry["repo"])
+            if not REFERENCE_RE.search(entry["ref"]): reference = _code(entry["ref"])
+            for stage in dict.fromkeys(entry["stages"]):
+                reference += " · " + (_linked_text(stage, issue_urls, entry["repo"]) if REFERENCE_RE.search(stage) else _code(stage))
             action = entry["action"] or _code(f"@bot {number}")
-            lines.append(f"- [ ] **[{number}] {summary}** · {action} · {_code(refs)}")
+            lines.append(f"- [ ] **[{number}] {summary}** · {action} · {reference}")
             todos.append({"number": number, "text": " · ".join(dict.fromkeys(entry["parts"])), "summary": summary,
                           "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"]))})
     if not todos: lines.append("- 无已核实待办。")
-    rollup: dict[str, list[tuple[str, str]]] = {}
+    rollup: list[list[tuple[str, str, str]]] = [[] for _ in LAYERS]
+    def add_row(project: str, item: dict[str, Any], primary: str, result: Any) -> None:
+        repo = _reference_context(item, project)
+        refs = list(dict.fromkeys([primary, *_source_refs(item, issue_urls, repo)]))
+        rollup[_layer(project, item)].append((_linked_text(project, issue_urls, repo), " · ".join(ref for ref in refs if ref), _linked_text(result, issue_urls, repo, limit=20)))
     for issue in linear:
         if not _issue_is_completed(issue, yesterday): continue
         project = (issue.get("project") or {}).get("name") or "Personal"
-        ref = _link(issue.get("url"), str(issue.get("identifier") or "Linear")) or _code(issue.get("identifier") or issue.get("id") or "Linear")
-        rollup.setdefault(project, []).append((ref, _short(issue.get("title"), 20)))
+        identifier = str(issue.get("identifier") or issue.get("id") or "Linear")
+        ref = _linked_text(identifier, issue_urls) if REFERENCE_RE.search(identifier) else _link(issue.get("url"), identifier) or _code(identifier)
+        add_row(project, issue, ref, issue.get("title"))
     for commit in commits:
-        project = _repo_name(commit["repo"])
-        rollup.setdefault(project, []).append((_code(commit["sha"]), _short(commit["subject"], 20)))
+        add_row(_repo_name(commit["repo"]), commit, _code(commit["sha"]), commit["subject"])
     for pr in prs or []:
-        project = _repo_name(pr["repo"])
-        number = str(pr.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
-        ref = _link(pr.get("url"), f"#{number}" if number.isdigit() else "PR") or "PR"
+        repo = _reference_context(pr, pr["repo"])
+        number = str(pr.get("number") or str(pr.get("url", "")).rstrip("/").rsplit("/", 1)[-1])
+        ref = _link(pr.get("url"), f"#{number}" if number.isdigit() else "PR") or (_linked_text(f"#{number}", issue_urls, repo) if number.isdigit() else "PR")
         metrics = ", ".join(f"{k}={pr[k]}" for k in ("additions", "deletions", "changed_files") if pr.get(k) is not None)
-        if metrics: ref += f" · {_code(metrics)}"
-        rollup.setdefault(project, []).append((ref, _short(pr.get("title"), 20)))
+        add_row(_repo_name(pr["repo"]), pr, ref, pr.get("title"))
+        if metrics:
+            layer = rollup[_layer(_repo_name(pr["repo"]), pr)]
+            project, refs, result = layer[-1]
+            layer[-1] = (project, refs + f" · {_code(metrics)}", result)
     for event in events:
-        ref = event.get("identifier") or event.get("task") or event.get("id") or event.get("EVT", "event")
-        link = _link(event.get("ref") or event.get("pr") or event.get("ledger"), ref) or _code(ref)
+        ref = str(event.get("identifier") or event.get("task") or event.get("id") or event.get("EVT", "event"))
+        repo = _reference_context(event, event.get("goal", ""))
+        link = _linked_text(ref, issue_urls, repo) if REFERENCE_RE.search(ref) else _link(event.get("ref") or event.get("pr") or event.get("ledger"), ref) or _code(ref)
         result = event.get("note") or event.get("title") or event.get("EVT", "完成")
-        rollup.setdefault(event.get("goal", "Handoff"), []).append((link, _short(result, 20)))
-    count = sum(len(rows) for rows in rollup.values())
-    lines += ["", "---", "", f"## 📊 昨日完成 ({yesterday:%m-%d} · {count} 项)", "", "| 项目 | 单据 / PR | 一句话结果 |", "|---|---|---|"]
-    for project, rows in rollup.items():
-        for ref, result in rows: lines.append(f"| **{_plain(project)}** | {ref} | {result} |")
-    if warnings: lines += ["", "**Source warnings:**", *[f"- {_plain(warning)}" for warning in sorted(set(warnings))]]
+        add_row(event.get("goal", "Handoff"), event, link, result)
+    count = sum(len(rows) for rows in rollup)
+    lines += ["", "---", "", f"## 📊 昨日完成 ({yesterday:%m-%d} · {count} 项 · workflow-hub 四大方向)"]
+    for index, ((name, translation, _), rows) in enumerate(zip(LAYERS, rollup), 1):
+        lines += ["", f"### {index}. {name}（{translation} · {len(rows)} 项）", ""]
+        if not rows: lines.append("_无_"); continue
+        lines += ["| 项目 | 单据 / PR | 一句话结果 |", "|---|---|---|"]
+        for project, ref, result in rows: lines.append(f"| **{project}** | {ref} | {result} |")
+    if warnings: lines += ["", "**Source warnings:**", *[f"- {_linked_text(warning, issue_urls)}" for warning in sorted(set(warnings))]]
     return "\n".join(lines).rstrip() + "\n", todos
 
 def _load_linear_client(*, dry_run: bool = False) -> Any:

@@ -107,7 +107,7 @@ class DailyBriefTests(unittest.TestCase):
         markdown, todos = daily_brief.render_brief(TODAY, data, [], [], [])
         self.assertTrue(markdown.startswith(MARKER))
         self.assertEqual(markdown.splitlines()[1], "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）")
-        self.assertIn("## 📊 昨日完成 (11-14 · 1 项)", markdown)
+        self.assertIn("## 📊 昨日完成 (11-14 · 1 项 · workflow-hub 四大方向)", markdown)
         self.assertEqual([row["number"] for row in todos], [1, 2, 3, 4])
         self.assertEqual([re.search(r"TIA-\d+", row["text"])[0] for row in todos], ["TIA-1", "TIA-2", "TIA-3", "TIA-4"])
         self.assertIn("[Personal project] https://linear.app/test/TIA-2", todos[1]["text"])
@@ -115,7 +115,7 @@ class DailyBriefTests(unittest.TestCase):
         self.assertEqual([row["group"] for row in todos], ["needs", "active", "planned", "planned"])
         self.assertIn("- [ ] **[2] Implement**", markdown)
         self.assertIn("- [ ] **[3] Ship**", markdown)
-        self.assertNotIn("###", markdown)
+        self.assertEqual(sum(line.startswith("### ") for line in markdown.splitlines()), 4)
         self.assertNotIn("## 🤖", markdown)
         self.assertNotIn("# " + TITLE, markdown)
 
@@ -145,14 +145,14 @@ class DailyBriefTests(unittest.TestCase):
         lines = markdown.splitlines()
         self.assertEqual(lines[0], MARKER)
         self.assertEqual(lines[1], "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）")
-        self.assertLess(lines.index("---"), lines.index("## 📊 昨日完成 (11-14 · 4 项)"))
-        self.assertEqual([line for line in lines if line.startswith("## ")], [lines[1], "## 📊 昨日完成 (11-14 · 4 项)"])
+        self.assertLess(lines.index("---"), lines.index("## 📊 昨日完成 (11-14 · 4 项 · workflow-hub 四大方向)"))
+        self.assertEqual([line for line in lines if line.startswith("## ")], [lines[1], "## 📊 昨日完成 (11-14 · 4 项 · workflow-hub 四大方向)"])
         todo_lines = [line for line in lines if line.startswith("- [ ]")]
         self.assertEqual(len(todo_lines), len(todos))
         for number, line in enumerate(todo_lines, 1):
-            match = re.fullmatch(r"- \[ \] \*\*\[(\d+)\] (.+)\*\* · (.+) · `([^`]+)`", line)
+            match = re.fullmatch(r"- \[ \] \*\*\[(\d+)\] (.+)\*\* · (.+) · (.+)", line)
             self.assertIsNotNone(match)
-            self.assertEqual(int(match[1]), number); self.assertLessEqual(len(match[2]), 25)
+            self.assertEqual(int(match[1]), number); self.assertLessEqual(len(daily_brief._plain(match[2])), 25)
             self.assertLessEqual(len(re.findall(r"\]\(", match[3])), 1)
             self.assertTrue(match[3].startswith("[") or match[3].startswith("`"))
         self.assertIn("| 项目 | 单据 / PR | 一句话结果 |", markdown)
@@ -162,20 +162,98 @@ class DailyBriefTests(unittest.TestCase):
             cells = row.strip("|").split("|")
             self.assertEqual(len(cells), 3)
             result = cells[2].strip()
-            self.assertLessEqual(len(result), 20); self.assertNotIn("\n", result)
+            self.assertLessEqual(len(daily_brief._plain(result)), 20); self.assertNotIn("\n", result)
         self.assertIn("additions=100, deletions=30, changed_files=5", markdown)
         self.assertIn("T1: in_review/Reviewer", markdown)
-        self.assertFalse(any(line.startswith(">") or line.startswith("###") for line in lines))
+        self.assertFalse(any(line.startswith(">") for line in lines))
+        self.assertEqual(sum(line.startswith("### ") for line in lines), 4)
         self.assertNotIn("## 🤖", markdown); self.assertNotIn("统计口径", markdown)
         self.assertNotIn("Long explanation", markdown)
 
     def test_empty_plan_a_has_honest_zero_rows_and_no_placeholder_actions(self):
         markdown, todos = daily_brief.render_brief(TODAY, [], [], [], [])
         self.assertFalse(todos)
-        self.assertIn("## 📊 昨日完成 (11-14 · 0 项)", markdown)
-        self.assertIn("| 项目 | 单据 / PR | 一句话结果 |\n|---|---|---|", markdown)
+        self.assertIn("## 📊 昨日完成 (11-14 · 0 项 · workflow-hub 四大方向)", markdown)
+        self.assertEqual(markdown.splitlines().count("_无_"), 4)
+        self.assertNotIn("| 项目 |", markdown)
         self.assertNotIn("- [ ]", markdown)
         self.assertNotIn("| **", markdown)
+
+    def test_four_layers_classify_mixed_sources_and_generic_projects_by_intent(self):
+        data = [issue("TIA-1", "Ship app", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"}),
+                issue("TIA-2", "[Daily Learn 2026-11-14] optics", "Done", "completed", completedAt="2026-11-14", project={"name": "Agent Workflow"})]
+        commits = [{"repo": "shared-ci", "sha": "abc", "subject": "Fix verification"},
+                   {"repo": "user-skills", "sha": "def", "subject": "Tighten linear-board"}]
+        prs = [{"repo": "Other/leepepe.github.io", "title": "Blog Demos", "url": "https://github.com/Other/leepepe.github.io/pull/10"}]
+        events = [{"goal": "vitalstride-gallery", "note": "Ship product", "id": "E1", "ledger": "file:///tmp/product/ledger.md"},
+                  {"goal": "retro-loop-upgrade", "note": "Digest evidence", "id": "E2", "ledger": "file:///tmp/story/ledger.md"},
+                  {"goal": "unknown-handoff", "note": "Validated", "id": "E3", "ledger": "file:///tmp/work/ledger.md"}]
+        markdown, _ = daily_brief.render_brief(TODAY, data, commits, events, [], prs)
+        headings = [line for line in markdown.splitlines() if line.startswith("### ")]
+        self.assertEqual(headings, ["### 1. Products & Apps（产品与应用 · 2 项）", "### 2. Shared Foundations（共享底座 · 1 项）",
+                                    "### 3. Engineering Workflows（工程工作流与技能 · 2 项）", "### 4. Knowledge & Narrative（知识沉淀与叙事 · 3 项）"])
+        sections = re.split(r"### \d\. ", markdown)[1:]
+        for section, projects in zip(sections, (("VoxPocket", "vitalstride-gallery"), ("shared-ci",), ("user-skills", "unknown-handoff"), ("Agent Workflow", "leepepe.github.io", "retro-loop-upgrade"))):
+            for project in projects: self.assertIn(f"| **{project}** |", section)
+        # All documented concrete destinations and hyphenated handoff slugs map consistently.
+        for names, expected in ((("Financial", "AIDash", "WebIQSearch", "Nas", "NasControl"), 0),
+                                (("shared-design-system", "DesignSystem", "shared-telemetry", "raven", "agent-herdr"), 1),
+                                (("m2-dispatcher", "personal-m2-assistant", "team-lead", "my-designer", "design-studio", "code-review", "repo-kit", "skill-contract"), 2),
+                                (("knowledge-digest", "story-craft", "save-tool", "Knowledge"), 3)):
+            for name in names:
+                with self.subTest(name=name):
+                    rendered, _ = daily_brief.render_brief(TODAY, [], [], [{"goal": name + "-upgrade", "note": "Validated", "id": "E1"}], [])
+                    self.assertIn(f"| **{name}-upgrade** |", re.split(r"### \d\. ", rendered)[expected + 1])
+        explicit, _ = daily_brief.render_brief(TODAY, [], [{"repo": "shared-design-system", "sha": "xyz", "subject": "Support VoxPocket"}], [], [])
+        self.assertIn("shared-design-system", explicit.split("### 2.")[1].split("### 3.")[0])
+
+    def test_clickable_refs_in_todos_and_all_completed_sources_preserve_canonical_urls(self):
+        canonical = "https://linear.app/custom/issue/TIA-1/goal"
+        data = [issue("TIA-1", "TIA-1 fix #21", "In Progress", "started", url=canonical, project={"name": "VoxPocket"}),
+                issue("TIA-2", "TIA-3 fix #22", "Done", "completed", completedAt="2026-11-14", url="", project={"name": "VoxPocket"})]
+        active = [{"identifier": "TIA-1", "goal": "voxpocket", "task": "T1", "state": "in_review", "stage": "Reviewer", "group": "active"},
+                  {"identifier": "TIA-9", "goal": "standalone", "title": "TIA-9 choose", "state": "blocked", "group": "needs", "ledger": "file:///tmp/ledger.md"}]
+        commits = [{"repo": "VoxPocket", "sha": "abc", "subject": "TIA-4 #23 fix"},
+                   {"repo": "user-skills", "sha": "def", "subject": "Long result beyond budget TIA-40 #230; see https://github.com/Other/Financial/pull/231"}]
+        prs = [{"repo": "Other/shared-ci", "number": 24, "title": "TIA-5 #25 fix", "url": ""}]
+        events = [{"identifier": "TIA-6", "goal": "delivery", "note": "TIA-7 merged #26", "ref": "https://github.com/Other/Financial/pull/26"}]
+        markdown, todos = daily_brief.render_brief(TODAY, data, commits, events, [], prs, active)
+        self.assertIn(f"[TIA-1]({canonical}) · `T1: in_review/Reviewer`", markdown)
+        for number in (2, 3, 4, 5, 6, 7, 9, 40):
+            self.assertIn(f"[TIA-{number}](https://linear.app/tianpeili/issue/TIA-{number})", markdown)
+        for repo, numbers in (("LeePepe/VoxPocket", (21, 22, 23)), ("LeePepe/user-skills", (230,)), ("Other/shared-ci", (24, 25)), ("Other/Financial", (26, 231))):
+            for number in numbers: self.assertIn(f"[#{number}](https://github.com/{repo}/pull/{number})", markdown)
+        unlinked = re.sub(r"\[[^\]]+\]\([^)]*\)", "LINK", markdown)
+        self.assertIsNone(re.search(r"\bTIA-\d+\b|(?<!\w)#\d+\b", unlinked))
+        self.assertEqual(len(todos), 2)
+        self.assertIn("TIA-1", todos[1]["text"])
+        for line in markdown.splitlines():
+            if line.startswith("| **"): self.assertLessEqual(len(daily_brief._plain(line.strip("|").split("|")[2])), 20)
+            if line.startswith("- [ ]"):
+                summary = re.search(r"\*\*\[\d+\] (.*?)\*\*", line)[1]
+                self.assertLessEqual(len(daily_brief._plain(summary)), 25)
+
+    def test_ledger_repo_metadata_reaches_layer_and_pr_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger(root, "generic-delivery", "# Goal: Publish\n- Repo: Other/shared-ci\n## Tasks\n| ID | Title | Status |\n|---|---|---|\n| T1 | Repair #8 | in_progress |\n## Events\n- 2026-11-14 | EVT=PR_MERGED | id=E1 | note=Done #7\n")
+            events, active, warnings = daily_brief.collect_handoff(root, TODAY)
+            markdown, _ = daily_brief.render_brief(TODAY, [], [], events, warnings, ledger_active=active)
+        self.assertFalse(warnings)
+        self.assertIn("[#7](https://github.com/Other/shared-ci/pull/7)", markdown)
+        self.assertIn("[#8](https://github.com/Other/shared-ci/pull/8)", markdown)
+        self.assertIn("generic-delivery", markdown.split("### 2.")[1].split("### 3.")[0])
+
+    def test_truncation_does_not_change_issue_or_pr_identity_and_unknown_repo_is_not_invented(self):
+        commits = [{"repo": "VoxPocket", "sha": "abc", "subject": "A" * 15 + " TIA-123456"},
+                   {"repo": "user-skills", "sha": "def", "subject": "A" * 16 + " #123456"}]
+        events = [{"goal": "unknown", "id": "E1", "note": "Done #99"}]
+        markdown, _ = daily_brief.render_brief(TODAY, [], commits, events, [])
+        self.assertIn("[TIA-123456](https://linear.app/tianpeili/issue/TIA-123456)", markdown)
+        self.assertIn("[#123456](https://github.com/LeePepe/user-skills/pull/123456)", markdown)
+        self.assertNotIn("#99", markdown); self.assertNotIn("LeePepe/unknown", markdown)
+        self.assertNotRegex(markdown, r"\[(?:TIA-12?|#12?)\]\(")
+        self.assertEqual(sum(line.startswith("| **") for line in markdown.splitlines()), 3)
 
     def test_resolved_event_without_task_does_not_resurrect_blocked_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
