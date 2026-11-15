@@ -792,7 +792,7 @@ def command_jev_gate(args):
                 errors.extend(_platform_errors(args.platform, text))
                 evidence = [{'spec_text': text, 'platform': args.platform}]
             else:
-                found, evidence = EVIDENCE.traceback_errors(text)
+                found, evidence = EVIDENCE.traceback_errors(text, base_dir=Path(args.spec_file).resolve().parent)
                 errors.extend(found)
         except (OSError, ValueError) as error:
             errors.append(str(error))

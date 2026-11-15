@@ -32,6 +32,25 @@ def run(*args, **kwargs):
 
 
 class DesignCatalogTests(unittest.TestCase):
+    def test_blog_builder_strata_precedence_and_safe_fallback(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            blog = Path(directory) / 'blog'; (blog / 'demos').mkdir(parents=True)
+            builder = blog / 'build_site.py'
+            builder.write_text('from pathlib import Path\nPath("demos/index.html").write_text("BUILT-STRATA")\n', encoding='utf-8')
+            hub = DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertEqual(hub.read_text(), 'BUILT-STRATA')
+            builder.unlink(); hub.unlink()
+            DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertIn('data-strata-brand="yellow"', hub.read_text())
+            hub.write_text('KEEP-OLD-HUB', encoding='utf-8')
+            builder.symlink_to(blog / 'missing-builder.py')
+            DESIGN_CATALOG._update_demos_hub(blog)
+            self.assertEqual(hub.read_text(), 'KEEP-OLD-HUB')
+            builder.unlink()
+            builder.write_text('raise SystemExit("builder failed")', encoding='utf-8')
+            with self.assertRaises(subprocess.CalledProcessError):
+                DESIGN_CATALOG._update_demos_hub(blog)
+
     def test_repository_schema_and_render(self):
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
         self.assertIsInstance(catalog, dict)
@@ -1227,6 +1246,12 @@ class PromptAndRenderedGuardTests(unittest.TestCase):
                 self.assertEqual(manifest['count'], expected)
                 self.assertEqual([v['id'] for v in manifest['variants']], [f'v{i:02d}' for i in range(1, expected + 1)])
                 self.assertEqual(self.evidence.gallery_errors(gallery, manifest)[0], [])
+                index = (gallery / 'index.html').read_text()
+                for asset in ('/assets/colors.css', '/assets/strata-theme.css', '/assets/blog.css'):
+                    self.assertLess(index.index(asset), index.index('<style>'))
+                self.assertIn('data-lp-theme="light"', index)
+                self.assertIn('class="site-header shell"', index)
+                self.assertIn('class="gallery-breadcrumbs site-nav"', index)
                 gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
                 self.assertEqual(gate.returncode, 0, gate.stdout)
 

@@ -1477,9 +1477,16 @@ def _update_goal_portal(goal_root, goal, blog_goal=None):
 def _update_demos_hub(blog_repo):
     if blog_repo is None:
         return None
-    demos = Path(blog_repo).resolve() / 'demos'
+    blog_root = Path(blog_repo).resolve()
+    demos = blog_root / 'demos'
     demos.mkdir(parents=True, exist_ok=True)
     hub = demos / 'index.html'
+    builder = blog_root / 'build_site.py'
+    if builder.is_symlink() or (builder.exists() and not builder.is_file()):
+        return hub if hub.is_file() else None
+    if builder.is_file():
+        subprocess.run([sys.executable, str(builder)], cwd=str(blog_root), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return hub
     hub.write_text(CHOOSER.render_demos_hub(demos, _gallery_tokens()), encoding='utf-8')
     return hub
 

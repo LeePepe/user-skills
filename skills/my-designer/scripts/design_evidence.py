@@ -322,6 +322,8 @@ def rendered_gallery_errors(root):
 
     def stylesheet(href, base):
         url = urlsplit(href)
+        if href in {'/assets/colors.css', '/assets/strata-theme.css', '/assets/blog.css'}:
+            return
         if url.scheme or url.netloc or not url.path:
             errors.append(f'unsafe local stylesheet: {href}')
             return
@@ -395,7 +397,7 @@ def portal_errors(goal_root):
     except (OSError, UnicodeError) as error:
         return [f'index.html: unreadable portal surface: {error}']
     required = {
-        'gallery-breadcrumbs': 'class="gallery-breadcrumbs"',
+        'gallery-breadcrumbs': re.compile(r'class="[^"]*\bgallery-breadcrumbs\b[^"]*"'),
         'demos breadcrumb': 'href="/demos/"',
         'selection telemetry': 'id="selection-telemetry"',
         'copy summary': 'id="copy-summary"',
@@ -403,7 +405,7 @@ def portal_errors(goal_root):
         'star controls': 'data-star',
         'note controls': 'data-note',
     }
-    errors = [f'index.html: missing {label}' for label, token in required.items() if token not in html]
+    errors = [f'index.html: missing {label}' for label, token in required.items() if not (token.search(html) if hasattr(token, 'search') else token in html)]
     if 'aria-hidden="true"' in html and not re.search(r'(?:\.variant-card\[hidden\]|\.variant-card\[aria-hidden=["\']true["\']\])\s*\{[^}]*display\s*:\s*none', html, re.I | re.S):
         errors.append('index.html: aria-hidden card filtering must also hide cards with CSS')
     if not all(token in html for token in ('SELECT:', 'STAR:', 'NOTES:', '[data-star]', '[data-note]')):
@@ -587,7 +589,7 @@ def gallery_errors(root, manifest):
                 distances.append(distance)
                 if distance < 2:
                     errors.append(f'{a["id"]}/{b["id"]}: need two substantive axis differences')
-            evidence.append({'variant_count': 10, 'checked_pairs': len(distances), 'minimum_distance': min(distances)})
+            evidence.append({'variant_count': count, 'checked_pairs': len(distances), 'minimum_distance': min(distances)})
             topology_names, topology_trees = [], []
             for v in variants:
                 name = v['id'] + '.html'
@@ -709,7 +711,33 @@ def _assertion(rule):
     return observed == required if rule['operator'] == 'equal' else not observed
 
 
-def traceback_errors(text):
+def _unvalidated_marker(value):
+    if isinstance(value, dict):
+        return any(_unvalidated_marker(key) or _unvalidated_marker(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_unvalidated_marker(item) for item in value)
+    return isinstance(value, str) and 'unvalidated' in value.casefold()
+
+
+def _image_path(source, base_dir):
+    raw = re.split(r'[#]', source, maxsplit=1)[0]
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (base_dir / path) if base_dir else (Path.cwd() / path)
+    path = path.resolve()
+    if path.is_symlink() or not path.is_file() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError(f'screenshot artifact is missing or symlinked: {source}')
+    data = path.read_bytes()
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        if len(data) < 24 or data[12:16] != b'IHDR' or int.from_bytes(data[16:20], 'big') < 1 or int.from_bytes(data[20:24], 'big') < 1:
+            raise ValueError(f'screenshot PNG has invalid dimensions: {source}')
+        return path
+    if data.startswith(b'\xff\xd8\xff'):
+        return path
+    raise ValueError(f'screenshot artifact is not PNG or JPEG: {source}')
+
+
+def traceback_errors(text, base_dir=None):
     errors, evidence = [], []
     try:
         # JSON file or one fenced JSON record in a report. Prose is not evidence.
@@ -717,21 +745,34 @@ def traceback_errors(text):
         data = json.loads(fenced[0] if len(fenced) == 1 else text)
         if not isinstance(data, dict) or data.get('schema') != 'visual-traceback/v1' or not isinstance(data.get('findings'), list):
             raise ValueError('expected visual-traceback/v1 with findings array')
-        if str(data.get('status', '')).upper() == 'UNVALIDATED':
+        if _unvalidated_marker(data):
             raise ValueError('UNVALIDATED visual traceback cannot PASS')
         rendered = data.get('rendered_evidence')
         if not isinstance(rendered, list) or not rendered:
             raise ValueError('real rendered screenshot/observation evidence is required')
+        screenshots = []
         for item in rendered:
             if not isinstance(item, dict) or item.get('kind') not in {'screenshot', 'observation'} or not _source(item.get('source')) or not item.get('observation'):
                 raise ValueError('rendered_evidence requires kind, source, and observation')
-            if item.get('kind') == 'screenshot' and not re.search(r'\.(?:png|jpe?g)(?:#|$)', item['source'], re.I):
-                raise ValueError('screenshot evidence must cite a PNG or JPEG source')
+            if item.get('kind') == 'screenshot':
+                if not re.search(r'\.(?:png|jpe?g)(?:#|$)', item['source'], re.I):
+                    raise ValueError('screenshot evidence must cite a PNG or JPEG source')
+                screenshots.append(_image_path(item['source'], Path(base_dir) if base_dir else None))
+        if not screenshots:
+            raise ValueError('at least one real screenshot evidence entry is required')
+        screenshot_sources = {str(path) for path in screenshots}
+        def require_screenshot_source(source):
+            if not isinstance(source, str) or not re.search(r'\.(?:png|jpe?g)(?:#|$)', source, re.I):
+                raise ValueError('implementation evidence must cite a screenshot artifact')
+            path = _image_path(source, Path(base_dir) if base_dir else None)
+            if str(path) not in screenshot_sources:
+                raise ValueError('implementation screenshot is not listed in rendered_evidence')
         findings = data['findings']
         if not findings:
             clean = data.get('clean')
             if not isinstance(clean, dict) or not _source(clean.get('spec_source')) or not _source(clean.get('implementation_source')) or not clean.get('checks'):
                 raise ValueError('clean result requires spec/implementation source references and checks')
+            require_screenshot_source(clean['implementation_source'])
             for check in clean['checks']:
                 if not check.get('requirement') or not _assertion(check.get('assertion')):
                     raise ValueError('clean result contains missing/failed evidence check')
@@ -744,6 +785,7 @@ def traceback_errors(text):
                 raise ValueError(f'finding {i}: declared and conforms must be explicit booleans')
             if not _source(constraint.get('source')) or not constraint.get('requirement') or not _source(impl.get('source')) or not impl.get('observation'):
                 raise ValueError(f'finding {i}: source, requirement and observed implementation evidence required')
+            require_screenshot_source(impl['source'])
             declared, conforms = constraint['declared'], impl['conforms']
             if declared:
                 conforms_actual = _assertion(impl.get('assertion'))
