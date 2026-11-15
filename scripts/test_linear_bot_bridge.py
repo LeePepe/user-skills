@@ -86,6 +86,55 @@ class FakeClient:
         return issue
 
 
+class DailyBriefSelectionTests(unittest.TestCase):
+    def brief(self):
+        issue = personal_issue(comments=[])
+        issue["title"] = "[Daily Brief 2026-11-15] 昨日汇总与今日 Todo"
+        issue["description"] = (
+            "## Yesterday\n- unrelated-delivery\n"
+            "- [ ] **[1]** TIA-10 VoxPocket: choose demo\n"
+            "- [x] **[2]** TIA-11 user-skills: fix daily brief\n"
+            "- [ ] **[3]** TIA-12 Financial: inspect ledger\n")
+        return issue
+
+    def test_numbered_comment_routes_only_selected_sources(self):
+        issue = self.brief()
+        comment = owner_comment("@bot 执行 1, 3")
+        directive, slugs = bridge._directive(issue, comment, [])
+        self.assertEqual(slugs, [])
+        self.assertIn("TIA-10 VoxPocket", directive)
+        self.assertIn("TIA-12 Financial", directive)
+        self.assertNotIn("TIA-11", directive)
+        context = bridge.thread_context(issue, comment)
+        self.assertIn(directive, context)
+        self.assertNotIn("unrelated-delivery", context)
+        self.assertNotIn("TIA-11", context)
+        issue["description"] = issue["description"].replace("[1]", r"\[1\]")
+        self.assertIn("TIA-10", bridge.brief_selection(issue, comment))
+
+    def test_assignment_uses_checked_boxes_or_latest_owner_selection(self):
+        issue = self.brief()
+        directive, _ = bridge._directive(issue, {"body": "assigned to bot"}, [])
+        self.assertIn("TIA-11 user-skills", directive)
+        self.assertNotIn("TIA-10", directive)
+        directive, _ = bridge._directive(issue, {"body": "assigned to bot"}, [owner_comment("执行 3")])
+        self.assertIn("TIA-12 Financial", directive)
+        self.assertNotIn("TIA-11", directive)
+
+    def test_all_and_invalid_selection_never_fall_back_to_whole_issue(self):
+        issue = self.brief()
+        selected = bridge.brief_selection(issue, owner_comment("@bot 全部"))
+        for identifier in ("TIA-10", "TIA-11", "TIA-12"):
+            self.assertIn(identifier, selected)
+        invalid = bridge.brief_selection(issue, owner_comment("@bot 执行 1, 9"))
+        self.assertIn("Owner decision required", invalid)
+        self.assertNotIn("TIA-10", invalid)
+        issue["description"] = issue["description"].replace("[x]", "[ ]")
+        self.assertIn("Owner decision required", bridge.brief_selection(issue))
+        learning = personal_issue(daily=True)
+        self.assertEqual(bridge._directive(learning, owner_comment("@bot 执行 2"), [])[1], ["second-topic"])
+
+
 class OAuthAgentScopeTests(unittest.TestCase):
     def test_agent_capabilities_require_explicit_login_and_admin_approval(self):
         for enabled in (False, True):

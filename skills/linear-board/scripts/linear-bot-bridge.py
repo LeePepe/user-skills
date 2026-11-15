@@ -137,10 +137,30 @@ def is_daily(issue: dict[str, Any]) -> bool:
     return "[daily learn" in str(issue.get("title") or "").casefold() or "KD-DAILY-START" in str(issue.get("description") or "")
 
 
+def is_daily_brief(issue: dict[str, Any]) -> bool:
+    return str(issue.get("title") or "").casefold().startswith("[daily brief ")
+
+
+def brief_selection(issue: dict[str, Any], comment: dict[str, Any] | None = None) -> str:
+    description = re.sub(r"\\([\[\]])", r"\1", str(issue.get("description") or ""))
+    rows = re.findall(r"(?m)^\s*[-*+]\s+\[([ xX])\]\s+\*{0,2}\[(\d+)\]\*{0,2}\s+(.+)$", description)
+    selected = _selectors(str((comment or {}).get("body") or ""))
+    if selected != ["all"] and any(number not in {row[1] for row in rows} for number in selected):
+        return "Owner decision required: 点单编号不存在，请选择当前 Daily Brief 中的编号。"
+    chosen = [(number, text) for checked, number, text in rows
+              if selected == ["all"] or (number in selected if selected else checked.casefold() == "x")]
+    if not chosen:
+        return "Owner decision required: 请回复 @bot 执行 1, 2 或勾选要执行的 Daily Brief 事项。"
+    return "只执行以下已选 Daily Brief 事项（不执行汇总或其他未选事项）：\n" + "\n".join(
+        f"[{number}] {text}" for number, text in chosen)
+
 
 def thread_context(issue: dict[str, Any], comment: dict[str, Any]) -> str:
     comments = issue.get("comments") or {}
     nodes = comments.get("nodes", []) if isinstance(comments, dict) else comments
+    if is_daily_brief(issue):
+        directive, _ = _directive(issue, comment, nodes if isinstance(nodes, list) else [])
+        return f"Issue: {issue.get('title', '')}\nCurrent directive:\n{directive}"
     lines = [f"Issue: {issue.get('title', '')}", "Description:", str(issue.get("description") or ""), "Comment thread:"]
     for item in nodes if isinstance(nodes, list) else []:
         if isinstance(item, dict):
@@ -467,6 +487,9 @@ def _latest_owner(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    if is_daily_brief(issue):
+        source = trigger if trigger.get("id") else (_latest_owner(comments) or trigger)
+        return brief_selection(issue, source), []
     if is_daily(issue):
         source = trigger if trigger.get("id") else (_latest_owner(comments) or trigger)
         slugs = topic_selection(issue, source)
@@ -495,7 +518,7 @@ def _new_turn(issue: dict[str, Any], state: State) -> dict[str, Any] | None:
         state.data["issue_assignments"].pop(issue_id, None)
     assignment_event = assigned and state.data["issue_assignments"].get(issue_id) != assignment_key
     if not triggers and not assignment_event: return None
-    owner = _latest_owner(comments) if assignment_event and is_daily(issue) else None
+    owner = _latest_owner(comments) if assignment_event and (is_daily(issue) or is_daily_brief(issue)) else None
     trigger = triggers[-1] if triggers else (owner or {"body": "assigned to bot"})
     directive, slugs = _directive(issue, trigger, comments)
     trigger_ids = [str(c["id"]) for c in triggers]
