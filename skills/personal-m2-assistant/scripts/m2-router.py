@@ -1088,6 +1088,154 @@ def _stale_candidates(target: dict[str, Any], sessions: list[dict[str, Any]], do
     return candidates
 
 
+
+def _read_goal_state(session: dict[str, Any], *, handoff_root: str | Path | None = None) -> tuple[bool, str]:
+    """Return effective completion, rejecting reopened or owner-blocked goals."""
+    if session.get("goal_done") is True:
+        return True, "session.goal_done"
+    explicit = _text(session.get("handoff_dir"))
+    root = Path(handoff_root or os.environ.get("M2_HANDOFF_ROOT") or "~/Development/handoff").expanduser()
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit) / "ledger.md")
+    goal_id = _text(session.get("goal_id"))
+    if goal_id:
+        candidates.append(root / goal_id / "ledger.md")
+    text = "\n".join(_text(session.get(k)) for k in ("target", "title", "summary", "visible_summary", "terminal_title"))
+    for match in re.finditer(r"(?:~/|/)[^\s`\"'<>|()]*handoff/([^/\s`\"'<>|()]+)", text):
+        candidates.append(Path(match.group(0)).expanduser() / "ledger.md")
+    for path in dict.fromkeys(candidates):
+        try:
+            ledger = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        tail = ledger[-4000:]
+        if re.search(r"NEED_OWNER_DECISION|In Review|in_review|changes_requested|in_progress|reopened", tail, re.I):
+            return False, f"active_or_review:{path.parent.name}"
+        if re.search(r"EVT=GOAL_DONE|^\s*-?\s*status\s*:\s*done\b", ledger, re.I | re.M):
+            return True, f"ledger:{path.parent.name}"
+    return False, "not_effectively_completed"
+
+
+def _answer_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("noul", "choice", "value", "score", "answer"):
+            if key in value:
+                return value[key]
+    return value
+
+
+def _evaluate_m2_context_continuity(
+    target: dict[str, Any], session: dict[str, Any], message: str, *,
+    domain_map: dict[str, Any] | None = None, mock_jev: Any = None,
+    handoff_root: str | Path | None = None, visible_text: str = "",
+) -> dict[str, Any]:
+    """Strict safety truth table: effective completion AND both unrelatedness answers."""
+    old_done, completion_evidence = _read_goal_state(session, handoff_root=handoff_root)
+    semantic: dict[str, Any] = {}
+    if isinstance(mock_jev, dict):
+        semantic = _decision_answers(mock_jev)
+    relevant = any(key in semantic for key in ("is_same_goal_continuation", "prior_context_value", "prior_context_value_match"))
+    if not relevant and os.environ.get("GTT_JEV_LIVE") == "1":
+        try:
+            jev_path = Path(__file__).resolve().parents[2] / "team-lead" / "scripts" / "jev_client.py"
+            spec = importlib.util.spec_from_file_location("m2_router_continuity_jev", jev_path)
+            module = importlib.util.module_from_spec(spec); assert spec and spec.loader; spec.loader.exec_module(module)
+            questions = {
+                "is_same_goal_continuation": {"type": "noul", "instructions": "Is this a direct continuation, follow-up, or feedback?"},
+                "prior_context_value": {"type": "choice", "criteria": {"essential":"essential", "helpful":"helpful", "noise_or_irrelevant":"noise_or_irrelevant"}, "instructions": "How valuable is old context?"},
+                "prior_context_value_match": {"type": "noul", "instructions": "Is prior context essential or helpful?"},
+            }
+            result = module.jev_decide({"old_title": session.get("title", ""), "old_summary": session.get("summary", ""), "new_message": message, "topic_id": target.get("topic_id", "")}, questions, agent_role="personal_m2_assistant", timeout_sec=1.5)
+            semantic = _decision_answers(result) if isinstance(result, dict) else {}
+        except (OSError, ImportError, TypeError, AssertionError):
+            semantic = {}
+    raw_same = _answer_value(semantic.get("is_same_goal_continuation"))
+    try:
+        same_score = float(raw_same) if raw_same is not None else None
+    except (TypeError, ValueError):
+        same_score = None
+    value = _text(_answer_value(semantic.get("prior_context_value"))).lower() or None
+    match = _answer_value(semantic.get("prior_context_value_match"))
+    valid = same_score is not None and 0 <= same_score <= 1 and value in {"essential", "helpful", "noise_or_irrelevant"}
+    unrelated = bool(valid and same_score < 0.35 and value == "noise_or_irrelevant" and match not in {True, "true", "yes", "essential", "helpful"})
+    replace = bool(old_done and unrelated)
+    return {
+        "m2_action": "REPLACE_STALE_M2" if replace else "REUSE_EXISTING_M2",
+        "m2_status": "NEW_M2" if replace else "EXISTING_M2",
+        "old_goal_done": old_done,
+        "completion_evidence": completion_evidence,
+        "is_same_goal_continuation": same_score,
+        "prior_context_value": value,
+        "prior_context_value_match": match,
+        "semantic_evidence_valid": valid,
+        "semantic_unrelated": unrelated,
+        "eviction_reason": "completed_goal_and_strict_jev_unrelatedness" if replace else "conservative_reuse",
+        "stale_session_id": _text(session.get("session_id")),
+        "stale_pane_id": _text(session.get("pane_id")),
+    }
+
+
+def _gc_protected(rec: dict[str, Any]) -> bool:
+    pane = _text(rec.get("pane_id") or rec.get("paneId"))
+    status = _text(rec.get("agent_status") or rec.get("status")).lower()
+    hay = " ".join(_text(rec.get(k)) for k in ("workspace_label", "workspaceLabel", "space", "label", "title", "name"))
+    return pane in {_text(os.environ.get("HERDR_PANE_ID")), "w1:p1", "w2J:p1"} or re.search(r"Cindy|大总管", hay, re.I) is not None or status in {"working", "running", "blocked", "needs_input"} or _has_active_visible_tail(_text(rec.get("visible") or rec.get("visible_text")))
+
+
+def discover_gc_candidates(records: Iterable[dict[str, Any]], *, handoff_root: str | Path | None = None) -> list[dict[str, Any]]:
+    records = [dict(r) for r in records if isinstance(r, dict)]
+    candidates: list[dict[str, Any]] = []
+    for rec in records:
+        if _gc_protected(rec):
+            continue
+        pane = _text(rec.get("pane_id") or rec.get("paneId"))
+        if not pane:
+            continue
+        status = _text(rec.get("agent_status") or rec.get("status"), "idle").lower()
+        background = _herdr_background(rec)
+        done, evidence = _read_goal_state(rec, handoff_root=handoff_root)
+        workspace = _text(rec.get("workspace_id") or rec.get("workspaceId") or rec.get("workspace_label") or rec.get("workspaceLabel"))
+        active_child = any(
+            other is not rec and workspace and _text(other.get("workspace_id") or other.get("workspaceId") or other.get("workspace_label") or other.get("workspaceLabel")) == workspace
+            and _text(other.get("agent_status") or other.get("status")).lower() in {"working", "running", "blocked", "needs_input"}
+            for other in records
+        )
+        if background and (status == "done" or done) and status in {"idle", "done", "exited", "stopped"} and not active_child:
+            candidates.append({"category":"orphan_m1", "reason":"orphan_completed_m1", "pane_id":pane, "session_id":_session_id(rec), "title":_text(rec.get("title") or rec.get("name")), "completion_evidence":evidence})
+        elif _looks_like_m2(rec, "herdr") and status in {"idle", "done"}:
+            if done:
+                candidates.append({"category":"completed_goal_m2", "reason":"completed_goal_m2", "pane_id":pane, "session_id":_session_id(rec), "title":_text(rec.get("title") or rec.get("name")), "completion_evidence":evidence, "topic_id":_text(rec.get("topic_id"))})
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for rec in records:
+        if _looks_like_m2(rec, "herdr") and not _gc_protected(rec) and _text(rec.get("agent_status") or rec.get("status"), "idle").lower() in {"idle", "done"}:
+            key = _text(rec.get("workspace_label") or rec.get("workspaceLabel") or rec.get("space") or rec.get("target_repo") or rec.get("repo"), "M2").casefold()
+            groups.setdefault(key, []).append(rec)
+    for key, group in groups.items():
+        for rec in group[1:]:
+            pane = _text(rec.get("pane_id") or rec.get("paneId"))
+            if pane and not any(c.get("pane_id") == pane for c in candidates):
+                candidates.append({"category":"duplicate_m2", "reason":"duplicate_m2", "pane_id":pane, "session_id":_session_id(rec), "title":_text(rec.get("title") or rec.get("name")), "topic_id":_text(rec.get("topic_id")), "space":key})
+    return candidates
+
+
+def run_gc(records: Iterable[dict[str, Any]], *, approve: bool = False, state_file: str | Path | None = None, handoff_root: str | Path | None = None, runner: CommandRunner = _run_command) -> dict[str, Any]:
+    candidates = discover_gc_candidates(records, handoff_root=handoff_root)
+    receipts = []
+    if approve:
+        for candidate in candidates:
+            try:
+                receipts.append({**candidate, **_close_herdr_pane(candidate, runner=runner)})
+            except RouterError as error:
+                receipts.append({**candidate, "ok": False, "error": str(error)})
+        closed = {c.get("pane_id") for c in receipts if c.get("ok") and not c.get("skipped")}
+        if state_file:
+            def prune(state: dict[str, Any]) -> dict[str, Any]:
+                state["slots"] = [s for s in state.get("slots", []) if _text(s.get("pane_id")) not in closed]
+                return state
+            _with_locked_supervision_state(Path(state_file).expanduser(), prune)
+    return {"ok": True, "approved": approve, "dry_run": not approve, "gc_candidates": candidates, "closed_receipts": receipts, "pruned_state_slots": [c.get("pane_id") for c in receipts if c.get("ok") and not c.get("skipped")]}
+
 def _default_preview_path(plan_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"
     return Path(f"/tmp/m2-plan-{safe_id}.md")
@@ -1144,6 +1292,10 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
                 hint,
                 "```",
             ])
+    for target in plan.get("targets", []):
+        eviction = target.get("context_eviction") or {}
+        if target.get("m2_action") == "REPLACE_STALE_M2":
+            lines.extend(["", "## Context Eviction", "", "🔄 旧 Goal 已完结且新旧任务语义无关 -> 抛弃旧上下文重开干净 M2", f"- completion=`{eviction.get('completion_evidence')}`; is_same_goal_continuation=`{eviction.get('is_same_goal_continuation')}`; prior_context_value=`{eviction.get('prior_context_value')}`"])
     stale = plan.get("stale_m2_candidates", [])
     if stale:
         lines.extend(["", "## Stale / Duplicate M2 Cleanup Candidates", ""])
@@ -1239,6 +1391,18 @@ def build_plan(
         target["model_label"] = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
         target.setdefault("context_pass", {"enabled": bool(target.get("rag_context_hint")), "hint": target.get("rag_context_hint")})
         target["cleanup_candidates"] = _stale_candidates(target, sessions, loaded_domain_map)
+        matched = _target_session(target, topic, sessions, loaded_domain_map) if target.get("m2_status") == "EXISTING_M2" else None
+        if matched and _text(matched.get("status"), "idle").casefold() in {"idle", "done"}:
+            continuity = _evaluate_m2_context_continuity(
+                target, matched, message, domain_map=loaded_domain_map, mock_jev=mock_jev,
+                handoff_root=os.environ.get("M2_HANDOFF_ROOT"),
+                visible_text=_text(matched.get("visible") or matched.get("visible_text")),
+            )
+            target.update({"m2_action": continuity["m2_action"], "m2_status": continuity["m2_status"]})
+            target["context_eviction"] = continuity
+            if continuity["m2_action"] == "REPLACE_STALE_M2":
+                candidate = {"session_id": matched.get("session_id", ""), "pane_id": matched.get("pane_id", ""), "title": matched.get("title", ""), "status": matched.get("status", "idle"), "target_repo": matched.get("target_repo", ""), "topic_id": target.get("topic_id", ""), "reason": "context_eviction", "eviction_reason": continuity["eviction_reason"], "old_goal_done": True, "is_same_goal_continuation": continuity["is_same_goal_continuation"], "prior_context_value": continuity["prior_context_value"]}
+                target["cleanup_candidates"] = [candidate]
         stale_candidates.extend(target["cleanup_candidates"])
     unique_stale = {item["session_id"]: item for item in stale_candidates}
     plan: dict[str, Any] = {
@@ -1255,6 +1419,7 @@ def build_plan(
         "targets": targets,
         "new_domain_candidates": decision.get("new_domain_candidates", []),
         "stale_m2_candidates": list(unique_stale.values()),
+        "gc_candidates": discover_gc_candidates(workspace_inventory or sessions, handoff_root=os.environ.get("M2_HANDOFF_ROOT")),
         "approval": {"required": True, "approved": False},
     }
     plan["preview_markdown"] = render_preview_markdown(plan)
@@ -1283,6 +1448,10 @@ def preview_text(plan: dict[str, Any]) -> str:
         hint = _text(target.get("rag_context_hint"))
         if hint:
             lines.append(f"  rag_context_hint: {hint}")
+    for target in plan.get("targets", []):
+        eviction = target.get("context_eviction") or {}
+        if target.get("m2_action") == "REPLACE_STALE_M2":
+            lines.extend(["", "🔄 旧 Goal 已完结且新旧任务语义无关 -> 抛弃旧上下文重开干净 M2", f"completion={eviction.get('completion_evidence')} · continuation={eviction.get('is_same_goal_continuation')} · prior_context_value={eviction.get('prior_context_value')}"])
     stale = plan.get("stale_m2_candidates", [])
     if stale:
         lines.extend(["", "Stale / Duplicate M2 Cleanup Candidates:"])
@@ -2014,7 +2183,8 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             if isinstance(c, dict) and _text(c.get("topic_id")) not in stdout_new_topics
         ]
     registered = _register_new_domains(reg_plan, domain_map_file, dry_run=is_stdout_only) if register_new_domains else []
-    cleanup_mode = "replace" if replace_stale_m2 else "duplicates" if cleanup_duplicates else "none"
+    auto_replace = any(t.get("m2_action") == "REPLACE_STALE_M2" for t in targets)
+    cleanup_mode = "replace" if (replace_stale_m2 or auto_replace) else "duplicates" if cleanup_duplicates else "none"
     cleanup_receipts = _cleanup_stale(plan, cleanup_mode, runner=runner, dry_run=is_stdout_only, dry_run_sessions=stdout_candidate_sessions)
     closed_sessions = {item.get("session_id") for item in cleanup_receipts if item.get("ok") and not item.get("skipped") and not item.get("simulated")}
     used_herdr_names: set[str] = set()
@@ -2028,7 +2198,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             dispatch_target = dict(target)
             initial_transport = _resolve_target_transport(dispatch_target, plan, transport)
             target_is_stdout = is_stdout_only or initial_transport == "stdout"
-            if replace_stale_m2 and target.get("cleanup_candidates"):
+            if (replace_stale_m2 or target.get("m2_action") == "REPLACE_STALE_M2") and target.get("cleanup_candidates"):
                 candidate_ids = {_text(c.get("session_id")) for c in target.get("cleanup_candidates", []) if isinstance(c, dict)}
                 if not candidate_ids or candidate_ids.issubset(closed_sessions) or target_is_stdout:
                     dispatch_target.update({
@@ -3467,6 +3637,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
+    mode.add_argument("--gc", action="store_true", help="preview or owner-approved safe global cleanup")
     parser.add_argument("--handoff-root", help="Goal ledger root (default: M2_HANDOFF_ROOT or ~/Development/handoff)")
     parser.add_argument("--message")
     parser.add_argument("--message-file")
@@ -3545,6 +3716,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.dsh_state_url:
                 plan["discovery"]["dsh_state_url"] = args.dsh_state_url
             output: Any = plan if args.json else preview_text(plan)
+        elif args.gc:
+            payload = _json_value(args.herdr_agent_json or args.herdr_json) if (args.herdr_agent_json or args.herdr_json) else None
+            records = _records(payload) if payload is not None else _live_agent_records(_text(args.herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr"))
+            output = run_gc(records, approve=args.approve, state_file=args.state_file, handoff_root=args.handoff_root)
         elif args.status:
             result = supervision_status(
                 state_file=args.state_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file,
