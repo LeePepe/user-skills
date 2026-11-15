@@ -121,6 +121,32 @@
         "OK"
       ],
       "registered_at": "2026-11-14"
+    },
+    {
+      "id": "EV-006",
+      "title": "SwiftUI Native Audit, Scan Manifest, Genjutsu Tiers and UNVALIDATED Honesty",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationStack",
+        "TabView",
+        "WebViewport"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'Text(\"x\").padding().glassEffect(.prominent)'",
+      "expect_exit": 1,
+      "expect_stdout_contains": [
+        "DC-011",
+        "findings"
+      ],
+      "registered_at": "2026-11-15"
     }
   ]
 }

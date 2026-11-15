@@ -589,6 +589,16 @@ def traceback_errors(text):
         data = json.loads(fenced[0] if len(fenced) == 1 else text)
         if not isinstance(data, dict) or data.get('schema') != 'visual-traceback/v1' or not isinstance(data.get('findings'), list):
             raise ValueError('expected visual-traceback/v1 with findings array')
+        if str(data.get('status', '')).upper() == 'UNVALIDATED':
+            raise ValueError('UNVALIDATED visual traceback cannot PASS')
+        rendered = data.get('rendered_evidence')
+        if not isinstance(rendered, list) or not rendered:
+            raise ValueError('real rendered screenshot/observation evidence is required')
+        for item in rendered:
+            if not isinstance(item, dict) or item.get('kind') not in {'screenshot', 'observation'} or not _source(item.get('source')) or not item.get('observation'):
+                raise ValueError('rendered_evidence requires kind, source, and observation')
+            if item.get('kind') == 'screenshot' and not re.search(r'\.(?:png|jpe?g)(?:#|$)', item['source'], re.I):
+                raise ValueError('screenshot evidence must cite a PNG or JPEG source')
         findings = data['findings']
         if not findings:
             clean = data.get('clean')

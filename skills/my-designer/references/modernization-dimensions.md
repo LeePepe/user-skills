@@ -13,7 +13,13 @@ Use this reference after locking platform (`desktop|mobile|web`) and surface coo
 | **5. Anti-Collision & Single Bottom Inset** | Restrict Liquid Glass to the floating functional layer (`Z=10..20`), keep the content layer (`Z=0`) solid/standard material, consolidate bottom chrome into a single `.safeAreaInset(edge: .bottom)` stack (`<=2` layers), and collapse inactive slots to `0pt`. |
 | **6. OS 27 Macro-Tiers (`horizontalSizeClass`)** | Drive layout from container width and `@Environment(\.horizontalSizeClass)` (or CSS `@container`), never fixed device idioms (`UIScreen.main` or `userInterfaceIdiom == .phone`): compact touch (`>=44x44pt` targets), wide touch / iPhone Duo adaptive split grid, and desktop pointer (`>=28x28pt` minimum). |
 
-## 2. Objective Modernization & Visual Traceback Checklist
+## 2. Blast-Radius and Glass/API Laws
+
+Use `cast` for one micro-interaction, `paint` for one screen/token system, and `bunshin` only for multi-screen work with Scope/Tier + Direction owner gates and an Evidence Harness; missing harness downgrades to `paint`. B4 is `UNVALIDATED` without real rendered viewport evidence.
+
+For Apple `desktop`/`mobile`, use native `TabView` with `.sidebarAdaptable` and `NavigationSplitView`; replace boolean sheets with one `Identifiable` enum and `.sheet(item:)`. Group adjacent glass controls in `GlassEffectContainer(spacing:)` with 1:1 stack spacing and `@Namespace` IDs. Native glass styles are `.regular`, `.clear`, `.identity`; use `.buttonStyle(.glassProminent)` for emphasis. Apply `padding`, `frame`, and `font` before `.glassEffect(...)`.
+
+## 3. Objective Modernization & Visual Traceback Checklist
 
 - **Typography & Copy**: Keep at most 3 type scale levels per card/section; use semantic status pills (never color alone); ensure localized strings (`en`, `zh-Hans`) never clip or wrap single words awkwardly.
 - **Surface & Contrast**: Verify Light and Dark appearances plus dense and empty fixtures (include RTL where applicable). Reject custom capsule chrome nested inside system glass, sub-AA (`<4.5:1`) filled buttons, oversized sticky headers (`>64pt`), and negative-padding occlusion.

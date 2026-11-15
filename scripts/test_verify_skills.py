@@ -2994,7 +2994,8 @@ class JevGateTests(unittest.TestCase):
         gap = {'classification': 'SPEC_GAP', 'constraint': {'declared': False, 'source': 'spec.md#copy', 'requirement': 'Follows every declared constraint', 'missing_requirement': 'CJK wrapping at 390px'},
                'implementation': {'source': 'screen.png#copy', 'observation': 'Declared layout followed; CJK copy overflows', 'conforms': True},
                'route': {'owner': 'Steering', 'amend_spec_first': True}}
-        def check(f): return g.EVIDENCE.traceback_errors(json.dumps({'schema': 'visual-traceback/v1', 'findings': [f]}))[0]
+        rendered = {'rendered_evidence': [{'kind': 'screenshot', 'source': 'screen.png#button', 'observation': 'Rendered viewport inspected'}]}
+        def check(f): return g.EVIDENCE.traceback_errors(json.dumps({'schema': 'visual-traceback/v1', 'findings': [f], **rendered}))[0]
         self.assertEqual(check(violation), [])
         self.assertEqual(check(gap), [])
         wrong = copy.deepcopy(violation); wrong['classification'] = 'SPEC_GAP'
@@ -3003,7 +3004,7 @@ class JevGateTests(unittest.TestCase):
         self.assertTrue(check(wrong))
         wrong = copy.deepcopy(violation); wrong['implementation']['conforms'] = True
         self.assertTrue(check(wrong))
-        clean = {'schema': 'visual-traceback/v1', 'findings': [], 'clean': {'spec_source': 'spec.md:12', 'implementation_source': 'screen.png#button', 'checks': [{'requirement': '48pt targets', 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 48}}]}}
+        clean = {'schema': 'visual-traceback/v1', 'findings': [], **rendered, 'clean': {'spec_source': 'spec.md:12', 'implementation_source': 'screen.png#button', 'checks': [{'requirement': '48pt targets', 'assertion': {'operator': 'minimum', 'required': 48, 'observed': 48}}]}}
         self.assertEqual(g.EVIDENCE.traceback_errors(json.dumps(clean))[0], [])
         self.assertTrue(g.EVIDENCE.traceback_errors('Allowed words [IMPL_BUG] and [SPEC_GAP]')[0])
         import types
@@ -3016,6 +3017,25 @@ class JevGateTests(unittest.TestCase):
         answers['q_traceback_evidence_attribution'] = {'noul': 0, 'status': 'PASS'}
         args.mock_jev_json = json.dumps(answers)
         self.assertEqual(g._jev_response(args, [gap], 'mobile')['status'], 'REJECT_REVISE')
+
+
+    def test_swift_audit_masks_comments_strings_and_reports_native_defects(self):
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        bad = '/* .glassEffect(.prominent) */\nText(".glassEffect(.prominent)").padding().glassEffect(.prominent)'
+        result = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'mobile', '--path', 'snippet.swift', '--snippet', bad], cwd=REPO_ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('DC-011', result.stdout)
+        self.assertIn('line', result.stdout)
+        good = 'Text("x").padding().frame(width: 44).glassEffect(.regular)'
+        result = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'mobile', '--path', 'snippet.swift', '--snippet', good], cwd=REPO_ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_traceback_rejects_unvalidated_or_missing_rendered_evidence(self):
+        g = self.gate
+        payload = {'schema': 'visual-traceback/v1', 'findings': [], 'status': 'UNVALIDATED'}
+        self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(payload))[0])
+        payload['status'] = 'PASS'
+        self.assertTrue(g.EVIDENCE.traceback_errors(json.dumps(payload))[0])
 
 
 class SkillContractV2Tests(unittest.TestCase):

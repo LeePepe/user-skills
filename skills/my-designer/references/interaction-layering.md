@@ -27,7 +27,13 @@ Never design a screen by dumping every feature or candidate component onto a sin
 
 ---
 
-## 2. Executable 3-Step (`X-Y-Z`) Layering Protocol for `design.md`
+## 2. Native Glass and Item-Driven Presentation Contract
+
+On `desktop`/`mobile`, prefer `TabView` + `.tabViewStyle(.sidebarAdaptable)` and `NavigationSplitView`; use one `Identifiable` sheet enum with `.sheet(item:)` and `@Environment(\.dismiss)` in the sheet. Keep Web on its own firewall route.
+
+Put adjacent glass controls in one `GlassEffectContainer(spacing:)` whose spacing exactly matches the child `HStack`/`VStack`, and identify transitions with `@Namespace` + `.glassEffectID`. Only `.regular`, `.clear`, and `.identity` are valid `Glass` values; prominent actions use `.buttonStyle(.glassProminent)`. Apply `padding`, `frame`, and `font` before `.glassEffect(...)`.
+
+## 3. Executable 3-Step (`X-Y-Z`) Layering Protocol for `design.md`
 
 ### Axis X · Filter by `Interaction Role × Frequency Priority (P0..P3)` (Who Stays vs. Who Folds)
 

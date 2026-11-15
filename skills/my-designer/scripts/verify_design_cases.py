@@ -104,6 +104,58 @@ def _csv(value: str | None) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _mask_swift(text: str) -> str:
+    """Hide comments and string literals while preserving line/column offsets."""
+    pattern = re.compile(r'("(?:\\\\.|[^"\\\\])*"|//[^\\n]*|/\\*[\\s\\S]*?\\*/)')
+    return pattern.sub(lambda m: ''.join('\\n' if c == '\\n' else ' ' for c in m.group()), text)
+
+
+def command_audit_code(args: argparse.Namespace) -> int:
+    if args.platform == 'macos':
+        args.platform = 'desktop'
+    if args.platform not in {'desktop', 'mobile'}:
+        print(json.dumps({'ok': True, 'platform': args.platform, 'findings': [], 'native_only': False}, indent=2))
+        return 0
+    root = Path(args.path)
+    files = [root] if args.snippet or root.is_file() else sorted(root.rglob('*.swift'))
+    cases = _load_json(Path(args.cases_file)).get('active_cases', [])
+    findings = []
+    for path in files:
+        if path.suffix != '.swift' and not args.snippet:
+            continue
+        text = args.snippet if args.snippet else path.read_text(encoding='utf-8', errors='ignore')
+        masked = _mask_swift(text)
+        for case in cases:
+            if args.platform not in case.get('platforms', []) or not case.get('forbidden_regex'):
+                continue
+            try:
+                if case.get('id') == 'DC-011':
+                    matches = []
+                    for call in re.finditer(r'\.glassEffect\s*\(', masked):
+                        depth, end = 1, call.end()
+                        while end < len(masked) and depth:
+                            depth += masked[end] == '('
+                            depth -= masked[end] == ')'
+                            end += 1
+                        args_text = masked[call.end():max(call.end(), end - 1)]
+                        tail = masked[end:]
+                        if re.search(r'\.prominent\b', args_text):
+                            matches.append(call)
+                        elif re.match(r'\s*\.\s*(?:padding|frame)\s*\(', tail):
+                            matches.append(call)
+                else:
+                    matches = list(re.finditer(case['forbidden_regex'], masked))
+            except re.error as error:
+                print(json.dumps({'ok': False, 'error': f"{case.get('id')}: invalid forbidden_regex: {error}"}))
+                return 2
+            for match in matches:
+                line = masked.count('\\n', 0, match.start()) + 1
+                findings.append({'case_id': case['id'], 'title': case['title'], 'file': str(path), 'line': line, 'match': text[match.start():match.end()].replace('\\n', ' ')[:240]})
+    result = {'ok': not findings, 'platform': args.platform, 'native_only': True, 'files': len(files), 'findings': findings}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if not findings else 1
+
+
 def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: list[str], container: str | None = None) -> list[dict[str, Any]]:
     matched = []
     dim_set = set(dimensions)
@@ -176,6 +228,7 @@ def command_route(args: argparse.Namespace) -> int:
             f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/liquid-glass.md",
             f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/charts.md",
             f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/animation-advanced.md",
+            f"{ext_root}/avdlee-swiftui-skill/.agents/skills/update-swiftui-apis/references/scan-manifest.md",
             *(
                 [
                     f"{ext_root}/avdlee-swiftui-skill/skills/swiftui-expert-skill/references/macos-window-styling.md",
@@ -285,6 +338,7 @@ def command_route(args: argparse.Namespace) -> int:
             "genjutsu_native_only": {
                 "files": genjutsu_all_files,
                 "focused_files": genjutsu_focused,
+                "choreography_tiers": {"cast": "single micro-interaction", "paint": "single screen or AppTheme", "bunshin": "multi-screen with two owner gates and shoot.mjs --self-test"},
                 "forbidden_web_compose": ["css-native", "framer-motion", "gsap", "threejs-r3f", "compose-*"],
             },
             "claude-code-apple-skills": {
@@ -769,6 +823,11 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
 
+    audit = sub.add_parser("audit-code", aliases=["audit-swift"], parents=[common], help="Scan Swift source against active native defect cases")
+    audit.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
+    audit.add_argument("--path", required=True)
+    audit.add_argument("--snippet", default=None)
+
     gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
     gate.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     gate.add_argument("--stage", choices=["gallery", "spec", "traceback"], required=True)
@@ -798,6 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_flow_map(args)
     if args.command == "route":
         return command_route(args)
+    if args.command in {"audit-code", "audit-swift"}:
+        return command_audit_code(args)
     if args.command == "register-case":
         return command_register_case(args)
     if args.command == "jev-gate":

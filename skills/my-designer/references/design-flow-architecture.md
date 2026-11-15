@@ -15,7 +15,14 @@ This document defines the unified architecture connecting **Entry A (Ingest & St
 
 ---
 
-## 2. Two-Stage Demo Pipeline & Change Impact
+## 2. Blast-Radius Choreography & Receipt Honesty
+
+- **cast**: one micro-interaction/component; lock one Interaction Thesis and preview it in place without rewriting global tokens.
+- **paint**: one screen or app-wide style; lock visual + interaction theses and the shared `AppTheme`/`MASTER.md` token ledger before implementation.
+- **bunshin**: multiple screens; require Scope/Tier and Direction owner gates plus a working Evidence Harness (`shoot.mjs --self-test`). Without the harness, downgrade to `paint`.
+- **B4 honesty**: visual traceback is `UNVALIDATED` unless real rendered screenshots at `390×844` mobile or `1280×800+` desktop are captured and inspected. Compilation and code reading are not visual PASS evidence.
+
+## 3. Two-Stage Demo Pipeline & Change Impact
 
 Stage 1 **Designer** (`--role designer` → `magpie/group/designer`, Copilot `gpt-6.1-sol` + `grok-4.7`) authors TEN independent screen prompts or FOUR app-nav prompts: each owns a metaphor, one P0, P1/P2 folding, color/surface polarity, Liquid Glass optical parameters, inline SVG icons and anti-patterns. Stage 2 **Coding** (`--role writer` → `magpie/group/coding`) implements the approved HTML/CSS/JS, then production code after selection; Coding does not own ideation. Routing/config implementation is upstream and out of this skill's scope.
 `scaffold-gallery [--prompts-dir <dir>]` binds exact `prompts/v01-prompt.md..v10-prompt.md` or `prompts/app01-prompt.md..app04-prompt.md` via manifest `prompt_file`. Default scaffolds are independently useful but unapproved starters; the CLI does not semantically compile arbitrary prose. Outer choosers own gallery/theme/viewport controls; sub-pages prohibit caustic repeating stripes, rulers and Active / Matte debug bars.
