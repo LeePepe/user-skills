@@ -4,7 +4,7 @@ const S = CONFIG.scheme;
 const A = S.architecture;
 const P = Object.fromEntries(S.screens.map(p => [p.id, p]));
 const initial = CONFIG.initial_state || A.initial_state || {active_screen: A.root, history: [], overlay: null, detent: null, overflow_open: false, title_collapsed: false};
-const initialTab = A.destinations.includes(initial.active_screen) ? initial.active_screen : A.root;
+const initialTab = initial.history?.length ? initial.history[0] : initial.active_screen;
 const state = {
   activeTab: initialTab,
   tabs: Object.fromEntries(A.destinations.map(id => [id, {current: id, history: []}])),

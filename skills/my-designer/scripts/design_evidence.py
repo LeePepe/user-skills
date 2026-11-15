@@ -55,53 +55,74 @@ class PageParser(HTMLParser):
 
 
 class RenderedSurface(HTMLParser):
-    """Inspect rendered structure/styles, never inert JSON, scripts, or prompt prose."""
+    """Keep independent block/label text runs and a cosmetic-ID-free DOM tree."""
+    BLOCKS = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'div', 'section', 'header',
+              'footer', 'summary', 'figcaption', 'article', 'aside', 'nav', 'label', 'td',
+              'th', 'output', 'main', 'ol', 'ul', 'figure', 'button', 'textarea', 'select', 'option', 'br', 'hr'}
+    VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
     def __init__(self, text):
         super().__init__()
         self.nodes, self.styles, self.links, self.labels = [], [], [], []
-        self.visible_chunks, self.option_tokens = [], []
+        self.visible_blocks, self.option_tokens, self.text_run = [], [], []
+        self.tree = {'tag': 'document', 'attrs': {}, 'children': []}
+        self.stack = [self.tree]
         self.in_style = False
         self.ignored_depth = 0
-        self.button_text = None
         self.control_stack = []
         self.feed(text)
+        self._flush_text()
+
+    def _flush_text(self):
+        text = ' '.join(''.join(self.text_run).split()).casefold()
+        if text:
+            self.visible_blocks.append(text)
+        self.text_run = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         self.nodes.append((tag, attrs))
-        if tag in {'script', 'style'}:
-            self.ignored_depth += 1
-        if tag == 'style':
-            self.in_style = True
-        if tag in {'button', 'input', 'textarea', 'select', 'option'}:
-            self.control_stack.append((tag, attrs.get('value', ''), []))
-        for key in ('aria-label', 'title', 'placeholder'):
-            if attrs.get(key):
-                self.labels.append(' '.join(attrs[key].split()).casefold())
+        node = {'tag': tag, 'attrs': attrs, 'children': []}
+        self.stack[-1]['children'].append(node)
+        if tag not in self.VOID:
+            self.stack.append(node)
         if tag == 'link' and 'stylesheet' in attrs.get('rel', '').lower().split():
             self.links.append(attrs.get('href', ''))
         if attrs.get('style'):
             self.styles.append('*{' + attrs['style'] + '}')
-        if tag == 'button':
-            self.button_text = []
+        if tag in {'script', 'style'}:
+            self._flush_text()
+            self.ignored_depth += 1
+            self.in_style = tag == 'style'
+        if self.ignored_depth:
+            return
+        if tag in self.BLOCKS or tag == 'input':
+            self._flush_text()
+        for key in ('aria-label', 'title', 'placeholder'):
+            if attrs.get(key):
+                self.labels.append(' '.join(attrs[key].split()).casefold())
+        if tag == 'input' and attrs.get('value'):
+            self.labels.append(' '.join(attrs['value'].split()).casefold())
+        if tag in {'button', 'textarea'} or (tag == 'option' and any(n['tag'] == 'select' for n in self.stack)):
+            self.control_stack.append((tag, attrs.get('value', ''), []))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
 
     def handle_data(self, text):
         if self.in_style:
             self.styles.append(text)
         if self.ignored_depth:
             return
-        if text.strip():
-            self.visible_chunks.append(text)
-        if self.button_text is not None:
-            self.button_text.append(text)
-        if self.control_stack:
-            self.control_stack[-1][2].append(text)
+        self.text_run.append(text)
+        for _, _, chunks in self.control_stack:
+            chunks.append(text)
 
     def handle_endtag(self, tag):
-        if tag == 'style':
-            self.in_style = False
-        if tag in {'script', 'style'}:
-            self.ignored_depth = max(0, self.ignored_depth - 1)
+        if tag in self.BLOCKS:
+            self._flush_text()
         if self.control_stack and self.control_stack[-1][0] == tag:
             _, value, chunks = self.control_stack.pop()
             text = ' '.join(''.join(chunks).split()).casefold()
@@ -109,9 +130,46 @@ class RenderedSurface(HTMLParser):
                 self.option_tokens.append((text, ' '.join(value.split()).casefold()))
             elif text:
                 self.labels.append(text)
-        if tag == 'button' and self.button_text is not None:
-            self.labels.append(' '.join(''.join(self.button_text).split()).casefold())
-            self.button_text = None
+        if tag in {'script', 'style'}:
+            self.in_style = False
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i]['tag'] == tag:
+                del self.stack[i:]
+                break
+
+
+def topology_signature(text):
+    surface = RenderedSurface(text)
+    def descendants(node):
+        yield node
+        for child in node['children']:
+            yield from descendants(child)
+    mains = [n for n in descendants(surface.tree) if n['tag'] == 'main']
+    if len(mains) != 1:
+        raise ValueError('topology requires one main viewport')
+    main = mains[0]
+    tokens = [t for t in main['attrs'].get('class', '').split() if t.startswith('topology-')]
+    content = [n for n in main['children'] if n['tag'] == 'section' and 'content' in n['attrs'].get('class', '').split()]
+    if len(tokens) != 1 or len(content) != 1:
+        raise ValueError('topology requires a labelled main and an inner content component')
+    children = [n for n in content[0]['children'] if not set(n['attrs'].get('class', '').split()) & {'hero', 'fold-panel', 'secondary'}]
+    if not children:
+        raise ValueError('topology inner child tree is empty')
+    def shape(node):
+        return (node['tag'], node['attrs'].get('role', ''), tuple(shape(n) for n in node['children']))
+    return tokens[0], tuple(shape(n) for n in children)
+
+
+def disclaimer_copy(text):
+    banned = re.compile(r'演示数据|非实时|模拟|示意|非已证实失败|非成功/失败证明|synthetic|demo\s+only|mock\s+data|placeholder\s+stage', re.I)
+    parts = re.split(r'[;；。!?！？\n]|\.(?:\s|$)|\b(?:but|however|yet|whereas)\b|但是|但|然而|不过|\band\s+(?=(?:display|render|show|use|present|confirm)\b)|[,，]\s*(?=(?:now|this|we|display|render|show)\b|现在|本页|显示)', text, flags=re.I)
+    for part in parts:
+        for match in banned.finditer(part):
+            prefix = part[:match.start()]
+            if not re.search(r'禁止|严禁|不得|不要|\b(?:never|must not|do not)\s+(?:use|show|display|render|include|generate|confirm|present|allow)\b|\bno\s+(?:use\s+(?:of\s+)?)?$', prefix, re.I):
+                return True
+    return False
 
 
 def rendered_gallery_errors(root):
@@ -164,12 +222,8 @@ def rendered_gallery_errors(root):
         try:
             html = path.read_text(encoding='utf-8')
             surface = RenderedSurface(html)
-            visible_blocks = [' '.join(''.join(surface.visible_chunks).split()).casefold(), *surface.labels]
-            banned = re.compile(r'(?:演示数据|非实时|模拟|示意|非已证实失败|非成功/失败证明|仅在本页模拟|确认模拟|synthetic|demo only|mock data|placeholder stage)', re.I)
-            for block in visible_blocks:
-                if banned.search(block) and not re.search(r'(?:禁止|严禁|不得|不要|never|must not|do not|no\\s+)', block, re.I):
-                    errors.append(f'{path.name}: sandbox/meta-disclaimer copy is forbidden')
-                    break
+            if any(disclaimer_copy(block) for block in [*surface.visible_blocks, *surface.labels]):
+                errors.append(f'{path.name}: sandbox/meta-disclaimer copy is forbidden')
             internal = {'ready', 'empty', 'stale', 'failed', 'loading', 'error', 'simulated'}
             if any(text in internal or value in internal for text, value in surface.option_tokens):
                 errors.append(f'{path.name}: inline test-state select is forbidden')
@@ -192,12 +246,11 @@ def rendered_gallery_errors(root):
     return errors
 
 
-def _prompt_paragraphs(text):
-    return {p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) >= 20 and not p.lstrip().startswith('#')}
-
-
-def _overlap_ratio(left, right):
-    return len(left & right) / min(len(left), len(right)) if left and right else 0.0
+_prompts_spec = importlib.util.spec_from_file_location('evidence_prompts', CATALOG_PATH.with_name('gallery_prompts.py'))
+_PROMPTS = importlib.util.module_from_spec(_prompts_spec)
+_prompts_spec.loader.exec_module(_PROMPTS)
+_prompt_paragraphs = _PROMPTS._paragraphs
+_overlap_ratio = _PROMPTS._overlap_ratio
 
 
 def prompt_errors(root, manifest):
@@ -321,21 +374,21 @@ def gallery_errors(root, manifest):
                 if distance < 2:
                     errors.append(f'{a["id"]}/{b["id"]}: need two substantive axis differences')
             evidence.append({'variant_count': 10, 'checked_pairs': len(distances), 'minimum_distance': min(distances)})
-            topology_signatures = []
+            topology_names, topology_trees = [], []
             for v in variants:
                 name = v['id'] + '.html'
-                compare(name, c._gallery_html(f'{manifest["goal"]} {v["id"]}', v['id'], platform, v, anti, overrides))
-                path = root / name
+                expected = c._gallery_html(f'{manifest["goal"]} {v["id"]}', v['id'], platform, v, anti, overrides)
+                compare(name, expected)
                 try:
-                    surface = RenderedSurface(path.read_text(encoding='utf-8'))
-                    main = next(attrs for tag, attrs in surface.nodes if tag == 'main')
-                    topology = next((token for token in main.get('class', '').split() if token.startswith('topology-')), None)
-                    children = tuple((tag, attrs.get('class', ''), attrs.get('role', ''), attrs.get('id', '')) for tag, attrs in surface.nodes if 'topology-' in attrs.get('class', ''))
-                    topology_signatures.append((topology, children))
-                except (OSError, StopIteration):
-                    pass
-            if len(topology_signatures) != 10 or len(set(topology_signatures)) != 10:
-                errors.append('screen variants must have ten distinct DOM topology/child signatures')
+                    topology, children = topology_signature((root / name).read_text(encoding='utf-8'))
+                    topology_names.append(topology)
+                    topology_trees.append(children)
+                    if (topology, children) != topology_signature(expected):
+                        errors.append(f'{name}: inner DOM topology/child tree does not match the declared morphology')
+                except (OSError, ValueError) as error:
+                    errors.append(f'{name}: invalid DOM topology: {error}')
+            if len(set(topology_names)) != 10 or len(set(topology_trees)) != 10:
+                errors.append('screen variants must have ten distinct DOM topology/child trees independent of cosmetic IDs/classes')
             current_meta = {'p0': 'current', 'axis_y': 'accordion', 'archetype': variants[0]['archetype'],
                             'content': manifest.get('screen_content') or f'{manifest["goal"]} key screen'}
             # The first breadth variant is not necessarily the current archetype.
