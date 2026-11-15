@@ -3493,7 +3493,8 @@ class SkillContractV2Tests(unittest.TestCase):
         for token in ('gallery-breadcrumbs', 'selection-telemetry', 'render_demos_hub', 'data-copy-goal', 'aidash-cards-r2:'):
             self.assertIn(token, source)
         css = (SKILLS_DIR / 'design-studio/assets/tenfold-gallery.css').read_text(encoding='utf-8')
-        self.assertIn('.variant-card[hidden]', css); self.assertIn('min-height:44px', css)
+        self.assertIn('.variant-card[hidden]', css); self.assertIn('min-height:44px', css); self.assertIn('.variant-summary', css)
+
         evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
         spec = importlib.util.spec_from_file_location('portal_gate_contract', evidence_path)
         evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
@@ -3502,6 +3503,8 @@ class SkillContractV2Tests(unittest.TestCase):
             errors = evidence.portal_errors(root)
             self.assertTrue(any('hidden' in error for error in errors))
             self.assertTrue(any('multi-category' in error for error in errors))
+            rendered = evidence.rendered_gallery_errors(root)
+            self.assertTrue(any('variant-summary' in error for error in rendered))
 
     def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
         evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"

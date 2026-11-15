@@ -1444,7 +1444,8 @@ def _portal_manifests(root, goal):
             if {v['id'] for v in item['variants']} != expected:
                 continue
             item['_path'] = child.name
-            CHOOSER.cards_for(item, child.name + '/', reference=False)
+            item['_root_dir'] = str(child)
+            CHOOSER.cards_for(item, child.name + '/', reference=False, root_dir=child)
             manifests.append(item)
         except (OSError, ValueError, TypeError, KeyError, StopIteration):
             continue
@@ -1490,7 +1491,9 @@ def command_scaffold_app_nav(args):
         raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
     platform = 'desktop' if args.platform == 'macos' else args.platform
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
-    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']]} for x in schemes]}
+    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']], **({k: x[k] for k in ('summary', 'one_liner', 'summary_zh') if k in x})} for x in schemes]}
+    for variant, scheme in zip(manifest['variants'], schemes):
+        variant['summary'] = CHOOSER._summary_for(manifest, variant, scheme)
     prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
     _blog_manifest(args, manifest)
     destination.mkdir(parents=True)
@@ -1534,6 +1537,8 @@ def command_scaffold_gallery(args):
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
     platform = 'desktop' if args.platform == 'macos' else args.platform
     manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    for variant in variants:
+        variant['summary'] = CHOOSER._summary_for(manifest, variant)
     prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
     _blog_manifest(args, manifest)
     destination.mkdir(parents=True, exist_ok=False)

@@ -91,6 +91,7 @@ summary{cursor:pointer;font-weight:650;min-height:32px;padding:6px 0}
 .variant-card header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;overflow-wrap:anywhere;min-height:90px}
 .variant-card header strong{min-height:0}
 .variant-card header a{margin-left:auto;color:var(--action);font-size:12px}
+.variant-summary{margin:8px 0 12px;font-size:13px;line-height:1.5;color:var(--muted);min-height:38px}
 .variant-badge,.coordinate-pill{padding:3px 7px;border-radius:999px;background:var(--border);color:var(--ink);font-size:11px;max-width:100%;overflow-wrap:anywhere}
 .variant-card .controls{display:flex;gap:12px;margin-top:8px}
 .variant-card textarea{background:var(--paper);color:var(--ink)}

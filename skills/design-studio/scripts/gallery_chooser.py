@@ -11,16 +11,67 @@ def frame_mode(manifest):
     return 'macos' if manifest['platform'] == 'desktop' else manifest['platform']
 
 
-def cards_for(manifest, prefix='', reference=True):
+_CHINESE = re.compile(r'[\u4e00-\u9fff]')
+
+
+def _usable_summary(value):
+    text = str(value or '').strip()
+    return text if len(text) >= 10 and _CHINESE.search(text) else ''
+
+
+def _prompt_summary(root_dir, variant):
+    if not root_dir:
+        return ''
+    prompt = Path(root_dir) / 'prompts' / f'{variant["id"]}-prompt.md'
+    try:
+        text = prompt.read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return ''
+    for line in text.splitlines():
+        match = re.search(r'(?:一句话介绍|核心差异|摘要|summary)\\s*[：:]\\s*(.+)', line, re.I)
+        candidate = _usable_summary(match.group(1) if match else line.lstrip('# -*'))
+        if candidate:
+            return candidate
+    return ''
+
+
+def _summary_for(manifest, variant, scheme=None, root_dir=None):
+    if variant.get('id') == 'current':
+        return _usable_summary(manifest.get('reference_summary')) or f'当前基线参照视图（{manifest.get("goal", "当前项目")} 的现有布局与交互对照基线）'
+    for key in ('summary', 'one_liner', 'summary_zh'):
+        candidate = _usable_summary(variant.get(key))
+        if candidate:
+            return candidate
+    candidate = _prompt_summary(root_dir, variant)
+    if candidate:
+        return candidate
+    if scheme is not None:
+        architecture = scheme.get('architecture', {})
+        kind = architecture.get('kind', '工作台')
+        state = architecture.get('initial_state', {}).get('active_screen', '主屏')
+        destinations = '、'.join(str(item) for item in architecture.get('destinations', [])[:2]) or '核心流程'
+        sheet = architecture.get('sheet') or '无浮层'
+        return f'{variant["id"]} 采用{kind}导航，以{state}为起点串联{destinations}，并用{sheet}保持操作路径清晰。'
+    morphology = {'v01': 'Bento磁贴', 'v02': '时间轴轨', 'v03': '脉冲矩阵', 'v04': '环形仪表',
+                  'v05': '主从折叠', 'v06': '双栏工作台', 'v07': '悬浮灵动岛', 'v08': '3D卡包',
+                  'v09': '命令舞台', 'v10': '画报大字'}.get(variant.get('id'), '模块化布局')
+    return (f'{variant["id"]} 以{morphology}聚焦{variant.get("p0", "主要任务")}，'
+            f'通过{variant.get("axis_y", "分层折叠")}和{variant.get("layout", "主次布局")}组织信息，'
+            f'呈现{variant.get("glass_geometry", "平衡")}的操作节奏。')
+
+
+def cards_for(manifest, prefix='', reference=True, root_dir=None):
     category = manifest.get('category') or f'r{manifest["round"]}'
     common = {'category': category, 'round': manifest['round'], 'platform': frame_mode(manifest)}
     result = []
     if reference:
         result.append(dict(common, id='current', title='Current reference', pills=['Reference'],
-                           src=prefix + 'current.html', reference=True))
+                           src=prefix + 'current.html', reference=True,
+                           summary=_summary_for(manifest, {'id': 'current'})))
     for variant in manifest['variants']:
         if variant.get('prompt_file') is not None and variant['prompt_file'] != f'prompts/{variant["id"]}-prompt.md':
             raise ValueError('unsafe variant prompt_file')
+        scheme = None
         if manifest.get('mode') == 'app-nav':
             scheme = next(s for s in manifest['schemes'] if s['id'] == variant['id'])
             pills = [variant['navigation_model'], scheme['architecture']['kind']]
@@ -28,7 +79,8 @@ def cards_for(manifest, prefix='', reference=True):
             pills = [variant['p0'], variant['axis_y'], variant['archetype']]
         result.append(dict(common, id=variant['id'], title=variant.get('title', variant['id']),
                            pills=pills, src=prefix + variant['id'] + '.html', reference=False,
-                           prompt=prefix + variant['prompt_file'] if variant.get('prompt_file') else ''))
+                           prompt=prefix + variant['prompt_file'] if variant.get('prompt_file') else '',
+                           summary=_summary_for(manifest, variant, scheme, root_dir)))
     return result
 
 
@@ -59,6 +111,7 @@ def card_html(card, hidden=False):
     return f'''<article class="variant-card{current_class}" data-group="{attr(card['category'])}" data-round="{card['round']}" data-variant="{attr(card['id'])}" data-platform="{card['platform']}"{hidden_attr}>
 <header><span class="variant-badge">{attr(card['id'])}</span><strong>{attr(card['title'])}</strong>{pills}
 <a target="_blank" rel="noopener" href="{attr(card['src'])}">↗ 全屏打开</a>{prompt_link}</header>
+<p class="variant-summary">{escape(card['summary'])}</p>
 <div class="device-bezel" data-frame-mode="{card['platform']}" style="--frame-width:{width}px;--frame-height:{height}px;--preview-scale:{scale}">
 <div class="device-window">{chrome}<iframe loading="eager" src="{attr(card['src'])}" title="{attr(card['title'])}"></iframe>{home}</div></div>
 {controls}</article>'''
@@ -73,8 +126,9 @@ def render(goal, manifests, tokens, portal=False, prefix=''):
         group['count'] += len(manifest['variants'])
         group['platforms'].add(frame_mode(manifest))
         path = manifest['_path'] + '/' if portal else prefix
+        root_dir = Path(manifest.get('_root_dir', '')) if manifest.get('_root_dir') else None
         # Portals compare candidates; each round keeps its own non-selectable reference.
-        cards.extend(cards_for(manifest, path, reference=not portal))
+        cards.extend(cards_for(manifest, path, reference=not portal, root_dir=root_dir))
     tabs = ''
     if portal:
         total = sum(g['count'] for g in groups.values())
