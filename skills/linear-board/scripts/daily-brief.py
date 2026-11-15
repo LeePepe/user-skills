@@ -398,6 +398,78 @@ def _source_refs(item: dict[str, Any], issue_urls: dict[str, str], repo: str) ->
     pr_urls = {f"#{match[2]}": match[0] for match in PR_URL_RE.finditer(text)}
     return [_link(pr_urls[label], label) if label in pr_urls else _linked_text(label, issue_urls, repo) for label in labels]
 
+TODO_BUCKETS = {
+    "needs": "🚨 待你拍板（Needs Decision）",
+    "active": "🔨 在途跟进（In Progress）",
+    "planned": "📌 今日计划（Planned & Learn）",
+    "recommended": "💡 昨日完结顺推（Recommended Next-Hop）",
+}
+
+def _area(project: str, item: dict[str, Any]) -> str:
+    generic = {"", "personal", "personal project", "agent workflow", "handoff"}
+    layer = _layer(project, item)
+    destination = _repo_name(str(item.get("repo") or project))
+    context = " ".join(str(item.get(key) or "") for key in ("goal", "title", "subject"))
+    if destination.casefold() not in generic | {"user-skills"}: context = destination + " " + context
+    for token in LAYERS[layer][2]:
+        if re.search(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])", context.casefold()):
+            return {"voxpocket": "VoxPocket", "aidash": "AIDash", "financial": "Financial", "vitalstride": "VitalStride", "webiqsearch": "WebIQSearch", "nas": "Nas", "nascontrol": "NasControl"}.get(token, destination if destination.casefold() == token else token)
+    return destination if destination.casefold() not in generic else _plain(item.get("goal") or item.get("title") or item.get("identifier") or "完成事项")
+
+def _completed_sources(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
+    sources = [((item.get("project") or {}).get("name") or "Personal", item, "Linear")
+               for item in linear if _issue_is_completed(item, yesterday) and not _brief_issue(item) and not _excluded_text([str(item.get("title") or ""), str((item.get("project") or {}).get("name") or "")], root_self=True)]
+    sources += [(_repo_name(item["repo"]), item, "Git") for item in commits if not item.get("timestamp") or _date_in(item["timestamp"], yesterday)]
+    sources += [(_repo_name(item["repo"]), item, "PR") for item in prs if not item.get("merged_at") or _date_in(item["merged_at"], yesterday)]
+    sources += [(item.get("goal", "Handoff"), item, "ledger") for item in events
+                if (not item.get("timestamp") or _date_in(item["timestamp"], yesterday)) and item.get("EVT", "DONE").upper() in {"DONE", "PR_MERGED", "GOAL_DONE"}]
+    return sources
+
+def _recommendations(yesterday: date, linear: list[dict[str, Any]], commits: list[dict[str, Any]], events: list[dict[str, Any]], prs: list[dict[str, Any]], entries: dict[str, dict[str, Any]], issue_urls: dict[str, str]) -> list[dict[str, Any]]:
+    covered_ids = set(REFERENCE_RE.findall(" ".join(str(entry["ref"]) + " " + " ".join(entry["parts"]) for entry in entries.values())))
+    covered_topics = {topic for entry in entries.values() for topic in entry["topics"]}
+    areas: dict[str, dict[str, Any]] = {}
+    for project, item, source in _completed_sources(yesterday, linear, commits, events, prs):
+        area = _area(project, item); key = area.casefold()
+        labels = _source_refs(item, issue_urls, _reference_context(item, project))
+        identifiers = set(re.findall(r"\bTIA-\d+\b", " ".join(labels)))
+        if key in covered_topics or identifiers & covered_ids: continue
+        repo = _reference_context(item, project)
+        pr_match = PR_URL_RE.search(" ".join(str(item.get(k) or "") for k in ("url", "ref", "pr")))
+        identifier = str(item.get("identifier") or next(iter(sorted(identifiers)), ""))
+        if source == "PR" or pr_match:
+            number = str(item.get("number") or (pr_match[2] if pr_match else ""))
+            url = pr_match[0] if pr_match else (f"https://github.com/{repo}/pull/{number}" if repo and number else "")
+            action = _link(url, f"#{number}" if number else "PR"); identity = identifier or url; priority = 0
+        elif identifier:
+            action = _linked_text(identifier, issue_urls); identity = identifier; priority = 1
+        elif source == "Git" and repo and item.get("sha"):
+            action = _link(f"https://github.com/{repo}/commit/{item['sha']}", str(item["sha"])); identity = f"{repo}:{item['sha']}"; priority = 3
+        else:
+            action = _link(item.get("ledger"), "记录"); identity = str(item.get("task") or item.get("id") or item.get("goal")); priority = 2
+        if not action: continue
+        layer = _layer(project, item)
+        gallery = layer == 0 and bool(re.search(r"(?i)\b(?:demo|gallery)\b|画廊|原型", " ".join(str(item.get(k) or "") for k in ("goal", "title", "subject", "note"))))
+        candidate = {"area": area, "layer": layer, "gallery": gallery, "identities": {identity}, "priority": priority,
+                     "action": action, "ref": identifier or " · ".join(labels) or area, "repo": repo,
+                     "parts": [_item(_issue_context(item) if source == "Linear" else _ledger_context(item) if source == "ledger" else f"{area}: {item.get('title') or item.get('subject') or ''} {action}", source)]}
+        if key not in areas: areas[key] = candidate; continue
+        current = areas[key]
+        current["gallery"] |= gallery; current["identities"].add(identity); current["parts"].extend(candidate["parts"])
+        if (priority, action) < (current["priority"], current["action"]):
+            for field in ("priority", "action", "ref", "repo"): current[field] = candidate[field]
+    result = []
+    for item in sorted(areas.values(), key=lambda row: (not row["gallery"], row["layer"], row["area"].casefold()))[:3]:
+        area = item["area"]
+        if item["gallery"]: summary = f"拍板 {area} 画廊并进实现"
+        elif item["layer"] == 3 or len(item["identities"]) >= 2: summary = f"提炼 {area} 复盘/技术博客"
+        elif item["layer"] == 0: summary = f"验证 {area} 本地安装/构建读回"
+        elif item["layer"] == 1: summary = f"验证 {area} 下游接入与门禁"
+        else: summary = f"实测 {area} 首轮端到端链路"
+        result.append({**item, "group": "recommended", "summary": summary, "action": "源自昨日 " + item["action"], "stages": [], "topics": [area.casefold()],
+                       "parts": [summary, *item["parts"]]})
+    return result
+
 def _brief_title(target: date) -> str:
     yesterday = target - timedelta(days=1)
     return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
@@ -422,7 +494,8 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
             key = str(issue.get("identifier") or issue.get("id") or f"linear-{index}")
             entries[key] = {"group": group, "parts": [_item(_issue_context(issue), "Linear TIA")],
                             "summary": issue.get("title") or key, "action": _link(issue.get("url") or issue_urls.get(key) or (f"https://linear.app/tianpeili/issue/{key}" if re.fullmatch(r"TIA-\d+", key) else ""), "打开"),
-                            "ref": key, "repo": _reference_context(issue, (issue.get("project") or {}).get("name", "")), "stages": []}
+                            "ref": key, "repo": _reference_context(issue, (issue.get("project") or {}).get("name", "")),
+                            "topics": [_area((issue.get("project") or {}).get("name", ""), issue).casefold()], "stages": []}
     rank = {"needs": 0, "active": 1, "planned": 2}
     for item in ledger_active or []:
         identifier = item.get("identifier", "")
@@ -435,15 +508,21 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
             parts = [_item(_issue_context(bound_issue), "Linear TIA")] if bound_issue else []
             entries[key] = {"group": group, "parts": parts, "summary": (bound_issue or {}).get("title") or item.get("title") or item.get("goal"),
                             "action": _link((bound_issue or {}).get("url") or item.get("ledger"), "打开"), "ref": identifier or item.get("goal", "goal"),
-                            "repo": _reference_context(item, item.get("goal", "")), "stages": []}
+                            "repo": _reference_context(item, item.get("goal", "")), "topics": [], "stages": []}
         entry = entries[key]
+        entry["topics"].append(_area(item.get("goal", ""), item).casefold())
         if not entry["repo"]: entry["repo"] = _reference_context(item, item.get("goal", ""))
         if rank[group] < rank[entry["group"]]: entry["group"] = group
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
         if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
+    for index, item in enumerate(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls)):
+        entries[f"recommended:{index}"] = item
     todos = []
-    for group in rank:
+    for group, heading in TODO_BUCKETS.items():
+        if not any(entry["group"] == group for entry in entries.values()): continue
+        if lines[-1]: lines.append("")
+        lines += [f"**{heading}**", ""]
         for entry in entries.values():
             if entry["group"] != group: continue
             number = len(todos) + 1

@@ -108,11 +108,13 @@ class DailyBriefTests(unittest.TestCase):
         self.assertTrue(markdown.startswith(MARKER))
         self.assertEqual(markdown.splitlines()[1], "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）")
         self.assertIn("## 📊 昨日完成 (11-14 · 1 项 · workflow-hub 四大方向)", markdown)
-        self.assertEqual([row["number"] for row in todos], [1, 2, 3, 4])
-        self.assertEqual([re.search(r"TIA-\d+", row["text"])[0] for row in todos], ["TIA-1", "TIA-2", "TIA-3", "TIA-4"])
+        self.assertEqual([row["number"] for row in todos], list(range(1, len(todos) + 1)))
+        original = [row for row in todos if row["group"] != "recommended"]
+        self.assertEqual([re.search(r"TIA-\d+", row["text"])[0] for row in original], ["TIA-1", "TIA-2", "TIA-3", "TIA-4"])
         self.assertIn("[Personal project] https://linear.app/test/TIA-2", todos[1]["text"])
         self.assertIn("[TIA-5](https://linear.app/test/TIA-5) | Needs Decision |", markdown)
-        self.assertEqual([row["group"] for row in todos], ["needs", "active", "planned", "planned"])
+        self.assertEqual([row["group"] for row in original], ["needs", "active", "planned", "planned"])
+        self.assertEqual(todos[-1]["group"], "recommended")
         self.assertIn("- [ ] **[2] Implement**", markdown)
         self.assertIn("- [ ] **[3] Ship**", markdown)
         self.assertEqual(sum(line.startswith("### ") for line in markdown.splitlines()), 4)
@@ -154,7 +156,8 @@ class DailyBriefTests(unittest.TestCase):
             self.assertIsNotNone(match)
             self.assertEqual(int(match[1]), number); self.assertLessEqual(len(daily_brief._plain(match[2])), 25)
             self.assertLessEqual(len(re.findall(r"\]\(", match[3])), 1)
-            self.assertTrue(match[3].startswith("[") or match[3].startswith("`"))
+            action = match[3].removeprefix("源自昨日 ")
+            self.assertTrue(action.startswith("[") or action.startswith("`"))
         self.assertIn("| 项目 | 单据 / PR | 一句话结果 |", markdown)
         rows = [line for line in lines if line.startswith("| **")]
         self.assertEqual(len(rows), 4)
@@ -225,7 +228,7 @@ class DailyBriefTests(unittest.TestCase):
             for number in numbers: self.assertIn(f"[#{number}](https://github.com/{repo}/pull/{number})", markdown)
         unlinked = re.sub(r"\[[^\]]+\]\([^)]*\)", "LINK", markdown)
         self.assertIsNone(re.search(r"\bTIA-\d+\b|(?<!\w)#\d+\b", unlinked))
-        self.assertEqual(len(todos), 2)
+        self.assertEqual(sum(row["group"] != "recommended" for row in todos), 2)
         self.assertIn("TIA-1", todos[1]["text"])
         for line in markdown.splitlines():
             if line.startswith("| **"): self.assertLessEqual(len(daily_brief._plain(line.strip("|").split("|")[2])), 20)
@@ -254,6 +257,68 @@ class DailyBriefTests(unittest.TestCase):
         self.assertNotIn("#99", markdown); self.assertNotIn("LeePepe/unknown", markdown)
         self.assertNotRegex(markdown, r"\[(?:TIA-12?|#12?)\]\(")
         self.assertEqual(sum(line.startswith("| **") for line in markdown.splitlines()), 3)
+
+    def test_todo_action_buckets_cap_recommendations_and_keep_bridge_global_selection(self):
+        data = [issue("TIA-1", "Need owner", state="Blocked"), issue("TIA-2", "Active turn", "In Progress", "started"),
+                issue("TIA-3", "Plan work", priority=1),
+                issue("TIA-4", "Demo gallery", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"}),
+                issue("TIA-5", "Story card", "Done", "completed", completedAt="2026-11-14", project={"name": "Knowledge"})]
+        commits = [{"repo": "user-skills", "sha": "abc", "subject": "Validate workflow"}]
+        prs = [{"repo": "Other/shared-ci", "number": 8, "title": "Quality gates", "url": "https://github.com/Other/shared-ci/pull/8"}]
+        markdown, todos = daily_brief.render_brief(TODAY, data, commits, [], [], prs)
+        self.assertEqual([row["number"] for row in todos], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([row["group"] for row in todos], ["needs", "active", "planned"] + ["recommended"] * 3)
+        buckets = [line for line in markdown.splitlines() if line.startswith("**")]
+        self.assertEqual(buckets, [f"**{label}**" for label in daily_brief.TODO_BUCKETS.values()])
+        self.assertEqual([daily_brief._plain(row["summary"]) for row in todos[3:]], ["拍板 VoxPocket 画廊并进实现", "验证 shared-ci 下游接入与门禁", "实测 user-skills 首轮端到端链路"])
+        for row in todos[3:]: self.assertTrue(row["action"].startswith("源自昨日 ["))
+        self.assertIn("[#8](https://github.com/Other/shared-ci/pull/8)", markdown)
+        bridge_spec = importlib.util.spec_from_file_location("brief_bucket_bridge", ROOT / "skills/linear-board/scripts/linear-bot-bridge.py")
+        bridge = importlib.util.module_from_spec(bridge_spec); bridge_spec.loader.exec_module(bridge)
+        selected = bridge.brief_selection({"title": TITLE, "description": markdown}, {"body": "@bot 1, 6"})
+        self.assertEqual([line.split("]", 1)[0] for line in selected.splitlines()[1:]], ["[1", "[6"])
+        self.assertIn("实测 user-skills", selected); self.assertNotIn("拍板 VoxPocket", selected)
+        checked = bridge.brief_selection({"title": TITLE, "description": markdown.replace("- [ ] **[6]", "- [x] **[6]")})
+        self.assertIn("[6]", checked); self.assertNotIn("[1]", checked)
+
+    def test_next_hop_layer_defaults_and_distinct_multi_item_milestones(self):
+        for project, title, expected in (("VoxPocket", "Feature done", "验证 VoxPocket 本地安装/构建读回"),
+                                         ("shared-design-system", "Tokens done", "验证 shared-design-system 下游接入与门禁"),
+                                         ("linear-board", "Bridge done", "实测 linear-board 首轮端到端链路"),
+                                         ("Knowledge", "Optics card", "提炼 Knowledge 复盘/技术博客")):
+            with self.subTest(project=project):
+                completed = issue("TIA-10", title, "Done", "completed", completedAt="2026-11-14", project={"name": project})
+                _, todos = daily_brief.render_brief(TODAY, [completed], [], [], [])
+                self.assertEqual(len(todos), 1)
+                self.assertEqual(daily_brief._plain(todos[0]["summary"]), expected[:25])
+        completed = issue("TIA-10", "Tokens done", "Done", "completed", completedAt="2026-11-14", project={"name": "shared-ci"})
+        duplicate = {"goal": "shared-ci-release", "identifier": "TIA-10", "ref": "https://github.com/LeePepe/shared-ci/pull/8", "note": "Delivered"}
+        _, todos = daily_brief.render_brief(TODAY, [completed], [], [duplicate], [])
+        self.assertEqual(len(todos), 1)
+        self.assertTrue(todos[0]["summary"].startswith("验证 shared-ci"))
+        commits = [{"repo": "shared-ci", "sha": "first", "subject": "Gate one"}, {"repo": "shared-ci", "sha": "second", "subject": "Gate two"}]
+        _, todos = daily_brief.render_brief(TODAY, [], commits, [], [])
+        self.assertEqual(len(todos), 1); self.assertEqual(todos[0]["summary"], "提炼 shared-ci 复盘/技术博客")
+        self.assertIn("/commit/first", todos[0]["action"])
+        _, reversed_todos = daily_brief.render_brief(TODAY, [], list(reversed(commits)), [], [])
+        self.assertEqual(reversed_todos[0]["action"], todos[0]["action"])
+
+    def test_recommendations_exclude_covered_issues_topics_non_yesterday_and_unusable_sources(self):
+        data = [issue("TIA-1", "Active app", "In Progress", "started", project={"name": "VoxPocket"}),
+                issue("TIA-2", "Demo gallery", "Done", "completed", completedAt="2026-11-14", project={"name": "VoxPocket"}),
+                issue("TIA-3", "Skill planned", priority=1, project={"name": "linear-board"}),
+                issue("TIA-4", "Bridge done", "Done", "completed", completedAt="2026-11-14", project={"name": "linear-board"}),
+                issue("TIA-5", TITLE, "Done", "completed", completedAt="2026-11-14"),
+                issue("TIA-6", "Work Business", "Done", "completed", completedAt="2026-11-14"),
+                issue("TIA-7", "Future", "Done", "completed", completedAt="2026-11-15")]
+        events = [{"goal": "voxpocket-gallery", "id": "E1", "ledger": "file:///tmp/gallery/ledger.md", "note": "Demo done"},
+                  {"goal": "other-area", "identifier": "TIA-1", "note": "Covered issue"},
+                  {"goal": "unknown", "id": "E2", "note": "No usable destination"}]
+        commits = [{"repo": "shared-ci", "sha": "old", "subject": "Older", "timestamp": "2026-11-13"}]
+        markdown, todos = daily_brief.render_brief(TODAY, data, commits, events, [])
+        self.assertEqual([row["group"] for row in todos], ["active", "planned"])
+        self.assertNotIn("**💡 昨日完结顺推（Recommended Next-Hop）**", markdown)
+        self.assertNotIn("**🚨 待你拍板（Needs Decision）**", markdown)
 
     def test_resolved_event_without_task_does_not_resurrect_blocked_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -370,13 +435,15 @@ class DailyBriefTests(unittest.TestCase):
             rollup, active, warnings = daily_brief.collect_handoff(root, TODAY, client=client, scope_cache=cache)
             markdown, todos = daily_brief.render_brief(TODAY, rows, [], rollup, warnings, ledger_active=active)
         self.assertFalse(warnings); self.assertFalse(client.scope_calls)
-        self.assertEqual(len(todos), 2)
-        self.assertEqual(sum("TIA-10" in row["text"] for row in todos), 1)
+        original = [row for row in todos if row["group"] != "recommended"]
+        self.assertEqual(len(original), 2)
+        self.assertEqual(sum("TIA-10" in row["text"] for row in original), 1)
         self.assertIn("Choose v01 or v02", todos[0]["text"])
         self.assertIn("M1: in_review / Reviewer", todos[0]["text"])
         self.assertIn("ledger.md", todos[0]["text"])
         self.assertIn("beta", todos[1]["text"])
-        self.assertNotIn("finished", str(todos)); self.assertNotIn("Later", str(todos)); self.assertNotIn("Complete", str(todos))
+        self.assertNotIn("finished", str(original)); self.assertNotIn("Later", str(todos)); self.assertNotIn("Complete", str(todos))
+        self.assertEqual(todos[-1]["group"], "recommended")
         self.assertIn("| **finished** |", markdown.split("## 📊 昨日完成")[1])
         self.assertNotIn("| **Handoff** |", markdown)
         self.assertIn("T2: in_review/Reviewer", markdown)
