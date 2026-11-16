@@ -486,10 +486,22 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
 
   if [[ "$MODEL_INDEX" -ge 0 ]]; then
     if [[ "$REQUESTED_MODEL" == group/* || "$REQUESTED_MODEL" == magpie/group/* ]]; then
-      if [[ "$MODEL_PREFIX" == "--model=" ]]; then
-        AGENT_ARGS[$MODEL_INDEX]="--model=$([[ "$GATEWAY_ONLINE" -eq 1 ]] && printf '%s' "$LOGICAL_GROUP" || printf '%s' "$FALLBACK_MODEL")"
+      if [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" == "copilot" ]]; then
+        if [[ -f "$HOME/.copilot/providers.json" || "${HERDR_COPILOT_MAGPIE_BYOK:-0}" == "1" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "1" ]]; then
+          TARGET_GROUP_MODEL="magpie/$LOGICAL_GROUP"
+        else
+          TARGET_GROUP_MODEL="$FALLBACK_MODEL"
+          GATEWAY_ONLINE=0
+        fi
+      elif [[ "$GATEWAY_ONLINE" -eq 1 ]]; then
+        TARGET_GROUP_MODEL="$LOGICAL_GROUP"
       else
-        AGENT_ARGS[$MODEL_INDEX]="$([[ "$GATEWAY_ONLINE" -eq 1 ]] && printf '%s' "$LOGICAL_GROUP" || printf '%s' "$FALLBACK_MODEL")"
+        TARGET_GROUP_MODEL="$FALLBACK_MODEL"
+      fi
+      if [[ "$MODEL_PREFIX" == "--model=" ]]; then
+        AGENT_ARGS[$MODEL_INDEX]="--model=$TARGET_GROUP_MODEL"
+      else
+        AGENT_ARGS[$MODEL_INDEX]="$TARGET_GROUP_MODEL"
       fi
     fi
   elif [[ "$GATEWAY_ONLINE" -eq 1 ]]; then
@@ -805,7 +817,7 @@ else:
     WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
     [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
     WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
-    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" <<'PY'
+    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$KIND" <<'PY'
 import json, sys
 payload = {
     "ok": True,
@@ -824,10 +836,11 @@ payload = {
     },
 }
 if sys.argv[3] == "1":
+    gw_mode = "magpie" if sys.argv[6] == "1" else ("claude_direct" if sys.argv[11] == "claude" else "direct_fallback")
     payload.update({
         "logical_group": sys.argv[4],
         "resolved_model": sys.argv[5],
-        "gateway_mode": "magpie" if sys.argv[6] == "1" else "direct_fallback",
+        "gateway_mode": gw_mode,
     })
 print(json.dumps(payload))
 PY
@@ -1070,11 +1083,12 @@ if sys.argv[13]:
         "command": f"python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/{sys.argv[14]} --interval 15 --max-wait 2400 --json",
     }
 if sys.argv[3] == "1" or sys.argv[7] == "1":
+    gw_mode = "magpie" if sys.argv[6] == "1" else ("claude_direct" if sys.argv[10] == "claude" else "direct_fallback")
     payload.update({
         "resolved_kind": sys.argv[10],
         "logical_group": sys.argv[4],
         "resolved_model": sys.argv[5],
-        "gateway_mode": "magpie" if sys.argv[6] == "1" else "direct_fallback",
+        "gateway_mode": gw_mode,
     })
 if sys.argv[11] == "1":
     payload["resolved_kind"] = sys.argv[10]
