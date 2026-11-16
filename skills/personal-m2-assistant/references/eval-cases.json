@@ -1,0 +1,100 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-16",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "m2-router.py --help exposes Grok Bot quota-protection CLI flags",
+      "tags": [
+        "cli",
+        "grok-bot",
+        "quota-protection"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--caller-bot",
+        "--no-supervision",
+        "--no-routine",
+        "--force-watch"
+      ],
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-002",
+      "title": "m2-router.py --plan with --caller-bot grok sets quota_protection_mode to grok_bot_no_supervision",
+      "tags": [
+        "plan",
+        "grok-bot",
+        "quota-protection"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message 'check shared-ci status' --caller-bot grok --no-herdr --no-dsh --mock-jev-json '{}' --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "quota_protection_mode": "grok_bot_no_supervision",
+        "quota_protection": {
+          "active": true,
+          "caller_bot": "grok",
+          "reason": "grok_bot_no_supervision_no_routine",
+          "supervision_disabled": true,
+          "routine_disabled": true
+        }
+      },
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-003",
+      "title": "m2-router.py --watch with --caller-bot grok short-circuits in 0s without polling",
+      "tags": [
+        "watch",
+        "grok-bot",
+        "quota-protection"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --watch --plan-file '{\"schema_version\":1,\"plan_id\":\"m2p-eval\",\"targets\":[{\"topic_id\":\"shared-ci\",\"target_repo\":\"shared-ci\",\"wave_order\":1,\"m2_status\":\"EXISTING_M2\"}]}' --caller-bot grok --no-herdr --no-dsh --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "all_settled": true,
+        "skipped": true,
+        "polls": 0,
+        "reason": "grok_bot_supervision_disabled",
+        "quota_protection_mode": "grok_bot_no_supervision"
+      },
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-004",
+      "title": "personal-m2-assistant SKILL.md documents Grok Bot quota-protection contract",
+      "tags": [
+        "contract",
+        "grok-bot",
+        "l0"
+      ],
+      "file": "skills/personal-m2-assistant/SKILL.md",
+      "must_contain": [
+        "grok_bot_no_supervision",
+        "--caller-bot grok",
+        "--no-supervision",
+        "--force-watch",
+        "grok_bot_supervision_disabled"
+      ],
+      "registered_at": "2026-11-16"
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "用 /m2 把任务派发给 AIDash 和 Sapphire 两个 M2 窗口",
+      "should_trigger": true
+    },
+    {
+      "query": "run xcodebuild test on iOS simulator",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "跨 M2 巡检当前所有在途任务并同步 TIA-463 看板",
+      "should_trigger": true
+    }
+  ]
+}

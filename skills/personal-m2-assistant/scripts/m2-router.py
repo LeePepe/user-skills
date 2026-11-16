@@ -91,6 +91,19 @@ WHITELISTED_CMD_BINARIES = {
     "find",
 }
 FORBIDDEN_GIT_SUBCOMMANDS = {"commit", "push", "merge", "rebase", "reset", "checkout"}
+GROK_QUOTA_PROTECTION_MODE = "grok_bot_no_supervision"
+GROK_QUOTA_PROTECTION_REASON = "grok_bot_no_supervision_no_routine"
+GROK_ENV_MODEL_VARS = (
+    "M2_CALLER_BOT",
+    "BOT_KIND",
+    "GROK_BOT",
+    "COPILOT_MODEL",
+    "OPENAI_MODEL",
+    "ANTHROPIC_MODEL",
+    "DSH_MODEL",
+    "HERDR_MODEL",
+    "MODEL",
+)
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -439,6 +452,119 @@ def _parse_pane_recent_unwrapped_turns(raw_text: str, *, max_turns: int = RECENT
 
 def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _quota_protection_payload() -> dict[str, Any]:
+    return {
+        "active": True,
+        "caller_bot": "grok",
+        "reason": GROK_QUOTA_PROTECTION_REASON,
+        "supervision_disabled": True,
+        "routine_disabled": True,
+    }
+
+
+def _record_has_grok_model(record: dict[str, Any]) -> bool:
+    for field in ("model", "resolved_model", "agent_model", "logical_group", "agent"):
+        if "grok" in _text(record.get(field)).lower():
+            return True
+    return False
+
+
+def is_grok_bot_caller(
+    args: Any = None,
+    *,
+    caller_bot: str = "",
+    no_supervision: bool = False,
+    no_routine: bool = False,
+    agent_records: Iterable[dict[str, Any]] | None = None,
+    herdr_bin: str | None = None,
+    runner: CommandRunner = _run_command,
+    probe_herdr: bool = True,
+) -> bool:
+    """Detect whether the caller is Grok Bot or explicitly requested no supervision/routine polling."""
+    if (
+        no_supervision
+        or no_routine
+        or bool(getattr(args, "no_supervision", False))
+        or bool(getattr(args, "no_routine", False))
+    ):
+        return True
+    effective_caller_bot = _text(caller_bot or getattr(args, "caller_bot", "")).lower()
+    if "grok" in effective_caller_bot:
+        return True
+    grok_bot_env = _text(os.environ.get("GROK_BOT")).lower()
+    if grok_bot_env in {"1", "true", "yes"} or "grok" in grok_bot_env:
+        return True
+    for env_var in GROK_ENV_MODEL_VARS:
+        if "grok" in _text(os.environ.get(env_var)).lower():
+            return True
+    caller_pane = _text(os.environ.get("HERDR_PANE_ID"))
+    if caller_pane:
+        records: list[dict[str, Any]] = []
+        if agent_records is not None:
+            records = [dict(item) for item in agent_records if isinstance(item, dict)]
+        elif probe_herdr and not bool(getattr(args, "no_herdr", False)):
+            binary = _text(
+                herdr_bin
+                or getattr(args, "herdr_bin", "")
+                or os.environ.get("HERDR_BIN")
+                or shutil.which("herdr"),
+                "herdr",
+            )
+            try:
+                res = runner([binary, "agent", "list"], timeout=2.0)
+                if getattr(res, "returncode", 1) == 0:
+                    records = _records(_parse_json_output(getattr(res, "stdout", "")))
+            except (OSError, subprocess.SubprocessError):
+                records = []
+        for rec in records:
+            pane_val = _text(rec.get("pane_id") or rec.get("paneId") or rec.get("id"))
+            if pane_val == caller_pane and _record_has_grok_model(rec):
+                return True
+    return False
+
+
+def _resolve_quota_protection(
+    args: Any = None,
+    *,
+    plan: dict[str, Any] | None = None,
+    apply_receipt: dict[str, Any] | None = None,
+    caller_bot: str = "",
+    no_supervision: bool = False,
+    no_routine: bool = False,
+    agent_records: Iterable[dict[str, Any]] | None = None,
+    herdr_bin: str | None = None,
+    runner: CommandRunner = _run_command,
+    probe_herdr: bool = True,
+) -> dict[str, Any]:
+    plan_obj = plan if isinstance(plan, dict) else {}
+    receipt_obj = apply_receipt if isinstance(apply_receipt, dict) else {}
+    active = (
+        _text(plan_obj.get("quota_protection_mode")) == GROK_QUOTA_PROTECTION_MODE
+        or bool((plan_obj.get("quota_protection") or {}).get("active"))
+        or _text(receipt_obj.get("quota_protection_mode")) == GROK_QUOTA_PROTECTION_MODE
+        or bool((receipt_obj.get("quota_protection") or {}).get("active"))
+        or is_grok_bot_caller(
+            args,
+            caller_bot=caller_bot,
+            no_supervision=no_supervision,
+            no_routine=no_routine,
+            agent_records=agent_records,
+            herdr_bin=herdr_bin,
+            runner=runner,
+            probe_herdr=probe_herdr,
+        )
+    )
+    if active:
+        return _quota_protection_payload()
+    return {
+        "active": False,
+        "caller_bot": _text(caller_bot or getattr(args, "caller_bot", "")),
+        "reason": "",
+        "supervision_disabled": False,
+        "routine_disabled": False,
+    }
 
 
 def _read_herdr_pane_recent_unwrapped(
@@ -1798,6 +1924,8 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
     plan_id = _text(plan.get("plan_id"), "m2p-unknown")
     route = _text((plan.get("decision") or {}).get("route"), "ROUTE_SINGLE")
     default_label = _text(plan.get("default_model_label"), DEFAULT_M2_MODEL_LABEL)
+    quota_mode = _text(plan.get("quota_protection_mode"))
+    quota_info = plan.get("quota_protection") if isinstance(plan.get("quota_protection"), dict) else {}
     lines = [
         f"# M2 Dispatch Plan · {plan_id} ({route})",
         "",
@@ -1805,12 +1933,19 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
         f"- **Route**: `{route}`",
         f"- **Default Model / Context**: `{default_label}` (`{_text(plan.get('default_model'), DEFAULT_M2_MODEL)}` / `{_text(plan.get('default_context'), DEFAULT_M2_CONTEXT)}`)",
         "- **Owner Gate**: Owner approval required before dispatch.",
+    ]
+    if quota_mode == GROK_QUOTA_PROTECTION_MODE or bool(quota_info.get("active")):
+        lines.append(
+            f"- **Quota Protection**: `quota_protection_mode: {GROK_QUOTA_PROTECTION_MODE}` "
+            "(Grok Bot 省流防烧额度模式：仅执行单次派发 Fire-and-Forget，自动取消后台 `--watch` 监督与定时 Routine 轮询)"
+        )
+    lines.extend([
         "",
         "## Target Dispatch Table",
         "",
         "| Wave | Topic | Domain Status | Target Repo | Space | M2 Status | Transport | Model / Context | CWD |",
         "|---|---|---|---|---|---|---|---|---|",
-    ]
+    ])
     for target in plan.get("targets", []):
         model_label = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
         cwd = _expand_cwd(target.get("cwd"))
@@ -1937,6 +2072,10 @@ def build_plan(
     runner: CommandRunner = _run_command,
     herdr_bin: str | None = None,
     session_state_dir: str | Path | None = None,
+    caller_bot: str = "",
+    no_supervision: bool = False,
+    no_routine: bool = False,
+    agent_records: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
@@ -2072,6 +2211,16 @@ def build_plan(
     plan["remote_devices"] = cross_summary["remote_devices"]
     plan["cross_device_in_flight"] = cross_summary["cross_device_in_flight"]
     plan["cross_device_pending_decisions"] = cross_summary["cross_device_pending_decisions"]
+    if is_grok_bot_caller(
+        caller_bot=caller_bot,
+        no_supervision=no_supervision,
+        no_routine=no_routine,
+        agent_records=agent_records if agent_records is not None else (sessions if sessions else None),
+        herdr_bin=herdr_bin,
+        runner=runner,
+    ):
+        plan["quota_protection_mode"] = GROK_QUOTA_PROTECTION_MODE
+        plan["quota_protection"] = _quota_protection_payload()
     plan["preview_markdown"] = render_preview_markdown(plan)
     if write_preview_md or preview_md_file is not None:
         write_preview_markdown(plan, preview_md_file)
@@ -2083,6 +2232,13 @@ def preview_text(plan: dict[str, Any]) -> str:
         f"Plan {plan['plan_id']} · {plan['decision']['route']}",
         f"Default Model / Context: {_text(plan.get('default_model_label'), DEFAULT_M2_MODEL_LABEL)}",
     ]
+    quota_mode = _text(plan.get("quota_protection_mode"))
+    quota_info = plan.get("quota_protection") if isinstance(plan.get("quota_protection"), dict) else {}
+    if quota_mode == GROK_QUOTA_PROTECTION_MODE or bool(quota_info.get("active")):
+        lines.append(
+            f"quota_protection_mode: {GROK_QUOTA_PROTECTION_MODE} "
+            "(Grok Bot fire-and-forget: background --watch supervision and routine polling disabled)"
+        )
     preview_md_path = _text(plan.get("preview_markdown_path"))
     if preview_md_path:
         lines.append(f"Preview Markdown: {preview_md_path}")
@@ -3941,7 +4097,7 @@ def sync_cross_device_hub(
     }
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", sync_linear: bool = False, no_sync_linear: bool = False, hub_issue: str | None = None, local_hostname: str | None = None, linear_runner: CommandRunner | None = None, hub_issue_payload: dict[str, Any] | None = None, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", sync_linear: bool = False, no_sync_linear: bool = False, hub_issue: str | None = None, local_hostname: str | None = None, linear_runner: CommandRunner | None = None, hub_issue_payload: dict[str, Any] | None = None, caller_bot: str = "", no_supervision: bool = False, no_routine: bool = False, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -4181,12 +4337,27 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     )
 
     handoff_watch_arg = f" --handoff-root {shlex.quote(str(handoff_root))}" if handoff_root else ""
+    quota_protection = _resolve_quota_protection(
+        plan=plan,
+        caller_bot=caller_bot,
+        no_supervision=no_supervision,
+        no_routine=no_routine,
+        agent_records=live_records,
+        herdr_bin=binary,
+        runner=runner,
+        probe_herdr=not is_stdout_only,
+    )
+    grok_supervision_disabled = bool(quota_protection.get("active"))
     watchdog_tasks: list[dict[str, Any]] = []
     for rec in receipts:
         slot_id = _text(rec.get("slot_id"), "m2")
         run_seq = int(rec.get("run_seq") or 1)
         run_label = _text(rec.get("run_label"), slot_id)
         safe_slot = re.sub(r"[^a-zA-Z0-9_.-]+", "-", slot_id).strip("-") or "m2"
+        if grok_supervision_disabled:
+            rec["watchdog_cmd"] = None
+            rec["watchdog_copilot_cli"] = None
+            continue
         target_watch_cmd = (
             f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
             f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
@@ -4218,13 +4389,21 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             "watchdog_copilot_cli": target_cli,
         })
 
-    watch_cmd = (
+    watch_cmd = None if grok_supervision_disabled else (
         f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
         f"--watch --plan-file {shlex.quote(resolved_plan_file)} "
         f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
         f"--state-file {shlex.quote(str(resolved_state_path))} "
         f"--interval 15 --max-wait 2400 --json{handoff_watch_arg}"
     )
+    watch_cli = None if grok_supervision_disabled else {
+        "tool": "bash",
+        "mode": "async",
+        "detach": True,
+        "shellId": f"watch-m2-{plan_id}",
+        "description": f"Watch dispatched target M2 sessions ({plan_id}) until quiescent",
+        "command": watch_cmd,
+    }
     payload: dict[str, Any] = {
         "ok": True,
         "plan_id": plan.get("plan_id"),
@@ -4246,15 +4425,11 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         "linear_sync": linear_sync_result,
         "board_rollup": board_rollup,
         "watchdog_cmd": watch_cmd,
-        "watchdog_copilot_cli": {
-            "tool": "bash",
-            "mode": "async",
-            "detach": True,
-            "shellId": f"watch-m2-{plan_id}",
-            "description": f"Watch dispatched target M2 sessions ({plan_id}) until quiescent",
-            "command": watch_cmd,
-        },
+        "watchdog_copilot_cli": watch_cli,
     }
+    if grok_supervision_disabled:
+        payload["quota_protection_mode"] = GROK_QUOTA_PROTECTION_MODE
+        payload["quota_protection"] = quota_protection
     try:
         resolved_receipt_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -4973,12 +5148,46 @@ def watch_dispatched_m2(
     local_hostname: str | None = None,
     linear_runner: CommandRunner | None = None,
     hub_issue_payload: dict[str, Any] | None = None,
+    caller_bot: str = "",
+    no_supervision: bool = False,
+    no_routine: bool = False,
+    force_watch: bool = False,
+    agent_records: Iterable[dict[str, Any]] | None = None,
     runner: CommandRunner = _run_command,
     fetcher: Callable[..., Any] = _fetch_json,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Poll dispatched target M2s until quiescent, auto-unblocking safe Allow dialogs only with verified apply_receipt."""
     binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    if not force_watch:
+        quota_protection = _resolve_quota_protection(
+            plan=plan,
+            apply_receipt=apply_receipt,
+            caller_bot=caller_bot,
+            no_supervision=no_supervision,
+            no_routine=no_routine,
+            agent_records=agent_records,
+            herdr_bin=binary,
+            runner=runner,
+        )
+        if bool(quota_protection.get("active")):
+            return {
+                "ok": True,
+                "plan_id": _text(plan.get("plan_id")),
+                "watch_target": _text(watch_target),
+                "all_settled": True,
+                "skipped": True,
+                "polls": 0,
+                "reason": "grok_bot_supervision_disabled",
+                "quota_protection_mode": GROK_QUOTA_PROTECTION_MODE,
+                "quota_protection": quota_protection,
+                "targets": [],
+                "summary_markdown": (
+                    "### M2 Watch Skipped (`grok_bot_supervision_disabled`)\n"
+                    "- **Quota Protection**: `grok_bot_no_supervision` "
+                    "(Grok Bot quota protection active: background `--watch` polling and routines are disabled)."
+                ),
+            }
     plan_targets = [dict(t) for t in (plan.get("targets") or []) if isinstance(t, dict)]
     receipt_items = [dict(r) for r in ((apply_receipt or {}).get("receipts") or []) if isinstance(r, dict)]
     has_apply_receipt = bool(receipt_items)
@@ -5773,6 +5982,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
     parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
     parser.add_argument("--approve", "--yes", action="store_true", help="explicitly approve dispatch")
+    parser.add_argument("--caller-bot", default=os.environ.get("M2_CALLER_BOT", ""), help="caller bot kind (e.g. grok) for quota-protection routing")
+    parser.add_argument("--no-supervision", action="store_true", help="disable background --watch watchdog tasks for quota-sensitive callers")
+    parser.add_argument("--no-routine", action="store_true", help="disable periodic routine polling for quota-sensitive callers")
+    parser.add_argument("--force-watch", action="store_true", help="force --watch polling even when Grok Bot quota protection is active")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--no-herdr", action="store_true")
     parser.add_argument("--no-dsh", action="store_true")
@@ -5811,6 +6024,9 @@ def main(argv: list[str] | None = None) -> int:
             herdr_workspace_payload = _json_value(args.herdr_workspace_json) if args.herdr_workspace_json else None
             dsh_payload = _json_value(args.dsh_state_json) if args.dsh_state_json else payload
             sessions, warnings = discover_sessions(herdr_payload=herdr_payload, herdr_pane_payload=herdr_pane_payload, herdr_agent_payload=herdr_agent_payload, workspace_payload=herdr_workspace_payload, dsh_payload=dsh_payload, herdr_bin=args.herdr_bin, dsh_state_url=args.dsh_state_url, dsh_token=args.dsh_token, include_herdr=not args.no_herdr, include_dsh=not args.no_dsh)
+            raw_gc_records = _merge_herdr_records(_records(herdr_pane_payload), _records(herdr_agent_payload))
+            if not raw_gc_records and herdr_payload is not None:
+                raw_gc_records = _records(herdr_payload)
             plan = build_plan(
                 _message(args),
                 sessions,
@@ -5830,8 +6046,11 @@ def main(argv: list[str] | None = None) -> int:
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
                 herdr_bin=args.herdr_bin,
+                caller_bot=args.caller_bot,
+                no_supervision=args.no_supervision,
+                no_routine=args.no_routine,
+                agent_records=raw_gc_records if raw_gc_records else ([] if args.no_herdr else None),
             )
-            raw_gc_records = _merge_herdr_records(_records(herdr_pane_payload), _records(herdr_agent_payload))
             if raw_gc_records:
                 plan["gc_candidates"] = discover_gc_candidates(raw_gc_records, handoff_root=args.handoff_root)
             if args.dsh_state_url:
@@ -5888,12 +6107,15 @@ def main(argv: list[str] | None = None) -> int:
                 state_file=args.state_file,
                 reset_state=args.reset_state,
                 handoff_root=args.handoff_root,
-                agent_records=_records(_json_value(args.herdr_agent_json)) if args.herdr_agent_json else None,
+                agent_records=_records(_json_value(args.herdr_agent_json)) if args.herdr_agent_json else ([] if args.no_herdr else None),
                 transport=args.transport,
                 sync_linear=args.sync_linear,
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
+                caller_bot=args.caller_bot,
+                no_supervision=args.no_supervision,
+                no_routine=args.no_routine,
             )
         else:
             if not args.plan_file:
@@ -5920,6 +6142,11 @@ def main(argv: list[str] | None = None) -> int:
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
+                caller_bot=args.caller_bot,
+                no_supervision=args.no_supervision,
+                no_routine=args.no_routine,
+                force_watch=args.force_watch,
+                agent_records=_records(_json_value(args.herdr_agent_json or args.herdr_json)) if (args.herdr_agent_json or args.herdr_json) else ([] if args.no_herdr else None),
             )
             output = watch_result if args.json else watch_result["summary_markdown"]
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)
