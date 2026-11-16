@@ -54,12 +54,12 @@
 
 | 节点 | 触发 | Inbound & Internal | Calls | PointsTo | 🔴断链 |
 |---|---|---|---|---|---|
-| I1 Teams | Manual/Pulse | teams-cli、群/频道、watermark、深链 | I3,I4 | I5→I6；G1/G2 | 认证、watermark、一键回复 |
+| I1 Teams | Manual/Pulse | teams-cli、动态未读+watched 群/频道、0600 watermark、freshness/degraded reason、深链 | I3,I4 | I5→I6；G1/G2 | 认证、watermark、一键回复、只读回退 |
 | I2 Email | Manual/Pulse | workiq只读、watermark、最小元数据 | I3,I4 | I5/G1；证据→G2；告警→E10 | 采集与证据收件箱 |
 | I3 Classify | 被I1/I2/E2/E4a/E5/E10/P1 | Jev正交标签：内容/动作/紧急度/置信度；Star 样本经 `sync-jev-stars` 回流 | — | 标签返调用方 | 多标签与人工回写；TK-07 闭环 |
 | I4 Summarize | 被I1/I2/E5/Q3/G2/P1/P5 | 事实、影响、责任人、截止、引用、脱敏 | — | 有出处摘要 | 跨渠道Schema |
 | I5 Notify | 被几乎所有节点 | P0拍板/P1回执/P2日报，去重并落唯一落点 | — | User decision→Waiting Node | event_id与回调桥 |
-| I6 Reply Teams | I1草稿+I5确认 | 幂等发送、回读消息深链 | — | I5已回复 | 待实装 |
+| I6 Reply Teams | I1草稿+I5确认 | approvalBinding、tail collision、plan→apply→verify、uncertain reconciliation、回读消息深链 | — | I5已回复 | 已落地；仅 Owner/self meeting 可做真实发送验收 |
 | I7 Unified M2 Ingress | Manual/CLI/dsh；P0预览/P1回执 | `personal-m2-assistant` 发现 Herdr/dsh M2；Jev I3 拆 `topic_id/target_repo/sub_prompt/wave_order/rag_context_hint`；Owner Gate 后按 wave 交付既有或新建 M2 | I3、I5、m2-dispatcher | `1:N` M2 Dispatcher；新建目标回执坐标 | dsh 私有 session 禁读；无 Owner 批准不得派发 |
 | G1 Task | Manual/I1/I2/Q1/Q3/G2/P1 | Linear/ADO去重、1 Goal=1 Issue、Task/R10 | — | GO→E1/E2/E3/P7/P8 | 跨源幂等键 |
 | G2 FlightBook | 周期/里程碑/I2/E10/E12/E8 | 五面同步、证据池、真实读回 | E8,I4,I5 | P1回执；缺件P0 | 邮件/PR/发布自动投递 |
@@ -91,7 +91,7 @@
 | TK-05 | E1→E5→I5 | Phase 0；缺件P0 | Notification/SmartBanner handoff | 实例/hash/AASA/Adjust闭合才派E4 |
 | TK-06 | E1→E3/E2回流 | QA/联调；阻塞P0 | team-lead、goal-queue | 热追加修复后回E1验收 |
 | TK-07 | I3正交标签/回写 | 被多节点；低置信P0 | Jev client、handoff、`sync-jev-stars` | tags/actions/urgency/confidence+Star样本闭环 |
-| TK-08 | I1→I3→I4→I5→I6 | Pulse/Manual；确认后P1 | teams-cli adapter | watermark→草稿→确认发送→深链 |
+| TK-08 | I1→I3→I4→I5→I6 | Pulse/Manual；确认后P1 | `packages/dsh-teams/**` + this recipe | dynamic unread/watched + 0600 watermark → 5×7×8 Jev → grounded draft → approvalBinding/tail gate → self-meeting-safe send/verify → deep link |
 | TK-09 | I2→I3→I4 | workiq Pulse；Actionable P0 | workiq、handoff | 只读state.json增量，无发信路径 |
 | TK-10 | I2/E10/E12→G2 | Hook/周五Pulse | flightbook skill/handoff | 幂等 evidence inbox→五面读回 |
 | TK-11 | P1 Pulse→E10/P2/I1/I2 | launchd；失败P0/P1 | AIDash installer | job registry/plist安装状态读回 |
@@ -135,3 +135,9 @@
 - **Trigger/Notify**：Manual/Pulse；P0 用 `P0_BLOCKING_DECISION`，P1 用 `WAIT_POP_OR_MERGE`，S1→S2→S3 串行自愈；Linear 是唯一可写追踪 DB，严禁向 FlightBook、ADO、GitHub/GHE PR 反向写入。
 - **Owned Paths**：`handoff/project-root-tracker/**` 与本 recipe；**验证**：`python3 -m unittest`、`python3 skills/skill-contract/scripts/skill_contract.py audit --strict`。
 - **Teams timeline extension**：I1 Teams 写入 `state/teams-china-release-timeline.json`（版本、Code Freeze/QA/Release、DRI、上下文与深链）；Root Tracker 先以 `--preview` 展示候选 `targetDate`/description 与 `TIA-365` L0，I5 Owner 确认后才由 G1 更新 China Release Project Milestone 和 `## Release Timeline & Teams Context`。未确认数据只进入本地 snapshot/dashboard，不进入 Linear。
+
+### I1 → I3 → I4 → I5 → I6 Teams Reply Inbox & Digest（TK-08，已落地）
+
+- **Internal**：动态未读 + watched scopes，live 失败回退 local 并标记 stale/degraded；`0600` watermark；I3 输出 5×7×8 Jev；I4 仅为 `pending_my_action` 调 Magpie/Raven，缺事实返回 `missingFacts`。
+- **Calls/PointsTo**：I5 通过 Session 与 `/reply-inbox` 双入口呈现上下文、`Draft #N`、`approvalDigest`；I6 校验 target/text/mentions/sourceRevision，tail 无碰撞后 plan→apply→verify，成功回写深链，uncertain 禁止盲重发；LaunchAgent 写只读报告。
+- **红线/验证**：不调用 `messages.markRead`，不向真实同事/群聊发送；E2E 仅 Owner self meeting，其余用 `RecordingTeamsTransport`。验证：Teams tests、source isolation、`./scripts/verify --all`、两项 strict audit。
