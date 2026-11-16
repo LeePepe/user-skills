@@ -252,6 +252,31 @@
     },
     {
       "id": "DC-012",
+      "title": "Nested Button-in-Button Label Collapse, Locked-minHeight Expandable Drawer & Page Snapshot fixedSize Tight-Crop",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "component",
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "ScrollView",
+        "VStack"
+      ],
+      "symptom": "Nesting interactive child Button controls inside an outer Button label (.buttonStyle(.plain)), locking an expandable drawer row (if expanded) to a collapsed outer minHeight without height isolation, or applying .fixedSize(horizontal: false, vertical: true) to a page-level snapshot host collapses AppKit/SwiftUI row intrinsic height (causing vertical text/row overlap) and tight-crops full-window snapshots to hide bottom dead space.",
+      "fix_rule": "Never nest Button controls inside another Button label; isolate the row selection trigger from expanded action buttons in a VStack/HStack container with adaptive height, and render page-level snapshots at full viewport dimensions (1280x800 desktop / 390x844 mobile) without .fixedSize(horizontal: false, vertical: true).",
+      "forbidden_regex": "Button\\b[^{]*\\{[^{}]*\\}\\s*label\\s*:\\s*\\{(?:[^{}]|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})*(?:\\{(?:[^{}]|\\{[^{}]*\\})*){0,3}\\bButton\\s*(?:\\(|\\{)|Button\\b[^{]*\\{[^{}]*\\}\\s*label\\s*:\\s*\\{(?:[^{}]|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})*?(?:\\{(?:[^{}]|\\{[^{}]*\\})*){0,2}\\bif\\s+(?:expanded|isExpanded)\\b[\\s\\S]{0,260}?\\.frame\\s*\\([^)]*minHeight\\s*:[^)]*\\)\\s*\\}\\s*\\.buttonStyle\\s*\\(\\s*\\.plain\\s*\\)|\\.frame\\(\\s*width\\s*:[^)]+\\)(?:\\s*\\.padding\\([^)]*\\))?\\s*\\.fixedSize\\(\\s*horizontal\\s*:\\s*false\\s*,\\s*vertical\\s*:\\s*true\\s*\\)|(?:PageView|WorkspaceView|ImageRenderer)\\b[\\s\\S]{0,260}?\\.fixedSize\\(\\s*horizontal\\s*:\\s*false\\s*,\\s*vertical\\s*:\\s*true\\s*\\)",
+      "bad_snippet": "Button { select(entry) } label: {\n    VStack(alignment: .leading, spacing: 6) {\n        Text(entry.title)\n        if expanded {\n            Button(\"Run\") { run(entry) }\n        }\n    }.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)\n}.buttonStyle(.plain)",
+      "good_snippet": "VStack(alignment: .leading, spacing: 6) {\n    Button { select(entry) } label: {\n        Text(entry.title).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)\n    }.buttonStyle(.plain)\n    if expanded {\n        Button(\"Run\") { run(entry) }.buttonStyle(.bordered)\n    }\n}",
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "DC-013",
       "title": "Multi-Boolean .sheet(isPresented:) State Collision & Custom Material Bottom Bar",
       "platforms": [
         "desktop",
@@ -270,6 +295,8 @@
       "symptom": "Stacking multiple boolean .sheet(isPresented:) modifiers or hand-rolling an ultraThinMaterial bottom tab bar instead of native TabView/sidebarAdaptable.",
       "fix_rule": "Consolidate modal presentations into one Identifiable enum bound to one .sheet(item:) modifier and use native TabView with .tabViewStyle(.sidebarAdaptable).",
       "forbidden_regex": "\\.sheet\\(\\s*isPresented\\s*:[^)]+\\)[\\s\\S]{0,240}?\\.sheet\\(\\s*isPresented\\s*:",
+      "bad_snippet": "ContentView()\n    .sheet(isPresented: $showA) { SheetA() }\n    .sheet(isPresented: $showB) { SheetB() }",
+      "good_snippet": "ContentView()\n    .sheet(item: $activeSheet) { sheet in SheetView(sheet: sheet) }",
       "registered_at": "2026-11-15"
     }
   ],
