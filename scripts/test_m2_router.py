@@ -3004,6 +3004,155 @@ class M2RouterTests(unittest.TestCase):
         self.assertFalse((hook_state_dir / "linear-sync.dirty").exists())
         self.assertEqual(len(linear_log_file.read_text(encoding="utf-8").splitlines()), 4)
 
+    def test_is_grok_bot_caller_detects_cli_flags_env_vars_and_herdr_pane_model(self):
+        # Baseline: no flags, no Grok env vars, no Grok pane
+        with patch.dict("os.environ", {
+            "M2_CALLER_BOT": "",
+            "BOT_KIND": "",
+            "GROK_BOT": "",
+            "COPILOT_MODEL": "",
+            "OPENAI_MODEL": "",
+            "ANTHROPIC_MODEL": "",
+            "DSH_MODEL": "",
+            "HERDR_MODEL": "",
+            "MODEL": "",
+            "HERDR_PANE_ID": "",
+        }, clear=False):
+            self.assertFalse(self.router.is_grok_bot_caller(probe_herdr=False))
+
+            # (a) Explicit CLI flags / kwargs
+            self.assertTrue(self.router.is_grok_bot_caller(caller_bot="grok", probe_herdr=False))
+            self.assertTrue(self.router.is_grok_bot_caller(caller_bot="Cindy-Grok-Bot", probe_herdr=False))
+            self.assertTrue(self.router.is_grok_bot_caller(no_supervision=True, probe_herdr=False))
+            self.assertTrue(self.router.is_grok_bot_caller(no_routine=True, probe_herdr=False))
+            ns_args = SimpleNamespace(caller_bot="grok", no_supervision=False, no_routine=False, no_herdr=True)
+            self.assertTrue(self.router.is_grok_bot_caller(ns_args))
+
+            # (b) Environment variables
+            for truthy in ("1", "true", "TRUE", "yes", "grok-bot"):
+                with patch.dict("os.environ", {"GROK_BOT": truthy}):
+                    self.assertTrue(self.router.is_grok_bot_caller(probe_herdr=False))
+            for env_var in (
+                "M2_CALLER_BOT",
+                "BOT_KIND",
+                "COPILOT_MODEL",
+                "OPENAI_MODEL",
+                "ANTHROPIC_MODEL",
+                "DSH_MODEL",
+                "HERDR_MODEL",
+                "MODEL",
+            ):
+                with patch.dict("os.environ", {env_var: "magpie/grok/grok-4.7"}):
+                    self.assertTrue(self.router.is_grok_bot_caller(probe_herdr=False), f"failed for {env_var}")
+
+            # (c) Caller's HERDR_PANE_ID model in herdr agent list
+            with patch.dict("os.environ", {"HERDR_PANE_ID": "w12:p1"}):
+                self.assertTrue(self.router.is_grok_bot_caller(
+                    agent_records=[{"pane_id": "w12:p1", "model": "grok-4.7"}],
+                ))
+                self.assertTrue(self.router.is_grok_bot_caller(
+                    agent_records=[{"pane_id": "w12:p1", "resolved_model": "magpie/grok/grok-4.6"}],
+                ))
+                self.assertFalse(self.router.is_grok_bot_caller(
+                    agent_records=[{"pane_id": "w12:p1", "model": "gemini-4-argon"}],
+                ))
+
+                # Probe via runner when agent_records is None
+                def fake_runner(cmd, *, timeout=3.0):
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"agents": [{"pane_id": "w12:p1", "resolved_model": "magpie/grok/grok-4.7"}]}),
+                        stderr="",
+                    )
+
+                self.assertTrue(self.router.is_grok_bot_caller(runner=fake_runner, probe_herdr=True))
+
+    def test_grok_bot_mode_disables_supervision_in_plan_apply_and_watch_unless_force_watch(self):
+        sessions = [
+            {
+                "session_id": "shared-m2",
+                "target_repo": "shared-ci",
+                "title": "shared-ci",
+                "status": "idle",
+                "cwd": "/repo/shared-ci",
+                "source": "herdr",
+                "herdr_target": "shared-m2",
+                "pane_id": "w1:p1",
+                "workspace_id": "w1",
+            },
+        ]
+        # 1) --plan marks quota_protection_mode = grok_bot_no_supervision and annotates preview_markdown & preview_text
+        plan = self.router.build_plan(
+            "检查 shared-ci 门禁状态",
+            sessions,
+            mock_jev={},
+            transport="stdout",
+            caller_bot="grok",
+            no_sync_linear=True,
+        )
+        self.assertEqual(plan.get("quota_protection_mode"), "grok_bot_no_supervision")
+        self.assertTrue(plan["quota_protection"]["active"])
+        self.assertTrue(plan["quota_protection"]["supervision_disabled"])
+        self.assertTrue(plan["quota_protection"]["routine_disabled"])
+        self.assertIn("quota_protection_mode: grok_bot_no_supervision", plan["preview_markdown"])
+        self.assertIn("quota_protection_mode: grok_bot_no_supervision", self.router.preview_text(plan))
+
+        # 2) --apply dispatches normally but suppresses watchdog_tasks and watchdog_cmd
+        plan_file = self.test_root / "grok-plan.json"
+        receipt_file = self.test_root / "grok-apply.json"
+        state_file = self.test_root / "grok-state.json"
+        plan_file.write_text(json.dumps(plan), encoding="utf-8")
+
+        applied = self.router.apply_plan(
+            plan,
+            approve=True,
+            plan_file=plan_file,
+            apply_receipt_file=receipt_file,
+            state_file=state_file,
+            transport="stdout",
+            no_sync_linear=True,
+        )
+        self.assertTrue(applied["ok"])
+        self.assertEqual(len(applied["receipts"]), 1)
+        self.assertIsNone(applied["receipts"][0]["watchdog_cmd"])
+        self.assertIsNone(applied["receipts"][0]["watchdog_copilot_cli"])
+        self.assertEqual(applied["watchdog_tasks"], [])
+        self.assertIsNone(applied["watchdog_cmd"])
+        self.assertIsNone(applied["watchdog_copilot_cli"])
+        self.assertEqual(applied["quota_protection_mode"], "grok_bot_no_supervision")
+        self.assertTrue(applied["quota_protection"]["active"])
+
+        # 3) --watch short-circuits in 0s without calling sleep_fn or polling
+        sleep_calls: list[float] = []
+        watch_res = self.router.watch_dispatched_m2(
+            plan,
+            apply_receipt=applied,
+            state_file=state_file,
+            no_sync_linear=True,
+            sleep_fn=lambda sec: sleep_calls.append(sec),
+        )
+        self.assertTrue(watch_res["ok"])
+        self.assertTrue(watch_res["all_settled"])
+        self.assertTrue(watch_res["skipped"])
+        self.assertEqual(watch_res["polls"], 0)
+        self.assertEqual(watch_res["reason"], "grok_bot_supervision_disabled")
+        self.assertEqual(watch_res["quota_protection_mode"], "grok_bot_no_supervision")
+        self.assertEqual(sleep_calls, [])
+
+        # 4) --force-watch overrides the Grok Bot short-circuit and runs normal watch
+        forced_res = self.router.watch_dispatched_m2(
+            plan,
+            apply_receipt=applied,
+            state_file=state_file,
+            force_watch=True,
+            no_sync_linear=True,
+            sleep_fn=lambda sec: sleep_calls.append(sec),
+        )
+        self.assertTrue(forced_res["ok"])
+        self.assertFalse(forced_res.get("skipped", False))
+        self.assertEqual(forced_res["polls"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

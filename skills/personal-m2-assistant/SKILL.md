@@ -26,6 +26,9 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 8. **每个 M2 独立后台监督与增量滚动汇总（`--watch --watch-target` + `watchdog_tasks`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护共享监督状态账本 `m2-supervision-state.json`（或 `--state-file`），并为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）：
    - **单 M2 独立完成即刻唤醒与累积汇总**：每个 M2 由各自独立的 background `bash` 任务运行 `m2-router.py --watch --watch-target <slot_id>`，任一 M2 经真静默判定（`idle`/`done` 且无活动尾部）后退出唤醒并更新账本，输出完整 `unified_rollup_markdown`，同时保留累积汇总码 `completed_rollup_code`。例如派发 `ABC`：`A` 完成报告 `A`，`B` 完成报告 `AB`；若此时新增 `D` 且向 `A` 追加新任务 `A2`（`A` 槽位转为运行 `A2`），随后 `C` 完成报告 `BC`，`A2` 完成报告 `A2BC`，`D` 完成报告 `A2BCD`。
    - **安全 Allow 自动解卡与 Owner 决策门禁**：仅当传入经校验的 `apply_receipt`（`ok=true`、`approved=true`、`plan_id` 与目标匹配）且目标处于 `blocked`/`needs_input` 时，对底部当前活动帧的安全权限弹窗（词法与 `resolve` 均落在安全基线/目标 `cwd` 且无符号链接越界的完整单路径 `Allow path access`/`Confirm folder trust`、`Curate Memory`，以及单行无元字符的严格只读参数白名单命令 `CMD_CONFIRM`）发送单次 `enter` 放行；无有效回执时保持纯被动只读观察（`auto_unblock_enabled=false`）。遇到业务/Spec 级 `ask_user`、`Proceed with`、路径越界/多路径或非只读命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）；目标缺失或发现中断持续重试至超时后返回 `ok=false, all_settled=false, blocked_reason="target_missing_or_unreachable"`。
+8. **Grok Bot 省流防烧额度规则（`grok_bot_no_supervision` · Fire-and-Forget）**：当总控运行在 Grok Bot 环境（显式 `--caller-bot grok` / `--no-supervision` / `--no-routine`，或环境变量 `M2_CALLER_BOT`/`BOT_KIND`/`GROK_BOT`/`*_MODEL` 含 `grok`，或当前 `HERDR_PANE_ID` 绑定 `grok-4.7` / `magpie/grok/*` 模型）时，自动启用 `quota_protection_mode: grok_bot_no_supervision`：
+   - **严禁启动后台 `--watch` 监督看门狗或定时 Routine 轮询**：仅执行 `--plan` → `ask_user` → `--apply` 即刻结束本轮，`--apply` 强制返回 `watchdog_tasks: []` 与 `watchdog_cmd: null`，等待用户主动查询 `--status`。
+   - **误调 `--watch` 0 秒短路保护**：在 Grok Bot 模式下若误调 `--watch` 且未显式传入 `--force-watch`，立即在 0 秒内短路退出（`skipped: true, all_settled: true, polls: 0, reason: "grok_bot_supervision_disabled"`），绝不进入轮询循环。
 
 ## 真静默与全局统一汇总
 
@@ -69,4 +72,4 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 
 - How-To 节点：[`I7 Unified M2 Ingress`](../workflow-hub/references/how-to-nodes.md)。
 - 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../m2-dispatcher/scripts/m2-router.py) 仅作 wrapper，权威实现位于本技能 `scripts/m2-router.py`。
-- 验证：`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
+- 验证与回归用例：[`eval-cases.json`](references/eval-cases.json)、`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
