@@ -425,7 +425,21 @@ class RootTrackerTests(unittest.TestCase):
         self.assertEqual(len(mutations), 1)
         self.assertEqual(mutations[0]["id"], "dup-id")
         self.assertIsNone(mutations[0]["input"]["parentId"])
-        self.assertEqual(mutations[0]["input"]["stateId"], client.DUPLICATE_ID)
+        self.assertEqual(mutations[0]["input"]["stateId"], client.CANCELED_ID)
+
+    def test_parse_manifest_and_root_meta_unescape_linear_markdown(self):
+        escaped = (
+            '<!-- ROOT-META:v1 {"pr_heads":\\[{"head_sha":"abc","pr":1,"signal":"MERGED","state":"MERGED"}\\],'
+            '"root_id":"china-release","signal_sources":{"branches":\\["*china*"\\]}} -->\n'
+            '<!-- ROOT-MANIFEST:v1 {"branch_globs": \\["*china*"\\], "root_id": "china-release"} -->'
+        )
+        meta = root_tracker.parse_root_meta(escaped)
+        manifest = root_tracker.parse_manifest(escaped)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["root_id"], "china-release")
+        self.assertEqual(meta["pr_heads"][0]["pr"], 1)
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["branch_globs"], ["*china*"])
 
     def test_linear_client_refreshes_live_action_children_in_state_block(self):
         client = root_tracker.LinearClient("token")

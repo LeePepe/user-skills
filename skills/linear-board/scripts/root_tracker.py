@@ -303,12 +303,16 @@ def manifest_block(root: Mapping[str, Any]) -> str:
     return "<!-- ROOT-MANIFEST:v1 " + json.dumps(manifest, ensure_ascii=False, sort_keys=True) + " -->"
 
 
+def _unescape_linear_json(raw: str) -> str:
+    return re.sub(r"\\([\[\]*_~`])", r"\1", raw or "")
+
+
 def parse_manifest(description: str) -> dict[str, Any] | None:
     match = MANIFEST_RE.search(description or "")
     if not match:
         return None
     try:
-        value = json.loads(match.group(1))
+        value = json.loads(_unescape_linear_json(match.group(1)))
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -319,7 +323,7 @@ def parse_root_meta(description: str) -> dict[str, Any] | None:
     if not match:
         return None
     try:
-        value = json.loads(match.group(1))
+        value = json.loads(_unescape_linear_json(match.group(1)))
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -1517,7 +1521,13 @@ def build_root_markdown(
         "root_id": root_id,
         "signal_sources": signal_sources,
         "spec_sha": "prt-spec-v2-3layer",
-        "workstream_issues": ws_links,
+        "workstream_issues": {
+            stream: {
+                "id": ws_links[stream]["id"],
+                "identifier": ws_links[stream]["identifier"],
+            }
+            for stream in WORKSTREAMS
+        },
     }
     lines += [
         "",
@@ -1527,6 +1537,7 @@ def build_root_markdown(
         f"- `sub_issues`: {', '.join(sub_issue_bindings)} (three sub-issues)",
         f"- `pr_sha_manifest`: {', '.join(pr_sha_entries) if pr_sha_entries else 'none'}",
         f"- `signal_sources`: repos={','.join(signal_sources['repos']) or 'none'} · branches={','.join(signal_sources['integration_branches']) or 'none'}",
+        "",
         "<!-- Current Milestone Blockers: Details: see the three sub-issues -->",
         "<!-- ROOT-META:v1 " + json.dumps(meta_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + " -->",
         manifest_block(root),
@@ -1960,6 +1971,7 @@ class LinearClient:
     }
     ROOT_LABEL_ID = "04dc1e1a-6803-4590-acd3-4e54b25bb4ae"
     IN_PROGRESS_ID = "d7d9992e-4736-4af0-b5ab-dce211b48bc8"
+    CANCELED_ID = "17bbd5ea-a873-4f97-8bad-00885358f408"
     DUPLICATE_ID = "3be8ce2f-ea8b-48e5-aabe-5e2511f05aef"
 
     def __init__(self, token: str, team_key: str = "TIA") -> None:
@@ -2047,7 +2059,7 @@ class LinearClient:
                     continue
                 mutation = """mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input){success}}"""
                 try:
-                    self._mutate(mutation, {"id": str(dup_id), "input": {"parentId": None, "stateId": self.DUPLICATE_ID}})
+                    self._mutate(mutation, {"id": str(dup_id), "input": {"parentId": None, "stateId": self.CANCELED_ID}})
                 except LinearSyncError:
                     continue
         return canonical
