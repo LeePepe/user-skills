@@ -3075,6 +3075,114 @@ class JevGateTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'mobile', '--path', 'snippet.swift', '--snippet', good], cwd=REPO_ROOT, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_p0_dc012_whitespace_ratio_and_subtree_leaf_aabb_collision_gates(self):
+        import binascii, struct, zlib
+        gate = SKILLS_DIR / 'my-designer/scripts/verify_design_cases.py'
+        for bad_swift in (
+            'Button { select(entry) } label: {\n    VStack {\n        Text(entry.title)\n        if expanded {\n            HStack { Button("Run") { run(entry) } }\n        }\n    }.frame(maxWidth: .infinity, minHeight: 36)\n}.buttonStyle(.plain)',
+            'Button { toggle() } label: {\n    VStack {\n        Text("Header")\n        if isExpanded {\n            Text("Details")\n        }\n    }.frame(maxWidth: .infinity, minHeight: 36)\n}.buttonStyle(.plain)',
+            'let host = view.frame(width: width, alignment: .topLeading).padding(20).fixedSize(horizontal: false, vertical: true)',
+        ):
+            res = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'desktop', '--path', 'ScheduledPulsePageView.swift', '--snippet', bad_swift], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(res.returncode, 1, bad_swift)
+            self.assertIn('DC-012', res.stdout)
+
+        good_swift = (
+            'VStack(alignment: .leading, spacing: 6) {\n'
+            '    Button { select(entry) } label: {\n'
+            '        Text(entry.title).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)\n'
+            '    }.buttonStyle(.plain)\n'
+            '    if expanded {\n'
+            '        HStack { Button("Run") { run(entry) }.buttonStyle(.bordered) }\n'
+            '    }\n'
+            '}'
+        )
+        res_ok = subprocess.run([sys.executable, str(gate), 'audit-code', '--platform', 'desktop', '--path', 'ScheduledPulsePageView.swift', '--snippet', good_swift], cwd=REPO_ROOT, text=True, capture_output=True)
+        self.assertEqual(res_ok.returncode, 0, res_ok.stdout)
+
+        def make_png(width, height, content_height_ratio, sidebar_only_bottom=False):
+            rows = []
+            content_rows = int(height * content_height_ratio)
+            for y in range(height):
+                row = bytearray(b'\x00')
+                for x in range(width):
+                    if y < content_rows or (sidebar_only_bottom and x < int(width * 0.14)):
+                        c = 40 if (x // 16 + y // 12) % 2 == 0 else 220
+                        row.extend((c, c, c, 255))
+                    else:
+                        row.extend((245, 245, 247, 255))
+                rows.append(bytes(row))
+            raw = b''.join(rows)
+            def chunk(kind, payload):
+                return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', binascii.crc32(kind + payload) & 0xffffffff)
+            return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            root = Path(tmp)
+            dead_png = root / 'dead-space.png'
+            dead_png.write_bytes(make_png(800, 500, 0.30, sidebar_only_bottom=True))
+            healthy_png = root / 'healthy.png'
+            healthy_png.write_bytes(make_png(800, 500, 0.72, sidebar_only_bottom=False))
+
+            ws_fail = subprocess.run([sys.executable, str(gate), '--check-whitespace-ratio', str(dead_png)], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(ws_fail.returncode, 1)
+            self.assertIn('VISUAL_EXCESSIVE_DEAD_SPACE', ws_fail.stdout)
+
+            ws_pass = subprocess.run([sys.executable, str(gate), 'check-whitespace-ratio', '--path', str(healthy_png)], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(ws_pass.returncode, 0, ws_pass.stdout)
+
+            colliding_geom = root / 'colliding.json'
+            colliding_geom.write_text(json.dumps({
+                'platform': 'desktop',
+                'viewportWidth': 1280,
+                'children': [
+                    {
+                        'label': 'compartment-exceptions',
+                        'frame': {'x': 20, 'y': 100, 'width': 380, 'height': 160},
+                        'children': [
+                            {
+                                'label': 'row-my-prs',
+                                'frame': {'x': 24, 'y': 110, 'width': 360, 'height': 36},
+                                'children': [
+                                    {'label': 'My PRs', 'role': 'text', 'frame': {'x': 40, 'y': 118, 'width': 120, 'height': 18}},
+                                ],
+                            },
+                            {
+                                'label': 'row-watched-prs',
+                                'frame': {'x': 24, 'y': 122, 'width': 360, 'height': 110},
+                                'children': [
+                                    {'label': 'Watched PRs', 'role': 'text', 'frame': {'x': 40, 'y': 122, 'width': 120, 'height': 18}},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }), encoding='utf-8')
+            geom_fail = subprocess.run([sys.executable, str(gate), '--audit-geometry', str(colliding_geom)], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(geom_fail.returncode, 1)
+            geom_payload = json.loads(geom_fail.stdout)
+            self.assertIn('GEOM_TEXT_COLLISION', geom_payload['errors'])
+            self.assertTrue(any(d.get('rule') == 'GEOM_TEXT_COLLISION' and d.get('intersection_pt2', 0) > 2.0 for d in geom_payload['geometry_details']))
+
+            clean_geom = root / 'clean.json'
+            clean_geom.write_text(json.dumps({
+                'platform': 'desktop',
+                'viewportWidth': 1280,
+                'children': [
+                    {
+                        'label': 'compartment-exceptions',
+                        'frame': {'x': 20, 'y': 100, 'width': 380, 'height': 220},
+                        'children': [
+                            {'label': 'My PRs', 'role': 'text', 'frame': {'x': 40, 'y': 118, 'width': 120, 'height': 18}},
+                            {'label': 'Watched PRs', 'role': 'text', 'frame': {'x': 40, 'y': 158, 'width': 120, 'height': 18}},
+                            {'label': 'Pulse Run', 'role': 'button', 'frame': {'x': 40, 'y': 186, 'width': 88, 'height': 28}},
+                        ],
+                    }
+                ],
+            }), encoding='utf-8')
+            geom_pass = subprocess.run([sys.executable, str(gate), 'audit-geometry', '--path', str(clean_geom)], cwd=REPO_ROOT, text=True, capture_output=True)
+            self.assertEqual(geom_pass.returncode, 0, geom_pass.stdout)
+
     def test_traceback_rejects_unvalidated_or_missing_rendered_evidence(self):
         g = self.gate
         payload = {'schema': 'visual-traceback/v1', 'findings': [], 'status': 'UNVALIDATED'}

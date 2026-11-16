@@ -147,6 +147,31 @@
         "findings"
       ],
       "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-007",
+      "title": "P0 Native Fidelity Gates: DC-012 Nested Button/Drawer Audit, Dead-Space Ratio & Subtree Leaf AABB Collision",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "component",
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "VStack"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform desktop --path skills/my-designer/scripts --snippet 'Button { select() } label: { VStack { if expanded { Button(\"Run\") {} } }.frame(minHeight: 36) }.buttonStyle(.plain)'",
+      "expect_exit": 1,
+      "expect_stdout_contains": [
+        "DC-012",
+        "findings"
+      ],
+      "registered_at": "2026-11-16"
     }
   ]
 }

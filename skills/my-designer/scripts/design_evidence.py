@@ -11,8 +11,10 @@ import itertools
 import json
 from pathlib import Path
 import re
+import struct
 import subprocess
 from urllib.parse import unquote, urlsplit
+import zlib
 
 CATALOG_PATH = Path(__file__).resolve().parents[2] / 'design-studio' / 'scripts' / 'design_catalog.py'
 
@@ -815,6 +817,257 @@ def _image_path(source, base_dir, platform=None):
     return path
 
 
+def _decode_png(data):
+    if len(data) < 33 or data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
+        raise ValueError('not a valid PNG')
+    width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack('>IIBBBBB', data[16:29])
+    if width < 1 or height < 1 or bit_depth != 8 or color_type not in (2, 6) or comp != 0 or filt != 0 or interlace != 0:
+        raise ValueError('unsupported PNG format (requires 8-bit non-interlaced RGB/RGBA)')
+    channels = 3 if color_type == 2 else 4
+    idat = bytearray()
+    offset = 8
+    seen_iend = False
+    while offset + 12 <= len(data):
+        length = struct.unpack_from('>I', data, offset)[0]
+        chunk_type = data[offset + 4:offset + 8]
+        chunk_end = offset + 8 + length
+        if chunk_end + 4 > len(data):
+            raise ValueError('truncated PNG chunk')
+        if chunk_type == b'IDAT':
+            idat.extend(data[offset + 8:chunk_end])
+        elif chunk_type == b'IEND':
+            seen_iend = True
+            break
+        offset = chunk_end + 4
+    if not seen_iend or not idat:
+        raise ValueError('incomplete PNG stream')
+    stride = width * channels
+    expected = height * (1 + stride)
+    raw = zlib.decompress(bytes(idat))
+    if len(raw) != expected:
+        raise ValueError('invalid PNG scanline byte count')
+    rows = []
+    cursor = 0
+    prior = bytearray(stride)
+    for _ in range(height):
+        filter_type = raw[cursor]
+        cursor += 1
+        row = bytearray(raw[cursor:cursor + stride])
+        cursor += stride
+        if filter_type == 1:
+            for i in range(channels, stride):
+                row[i] = (row[i] + row[i - channels]) & 255
+        elif filter_type == 2:
+            for i in range(stride):
+                row[i] = (row[i] + prior[i]) & 255
+        elif filter_type == 3:
+            for i in range(stride):
+                left = row[i - channels] if i >= channels else 0
+                row[i] = (row[i] + ((left + prior[i]) >> 1)) & 255
+        elif filter_type == 4:
+            for i in range(stride):
+                a = row[i - channels] if i >= channels else 0
+                b = prior[i]
+                c = prior[i - channels] if i >= channels else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                row[i] = (row[i] + pr) & 255
+        elif filter_type != 0:
+            raise ValueError(f'invalid PNG filter type: {filter_type}')
+        rows.append(bytes(row))
+        prior = row
+    return width, height, rows, channels
+
+
+def _region_bottom_dead_space_ratio(width, height, rows, channels, x_start_ratio, x_end_ratio):
+    x0 = max(0, min(width - 1, int(width * x_start_ratio)))
+    x1 = max(x0 + 1, min(width, int(width * x_end_ratio)))
+    step = max(1, (x1 - x0) // 160)
+    xs = list(range(x0, x1, step))
+    if not xs:
+        return 0.0
+
+    def row_is_uniform(y, ref_rgb=None):
+        row = rows[y]
+        mid_x = xs[len(xs) // 2]
+        base_r, base_g, base_b = row[mid_x * channels], row[mid_x * channels + 1], row[mid_x * channels + 2]
+        target_r, target_g, target_b = ref_rgb if ref_rgb is not None else (base_r, base_g, base_b)
+        matching = 0
+        for x in xs:
+            idx = x * channels
+            r, g, b = row[idx], row[idx + 1], row[idx + 2]
+            if max(abs(r - target_r), abs(g - target_g), abs(b - target_b)) <= 8 and max(abs(r - base_r), abs(g - base_g), abs(b - base_b)) <= 8:
+                matching += 1
+        return (matching / len(xs)) >= 0.98, (base_r, base_g, base_b)
+
+    bezel_limit = max(1, int(height * 0.02))
+    y = height - 1
+    skipped_bezel = 0
+    while y >= 0 and skipped_bezel < bezel_limit:
+        uniform, _ = row_is_uniform(y)
+        if uniform:
+            break
+        skipped_bezel += 1
+        y -= 1
+    if y < 0:
+        return 0.0
+    first_uniform, ref_rgb = row_is_uniform(y)
+    if not first_uniform:
+        return 0.0
+    blank_rows = 0
+    while y >= 0:
+        uniform, _ = row_is_uniform(y, ref_rgb)
+        if not uniform:
+            break
+        blank_rows += 1
+        y -= 1
+    return round(blank_rows / max(1, height), 4)
+
+
+def check_whitespace_ratio(path, max_dead_space_ratio=0.40):
+    target = Path(path)
+    images = [target] if target.is_file() else sorted(target.glob('*.png')) if target.is_dir() else []
+    if not images:
+        return [f'whitespace check path not found: {path}'], []
+    errors, metrics = [], []
+    for image in images:
+        try:
+            if image.is_symlink():
+                raise ValueError('refusing symlink PNG')
+            width, height, rows, channels = _decode_png(image.read_bytes())
+            full_ratio = _region_bottom_dead_space_ratio(width, height, rows, channels, 0.02, 0.98)
+            detail_ratio = _region_bottom_dead_space_ratio(width, height, rows, channels, 0.20, 0.96) if width >= 600 else full_ratio
+            ratio = max(full_ratio, detail_ratio)
+            ok = ratio <= max_dead_space_ratio
+            metrics.append({
+                'file': str(image),
+                'width': width,
+                'height': height,
+                'dead_space_ratio': ratio,
+                'full_canvas_ratio': full_ratio,
+                'detail_canvas_ratio': detail_ratio,
+                'max_dead_space_ratio': max_dead_space_ratio,
+                'ok': ok,
+            })
+            if not ok:
+                errors.append(f'{image.name}: VISUAL_EXCESSIVE_DEAD_SPACE (bottom contiguous dead space {ratio:.1%} > {max_dead_space_ratio:.0%})')
+        except (OSError, ValueError, struct.error, zlib.error) as error:
+            errors.append(f'{image.name}: invalid PNG for whitespace check: {error}')
+    return errors, metrics
+
+
+def audit_geometry(path_or_data, platform='desktop', collision_threshold_pt2=2.0):
+    if isinstance(path_or_data, dict):
+        document = path_or_data
+    else:
+        try:
+            document = json.loads(Path(path_or_data).read_text(encoding='utf-8'))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [f'GEOM_INVALID: {error}'], []
+    if not isinstance(document, dict):
+        return ['GEOM_INVALID: geometry root must be an object'], []
+    errors, details = [], []
+    if document.get('fixedSizeVerticalTightCrop') is True or document.get('snapshotMode') == 'fixedSize':
+        errors.append('FIXED_SIZE_PAGE_SNAPSHOT_CROP')
+        details.append({'rule': 'FIXED_SIZE_PAGE_SNAPSHOT_CROP', 'reason': 'page-level .fixedSize(horizontal: false, vertical: true) tight-crop is forbidden'})
+    viewport = float(document.get('viewportWidth', (document.get('viewport') or {}).get('width', 0) if isinstance(document.get('viewport'), dict) else 0) or 0)
+    nodes = []
+
+    def visit(value, parent=None, ancestors=(), scope='default'):
+        if isinstance(value, dict):
+            current_scope = scope
+            raw_label = str(value.get('label', value.get('id', '')) or '')
+            if parent is document and not isinstance(value.get('frame'), dict) and raw_label:
+                current_scope = raw_label
+            elif '/' in raw_label and current_scope == 'default':
+                current_scope = raw_label.split('/', 1)[0]
+            node_entry = None
+            next_ancestors = ancestors
+            if isinstance(value.get('frame'), dict):
+                node_entry = dict(value)
+                node_entry['_obj_id'] = id(value)
+                node_entry['_parent'] = parent
+                node_entry['_ancestors'] = set(ancestors)
+                node_entry['_scope'] = current_scope
+                node_entry['_has_framed_child'] = False
+                nodes.append(node_entry)
+                next_ancestors = (*ancestors, id(value))
+            for key in ('children', 'nodes', 'samples', 'leafNodes'):
+                children = value.get(key)
+                if isinstance(children, list):
+                    before_count = len(nodes)
+                    for child in children:
+                        visit(child, value, next_ancestors, current_scope)
+                    if node_entry is not None and len(nodes) > before_count:
+                        node_entry['_has_framed_child'] = True
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, parent, ancestors, scope)
+
+    visit(document)
+    min_target = 44.0 if platform == 'mobile' else 28.0
+    for node in nodes:
+        frame = node['frame']
+        x = float(frame.get('minX', frame.get('x', 0)))
+        y = float(frame.get('minY', frame.get('y', 0)))
+        width = float(frame.get('width', 0))
+        height = float(frame.get('height', 0))
+        if viewport and (x < 0 or x + width > viewport):
+            errors.append('GEOM_VIEWPORT_OVERFLOW')
+        text = str(node.get('text', node.get('label', '')))
+        if node.get('numeric') and ('…' in text or '...' in text):
+            errors.append('GEOM_NUMERIC_TRUNCATION')
+        if (node.get('interactive') or node.get('role') in {'button', 'AXButton'}) and (width < min_target or height < min_target):
+            errors.append('GEOM_HIT_TARGET_TOO_SMALL')
+
+    for parent in {id(node.get('_parent')): node.get('_parent') for node in nodes if node.get('_parent') is not None}.values():
+        siblings = [node for node in nodes if node.get('_parent') is parent]
+        for index, first in enumerate(siblings):
+            a = first['frame']
+            ax, ay = float(a.get('minX', a.get('x', 0))), float(a.get('minY', a.get('y', 0)))
+            ar, ab = ax + float(a.get('width', 0)), ay + float(a.get('height', 0))
+            for second in siblings[index + 1:]:
+                b = second['frame']
+                bx, by = float(b.get('minX', b.get('x', 0))), float(b.get('minY', b.get('y', 0)))
+                br, bb = bx + float(b.get('width', 0)), by + float(b.get('height', 0))
+                if min(ar, br) > max(ax, bx) and min(ab, bb) > max(ay, by):
+                    errors.append('GEOM_SIBLING_OVERLAP')
+
+    leaf_roles = {'text', 'label', 'staticText', 'AXStaticText', 'button', 'AXButton', 'heading', 'badge', 'pill', 'rowTitle', 'cadence', 'pulseStageTile'}
+    leaf_nodes = [
+        node for node in nodes
+        if not node.get('_has_framed_child') or str(node.get('role', node.get('kind', ''))) in leaf_roles
+    ]
+    by_scope = {}
+    for node in leaf_nodes:
+        by_scope.setdefault(node.get('_scope', 'default'), []).append(node)
+    for scope_key, scoped_leaves in by_scope.items():
+        for index, first in enumerate(scoped_leaves):
+            a = first['frame']
+            ax, ay = float(a.get('minX', a.get('x', 0))), float(a.get('minY', a.get('y', 0)))
+            ar, ab = ax + float(a.get('width', 0)), ay + float(a.get('height', 0))
+            for second in scoped_leaves[index + 1:]:
+                if first['_obj_id'] in second['_ancestors'] or second['_obj_id'] in first['_ancestors']:
+                    continue
+                b = second['frame']
+                bx, by = float(b.get('minX', b.get('x', 0))), float(b.get('minY', b.get('y', 0)))
+                br, bb = bx + float(b.get('width', 0)), by + float(b.get('height', 0))
+                ix = max(0.0, min(ar, br) - max(ax, bx))
+                iy = max(0.0, min(ab, bb) - max(ay, by))
+                area = ix * iy
+                if area > float(collision_threshold_pt2):
+                    errors.append('GEOM_TEXT_COLLISION')
+                    details.append({
+                        'rule': 'GEOM_TEXT_COLLISION',
+                        'scope': scope_key,
+                        'first': str(first.get('label', first.get('id', first.get('text', 'node_a')))),
+                        'second': str(second.get('label', second.get('id', second.get('text', 'node_b')))),
+                        'intersection_pt2': round(area, 2),
+                    })
+    return list(dict.fromkeys(errors)), details
+
+
 def traceback_errors(text, base_dir=None, platform=None):
     errors, evidence = [], []
     try:
@@ -830,14 +1083,37 @@ def traceback_errors(text, base_dir=None, platform=None):
             raise ValueError('real rendered screenshot/observation evidence is required')
         screenshots = []
         for item in rendered:
-            if not isinstance(item, dict) or item.get('kind') not in {'screenshot', 'observation'} or not _source(item.get('source')) or not item.get('observation'):
+            if not isinstance(item, dict) or item.get('kind') not in {'screenshot', 'observation', 'geometry'} or not _source(item.get('source')) or not item.get('observation'):
                 raise ValueError('rendered_evidence requires kind, source, and observation')
             if item.get('kind') == 'screenshot':
                 if not re.search(r'\.(?:png|jpe?g)(?:#|$)', item['source'], re.I):
                     raise ValueError('screenshot evidence must cite a PNG or JPEG source')
                 screenshots.append(_image_path(item['source'], Path(base_dir) if base_dir else None, platform))
+            elif item.get('kind') == 'geometry':
+                raw_geom = re.split(r'[#:]', item['source'], maxsplit=1)[0]
+                geom_path = Path(raw_geom)
+                if not geom_path.is_absolute():
+                    geom_path = (Path(base_dir) / geom_path) if base_dir else (Path.cwd() / geom_path)
+                geom_errors, _ = audit_geometry(geom_path.resolve(), platform=platform or 'desktop')
+                if geom_errors:
+                    raise ValueError(f"geometry audit failed ({', '.join(geom_errors)})")
         if not screenshots:
             raise ValueError('at least one real screenshot evidence entry is required')
+        if data.get('check_whitespace_ratio') or data.get('max_dead_space_ratio') is not None:
+            max_dead = float(data.get('max_dead_space_ratio', 0.40))
+            for shot in screenshots:
+                if shot.suffix.casefold() == '.png':
+                    ws_errors, _ = check_whitespace_ratio(shot, max_dead_space_ratio=max_dead)
+                    if ws_errors:
+                        raise ValueError('; '.join(ws_errors))
+        if data.get('geometry_source'):
+            raw_geom = re.split(r'[#:]', str(data['geometry_source']), maxsplit=1)[0]
+            geom_path = Path(raw_geom)
+            if not geom_path.is_absolute():
+                geom_path = (Path(base_dir) / geom_path) if base_dir else (Path.cwd() / geom_path)
+            geom_errors, _ = audit_geometry(geom_path.resolve(), platform=platform or 'desktop')
+            if geom_errors:
+                raise ValueError(f"geometry audit failed ({', '.join(geom_errors)})")
         screenshot_sources = {str(path) for path in screenshots}
         def require_screenshot_source(source):
             if not isinstance(source, str) or not re.search(r'\.(?:png|jpe?g)(?:#|$)', source, re.I):

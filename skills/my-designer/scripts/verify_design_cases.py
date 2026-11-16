@@ -110,6 +110,62 @@ def _mask_swift(text: str) -> str:
     return pattern.sub(lambda m: ''.join('\\n' if c == '\\n' else ' ' for c in m.group()), text)
 
 
+def _balanced_brace_end(text: str, open_brace_index: int) -> int:
+    depth = 1
+    idx = open_brace_index + 1
+    while idx < len(text) and depth > 0:
+        if text[idx] == '{':
+            depth += 1
+        elif text[idx] == '}':
+            depth -= 1
+        idx += 1
+    return idx
+
+
+def _dc012_spans(masked: str, regex_pattern: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = [(m.start(), m.end()) for m in re.finditer(regex_pattern, masked)]
+    for btn in re.finditer(r'\bButton\b', masked):
+        cursor = btn.end()
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor < len(masked) and masked[cursor] == '(':
+            depth = 1
+            cursor += 1
+            while cursor < len(masked) and depth > 0:
+                depth += masked[cursor] == '('
+                depth -= masked[cursor] == ')'
+                cursor += 1
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked) or masked[cursor] != '{':
+            continue
+        first_end = _balanced_brace_end(masked, cursor)
+        first_body = masked[cursor + 1:max(cursor + 1, first_end - 1)]
+        label_Match = re.match(r'\s*label\s*:\s*\{', masked[first_end:])
+        if label_Match:
+            label_open = first_end + label_Match.end() - 1
+            block_end = _balanced_brace_end(masked, label_open)
+            label_body = masked[label_open + 1:max(label_open + 1, block_end - 1)]
+        else:
+            block_end = first_end
+            label_body = first_body
+        tail = masked[block_end:min(len(masked), block_end + 220)]
+        has_nested_btn = bool(re.search(r'\bButton\s*(?:\(|\{)', label_body))
+        has_locked_drawer = bool(
+            re.search(r'\bif\s+(?:expanded|isExpanded)\b', label_body)
+            and re.search(r'\.frame\s*\([^)]*minHeight\s*:', label_body + tail)
+            and re.search(r'\.buttonStyle\s*\(\s*\.plain\s*\)', tail)
+        )
+        if has_nested_btn or has_locked_drawer:
+            spans.append((btn.start(), min(len(masked), block_end + 60)))
+    deduped: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if deduped and start < deduped[-1][1]:
+            continue
+        deduped.append((start, end))
+    return deduped
+
+
 def command_audit_code(args: argparse.Namespace) -> int:
     if args.platform == 'macos':
         args.platform = 'desktop'
@@ -130,7 +186,7 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 continue
             try:
                 if case.get('id') == 'DC-011':
-                    matches = []
+                    spans = []
                     for call in re.finditer(r'\.glassEffect\s*\(', masked):
                         depth, end = 1, call.end()
                         while end < len(masked) and depth:
@@ -140,20 +196,50 @@ def command_audit_code(args: argparse.Namespace) -> int:
                         args_text = masked[call.end():max(call.end(), end - 1)]
                         tail = masked[end:]
                         if re.search(r'\.prominent\b', args_text):
-                            matches.append(call)
+                            spans.append((call.start(), end))
                         elif re.match(r'\s*\.\s*(?:padding|frame)\s*\(', tail):
-                            matches.append(call)
+                            spans.append((call.start(), end))
+                elif case.get('id') == 'DC-012':
+                    spans = _dc012_spans(masked, case['forbidden_regex'])
                 else:
-                    matches = list(re.finditer(case['forbidden_regex'], masked))
+                    spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], masked)]
             except re.error as error:
                 print(json.dumps({'ok': False, 'error': f"{case.get('id')}: invalid forbidden_regex: {error}"}))
                 return 2
-            for match in matches:
-                line = masked.count('\\n', 0, match.start()) + 1
-                findings.append({'case_id': case['id'], 'title': case['title'], 'file': str(path), 'line': line, 'match': text[match.start():match.end()].replace('\\n', ' ')[:240]})
-    result = {'ok': not findings, 'platform': args.platform, 'native_only': True, 'files': len(files), 'findings': findings}
+            for start, end in spans:
+                line = masked.count('\n', 0, start) + 1
+                findings.append({'case_id': case['id'], 'title': case['title'], 'file': str(path), 'line': line, 'match': text[start:end].replace('\n', ' ')[:240]})
+    visual_errors: list[str] = []
+    geometry_errors: list[str] = []
+    if getattr(args, 'check_whitespace_ratio', None):
+        ws_errs, _ = EVIDENCE.check_whitespace_ratio(args.check_whitespace_ratio, max_dead_space_ratio=float(getattr(args, 'max_dead_space', 0.40)))
+        visual_errors.extend(ws_errs)
+    if getattr(args, 'audit_geometry', None):
+        geom_errs, _ = EVIDENCE.audit_geometry(args.audit_geometry, platform=args.platform, collision_threshold_pt2=float(getattr(args, 'collision_threshold', 2.0)))
+        geometry_errors.extend(geom_errs)
+    ok = not findings and not visual_errors and not geometry_errors
+    result: dict[str, Any] = {'ok': ok, 'platform': args.platform, 'native_only': True, 'files': len(files), 'findings': findings}
+    if visual_errors:
+        result['visual_errors'] = visual_errors
+    if geometry_errors:
+        result['geometry_errors'] = geometry_errors
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if not findings else 1
+    return 0 if ok else 1
+
+
+def command_check_whitespace_ratio(args: argparse.Namespace) -> int:
+    errors, metrics = EVIDENCE.check_whitespace_ratio(args.path, max_dead_space_ratio=float(args.max_dead_space))
+    payload = {'ok': not errors, 'max_dead_space_ratio': float(args.max_dead_space), 'errors': errors, 'metrics': metrics}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
+
+
+def command_audit_geometry(args: argparse.Namespace) -> int:
+    platform = 'desktop' if args.platform == 'macos' else args.platform
+    errors, details = EVIDENCE.audit_geometry(args.path, platform=platform, collision_threshold_pt2=float(args.collision_threshold))
+    payload = {'ok': not errors, 'platform': platform, 'collision_threshold_pt2': float(args.collision_threshold), 'errors': errors, 'details': details}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
 
 
 def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: list[str], container: str | None = None) -> list[dict[str, Any]]:
@@ -813,8 +899,13 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cases-file", default=str(DEFAULT_CASES))
     common.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description=__doc__, parents=[common])
+    parser.add_argument("--check-whitespace-ratio", dest="top_whitespace_path", default=None, metavar="PNG_OR_DIR")
+    parser.add_argument("--max-dead-space", type=float, default=0.40)
+    parser.add_argument("--audit-geometry", dest="top_geometry_path", default=None, metavar="GEOMETRY_JSON")
+    parser.add_argument("--collision-threshold", type=float, default=2.0)
+    parser.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default="desktop")
+    sub = parser.add_subparsers(dest="command", required=False)
 
     sub.add_parser("flow-map", parents=[common])
 
@@ -827,6 +918,19 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     audit.add_argument("--path", required=True)
     audit.add_argument("--snippet", default=None)
+    audit.add_argument("--check-whitespace-ratio", default=None, metavar="PNG_OR_DIR")
+    audit.add_argument("--max-dead-space", type=float, default=0.40)
+    audit.add_argument("--audit-geometry", default=None, metavar="GEOMETRY_JSON")
+    audit.add_argument("--collision-threshold", type=float, default=2.0)
+
+    ws = sub.add_parser("check-whitespace-ratio", parents=[common], help="Reject full-viewport screenshots with >0.40 bottom contiguous dead space")
+    ws.add_argument("--path", required=True, metavar="PNG_OR_DIR")
+    ws.add_argument("--max-dead-space", type=float, default=0.40)
+
+    geom = sub.add_parser("audit-geometry", parents=[common], help="Audit subtree leaf AABB collisions (>2pt^2 -> GEOM_TEXT_COLLISION) and layout bounds")
+    geom.add_argument("--path", required=True, metavar="GEOMETRY_JSON")
+    geom.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default="desktop")
+    geom.add_argument("--collision-threshold", type=float, default=2.0)
 
     gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
     gate.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
@@ -852,18 +956,40 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "flow-map":
         return command_flow_map(args)
     if args.command == "route":
         return command_route(args)
     if args.command in {"audit-code", "audit-swift"}:
         return command_audit_code(args)
+    if args.command == "check-whitespace-ratio":
+        return command_check_whitespace_ratio(args)
+    if args.command == "audit-geometry":
+        return command_audit_geometry(args)
     if args.command == "register-case":
         return command_register_case(args)
     if args.command == "jev-gate":
         return command_jev_gate(args)
-    return 1
+    if args.top_whitespace_path or args.top_geometry_path:
+        ws_errors, ws_metrics = ([], [])
+        geom_errors, geom_details = ([], [])
+        if args.top_whitespace_path:
+            ws_errors, ws_metrics = EVIDENCE.check_whitespace_ratio(args.top_whitespace_path, max_dead_space_ratio=float(args.max_dead_space))
+        if args.top_geometry_path:
+            plat = 'desktop' if args.platform == 'macos' else args.platform
+            geom_errors, geom_details = EVIDENCE.audit_geometry(args.top_geometry_path, platform=plat, collision_threshold_pt2=float(args.collision_threshold))
+        errors = [*ws_errors, *geom_errors]
+        print(json.dumps({
+            'ok': not errors,
+            'errors': errors,
+            'whitespace_metrics': ws_metrics,
+            'geometry_details': geom_details,
+        }, ensure_ascii=False, indent=2))
+        return 0 if not errors else 1
+    parser.error("a subcommand or --check-whitespace-ratio / --audit-geometry is required")
+    return 2
 
 
 if __name__ == "__main__":
