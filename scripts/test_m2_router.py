@@ -270,8 +270,8 @@ class M2RouterTests(unittest.TestCase):
     def test_domain_map_has_four_groups_and_26_topics(self):
         domain_map = self.router.load_domain_map()
         self.assertEqual(len(domain_map["groups"]), 4)
-        self.assertEqual(len(domain_map["topics"]), 26)
-        self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system"}, {"financial", "shared-design-system"})
+        self.assertEqual(len(domain_map["topics"]), 27)
+        self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system", "work-recruitment"}, {"financial", "shared-design-system", "work-recruitment"})
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
         self.assertTrue(all(topic.get("space") for topic in domain_map["topics"]))
@@ -364,7 +364,7 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(registered["topics"]), 27)
+            self.assertEqual(len(registered["topics"]), 28)
             new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
             self.assertTrue(len(new_topic["keywords"]) > 0)
             self.assertEqual(len(new_domain_map["groups"]), 5)
@@ -2385,6 +2385,108 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("[Host: leedeMac-Mini]", plan_out["preview_markdown"])
         self.assertIn("TIA-457, TIA-420", plan_out["preview_markdown"])
         self.assertIn("[Host: leedeMac-Mini]", self.router.preview_text(plan_out))
+
+    def test_cross_device_hub_splits_work_and_non_work_with_backlog_and_retained(self):
+        remote_issue = {"identifier": "TIA-463", "title": "[M2-Sync] 跨设备总账本", "description": ""}
+
+        def fake_linear_runner(args, **kwargs):
+            if "get-issue" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            if "update-issue" in args:
+                remote_issue["description"] = args[args.index("--description") + 1]
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            raise AssertionError(args)
+
+        cache_path = self.test_root / "hub-split-cache.json"
+        board = self.router._compute_board_rollup({
+            "schema_version": 1,
+            "slots": [
+                {
+                    "slot_id": "work-recruitment",
+                    "run_label": "work-recruitment",
+                    "topic_id": "work-recruitment",
+                    "target_repo": "Personal",
+                    "target": "w57:p1",
+                    "pane_id": "w57:p1",
+                    "status": "idle",
+                    "retained": True,
+                    "visible_summary": "保留并整理招聘信息",
+                },
+                {
+                    "slot_id": "sapphire-smartbanner",
+                    "run_label": "sapphire-smartbanner",
+                    "topic_id": "sapphire-smartbanner",
+                    "target_repo": "bing-growth-sapphire-app",
+                    "target": "w10:p1",
+                    "pane_id": "w10:p1",
+                    "status": "idle",
+                    "retained": True,
+                    "visible_summary": "SmartBanner PR 与实验跟进",
+                },
+                {
+                    "slot_id": "pew-telemetry",
+                    "run_label": "pew-telemetry",
+                    "topic_id": "pew-telemetry",
+                    "target_repo": "pew",
+                    "target": "w67:p1",
+                    "pane_id": "w67:p1",
+                    "status": "working",
+                    "m1_progress": "继续本机 pew 修复与同步",
+                },
+                {
+                    "slot_id": "skills-workflow",
+                    "run_label": "skills-workflow",
+                    "topic_id": "skills-workflow",
+                    "target_repo": "user-skills",
+                    "target": "w5T:p1",
+                    "pane_id": "w5T:p1",
+                    "linear_issue": "TIA-463",
+                    "status": "done",
+                    "m1_progress": "同单 Work/Non-Work 双分区升级完成",
+                },
+            ],
+            "backlog": [
+                {"topic_id": "info-teams", "summary": "Teams 获取、同步、整理与总结（暂缓执行）"},
+                {"topic_id": "info-email", "summary": "Email 获取、同步、整理与总结（暂缓执行）"},
+            ],
+        })
+        res = self.router.sync_cross_device_hub(
+            board,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            cache_path=cache_path,
+            linear_runner=fake_linear_runner,
+            now_iso="2026-11-16T10:25:00+08:00",
+        )
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["updated"])
+        desc = remote_issue["description"]
+        work_part, non_work_part = desc.split("## 🛠️ Part 2 · Non-Work", 1)
+        self.assertIn("## 💼 Part 1 · Work", work_part)
+        self.assertIn("`work-recruitment`", work_part)
+        self.assertIn("`sapphire-smartbanner`", work_part)
+        self.assertIn("⏸️ `info-teams`", work_part)
+        self.assertIn("⏸️ `info-email`", work_part)
+        self.assertNotIn("`pew-telemetry`", work_part)
+        self.assertNotIn("`skills-workflow`", work_part)
+
+        self.assertIn("`pew-telemetry`", non_work_part.split("<details>", 1)[0])
+        self.assertIn("`skills-workflow`", non_work_part.split("<details>", 1)[0])
+        self.assertNotIn("`sapphire-smartbanner`", non_work_part.split("<details>", 1)[0])
+
+        # Re-sync without explicit backlog in rollup preserves previous backlog idempotently
+        board_no_backlog_key = self.router._compute_board_rollup({"schema_version": 1, "slots": board["slots"]})
+        res2 = self.router.sync_cross_device_hub(
+            board_no_backlog_key,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            cache_path=cache_path,
+            linear_runner=fake_linear_runner,
+            now_iso="2026-11-16T10:28:00+08:00",
+        )
+        self.assertTrue(res2["ok"])
+        self.assertFalse(res2["updated"])
+        self.assertEqual(res2["skipped_reason"], "no_substantive_change")
 
 
 if __name__ == "__main__":

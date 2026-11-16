@@ -25,7 +25,8 @@
           ],
           "space": "bing-growth-sapphire-app",
           "space_aliases": [
-            "Sapphire"
+            "Sapphire",
+            "Notification"
           ]
         },
         {
@@ -47,7 +48,8 @@
           ],
           "space": "bing-growth-sapphire-app",
           "space_aliases": [
-            "Sapphire"
+            "Sapphire",
+            "SmartBanner"
           ]
         },
         {
@@ -69,7 +71,8 @@
           ],
           "space": "bing-growth-sapphire-app",
           "space_aliases": [
-            "Sapphire"
+            "Sapphire",
+            "China bugs 修复"
           ]
         },
         {
@@ -193,6 +196,30 @@
           "space": "dsh-personal-plugins",
           "space_aliases": [
             "Deepseek 插件开发"
+          ]
+        },
+        {
+          "topic_id": "work-recruitment",
+          "group": "work-business",
+          "title": "Intern and Team Recruitment",
+          "target_repo": "Personal",
+          "cwd": "~/Development",
+          "keywords": [
+            "招聘",
+            "Intern 招聘",
+            "实习生",
+            "简历筛选",
+            "面试"
+          ],
+          "aliases": [
+            "recruitment",
+            "hiring",
+            "intern hiring"
+          ],
+          "space": "Intern 招聘",
+          "space_aliases": [
+            "招聘",
+            "Recruitment"
           ]
         }
       ]
@@ -322,7 +349,10 @@
             "telemetry",
             "pulse"
           ],
-          "space": "AIDash"
+          "space": "AIDash",
+          "space_aliases": [
+            "aidash-scheduled-pulse"
+          ]
         },
         {
           "topic_id": "pew-telemetry",
@@ -331,6 +361,9 @@
           "target_repo": "pew",
           "cwd": "~/Development/handoff/pew-copilot-hermes-fix",
           "space": "pew",
+          "space_aliases": [
+            "pew 修复"
+          ],
           "keywords": [
             "pew",
             "pew sync",
