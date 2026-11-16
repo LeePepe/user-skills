@@ -2312,7 +2312,8 @@ def _compute_board_rollup(
     markdown.extend([row(s) for s in completed_slots] or ["无"])
     markdown.append("#### 3. ⏳ 仍在运行中（In-Flight Active M2s）")
     markdown.extend([row(s) for s in in_flight] or ["无"])
-    return {
+    backlog_items = [dict(b) for b in (ledger.get("backlog") or []) if isinstance(b, dict)] if "backlog" in ledger else None
+    result_rollup: dict[str, Any] = {
         "unified_rollup_markdown": "\n".join(markdown),
         "in_flight_details": details,
         "wave_dependency_chain": chain,
@@ -2328,6 +2329,9 @@ def _compute_board_rollup(
         "blocked_targets": blocked_slots,
         "slots": slots,
     }
+    if backlog_items is not None:
+        result_rollup["backlog"] = backlog_items
+    return result_rollup
 
 
 def _resolve_local_hostname(local_hostname: str | None = None) -> str:
@@ -2421,6 +2425,106 @@ def _format_linear_issue_link(issue_id: str) -> str:
     return _text(issue_id) or "—"
 
 
+_NON_WORK_EXACT_TOKENS = {
+    "aidash",
+    "aidash-aidata",
+    "pew",
+    "pew-telemetry",
+    "user-skills",
+    "skills-workflow",
+    "skills-design",
+    "skills-research-knowledge",
+    "skills-retro-story",
+    "skills-repo-ci",
+    "skill-skill-contract",
+    "voxpocket",
+    "vitalstride",
+    "helix",
+    "davici",
+    "nas",
+    "nas-smart-home",
+    "financial",
+    "shared-design-system",
+    "raven",
+    "gateway-herdr-jev",
+    "dsh-plugins",
+    "learning-and-blog",
+    "leepepe.github.io",
+}
+_WORK_SIGNAL_RE = re.compile(
+    r"(?:\bbing-growth-sapphire-app\b|\bsapphire\b|\bsmartbanner\b|\bchina[-_ ]?bugs?\b"
+    r"|\bchina\s+release\b|\bflightbook\b|\bwebiq\b|\bworkiq\b|\bteams-cli\b"
+    r"|\binfo-teams\b|\binfo-email\b|\bemail-dsh\b|\bwork-recruitment\b"
+    r"|\bintern\b|招聘|\bmy-pr-supervisor\b|\bpr-auto-review\b|\bdsat\b)",
+    re.I,
+)
+
+
+def _normalize_hub_scope(value: Any) -> str:
+    raw = _text(value).strip().casefold().replace("_", "-")
+    if raw == "work":
+        return "work"
+    if raw in {"non-work", "nonwork", "personal"}:
+        return "non-work"
+    return ""
+
+
+def _classify_hub_scope(
+    item: Any = None,
+    *,
+    rich_line: str = "",
+    domain_map: dict[str, Any] | None = None,
+    hint_scope: str = "",
+) -> str:
+    explicit = _normalize_hub_scope(hint_scope)
+    if explicit:
+        return explicit
+    if isinstance(item, dict):
+        item_scope = _normalize_hub_scope(item.get("scope") or item.get("area"))
+        if item_scope:
+            return item_scope
+    topics_by_id: dict[str, dict[str, Any]] = {}
+    active_map = domain_map
+    if active_map is None:
+        try:
+            active_map = load_domain_map()
+        except RouterError:
+            active_map = {}
+    if isinstance(active_map, dict):
+        topics_by_id = _topic_by_id(active_map)
+    candidates: list[str] = []
+    if isinstance(item, dict):
+        for key in ("topic_id", "slot_id", "target_repo"):
+            val = _text(item.get(key)).strip()
+            if val:
+                candidates.append(val)
+    elif item is not None:
+        val = _text(item).strip()
+        if val:
+            candidates.append(val)
+    if rich_line:
+        cells = [c.strip("` ").strip() for c in rich_line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and rich_line.lstrip().startswith("|"):
+            candidates.append(cells[1])
+    for cand in candidates:
+        low = cand.casefold()
+        topic = topics_by_id.get(low)
+        if topic:
+            return "work" if _text(topic.get("group")) == "work-business" else "non-work"
+        if low in _NON_WORK_EXACT_TOKENS or low.startswith("new-topic-vox"):
+            return "non-work"
+        if _WORK_SIGNAL_RE.search(cand):
+            return "work"
+    probe_parts = [rich_line]
+    if isinstance(item, dict):
+        probe_parts.extend(_text(item.get(k)) for k in ("title", "summary"))
+    elif item is not None:
+        probe_parts.append(_text(item))
+    if _WORK_SIGNAL_RE.search(" ".join(p for p in probe_parts if p)):
+        return "work"
+    return "non-work"
+
+
 def parse_cross_device_hub_description(description: str) -> dict[str, Any]:
     text = str(description or "")
     state_obj: dict[str, Any] = {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
@@ -2452,28 +2556,18 @@ def parse_cross_device_hub_description(description: str) -> dict[str, Any]:
     body_before_details = text.split("<details>", 1)[0] if "<details>" in text else (text[:gtt_start] if gtt_start >= 0 else text)
     pending_by_host: dict[str, list[str]] = {}
     in_flight_rows_by_host: dict[str, list[str]] = {}
+    backlog_lines_by_host: dict[str, list[str]] = {}
     completed_rows_by_host: dict[str, list[str]] = {}
+    line_scopes: dict[str, str] = {}
 
-    sec1_match = re.search(
-        r"###\s*1\.\s*🚨[^\n]*\n(.*?)(?=\n###\s*2\.|\n###\s*3\.|\n---|\Z)",
-        body_before_details,
-        re.S,
-    )
-    if sec1_match:
-        for raw_line in sec1_match.group(1).splitlines():
-            line = raw_line.strip()
-            if not line.startswith("-"):
-                continue
-            host_m = re.search(r"\(`([^`]+)`\)\s*$", line)
-            if not host_m:
-                host_m = re.search(r"\[Host:\s*([^\]]+)\]", line)
-            if host_m:
-                host_key = host_m.group(1).strip()
-                pending_by_host.setdefault(host_key, []).append(line)
+    def _extract_host_from_bullet(line: str) -> str:
+        host_m = re.search(r"\(`([^`]+)`\)\s*$", line)
+        if not host_m:
+            host_m = re.search(r"\[Host:\s*([^\]]+)\]", line)
+        return host_m.group(1).strip() if host_m else ""
 
-    def _parse_table_rows_by_host(section_text: str) -> dict[str, list[str]]:
-        by_host: dict[str, list[str]] = {}
-        for raw_line in section_text.splitlines():
+    def _collect_table_rows(lines_iter: Iterable[str], target_map: dict[str, list[str]], scope_hint: str) -> None:
+        for raw_line in lines_iter:
             line = raw_line.strip()
             if not line.startswith("|") or line.count("|") < 3:
                 continue
@@ -2487,30 +2581,92 @@ def parse_cross_device_hub_description(description: str) -> dict[str, Any]:
                 continue
             host_name = first.strip("` ").strip()
             if host_name and host_name not in {"—", "-"}:
-                by_host.setdefault(host_name, []).append(line)
-        return by_host
+                if line not in target_map.setdefault(host_name, []):
+                    target_map[host_name].append(line)
+                if scope_hint:
+                    line_scopes[line] = scope_hint
 
-    sec2_match = re.search(
-        r"###\s*2\.\s*⏳[^\n]*\n(.*?)(?=\n###\s*3\.|\n---|\Z)",
-        body_before_details,
-        re.S,
-    )
-    if sec2_match:
-        in_flight_rows_by_host = _parse_table_rows_by_host(sec2_match.group(1))
+    current_part_scope = ""
+    current_sub_kind = ""
+    sub_buffer: list[str] = []
 
-    sec3_match = re.search(
-        r"###\s*3\.\s*✅[^\n]*\n(.*?)(?=\n---|\n<details>|\Z)",
-        body_before_details,
-        re.S,
-    )
-    if sec3_match:
-        completed_rows_by_host = _parse_table_rows_by_host(sec3_match.group(1))
+    def _flush_sub_buffer() -> None:
+        nonlocal sub_buffer
+        if not current_sub_kind or not sub_buffer:
+            sub_buffer = []
+            return
+        if current_sub_kind == "pending":
+            for raw_line in sub_buffer:
+                line = raw_line.strip()
+                if not line.startswith("-"):
+                    continue
+                host_key = _extract_host_from_bullet(line)
+                if host_key:
+                    if line not in pending_by_host.setdefault(host_key, []):
+                        pending_by_host[host_key].append(line)
+                    if current_part_scope:
+                        line_scopes[line] = current_part_scope
+        elif current_sub_kind == "backlog":
+            for raw_line in sub_buffer:
+                line = raw_line.strip()
+                if not line.startswith("-"):
+                    continue
+                host_key = _extract_host_from_bullet(line)
+                if host_key:
+                    if line not in backlog_lines_by_host.setdefault(host_key, []):
+                        backlog_lines_by_host[host_key].append(line)
+                    if current_part_scope:
+                        line_scopes[line] = current_part_scope
+        elif current_sub_kind == "in_flight":
+            _collect_table_rows(sub_buffer, in_flight_rows_by_host, current_part_scope)
+        elif current_sub_kind == "completed":
+            _collect_table_rows(sub_buffer, completed_rows_by_host, current_part_scope)
+        sub_buffer = []
+
+    for raw_line in body_before_details.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("## ") and not stripped.startswith("### "):
+            _flush_sub_buffer()
+            current_sub_kind = ""
+            low_h2 = stripped.casefold()
+            if "non-work" in low_h2 or "非工作" in stripped:
+                current_part_scope = "non-work"
+            elif re.search(r"\bwork\b", low_h2) or "工作业务" in stripped:
+                current_part_scope = "work"
+            continue
+        if stripped.startswith("### "):
+            _flush_sub_buffer()
+            low_h3 = stripped.casefold()
+            if "non-work" in low_h3 or "非工作" in stripped:
+                current_part_scope = "non-work"
+            elif re.search(r"\bwork\b", low_h3) or "工作业务" in stripped:
+                current_part_scope = "work"
+            if "🚨" in stripped:
+                current_sub_kind = "pending"
+            elif "⏳" in stripped:
+                current_sub_kind = "in_flight"
+            elif "🗂" in stripped or "backlog" in low_h3:
+                current_sub_kind = "backlog"
+            elif "✅" in stripped:
+                current_sub_kind = "completed"
+            else:
+                current_sub_kind = ""
+            continue
+        if stripped == "---":
+            _flush_sub_buffer()
+            current_sub_kind = ""
+            continue
+        if current_sub_kind:
+            sub_buffer.append(raw_line)
+    _flush_sub_buffer()
 
     return {
         "state": state_obj,
         "pending_lines_by_host": pending_by_host,
         "in_flight_rows_by_host": in_flight_rows_by_host,
+        "backlog_lines_by_host": backlog_lines_by_host,
         "completed_rows_by_host": completed_rows_by_host,
+        "line_scopes": line_scopes,
         "gtt_suffix": gtt_suffix,
     }
 
@@ -2523,31 +2679,44 @@ def _build_local_device_shard(
 ) -> dict[str, Any]:
     timestamp = now_iso or _cst_now_iso()
     prev = previous_shard if isinstance(previous_shard, dict) else {}
+    try:
+        domain_map = load_domain_map()
+    except RouterError:
+        domain_map = {}
     slots = [dict(s) for s in (board_rollup.get("slots") or []) if isinstance(s, dict)]
     in_flight_items: list[dict[str, Any]] = []
     pending_decisions: list[str] = []
     recent_completed: list[Any] = []
     active_issues: set[str] = set()
+    active_running_topics: set[str] = set()
 
     for slot in slots:
         status = _text(slot.get("status")).lower()
+        retained = bool(slot.get("retained"))
         slot_id = _text(slot.get("slot_id") or slot.get("run_label"))
         topic_id = _text(slot.get("topic_id") or slot.get("target_repo") or slot_id)
         session_id = _text(slot.get("target") or slot.get("session_id") or slot_id)
         pane_id = _text(slot.get("pane_id"))
         issue = _text(slot.get("linear_issue"))
         summary = _text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"), "—").replace("\n", " / ")[:280]
-        if status in {"working", "running", "blocked", "needs_input", "ready", "unknown"}:
-            in_flight_items.append({
+        scope = _classify_hub_scope(slot, domain_map=domain_map)
+        if status in {"working", "running", "blocked", "needs_input", "ready", "unknown"} or retained:
+            entry: dict[str, Any] = {
                 "slot_id": slot_id,
                 "topic_id": topic_id,
                 "session_id": session_id,
                 "pane_id": pane_id,
                 "issue": issue,
                 "summary": summary,
-            })
+                "scope": scope,
+            }
+            if retained:
+                entry["retained"] = True
+            in_flight_items.append(entry)
             if issue:
                 active_issues.add(issue)
+            if status in {"working", "running"} and topic_id:
+                active_running_topics.add(topic_id.casefold())
             if bool(slot.get("needs_owner_attention")) or status in {"blocked", "needs_input"}:
                 decision_key = issue or slot_id
                 if decision_key and decision_key not in pending_decisions:
@@ -2559,6 +2728,7 @@ def _build_local_device_shard(
                 "target_repo": _text(slot.get("target_repo") or topic_id),
                 "issue": issue or slot_id,
                 "summary": summary,
+                "scope": scope,
             }
             recent_completed.append(comp_entry)
 
@@ -2574,12 +2744,26 @@ def _build_local_device_shard(
             recent_completed.append(old_comp)
             seen_completed_keys.add(key)
 
-    return {
+    raw_backlog = board_rollup.get("backlog") if "backlog" in board_rollup else prev.get("backlog")
+    backlog_items: list[dict[str, Any]] = []
+    for raw_b in (raw_backlog or []):
+        if isinstance(raw_b, dict):
+            b_topic = _text(raw_b.get("topic_id") or raw_b.get("id"))
+            if b_topic and b_topic.casefold() in active_running_topics:
+                continue
+            b_copy = dict(raw_b)
+            b_copy["scope"] = _classify_hub_scope(b_copy, domain_map=domain_map)
+            backlog_items.append(b_copy)
+
+    shard_out: dict[str, Any] = {
         "updated_at": timestamp,
         "in_flight": in_flight_items,
         "pending_decisions": pending_decisions,
         "recent_completed": recent_completed[:12],
     }
+    if backlog_items:
+        shard_out["backlog"] = backlog_items
+    return shard_out
 
 
 def render_cross_device_hub_markdown(
@@ -2591,8 +2775,14 @@ def render_cross_device_hub_markdown(
     preserved = preserved_sections or {}
     pending_by_host: dict[str, list[str]] = dict(preserved.get("pending_lines_by_host") or {})
     in_flight_by_host: dict[str, list[str]] = dict(preserved.get("in_flight_rows_by_host") or {})
+    backlog_by_host: dict[str, list[str]] = dict(preserved.get("backlog_lines_by_host") or {})
     completed_by_host: dict[str, list[str]] = dict(preserved.get("completed_rows_by_host") or {})
+    line_scopes: dict[str, str] = dict(preserved.get("line_scopes") or {})
     gtt_suffix = _text(preserved.get("gtt_suffix"))
+    try:
+        domain_map = load_domain_map()
+    except RouterError:
+        domain_map = {}
     devices: dict[str, dict[str, Any]] = {
         str(k): dict(v)
         for k, v in ((state.get("devices") or {}).items() if isinstance(state.get("devices"), dict) else [])
@@ -2601,34 +2791,60 @@ def render_cross_device_hub_markdown(
 
     def _ordered_hosts() -> list[str]:
         keys = list(devices.keys())
-        for extra_map in (pending_by_host, in_flight_by_host, completed_by_host):
+        for extra_map in (pending_by_host, in_flight_by_host, backlog_by_host, completed_by_host):
             for k in extra_map:
                 if k not in keys:
                     keys.append(k)
         return keys
 
     hosts = _ordered_hosts()
+    pending_by_scope: dict[str, list[str]] = {"work": [], "non-work": []}
+    in_flight_by_scope: dict[str, list[str]] = {"work": [], "non-work": []}
+    backlog_by_scope: dict[str, list[str]] = {"work": [], "non-work": []}
+    completed_by_scope: dict[str, list[str]] = {"work": [], "non-work": []}
 
-    # Section 1: Pending decisions
-    sec1_lines: list[str] = []
+    def _append_unique(bucket: dict[str, list[str]], scope: str, line: str) -> None:
+        key = "work" if scope == "work" else "non-work"
+        if line not in bucket[key]:
+            bucket[key].append(line)
+
+    def _scope_for_host_issue(shard: dict[str, Any], issue_or_text: str, rich_line: str = "") -> str:
+        hinted = line_scopes.get(rich_line, "")
+        if hinted:
+            return hinted
+        needle = _text(issue_or_text)
+        if needle:
+            for coll_key in ("in_flight", "backlog", "recent_completed"):
+                for entry in (shard.get(coll_key) or []):
+                    if isinstance(entry, dict) and needle in {_text(entry.get("issue")), _text(entry.get("topic_id")), _text(entry.get("slot_id"))}:
+                        return _classify_hub_scope(entry, rich_line=rich_line, domain_map=domain_map)
+        return _classify_hub_scope(issue_or_text, rich_line=rich_line, domain_map=domain_map)
+
+    # Pending decisions (Work vs Non-Work)
     for host in hosts:
         shard = devices.get(host, {})
         shard_pending = shard.get("pending_decisions") or []
         rich_lines = pending_by_host.get(host) or []
+        all_pending_seen: list[str] = []
         if host != local_hostname and rich_lines and shard_pending:
             for line in rich_lines:
-                if line not in sec1_lines:
-                    sec1_lines.append(line)
+                sc = _scope_for_host_issue(shard, "", line)
+                _append_unique(pending_by_scope, sc, line)
+                all_pending_seen.append(line)
             for item in shard_pending:
                 item_str = _text(item.get("issue") or item.get("summary") if isinstance(item, dict) else item)
-                if item_str and not any(item_str in existing for existing in sec1_lines):
-                    sec1_lines.append(f"- [ ] {_format_linear_issue_link(item_str)} (`{host}`)")
+                if item_str and not any(item_str in existing for existing in all_pending_seen):
+                    line = f"- [ ] {_format_linear_issue_link(item_str)} (`{host}`)"
+                    sc = _classify_hub_scope(item, rich_line=line, domain_map=domain_map) if isinstance(item, dict) else _scope_for_host_issue(shard, item_str, line)
+                    _append_unique(pending_by_scope, sc, line)
+                    all_pending_seen.append(line)
         else:
             for item in shard_pending:
                 if isinstance(item, dict):
                     issue_ref = _format_linear_issue_link(_text(item.get("issue")))
                     desc = _text(item.get("summary") or item.get("title"))
                     line = f"- [ ] {issue_ref}{(' · ' + desc) if desc else ''} (`{host}`)"
+                    sc = _classify_hub_scope(item, rich_line=line, domain_map=domain_map)
                 else:
                     raw_item = _text(item)
                     matched_rich = next((rl for rl in rich_lines if raw_item and raw_item in rl), "")
@@ -2638,21 +2854,24 @@ def render_cross_device_hub_markdown(
                         line = f"- [ ] {_format_linear_issue_link(raw_item)} · 待 Owner 拍板 (`{host}`)"
                     else:
                         line = f"- [ ] {raw_item} (`{host}`)"
-                if line not in sec1_lines:
-                    sec1_lines.append(line)
-    if not sec1_lines:
-        sec1_lines.append("- 暂无跨设备阻塞或待拍板事项")
+                    sc = _scope_for_host_issue(shard, raw_item, line)
+                _append_unique(pending_by_scope, sc, line)
 
-    # Section 2: In-Flight by Device
-    sec2_rows: list[str] = []
+    # In-Flight & Retained by Device (Work vs Non-Work)
     for host in hosts:
         shard = devices.get(host, {})
         shard_in_flight = shard.get("in_flight") or []
         rich_rows = in_flight_by_host.get(host) or []
         if host != local_hostname and rich_rows and shard_in_flight:
             for r in rich_rows:
-                if r not in sec2_rows:
-                    sec2_rows.append(r)
+                cells = [c.strip("` ").strip() for c in r.strip("|").split("|")]
+                row_topic = cells[1] if len(cells) > 1 else ""
+                matched_entry = next(
+                    (it for it in shard_in_flight if isinstance(it, dict) and _text(it.get("topic_id") or it.get("slot_id")) == row_topic),
+                    None,
+                )
+                sc = _classify_hub_scope(matched_entry or row_topic, rich_line=r, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
+                _append_unique(in_flight_by_scope, sc, r)
         else:
             hb = _format_cst_heartbeat(_text(shard.get("updated_at") or state.get("updated_at")))
             for item in shard_in_flight:
@@ -2665,30 +2884,59 @@ def render_cross_device_hub_markdown(
                 issue_cell = _format_linear_issue_link(_text(item.get("issue")))
                 summary_cell = _text(item.get("summary"), "—").replace("|", "\\|").replace("\n", "&#10;")
                 item_hb = _format_cst_heartbeat(_text(item.get("updated_at") or shard.get("updated_at") or state.get("updated_at"))) or hb
-                sec2_rows.append(f"| `{host}` | `{topic}` | {session_cell} | {issue_cell} | {summary_cell} | `{item_hb}` |")
-    if not sec2_rows:
-        sec2_rows.append("| `—` | `—` | `—` | — | 当前各设备均无在途 M2 槽位 | `—` |")
+                row_str = f"| `{host}` | `{topic}` | {session_cell} | {issue_cell} | {summary_cell} | `{item_hb}` |"
+                sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map)
+                _append_unique(in_flight_by_scope, sc, row_str)
 
-    # Section 3: Recent Completed Rollup
-    sec3_rows: list[str] = []
+    # Deferred Backlog by Device (Work vs Non-Work)
+    for host in hosts:
+        shard = devices.get(host, {})
+        shard_backlog = shard.get("backlog") or []
+        rich_backlog = backlog_by_host.get(host) or []
+        if host != local_hostname and rich_backlog and not shard_backlog:
+            for line in rich_backlog:
+                sc = _classify_hub_scope(None, rich_line=line, domain_map=domain_map, hint_scope=line_scopes.get(line, ""))
+                _append_unique(backlog_by_scope, sc, line)
+        else:
+            for item in shard_backlog:
+                if isinstance(item, dict):
+                    b_topic = _text(item.get("topic_id") or item.get("id") or item.get("title"), "backlog")
+                    b_summary = _text(item.get("summary") or item.get("intent") or item.get("title"), "暂缓执行")
+                    b_issue = _text(item.get("issue"))
+                    issue_part = f" · {_format_linear_issue_link(b_issue)}" if b_issue else ""
+                    line = f"- ⏸️ `{b_topic}`{issue_part} · {b_summary} (`{host}`)"
+                    sc = _classify_hub_scope(item, rich_line=line, domain_map=domain_map)
+                else:
+                    raw_b = _text(item)
+                    line = f"- ⏸️ {raw_b} (`{host}`)"
+                    sc = _classify_hub_scope(raw_b, rich_line=line, domain_map=domain_map)
+                _append_unique(backlog_by_scope, sc, line)
+
+    # Recent Completed Rollup (Work vs Non-Work)
     for host in hosts:
         shard = devices.get(host, {})
         shard_completed = shard.get("recent_completed") or []
         rich_rows = completed_by_host.get(host) or []
+        seen_comp_rows: list[str] = []
         if host != local_hostname and rich_rows:
             for r in rich_rows:
-                if r not in sec3_rows:
-                    sec3_rows.append(r)
+                sc = _classify_hub_scope(None, rich_line=r, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
+                _append_unique(completed_by_scope, sc, r)
+                seen_comp_rows.append(r)
             for item in shard_completed:
                 item_key = _text(item.get("issue") if isinstance(item, dict) else item)
-                if item_key and not any(item_key in existing for existing in sec3_rows):
+                if item_key and not any(item_key in existing for existing in seen_comp_rows):
                     if isinstance(item, dict):
                         topic = _text(item.get("topic_id") or item.get("target_repo"), "—")
                         issue_cell = _format_linear_issue_link(item_key)
                         summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
-                        sec3_rows.append(f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |")
+                        row_str = f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |"
+                        sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map)
                     else:
-                        sec3_rows.append(f"| `{host}` | `—` | {_format_linear_issue_link(item_key)} | 已完成 |")
+                        row_str = f"| `{host}` | `—` | {_format_linear_issue_link(item_key)} | 已完成 |"
+                        sc = _scope_for_host_issue(shard, item_key, row_str)
+                    _append_unique(completed_by_scope, sc, row_str)
+                    seen_comp_rows.append(row_str)
         else:
             for item in shard_completed:
                 if isinstance(item, dict):
@@ -2704,14 +2952,13 @@ def render_cross_device_hub_markdown(
                             issue_cell = f"{issue_cell} / {pr_ref}"
                         summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
                         row_str = f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |"
+                    sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map, hint_scope=line_scopes.get(row_str, ""))
                 else:
                     raw_val = _text(item)
                     matched_rich = next((rr for rr in rich_rows if raw_val and raw_val in rr), "")
                     row_str = matched_rich or f"| `{host}` | `—` | {_format_linear_issue_link(raw_val)} | 已完成 |"
-                if row_str not in sec3_rows:
-                    sec3_rows.append(row_str)
-    if not sec3_rows:
-        sec3_rows.append("| `—` | `—` | — | 暂无跨设备完成记录 |")
+                    sc = _scope_for_host_issue(shard, raw_val, row_str)
+                _append_unique(completed_by_scope, sc, row_str)
 
     canonical_state = {
         "schema": M2_SYNC_SCHEMA,
@@ -2720,28 +2967,70 @@ def render_cross_device_hub_markdown(
     }
     state_json_str = json.dumps(canonical_state, ensure_ascii=False, indent=2)
 
+    work_pending = pending_by_scope["work"] or ["- 暂无 Work 阻塞或待拍板事项"]
+    work_in_flight = in_flight_by_scope["work"] or ["| `—` | `—` | `—` | — | 当前无 Work 在途或常驻 M2 | `—` |"]
+    work_backlog = backlog_by_scope["work"] or ["- 暂无 Work 暂缓 Backlog"]
+    work_completed = completed_by_scope["work"] or ["| `—` | `—` | — | 暂无 Work 完成记录 |"]
+
+    non_work_pending = pending_by_scope["non-work"] or ["- 暂无 Non-Work 阻塞或待拍板事项"]
+    non_work_in_flight = in_flight_by_scope["non-work"] or ["| `—` | `—` | `—` | — | 当前无 Non-Work 在途 M2 | `—` |"]
+    non_work_backlog = backlog_by_scope["non-work"] or ["- 暂无 Non-Work 暂缓 Backlog"]
+    non_work_completed = completed_by_scope["non-work"] or ["| `—` | `—` | — | 暂无 Non-Work 完成记录 |"]
+
     lines = [
         M2_SYNC_HUB_MARKER,
         "",
         "## 🌐 跨设备 `/personal-m2-assistant` 监督与推进总账本",
         "",
-        "> **用途**：作为 `leedeMac-Mini`、`MacBook` 与移动端 Linear 之间的唯一跨设备 M2 监督同步中枢。任一设备执行 `--apply` / `--watch` / `--status` / `--gc` 时按设备分片（`devices.<hostname>`）自动对账更新；直接在本单评论指令即可通过 `linear-bot-bridge` 跨设备触发推进。",
+        "> **用途**：作为 `leedeMac-Mini`、`MacBook-Pro` 与移动端 Linear 之间的唯一跨设备 M2 监督同步中枢，在同一个 Issue 内拆分为 **Part 1 · Work（工作业务）** 与 **Part 2 · Non-Work（非工作 / 个人与基建）** 两部分。任一设备执行 `--apply` / `--watch` / `--status` / `--gc` 时按设备分片（`devices.<hostname>`）自动对账更新；直接在本单评论指令即可通过 `linear-bot-bridge` 跨设备触发推进。",
         "",
-        "### 1. 🚨 待拍板 / 跨设备待选型事项",
+        "---",
         "",
-        *sec1_lines,
+        "## 💼 Part 1 · Work（工作业务 M2）",
         "",
-        "### 2. ⏳ 各设备在途监督（In-Flight by Device）",
+        "### 1.1 🚨 Work 待拍板 / 跨设备待选型事项",
+        "",
+        *work_pending,
+        "",
+        "### 1.2 ⏳ Work 各设备在途与常驻监督（In-Flight & Retained）",
         "",
         "| 设备 (`Host`) | M2 话题 (`Topic`) | 会话 / Pane | 关联单据 | 当前推进阶段 (`M1 Stage`) | 最近心跳 (`CST`) |",
         "| -- | -- | -- | -- | -- | -- |",
-        *sec2_rows,
+        *work_in_flight,
         "",
-        "### 3. ✅ 最近跨设备已完成（Recent Completed Rollup）",
+        "### 1.3 🗂️ Work 暂缓 Backlog（Deferred · 不自动派发）",
+        "",
+        *work_backlog,
+        "",
+        "### 1.4 ✅ Work 最近已完成（Recent Completed）",
         "",
         "| 设备 (`Host`) | 话题 / 仓库 | 单据 / PR | 一句话结果 |",
         "| -- | -- | -- | -- |",
-        *sec3_rows,
+        *work_completed,
+        "",
+        "---",
+        "",
+        "## 🛠️ Part 2 · Non-Work（非工作 / 个人与基建 M2）",
+        "",
+        "### 2.1 🚨 Non-Work 待拍板 / 跨设备待选型事项",
+        "",
+        *non_work_pending,
+        "",
+        "### 2.2 ⏳ Non-Work 各设备在途与继续推进（In-Flight & Continuing）",
+        "",
+        "| 设备 (`Host`) | M2 话题 (`Topic`) | 会话 / Pane | 关联单据 | 当前推进阶段 (`M1 Stage`) | 最近心跳 (`CST`) |",
+        "| -- | -- | -- | -- | -- | -- |",
+        *non_work_in_flight,
+        "",
+        "### 2.3 🗂️ Non-Work 暂缓 Backlog（Deferred · 不自动派发）",
+        "",
+        *non_work_backlog,
+        "",
+        "### 2.4 ✅ Non-Work 最近已完成（Recent Completed）",
+        "",
+        "| 设备 (`Host`) | 话题 / 仓库 | 单据 / PR | 一句话结果 |",
+        "| -- | -- | -- | -- |",
+        *non_work_completed,
         "",
         "---",
         "",
