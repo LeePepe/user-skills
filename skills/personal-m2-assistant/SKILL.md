@@ -29,8 +29,8 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 ## 真静默与全局统一汇总
 
 - **True Quiescence Detection**：检查可见尾部最后 8 行（原始行及非空行）；出现 `background /tasks`、`ctrl+c `、`Working`、`Thinking`、`Running `、`Waiting for` 即覆盖 `idle`/`done` 为 `working`（非静默），绝不提前退出 `--watch`。关联 Goal 的任务仍 `in_progress` 且 TL 运行中时同样保持监督。
-- **跨轮次共享账本**：默认 `/tmp/m2-supervision-state.json`，自动合并公开 `herdr agent list` 活跃 M2 与关联 Goal `ledger.md`，保留 Linear 主 Issue/Parent、M1 子阶段进度（自动关联优先当前可见 Goal，不被旧标题/RAG 路径锁定；显式 `handoff_dir` 仍为准）；`--state-file` 可隔离状态，`--handoff-root`（或 `M2_HANDOFF_ROOT`）可指定台账根目录。自定义目录的 plan/receipt 默认使用同目录账本。
-- **强制三段式汇报**：每次后台 `--watch` 唤醒向 Owner 汇报或调用 `--status` 时，直接输出完整 `unified_rollup_markdown`：**Wave 波次与上下游依赖链路** → **1. 🔔 本次完成** → **2. ✅ 累计已完成** → **3. ⏳ 仍在运行中**。逐项包含 M2、pane、Wave/依赖、Linear `TIA-*`、M1 当前进度（含内部 Stage 链路），严禁只报单条而遗漏其他跨轮次在途或 blocked M2。结构化详情见 `in_flight_details` / `wave_dependency_chain`。
+- **跨轮次共享账本与跨设备同步中枢（`TIA-463`）**：默认 `/tmp/m2-supervision-state.json`，自动合并公开 `herdr agent list` 活跃 M2 与关联 Goal `ledger.md`，保留 Linear 主 Issue/Parent、M1 子阶段进度（自动关联优先当前可见 Goal，不被旧标题/RAG 路径锁定；显式 `handoff_dir` 仍为准）；`--state-file` 可隔离状态，`--handoff-root`（或 `M2_HANDOFF_ROOT`）可指定台账根目录。通过 `--sync-linear [--hub-issue TIA-463]`（并在 `--apply`、`--watch` 退出、`--gc --approve` 时最佳努力静默触发）按设备分片 `devices.<hostname>` 与 Linear `TIA-463`（`<!-- GTT-M2-SYNC-HUB:v1 -->`）双向幂等同步，保留其他设备分片与富文本行。
+- **强制三段式汇报与跨设备感知**：每次后台 `--watch` 唤醒向 Owner 汇报或调用 `--status` / `--plan` 时，直接输出完整 `unified_rollup_markdown`：**Wave 波次与上下游依赖链路** → **1. 🔔 本次完成** → **2. ✅ 累计已完成** → **3. ⏳ 仍在运行中**（含跨设备 `[Host: <device>]` 在途与待拍板项）。逐项包含 M2、pane、Wave/依赖、Linear `TIA-*`、M1 当前进度（含内部 Stage 链路），严禁只报单条而遗漏其他跨轮次在途或 blocked M2。结构化详情见 `in_flight_details` / `wave_dependency_chain` / `remote_devices`。
 
 ## CLI
 
@@ -51,7 +51,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
 
-随时巡检：`python3 skills/personal-m2-assistant/scripts/m2-router.py --status`（加 `--json` 返回结构化全局汇总）。全局回收默认只读预览：`--gc [--approve] [--json]`，仅 Owner 批准后关闭已完成孤儿 M1、重复静默 M2、已完成 Goal 的静默 M2，并清理对应监督槽位。
+随时巡检与跨设备对账：`python3 skills/personal-m2-assistant/scripts/m2-router.py --status [--sync-linear --hub-issue TIA-463]`（加 `--json` 返回结构化全局汇总）。全局回收默认只读预览：`--gc [--approve] [--json]`，仅 Owner 批准后关闭已完成孤儿 M1、重复静默 M2、已完成 Goal 的静默 M2，并清理对应监督槽位与同步跨设备账本。
 
 常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`（显式导出）、`--transport stdout`。完整参数以脚本 `--help` 为准。
 

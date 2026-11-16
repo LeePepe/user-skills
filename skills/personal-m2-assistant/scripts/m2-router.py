@@ -9,6 +9,7 @@ and sends only the targets recorded in the plan.
 from __future__ import annotations
 
 import argparse
+import copy
 try:
     import fcntl
 except ImportError:  # pragma: no cover
@@ -20,17 +21,25 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
 SCHEMA_VERSION = 1
+M2_SYNC_HUB_MARKER = "<!-- GTT-M2-SYNC-HUB:v1 -->"
+M2_SYNC_STATE_START = "<!-- M2-SYNC-STATE-START -->"
+M2_SYNC_STATE_END = "<!-- M2-SYNC-STATE-END -->"
+M2_SYNC_SCHEMA = "m2-cross-device-sync/v1"
+DEFAULT_M2_SYNC_HUB_ISSUE = "TIA-463"
+LINEAR_SYNC_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "team-lead" / "scripts" / "linear-sync.py"
 DEFAULT_M2_MODEL = "gemini-4-argon"
 DEFAULT_M2_CONTEXT = "long_context"
 DEFAULT_M2_MODEL_LABEL = "Gemini 4 Argon · 983K context"
@@ -1287,7 +1296,22 @@ def _prune_closed_slots(state_path: Path | None, receipts: list[dict[str, Any]])
     return pruned
 
 
-def run_gc(records: Iterable[dict[str, Any]], *, approve: bool = False, state_file: str | Path | None = None, handoff_root: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, runner: CommandRunner = _run_command) -> dict[str, Any]:
+def run_gc(
+    records: Iterable[dict[str, Any]],
+    *,
+    approve: bool = False,
+    state_file: str | Path | None = None,
+    handoff_root: str | Path | None = None,
+    plan_file: str | Path | None = None,
+    apply_receipt_file: str | Path | None = None,
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
     candidates = discover_gc_candidates(records, handoff_root=handoff_root)
     receipts = []
     if approve:
@@ -1298,7 +1322,30 @@ def run_gc(records: Iterable[dict[str, Any]], *, approve: bool = False, state_fi
                 receipts.append({**candidate, "ok": False, "error": str(error)})
     state_path = _resolve_supervision_state_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file, persist_by_default=True) if approve else None
     pruned = _prune_closed_slots(state_path, receipts)
-    return {"ok": True, "approved": approve, "dry_run": not approve, "gc_candidates": candidates, "closed_receipts": receipts, "pruned_state_slots": pruned}
+    result: dict[str, Any] = {"ok": True, "approved": approve, "dry_run": not approve, "gc_candidates": candidates, "closed_receipts": receipts, "pruned_state_slots": pruned}
+    should_sync, sync_reason = _should_trigger_linear_sync(
+        sync_linear=sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=bool(approve),
+        state_path=state_path,
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    if should_sync:
+        board_state = _with_locked_supervision_state(state_path, lambda s: s)
+        board_rollup = _compute_board_rollup(board_state)
+        cache_path = _resolve_cross_device_cache_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file)
+        result["linear_sync"] = sync_cross_device_hub(
+            board_rollup,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+        )
+    elif approve or sync_linear or no_sync_linear:
+        result["linear_sync"] = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+    return result
 
 def _default_preview_path(plan_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"
@@ -1376,6 +1423,12 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
                 f"- `{_text(candidate.get('topic_id'))}`: {_text(candidate.get('title'))} → "
                 f"`{_text(candidate.get('target_repo'))}` (`{_text(candidate.get('group'))}`, cwd `{_expand_cwd(candidate.get('cwd'))}`)"
             )
+    cross_lines = _render_cross_device_rollup_lines({
+        "cross_device_in_flight": plan.get("cross_device_in_flight") or [],
+        "cross_device_pending_decisions": plan.get("cross_device_pending_decisions") or [],
+    })
+    if cross_lines:
+        lines.extend(["", "## Cross-Device Active & Pending (Linear `TIA-463`)", "", *cross_lines[1:]])
     return "\n".join(lines) + "\n"
 
 
@@ -1410,6 +1463,14 @@ def build_plan(
     transport: str = "auto",
     preview_md_file: str | Path | None = None,
     write_preview_md: bool = False,
+    state_file: str | Path | None = None,
+    cross_device_state: dict[str, Any] | None = None,
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     message = _text(message)
@@ -1487,6 +1548,37 @@ def build_plan(
         "gc_candidates": discover_gc_candidates(list(sessions), handoff_root=os.environ.get("M2_HANDOFF_ROOT")),
         "approval": {"required": True, "approved": False},
     }
+    cache_path = _resolve_cross_device_cache_path(state_file)
+    resolved_cross_state = cross_device_state
+    should_sync, _ = _should_trigger_linear_sync(
+        sync_linear=sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=False,
+        state_path=_resolve_supervision_state_path(state_file, persist_by_default=True),
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    if should_sync and resolved_cross_state is None:
+        state_path = _resolve_supervision_state_path(state_file, persist_by_default=True)
+        local_board = _compute_board_rollup(_with_locked_supervision_state(state_path, lambda s: s))
+        sync_res = sync_cross_device_hub(
+            local_board,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+        )
+        plan["linear_sync"] = sync_res
+        if isinstance(sync_res.get("state"), dict):
+            resolved_cross_state = sync_res["state"]
+    if resolved_cross_state is None:
+        resolved_cross_state = _load_cross_device_cache(cache_path)
+    cross_summary = _extract_remote_devices_summary(resolved_cross_state, local_hostname=local_hostname)
+    plan["local_hostname"] = cross_summary["local_hostname"]
+    plan["remote_devices"] = cross_summary["remote_devices"]
+    plan["cross_device_in_flight"] = cross_summary["cross_device_in_flight"]
+    plan["cross_device_pending_decisions"] = cross_summary["cross_device_pending_decisions"]
     plan["preview_markdown"] = render_preview_markdown(plan)
     if write_preview_md or preview_md_file is not None:
         write_preview_markdown(plan, preview_md_file)
@@ -1528,6 +1620,12 @@ def preview_text(plan: dict[str, Any]) -> str:
         lines.extend(["", "New domain candidates (Owner decision required):"])
         for candidate in candidates:
             lines.append(f"- {candidate.get('topic_id')}: {candidate.get('title')} → {candidate.get('target_repo')} ({candidate.get('group')})")
+    cross_lines = _render_cross_device_rollup_lines({
+        "cross_device_in_flight": plan.get("cross_device_in_flight") or [],
+        "cross_device_pending_decisions": plan.get("cross_device_pending_decisions") or [],
+    })
+    if cross_lines:
+        lines.extend(["", "Cross-Device Active & Pending (TIA-463):", *cross_lines[1:]])
     return "\n".join(lines)
 
 
@@ -2232,7 +2330,702 @@ def _compute_board_rollup(
     }
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def _resolve_local_hostname(local_hostname: str | None = None) -> str:
+    explicit = _text(local_hostname or os.environ.get("M2_LOCAL_HOSTNAME"))
+    if explicit:
+        return explicit.split(".", 1)[0]
+    try:
+        host = socket.gethostname().split(".", 1)[0].strip()
+    except OSError:
+        host = ""
+    return host or "localhost"
+
+
+def _resolve_cross_device_cache_path(
+    state_file: str | Path | None = None,
+    *,
+    plan_file: str | Path | None = None,
+    apply_receipt_file: str | Path | None = None,
+    apply_receipt: dict[str, Any] | None = None,
+) -> Path:
+    explicit_cache = _text(os.environ.get("M2_CROSS_DEVICE_CACHE_FILE"))
+    if explicit_cache:
+        return Path(explicit_cache).expanduser()
+    state_path = _resolve_supervision_state_path(
+        state_file,
+        plan_file=plan_file,
+        apply_receipt_file=apply_receipt_file,
+        apply_receipt=apply_receipt,
+        persist_by_default=True,
+    )
+    if state_path and state_path.parent not in {Path("/tmp"), Path("/private/tmp")}:
+        return state_path.parent / "m2-cross-device-sync-cache.json"
+    return Path("/tmp/m2-cross-device-sync-cache.json")
+
+
+def _is_isolated_test_state_path(state_path: Path | None) -> bool:
+    if state_path is None:
+        return False
+    resolved = state_path.expanduser().resolve(strict=False)
+    return resolved not in {
+        Path("/tmp/m2-supervision-state.json").resolve(strict=False),
+        Path("/private/tmp/m2-supervision-state.json").resolve(strict=False),
+    }
+
+
+def _should_trigger_linear_sync(
+    *,
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
+    auto_trigger: bool = False,
+    state_path: Path | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    if no_sync_linear:
+        return False, "explicit_no_sync_linear"
+    if sync_linear or linear_runner is not None or hub_issue_payload is not None:
+        return True, "explicit"
+    if not auto_trigger:
+        return False, "not_requested"
+    if _text(os.environ.get("GTT_LINEAR_SYNC")) == "0":
+        return False, "env_gtt_linear_sync_disabled"
+    if _is_isolated_test_state_path(state_path) and _text(os.environ.get("GTT_LINEAR_SYNC")) != "1":
+        return False, "isolated_test_state_path"
+    return True, "auto_best_effort"
+
+
+def _cst_now_iso() -> str:
+    cst = timezone(timedelta(hours=8))
+    return datetime.now(cst).replace(microsecond=0).isoformat()
+
+
+def _format_cst_heartbeat(iso_str: str) -> str:
+    raw = _text(iso_str)
+    if not raw:
+        cst = timezone(timedelta(hours=8))
+        return datetime.now(cst).strftime("%Y-%m-%d %H:%M")
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        cst = timezone(timedelta(hours=8))
+        return dt.astimezone(cst).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})", raw)
+        return f"{m.group(1)} {m.group(2)}" if m else raw[:16]
+
+
+def _format_linear_issue_link(issue_id: str) -> str:
+    clean = _text(issue_id).upper()
+    if re.match(r"^TIA-\d+$", clean):
+        return f"[{clean}](https://linear.app/tianpeili/issue/{clean})"
+    return _text(issue_id) or "—"
+
+
+def parse_cross_device_hub_description(description: str) -> dict[str, Any]:
+    text = str(description or "")
+    state_obj: dict[str, Any] = {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
+    if M2_SYNC_STATE_START in text and M2_SYNC_STATE_END in text:
+        between = text.split(M2_SYNC_STATE_START, 1)[1].split(M2_SYNC_STATE_END, 1)[0]
+        code_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", between, re.S)
+        raw_json = code_match.group(1) if code_match else between.strip()
+        try:
+            loaded = json.loads(raw_json)
+            if isinstance(loaded, dict):
+                devices_raw = loaded.get("devices")
+                state_obj = {
+                    "schema": _text(loaded.get("schema"), M2_SYNC_SCHEMA),
+                    "updated_at": _text(loaded.get("updated_at")),
+                    "devices": {
+                        str(k): dict(v)
+                        for k, v in (devices_raw.items() if isinstance(devices_raw, dict) else [])
+                        if isinstance(v, dict)
+                    },
+                }
+        except (ValueError, TypeError):
+            pass
+
+    gtt_suffix = ""
+    gtt_start = text.find("<!-- GTT-LINEAR-SYNC:START -->")
+    if gtt_start >= 0:
+        gtt_suffix = text[gtt_start:].strip()
+
+    body_before_details = text.split("<details>", 1)[0] if "<details>" in text else (text[:gtt_start] if gtt_start >= 0 else text)
+    pending_by_host: dict[str, list[str]] = {}
+    in_flight_rows_by_host: dict[str, list[str]] = {}
+    completed_rows_by_host: dict[str, list[str]] = {}
+
+    sec1_match = re.search(
+        r"###\s*1\.\s*🚨[^\n]*\n(.*?)(?=\n###\s*2\.|\n###\s*3\.|\n---|\Z)",
+        body_before_details,
+        re.S,
+    )
+    if sec1_match:
+        for raw_line in sec1_match.group(1).splitlines():
+            line = raw_line.strip()
+            if not line.startswith("-"):
+                continue
+            host_m = re.search(r"\(`([^`]+)`\)\s*$", line)
+            if not host_m:
+                host_m = re.search(r"\[Host:\s*([^\]]+)\]", line)
+            if host_m:
+                host_key = host_m.group(1).strip()
+                pending_by_host.setdefault(host_key, []).append(line)
+
+    def _parse_table_rows_by_host(section_text: str) -> dict[str, list[str]]:
+        by_host: dict[str, list[str]] = {}
+        for raw_line in section_text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("|") or line.count("|") < 3:
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if not cells:
+                continue
+            first = cells[0]
+            if not first or all(set(c) <= {"-", ":", " "} for c in cells):
+                continue
+            if "设备" in first or "Host" in first:
+                continue
+            host_name = first.strip("` ").strip()
+            if host_name and host_name not in {"—", "-"}:
+                by_host.setdefault(host_name, []).append(line)
+        return by_host
+
+    sec2_match = re.search(
+        r"###\s*2\.\s*⏳[^\n]*\n(.*?)(?=\n###\s*3\.|\n---|\Z)",
+        body_before_details,
+        re.S,
+    )
+    if sec2_match:
+        in_flight_rows_by_host = _parse_table_rows_by_host(sec2_match.group(1))
+
+    sec3_match = re.search(
+        r"###\s*3\.\s*✅[^\n]*\n(.*?)(?=\n---|\n<details>|\Z)",
+        body_before_details,
+        re.S,
+    )
+    if sec3_match:
+        completed_rows_by_host = _parse_table_rows_by_host(sec3_match.group(1))
+
+    return {
+        "state": state_obj,
+        "pending_lines_by_host": pending_by_host,
+        "in_flight_rows_by_host": in_flight_rows_by_host,
+        "completed_rows_by_host": completed_rows_by_host,
+        "gtt_suffix": gtt_suffix,
+    }
+
+
+def _build_local_device_shard(
+    board_rollup: dict[str, Any],
+    *,
+    previous_shard: dict[str, Any] | None = None,
+    now_iso: str = "",
+) -> dict[str, Any]:
+    timestamp = now_iso or _cst_now_iso()
+    prev = previous_shard if isinstance(previous_shard, dict) else {}
+    slots = [dict(s) for s in (board_rollup.get("slots") or []) if isinstance(s, dict)]
+    in_flight_items: list[dict[str, Any]] = []
+    pending_decisions: list[str] = []
+    recent_completed: list[Any] = []
+    active_issues: set[str] = set()
+
+    for slot in slots:
+        status = _text(slot.get("status")).lower()
+        slot_id = _text(slot.get("slot_id") or slot.get("run_label"))
+        topic_id = _text(slot.get("topic_id") or slot.get("target_repo") or slot_id)
+        session_id = _text(slot.get("target") or slot.get("session_id") or slot_id)
+        pane_id = _text(slot.get("pane_id"))
+        issue = _text(slot.get("linear_issue"))
+        summary = _text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"), "—").replace("\n", " / ")[:280]
+        if status in {"working", "running", "blocked", "needs_input", "ready", "unknown"}:
+            in_flight_items.append({
+                "slot_id": slot_id,
+                "topic_id": topic_id,
+                "session_id": session_id,
+                "pane_id": pane_id,
+                "issue": issue,
+                "summary": summary,
+            })
+            if issue:
+                active_issues.add(issue)
+            if bool(slot.get("needs_owner_attention")) or status in {"blocked", "needs_input"}:
+                decision_key = issue or slot_id
+                if decision_key and decision_key not in pending_decisions:
+                    pending_decisions.append(decision_key)
+        elif status in {"idle", "done"}:
+            comp_entry: dict[str, Any] = {
+                "slot_id": slot_id,
+                "topic_id": topic_id,
+                "target_repo": _text(slot.get("target_repo") or topic_id),
+                "issue": issue or slot_id,
+                "summary": summary,
+            }
+            recent_completed.append(comp_entry)
+
+    # Preserve prior recent_completed items from this host that aren't currently back in-flight
+    seen_completed_keys: set[str] = {
+        _text(item.get("issue") if isinstance(item, dict) else item)
+        for item in recent_completed
+        if _text(item.get("issue") if isinstance(item, dict) else item)
+    }
+    for old_comp in (prev.get("recent_completed") or []):
+        key = _text(old_comp.get("issue") if isinstance(old_comp, dict) else old_comp)
+        if key and key not in seen_completed_keys and key not in active_issues:
+            recent_completed.append(old_comp)
+            seen_completed_keys.add(key)
+
+    return {
+        "updated_at": timestamp,
+        "in_flight": in_flight_items,
+        "pending_decisions": pending_decisions,
+        "recent_completed": recent_completed[:12],
+    }
+
+
+def render_cross_device_hub_markdown(
+    state: dict[str, Any],
+    *,
+    preserved_sections: dict[str, Any] | None = None,
+    local_hostname: str = "",
+) -> str:
+    preserved = preserved_sections or {}
+    pending_by_host: dict[str, list[str]] = dict(preserved.get("pending_lines_by_host") or {})
+    in_flight_by_host: dict[str, list[str]] = dict(preserved.get("in_flight_rows_by_host") or {})
+    completed_by_host: dict[str, list[str]] = dict(preserved.get("completed_rows_by_host") or {})
+    gtt_suffix = _text(preserved.get("gtt_suffix"))
+    devices: dict[str, dict[str, Any]] = {
+        str(k): dict(v)
+        for k, v in ((state.get("devices") or {}).items() if isinstance(state.get("devices"), dict) else [])
+        if isinstance(v, dict)
+    }
+
+    def _ordered_hosts() -> list[str]:
+        keys = list(devices.keys())
+        for extra_map in (pending_by_host, in_flight_by_host, completed_by_host):
+            for k in extra_map:
+                if k not in keys:
+                    keys.append(k)
+        return keys
+
+    hosts = _ordered_hosts()
+
+    # Section 1: Pending decisions
+    sec1_lines: list[str] = []
+    for host in hosts:
+        shard = devices.get(host, {})
+        shard_pending = shard.get("pending_decisions") or []
+        rich_lines = pending_by_host.get(host) or []
+        if host != local_hostname and rich_lines and shard_pending:
+            for line in rich_lines:
+                if line not in sec1_lines:
+                    sec1_lines.append(line)
+            for item in shard_pending:
+                item_str = _text(item.get("issue") or item.get("summary") if isinstance(item, dict) else item)
+                if item_str and not any(item_str in existing for existing in sec1_lines):
+                    sec1_lines.append(f"- [ ] {_format_linear_issue_link(item_str)} (`{host}`)")
+        else:
+            for item in shard_pending:
+                if isinstance(item, dict):
+                    issue_ref = _format_linear_issue_link(_text(item.get("issue")))
+                    desc = _text(item.get("summary") or item.get("title"))
+                    line = f"- [ ] {issue_ref}{(' · ' + desc) if desc else ''} (`{host}`)"
+                else:
+                    raw_item = _text(item)
+                    matched_rich = next((rl for rl in rich_lines if raw_item and raw_item in rl), "")
+                    if matched_rich:
+                        line = matched_rich
+                    elif re.match(r"^TIA-\d+$", raw_item, re.I):
+                        line = f"- [ ] {_format_linear_issue_link(raw_item)} · 待 Owner 拍板 (`{host}`)"
+                    else:
+                        line = f"- [ ] {raw_item} (`{host}`)"
+                if line not in sec1_lines:
+                    sec1_lines.append(line)
+    if not sec1_lines:
+        sec1_lines.append("- 暂无跨设备阻塞或待拍板事项")
+
+    # Section 2: In-Flight by Device
+    sec2_rows: list[str] = []
+    for host in hosts:
+        shard = devices.get(host, {})
+        shard_in_flight = shard.get("in_flight") or []
+        rich_rows = in_flight_by_host.get(host) or []
+        if host != local_hostname and rich_rows and shard_in_flight:
+            for r in rich_rows:
+                if r not in sec2_rows:
+                    sec2_rows.append(r)
+        else:
+            hb = _format_cst_heartbeat(_text(shard.get("updated_at") or state.get("updated_at")))
+            for item in shard_in_flight:
+                if not isinstance(item, dict):
+                    continue
+                topic = _text(item.get("topic_id") or item.get("slot_id"), "—")
+                session_id = _text(item.get("session_id") or item.get("target"), "—")
+                pane_id = _text(item.get("pane_id"))
+                session_cell = f"`{session_id}` (`{pane_id}`)" if pane_id else f"`{session_id}`"
+                issue_cell = _format_linear_issue_link(_text(item.get("issue")))
+                summary_cell = _text(item.get("summary"), "—").replace("|", "\\|").replace("\n", "&#10;")
+                item_hb = _format_cst_heartbeat(_text(item.get("updated_at") or shard.get("updated_at") or state.get("updated_at"))) or hb
+                sec2_rows.append(f"| `{host}` | `{topic}` | {session_cell} | {issue_cell} | {summary_cell} | `{item_hb}` |")
+    if not sec2_rows:
+        sec2_rows.append("| `—` | `—` | `—` | — | 当前各设备均无在途 M2 槽位 | `—` |")
+
+    # Section 3: Recent Completed Rollup
+    sec3_rows: list[str] = []
+    for host in hosts:
+        shard = devices.get(host, {})
+        shard_completed = shard.get("recent_completed") or []
+        rich_rows = completed_by_host.get(host) or []
+        if host != local_hostname and rich_rows:
+            for r in rich_rows:
+                if r not in sec3_rows:
+                    sec3_rows.append(r)
+            for item in shard_completed:
+                item_key = _text(item.get("issue") if isinstance(item, dict) else item)
+                if item_key and not any(item_key in existing for existing in sec3_rows):
+                    if isinstance(item, dict):
+                        topic = _text(item.get("topic_id") or item.get("target_repo"), "—")
+                        issue_cell = _format_linear_issue_link(item_key)
+                        summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
+                        sec3_rows.append(f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |")
+                    else:
+                        sec3_rows.append(f"| `{host}` | `—` | {_format_linear_issue_link(item_key)} | 已完成 |")
+        else:
+            for item in shard_completed:
+                if isinstance(item, dict):
+                    item_key = _text(item.get("issue") or item.get("slot_id"))
+                    matched_rich = next((rr for rr in rich_rows if item_key and item_key in rr), "")
+                    if matched_rich and item.get("summary") in {"", "—"}:
+                        row_str = matched_rich
+                    else:
+                        topic = _text(item.get("topic_id") or item.get("target_repo") or item.get("slot_id"), "—")
+                        issue_cell = _format_linear_issue_link(item_key) if re.match(r"^TIA-\d+$", item_key, re.I) else (f"`{item_key}`" if item_key else "—")
+                        pr_ref = _text(item.get("pr"))
+                        if pr_ref:
+                            issue_cell = f"{issue_cell} / {pr_ref}"
+                        summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
+                        row_str = f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |"
+                else:
+                    raw_val = _text(item)
+                    matched_rich = next((rr for rr in rich_rows if raw_val and raw_val in rr), "")
+                    row_str = matched_rich or f"| `{host}` | `—` | {_format_linear_issue_link(raw_val)} | 已完成 |"
+                if row_str not in sec3_rows:
+                    sec3_rows.append(row_str)
+    if not sec3_rows:
+        sec3_rows.append("| `—` | `—` | — | 暂无跨设备完成记录 |")
+
+    canonical_state = {
+        "schema": M2_SYNC_SCHEMA,
+        "updated_at": _text(state.get("updated_at")) or _cst_now_iso(),
+        "devices": devices,
+    }
+    state_json_str = json.dumps(canonical_state, ensure_ascii=False, indent=2)
+
+    lines = [
+        M2_SYNC_HUB_MARKER,
+        "",
+        "## 🌐 跨设备 `/personal-m2-assistant` 监督与推进总账本",
+        "",
+        "> **用途**：作为 `leedeMac-Mini`、`MacBook` 与移动端 Linear 之间的唯一跨设备 M2 监督同步中枢。任一设备执行 `--apply` / `--watch` / `--status` / `--gc` 时按设备分片（`devices.<hostname>`）自动对账更新；直接在本单评论指令即可通过 `linear-bot-bridge` 跨设备触发推进。",
+        "",
+        "### 1. 🚨 待拍板 / 跨设备待选型事项",
+        "",
+        *sec1_lines,
+        "",
+        "### 2. ⏳ 各设备在途监督（In-Flight by Device）",
+        "",
+        "| 设备 (`Host`) | M2 话题 (`Topic`) | 会话 / Pane | 关联单据 | 当前推进阶段 (`M1 Stage`) | 最近心跳 (`CST`) |",
+        "| -- | -- | -- | -- | -- | -- |",
+        *sec2_rows,
+        "",
+        "### 3. ✅ 最近跨设备已完成（Recent Completed Rollup）",
+        "",
+        "| 设备 (`Host`) | 话题 / 仓库 | 单据 / PR | 一句话结果 |",
+        "| -- | -- | -- | -- |",
+        *sec3_rows,
+        "",
+        "---",
+        "",
+        "<details>",
+        "<summary>🤖 Machine-Readable Cross-Device State (M2-SYNC-STATE v1)</summary>",
+        "",
+        M2_SYNC_STATE_START,
+        "",
+        "```json",
+        state_json_str,
+        "```",
+        "",
+        M2_SYNC_STATE_END,
+        "</details>",
+    ]
+    if gtt_suffix:
+        lines.extend(["", gtt_suffix])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _substantive_hub_signature(description: str) -> tuple[dict[str, Any], str]:
+    parsed = parse_cross_device_hub_description(description)
+    state = copy.deepcopy(parsed.get("state") or {})
+    state.pop("updated_at", None)
+    devices = state.get("devices")
+    if isinstance(devices, dict):
+        for host_shard in devices.values():
+            if isinstance(host_shard, dict):
+                host_shard.pop("updated_at", None)
+                for item in (host_shard.get("in_flight") or []):
+                    if isinstance(item, dict):
+                        item.pop("updated_at", None)
+    body = str(description or "").split("<details>", 1)[0]
+    body_norm = re.sub(r"\|\s*`\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}`\s*\|", "| `<CST>` |", body).strip()
+    return state, body_norm
+
+
+def _load_cross_device_cache(cache_path: Path | None) -> dict[str, Any]:
+    if cache_path is None or not cache_path.is_file():
+        return {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
+    try:
+        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and isinstance(loaded.get("devices"), dict):
+            return loaded
+    except (OSError, ValueError):
+        pass
+    return {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
+
+
+def _save_cross_device_cache(cache_path: Path | None, state: dict[str, Any]) -> None:
+    if cache_path is None:
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
+        temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp_path.replace(cache_path)
+    except OSError:
+        pass
+
+
+def _extract_remote_devices_summary(
+    cross_device_state: dict[str, Any] | None,
+    *,
+    local_hostname: str | None = None,
+) -> dict[str, Any]:
+    host = _resolve_local_hostname(local_hostname)
+    devices = (cross_device_state or {}).get("devices") if isinstance(cross_device_state, dict) else {}
+    if not isinstance(devices, dict):
+        devices = {}
+    remote_devices: dict[str, dict[str, Any]] = {}
+    remote_in_flight: list[dict[str, Any]] = []
+    remote_pending: list[dict[str, Any]] = []
+    for other_host, shard in devices.items():
+        if not isinstance(shard, dict) or str(other_host).casefold() == host.casefold():
+            continue
+        in_flight = [dict(x) for x in (shard.get("in_flight") or []) if isinstance(x, dict)]
+        pending = list(shard.get("pending_decisions") or [])
+        completed = list(shard.get("recent_completed") or [])
+        if in_flight or pending or completed:
+            remote_devices[str(other_host)] = {
+                "updated_at": _text(shard.get("updated_at")),
+                "in_flight": in_flight,
+                "pending_decisions": pending,
+                "recent_completed": completed,
+            }
+        for item in in_flight:
+            remote_in_flight.append({"host": str(other_host), **item})
+        if pending:
+            remote_pending.append({"host": str(other_host), "decisions": pending})
+    return {
+        "local_hostname": host,
+        "remote_devices": remote_devices,
+        "cross_device_in_flight": remote_in_flight,
+        "cross_device_pending_decisions": remote_pending,
+    }
+
+
+def _render_cross_device_rollup_lines(
+    cross_device_summary: dict[str, Any],
+) -> list[str]:
+    remote_in_flight = cross_device_summary.get("cross_device_in_flight") or []
+    remote_pending = cross_device_summary.get("cross_device_pending_decisions") or []
+    if not remote_in_flight and not remote_pending:
+        return []
+    lines = ["#### 🌐 4. 跨设备在途与待拍板（Cross-Device M2 Sync Hub · `TIA-463`）"]
+    for group in remote_pending:
+        host = _text(group.get("host"))
+        decisions = ", ".join(_text(d.get("issue") if isinstance(d, dict) else d) for d in (group.get("decisions") or []) if _text(d.get("issue") if isinstance(d, dict) else d))
+        if decisions:
+            lines.append(f"- 🚨 `[Host: {host}]` 待拍板 / 待选型: {decisions}")
+    for item in remote_in_flight:
+        host = _text(item.get("host"))
+        topic = _text(item.get("topic_id") or item.get("slot_id"), "—")
+        session_id = _text(item.get("session_id") or item.get("target"), "—")
+        pane_id = _text(item.get("pane_id"))
+        pane_str = f" (`{pane_id}`)" if pane_id else ""
+        issue = _text(item.get("issue"), "Linear 未绑定")
+        summary = _text(item.get("summary"), "—")
+        lines.append(f"- ⏳ `[Host: {host}]` `{topic}` · `{session_id}`{pane_str} · {issue} · {summary}")
+    return lines
+
+
+def _attach_cross_device_to_rollup(
+    board_rollup: dict[str, Any],
+    cross_device_state: dict[str, Any] | None = None,
+    *,
+    local_hostname: str | None = None,
+    cache_path: Path | None = None,
+) -> dict[str, Any]:
+    state = cross_device_state if isinstance(cross_device_state, dict) else _load_cross_device_cache(cache_path)
+    summary = _extract_remote_devices_summary(state, local_hostname=local_hostname)
+    board_rollup["local_hostname"] = summary["local_hostname"]
+    board_rollup["remote_devices"] = summary["remote_devices"]
+    board_rollup["cross_device_in_flight"] = summary["cross_device_in_flight"]
+    board_rollup["cross_device_pending_decisions"] = summary["cross_device_pending_decisions"]
+    extra_lines = _render_cross_device_rollup_lines(summary)
+    if extra_lines:
+        base_md = _text(board_rollup.get("unified_rollup_markdown"))
+        marker_header = "#### 🌐 4. 跨设备在途与待拍板"
+        if marker_header in base_md:
+            base_md = base_md.split(marker_header, 1)[0].rstrip()
+        board_rollup["unified_rollup_markdown"] = base_md + "\n" + "\n".join(extra_lines)
+    return board_rollup
+
+
+def sync_cross_device_hub(
+    board_rollup: dict[str, Any],
+    *,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    cache_path: Path | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+    now_iso: str = "",
+) -> dict[str, Any]:
+    issue_id = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
+    host = _resolve_local_hostname(local_hostname)
+    exec_runner = linear_runner or _run_command
+    remote_issue: dict[str, Any] = {}
+    if isinstance(hub_issue_payload, dict):
+        remote_issue = dict(hub_issue_payload.get("issue") if isinstance(hub_issue_payload.get("issue"), dict) else hub_issue_payload)
+    else:
+        try:
+            get_res = exec_runner(
+                [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "get-issue", "--id", issue_id],
+                timeout=15.0,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return {"ok": False, "updated": False, "hub_issue": issue_id, "local_hostname": host, "error": str(error)}
+        parsed_get = _parse_json_output(getattr(get_res, "stdout", "")) if getattr(get_res, "returncode", 1) == 0 else None
+        if isinstance(parsed_get, dict) and isinstance(parsed_get.get("issue"), dict):
+            remote_issue = dict(parsed_get["issue"])
+        else:
+            # Fallback: search via list-issues for [M2-Sync]
+            try:
+                list_res = exec_runner(
+                    [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "list-issues", "--team", "TIA", "--query", "M2-Sync", "--limit", "10"],
+                    timeout=15.0,
+                )
+                parsed_list = _parse_json_output(getattr(list_res, "stdout", "")) if getattr(list_res, "returncode", 1) == 0 else None
+                candidates = (parsed_list or {}).get("issues") if isinstance(parsed_list, dict) else []
+                found_id = next(
+                    (
+                        _text(item.get("identifier"))
+                        for item in (candidates or [])
+                        if isinstance(item, dict) and "[m2-sync]" in _text(item.get("title")).casefold()
+                    ),
+                    "",
+                )
+                if found_id:
+                    issue_id = found_id
+                    retry_res = exec_runner(
+                        [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "get-issue", "--id", issue_id],
+                        timeout=15.0,
+                    )
+                    parsed_retry = _parse_json_output(getattr(retry_res, "stdout", "")) if getattr(retry_res, "returncode", 1) == 0 else None
+                    if isinstance(parsed_retry, dict) and isinstance(parsed_retry.get("issue"), dict):
+                        remote_issue = dict(parsed_retry["issue"])
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if not remote_issue:
+            err_msg = _text(getattr(get_res, "stderr", "") or getattr(get_res, "stdout", ""), f"unable to fetch hub issue {issue_id}")
+            return {"ok": False, "updated": False, "hub_issue": issue_id, "local_hostname": host, "error": err_msg}
+
+    existing_description = str(remote_issue.get("description") or "")
+    parsed_hub = parse_cross_device_hub_description(existing_description)
+    merged_state = copy.deepcopy(parsed_hub["state"])
+    devices = merged_state.setdefault("devices", {})
+    timestamp = now_iso or _cst_now_iso()
+    local_shard = _build_local_device_shard(
+        board_rollup,
+        previous_shard=devices.get(host),
+        now_iso=timestamp,
+    )
+    devices[host] = local_shard
+    merged_state["schema"] = M2_SYNC_SCHEMA
+    merged_state["updated_at"] = timestamp
+
+    rendered_description = render_cross_device_hub_markdown(
+        merged_state,
+        preserved_sections=parsed_hub,
+        local_hostname=host,
+    )
+    _save_cross_device_cache(cache_path, merged_state)
+
+    old_sig = _substantive_hub_signature(existing_description)
+    new_sig = _substantive_hub_signature(rendered_description)
+    if existing_description.strip() and old_sig == new_sig:
+        return {
+            "ok": True,
+            "updated": False,
+            "skipped_reason": "no_substantive_change",
+            "hub_issue": _text(remote_issue.get("identifier"), issue_id),
+            "local_hostname": host,
+            "state": merged_state,
+            "description": existing_description,
+        }
+
+    if hub_issue_payload is not None and linear_runner is None:
+        return {
+            "ok": True,
+            "updated": True,
+            "simulated": True,
+            "hub_issue": _text(remote_issue.get("identifier"), issue_id),
+            "local_hostname": host,
+            "state": merged_state,
+            "description": rendered_description,
+        }
+
+    try:
+        upd_res = exec_runner(
+            [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "update-issue", "--id", _text(remote_issue.get("identifier"), issue_id), "--description", rendered_description],
+            timeout=20.0,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {
+            "ok": False,
+            "updated": False,
+            "hub_issue": _text(remote_issue.get("identifier"), issue_id),
+            "local_hostname": host,
+            "state": merged_state,
+            "error": str(error),
+        }
+    if getattr(upd_res, "returncode", 1) != 0:
+        return {
+            "ok": False,
+            "updated": False,
+            "hub_issue": _text(remote_issue.get("identifier"), issue_id),
+            "local_hostname": host,
+            "state": merged_state,
+            "error": _text(getattr(upd_res, "stderr", "") or getattr(upd_res, "stdout", ""), "update-issue failed"),
+        }
+    return {
+        "ok": True,
+        "updated": True,
+        "hub_issue": _text(remote_issue.get("identifier"), issue_id),
+        "local_hostname": host,
+        "state": merged_state,
+        "description": rendered_description,
+    }
+
+
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", sync_linear: bool = False, no_sync_linear: bool = False, hub_issue: str | None = None, local_hostname: str | None = None, linear_runner: CommandRunner | None = None, hub_issue_payload: dict[str, Any] | None = None, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -2443,6 +3236,33 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
 
     board_state = _with_locked_supervision_state(resolved_state_path, _register_dispatched_slots, reset=reset_state)
     board_rollup = _compute_board_rollup(board_state)
+    cache_path = _resolve_cross_device_cache_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file)
+    should_sync, sync_reason = _should_trigger_linear_sync(
+        sync_linear=sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=True,
+        state_path=resolved_state_path,
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    linear_sync_result: dict[str, Any]
+    if should_sync:
+        linear_sync_result = sync_cross_device_hub(
+            board_rollup,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+        )
+    else:
+        linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+    _attach_cross_device_to_rollup(
+        board_rollup,
+        linear_sync_result.get("state") if isinstance(linear_sync_result.get("state"), dict) else None,
+        local_hostname=local_hostname,
+        cache_path=cache_path,
+    )
 
     handoff_watch_arg = f" --handoff-root {shlex.quote(str(handoff_root))}" if handoff_root else ""
     watchdog_tasks: list[dict[str, Any]] = []
@@ -2503,6 +3323,11 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         "unified_rollup_markdown": board_rollup["unified_rollup_markdown"],
         "in_flight_details": board_rollup["in_flight_details"],
         "wave_dependency_chain": board_rollup["wave_dependency_chain"],
+        "local_hostname": board_rollup.get("local_hostname"),
+        "remote_devices": board_rollup.get("remote_devices", {}),
+        "cross_device_in_flight": board_rollup.get("cross_device_in_flight", []),
+        "cross_device_pending_decisions": board_rollup.get("cross_device_pending_decisions", []),
+        "linear_sync": linear_sync_result,
         "board_rollup": board_rollup,
         "watchdog_cmd": watch_cmd,
         "watchdog_copilot_cli": {
@@ -3167,6 +3992,12 @@ def watch_dispatched_m2(
     herdr_bin: str | None = None,
     dsh_state_url: str = "",
     dsh_token: str = "",
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
     runner: CommandRunner = _run_command,
     fetcher: Callable[..., Any] = _fetch_json,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -3627,6 +4458,32 @@ def watch_dispatched_m2(
         updated_state,
         just_settled_slots=[t["slot_id"] for t in target_reports if t["status"] in {"idle", "done"} and not t.get("superseded_by_run_seq")],
     )
+    cache_path = _resolve_cross_device_cache_path(state_file, apply_receipt=apply_receipt)
+    should_sync, sync_reason = _should_trigger_linear_sync(
+        sync_linear=sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=True,
+        state_path=resolved_state_path,
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    if should_sync:
+        linear_sync_result = sync_cross_device_hub(
+            board_rollup,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+        )
+    else:
+        linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+    _attach_cross_device_to_rollup(
+        board_rollup,
+        linear_sync_result.get("state") if isinstance(linear_sync_result.get("state"), dict) else None,
+        local_hostname=local_hostname,
+        cache_path=cache_path,
+    )
 
     any_missing = any(t["status"] == "missing" for t in target_reports)
     any_owner_attention = any(t["needs_owner_attention"] for t in target_reports)
@@ -3684,6 +4541,11 @@ def watch_dispatched_m2(
         "running_labels": board_rollup["running_labels"],
         "blocked_labels": board_rollup["blocked_labels"],
         "all_board_settled": board_rollup["all_board_settled"],
+        "local_hostname": board_rollup.get("local_hostname"),
+        "remote_devices": board_rollup.get("remote_devices", {}),
+        "cross_device_in_flight": board_rollup.get("cross_device_in_flight", []),
+        "cross_device_pending_decisions": board_rollup.get("cross_device_pending_decisions", []),
+        "linear_sync": linear_sync_result,
         "board_rollup": board_rollup,
         "targets": target_reports,
         "summary_markdown": "\n".join(summary_lines),
@@ -3695,6 +4557,11 @@ def supervision_status(
     apply_receipt_file: str | Path | None = None, handoff_root: str | Path | None = None,
     agent_records: list[dict[str, Any]] | None = None, herdr_bin: str | None = None,
     runner: CommandRunner = _run_command, discover: bool = True,
+    sync_linear: bool = False, no_sync_linear: bool = False,
+    hub_issue: str | None = None, local_hostname: str | None = None,
+    cross_device_state: dict[str, Any] | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state_path = _resolve_supervision_state_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file, persist_by_default=True)
     binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
@@ -3707,17 +4574,53 @@ def supervision_status(
 
     state = _with_locked_supervision_state(state_path, refresh)
     board = _compute_board_rollup(state)
-    return {"ok": True, "supervision_state_path": str(state_path), **board, "board_rollup": board, "summary_markdown": board["unified_rollup_markdown"]}
+    cache_path = _resolve_cross_device_cache_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file)
+    should_sync, sync_reason = _should_trigger_linear_sync(
+        sync_linear=sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=False,
+        state_path=state_path,
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    linear_sync_result: dict[str, Any] | None = None
+    if should_sync:
+        linear_sync_result = sync_cross_device_hub(
+            board,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+        )
+        if cross_device_state is None and isinstance(linear_sync_result.get("state"), dict):
+            cross_device_state = linear_sync_result["state"]
+    elif sync_linear or no_sync_linear:
+        linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+    _attach_cross_device_to_rollup(
+        board,
+        cross_device_state,
+        local_hostname=local_hostname,
+        cache_path=cache_path,
+    )
+    out: dict[str, Any] = {"ok": True, "supervision_state_path": str(state_path), **board, "board_rollup": board, "summary_markdown": board["unified_rollup_markdown"]}
+    if linear_sync_result is not None:
+        out["linear_sync"] = linear_sync_result
+    return out
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plan and owner-gated dispatch for a unified M2 ingress")
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--plan", action="store_true", help="build and print a dispatch preview")
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
     mode.add_argument("--gc", action="store_true", help="preview or owner-approved safe global cleanup")
+    parser.add_argument("--sync-linear", action="store_true", help="bidirectional per-device shard sync with Linear cross-device M2 hub (TIA-463)")
+    parser.add_argument("--no-sync-linear", action="store_true", help="explicitly disable automatic Linear cross-device hub sync")
+    parser.add_argument("--hub-issue", default=os.environ.get("M2_SYNC_HUB_ISSUE", DEFAULT_M2_SYNC_HUB_ISSUE), help="Linear cross-device M2 sync hub issue identifier (default: TIA-463)")
+    parser.add_argument("--local-hostname", default=os.environ.get("M2_LOCAL_HOSTNAME", ""), help="override local device hostname shard key")
     parser.add_argument("--handoff-root", help="Goal ledger root (default: M2_HANDOFF_ROOT or ~/Development/handoff)")
     parser.add_argument("--message")
     parser.add_argument("--message-file")
@@ -3769,7 +4672,13 @@ def _message(args: argparse.Namespace) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if not (args.plan or args.apply or args.watch or args.status or args.gc):
+        if args.sync_linear:
+            args.status = True
+        else:
+            parser.error("one of the arguments --plan --apply --watch --status --gc --sync-linear is required")
     try:
         if args.plan:
             payload = _json_value(args.sessions_json) if args.sessions_json else None
@@ -3792,6 +4701,11 @@ def main(argv: list[str] | None = None) -> int:
                 mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None,
                 transport=args.transport,
                 preview_md_file=args.preview_md_file,
+                state_file=args.state_file,
+                sync_linear=args.sync_linear,
+                no_sync_linear=args.no_sync_linear,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
             )
             raw_gc_records = _merge_herdr_records(_records(herdr_pane_payload), _records(herdr_agent_payload))
             if raw_gc_records:
@@ -3813,12 +4727,23 @@ def main(argv: list[str] | None = None) -> int:
                 ws = _text(rec.get("workspace_id") or rec.get("workspaceId"))
                 if ws and labels.get(ws):
                     rec["workspace_label"] = labels[ws]
-            output = run_gc(records, approve=args.approve, state_file=args.state_file, handoff_root=args.handoff_root)
+            output = run_gc(
+                records,
+                approve=args.approve,
+                state_file=args.state_file,
+                handoff_root=args.handoff_root,
+                sync_linear=args.sync_linear,
+                no_sync_linear=args.no_sync_linear,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
+            )
         elif args.status:
             result = supervision_status(
                 state_file=args.state_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file,
                 handoff_root=args.handoff_root, herdr_bin=args.herdr_bin, discover=not args.no_herdr,
                 agent_records=_records(_json_value(args.herdr_agent_json or args.herdr_json)) if (args.herdr_agent_json or args.herdr_json) else None,
+                sync_linear=args.sync_linear, no_sync_linear=args.no_sync_linear,
+                hub_issue=args.hub_issue, local_hostname=args.local_hostname or None,
             )
             output = result if args.json else result["unified_rollup_markdown"]
         elif args.apply:
@@ -3827,7 +4752,25 @@ def main(argv: list[str] | None = None) -> int:
             plan = _json_value(args.plan_file)
             if not isinstance(plan, dict):
                 raise RouterError("plan file must contain a JSON object")
-            output = apply_plan(plan, approve=args.approve, register_new_domains=args.register_new_domains, cleanup_duplicates=args.cleanup_duplicates, replace_stale_m2=args.replace_stale_m2, domain_map_file=args.domain_map_file, plan_file=args.plan_file, apply_receipt_file=args.apply_receipt_file, state_file=args.state_file, reset_state=args.reset_state, handoff_root=args.handoff_root, agent_records=_records(_json_value(args.herdr_agent_json)) if args.herdr_agent_json else None, transport=args.transport)
+            output = apply_plan(
+                plan,
+                approve=args.approve,
+                register_new_domains=args.register_new_domains,
+                cleanup_duplicates=args.cleanup_duplicates,
+                replace_stale_m2=args.replace_stale_m2,
+                domain_map_file=args.domain_map_file,
+                plan_file=args.plan_file,
+                apply_receipt_file=args.apply_receipt_file,
+                state_file=args.state_file,
+                reset_state=args.reset_state,
+                handoff_root=args.handoff_root,
+                agent_records=_records(_json_value(args.herdr_agent_json)) if args.herdr_agent_json else None,
+                transport=args.transport,
+                sync_linear=args.sync_linear,
+                no_sync_linear=args.no_sync_linear,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
+            )
         else:
             if not args.plan_file:
                 raise RouterError("--watch requires --plan-file")
@@ -3849,6 +4792,10 @@ def main(argv: list[str] | None = None) -> int:
                 herdr_bin=args.herdr_bin,
                 dsh_state_url=args.dsh_state_url,
                 dsh_token=args.dsh_token,
+                sync_linear=args.sync_linear,
+                no_sync_linear=args.no_sync_linear,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
             )
             output = watch_result if args.json else watch_result["summary_markdown"]
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)

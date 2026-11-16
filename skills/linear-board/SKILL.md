@@ -12,7 +12,7 @@ description: 管理 Linear TIA Idea Inbox 与 Global Goal Status Board；运行�
 - 遵守 `1 Goal = 1 Issue`（TIA 为团队前缀），description 维护 Task checklist、R8 状态与阻塞证据。
 - `[Root]`、Work Business/Bing/Workplace 与完整祖先链按路由规则处理；不要把 API key 写入仓库。
 - OAuth native Delegate/mention 需要管理员明确授予 `app:assignable` 与 `app:mentionable`；文本 `@bot` 不等于 native live handoff。
-- Daily Learn、Daily Brief，以及已有 Bot 参与的个人 TIA issue：Owner 顶层评论可直接触发，`@bot` 可省略；普通 issue 仍需显式 `@bot`/Bot thread。
+- Daily Learn、Daily Brief、跨设备 M2 同步中枢 `TIA-463`（`[M2-Sync]` / `<!-- GTT-M2-SYNC-HUB:v1 -->`），以及已有 Bot 参与的个人 TIA issue：Owner 评论可直接触发，`@bot` 可省略；普通 issue 仍需显式 `@bot`/Bot thread。
 - Daily Brief 只在验证来源后发布；dry-run 不刷新、不写入、不派发。Teams timeline 必须经过显式 confirmation gate。
 
 ## When-to-Read & CLI 路由

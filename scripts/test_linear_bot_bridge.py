@@ -193,6 +193,32 @@ class DailyBriefSelectionTests(unittest.TestCase):
             pending = bridge._new_turn(learning, bridge.State(Path(tmp) / "state.json"))
         self.assertEqual(pending["slugs"], ["first-topic"])
 
+    def test_m2_sync_hub_triggers_without_mention_and_keeps_directive_compact(self):
+        hub_issue = personal_issue(comments=[owner_comment("继续推进 VoxPocket Track 2 的 4 套 HTML Demo", "hub-c1")])
+        hub_issue["identifier"] = "TIA-463"
+        hub_issue["title"] = "[M2-Sync] 跨设备 Personal-M2-Assistant 监督与推进总账本"
+        hub_issue["description"] = (
+            "<!-- GTT-M2-SYNC-HUB:v1 -->\n"
+            "### 3. ✅ 最近跨设备已完成\n"
+            "| `leedeMac-Mini` | `AIDash` | `TIA-432` | 历史已完成任务不应作为新指令重发 |\n"
+            "<!-- M2-SYNC-STATE-START -->\n"
+            '```json\n{"schema": "m2-cross-device-sync/v1", "devices": {"leedeMac-Mini": {"in_flight": [{"topic_id": "voxpocket", "issue": "TIA-420"}], "pending_decisions": ["TIA-457"]}}}\n```\n'
+            "<!-- M2-SYNC-STATE-END -->\n"
+        )
+        self.assertTrue(bridge.is_m2_sync_hub(hub_issue))
+        with tempfile.TemporaryDirectory() as tmp:
+            client, state, runtime = FakeClient(hub_issue), bridge.State(Path(tmp) / "state.json"), Runtime()
+            pending = bridge._new_turn(hub_issue, state)
+            self.assertIsNotNone(pending)
+            self.assertEqual(pending["directive"], "继续推进 VoxPocket Track 2 的 4 套 HTML Demo")
+            with mock.patch.object(bridge, "_run", side_effect=runtime.run):
+                bridge._advance_turn(client, state, hub_issue, pending)
+            plan_call = next(call for call in runtime.calls if "--plan" in call)
+            payload = plan_call[plan_call.index("--message") + 1]
+            self.assertIn("继续推进 VoxPocket Track 2 的 4 套 HTML Demo", payload)
+            self.assertIn("[Host: leedeMac-Mini]", payload)
+            self.assertNotIn("历史已完成任务不应作为新指令重发", payload)
+
     def test_all_and_invalid_selection_never_fall_back_to_whole_issue(self):
         issue = self.brief()
         selected = bridge.brief_selection(issue, owner_comment("@bot 全部"))
