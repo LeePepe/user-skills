@@ -2511,6 +2511,66 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("⏸️ `info-teams`", remote_issue["description"])
         self.assertIn("⏸️ `info-email`", remote_issue["description"])
 
+    def test_watch_unblocks_real_copilot_cli_tui_boxed_path_prompts_and_rejects_unsafe_boxed_paths(self):
+        boxed_aidash = (
+            "╭──────────────────────────────────────────────────────╮\n"
+            "│ Allow path access                                    │\n"
+            "│ ──────────────────────────────────────────────────── │\n"
+            "│ ╭──────────────────────────────────────────────────╮ │\n"
+            "│ │ ~/Development/AIDash/                            │ │\n"
+            "│ │ ~/Development/AIDash/aidata/                     │ │\n"
+            "│ ╰──────────────────────────────────────────────────╯ │\n"
+            "│ Do you want to allow this?                           │\n"
+            "│ ❯ 1. Yes                                             │\n"
+            "│   2. Yes, and remember these paths for this session  │\n"
+            "│   3. No (Esc)                                        │\n"
+            "╰──────────────────────────────────────────────────────╯\n"
+        )
+        sent = []
+        res_ok = self.router._classify_and_unblock_dialog(
+            boxed_aidash,
+            target_ref="m2-aidash-r1",
+            target_cwd="~/Development/AIDash",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(res_ok["action"], "auto_unblocked")
+        self.assertEqual(res_ok["kind"], "allow_path_access")
+        self.assertEqual(res_ok["keys"], ["down", "enter"])
+
+        boxed_read_dir = (
+            "╭──────────────────────────────────────────────────────╮\n"
+            "│ Read access covers this directory and its descendants: │\n"
+            "│   ~/Development/AIDash/aidata                        │\n"
+            "│ Do you want to allow this?                           │\n"
+            "│ ❯ 1. Yes                                             │\n"
+            "│   2. Yes, and remember this path for this session    │\n"
+            "╰──────────────────────────────────────────────────────╯\n"
+        )
+        res_read = self.router._classify_and_unblock_dialog(
+            boxed_read_dir,
+            target_ref="m2-pew-r1",
+            target_cwd="~/Development",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(res_read["action"], "auto_unblocked")
+        self.assertEqual(res_read["keys"], ["down", "enter"])
+
+        boxed_unsafe = boxed_aidash.replace("~/Development/AIDash/aidata/", "/etc/passwd")
+        res_bad = self.router._classify_and_unblock_dialog(
+            boxed_unsafe,
+            target_ref="m2-aidash-r1",
+            target_cwd="~/Development/AIDash",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        self.assertEqual(res_bad["action"], "owner_decision")
+        self.assertEqual(res_bad["blocked_reason"], "owner_decision_required")
+
 
 if __name__ == "__main__":
     unittest.main()

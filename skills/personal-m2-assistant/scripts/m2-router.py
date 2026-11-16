@@ -65,6 +65,11 @@ SAFE_BASELINE_ROOTS = (
     "~/.copilot",
     "~/.agents",
     "~/.codex",
+    "~/.claude",
+    "~/.local",
+    "~/.config/pew",
+    "~/Library/Application Support/AIDash",
+    "/opt/homebrew/lib/node_modules/@nocoo/pew",
 )
 WHITELISTED_CMD_BINARIES = {
     "gh",
@@ -3781,6 +3786,40 @@ def _extract_single_dialog_path(frame_text: str) -> str | None:
     return single
 
 
+def _strip_tui_box_chrome(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in _text(text).splitlines():
+        stripped = re.sub(r"^[\s│┃╭╮╰╯─━┌┐└┘├┤┬┴┼]+|[\s│┃╭╮╰╯─━┌┐└┘├┤┬┴┼]+$", "", raw_line)
+        if stripped:
+            cleaned_lines.append(stripped)
+    return "\n".join(cleaned_lines)
+
+
+def _extract_dialog_paths(frame_text: str) -> list[str]:
+    unboxed = _strip_tui_box_chrome(frame_text)
+    single = _extract_single_dialog_path(unboxed)
+    if single is not None:
+        return [single]
+    # If inline header pattern had multiple paths on one line, do not fall through
+    for line in unboxed.splitlines():
+        if re.search(r"(?:Allow\s+(?:path|directory)\s+access\s+to|access\s+to)\s+", line, re.I):
+            return []
+    paths: list[str] = []
+    for raw_line in unboxed.splitlines():
+        line = raw_line.strip()
+        if not line or re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", line):
+            continue
+        if not (line.startswith("/") or line.startswith("~/") or line == "~"):
+            continue
+        if re.search(r"\s+(?:~|/)[A-Za-z0-9_.-]", line):
+            return []
+        if any(ch in line for ch in ("*", "?", "[", "]", "$", "`", ";", "|", "&", "<", ">", '"', "'")):
+            return []
+        if line not in paths:
+            paths.append(line)
+    return paths
+
+
 _READONLY_GIT_SUBCOMMANDS = {
     "status",
     "diff",
@@ -3983,7 +4022,8 @@ def _is_whitelisted_command(cmd_text: str) -> bool:
 
 
 _PROMPT_HEADER_RE = re.compile(
-    r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\bCurate\s+Memory\b|"
+    r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|Read\s+access\s+covers\s+this\s+directory|"
+    r"\bCurate\s+Memory\b|curate\s+this\s+memory|"
     r"\bstore_memory\b|\bvote_memory\b|Confirm\s+folder\s+trust|"
     r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|\bCMD_CONFIRM\b|"
     r"Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
@@ -4084,7 +4124,8 @@ def _classify_and_unblock_dialog(
     if _text(live_status).lower() not in {"blocked", "needs_input"}:
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
 
-    active_frame = _extract_active_bottom_frame(text)
+    raw_active_frame = _extract_active_bottom_frame(text)
+    active_frame = _strip_tui_box_chrome(raw_active_frame)
     if not active_frame:
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
 
@@ -4110,7 +4151,11 @@ def _classify_and_unblock_dialog(
         )
     )
     is_path_prompt = bool(
-        re.search(r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|\baccess\s+to\b)", active_frame, re.I)
+        re.search(
+            r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|Read\s+access\s+covers\s+this\s+directory|\baccess\s+to\b)",
+            active_frame,
+            re.I,
+        )
     )
     is_folder_trust_prompt = bool(
         re.search(
@@ -4120,7 +4165,7 @@ def _classify_and_unblock_dialog(
         )
     )
     is_curate_memory_prompt = bool(
-        re.search(r"(?:Curate\s+Memory|\bstore_memory\b|\bvote_memory\b)", active_frame, re.I)
+        re.search(r"(?:Curate\s+Memory|curate\s+this\s+memory|\bstore_memory\b|\bvote_memory\b)", active_frame, re.I)
         and re.search(r"(?:\?|[>❯●◉▶]|\bAllow\b|\bConfirm\b|\bYes\b|1[.)])", active_frame, re.I)
     )
 
@@ -4130,7 +4175,9 @@ def _classify_and_unblock_dialog(
         for ln in active_frame.splitlines()
         if ln.strip().endswith("?")
         and not re.search(
-            r"(?:Allow\s+(?:path|directory)\s+access|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
+            r"(?:Allow\s+(?:path|directory)\s+access|Read\s+access\s+covers\s+this\s+directory|"
+            r"Do\s+you\s+want\s+to\s+allow\s+this|Allow\s+Copilot\s+to\s+curate\s+this\s+memory|"
+            r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
             r"Confirm\s+folder\s+trust|Trust\s+folder|Curate\s+Memory|store_memory|vote_memory|"
             r"CMD_CONFIRM|Do\s+you\s+want\s+to\s+run|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)",
             ln,
@@ -4164,10 +4211,15 @@ def _classify_and_unblock_dialog(
                 "auto_unblock_enabled": auto_unblock_enabled,
             }
     elif is_path_prompt:
-        single_path = _extract_single_dialog_path(active_frame)
-        if single_path is not None and _path_is_under_safe_roots(single_path, safe_roots):
+        dialog_paths = _extract_dialog_paths(raw_active_frame)
+        if dialog_paths and all(_path_is_under_safe_roots(p, safe_roots) for p in dialog_paths):
             kind = "allow_path_access"
-            keys = ["enter"]
+            has_tui_remember = (
+                any(ch in raw_active_frame for ch in ("│", "╭", "╰"))
+                and bool(re.search(r"(?m)^[>❯]\s*1[.)]\s*Yes\b", active_frame, re.I))
+                and bool(re.search(r"(?m)^2[.)]\s*Yes,\s*and\s+remember\b", active_frame, re.I))
+            )
+            keys = ["down", "enter"] if has_tui_remember else ["enter"]
         else:
             return {
                 "action": "owner_decision",
