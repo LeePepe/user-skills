@@ -700,7 +700,7 @@ def _advance_turn(client: Any, state: State, issue: dict[str, Any], pending: dic
             in_progress = next((s["id"] for s in team.get("states", {}).get("nodes", [])
                                 if str(s.get("name", "")).casefold() == "in progress"), None)
             if not in_progress: raise RuntimeError("TIA In Progress state unavailable")
-            client.update_issue(issue_id, state_id=in_progress)
+            client.update_issue(issue_id, state_id=in_progress, clear_assignee=True)
             pending["in_progress"] = True
         pending["phase"] = "dispatch"; state.save()
     if pending["phase"] in {"dispatching", "ambiguous"}:
@@ -724,7 +724,12 @@ def _advance_turn(client: Any, state: State, issue: dict[str, Any], pending: dic
                 issue_id, f"@ltp19941128\n\n{label}{output}\n{pending['result_marker']}", parent_id=pending["root_id"])
         pending["phase"] = "owner-reassign"; state.save()
     if pending["phase"] == "owner-reassign":
-        client.update_issue(issue_id, assignee_id=OWNER_USER_ID, clear_delegate=True)
+        is_container = is_m2_sync_hub(issue) or bool(re.match(r"^\s*\[(?:epic|root)\]", str(issue.get("title") or ""), re.I))
+        keep_owner = not is_container and (pending.get("result_kind") == "owner-decision" or is_daily_brief(issue))
+        if keep_owner:
+            client.update_issue(issue_id, assignee_id=OWNER_USER_ID, clear_delegate=True)
+        else:
+            client.update_issue(issue_id, clear_assignee=True, clear_delegate=True)
         pending["phase"] = "complete"
         state.data["issue_assignments"][issue_id] = pending["assignment_key"]
         state.data["processed_comment_ids"] = list(dict.fromkeys(state.data["processed_comment_ids"] + pending["trigger_ids"]))
