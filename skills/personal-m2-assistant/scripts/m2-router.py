@@ -2009,6 +2009,8 @@ def _with_locked_supervision_state(
                             "slots": [dict(s) for s in (loaded.get("slots") or []) if isinstance(s, dict)],
                             "events": [dict(e) for e in (loaded.get("events") or []) if isinstance(e, dict)],
                         }
+                        if "backlog" in loaded and isinstance(loaded.get("backlog"), list):
+                            current["backlog"] = [dict(b) for b in loaded["backlog"] if isinstance(b, dict)]
                 except (OSError, ValueError):
                     pass
             updated = mutator(current)
@@ -2101,6 +2103,8 @@ def _slot_metadata(source: dict[str, Any]) -> dict[str, Any]:
 
 
 def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | None = None, scan_default: bool = False) -> dict[str, Any]:
+    if slot.get("retained") and slot.get("m1_progress") and not slot.get("handoff_dir"):
+        return slot
     text = "\n".join(_text(slot.get(key)) for key in (
         "target", "sub_prompt", "terminal_title", "visible_summary", "rag_context_hint", "goal_id", "linear_issue",
     ))
@@ -2219,7 +2223,12 @@ def _discover_and_enrich_global_m2_slots(
             while slot_id in existing_ids:
                 slot_id += "-live"
             slot = {"slot_id": slot_id, "run_label": name or pane, "run_seq": 1, "plan_id": "discovered", "wave_order": int(live.get("wave_order") or 1)}
-        slot.update({"target": name or slot.get("target", ""), "pane_id": pane or slot.get("pane_id", ""), "target_repo": _repo_from(live) or slot.get("target_repo", ""), "topic_id": live.get("topic_id") or slot.get("topic_id", "")})
+        slot.update({
+            "target": slot.get("target") if (slot.get("retained") and slot.get("target")) else (name or slot.get("target", "")),
+            "pane_id": pane or slot.get("pane_id", ""),
+            "target_repo": slot.get("target_repo") if (slot.get("retained") and slot.get("target_repo")) else (_repo_from(live) or slot.get("target_repo", "")),
+            "topic_id": live.get("topic_id") or slot.get("topic_id", ""),
+        })
         slot.update(_slot_metadata(live))
         slot["terminal_title"] = _text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or slot.get("terminal_title"))
         ref = name or pane
