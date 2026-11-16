@@ -1571,8 +1571,19 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
             self.assertIn('data-group-filter="all" aria-pressed="false"', portal)
             self.assertGreaterEqual(portal.count('hidden aria-hidden="true"'), 10)
             hub = (blog / 'demos/index.html').read_text(encoding='utf-8')
-            for token in ('data-demo-goal="hub-contract"', 'data-copy-goal="hub-contract"', 'copy-all-demos-summary', 'localStorage', 'NOTES:', 'aidash-cards-r2:', "parts[0] === 'selection'", "parts[0] === 'star'", "parts[0] === 'note'"):
+            for token in (
+                'data-demo-goal="hub-contract"', 'data-copy-goal="hub-contract"', 'copy-all-demos-summary',
+                'localStorage', 'NOTES:', 'aidash-cards-r2:', "parts[0] === 'selection'", "parts[0] === 'star'", "parts[0] === 'note'",
+                '--paper: #f5f5f0', '--accent: #31694b', '--paper: #171b18', '--accent: #a2cbae',
+                'lp<span>.</span>', 'An engineering notebook', '<select id="theme">',
+            ):
                 self.assertIn(token, hub)
+            for token in (
+                '--paper: #f5f5f0', '--accent: #31694b', '--paper: #171b18', '--accent: #a2cbae',
+                'lp<span>.</span>', 'An engineering notebook', '<select id="theme">',
+            ):
+                self.assertIn(token, portal)
+                self.assertIn(token, round_index.read_text(encoding='utf-8'))
             cleanup = run('cleanup-demo', '--goal', 'hub-contract', '--handoff-root', str(Path(directory) / 'Development/handoff'), '--blog-repo', str(blog), env=env)
             self.assertEqual(cleanup.returncode, 0, cleanup.stderr)
             self.assertNotIn('hub-contract', (blog / 'demos/index.html').read_text(encoding='utf-8'))

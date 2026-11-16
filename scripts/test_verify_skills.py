@@ -3742,7 +3742,11 @@ class SkillContractV2Tests(unittest.TestCase):
     def test_gallery_portal_gate_and_hub_contract(self) -> None:
         chooser = SKILLS_DIR / 'design-studio/scripts/gallery_chooser.py'
         source = chooser.read_text(encoding='utf-8')
-        for token in ('gallery-breadcrumbs', 'selection-telemetry', 'render_demos_hub', 'data-copy-goal', 'aidash-cards-r2:'):
+        for token in (
+            'gallery-breadcrumbs', 'selection-telemetry', 'render_demos_hub', 'data-copy-goal', 'aidash-cards-r2:',
+            '--paper: #f5f5f0', '--accent: #31694b', '--paper: #171b18', '--accent: #a2cbae',
+            'lp<span>.</span>', 'An engineering notebook', '<select id="theme">',
+        ):
             self.assertIn(token, source)
         css = (SKILLS_DIR / 'design-studio/assets/tenfold-gallery.css').read_text(encoding='utf-8')
         self.assertIn('.variant-card[hidden]', css); self.assertIn('min-height:44px', css); self.assertIn('.variant-summary', css)
@@ -3757,6 +3761,84 @@ class SkillContractV2Tests(unittest.TestCase):
             self.assertTrue(any('multi-category' in error for error in errors))
             rendered = evidence.rendered_gallery_errors(root)
             self.assertTrue(any('variant-summary' in error for error in rendered))
+
+    def test_herdr_dispatch_sets_leepepe_bot_git_author_and_skips_enterprise(self) -> None:
+        helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            bin_dir = tmp_dir / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            mock_herdr = bin_dir / "herdr"
+            mock_herdr.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['pane', 'split']:\n"
+                "    print(json.dumps({'result': {'pane': {'pane_id': 'p10'}}}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] == ['agent', 'get']:\n"
+                "    print(json.dumps({'interactive_ready': True, 'agent_status': 'working'}))\n"
+                "    sys.exit(0)\n"
+                "if args[:2] in (['agent', 'start'], ['agent', 'prompt']):\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            mock_herdr.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+                "MOCK_HERDR_LOG": str(tmp_dir / "herdr.jsonl"),
+                "HERDR_DISPATCH_SKIP_TRUST": "1",
+            }
+            personal_repo = tmp_dir / "personal-repo"
+            personal_repo.mkdir()
+            subprocess.run(["git", "-C", str(personal_repo), "init"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(personal_repo), "remote", "add", "origin", "https://github.com/LeePepe/demo.git"],
+                check=True,
+                capture_output=True,
+            )
+            res = subprocess.run(
+                [str(helper), "--name", "tia-490-writer-r1", "--kind", "copilot", "--cwd", str(personal_repo), "--prompt", "test"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            name = subprocess.run(["git", "-C", str(personal_repo), "config", "--local", "--get", "user.name"], capture_output=True, text=True)
+            email = subprocess.run(["git", "-C", str(personal_repo), "config", "--local", "--get", "user.email"], capture_output=True, text=True)
+            self.assertEqual(name.stdout.strip(), "leepepe-agent[bot]")
+            self.assertEqual(email.stdout.strip(), "333217946+leepepe-agent[bot]@users.noreply.github.com")
+
+            enterprise_repo = tmp_dir / "enterprise-repo"
+            enterprise_repo.mkdir()
+            subprocess.run(["git", "-C", str(enterprise_repo), "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(enterprise_repo), "config", "user.name", "Enterprise User"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(enterprise_repo), "config", "user.email", "ent@microsoft.com"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(enterprise_repo), "remote", "add", "origin", "https://github.com/microsoft/internal.git"],
+                check=True,
+                capture_output=True,
+            )
+            res_ent = subprocess.run(
+                [str(helper), "--name", "tia-490-ent-r1", "--kind", "copilot", "--cwd", str(enterprise_repo), "--prompt", "test"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_ent.returncode, 0, res_ent.stderr)
+            ent_name = subprocess.run(["git", "-C", str(enterprise_repo), "config", "--local", "--get", "user.name"], capture_output=True, text=True)
+            ent_email = subprocess.run(["git", "-C", str(enterprise_repo), "config", "--local", "--get", "user.email"], capture_output=True, text=True)
+            self.assertEqual(ent_name.stdout.strip(), "Enterprise User")
+            self.assertEqual(ent_email.stdout.strip(), "ent@microsoft.com")
 
     def test_navigation_gallery_rejects_meta_copy_and_state_selectors(self) -> None:
         evidence_path = SKILLS_DIR / "my-designer" / "scripts" / "design_evidence.py"
