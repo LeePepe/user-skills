@@ -53,6 +53,7 @@ NEW_DOMAIN_CANDIDATE = "NEW_DOMAIN_CANDIDATE"
 MAGPIE_BASE_URL = "http://127.0.0.1:3425"
 MAGPIE_DEFAULT_MODEL = "group/steering"
 DEFAULT_DOMAIN_MAP_PATH = Path(__file__).resolve().parents[1] / "references" / "m2-domain-map.json"
+DEFAULT_HOOK_SCRIPT_PATH = Path(__file__).resolve().parent / "m2-board-hook.sh"
 HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
 HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
 SAFE_BASELINE_ROOTS = (
@@ -162,6 +163,362 @@ def _session_id(value: dict[str, Any]) -> str:
     return ""
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+EVENTS_TAIL_MAX_BYTES = 64 * 1024
+RECENT_SESSION_MAX_TURNS = 3
+
+
+def _agent_session_id(value: dict[str, Any]) -> str:
+    raw_as = value.get("agent_session") or value.get("agentSession")
+    if isinstance(raw_as, dict):
+        for key in ("value", "id", "session_id", "sessionId", "agent_session_id"):
+            cand = _text(raw_as.get(key))
+            if cand:
+                return cand
+    elif isinstance(raw_as, str) and _text(raw_as):
+        return _text(raw_as)
+    for key in ("agent_session_id", "agentSessionId", "copilot_session_id", "copilotSessionId"):
+        cand = _text(value.get(key))
+        if cand:
+            return cand
+    for key in ("session_id", "sessionId", "id"):
+        cand = _text(value.get(key))
+        if cand and _UUID_RE.match(cand):
+            return cand
+    return ""
+
+
+def _parse_iso_epoch(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        fval = float(value)
+        return fval / 1000.0 if fval > 1e11 else fval
+    raw = _text(value)
+    if not raw:
+        return None
+    if re.match(r"^\d+(?:\.\d+)?$", raw):
+        fval = float(raw)
+        return fval / 1000.0 if fval > 1e11 else fval
+    norm = raw.replace("Z", "+00:00")
+    norm = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", norm)
+    try:
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _epoch_to_iso(epoch_val: Any) -> str:
+    parsed = _parse_iso_epoch(epoch_val)
+    if parsed is None:
+        return ""
+    cst = timezone(timedelta(hours=8))
+    return datetime.fromtimestamp(parsed, tz=cst).replace(microsecond=0).isoformat()
+
+
+def _clean_single_line(text: Any, *, max_len: int = 320) -> str:
+    raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", _text(text))
+    compact = re.sub(r"\s+", " ", raw).strip()
+    if len(compact) > max_len:
+        return compact[: max_len - 1].rstrip() + "…"
+    return compact
+
+
+def _read_copilot_events_tail(
+    session_uuid: str,
+    *,
+    session_state_dir: str | Path | None = None,
+    max_bytes: int = EVENTS_TAIL_MAX_BYTES,
+    max_turns: int = RECENT_SESSION_MAX_TURNS,
+) -> dict[str, Any] | None:
+    clean_uuid = _text(session_uuid)
+    if not clean_uuid or "/" in clean_uuid or "\\" in clean_uuid or ".." in clean_uuid:
+        return None
+    base_dir = Path(
+        session_state_dir
+        or os.environ.get("COPILOT_SESSION_STATE_DIR")
+        or (Path.home() / ".copilot" / "session-state")
+    ).expanduser()
+    events_path = base_dir / clean_uuid / "events.jsonl"
+    if not events_path.is_file():
+        return None
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            offset = max(0, file_size - max(1024, int(max_bytes)))
+            handle.seek(offset, os.SEEK_SET)
+            chunk = handle.read()
+    except OSError:
+        return None
+
+    text = chunk.decode("utf-8", errors="replace")
+    raw_lines = text.splitlines()
+    if offset > 0 and raw_lines:
+        try:
+            json.loads(raw_lines[0])
+        except ValueError:
+            raw_lines = raw_lines[1:]
+
+    turns: list[dict[str, Any]] = []
+    last_conv_ts = ""
+    last_conv_epoch: float | None = None
+    last_any_ts = ""
+    last_any_epoch: float | None = None
+
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        etype = _text(obj.get("type"))
+        data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+        ts = _text(obj.get("timestamp"))
+        if not ts and data.get("timestamp") is not None:
+            ts = _epoch_to_iso(data.get("timestamp"))
+        ts_epoch = _parse_iso_epoch(ts)
+        if ts and (last_any_epoch is None or (ts_epoch is not None and ts_epoch >= last_any_epoch)):
+            last_any_ts = ts
+            last_any_epoch = ts_epoch
+        if etype and not etype.startswith("hook.") and ts:
+            if last_conv_epoch is None or (ts_epoch is not None and ts_epoch >= last_conv_epoch):
+                last_conv_ts = ts
+                last_conv_epoch = ts_epoch
+
+        if etype == "user.message":
+            u_text = _clean_single_line(
+                data.get("content") or data.get("transformedContent") or data.get("text") or obj.get("content"),
+                max_len=320,
+            )
+            if u_text:
+                turns.append({
+                    "user_message": u_text,
+                    "assistant_message": "",
+                    "user_timestamp": ts,
+                    "assistant_timestamp": "",
+                    "timestamp": ts,
+                })
+        elif etype == "assistant.message":
+            a_text = _clean_single_line(
+                data.get("content") or data.get("text") or obj.get("content"),
+                max_len=320,
+            )
+            if a_text:
+                if turns:
+                    turns[-1]["assistant_message"] = a_text
+                    turns[-1]["assistant_timestamp"] = ts
+                    if ts:
+                        turns[-1]["timestamp"] = ts
+                else:
+                    turns.append({
+                        "user_message": "",
+                        "assistant_message": a_text,
+                        "user_timestamp": "",
+                        "assistant_timestamp": ts,
+                        "timestamp": ts,
+                    })
+
+    recent_turns = [t for t in turns if t.get("user_message") or t.get("assistant_message")][-max_turns:]
+    last_activity = last_conv_ts or last_any_ts
+    if not last_activity:
+        try:
+            last_activity = _epoch_to_iso(events_path.stat().st_mtime)
+        except OSError:
+            last_activity = ""
+
+    turn_summaries: list[str] = []
+    for idx, t in enumerate(recent_turns, start=1):
+        u_msg = _text(t.get("user_message"))
+        a_msg = _text(t.get("assistant_message"))
+        if u_msg and a_msg:
+            turn_summaries.append(f"[{idx}] User: {u_msg} -> Assistant: {a_msg}")
+        elif u_msg:
+            turn_summaries.append(f"[{idx}] User: {u_msg}")
+        elif a_msg:
+            turn_summaries.append(f"[{idx}] Assistant: {a_msg}")
+
+    user_messages = [_text(t["user_message"]) for t in recent_turns if _text(t.get("user_message"))]
+    assistant_messages = [_text(t["assistant_message"]) for t in recent_turns if _text(t.get("assistant_message"))]
+    return {
+        "source": "copilot_events_jsonl",
+        "agent_session_id": clean_uuid,
+        "events_path": str(events_path),
+        "bytes_read": len(chunk),
+        "last_session_activity_at": last_activity,
+        "turns": recent_turns,
+        "user_messages": user_messages,
+        "assistant_messages": assistant_messages,
+        "latest_user_message": user_messages[-1] if user_messages else "",
+        "latest_assistant_message": assistant_messages[-1] if assistant_messages else "",
+        "summary": " | ".join(turn_summaries),
+    }
+
+
+def _parse_pane_recent_unwrapped_turns(raw_text: str, *, max_turns: int = RECENT_SESSION_MAX_TURNS) -> list[dict[str, Any]]:
+    cleaned = _strip_tui_box_chrome(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", _text(raw_text)))
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in cleaned.splitlines() if re.search(r"\w", ln)]
+    if not lines:
+        return []
+    turns: list[dict[str, Any]] = []
+    prompt_re = re.compile(r"^(?:[❯>]\s*(?!\d+\.)|(?:User|Prompt|You)\s*[:：]\s*)(.+)$", re.I)
+    reply_re = re.compile(r"^(?:[●⏺✦]\s*|(?:Assistant|Copilot)\s*[:：]\s*)(.+)$", re.I)
+    current_user = ""
+    current_assistant: list[str] = []
+    for ln in lines:
+        if re.match(r"^(?:─+|━+|╻.*|╹.*)$", ln):
+            continue
+        pm = prompt_re.match(ln)
+        if pm:
+            u_cand = _clean_single_line(pm.group(1), max_len=320)
+            if u_cand:
+                if current_user or current_assistant:
+                    turns.append({
+                        "user_message": current_user,
+                        "assistant_message": _clean_single_line(" ".join(current_assistant), max_len=320),
+                        "timestamp": "",
+                    })
+                current_user = u_cand
+                current_assistant = []
+                continue
+        rm = reply_re.match(ln)
+        if rm:
+            current_assistant.append(_clean_single_line(rm.group(1), max_len=320))
+        elif current_user:
+            current_assistant.append(_clean_single_line(ln, max_len=200))
+    if current_user or current_assistant:
+        turns.append({
+            "user_message": current_user,
+            "assistant_message": _clean_single_line(" ".join(current_assistant), max_len=320),
+            "timestamp": "",
+        })
+    if not turns:
+        tail_summary = _clean_single_line(" / ".join(lines[-6:]), max_len=320)
+        if tail_summary:
+            turns.append({"user_message": "", "assistant_message": tail_summary, "timestamp": ""})
+    return [t for t in turns if t.get("user_message") or t.get("assistant_message")][-max_turns:]
+
+
+def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _read_herdr_pane_recent_unwrapped(
+    binary: str,
+    pane_id: str,
+    *,
+    runner: CommandRunner = _run_command,
+    lines: int = 50,
+) -> str:
+    clean_pane = _text(pane_id)
+    if not clean_pane:
+        return ""
+    try:
+        res = runner(
+            [binary, "pane", "read", clean_pane, "--source", "recent-unwrapped", "--lines", str(lines)],
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if getattr(res, "returncode", 1) != 0:
+        return ""
+    stdout = _text(getattr(res, "stdout", ""))
+    parsed = _parse_json_output(stdout)
+    if isinstance(parsed, dict):
+        for key in ("recent_unwrapped", "recent", "text", "content", "output", "visible"):
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        result = parsed.get("result")
+        if isinstance(result, dict):
+            for key in ("recent_unwrapped", "recent", "text", "content", "output", "visible"):
+                val = result.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+    return stdout
+
+
+def read_recent_session_context(
+    session: dict[str, Any],
+    *,
+    runner: CommandRunner = _run_command,
+    herdr_bin: str | None = None,
+    session_state_dir: str | Path | None = None,
+    allow_pane_fallback: bool = True,
+) -> dict[str, Any] | None:
+    if not isinstance(session, dict):
+        return None
+    existing = session.get("recent_session_context")
+    if isinstance(existing, dict) and (existing.get("turns") or existing.get("summary")):
+        return existing
+
+    agent_sid = _agent_session_id(session)
+    if agent_sid:
+        events_ctx = _read_copilot_events_tail(agent_sid, session_state_dir=session_state_dir)
+        if events_ctx and (events_ctx.get("turns") or events_ctx.get("last_session_activity_at")):
+            if _text(session.get("pane_id") or session.get("paneId")):
+                events_ctx["pane_id"] = _text(session.get("pane_id") or session.get("paneId"))
+            return events_ctx
+
+    pane_id = _text(session.get("pane_id") or session.get("paneId"))
+    if not allow_pane_fallback or not pane_id:
+        return None
+
+    raw_pane_text = _text(session.get("recent_unwrapped") or session.get("pane_recent_unwrapped"))
+    should_call_herdr = bool(
+        raw_pane_text
+        or runner is not _run_command
+        or herdr_bin
+        or session.get("_live_herdr")
+        or session.get("agent_session") is not None
+        or _text(os.environ.get("M2_ENABLE_PANE_READ_FALLBACK")) == "1"
+    )
+    if not raw_pane_text and should_call_herdr:
+        binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+        raw_pane_text = _read_herdr_pane_recent_unwrapped(binary, pane_id, runner=runner, lines=50)
+    if not raw_pane_text:
+        return None
+
+    turns = _parse_pane_recent_unwrapped_turns(raw_pane_text, max_turns=RECENT_SESSION_MAX_TURNS)
+    if not turns:
+        return None
+    last_activity = _text(session.get("last_session_activity_at") or session.get("updated_at"))
+    for idx, t in enumerate(turns):
+        if last_activity and not _text(t.get("timestamp")):
+            t["timestamp"] = last_activity
+    turn_summaries: list[str] = []
+    for idx, t in enumerate(turns, start=1):
+        u_msg = _text(t.get("user_message"))
+        a_msg = _text(t.get("assistant_message"))
+        if u_msg and a_msg:
+            turn_summaries.append(f"[{idx}] User: {u_msg} -> Assistant: {a_msg}")
+        elif u_msg:
+            turn_summaries.append(f"[{idx}] User: {u_msg}")
+        elif a_msg:
+            turn_summaries.append(f"[{idx}] Assistant: {a_msg}")
+    user_messages = [_text(t["user_message"]) for t in turns if _text(t.get("user_message"))]
+    assistant_messages = [_text(t["assistant_message"]) for t in turns if _text(t.get("assistant_message"))]
+    return {
+        "source": "herdr_pane_read",
+        "agent_session_id": agent_sid,
+        "pane_id": pane_id,
+        "last_session_activity_at": last_activity,
+        "turns": turns,
+        "user_messages": user_messages,
+        "assistant_messages": assistant_messages,
+        "latest_user_message": user_messages[-1] if user_messages else "",
+        "latest_assistant_message": assistant_messages[-1] if assistant_messages else "",
+        "summary": " | ".join(turn_summaries),
+    }
+
+
 def _herdr_agent_name(value: dict[str, Any]) -> str:
     agent = value.get("agent") or value.get("agent_name") or value.get("agentName") or value.get("provider")
     if isinstance(agent, dict):
@@ -224,7 +581,9 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
     if not sid:
         return None
     repo = _repo_from(value)
-    return {
+    agent_sid = _agent_session_id(value)
+    raw_agent_session = value.get("agent_session") if isinstance(value.get("agent_session"), dict) else ({"value": agent_sid} if agent_sid else None)
+    norm: dict[str, Any] = {
         "session_id": sid,
         "topic_id": _text(value.get("topic_id") or value.get("topicId")),
         "target_repo": repo,
@@ -239,6 +598,17 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
         "summary": _text(value.get("summary") or value.get("contextSummary") or value.get("lastAssistantText"))[:800],
         "base_url": _text(value.get("base_url") or value.get("dsh_base_url")),
     }
+    if raw_agent_session:
+        norm["agent_session"] = dict(raw_agent_session)
+    if agent_sid:
+        norm["agent_session_id"] = agent_sid
+    if _text(value.get("last_session_activity_at")):
+        norm["last_session_activity_at"] = _text(value.get("last_session_activity_at"))
+    if isinstance(value.get("recent_session_context"), dict):
+        norm["recent_session_context"] = dict(value["recent_session_context"])
+    if value.get("_live_herdr"):
+        norm["_live_herdr"] = True
+    return norm
 
 
 def _records(payload: Any) -> list[dict[str, Any]]:
@@ -252,10 +622,6 @@ def _records(payload: Any) -> list[dict[str, Any]]:
             return [item for item in nested if isinstance(item, dict)]
     result = payload.get("result")
     return _records(result) if result is not None else []
-
-
-def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
 
 
 def _workspace_inventory(payload: Any) -> list[dict[str, Any]] | None:
@@ -377,7 +743,9 @@ def discover_herdr(
     if isinstance(payload, dict) and workspace_inventory is None:
         workspace_inventory = _workspace_inventory(payload)
     workspace_records = workspace_inventory or []
+    used_live_herdr = False
     if pane_payload is None and agent_payload is None and payload is None:
+        used_live_herdr = True
         binary = herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr")
         if not binary:
             return DiscoverySessions(workspaces=workspace_records), None
@@ -401,6 +769,8 @@ def discover_herdr(
     workspace_by_id = _workspace_map(workspace_records)
     records = _merge_herdr_records(pane_records, agent_records)
     for item in records:
+        if used_live_herdr:
+            item["_live_herdr"] = True
         ws = _text(item.get("workspace_id") or item.get("workspaceId"))
         if ws and ws in workspace_by_id:
             item["workspace_label"] = workspace_by_id[ws].get("label", "")
@@ -912,6 +1282,16 @@ def _extract_jev_plan(
                 "base_url": match.get("base_url", ""),
                 "m2_status": "EXISTING_M2",
             })
+            if match.get("agent_session"):
+                target.setdefault("agent_session", dict(match["agent_session"]))
+            if _text(match.get("agent_session_id")):
+                target.setdefault("agent_session_id", _text(match["agent_session_id"]))
+            if isinstance(match.get("recent_session_context"), dict):
+                target["recent_session_context"] = dict(match["recent_session_context"])
+                if _text(match["recent_session_context"].get("last_session_activity_at")):
+                    target["last_session_activity_at"] = _text(match["recent_session_context"].get("last_session_activity_at"))
+            elif _text(match.get("last_session_activity_at")):
+                target["last_session_activity_at"] = _text(match.get("last_session_activity_at"))
         else:
             target["session_id"] = session_id
             target["target_repo"] = _repo_from(target) or "unspecified"
@@ -993,10 +1373,21 @@ def _magpie_decision(value: Any) -> dict[str, Any] | None:
 
 
 def _request_magpie(message: str, sessions: list[dict[str, Any]], *, base_url: str, model: str, token: str = "") -> dict[str, Any]:
-    request_input = {"user_message": message, "active_m2_sessions": sessions}
+    recent_contexts = {
+        _text(s.get("session_id") or s.get("pane_id")): s["recent_session_context"]
+        for s in sessions
+        if isinstance(s, dict) and isinstance(s.get("recent_session_context"), dict) and (s["recent_session_context"].get("turns") or s["recent_session_context"].get("summary"))
+    }
+    request_input: dict[str, Any] = {"user_message": message, "active_m2_sessions": sessions}
+    if recent_contexts:
+        request_input["recent_session_context"] = recent_contexts
     system = (
         "You are the unified M2 ingress semantic decomposer. Return only strict JSON, with no markdown or prose. "
         "Rewrite each target's sub_prompt as a complete executable instruction for that M2. "
+        "When binding an existing session (EXISTING_M2) that includes recent_session_context "
+        "(recent user.message and assistant.message turns 2, 3 from direct sub-pane chat), "
+        "you MUST generate an incremental sub_prompt (step 4) that continues directly on top of the latest turns in recent_session_context, "
+        "and NEVER overwrite or regress to stale pre-private-chat state. "
         "Bind session_id only when it matches an active session; otherwise use an empty string. "
         "Use route ROUTE_SINGLE, ROUTE_CROSS_SESSION, or CREATE_NEW_M2. "
         "Return {route, reason, targets:[{target_repo, session_id, sub_prompt, wave_order, rag_context_hint}]}."
@@ -1043,7 +1434,22 @@ def classify(
     mock: Any = None,
     goal_id: str = "",
     workspaces: list[dict[str, Any]] | None = None,
+    runner: CommandRunner = _run_command,
+    herdr_bin: str | None = None,
+    session_state_dir: str | Path | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    for session in sessions:
+        if isinstance(session, dict) and not isinstance(session.get("recent_session_context"), dict):
+            ctx = read_recent_session_context(
+                session,
+                runner=runner,
+                herdr_bin=herdr_bin,
+                session_state_dir=session_state_dir,
+            )
+            if ctx:
+                session["recent_session_context"] = ctx
+                if _text(ctx.get("last_session_activity_at")):
+                    session["last_session_activity_at"] = _text(ctx.get("last_session_activity_at"))
     jev = _jev_decision(message, sessions, domain_map, mock=mock, goal_id=goal_id)
     decision: dict[str, Any] | None = None
     source = "magpie"
@@ -1408,6 +1814,27 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
                 hint,
                 "```",
             ])
+        recent_ctx = target.get("recent_session_context")
+        if isinstance(recent_ctx, dict) and (recent_ctx.get("turns") or recent_ctx.get("summary")):
+            lines.extend([
+                "",
+                "#### `recent_session_context`",
+                f"- **Source**: `{_text(recent_ctx.get('source'), 'session')}` · **Last Activity**: `{_text(recent_ctx.get('last_session_activity_at') or target.get('last_session_activity_at'), '—')}`",
+            ])
+            for t_idx, turn in enumerate(recent_ctx.get("turns") or [], start=1):
+                if isinstance(turn, dict):
+                    u_m = _text(turn.get("user_message"))
+                    a_m = _text(turn.get("assistant_message"))
+                    ts_m = _text(turn.get("timestamp"))
+                    ts_part = f" (`{ts_m}`)" if ts_m else ""
+                    if u_m and a_m:
+                        lines.append(f"- **Turn {t_idx}**{ts_part}: User `{u_m}` → Assistant `{a_m}`")
+                    elif u_m:
+                        lines.append(f"- **Turn {t_idx}**{ts_part}: User `{u_m}`")
+                    elif a_m:
+                        lines.append(f"- **Turn {t_idx}**{ts_part}: Assistant `{a_m}`")
+            if not recent_ctx.get("turns") and _text(recent_ctx.get("summary")):
+                lines.append(f"- **Summary**: {_text(recent_ctx.get('summary'))}")
     for target in plan.get("targets", []):
         eviction = target.get("context_eviction") or {}
         if target.get("m2_action") == "REPLACE_STALE_M2":
@@ -1477,6 +1904,8 @@ def build_plan(
     linear_runner: CommandRunner | None = None,
     hub_issue_payload: dict[str, Any] | None = None,
     runner: CommandRunner = _run_command,
+    herdr_bin: str | None = None,
+    session_state_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
@@ -1497,6 +1926,9 @@ def build_plan(
         mock=mock_jev,
         goal_id=plan_id,
         workspaces=workspace_inventory,
+        runner=runner,
+        herdr_bin=herdr_bin,
+        session_state_dir=session_state_dir,
     )
     for target in targets:
         topic = _topic_by_id(loaded_domain_map).get(_text(target.get("topic_id")))
@@ -1520,9 +1952,34 @@ def build_plan(
         target["model"] = _text(target.get("model"), DEFAULT_M2_MODEL)
         target["context"] = _text(target.get("context"), DEFAULT_M2_CONTEXT)
         target["model_label"] = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
-        target.setdefault("context_pass", {"enabled": bool(target.get("rag_context_hint")), "hint": target.get("rag_context_hint")})
-        target["cleanup_candidates"] = _stale_candidates(target, sessions, loaded_domain_map)
         matched = _target_session(target, topic, sessions, loaded_domain_map) if target.get("m2_status") == "EXISTING_M2" else None
+        if target.get("m2_status") == "EXISTING_M2":
+            ctx_source = matched if isinstance(matched, dict) else target
+            recent_ctx = target.get("recent_session_context") if isinstance(target.get("recent_session_context"), dict) else read_recent_session_context(
+                ctx_source,
+                runner=runner,
+                herdr_bin=herdr_bin,
+                session_state_dir=session_state_dir,
+            )
+            if isinstance(recent_ctx, dict) and (recent_ctx.get("turns") or recent_ctx.get("last_session_activity_at")):
+                target["recent_session_context"] = recent_ctx
+                if _text(recent_ctx.get("last_session_activity_at")):
+                    target["last_session_activity_at"] = _text(recent_ctx.get("last_session_activity_at"))
+                if _text(recent_ctx.get("agent_session_id")):
+                    target["agent_session_id"] = _text(recent_ctx.get("agent_session_id"))
+        target.setdefault(
+            "context_pass",
+            {
+                "enabled": bool(target.get("rag_context_hint") or target.get("recent_session_context")),
+                "hint": target.get("rag_context_hint"),
+                **(
+                    {"recent_session_context": target["recent_session_context"]}
+                    if isinstance(target.get("recent_session_context"), dict)
+                    else {}
+                ),
+            },
+        )
+        target["cleanup_candidates"] = _stale_candidates(target, sessions, loaded_domain_map)
         if matched and _text(matched.get("status"), "idle").casefold() in {"idle", "done"}:
             continuity = _evaluate_m2_context_continuity(
                 target, matched, message, domain_map=loaded_domain_map, mock_jev=mock_jev,
@@ -1610,6 +2067,10 @@ def preview_text(plan: dict[str, Any]) -> str:
         hint = _text(target.get("rag_context_hint"))
         if hint:
             lines.append(f"  rag_context_hint: {hint}")
+        recent_ctx = target.get("recent_session_context")
+        if isinstance(recent_ctx, dict) and (recent_ctx.get("turns") or recent_ctx.get("summary")):
+            ts_label = _text(recent_ctx.get("last_session_activity_at") or target.get("last_session_activity_at"), "recent")
+            lines.append(f"  recent_session_context ({ts_label}): {_text(recent_ctx.get('summary'))}")
     for target in plan.get("targets", []):
         eviction = target.get("context_eviction") or {}
         if target.get("m2_action") == "REPLACE_STALE_M2":
@@ -2089,6 +2550,8 @@ ROLLUP_METADATA_KEYS = (
     "linear_issue", "parent_linear_issue", "handoff_dir", "goal_id", "depends_on",
     "upstream_waves", "rag_context_hint", "sub_prompt", "terminal_title", "cwd",
     "m1_progress", "m1_stage_summary", "_handoff_discovered",
+    "agent_session", "agent_session_id", "recent_session_context",
+    "last_session_activity_at", "ledger_updated_at", "active_summary_source",
 )
 
 
@@ -2102,12 +2565,60 @@ def _has_active_visible_tail(visible_text: str, *, max_lines: int = 8) -> bool:
 
 def _slot_metadata(source: dict[str, Any]) -> dict[str, Any]:
     metadata = {key: source[key] for key in ROLLUP_METADATA_KEYS if key in source}
+    agent_sid = _agent_session_id(source)
+    if agent_sid and "agent_session_id" not in metadata:
+        metadata["agent_session_id"] = agent_sid
     if (source.get("handoff_dir") or source.get("goal_id")) and "_handoff_discovered" not in source:
         metadata["_handoff_discovered"] = False
     return metadata
 
 
-def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | None = None, scan_default: bool = False) -> dict[str, Any]:
+_LEDGER_TS_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\b"
+)
+
+
+def _extract_ledger_latest_timestamp(ledger_text: str, ledger_path: Path) -> tuple[str, float | None]:
+    best_ts = ""
+    best_epoch: float | None = None
+    for match in _LEDGER_TS_RE.finditer(ledger_text):
+        cand_ts = match.group(1).replace(" ", "T")
+        cand_epoch = _parse_iso_epoch(cand_ts)
+        if cand_epoch is not None and (best_epoch is None or cand_epoch >= best_epoch):
+            best_epoch = cand_epoch
+            best_ts = cand_ts
+    if best_epoch is not None:
+        return best_ts, best_epoch
+    try:
+        mtime = ledger_path.stat().st_mtime
+        return _epoch_to_iso(mtime), mtime
+    except OSError:
+        return "", None
+
+
+def _enrich_slot_metadata(
+    slot: dict[str, Any],
+    *,
+    handoff_root: str | Path | None = None,
+    scan_default: bool = False,
+    session_state_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    agent_sid = _agent_session_id(slot)
+    if agent_sid:
+        slot["agent_session_id"] = agent_sid
+        events_ctx = _read_copilot_events_tail(agent_sid, session_state_dir=session_state_dir)
+        if events_ctx:
+            slot["recent_session_context"] = events_ctx
+            if _text(events_ctx.get("last_session_activity_at")):
+                slot["last_session_activity_at"] = _text(events_ctx.get("last_session_activity_at"))
+            session_turn_summary = _text(
+                events_ctx.get("latest_assistant_message")
+                or events_ctx.get("summary")
+                or events_ctx.get("latest_user_message")
+            )
+            if session_turn_summary and not _text(slot.get("visible_summary")):
+                slot["visible_summary"] = session_turn_summary
+
     if slot.get("retained") and slot.get("m1_progress") and not slot.get("handoff_dir"):
         return slot
     text = "\n".join(_text(slot.get(key)) for key in (
@@ -2183,11 +2694,55 @@ def _enrich_slot_metadata(slot: dict[str, Any], *, handoff_root: str | Path | No
         events = [line.strip("- ") for line in ledger_text.splitlines() if "EVT=" in line]
         if events:
             progress.append(events[-1][:300])
-        slot["m1_progress"] = " | ".join(progress)
-        slot["m1_stage_summary"] = stage_summary
-        slot["handoff_in_progress"] = any("(in_progress," in task for task in tasks) and "EVT=GOAL_DONE" not in ledger_text
-        slot["goal_tl"] = tl.group(1) if tl else ""
+        ledger_progress = " | ".join(progress)
+        slot["ledger_m1_progress"] = ledger_progress
+        ledger_ts, ledger_epoch = _extract_ledger_latest_timestamp(ledger_text, ledger_path)
+        if ledger_ts:
+            slot["ledger_updated_at"] = ledger_ts
+        session_ts = _text(
+            slot.get("last_session_activity_at")
+            or ((slot.get("recent_session_context") or {}).get("last_session_activity_at") if isinstance(slot.get("recent_session_context"), dict) else "")
+        )
+        session_epoch = _parse_iso_epoch(session_ts)
+        recent_ctx = slot.get("recent_session_context") if isinstance(slot.get("recent_session_context"), dict) else {}
+        session_newer = bool(
+            session_epoch is not None
+            and (ledger_epoch is None or session_epoch > ledger_epoch)
+        )
+        if session_newer:
+            newer_summary = _text(
+                recent_ctx.get("latest_assistant_message")
+                or recent_ctx.get("summary")
+                or slot.get("visible_summary")
+            )
+            slot["active_summary_source"] = "session"
+            if newer_summary:
+                slot["visible_summary"] = newer_summary
+                slot["m1_progress"] = newer_summary
+            else:
+                slot["m1_progress"] = ledger_progress
+            slot["m1_stage_summary"] = ""
+            slot["handoff_in_progress"] = False
+            slot["goal_tl"] = tl.group(1) if tl else ""
+        else:
+            slot["active_summary_source"] = "ledger"
+            slot["m1_progress"] = ledger_progress
+            slot["m1_stage_summary"] = stage_summary
+            slot["handoff_in_progress"] = any("(in_progress," in task for task in tasks) and "EVT=GOAL_DONE" not in ledger_text
+            slot["goal_tl"] = tl.group(1) if tl else ""
         break
+    else:
+        recent_ctx = slot.get("recent_session_context") if isinstance(slot.get("recent_session_context"), dict) else {}
+        if recent_ctx:
+            newer_summary = _text(
+                recent_ctx.get("latest_assistant_message")
+                or recent_ctx.get("summary")
+                or slot.get("visible_summary")
+            )
+            if newer_summary:
+                slot["visible_summary"] = newer_summary
+                slot["m1_progress"] = newer_summary
+                slot["active_summary_source"] = "session"
     return slot
 
 
@@ -2204,6 +2759,8 @@ def _discover_and_enrich_global_m2_slots(
     runner: CommandRunner = _run_command, herdr_bin: str = "herdr",
     handoff_root: str | Path | None = None, protected_slots: Iterable[str] = (),
     visible_by_ref: dict[str, str] | None = None,
+    allow_quiescent_settle: bool = False,
+    settled_slot_ids_out: list[str] | None = None,
 ) -> dict[str, Any]:
     slots = state.setdefault("slots", [])
     records = list(agent_records)
@@ -2244,14 +2801,38 @@ def _discover_and_enrich_global_m2_slots(
             slot["visible_summary"] = _summarize_visible_lines(visible)
         _enrich_slot_metadata(slot, handoff_root=handoff_root, scan_default=scan_default)
         if slot.get("slot_id") not in protected:
-            active = _has_active_visible_tail(visible) or slot.get("handoff_in_progress", False)
-            # Discovery cannot certify completion; only a target watchdog can do so.
+            handoff_active = bool(slot.get("handoff_in_progress", False))
+            if handoff_active:
+                if slot.get("active_summary_source") == "session":
+                    handoff_active = False
+                else:
+                    tl_name = _text(slot.get("goal_tl"))
+                    if tl_name:
+                        tl_rec = next(
+                            (r for r in records if _text(r.get("name") or r.get("herdr_target") or r.get("id")) == tl_name),
+                            None,
+                        )
+                        if tl_rec is not None:
+                            tl_status = _text(tl_rec.get("agent_status") or tl_rec.get("status"), "idle").lower()
+                            tl_vis = _text(tl_rec.get("visible") or tl_rec.get("visible_text"))
+                            if tl_status not in {"working", "running", "blocked", "needs_input"} and not _has_active_visible_tail(tl_vis):
+                                handoff_active = False
+            active = _has_active_visible_tail(visible) or handoff_active
             if active or status in {"working", "running", "blocked", "needs_input"}:
                 slot["raw_status"] = "working" if active and status not in {"blocked", "needs_input"} else status
                 slot["status"] = slot["raw_status"]
                 slot["needs_owner_attention"] = status in {"blocked", "needs_input"}
                 slot["quiescent"] = False
                 slot["seen_working"] = active or status in {"working", "running"}
+            elif allow_quiescent_settle and status in {"idle", "done"} and not is_new:
+                was_active = _text(slot.get("status")).lower() in {"working", "running", "blocked", "needs_input", "unknown"}
+                slot["raw_status"] = status
+                slot["status"] = status
+                slot["needs_owner_attention"] = False
+                slot["blocked_reason"] = ""
+                slot["quiescent"] = True
+                if was_active and settled_slot_ids_out is not None and _text(slot.get("slot_id")):
+                    settled_slot_ids_out.append(_text(slot.get("slot_id")))
             elif is_new:
                 continue
         if is_new:
@@ -3204,13 +3785,14 @@ def sync_cross_device_hub(
     issue_id = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
     host = _resolve_local_hostname(local_hostname)
     exec_runner = linear_runner or _run_command
+    linear_script = _text(os.environ.get("M2_LINEAR_SYNC_SCRIPT"), str(LINEAR_SYNC_SCRIPT_PATH))
     remote_issue: dict[str, Any] = {}
     if isinstance(hub_issue_payload, dict):
         remote_issue = dict(hub_issue_payload.get("issue") if isinstance(hub_issue_payload.get("issue"), dict) else hub_issue_payload)
     else:
         try:
             get_res = exec_runner(
-                [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "get-issue", "--id", issue_id],
+                [sys.executable, linear_script, "get-issue", "--id", issue_id],
                 timeout=15.0,
             )
         except (OSError, subprocess.SubprocessError) as error:
@@ -3222,7 +3804,7 @@ def sync_cross_device_hub(
             # Fallback: search via list-issues for [M2-Sync]
             try:
                 list_res = exec_runner(
-                    [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "list-issues", "--team", "TIA", "--query", "M2-Sync", "--limit", "10"],
+                    [sys.executable, linear_script, "list-issues", "--team", "TIA", "--query", "M2-Sync", "--limit", "10"],
                     timeout=15.0,
                 )
                 parsed_list = _parse_json_output(getattr(list_res, "stdout", "")) if getattr(list_res, "returncode", 1) == 0 else None
@@ -3238,7 +3820,7 @@ def sync_cross_device_hub(
                 if found_id:
                     issue_id = found_id
                     retry_res = exec_runner(
-                        [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "get-issue", "--id", issue_id],
+                        [sys.executable, linear_script, "get-issue", "--id", issue_id],
                         timeout=15.0,
                     )
                     parsed_retry = _parse_json_output(getattr(retry_res, "stdout", "")) if getattr(retry_res, "returncode", 1) == 0 else None
@@ -3297,7 +3879,7 @@ def sync_cross_device_hub(
 
     try:
         upd_res = exec_runner(
-            [sys.executable, str(LINEAR_SYNC_SCRIPT_PATH), "update-issue", "--id", _text(remote_issue.get("identifier"), issue_id), "--description", rendered_description],
+            [sys.executable, linear_script, "update-issue", "--id", _text(remote_issue.get("identifier"), issue_id), "--description", rendered_description],
             timeout=20.0,
         )
     except (OSError, subprocess.SubprocessError) as error:
@@ -4902,6 +5484,136 @@ def watch_dispatched_m2(
     }
 
 
+def compute_board_fingerprint(state_or_path: dict[str, Any] | str | Path | None = None) -> str:
+    """Compute a deterministic SHA-256 fingerprint of local supervision slot statuses and summaries."""
+    if isinstance(state_or_path, dict):
+        state = state_or_path
+    else:
+        state_path = _resolve_supervision_state_path(state_or_path, persist_by_default=True)
+        state = {}
+        if state_path and state_path.is_file():
+            try:
+                loaded = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    state = loaded
+            except (OSError, ValueError):
+                state = {}
+    slots_payload: list[dict[str, Any]] = []
+    for raw_slot in (state.get("slots") or []):
+        if not isinstance(raw_slot, dict):
+            continue
+        summary = _text(raw_slot.get("m1_progress") or raw_slot.get("visible_summary") or raw_slot.get("sub_prompt"))
+        slots_payload.append({
+            "slot_id": _text(raw_slot.get("slot_id")),
+            "run_label": _text(raw_slot.get("run_label")),
+            "topic_id": _text(raw_slot.get("topic_id")),
+            "target_repo": _text(raw_slot.get("target_repo")),
+            "target": _text(raw_slot.get("target")),
+            "pane_id": _text(raw_slot.get("pane_id")),
+            "linear_issue": _text(raw_slot.get("linear_issue")),
+            "status": _text(raw_slot.get("status")),
+            "raw_status": _text(raw_slot.get("raw_status")),
+            "retained": bool(raw_slot.get("retained")),
+            "needs_owner_attention": bool(raw_slot.get("needs_owner_attention")),
+            "blocked_reason": _text(raw_slot.get("blocked_reason")),
+            "summary": summary,
+            "active_summary_source": _text(raw_slot.get("active_summary_source")),
+        })
+    slots_payload.sort(key=lambda item: (item["slot_id"], item["pane_id"], item["target"]))
+    backlog_payload = [
+        {
+            "topic_id": _text(b.get("topic_id") or b.get("id")),
+            "issue": _text(b.get("issue")),
+            "summary": _text(b.get("summary") or b.get("title")),
+        }
+        for b in (state.get("backlog") or [])
+        if isinstance(b, dict)
+    ]
+    backlog_payload.sort(key=lambda item: (item["topic_id"], item["issue"], item["summary"]))
+    canonical = {"slots": slots_payload, "backlog": backlog_payload}
+    return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def install_m2_board_hook(
+    *,
+    hooks_dir: str | Path | None = None,
+    hook_script_source: str | Path | None = None,
+) -> dict[str, Any]:
+    """Idempotently install m2-board.json and m2-board-hook.sh into ~/.copilot/hooks without touching sibling hooks."""
+    target_dir = Path(hooks_dir or os.environ.get("COPILOT_HOOKS_DIR") or (Path.home() / ".copilot" / "hooks")).expanduser()
+    source_script = Path(hook_script_source or DEFAULT_HOOK_SCRIPT_PATH).expanduser()
+    if not source_script.is_file():
+        raise RouterError(f"hook script source not found: {source_script}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    installed_script = target_dir / "m2-board-hook.sh"
+    installed_json = target_dir / "m2-board.json"
+    source_text = source_script.read_text(encoding="utf-8")
+
+    updated_script = False
+    existing_script_text = None
+    if installed_script.is_file():
+        try:
+            existing_script_text = installed_script.read_text(encoding="utf-8")
+        except OSError:
+            existing_script_text = None
+    if existing_script_text != source_text or not os.access(installed_script, os.X_OK):
+        tmp_script = installed_script.with_suffix(f".{os.getpid()}.tmp")
+        tmp_script.write_text(source_text, encoding="utf-8")
+        tmp_script.chmod(0o755)
+        tmp_script.replace(installed_script)
+        installed_script.chmod(0o755)
+        updated_script = True
+
+    hook_cmd = f"sh '{installed_script}'"
+    hook_config = {
+        "version": 1,
+        "hooks": {
+            "agentStop": [
+                {
+                    "type": "command",
+                    "bash": hook_cmd,
+                    "timeoutSec": 5,
+                }
+            ],
+            "sessionEnd": [
+                {
+                    "type": "command",
+                    "bash": hook_cmd,
+                    "timeoutSec": 5,
+                }
+            ],
+        },
+    }
+    desired_json_text = json.dumps(hook_config, ensure_ascii=False, indent=2) + "\n"
+    updated_json = False
+    existing_json_text = None
+    if installed_json.is_file():
+        try:
+            existing_json_text = installed_json.read_text(encoding="utf-8")
+        except OSError:
+            existing_json_text = None
+    if existing_json_text != desired_json_text:
+        tmp_json = installed_json.with_suffix(f".{os.getpid()}.tmp")
+        tmp_json.write_text(desired_json_text, encoding="utf-8")
+        tmp_json.replace(installed_json)
+        updated_json = True
+
+    preserved = sorted(
+        p.name for p in target_dir.iterdir()
+        if p.name not in {"m2-board.json", "m2-board-hook.sh"}
+    )
+    return {
+        "ok": True,
+        "hooks_dir": str(target_dir),
+        "hook_json_path": str(installed_json),
+        "hook_script_path": str(installed_script),
+        "updated_json": updated_json,
+        "updated_script": updated_script,
+        "preserved_files": preserved,
+    }
+
+
 def supervision_status(
     *, state_file: str | Path | None = None, plan_file: str | Path | None = None,
     apply_receipt_file: str | Path | None = None, handoff_root: str | Path | None = None,
@@ -4916,14 +5628,23 @@ def supervision_status(
     state_path = _resolve_supervision_state_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file, persist_by_default=True)
     binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
     records = agent_records if agent_records is not None else (_live_agent_records(binary, runner=runner) if discover else [])
+    settled_in_status: list[str] = []
 
     def refresh(state: dict[str, Any]) -> dict[str, Any]:
-        _discover_and_enrich_global_m2_slots(state, agent_records=records, runner=runner, herdr_bin=binary, handoff_root=handoff_root)
-        state["slots"] = _compute_board_rollup(state)["slots"]
+        _discover_and_enrich_global_m2_slots(
+            state,
+            agent_records=records,
+            runner=runner,
+            herdr_bin=binary,
+            handoff_root=handoff_root,
+            allow_quiescent_settle=True,
+            settled_slot_ids_out=settled_in_status,
+        )
+        state["slots"] = _compute_board_rollup(state, just_settled_slots=settled_in_status)["slots"]
         return state
 
     state = _with_locked_supervision_state(state_path, refresh)
-    board = _compute_board_rollup(state)
+    board = _compute_board_rollup(state, just_settled_slots=settled_in_status)
     cache_path = _resolve_cross_device_cache_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file)
     should_sync, sync_reason = _should_trigger_linear_sync(
         sync_linear=sync_linear,
@@ -4967,6 +5688,9 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
     mode.add_argument("--gc", action="store_true", help="preview or owner-approved safe global cleanup")
+    mode.add_argument("--board-fingerprint", action="store_true", help="print SHA-256 fingerprint of local supervision state")
+    mode.add_argument("--install-hook", action="store_true", help="idempotently install m2-board.json and m2-board-hook.sh into ~/.copilot/hooks")
+    parser.add_argument("--hooks-dir", help="target hooks directory for --install-hook (default: ~/.copilot/hooks)")
     parser.add_argument("--sync-linear", action="store_true", help="bidirectional per-device shard sync with Linear cross-device M2 hub (TIA-463)")
     parser.add_argument("--no-sync-linear", action="store_true", help="explicitly disable automatic Linear cross-device hub sync")
     parser.add_argument("--hub-issue", default=os.environ.get("M2_SYNC_HUB_ISSUE", DEFAULT_M2_SYNC_HUB_ISSUE), help="Linear cross-device M2 sync hub issue identifier (default: TIA-463)")
@@ -5024,13 +5748,18 @@ def _message(args: argparse.Namespace) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if not (args.plan or args.apply or args.watch or args.status or args.gc):
+    if not (args.plan or args.apply or args.watch or args.status or args.gc or args.board_fingerprint or args.install_hook):
         if args.sync_linear:
             args.status = True
         else:
-            parser.error("one of the arguments --plan --apply --watch --status --gc --sync-linear is required")
+            parser.error("one of the arguments --plan --apply --watch --status --gc --sync-linear --board-fingerprint --install-hook is required")
     try:
-        if args.plan:
+        if args.board_fingerprint:
+            fp = compute_board_fingerprint(args.state_file)
+            output: Any = {"ok": True, "fingerprint": fp} if args.json else fp
+        elif args.install_hook:
+            output = install_m2_board_hook(hooks_dir=args.hooks_dir)
+        elif args.plan:
             payload = _json_value(args.sessions_json) if args.sessions_json else None
             herdr_payload = _json_value(args.herdr_json) if args.herdr_json else payload
             herdr_pane_payload = _json_value(args.herdr_pane_json) if args.herdr_pane_json else None
@@ -5056,6 +5785,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
+                herdr_bin=args.herdr_bin,
             )
             raw_gc_records = _merge_herdr_records(_records(herdr_pane_payload), _records(herdr_agent_payload))
             if raw_gc_records:
