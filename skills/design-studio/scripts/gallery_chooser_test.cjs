@@ -89,14 +89,26 @@ function verifyRuntime(source) {
     return n;
   });
   const root = new Node(); root.children = nodes;
-  const ids = Object.fromEntries(['status', 'selection-telemetry', 'empty-state', 'copy-summary', 'summary-text'].map(id => [id, new Node()]));
+  const ids = Object.fromEntries(['status', 'selection-telemetry', 'empty-state', 'copy-summary', 'summary-text', 'theme'].map(id => [id, new Node()]));
   ids['portal-grid'] = root;
   const config = {goal: 'probe', portal: true, firstGroup: 'A', cards: inventory};
   ids['gallery-config'] = {textContent: JSON.stringify(config)};
   const store = new Map([['design-gallery:probe', JSON.stringify(saved)]]);
-  const context = {document: {getElementById: id => ids[id], querySelectorAll: () => [], body: {dataset: {}}}, window: {localStorage: {getItem: k => store.get(k), setItem: (k,v) => store.set(k,v)}, addEventListener() {}}, navigator: {clipboard: {writeText: text => {context.copied = text;}}}, ResizeObserver: class {observe() {}}, module: {exports: {}}, console};
+  const docElement = {dataset: {}};
+  const context = {document: {getElementById: id => ids[id], querySelectorAll: () => [], documentElement: docElement, body: {dataset: {}}}, window: {localStorage: {getItem: k => store.get(k), setItem: (k,v) => store.set(k,v)}, addEventListener() {}}, navigator: {clipboard: {writeText: text => {context.copied = text;}}}, ResizeObserver: class {observe() {}}, module: {exports: {}}, console};
   vm.createContext(context);
   vm.runInContext(source, context, {timeout: 1000});
+  if (ids['theme'].listeners.change) {
+    ids['theme'].value = 'dark';
+    ids['theme'].listeners.change({target: ids['theme']});
+    assert.equal(docElement.dataset.theme, 'dark');
+    assert.equal(context.document.body.dataset.theme, 'dark');
+    assert.equal(store.get('profile-theme'), 'dark');
+    ids['theme'].value = 'system';
+    ids['theme'].listeners.change({target: ids['theme']});
+    assert.equal(docElement.dataset.theme, undefined);
+    assert.equal(store.get('profile-theme'), 'system');
+  }
   context.click = ids['copy-summary'].listeners.click;
   const click = () => {vm.runInContext('click()', context, {timeout: 1000}); return ids['summary-text'].value;};
   const expected = (a, b) => `Goal: probe\nCategory: A\nSELECT: A/v01\nSTAR: A/v01\nNOTES:\n  - A/v01 (Alpha): ${a}\nCategory: B\nSELECT: B/v01\nSTAR: B/v01\nNOTES:\n  - B/v01 (Beta): ${b}`;

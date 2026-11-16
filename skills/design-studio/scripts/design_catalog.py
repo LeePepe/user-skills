@@ -1333,23 +1333,26 @@ def _gallery_svg(width=342, height=72):
 
 def _gallery_tokens():
     colors = {
-        "ink": "#172033", "muted": "#596476", "focus": "#3568d4",
+        "paper": "#f5f5f0", "surface": "#fff", "inset": "#eeefea",
+        "text": "#242822", "secondary": "#62685e", "line": "#dcded6",
+        "accent": "#31694b", "accent-soft": "#e5eee4", "agent": "#795e78", "ring": "#31694b",
+        "ink": "#242822", "muted": "#62685e", "focus": "#31694b",
         "shadow-faint": "#1f294812", "shadow-soft": "#1f294819",
         "shadow-solid": "#1f294826", "shadow-glass": "#1f29482b",
-        "action": "#355fc1", "eyebrow": "#4f5c73", "divider": "#8e9bb540",
-        "border-control": "#8e9bb560", "border-strong": "#bec9db", "border": "#d5deed",
+        "action": "#31694b", "eyebrow": "#62685e", "divider": "#dcded6",
+        "border-control": "#dcded6", "border-strong": "#c5c8be", "border": "#dcded6",
         "wallpaper-cool": "#93b7f5", "wallpaper-warm": "#f4bca7",
-        "gallery-canvas": "#edf1f8", "canvas": "#edf2fb", "paper": "#f8fafc",
+        "gallery-canvas": "#f5f5f0", "canvas": "#f5f5f0",
         "white": "#fff", "mask-opaque": "#000", "glass-clear": "#ffffff12",
         "caustic-inset": "#ffffff30", "glass-veil": "#ffffff38", "rim-dim": "#ffffff40",
         "rim-bounce": "#ffffff66", "rim-secondary": "#ffffffad",
         "glass-button": "#ffffffb8", "rim-primary": "#ffffffed",
-        "paper-warm": "#fffaf2", "paper-dark": "#151d2b",
-        "ink-inverse": "#f2f4ff", "muted-inverse": "#bac4d6",
+        "paper-warm": "#fffaf2", "paper-dark": "#171b18",
+        "ink-inverse": "#edf1e9", "muted-inverse": "#abb4a5",
         "traffic-red": "#ef4444", "traffic-yellow": "#f59e0b", "traffic-green": "#22c55e",
         "archetype-005": "var(--focus)", "archetype-006": "#a84b29",
         "archetype-007": "#187160", "archetype-008": "#7145bc",
-        "accent": "var(--archetype-005)", "glass": "var(--glass-veil)", "radius": "28px",
+        "glass": "var(--glass-veil)", "radius": "28px",
     }
     return ":root {\n" + "\n".join(f"  --{name}: {value};" for name, value in colors.items()) + "\n}\n"
 

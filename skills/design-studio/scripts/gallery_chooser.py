@@ -8,6 +8,127 @@ import re
 ASSETS = Path(__file__).resolve().parents[1] / 'assets'
 STRATA_HEAD = '<link rel="stylesheet" href="/assets/colors.css"><link rel="stylesheet" href="/assets/strata-theme.css"><link rel="stylesheet" href="/assets/blog.css">'
 ROOT_ATTRS = 'data-lp-theme="light" data-strata-brand="yellow" data-strata-material="glass"'
+NOTEBOOK_CSS = ''':root {
+  color-scheme: light;
+  --paper: #f5f5f0;
+  --surface: #fff;
+  --inset: #eeefea;
+  --text: #242822;
+  --secondary: #62685e;
+  --line: #dcded6;
+  --accent: #31694b;
+  --accent-soft: #e5eee4;
+  --agent: #795e78;
+  --ring: #31694b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #171b18;
+    --surface: #202620;
+    --inset: #292f29;
+    --text: #edf1e9;
+    --secondary: #abb4a5;
+    --line: #3d463b;
+    --accent: #a2cbae;
+    --accent-soft: #2b3f30;
+    --agent: #c8acc6;
+    --ring: #a2cbae;
+  }
+}
+:root[data-theme="dark"], body[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #171b18;
+  --surface: #202620;
+  --inset: #292f29;
+  --text: #edf1e9;
+  --secondary: #abb4a5;
+  --line: #3d463b;
+  --accent: #a2cbae;
+  --accent-soft: #2b3f30;
+  --agent: #c8acc6;
+  --ring: #a2cbae;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.gallery-page .site-header {
+  isolation: isolate;
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 0 14px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.gallery-page .site-header__bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.gallery-page .wordmark {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  letter-spacing: -2.5px;
+  line-height: 1;
+  color: var(--text);
+  text-decoration: none;
+}
+.gallery-page .wordmark span {
+  color: var(--accent);
+}
+.gallery-page .header-note {
+  font-size: 12px;
+  color: var(--secondary);
+  letter-spacing: 0.3px;
+}
+.gallery-page .gallery-breadcrumbs {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 0;
+  font-size: 13px;
+}
+.gallery-page .theme-label {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+  display: inline-flex;
+  align-items: center;
+}
+.gallery-page .theme-label select {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 8px 0;
+  max-width: 108px;
+  cursor: pointer;
+}'''
+
+
+def _site_header(portal=False, hub=False):
+    portal_link = '<span>·</span><a href="../index.html">Goal Portal (../)</a>' if not (portal or hub) else ''
+    return (
+        '<header class="site-header shell"><div class="site-header__bar">'
+        '<a class="wordmark brand" href="/" aria-label="LeePepe home">lp<span>.</span></a>'
+        '<span class="header-note">An engineering notebook</span>'
+        f'<nav class="gallery-breadcrumbs site-nav" aria-label="Breadcrumb"><a href="/">Home</a><span>·</span><a href="/demos/">Demos 总目录</a>{portal_link}</nav>'
+        '<label class="theme-label"><span class="sr-only">Color theme</span>'
+        '<select id="theme"><option value="system">◐ System</option><option value="light">☀ Light</option><option value="dark">☾ Dark</option></select>'
+        '</label></div></header>'
+    )
 
 
 def frame_mode(manifest):
@@ -180,11 +301,11 @@ def render(goal, manifests, tokens, portal=False, prefix=''):
     runtime = (ASSETS / 'gallery-chooser.js').read_text(encoding='utf-8')
     grid_id = 'portal-grid' if portal else 'variants'
     session = '; '.join(str(a) for m in manifests for a in m.get('session_anti_patterns', [])) or 'none'
-    breadcrumbs = '<header class="site-header shell"><div class="site-header__bar"><a class="brand" href="/">Lee Pepe</a><nav class="gallery-breadcrumbs site-nav" aria-label="Breadcrumb"><a href="/">Home</a><span>·</span><a href="/demos/">Demos 总目录</a>' + ('<span>·</span><a href="../index.html">Goal Portal (../)</a>' if not portal else '') + '</nav></div></header>'
+    breadcrumbs = _site_header(portal=portal)
     initial = ''.join(card_html(c, portal and c['category'] != first_group) for c in cards)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(title)}</title>{STRATA_HEAD}<style>.gallery-page .site-header{{isolation:isolate}}.gallery-page .gallery-breadcrumbs{{display:flex;gap:8px;margin-bottom:18px}}\n{tokens}\n{css}</style></head>
+<title>{escape(title)}</title>{STRATA_HEAD}<style>{NOTEBOOK_CSS}\n{tokens}\n{css}</style></head>
 <body class="gallery-page" {ROOT_ATTRS}><main class="gallery{' portal' if portal else ''}">
 {breadcrumbs}<h1>{escape(title)}</h1><p id="session">Session anti-patterns: {escape(session)}</p>
 {tabs}<div class="portal-actions">{platforms}<button {theme_attr}="light">Light</button><button {theme_attr}="dark">Dark</button>{responsive}</div>
@@ -234,5 +355,6 @@ def render_demos_hub(demos_root, tokens):
         cards.append(f'<article class="demo-goal-card" data-demo-goal="{safe}"><h2>{escape(goal)}</h2><p>{categories} · {count} variants · {platforms}</p><p data-goal-telemetry="{safe}">已记录 0 条观察 · 0 个收藏 · 0 个选择</p><a href="{safe}/index.html">进入画廊 →</a> <button data-copy-goal="{safe}">复制该项目观察摘要</button></article>')
     config = json.dumps(inventories, ensure_ascii=False).replace('<', '\\u003c')
     shared_runtime = (ASSETS / 'gallery-chooser.js').read_text(encoding='utf-8')
-    runtime = r"""(() => { const config = JSON.parse(document.getElementById('hub-config').textContent), goals = config.map(item => item.goal), inventories = new Map(config.map(item => [item.goal, item.cards])), {activeItems, telemetryText, selectionSummary} = window.galleryChooser; const safeObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}; const parse = goal => { const merged = {}; for (const key of [`design-gallery:${goal}`, `design-gallery-${goal}`]) { try { Object.assign(merged, safeObject(JSON.parse(localStorage.getItem(key) || '{}'))); } catch {} } if (goal === 'aidash-cards-redesign') { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i) || ''; if (!key.startsWith('aidash-cards-r2:')) continue; const parts = key.slice('aidash-cards-r2:'.length).split(':'); if (parts[0] === 'selection' && parts[1]) { const category = parts[1].replace(/^select-/, ''), id = String(localStorage.getItem(key) || ''); if (id) { const entry = JSON.stringify([category, 2, id]); merged[entry] = {...merged[entry], category, round: 2, id, selected: true}; } } else if ((parts[0] === 'star' || parts[0] === 'note') && parts.length >= 3) { const category = parts[1], id = parts.slice(2).join(':'), entry = JSON.stringify([category, 2, id]), item = {...merged[entry], category, round: 2, id}; if (parts[0] === 'star' && localStorage.getItem(key) === '1') item.starred = true; if (parts[0] === 'note') item.notes = String(localStorage.getItem(key) || ''); merged[entry] = item; } } } return merged; }; const summary = (goal, state) => selectionSummary(goal, state, undefined, inventories.get(goal) || []); const update = () => goals.forEach(goal => { let state = {}; try { state = parse(goal); } catch {} const node = document.querySelector(`[data-goal-telemetry="${CSS.escape(goal)}"]`); if (node) node.textContent = telemetryText(activeItems(state, undefined, inventories.get(goal) || [])); }); const copy = async text => { try { await navigator.clipboard.writeText(text); } catch { const area = document.getElementById('hub-summary-text'); area.hidden = false; area.value = text; area.focus(); area.select(); } }; document.addEventListener('click', event => { const button = event.target.closest('[data-copy-goal],#copy-all-demos-summary'); if (!button) return; copy(button.id ? goals.map(goal => summary(goal, parse(goal))).join('\n\n') : summary(button.dataset.copyGoal, parse(button.dataset.copyGoal))); }); window.addEventListener('storage', update); window.addEventListener('pageshow', update); update(); })();"""
-    return f'''<!doctype html><html lang="zh-CN" {ROOT_ATTRS}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design Demos 总目录 · Active Ephemeral Galleries</title>{STRATA_HEAD}<style>.gallery-page .site-header{{isolation:isolate}}.gallery-page .gallery-breadcrumbs{{display:flex;gap:8px;margin-bottom:18px}}.demo-goal-card{{padding:20px;margin:16px 0;border:1px solid var(--border);border-radius:18px;background:var(--white)}}.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{margin-right:12px;min-height:28px;display:inline-flex;align-items:center}}button{{padding:10px 14px}}@media(max-width:480px){{.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{min-height:44px}}}}</style></head><body class="gallery-page"><main class="gallery"><header class="site-header shell"><div class="site-header__bar"><a class="brand" href="/">Lee Pepe</a><nav class="gallery-breadcrumbs site-nav" aria-label="Breadcrumb"><a href="/">Home</a><span>·</span><a href="/demos/">Demos 总目录</a></nav></div></header><h1>Design Demos 总目录 · Active Ephemeral Galleries</h1><div id="demo-goals">{"".join(cards)}</div><button id="copy-all-demos-summary">📋 复制全部项目观察摘要</button><textarea id="hub-summary-text" readonly hidden></textarea></main><script id="hub-config" type="application/json">{config}</script><script>{shared_runtime}</script><script>{runtime}</script></body></html>'''
+    runtime = r"""(() => { const config = JSON.parse(document.getElementById('hub-config').textContent), goals = config.map(item => item.goal), inventories = new Map(config.map(item => [item.goal, item.cards])), {activeItems, telemetryText, selectionSummary} = window.galleryChooser; const themeSelect = document.getElementById('theme'); const setHubTheme = value => { const mode = ['system', 'light', 'dark'].includes(value) ? value : 'system'; if (themeSelect) themeSelect.value = mode; if (document.documentElement?.dataset) { if (mode === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = mode; } if (document.body?.dataset) { if (mode === 'system') delete document.body.dataset.theme; else document.body.dataset.theme = mode; } try { localStorage?.setItem?.('profile-theme', mode); } catch {} }; try { setHubTheme(localStorage?.getItem?.('profile-theme') || 'system'); } catch { setHubTheme('system'); } themeSelect?.addEventListener?.('change', e => setHubTheme(e.target?.value || themeSelect.value)); const safeObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}; const parse = goal => { const merged = {}; for (const key of [`design-gallery:${goal}`, `design-gallery-${goal}`]) { try { Object.assign(merged, safeObject(JSON.parse(localStorage.getItem(key) || '{}'))); } catch {} } if (goal === 'aidash-cards-redesign') { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i) || ''; if (!key.startsWith('aidash-cards-r2:')) continue; const parts = key.slice('aidash-cards-r2:'.length).split(':'); if (parts[0] === 'selection' && parts[1]) { const category = parts[1].replace(/^select-/, ''), id = String(localStorage.getItem(key) || ''); if (id) { const entry = JSON.stringify([category, 2, id]); merged[entry] = {...merged[entry], category, round: 2, id, selected: true}; } } else if ((parts[0] === 'star' || parts[0] === 'note') && parts.length >= 3) { const category = parts[1], id = parts.slice(2).join(':'), entry = JSON.stringify([category, 2, id]), item = {...merged[entry], category, round: 2, id}; if (parts[0] === 'star' && localStorage.getItem(key) === '1') item.starred = true; if (parts[0] === 'note') item.notes = String(localStorage.getItem(key) || ''); merged[entry] = item; } } } return merged; }; const summary = (goal, state) => selectionSummary(goal, state, undefined, inventories.get(goal) || []); const update = () => goals.forEach(goal => { let state = {}; try { state = parse(goal); } catch {} const node = document.querySelector(`[data-goal-telemetry="${CSS.escape(goal)}"]`); if (node) node.textContent = telemetryText(activeItems(state, undefined, inventories.get(goal) || [])); }); const copy = async text => { try { await navigator.clipboard.writeText(text); } catch { const area = document.getElementById('hub-summary-text'); area.hidden = false; area.value = text; area.focus(); area.select(); } }; document.addEventListener('click', event => { const button = event.target.closest('[data-copy-goal],#copy-all-demos-summary'); if (!button) return; copy(button.id ? goals.map(goal => summary(goal, parse(goal))).join('\n\n') : summary(button.dataset.copyGoal, parse(button.dataset.copyGoal))); }); window.addEventListener('storage', update); window.addEventListener('pageshow', update); update(); })();"""
+    header = _site_header(hub=True)
+    return f'''<!doctype html><html lang="zh-CN" {ROOT_ATTRS}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design Demos 总目录 · Active Ephemeral Galleries</title>{STRATA_HEAD}<style>{NOTEBOOK_CSS}\n{tokens}\n.demo-goal-card{{padding:20px;margin:16px 0;border:1px solid var(--line,var(--border));border-radius:12px;background:var(--surface,var(--white));color:var(--text,var(--ink))}}.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{margin-right:12px;min-height:28px;display:inline-flex;align-items:center;color:var(--accent,var(--action))}}button{{padding:10px 14px;border:1px solid var(--line,var(--border-strong));border-radius:10px;background:var(--surface,var(--white));color:var(--text,var(--ink))}}@media(max-width:480px){{.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{min-height:44px}}}}</style></head><body class="gallery-page"><main class="gallery">{header}<h1>Design Demos 总目录 · Active Ephemeral Galleries</h1><div id="demo-goals">{"".join(cards)}</div><button id="copy-all-demos-summary">📋 复制全部项目观察摘要</button><textarea id="hub-summary-text" readonly hidden></textarea></main><script id="hub-config" type="application/json">{config}</script><script>{shared_runtime}</script><script>{runtime}</script></body></html>'''

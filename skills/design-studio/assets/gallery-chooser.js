@@ -56,20 +56,37 @@
   if (typeof document === 'undefined' || !document.getElementById('gallery-config')) return;
   const config = JSON.parse(document.getElementById('gallery-config').textContent), root = document.getElementById(config.portal ? 'portal-grid' : 'variants');
   const articles = [...root.children], cards = new Map(articles.map((node, i) => { node.__galleryCard = config.cards[i]; return [node, config.cards[i]]; }));
-  const status = document.getElementById('status'), telemetry = document.getElementById('selection-telemetry'); let group = config.portal ? config.firstGroup : 'all', platform = 'all', theme = 'light', mobileWeb = false, memoryState = {};
+  const status = document.getElementById('status'), telemetry = document.getElementById('selection-telemetry'), themeSelect = document.getElementById('theme'); let group = config.portal ? config.firstGroup : 'all', platform = 'all', theme = 'system', mobileWeb = false, memoryState = {};
   function storage() { try { return window.localStorage; } catch { return null; } }
+  try { const savedTheme = storage()?.getItem?.('profile-theme'); if (['system', 'light', 'dark'].includes(savedTheme)) theme = savedTheme; } catch {}
+  function resolvePreviewTheme(value) {
+    if (value === 'dark' || value === 'light') return value;
+    try { return window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'; } catch { return 'light'; }
+  }
   function currentState() { const stored = readState(storage(), config.goal); return Object.keys(stored).length ? {...memoryState, ...stored} : {...memoryState}; }
   function updateTelemetry(state) { if (telemetry) telemetry.textContent = telemetryText(activeItems(state, root, config.cards)); }
   function restoreControls() { const state = currentState(); memoryState = {...state}; cards.forEach((card, node) => { if (card.reference) return; const value = state[entryKey(card)] || {}; node.querySelector('[data-select]').checked = !!value.selected; node.querySelector('[data-star]').checked = !!value.starred; node.querySelector('[data-note]').value = value.notes || ''; }); updateTelemetry(state); filter(); }
   root.addEventListener('input', persist); root.addEventListener('change', persist);
   function persist(event) { const node = event.target.closest('.variant-card'), card = cards.get(node), input = event.target; if (!card || card.reference) return; const field = input.hasAttribute('data-select') ? 'selected' : input.hasAttribute('data-star') ? 'starred' : input.hasAttribute('data-note') ? 'notes' : null; if (!field) return; const state = updateState(currentState(), card, field, field === 'notes' ? input.value : input.checked); memoryState = state; try { const store = storage(); if (!store) throw new Error('Storage unavailable'); store.setItem(`design-gallery:${config.goal}`, JSON.stringify(state)); } catch { status.textContent = 'Local storage unavailable — changes cannot persist in this browser context.'; } restoreControls(); }
-  function applyFrame(frame) { try { const doc = frame.contentDocument; if (!doc?.body) return; doc.documentElement.dataset.theme = theme; doc.body.dataset.theme = theme; } catch { status.textContent = 'Preview appearance unavailable across origins; open via a same-origin HTTP server.'; } }
-  function applyTheme(value) { theme = value; document.body.dataset.theme = theme; root.querySelectorAll('iframe').forEach(applyFrame); }
+  function applyFrame(frame) { try { const doc = frame.contentDocument; if (!doc?.body) return; const previewTheme = resolvePreviewTheme(theme); doc.documentElement.dataset.theme = previewTheme; doc.body.dataset.theme = previewTheme; } catch { status.textContent = 'Preview appearance unavailable across origins; open via a same-origin HTTP server.'; } }
+  function applyTheme(value, persistTheme = false) {
+    theme = ['system', 'light', 'dark'].includes(value) ? value : 'light';
+    if (themeSelect) themeSelect.value = theme;
+    const effective = resolvePreviewTheme(theme);
+    if (document.documentElement?.dataset) {
+      if (theme === 'system') delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = theme;
+    }
+    if (document.body?.dataset) document.body.dataset.theme = theme === 'system' ? effective : theme;
+    if (persistTheme) { try { storage()?.setItem?.('profile-theme', theme); } catch {} }
+    root.querySelectorAll('iframe').forEach(applyFrame);
+  }
   function fitFrames() { root.querySelectorAll('.device-bezel').forEach(bezel => { const card = bezel.closest('.variant-card'), m = frameMetrics(bezel.dataset.frameMode, mobileWeb, card.clientWidth); bezel.style.setProperty('--frame-width', `${m.width}px`); bezel.style.setProperty('--frame-height', `${m.height}px`); bezel.style.setProperty('--preview-scale', m.scale); }); }
   function filter() { let visible = 0; articles.forEach(node => { const matches = (group === 'all' || node.dataset.group === group) && (platform === 'all' || node.dataset.platform === platform); node.hidden = !matches; node.setAttribute('aria-hidden', String(!matches)); if (matches) visible++; }); document.getElementById('empty-state').hidden = visible > 0; updateTelemetry(currentState()); fitFrames(); applyTheme(theme); }
   function bindFilter(selector, update) { const buttons = [...document.querySelectorAll(selector)]; buttons.forEach(button => button.addEventListener('click', () => { buttons.forEach(b => b.setAttribute('aria-pressed', String(b === button))); update(button); filter(); })); }
   bindFilter('[data-group-filter]', b => { group = b.dataset.groupFilter; }); bindFilter('[data-portal-platform]', b => { platform = b.dataset.portalPlatform; });
-  document.querySelectorAll('button[data-theme],button[data-portal-theme]').forEach(button => button.addEventListener('click', () => applyTheme(button.dataset.portalTheme || button.dataset.theme)));
+  document.querySelectorAll('button[data-theme],button[data-portal-theme]').forEach(button => button.addEventListener('click', () => applyTheme(button.dataset.portalTheme || button.dataset.theme, true)));
+  themeSelect?.addEventListener?.('change', event => applyTheme(event.target?.value || themeSelect.value, true));
   document.getElementById('responsive-toggle')?.addEventListener('click', event => { mobileWeb = !mobileWeb; event.currentTarget.setAttribute('aria-pressed', String(mobileWeb)); fitFrames(); });
   document.getElementById('copy-summary').addEventListener('click', async () => { const text = selectionSummary(config.goal, currentState(), root, config.cards), area = document.getElementById('summary-text'); area.value = text; try { await navigator.clipboard.writeText(text); area.hidden = true; status.textContent = 'Summary copied'; } catch { area.hidden = false; area.focus(); area.select(); status.textContent = 'Clipboard unavailable — copy the summary below.'; } });
   articles.forEach(node => node.querySelector('iframe').addEventListener('load', event => applyFrame(event.target)));

@@ -543,6 +543,34 @@ else
 fi
 
 # Pre-register folder trust for CWD & shared roots so headless panes never block on startup folder-trust dialogs.
+if [[ -d "$CWD" && "${HERDR_SKIP_GIT_AUTHOR:-0}" != "1" ]]; then
+  if git -C "$CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ORIGIN_URL="$(git -C "$CWD" config --get remote.origin.url 2>/dev/null || true)"
+    ORIGIN_LC="$(printf '%s' "$ORIGIN_URL" | tr '[:upper:]' '[:lower:]')"
+    CWD_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CWD" 2>/dev/null || printf '%s' "$CWD")"
+    IS_ENTERPRISE_REMOTE=0
+    case "$ORIGIN_LC" in
+      *microsoft*|*bing-growth*|*visualstudio*|*azure*|*dev.azure.com*)
+        IS_ENTERPRISE_REMOTE=1
+        ;;
+    esac
+    SHOULD_SET_BOT_AUTHOR=0
+    if [[ "$ORIGIN_LC" == *leepepe* ]]; then
+      SHOULD_SET_BOT_AUTHOR=1
+    elif [[ "$IS_ENTERPRISE_REMOTE" -eq 0 ]]; then
+      case "$CWD:$CWD_REAL" in
+        "$HOME/Development"/*|*/Development/*|/Volumes/SSD/*|/tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+          SHOULD_SET_BOT_AUTHOR=1
+          ;;
+      esac
+    fi
+    if [[ "$SHOULD_SET_BOT_AUTHOR" -eq 1 ]]; then
+      git -C "$CWD" config user.name "leepepe-agent[bot]" >/dev/null 2>&1 || true
+      git -C "$CWD" config user.email "333217946+leepepe-agent[bot]@users.noreply.github.com" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 if [[ -z "${MOCK_HERDR_LOG:-}" && "${HERDR_DISPATCH_SKIP_TRUST:-0}" != "1" ]]; then
   python3 - "$KIND" "$CWD" <<'PY' || true
 import json, os, pathlib, re, sys
