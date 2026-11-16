@@ -449,10 +449,15 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
     GATEWAY_ONLINE=1
   elif [[ "$GATEWAY_MODE" == "direct" || "${HERDR_MOCK_MAGPIE_ONLINE:-}" == "0" ]]; then
     GATEWAY_ONLINE=0
-  elif curl -fsS --max-time 0.2 "${HERDR_MAGPIE_HEALTH_URL:-http://127.0.0.1:3425/api/hello}" >/dev/null 2>&1; then
-    GATEWAY_ONLINE=1
   else
     GATEWAY_ONLINE=0
+    for _probe_attempt in 1 2 3 4; do
+      if curl -fsS --max-time 0.2 "${HERDR_MAGPIE_HEALTH_URL:-http://127.0.0.1:3425/api/hello}" >/dev/null 2>&1; then
+        GATEWAY_ONLINE=1
+        break
+      fi
+      [[ "$_probe_attempt" -lt 4 ]] && sleep 0.1
+    done
   fi
 
   FALLBACK_MODEL=""
@@ -509,6 +514,18 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
   fi
   [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" != "copilot" ]] && RESOLVED_MODEL="$LOGICAL_GROUP"
   [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" == "copilot" && "${AGENT_ARGS[*]}" == *"magpie/$LOGICAL_GROUP"* ]] && RESOLVED_MODEL="magpie/$LOGICAL_GROUP"
+  if [[ "$GATEWAY_ONLINE" -eq 0 && "$KIND" == "copilot" && ( "$LOGICAL_GROUP" == "group/steering" || "$LOGICAL_GROUP" == "group/reviewing" ) && "$RESOLVED_MODEL" == "$FALLBACK_MODEL" ]]; then
+    HAS_REASONING_EFFORT=0
+    HAS_CONTEXT_TIER=0
+    for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
+      case "$arg" in
+        --reasoning-effort|--reasoning-effort=*) HAS_REASONING_EFFORT=1 ;;
+        --context|--context=*) HAS_CONTEXT_TIER=1 ;;
+      esac
+    done
+    [[ "$HAS_REASONING_EFFORT" -eq 0 ]] && AGENT_ARGS+=(--reasoning-effort high)
+    [[ "$HAS_CONTEXT_TIER" -eq 0 ]] && AGENT_ARGS+=(--context long_context)
+  fi
 else
   RESOLVED_MODEL="$REQUESTED_MODEL"
 fi

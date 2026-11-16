@@ -99,6 +99,60 @@ elif args[:2] == ["agent", "prompt"]:
         offline_payload = json.loads(offline.stdout)
         self.assertEqual(offline_payload["logical_group"], "group/steering")
         self.assertEqual(offline_payload["resolved_model"], "gemini-4-carbon")
+        self.assertIn('"--reasoning-effort", "high"', offline.mock_log)
+        self.assertIn('"--context", "long_context"', offline.mock_log)
+
+    def test_magpie_probe_retries_transient_failure_and_offline_reviewing_fallback_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            herdr = tmp / "herdr"
+            herdr.write_text(self.herdr_source, encoding="utf-8")
+            herdr.chmod(0o755)
+            curl_counter = tmp / "curl_attempts"
+            curl_bin = tmp / "curl"
+            curl_bin.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib, sys\n"
+                "p = pathlib.Path(os.environ['CURL_COUNTER'])\n"
+                "n = int(p.read_text()) + 1 if p.exists() else 1\n"
+                "p.write_text(str(n))\n"
+                "sys.exit(0 if n >= 2 else 28)\n",
+                encoding="utf-8",
+            )
+            curl_bin.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{tmp}:{os.environ['PATH']}",
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p1",
+                "HERDR_MOCK_MAGPIE_ONLINE": "",
+                "HERDR_COPILOT_MAGPIE_BYOK": "1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+                "MOCK_HERDR_LOG": str(tmp / "calls"),
+                "TEST_CAPTURE": str(tmp / "calls"),
+                "CURL_COUNTER": str(curl_counter),
+            }
+            retried = subprocess.run(
+                [
+                    str(DISPATCH), "--name", "goal-tl-r1", "--kind", "copilot",
+                    "--cwd", str(tmp), "--prompt", "test", "--role", "team_lead",
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(retried.returncode, 0, retried.stderr)
+            retried_payload = json.loads(retried.stdout)
+            self.assertEqual(int(curl_counter.read_text(encoding="utf-8")), 2)
+            self.assertEqual(retried_payload["gateway_mode"], "magpie")
+            self.assertEqual(retried_payload["resolved_model"], "magpie/group/steering")
+
+        reviewer_offline = self.run_dispatch(
+            "code_reviewer", kind="copilot", online="0", extra=("--exclude-vendor", "openai"),
+        )
+        self.assertEqual(reviewer_offline.returncode, 0, reviewer_offline.stderr)
+        rev_payload = json.loads(reviewer_offline.stdout)
+        self.assertEqual(rev_payload["resolved_model"], "gemini-4-argon")
+        self.assertIn('"--reasoning-effort", "high"', reviewer_offline.mock_log)
+        self.assertIn('"--context", "long_context"', reviewer_offline.mock_log)
 
     def test_designer_online_and_offline_fallback(self):
         online = self.run_dispatch("designer", online="1")
