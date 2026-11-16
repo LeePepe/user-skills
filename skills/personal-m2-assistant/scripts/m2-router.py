@@ -227,42 +227,9 @@ def _clean_single_line(text: Any, *, max_len: int = 320) -> str:
     return compact
 
 
-def _read_copilot_events_tail(
-    session_uuid: str,
-    *,
-    session_state_dir: str | Path | None = None,
-    max_bytes: int = EVENTS_TAIL_MAX_BYTES,
-    max_turns: int = RECENT_SESSION_MAX_TURNS,
-) -> dict[str, Any] | None:
-    clean_uuid = _text(session_uuid)
-    if not clean_uuid or "/" in clean_uuid or "\\" in clean_uuid or ".." in clean_uuid:
-        return None
-    base_dir = Path(
-        session_state_dir
-        or os.environ.get("COPILOT_SESSION_STATE_DIR")
-        or (Path.home() / ".copilot" / "session-state")
-    ).expanduser()
-    events_path = base_dir / clean_uuid / "events.jsonl"
-    if not events_path.is_file():
-        return None
-    try:
-        with events_path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            file_size = handle.tell()
-            offset = max(0, file_size - max(1024, int(max_bytes)))
-            handle.seek(offset, os.SEEK_SET)
-            chunk = handle.read()
-    except OSError:
-        return None
-
-    text = chunk.decode("utf-8", errors="replace")
-    raw_lines = text.splitlines()
-    if offset > 0 and raw_lines:
-        try:
-            json.loads(raw_lines[0])
-        except ValueError:
-            raw_lines = raw_lines[1:]
-
+def _extract_events_from_jsonl_lines(
+    raw_lines: list[str],
+) -> tuple[list[dict[str, Any]], str, float | None, str, float | None]:
     turns: list[dict[str, Any]] = []
     last_conv_ts = ""
     last_conv_epoch: float | None = None
@@ -325,6 +292,70 @@ def _read_copilot_events_tail(
                         "assistant_timestamp": ts,
                         "timestamp": ts,
                     })
+    return turns, last_conv_ts, last_conv_epoch, last_any_ts, last_any_epoch
+
+
+def _read_copilot_events_tail(
+    session_uuid: str,
+    *,
+    session_state_dir: str | Path | None = None,
+    max_bytes: int = EVENTS_TAIL_MAX_BYTES,
+    max_turns: int = RECENT_SESSION_MAX_TURNS,
+) -> dict[str, Any] | None:
+    clean_uuid = _text(session_uuid)
+    if not clean_uuid or "/" in clean_uuid or "\\" in clean_uuid or ".." in clean_uuid:
+        return None
+    base_dir = Path(
+        session_state_dir
+        or os.environ.get("COPILOT_SESSION_STATE_DIR")
+        or (Path.home() / ".copilot" / "session-state")
+    ).expanduser()
+    events_path = base_dir / clean_uuid / "events.jsonl"
+    if not events_path.is_file():
+        return None
+    window = max(1024, int(max_bytes))
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            offset = max(0, file_size - window)
+            handle.seek(offset, os.SEEK_SET)
+            chunk = handle.read()
+    except OSError:
+        return None
+
+    initial_bytes_read = len(chunk)
+    text = chunk.decode("utf-8", errors="replace")
+    raw_lines = text.splitlines()
+    if offset > 0 and raw_lines:
+        try:
+            json.loads(raw_lines[0])
+        except ValueError:
+            raw_lines = raw_lines[1:]
+
+    turns, last_conv_ts, _, last_any_ts, _ = _extract_events_from_jsonl_lines(raw_lines)
+    # If the tail 64KB was filled with tool/hook events during an active turn, widen window up to 512KB to recover recent user/assistant messages.
+    if not any(t.get("user_message") or t.get("assistant_message") for t in turns) and offset > 0:
+        wider_offset = max(0, file_size - min(file_size, window * 8))
+        try:
+            with events_path.open("rb") as handle:
+                handle.seek(wider_offset, os.SEEK_SET)
+                wider_chunk = handle.read()
+            wider_lines = wider_chunk.decode("utf-8", errors="replace").splitlines()
+            if wider_offset > 0 and wider_lines:
+                try:
+                    json.loads(wider_lines[0])
+                except ValueError:
+                    wider_lines = wider_lines[1:]
+            w_turns, w_conv_ts, _, w_any_ts, _ = _extract_events_from_jsonl_lines(wider_lines)
+            if w_turns:
+                turns = w_turns
+            if not last_conv_ts and w_conv_ts:
+                last_conv_ts = w_conv_ts
+            if not last_any_ts and w_any_ts:
+                last_any_ts = w_any_ts
+        except OSError:
+            pass
 
     recent_turns = [t for t in turns if t.get("user_message") or t.get("assistant_message")][-max_turns:]
     last_activity = last_conv_ts or last_any_ts
@@ -351,7 +382,7 @@ def _read_copilot_events_tail(
         "source": "copilot_events_jsonl",
         "agent_session_id": clean_uuid,
         "events_path": str(events_path),
-        "bytes_read": len(chunk),
+        "bytes_read": initial_bytes_read,
         "last_session_activity_at": last_activity,
         "turns": recent_turns,
         "user_messages": user_messages,
@@ -4881,9 +4912,21 @@ def _classify_and_unblock_dialog(
     }
 
 
+_VOLATILE_TUI_CHROME_RE = re.compile(
+    r"(?:Session:\s*[\d.]+\s*AIC\s+used"
+    r"|←\s*open\s+sidebar"
+    r"|Interactive\s*·\s*Manual\s+Approval"
+    r"|(?:Working|Thinking)\s*·\s*[\d.]+\s*[KMG]?i?B\b.*context\s*\(\d+%\))",
+    re.I,
+)
+
+
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
-    lines = [re.sub(r"\s+", " ", line).strip(" ┃│") for line in _text(text).splitlines()]
-    return "\n".join([line for line in lines if re.search(r"\w", line)][-max_lines:])[-800:]
+    raw_lines = [re.sub(r"\s+", " ", line).strip(" ┃│╻╹▄▀") for line in _text(text).splitlines()]
+    word_lines = [line for line in raw_lines if re.search(r"\w", line)]
+    filtered = [line for line in word_lines if not _VOLATILE_TUI_CHROME_RE.search(line)]
+    chosen = filtered if filtered else word_lines
+    return "\n".join(chosen[-max_lines:])[-800:]
 
 
 def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner = _run_command, lines: int = 40) -> str:
@@ -5631,15 +5674,16 @@ def supervision_status(
     settled_in_status: list[str] = []
 
     def refresh(state: dict[str, Any]) -> dict[str, Any]:
-        _discover_and_enrich_global_m2_slots(
-            state,
-            agent_records=records,
-            runner=runner,
-            herdr_bin=binary,
-            handoff_root=handoff_root,
-            allow_quiescent_settle=True,
-            settled_slot_ids_out=settled_in_status,
-        )
+        if discover or agent_records is not None:
+            _discover_and_enrich_global_m2_slots(
+                state,
+                agent_records=records,
+                runner=runner,
+                herdr_bin=binary,
+                handoff_root=handoff_root,
+                allow_quiescent_settle=True,
+                settled_slot_ids_out=settled_in_status,
+            )
         state["slots"] = _compute_board_rollup(state, just_settled_slots=settled_in_status)["slots"]
         return state
 
