@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -493,6 +494,139 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertFalse(broken_payload["compatible"])
             self.assertIn("delivery_requirements", broken_payload["missing_slots"])
             self.assertTrue(any(m["path"] == "communication.max_summary_lines" for m in broken_payload["type_mismatches"]))
+
+    def test_eval_target_and_queue_supervisor_checkpoints(self):
+        skill_contract = ROOT / "skills" / "skill-contract" / "scripts" / "skill_contract.py"
+        goal_queue = SCRIPTS / "goal-queue.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            handoff = root / "handoff" / "demo-goal"
+            worktree = root / "wt"
+            (handoff / "receipts").mkdir(parents=True)
+            worktree.mkdir(parents=True)
+            (handoff / "ledger.md").write_text(
+                "# Goal: demo-goal\n- TL: demo-goal-goal-tl-r1\n"
+                "2026-11-16T08:00:00Z | EVT=READY | id=E1\n"
+                "2026-11-16T08:05:00Z | EVT=GOAL_DONE | id=E2\n",
+                encoding="utf-8",
+            )
+            (handoff / "spec.md").write_text("# Spec\nUse my-designer for SwiftUI.\n", encoding="utf-8")
+            # 1) Subtractive design.md missing Negative Assertions and concrete Obsolete Test Manifest must fail spec phase
+            (handoff / "design.md").write_text(
+                "# Design\n底部只保留两个按钮，去掉灰色遮罩。\n\n## Obsolete Test Manifest\n- 无破坏性旧单测删除\n",
+                encoding="utf-8",
+            )
+            bad_spec_eval = subprocess.run(
+                [
+                    sys.executable,
+                    str(skill_contract),
+                    "eval-target",
+                    "--skills",
+                    "auto",
+                    "--phase",
+                    "spec",
+                    "--handoff-dir",
+                    str(handoff),
+                    "--strict",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_spec_eval.returncode, 1)
+            bad_spec_payload = json.loads(bad_spec_eval.stdout)
+            self.assertFalse(bad_spec_payload["ok"])
+            self.assertIn("my-designer", bad_spec_payload["skill_eval_summary"]["triggered_skills"])
+            self.assertIn("my-designer:EV-013", bad_spec_payload["skill_eval_summary"]["executed_case_ids"])
+            self.assertGreaterEqual(bad_spec_payload["skill_eval_summary"]["caught"], 1)
+
+            # Checkpoint A: goal-queue.py ack-spec blocks when design.md fails spec eval-target
+            blocked_ack = subprocess.run(
+                [sys.executable, str(goal_queue), "ack-spec", "--handoff-dir", str(handoff)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked_ack.returncode, 0)
+            self.assertIn("SUBTRACTIVE_MISSING_NEGATIVE_ASSERTIONS", blocked_ack.stderr)
+
+            # 2) Fix design.md with Negative Assertions + concrete Obsolete Test Manifest -> ack-spec passes
+            (handoff / "design.md").write_text(
+                "# Design\n底部只保留两个按钮，去掉灰色遮罩。\n\n"
+                "## Negative DOM/View Assertions\n"
+                "- `!app.otherElements[\"vox.recording.indicator\"].exists` (`count == 0`)\n\n"
+                "## Obsolete Test Manifest\n"
+                "- `VoxPocketUITests.swift:151` — remove legacy banner assertion\n",
+                encoding="utf-8",
+            )
+            passed_ack = subprocess.run(
+                [sys.executable, str(goal_queue), "ack-spec", "--handoff-dir", str(handoff)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            ack_payload = json.loads(passed_ack.stdout)
+            self.assertTrue(ack_payload["ok"])
+            self.assertEqual(ack_payload["skill_eval_summary"]["passed"], 1)
+
+            # 3) Code phase catches instructional micro-copy clutter in worktree
+            bad_swift = worktree / "BadView.swift"
+            bad_swift.write_text('import SwiftUI\nstruct V: View { var body: some View { Text("点击任务置顶聚焦 · 标题与属性展示处直接点按修改") } }\n', encoding="utf-8")
+            bad_code_eval = subprocess.run(
+                [
+                    sys.executable,
+                    str(skill_contract),
+                    "eval-target",
+                    "--skills",
+                    "auto",
+                    "--phase",
+                    "code",
+                    "--handoff-dir",
+                    str(handoff),
+                    "--worktree",
+                    str(worktree),
+                    "--strict",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_code_eval.returncode, 1)
+            bad_code_payload = json.loads(bad_code_eval.stdout)
+            self.assertFalse(bad_code_payload["ok"])
+            self.assertGreaterEqual(bad_code_payload["skill_eval_summary"]["caught"], 1)
+
+            # 4) Clean Swift file passes and Checkpoint B (goal-supervisor.py telemetry --write) records skill_eval_summary
+            bad_swift.write_text('import SwiftUI\nstruct V: View { var body: some View { Text("待办清单") } }\n', encoding="utf-8")
+            telem_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(SUPERVISOR),
+                    "telemetry",
+                    "--handoff-dir",
+                    str(handoff),
+                    "--worktree",
+                    str(worktree),
+                    "--write",
+                    "--json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            telem_payload = json.loads(telem_res.stdout)
+            summary = telem_payload["skill_eval_summary"]
+            self.assertIn("my-designer", summary["triggered_skills"])
+            self.assertEqual(summary["cases_run"], 3)
+            self.assertEqual(summary["passed"], 3)
+            self.assertEqual(summary["caught"], 0)
+            self.assertTrue((handoff / "receipts" / "skill-eval-report.json").is_file())
+            self.assertTrue((handoff / "receipts" / "contract-telemetry.json").is_file())
 
 
 if __name__ == "__main__":
