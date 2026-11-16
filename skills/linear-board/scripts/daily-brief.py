@@ -10,7 +10,9 @@ from typing import Any, Callable
 
 CST = timezone(timedelta(hours=8))
 OWNER_ID = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
-DEFAULT_PARENT = "TIA-375"
+DEFAULT_PARENT = ""
+DEFAULT_PROJECT = "user-skills"
+DEFAULT_MILESTONE = "Skills Workflow"
 PERSONAL_REPOS = ("user-skills", "VoxPocket", "AIDash", "shared-design-system", "Financial", "leepepe.github.io")
 EXCLUDED_TERMS = ("work business", "bing", "workplace")
 LEDGER_TOKENS = ("work", "sapphire", "flightbook", "webiq", "bing", "devsync")
@@ -696,32 +698,65 @@ def _canceled_issue(issue: dict[str, Any]) -> bool:
     state = issue.get("state") or {}
     return any(str(state.get(key) or "").casefold() in {"canceled", "cancelled"} for key in ("type", "name"))
 
-def propose(client: Any, title: str, markdown: str, parent: str = DEFAULT_PARENT, dedup_key: str | None = None) -> dict[str, Any] | None:
+def _prior_daily_brief_date(issue: dict[str, Any], current_date: str) -> bool:
+    if not current_date: return False
+    text = f"{issue.get('title') or ''} {issue.get('description') or ''}"
+    match = re.search(r"<!--\s*GTT-LINEAR-DEDUP:daily-brief-(\d{4}-\d{2}-\d{2})\s*-->", text) or re.search(r"\[Daily Brief\s+(\d{4}-\d{2}-\d{2})\]", text, re.I)
+    return bool(match and match.group(1) < current_date)
+
+def propose(client: Any, title: str, markdown: str, parent: str | None = DEFAULT_PARENT, dedup_key: str | None = None) -> dict[str, Any] | None:
     if client is None: return None
     team = client.team_metadata("TIA")
     match = re.search(r"\d{4}-\d{2}-\d{2}", title)
-    marker = dedup_key or (f"daily-brief-{match[0]}" if match else "")
+    current_date = match[0] if match else ""
+    marker = dedup_key or (f"daily-brief-{current_date}" if current_date else "")
     if not re.fullmatch(r"daily-brief-\d{4}-\d{2}-\d{2}", marker): raise ValueError("Invalid Daily Brief marker")
+    if not current_date: current_date = marker.removeprefix("daily-brief-")
     exact_comment = f"<!-- GTT-LINEAR-DEDUP:{marker} -->"
     # Enumeration includes closed issues; narrower marker helpers can create duplicates.
     issues = client.list_issues("TIA", limit=None)
     marker_matches = [issue for issue in issues if exact_comment in str(issue.get("description") or "")]
     candidates = marker_matches or [issue for issue in issues if issue.get("title") == title]
     existing = min(candidates, key=_canceled_issue) if candidates else None
-    todo = next((s for s in team.get("states", {}).get("nodes", []) if str(s.get("name", "")).casefold() == "todo" and s.get("id")), None)
+    states = team.get("states", {}).get("nodes", [])
+    todo = next((s for s in states if str(s.get("name", "")).casefold() == "todo" and s.get("id")), None)
+    done = next((s for s in states if (str(s.get("name", "")).casefold() == "done" or str(s.get("type", "")).casefold() == "completed") and s.get("id")), None)
     if (not existing or _canceled_issue(existing)) and todo is None: raise ValueError("TIA Todo state unavailable")
-    parent_issue = client.issue(parent)
-    parent_team = parent_issue.get("team") or {}
-    if not parent_issue.get("id") or not (parent_team.get("key") == "TIA" or (not parent_team.get("key") and parent_team.get("id") == team["id"])):
-        raise ValueError("Daily Brief parent is not verified in team TIA")
-    kwargs = {"title": title, "description": markdown, "parent_id": parent_issue["id"], "assignee_id": OWNER_ID}
+    for old in issues:
+        if existing and old.get("id") == existing.get("id"): continue
+        if not _prior_daily_brief_date(old, current_date) or _canceled_issue(old): continue
+        old_state = old.get("state") or {}
+        is_done = str(old_state.get("name") or "").casefold() == "done" or str(old_state.get("type") or "").casefold() == "completed"
+        has_assignee = bool((old.get("assignee") or {}).get("id"))
+        if (done and not is_done) or has_assignee:
+            retire_kwargs: dict[str, Any] = {"assignee_id": None, "clear_assignee": True}
+            if done and not is_done: retire_kwargs["state_id"] = str(done["id"])
+            client.update_issue(old["id"], **retire_kwargs)
+    kwargs: dict[str, Any] = {"title": title, "description": markdown, "assignee_id": OWNER_ID}
+    parent_key = str(parent or "").strip()
+    if parent_key:
+        parent_issue = client.issue(parent_key)
+        parent_team = parent_issue.get("team") or {}
+        if not parent_issue.get("id") or not (parent_team.get("key") == "TIA" or (not parent_team.get("key") and parent_team.get("id") == team["id"])):
+            raise ValueError("Daily Brief parent is not verified in team TIA")
+        kwargs["parent_id"] = parent_issue["id"]
+    else:
+        kwargs["parent_id"] = None
+        projects = (team.get("projects") or {}).get("nodes") or []
+        project = next((p for p in projects if str(p.get("name", "")).casefold() == DEFAULT_PROJECT.casefold() and p.get("id")), None)
+        if project:
+            kwargs["project_id"] = str(project["id"])
+            if hasattr(client, "project_milestones"):
+                ms = next((m for m in (client.project_milestones(str(project["id"])) or []) if str(m.get("name", "")).casefold() == DEFAULT_MILESTONE.casefold() and m.get("id")), None)
+                if ms: kwargs["project_milestone_id"] = str(ms["id"])
     if existing:
         if _canceled_issue(existing): kwargs["state_id"] = todo["id"]
+        if not parent_key: kwargs["clear_parent"] = True
         return client.update_issue(existing["id"], **kwargs)
     kwargs["team_id"] = team["id"]; kwargs["state_id"] = todo["id"]
     return client.create_issue(**kwargs)
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)

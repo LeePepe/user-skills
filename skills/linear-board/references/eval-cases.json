@@ -1,12 +1,12 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-15",
+  "updated": "2026-11-16",
   "active_cases": [
     {
       "id": "EV-001",
-      "title": "L0 routes Daily Brief and drawer",
-      "cmd": "grep -q 'daily-brief-and-bot.md' skills/linear-board/SKILL.md && grep -q 'eval-cases.json' skills/linear-board/SKILL.md",
+      "title": "L0 routes Daily Brief, drawer, and L1-L3 hierarchy contract",
+      "cmd": "grep -q 'daily-brief-and-bot.md' skills/linear-board/SKILL.md && grep -q 'eval-cases.json' skills/linear-board/SKILL.md && grep -q '\\[Routine\\]' skills/linear-board/SKILL.md",
       "expect_exit": 0,
       "registered_at": "2026-11-15",
       "platforms": [
@@ -35,8 +35,8 @@
     },
     {
       "id": "EV-002",
-      "title": "L1 records four buckets, four layers, and bridge safety",
-      "cmd": "grep -q 'Jev truth table' skills/linear-board/references/daily-brief-and-bot.md && grep -q 'Ack → dispatch → wait → result-comment → owner-reassign' skills/linear-board/references/daily-brief-and-bot.md",
+      "title": "L1 records four buckets, four layers, L1-L3 hierarchy, and bridge safety",
+      "cmd": "grep -q 'Jev truth table' skills/linear-board/references/daily-brief-and-bot.md && grep -q 'Ack → dispatch → wait → result-comment → owner-reassign' skills/linear-board/references/daily-brief-and-bot.md && grep -q 'TIA-375..TIA-389' skills/linear-board/references/daily-brief-and-bot.md",
       "expect_exit": 0,
       "registered_at": "2026-11-15",
       "platforms": [

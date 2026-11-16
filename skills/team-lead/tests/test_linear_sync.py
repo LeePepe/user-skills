@@ -92,10 +92,15 @@ class FakeTransport:
         if "UpdateIssue" in query:
             label_ids = variables["input"].get("labelIds", [])
             labels = {"nodes": [{"id": label_id, "name": label_id} for label_id in label_ids]}
+            assignee = self.issue.get("assignee")
+            if "assigneeId" in variables["input"]:
+                aid = variables["input"].get("assigneeId")
+                assignee = {"id": aid, "name": "Owner"} if aid else None
             self.issue = {
                 **self.issue,
                 "description": variables["input"].get("description"),
                 "state": {"id": variables["input"].get("stateId"), "name": "In Progress", "type": "started"},
+                "assignee": assignee,
                 "project": (
                     {"id": variables["input"]["projectId"], "name": variables["input"]["projectId"]}
                     if variables["input"].get("projectId")
@@ -205,6 +210,47 @@ class LinearSyncTests(unittest.TestCase):
         client.update_issue("issue-id", clear_parent=True)
         update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
         self.assertIsNone(update_calls[-1][1]["input"]["parentId"])
+
+    def test_sync_issue_enforces_assignee_ball_in_owner_court_rule(self) -> None:
+        transport = FakeTransport()
+        client = linear_sync.GraphQLClient("not-a-secret", transport)
+        team = client.team("TIA")
+        transport.issue["assignee"] = {"id": linear_sync.OWNER_USER_ID, "name": "Owner"}
+        linear_sync._sync_issue(client, transport.issue, team, self.work)
+        update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
+        self.assertIsNone(update_calls[-1][1]["input"]["assigneeId"])
+        (self.work / "ledger.md").write_text(
+            "# Goal: demo\n"
+            "- Owner: tianpei\n"
+            "- Status: in_progress\n\n"
+            "## Tasks\n"
+            "| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
+            "|---|---|---|---|---|---|\n"
+            "| TK1 | — | Build it | writer | blocked | — |\n"
+            "## Events\n"
+            "- 2026-11-04T14:00:00+08:00 | EVT=NEED_OWNER_DECISION | id=E9 | task=TK1 | note=choose A or B\n",
+            encoding="utf-8",
+        )
+        transport.issue["assignee"] = None
+        linear_sync._sync_issue(client, transport.issue, team, self.work)
+        update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
+        self.assertEqual(update_calls[-1][1]["input"]["assigneeId"], linear_sync.OWNER_USER_ID)
+        (self.work / "ledger.md").write_text(
+            "# Goal: demo\n"
+            "- Owner: tianpei\n"
+            "- Status: done\n\n"
+            "## Tasks\n"
+            "| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
+            "|---|---|---|---|---|---|\n"
+            "| TK1 | — | Build it | writer | done | — |\n"
+            "## Events\n"
+            "- 2026-11-04T14:05:00+08:00 | EVT=GOAL_DONE | id=E10 | note=finished\n",
+            encoding="utf-8",
+        )
+        transport.issue["assignee"] = {"id": linear_sync.OWNER_USER_ID, "name": "Owner"}
+        linear_sync._sync_issue(client, transport.issue, team, self.work)
+        update_calls = [call for call in transport.calls if "UpdateIssue" in call[0]]
+        self.assertIsNone(update_calls[-1][1]["input"]["assigneeId"])
 
     def test_aggregate_state_keeps_in_progress_when_partially_completed(self) -> None:
         team = FakeTransport()("query TeamMetadata", {})["data"]["teams"]["nodes"][0]

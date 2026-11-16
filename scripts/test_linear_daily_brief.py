@@ -43,7 +43,9 @@ class FakeClient:
         self.list_calls = []
         self.mutations = []
         self.states = [{"id": "todo", "name": "Todo", "type": "unstarted"}]
-        self.parent = issue("parent", "[Root] Skills Workflow")
+        self.projects = [{"id": "proj-user-skills", "name": "user-skills"}]
+        self.milestones = [{"id": "ms-skills-workflow", "name": "Skills Workflow"}]
+        self.parent = issue("parent", "[Epic] Skills Workflow")
         self.read_error = None
 
     def list_issues(self, key, *, limit):
@@ -59,7 +61,11 @@ class FakeClient:
 
     def team_metadata(self, key):
         if key != "TIA": raise AssertionError(key)
-        return {"id": "tia", "key": "TIA", "states": {"nodes": self.states}}
+        return {"id": "tia", "key": "TIA", "states": {"nodes": self.states}, "projects": {"nodes": self.projects}}
+
+    def project_milestones(self, project_id):
+        if project_id != "proj-user-skills": return []
+        return self.milestones
 
     def issue(self, identifier):
         if identifier != "TIA-375": raise AssertionError(identifier)
@@ -624,16 +630,41 @@ class DailyBriefTests(unittest.TestCase):
 
     def test_propose_creates_then_updates_idempotently_with_correct_parent_owner(self):
         client = FakeClient()
-        first = daily_brief.propose(client, TITLE, MARKER + "\nbody", "TIA-375")
-        second = daily_brief.propose(client, TITLE, MARKER + "\nupdated", "TIA-375")
+        first = daily_brief.propose(client, TITLE, MARKER + "\nbody")
+        second = daily_brief.propose(client, TITLE, MARKER + "\nupdated")
         self.assertEqual([kind for kind, _ in client.mutations], ["create", "update"])
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(first["team_id"], "tia"); self.assertEqual(first["state_id"], "todo")
         for row in (first, second):
-            self.assertEqual(row["parent_id"], "parent")
+            self.assertIsNone(row["parent_id"])
+            self.assertEqual(row["project_id"], "proj-user-skills")
+            self.assertEqual(row["project_milestone_id"], "ms-skills-workflow")
             self.assertEqual(row["assignee_id"], "0680d5e4-720a-4724-a1d4-b9660c0d1495")
+        self.assertTrue(second["clear_parent"])
         self.assertNotIn("state_id", second)
         self.assertEqual(client.list_calls, [("TIA", None), ("TIA", None)])
+        override = daily_brief.propose(client, TITLE, MARKER + "\nexplicit", "TIA-375")
+        self.assertEqual(override["parent_id"], "parent")
+        self.assertNotIn("clear_parent", override)
+
+    def test_propose_auto_closes_and_unassigns_prior_daily_briefs(self):
+        prior = issue(
+            "prior-brief",
+            "[Daily Brief 2026-11-14] 昨日汇总 (11-13) 与今日 Todo (11-14)",
+            "Todo",
+            "unstarted",
+            description="<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-14 -->\nbody",
+            assignee={"id": daily_brief.OWNER_ID},
+        )
+        client = FakeClient([prior])
+        client.states.append({"id": "done", "name": "Done", "type": "completed"})
+        created = daily_brief.propose(client, TITLE, MARKER + "\nbody")
+        self.assertEqual(created["id"], "created")
+        self.assertEqual(created["assignee_id"], daily_brief.OWNER_ID)
+        self.assertEqual(
+            client.mutations[0],
+            ("update", {"id": "prior-brief", "assignee_id": None, "clear_assignee": True, "state_id": "done"}),
+        )
 
     def test_exact_comment_not_prose_and_marker_preferred_over_title(self):
         prose = issue("TIA-446", "Implement generator", description="Mentions daily-brief-2026-11-15 in prose")
@@ -664,7 +695,7 @@ class DailyBriefTests(unittest.TestCase):
     def test_wrong_or_unverifiable_parent_and_missing_todo_do_not_mutate(self):
         for team in ({"key": "OTHER", "id": "other"}, {}, {"id": "other"}):
             client = FakeClient(); client.parent["team"] = team
-            with self.assertRaises(ValueError): daily_brief.propose(client, TITLE, MARKER)
+            with self.assertRaises(ValueError): daily_brief.propose(client, TITLE, MARKER, "TIA-375")
             self.assertFalse(client.mutations)
         for existing in ([], [issue("old", TITLE, "Canceled", "canceled", description=MARKER)]):
             client = FakeClient(existing); client.states = []

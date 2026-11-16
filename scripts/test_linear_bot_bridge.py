@@ -77,11 +77,12 @@ class FakeClient:
 
     def update_issue(self, issue_id, **kwargs):
         self.updates.append((issue_id, kwargs))
-        if kwargs.get("assignee_id") and self.fail_owner:
+        if (kwargs.get("assignee_id") or kwargs.get("clear_delegate")) and self.fail_owner:
             self.fail_owner -= 1
             raise OSError("temporary Owner update failure")
         issue = self.issues[issue_id]
-        if kwargs.get("assignee_id"): issue["assignee"] = {"id": kwargs["assignee_id"]}
+        if kwargs.get("clear_assignee"): issue["assignee"] = None
+        elif kwargs.get("assignee_id"): issue["assignee"] = {"id": kwargs["assignee_id"]}
         if kwargs.get("clear_delegate"): issue["delegate"] = None
         return issue
 
@@ -489,7 +490,7 @@ class BridgeTests(unittest.TestCase):
     def scan(self, client):
         return bridge.process_once(client, self.state)
 
-    def assert_handoff(self, client, text=None):
+    def assert_handoff(self, client, text=None, owner_decision=False):
         self.assertEqual(self.runtime.dispatches, 1)
         self.assertEqual(len(client.comments), 2)
         result_body = client.comments[-1][1]
@@ -499,7 +500,8 @@ class BridgeTests(unittest.TestCase):
         else:
             self.assertIn(text or self.runtime.text, result_body)
         self.assertIn("@ltp19941128", result_body)
-        self.assertEqual(client.updates[-1][1], {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True})
+        expected = {"assignee_id": bridge.OWNER_USER_ID, "clear_delegate": True} if owner_decision else {"clear_assignee": True, "clear_delegate": True}
+        self.assertEqual(client.updates[-1][1], expected)
         self.assertFalse(self.state.data["pending"])
 
     def test_router_real_watch_schema_full_context_and_verbatim_directive(self):
@@ -556,7 +558,7 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("DO NOT POST", client.comments[-1][1])
         self.assertTrue(self.runtime.prompts[0].startswith("/learn second-topic\n"))
         self.assertIn("selection", self.state.data["processed_comment_ids"])
-        self.assertEqual(issue["assignee"]["id"], bridge.OWNER_USER_ID)
+        self.assertIsNone(issue["assignee"])
         self.assertIsNone(issue["delegate"])
         self.restart(); self.scan(client)
         self.assertEqual(self.runtime.dispatches, 1)
@@ -695,7 +697,7 @@ class BridgeTests(unittest.TestCase):
         self.runtime.blocked = True
         self.runtime.text = "Which personal repository should I use?"
         report = self.scan(client)
-        self.assert_handoff(client)
+        self.assert_handoff(client, owner_decision=True)
         self.assertEqual(report["triggers"][0]["result_kind"], "owner-decision")
         self.assertIn("task is not completed", client.comments[-1][1])
         self.assertNotIn("completed without", client.comments[-1][1])

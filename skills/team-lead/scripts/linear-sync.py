@@ -26,6 +26,7 @@ from urllib.request import Request, urlopen
 API_URL = "https://api.linear.app/graphql"
 OAUTH_TOKEN_URL = "https://api.linear.app/oauth/token"
 OAUTH_AUTHORIZE_URL = "https://linear.app/oauth/authorize"
+OWNER_USER_ID = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
 ISSUE_HISTORY_FIELDS = (
     "history { nodes { id createdAt actor { id name displayName app } "
     "botActor { id name type } fromState { id name type } toState { id name type } "
@@ -1458,6 +1459,16 @@ def _sync_issue(
     target_milestone_id = goal_route.get("milestone_id") if goal_route and goal_route.get("milestone_id") else None
     target_parent_id = None
     clear_goal_parent = goal_route is not None
+    current_assignee_id = str((issue.get("assignee") or {}).get("id") or "")
+    target_state_name = str((target_state or {}).get("name") or "").casefold()
+    is_container = bool(re.match(r"^\s*\[(?:epic|root|m2-sync)\]", str(issue.get("title") or ""), re.I)) or "<!-- GTT-M2-SYNC-HUB:v1 -->" in str(issue.get("description") or "")
+    needs_owner_ball = not is_container and (
+        target_state_name == "in review"
+        or any(str(ev.get("EVT") or "").upper() in {"NEED_OWNER_DECISION", "NEED_GO"} for ev in blocking)
+    )
+    target_assignee_id = OWNER_USER_ID if needs_owner_ball else None
+    clear_goal_assignee = not needs_owner_ball and bool(current_assignee_id)
+    assignee_changed = (needs_owner_ball and current_assignee_id != OWNER_USER_ID) or clear_goal_assignee
     current_state_id = str((issue.get("state") or {}).get("id") or "")
     current_labels = [str(node["id"]) for node in issue.get("labels", {}).get("nodes", []) if node.get("id")]
     state_changed = bool(target_state and str(target_state.get("id") or "") != current_state_id)
@@ -1466,7 +1477,7 @@ def _sync_issue(
     milestone_changed = bool(target_milestone_id and target_milestone_id != current_milestone_id)
     parent_changed = clear_goal_parent and bool(current_parent_id)
     description_changed = description != str(issue.get("description") or "")
-    has_field_changes = description_changed or state_changed or labels_changed or project_changed or milestone_changed or parent_changed
+    has_field_changes = description_changed or state_changed or labels_changed or project_changed or milestone_changed or parent_changed or assignee_changed
     planned_mutations: list[dict[str, Any]] = []
     if has_field_changes:
         planned_mutations.append({"operation": "UpdateIssue", "graphql_operation_name": "UpdateIssue", "variables": {
@@ -1477,6 +1488,7 @@ def _sync_issue(
                 **({"projectId": target_project_id} if target_project_id else {}),
                 **({"projectMilestoneId": target_milestone_id} if target_milestone_id else {}),
                 **({"parentId": target_parent_id} if clear_goal_parent else {}),
+                **({"assigneeId": target_assignee_id} if assignee_changed else {}),
             },
         }})
     if mode == "auto" and has_field_changes:
@@ -1486,6 +1498,8 @@ def _sync_issue(
             label_ids=labels, project_id=target_project_id,
             project_milestone_id=target_milestone_id, parent_id=target_parent_id,
             clear_parent=clear_goal_parent,
+            assignee_id=target_assignee_id if needs_owner_ball else None,
+            clear_assignee=clear_goal_assignee,
         )
     existing_comments = _issue_comment_bodies(issue)
     for event in blocking:
@@ -1542,7 +1556,7 @@ def _sync_issue(
         return {
             **issue,
             "diff": {"has_changes": has_field_changes, "issue_create": False,
-                     "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed), ("milestone", milestone_changed), ("parent", parent_changed)) if changed],
+                     "fields": [key for key, changed in (("description", description_changed), ("state", state_changed), ("labels", labels_changed), ("project", project_changed), ("milestone", milestone_changed), ("parent", parent_changed), ("assignee", assignee_changed)) if changed],
                      "comments_to_create": [m["variables"]["input"]["body"] for m in planned_mutations if m["operation"] == "CreateComment"],
                      "local_effects": []},
             "planned_mutations": planned_mutations,
@@ -1710,6 +1724,8 @@ def cmd_update_issue(args: argparse.Namespace) -> dict[str, Any]:
             if not state:
                 raise LinearSyncError(f"Linear state '{args.state}' was not found")
             requested["stateId"] = str(state["id"])
+            if args.assignee is None and str(state.get("name") or state.get("type") or "").casefold() in {"done", "completed", "canceled", "cancelled"}:
+                clear_assignee = True
         if args.project:
             project_id = _project_id(team, args.project)
             if not project_id:

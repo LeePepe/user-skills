@@ -10,7 +10,14 @@ description: 管理 Linear TIA Idea Inbox 与 Global Goal Status Board；运行�
 
 - Idea 只记录问题、背景、证据指针与下一步；成熟后才提升为 Goal。
 - 遵守 `1 Goal = 1 Issue`（TIA 为团队前缀），description 维护 Task checklist、R8 状态与阻塞证据。
-- `[Root]`、Work Business/Bing/Workplace 与完整祖先链按路由规则处理；不要把 API key 写入仓库。
+- **个人方向三层层级契约（L1–L3）**：
+  - **L1 Project**：`Personal Products & Home`、`Personal Core & Gateways`、`user-skills`（`Work Business` 工作 `[Root]` `TIA-365..TIA-374` 保持原样）。
+  - **L2 Project Milestone**：与 `m2-domain-map.json` 模块 1:1 对齐（含 `Personal Core & Gateways` 下的 `Pew CLI Telemetry` 与 `Shared Design System`）。
+  - **L3 Stage `[Epic]` vs. 顶层单据（`parentId = null`）**：跨多 Goal 阶段性战役在对应 `Project + Milestone` 下建 `[Epic]` 父单并将子 Goal 挂载其下（`parentId = <Epic ID>`）；**个人 1:1 `[Root]` 空壳（`TIA-375..TIA-389`）已全部退役（`Canceled`），且永久禁止任何 `[Routine]` 父单概念**；独立单次 Goal 与日常例行单据（`[Daily Brief]`、`[Daily Learn]`、`[M2-Sync]`）一律以 `parentId = null` 直接挂在对应 `Project + Project Milestone` 顶层。
+- **Assignee 指派铁律（`Assignee = Owner` 严格等于「球在 Owner 脚下」）**：
+  - ✅ **仅 3 类允许设 `Assignee = Owner`（`@ltp19941128`）**：① 待 Owner 拍板/选型（`In Review` / `NEED_OWNER_DECISION` / `NEED_GO`，拍板转 `In Progress` 立即清空）；② 当天最新一期 `[Daily Brief]` 与 `[Daily Learn]`（新一期生成时自动将前一期标 `Done` 并清空 `Assignee`）；③ 需 Owner 真人外部回复/操作的任务。
+  - ❌ **一律 `Assignee = null`**：① 所有 `[Epic]`、`[Root]`、`[M2-Sync]` 容器/中枢单；② AI 后台执行的 `In Progress` / `Todo` Goal；③ 所有 `Done` / `Canceled` 单据。
+- Work Business/Bing/Workplace 与完整祖先链按路由规则处理；不要把 API key 写入仓库。
 - OAuth native Delegate/mention 需要管理员明确授予 `app:assignable` 与 `app:mentionable`；文本 `@bot` 不等于 native live handoff。
 - Daily Learn、Daily Brief、跨设备 M2 同步中枢 `TIA-463`（`[M2-Sync]` / `<!-- GTT-M2-SYNC-HUB:v1 -->`），以及已有 Bot 参与的个人 TIA issue：Owner 评论可直接触发，`@bot` 可省略；普通 issue 仍需显式 `@bot`/Bot thread。
 - Daily Brief 只在验证来源后发布；dry-run 不刷新、不写入、不派发。Teams timeline 必须经过显式 confirmation gate。
@@ -41,11 +48,11 @@ python3 scripts/linear-sync.py sync-ledger --handoff-dir <dir> --issue TIA-123
 
 ## Daily Brief
 
-`daily-brief.py` 在 CST 05:00 生成 Plan A：第一屏是全局编号的 Todo 四桶，随后是昨日完成的 workflow-hub 四层矩阵；具体契约、Jev truth table、发布与 bridge 状态机见 L1。建议先用 `--dry-run`，再由受控 LaunchAgent 调用 `--propose-linear --json`。
+`daily-brief.py` 在 CST 05:00 生成 Plan A：第一屏是全局编号的 Todo 四桶，随后是昨日完成的 workflow-hub 四层矩阵；具体契约、Jev truth table、发布与 bridge 状态机见 L1。建议先用 `--dry-run`，再由受控 LaunchAgent 调用 `--propose-linear --json`（默认以 `parentId = null` 挂在 `user-skills` / Milestone `Skills Workflow` 顶层，也可显式传 `--parent-issue TIA-xxx` 覆盖）。
 
 ```bash
 python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run
-python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --parent-issue TIA-375 --json
+python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --json
 ```
 
 ## Safety
