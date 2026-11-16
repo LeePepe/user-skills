@@ -52,6 +52,7 @@ DEFAULT_DASHBOARD = HANDOFF_DIR / "dashboard/index.html"
 DEFAULT_TEAMS_TIMELINE = DEFAULT_STATE_DIR / "teams-china-release-timeline.json"
 TIMELINE_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 MANIFEST_RE = re.compile(r"<!--\s*ROOT-MANIFEST:v1\s+({.*?})\s*-->", re.DOTALL)
+ROOT_META_RE = re.compile(r"<!--\s*ROOT-META:v1\s+({.*?})\s*-->", re.DOTALL)
 BUG_ROW_RE = re.compile(
     r"^\|\s*(\d+)\s*\|\s*\[AB#(\d+)\]\([^)]*\)\s*\|\s*\*\*(.*?)\*\*\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$"
 )
@@ -88,6 +89,14 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.expanduser().read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return default
+
+
+def _read_json_from_text(text: str, default: Any = None) -> Any:
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return default
+    return value if isinstance(value, Mapping) else default
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -296,6 +305,17 @@ def manifest_block(root: Mapping[str, Any]) -> str:
 
 def parse_manifest(description: str) -> dict[str, Any] | None:
     match = MANIFEST_RE.search(description or "")
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(1))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def parse_root_meta(description: str) -> dict[str, Any] | None:
+    match = ROOT_META_RE.search(description or "")
     if not match:
         return None
     try:
@@ -663,6 +683,7 @@ def collect_prs(config: Mapping[str, Any], bugs: Sequence[Mapping[str, Any]], di
                 "state": pr.get("state"),
                 "isDraft": bool(pr.get("isDraft", pr.get("is_draft", pr.get("draft", False)))),
                 "head_sha": pr.get("head_sha") or pr.get("headRefOid"),
+                "unresolved_count": pr.get("unresolved_count", pr.get("unresolvedCount", 0)),
                 "signals": list(pr.get("signals") or []),
                 "match_text": _semantic_text(pr),
                 "pending_decisions": [
@@ -918,35 +939,61 @@ def _has_china_context(value: Any) -> bool:
     return any(pattern in text or pattern in normalized for pattern in CHINA_RELEASE_CONTEXT)
 
 
-def _root_match_score(item: Mapping[str, Any], root: Mapping[str, Any]) -> int:
+def _canonical_repo(value: Any) -> str:
+    repo = str(value or "").casefold().strip().rstrip("/")
+    if repo.startswith("san/"):
+        repo = repo[4:]
+    return repo
+
+
+def _shared_repositories(roots: Sequence[Mapping[str, Any]]) -> set[str]:
+    counts: Counter[str] = Counter()
+    for root in roots:
+        for repo in root.get("repos", []):
+            counts[_canonical_repo(repo)] += 1
+    return {repo for repo, count in counts.items() if count > 1}
+
+
+def _root_match_score(
+    item: Mapping[str, Any],
+    root: Mapping[str, Any],
+    shared_repositories: set[str] | None = None,
+) -> int:
     haystack = _text(item).casefold()
     normalized_haystack = re.sub(r"[^a-z0-9]+", "", haystack)
     root_id = str(root.get("root_id") or "").casefold()
-    repository_match = _match_value(str(item.get("repository") or item.get("repo") or ""), root.get("repos", []))
+    repository = str(item.get("repository") or item.get("repo") or "")
+    repository_match = _match_value(repository, root.get("repos", []))
     contextual_match = _has_china_context(item)
     if repository_match and root_id == "china-release" and not contextual_match:
         repository_match = False
-    score = 1 if repository_match else 0
+    context_score = 0
     if _match_value(str(item.get("branch") or ""), root.get("branch_globs", [])):
-        score += 5
+        context_score += 5
     if _match_value(str(item.get("integration_branch") or ""), root.get("integration_branches", [])):
-        score += 5
+        context_score += 5
     if _match_value(str(item.get("source") or ""), root.get("handoff_files", []) + root.get("bug_list_paths", [])):
-        score += 4
+        context_score += 4
     keywords = root.get("keywords", [])
     if root_id == "china-release":
         keywords = [keyword for keyword in keywords if _has_china_context(keyword)]
-    score += sum(
+    context_score += sum(
         1
         for keyword in keywords
         if str(keyword).casefold() in haystack
         or re.sub(r"[^a-z0-9]+", "", str(keyword).casefold()) in normalized_haystack
     )
-    return score
+    if repository_match and shared_repositories and _canonical_repo(repository) in shared_repositories and context_score == 0:
+        return 0
+    return (1 if repository_match else 0) + context_score
 
 
-def deterministic_root_match(item: Mapping[str, Any], root: Mapping[str, Any]) -> bool:
-    return _root_match_score(item, root) > 0
+def deterministic_root_match(
+    item: Mapping[str, Any],
+    root: Mapping[str, Any],
+    shared_repositories: set[str] | None = None,
+) -> bool:
+    return _root_match_score(item, root, shared_repositories) > 0
 
 
 def _load_jev_function():
@@ -972,16 +1019,22 @@ def _load_jev_function():
 
 
 def classify_jev(item: Mapping[str, Any], roots: Sequence[Mapping[str, Any]], jev_function=None) -> dict[str, Any]:
+    shared_repositories = _shared_repositories(roots)
     topic_id = _topic_for_item(item)
     mapped_root_id = TOPIC_TO_ROOT.get(topic_id)
     if mapped_root_id:
         mapped_root = next((root for root in roots if root.get("root_id") == mapped_root_id), None)
         context_match = _has_china_context(item)
-        is_china_signal = str(item.get("type") or "") in {"bug", "devsync", "worktree"} or context_match
+        item_id = str(item.get("id") or item.get("itemId") or item.get("decision_id") or "").strip()
+        is_china_signal = (
+            str(item.get("type") or "") in {"bug", "devsync", "worktree"}
+            or item_id in CANONICAL_TOPIC_BY_ID
+            or context_match
+        )
         if mapped_root and (mapped_root_id != "china-release" or is_china_signal):
             return {"topic_id": topic_id, "root_id": mapped_root_id, "method": "m2-domain-map", "confidence": 1.0, "match_score": 100}
     deterministic = sorted(
-        ((_root_match_score(item, root), root) for root in roots),
+        ((_root_match_score(item, root, shared_repositories), root) for root in roots),
         key=lambda pair: pair[0],
         reverse=True,
     )
@@ -1001,7 +1054,9 @@ def classify_jev(item: Mapping[str, Any], roots: Sequence[Mapping[str, Any]], je
                 if isinstance(response.get("answers"), Mapping):
                     root_id = root_id or response["answers"].get("root_id")
                 if root_id in {root["root_id"] for root in roots}:
-                    return {"topic_id": topic_id, "root_id": root_id, "method": "jev", "confidence": _score(response) or 0.75}
+                    candidate = next(root for root in roots if root["root_id"] == root_id)
+                    if _root_match_score(item, candidate, shared_repositories) > 0:
+                        return {"topic_id": topic_id, "root_id": root_id, "method": "jev", "confidence": _score(response) or 0.75}
         except (OSError, RuntimeError, TypeError, ValueError):
             pass
     lowered = _text(item).casefold()
@@ -1180,153 +1235,310 @@ def build_root_markdown(
     root: Mapping[str, Any],
     snapshot_root: Mapping[str, Any] | None = None,
     confirm_teams_timeline: bool = False,
+    workstream_links: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
-    """Render the Root issue as a compact executive summary; details live in streams."""
+    """Render a Work [Root] issue in a strict three-layer layout."""
     name = str(root.get("name") or root.get("root_id") or "Root")
+    root_id = str(root.get("root_id") or _slug(name) or "root")
     description = " ".join(str(root.get("description") or "").split())
-    lines = [description] if description else []
-    if isinstance(snapshot_root, Mapping):
-        workstreams = snapshot_root.get("workstreams") or {}
-        pr_items = [item for item in (workstreams.get("PR & PoP") or {}).get("items", []) if item.get("type") == "pr"]
-        decision_items = [item for item in (workstreams.get("PR & PoP") or {}).get("items", []) if item.get("type") == "decision"]
-        def signal_count(predicate):
-            return sum(1 for item in pr_items if predicate(item))
-        merged = signal_count(lambda item: str(item.get("signal") or "").upper() == "MERGED" or str(item.get("state") or "").upper() == "MERGED")
-        pop = signal_count(lambda item: str(item.get("signal") or "") == "WAIT_POP_OR_MERGE")
-        auto = signal_count(lambda item: "AUTO_HEAL" in str(item.get("classification") or item.get("signal") or "") or str(item.get("signal") or "").startswith("S"))
-        waiting = signal_count(lambda item: str(item.get("signal") or "") == "OBSERVE")
-        bugs = [item for item in (workstreams.get("Bugs & Devsync") or {}).get("items", []) if item.get("type") == "bug"]
-        def bug_bucket(item):
-            st = str(item.get("status") or "").casefold()
-            if "remote config" in st:
-                return "Remote Config"
-            if "by design" in st or "not fixing" in st or "cannot reproduce" in st:
-                return "By Design & Not Fixing"
-            if "external" in st:
-                return "External Non-Blocker"
-            if "blocking" in st or "on hold" in st:
-                return "Blocking"
-            return "Fixed" if "fixed" in st or "resolved" in st else "Blocking"
-        bug_counts = Counter(bug_bucket(item) for item in bugs)
-        ship_blocker_open = [
-            item for item in bugs
-            if item.get("ship_blocker") and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
-            and bug_bucket(item) in {"Blocking", "Remote Config"}
+    snap: Mapping[str, Any] = snapshot_root if isinstance(snapshot_root, Mapping) else {}
+    workstreams = snap.get("workstreams") if isinstance(snap.get("workstreams"), Mapping) else {}
+    ws_links: dict[str, dict[str, Any]] = {}
+    raw_ws_links = workstream_links or (snap.get("workstream_links") if isinstance(snap.get("workstream_links"), Mapping) else {}) or {}
+    for stream in WORKSTREAMS:
+        stream_data = workstreams.get(stream) if isinstance(workstreams.get(stream), Mapping) else {}
+        lin = (raw_ws_links.get(stream) if isinstance(raw_ws_links, Mapping) else None) or stream_data.get("linear") or {}
+        if isinstance(lin, Mapping):
+            ws_links[stream] = {
+                "id": str(lin.get("id") or ""),
+                "identifier": str(lin.get("identifier") or ""),
+                "url": str(lin.get("url") or ""),
+            }
+        else:
+            ws_links[stream] = {"id": "", "identifier": "", "url": ""}
+
+    pr_items = [
+        item for item in (workstreams.get("PR & PoP") or {}).get("items", [])
+        if isinstance(item, Mapping) and item.get("type") == "pr"
+    ]
+    decision_items = [
+        item for item in (workstreams.get("PR & PoP") or {}).get("items", [])
+        if isinstance(item, Mapping) and item.get("type") == "decision"
+    ]
+    if not decision_items:
+        decision_items = [
+            item for item in pr_items
+            if str(item.get("signal") or "") == "P0_BLOCKING_DECISION"
         ]
-        sinks = len((workstreams.get("Repo & Skill Sinks") or {}).get("items", []))
-        failing = [str(item.get("pr_number")) for item in pr_items if "S3" in str(item.get("signal") or "") or "CI_FAILURE" in str(item.get("classification") or "")]
-        blockers = [f"PoP PR #{item.get('pr_number')}" for item in pr_items if item.get("signal") == "WAIT_POP_OR_MERGE"]
-        blockers += [str(item.get("id") or "P0 decision") for item in decision_items]
-        timeline = snapshot_root.get("teams_timeline") or root.get("teams_timeline")
-        failing_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in failing) if failing else "None"
-        waiting_prs = [str(item.get("pr_number")) for item in pr_items if str(item.get("signal") or "") == "OBSERVE" and item.get("pr_number")]
-        waiting_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in waiting_prs[:6]) if waiting_prs else "None"
-        has_tl = _timeline_is_confirmed(timeline, confirm_teams_timeline) and isinstance(timeline, Mapping)
-        ver = str(timeline.get("version") or "CN App").strip() if has_tl else name
-        tdate = str(timeline.get("target_date") or "TBD").strip() if has_tl else "TBD"
-        int_branch = ", ".join(f"`{b}`" for b in (root.get("integration_branches") or [])[:1]) or "`main`"
-        chk_pop_review = "x" if (pop == 0 and len(decision_items) == 0 and waiting == 0) else " "
-        chk_bugs = "x" if (bug_counts["Blocking"] == 0 and len(ship_blocker_open) == 0) else " "
-        chk_ci = "x" if len(failing) == 0 else " "
-        sb_count = len(ship_blocker_open) or bug_counts["Blocking"]
-        ext_count = bug_counts["External Non-Blocker"]
+
+    def signal_count(predicate) -> int:
+        return sum(1 for item in pr_items if predicate(item))
+
+    merged = signal_count(
+        lambda item: str(item.get("signal") or "").upper() == "MERGED"
+        or str(item.get("state") or "").upper() == "MERGED"
+    )
+    pop = signal_count(
+        lambda item: str(item.get("signal") or "") == "WAIT_POP_OR_MERGE"
+        and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
+    )
+    auto = signal_count(
+        lambda item: (
+            "AUTO_HEAL" in str(item.get("classification") or item.get("signal") or "")
+            or str(item.get("signal") or "").startswith("S")
+        )
+        and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
+    )
+    waiting = signal_count(
+        lambda item: str(item.get("signal") or "") == "OBSERVE"
+        and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
+    )
+    in_flight_total = pop + auto + waiting
+
+    bugs = [
+        item for item in (workstreams.get("Bugs & Devsync") or {}).get("items", [])
+        if isinstance(item, Mapping) and item.get("type") == "bug"
+    ]
+
+    def bug_bucket(item: Mapping[str, Any]) -> str:
+        st = str(item.get("status") or "").casefold()
+        if "remote config" in st:
+            return "Remote Config"
+        if "by design" in st or "not fixing" in st or "cannot reproduce" in st:
+            return "By Design & Not Fixing"
+        if "external" in st:
+            return "External Non-Blocker"
+        if "blocking" in st or "on hold" in st:
+            return "Blocking"
+        return "Fixed" if "fixed" in st or "resolved" in st else "Blocking"
+
+    bug_counts = Counter(bug_bucket(item) for item in bugs)
+    ship_blocker_open = [
+        item for item in bugs
+        if item.get("ship_blocker")
+        and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
+        and bug_bucket(item) in {"Blocking", "Remote Config"}
+    ]
+    sinks = len((workstreams.get("Repo & Skill Sinks") or {}).get("items", []))
+    failing = [
+        str(item.get("pr_number"))
+        for item in pr_items
+        if ("S3" in str(item.get("signal") or "") or "CI_FAILURE" in str(item.get("classification") or ""))
+        and item.get("pr_number")
+    ]
+    pop_prs = [
+        str(item.get("pr_number"))
+        for item in pr_items
+        if str(item.get("signal") or "") == "WAIT_POP_OR_MERGE" and item.get("pr_number")
+    ]
+    waiting_prs = [
+        str(item.get("pr_number"))
+        for item in pr_items
+        if str(item.get("signal") or "") == "OBSERVE"
+        and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
+        and item.get("pr_number")
+    ]
+    blockers = [f"PoP PR #{pr}" for pr in pop_prs]
+    blockers += [str(item.get("id") or "阻塞决策") for item in decision_items]
+
+    timeline = snap.get("teams_timeline") or root.get("teams_timeline")
+    has_tl = _timeline_is_confirmed(timeline, confirm_teams_timeline) and isinstance(timeline, Mapping)
+    ver = str(timeline.get("version") or "CN App").strip() if has_tl else name
+    tdate = str(timeline.get("target_date") or "TBD").strip() if has_tl else "TBD"
+    int_branch = ", ".join(f"`{b}`" for b in (root.get("integration_branches") or [])[:1]) or "`main`"
+
+    pop_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in pop_prs[:6])
+    failing_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in failing[:6]) if failing else "无"
+    waiting_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in waiting_prs[:6]) if waiting_prs else "无"
+
+    sb_count = len(ship_blocker_open) or bug_counts["Blocking"]
+    ext_count = bug_counts["External Non-Blocker"]
+    non_pr_total = sum(
+        1 for item in bugs
+        if not item.get("pr_number") and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
+    )
+    non_pr_is_relevant = root_id == "china-release" or non_pr_total > 0 or bug_counts["Blocking"] > 0
+
+    if has_tl:
+        tldr_status = (
+            f"当前推进 **{ver}**（目标发版日 **{tdate}**），代码侧已合入 **{merged}** 个 PR、"
+            f"在途 **{in_flight_total}** 个 PR（待催审 **{waiting}** · 后台自愈 **{auto}** · 待点合入 **{pop}**）。"
+        )
+    else:
+        lead = description.rstrip(".") if description else f"{name} 业务根追踪"
+        tldr_status = (
+            f"{lead} — 代码侧已合入 **{merged}** 个 PR、在途 **{in_flight_total}** 个 PR"
+            f"（待催审 **{waiting}** · 后台自愈 **{auto}** · 待点合入 **{pop}**）。"
+        )
+
+    if pop > 0 or decision_items:
+        tldr_blocker = (
+            f"当前最大卡点为 **{pop}** 个已就绪 PR 待你点 PoP 合入、**{len(decision_items)}** 项阻塞方案待你拍板"
+            + (f"，另有 **{non_pr_total or bug_counts['Blocking']}** 条非 PR/阻塞 Bug 待推进。" if non_pr_is_relevant else "；当前无非 PR 可修阻塞或外部配置卡点（0 条）。")
+        )
+    elif non_pr_is_relevant:
+        tldr_blocker = (
+            f"非 PR 可修项共 **{non_pr_total or (sb_count + ext_count)}** 条（含 **{sb_count}** 条发版阻塞远端配置/服务端开关 + "
+            f"**{max((non_pr_total or (sb_count + ext_count)) - sb_count, 0)}** 条外部资源/PM/H5 依赖）；代码侧有 **{waiting}** 个已清零评论的 PR 等待催审。"
+        )
+    elif waiting > 0 or auto > 0:
+        tldr_blocker = f"当前无非 PR 可修阻塞或外部配置卡点（0 条）；主要关注 **{waiting}** 个待审 PR 审批与 **{auto}** 个在途 PR 后台自愈。"
+    else:
+        tldr_blocker = "当前无非 PR 可修阻塞或外部配置卡点（0 条），在途 PR 与阻塞项均已清零。"
+
+    tldr_autopilot = f"AI 正在后台自动跟进 **{auto}** 个在途 PR 自愈，并维护 **{sinks}** 项高价值工程与评测规则沉淀。"
+
+    next_actions: list[str] = []
+    if pop > 0:
+        next_actions.append(
+            f"- [ ] **[点 PoP 合入]** 完成 **{pop}** 个已就绪 PR 的 PoP 合入（{pop_links or '详见子单 PR & PoP'}）"
+        )
+    if decision_items:
+        dec_links = ", ".join(
+            _md_link(str(item.get("id") or "决策单"), item.get("url"))
+            for item in decision_items[:4]
+        )
+        next_actions.append(
+            f"- [ ] **[拍板阻塞决策]** 回复 **{len(decision_items)}** 项待决方案（{dec_links or '详见子单 PR & PoP'}）"
+        )
+    if waiting > 0:
+        next_actions.append(
+            f"- [ ] **[催审在途 PR]** 推动 Reviewer 审批评论已清零的 **{waiting}** 个在途 PR（{waiting_links}，详见子单 PR & PoP）"
+        )
+    if non_pr_is_relevant and (sb_count > 0 or non_pr_total > 0):
+        next_actions.append(
+            f"- [ ] **[推进远端配置与外部依赖]** 推动 **{sb_count}** 条发版阻塞配置/服务端开关与 **{max(non_pr_total - sb_count, 0)}** 条 PM/设计/H5 外部依赖收口（详见子单 Bugs & Devsync）"
+        )
+    if has_tl:
+        ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
+        qa_ms = next((m for m in ms_list if "qa" in str(m.get("name") or "").casefold() and str(m.get("status") or "").casefold() != "completed"), None)
+        rel_ms = next((m for m in reversed(ms_list) if str(m.get("status") or "").casefold() != "completed"), None)
+        if qa_ms:
+            qlink = f" ([Teams]({qa_ms.get('deep_link')}))" if qa_ms.get("deep_link") else ""
+            next_actions.append(f"- [ ] **[QA 验收跟进 ({qa_ms.get('date', '11-18')})]** {qa_ms.get('summary') or qa_ms.get('name')}{qlink}")
+        if rel_ms and rel_ms is not qa_ms:
+            rlink = f" ([Teams]({rel_ms.get('deep_link')}))" if rel_ms.get("deep_link") else ""
+            next_actions.append(f"- [ ] **[上架提审准备 ({rel_ms.get('date', tdate)})]** {rel_ms.get('summary') or rel_ms.get('name')}{rlink}")
+    if not next_actions:
+        next_actions.append("- 当前无需你立即操作")
+
+    def _ws_badge(stream: str) -> str:
+        info = ws_links.get(stream) or {}
+        ident = str(info.get("identifier") or "").strip()
+        url = str(info.get("url") or "").strip()
+        if ident and url:
+            return f" ({_md_link(ident, url)})"
+        if ident:
+            return f" (`{ident}`)"
+        return ""
+
+    pr_todo_parts: list[str] = []
+    if pop > 0 and pop_links:
+        pr_todo_parts.append(f"待点合入: {pop_links}")
+    if waiting > 0 and waiting_links != "无":
+        pr_todo_parts.append(f"待催审: {waiting_links}")
+    if failing:
+        pr_todo_parts.append(f"CI 自愈中: {failing_links}")
+    pr_todo_cell = " · ".join(pr_todo_parts) if pr_todo_parts else "当前无在途阻塞 PR"
+
+    lines: list[str] = [
+        "## ⚡ TL;DR & 下一步需要你做的",
+        f"- **TL;DR（核心结论）**：{tldr_status}",
+        f"- **TL;DR（最大卡点）**：{tldr_blocker}",
+        f"- **TL;DR（后台自愈与沉淀）**：{tldr_autopilot}",
+        "### 👇 下一步做的（Next Actions）",
+        *next_actions,
+        "",
+        "## 📋 总体信息",
+        "### 📊 三大工作流进度 (Milestone Readiness Scoreboard)",
+        "| 维度 | 当前进度 | 当前阻塞 / 待办 |",
+        "| --- | --- | --- |",
+        f"| **🔀 PR & PoP**{_ws_badge('PR & PoP')} | 待合入 PoP `{pop}` · 待拍板 `{len(decision_items)}` · 后台自愈 `{auto}` · 待审 `{waiting}` · 已合入 `{merged}` | {pr_todo_cell} |",
+        f"| **🐛 Bugs & Devsync**{_ws_badge('Bugs & Devsync')} | 已修 `{bug_counts['Fixed']}` · 远端配置 `{bug_counts['Remote Config']}` · 设计如此/不修 `{bug_counts['By Design & Not Fixing']}` · 阻塞 `{bug_counts['Blocking']}` | 阻塞 Bug: **{bug_counts['Blocking']}**（非 PR 卡点 `{non_pr_total}` 条） |",
+        f"| **🧬 Repo & Skill Sinks**{_ws_badge('Repo & Skill Sinks')} | 高价值规则沉淀候选 `{sinks}` 项 | 待处理 PoP/决策: {', '.join(blockers) if blockers else '无'} |",
+    ]
+
+    if has_tl:
+        ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
         lines += [
             "",
-            f"> **版本**：`{ver}` · **🎯 Target Release**：**`{tdate}`** · **集成分支**：{int_branch}",
-            "",
-            "## 🧭 当前推进水位 & 下一步行动清单 (Where We Are & Next Todo)",
-            "",
-            f"- **📍 AI 当前水位判断**：当前处于 **`G2 代码封板与收口（进行中）`**（目标发版日 `{tdate}`）。客户端代码侧已合入 `{merged}` 个 PR、在途 `{waiting + len(failing)}` 个 PR；**非 PR 可修项共 `{sb_count + ext_count}` 条（其中 `{sb_count}` 条带 Ship Blocker 需推远端配置/服务端，`{ext_count}` 条缺外部资源/PM 信息或属 H5 团队）**。",
-            "",
-            "### 👤 下一步需你出手 / 推动 (Owner Next Actions)",
-            f"- [{chk_pop_review}] **[PR 侧：催审 & PoP 合入]** 推动 Reviewer 审批评论已清零的 `{waiting}` 个在途 PR（{waiting_links}），Approve 后完成 PoP 合入（详见子单 `PR & PoP`）",
-            f"- [{chk_bugs}] **[非 PR 侧：推进 5 条 Ship Blocker 配置/服务端 + 10 条缺信息/外部依赖]** ① 在 `ManageApps/start-china` 启用标签设置 (`11453356`)、AppStarter (`11440561`)、Money (`11440609`) 配置；② 确认 Evie 禁用 AI 搜索 (`11440530`)；③ 找 PM/设计补齐 `aka.ms` 新链接 (`11453157`)、FRE 透明贴图 (`11440359`) 及合规/H5 裁决（详见子单 `Bugs & Devsync`）",
+            "### 🗓️ 发版与 QA 关键时间线 (Release Timeline & Teams Context)",
+            f"- **版本与目标日**：`{ver}` · **🎯 Target Release**：**`{tdate}`** · **集成分支**：{int_branch}",
         ]
-        if has_tl:
-            ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
-            qa_ms = next((m for m in ms_list if "qa" in str(m.get("name") or "").casefold() and str(m.get("status") or "").casefold() != "completed"), None)
-            rel_ms = next((m for m in reversed(ms_list) if str(m.get("status") or "").casefold() != "completed"), None)
-            if qa_ms:
-                qlink = f" ([Teams]({qa_ms.get('deep_link')}))" if qa_ms.get("deep_link") else ""
-                lines.append(f"- [ ] **[QA 二轮验收跟进 ({qa_ms.get('date', '11-18')})]** {qa_ms.get('summary') or qa_ms.get('name')}{qlink}")
-            if rel_ms and rel_ms is not qa_ms:
-                rlink = f" ([Teams]({rel_ms.get('deep_link')}))" if rel_ms.get("deep_link") else ""
-                lines.append(f"- [ ] **[上架提审准备 ({rel_ms.get('date', tdate)})]** {rel_ms.get('summary') or rel_ms.get('name')}{rlink}")
-        lines += [
-            "",
-            "### 🤖 AI / 后台正在自动推进 (Agent Auto-Pilot)",
-            f"- [{chk_ci}] **[CI 红灯自愈]** 自动修复/重跑 `{len(failing)}` 个 CI 失败的 PR（{failing_links}）",
-            f"- [ ] **[集成分支与规则沉淀]** 随 PR 合入自动同步 {int_branch} 台账，并推进 `{sinks}` 项高价值规则沉淀（详见子单 `Repo & Skill Sinks`）",
+        for ms in ms_list[:8]:
+            mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
+            status_norm = str(ms.get("status") or "").casefold()
+            chk = "x" if status_norm == "completed" else " "
+            dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
+            summary_txt = str(ms.get("summary") or "").strip()
+            detail_part = f" — {summary_txt}" if summary_txt else ""
+            lines.append(f"- [{chk}] `{mdate or 'TBD'}` **{ms.get('name')}**{detail_part}{dlink}")
+        ctx_items = [c for c in (timeline.get("key_context") or []) if isinstance(c, Mapping)]
+        for ctx in ctx_items[:3]:
+            cdate = str(ctx.get("date") or "")[5:] if len(str(ctx.get("date") or "")) >= 10 else str(ctx.get("date") or "")
+            cowner = str(ctx.get("owner") or "").split("/")[0].strip()
+            csum = str(ctx.get("summary") or ctx.get("text") or "").strip()
+            curl = ctx.get("deep_link") or ctx.get("url")
+            clink = f" ([Teams]({curl}))" if curl else ""
+            prefix = f"**`{cdate}` ({cowner})**" if cdate and cowner else (f"**`{cdate or cowner}`**" if (cdate or cowner) else "**Teams 要点**")
+            lines.append(f"- {prefix}：{csum}{clink}")
+        top_links = [
+            _md_link(d.get("title") or "Teams thread", d.get("url") or d.get("deep_link"))
+            for d in (timeline.get("deep_links") or [])
+            if isinstance(d, Mapping) and (d.get("url") or d.get("deep_link"))
         ]
-        if has_tl:
-            ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
-            done_ms = [m for m in ms_list if str(m.get("status") or "").casefold() == "completed"]
-            active_ms = [m for m in ms_list if str(m.get("status") or "").casefold() in {"in_progress", "active"}]
-            planned_ms = [m for m in ms_list if str(m.get("status") or "").casefold() not in {"completed", "in_progress", "active"}]
-            lines += [
-                "",
-                "## 🏁 发版闯关阶段 Checklist (G1–G4 Release Stage Gates)",
-                "",
-                f"### Gate 1：基线迁仓、证书与首轮提测（`{len(done_ms)}/{len(done_ms)} ✅ 已通关`）",
-            ]
-            for ms in done_ms:
-                mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
-                dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
-                lines.append(f"- [x] `{mdate}` **{ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
-            lines.append("")
-            lines.append("### Gate 2：代码封板与核心 Bug 收口（`🔄 当前主战场`）")
-            for ms in active_ms:
-                mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
-                dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
-                lines.append(f"- [ ] **`{mdate}` {ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
-            lines.append(f"- [{'x' if merged > 0 else ' '}] 已完成首批 `{merged}` 个修复 PR 合入与评论清零")
-            lines.append(f"- [{chk_ci}] 清零剩余 `{len(failing)}` 个 CI 红灯 PR（{failing_links}）并合入 `{waiting}` 个待审 PR")
-            lines.append(f"- [{chk_bugs}] 收口剩余 `{bug_counts['Blocking']}` 条 Blocking Bugs（当前已修 `{bug_counts['Fixed']}` · 远端配置 `{bug_counts['Remote Config']}` · 不修 `{bug_counts['By Design & Not Fixing']}`）")
-            if planned_ms:
-                lines.append("")
-                lines.append(f"### Gate 3 & 4：QA 二轮回归与正式提审上线（`🎯 目标日 {tdate}`）")
-                for ms in planned_ms:
-                    mdate = str(ms.get("date") or "")[5:] if len(str(ms.get("date") or "")) >= 10 else str(ms.get("date") or "")
-                    dlink = f" ([Teams]({ms.get('deep_link')}))" if ms.get("deep_link") else ""
-                    lines.append(f"- [ ] `{mdate}` **{ms.get('name')}** — {ms.get('summary') or ''}{dlink}")
-            ctx_items = [c for c in (timeline.get("key_context") or []) if isinstance(c, Mapping)]
-            if ctx_items:
-                lines += ["", "### 📌 Teams 关键决策备忘 (Key Context)"]
-                for ctx in ctx_items[:4]:
-                    cdate = str(ctx.get("date") or "")[5:] if len(str(ctx.get("date") or "")) >= 10 else str(ctx.get("date") or "")
-                    cowner = str(ctx.get("owner") or "").split("/")[0].strip()
-                    csum = str(ctx.get("summary") or ctx.get("text") or "").strip()
-                    curl = ctx.get("deep_link") or ctx.get("url")
-                    clink = f" ([Teams]({curl}))" if curl else ""
-                    prefix = f"**`{cdate}` ({cowner})**" if cdate and cowner else f"**`{cdate or cowner}`**"
-                    lines.append(f"- {prefix}：{csum}{clink}")
-            top_links = [
-                _md_link(d.get("title") or "Teams thread", d.get("url") or d.get("deep_link"))
-                for d in (timeline.get("deep_links") or [])
-                if isinstance(d, Mapping) and (d.get("url") or d.get("deep_link"))
-            ]
-            if top_links:
-                lines.append(f"- **🔗 核心讨论深链**：{' · '.join(top_links[:4])}")
-            lines.append("<!-- Release Timeline & Teams Context: Milestones / Context -->")
-        lines += [
-            "",
-            "## 📊 Milestone Readiness Scoreboard",
-            "",
-            "| 维度 | 当前进度 | 当前阻塞 / 待办 |",
-            "| --- | --- | --- |",
-            f"| **🔀 PR Funnel** | PoP Ready `{pop}` · P0 Decisions `{len(decision_items)}` · Auto-Healing `{auto}` · Waiting Review `{waiting}` · Merged `{merged}` | Failing CI PRs: {failing_links} |",
-            f"| **🐛 Bug Buckets** | Fixed `{bug_counts['Fixed']}` · Remote Config `{bug_counts['Remote Config']}` · By Design & Not Fixing `{bug_counts['By Design & Not Fixing']}` · Blocking `{bug_counts['Blocking']}` | Blocking bugs: **{bug_counts['Blocking']}** |",
-            f"| **🧬 Skill Sinks (score ≥ 0.70)** | `{sinks}` high-value items | Active PoP/Decisions: {', '.join(blockers) if blockers else 'None'} |",
-            "",
-            "<!-- Current Milestone Blockers: Details: see the three sub-issues -->",
-        ]
-    lines.append(manifest_block(root))
+        if top_links:
+            lines.append(f"- **🔗 核心讨论深链**：{' · '.join(top_links[:4])}")
+
+    sub_issue_bindings = [
+        f"{stream}={ws_links[stream]['identifier'] or 'unbound'}"
+        for stream in WORKSTREAMS
+    ]
+    pr_sha_entries = [
+        f"PR#{item.get('pr_number') or item.get('id')}@{str(item.get('head_sha') or item.get('headRefOid') or 'none')[:9]}:{item.get('signal') or 'OBSERVE'}"
+        for item in pr_items
+    ]
+    signal_sources = {
+        "repos": list(root.get("repos") or []),
+        "integration_branches": list(root.get("integration_branches") or []),
+        "handoff_files": list(root.get("handoff_files") or []),
+        "bug_list_paths": list(root.get("bug_list_paths") or []),
+    }
+    meta_payload = {
+        "pr_heads": [
+            {
+                "head_sha": str(item.get("head_sha") or item.get("headRefOid") or ""),
+                "pr": item.get("pr_number") or item.get("id"),
+                "signal": str(item.get("signal") or ""),
+                "state": str(item.get("state") or "OPEN"),
+            }
+            for item in pr_items
+        ],
+        "root_id": root_id,
+        "signal_sources": signal_sources,
+        "spec_sha": "prt-spec-v2-3layer",
+        "workstream_issues": ws_links,
+    }
+    lines += [
+        "",
+        "<details><summary>🤖 AI 知道的信息</summary>",
+        "",
+        f"- `root_id`: `{root_id}`",
+        f"- `sub_issues`: {', '.join(sub_issue_bindings)} (three sub-issues)",
+        f"- `pr_sha_manifest`: {', '.join(pr_sha_entries) if pr_sha_entries else 'none'}",
+        f"- `signal_sources`: repos={','.join(signal_sources['repos']) or 'none'} · branches={','.join(signal_sources['integration_branches']) or 'none'}",
+        "<!-- Current Milestone Blockers: Details: see the three sub-issues -->",
+        "<!-- ROOT-META:v1 " + json.dumps(meta_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + " -->",
+        manifest_block(root),
+        "</details>",
+    ]
     return "\n".join(line for line in lines if line is not None).strip()
 
 
 def _workstream_title(root_name: str, stream: str) -> str:
+    if stream == "PR & PoP":
+        return f"[{root_name}] PR 进度与待办"
     suffixes = {
-        "PR & PoP": "PR 监督、PoP 待合入与 S1/S2/S3 自愈清单",
         "Bugs & Devsync": "非 PR 可修卡点、远端配置与缺失信息清单",
         "Repo & Skill Sinks": "评测提取 (≥0.70) 与规则沉淀候选 Link",
     }
@@ -1346,13 +1558,114 @@ def _item_pr_url(item: Mapping[str, Any]) -> str:
     return f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{number}" if number else ""
 
 
+def _pending_entry(item: Mapping[str, Any], kind: str) -> Mapping[str, Any] | None:
+    entries = [
+        entry for entry in item.get("pending_decisions", [])
+        if isinstance(entry, Mapping) and entry.get("kind") == kind
+    ]
+    return entries[0] if entries else None
+
+
+def _decision_identifier(item: Mapping[str, Any], kind: str | None = None) -> str:
+    entry = _pending_entry(item, kind) if kind else None
+    if entry:
+        return str(entry.get("decision_id") or entry.get("linear_identifier") or "")
+    for value in item.get("pending_decisions", []) or []:
+        if isinstance(value, Mapping):
+            identifier = value.get("decision_id") or value.get("linear_identifier")
+            if identifier:
+                return str(identifier)
+    return str(item.get("decision_id") or "")
+
+
+def _pr_state_value(item: Mapping[str, Any], key: str, default: Any = "") -> Any:
+    value = item.get(key)
+    if value in (None, ""):
+        aliases = {"head_sha": "headRefOid", "unresolved": "unresolvedCount"}
+        value = item.get(aliases.get(key, key), default)
+    return default if value is None else value
+
+
+def _unresolved_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _human_pr_status(signal: str) -> str:
+    code = signal.upper()
+    if "S1" in code or "CONFLICT" in code:
+        return "冲突自动处理中"
+    if "S2" in code or "COMMENT" in code:
+        return "评论自动修复中"
+    if "S3" in code or "CI_FAILURE" in code or "CI" in code and "FAIL" in code:
+        return "CI 自动修复中"
+    return "评论已清零，等 Review"
+
+
+def _agent_pr_state(
+    root: Mapping[str, Any],
+    pops: Sequence[Mapping[str, Any]],
+    decisions: Sequence[Mapping[str, Any]],
+    in_flight: Sequence[Mapping[str, Any]],
+    merged: Sequence[str],
+) -> str:
+    def pr_value(item: Mapping[str, Any]) -> int | str:
+        value = item.get("pr_number") or item.get("number") or item.get("id") or ""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+    def decision_value(item: Mapping[str, Any], kind: str | None = None) -> str:
+        return _decision_identifier(item, kind)
+
+    payload = {
+        "decisions": [
+            {
+                "pr": pr_value(item),
+                "decision_id": decision_value(item, "owner_decision"),
+                "head_sha": str(_pr_state_value(item, "head_sha", "") or ""),
+            }
+            for item in decisions
+        ],
+        "in_flight": [
+            {
+                "pr": pr_value(item),
+                "head_sha": str(_pr_state_value(item, "head_sha", "") or ""),
+                "stage_code": str(item.get("signal") or item.get("classification") or "OBSERVE"),
+                "decision_id": decision_value(item),
+                "unresolved": _unresolved_count(_pr_state_value(item, "unresolved", 0)),
+                "is_draft": bool(item.get("isDraft", item.get("is_draft", False))),
+            }
+            for item in in_flight
+        ],
+        "merged": [
+            int(value[1:]) if str(value).startswith("#") and str(value)[1:].isdigit() else (int(value) if str(value).isdigit() else str(value))
+            for value in merged
+        ],
+        "pop_ready": [
+            {
+                "pr": pr_value(item),
+                "head_sha": str(_pr_state_value(item, "head_sha", "") or ""),
+                "decision_id": decision_value(item, "owner_action"),
+            }
+            for item in pops
+        ],
+        "root_id": str(root.get("root_id") or ""),
+    }
+    return "<!-- AGENT-PR-STATE:v1 " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + " -->"
+
+
 def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[Mapping[str, Any]]) -> str:
     rows = [dict(item) for item in items if isinstance(item, Mapping)]
     lines: list[str] = []
     if stream == "PR & PoP":
         pops = [
             item for item in rows
-            if item.get("signal") != "MERGED"
+            if item.get("type") == "pr"
+            and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
             and (
                 item.get("signal") == "WAIT_POP_OR_MERGE"
                 or any(
@@ -1365,82 +1678,83 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
         ]
         decisions = [item for item in rows if item.get("type") == "decision"]
         if not decisions:
-            decisions = [item for item in rows if item.get("signal") == "P0_BLOCKING_DECISION"]
-        lines.extend([
-            "<!-- PRT-T3-ACTIVE-CALLOUT:v1 -->",
-            f"> Active PoP/Merge: **{len(pops)}** · P0 Decisions: **{len(decisions)}**",
-            "",
-            "## 1. 🟢 待你点 PoP / Merge（直接点 PR 号去 GHE 合入）",
-            "",
-        ])
+            decisions = [
+                item for item in rows
+                if item.get("type") == "pr" and item.get("signal") == "P0_BLOCKING_DECISION"
+            ]
         action_pr_nums: set[str] = set()
-        for item in pops:
-            pending = [entry for entry in item.get("pending_decisions", []) if isinstance(entry, Mapping) and entry.get("kind") == "owner_action"]
-            label = (pending[0].get("linear_identifier") if pending else None) or item.get("id") or item.get("pr_number")
-            url = pending[0].get("url") if pending else _item_pr_url(item)
+        for item in pops + decisions:
             pr_num = str(item.get("pr_number") or "")
             if pr_num:
                 action_pr_nums.add(pr_num)
-            pr_link = _md_link(f"PR #{pr_num}", _item_pr_url(item)) if pr_num else _md_link(label, url)
-            lin_link = _md_link(label, url) if url else f"`{label}`"
-            title_short = str(item.get("title") or "").strip()
-            lines.append(f"- {pr_link} ({lin_link}) — {title_short} (`{item.get('head_sha') or '—'}`)")
-        if not pops:
-            lines.append("- — No active PoP item")
-        lines.extend(["", "## 2. 🚨 待你拍板 Blocking 决策（点 TIA 单号回复 `A` 或 `B`）", ""])
-        for item in decisions:
-            pending = [entry for entry in item.get("pending_decisions", []) if isinstance(entry, Mapping) and entry.get("kind") == "owner_decision"]
-            label = (pending[0].get("linear_identifier") if pending else None) or item.get("id") or item.get("pr_number")
-            url = pending[0].get("url") if pending else item.get("url")
-            pr_num = str(item.get("pr_number") or "")
-            if pr_num:
-                action_pr_nums.add(pr_num)
-            summary_text = str(item.get("title") or item.get("rationale") or "Owner decision required").replace("|", r"\|")
-            pr_comment_link = _md_link(f"PR #{pr_num}", _item_pr_url(item)) if pr_num else ""
-            prefix = f"{_md_link(label, url or _item_pr_url(item))} · {pr_comment_link}" if pr_comment_link else _md_link(label, url or _item_pr_url(item))
-            lines.append(f"- **{prefix}** — {summary_text}")
-        if not decisions:
-            lines.append("- — No active decision")
-        auto_heal_lines: list[str] = []
-        waiting_review_lines: list[str] = []
-        merged_links: list[str] = []
-        seen_prs: set[str] = set(action_pr_nums)
+
+        in_flight: list[dict[str, Any]] = []
+        merged_prs: list[dict[str, Any]] = []
         for item in rows:
-            if item.get("type") not in {"pr", "decision"}:
+            if item.get("type") != "pr":
                 continue
             pr_num = str(item.get("pr_number") or item.get("id") or "")
-            if not pr_num or pr_num in seen_prs:
+            if not pr_num or pr_num in action_pr_nums:
                 continue
-            seen_prs.add(pr_num)
-            sig = str(item.get("signal") or item.get("classification") or "OBSERVE")
-            link = _md_link(f"PR #{pr_num}", _item_pr_url(item))
-            title_short = str(item.get("title") or "").strip()
-            draft_badge = " `DRAFT`" if item.get("isDraft") else ""
-            reconciled_decs = [
-                d.get("linear_identifier")
-                for d in (item.get("pending_decisions") or [])
-                if isinstance(d, Mapping) and d.get("linear_identifier")
-            ]
-            dec_badge = f" *(已修完 Resolve: {', '.join(reconciled_decs)})*" if reconciled_decs else ""
-            if sig == "MERGED" or str(item.get("state") or "").upper() == "MERGED":
-                merged_links.append(_md_link(f"#{pr_num}", _item_pr_url(item)))
-            elif "AUTO_HEAL" in sig or sig.startswith("S"):
-                auto_heal_lines.append(f"  - {link} — {title_short}{draft_badge} (`{sig}`)")
-            else:
-                waiting_review_lines.append(f"  - {link} — {title_short}{draft_badge}{dec_badge} (`等 Review Approve / CI`)")
+            signal = str(item.get("signal") or item.get("classification") or "OBSERVE")
+            state = str(item.get("state") or "").upper()
+            if signal == "MERGED" or state == "MERGED":
+                merged_prs.append(item)
+            elif state not in {"CLOSED", "MERGED"}:
+                in_flight.append(item)
+        merged_numbers = [str(item.get("pr_number") or item.get("id") or "") for item in merged_prs]
+        action_count = len(pops) + len(decisions)
         lines.extend([
-            "",
-            "## 3. 🤖 在途 Open PR 监督（无需你操作，Approve 后自动进第 1 栏 PoP）",
-            "",
-            f"- **🔧 自动修评论/冲突/CI 中 ({len(auto_heal_lines)})**：",
-            *(auto_heal_lines or ["  - —"]),
-            f"- **⏳ 评论已清零，等 Reviewer Approve / CI ({len(waiting_review_lines)})**：",
-            *(waiting_review_lines or ["  - —"]),
-            "",
-            f"## 4. ✅ 已合入 Merged ({len(merged_links)})",
-            "",
-            f"- {' · '.join(merged_links) if merged_links else '—'}",
+            "<!-- PRT-T3-ACTIVE-CALLOUT:v1 -->",
+            (
+                f"> 🔴 **待你操作 {action_count}**（PoP **{len(pops)}** · 决策 **{len(decisions)}**） · "
+                f"在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
+                if action_count
+                else f"> 🟢 **无需你操作** · 在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
+            ),
         ])
+        if action_count:
+            lines.extend(["", f"### 🔴 待你操作 ({action_count})"])
+            for item in pops:
+                pending = _pending_entry(item, "owner_action") or {}
+                pr_num = str(item.get("pr_number") or "")
+                pr_link = _md_link(f"#{pr_num}", _item_pr_url(item)) if pr_num else _md_link(item.get("id"), item.get("url"))
+                identifier = pending.get("linear_identifier") or item.get("id") or ""
+                linear_link = _md_link(identifier, pending.get("url")) if pending.get("url") else f"`{identifier}`"
+                title = str(item.get("title") or "").strip()
+                lines.append(f"- **{pr_link}** ({linear_link}) — {title} — *待点 PoP 合入*")
+            for item in decisions:
+                pending = _pending_entry(item, "owner_decision") or {}
+                identifier = pending.get("linear_identifier") or item.get("id") or ""
+                linear_link = _md_link(identifier, pending.get("url")) if pending.get("url") else f"`{identifier}`"
+                pr_num = str(item.get("pr_number") or "")
+                pr_link = f"({_md_link(f'#{pr_num}', _item_pr_url(item))})" if pr_num else ""
+                summary = str(item.get("title") or item.get("rationale") or "Owner decision required").replace("|", r"\|")
+                lines.append(f"- **{linear_link}** {pr_link} — {summary} — *待拍板回复 A/B*")
+
+        if in_flight:
+            lines.extend(["", f"### ⏳ 在途 PR ({len(in_flight)})"])
+            for item in in_flight:
+                pr_num = str(item.get("pr_number") or item.get("id") or "")
+                link = _md_link(f"#{pr_num}", _item_pr_url(item))
+                title = str(item.get("title") or "").strip()
+                draft_badge = " `DRAFT`" if item.get("isDraft", item.get("is_draft", False)) else ""
+                resolved = [
+                    str(entry.get("linear_identifier"))
+                    for entry in item.get("pending_decisions", []) or []
+                    if isinstance(entry, Mapping)
+                    and str(entry.get("status") or "").casefold() == "completed"
+                    and entry.get("linear_identifier")
+                ]
+                dec_badge = f" *(已修完 Resolve: {', '.join(resolved)})*" if resolved else ""
+                signal = str(item.get("signal") or item.get("classification") or "OBSERVE")
+                lines.append(f"- **{link}** {title}{draft_badge} — *{_human_pr_status(signal)}*{dec_badge}")
+
+        if merged_numbers:
+            lines.extend(["", f"### ✅ 已合入 ({len(merged_numbers)})", "", " · ".join(
+                _md_link(f"#{number}", _item_pr_url(item)) for number, item in zip(merged_numbers, merged_prs)
+            )])
+        lines.extend(["", _agent_pr_state(root, pops, decisions, in_flight, merged_numbers)])
     elif stream == "Bugs & Devsync":
         bug_rows = [item for item in rows if item.get("type") == "bug"]
         if not bug_rows:
@@ -1555,23 +1869,40 @@ def sync_linear(
     """Upsert Linear roots and exactly three workstream children; never write sources."""
     desired = []
     fallback_timeline = load_teams_timeline(teams_timeline_path, confirm=confirm_teams_timeline)
+    cached_ws_by_root: dict[str, dict[str, dict[str, Any]]] = {}
+    if not dry_run and cache_path.is_file():
+        cached_doc = _read_json(cache_path, {})
+        for cached_root in (cached_doc.get("roots") or []) if isinstance(cached_doc, Mapping) else []:
+            if not isinstance(cached_root, Mapping) or not cached_root.get("root_id"):
+                continue
+            rid = str(cached_root["root_id"])
+            cached_ws_by_root[rid] = {
+                str(w.get("stream")): dict(w["linear"])
+                for w in (cached_root.get("workstreams") or [])
+                if isinstance(w, Mapping) and w.get("stream") and isinstance(w.get("linear"), Mapping)
+            }
     for root in roots:
-        snap_root = (snapshot_roots or {}).get(str(root["root_id"])) or {}
-        if str(root.get("root_id")) == str(fallback_timeline.get("root_id", "china-release")) and not snap_root.get("teams_timeline"):
-            snap_root = {**snap_root, "teams_timeline": fallback_timeline}
+        rid = str(root["root_id"])
+        snap_root = dict((snapshot_roots or {}).get(rid) or {})
+        if rid == str(fallback_timeline.get("root_id", "china-release")) and not snap_root.get("teams_timeline"):
+            snap_root["teams_timeline"] = fallback_timeline
+        if rid in cached_ws_by_root and not snap_root.get("workstream_links"):
+            snap_root["workstream_links"] = cached_ws_by_root[rid]
         streams = snap_root.get("workstreams") if isinstance(snap_root, Mapping) else {}
         streams = streams if isinstance(streams, Mapping) else {}
         desired.append({
-            "root_id": root["root_id"],
-            "name": root.get("name", root["root_id"]),
+            "root_id": rid,
+            "name": root.get("name", rid),
             "label": "root-tracker",
             "team": "TIA",
             "teams_timeline": snap_root.get("teams_timeline"),
+            "_snap_root": snap_root,
+            "_root_def": dict(root),
             "description": build_root_markdown(root, snap_root),
             "workstreams": [
                 {
                     "stream": stream,
-                    "title": _workstream_title(str(root.get("name", root["root_id"])), stream),
+                    "title": _workstream_title(str(root.get("name", rid)), stream),
                     "description": _workstream_markdown(root, stream, (streams.get(stream) or {}).get("items") or []),
                     "items": [dict(item) for item in (streams.get(stream) or {}).get("items", []) if isinstance(item, Mapping)],
                 }
@@ -1579,6 +1910,9 @@ def sync_linear(
             ],
         })
     if dry_run or offline or client is None:
+        for record in desired:
+            record.pop("_snap_root", None)
+            record.pop("_root_def", None)
         result = {"mode": "dry-run" if dry_run else "offline", "writes": [], "roots": desired}
         if not dry_run:
             _write_json(cache_path, {"schema_version": 1, "updated_at": utc_now(), "source": "offline", "roots": desired})
@@ -1586,13 +1920,27 @@ def sync_linear(
     if getattr(client, "boundary", None) != "linear":
         raise OneWayBoundaryError("Project Root Tracker may write only to Linear")
     for record in desired:
+        root_def = record.pop("_root_def", {})
+        snap_root = record.pop("_snap_root", {})
         parent = client.upsert_root(record)
         record["linear"] = parent
+        if hasattr(client, "deduplicate_root_children"):
+            client.deduplicate_root_children(parent, str(record.get("name") or record["root_id"]))
         timeline = record.get("teams_timeline")
         if str(record.get("root_id")) == "china-release" and _timeline_is_confirmed(timeline) and hasattr(client, "upsert_project_milestone"):
             record["project_milestone"] = client.upsert_project_milestone("china-release", str(record.get("name") or "China Release"), timeline)
         for workstream in record["workstreams"]:
             workstream["linear"] = client.upsert_workstream(parent, record, workstream)
+        live_links = {
+            str(w["stream"]): dict(w["linear"])
+            for w in record["workstreams"]
+            if isinstance(w.get("linear"), Mapping) and (w["linear"].get("identifier") or w["linear"].get("url"))
+        }
+        if live_links:
+            updated_desc = build_root_markdown(root_def, snap_root, workstream_links=live_links)
+            if updated_desc != record["description"]:
+                record["description"] = updated_desc
+                record["linear"] = client.upsert_root(record)
         if hasattr(client, "enforce_tia83"):
             client.enforce_tia83(roots)
         if hasattr(client, "ensure_related"):
@@ -1612,6 +1960,7 @@ class LinearClient:
     }
     ROOT_LABEL_ID = "04dc1e1a-6803-4590-acd3-4e54b25bb4ae"
     IN_PROGRESS_ID = "d7d9992e-4736-4af0-b5ab-dce211b48bc8"
+    DUPLICATE_ID = "3be8ce2f-ea8b-48e5-aabe-5e2511f05aef"
 
     def __init__(self, token: str, team_key: str = "TIA") -> None:
         self.token = token
@@ -1662,14 +2011,71 @@ class LinearClient:
         result = self._mutate(mutation, {"id": milestone_id, "input": input_data})
         return (result.get("projectMilestoneUpdate") or {}).get("projectMilestone") or result.get("projectMilestoneUpdate", {})
 
-    def _find_issue(self, title: str, parent_id: str | None = None) -> dict[str, Any] | None:
-        query = """query($teamId:ID!,$title:String!){issues(filter:{team:{id:{eq:$teamId}},title:{eq:$title}},first:50){nodes{id identifier url description parent{ id }}}}"""
+    def deduplicate_root_children(self, parent: Mapping[str, Any], root_name: str) -> dict[str, dict[str, Any]]:
+        """Ensure each [Root] issue keeps at most 3 canonical workstream sub-issues."""
+        parent_id = parent.get("id")
+        if not parent_id:
+            return {}
+        query = """query($id:String!){issue(id:$id){children(first:50){nodes{id identifier title url createdAt state{id name type}}}}}"""
         try:
-            nodes = _linear_query(self.token, query, {"teamId": self._team(), "title": title}).get("issues", {}).get("nodes", [])
+            nodes = ((_linear_query(self.token, query, {"id": str(parent_id)}).get("issue") or {}).get("children") or {}).get("nodes") or []
+        except LinearSyncError:
+            return {}
+        by_stream: dict[str, list[dict[str, Any]]] = {stream: [] for stream in WORKSTREAMS}
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            state_type = str((node.get("state") or {}).get("type") or "").casefold()
+            if state_type in {"canceled", "duplicate"}:
+                continue
+            title = str(node.get("title") or "")
+            if title == f"[{root_name}] PR 进度与待办" or title.startswith(f"[{root_name} · PR & PoP]"):
+                by_stream["PR & PoP"].append(dict(node))
+            elif title.startswith(f"[{root_name} · Bugs & Devsync]"):
+                by_stream["Bugs & Devsync"].append(dict(node))
+            elif title.startswith(f"[{root_name} · Repo & Skill Sinks]"):
+                by_stream["Repo & Skill Sinks"].append(dict(node))
+        canonical: dict[str, dict[str, Any]] = {}
+        for stream, matches in by_stream.items():
+            if not matches:
+                continue
+            matches.sort(key=lambda item: (str(item.get("createdAt") or ""), str(item.get("identifier") or "")))
+            canonical[stream] = matches[0]
+            for dup in matches[1:]:
+                dup_id = dup.get("id")
+                if not dup_id:
+                    continue
+                mutation = """mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input){success}}"""
+                try:
+                    self._mutate(mutation, {"id": str(dup_id), "input": {"parentId": None, "stateId": self.DUPLICATE_ID}})
+                except LinearSyncError:
+                    continue
+        return canonical
+
+    def _find_issue(self, title: str, parent_id: str | None = None) -> dict[str, Any] | None:
+        exact_query = """query($teamId:ID!,$title:String!){issues(filter:{team:{id:{eq:$teamId}},title:{eq:$title}},first:50){nodes{id identifier title url description state{type} parent{ id }}}}"""
+        prefix_query = """query($teamId:ID!,$prefix:String!){issues(filter:{team:{id:{eq:$teamId}},title:{contains:$prefix}},first:100){nodes{id identifier title url description state{type} parent{ id }}}}"""
+        try:
+            nodes = _linear_query(self.token, exact_query, {"teamId": self._team(), "title": title}).get("issues", {}).get("nodes", [])
         except LinearSyncError:
             return None
         for node in nodes:
+            if str((node.get("state") or {}).get("type") or "").casefold() in {"canceled", "duplicate"}:
+                continue
             if parent_id is None or (node.get("parent") or {}).get("id") == parent_id:
+                return node
+        if not title.endswith("PR 进度与待办"):
+            return None
+        prefix = title.split("]", 1)[0] + " · PR & PoP]"
+        try:
+            nodes = _linear_query(self.token, prefix_query, {"teamId": self._team(), "prefix": prefix}).get("issues", {}).get("nodes", [])
+        except LinearSyncError:
+            return None
+        for node in nodes:
+            if str((node.get("state") or {}).get("type") or "").casefold() in {"canceled", "duplicate"}:
+                continue
+            node_title = str(node.get("title") or "")
+            if node_title.startswith(prefix) and (parent_id is None or (node.get("parent") or {}).get("id") == parent_id):
                 return node
         return None
 
@@ -1755,38 +2161,78 @@ class LinearClient:
         if workstream.get("stream") == "PR & PoP":
             live_children = self.active_tia83_for_root(str(record.get("root_id", "")))
             pop_children = [
-                c for c in live_children
-                if str(c.get("title") or "").startswith("[PR Action]")
-                and str((c.get("state") or {}).get("name") or "").casefold() not in {"done", "canceled", "duplicate"}
+                child for child in live_children
+                if str(child.get("title") or "").startswith("[PR Action]")
+                and str((child.get("state") or {}).get("name") or "").casefold() not in {"done", "canceled", "duplicate"}
             ]
             dec_children = [
-                c for c in live_children
-                if str(c.get("title") or "").startswith("[PR Decision]")
-                and str((c.get("state") or {}).get("name") or "").casefold() not in {"done", "canceled", "duplicate"}
+                child for child in live_children
+                if str(child.get("title") or "").startswith("[PR Decision]")
+                and str((child.get("state") or {}).get("name") or "").casefold() not in {"done", "canceled", "duplicate"}
             ]
-            description = re.sub(
-                r"> Active PoP/Merge: \*\*\d+\*\* · P0 Decisions: \*\*\d+\*\*",
-                f"> Active PoP/Merge: **{len(pop_children)}** · P0 Decisions: **{len(dec_children)}**",
-                description,
-                count=1,
-            )
-            if pop_children:
-                pop_lines = []
-                for child in pop_children:
-                    identifier = child.get("identifier") or child.get("id")
-                    lin_url = f"https://linear.app/tianpeili/issue/{identifier}" if identifier else ""
-                    title_text = str(child.get("title") or "")
-                    pr_match = re.search(r"#(\d+)", title_text)
-                    pr_num = pr_match.group(1) if pr_match else ""
-                    pr_url = f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr_num}" if pr_num else ""
-                    sha_match = re.search(r"\(([0-9a-f]{7,40})\)", title_text)
-                    sha = sha_match.group(1) if sha_match else "—"
-                    pr_part = _md_link(f"PR #{pr_num}", pr_url) if pr_num else f"`{title_text}`"
-                    pop_lines.append(f"- **{pr_part}** · {_md_link(identifier, lin_url)} — Complete PoP / Merge (`{sha}`)")
-                description = description.replace("- — No active PoP item", "\n".join(pop_lines), 1)
+            if pop_children or dec_children:
+                base_items = [dict(item) for item in workstream.get("items", []) if isinstance(item, Mapping)]
+                live_items: list[dict[str, Any]] = []
+                for child in pop_children + dec_children:
+                    child_title = str(child.get("title") or "")
+                    pr_match = re.search(r"#(\d+)", child_title)
+                    pr_num = int(pr_match.group(1)) if pr_match else None
+                    sha_match = re.search(r"\(([0-9a-f]{7,40})\)", child_title)
+                    description_text = str(child.get("description") or "")
+                    description_data = _read_json_from_text(description_text, {})
+                    head_match = re.search(r"\*\*Head:\*\*\s*`([^`]+)`", description_text)
+                    decision_match = re.search(r"—\s*([A-Za-z0-9_-]+)\s*$", child_title)
+                    kind = "owner_action" if child in pop_children else "owner_decision"
+                    identifier = child.get("identifier") or child.get("id") or ""
+                    clean_title = re.sub(r"^\[PR (?:Action|Decision)\]\s*", "", child_title).strip()
+                    live_items.append({
+                        "id": f"PR#{pr_num}" if pr_num else identifier,
+                        "type": "pr",
+                        "pr_number": pr_num,
+                        "title": clean_title or child_title,
+                        "url": f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr_num}" if pr_num else child.get("url"),
+                        "signal": "WAIT_POP_OR_MERGE" if kind == "owner_action" else "P0_BLOCKING_DECISION",
+                        "state": "OPEN",
+                        "head_sha": description_data.get("head_sha") or (head_match.group(1) if head_match else (sha_match.group(1) if sha_match else "")),
+                        "unresolved_count": description_data.get("unresolved_count", 0),
+                        "pending_decisions": [{
+                            "kind": kind,
+                            "status": "awaiting_owner",
+                            "decision_id": description_data.get("decision_id") or (decision_match.group(1) if decision_match else identifier),
+                            "linear_identifier": identifier,
+                            "url": child.get("url") or f"https://linear.app/tianpeili/issue/{identifier}",
+                        }],
+                    })
+                combined_items = [dict(item) for item in base_items]
+                for live_item in live_items:
+                    match = next(
+                        (item for item in combined_items
+                         if str(item.get("pr_number") or "") == str(live_item.get("pr_number") or "")),
+                        None,
+                    )
+                    if match is None:
+                        combined_items.append(live_item)
+                        continue
+                    match.update({
+                        "signal": live_item["signal"],
+                        "state": live_item["state"],
+                        "url": match.get("url") or live_item.get("url"),
+                        "head_sha": match.get("head_sha") or live_item.get("head_sha"),
+                        "unresolved_count": live_item.get("unresolved_count", match.get("unresolved_count", 0)),
+                    })
+                    live_decision = live_item["pending_decisions"][0]
+                    pending_decisions = [dict(entry) for entry in match.get("pending_decisions", []) if isinstance(entry, Mapping)]
+                    existing = next((entry for entry in pending_decisions if entry.get("kind") == live_decision["kind"]), None)
+                    if existing is None:
+                        pending_decisions.append(live_decision)
+                    else:
+                        existing.update({key: value for key, value in live_decision.items() if value not in (None, "")})
+                    match["pending_decisions"] = pending_decisions
+                description = _workstream_markdown(record, "PR & PoP", combined_items)
         input_data: dict[str, Any] = {
             "description": description,
             "parentId": parent.get("id"),
+            "title": title,
         }
         if project_id:
             input_data["projectId"] = project_id
