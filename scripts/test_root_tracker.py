@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -154,32 +155,65 @@ class RootTrackerTests(unittest.TestCase):
         self.assertIn("devsync revert", html)
         self.assertIn("P0 Blocking Decision", html)
 
-    def test_pr_workstream_uses_four_sections_and_reconciliation_badge(self):
+    def test_pr_workstream_uses_concise_sections_and_agent_state(self):
         root = {"root_id": "china-release", "name": "China Release"}
         items = [
             {
                 "type": "pr", "pr_number": 580, "signal": "WAIT_POP_OR_MERGE",
                 "title": "PoP gate", "head_sha": "pop-head",
-                "pending_decisions": [{"kind": "owner_action", "status": "awaiting_owner", "linear_identifier": "TIA-350", "url": "https://linear.app/TIA-350"}],
+                "pending_decisions": [{"kind": "owner_action", "status": "awaiting_owner", "decision_id": "D580", "linear_identifier": "TIA-350", "url": "https://linear.app/TIA-350"}],
             },
             {"type": "pr", "pr_number": 617, "signal": "OBSERVE", "state": "OPEN", "isDraft": True,
-             "title": "Waiting approval", "pending_decisions": [{"kind": "owner_decision", "status": "completed", "linear_identifier": "TIA-347"}]},
-            {"type": "pr", "pr_number": 620, "signal": "S3_CI_FAILURE", "title": "CI repair"},
+             "title": "Waiting approval", "head_sha": "wait-head", "pending_decisions": [{"kind": "owner_decision", "status": "completed", "linear_identifier": "TIA-347"}]},
+            {"type": "pr", "pr_number": 620, "signal": "S3_CI_FAILURE", "head_sha": "ci-head", "unresolved_count": 2, "title": "CI repair"},
             {"type": "pr", "pr_number": 686, "signal": "MERGED", "state": "MERGED", "title": "Landed"},
         ]
         markdown = root_tracker._workstream_markdown(root, "PR & PoP", items)
-        sections = [
-            "## 1. 🟢 待你点 PoP / Merge",
-            "## 2. 🚨 待你拍板 Blocking 决策",
-            "## 3. 🤖 在途 Open PR 监督",
-            "## 4. ✅ 已合入 Merged",
-        ]
-        self.assertEqual([markdown.index(section) for section in sections], sorted(markdown.index(section) for section in sections))
-        self.assertIn("⏳ 评论已清零，等 Reviewer Approve / CI", markdown)
+        self.assertIn("> 🔴 **待你操作 1**（PoP **1** · 决策 **0**）", markdown)
+        self.assertIn("### 🔴 待你操作 (1)", markdown)
+        self.assertIn("### ⏳ 在途 PR (2)", markdown)
+        self.assertIn("### ✅ 已合入 (1)", markdown)
+        self.assertIn("待点 PoP 合入", markdown)
+        self.assertIn("评论已清零，等 Review", markdown)
+        self.assertIn("CI 自动修复中", markdown)
         self.assertIn("DRAFT", markdown)
         self.assertIn("已修完 Resolve: TIA-347", markdown)
-        self.assertIn("[#686]", markdown)
-        self.assertNotIn("Landed", markdown)
+        self.assertNotIn("AUTO_HEAL_", markdown.split("<!-- AGENT-PR-STATE:v1", 1)[0])
+        self.assertNotIn("S3_CI_FAILURE", markdown.split("<!-- AGENT-PR-STATE:v1", 1)[0])
+        self.assertNotIn("等 Review Approve / CI", markdown)
+        state = json.loads(re.search(r"<!-- AGENT-PR-STATE:v1 (.+) -->", markdown).group(1))
+        self.assertEqual(state["root_id"], "china-release")
+        self.assertEqual(state["pop_ready"], [{"pr": 580, "head_sha": "pop-head", "decision_id": "D580"}])
+        self.assertEqual(state["in_flight"][1]["stage_code"], "S3_CI_FAILURE")
+        self.assertEqual(state["merged"], [686])
+
+    def test_pr_workstream_serializes_decision_metadata(self):
+        markdown = root_tracker._workstream_markdown(
+            {"root_id": "china-release"},
+            "PR & PoP",
+            [{
+                "type": "decision", "pr_number": 617, "title": "Choose A or B", "head_sha": "head617",
+                "decision_id": "D617", "pending_decisions": [{
+                    "kind": "owner_decision", "status": "awaiting_owner", "decision_id": "D617",
+                    "linear_identifier": "TIA-347", "url": "https://linear.app/tianpeili/issue/TIA-347",
+                }],
+            }],
+        )
+        payload = json.loads(re.search(r"<!-- AGENT-PR-STATE:v1 (.+) -->", markdown).group(1))
+        self.assertEqual(payload["decisions"], [{"pr": 617, "decision_id": "D617", "head_sha": "head617"}])
+        self.assertIn("待拍板回复 A/B", markdown)
+
+    def test_pr_workstream_omits_empty_action_sections_and_placeholders(self):
+        items = [
+            {"type": "pr", "pr_number": 630, "signal": "OBSERVE", "state": "OPEN", "title": "In flight", "head_sha": "h630"},
+            *({"type": "pr", "pr_number": number, "signal": "MERGED", "state": "MERGED", "title": f"Merged {number}"} for number in (358, 392, 520, 542)),
+        ]
+        markdown = root_tracker._workstream_markdown({"root_id": "sapphire-notification"}, "PR & PoP", items)
+        self.assertIn("> 🟢 **无需你操作** · 在途 **1** · 已合入 **4**", markdown)
+        self.assertIn("### ⏳ 在途 PR (1)", markdown)
+        self.assertIn("### ✅ 已合入 (4)", markdown)
+        self.assertNotIn("### 🔴 待你操作", markdown)
+        self.assertNotIn("No active", markdown)
 
     def test_discovery_head_advance_reconciles_pending_decision(self):
         config = {
@@ -220,9 +254,9 @@ class RootTrackerTests(unittest.TestCase):
             "summary": {},
             "workstreams": {
                 "PR & PoP": {"items": [
-                    {"type": "pr", "pr_number": 1, "signal": "WAIT_POP_OR_MERGE"},
-                    {"type": "pr", "pr_number": 2, "signal": "S3_CI_FAILURE"},
-                    {"type": "pr", "pr_number": 3, "signal": "MERGED", "state": "MERGED"},
+                    {"type": "pr", "pr_number": 1, "signal": "WAIT_POP_OR_MERGE", "head_sha": "deadbeef1234"},
+                    {"type": "pr", "pr_number": 2, "signal": "S3_CI_FAILURE", "head_sha": "cafebabe5678"},
+                    {"type": "pr", "pr_number": 3, "signal": "MERGED", "state": "MERGED", "head_sha": "feedface9012"},
                 ]},
                 "Bugs & Devsync": {"items": [
                     {"type": "bug", "status": "FIXED", "title": "fixed"},
@@ -231,11 +265,31 @@ class RootTrackerTests(unittest.TestCase):
                 "Repo & Skill Sinks": {"items": [{"type": "eval_sink", "id": "E1"}]},
             },
         }
-        markdown = root_tracker.build_root_markdown(
-            {"root_id": "china-release", "name": "China Release", "description": "Executive summary."},
-            snapshot_root,
-        )
+        root_def = {
+            "root_id": "china-release",
+            "name": "China Release",
+            "description": "Executive summary.",
+            "repos": ["san/bing-growth-sapphire-app"],
+            "integration_branches": ["devsync1030"],
+        }
+        ws_links = {
+            "PR & PoP": {"id": "u1", "identifier": "TIA-390", "url": "https://linear.app/TIA-390"},
+            "Bugs & Devsync": {"id": "u2", "identifier": "TIA-391", "url": "https://linear.app/TIA-391"},
+            "Repo & Skill Sinks": {"id": "u3", "identifier": "TIA-392", "url": "https://linear.app/TIA-392"},
+        }
+        markdown = root_tracker.build_root_markdown(root_def, snapshot_root, workstream_links=ws_links)
         self.assertLessEqual(len(markdown.splitlines()), 35)
+        layer1_idx = markdown.index("## ⚡ TL;DR & 下一步需要你做的")
+        layer2_idx = markdown.index("## 📋 总体信息")
+        layer3_idx = markdown.index("<details><summary>🤖 AI 知道的信息</summary>")
+        self.assertLess(layer1_idx, layer2_idx)
+        self.assertLess(layer2_idx, layer3_idx)
+        self.assertTrue(markdown.endswith("</details>"))
+
+        human_visible = markdown[:layer3_idx]
+        for forbidden in ("deadbeef1234", "cafebabe5678", "WAIT_POP_OR_MERGE", "S3_CI_FAILURE", "AUTO_HEAL_", "OBSERVE", "<!-- ROOT-MANIFEST:v1"):
+            self.assertNotIn(forbidden, human_visible)
+
         self.assertIn("Milestone Readiness Scoreboard", markdown)
         self.assertIn("| 维度 | 当前进度 |", markdown)
         self.assertIn("| --- | --- |", markdown)
@@ -245,6 +299,40 @@ class RootTrackerTests(unittest.TestCase):
         self.assertNotIn("| PR | Signal", markdown)
         self.assertNotIn("| Bug ID | Status", markdown)
         self.assertNotIn("Repo & Skill Sinks（", markdown)
+
+        meta = root_tracker.parse_root_meta(markdown)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["root_id"], "china-release")
+        self.assertEqual(meta["workstream_issues"]["PR & PoP"]["identifier"], "TIA-390")
+        self.assertEqual(len(meta["pr_heads"]), 3)
+        manifest = root_tracker.parse_manifest(markdown)
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["root_id"], "china-release")
+        self.assertEqual(
+            markdown,
+            root_tracker.build_root_markdown(root_def, snapshot_root, workstream_links=ws_links),
+        )
+
+    def test_non_china_root_has_no_china_non_pr_text_and_shows_no_action_needed(self):
+        snapshot_root = {
+            "workstreams": {
+                "PR & PoP": {"items": [
+                    {"type": "pr", "pr_number": 580, "signal": "MERGED", "state": "MERGED", "head_sha": "abc123456"}
+                ]},
+                "Bugs & Devsync": {"items": []},
+                "Repo & Skill Sinks": {"items": []},
+            }
+        }
+        markdown = root_tracker.build_root_markdown(
+            {"root_id": "sapphire-notification", "name": "Sapphire Notification", "description": "Notification."},
+            snapshot_root,
+        )
+        self.assertIn("## ⚡ TL;DR & 下一步需要你做的", markdown)
+        self.assertIn("当前无非 PR 可修阻塞或外部配置卡点（0 条）", markdown)
+        self.assertIn("- 当前无需你立即操作", markdown)
+        self.assertNotIn("start-china", markdown)
+        self.assertNotIn("11453356", markdown)
+        self.assertNotIn("abc123456", markdown.split("<details><summary>🤖 AI 知道的信息</summary>", 1)[0])
 
     def test_linear_boundary_refuses_non_linear_writer(self):
         class ForbiddenClient:
@@ -295,6 +383,71 @@ class RootTrackerTests(unittest.TestCase):
             result = root_tracker.sync_linear(self.roots, cache_path=Path(directory) / "cache.json", client=client, teams_timeline_path=timeline_path, snapshot_roots={"china-release": {"workstreams": {}}})
         self.assertEqual(client.milestones, [])
         self.assertNotIn("Release Timeline & Teams Context", result["roots"][0]["description"])
+
+    def test_linear_client_finds_legacy_pr_title_and_updates_new_title(self):
+        client = root_tracker.LinearClient("token")
+        client._team = lambda: "team-id"
+        calls = []
+        with mock.patch.object(root_tracker, "_linear_query", side_effect=[
+            {"issues": {"nodes": []}},
+            {"issues": {"nodes": [{"id": "issue-id", "identifier": "TIA-394", "title": "[Sapphire Notification · PR & PoP] legacy", "parent": {"id": "parent-id"}}]}},
+        ]):
+            found = client._find_issue("[Sapphire Notification] PR 进度与待办", "parent-id")
+        self.assertEqual(found["identifier"], "TIA-394")
+
+        client._project_and_milestone = lambda root_id, root_name: (None, None)
+        client.active_tia83_for_root = lambda root_id: []
+        client._find_issue = lambda title, parent_id: {"id": "issue-id", "description": "old"}
+        client._mutate = lambda mutation, variables: calls.append(variables) or {"issueUpdate": {"issue": {"id": "issue-id"}}}
+        client.upsert_workstream(
+            {"id": "parent-id"},
+            {"root_id": "sapphire-notification", "name": "Sapphire Notification"},
+            {"stream": "PR & PoP", "title": "[Sapphire Notification] PR 进度与待办", "description": "new", "items": []},
+        )
+        self.assertEqual(calls[0]["input"]["title"], "[Sapphire Notification] PR 进度与待办")
+
+    def test_linear_client_deduplicates_duplicate_workstream_children(self):
+        client = root_tracker.LinearClient("token")
+        mutations = []
+        with mock.patch.object(root_tracker, "_linear_query", return_value={
+            "issue": {
+                "children": {
+                    "nodes": [
+                        {"id": "dup-id", "identifier": "TIA-459", "title": "[China Release · PR & PoP] legacy", "createdAt": "2026-11-16T01:03:52Z", "state": {"type": "backlog"}},
+                        {"id": "canon-id", "identifier": "TIA-390", "title": "[China Release] PR 进度与待办", "createdAt": "2026-11-13T03:21:31Z", "state": {"type": "unstarted"}},
+                    ]
+                }
+            }
+        }):
+            client._mutate = lambda mutation, variables: mutations.append(variables) or {"issueUpdate": {"success": True}}
+            canonical = client.deduplicate_root_children({"id": "parent-id"}, "China Release")
+        self.assertEqual(canonical["PR & PoP"]["identifier"], "TIA-390")
+        self.assertEqual(len(mutations), 1)
+        self.assertEqual(mutations[0]["id"], "dup-id")
+        self.assertIsNone(mutations[0]["input"]["parentId"])
+        self.assertEqual(mutations[0]["input"]["stateId"], client.DUPLICATE_ID)
+
+    def test_linear_client_refreshes_live_action_children_in_state_block(self):
+        client = root_tracker.LinearClient("token")
+        client._project_and_milestone = lambda root_id, root_name: (None, None)
+        client.active_tia83_for_root = lambda root_id: [{
+            "id": "child-id", "identifier": "TIA-999", "url": "https://linear.app/tianpeili/issue/TIA-999",
+            "title": "[PR Action] #630 Ready — Complete PoP / Merge (abc1234) — D630",
+            "description": "## PR Owner Action — PoP / Merge Gate\n**Head:** `abc1234`\n<!-- [DECISION:D630] -->",
+            "state": {"name": "Todo"},
+        }]
+        client._find_issue = lambda title, parent_id: {"id": "issue-id"}
+        calls = []
+        client._mutate = lambda mutation, variables: calls.append(variables) or {"issueUpdate": {"issue": {"id": "issue-id"}}}
+        client.upsert_workstream(
+            {"id": "parent-id"},
+            {"root_id": "sapphire-notification", "name": "Sapphire Notification"},
+            {"stream": "PR & PoP", "title": "[Sapphire Notification] PR 进度与待办", "description": "old", "items": []},
+        )
+        description = calls[0]["input"]["description"]
+        self.assertIn("### 🔴 待你操作 (1)", description)
+        self.assertIn('"head_sha":"abc1234"', description)
+        self.assertIn('"decision_id":"D630"', description)
 
     def test_linear_client_project_milestone_update_writes_confirmed_fields(self):
         client = root_tracker.LinearClient("token")
