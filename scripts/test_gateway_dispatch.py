@@ -83,8 +83,22 @@ elif args[:2] == ["agent", "prompt"]:
         text = PROFILES.read_text(encoding="utf-8")
         for group in ("group/steering", "group/reviewing", "group/coding", "group/coding-escalated", "group/designer"):
             self.assertIn(group, text)
+        self.assertIn('fallback_models: {claude: "opus", copilot: "gemini-4-carbon", codex: "gpt-6.1-sol"}', text)
+        self.assertIn("gemini-4-carbon: google", text)
         self.assertIn("grok-4.7: xai", text)
         self.assertIn("alt_by_excluded_vendor: {google: \"group/reviewing-openai\"", text)
+
+    def test_steering_copilot_online_and_offline_fallback(self):
+        online = self.run_dispatch("team_lead", kind="copilot", online="1", name="goal-tl-r1")
+        self.assertEqual(online.returncode, 0, online.stderr)
+        online_payload = json.loads(online.stdout)
+        self.assertEqual(online_payload["logical_group"], "group/steering")
+        self.assertEqual(online_payload["resolved_model"], "magpie/group/steering")
+        offline = self.run_dispatch("team_lead", kind="copilot", online="0", name="goal-tl-r1")
+        self.assertEqual(offline.returncode, 0, offline.stderr)
+        offline_payload = json.loads(offline.stdout)
+        self.assertEqual(offline_payload["logical_group"], "group/steering")
+        self.assertEqual(offline_payload["resolved_model"], "gemini-4-carbon")
 
     def test_designer_online_and_offline_fallback(self):
         online = self.run_dispatch("designer", online="1")

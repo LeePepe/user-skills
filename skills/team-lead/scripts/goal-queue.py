@@ -558,7 +558,7 @@ def _default_ledger_skeleton(goal_name: str) -> str:
         "- 验收: TBD\n"
         "- Owner: tianpei\n"
         "- 协调者 bot: joy\n"
-        f"- TL: {goal_name}-goal-tl-r1 / 模型 group/steering (gemini-4-argon)\n"
+        f"- TL: {goal_name}-goal-tl-r1 / 模型 group/steering (gemini-4-carbon)\n"
         f"- 机器: {os.environ.get('GTT_MACHINE', 'MacBook')}\n"
         "- 合同版本: team-lead@HEAD\n\n"
         "## Tasks\n"
