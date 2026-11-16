@@ -35,6 +35,9 @@ OWNER_USER_ID = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
 EXCLUDED_NAMES = {"work business", "bing", "workplace"}
 ACK = "🤖 已接单，正在唤醒目标 M2 处理..."
 BOT_MARKER = "<!-- BOT-BRIDGE:"
+M2_SYNC_HUB_MARKER = "<!-- GTT-M2-SYNC-HUB:v1 -->"
+M2_SYNC_STATE_START = "<!-- M2-SYNC-STATE-START -->"
+M2_SYNC_STATE_END = "<!-- M2-SYNC-STATE-END -->"
 DEFAULT_STATE = Path("~/.config/linear/bot-bridge-state.json").expanduser()
 VAULT = Path("~/Development/Personal/knowledge-vault").expanduser()
 ROOT = Path(__file__).resolve().parents[3]
@@ -141,6 +144,25 @@ def is_daily_brief(issue: dict[str, Any]) -> bool:
     return str(issue.get("title") or "").casefold().startswith("[daily brief ")
 
 
+def is_m2_sync_hub(issue: dict[str, Any]) -> bool:
+    title = str(issue.get("title") or "").casefold()
+    description = str(issue.get("description") or "")
+    return M2_SYNC_HUB_MARKER in description or "[m2-sync]" in title
+
+
+def _extract_m2_sync_state(description: str) -> dict[str, Any] | None:
+    if M2_SYNC_STATE_START not in description or M2_SYNC_STATE_END not in description:
+        return None
+    block = description.split(M2_SYNC_STATE_START, 1)[1].split(M2_SYNC_STATE_END, 1)[0]
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", block, re.S)
+    raw = match.group(1) if match else block.strip()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def brief_selection(issue: dict[str, Any], comment: dict[str, Any] | None = None) -> str:
     description = re.sub(r"\\([\[\]])", r"\1", str(issue.get("description") or ""))
     rows = re.findall(r"(?m)^\s*[-*+]\s+\[([ xX])\]\s+\*{0,2}\[(\d+)\]\*{0,2}\s+(.+)$", description)
@@ -162,6 +184,27 @@ def thread_context(issue: dict[str, Any], comment: dict[str, Any], *, resolved_d
         if resolved_directive is None:
             resolved_directive, _ = _directive(issue, comment, nodes if isinstance(nodes, list) else [])
         return f"Issue: {issue.get('title', '')}\nCurrent directive:\n{resolved_directive}"
+    if is_m2_sync_hub(issue):
+        if resolved_directive is None:
+            resolved_directive, _ = _directive(issue, comment, nodes if isinstance(nodes, list) else [])
+        lines = [f"Issue: {issue.get('title', '')}", f"Current directive:\n{resolved_directive}"]
+        sync_state = _extract_m2_sync_state(str(issue.get("description") or ""))
+        devices = (sync_state or {}).get("devices") if isinstance(sync_state, dict) else None
+        if isinstance(devices, dict) and devices:
+            summary_rows: list[str] = []
+            for host, shard in sorted(devices.items()):
+                if not isinstance(shard, dict):
+                    continue
+                in_flight = [
+                    str(item.get("topic_id") or item.get("slot_id") or item.get("issue") or "")
+                    for item in (shard.get("in_flight") or [])
+                    if isinstance(item, dict)
+                ]
+                pending = [str(x) for x in (shard.get("pending_decisions") or []) if x]
+                summary_rows.append(f"- [Host: {host}] in_flight={in_flight or ['none']} pending_decisions={pending or ['none']}")
+            if summary_rows:
+                lines.append("Cross-device M2-SYNC-STATE context (reference only, do not re-dispatch unless requested):\n" + "\n".join(summary_rows))
+        return "\n".join(lines)
     lines = [f"Issue: {issue.get('title', '')}", "Description:", str(issue.get("description") or ""), "Comment thread:"]
     for item in nodes if isinstance(nodes, list) else []:
         if isinstance(item, dict):
@@ -580,6 +623,10 @@ def _directive(issue: dict[str, Any], trigger: dict[str, Any], comments: list[di
         source = trigger if trigger.get("id") else (_latest_owner(comments) or trigger)
         slugs = topic_selection(issue, source)
         return ", ".join(slugs), slugs
+    if is_m2_sync_hub(issue):
+        source = trigger if trigger.get("id") else (_latest_owner(comments) or trigger)
+        body = str(source.get("body") or "").strip()
+        return (body or str(issue.get("title") or "assigned issue")), []
     if trigger.get("id"): return str(trigger.get("body") or ""), []
     return str(issue.get("description") or issue.get("title") or "assigned issue"), []
 
@@ -594,13 +641,15 @@ def _new_turn(issue: dict[str, Any], state: State, client: Any | None = None) ->
     comments = _comments(issue)
     by_id = {str(c["id"]): c for c in comments}
     unprocessed = [c for c in comments if not is_bot_comment(c) and str(c["id"]) not in state.data["processed_comment_ids"]]
-    no_mention_scope = is_daily(issue) or is_daily_brief(issue) or _bot_participated(issue, comments)
+    m2_sync_scope = is_m2_sync_hub(issue)
+    no_mention_scope = is_daily(issue) or is_daily_brief(issue) or m2_sync_scope or _bot_participated(issue, comments)
     if (client is not None and not no_mention_scope and not _creator_id(issue)
             and any(_is_owner_comment(c) and not (c.get("parent") or {}).get("id")
                     and "@bot" not in str(c.get("body") or "").casefold() for c in unprocessed)):
         _hydrate_bot_provenance(client, issue)
         no_mention_scope = _bot_participated(issue, comments)
     triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold()
+                or (m2_sync_scope and _is_owner_comment(c))
                 or (no_mention_scope and _is_owner_comment(c) and not (c.get("parent") or {}).get("id"))
                 or is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {}))
                 or is_bot_comment(_root_comment(c, by_id))]
@@ -611,7 +660,7 @@ def _new_turn(issue: dict[str, Any], state: State, client: Any | None = None) ->
         state.data["issue_assignments"].pop(issue_id, None)
     assignment_event = assigned and state.data["issue_assignments"].get(issue_id) != assignment_key
     if not triggers and not assignment_event: return None
-    owner = _latest_owner(comments) if assignment_event and (is_daily(issue) or is_daily_brief(issue)) else None
+    owner = _latest_owner(comments) if assignment_event and (is_daily(issue) or is_daily_brief(issue) or m2_sync_scope) else None
     trigger = triggers[-1] if triggers else (owner or {"body": "assigned to bot"})
     directive, slugs = _directive(issue, trigger, comments)
     trigger_ids = [str(c["id"]) for c in triggers]

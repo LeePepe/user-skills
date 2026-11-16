@@ -2234,6 +2234,158 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(md.returncode, 0, md.stderr)
         self.assertIn("Unified M2 Rollup", md.stdout)
 
+    def test_cross_device_shard_sync_merges_devices_preserves_rich_rows_and_is_idempotent(self):
+        remote_desc = (
+            "<!-- GTT-M2-SYNC-HUB:v1 -->\n\n"
+            "## 🌐 跨设备 `/personal-m2-assistant` 监督与推进总账本\n\n"
+            "### 1. 🚨 待拍板 / 跨设备待选型事项\n\n"
+            "- [ ] [TIA-457](https://linear.app/tianpeili/issue/TIA-457) · 小红书「无线开关连空调」3 套 3:4 样张选型 · [在线预览](<https://leepepe.github.io/demos/xhs-study-switch-ac/>) (`leedeMac-Mini`)\n"
+            "- [ ] [TIA-420](https://linear.app/tianpeili/issue/TIA-420) · VoxPocket「Todo 点击展开后」4 套新 Demo 选型 · [画廊入口](<https://leepepe.github.io/demos/voxpocket-holistic-redesign/>) (`leedeMac-Mini`)\n\n"
+            "### 2. ⏳ 各设备在途监督（In-Flight by Device）\n\n"
+            "| 设备 (`Host`) | M2 话题 (`Topic`) | 会话 / Pane | 关联单据 | 当前推进阶段 (`M1 Stage`) | 最近心跳 (`CST`) |\n"
+            "| -- | -- | -- | -- | -- | -- |\n"
+            "| `leedeMac-Mini` | `voxpocket` | `m2-voxpocket-r1` (`w29:p3D`) | [TIA-420](https://linear.app/tianpeili/issue/TIA-420) | **Track 1**: iOS 原生 SwiftUI&#10;**Track 2**: 4 套高精 HTML Demo | `2026-11-16 09:33` |\n\n"
+            "### 3. ✅ 最近跨设备已完成（Recent Completed Rollup）\n\n"
+            "| 设备 (`Host`) | 话题 / 仓库 | 单据 / PR | 一句话结果 |\n"
+            "| -- | -- | -- | -- |\n"
+            "| `leedeMac-Mini` | `AIDash` | [TIA-432](https://linear.app/tianpeili/issue/TIA-432) / [PR #312](<https://github.com/LeePepe/AIDash/pull/312>) | 定时脉搏分类玻璃收纳箱 + ROI 横滑全指标 |\n\n"
+            "---\n\n"
+            "<details>\n"
+            "<summary>🤖 Machine-Readable Cross-Device State (M2-SYNC-STATE v1)</summary>\n\n"
+            "<!-- M2-SYNC-STATE-START -->\n\n"
+            "```json\n"
+            + json.dumps({
+                "schema": "m2-cross-device-sync/v1",
+                "updated_at": "2026-11-16T09:33:00+08:00",
+                "devices": {
+                    "leedeMac-Mini": {
+                        "updated_at": "2026-11-16T09:33:00+08:00",
+                        "in_flight": [{
+                            "slot_id": "voxpocket",
+                            "topic_id": "voxpocket",
+                            "session_id": "m2-voxpocket-r1",
+                            "pane_id": "w29:p3D",
+                            "issue": "TIA-420",
+                            "summary": "Track 1 SwiftUI + Track 2 Expanded Todo 4-variant HTML Demo",
+                        }],
+                        "pending_decisions": ["TIA-457", "TIA-420"],
+                        "recent_completed": ["TIA-432"],
+                    }
+                },
+            }, ensure_ascii=False, indent=2)
+            + "\n```\n\n"
+            "<!-- M2-SYNC-STATE-END -->\n"
+            "</details>\n\n"
+            "<!-- GTT-LINEAR-SYNC:START -->\n## Tasks\n- [ ] **T1**: Hub sync\n<!-- GTT-LINEAR-SYNC:END -->\n"
+        )
+        remote_issue = {"identifier": "TIA-463", "title": "[M2-Sync] 跨设备总账本", "description": remote_desc}
+        linear_calls = []
+
+        def fake_linear_runner(args, **kwargs):
+            linear_calls.append(args)
+            if "get-issue" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            if "update-issue" in args:
+                desc_idx = args.index("--description") + 1
+                remote_issue["description"] = args[desc_idx]
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            raise AssertionError(f"Unexpected linear call: {args}")
+
+        state_path = self.test_root / "macbook-state.json"
+        cache_path = self.test_root / "m2-cross-device-sync-cache.json"
+        macbook_slots = {
+            "schema_version": 1,
+            "slots": [
+                {
+                    "slot_id": "skills-workflow",
+                    "run_label": "skills-workflow",
+                    "topic_id": "skills-workflow",
+                    "target_repo": "user-skills",
+                    "target": "m2-skill-personal-m2-r1",
+                    "pane_id": "w1:p1",
+                    "linear_issue": "TIA-463",
+                    "status": "working",
+                    "m1_progress": "TL: m2-sync-hub-goal-tl-r1 | T1-m2-cross-device-sync-hub (in_progress)",
+                },
+                {
+                    "slot_id": "financial",
+                    "run_label": "financial",
+                    "topic_id": "financial",
+                    "target_repo": "financial",
+                    "target": "m2-financial-r1",
+                    "pane_id": "w2:p1",
+                    "linear_issue": "TIA-430",
+                    "status": "done",
+                    "m1_progress": "Anchor balance verified",
+                },
+            ],
+        }
+        board = self.router._compute_board_rollup(macbook_slots)
+        sync_res = self.router.sync_cross_device_hub(
+            board,
+            hub_issue="TIA-463",
+            local_hostname="MacBook",
+            cache_path=cache_path,
+            linear_runner=fake_linear_runner,
+            now_iso="2026-11-16T09:55:00+08:00",
+        )
+        self.assertTrue(sync_res["ok"])
+        self.assertTrue(sync_res["updated"])
+        self.assertEqual(len(linear_calls), 2)
+        updated_desc = remote_issue["description"]
+        # Verify leedeMac-Mini rich rows and shard are preserved verbatim
+        self.assertIn("[在线预览](<https://leepepe.github.io/demos/xhs-study-switch-ac/>) (`leedeMac-Mini`)", updated_desc)
+        self.assertIn("[PR #312](<https://github.com/LeePepe/AIDash/pull/312>)", updated_desc)
+        self.assertIn("<!-- GTT-LINEAR-SYNC:START -->", updated_desc)
+        # Verify MacBook shard was added
+        self.assertIn("| `MacBook` | `skills-workflow` | `m2-skill-personal-m2-r1` (`w1:p1`)", updated_desc)
+        self.assertIn("| `MacBook` | `financial` | [TIA-430](https://linear.app/tianpeili/issue/TIA-430) | Anchor balance verified |", updated_desc)
+        parsed = self.router.parse_cross_device_hub_description(updated_desc)
+        devices = parsed["state"]["devices"]
+        self.assertIn("leedeMac-Mini", devices)
+        self.assertIn("MacBook", devices)
+        self.assertEqual(devices["leedeMac-Mini"]["pending_decisions"], ["TIA-457", "TIA-420"])
+        self.assertEqual(devices["MacBook"]["in_flight"][0]["issue"], "TIA-463")
+
+        # Second sync with only a newer timestamp must be idempotent (no update-issue call)
+        linear_calls.clear()
+        sync_res_2 = self.router.sync_cross_device_hub(
+            board,
+            hub_issue="TIA-463",
+            local_hostname="MacBook",
+            cache_path=cache_path,
+            linear_runner=fake_linear_runner,
+            now_iso="2026-11-16T10:02:00+08:00",
+        )
+        self.assertTrue(sync_res_2["ok"])
+        self.assertFalse(sync_res_2["updated"])
+        self.assertEqual(sync_res_2["skipped_reason"], "no_substantive_change")
+        self.assertEqual(len(linear_calls), 1)  # only get-issue, no update-issue
+
+        # Verify --status and --plan surface [Host: leedeMac-Mini] from cache
+        state_path.write_text(json.dumps(macbook_slots), encoding="utf-8")
+        status_out = self.router.supervision_status(
+            state_file=state_path,
+            discover=False,
+            local_hostname="MacBook",
+        )
+        self.assertIn("leedeMac-Mini", status_out["remote_devices"])
+        self.assertIn("[Host: leedeMac-Mini]", status_out["unified_rollup_markdown"])
+        self.assertIn("TIA-457, TIA-420", status_out["unified_rollup_markdown"])
+        self.assertIn("voxpocket", status_out["unified_rollup_markdown"])
+
+        plan_out = self.router.build_plan(
+            "检查 VoxPocket 最新状态",
+            [],
+            mock_jev={},
+            state_file=state_path,
+            local_hostname="MacBook",
+        )
+        self.assertIn("leedeMac-Mini", plan_out["remote_devices"])
+        self.assertIn("[Host: leedeMac-Mini]", plan_out["preview_markdown"])
+        self.assertIn("TIA-457, TIA-420", plan_out["preview_markdown"])
+        self.assertIn("[Host: leedeMac-Mini]", self.router.preview_text(plan_out))
+
 
 if __name__ == "__main__":
     unittest.main()
