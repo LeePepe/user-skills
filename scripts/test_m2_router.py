@@ -2488,6 +2488,29 @@ class M2RouterTests(unittest.TestCase):
         self.assertFalse(res2["updated"])
         self.assertEqual(res2["skipped_reason"], "no_substantive_change")
 
+        # Verify supervision_status persists backlog from state_file into TIA-463 sync
+        st_file = self.test_root / "persisted-state.json"
+        st_file.write_text(json.dumps({
+            "schema_version": 1,
+            "slots": board["slots"],
+            "backlog": [
+                {"topic_id": "info-teams", "summary": "Teams 获取、同步、整理与总结（暂缓执行）"},
+                {"topic_id": "info-email", "summary": "Email 获取、同步、整理与总结（暂缓执行）"},
+            ],
+        }), encoding="utf-8")
+        remote_issue["description"] = ""
+        st_res = self.router.supervision_status(
+            state_file=st_file,
+            discover=False,
+            sync_linear=True,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            linear_runner=fake_linear_runner,
+        )
+        self.assertTrue(st_res["linear_sync"]["ok"])
+        self.assertIn("⏸️ `info-teams`", remote_issue["description"])
+        self.assertIn("⏸️ `info-email`", remote_issue["description"])
+
 
 if __name__ == "__main__":
     unittest.main()
