@@ -99,8 +99,19 @@ elif args[:2] == ["agent", "prompt"]:
         offline_payload = json.loads(offline.stdout)
         self.assertEqual(offline_payload["logical_group"], "group/steering")
         self.assertEqual(offline_payload["resolved_model"], "gemini-4-carbon")
+        self.assertEqual(offline_payload["gateway_mode"], "direct_fallback")
         self.assertIn('"--reasoning-effort", "high"', offline.mock_log)
         self.assertIn('"--context", "long_context"', offline.mock_log)
+
+        explicit_group = self.run_dispatch(
+            "team_lead", kind="copilot", online="1", name="goal-tl-r1",
+            agent_args=("--model", "magpie/group/steering"),
+        )
+        self.assertEqual(explicit_group.returncode, 0, explicit_group.stderr)
+        explicit_payload = json.loads(explicit_group.stdout)
+        self.assertEqual(explicit_payload["gateway_mode"], "magpie")
+        self.assertEqual(explicit_payload["resolved_model"], "magpie/group/steering")
+        self.assertIn('"--model", "magpie/group/steering"', explicit_group.mock_log)
 
     def test_magpie_probe_retries_transient_failure_and_offline_reviewing_fallback_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -256,7 +267,7 @@ elif args[:2] == ["agent", "prompt"]:
             self.assertEqual(payload["resolved_kind"], "claude")
             self.assertEqual(payload["logical_group"], "group/steering")
             self.assertEqual(payload["resolved_model"], "opus")
-            self.assertEqual(payload["gateway_mode"], "direct_fallback")
+            self.assertEqual(payload["gateway_mode"], "claude_direct")
             self.assertIn(
                 "goal-supervisor.py watch --handoff-dir ~/Development/handoff/demo --interval 15 --max-wait 600 --json",
                 payload["watchdog_cmd"],
