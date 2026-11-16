@@ -172,6 +172,90 @@
         "findings"
       ],
       "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-013",
+      "title": "Subtractive Mandate Gate: Negative DOM/View Assertions & Concrete Obsolete Test Manifest",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "ScrollView"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'struct IOSDualButtonSlideDock: View { var body: some View { EmptyView().frame(minHeight: 148) } }'",
+      "expect_exit": 1,
+      "expect_stdout_contains": [
+        "DC-015",
+        "findings"
+      ],
+      "target_phase": "spec",
+      "target_cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-spec --spec-file {HANDOFF_DIR}/design.md",
+      "target_expect_exit": 0,
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-014",
+      "title": "Anti-Instructional Micro-Copy Clutter Gate (DC-014 / UI_INSTRUCTIONAL_CLUTTER)",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationStack",
+        "ScrollView",
+        "WebViewport"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\")'",
+      "expect_exit": 1,
+      "expect_stdout_contains": [
+        "DC-014",
+        "findings"
+      ],
+      "target_phase": "code",
+      "target_cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path {WORKTREE}",
+      "target_expect_exit": 0,
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-015",
+      "title": "Top-Stacked Duplicate Focus Card & Unstripped Subtractive Dock Chrome Gate (DC-015)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "motion-interaction",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "ScrollView",
+        "LazyVStack"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'VStack { IOSTopFocusTodoCard(todo: focused); ForEach(viewModel.companionTodos) { t in Row(t) } }'",
+      "expect_exit": 1,
+      "expect_stdout_contains": [
+        "DC-015",
+        "findings"
+      ],
+      "target_phase": "code",
+      "target_cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform desktop --path {WORKTREE}",
+      "target_expect_exit": 0,
+      "registered_at": "2026-11-16"
     }
   ]
 }

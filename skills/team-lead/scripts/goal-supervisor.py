@@ -989,11 +989,65 @@ def check_operator_policy(args: argparse.Namespace) -> dict[str, Any]:
     return check_operator_policy_compatibility(policy_path=policy_path, template=template)
 
 
+def _run_telemetry_skill_eval(handoff: Path, worktree_arg: str | None = None) -> dict[str, Any]:
+    default_summary: dict[str, Any] = {
+        "triggered_skills": [],
+        "executed_case_ids": [],
+        "cases_run": 0,
+        "passed": 0,
+        "failed": 0,
+        "caught": 0,
+        "skipped": 0,
+    }
+    skill_contract_script = SCRIPT_DIR.parents[1] / "skill-contract" / "scripts" / "skill_contract.py"
+    if not skill_contract_script.is_file():
+        return default_summary
+    resolved_worktree = worktree_arg or ""
+    if not resolved_worktree:
+        for task in _queue_tasks(handoff):
+            candidate_wt = str(task.get("worktree") or "").strip()
+            if candidate_wt and Path(candidate_wt).expanduser().is_dir():
+                resolved_worktree = str(Path(candidate_wt).expanduser().resolve())
+                break
+        if not resolved_worktree:
+            for task in _queue_tasks(handoff):
+                candidate_repo = str(task.get("repo") or "").strip()
+                if candidate_repo and Path(candidate_repo).expanduser().is_dir():
+                    resolved_worktree = str(Path(candidate_repo).expanduser().resolve())
+                    break
+    receipt_out = handoff / "receipts" / "skill-eval-report.json"
+    cmd = [
+        sys.executable,
+        str(skill_contract_script),
+        "eval-target",
+        "--skills",
+        "auto",
+        "--phase",
+        "all",
+        "--handoff-dir",
+        str(handoff),
+        "--receipt-out",
+        str(receipt_out),
+    ]
+    if resolved_worktree:
+        cmd.extend(["--worktree", resolved_worktree])
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        summary = payload.get("skill_eval_summary")
+        if isinstance(summary, dict):
+            return summary
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+    return default_summary
+
+
 def telemetry(args: argparse.Namespace) -> dict[str, Any]:
     handoff = Path(args.handoff_dir)
     events = goal_events(handoff / "ledger.md")
     names = [event for _, event in events]
     duration = int((events[-1][0] - events[0][0]).total_seconds()) if len(events) > 1 else 0
+    skill_eval_summary = _run_telemetry_skill_eval(handoff, getattr(args, "worktree", None))
     result = {
         "goal_id": handoff.name,
         "goal_done": "GOAL_DONE" in names,
@@ -1003,6 +1057,7 @@ def telemetry(args: argparse.Namespace) -> dict[str, Any]:
         "changes_requested_count": sum(name in {"CHANGES_REQUESTED", "REVIEW_FAIL"} for name in names),
         "pr_check_failed_count": names.count("PR_CHECK_FAILED"),
         "receipt_count": len(list((handoff / "receipts").glob("*.md"))),
+        "skill_eval_summary": skill_eval_summary,
     }
     result["summary_line"] = (
         f"{result['goal_id']}: {result['event_count']} events, "
@@ -1348,6 +1403,7 @@ def main() -> None:
     policy_parser.add_argument("--json", action="store_true")
     telemetry_parser = subparsers.add_parser("telemetry")
     telemetry_parser.add_argument("--handoff-dir", required=True)
+    telemetry_parser.add_argument("--worktree", default=None)
     telemetry_parser.add_argument("--write", action="store_true")
     telemetry_parser.add_argument("--json", action="store_true")
     watch_parser = subparsers.add_parser("watch")

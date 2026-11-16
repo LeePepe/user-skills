@@ -298,6 +298,59 @@
       "bad_snippet": "ContentView()\n    .sheet(isPresented: $showA) { SheetA() }\n    .sheet(isPresented: $showB) { SheetB() }",
       "good_snippet": "ContentView()\n    .sheet(item: $activeSheet) { sheet in SheetView(sheet: sheet) }",
       "registered_at": "2026-11-15"
+    },
+    {
+      "id": "DC-014",
+      "title": "Self-Proving Instructional Micro-Copy Clutter & OCR Spec-Prose Leak on UI Surface",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView",
+        "WebViewport"
+      ],
+      "match_raw_strings": true,
+      "symptom": "Printing interaction specifications or tutorial micro-copy directly onto the UI canvas (e.g., Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\"), Label(\"执行步骤树\", ...), Text(\"点按文字原地修改 · 右下麦克风语音直补\"), Text(\"按住右下麦克风继续追补\"), Text(\"点按任意条目切换至顶部聚焦\")) to self-certify that direct manipulation exists for static screenshot or Vision OCR checks.",
+      "fix_rule": "Never print interaction rules or tutorial micro-copy onto the UI surface to pass OCR or screenshot reviews; enforce Self-Evident Affordance over Instructional Micro-Copy (UI_INSTRUCTIONAL_CLUTTER gate) and verify interactive state transitions via Before/After state-diff screenshots or XCTest/Playwright interactive assertions.",
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:(?:点击|点按|长按|按住|双击)[^\\n\"'<>]{0,20}?(?:即可|直接|原地|可|继续)?[^\\n\"'<>]{0,8}?(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)|操作\\s*/\\s*展示一体|执行步骤树|点击任务置顶聚焦|标题与属性展示处直接点按修改|点按文字原地修改|右下麦克风语音直补|按住右下麦克风继续追补|点按任意条目切换至顶部聚焦)[^\\n\"]*\"",
+      "bad_snippet": "VStack(alignment: .leading) {\n    Text(\"待办清单\")\n    Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\")\n    Label(\"执行步骤树\", systemImage: \"list.bullet\")\n    Text(\"点按文字原地修改 · 右下麦克风语音直补\")\n}",
+      "good_snippet": "VStack(alignment: .leading) {\n    Text(\"待办清单\")\n    TextField(\"待办标题\", text: $draftTitle)\n}",
+      "registered_at": "2026-11-16"
+    },
+    {
+      "id": "DC-015",
+      "title": "Top-Stacked Duplicate Focus Card Substituted for In-Place List Unfold & Unstripped Subtractive Dock Chrome",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "motion-interaction",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "ScrollView",
+        "LazyVStack",
+        "VStack"
+      ],
+      "symptom": "When the Owner mandates 'tap item to unfold detail in-place' and 'only keep 2 bottom buttons', Steering/Writer substitutes a top-stacked focus card (IOSTopFocusTodoCard + Text(\"其余待办\") divider above companionTodos) for true in-place list row expansion, and clones RecorderDock's 148pt background mask, waveform bars, and feedback banner because design.md lacked Negative DOM/View Assertions (count == 0) and a concrete Obsolete Test Manifest.",
+      "fix_rule": "Never substitute a top-stacked duplicate/hero card + '其余待办' split list when the Owner asks for in-place card expansion: unfold the tapped card container directly at its position in the single ForEach list. Every subtractive mandate ('只保留/去掉/砍掉') in design.md/spec.md must declare explicit Negative DOM/View Assertions (count == 0 / !exists) and a concrete file:line Obsolete Test Manifest.",
+      "forbidden_regex": "IOSTopFocusTodoCard\\b[\\s\\S]{0,900}?companionTodos|struct\\s+IOSDualButtonSlideDock\\b[\\s\\S]{0,900}?minHeight\\s*:\\s*148",
+      "bad_snippet": "VStack {\n    if let focused = viewModel.expandedTodo {\n        IOSTopFocusTodoCard(todo: focused)\n    }\n    ForEach(viewModel.companionTodos) { todo in Row(todo: todo) }\n}",
+      "good_snippet": "LazyVStack(spacing: AppTheme.Space.md) {\n    ForEach(viewModel.filteredTodos) { todo in\n        IOSTodoExpandableCard(todo: todo, isExpanded: viewModel.expandedTodoID == todo.id)\n    }\n}",
+      "registered_at": "2026-11-16"
     }
   ],
   "archived_templates": [

@@ -689,8 +689,52 @@ def _parse_batch_payload(batch_arg: str) -> list[dict[str, Any]]:
     return validated
 
 
+def _run_spec_eval_target_gate(handoff_dir: Path) -> dict[str, Any] | None:
+    if os.environ.get("GTT_SKIP_SPEC_EVAL") == "1":
+        return None
+    if not (handoff_dir / "design.md").is_file():
+        return None
+    skill_contract_script = Path(__file__).resolve().parents[2] / "skill-contract" / "scripts" / "skill_contract.py"
+    if not skill_contract_script.is_file():
+        return None
+    receipt_out = handoff_dir / "receipts" / "skill-eval-spec.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(skill_contract_script),
+            "eval-target",
+            "--skills",
+            "auto",
+            "--phase",
+            "spec",
+            "--handoff-dir",
+            str(handoff_dir),
+            "--receipt-out",
+            str(receipt_out),
+            "--strict",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        report = json.loads(proc.stdout) if proc.stdout.strip() else {}
+    except json.JSONDecodeError:
+        report = {}
+    if proc.returncode != 0 or not report.get("ok", True):
+        failures = report.get("failures") or []
+        reasons: list[str] = []
+        for item in failures:
+            if isinstance(item, dict):
+                reasons.extend(str(r) for r in (item.get("reasons") or []))
+        detail = "; ".join(reasons) if reasons else (proc.stderr.strip() or proc.stdout.strip() or "spec eval-target failed")
+        raise ValueError(f"spec eval-target gate failed for {handoff_dir / 'design.md'}: {detail}")
+    return report.get("skill_eval_summary") if isinstance(report, dict) else None
+
+
 def cmd_enqueue(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    _run_spec_eval_target_gate(handoff_dir)
     raw_specs: list[dict[str, Any]] = []
     if args.batch_json:
         raw_specs.extend(_parse_batch_payload(args.batch_json))
@@ -1307,6 +1351,7 @@ def _enqueue_herdr_delivery(
 
 def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
     handoff_dir = _ensure_safe_dir(args.handoff_dir)
+    spec_eval_summary = _run_spec_eval_target_gate(handoff_dir)
     with _queue_lock(handoff_dir):
         queue_data = _load_queue(handoff_dir)
         changed: list[str] = []
@@ -1328,7 +1373,10 @@ def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
         sync_to_sqlite(handoff_dir, queue_data, [event])
-    return {"ok": True, "unblocked": changed}
+    payload: dict[str, Any] = {"ok": True, "unblocked": changed}
+    if spec_eval_summary is not None:
+        payload["skill_eval_summary"] = spec_eval_summary
+    return payload
 
 
 def cmd_ruling(args: argparse.Namespace) -> dict[str, Any]:

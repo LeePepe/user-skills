@@ -432,6 +432,201 @@ def add_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def _detect_target_skills(
+    handoff_dir: Path | None,
+    worktree: Path | None,
+    repo_root: Path = ROOT,
+) -> list[str]:
+    all_pkgs = {pkg.name for pkg in _discover_packages(repo=repo_root)}
+    detected: list[str] = []
+
+    def add_skill(name: str) -> None:
+        if name in all_pkgs and name not in detected:
+            detected.append(name)
+
+    corpus_parts: list[str] = []
+    if handoff_dir is not None and handoff_dir.is_dir():
+        if (handoff_dir / "design.md").is_file():
+            add_skill("my-designer")
+        for doc_name in ("spec.md", "design.md", "ledger.md", "queue.json"):
+            doc_path = handoff_dir / doc_name
+            if doc_path.is_file():
+                try:
+                    corpus_parts.append(doc_path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+    corpus = "\n".join(corpus_parts)
+    for skill_name in sorted(all_pkgs):
+        if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(skill_name)}(?![A-Za-z0-9_-])", corpus):
+            add_skill(skill_name)
+    if re.search(r"\b(?:SwiftUI|UIKit|AppKit|Liquid\s+Glass|design\.md|Visual\s+Traceback)\b", corpus, re.I):
+        add_skill("my-designer")
+
+    if worktree is not None and worktree.is_dir():
+        ui_suffixes = {".swift", ".html", ".htm", ".css", ".scss", ".tsx", ".jsx"}
+        try:
+            git_proc = subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            changed_lines = git_proc.stdout.splitlines() if git_proc.returncode == 0 else []
+            if any(Path(line[3:].strip()).suffix.lower() in ui_suffixes for line in changed_lines if len(line) > 3):
+                add_skill("my-designer")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if "my-designer" not in detected:
+            for ext in ("*.swift", "*.html", "*.tsx", "*.jsx"):
+                if next(worktree.rglob(ext), None) is not None:
+                    add_skill("my-designer")
+                    break
+    return detected
+
+
+def _expand_target_cmd(
+    template: str | list[str],
+    *,
+    worktree: Path | None,
+    handoff_dir: Path | None,
+) -> tuple[list[str] | None, str | None]:
+    tokens = [str(item) for item in template] if isinstance(template, list) else shlex.split(str(template))
+    if not tokens:
+        return None, "empty target_cmd"
+    raw_joined = " ".join(tokens)
+    if "{HANDOFF_DIR}" in raw_joined:
+        if handoff_dir is None or not handoff_dir.is_dir():
+            return None, "missing_handoff_dir"
+        if "{HANDOFF_DIR}/design.md" in raw_joined and not (handoff_dir / "design.md").is_file():
+            return None, "design.md_absent"
+        if "{HANDOFF_DIR}/spec.md" in raw_joined and not (handoff_dir / "spec.md").is_file():
+            return None, "spec.md_absent"
+    if "{WORKTREE}" in raw_joined and (worktree is None or not worktree.is_dir()):
+        return None, "missing_worktree"
+
+    expanded: list[str] = []
+    for token in tokens:
+        val = token
+        if handoff_dir is not None:
+            val = val.replace("{HANDOFF_DIR}", str(handoff_dir.resolve()))
+        if worktree is not None:
+            val = val.replace("{WORKTREE}", str(worktree.resolve()))
+        val = val.replace("{SKILL_ROOT}", str(ROOT.resolve()))
+        expanded.append(val)
+    return expanded, None
+
+
+def run_eval_target(args: argparse.Namespace) -> int:
+    repo_arg = getattr(args, "repo", None)
+    repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
+    handoff_dir = Path(args.handoff_dir).expanduser().resolve() if getattr(args, "handoff_dir", None) else None
+    worktree = Path(args.worktree).expanduser().resolve() if getattr(args, "worktree", None) else None
+    phase = getattr(args, "phase", "all") or "all"
+    allowed_phases = {"spec", "code"} if phase == "all" else {phase}
+
+    raw_skills = getattr(args, "skills", "auto") or "auto"
+    if raw_skills.strip().lower() == "auto":
+        skill_names = _detect_target_skills(handoff_dir, worktree, repo_root=repo_root)
+    else:
+        skill_names = _csv(raw_skills)
+
+    triggered_skills: list[str] = []
+    executed_cases: list[str] = []
+    skipped_cases: list[dict[str, str]] = []
+    case_results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    passed = 0
+
+    for skill_name in skill_names:
+        pkg = _resolve_skill_dir(skill_name, repo=repo_arg, create=False)
+        drawer_path = pkg / "references" / "eval-cases.json"
+        if not drawer_path.is_file():
+            continue
+        try:
+            doc = json.loads(drawer_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append({"skill": skill_name, "id": "<drawer>", "phase": phase, "reasons": [str(exc)]})
+            continue
+
+        for case in doc.get("active_cases", []):
+            if not isinstance(case, dict) or not case.get("target_cmd"):
+                continue
+            case_id = str(case.get("id", "<unidentified>"))
+            case_phase = str(case.get("target_phase") or "code").lower()
+            if case_phase not in allowed_phases:
+                continue
+            argv, skip_reason = _expand_target_cmd(
+                case["target_cmd"],
+                worktree=worktree,
+                handoff_dir=handoff_dir,
+            )
+            if skip_reason is not None or argv is None:
+                skipped_cases.append({"skill": skill_name, "id": case_id, "phase": case_phase, "reason": skip_reason or "skipped"})
+                continue
+
+            if skill_name not in triggered_skills:
+                triggered_skills.append(skill_name)
+            executed_cases.append(f"{skill_name}:{case_id}")
+            proc = _run_command(argv, repo_root)
+            expect_exit = int(case.get("target_expect_exit", 0))
+            reasons: list[str] = []
+            if proc.returncode != expect_exit:
+                snippet = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}")[:400]
+                reasons.append(f"{case_id}: target_cmd exit {proc.returncode} != {expect_exit}: {snippet}")
+            combined_out = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
+            for token in case.get("target_expect_stdout_contains") or []:
+                if str(token) not in combined_out:
+                    reasons.append(f"{case_id}: target output missing {token!r}")
+
+            ok_case = len(reasons) == 0
+            if ok_case:
+                passed += 1
+            else:
+                failures.append({
+                    "skill": skill_name,
+                    "id": case_id,
+                    "phase": case_phase,
+                    "reasons": reasons,
+                })
+            case_results.append({
+                "skill": skill_name,
+                "id": case_id,
+                "title": case.get("title", ""),
+                "phase": case_phase,
+                "ok": ok_case,
+                "exit_code": proc.returncode,
+                "reasons": reasons,
+            })
+
+    summary = {
+        "triggered_skills": triggered_skills,
+        "executed_case_ids": executed_cases,
+        "cases_run": len(executed_cases),
+        "passed": passed,
+        "failed": len(failures),
+        "caught": len(failures),
+        "skipped": len(skipped_cases),
+    }
+    payload = {
+        "ok": len(failures) == 0,
+        "phase": phase,
+        "handoff_dir": str(handoff_dir) if handoff_dir else None,
+        "worktree": str(worktree) if worktree else None,
+        "skill_eval_summary": summary,
+        "results": case_results,
+        "skipped_cases": skipped_cases,
+        "failures": failures,
+    }
+    receipt_out = getattr(args, "receipt_out", None)
+    if receipt_out:
+        out_path = Path(receipt_out).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if failures and getattr(args, "strict", False) else 0
+
+
 def run_eval(args: argparse.Namespace) -> int:
     if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
         raise SystemExit("eval requires one of --all, --skill, or --repo")
@@ -1073,6 +1268,15 @@ def parser() -> argparse.ArgumentParser:
     eval_p.add_argument("--json", action="store_true")
     eval_p.add_argument("--strict", action="store_true")
 
+    target_p = sub.add_parser("eval-target")
+    target_p.add_argument("--skills", default="auto", help="Comma-separated skill names or 'auto'")
+    target_p.add_argument("--worktree", default=None, help="Path to active task worktree")
+    target_p.add_argument("--handoff-dir", default=None, help="Path to handoff/<goal> directory")
+    target_p.add_argument("--phase", choices=["spec", "code", "all"], default="all")
+    target_p.add_argument("--receipt-out", default=None, help="Optional JSON receipt output path")
+    target_p.add_argument("--repo", default=None)
+    target_p.add_argument("--strict", action="store_true")
+
     desc_p = sub.add_parser("description-eval")
     desc_p.add_argument("--skill", required=True)
     desc_p.add_argument("--repo", default=None)
@@ -1104,6 +1308,7 @@ def main() -> int:
         "sink-rule": sink_rule,
         "add-case": add_case,
         "eval": run_eval,
+        "eval-target": run_eval_target,
         "description-eval": description_eval,
         "sync-jev-stars": sync_jev_stars,
         "audit": audit,

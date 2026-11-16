@@ -169,21 +169,23 @@ def _dc012_spans(masked: str, regex_pattern: str) -> list[tuple[int, int]]:
 def command_audit_code(args: argparse.Namespace) -> int:
     if args.platform == 'macos':
         args.platform = 'desktop'
-    if args.platform not in {'desktop', 'mobile'}:
+    if args.platform not in {'desktop', 'mobile', 'web'}:
         print(json.dumps({'ok': True, 'platform': args.platform, 'findings': [], 'native_only': False}, indent=2))
         return 0
     root = Path(args.path)
-    files = [root] if args.snippet or root.is_file() else sorted(root.rglob('*.swift'))
+    allowed_suffixes = {'.swift', '.html', '.htm', '.tsx', '.jsx'} if args.platform == 'web' else {'.swift'}
+    files = [root] if args.snippet or root.is_file() else sorted(p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in allowed_suffixes)
     cases = _load_json(Path(args.cases_file)).get('active_cases', [])
     findings = []
     for path in files:
-        if path.suffix != '.swift' and not args.snippet:
+        if not args.snippet and path.suffix.lower() not in allowed_suffixes:
             continue
         text = args.snippet if args.snippet else path.read_text(encoding='utf-8', errors='ignore')
-        masked = _mask_swift(text)
+        masked = _mask_swift(text) if (args.snippet or path.suffix.lower() == '.swift') else text
         for case in cases:
             if args.platform not in case.get('platforms', []) or not case.get('forbidden_regex'):
                 continue
+            target_text = text if case.get('match_raw_strings') or case.get('id') in {'DC-006', 'DC-007', 'DC-008', 'DC-009', 'DC-010', 'DC-014'} else masked
             try:
                 if case.get('id') == 'DC-011':
                     spans = []
@@ -202,13 +204,33 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 elif case.get('id') == 'DC-012':
                     spans = _dc012_spans(masked, case['forbidden_regex'])
                 else:
-                    spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], masked)]
+                    spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], target_text)]
             except re.error as error:
                 print(json.dumps({'ok': False, 'error': f"{case.get('id')}: invalid forbidden_regex: {error}"}))
                 return 2
             for start, end in spans:
-                line = masked.count('\n', 0, start) + 1
+                line = target_text.count('\n', 0, start) + 1
                 findings.append({'case_id': case['id'], 'title': case['title'], 'file': str(path), 'line': line, 'match': text[start:end].replace('\n', ' ')[:240]})
+        for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
+            line = text.count('\n', 0, match.start()) + 1
+            line_text = text.splitlines()[line - 1] if line <= len(text.splitlines()) else ""
+            if "design-contract-allow" in line_text:
+                continue
+            if not any(f.get('line') == line and f.get('case_id') == 'DC-014' for f in findings):
+                findings.append({
+                    'case_id': 'UI_INSTRUCTIONAL_CLUTTER',
+                    'title': 'Self-Proving Instructional Micro-Copy Printed on UI Surface',
+                    'file': str(path),
+                    'line': line,
+                    'match': match.group(0).replace('\n', ' ')[:240],
+                })
+    spec_errors: list[dict[str, Any]] = []
+    if getattr(args, 'spec_file', None):
+        spec_path = Path(args.spec_file)
+        if not spec_path.is_file():
+            spec_errors.append({'rule': 'SUBTRACTIVE_SPEC_MISSING', 'file': str(spec_path), 'line': 0, 'message': f'spec file not found: {spec_path}'})
+        else:
+            spec_errors.extend(audit_subtractive_spec_text(spec_path.read_text(encoding='utf-8', errors='ignore'), str(spec_path)))
     visual_errors: list[str] = []
     geometry_errors: list[str] = []
     if getattr(args, 'check_whitespace_ratio', None):
@@ -217,8 +239,10 @@ def command_audit_code(args: argparse.Namespace) -> int:
     if getattr(args, 'audit_geometry', None):
         geom_errs, _ = EVIDENCE.audit_geometry(args.audit_geometry, platform=args.platform, collision_threshold_pt2=float(getattr(args, 'collision_threshold', 2.0)))
         geometry_errors.extend(geom_errs)
-    ok = not findings and not visual_errors and not geometry_errors
-    result: dict[str, Any] = {'ok': ok, 'platform': args.platform, 'native_only': True, 'files': len(files), 'findings': findings}
+    ok = not findings and not spec_errors and not visual_errors and not geometry_errors
+    result: dict[str, Any] = {'ok': ok, 'platform': args.platform, 'native_only': args.platform != 'web', 'files': len(files), 'findings': findings}
+    if spec_errors:
+        result['spec_errors'] = spec_errors
     if visual_errors:
         result['visual_errors'] = visual_errors
     if geometry_errors:
@@ -827,6 +851,122 @@ def command_flow_map(args: argparse.Namespace) -> int:
     return 0 if all_within_budget else 1
 
 
+INSTRUCTIONAL_MICRO_COPY_TEXT_RE = re.compile(
+    r"(?:"
+    r"(?:点击|点按|长按|按住|双击)[^\n\"'<>]{0,20}?"
+    r"(?:即可|直接|原地|可|继续)?[^\n\"'<>]{0,8}?"
+    r"(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)"
+    r"|操作\s*/\s*展示一体"
+    r"|执行步骤树"
+    r"|点击任务置顶聚焦"
+    r"|标题与属性展示处直接点按修改"
+    r"|点按文字原地修改"
+    r"|右下麦克风语音直补"
+    r"|按住右下麦克风继续追补"
+    r"|点按任意条目切换至顶部聚焦"
+    r")"
+)
+UI_INSTRUCTIONAL_CLUTTER_RE = re.compile(
+    rf"(?:\b(?:Text|Label)\s*\(\s*\"[^\n\"]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^\n\"]*\""
+    rf"|>[^<>\n]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^<>\n]*<)"
+)
+SUBTRACTIVE_MANDATE_RE = re.compile(
+    r"(?:只保留|仅保留|去掉|砍掉|删除|移除|严禁出现|\bONLY\s+keep\b)",
+    re.IGNORECASE,
+)
+NEGATIVE_ASSERTION_HEADING_RE = re.compile(
+    r"^#{1,6}\s*[^\n]*(?:Negative\s+(?:DOM/View\s+)?Assertions?|减法禁用(?:断言|清单)|负向断言)[^\n]*$"
+    r"|^\s*[-*]\s*\*\*(?:Negative\s+(?:DOM/View\s+)?Assertions?|减法禁用(?:断言|清单)|负向断言)\*\*\s*[:：]?",
+    re.IGNORECASE | re.MULTILINE,
+)
+NEGATIVE_ASSERTION_EVIDENCE_RE = re.compile(
+    r"(?:\bcount\s*==\s*0\b|!\s*\w[\w.]*\.exists\b|\bexists\s*==\s*false\b|\bXCTAssertFalse\b|\btoHaveCount\(\s*0\s*\))",
+    re.IGNORECASE,
+)
+OBSOLETE_TEST_HEADING_RE = re.compile(
+    r"^#{1,6}\s*[^\n]*Obsolete\s+Test\s+Manifest[^\n]*$"
+    r"|^\s*[-*]\s*\*\*Obsolete\s+Test\s+Manifest\*\*\s*[:：]?",
+    re.IGNORECASE | re.MULTILINE,
+)
+VAGUE_OBSOLETE_TEST_RE = re.compile(
+    r"(?:无破坏性旧单测删除|无旧单测删除|无需删除旧测试|无冲突旧单测|^\s*none\s*$|^\s*n/a\s*$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+CONCRETE_TEST_REF_RE = re.compile(
+    r"(?:[A-Za-z0-9_./-]+(?:Tests?|Spec)\.[A-Za-z0-9]+(?::\d+)?"
+    r"|\btest_[A-Za-z0-9_]+\.py(?::\d+)?"
+    r"|[A-Za-z0-9_./-]+\.(?:swift|py|ts|tsx|js|jsx|mjs):\d+)"
+)
+
+
+def _extract_markdown_block(content: str, heading_pattern: re.Pattern[str]) -> tuple[int, str] | None:
+    match = heading_pattern.search(content)
+    if match is None:
+        return None
+    line_number = content.count("\n", 0, match.start()) + 1
+    heading_text = match.group(0).lstrip()
+    tail = content[match.end() :]
+    if heading_text.startswith("#"):
+        level = len(heading_text) - len(heading_text.lstrip("#"))
+        stop = re.search(rf"(?m)^#{{1,{max(1, level)}}}\s+\S", tail)
+    else:
+        stop = re.search(
+            r"(?m)^(?:#{1,6}\s+\S|[-*]\s+\*\*(?!Negative|Obsolete|减法禁用|负向断言)[^*\n]+\*\*)",
+            tail,
+        )
+    block = tail[: stop.start()] if stop is not None else tail
+    return line_number, block.strip()
+
+
+def audit_subtractive_spec_text(content: str, source: str = "<spec>") -> list[dict[str, Any]]:
+    subtractive_match = SUBTRACTIVE_MANDATE_RE.search(content)
+    if subtractive_match is None:
+        return []
+    mandate_line = content.count("\n", 0, subtractive_match.start()) + 1
+    findings: list[dict[str, Any]] = []
+    neg_block = _extract_markdown_block(content, NEGATIVE_ASSERTION_HEADING_RE)
+    if neg_block is None or not NEGATIVE_ASSERTION_EVIDENCE_RE.search(neg_block[1]):
+        findings.append({
+            "rule": "SUBTRACTIVE_MISSING_NEGATIVE_ASSERTIONS",
+            "file": source,
+            "line": neg_block[0] if neg_block is not None else mandate_line,
+            "message": "subtractive mandate requires a non-empty 'Negative DOM/View Assertions' section with explicit count == 0 / !exists assertions",
+        })
+    obs_block = _extract_markdown_block(content, OBSOLETE_TEST_HEADING_RE)
+    if obs_block is None:
+        findings.append({
+            "rule": "SUBTRACTIVE_MISSING_OBSOLETE_TEST_MANIFEST",
+            "file": source,
+            "line": mandate_line,
+            "message": "subtractive mandate requires an 'Obsolete Test Manifest' section with concrete test file:line references",
+        })
+    else:
+        obs_line, obs_body = obs_block
+        cleaned_body = re.sub(r"^[-*0-9.)\s:：]+", "", obs_body).strip()
+        has_concrete_ref = bool(CONCRETE_TEST_REF_RE.search(obs_body))
+        is_vague = bool(VAGUE_OBSOLETE_TEST_RE.search(cleaned_body)) and not has_concrete_ref
+        if not cleaned_body or is_vague or not has_concrete_ref:
+            findings.append({
+                "rule": "SUBTRACTIVE_MISSING_OBSOLETE_TEST_MANIFEST",
+                "file": source,
+                "line": obs_line,
+                "message": "Obsolete Test Manifest must cite concrete test file/file:line references (vague placeholders like '无破坏性旧单测删除' are forbidden)",
+            })
+    return findings
+
+
+def command_audit_spec(args: argparse.Namespace) -> int:
+    spec_path = Path(args.spec_file)
+    if not spec_path.is_file():
+        print(json.dumps({"ok": False, "errors": [f"spec file not found: {spec_path}"], "findings": []}, ensure_ascii=False, indent=2))
+        return 1
+    text = spec_path.read_text(encoding="utf-8", errors="ignore")
+    findings = audit_subtractive_spec_text(text, str(spec_path))
+    ok = not findings
+    print(json.dumps({"ok": ok, "spec_file": str(spec_path), "findings": findings}, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
 
 def _jev_response(args, payload, platform):
     return JEV.response(args, payload, platform, TAXONOMY)
@@ -875,6 +1015,8 @@ def command_jev_gate(args):
                         errors.append(f'missing {token}')
                 if not re.search(r'(?i)(single\s+P0|one\s+P0|唯一\s*P0|P0[^\n]{0,40}(?:primary|per viewport|唯一))', text):
                     errors.append('missing single P0 focal evidence')
+                for sub_err in audit_subtractive_spec_text(text, str(args.spec_file)):
+                    errors.append(f"{sub_err['rule']}: {sub_err['message']}")
                 errors.extend(_platform_errors(args.platform, text))
                 evidence = [{'spec_text': text, 'platform': args.platform}]
             else:
@@ -914,14 +1056,18 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--dimensions", default="")
     route.add_argument("--container", default=None)
 
-    audit = sub.add_parser("audit-code", aliases=["audit-swift"], parents=[common], help="Scan Swift source against active native defect cases")
+    audit = sub.add_parser("audit-code", aliases=["audit-swift"], parents=[common], help="Scan Swift/Web source against active defect cases and instructional clutter")
     audit.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
     audit.add_argument("--path", required=True)
     audit.add_argument("--snippet", default=None)
+    audit.add_argument("--spec-file", default=None, metavar="SPEC_MD")
     audit.add_argument("--check-whitespace-ratio", default=None, metavar="PNG_OR_DIR")
     audit.add_argument("--max-dead-space", type=float, default=0.40)
     audit.add_argument("--audit-geometry", default=None, metavar="GEOMETRY_JSON")
     audit.add_argument("--collision-threshold", type=float, default=2.0)
+
+    spec_audit = sub.add_parser("audit-spec", parents=[common], help="Audit design.md/spec.md for subtractive Negative DOM/View Assertions and concrete Obsolete Test Manifest")
+    spec_audit.add_argument("--spec-file", required=True, metavar="SPEC_MD")
 
     ws = sub.add_parser("check-whitespace-ratio", parents=[common], help="Reject full-viewport screenshots with >0.40 bottom contiguous dead space")
     ws.add_argument("--path", required=True, metavar="PNG_OR_DIR")
@@ -964,6 +1110,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_route(args)
     if args.command in {"audit-code", "audit-swift"}:
         return command_audit_code(args)
+    if args.command == "audit-spec":
+        return command_audit_spec(args)
     if args.command == "check-whitespace-ratio":
         return command_check_whitespace_ratio(args)
     if args.command == "audit-geometry":
