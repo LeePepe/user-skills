@@ -458,7 +458,7 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
   FALLBACK_MODEL=""
   case "$LOGICAL_GROUP" in
     group/steering)
-      case "$KIND" in claude) FALLBACK_MODEL="opus" ;; copilot) FALLBACK_MODEL="gemini-4-argon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
+      case "$KIND" in claude) FALLBACK_MODEL="opus" ;; copilot) FALLBACK_MODEL="gemini-4-carbon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
     group/reviewing-openai)
       case "$KIND" in copilot) FALLBACK_MODEL="gpt-5.6-luna" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
     group/reviewing)

@@ -687,6 +687,8 @@ class VerifySkillsTests(unittest.TestCase):
 
         self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
         self.assertIn("copilot_allowlist:", content)
+        self.assertIn('fallback_models: {claude: "opus", copilot: "gemini-4-carbon", codex: "gpt-6.1-sol"}', content)
+        self.assertIn("gemini-4-carbon: google", content)
         self.assertNotIn("gemini-3.8-flash", content)
         self.assertNotIn("composer-2.5", content)
         self.assertNotIn("kimi-k3-high", content)
@@ -1450,7 +1452,7 @@ try {
                 "\n".join(
                     [
                         "# Goal: good-designer",
-                        "- TL: good-designer-goal-tl-r1 / 模型 gemini-4-argon",
+                        "- TL: good-designer-goal-tl-r1 / 模型 gemini-4-carbon",
                         "- 2026-10-31T00:00:00Z | EVT=START | id=E1 | from=good-designer-goal-tl-r1",
                         "",
                     ]
@@ -1461,7 +1463,7 @@ try {
                 "\n".join(
                     [
                         "# Goal: other-goal",
-                        "- TL: other-goal-goal-tl-r1 / 模型 gemini-4-argon",
+                        "- TL: other-goal-goal-tl-r1 / 模型 gemini-4-carbon",
                         "- 2026-10-31T00:00:00Z | EVT=START | id=E1",
                         "",
                     ]

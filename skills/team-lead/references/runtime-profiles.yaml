@@ -1,6 +1,6 @@
 # GTT runtime profiles — role to model, CLI, and launch parameters.
 version: 2
-updated: 2026-11-05
+updated: 2026-11-16
 
 gateway:
   enabled: true
@@ -17,7 +17,7 @@ gateway:
       routing: pace
       stays: session
       claude_mode: direct_quota_gated
-      fallback_models: {claude: "opus", copilot: "gemini-4-argon", codex: "gpt-6.1-sol"}
+      fallback_models: {claude: "opus", copilot: "gemini-4-carbon", codex: "gpt-6.1-sol"}
     reviewing:
       id: "group/reviewing"
       roles: [planner_reviewer, code_reviewer, research_primary, research_co]
@@ -61,6 +61,7 @@ vendors:
   gpt-5.6-luna: openai
   mai-code-2-flash: microsoft
   gemini-4-argon: google
+  gemini-4-carbon: google
   kimi: moonshot
   grok-4.7: xai
 
@@ -121,10 +122,10 @@ machines:
     strong:
       team_lead:
         - {cli: claude, model: opus, vendor: anthropic, flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}
-        - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders"}
+        - {cli: copilot, model: gemini-4-carbon, vendor: google, effort: high, context: long_context, context_window: 936k, flags: "--model gemini-4-carbon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders"}
       arbitration:
         - {cli: claude, model: opus, vendor: anthropic, flags: "--model opus --allowedTools Bash Read Write Edit Grep Glob"}
-        - {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+        - {cli: copilot, model: gemini-4-carbon, vendor: google, effort: high, context: long_context, context_window: 936k, flags: "--model gemini-4-carbon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
     mid:
       planner: {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, sandbox: danger-full-access, flags: "-m gpt-6.1-sol -c model_context_window=1000000 -s danger-full-access -a never", writes: handoff-only}
       planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
@@ -159,8 +160,8 @@ machines:
   macbook:
     allowed_cli: [codex, copilot]
     strong:
-      team_lead: {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders"}
-      arbitration: {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
+      team_lead: {cli: copilot, model: gemini-4-carbon, vendor: google, effort: high, context: long_context, context_window: 936k, flags: "--model gemini-4-carbon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders"}
+      arbitration: {cli: copilot, model: gemini-4-carbon, vendor: google, effort: high, context: long_context, context_window: 936k, flags: "--model gemini-4-carbon --reasoning-effort high --context long_context --allow-tool write --allow-tool shell --allow-tool url --deny-tool 'shell(rm -rf /:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
     mid:
       planner: {cli: codex, model: gpt-6.1-sol, vendor: openai, context: long_context, context_window: 1000000, sandbox: danger-full-access, flags: "-m gpt-6.1-sol -c model_context_window=1000000 -s danger-full-access -a never", writes: handoff-only}
       planner_reviewer: {cli: copilot, model: gemini-4-argon, vendor: google, effort: high, context: long_context, context_window: 983k, flags: "--model gemini-4-argon --reasoning-effort high --context long_context --allow-tool write --allow-tool url --allow-tool 'shell(git:*)' --allow-tool 'shell(gh:*)' --allow-tool 'shell(python3:*)' --allow-tool 'shell(shasum:*)' --deny-tool 'shell(git commit:*)' --deny-tool 'shell(git push:*)' --deny-tool 'shell(git merge:*)' --deny-tool 'shell(git rebase:*)' --deny-tool 'shell(git reset:*)' --deny-tool 'shell(git checkout:*)' --deny-tool 'shell(herdr server stop:*)' --add-dir ~/Development --add-dir ~/.copilot --add-dir ~/.agents --add-dir ~/.codex --add-dir ~/orca --add-dir /Volumes/SSD --add-dir /tmp --add-dir /private/tmp --add-dir /var/folders --add-dir /private/var/folders --no-ask-user"}
@@ -194,9 +195,9 @@ notes:
   mac_mini_strong_claude_quota: >
     On mac-mini only, before starting strong team_lead or arbitration when the first
     profile entry is claude/opus, run quota_precheck (weekly_remaining_pct < 20 or unreadable
-    → start on copilot/gemini-4-argon). See bots-and-agents.md Measurement.
+    → start on copilot/gemini-4-carbon). See bots-and-agents.md Measurement.
   model_assignment: >
-    strong uses opus with claude and gemini-4-argon with copilot;
+    strong uses opus with claude and gemini-4-carbon with copilot;
     mid uses gpt-6.1-sol with codex and gemini-4-argon with copilot;
     worker (writer, explorer, pr_monitor, mechanical) uses copilot with gpt-5.6-luna and mai-code-2-flash only; writer, explorer, and mechanical prioritize gpt-5.6-luna -> mai-code-2-flash;
     writer_escalated (codex gpt-6.1-sol) is strictly reserved for V3 Round 2 fix escalation and never used for Round 1 (r1) writer dispatches;
@@ -205,9 +206,9 @@ notes:
   diagnostic_goal_tl: >
     Owner 2026-10-26 (Joy → Hotty → flower). Diagnostic Goals only — root cause
     of CLI / team-lead / TL slowness, effectiveness, or which skill was used:
-    TL is copilot/gemini-4-argon on MacBook and on Mac mini. Do not use the
+    TL is copilot/gemini-4-carbon on MacBook and on Mac mini. Do not use the
     mac-mini strong tier (claude/opus) to brute-force that research, and do not
     run quota_precheck for it. This does not replace day-to-day implementation
-    TL (MacBook team_lead stays gemini-4-argon; mac-mini strong stays claude/opus,
-    weekly_remaining_pct < 20 or unreadable → copilot/gemini-4-argon).
+    TL (MacBook team_lead stays gemini-4-carbon; mac-mini strong stays claude/opus,
+    weekly_remaining_pct < 20 or unreadable → copilot/gemini-4-carbon).
     See bots-and-agents.md.

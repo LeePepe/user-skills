@@ -41,6 +41,7 @@ DEFAULT_MODEL_PRICES = {
     "gpt-5.6-luna": {"input_per_mtok": 1.25, "output_per_mtok": 10.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
     "gpt-5.6-sol": {"input_per_mtok": 1.25, "output_per_mtok": 10.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
     "gemini-4-argon": {"input_per_mtok": 1.25, "output_per_mtok": 5.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
+    "gemini-4-carbon": {"input_per_mtok": 1.25, "output_per_mtok": 5.0, "cache_read_per_mtok": 0.125, "cache_write_per_mtok": 1.25},
     "mai-code-2-flash": {"input_per_mtok": 0.30, "output_per_mtok": 2.50, "cache_read_per_mtok": 0.03, "cache_write_per_mtok": 0.30},
     "default": {"input_per_mtok": 1.0, "output_per_mtok": 4.0, "cache_read_per_mtok": 0.1, "cache_write_per_mtok": 1.0},
 }
