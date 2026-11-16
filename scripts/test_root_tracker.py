@@ -175,7 +175,7 @@ class RootTrackerTests(unittest.TestCase):
         self.assertIn("### ✅ 已合入 (1)", markdown)
         self.assertIn("待点 PoP 合入", markdown)
         self.assertIn("评论已清零，等 Review", markdown)
-        self.assertIn("CI 自动修复中", markdown)
+        self.assertIn("必需 CI 失败/取消（待恢复/重跑）", markdown)
         self.assertIn("DRAFT", markdown)
         self.assertIn("已修完 Resolve: TIA-347", markdown)
         self.assertNotIn("AUTO_HEAL_", markdown.split("<!-- AGENT-PR-STATE:v1", 1)[0])
@@ -186,6 +186,64 @@ class RootTrackerTests(unittest.TestCase):
         self.assertEqual(state["pop_ready"], [{"pr": 580, "head_sha": "pop-head", "decision_id": "D580"}])
         self.assertEqual(state["in_flight"][1]["stage_code"], "S3_CI_FAILURE")
         self.assertEqual(state["merged"], [686])
+
+    def test_china_release_closed_vs_merged_required_checks_on_hold_and_unassigned_bugs(self):
+        bugs = [
+            {"id": "AB#11453356", "type": "bug", "raw_status": "REMOTE CONFIG", "status": "REMOTE CONFIG", "pr_number": 544, "pr_closed": True, "ship_blocker": True, "assigned_to": "Tianpei Li"},
+            {"id": "AB#11452501", "type": "bug", "raw_status": "ON HOLD", "status": "ON HOLD", "pr_number": 566, "pr_closed": False, "ship_blocker": True, "assigned_to": "Tianpei Li", "owner_domain": "#566 (Draft)", "title": "App Rating", "resolution": "Draft PR #566 保持挂起"},
+            {"id": "AB#11440469", "type": "bug", "raw_status": "BLOCKING", "status": "EXTERNAL (外部法务网页)", "pr_number": None, "pr_closed": False, "ship_blocker": False, "assigned_to": "", "owner_domain": "外部法务网页", "title": "第三方服务说明英文", "resolution": "微软服务端未提供中文页面"},
+        ]
+        config = {
+            "watched_prs": [
+                {"key": "san/bing-growth-sapphire-app#500", "pr_number": 500, "repository": "san/bing-growth-sapphire-app", "enabled": True},
+                {"key": "san/bing-growth-sapphire-app#544", "pr_number": 544, "repository": "san/bing-growth-sapphire-app", "enabled": True},
+                {"key": "san/bing-growth-sapphire-app#566", "pr_number": 566, "repository": "san/bing-growth-sapphire-app", "enabled": True, "isDraft": True},
+                {"key": "san/bing-growth-sapphire-app#619", "pr_number": 619, "repository": "san/bing-growth-sapphire-app", "enabled": True},
+                {"key": "san/bing-growth-sapphire-app#545", "pr_number": 545, "repository": "san/bing-growth-sapphire-app", "enabled": True},
+            ],
+            "pending_decisions": {},
+        }
+        discovery = {
+            "overview": [
+                {"key": "san/bing-growth-sapphire-app#566", "number": 566, "state": "OPEN", "isDraft": True, "signals": ["s1_conflict"]},
+                {
+                    "key": "san/bing-growth-sapphire-app#619",
+                    "number": 619,
+                    "state": "OPEN",
+                    "signals": ["s3_failed_checks"],
+                    "statusCheckRollup": [
+                        {"name": "[Backend][VoiceSearch] gh-code-ci", "conclusion": "CANCELLED"},
+                        {"name": "[iOS][Gated] PR Validation (GHE)", "conclusion": "SUCCESS", "isRequired": True},
+                    ],
+                },
+                {
+                    "key": "san/bing-growth-sapphire-app#545",
+                    "number": 545,
+                    "state": "OPEN",
+                    "signals": ["s3_failed_checks"],
+                    "statusCheckRollup": [
+                        {"name": "[Proxima][Mini App] Build", "conclusion": "CANCELLED", "isRequired": True},
+                    ],
+                },
+            ]
+        }
+        prs = root_tracker.collect_prs(config, bugs, discovery)
+        by_num = {item["pr_number"]: item for item in prs}
+        self.assertNotIn(544, by_num)
+        self.assertEqual(by_num[500]["signal"], "MERGED")
+        self.assertEqual(by_num[566]["signal"], "ON_HOLD")
+        self.assertEqual(by_num[619]["signal"], "OBSERVE")
+        self.assertEqual(by_num[545]["signal"], "AUTO_HEAL_S3_CI_FAILURE")
+
+        pr_md = root_tracker._workstream_markdown({"root_id": "china-release"}, "PR & PoP", prs)
+        self.assertIn("> 🟡 **待你推进 / 裁决 2**（必需 CI 待恢复/重跑 **1** · ON HOLD 待裁决 **1** · 待催审 **1**）", pr_md)
+        self.assertNotIn("无需你操作", pr_md)
+        self.assertIn("ON HOLD（待裁决本版豁免或解封）", pr_md)
+        self.assertIn("必需 CI 失败/取消（待恢复/重跑）", pr_md)
+
+        bug_md = root_tracker._workstream_markdown({"root_id": "china-release"}, "Bugs & Devsync", bugs)
+        self.assertIn("需二选一裁决：摘除 Ship Blocker 本版豁免 vs 解除 #566 Hold", bug_md)
+        self.assertIn("待指派责任人/定本版取舍", bug_md)
 
     def test_pr_workstream_serializes_decision_metadata(self):
         markdown = root_tracker._workstream_markdown(

@@ -35,7 +35,6 @@ DEFAULT_TOPIC_MAPS = (
     SCRIPT_DIR.parents[1] / "personal-m2-assistant/references/m2-domain-map.json",
     Path.home() / ".agents/skills/personal-m2-assistant/references/m2-domain-map.json",
     Path.home() / "Development/user-skills/skills/personal-m2-assistant/references/m2-domain-map.json",
-    Path.home() / "Development/worktrees/project-root-tracker-tk1/skills/personal-m2-assistant/references/m2-domain-map.json",
 )
 TOPIC_TO_ROOT = {
     "sapphire-china-bugs": "china-release",
@@ -471,20 +470,74 @@ def _is_china_pr(pr: Mapping[str, Any], bugs: Sequence[Mapping[str, Any]]) -> bo
     return "bing cn" in haystack or "bingchina" in haystack or "ab114" in haystack or "china" in haystack
 
 
+NON_REQUIRED_CHECK_PREFIXES = (
+    "[backend][voicesearch] gh-code-ci",
+)
+
+
+def _has_only_non_required_check_failures(pr: Mapping[str, Any]) -> bool:
+    if pr.get("non_required_ci_only") is True:
+        return True
+    rollup = pr.get("statusCheckRollup")
+    if isinstance(rollup, Mapping):
+        rollup = rollup.get("contexts", rollup.get("nodes", []))
+        if isinstance(rollup, Mapping):
+            rollup = rollup.get("nodes", [])
+    if not isinstance(rollup, list) or not rollup:
+        return False
+    failed_conclusions = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"}
+    relevant_failures = 0
+    for check in rollup:
+        if not isinstance(check, Mapping):
+            continue
+        if check.get("required", check.get("isRequired", True)) is False:
+            continue
+        name = str(check.get("name") or check.get("context") or "").strip().casefold()
+        if any(name.startswith(prefix) for prefix in NON_REQUIRED_CHECK_PREFIXES):
+            continue
+        conclusion = str(check.get("conclusion") or "").upper()
+        state = str(check.get("state") or "").upper()
+        if conclusion in failed_conclusions or state in {"FAILURE", "ERROR"}:
+            relevant_failures += 1
+    return relevant_failures == 0
+
+
 def _pr_signal(
     pr: Mapping[str, Any],
     pending: Sequence[Mapping[str, Any]],
     *,
     open_keys: set[str] | None = None,
+    closed_pr_numbers: set[int] | None = None,
+    on_hold_pr_numbers: set[int] | None = None,
 ) -> tuple[str, str]:
     number = pr.get("pr_number") or pr.get("number")
+    num_int: int | None = None
+    try:
+        if number is not None:
+            num_int = int(number)
+    except (TypeError, ValueError):
+        num_int = None
     repo = str(pr.get("repository") or pr.get("repo") or "san/bing-growth-sapphire-app")
     key = str(pr.get("key") or (f"{repo}#{number}" if number else ""))
     state_str = str(pr.get("state") or "").upper()
-    if state_str == "MERGED" or pr.get("merged") is True:
+    merged_at = pr.get("mergedAt") or pr.get("merged_at")
+    has_merged_at = "mergedAt" in pr or "merged_at" in pr
+    if num_int is not None and closed_pr_numbers and num_int in closed_pr_numbers:
+        return "CLOSED", "PR was closed without merging."
+    if state_str == "CLOSED" and not (pr.get("merged") is True or bool(merged_at)):
+        return "CLOSED", "PR was closed without merging."
+    if has_merged_at and not merged_at and state_str not in {"OPEN", ""}:
+        return "CLOSED", "PR has no mergedAt timestamp."
+    if state_str == "MERGED" or pr.get("merged") is True or bool(merged_at):
         return "MERGED", "PR is already merged."
     if open_keys and repo.endswith("bing-growth-sapphire-app") and key and key not in open_keys:
         return "MERGED", "PR is no longer open in live discovery (merged)."
+    if (
+        (num_int is not None and on_hold_pr_numbers and num_int in on_hold_pr_numbers)
+        or pr.get("on_hold") is True
+        or "on hold" in str(pr.get("status") or "").casefold()
+    ):
+        return "ON_HOLD", "PR is explicitly on hold pending owner/PM decision on release exemption or unblocking."
     active_pending = [
         item for item in pending
         if (item.get("pr_number") or item.get("number")) == number
@@ -495,6 +548,8 @@ def _pr_signal(
     if any(str(item.get("kind") or "") == "owner_decision" for item in active_pending):
         return "P0_BLOCKING_DECISION", "Owner decision is required before source or integration action."
     live_signals = [str(s).casefold() for s in (pr.get("signals") or []) if s]
+    if _has_only_non_required_check_failures(pr):
+        live_signals = [s for s in live_signals if "s3" not in s and "fail" not in s and "check" not in s]
     if any("s1" in s or "conflict" in s for s in live_signals):
         return "AUTO_HEAL_S1_CONFLICT", "S1 conflict is queued before later auto-heal stages."
     if any("s2" in s or "comment" in s for s in live_signals):
@@ -663,12 +718,32 @@ def collect_prs(config: Mapping[str, Any], bugs: Sequence[Mapping[str, Any]], di
             "pending_only": True,
         })
         known_numbers.add(number)
+    closed_pr_numbers = {
+        int(bug["pr_number"])
+        for bug in bugs
+        if isinstance(bug, Mapping) and bug.get("pr_number") is not None and bug.get("pr_closed")
+    }
+    on_hold_pr_numbers = {
+        int(bug["pr_number"])
+        for bug in bugs
+        if isinstance(bug, Mapping)
+        and bug.get("pr_number") is not None
+        and "ON HOLD" in str(bug.get("raw_status") or bug.get("status") or "").upper()
+    }
     result = []
     for pr in records:
         if not pr.get("enabled", True):
             continue
         pr_number = pr.get("pr_number") or pr.get("number")
-        signal, rationale = _pr_signal(pr, pending, open_keys=open_keys if open_keys else None)
+        signal, rationale = _pr_signal(
+            pr,
+            pending,
+            open_keys=open_keys if open_keys else None,
+            closed_pr_numbers=closed_pr_numbers,
+            on_hold_pr_numbers=on_hold_pr_numbers,
+        )
+        if signal == "CLOSED":
+            continue
         pending_for_pr = [item for item in pending if (item.get("pr_number") or item.get("number")) == pr_number]
         result.append(
             {
@@ -1002,7 +1077,6 @@ def deterministic_root_match(
 
 def _load_jev_function():
     candidates = [
-        Path(__file__).resolve().parents[2] / "worktrees/project-root-tracker-tk1/skills/team-lead/scripts/jev_client.py",
         Path.home() / "Development/user-skills/skills/team-lead/scripts/jev_client.py",
         Path(__file__).resolve().parents[2] / "job skills/team-lead/scripts/jev_client.py",
     ]
@@ -1279,11 +1353,18 @@ def build_root_markdown(
         return sum(1 for item in pr_items if predicate(item))
 
     merged = signal_count(
-        lambda item: str(item.get("signal") or "").upper() == "MERGED"
-        or str(item.get("state") or "").upper() == "MERGED"
+        lambda item: str(item.get("state") or "").upper() != "CLOSED"
+        and (
+            str(item.get("signal") or "").upper() == "MERGED"
+            or str(item.get("state") or "").upper() == "MERGED"
+        )
     )
     pop = signal_count(
         lambda item: str(item.get("signal") or "") == "WAIT_POP_OR_MERGE"
+        and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
+    )
+    on_hold = signal_count(
+        lambda item: str(item.get("signal") or "").upper() == "ON_HOLD"
         and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
     )
     auto = signal_count(
@@ -1297,7 +1378,7 @@ def build_root_markdown(
         lambda item: str(item.get("signal") or "") == "OBSERVE"
         and str(item.get("state") or "").upper() not in {"MERGED", "CLOSED"}
     )
-    in_flight_total = pop + auto + waiting
+    in_flight_total = pop + on_hold + auto + waiting
 
     bugs = [
         item for item in (workstreams.get("Bugs & Devsync") or {}).get("items", [])
@@ -1323,12 +1404,28 @@ def build_root_markdown(
         and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
         and bug_bucket(item) in {"Blocking", "Remote Config"}
     ]
+    non_pr_bugs = [
+        b for b in bugs
+        if str(b.get("ado_state") or "") not in {"Resolved", "Closed"}
+        and not str(b.get("status") or "").startswith("RESOLVED")
+        and not (
+            b.get("pr_number")
+            and not b.get("pr_closed")
+            and "ON HOLD" not in str(b.get("raw_status") or b.get("status") or "")
+        )
+    ]
+    unassigned_non_pr_count = sum(1 for b in non_pr_bugs if not str(b.get("assigned_to") or "").strip())
     sinks = len((workstreams.get("Repo & Skill Sinks") or {}).get("items", []))
     failing = [
         str(item.get("pr_number"))
         for item in pr_items
         if ("S3" in str(item.get("signal") or "") or "CI_FAILURE" in str(item.get("classification") or ""))
         and item.get("pr_number")
+    ]
+    on_hold_prs = [
+        str(item.get("pr_number"))
+        for item in pr_items
+        if str(item.get("signal") or "").upper() == "ON_HOLD" and item.get("pr_number")
     ]
     pop_prs = [
         str(item.get("pr_number"))
@@ -1353,26 +1450,25 @@ def build_root_markdown(
 
     pop_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in pop_prs[:6])
     failing_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in failing[:6]) if failing else "无"
-    waiting_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in waiting_prs[:6]) if waiting_prs else "无"
+    on_hold_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in on_hold_prs[:4]) if on_hold_prs else "无"
+    waiting_links = ", ".join(_md_link(f"#{pr}", f"https://msft.ghe.com/san/bing-growth-sapphire-app/pull/{pr}") for pr in waiting_prs[:8]) if waiting_prs else "无"
 
     sb_count = len(ship_blocker_open) or bug_counts["Blocking"]
     ext_count = bug_counts["External Non-Blocker"]
-    non_pr_total = sum(
-        1 for item in bugs
-        if not item.get("pr_number") and str(item.get("ado_state") or "") not in {"Resolved", "Closed"}
-    )
+    non_pr_total = len(non_pr_bugs)
     non_pr_is_relevant = root_id == "china-release" or non_pr_total > 0 or bug_counts["Blocking"] > 0
 
+    hold_suffix = f" · ON HOLD **{on_hold}**" if on_hold else ""
     if has_tl:
         tldr_status = (
             f"当前推进 **{ver}**（目标发版日 **{tdate}**），代码侧已合入 **{merged}** 个 PR、"
-            f"在途 **{in_flight_total}** 个 PR（待催审 **{waiting}** · 后台自愈 **{auto}** · 待点合入 **{pop}**）。"
+            f"在途 **{in_flight_total}** 个 PR（待催审 **{waiting}** · 必需 CI 待恢复/重跑 **{auto}**{hold_suffix} · 待点合入 **{pop}**）。"
         )
     else:
         lead = description.rstrip(".") if description else f"{name} 业务根追踪"
         tldr_status = (
             f"{lead} — 代码侧已合入 **{merged}** 个 PR、在途 **{in_flight_total}** 个 PR"
-            f"（待催审 **{waiting}** · 后台自愈 **{auto}** · 待点合入 **{pop}**）。"
+            f"（待催审 **{waiting}** · 必需 CI 待恢复/重跑 **{auto}**{hold_suffix} · 待点合入 **{pop}**）。"
         )
 
     if pop > 0 or decision_items:
@@ -1382,15 +1478,19 @@ def build_root_markdown(
         )
     elif non_pr_is_relevant:
         tldr_blocker = (
-            f"非 PR 可修项共 **{non_pr_total or (sb_count + ext_count)}** 条（含 **{sb_count}** 条发版阻塞远端配置/服务端开关 + "
-            f"**{max((non_pr_total or (sb_count + ext_count)) - sb_count, 0)}** 条外部资源/PM/H5 依赖）；代码侧有 **{waiting}** 个已清零评论的 PR 等待催审。"
+            f"非 PR 可修项共 **{non_pr_total or (sb_count + ext_count)}** 条（含 **{sb_count}** 条发版阻塞远端配置/服务端开关及 ON HOLD 裁决 + "
+            f"**{unassigned_non_pr_count or max((non_pr_total or (sb_count + ext_count)) - sb_count, 0)}** 条 ADO 尚无 Assignee 待指派责任人/定本版取舍项）；代码侧有 **{waiting}** 个已清零评论的 PR 等待催审。"
         )
     elif waiting > 0 or auto > 0:
-        tldr_blocker = f"当前无非 PR 可修阻塞或外部配置卡点（0 条）；主要关注 **{waiting}** 个待审 PR 审批与 **{auto}** 个在途 PR 后台自愈。"
+        tldr_blocker = f"当前无非 PR 可修阻塞或外部配置卡点（0 条）；主要关注 **{waiting}** 个待审 PR 审批与 **{auto}** 个在途 PR CI 状态。"
     else:
         tldr_blocker = "当前无非 PR 可修阻塞或外部配置卡点（0 条），在途 PR 与阻塞项均已清零。"
 
-    tldr_autopilot = f"AI 正在后台自动跟进 **{auto}** 个在途 PR 自愈，并维护 **{sinks}** 项高价值工程与评测规则沉淀。"
+    tldr_autopilot = (
+        f"必需 CI 失败/取消待恢复/重跑 **{auto}** 项"
+        + (f"，ON HOLD 待裁决 **{on_hold}** 项" if on_hold else "")
+        + f"，并已沉淀 **{sinks}** 项高价值工程与评测规则。"
+    )
 
     next_actions: list[str] = []
     if pop > 0:
@@ -1409,9 +1509,17 @@ def build_root_markdown(
         next_actions.append(
             f"- [ ] **[催审在途 PR]** 推动 Reviewer 审批评论已清零的 **{waiting}** 个在途 PR（{waiting_links}，详见子单 PR & PoP）"
         )
+    if failing:
+        next_actions.append(
+            f"- [ ] **[恢复/重跑必需 CI]** 跟进或重跑 **{len(failing)}** 个必需检查失败/取消的 PR（{failing_links}，当前无活跃自愈进程，详见子单 PR & PoP）"
+        )
+    if on_hold > 0:
+        next_actions.append(
+            f"- [ ] **[裁决 ON HOLD 挂起项]** 对 {on_hold_links} 二选一拍板：摘除 Ship Blocker 本版豁免 vs 解除 Hold 推进合入（详见子单 PR & PoP / Bugs & Devsync）"
+        )
     if non_pr_is_relevant and (sb_count > 0 or non_pr_total > 0):
         next_actions.append(
-            f"- [ ] **[推进远端配置与外部依赖]** 推动 **{sb_count}** 条发版阻塞配置/服务端开关与 **{max(non_pr_total - sb_count, 0)}** 条 PM/设计/H5 外部依赖收口（详见子单 Bugs & Devsync）"
+            f"- [ ] **[推进远端配置与待指派外部依赖]** 推动 **{sb_count}** 条发版阻塞配置/服务端开关收口，并为 **{unassigned_non_pr_count or max(non_pr_total - sb_count, 0)}** 条尚无 Assignee 的外部卡点指派责任人或定本版取舍（详见子单 Bugs & Devsync）"
         )
     if has_tl:
         ms_list = [m for m in (timeline.get("milestones") or []) if isinstance(m, Mapping)]
@@ -1442,14 +1550,18 @@ def build_root_markdown(
     if waiting > 0 and waiting_links != "无":
         pr_todo_parts.append(f"待催审: {waiting_links}")
     if failing:
-        pr_todo_parts.append(f"CI 自愈中: {failing_links}")
+        pr_todo_parts.append(f"必需 CI 待恢复/重跑: {failing_links}")
+    if on_hold > 0 and on_hold_links != "无":
+        pr_todo_parts.append(f"ON HOLD 待裁决: {on_hold_links}")
     pr_todo_cell = " · ".join(pr_todo_parts) if pr_todo_parts else "当前无在途阻塞 PR"
+    hold_col = f" · ON HOLD `{on_hold}`" if on_hold else ""
+    ext_col = f" · 外部待指派 `{bug_counts['External Non-Blocker']}`" if bug_counts["External Non-Blocker"] else ""
 
     lines: list[str] = [
         "## ⚡ TL;DR & 下一步需要你做的",
         f"- **TL;DR（核心结论）**：{tldr_status}",
         f"- **TL;DR（最大卡点）**：{tldr_blocker}",
-        f"- **TL;DR（后台自愈与沉淀）**：{tldr_autopilot}",
+        f"- **TL;DR（CI 与规则沉淀）**：{tldr_autopilot}",
         "### 👇 下一步做的（Next Actions）",
         *next_actions,
         "",
@@ -1457,8 +1569,8 @@ def build_root_markdown(
         "### 📊 三大工作流进度 (Milestone Readiness Scoreboard)",
         "| 维度 | 当前进度 | 当前阻塞 / 待办 |",
         "| --- | --- | --- |",
-        f"| **🔀 PR & PoP**{_ws_badge('PR & PoP')} | 待合入 PoP `{pop}` · 待拍板 `{len(decision_items)}` · 后台自愈 `{auto}` · 待审 `{waiting}` · 已合入 `{merged}` | {pr_todo_cell} |",
-        f"| **🐛 Bugs & Devsync**{_ws_badge('Bugs & Devsync')} | 已修 `{bug_counts['Fixed']}` · 远端配置 `{bug_counts['Remote Config']}` · 设计如此/不修 `{bug_counts['By Design & Not Fixing']}` · 阻塞 `{bug_counts['Blocking']}` | 阻塞 Bug: **{bug_counts['Blocking']}**（非 PR 卡点 `{non_pr_total}` 条） |",
+        f"| **🔀 PR & PoP**{_ws_badge('PR & PoP')} | 待合入 PoP `{pop}` · 待拍板 `{len(decision_items)}` · 必需 CI 待恢复 `{auto}`{hold_col} · 待审 `{waiting}` · 已合入 `{merged}` | {pr_todo_cell} |",
+        f"| **🐛 Bugs & Devsync**{_ws_badge('Bugs & Devsync')} | 已修 `{bug_counts['Fixed']}` · 远端配置 `{bug_counts['Remote Config']}` · 设计如此/不修 `{bug_counts['By Design & Not Fixing']}`{ext_col} · 阻塞/挂起 `{bug_counts['Blocking']}` | 阻塞 Bug: **{bug_counts['Blocking']}**（非 PR 卡点 `{non_pr_total}` 条） |",
         f"| **🧬 Repo & Skill Sinks**{_ws_badge('Repo & Skill Sinks')} | 高价值规则沉淀候选 `{sinks}` 项 | 待处理 PoP/决策: {', '.join(blockers) if blockers else '无'} |",
     ]
 
@@ -1604,14 +1716,17 @@ def _unresolved_count(value: Any) -> int:
         return 0
 
 
-def _human_pr_status(signal: str) -> str:
+def _human_pr_status(signal: str, item: Mapping[str, Any] | None = None) -> str:
     code = signal.upper()
+    auto_active = bool((item or {}).get("auto_healing_active"))
+    if code == "ON_HOLD" or "ON_HOLD" in code:
+        return "ON HOLD（待裁决本版豁免或解封）"
     if "S1" in code or "CONFLICT" in code:
-        return "冲突自动处理中"
+        return "冲突自动处理中" if auto_active else "存在合并冲突（待处理）"
     if "S2" in code or "COMMENT" in code:
-        return "评论自动修复中"
+        return "评论自动修复中" if auto_active else "存在未决评论（待处理）"
     if "S3" in code or "CI_FAILURE" in code or "CI" in code and "FAIL" in code:
-        return "CI 自动修复中"
+        return "CI 自动修复中" if auto_active else "必需 CI 失败/取消（待恢复/重跑）"
     return "评论已清零，等 Review"
 
 
@@ -1709,20 +1824,47 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
                 continue
             signal = str(item.get("signal") or item.get("classification") or "OBSERVE")
             state = str(item.get("state") or "").upper()
+            if signal == "CLOSED" or (state == "CLOSED" and signal != "MERGED"):
+                continue
             if signal == "MERGED" or state == "MERGED":
                 merged_prs.append(item)
             elif state not in {"CLOSED", "MERGED"}:
                 in_flight.append(item)
         merged_numbers = [str(item.get("pr_number") or item.get("id") or "") for item in merged_prs]
         action_count = len(pops) + len(decisions)
-        lines.extend([
-            "<!-- PRT-T3-ACTIVE-CALLOUT:v1 -->",
-            (
+        on_hold_items = [
+            item for item in in_flight
+            if str(item.get("signal") or item.get("classification") or "").upper() == "ON_HOLD"
+        ]
+        ci_attention_items = [
+            item for item in in_flight
+            if any(
+                token in str(item.get("signal") or item.get("classification") or "").upper()
+                for token in ("S1", "S2", "S3", "CI_FAILURE", "CONFLICT")
+            )
+            and not item.get("auto_healing_active")
+        ]
+        waiting_review_items = [
+            item for item in in_flight
+            if item not in on_hold_items and item not in ci_attention_items
+        ]
+        attention_count = len(ci_attention_items) + len(on_hold_items)
+        if action_count:
+            callout_line = (
                 f"> 🔴 **待你操作 {action_count}**（PoP **{len(pops)}** · 决策 **{len(decisions)}**） · "
                 f"在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
-                if action_count
-                else f"> 🟢 **无需你操作** · 在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
-            ),
+            )
+        elif attention_count:
+            callout_line = (
+                f"> 🟡 **待你推进 / 裁决 {attention_count}**（必需 CI 待恢复/重跑 **{len(ci_attention_items)}** · "
+                f"ON HOLD 待裁决 **{len(on_hold_items)}** · 待催审 **{len(waiting_review_items)}**） · "
+                f"在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
+            )
+        else:
+            callout_line = f"> 🟢 **无需你操作** · 在途 **{len(in_flight)}** · 已合入 **{len(merged_numbers)}**"
+        lines.extend([
+            "<!-- PRT-T3-ACTIVE-CALLOUT:v1 -->",
+            callout_line,
         ])
         if action_count:
             lines.extend(["", f"### 🔴 待你操作 ({action_count})"])
@@ -1759,7 +1901,7 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
                 ]
                 dec_badge = f" *(已修完 Resolve: {', '.join(resolved)})*" if resolved else ""
                 signal = str(item.get("signal") or item.get("classification") or "OBSERVE")
-                lines.append(f"- **{link}** {title}{draft_badge} — *{_human_pr_status(signal)}*{dec_badge}")
+                lines.append(f"- **{link}** {title}{draft_badge} — *{_human_pr_status(signal, item)}*{dec_badge}")
 
         if merged_numbers:
             lines.extend(["", f"### ✅ 已合入 ({len(merged_numbers)})", "", " · ".join(
@@ -1786,9 +1928,16 @@ def _workstream_markdown(root: Mapping[str, Any], stream: str, items: Sequence[M
             link = _md_link(bid, f"https://msasg.visualstudio.com/SAN%20SA/_workitems/edit/{num}") if bid.startswith("AB#") else f"`{bid}`"
             sb = " 🚨`Ship Blocker`" if b.get("ship_blocker") else ""
             owner_dom = str(b.get("owner_domain") or b.get("raw_status") or "外部/配置").replace("`", "").replace("|", r"\|")
+            assignee = str(b.get("assigned_to") or "").strip().replace("|", r"\|")
+            assignee_tag = f"👤 `{assignee}`" if assignee else "⚠️ `待指派责任人/定本版取舍`"
             title_txt = str(b.get("title") or "").replace("|", r"\|")
             res_txt = str(b.get("resolution") or "—").replace("|", r"\|")
-            return f"| {link}{sb} | `{owner_dom}` | {title_txt} | {res_txt} |"
+            raw_st = str(b.get("raw_status") or b.get("status") or "").upper()
+            if bid == "AB#11452501" or "ON HOLD" in raw_st:
+                res_txt += " **【需二选一裁决：摘除 Ship Blocker 本版豁免 vs 解除 #566 Hold】**"
+            elif not assignee:
+                res_txt += " **【ADO 尚无 Assignee：待指派责任人/定本版取舍】**"
+            return f"| {link}{sb} | `{owner_dom}` · {assignee_tag} | {title_txt} | {res_txt} |"
 
         c1_remote_config = []
         c2_missing_info_or_policy = []
