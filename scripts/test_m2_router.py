@@ -2571,6 +2571,439 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(res_bad["action"], "owner_decision")
         self.assertEqual(res_bad["blocked_reason"], "owner_decision_required")
 
+    def test_plan_reads_events_jsonl_tail_64kb_injects_recent_context_and_falls_back_to_pane_read(self):
+        session_uuid = "11111111-2222-3333-4444-555555555555"
+        session_dir = self.test_root / "session-state" / session_uuid
+        session_dir.mkdir(parents=True)
+        events_path = session_dir / "events.jsonl"
+
+        # Prepend >70KB of older turns so seek(-64KB) lands mid-file and skips any partial line
+        padding_lines = [
+            json.dumps({
+                "type": "user.message",
+                "timestamp": "2026-11-16T08:00:00Z",
+                "data": {"content": "old-turn-0-" + ("x" * 600)},
+            })
+            for _ in range(120)
+        ]
+        recent_events = [
+            {"type": "user.message", "timestamp": "2026-11-16T10:01:00Z", "data": {"content": "Step 1: 初始化 AIDash 看板指标"}},
+            {"type": "assistant.message", "timestamp": "2026-11-16T10:02:00Z", "data": {"content": "Step 1 完成：已初始化基础指标表"}},
+            {"type": "user.message", "timestamp": "2026-11-16T10:05:00Z", "data": {"content": "Step 2 (子窗格私聊): 把缓存口径改为 24h 滑动窗口"}},
+            {"type": "assistant.message", "timestamp": "2026-11-16T10:06:00Z", "data": {"content": "正在调整 24h 窗口..."}},
+            {"type": "assistant.message", "timestamp": "2026-11-16T10:06:30Z", "data": {"content": "Step 2 完成：24h 滑动窗口已生效"}},
+            {"type": "user.message", "timestamp": "2026-11-16T10:10:00Z", "data": {"content": "Step 3 (子窗格私聊): 补充 p95 延迟分位数列"}},
+            {"type": "assistant.message", "timestamp": "2026-11-16T10:11:15Z", "data": {"content": "Step 3 完成：p95 列已加入 L4_serve 视图"}},
+            {"type": "hook.start", "timestamp": "2026-11-16T10:12:00Z", "data": {"hookType": "postToolUse"}},
+        ]
+        events_path.write_text(
+            "\n".join(padding_lines + [json.dumps(e, ensure_ascii=False) for e in recent_events]) + "\n",
+            encoding="utf-8",
+        )
+        self.assertGreater(events_path.stat().st_size, 65536)
+
+        sessions, warnings = self.router.discover_sessions(
+            herdr_payload={
+                "agents": [{
+                    "name": "m2-aidash-aidata-r1",
+                    "pane_id": "w55:p2",
+                    "workspace_id": "w55",
+                    "cwd": "/repo/AIDash",
+                    "agent": "copilot",
+                    "agent_status": "idle",
+                    "agent_session": {"agent": "copilot", "kind": "id", "value": session_uuid},
+                }]
+            },
+            include_dsh=False,
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(sessions[0]["agent_session_id"], session_uuid)
+
+        captured_magpie_payloads: list[dict] = []
+
+        def fake_post_json(url, payload, **kwargs):
+            captured_magpie_payloads.append(payload)
+            user_input = json.loads(payload["messages"][1]["content"])
+            ctx_map = user_input.get("recent_session_context") or {}
+            aidash_ctx = ctx_map.get("m2-aidash-aidata-r1") or {}
+            latest_a = aidash_ctx.get("latest_assistant_message", "")
+            return {
+                "route": "ROUTE_SINGLE",
+                "reason": "incremental continuation from 2,3 -> 4",
+                "targets": [{
+                    "target_repo": "AIDash",
+                    "session_id": "m2-aidash-aidata-r1",
+                    "sub_prompt": f"基于最新进度（{latest_a}）继续执行 Step 4：导出快照并回归验证",
+                    "wave_order": 1,
+                    "rag_context_hint": None,
+                }],
+            }
+
+        with patch.object(self.router, "_jev_decision", return_value={}), patch.object(self.router, "_post_json", side_effect=fake_post_json):
+            plan = self.router.build_plan(
+                "Step 4: 在 AIDash 导出快照并跑回归验证",
+                sessions,
+                session_state_dir=self.test_root / "session-state",
+            )
+
+        self.assertEqual(len(captured_magpie_payloads), 1)
+        sys_msg = captured_magpie_payloads[0]["messages"][0]["content"]
+        self.assertIn("recent_session_context", sys_msg)
+        self.assertIn("step 4", sys_msg)
+
+        target = plan["targets"][0]
+        self.assertEqual(target["m2_status"], "EXISTING_M2")
+        self.assertEqual(target["last_session_activity_at"], "2026-11-16T10:11:15Z")
+        ctx = target["recent_session_context"]
+        self.assertEqual(ctx["source"], "copilot_events_jsonl")
+        self.assertEqual(ctx["bytes_read"], 65536)
+        self.assertEqual(len(ctx["turns"]), 3)
+        self.assertEqual(ctx["user_messages"], [
+            "Step 1: 初始化 AIDash 看板指标",
+            "Step 2 (子窗格私聊): 把缓存口径改为 24h 滑动窗口",
+            "Step 3 (子窗格私聊): 补充 p95 延迟分位数列",
+        ])
+        self.assertEqual(ctx["assistant_messages"], [
+            "Step 1 完成：已初始化基础指标表",
+            "Step 2 完成：24h 滑动窗口已生效",
+            "Step 3 完成：p95 列已加入 L4_serve 视图",
+        ])
+        self.assertIn("Step 3 完成：p95 列已加入 L4_serve 视图", target["sub_prompt"])
+        self.assertIn("#### `recent_session_context`", plan["preview_markdown"])
+        self.assertIn("Step 3 (子窗格私聊): 补充 p95 延迟分位数列", plan["preview_markdown"])
+        self.assertIn("recent_session_context (2026-11-16T10:11:15Z):", self.router.preview_text(plan))
+
+        # Fallback: when events.jsonl is missing, falls back to `herdr pane read <pane> --source recent-unwrapped --lines 50`
+        pane_calls: list[list[str]] = []
+
+        def fake_pane_runner(args, **kwargs):
+            pane_calls.append(args)
+            if args[1:3] == ["pane", "read"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "❯ Step 2: 私聊排查通知开关\n"
+                        "● 已定位 NotificationSwitchManager 默认值问题\n"
+                        "❯ Step 3: 私聊补齐开关单测\n"
+                        "● 单测 NotificationSwitchTests 全部通过\n"
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        fallback_sessions = [{
+            "session_id": "m2-sapphire-notif-r1",
+            "topic_id": "sapphire-notification",
+            "target_repo": "bing-growth-sapphire-app",
+            "title": "Notification",
+            "status": "idle",
+            "cwd": "/repo/bing-growth-sapphire-app",
+            "source": "herdr",
+            "herdr_target": "m2-sapphire-notif-r1",
+            "pane_id": "w10:p2",
+            "workspace_id": "w10",
+            "agent_session": {"agent": "copilot", "kind": "id", "value": "missing-uuid-0000"},
+        }]
+        fallback_plan = self.router.build_plan(
+            "Step 4: 提交通知开关 PR",
+            fallback_sessions,
+            session_state_dir=self.test_root / "session-state",
+            runner=fake_pane_runner,
+            mock_jev={},
+            mock_magpie={
+                "route": "ROUTE_SINGLE",
+                "reason": "pane fallback",
+                "targets": [{
+                    "topic_id": "sapphire-notification",
+                    "target_repo": "bing-growth-sapphire-app",
+                    "session_id": "m2-sapphire-notif-r1",
+                    "sub_prompt": "Step 4: 基于 NotificationSwitchTests 通过结论提交 PR",
+                    "wave_order": 1,
+                }],
+            },
+        )
+        self.assertTrue(any(c[1:4] == ["pane", "read", "w10:p2"] and "--source" in c and "recent-unwrapped" in c for c in pane_calls))
+        fb_ctx = fallback_plan["targets"][0]["recent_session_context"]
+        self.assertEqual(fb_ctx["source"], "herdr_pane_read")
+        self.assertIn("Step 3: 私聊补齐开关单测", fb_ctx["user_messages"])
+        self.assertIn("单测 NotificationSwitchTests 全部通过", fb_ctx["latest_assistant_message"])
+
+    def test_status_newer_private_chat_timestamp_wins_over_stale_ledger_and_quiescent_settles_without_watch(self):
+        handoff_root = self.test_root / "handoff"
+        goal_dir = handoff_root / "aidash-old-goal"
+        goal_dir.mkdir(parents=True)
+        ledger_file = goal_dir / "ledger.md"
+        ledger_file.write_text(
+            "# Goal: aidash-old-goal\n"
+            "- Linear: TIA-432 (Parent TIA-375)\n"
+            "- TL: aidash-old-goal-tl-r1\n"
+            "## Tasks\n"
+            "| ID | 依赖 | 标题 | 负责 | 状态 | PR |\n"
+            "| tk1 | — | 旧版看板修复 | writer-r1 | done | #312 |\n"
+            "## Events\n"
+            "- 2026-11-15T12:00:00+08:00 | EVT=GOAL_DONE | note=旧版 PR #312 已合并完结\n",
+            encoding="utf-8",
+        )
+
+        session_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        sess_state_root = self.test_root / "copilot-sessions"
+        sess_dir = sess_state_root / session_uuid
+        sess_dir.mkdir(parents=True)
+        (sess_dir / "events.jsonl").write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "user.message",
+                    "timestamp": "2026-11-16T16:20:00+08:00",
+                    "data": {"content": "私聊追加 2, 3：直接重算 live actions.jsonl 并验证 580 条记录"},
+                }, ensure_ascii=False),
+                json.dumps({
+                    "type": "assistant.message",
+                    "timestamp": "2026-11-16T16:25:00+08:00",
+                    "data": {"content": "最新私聊结论：live actions.jsonl 已全量解码 580 条并刷新快照"},
+                }, ensure_ascii=False),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        state_path = self.test_root / "status-priority.json"
+        # Seed slot as working (e.g., before turn finished) without any --watch process
+        state_path.write_text(json.dumps({
+            "schema_version": 1,
+            "slots": [{
+                "slot_id": "aidash-aidata",
+                "base_label": "aidash-aidata",
+                "run_seq": 1,
+                "run_label": "aidash-aidata",
+                "plan_id": "m2p-seed",
+                "wave_order": 1,
+                "topic_id": "aidash-aidata",
+                "target_repo": "AIDash",
+                "target": "m2-aidash-aidata-r1",
+                "pane_id": "w55:p2",
+                "linear_issue": "TIA-432",
+                "handoff_dir": str(goal_dir),
+                "status": "working",
+                "raw_status": "working",
+            }],
+        }), encoding="utf-8")
+
+        live_records = [{
+            "name": "m2-aidash-aidata-r1",
+            "pane_id": "w55:p2",
+            "topic_id": "aidash-aidata",
+            "cwd": "/repo/AIDash",
+            "agent": "copilot",
+            "agent_status": "idle",
+            "agent_session": {"agent": "copilot", "kind": "id", "value": session_uuid},
+            "terminal_title": "TIA-432 aidash-old-goal",
+            "visible": "● 最新私聊结论：live actions.jsonl 已全量解码 580 条并刷新快照",
+        }]
+
+        with patch.dict("os.environ", {"COPILOT_SESSION_STATE_DIR": str(sess_state_root)}):
+            res = self.router.supervision_status(
+                state_file=state_path,
+                handoff_root=handoff_root,
+                agent_records=live_records,
+            )
+
+        slot = res["slots"][0]
+        # 1) Without --watch, quiescent idle pane settles from working -> idle
+        self.assertEqual(slot["status"], "idle")
+        self.assertTrue(slot["quiescent"])
+        self.assertIn("aidash-aidata", res["completed_labels"])
+        self.assertIn("aidash-aidata", res["just_settled_labels"])
+        self.assertEqual(res["running_labels"], [])
+
+        # 2) Newer private chat timestamp (2026-11-16T16:25) beats stale completed ledger.md (2026-11-15T12:00)
+        self.assertEqual(slot["active_summary_source"], "session")
+        self.assertIn("最新私聊结论：live actions.jsonl 已全量解码 580 条并刷新快照", slot["m1_progress"])
+        self.assertNotIn("旧版 PR #312 已合并完结", res["unified_rollup_markdown"])
+        self.assertIn("最新私聊结论：live actions.jsonl 已全量解码 580 条并刷新快照", res["unified_rollup_markdown"])
+
+        # 3) If ledger.md subsequently gets a newer event (2026-11-16T17:00), ledger.md wins
+        ledger_file.write_text(
+            "# Goal: aidash-old-goal\n"
+            "- Linear: TIA-432 (Parent TIA-375)\n"
+            "- TL: aidash-old-goal-tl-r1\n"
+            "## Tasks\n"
+            "| ID | 依赖 | 标题 | 负责 | 状态 | PR |\n"
+            "| tk2 | — | 新一轮 Goal TL 验证 | writer-r2 | done | #315 |\n"
+            "## Events\n"
+            "- 2026-11-16T17:00:00+08:00 | EVT=GOAL_DONE | note=新 Goal TL PR #315 已合入\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"COPILOT_SESSION_STATE_DIR": str(sess_state_root)}):
+            res_newer_ledger = self.router.supervision_status(
+                state_file=state_path,
+                handoff_root=handoff_root,
+                agent_records=live_records,
+            )
+        slot2 = res_newer_ledger["slots"][0]
+        self.assertEqual(slot2["active_summary_source"], "ledger")
+        self.assertIn("新 Goal TL PR #315 已合入", slot2["m1_progress"])
+
+    def test_m2_board_hook_idempotent_install_preserves_existing_hooks_and_hash_debounce(self):
+        hooks_dir = self.test_root / "hooks"
+        hooks_dir.mkdir(parents=True)
+        preserved_fixtures = {
+            "orca.json": '{"version":1,"hooks":{"Stop":[]}}\n',
+            "pew.json": '{"version":1,"hooks":{"agentStop":[]}}\n',
+            "pew-copilot-hook.sh": "#!/bin/sh\necho pew\n",
+            "herdr-agent-state.sh": "#!/bin/sh\necho herdr\n",
+        }
+        for fname, content in preserved_fixtures.items():
+            (hooks_dir / fname).write_text(content, encoding="utf-8")
+
+        # 1) First install creates m2-board.json and m2-board-hook.sh without touching sibling files
+        install_1 = self.router.install_m2_board_hook(hooks_dir=hooks_dir)
+        self.assertTrue(install_1["ok"])
+        self.assertTrue(install_1["updated_json"])
+        self.assertTrue(install_1["updated_script"])
+        for fname, content in preserved_fixtures.items():
+            self.assertEqual((hooks_dir / fname).read_text(encoding="utf-8"), content)
+
+        board_json = json.loads((hooks_dir / "m2-board.json").read_text(encoding="utf-8"))
+        self.assertIn("agentStop", board_json["hooks"])
+        self.assertIn("sessionEnd", board_json["hooks"])
+        self.assertTrue((hooks_dir / "m2-board-hook.sh").is_file())
+
+        # 2) Second install is idempotent (no-op)
+        install_2 = self.router.install_m2_board_hook(hooks_dir=hooks_dir)
+        self.assertTrue(install_2["ok"])
+        self.assertFalse(install_2["updated_json"])
+        self.assertFalse(install_2["updated_script"])
+        for fname, content in preserved_fixtures.items():
+            self.assertEqual((hooks_dir / fname).read_text(encoding="utf-8"), content)
+
+        # 3) Test m2-board-hook.sh execution, SHA-256 fingerprint dedup, and 60s cooldown gate
+        hook_script = hooks_dir / "m2-board-hook.sh"
+        state_file = self.test_root / "hook-supervision-state.json"
+        hook_state_dir = self.test_root / "hook-state"
+        agent_fixture_file = self.test_root / "herdr-agents.json"
+        linear_log_file = self.test_root / "linear-calls.log"
+        fake_linear_script = self.test_root / "fake-linear-sync.py"
+        fake_linear_script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"log = pathlib.Path({str(linear_log_file)!r})\n"
+            "with log.open('a', encoding='utf-8') as f:\n"
+            "    f.write((sys.argv[1] if len(sys.argv) > 1 else 'unknown') + '\\n')\n"
+            "if 'get-issue' in sys.argv:\n"
+            "    print(json.dumps({'ok': True, 'issue': {'identifier': 'TIA-463', 'description': ''}}))\n"
+            "elif 'update-issue' in sys.argv:\n"
+            "    print(json.dumps({'ok': True, 'issue': {'identifier': 'TIA-463'}}))\n",
+            encoding="utf-8",
+        )
+        fake_linear_script.chmod(0o755)
+
+        state_file.write_text(json.dumps({
+            "schema_version": 1,
+            "slots": [{
+                "slot_id": "pew-telemetry",
+                "run_label": "pew-telemetry",
+                "topic_id": "pew-telemetry",
+                "target_repo": "pew",
+                "target": "m2-pew-r1",
+                "pane_id": "w67:p1",
+                "linear_issue": "TIA-463",
+                "status": "working",
+                "raw_status": "working",
+                "visible_summary": "Running pew sync...",
+            }],
+        }), encoding="utf-8")
+        agent_fixture_file.write_text(json.dumps({
+            "agents": [{
+                "name": "m2-pew-r1",
+                "pane_id": "w67:p1",
+                "topic_id": "pew-telemetry",
+                "cwd": "/repo/pew",
+                "agent": "copilot",
+                "agent_status": "idle",
+                "visible": "● pew sync completed with 0 errors",
+            }]
+        }), encoding="utf-8")
+
+        base_env = {
+            **__import__("os").environ,
+            "HERDR_ENV": "1",
+            "M2_HOOK_FOREGROUND": "1",
+            "M2_ROUTER_SCRIPT": str(CANONICAL_ROUTER_PATH),
+            "M2_SUPERVISION_STATE_FILE": str(state_file),
+            "M2_BOARD_HOOK_STATE_DIR": str(hook_state_dir),
+            "M2_HOOK_HERDR_AGENT_JSON": str(agent_fixture_file),
+            "M2_LINEAR_SYNC_SCRIPT": str(fake_linear_script),
+            "M2_SYNC_HUB_ISSUE": "TIA-463",
+            "M2_BOARD_HOOK_COOLDOWN_SEC": "60",
+            "M2_HOOK_DEFER_ON_COOLDOWN": "1",
+        }
+
+        # Run 1: state transitions working -> idle; fingerprint changes -> syncs Linear once
+        run1 = subprocess.run(
+            ["sh", str(hook_script)],
+            input='{"hook_event_name":"agentStop"}\n',
+            capture_output=True,
+            text=True,
+            env=base_env,
+            check=False,
+        )
+        self.assertEqual(run1.returncode, 0, run1.stderr)
+        updated_state = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_state["slots"][0]["status"], "idle")
+        self.assertTrue((hook_state_dir / "last-board.sha256").is_file())
+        calls_after_1 = linear_log_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls_after_1), 2)  # get-issue + update-issue
+
+        # Run 2: state unchanged -> SHA-256 fingerprint matches -> 0 new Linear calls
+        run2 = subprocess.run(
+            ["sh", str(hook_script)],
+            input='{"hook_event_name":"agentStop"}\n',
+            capture_output=True,
+            text=True,
+            env=base_env,
+            check=False,
+        )
+        self.assertEqual(run2.returncode, 0, run2.stderr)
+        calls_after_2 = linear_log_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls_after_2), 2)  # still 2 (0 new API calls!)
+
+        # Run 3: state changes within 60s cooldown -> records dirty marker without network call when deferring
+        agent_fixture_file.write_text(json.dumps({
+            "agents": [{
+                "name": "m2-pew-r1",
+                "pane_id": "w67:p1",
+                "topic_id": "pew-telemetry",
+                "cwd": "/repo/pew",
+                "agent": "copilot",
+                "agent_status": "idle",
+                "visible": "● pew sync round 2 completed",
+            }]
+        }), encoding="utf-8")
+        run3 = subprocess.run(
+            ["sh", str(hook_script)],
+            input='{"hook_event_name":"agentStop"}\n',
+            capture_output=True,
+            text=True,
+            env=base_env,
+            check=False,
+        )
+        self.assertEqual(run3.returncode, 0, run3.stderr)
+        self.assertTrue((hook_state_dir / "linear-sync.dirty").is_file())
+        self.assertEqual(len(linear_log_file.read_text(encoding="utf-8").splitlines()), 2)
+
+        # Run 4: cooldown elapsed -> dirty marker flushes to Linear and clears dirty file
+        (hook_state_dir / "last-linear-sync.epoch").write_text("100\n", encoding="utf-8")
+        run4 = subprocess.run(
+            ["sh", str(hook_script)],
+            input='{"hook_event_name":"sessionEnd"}\n',
+            capture_output=True,
+            text=True,
+            env=base_env,
+            check=False,
+        )
+        self.assertEqual(run4.returncode, 0, run4.stderr)
+        self.assertFalse((hook_state_dir / "linear-sync.dirty").exists())
+        self.assertEqual(len(linear_log_file.read_text(encoding="utf-8").splitlines()), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
