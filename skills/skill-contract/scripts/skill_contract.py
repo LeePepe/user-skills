@@ -525,7 +525,7 @@ def run_eval_target(args: argparse.Namespace) -> int:
     phase = getattr(args, "phase", "all") or "all"
     allowed_phases = {"spec", "code"} if phase == "all" else {phase}
 
-    raw_skills = getattr(args, "skills", "auto") or "auto"
+    raw_skills = getattr(args, "skill", None) or getattr(args, "skills", "auto") or "auto"
     if raw_skills.strip().lower() == "auto":
         skill_names = _detect_target_skills(handoff_dir, worktree, repo_root=repo_root)
     else:
@@ -550,34 +550,72 @@ def run_eval_target(args: argparse.Namespace) -> int:
             continue
 
         for case in doc.get("active_cases", []):
-            if not isinstance(case, dict) or not case.get("target_cmd"):
+            if not isinstance(case, dict):
                 continue
+            raw_assertions = case.get("target_assertions")
+            target_Specs: list[dict[str, Any]] = []
+            if isinstance(raw_assertions, list) and raw_assertions:
+                for item in raw_assertions:
+                    if isinstance(item, dict) and item.get("cmd"):
+                        target_Specs.append(item)
+            elif case.get("target_cmd"):
+                target_Specs.append({
+                    "phase": case.get("target_phase") or "code",
+                    "cmd": case["target_cmd"],
+                    "expect_exit": case.get("target_expect_exit", 0),
+                    "expect_stdout_contains": case.get("target_expect_stdout_contains") or [],
+                })
+            if not target_Specs:
+                continue
+
             case_id = str(case.get("id", "<unidentified>"))
-            case_phase = str(case.get("target_phase") or "code").lower()
-            if case_phase not in allowed_phases:
+            matched_specs = [
+                spec for spec in target_Specs
+                if str(spec.get("phase") or case.get("target_phase") or "code").lower() in allowed_phases
+            ]
+            if not matched_specs:
                 continue
-            argv, skip_reason = _expand_target_cmd(
-                case["target_cmd"],
-                worktree=worktree,
-                handoff_dir=handoff_dir,
-            )
-            if skip_reason is not None or argv is None:
-                skipped_cases.append({"skill": skill_name, "id": case_id, "phase": case_phase, "reason": skip_reason or "skipped"})
+
+            expanded_runs: list[tuple[str, list[str], dict[str, Any]]] = []
+            first_skip_reason: str | None = None
+            for spec in matched_specs:
+                spec_phase = str(spec.get("phase") or case.get("target_phase") or "code").lower()
+                argv, skip_reason = _expand_target_cmd(
+                    spec["cmd"],
+                    worktree=worktree,
+                    handoff_dir=handoff_dir,
+                )
+                if skip_reason is not None or argv is None:
+                    first_skip_reason = first_skip_reason or skip_reason or "skipped"
+                    continue
+                expanded_runs.append((spec_phase, argv, spec))
+
+            if not expanded_runs:
+                skipped_cases.append({
+                    "skill": skill_name,
+                    "id": case_id,
+                    "phase": str(matched_specs[0].get("phase") or case.get("target_phase") or "code").lower(),
+                    "reason": first_skip_reason or "skipped",
+                })
                 continue
 
             if skill_name not in triggered_skills:
                 triggered_skills.append(skill_name)
             executed_cases.append(f"{skill_name}:{case_id}")
-            proc = _run_command(argv, repo_root)
-            expect_exit = int(case.get("target_expect_exit", 0))
             reasons: list[str] = []
-            if proc.returncode != expect_exit:
-                snippet = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}")[:400]
-                reasons.append(f"{case_id}: target_cmd exit {proc.returncode} != {expect_exit}: {snippet}")
-            combined_out = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
-            for token in case.get("target_expect_stdout_contains") or []:
-                if str(token) not in combined_out:
-                    reasons.append(f"{case_id}: target output missing {token!r}")
+            last_exit = 0
+            case_phase = expanded_runs[0][0]
+            for spec_phase, argv, spec in expanded_runs:
+                proc = _run_command(argv, repo_root)
+                last_exit = proc.returncode
+                expect_exit = int(spec.get("expect_exit", case.get("target_expect_exit", 0)))
+                if proc.returncode != expect_exit:
+                    snippet = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}")[:2400]
+                    reasons.append(f"{case_id}: target_cmd exit {proc.returncode} != {expect_exit}: {snippet}")
+                combined_out = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
+                for token in spec.get("expect_stdout_contains") or case.get("target_expect_stdout_contains") or []:
+                    if str(token) not in combined_out:
+                        reasons.append(f"{case_id}: target output missing {token!r}")
 
             ok_case = len(reasons) == 0
             if ok_case:
@@ -595,7 +633,7 @@ def run_eval_target(args: argparse.Namespace) -> int:
                 "title": case.get("title", ""),
                 "phase": case_phase,
                 "ok": ok_case,
-                "exit_code": proc.returncode,
+                "exit_code": last_exit,
                 "reasons": reasons,
             })
 
@@ -1270,6 +1308,7 @@ def parser() -> argparse.ArgumentParser:
 
     target_p = sub.add_parser("eval-target")
     target_p.add_argument("--skills", default="auto", help="Comma-separated skill names or 'auto'")
+    target_p.add_argument("--skill", default=None, help="Single skill name alias for --skills")
     target_p.add_argument("--worktree", default=None, help="Path to active task worktree")
     target_p.add_argument("--handoff-dir", default=None, help="Path to handoff/<goal> directory")
     target_p.add_argument("--phase", choices=["spec", "code", "all"], default="all")
