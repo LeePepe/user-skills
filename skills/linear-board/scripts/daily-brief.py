@@ -671,7 +671,7 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
     if warnings: lines += ["", "**Source warnings:**", *[f"- {_linked_text(warning, issue_urls)}" for warning in sorted(set(warnings))]]
     return "\n".join(lines).rstrip() + "\n", todos
 
-def _load_linear_client(*, dry_run: bool = False) -> Any:
+def _load_linear_module(*, dry_run: bool = False) -> Any:
     path = Path(__file__).resolve().parents[2] / "team-lead/scripts/linear-sync.py"; spec = importlib.util.spec_from_file_location("linear_sync", path)
     if not spec or not spec.loader: return None
     module = importlib.util.module_from_spec(spec)
@@ -681,6 +681,11 @@ def _load_linear_client(*, dry_run: bool = False) -> Any:
         spec.loader.exec_module(module)
     finally:
         sys.dont_write_bytecode = old_bytecode_flag
+    return module
+
+def _load_linear_client(*, dry_run: bool = False) -> Any:
+    module = _load_linear_module(dry_run=dry_run)
+    if module is None: return None
     key = module.load_api_key()
     return module.GraphQLClient(key, allow_refresh=not dry_run) if key else None
 
@@ -764,7 +769,7 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
     markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
-    issue = None; ok = True; warnings = w1 + w2 + w3 + w4
+    issue = None; ok = True; warnings = w1 + w2 + w3 + w4; archive_result = None
     if propose_linear and not dry_run:
         try:
             if client is None: raise ValueError("Linear client unavailable")
@@ -775,7 +780,19 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
             warning = "Linear publication failed; brief was not published"
             warnings.append(warning)
             markdown += f"\n**Publication warning:** {warning}\n"
-    return {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
+        else:
+            try:
+                if hasattr(client, "archive_issue"):
+                    sync_mod = _load_linear_module(dry_run=False)
+                    if sync_mod is not None and hasattr(sync_mod, "archive_completed_issues"):
+                        archive_result = sync_mod.archive_completed_issues(
+                            client, team_key="TIA", retention_days=2, max_active_issues=150, mode="auto"
+                        )
+            except Exception:
+                pass
+    payload = {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
+    if archive_result is not None: payload["archive_completed"] = archive_result
+    return payload
 
 def validate_markdown(markdown: str) -> list[str]:
     """Validate the published Plan A sink without network, credentials, or Jev."""
