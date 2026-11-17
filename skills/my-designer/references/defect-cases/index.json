@@ -130,26 +130,6 @@
       "registered_at": "2026-11-09"
     },
     {
-      "id": "DC-006",
-      "title": "Static HTML Raw YAML Frontmatter Leak Above Doctype",
-      "platforms": [
-        "web"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "typography-copy"
-      ],
-      "containers": [
-        "WebViewport"
-      ],
-      "symptom": "Static .html files served with .nojekyll or direct HTTP start with --- layout: null ... --- YAML frontmatter, rendering raw metadata text across the top of the browser viewport.",
-      "fix_rule": "Every static HTML entry file must start with <!doctype html> on line 1; handle routing via directory structure (/route/index.html) rather than Jekyll frontmatter.",
-      "forbidden_regex": "\\A---\\s*\\n[\\s\\S]{1,400}?\\n---\\s*\\n\\s*<!doctype html>",
-      "bad_snippet": "---\nlayout: null\npermalink: /about/\n---\n<!doctype html>\n<html></html>",
-      "good_snippet": "<!doctype html>\n<html lang=\"zh-CN\">\n<head><meta charset=\"utf-8\"></head>\n</html>",
-      "registered_at": "2026-11-10"
-    },
-    {
       "id": "DC-007",
       "title": "Web Prose Decorative Emoji Heading & Box-in-Box Callout Clutter",
       "platforms": [
@@ -351,9 +331,53 @@
       "bad_snippet": "VStack {\n    if let focused = viewModel.expandedTodo {\n        IOSTopFocusTodoCard(todo: focused)\n    }\n    ForEach(viewModel.companionTodos) { todo in Row(todo: todo) }\n}",
       "good_snippet": "LazyVStack(spacing: AppTheme.Space.md) {\n    ForEach(viewModel.filteredTodos) { todo in\n        IOSTodoExpandableCard(todo: todo, isExpanded: viewModel.expandedTodoID == todo.id)\n    }\n}",
       "registered_at": "2026-11-16"
+    },
+    {
+      "id": "DC-016",
+      "title": "Expand-State Pill Label/Height Pop-In, Header-Interleaved Insertion & Unclipped Panel Overlap",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "motion-interaction",
+        "component",
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationStack",
+        "ScrollView",
+        "LazyVStack",
+        "VStack"
+      ],
+      "symptom": "Switching persistent status/priority pills between icon-only (showLabel: false) when collapsed and icon+text (showLabel: true / isExpanded) when expanded or toggling minHeight: isExpanded ? 28 : 22 causes abrupt text/size pop-in; inserting if isExpanded blocks between unifiedTitleHeaderRow and unifiedMetadataStatusPriorityTimestampRow pushes the persistent status row down with a jump; and applying .transition(.opacity.combined(with: .move(edge: .top))) to inline tag panels slides them out from behind upper sibling views with overlap.",
+      "fix_rule": "Keep persistent status and priority pills identical in label, font, and height across collapsed and expanded states (UI_EXPAND_STATE_MUTATION); keep persistent header rows contiguous and place all expand-only sections below them (UI_HEADER_INTERLEAVED_INSERTION); and wrap expand-only sections and inline drawers in a continuous height-interpolating Layout + .clipped() rather than .transition(.move(edge: .top)) (UI_UNCLIPPED_PANEL_OVERLAP).",
+      "forbidden_regex": "\\bshowLabel\\s*:\\s*[^\\n,)]*\\b(?:isExpanded|expanded)\\b|\\bif\\s+!\\s*(?:isExpanded|expanded)\\b[\\s\\S]{0,450}?\\bshowLabel\\s*:\\s*false\\b[\\s\\S]{0,450}?\\belse\\b[\\s\\S]{0,450}?\\bshowLabel\\s*:\\s*true\\b|\\bif\\s+(?:isExpanded|expanded)\\b[\\s\\S]{0,450}?\\bshowLabel\\s*:\\s*true\\b[\\s\\S]{0,450}?\\belse\\b[\\s\\S]{0,450}?\\bshowLabel\\s*:\\s*false\\b|\\b(?:minHeight|maxHeight|height)\\s*:\\s*[^\\n,)]*\\b(?:isExpanded|expanded)\\s*\\?|\\b\\w*TitleHeaderRow\\b(?:\\s*\\n\\s*|\\s*;\\s*|\\s+)if\\s+(?:isExpanded|expanded)\\b[\\s\\S]{0,260}?(?:\\s*\\n\\s*|\\s*;\\s*|\\s+)\\b\\w*(?:Metadata|Status|Priority)\\w*Row\\b|\\.transition\\s*\\([^\\n;{}]*\\.move\\s*\\(\\s*edge\\s*:\\s*\\.top\\s*\\)\\s*\\)*+(?!(?:\\s*\\n\\s*|\\s*)\\.(?:clipped|clipShape)\\s*\\()",
+      "bad_snippet": "VStack {\n    unifiedTitleHeaderRow\n    if isExpanded { editableDescriptionBlock }\n    unifiedMetadataStatusPriorityTimestampRow\n    compactStatusCapsule(showLabel: isExpanded)\n    inlineTagTrayPanel.transition(.opacity.combined(with: .move(edge: .top)))\n}",
+      "good_snippet": "VStack {\n    unifiedTitleHeaderRow\n    unifiedMetadataStatusPriorityTimestampRow\n    TodoExpandRevealLayout(progress: isExpanded ? 1.0 : 0.0) {\n        VStack {\n            editableDescriptionBlock\n            inlineTagTrayPanel\n        }\n    }.clipped()\n    statusPill(showLabel: false)\n    priorityPill(showLabel: true)\n    inlineTagTrayPanel.transition(.opacity.combined(with: .move(edge: .top))).clipped()\n}",
+      "registered_at": "2026-11-17"
     }
   ],
   "archived_templates": [
+    {
+      "id": "DC-006",
+      "title": "Static HTML Raw YAML Frontmatter Leak Above Doctype",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "typography-copy"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Static .html files served with .nojekyll or direct HTTP start with --- layout: null ... --- YAML frontmatter, rendering raw metadata text across the top of the browser viewport.",
+      "fix_rule": "Every static HTML entry file must start with <!doctype html> on line 1; handle routing via directory structure (/route/index.html) rather than Jekyll frontmatter.",
+      "forbidden_regex": "\\A---\\s*\\n[\\s\\S]{1,400}?\\n---\\s*\\n\\s*<!doctype html>",
+      "registered_at": "2026-11-10"
+    },
     {
       "id": "DC-TEMPLATE-001",
       "title": "macOS Fixed-Width NSPopover Frame-Before-Padding Clipping",

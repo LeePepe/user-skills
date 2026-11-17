@@ -203,6 +203,12 @@ def command_audit_code(args: argparse.Namespace) -> int:
                             spans.append((call.start(), end))
                 elif case.get('id') == 'DC-012':
                     spans = _dc012_spans(masked, case['forbidden_regex'])
+                elif case.get('id') == 'DC-016':
+                    spans = [
+                        (m.start(), m.end())
+                        for m in re.finditer(case['forbidden_regex'], target_text)
+                        if not ('.move' in m.group(0) and _has_enclosing_clipped_reveal_container(target_text, m.start(), m.end()))
+                    ]
                 else:
                     spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], target_text)]
             except re.error as error:
@@ -211,9 +217,10 @@ def command_audit_code(args: argparse.Namespace) -> int:
             for start, end in spans:
                 line = target_text.count('\n', 0, start) + 1
                 findings.append({'case_id': case['id'], 'title': case['title'], 'file': str(path), 'line': line, 'match': text[start:end].replace('\n', ' ')[:240]})
+        lines = text.splitlines()
         for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
             line = text.count('\n', 0, match.start()) + 1
-            line_text = text.splitlines()[line - 1] if line <= len(text.splitlines()) else ""
+            line_text = lines[line - 1] if line <= len(lines) else ""
             if "design-contract-allow" in line_text:
                 continue
             if not any(f.get('line') == line and f.get('case_id') == 'DC-014' for f in findings):
@@ -223,6 +230,26 @@ def command_audit_code(args: argparse.Namespace) -> int:
                     'file': str(path),
                     'line': line,
                     'match': match.group(0).replace('\n', ' ')[:240],
+                })
+        for rule_id, rule_title, rule_re in (
+            ('UI_EXPAND_STATE_MUTATION', 'Persistent Pill Label or Size Mutation Between Collapsed and Expanded States', UI_EXPAND_STATE_MUTATION_RE),
+            ('UI_HEADER_INTERLEAVED_INSERTION', 'Interleaved Conditional Insertion Between Persistent Header Rows', UI_HEADER_INTERLEAVED_INSERTION_RE),
+            ('UI_UNCLIPPED_PANEL_OVERLAP', 'Unclipped Inline Panel .move(edge: .top) Overlap', UI_UNCLIPPED_PANEL_OVERLAP_RE),
+        ):
+            for match in rule_re.finditer(masked):
+                if rule_id == 'UI_UNCLIPPED_PANEL_OVERLAP' and _has_enclosing_clipped_reveal_container(masked, match.start(), match.end()):
+                    continue
+                line = masked.count('\n', 0, match.start()) + 1
+                end_line = masked.count('\n', 0, max(match.start(), match.end() - 1)) + 1
+                spanned = '\n'.join(lines[line - 1:end_line])
+                if 'design-contract-allow' in spanned:
+                    continue
+                findings.append({
+                    'case_id': rule_id,
+                    'title': rule_title,
+                    'file': str(path),
+                    'line': line,
+                    'match': text[match.start():match.end()].replace('\n', ' ')[:240],
                 })
     spec_errors: list[dict[str, Any]] = []
     if getattr(args, 'spec_file', None):
@@ -870,6 +897,56 @@ UI_INSTRUCTIONAL_CLUTTER_RE = re.compile(
     rf"(?:\b(?:Text|Label)\s*\(\s*\"[^\n\"]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^\n\"]*\""
     rf"|>[^<>\n]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^<>\n]*<)"
 )
+UI_EXPAND_STATE_MUTATION_RE = re.compile(
+    r"(?:"
+    r"\bshowLabel\s*:\s*[^\n,)]*\b(?:isExpanded|expanded)\b"
+    r"|\bif\s+!\s*(?:isExpanded|expanded)\b[\s\S]{0,450}?\bshowLabel\s*:\s*false\b[\s\S]{0,450}?\belse\b[\s\S]{0,450}?\bshowLabel\s*:\s*true\b"
+    r"|\bif\s+(?:isExpanded|expanded)\b[\s\S]{0,450}?\bshowLabel\s*:\s*true\b[\s\S]{0,450}?\belse\b[\s\S]{0,450}?\bshowLabel\s*:\s*false\b"
+    r"|\b(?:minHeight|maxHeight|height)\s*:\s*[^\n,)]*\b(?:isExpanded|expanded)\s*\?"
+    r"|\bif\s+(?:isExpanded|expanded)\s*\{\s*Text\s*\(\s*statusTitle\b"
+    r")"
+)
+UI_HEADER_INTERLEAVED_INSERTION_RE = re.compile(
+    r"\b\w*TitleHeaderRow\b(?:\s*\n\s*|\s*;\s*|\s+)if\s+(?:isExpanded|expanded)\b[\s\S]{0,260}?(?:\s*\n\s*|\s*;\s*|\s+)\b\w*(?:Metadata|Status|Priority)\w*Row\b"
+)
+UI_UNCLIPPED_PANEL_OVERLAP_RE = re.compile(
+    r"\.transition\s*\([^\n;{}]*\.move\s*\(\s*edge\s*:\s*\.top\s*\)"
+)
+
+
+def _has_enclosing_clipped_reveal_container(content: str, match_start: int, match_end: int) -> bool:
+    open_paren = content.find("(", match_start)
+    cursor = match_end
+    if open_paren != -1 and open_paren < match_end:
+        depth = 1
+        idx = open_paren + 1
+        while idx < len(content) and depth > 0:
+            if content[idx] == "(":
+                depth += 1
+            elif content[idx] == ")":
+                depth -= 1
+            idx += 1
+        cursor = idx
+    suffix = content[cursor : min(len(content), cursor + 260)]
+    if re.match(r"^\s*\.(?:clipped|clipShape)\s*\(", suffix):
+        return True
+    prefix = content[max(0, match_start - 400) : match_start]
+    for layout_match in re.finditer(r"\b\w*(?:ExpandReveal|Reveal)Layout\b[^{]*\{", prefix):
+        brace_open = prefix.rfind("{", layout_match.start(), layout_match.end())
+        if brace_open < 0:
+            continue
+        abs_open = max(0, match_start - 400) + brace_open
+        depth = 1
+        idx = abs_open + 1
+        while idx < len(content) and depth > 0:
+            if content[idx] == "{":
+                depth += 1
+            elif content[idx] == "}":
+                depth -= 1
+            idx += 1
+        if idx >= cursor and re.match(r"^\s*\.(?:clipped|clipShape)\s*\(", content[idx : idx + 80]):
+            return True
+    return False
 SUBTRACTIVE_MANDATE_RE = re.compile(
     r"(?:只保留|仅保留|去掉|砍掉|删除|移除|严禁出现|\bONLY\s+keep\b)",
     re.IGNORECASE,

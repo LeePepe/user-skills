@@ -600,6 +600,49 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             self.assertFalse(bad_code_payload["ok"])
             self.assertGreaterEqual(bad_code_payload["skill_eval_summary"]["caught"], 1)
 
+            # 3b) Code phase catches expand-state mutation, header-interleaved insertion, and unclipped panel overlap via --skill alias
+            bad_swift.write_text(
+                "import SwiftUI\n"
+                "struct V: View {\n"
+                "    let isExpanded: Bool\n"
+                "    var body: some View {\n"
+                "        VStack {\n"
+                "            unifiedTitleHeaderRow\n"
+                "            if isExpanded { editableDescriptionBlock }\n"
+                "            unifiedMetadataStatusPriorityTimestampRow\n"
+                "            compactStatusCapsule(showLabel: isExpanded)\n"
+                "            inlineTagTrayPanel.transition(.opacity.combined(with: .move(edge: .top)))\n"
+                "        }\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            bad_expand_eval = subprocess.run(
+                [
+                    sys.executable,
+                    str(skill_contract),
+                    "eval-target",
+                    "--skill",
+                    "my-designer",
+                    "--phase",
+                    "code",
+                    "--worktree",
+                    str(worktree),
+                    "--strict",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_expand_eval.returncode, 1)
+            bad_expand_payload = json.loads(bad_expand_eval.stdout)
+            self.assertFalse(bad_expand_payload["ok"])
+            self.assertIn("my-designer:EV-016", bad_expand_payload["skill_eval_summary"]["executed_case_ids"])
+            self.assertGreaterEqual(bad_expand_payload["skill_eval_summary"]["caught"], 1)
+            for expected_rule in ("UI_EXPAND_STATE_MUTATION", "UI_HEADER_INTERLEAVED_INSERTION", "UI_UNCLIPPED_PANEL_OVERLAP"):
+                self.assertIn(expected_rule, json.dumps(bad_expand_payload["failures"]))
+
             # 4) Clean Swift file passes and Checkpoint B (goal-supervisor.py telemetry --write) records skill_eval_summary
             bad_swift.write_text('import SwiftUI\nstruct V: View { var body: some View { Text("待办清单") } }\n', encoding="utf-8")
             telem_res = subprocess.run(
@@ -622,8 +665,8 @@ class GoalSupervisorAndJevTests(unittest.TestCase):
             telem_payload = json.loads(telem_res.stdout)
             summary = telem_payload["skill_eval_summary"]
             self.assertIn("my-designer", summary["triggered_skills"])
-            self.assertEqual(summary["cases_run"], 3)
-            self.assertEqual(summary["passed"], 3)
+            self.assertEqual(summary["cases_run"], 4)
+            self.assertEqual(summary["passed"], 4)
             self.assertEqual(summary["caught"], 0)
             self.assertTrue((handoff / "receipts" / "skill-eval-report.json").is_file())
             self.assertTrue((handoff / "receipts" / "contract-telemetry.json").is_file())
