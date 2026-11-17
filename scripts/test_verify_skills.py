@@ -2605,6 +2605,19 @@ try {
             self.assertIn("spec_sha", text)
             self.assertIn("sink-rule", text)
 
+        for name, text in (
+            ("skills/my-designer/SKILL.md", my_designer_skill),
+            ("skills/my-designer/references/design-flow-architecture.md", my_designer_arch),
+            ("skills/my-designer/references/interaction-layering.md", (SKILLS_DIR / "my-designer" / "references" / "interaction-layering.md").read_text(encoding="utf-8")),
+            ("skills/my-designer/references/navigation-evidence-contract.md", (SKILLS_DIR / "my-designer" / "references" / "navigation-evidence-contract.md").read_text(encoding="utf-8")),
+            ("skills/my-designer/references/routing-index.md", my_designer_routing),
+            ("skills/design-studio/SKILL.md", (SKILLS_DIR / "design-studio" / "SKILL.md").read_text(encoding="utf-8")),
+        ):
+            with self.subTest(native_preview_doc=name):
+                self.assertIn("PreviewHostKit", text)
+                self.assertIn("#Preview", text)
+                self.assertIn("120Hz", text)
+
     def test_skill_contract_add_case_and_eval_engine(self) -> None:
         script = SKILLS_DIR / "skill-contract" / "scripts" / "skill_contract.py"
         self.assertTrue(script.is_file())

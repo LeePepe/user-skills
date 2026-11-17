@@ -80,7 +80,10 @@
         "Visual Traceback",
         "[IMPL_BUG]",
         "[SPEC_GAP]",
-        "No Code Demo"
+        "No Code Demo",
+        "PreviewHostKit",
+        "#Preview",
+        "r5-todo-swiftui-preview"
       ],
       "registered_at": "2026-11-10"
     },
