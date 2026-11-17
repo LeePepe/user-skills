@@ -11,6 +11,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 - 直接触发：`/personal-m2-assistant <跨 M2 指令>`。
 - 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
 - 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
+- **M3 只管按业务话题直接转发，绝不预设 `Hot-Append` 或越权替 M2 拆 Goal**：收到后续指令时，M3 只按业务话题原意直达对应 M2，绝不在 M3 层预设包装为「热追加（`Hot-Append`）合并进当前任务」或自行拆 Goal；是同页面微调走 `Hot-Append` 还是独立新 Feature 拆分为第二个 Goal（新建 `handoff/<goal-2>/spec.md` + 独立 TL/Task/PR）完全由接收方 `M2-Dispatcher` 判定。
 - 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
 - 发现阶段读取公开的 `herdr workspace list`；交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
 
@@ -19,7 +20,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 1. 只读发现公开的 Herdr `pane/agent list` 与 dsh Omni Hub 状态；不读取 dsh 私有 session 存储。
 2. 调用 Jev/Falcon 做枚举选路，再由 Magpie 语义拆解并绑定已有会话；离线或网关不可达时只使用确定性兜底。
 3. **默认模型/Context 与 `~` 展开**：所有目标 M2 默认使用 `Gemini 4 Argon · 983K context`（`--model gemini-4-argon --context long_context`）；所有 `cwd`（含 `m2-domain-map.json`、会话发现、新话题候选与派发参数）统一先展开 `~` 为绝对路径再传给 `herdr-dispatch.sh` 或 `dsh create-session`。
-4. **`--plan` 尾部 64KB 直读与增量接续（`1 -> 子窗格私聊 2,3 -> 总入口 4`）**：绑定 `EXISTING_M2` 时优先按 `agent_session.value` seek 读取 `~/.copilot/session-state/<uuid>/events.jsonl` 末尾 `64KB`（缺失时回退 `herdr pane read <pane> --source recent-unwrapped --lines 50`），提取最近 3 轮真实 `user.message` 与最终 `assistant.message` 摘要及 `last_session_activity_at` 写入 `recent_session_context`，注入 Magpie 拆解器上下文（强制在最新 `2、3` 基础上生成增量 `sub_prompt` `4`）并展示在 `preview_markdown` / `preview_text` 中。
+4. **`--plan` 尾部 64KB 直读与增量接续（`1 -> 子窗格私聊 2,3 -> 总入口 4` · M3 原意直达不代判 Goal 边界）**：绑定 `EXISTING_M2` 时优先按 `agent_session.value` seek 读取 `~/.copilot/session-state/<uuid>/events.jsonl` 末尾 `64KB`（缺失时回退 `herdr pane read <pane> --source recent-unwrapped --lines 50`），提取最近 3 轮真实 `user.message` 与最终 `assistant.message` 摘要及 `last_session_activity_at` 写入 `recent_session_context`，注入 Magpie 拆解器上下文（强制在最新 `2、3` 基础上生成增量 `sub_prompt` `4`）并展示在 `preview_markdown` / `preview_text` 中。`recent_session_context` 仅用于保证话题归属与避免覆盖子窗格最新对话上下文，生成的 `sub_prompt` 保持对用户新指令的原意直达，严禁在 M3 层预设为 `Hot-Append` 合并进当前 Goal 或替 M2 拆 Goal，由接收方 `M2-Dispatcher` 自行判定是同页面微调（`Hot-Append`）还是独立新 Feature（新建第二个 `handoff/<goal-2>/spec.md` + 独立 Task/PR）。
 5. **Linear Team TIA 同步与终端摘要预览**：`--plan` 生成结构化 `plan.json`，其中 `preview_markdown` 保留完整 Markdown 正文，`preview_text(plan)` 提供终端摘要；计划与 Spec 拆解直接同步/展示在 Linear Team TIA（对应 Root/Goal Issue，如 `TIA-375`）及终端，不生成临时 `.md` 或打开 Orca。需要文件时只能显式传入 `--preview-md-file`。
 6. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 7. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
