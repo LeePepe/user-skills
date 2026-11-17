@@ -3153,6 +3153,52 @@ class M2RouterTests(unittest.TestCase):
         self.assertFalse(forced_res.get("skipped", False))
         self.assertEqual(forced_res["polls"], 1)
 
+    def test_m3_topic_only_forwarding_and_m2_goal_boundary_contract(self):
+        calls = []
+
+        def poster(url, payload, **kwargs):
+            calls.append((url, payload, kwargs))
+            return {"choices": [{"message": {"content": json.dumps({
+                "route": "ROUTE_SINGLE",
+                "reason": "route follow-up by topic to existing M2",
+                "targets": [{
+                    "target_repo": "AIDash",
+                    "session_id": "aidash-m2-r1",
+                    "sub_prompt": "新增跨端 iCloud AI 接单引擎",
+                    "wave_order": 1,
+                    "rag_context_hint": None,
+                }],
+            })}}]}
+
+        with patch.object(self.router, "_post_json", side_effect=poster):
+            self.router._request_magpie(
+                "在 AIDash 新增跨端 iCloud AI 接单引擎",
+                [{
+                    "session_id": "aidash-m2-r1",
+                    "target_repo": "AIDash",
+                    "recent_session_context": {
+                        "turns": [{"user": "调整卡片圆角", "assistant": "已完成微调"}],
+                        "summary": "user: 调整卡片圆角 -> assistant: 已完成微调",
+                    },
+                }],
+                base_url="http://127.0.0.1:3425/",
+                model="group/steering",
+            )
+
+        system_prompt = calls[0][1]["messages"][0]["content"]
+        self.assertIn("NEVER pre-package or rewrite a follow-up instruction as a Hot-Append", system_prompt)
+        self.assertIn("handoff/<goal-2>/spec.md", system_prompt)
+        self.assertIn("M2-Dispatcher", system_prompt)
+
+        m3_skill = (ROOT / "skills" / "personal-m2-assistant" / "SKILL.md").read_text(encoding="utf-8")
+        m2_skill = (ROOT / "skills" / "m2-dispatcher" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("M3 只管按业务话题直接转发", m3_skill)
+        self.assertIn("handoff/<goal-2>/spec.md", m3_skill)
+        self.assertIn("Goal 边界判定（微调 vs. 独立新 Feature）", m2_skill)
+        self.assertIn("跨端 iCloud AI 接单引擎", m2_skill)
+        self.assertIn("handoff/<goal-2>/spec.md", m2_skill)
+        self.assertIn("严禁把两个不同 Feature 塞进同一个 `spec.md`", m2_skill)
+
 
 if __name__ == "__main__":
     unittest.main()
