@@ -111,6 +111,8 @@ class FakeTransport:
             return {"data": {"issueUpdate": {"success": True, "issue": self.issue}}}
         if "CreateComment" in query:
             return {"data": {"commentCreate": {"success": True, "comment": {"id": "comment-id"}}}}
+        if "ArchiveIssue" in query:
+            return {"data": {"issueArchive": {"success": True}}}
         raise AssertionError(f"Unexpected query: {query}")
 
 
@@ -834,6 +836,345 @@ class LinearSyncTests(unittest.TestCase):
         record_types = {record_type for path, record_type, goal in records if goal == self.work.name}
         self.assertIn("contract_telemetry", record_types)
         self.assertIn("linear_observe", record_types)
+
+    def test_archive_completed_keep_2_days_and_cap_150_policy_and_whitelists(self) -> None:
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 11, 17, 9, 0, 0, tzinfo=timezone.utc)
+        issues = [
+            {
+                "id": "open-todo",
+                "identifier": "TIA-501",
+                "title": "Uncompleted Todo issue",
+                "description": "",
+                "state": {"id": "s1", "name": "Todo", "type": "unstarted"},
+                "updatedAt": "2026-10-01T00:00:00Z",
+            },
+            {
+                "id": "open-review",
+                "identifier": "TIA-502",
+                "title": "In Review issue",
+                "description": "",
+                "state": {"id": "s2", "name": "In Review", "type": "started"},
+                "updatedAt": "2026-10-01T00:00:00Z",
+            },
+            {
+                "id": "m2-sync-hub",
+                "identifier": "TIA-463",
+                "title": "[M2-Sync] Cross-Device Hub",
+                "description": "<!-- GTT-M2-SYNC-HUB:v1 -->",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-10-01T00:00:00Z",
+                "updatedAt": "2026-10-01T00:00:00Z",
+            },
+            {
+                "id": "epic-container",
+                "identifier": "TIA-400",
+                "title": "[Epic] Core Foundation Campaign",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-10-01T00:00:00Z",
+                "updatedAt": "2026-10-01T00:00:00Z",
+            },
+            {
+                "id": "recent-brief",
+                "identifier": "TIA-530",
+                "title": "[Daily Brief 2026-11-16] 昨日汇总",
+                "description": "<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-16 -->",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-17T01:00:00Z",
+                "updatedAt": "2026-11-17T01:00:00Z",
+            },
+            {
+                "id": "recent-learn",
+                "identifier": "TIA-531",
+                "title": "[Daily Learn 2026-11-16] Optics",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-16T15:00:00Z",
+                "updatedAt": "2026-11-16T15:00:00Z",
+            },
+            {
+                "id": "old-brief",
+                "identifier": "TIA-410",
+                "title": "[Daily Brief 2026-11-10] 昨日汇总",
+                "description": "<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-10 -->",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-11T01:00:00Z",
+                "updatedAt": "2026-11-11T01:00:00Z",
+            },
+            {
+                "id": "canceled-item",
+                "identifier": "TIA-510",
+                "title": "Abandoned experiment",
+                "description": "",
+                "state": {"id": "s4", "name": "Canceled", "type": "canceled"},
+                "updatedAt": "2026-11-17T08:00:00Z",
+            },
+            {
+                "id": "duplicate-item",
+                "identifier": "TIA-511",
+                "title": "Duplicate ticket",
+                "description": "",
+                "state": {"id": "s5", "name": "Duplicate", "type": "canceled"},
+                "updatedAt": "2026-11-17T08:00:00Z",
+            },
+            {
+                "id": "pr-action-done",
+                "identifier": "TIA-512",
+                "title": "[PR Action] Fix CI lint",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-17T08:30:00Z",
+                "updatedAt": "2026-11-17T08:30:00Z",
+            },
+            {
+                "id": "pr-decision-done",
+                "identifier": "TIA-513",
+                "title": "[PR Decision] Merge strategy",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-17T08:30:00Z",
+                "updatedAt": "2026-11-17T08:30:00Z",
+            },
+            {
+                "id": "goal-dup-old",
+                "identifier": "TIA-514",
+                "title": "[Goal] voxpocket-sync-r1",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-17T07:00:00Z",
+                "updatedAt": "2026-11-17T07:00:00Z",
+            },
+            {
+                "id": "goal-primary-open",
+                "identifier": "TIA-515",
+                "title": "[Goal] voxpocket-sync-r1 — Sync audio",
+                "description": "",
+                "state": {"id": "s2", "name": "In Progress", "type": "started"},
+                "updatedAt": "2026-11-17T08:00:00Z",
+            },
+            {
+                "id": "done-1d-ago",
+                "identifier": "TIA-520",
+                "title": "Yesterday feature",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-16T12:00:00Z",
+                "updatedAt": "2026-11-16T12:00:00Z",
+            },
+            {
+                "id": "done-3d-ago",
+                "identifier": "TIA-521",
+                "title": "Three days ago feature",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": "2026-11-14T01:00:00Z",
+                "updatedAt": "2026-11-14T01:00:00Z",
+            },
+        ]
+        archived_ids: list[str] = []
+
+        class ArchiveClient:
+            def archive_issue(self, issue_id: str) -> bool:
+                archived_ids.append(issue_id)
+                return True
+
+        res = linear_sync.archive_completed_issues(
+            ArchiveClient(),
+            team_key="TIA",
+            retention_days=2,
+            max_active_issues=150,
+            mode="auto",
+            issues_override=issues,
+            now=now,
+        )
+        self.assertTrue(res["ok"])
+        by_id = {item["id"]: item["reason"] for item in res["archived"]}
+        self.assertEqual(by_id["canceled-item"], "immediate")
+        self.assertEqual(by_id["duplicate-item"], "immediate")
+        self.assertEqual(by_id["pr-action-done"], "immediate")
+        self.assertEqual(by_id["pr-decision-done"], "immediate")
+        self.assertEqual(by_id["goal-dup-old"], "immediate")
+        self.assertEqual(by_id["done-3d-ago"], "retention_expired")
+        self.assertEqual(by_id["old-brief"], "retention_expired")
+        for protected in ("open-todo", "open-review", "m2-sync-hub", "epic-container", "recent-brief", "recent-learn", "goal-primary-open", "done-1d-ago"):
+            self.assertNotIn(protected, by_id)
+        self.assertEqual(set(archived_ids), set(by_id))
+
+    def test_archive_completed_cap_trim_enforces_max_active_issues(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 11, 17, 9, 0, 0, tzinfo=timezone.utc)
+        issues = []
+        for idx in range(100):
+            issues.append({
+                "id": f"open-{idx}",
+                "identifier": f"TIA-{100 + idx}",
+                "title": f"Open task {idx}",
+                "description": "",
+                "state": {"id": "s1", "name": "Todo", "type": "unstarted"},
+                "updatedAt": "2026-11-17T01:00:00Z",
+            })
+        for idx in range(60):
+            ts = (now - timedelta(minutes=idx + 1)).isoformat()
+            issues.append({
+                "id": f"done-{idx}",
+                "identifier": f"TIA-{300 + idx}",
+                "title": f"Recent done {idx}",
+                "description": "",
+                "state": {"id": "s3", "name": "Done", "type": "completed"},
+                "completedAt": ts,
+                "updatedAt": ts,
+            })
+        res = linear_sync.archive_completed_issues(
+            None,
+            team_key="TIA",
+            retention_days=2,
+            max_active_issues=150,
+            mode="observe",
+            issues_override=issues,
+            now=now,
+        )
+        self.assertEqual(res["total_before"], 160)
+        self.assertEqual(res["archived_count"], 10)
+        self.assertEqual(res["active_after"], 150)
+        self.assertTrue(all(item["reason"] == "cap_trim" for item in res["archived"]))
+        expected_oldest = {f"done-{idx}" for idx in range(50, 60)}
+        self.assertEqual({item["id"] for item in res["archived"]}, expected_oldest)
+
+    def test_create_issue_auto_heals_on_usage_limit_exceeded_in_idea_and_ensure_goal(self) -> None:
+        calls: list[str] = []
+
+        def transport(query: str, variables: dict[str, object]) -> dict[str, object]:
+            if "TeamMetadata" in query:
+                return {
+                    "data": {
+                        "teams": {
+                            "nodes": [{
+                                "id": "team-tia",
+                                "key": "TIA",
+                                "name": "TIA",
+                                "states": {"nodes": [{"id": "todo", "name": "Todo", "type": "unstarted"}, {"id": "triage", "name": "Triage", "type": "triage"}]},
+                                "labels": {"nodes": []},
+                                "projects": {"nodes": [{"id": "p1", "name": "user-skills"}]},
+                            }]
+                        }
+                    }
+                }
+            if "CreateIssue" in query:
+                calls.append("CreateIssue")
+                if calls.count("CreateIssue") == 1:
+                    return {"errors": [{"message": "Usage limit exceeded: workspace has exceeded the free issue limit"}]}
+                return {
+                    "data": {
+                        "issueCreate": {
+                            "success": True,
+                            "issue": {
+                                "id": "new-issue-id",
+                                "identifier": "TIA-599",
+                                "url": "https://linear.app/tianpeili/issue/TIA-599",
+                                "title": variables["input"]["title"],
+                                "description": variables["input"]["description"],
+                                "state": {"id": "todo", "name": "Todo", "type": "unstarted"},
+                                "team": {"id": "team-tia", "key": "TIA", "name": "TIA"},
+                                "project": {"id": "p1", "name": "user-skills"},
+                                "labels": {"nodes": []},
+                                "comments": {"nodes": []},
+                                "history": {"nodes": []},
+                            },
+                        }
+                    }
+                }
+            if "ListIssues" in query:
+                calls.append("ListIssues")
+                return {
+                    "data": {
+                        "issues": {
+                            "nodes": [{
+                                "id": "stale-canceled",
+                                "identifier": "TIA-101",
+                                "title": "Old canceled",
+                                "description": "",
+                                "state": {"id": "c1", "name": "Canceled", "type": "canceled"},
+                                "updatedAt": "2026-10-01T00:00:00Z",
+                                "comments": {"nodes": [], "pageInfo": {"hasNextPage": False}},
+                                "labels": {"nodes": []},
+                            }],
+                            "pageInfo": {"hasNextPage": False},
+                        }
+                    }
+                }
+            if "ArchiveIssue" in query:
+                calls.append(f"ArchiveIssue:{variables['id']}")
+                return {"data": {"issueArchive": {"success": True}}}
+            if "UpdateIssue" in query:
+                return {
+                    "data": {
+                        "issueUpdate": {
+                            "success": True,
+                            "issue": {
+                                "id": "new-issue-id",
+                                "identifier": "TIA-599",
+                                "url": "https://linear.app/tianpeili/issue/TIA-599",
+                                "title": "Goal",
+                                "description": variables["input"].get("description", ""),
+                                "state": {"id": "todo", "name": "Todo", "type": "unstarted"},
+                                "team": {"id": "team-tia", "key": "TIA", "name": "TIA"},
+                                "project": {"id": "p1", "name": "user-skills"},
+                                "labels": {"nodes": []},
+                                "comments": {"nodes": []},
+                                "history": {"nodes": []},
+                            },
+                        }
+                    }
+                }
+            if "CreateComment" in query:
+                return {"data": {"commentCreate": {"success": True, "comment": {"id": "c1"}}}}
+            if "project(id:" in query:
+                return {"data": {"project": {"projectMilestones": {"nodes": []}}}}
+            raise AssertionError(f"Unexpected query: {query}")
+
+        client = linear_sync.GraphQLClient("Bearer test", transport)
+        with mock.patch.object(linear_sync, "_client_or_fail", return_value=client):
+            idea_args = linear_sync.build_parser().parse_args(["idea", "--title", "Auto-heal idea", "--mode", "auto"])
+            idea_res = linear_sync.cmd_idea(idea_args)
+            self.assertEqual(idea_res["identifier"], "TIA-599")
+            self.assertIn("ArchiveIssue:stale-canceled", calls)
+            self.assertEqual(calls.count("CreateIssue"), 2)
+
+            calls.clear()
+            ensure_args = linear_sync.build_parser().parse_args(["ensure-goal", "--handoff-dir", str(self.work), "--mode", "auto"])
+            ensure_res = linear_sync.cmd_ensure_goal(ensure_args)
+            self.assertEqual(ensure_res["identifier"], "TIA-599")
+            self.assertIn("ArchiveIssue:stale-canceled", calls)
+            self.assertEqual(calls.count("CreateIssue"), 2)
+
+        daily_brief = load_module(ROOT / "skills/linear-board/scripts/daily-brief.py", "daily_brief_hook_test")
+        fake_brief_client = mock.Mock()
+        fake_brief_client.archive_issue = mock.Mock(return_value=True)
+        fake_sync_mod = mock.Mock()
+        fake_sync_mod.archive_completed_issues.return_value = {"ok": True, "archived_count": 2, "active_after": 120}
+        with mock.patch.object(daily_brief, "collect_linear", return_value=([], [])), \
+             mock.patch.object(daily_brief, "collect_git", return_value=([], [])), \
+             mock.patch.object(daily_brief, "collect_prs", return_value=([], [])), \
+             mock.patch.object(daily_brief, "collect_handoff", return_value=([], [], [])), \
+             mock.patch.object(daily_brief, "propose", return_value={"id": "brief-id", "identifier": "TIA-600"}), \
+             mock.patch.object(daily_brief, "_proposal_lock", return_value=linear_sync.contextlib.nullcontext()), \
+             mock.patch.object(daily_brief, "_load_linear_module", return_value=fake_sync_mod):
+            brief_res = daily_brief.generate(
+                daily_brief.parse_date("2026-11-17"),
+                dev_root=self.work,
+                handoff_root=self.work,
+                client=fake_brief_client,
+                propose_linear=True,
+                dry_run=False,
+            )
+        self.assertTrue(brief_res["ok"])
+        self.assertEqual(brief_res["archive_completed"]["archived_count"], 2)
+        fake_sync_mod.archive_completed_issues.assert_called_once_with(
+            fake_brief_client, team_key="TIA", retention_days=2, max_active_issues=150, mode="auto"
+        )
 
 
 if __name__ == "__main__":

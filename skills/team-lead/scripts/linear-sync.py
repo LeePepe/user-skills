@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -401,6 +401,19 @@ class GraphQLClient:
         self._paginate_comments(issue)
         return issue
 
+    def archive_issue(self, issue_id: str) -> bool:
+        data = self.execute(
+            """
+            mutation ArchiveIssue($id: String!) {
+              issueArchive(id: $id) {
+                success
+              }
+            }
+            """,
+            {"id": issue_id},
+        )
+        return bool((data.get("issueArchive") or {}).get("success"))
+
     def create_issue(
         self,
         *,
@@ -415,6 +428,7 @@ class GraphQLClient:
         assignee_id: str | None = None,
         delegate_id: str | None = None,
         create_as_user: str | None = None,
+        allow_archive_retry: bool = True,
     ) -> dict[str, Any]:
         input_data: dict[str, Any] = {
             "teamId": team_id,
@@ -437,29 +451,54 @@ class GraphQLClient:
             input_data["delegateId"] = delegate_id
         if create_as_user and _oauth_app_enabled():
             input_data["createAsUser"] = create_as_user
-        data = self.execute(
-            f"""
-            mutation CreateIssue($input: IssueCreateInput!) {{
-              issueCreate(input: $input) {{
-                success
-                issue {{
-                  id identifier url title description priority updatedAt
-                  assignee {{ id name displayName }}
-                  delegate {{ id name displayName }}
-                  state {{ id name type }}
-                  team {{ id key name }}
-                  project {{ id name }}
-                  projectMilestone {{ id name }}
-                  parent {{ id identifier title }}
-                  labels {{ nodes {{ id name }} }}
-                  comments {{ nodes {{ id body }} }}
-                  {ISSUE_HISTORY_FIELDS}
+        try:
+            data = self.execute(
+                f"""
+                mutation CreateIssue($input: IssueCreateInput!) {{
+                  issueCreate(input: $input) {{
+                    success
+                    issue {{
+                      id identifier url title description priority updatedAt
+                      assignee {{ id name displayName }}
+                      delegate {{ id name displayName }}
+                      state {{ id name type }}
+                      team {{ id key name }}
+                      project {{ id name }}
+                      projectMilestone {{ id name }}
+                      parent {{ id identifier title }}
+                      labels {{ nodes {{ id name }} }}
+                      comments {{ nodes {{ id body }} }}
+                      {ISSUE_HISTORY_FIELDS}
+                    }}
+                  }}
                 }}
-              }}
-            }}
-            """,
-            {"input": input_data},
-        )
+                """,
+                {"input": input_data},
+            )
+        except LinearSyncError as exc:
+            if allow_archive_retry and _is_usage_limit_error(str(exc)):
+                archive_completed_issues(
+                    self,
+                    team_key="TIA",
+                    retention_days=2,
+                    max_active_issues=150,
+                    mode="auto",
+                )
+                return self.create_issue(
+                    team_id=team_id,
+                    title=title,
+                    description=description,
+                    state_id=state_id,
+                    label_ids=label_ids,
+                    project_id=project_id,
+                    project_milestone_id=project_milestone_id,
+                    parent_id=parent_id,
+                    assignee_id=assignee_id,
+                    delegate_id=delegate_id,
+                    create_as_user=create_as_user,
+                    allow_archive_retry=False,
+                )
+            raise
         result = data.get("issueCreate", {})
         if not result.get("success") or not result.get("issue"):
             raise LinearSyncError("Linear did not create the issue")
@@ -600,7 +639,7 @@ class GraphQLClient:
                 """query ListIssues($filter: IssueFilter!, $first: Int!, $after: String) {
                   issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {
                     nodes {
-                      id identifier title url description priority updatedAt
+                      id identifier title url description priority createdAt updatedAt completedAt archivedAt
                       assignee { id name displayName } delegate { id name displayName }
                       state { id name type } project { id name } team { id key name }
                       parent { id identifier title project { id name } team { id key name } parent { id } }
@@ -1644,6 +1683,317 @@ def _is_closed_issue(issue: dict[str, Any]) -> bool:
     }
 
 
+def _is_usage_limit_error(message: str) -> bool:
+    lowered = str(message or "").casefold()
+    return (
+        "usage limit exceeded" in lowered
+        or "exceeded the free issue limit" in lowered
+        or "free issue limit" in lowered
+    )
+
+
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        return dt.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _issue_number_key(issue: dict[str, Any]) -> int:
+    ident = str(issue.get("identifier") or "")
+    match = re.search(r"-(\d+)$", ident)
+    return int(match.group(1)) if match else 0
+
+
+def _goal_slug_from_title(title: str) -> str | None:
+    match = re.match(r"^\s*\[goal\]\s+([^\s:—–\-]+(?:\-[^\s:—–\-]+)*)", str(title or ""), re.IGNORECASE)
+    if not match:
+        return None
+    slug = match.group(1).strip().casefold()
+    return slug if slug else None
+
+
+def _is_whitelisted_from_archive(
+    issue: dict[str, Any],
+    *,
+    now: datetime,
+    retention_days: int,
+) -> bool:
+    state = issue.get("state") or {}
+    state_type = str(state.get("type") or "").strip().casefold()
+    state_name = str(state.get("name") or "").strip().casefold()
+    is_canceled = state_type in {"canceled", "cancelled"} or state_name in {"canceled", "cancelled", "duplicate"}
+    is_completed = state_type == "completed" or state_name == "done"
+    if not (is_canceled or is_completed):
+        return True
+    if state_type in {"triage", "backlog", "unstarted", "started"} and not (is_canceled or is_completed):
+        return True
+    if state_name in {"triage", "backlog", "todo", "in progress", "in review"}:
+        return True
+    identifier = str(issue.get("identifier") or "").strip().upper()
+    title = str(issue.get("title") or "")
+    description = str(issue.get("description") or "")
+    if (
+        identifier == "TIA-463"
+        or "[m2-sync]" in title.casefold()
+        or "<!-- gtt-m2-sync-hub:v1 -->" in description.casefold()
+    ):
+        return True
+    if re.search(r"\[(?:epic|root)\]", title, re.IGNORECASE):
+        return True
+    is_daily = bool(
+        re.search(r"\[daily\s+(?:brief|learn)", title, re.IGNORECASE)
+        or "gtt-linear-dedup:daily-brief-" in description.casefold()
+    )
+    if is_daily:
+        cutoff = now - timedelta(days=retention_days)
+        ts = (
+            _parse_iso_timestamp(issue.get("completedAt"))
+            or _parse_iso_timestamp(issue.get("updatedAt"))
+            or _parse_iso_timestamp(issue.get("createdAt"))
+        )
+        if ts is not None and ts >= cutoff:
+            return True
+        date_match = (
+            re.search(r"\[daily\s+(?:brief|learn)\s+(\d{4}-\d{2}-\d{2})\]", title, re.IGNORECASE)
+            or re.search(r"gtt-linear-dedup:daily-brief-(\d{4}-\d{2}-\d{2})", description, re.IGNORECASE)
+        )
+        if date_match:
+            try:
+                issue_date = datetime.fromisoformat(f"{date_match.group(1)}T23:59:59+08:00").astimezone(timezone.utc)
+                if issue_date >= cutoff:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
+def _duplicate_goal_issue_ids(issues: list[dict[str, Any]]) -> set[str]:
+    by_slug: dict[str, list[dict[str, Any]]] = {}
+    all_titles_lower = [
+        (
+            str(item.get("id") or item.get("identifier") or ""),
+            str(item.get("title") or "").casefold(),
+            item,
+        )
+        for item in issues
+        if isinstance(item, dict) and not item.get("archivedAt")
+    ]
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("archivedAt"):
+            continue
+        slug = _goal_slug_from_title(str(issue.get("title") or ""))
+        if slug:
+            by_slug.setdefault(slug, []).append(issue)
+    duplicates: set[str] = set()
+    for slug, group in by_slug.items():
+        if len(group) > 1:
+            def primary_rank(item: dict[str, Any]) -> tuple[int, float, int]:
+                st = item.get("state") or {}
+                st_type = str(st.get("type") or "").casefold()
+                st_name = str(st.get("name") or "").casefold()
+                is_open = int(
+                    st_type not in {"completed", "canceled", "cancelled"}
+                    and st_name not in {"done", "canceled", "cancelled", "duplicate"}
+                )
+                ts = (
+                    _parse_iso_timestamp(item.get("updatedAt"))
+                    or _parse_iso_timestamp(item.get("completedAt"))
+                    or _parse_iso_timestamp(item.get("createdAt"))
+                )
+                return (is_open, ts.timestamp() if ts else 0.0, _issue_number_key(item))
+
+            primary = max(group, key=primary_rank)
+            primary_key = str(primary.get("id") or primary.get("identifier") or "")
+            for item in group:
+                item_key = str(item.get("id") or item.get("identifier") or "")
+                if item_key != primary_key:
+                    duplicates.add(item_key)
+        else:
+            only = group[0]
+            only_key = str(only.get("id") or only.get("identifier") or "")
+            if len(slug) >= 6:
+                for other_key, other_title, _ in all_titles_lower:
+                    if other_key != only_key and slug in other_title:
+                        duplicates.add(only_key)
+                        break
+    return duplicates
+
+
+def archive_completed_issues(
+    client: GraphQLClient | None,
+    *,
+    team_key: str = "TIA",
+    retention_days: int = 2,
+    max_active_issues: int = 150,
+    mode: str = "auto",
+    issues_override: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if mode == "off":
+        return {
+            "ok": True,
+            "command": "archive-completed",
+            "mode": "off",
+            "decision": "off (skipped)",
+            "strategy": "keep_2_days_and_cap_150",
+            "team": team_key,
+            "retention_days": retention_days,
+            "max_active_issues": max_active_issues,
+            "total_before": 0,
+            "archived_count": 0,
+            "active_after": 0,
+            "protected_count": 0,
+            "archived": [],
+            "planned_mutations": [],
+        }
+    if issues_override is not None:
+        raw_issues = list(issues_override)
+    else:
+        if client is None:
+            raise LinearSyncError("LINEAR_API_KEY is not configured")
+        raw_issues = client.list_issues(team_key, limit=None)
+    active_issues = [
+        issue for issue in raw_issues
+        if isinstance(issue, dict) and not issue.get("archivedAt")
+    ]
+    total_before = len(active_issues)
+    duplicate_goal_ids = _duplicate_goal_issue_ids(active_issues)
+    cutoff = current_now - timedelta(days=retention_days)
+    to_archive: list[tuple[dict[str, Any], str]] = []
+    remaining_done: list[dict[str, Any]] = []
+    protected_count = 0
+
+    for issue in active_issues:
+        if _is_whitelisted_from_archive(issue, now=current_now, retention_days=retention_days):
+            protected_count += 1
+            continue
+        state = issue.get("state") or {}
+        state_type = str(state.get("type") or "").strip().casefold()
+        state_name = str(state.get("name") or "").strip().casefold()
+        title = str(issue.get("title") or "")
+        issue_key = str(issue.get("id") or issue.get("identifier") or "")
+        is_canceled = state_type in {"canceled", "cancelled"} or state_name in {"canceled", "cancelled", "duplicate"}
+        is_pr_aux = bool(re.search(r"\[pr\s+(?:action|decision)\]", title, re.IGNORECASE))
+        is_dup_goal = issue_key in duplicate_goal_ids
+
+        if is_canceled or is_pr_aux or is_dup_goal:
+            to_archive.append((issue, "immediate"))
+            continue
+
+        completed_ts = (
+            _parse_iso_timestamp(issue.get("completedAt"))
+            or _parse_iso_timestamp(issue.get("updatedAt"))
+            or _parse_iso_timestamp(issue.get("createdAt"))
+        )
+        if completed_ts is not None and completed_ts < cutoff:
+            to_archive.append((issue, "retention_expired"))
+        else:
+            remaining_done.append(issue)
+
+    projected_active = total_before - len(to_archive)
+    if projected_active > max_active_issues and remaining_done:
+        def oldest_sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+            ts = (
+                _parse_iso_timestamp(item.get("completedAt"))
+                or _parse_iso_timestamp(item.get("updatedAt"))
+                or _parse_iso_timestamp(item.get("createdAt"))
+            )
+            return (
+                ts.timestamp() if ts is not None else float("inf"),
+                _issue_number_key(item),
+                str(item.get("identifier") or item.get("id") or ""),
+            )
+
+        remaining_done.sort(key=oldest_sort_key)
+        excess = projected_active - max_active_issues
+        for issue in remaining_done[:excess]:
+            to_archive.append((issue, "cap_trim"))
+
+    archived_records: list[dict[str, Any]] = []
+    planned_mutations: list[dict[str, Any]] = []
+    for issue, reason in to_archive:
+        issue_id = str(issue.get("id") or issue.get("identifier") or "")
+        state = issue.get("state") or {}
+        mutation = {
+            "operation": "ArchiveIssue",
+            "graphql_operation_name": "ArchiveIssue",
+            "variables": {"id": issue_id},
+        }
+        planned_mutations.append(mutation)
+        if mode == "auto":
+            if client is not None:
+                client.archive_issue(issue_id)
+        archived_records.append({
+            "identifier": issue.get("identifier"),
+            "id": issue_id,
+            "title": issue.get("title"),
+            "reason": reason,
+            "state": state.get("name") or state.get("type"),
+            "completedAt": issue.get("completedAt"),
+            "updatedAt": issue.get("updatedAt"),
+        })
+
+    active_after = total_before - len(archived_records)
+    return {
+        "ok": True,
+        "command": "archive-completed",
+        "mode": mode,
+        "decision": "observe (would accept)" if mode == "observe" and planned_mutations else ("observe (no-op)" if mode == "observe" else ("accept" if archived_records else "no-op")),
+        "would_accept": bool(planned_mutations),
+        "strategy": "keep_2_days_and_cap_150",
+        "team": team_key,
+        "retention_days": retention_days,
+        "max_active_issues": max_active_issues,
+        "total_before": total_before,
+        "archived_count": len(archived_records),
+        "active_after": active_after,
+        "protected_count": protected_count,
+        "archived": archived_records,
+        "planned_mutations": planned_mutations,
+    }
+
+
+def cmd_archive_completed(args: argparse.Namespace) -> dict[str, Any]:
+    mode, _ = resolve_mode(getattr(args, "mode", None), subcommand="archive-completed")
+    snapshot_arg = getattr(args, "offline_snapshot", "")
+    issues_override: list[dict[str, Any]] | None = None
+    if snapshot_arg:
+        try:
+            path = Path(snapshot_arg)
+            raw = path.read_text(encoding="utf-8") if path.is_file() else snapshot_arg
+            data = json.loads(raw)
+            if isinstance(data, list):
+                issues_override = data
+            elif isinstance(data, dict):
+                if isinstance(data.get("issues"), list):
+                    issues_override = data["issues"]
+                elif isinstance(data.get("issue"), list):
+                    issues_override = data["issue"]
+                elif isinstance(data.get("issue"), dict) and isinstance(data["issue"].get("issues"), list):
+                    issues_override = data["issue"]["issues"]
+                else:
+                    issues_override = []
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise LinearSyncError(f"invalid offline snapshot: {exc}") from exc
+    client = None if (mode == "off" or issues_override is not None) else _client_or_fail()
+    return archive_completed_issues(
+        client,
+        team_key=getattr(args, "team", "TIA"),
+        retention_days=int(getattr(args, "retention_days", 2)),
+        max_active_issues=int(getattr(args, "max_active_issues", 150)),
+        mode=mode,
+        issues_override=issues_override,
+    )
+
+
 def _issue_summary(issue: dict[str, Any]) -> dict[str, Any]:
     state = issue.get("state") or {}
     project = issue.get("project") or {}
@@ -2118,6 +2468,14 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--create-as-user")
     comment.add_argument("--mode", choices=("off", "observe", "auto"))
 
+    archive = subparsers.add_parser("archive-completed", help="Archive completed and canceled Linear issues under keep_2_days_and_cap_150 policy.")
+    archive.add_argument("--team", default="TIA")
+    archive.add_argument("--retention-days", type=int, default=2)
+    archive.add_argument("--max-active-issues", type=int, default=150)
+    archive.add_argument("--mode", choices=("off", "observe", "auto"))
+    archive.add_argument("--json", action="store_true")
+    archive.add_argument("--offline-snapshot", default="")
+
     auth = subparsers.add_parser("auth", help="Manage Linear credentials.")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_set = auth_sub.add_parser("set")
@@ -2249,6 +2607,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = cmd_update_issue(args)
         elif args.subcommand == "comment":
             payload = cmd_comment(args)
+        elif args.subcommand == "archive-completed":
+            payload = cmd_archive_completed(args)
         elif args.subcommand == "auth":
             path = _credential_path()
             if args.auth_command in {"set", "oauth-app"}:
