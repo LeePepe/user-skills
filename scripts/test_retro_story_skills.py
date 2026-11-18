@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -57,17 +58,33 @@ def _sample_raw_diagnostics() -> dict:
             "eval_case_total": 68,
             "eval_case_weekly_delta": 4,
         },
+        "S2_gate_catch": {
+            "eval_effect": {
+                "interceptions_7d": 3,
+                "escapes_7d": 1,
+                "interception_rate": 0.75,
+                "by_eval_case": {"case-a": {"interceptions": 3, "escapes": 1}},
+            }
+        },
         "S4_usage_and_r1": {
             "active_skills_count": 12,
             "idle_skills_30d": ["unused-skill-a", "unused-skill-b"],
+            "empty_load_rate": 0.25,
         },
+
         "S6_load_vs_script": [
             {
                 "skill": "team-lead",
                 "loads_30d": 120,
                 "script_execs": 12,
                 "script_touch_rate": 0.1,
+                "script_p95_ms": 450.0,
+                "script_success_rate": 0.9,
                 "unpracticed_rate": 0.9,
+                "empty_load_rate": 0.7,
+                "reference_hit_count": 2,
+                "eval_interceptions": 3,
+                "eval_escapes": 1,
             },
             {
                 "skill": "aidash-content",
@@ -100,7 +117,13 @@ def _sample_raw_diagnostics() -> dict:
                 "loads_30d": 120,
                 "loads_7d": 25,
                 "script_execs": 12,
+                "script_p95_ms": 450.0,
+                "script_success_rate": 0.9,
                 "unpracticed_rate": 0.9,
+                "empty_load_rate": 0.7,
+                "reference_hit_count": 2,
+                "eval_interceptions": 3,
+                "eval_escapes": 1,
                 "post_invocation_repair_loop_rate": 0.35,
                 "impl_bug_escapes": 5,
                 "spec_gap_escapes": 8,
@@ -160,6 +183,55 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
         self.assertIn("multica-skills-autopilot:skills-roi-autopilot-2026-11-18", snap["markdown_brief"])
         self.assertIn("Priority 3 (`medium`)", snap["markdown_brief"])
         self.assertIn("lee@multica.local", snap["markdown_brief"])
+        self.assertEqual(snap["top_findings"][0]["script_p95_ms"], 450.0)
+        self.assertEqual(snap["top_findings"][0]["reference_hit_count"], 2)
+        self.assertEqual(snap["summary"]["eval_effect"]["interceptions_7d"], 3)
+        self.assertIn("Empty-load", snap["markdown_brief"])
+        self.assertIn("450.0 ms", snap["markdown_brief"])
+
+    def test_collect_snapshot_reads_real_gap_metrics_from_warehouse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            warehouse = root / "warehouse.db"
+            copilot = root / "session-store.db"
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            dev_root.mkdir()
+            skill_dir = skills_root / "alpha"
+            (skill_dir / "scripts").mkdir(parents=True)
+            (skill_dir / "references").mkdir()
+            (skill_dir / "SKILL.md").write_text("---\nname: alpha\n---\n", encoding="utf-8")
+            with sqlite3.connect(warehouse) as conn:
+                conn.execute("CREATE TABLE fact_turn (session_id TEXT, attribution_skill TEXT, skill_names TEXT, tool_calls TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cst_day TEXT)")
+                conn.execute("CREATE TABLE reference_hits (session_id TEXT, skill TEXT, reference_path TEXT, byte_len INTEGER, cst_day TEXT)")
+                conn.execute("CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, cst_day TEXT)")
+                conn.execute("CREATE TABLE fact_gtt_task_run (goal_id TEXT, task_id TEXT, role_name TEXT, round_no INTEGER, v5_verdict TEXT, status TEXT, skills_used TEXT, cst_day TEXT)")
+                conn.execute('CREATE TABLE fact_gtt_event (goal_id TEXT, evt_type TEXT, note_preview TEXT, eval_case TEXT, interception INTEGER, "escape" INTEGER, cst_day TEXT)')
+                today = "date('now')"
+                conn.execute("INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("s1", "alpha", '["alpha"]', "[]", 100, 10, 0))
+                conn.execute("INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("s2", "alpha", '["alpha"]', "[]", 100, 10, 0))
+                conn.execute(f"INSERT INTO reference_hits VALUES ('s1', 'alpha', 'skills/alpha/references/a.md', 42, {today})")
+                for duration in (10, 20, 30, 40):
+                    conn.execute(f"INSERT INTO script_call VALUES ('s1', 'alpha', 'skills/alpha/scripts/check.py', 0, {duration}, {today})")
+                conn.execute("INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("goal-alpha", "T1", "reviewer", 1, "PASS", "done", '["alpha"]'))
+                conn.execute(f"INSERT INTO fact_gtt_event VALUES ('goal-alpha', 'EVAL', '', 'case-a', 1, 0, {today})")
+                conn.execute(f"INSERT INTO fact_gtt_event VALUES ('goal-alpha', 'EVAL', '', 'case-a', 0, 1, {today})")
+                conn.commit()
+            sqlite3.connect(copilot).close()
+            report = _load_autopilot_module().collect_skills_roi_snapshot(
+                warehouse_db=warehouse,
+                copilot_db=copilot,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                top_n=5,
+            )
+            row = next(item for item in report["top_findings"] if item["skill"] == "alpha")
+            self.assertEqual(row["script_p95_ms"], 40.0)
+            self.assertEqual(row["reference_hit_count"], 1)
+            self.assertEqual(row["empty_load_rate"], 0.5)
+            self.assertEqual(row["eval_interceptions"], 1)
+            self.assertEqual(row["eval_escapes"], 1)
+            self.assertEqual(report["summary"]["eval_effect"]["escapes_7d"], 1)
 
     def test_file_actionable_issue_creates_p3_assigned_to_owner_and_deduplicates(self) -> None:
         snap = AUTOPILOT.collect_skills_roi_snapshot(
