@@ -33,7 +33,12 @@ def _extract_email_action(issue: dict[str, Any]) -> dict[str, Any] | None:
         except ValueError: continue
         if not isinstance(payload, dict): continue
         item_id, plan_file = str(payload.get("email_item_id") or "").strip(), str(payload.get("plan_file") or "").strip()
-        if item_id and plan_file and item_id != "..." and plan_file != "...": return payload
+        if item_id and plan_file and item_id != "..." and plan_file != "...":
+            for key in ("email_url", "target_link"):
+                raw_url = str(payload.get(key) or "").strip()
+                url_match = re.fullmatch(r"\[[^\]]*\]\(<?(https?://[^>\s)]+)>?\)", raw_url)
+                if url_match: payload[key] = url_match.group(1).strip()
+            return payload
     return None
 
 def parse_date(value: str) -> date:

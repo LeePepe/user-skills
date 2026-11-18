@@ -870,12 +870,16 @@ class DailyBriefTests(unittest.TestCase):
             self.assertTrue(second_run["actionable"][0]["linear"]["deduplicated"])
             self.assertEqual([m[0] for m in client.mutations], ["create", "update"])
 
+            created_desc = client.mutations[0][1]["description"].replace(
+                f'"email_url": "{raw_applink}"',
+                f'"email_url": "[{raw_applink}](<{raw_applink}>)"',
+            )
             created_issue = issue(
                 "TIA-562",
                 client.mutations[0][1]["title"],
                 "Todo",
                 "unstarted",
-                description=client.mutations[0][1]["description"],
+                description=created_desc,
                 project={"name": "Work Business"},
                 labels={"nodes": [{"name": "Needs Decision"}]},
             )

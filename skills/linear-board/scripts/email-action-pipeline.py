@@ -163,8 +163,18 @@ def extract_workiq_citations(payload: dict[str, Any]) -> dict[str, dict[str, Any
     return citations
 
 
+def _unwrap_linear_url(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"\[[^\]]*\]\(<?(https?://[^>\s)]+)>?\)", text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
 def _clean_markdown_inline(text: str) -> str:
-    cleaned = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(text or ""))
+    cleaned = str(text or "")
+    cleaned = re.sub(r"\[\d+\]\([^)]*\)", "", cleaned)
+    cleaned = re.sub(r"\[((?:[^\[\]]|\[[^\[\]]*\])+)\]\([^)]*\)", r"\1", cleaned)
     cleaned = re.sub(r"[*`]+", "", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -561,6 +571,9 @@ def parse_email_action_marker(description: str) -> dict[str, Any] | None:
         plan_file = str(payload.get("plan_file") or "").strip()
         if not item_id or not plan_file or item_id == "..." or plan_file == "...":
             continue
+        for key in ("email_url", "target_link"):
+            if payload.get(key):
+                payload[key] = _unwrap_linear_url(payload[key])
         return payload
     return None
 
