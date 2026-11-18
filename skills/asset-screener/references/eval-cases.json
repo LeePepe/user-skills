@@ -110,10 +110,45 @@
         "references/multi-source-models.md",
         "references/eval-cases.json",
         "../portfolio-advisor/SKILL.md",
-        "--strict-no-personal-ledger"
+        "--strict-no-personal-ledger",
+        "lookahead_bias_forbidden"
       ],
       "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-006",
+      "title": "Reject forward-return look-ahead fields inside blind evaluate_asset",
+      "tags": [
+        "anti-cheat",
+        "backtest"
+      ],
+      "negative_cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py evaluate --input-json '{\"code\":\"007466\",\"name\":\"Dividend ETF A\",\"category\":\"dividend_value\",\"forward_30d_return_pct\":8.4}'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "lookahead_bias_forbidden",
+        "forward_30d_return_pct"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-007",
+      "title": "Run deterministic two-stage PIT blind backtest with Spearman IC and top-avoid hit rate",
+      "tags": [
+        "backtest"
+      ],
+      "cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py backtest --snapshots '{\"snapshots\":[{\"snapshot_id\":\"S1\",\"as_of\":\"2026-01-15\",\"assets\":[{\"blind_id\":\"B1\",\"category\":\"dividend_value\",\"mgmt_fee_pct\":0.15,\"custody_fee_pct\":0.05,\"dividend_yield_pct\":5.2,\"consecutive_dividend_years\":8,\"payout_coverage_ratio\":1.9,\"rsi_14\":40,\"bb_pct_b\":0.35},{\"blind_id\":\"B2\",\"category\":\"tech_cycle_growth\",\"mgmt_fee_pct\":1.2,\"custody_fee_pct\":0.2,\"sales_service_fee_pct\":0.5,\"rsi_14\":82,\"kdj_j\":95,\"bb_pct_b\":0.96,\"percentile_52w\":95,\"turnover_crowding_pct\":90,\"peg\":3.1,\"max_drawdown_pct\":44,\"top10_weight_pct\":82,\"single_subsector_pct\":82,\"quarterly_excess_return_pct\":-18}]}]}' --ground-truth '{\"records\":[{\"snapshot_id\":\"S1\",\"blind_id\":\"B1\",\"code\":\"DIV_A\",\"forward_30d_return_pct\":4.2,\"forward_60d_return_pct\":7.5,\"max_subsequent_drawdown_pct\":-3.1},{\"snapshot_id\":\"S1\",\"blind_id\":\"B2\",\"code\":\"TECH_C\",\"forward_30d_return_pct\":-11.5,\"forward_60d_return_pct\":-19.0,\"max_subsequent_drawdown_pct\":-24.0,\"is_market_top\":true,\"counterfactual_buy_cny\":10000}]}'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "command": "backtest"
+      },
+      "expect_stdout_contains": [
+        "mean_rank_ic_30d",
+        "top_avoid_hit_rate",
+        "avoided_absolute_loss_cny"
+      ],
+      "registered_at": "2026-11-19"
     }
   ],
-  "updated": "2026-11-18"
+  "updated": "2026-11-19"
 }

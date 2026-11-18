@@ -11,10 +11,10 @@ Pure, stateless investment asset evaluation and screening skill with **zero pers
 
 | Dimension | Contract |
 |---|---|
-| **Inbound** | Public asset metadata JSON/CLI flags (`code`, `name`, `category`, fees, valuation percentiles, yield, tracking error, technical crowding, top-10 holdings). Rejects personal ledger keys (`holding_shares`, `remaining_shares`, `unrealized_pnl`, `first_buy_date`, `account_balance`) by default (`--strict-no-personal-ledger`). |
-| **Internal** | `scripts/asset_evaluator.py`: **1 Universal Base Layer** (10Y risk-free opportunity cost, fee drag + C-share long-hold penalty, `RSI_14`/`KDJ_J`/`BB_pct_b`/`52w_percentile` crowding) + **4 Category Plugins** (`dividend_value`, `broad_beta`, `tech_cycle_growth`, `macro_hedge_gold_bond`) + **5-Source Consensus/Divergence Engine**. |
-| **Calls** | Pure functional Layer-0 CLI (`evaluate`, `screen`, `compare`, `list-models`). Optional `--research-models-path` cross-validates thresholds against external `research-models.md`. Zero personal database or ledger calls. |
-| **PointsTo** | Deterministic JSON or Markdown scorecard (`total_score` 0–100, `base_score`, `plugin_score`, `tier` in `A_CORE / B_SATELLITE / C_WATCH / D_AVOID`, `consensus`, `divergence`, `style_drift_flags`), consumed directly by users or downstream [`portfolio-advisor`](../portfolio-advisor/SKILL.md). |
+| **Inbound** | Public asset metadata JSON/CLI flags (`code`, `name`, `category`, fees, valuation percentiles, yield, tracking error, technical crowding, top-10 holdings), plus separate PIT `--snapshots` and `--ground-truth` files for blind `backtest`. Rejects personal ledger keys (`holding_shares`, `remaining_shares`, `unrealized_pnl`, `first_buy_date`, `account_balance`) and forward-return keys (`forward_30d_return_pct`, `forward_60d_return_pct`, `is_market_top`) inside `evaluate_asset()`. |
+| **Internal** | `scripts/asset_evaluator.py`: **1 Universal Base Layer** (10Y risk-free opportunity cost, fee drag + C-share long-hold penalty, `RSI_14`/`KDJ_J`/`BB_pct_b`/`52w_percentile` crowding) + **4 Category Plugins** (`dividend_value`, `broad_beta`, `tech_cycle_growth`, `macro_hedge_gold_bond`) + **5-Source Consensus/Divergence Engine** + **Two-Stage Zero-Lookahead PIT Backtest Engine**. |
+| **Calls** | Pure functional Layer-0 CLI (`evaluate`, `screen`, `compare`, `backtest`, `list-models`). Optional `--research-models-path` cross-validates thresholds against external `research-models.md`. Zero personal database or ledger calls. |
+| **PointsTo** | Deterministic JSON or Markdown scorecard (`total_score` 0–100, `base_score`, `plugin_score`, `tier` in `A_CORE / B_SATELLITE / C_WATCH / D_AVOID`, `consensus`, `divergence`, `style_drift_flags`) or PIT backtest report (Spread, Monotonicity, Spearman Rank IC, Top-Avoid Hit Rate, Avoided Loss CNY), consumed directly by users or downstream [`portfolio-advisor`](../portfolio-advisor/SKILL.md). |
 | **Trigger & Notify** | Manual asset research/screening requests or subprocess/module invocation from [`portfolio-advisor`](../portfolio-advisor/SKILL.md). |
 
 ## When-to-Read & Progressive Disclosure Routing
@@ -60,9 +60,13 @@ python3 skills/asset-screener/scripts/asset_evaluator.py screen --input-json pat
 
 # Side-by-side comparison in Markdown
 python3 skills/asset-screener/scripts/asset_evaluator.py compare --input-json path/to/assets.json --format markdown
+
+# Run two-stage zero-lookahead Point-in-Time (PIT) blind backtest
+python3 skills/asset-screener/scripts/asset_evaluator.py backtest --snapshots path/to/snapshots.json --ground-truth path/to/returns.json --report-md path/to/report.md
 ```
 
 ## Hard Red Lines
 
 - **Zero Personal-Ledger Coupling**: Never read personal SQLite databases, account balances, lot histories, or unrealized PnL inside `asset-screener`. Keep `--strict-no-personal-ledger` enabled by default so personal fields fail closed with exit code `2`.
+- **Zero Look-Ahead Bias & Zero Code/Date Hardcoding**: `evaluate_asset()` rejects forward-return / ground-truth keys (`forward_30d_return_pct`, `forward_60d_return_pct`, `subsequent_drawdown_pct`, `is_market_top`) with `lookahead_bias_forbidden` (exit code `2`); `backtest` freezes Stage A blind scores before reading Stage B ground-truth returns.
 - **No Single-Model Worship**: Always emit both `consensus` and `divergence` across institutional/quant/valuation perspectives instead of collapsing conflicting signals into opaque prose.
