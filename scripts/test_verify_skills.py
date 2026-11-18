@@ -688,7 +688,9 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertIn("worker: [writer, explorer, pr_monitor, mechanical]", content)
         self.assertIn("copilot_allowlist:", content)
         self.assertIn('fallback_models: {claude: "opus", copilot: "gemini-4-carbon", codex: "gpt-6.1-sol"}', content)
+        self.assertIn('fallback_models: {copilot: "gemini-4-argon"}', content)
         self.assertIn("gemini-4-carbon: google", content)
+        self.assertIn("mai-code-2: microsoft", content)
         self.assertNotIn("gemini-3.8-flash", content)
         self.assertNotIn("composer-2.5", content)
         self.assertNotIn("kimi-k3-high", content)
@@ -706,7 +708,33 @@ class VerifySkillsTests(unittest.TestCase):
                 block,
                 re.MULTILINE,
             )
-            self.assertEqual(models[2], "gpt-5.6-luna")
+            self.assertEqual(models, ["gemini-4-argon", "gpt-6.1-sol"])
+
+        designer_blocks = re.findall(
+            r"designer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(designer_blocks), 2)
+        for block in designer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models, ["gemini-4-argon", "grok-4.7"])
+
+        writer_blocks = re.findall(
+            r"\n[ \t]+writer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
+            content,
+        )
+        self.assertEqual(len(writer_blocks), 2)
+        for block in writer_blocks:
+            models = re.findall(
+                r"^[ \t]+- \{cli: [^,]+, model: ([^,]+),",
+                block,
+                re.MULTILINE,
+            )
+            self.assertEqual(models, ["gpt-5.6-luna", "mai-code-2", "mai-code-2-flash"])
 
         explorer_blocks = re.findall(
             r"explorer:\n((?:[ \t]+- \{[^\n]+\}\n)+)",
@@ -719,13 +747,24 @@ class VerifySkillsTests(unittest.TestCase):
                 block,
                 re.MULTILINE,
             )
-            self.assertEqual(models, ["gpt-5.6-luna", "mai-code-2-flash"])
+            self.assertEqual(models, ["gpt-5.6-luna", "mai-code-2", "mai-code-2-flash"])
+        long_context_models = {"gemini-4-carbon", "gemini-4-argon", "gpt-6.1-sol", "gpt-5.6-luna", "grok-4.7"}
         for line in content.splitlines():
             stripped = line.strip()
             if stripped.startswith("- {cli: copilot,") or stripped.startswith("planner_reviewer: {cli: copilot,") or stripped.startswith("research_primary: {cli: copilot,") or stripped.startswith("team_lead: {cli: copilot,") or stripped.startswith("arbitration: {cli: copilot,"):
+                self.assertIn("effort: high", stripped, f"Missing effort: high on copilot profile line: {stripped}")
+                self.assertIn("--reasoning-effort high", stripped, f"Missing --reasoning-effort high on copilot profile line: {stripped}")
+                model_match = re.search(r"model:\s*([^,\s]+)", stripped)
+                self.assertIsNotNone(model_match)
+                if model_match.group(1) in long_context_models:
+                    self.assertIn("context: long_context", stripped, f"Missing context: long_context on copilot profile line: {stripped}")
+                    self.assertIn("--context long_context", stripped, f"Missing --context long_context on copilot profile line: {stripped}")
                 self.assertIn("--allow-tool", stripped, f"Missing --allow-tool on copilot profile line: {stripped}")
                 self.assertIn("--add-dir ~/Development", stripped, f"Missing --add-dir on copilot profile line: {stripped}")
                 self.assertIn("--add-dir /Volumes/SSD", stripped, f"Missing /Volumes/SSD on copilot profile line: {stripped}")
+            elif "{cli: codex," in stripped:
+                self.assertIn("effort: high", stripped, f"Missing effort: high on codex profile line: {stripped}")
+                self.assertIn("context: long_context", stripped, f"Missing context: long_context on codex profile line: {stripped}")
 
     def test_relative_markdown_links_resolve(self) -> None:
         markdown_files = [
