@@ -18,6 +18,28 @@ EXCLUDED_TERMS = ("work business", "bing", "workplace")
 LEDGER_TOKENS = ("work", "sapphire", "flightbook", "webiq", "bing", "devsync")
 BLOCKING = {"NEED_GO", "NEED_OWNER_DECISION", "TASK_BLOCKED", "INPUT_BLOCKED", "REVIEW_FAIL"}
 EVENT_RE = re.compile(r"^\s*[-*]\s+(?P<stamp>\S+)\s+\|\s+(?P<body>.*)$")
+EMAIL_ACTION_MARKER_RE = re.compile(r"(?m)^[ \t]*<!--\s*GTT-EMAIL-ACTION:v1\s+(\{[^\n]*?\})\s*-->[ \t]*$")
+
+def _extract_email_action(issue: dict[str, Any]) -> dict[str, Any] | None:
+    text = str(issue.get("description") or "")
+    if "GTT-EMAIL-ACTION:v1" not in text: return None
+    in_fence = False
+    for line in text.splitlines():
+        if re.match(r"^\s*(?:```|~~~)", line): in_fence = not in_fence; continue
+        if in_fence: continue
+        match = EMAIL_ACTION_MARKER_RE.match(line)
+        if not match: continue
+        try: payload = json.loads(match.group(1))
+        except ValueError: continue
+        if not isinstance(payload, dict): continue
+        item_id, plan_file = str(payload.get("email_item_id") or "").strip(), str(payload.get("plan_file") or "").strip()
+        if item_id and plan_file and item_id != "..." and plan_file != "...":
+            for key in ("email_url", "target_link"):
+                raw_url = str(payload.get(key) or "").strip()
+                url_match = re.fullmatch(r"\[[^\]]*\]\(<?(https?://[^>\s)]+)>?\)", raw_url)
+                if url_match: payload[key] = url_match.group(1).strip()
+            return payload
+    return None
 
 def parse_date(value: str) -> date:
     return datetime.now(CST).date() if value == "today" else date.fromisoformat(value)
@@ -57,6 +79,7 @@ def _scope_lookup(identifier: str, client: Any, cache: dict[str, Any], warnings:
         return None
 
 def _excluded_issue(issue: dict[str, Any], client: Any = None, cache: dict[str, Any] | None = None, warnings: list[str] | None = None) -> bool:
+    if isinstance(issue, dict) and _extract_email_action(issue) is not None: return False
     cache = {} if cache is None else cache
     warnings = [] if warnings is None else warnings
     current = issue
@@ -295,6 +318,7 @@ def _brief_issue(issue: dict[str, Any]) -> bool:
     return bool(re.match(r"\[Daily Brief\b", str(issue.get("title") or ""), re.I) or re.search(r"<!-- GTT-LINEAR-DEDUP:daily-brief-\d{4}-\d{2}-\d{2} -->", str(issue.get("description") or "")))
 
 def _needs_decision(issue: dict[str, Any], labels: str, state: str) -> bool:
+    if _extract_email_action(issue) is not None and state not in {"in progress", "inprogress", "started"}: return True
     title = str(issue.get("title") or "")
     if re.search(r"(?i)\b(blocked|needs decision|owner decision)\b|待拍板|待选型", f"{title} {labels} {state}"): return True
     clauses = f"{title}\n{issue.get('description') or ''}"
@@ -586,8 +610,12 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         elif (state in {"todo", "backlog"} and issue.get("priority") in {1, 2}) or re.match(rf"\[Daily Learn {re.escape(target.isoformat())}\]", str(issue.get("title", ""))): group = "planned"
         if group:
             key = str(issue.get("identifier") or issue.get("id") or f"linear-{index}")
+            email_meta = _extract_email_action(issue)
+            email_url = str((email_meta or {}).get("email_url") or (email_meta or {}).get("target_link") or "").split("#", 1)[0].strip()
+            action_link = _link(email_url, "📧 打开原邮件") if email_url else _link(issue.get("url") or issue_urls.get(key) or (f"https://linear.app/tianpeili/issue/{key}" if re.fullmatch(r"TIA-\d+", key) else ""), "打开")
+            summary_text = str((email_meta or {}).get("brief_summary") or issue.get("title") or key)
             entries[key] = {"group": group, "parts": [_item(_issue_context(issue), "Linear TIA")],
-                            "summary": issue.get("title") or key, "action": _link(issue.get("url") or issue_urls.get(key) or (f"https://linear.app/tianpeili/issue/{key}" if re.fullmatch(r"TIA-\d+", key) else ""), "打开"),
+                            "summary": summary_text, "action": action_link,
                             "ref": key, "repo": _reference_context(issue, (issue.get("project") or {}).get("name", "")),
                             "topics": [_area((issue.get("project") or {}).get("name", ""), issue).casefold()], "stages": []}
     rank = {"needs": 0, "active": 1, "planned": 2}

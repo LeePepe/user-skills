@@ -745,6 +745,163 @@ class DailyBriefTests(unittest.TestCase):
         self.assertEqual(len(result["todo_items"]), 1)
         self.assertEqual(client.list_calls, [("TIA", None)]); self.assertFalse(client.mutations)
 
+    def test_email_action_pipeline_extracts_workiq_target_links_stages_plan_and_enters_daily_brief_needs_decision(self):
+        pipeline_spec = importlib.util.spec_from_file_location(
+            "email_action_pipeline", ROOT / "skills/linear-board/scripts/email-action-pipeline.py"
+        )
+        pipeline = importlib.util.module_from_spec(pipeline_spec)
+        assert pipeline_spec.loader
+        pipeline_spec.loader.exec_module(pipeline)
+
+        raw_applink = (
+            "https://outlook.office.com/mail/MBX%3A14bf50cb-b422-4ef7-a0ac-c0886461cb6e%40"
+            "72f988bf-86f1-41af-91ab-2d7cd011db47/applink/read/"
+            "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A6LMpo9Of7EymTgIos9RPlAAPt2c6RAAA/"
+            "?ds=Tianpei.Li%40microsoft.com&ai=OID%3Afbc97a98-90ba-4a99-aa1f-864201feccdb%40"
+            "72f988bf-86f1-41af-91ab-2d7cd011db47&as=Tianpei.Li%40microsoft.com&au=tianpli"
+        )
+        workiq_payload = {
+            "isError": False,
+            "response": (
+                "1. **[[EXTERNAL] The uploaded build for 微软必应 has one or more issues.]("
+                + raw_applink
+                + "&EntityRepresentationId=e955e389-8be2-47f4-a86c-c9035419f49c)**\n"
+                "   - **Sender:** App Store Connect `<no_reply@email.apple.com>`\n"
+                "   - **Received:** Nov 17, **16:08**\n"
+                "   - **What they want:** Correct **ITMS-90683** in a subsequent build by adding "
+                "`NSLocationAlwaysAndWhenInUseUsageDescription` to the **BingChina.app Info.plist**.\n"
+                "   - **Urgency:** Next-delivery fix.\n"
+                "   - **Context:** It applies to 微软必应 version/build **34.6.441116001**. "
+                f"[3]({raw_applink}#0a4909)\n"
+                "2. **[Ignite week is here!](https://outlook.office.com/mail/MBX/applink/read/AAkALgFYI1234567890/)**\n"
+                "   - **Sender:** Viva Engage\n"
+                "   - **What they want:** **No action.** FYI announcement only. "
+                "[4](https://outlook.office.com/mail/MBX/applink/read/AAkALgFYI1234567890/#763596)\n"
+            ),
+            "artifacts": [{
+                "artifactId": "art-1",
+                "parts": [
+                    {"text": ""},
+                    {"data": {
+                        "0a4909": {"targetLink": raw_applink, "isCitedInResponse": True},
+                        "763596": {"targetLink": "https://outlook.office.com/mail/MBX/applink/read/AAkALgFYI1234567890/", "isCitedInResponse": True},
+                    }},
+                ],
+            }],
+        }
+        list_shaped_payload = {
+            "response": workiq_payload["response"],
+            "artifacts": [{
+                "parts": [{"data": [
+                    {"citationId": "0a4909", "targetLink": raw_applink, "isCitedInResponse": True},
+                    {"citationId": "763596", "targetLink": "https://outlook.office.com/mail/MBX/applink/read/AAkALgFYI1234567890/"},
+                ]}],
+            }],
+        }
+        for payload in (workiq_payload, list_shaped_payload):
+            emails = pipeline.extract_emails_from_workiq(payload)
+            self.assertEqual(len(emails), 2)
+            self.assertEqual(
+                emails[0]["email_item_id"],
+                "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A6LMpo9Of7EymTgIos9RPlAAPt2c6RAAA",
+            )
+            self.assertEqual(emails[0]["target_link"], raw_applink)
+            self.assertNotIn("#", emails[0]["target_link"])
+            self.assertNotIn("EntityRepresentationId", emails[0]["target_link"])
+
+        router_calls = []
+
+        def fake_router(argv, _timeout):
+            router_calls.append(argv)
+            self.assertIn("--plan", argv)
+            self.assertNotIn("--apply", argv)
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps({
+                    "schema_version": 1,
+                    "plan_id": "m2p-itms90683",
+                    "targets": [{
+                        "topic_id": "sapphire-china-bugs",
+                        "target_repo": "bing-growth-sapphire-app",
+                        "m2_status": "EXISTING_M2",
+                        "herdr_target": "m2-sapphire-china-bugs",
+                        "session_id": "m2-sapphire-china-bugs",
+                        "sub_prompt": argv[argv.index("--message") + 1],
+                        "wave_order": 1,
+                    }],
+                }),
+                "",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plans_dir = Path(tmp) / "email-action-plans"
+            client = FakeClient()
+            client.labels = [{"id": "lbl-needs", "name": "Needs Decision"}]
+            orig_meta = client.team_metadata
+            client.team_metadata = lambda key: {**orig_meta(key), "labels": {"nodes": client.labels}}
+
+            first_run = pipeline.ingest_workiq_payload(
+                workiq_payload,
+                plans_dir=plans_dir,
+                client=client,
+                propose_linear=True,
+                runner=fake_router,
+            )
+            self.assertTrue(first_run["ok"])
+            self.assertEqual(first_run["actionable_count"], 1)
+            self.assertEqual(first_run["skipped_count"], 1)
+            item = first_run["actionable"][0]
+            self.assertEqual(item["slug"], "bingchina-itms-90683")
+            self.assertTrue(Path(item["plan_file"]).is_file())
+            self.assertEqual(Path(item["plan_file"]).stat().st_mode & 0o777, 0o600)
+            self.assertFalse(item["linear"]["deduplicated"])
+            self.assertEqual(client.mutations[0][0], "create")
+            self.assertEqual(client.mutations[0][1]["label_ids"], ["lbl-needs"])
+            self.assertEqual(client.mutations[0][1]["assignee_id"], daily_brief.OWNER_ID)
+
+            second_run = pipeline.ingest_workiq_payload(
+                workiq_payload,
+                plans_dir=plans_dir,
+                client=client,
+                propose_linear=True,
+                runner=fake_router,
+            )
+            self.assertTrue(second_run["actionable"][0]["linear"]["deduplicated"])
+            self.assertEqual([m[0] for m in client.mutations], ["create", "update"])
+
+            created_desc = client.mutations[0][1]["description"].replace(
+                f'"email_url": "{raw_applink}"',
+                f'"email_url": "[{raw_applink}](<{raw_applink}>)"',
+            )
+            created_issue = issue(
+                "TIA-562",
+                client.mutations[0][1]["title"],
+                "Todo",
+                "unstarted",
+                description=created_desc,
+                project={"name": "Work Business"},
+                labels={"nodes": [{"name": "Needs Decision"}]},
+            )
+            prose_issue = issue(
+                "TIA-561",
+                "[Workflow] Bing doc with placeholder",
+                "In Progress",
+                "started",
+                project={"name": "Work Business"},
+                description='Prose mentions `<!-- GTT-EMAIL-ACTION:v1 {"email_item_id": "...", "plan_file": "..."} -->`',
+            )
+            eligible, warnings = daily_brief.collect_linear(FakeClient([created_issue, prose_issue]), TODAY)
+            self.assertEqual([row["identifier"] for row in eligible], ["TIA-562"])
+            self.assertFalse(warnings)
+
+            markdown, todos = daily_brief.render_brief(TODAY, eligible, [], [], [])
+            self.assertEqual(daily_brief.validate_markdown(markdown), [])
+            self.assertEqual(len(todos), 1)
+            self.assertEqual(todos[0]["group"], "needs")
+            self.assertIn(f"[📧 打开原邮件]({raw_applink})", markdown)
+            self.assertIn("[TIA-562](https://linear.app/test/TIA-562)", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

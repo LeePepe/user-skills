@@ -156,6 +156,41 @@
         "standards",
         "cross-layer"
       ]
+    },
+    {
+      "id": "EV-006",
+      "title": "Email action pipeline CLI and GTT-EMAIL-ACTION v1 contract",
+      "cmd": "python3 skills/linear-board/scripts/email-action-pipeline.py ingest-workiq --help && grep -q 'GTT-EMAIL-ACTION:v1' skills/linear-board/scripts/daily-brief.py && grep -q 'GTT-EMAIL-ACTION:v1' skills/linear-board/scripts/linear-bot-bridge.py",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--input-json",
+        "--propose-linear"
+      ],
+      "registered_at": "2026-11-18",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "email-action"
+      ],
+      "routes": [
+        "email-action-pipeline",
+        "daily-brief",
+        "linear-bot-bridge"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
     }
   ],
   "trigger_evals": [
