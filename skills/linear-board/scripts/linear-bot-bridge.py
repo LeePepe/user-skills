@@ -38,6 +38,8 @@ BOT_MARKER = "<!-- BOT-BRIDGE:"
 M2_SYNC_HUB_MARKER = "<!-- GTT-M2-SYNC-HUB:v1 -->"
 M2_SYNC_STATE_START = "<!-- M2-SYNC-STATE-START -->"
 M2_SYNC_STATE_END = "<!-- M2-SYNC-STATE-END -->"
+EMAIL_ACTION_MARKER_RE = re.compile(r"(?m)^[ \t]*<!--\s*GTT-EMAIL-ACTION:v1\s+(\{[^\n]*?\})\s*-->[ \t]*$")
+EMAIL_ACTION_PLANS_DIR = Path("~/Development/handoff/email-action-plans").expanduser()
 DEFAULT_STATE = Path("~/.config/linear/bot-bridge-state.json").expanduser()
 VAULT = Path("~/Development/Personal/knowledge-vault").expanduser()
 ROOT = Path(__file__).resolve().parents[3]
@@ -62,6 +64,112 @@ def is_bot_comment(comment: dict[str, Any]) -> bool:
             or actor is not None or BOT_MARKER in body or body.startswith("🤖 已接单"))
 
 
+def _has_symlink(path: Path) -> bool:
+    current = path
+    while True:
+        if current.is_symlink():
+            return True
+        if current == current.parent:
+            return False
+        current = current.parent
+
+
+def _extract_email_action(issue: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(issue, dict):
+        return None
+    text = str(issue.get("description") or "")
+    if "GTT-EMAIL-ACTION:v1" not in text:
+        return None
+    in_fence = False
+    for line in text.splitlines():
+        if re.match(r"^\s*(?:```|~~~)", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = EMAIL_ACTION_MARKER_RE.match(line)
+        if not match:
+            continue
+        try:
+            payload = json.loads(match.group(1))
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        item_id = str(payload.get("email_item_id") or "").strip()
+        plan_file = str(payload.get("plan_file") or "").strip()
+        if item_id and plan_file and item_id != "..." and plan_file != "...":
+            return payload
+    return None
+
+
+def is_email_action_issue(issue: dict[str, Any]) -> bool:
+    return _extract_email_action(issue) is not None
+
+
+def _load_verified_email_action_plan(issue: dict[str, Any]) -> tuple[dict[str, Any], Path, dict[str, Any]]:
+    meta = _extract_email_action(issue)
+    if meta is None:
+        raise RuntimeError("email action marker missing or invalid")
+    raw_path = Path(str(meta.get("plan_file") or "")).expanduser()
+    allowed_dir = EMAIL_ACTION_PLANS_DIR.expanduser()
+    if raw_path.is_symlink() or allowed_dir.is_symlink():
+        raise RuntimeError("refusing symlinked email action plan path")
+    resolved_path = raw_path.resolve()
+    resolved_dir = allowed_dir.resolve()
+    if not resolved_path.name.endswith(".plan.json") or resolved_path.parent != resolved_dir or not resolved_path.is_file():
+        raise RuntimeError("verified email action plan file is missing or outside EMAIL_ACTION_PLANS_DIR")
+    try:
+        plan = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("email action plan JSON is unreadable") from exc
+    if not isinstance(plan, dict) or not plan.get("plan_id") or not isinstance(plan.get("targets"), list) or not plan["targets"]:
+        raise RuntimeError("email action plan is missing plan_id or targets")
+    embedded = plan.get("email_action")
+    if isinstance(embedded, dict) and embedded.get("email_item_id"):
+        if str(embedded.get("email_item_id")) != str(meta.get("email_item_id")):
+            raise RuntimeError("email action plan email_item_id mismatch")
+    return meta, resolved_path, plan
+
+
+def has_verified_email_action_plan(issue: dict[str, Any]) -> bool:
+    try:
+        _load_verified_email_action_plan(issue)
+        return True
+    except Exception:
+        return False
+
+
+def _is_email_approval_comment(body: str) -> bool:
+    text = str(body or "").strip()
+    if not text:
+        return False
+    if re.search(r"(?i)\b(?:hold|cancel|reject|wait|do\s+not|don't)\b|不要|别执行|暂缓|取消|不批准", text):
+        return False
+    return bool(re.search(r"(?i)\b(?:approve|approved|lgtm|yes|ok|go|execute|apply|run)\b|@bot|执行|同意|确认|批准|通过|可以|开始|继续|修吧", text))
+
+
+def _has_checked_email_box(description: str) -> bool:
+    in_fence = False
+    for line in str(description or "").splitlines():
+        if re.match(r"^\s*(?:```|~~~)", line):
+            in_fence = not in_fence
+            continue
+        if not in_fence and re.match(r"^\s*[-*+]\s+\[[xX]\]\s+", line):
+            return True
+    return False
+
+
+def _checked_brief_email_numbers(description: str) -> list[str]:
+    clean = re.sub(r"\\([\[\]])", r"\1", str(description or ""))
+    rows = re.findall(r"(?m)^\s*[-*+]\s+\[([xX])\]\s+\*{0,2}\[(\d+)\]\*{0,2}\s+(.+)$", clean)
+    return [
+        number
+        for _, number, text in rows
+        if re.search(r"(?i)applink/read/|outlook\.office|📧|\[Email Action\]", text)
+    ]
+
+
 def excluded_scope(issue: dict[str, Any]) -> bool:
     values: list[str] = []
     def collect(value: Any) -> None:
@@ -79,6 +187,8 @@ def excluded_scope(issue: dict[str, Any]) -> bool:
 
 
 def resolve_scope(client: Any, issue: dict[str, Any], cache: dict[str, Any] | None = None) -> dict[str, Any]:
+    if has_verified_email_action_plan(issue):
+        return copy.deepcopy(issue)
     cache = {} if cache is None else cache
     scoped = copy.deepcopy(issue)
     current = scoped
@@ -445,19 +555,44 @@ def _prepare_dispatch(state: State, pending: dict[str, Any]) -> None:
         handle = {"kind": "herdr", "agent": name, "baseline": baseline,
                   "prompt": "/learn " + " ".join(pending["slugs"]) + "\n\n" + publication + "\n\n" + payload + _output_instruction(pending["turn_id"])}
     else:
-        planned = _run([sys.executable, str(ROUTER_PATH), "--plan", "--message", payload,
-                        "--no-dsh", "--transport", "herdr", "--json"], 30)
-        plan = _herdr_payload(planned.stdout)
-        if planned.returncode or not plan.get("plan_id") or not plan.get("targets"):
-            raise RuntimeError("router did not return a valid dispatch plan")
+        if is_email_action_issue(issue):
+            meta, source_plan_path, pre_staged = _load_verified_email_action_plan(issue)
+            plan = copy.deepcopy(pre_staged)
+        elif pending.get("linked_email_plans"):
+            linked_plans = pending["linked_email_plans"]
+            plan = copy.deepcopy(linked_plans[0]["plan"])
+            if len(linked_plans) > 1:
+                merged_targets: list[dict[str, Any]] = []
+                for idx, item in enumerate(linked_plans, 1):
+                    for target in copy.deepcopy(item["plan"].get("targets") or []):
+                        target["wave_order"] = idx
+                        merged_targets.append(target)
+                plan["targets"] = merged_targets
+            source_plan_path = Path(str(linked_plans[0]["plan_file"]))
+            meta = {"email_item_id": str(linked_plans[0].get("email_item_id") or "")}
+        else:
+            planned = _run([sys.executable, str(ROUTER_PATH), "--plan", "--message", payload,
+                            "--no-dsh", "--transport", "herdr", "--json"], 30)
+            plan = _herdr_payload(planned.stdout)
+            if planned.returncode or not plan.get("plan_id") or not plan.get("targets"):
+                raise RuntimeError("router did not return a valid dispatch plan")
+            source_plan_path = None
+            meta = None
         baselines = {}
+        instruction = _output_instruction(pending["turn_id"])
         for target in plan["targets"]:
             if target.get("m2_status") == "EXISTING_M2":
                 name = str(target.get("herdr_target") or target.get("session_id") or "")
                 if not name: raise RuntimeError("router target has no dispatch identity")
                 baselines[name] = _baseline(name)
-            target["sub_prompt"] = str(target.get("sub_prompt") or payload) + _output_instruction(pending["turn_id"])
+            base_prompt = str(target.get("sub_prompt") or payload)
+            if f"Bridge turn token: {pending['turn_id']}" not in base_prompt:
+                target["sub_prompt"] = base_prompt + instruction
         handle = {"kind": "router", "plan": plan, "baselines": baselines}
+        if source_plan_path is not None:
+            handle["pre_staged_plan_file"] = str(source_plan_path)
+            if meta and meta.get("email_item_id"):
+                handle["email_item_id"] = str(meta["email_item_id"])
         plan_file, _, _ = _router_files(state, pending)
         _atomic_json(plan_file, plan)
     pending.update(handle=handle, before=time.time(), phase="dispatching")
@@ -642,26 +777,48 @@ def _new_turn(issue: dict[str, Any], state: State, client: Any | None = None) ->
     by_id = {str(c["id"]): c for c in comments}
     unprocessed = [c for c in comments if not is_bot_comment(c) and str(c["id"]) not in state.data["processed_comment_ids"]]
     m2_sync_scope = is_m2_sync_hub(issue)
-    no_mention_scope = is_daily(issue) or is_daily_brief(issue) or m2_sync_scope or _bot_participated(issue, comments)
+    email_meta = _extract_email_action(issue)
+    email_scope = email_meta is not None
+    no_mention_scope = is_daily(issue) or is_daily_brief(issue) or m2_sync_scope or email_scope or _bot_participated(issue, comments)
     if (client is not None and not no_mention_scope and not _creator_id(issue)
             and any(_is_owner_comment(c) and not (c.get("parent") or {}).get("id")
                     and "@bot" not in str(c.get("body") or "").casefold() for c in unprocessed)):
         _hydrate_bot_provenance(client, issue)
         no_mention_scope = _bot_participated(issue, comments)
-    triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold()
-                or (m2_sync_scope and _is_owner_comment(c))
-                or (no_mention_scope and _is_owner_comment(c) and not (c.get("parent") or {}).get("id"))
-                or is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {}))
-                or is_bot_comment(_root_comment(c, by_id))]
+    if email_scope:
+        triggers = [
+            c for c in unprocessed
+            if _is_owner_comment(c) and _is_email_approval_comment(str(c.get("body") or ""))
+        ]
+    else:
+        triggers = [c for c in unprocessed if "@bot" in str(c.get("body") or "").casefold()
+                    or (m2_sync_scope and _is_owner_comment(c))
+                    or (no_mention_scope and _is_owner_comment(c) and not (c.get("parent") or {}).get("id"))
+                    or is_bot_comment(by_id.get(str((c.get("parent") or {}).get("id")), {}))
+                    or is_bot_comment(_root_comment(c, by_id))]
     assignee, delegate = issue.get("assignee") or {}, issue.get("delegate") or {}
     assigned = BOT_ACTOR_ID in {assignee.get("id"), delegate.get("id")}
     assignment_key = f"{issue_id}:{assignee.get('id', '')}:{delegate.get('id', '')}"
-    if not assigned:
+    if not assigned and not str(state.data["issue_assignments"].get(issue_id) or "").startswith(f"{issue_id}:checked:"):
         state.data["issue_assignments"].pop(issue_id, None)
     assignment_event = assigned and state.data["issue_assignments"].get(issue_id) != assignment_key
+    if not triggers and not assignment_event and email_scope and has_verified_email_action_plan(issue):
+        workflow_name = str((issue.get("state") or {}).get("name") or "").casefold()
+        if workflow_name not in {"in progress", "inprogress"} and _has_checked_email_box(str(issue.get("description") or "")):
+            checkbox_key = f"{issue_id}:checked:email:{email_meta['email_item_id']}"
+            if state.data["issue_assignments"].get(issue_id) != checkbox_key:
+                assignment_key = checkbox_key
+                assignment_event = True
+    if not triggers and not assignment_event and is_daily_brief(issue):
+        checked_nums = _checked_brief_email_numbers(str(issue.get("description") or ""))
+        if checked_nums:
+            brief_key = f"{issue_id}:checked:brief:{','.join(checked_nums)}"
+            if state.data["issue_assignments"].get(issue_id) != brief_key:
+                assignment_key = brief_key
+                assignment_event = True
     if not triggers and not assignment_event: return None
     owner = _latest_owner(comments) if assignment_event and (is_daily(issue) or is_daily_brief(issue) or m2_sync_scope) else None
-    trigger = triggers[-1] if triggers else (owner or {"body": "assigned to bot"})
+    trigger = triggers[-1] if triggers else (owner or {"body": "Approve (checked [x])" if ":checked:" in assignment_key else "assigned to bot"})
     directive, slugs = _directive(issue, trigger, comments)
     trigger_ids = [str(c["id"]) for c in triggers]
     if owner and str(owner["id"]) not in trigger_ids:
@@ -700,7 +857,41 @@ def _advance_turn(client: Any, state: State, issue: dict[str, Any], pending: dic
             in_progress = next((s["id"] for s in team.get("states", {}).get("nodes", [])
                                 if str(s.get("name", "")).casefold() == "in progress"), None)
             if not in_progress: raise RuntimeError("TIA In Progress state unavailable")
-            client.update_issue(issue_id, state_id=in_progress, clear_assignee=True)
+            update_kwargs: dict[str, Any] = {"state_id": in_progress, "clear_assignee": True}
+            if is_email_action_issue(issue):
+                raw_labels = issue.get("labels") or {}
+                label_nodes = raw_labels.get("nodes", []) if isinstance(raw_labels, dict) else raw_labels
+                if isinstance(label_nodes, list) and any(str(l.get("name") or "").casefold() == "needs decision" for l in label_nodes if isinstance(l, dict)):
+                    update_kwargs["label_ids"] = [str(l["id"]) for l in label_nodes if isinstance(l, dict) and l.get("id") and str(l.get("name") or "").casefold() != "needs decision"]
+            client.update_issue(issue_id, **update_kwargs)
+            if is_daily_brief(issue) and "linked_email_plans" not in pending:
+                linked_plans: list[dict[str, Any]] = []
+                for line in str(pending.get("directive") or "").splitlines():
+                    if not re.search(r"(?i)applink/read/|outlook\.office|📧|\[Email Action\]", line):
+                        continue
+                    for ref_id in dict.fromkeys(re.findall(r"\bTIA-\d+\b", line)):
+                        try:
+                            linked_issue = client.issue(ref_id)
+                        except Exception:
+                            continue
+                        if not isinstance(linked_issue, dict) or not has_verified_email_action_plan(linked_issue):
+                            continue
+                        meta, plan_path, plan = _load_verified_email_action_plan(linked_issue)
+                        linked_kwargs: dict[str, Any] = {"state_id": in_progress, "clear_assignee": True}
+                        raw_labels = linked_issue.get("labels") or {}
+                        label_nodes = raw_labels.get("nodes", []) if isinstance(raw_labels, dict) else raw_labels
+                        if isinstance(label_nodes, list) and any(str(l.get("name") or "").casefold() == "needs decision" for l in label_nodes if isinstance(l, dict)):
+                            linked_kwargs["label_ids"] = [str(l["id"]) for l in label_nodes if isinstance(l, dict) and l.get("id") and str(l.get("name") or "").casefold() != "needs decision"]
+                        client.update_issue(str(linked_issue["id"]), **linked_kwargs)
+                        linked_plans.append({
+                            "issue_id": str(linked_issue["id"]),
+                            "identifier": str(linked_issue.get("identifier") or ref_id),
+                            "email_item_id": str(meta.get("email_item_id") or ""),
+                            "plan_file": str(plan_path),
+                            "plan": plan,
+                        })
+                if linked_plans:
+                    pending["linked_email_plans"] = linked_plans
             pending["in_progress"] = True
         pending["phase"] = "dispatch"; state.save()
     if pending["phase"] in {"dispatching", "ambiguous"}:
@@ -775,7 +966,7 @@ def _scan(client: Any, state: State, dry_run: bool) -> dict[str, Any]:
         try:
             if not dry_run: state.data["rescan_issues"].pop(issue_id, None)
             scoped = resolve_scope(client, issue, scope_cache)
-            if excluded_scope(scoped): continue
+            if excluded_scope(scoped) and not has_verified_email_action_plan(issue): continue
             workflow = issue.get("state") or {}
             if ({str(workflow.get("type") or "").casefold(), str(workflow.get("name") or "").casefold()}
                     & {"completed", "canceled", "cancelled", "done"}): continue

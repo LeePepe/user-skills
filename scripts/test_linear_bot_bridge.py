@@ -988,5 +988,142 @@ class WebhookTests(unittest.TestCase):
             finally: conn.close()
 
 
+class EmailActionPlanBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.plans_dir = self.root / "email-action-plans"
+        self.plans_dir.mkdir(parents=True, mode=0o700)
+        self.state = bridge.State(self.root / "state.json")
+        self.runtime = Runtime()
+        self.run = mock.patch.object(bridge, "_run", side_effect=self.runtime.run).start()
+        mock.patch.object(bridge, "EMAIL_ACTION_PLANS_DIR", self.plans_dir).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def write_plan(self, slug="bingchina-itms-90683", item_id="AAkALgITMS90683"):
+        plan_path = self.plans_dir / f"{slug}.plan.json"
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-email-90683",
+            "message": "Fix BingChina Info.plist NSLocationAlwaysAndWhenInUseUsageDescription in worktree and open PR",
+            "targets": [{
+                "topic_id": "sapphire-china-bugs",
+                "target_repo": "bing-growth-sapphire-app",
+                "m2_status": "EXISTING_M2",
+                "transport": "herdr",
+                "herdr_target": "m2-personal",
+                "session_id": "m2-personal",
+                "sub_prompt": "Fix BingChina Info.plist NSLocationAlwaysAndWhenInUseUsageDescription and open GHE PR",
+                "wave_order": 1,
+            }],
+            "email_action": {
+                "version": 1,
+                "email_item_id": item_id,
+                "slug": slug,
+                "plan_file": str(plan_path),
+            },
+        }
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        return plan_path, plan
+
+    def email_issue(self, plan_path, *, checked=False, comments=None, item_id="AAkALgITMS90683", iid="TIA-562"):
+        box = "x" if checked else " "
+        marker = json.dumps({
+            "email_item_id": item_id,
+            "plan_file": str(plan_path),
+            "target_topic": "sapphire-china-bugs",
+            "target_repo": "san/bing-growth-sapphire-app",
+            "email_url": f"https://outlook.office.com/mail/MBX/applink/read/{item_id}/",
+            "slug": "bingchina-itms-90683",
+        })
+        return {
+            "id": iid,
+            "identifier": "TIA-562",
+            "title": "[Email Action] 修复微软必应 34.6.441116001 ITMS-90683 (BingChina Info.plist)",
+            "description": (
+                f"- **原邮件直链**：[📧 打开原邮件](https://outlook.office.com/mail/MBX/applink/read/{item_id}/)\n"
+                f"- [{box}] **Approve & 自动执行**\n\n"
+                f"<!-- GTT-EMAIL-ACTION:v1 {marker} -->"
+            ),
+            "updatedAt": "2026-11-18T01:00:00Z",
+            "project": {"name": "Work Business"},
+            "team": {"key": "TIA"},
+            "parent": {"id": "work-root", "title": "[Root] Work Business", "project": {"name": "Work Business"}, "team": {"key": "TIA"}, "parent": None},
+            "state": {"name": "Todo", "type": "unstarted"},
+            "labels": {"nodes": [{"id": "lbl-needs", "name": "Needs Decision"}, {"id": "lbl-keep", "name": "Improvement"}]},
+            "assignee": {"id": bridge.OWNER_USER_ID},
+            "delegate": None,
+            "comments": {"nodes": [] if comments is None else comments},
+        }
+
+    def test_owner_comment_or_checkbox_approval_applies_pre_staged_email_plan_without_replanning(self):
+        for mode in ("comment", "checkbox", "daily-brief"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as sub_tmp:
+                self.plans_dir = Path(sub_tmp) / "email-action-plans"
+                self.plans_dir.mkdir(parents=True, mode=0o700)
+                mock.patch.object(bridge, "EMAIL_ACTION_PLANS_DIR", self.plans_dir).start()
+                self.state = bridge.State(Path(sub_tmp) / "state.json")
+                self.runtime = Runtime()
+                self.run.side_effect = self.runtime.run
+                plan_path, _ = self.write_plan()
+
+                if mode == "comment":
+                    issue = self.email_issue(plan_path, comments=[owner_comment("Approve", "c-approve")])
+                    client = FakeClient(issue)
+                elif mode == "checkbox":
+                    issue = self.email_issue(plan_path, checked=True, comments=[])
+                    client = FakeClient(issue)
+                else:
+                    linked = self.email_issue(plan_path, checked=False, comments=[])
+                    brief = personal_issue(comments=[], iid="i-brief")
+                    brief["identifier"] = "TIA-563"
+                    brief["title"] = "[Daily Brief 2026-11-18] 昨日汇总与今日 Todo"
+                    brief["description"] = (
+                        "<!-- GTT-LINEAR-DEDUP:daily-brief-2026-11-18 -->\n"
+                        "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）\n\n"
+                        "**🚨 待你拍板（Needs Decision）**\n\n"
+                        "- [x] **[1] 修复必应 ITMS-90683 定位权限键** · "
+                        "[📧 打开原邮件](https://outlook.office.com/mail/MBX/applink/read/AAkALgITMS90683/) · "
+                        "[TIA-562](https://linear.app/tianpeili/issue/TIA-562)\n"
+                    )
+                    client = FakeClient(brief, linked)
+
+                report = bridge.process_once(client, self.state)
+                self.assertTrue(report["ok"])
+                self.assertEqual(len(report["triggers"]), 1)
+                self.assertTrue(report["triggers"][0]["ok"])
+                self.assertEqual(self.runtime.dispatches, 1)
+                self.assertFalse(any("--plan" in call for call in self.runtime.calls))
+                self.assertEqual(sum("--apply" in call for call in self.runtime.calls), 1)
+                self.assertIn("Fix BingChina Info.plist NSLocationAlwaysAndWhenInUseUsageDescription", self.runtime.prompts[0])
+                self.assertTrue(plan_path.is_file())
+                if mode in ("comment", "checkbox"):
+                    self.assertEqual(client.updates[0][1]["label_ids"], ["lbl-keep"])
+                else:
+                    self.assertTrue(any(uid == "TIA-562" and kw.get("label_ids") == ["lbl-keep"] for uid, kw in client.updates))
+
+                # Second scan must be idempotent and never re-dispatch.
+                bridge.process_once(client, self.state)
+                self.assertEqual(self.runtime.dispatches, 1)
+
+    def test_unapproved_non_owner_hold_and_invalid_plan_paths_fail_closed(self):
+        plan_path, _ = self.write_plan()
+        unapproved = self.email_issue(plan_path, checked=False, comments=[])
+        non_owner = self.email_issue(plan_path, comments=[{"id": "c1", "body": "@bot Approve", "user": {"id": "other-user"}, "createdAt": "2"}])
+        hold = self.email_issue(plan_path, comments=[owner_comment("先不要执行，暂缓", "c2")])
+        outside = self.email_issue(self.root / "outside.plan.json", comments=[owner_comment("Approve", "c3")])
+        (self.root / "outside.plan.json").write_text(plan_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+        for name, candidate in (("unapproved", unapproved), ("non-owner", non_owner), ("hold", hold), ("outside", outside)):
+            with self.subTest(name=name):
+                candidate["id"] = f"i-{name}"
+                client = FakeClient(candidate)
+                report = bridge.process_once(client, bridge.State(self.root / f"{name}-state.json"))
+                self.assertTrue(report["ok"])
+                self.assertFalse(report["triggers"])
+                self.assertEqual(self.runtime.dispatches, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
