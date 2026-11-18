@@ -431,6 +431,223 @@ class InvestmentSkillsTests(unittest.TestCase):
             self.assertIn("All-Weather Barbell Allocation", proc.stdout)
             self.assertIn("offensive_growth", proc.stdout)
 
+    def test_asset_screener_rejects_lookahead_bias_and_has_zero_code_date_hardcoding(self) -> None:
+        source_text = SCREENER_SCRIPT.read_text(encoding="utf-8")
+        # AST / source guard: zero hardcoded fund codes or historical snapshot dates inside asset_evaluator.py
+        for forbidden_literal in ("011370", "017811", "000217", "007466", "2025-12-19", "2026-01-29", "2026-06-04"):
+            self.assertNotIn(forbidden_literal, source_text)
+
+        for bad_key in (
+            "forward_30d_return_pct",
+            "forward_60d_return_pct",
+            "forward_to_date_return_pct",
+            "max_subsequent_drawdown_pct",
+            "subsequent_drawdown_pct",
+            "is_market_top",
+            "ground_truth",
+            "future_return",
+        ):
+            with self.assertRaises(self.screener.LookaheadBiasViolation):
+                self.screener.evaluate_asset(
+                    {"code": "TEST_A", "name": "Generic Dividend ETF", "category": "dividend_value", bad_key: 5.0}
+                )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCREENER_SCRIPT),
+                "evaluate",
+                "--input-json",
+                json.dumps({"code": "TEST_A", "category": "dividend_value", "forward_60d_return_pct": 9.1}),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("lookahead_bias_forbidden", proc.stderr)
+
+    def test_spearman_rank_ic_ties_and_two_stage_blind_backtest(self) -> None:
+        # Exact Spearman check with ties
+        ic_perfect = self.screener.spearman_rank_ic([90.0, 75.0, 60.0, 40.0], [8.0, 4.0, -2.0, -12.0])
+        self.assertEqual(ic_perfect, 1.0)
+        ic_tied = self.screener.spearman_rank_ic([80.0, 80.0, 50.0, 30.0], [6.0, 4.0, -1.0, -10.0])
+        self.assertIsNotNone(ic_tied)
+        assert ic_tied is not None
+        self.assertGreater(ic_tied, 0.90)
+
+        snapshots = {
+            "snapshots": [
+                {
+                    "snapshot_id": "CS_PEAK",
+                    "as_of": "2026-02-01",
+                    "rf_10y_pct": 2.05,
+                    "assets": [
+                        {
+                            "blind_id": "BLIND_01",
+                            "category": "dividend_value",
+                            "mgmt_fee_pct": 0.15,
+                            "custody_fee_pct": 0.05,
+                            "dy_pct": 5.3,
+                            "dividend_years": 9,
+                            "dividend_coverage_ratio": 1.95,
+                            "rsi14": 41,
+                            "bollinger_pct_b": 0.36,
+                        },
+                        {
+                            "blind_id": "BLIND_02",
+                            "category": "broad_beta",
+                            "mgmt_fee_pct": 0.20,
+                            "custody_fee_pct": 0.05,
+                            "pe": 12.8,
+                            "pe_percentile_5y": 32,
+                            "pb_percentile_5y": 30,
+                            "annualized_tracking_error_pct": 0.30,
+                            "rsi14": 48,
+                        },
+                        {
+                            "blind_id": "BLIND_03",
+                            "category": "tech_cycle_growth",
+                            "mgmt_fee_pct": 0.80,
+                            "custody_fee_pct": 0.15,
+                            "service_fee_pct": 0.40,
+                            "peg_ratio": 2.3,
+                            "trailing_mdd_pct": 36.0,
+                            "calmar": 0.35,
+                            "cr10_pct": 68.0,
+                            "subsector_share_pct": 62.0,
+                            "quarterly_vs_benchmark_pct": -9.5,
+                            "rsi14": 76,
+                            "kdj_j": 92,
+                            "bollinger_pct_b": 0.91,
+                            "price_percentile_52w": 92,
+                            "crowding_percentile": 86,
+                        },
+                        {
+                            "blind_id": "BLIND_04",
+                            "category": "tech_cycle_growth",
+                            "mgmt_fee_pct": 1.20,
+                            "custody_fee_pct": 0.20,
+                            "service_fee_pct": 0.50,
+                            "peg_ratio": 2.9,
+                            "trailing_mdd_pct": 45.0,
+                            "calmar": 0.15,
+                            "cr10_pct": 83.0,
+                            "dominant_subsector_weight_pct": 83.0,
+                            "quarterly_vs_benchmark_pct": -21.0,
+                            "rsi14": 81,
+                            "kdj_j": 96,
+                            "bollinger_pct_b": 0.97,
+                            "price_percentile_52w": 96,
+                            "crowding_percentile": 92,
+                        },
+                    ],
+                }
+            ]
+        }
+        ground_truth = {
+            "snapshots": [
+                {
+                    "snapshot_id": "CS_PEAK",
+                    "internal_timepoint_id": "T1",
+                    "cutoff_date": "2026-02-01",
+                    "regime_description": "Peak tech crowding vs dividend value",
+                    "assets": [
+                        {
+                            "code": "SYN_DIV",
+                            "name": "Synthetic Dividend Low-Vol",
+                            "blind_id": "BLIND_01",
+                            "ground_truth_forward": {
+                                "forward_30d_calendar_return_pct": 3.8,
+                                "forward_60d_calendar_return_pct": 6.9,
+                                "forward_to_t5_total_return_pct": 9.5,
+                                "forward_60d_max_drawdown_pct": -2.8,
+                                "is_market_top": False,
+                            },
+                        },
+                        {
+                            "code": "SYN_BETA",
+                            "name": "Synthetic Broad Beta",
+                            "blind_id": "BLIND_02",
+                            "ground_truth_forward": {
+                                "forward_30d_calendar_return_pct": 1.5,
+                                "forward_60d_calendar_return_pct": 3.4,
+                                "forward_to_t5_total_return_pct": 5.0,
+                                "forward_60d_max_drawdown_pct": -5.1,
+                                "is_market_top": False,
+                            },
+                        },
+                        {
+                            "code": "SYN_CROWD",
+                            "name": "Synthetic Overbought Theme C",
+                            "blind_id": "BLIND_03",
+                            "counterfactual_buy_cny": 10000.0,
+                            "ground_truth_forward": {
+                                "forward_30d_calendar_return_pct": -8.2,
+                                "forward_60d_calendar_return_pct": -14.5,
+                                "forward_to_t5_total_return_pct": -16.0,
+                                "forward_60d_max_drawdown_pct": -19.0,
+                                "is_market_top": True,
+                            },
+                        },
+                        {
+                            "code": "SYN_DRIFT",
+                            "name": "Synthetic Style-Drift Theme C",
+                            "blind_id": "BLIND_04",
+                            "counterfactual_buy_cny": 20000.0,
+                            "ground_truth_forward": {
+                                "forward_30d_calendar_return_pct": -13.0,
+                                "forward_60d_calendar_return_pct": -22.5,
+                                "forward_to_t5_total_return_pct": -25.0,
+                                "forward_60d_max_drawdown_pct": -29.0,
+                                "is_market_top": True,
+                            },
+                        },
+                    ],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snap_file = Path(tmp) / "snapshots.json"
+            gt_file = Path(tmp) / "gt.json"
+            md_file = Path(tmp) / "report.md"
+            snap_file.write_text(json.dumps(snapshots), encoding="utf-8")
+            gt_file.write_text(json.dumps(ground_truth), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCREENER_SCRIPT),
+                    "backtest",
+                    "--snapshots",
+                    str(snap_file),
+                    "--ground-truth",
+                    str(gt_file),
+                    "--report-md",
+                    str(md_file),
+                    "--format",
+                    "json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            agg = payload["aggregate"]
+            self.assertEqual(agg["aligned_sample_count"], 4)
+            self.assertEqual(agg["mean_rank_ic_30d"], 1.0)
+            self.assertEqual(agg["mean_rank_ic_60d"], 1.0)
+            self.assertTrue(agg["monotonicity_60d"]["is_strictly_monotonic"])
+            self.assertEqual(agg["top_avoid_hit_rate"], 1.0)
+            # Avoided loss = 10000 * 16% + 20000 * 25% = 1600 + 5000 = 6600 CNY
+            self.assertAlmostEqual(agg["avoided_absolute_loss_cny"], 6600.0, places=2)
+            self.assertGreater(agg["reallocated_alpha_gain_cny"], agg["avoided_absolute_loss_cny"])
+            self.assertTrue(md_file.is_file())
+            self.assertIn("Blind Point-in-Time (PIT) Backtest Report", md_file.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
