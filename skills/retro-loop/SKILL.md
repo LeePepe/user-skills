@@ -95,6 +95,12 @@ python3 skills/retro-loop/scripts/retro_story_engine.py discover
 
 # 4. 每日增量水位线清理（仅处理新完结的 Goal 日志与已合并 Worktree，不重复扫描已清理项）
 python3 skills/team-lead/scripts/git-gc.py daily-cleanup
+
+# 5. NAS Multica Skills ROI Autopilot（两阶段：先确定性脚本收集 -> Agent 根因分析 -> 生成 P3 / medium Actionable Issue 指派给 Owner lee@multica.local）
+python3 skills/retro-loop/scripts/multica_skills_autopilot.py setup-autopilot
+python3 skills/retro-loop/scripts/multica_skills_autopilot.py collect --output /tmp/multica-skills-autopilot-collect.json
+python3 skills/retro-loop/scripts/multica_skills_autopilot.py file-issue --input /tmp/multica-skills-autopilot-collect.json --priority medium --assignee-id 1a895cfa-3ed5-45f5-aaf1-a24b10b502fc
+python3 skills/retro-loop/scripts/multica_skills_autopilot.py run-once
 ```
 
-实现入口：[retro_story_engine.py](scripts/retro_story_engine.py)。
+实现入口：[retro_story_engine.py](scripts/retro_story_engine.py) · [multica_skills_autopilot.py](scripts/multica_skills_autopilot.py)。
