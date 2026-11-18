@@ -1,0 +1,111 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "portfolio-advisor",
+  "trigger_evals": [
+    {
+      "query": "diagnose personal portfolio holdings from Financial ledger and generate All-Weather Barbell DCA rebalancing plan",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "calculate FIFO 30 180 365d fee-free redemption windows and top-10 track overlap for monthly DCA switches",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "screen ledgerless ETF candidates using Morningstar and Graham ERP without personal holdings",
+      "should_trigger": false,
+      "near_miss_skill": "asset-screener"
+    },
+    {
+      "query": "run xcodebuild simulator tests for an iOS package",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "design a macOS toolbar layout with Liquid Glass",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Rebalancer CLI help exposes diagnose rebalance fifo-window overlap",
+      "tags": [
+        "contract"
+      ],
+      "cmd": "python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "diagnose",
+        "rebalance",
+        "fifo-window",
+        "overlap"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-002",
+      "title": "Conservative cashflow rebalancing detects defensive vacuum overlap and emits STOP_DCA + ADD_NEW_DCA",
+      "tags": [
+        "rebalance"
+      ],
+      "cmd": "python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py rebalance --as-of 2026-11-18 --mode hold_underwater_stop_dca --portfolio-json '{\"holdings\":[{\"fund_code\":\"017811\",\"fund_name\":\"东方人工智能主题混合C\",\"category\":\"tech_cycle_growth\",\"market_value\":20528.79,\"unrealized_pnl\":-3946.21,\"unrealized_pnl_pct\":-16.12,\"monthly_dca_cny\":1900,\"mgmt_fee_pct\":1.2,\"custody_fee_pct\":0.2,\"sales_service_fee_pct\":0.5,\"top10_weight_pct\":80.85,\"single_subsector_pct\":80.85,\"quarterly_excess_return_pct\":-18.0,\"top10_holdings\":{\"中微公司\":9.0,\"北方华创\":9.0,\"寒武纪\":7.9,\"拓荆科技\":8.8},\"lots\":[{\"confirmed_date\":\"2026-08-01\",\"direction\":\"purchase\",\"shares\":7913.41,\"amount\":22575},{\"confirmed_date\":\"2026-10-29\",\"direction\":\"purchase\",\"shares\":800,\"amount\":1900}]},{\"fund_code\":\"020839\",\"fund_name\":\"南方中证半导体产业指数A\",\"category\":\"tech_cycle_growth\",\"is_passive_index\":true,\"market_value\":8151.45,\"unrealized_pnl\":651.45,\"unrealized_pnl_pct\":8.69,\"monthly_dca_cny\":500,\"mgmt_fee_pct\":0.15,\"custody_fee_pct\":0.05,\"top10_holdings\":{\"中微公司\":14.3,\"北方华创\":13.5,\"寒武纪\":9.9,\"拓荆科技\":5.2},\"lots\":[{\"confirmed_date\":\"2026-03-01\",\"direction\":\"purchase\",\"shares\":2971.51,\"amount\":7500}]}]}'",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "DEFENSIVE_VACUUM",
+        "TOP10_STOCK_COLLISION",
+        "STOP_DCA",
+        "HOLD_KEEP_DCA",
+        "ADD_NEW_DCA"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-003",
+      "title": "Active FIFO mode redeems only >=30d unlocked shares and preserves locked shares",
+      "tags": [
+        "fifo"
+      ],
+      "cmd": "python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py rebalance --as-of 2026-11-18 --mode redeem_unlocked_fifo --portfolio-json '{\"holdings\":[{\"fund_code\":\"011370\",\"fund_name\":\"华商均衡成长混合C\",\"category\":\"tech_cycle_growth\",\"latest_nav\":1.769,\"market_value\":11445.12,\"unrealized_pnl\":-10554.88,\"unrealized_pnl_pct\":-47.98,\"monthly_dca_cny\":4000,\"mgmt_fee_pct\":1.2,\"custody_fee_pct\":0.2,\"sales_service_fee_pct\":0.5,\"quarterly_excess_return_pct\":-22.0,\"aum_change_qoq_pct\":-38.76,\"lots\":[{\"confirmed_date\":\"2026-06-15\",\"direction\":\"purchase\",\"shares\":4822.08,\"amount\":18000},{\"confirmed_date\":\"2026-10-29\",\"direction\":\"purchase\",\"shares\":1647.38,\"amount\":4000}]}]}'",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "REDEEM_FIFO_UNLOCKED",
+        "4822.08",
+        "2026-11-28"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-004",
+      "title": "Missing Financial root fails closed with exit code 2",
+      "tags": [
+        "boundary"
+      ],
+      "negative_cmd": "python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py diagnose --financial-root /definitely/missing/financial-repo",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "portfolio_load_failed"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-005",
+      "title": "L0 and L1 contract links and delegation rules",
+      "tags": [
+        "contract"
+      ],
+      "file": "skills/portfolio-advisor/SKILL.md",
+      "must_contain": [
+        "When-to-Read & Progressive Disclosure Routing",
+        "references/rebalance-and-fifo-rules.md",
+        "references/eval-cases.json",
+        "../asset-screener/SKILL.md",
+        "skills/asset-screener/scripts/asset_evaluator.py"
+      ],
+      "registered_at": "2026-11-18"
+    }
+  ],
+  "updated": "2026-11-18"
+}

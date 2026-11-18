@@ -1,0 +1,5 @@
+{
+  "name": "asset-screener",
+  "description": "Evaluate, screen, and compare objective investment assets (funds, ETFs, gold, bonds, broad beta) via 1 universal base + 4 category plugins with Morningstar, WGC, Graham ERP, AkShare f-fund-screener, and Fuli Time consensus/divergence citations. Not for personal ledger holdings, FIFO windows, or portfolio rebalancing.",
+  "category": "research"
+}

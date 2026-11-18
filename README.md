@@ -40,13 +40,17 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`deep-research`](./skills/deep-research/SKILL.md) 对主题进行多来源调研与交叉核查，输出带引用、按置信度分级的报告。
 
+[`asset-screener`](./skills/asset-screener/SKILL.md) 提供纯客观投资标的评价与筛选（零个人账本耦合）：基于「1 个通用底座 + 4 套分类评估插件」（红利价值、宽基国运 ERP、科技周期成长与风格漂移检测、黄金纯债宏观对冲）输出晨星、WGC、格雷厄姆 ERP、AkShare `f-fund-screener` 与复利时光多源共识与分歧评分卡。
+
+[`portfolio-advisor`](./skills/portfolio-advisor/SKILL.md) 提供个人持仓诊断与调仓建议：读取 `Financial` CLI/JSON 账本并调用 [`asset-screener`](./skills/asset-screener/SKILL.md)，计算全天候哑铃配置偏离度、FIFO `30/180/365` 天免赎回费窗口、前十大重仓赛道重叠度与增量现金流定投开关方案。
+
 [`codebase-design`](./skills/codebase-design/SKILL.md) 提供深模块、接口、接缝和适配器的设计词汇与方法，并整合领域建模（梳理 Ubiquitous Language、按需维护 `CONTEXT.md` 和架构决策记录 ADR）。
 
 [`my-designer`](./skills/my-designer/SKILL.md) 是双入口设计流的 **Entry B（Product Design, Modernization & Post-Impl Visual Traceback）**：采用渐进式披露（`L0 -> L1 -> L2`）、三端平台防火墙、Plan A 五大透镜、6 维存量界面现代化改版（`No Code Demo`）与 Plan C 缺陷演进机制，产出 `design.md`/`spec.md` 并在实现后结合真实截图执行 `[IMPL_BUG]` vs `[SPEC_GAP]` 视觉回溯；底层 `references/` 与 `scripts/` 与 `design-studio` 100% 软链互通。
 
 [`design-studio`](./skills/design-studio/SKILL.md) 是双入口设计流的 **Entry A（Ingest, Stockpile & Video）**：专管外部设计/交互/动效灵感、截图色板测量（`--measure-palette`）、交互模式（`IP-*/MP-*`）与共性缺陷卡（`DC-*`）分类入库至共享 JSON 抽屉，并在 `--surface-mode video` 时按需披露 Remotion 与 FFmpeg 视频流水线。
 
-`codebase-design`（含原 `domain-modeling`）衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；目录附上原始版权与许可文本。
+[`codebase-design`](./skills/codebase-design/SKILL.md)（含原 `domain-modeling`）衍生自 [Matt Pocock 的 skills](https://github.com/mattpocock/skills)，按 MIT 许可使用；目录附上原始版权与许可文本。
 
 ## 运维参考（非 marketplace 插件）
 
@@ -70,6 +74,8 @@ Claude Code 使用 plugin marketplace：
 /plugin install code-review@user-skills
 /plugin install xcode-cli@user-skills
 /plugin install deep-research@user-skills
+/plugin install asset-screener@user-skills
+/plugin install portfolio-advisor@user-skills
 /plugin install codebase-design@user-skills
 /plugin install my-designer@user-skills
 /plugin install design-studio@user-skills
@@ -88,6 +94,8 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/asset-screener 安装 asset-screener。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/portfolio-advisor 安装 portfolio-advisor。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/codebase-design 安装 codebase-design。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/my-designer 安装 my-designer。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/design-studio 安装 design-studio。
