@@ -3199,6 +3199,204 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("handoff/<goal-2>/spec.md", m2_skill)
         self.assertIn("严禁把两个不同 Feature 塞进同一个 `spec.md`", m2_skill)
 
+    def test_classify_permission_prompt_unblocks_whitelisted_mcp_tools_and_blocks_dangerous_mcp_tools(self):
+        # 1) Real Copilot CLI TUI boxed prompt for Linear "Save issue" (even with inner JSON containing "ask_user?" / "Proceed with")
+        boxed_linear_save_issue = (
+            "╭──────────────────────────────────────────────────────────────────────────────────────────────────╮\n"
+            "│ Save issue                                                                                       │\n"
+            "│ ──────────────────────────────────────────────────────────────────────────────────────────────── │\n"
+            "│ ╭──────────────────────────────────────────────────────────────────────────────────────────────╮ │\n"
+            "│ │ {                                                                                            │ │\n"
+            "│ │   \"id\": \"TIA-566\",                                                                         │ │\n"
+            "│ │   \"description\": \"严守 ask_user 与 Proceed with? 拦截红线，保持 owner_decision_required\" │ │\n"
+            "│ │ }                                                                                            │ │\n"
+            "│ ╰──────────────────────────────────────────────────────────────────────────────────────────────╯ │\n"
+            "│                                                                                                  │\n"
+            "│ Do you want to use this tool?                                                                    │\n"
+            "│                                                                                                  │\n"
+            "│ ❯ 1. Yes                                                                                         │\n"
+            "│   2. Yes, and don't ask again for tool \"Save issue\" from \"linear\" in this repo (~/Development) │\n"
+            "│   3. No, and tell Copilot what to do differently (Esc to stop)                                   │\n"
+            "│                                                                                                  │\n"
+            "│ ↑/↓ to navigate · enter to select · esc to cancel                                                │\n"
+            "╰──────────────────────────────────────────────────────────────────────────────────────────────────╯\n"
+        )
+        sent: list[list[str]] = []
+        res_save_issue = self.router._classify_permission_prompt(
+            boxed_linear_save_issue,
+            target_cwd="~/Development/user-skills",
+            target_ref="m2-skills-r1",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(res_save_issue["action"], "auto_unblocked")
+        self.assertEqual(res_save_issue["kind"], "whitelisted_mcp_tool")
+        self.assertEqual(res_save_issue["mcp_server"], "linear")
+        self.assertEqual(res_save_issue["keys"], ["down", "enter"])
+        self.assertEqual(sent[-1], ["herdr", "agent", "send-keys", "m2-skills-r1", "down", "enter"])
+
+        # 2) Linear board tools (Save comment, Get issue, List issues, List comments, List projects, List milestones) + read-only ADO/GitHub
+        safe_mcp_cases = [
+            ('2. Yes, and don\'t ask again for tool "Save comment" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "Get issue" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "List issues" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "List comments" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "List projects" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "List milestones" from "linear" in this repo', "linear"),
+            ('2. Yes, and don\'t ask again for tool "wit_work_item" from "ado" in this repo', "ado"),
+            ('2. Yes, and don\'t ask again for tool "repo_pull_request" from "ado-edge" in this repo', "ado-edge"),
+            ('2. Yes, and don\'t ask again for tool "get_file_contents" from "github-mcp-server" in this repo', "github-mcp-server"),
+            ('2. Yes, and don\'t ask again for tool "search_code" from "github-mcp-server" in this repo', "github-mcp-server"),
+        ]
+        for opt2_line, expected_server in safe_mcp_cases:
+            with self.subTest(opt2_line=opt2_line):
+                dialog = (
+                    "Do you want to use this tool?\n"
+                    "❯ 1. Yes\n"
+                    f"  {opt2_line}\n"
+                    "  3. No (Esc)\n"
+                )
+                res = self.router._classify_permission_prompt(dialog, target_cwd="~/Development/user-skills")
+                self.assertEqual(res["action"], "auto_unblocked")
+                self.assertEqual(res["kind"], "whitelisted_mcp_tool")
+                self.assertEqual(res["mcp_server"], expected_server)
+                self.assertEqual(res["keys"], ["down", "enter"])
+
+        # Fallback to ["enter"] when option 2 is absent on a whitelisted MCP tool
+        single_opt_dialog = (
+            "Save comment (MCP: linear)\n"
+            "Do you want to use this tool?\n"
+            "❯ 1. Yes\n"
+            "  3. No (Esc)\n"
+        )
+        res_single_opt = self.router._classify_permission_prompt(single_opt_dialog, target_cwd="~/Development/user-skills")
+        self.assertEqual(res_single_opt["action"], "auto_unblocked")
+        self.assertEqual(res_single_opt["keys"], ["enter"])
+
+        # 3) Dangerous / write / delete / external-message / unknown MCP tools MUST be blocked
+        dangerous_mcp_cases = [
+            '2. Yes, and don\'t ask again for tool "Delete comment" from "linear" in this repo',
+            '2. Yes, and don\'t ask again for tool "Delete attachment" from "linear" in this repo',
+            '2. Yes, and don\'t ask again for tool "Share issue" from "linear" in this repo',
+            '2. Yes, and don\'t ask again for tool "Merge diff" from "linear" in this repo',
+            '2. Yes, and don\'t ask again for tool "wit_work_item_write" from "ado" in this repo',
+            '2. Yes, and don\'t ask again for tool "wit_work_item_comment_write" from "ado" in this repo',
+            '2. Yes, and don\'t ask again for tool "repo_pull_request_write" from "ado" in this repo',
+            '2. Yes, and don\'t ask again for tool "pipelines_write" from "ado-edge" in this repo',
+            '2. Yes, and don\'t ask again for tool "create_pull_request" from "github-mcp-server" in this repo',
+            '2. Yes, and don\'t ask again for tool "send_message" from "teams" in this repo',
+            '2. Yes, and don\'t ask again for tool "send_email" from "outlook" in this repo',
+            '2. Yes, and don\'t ask again for tool "custom_exec" from "unknown-mcp" in this repo',
+        ]
+        sent_bad: list[list[str]] = []
+        for bad_opt2 in dangerous_mcp_cases:
+            with self.subTest(bad_opt2=bad_opt2):
+                bad_dialog = (
+                    "Do you want to use this tool?\n"
+                    "❯ 1. Yes\n"
+                    f"  {bad_opt2}\n"
+                    "  3. No (Esc)\n"
+                )
+                res_bad = self.router._classify_and_unblock_dialog(
+                    bad_dialog,
+                    target_ref="m2-skills-r1",
+                    target_cwd="~/Development/user-skills",
+                    live_status="blocked",
+                    auto_unblock_enabled=True,
+                    runner=lambda args, **kw: (sent_bad.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+                )
+                self.assertEqual(res_bad["action"], "owner_decision")
+                self.assertEqual(res_bad["kind"], "non_whitelisted_mcp_tool")
+                self.assertEqual(res_bad["blocked_reason"], "owner_decision_required")
+                self.assertEqual(res_bad["keys"], [])
+        self.assertEqual(sent_bad, [])
+
+    def test_classify_permission_prompt_allows_homebrew_symlink_arrows_and_enforces_root_redlines(self):
+        # 1) /opt/homebrew symlink -> /opt/homebrew/Cellar/... (boxed and inline) is allowed with ["down", "enter"]
+        boxed_homebrew_symlink = (
+            "╭──────────────────────────────────────────────────────────────────────────────────────╮\n"
+            "│ Allow path access                                                                    │\n"
+            "│ ──────────────────────────────────────────────────────────────────────────────────── │\n"
+            "│ This action may read or write the following path outside the paths currently allowed │\n"
+            "│ ╭──────────────────────────────────────────────────────────────────────────────────╮ │\n"
+            "│ │ /opt/homebrew/bin/swiftlint -> /opt/homebrew/Cellar/swiftlint/0.63.2/bin/swiftlint │ │\n"
+            "│ ╰──────────────────────────────────────────────────────────────────────────────────╯ │\n"
+            "│ Do you want to allow this?                                                           │\n"
+            "│ ❯ 1. Yes                                                                             │\n"
+            "│   2. Yes, and remember this path for this session                                    │\n"
+            "│   3. No (Esc)                                                                        │\n"
+            "╰──────────────────────────────────────────────────────────────────────────────────────╯\n"
+        )
+        sent: list[list[str]] = []
+        res_hb = self.router._classify_permission_prompt(
+            boxed_homebrew_symlink,
+            target_cwd="~/Development/Sapphire",
+            target_ref="m2-sapphire-r1",
+            live_status="blocked",
+            auto_unblock_enabled=True,
+            runner=lambda args, **kw: (sent.append(args), SimpleNamespace(returncode=0, stdout="", stderr=""))[1],
+        )
+        self.assertEqual(res_hb["action"], "auto_unblocked")
+        self.assertEqual(res_hb["kind"], "allow_path_access")
+        self.assertEqual(res_hb["keys"], ["down", "enter"])
+        self.assertEqual(sent[-1], ["herdr", "agent", "send-keys", "m2-sapphire-r1", "down", "enter"])
+
+        # Relative symlink target under /opt/homebrew/bin -> ../Cellar/... and /opt/homebrew/opt & /usr/local/Cellar
+        for safe_pkg_path in (
+            "/opt/homebrew/bin/rg -> ../Cellar/ripgrep/14.1.1/bin/rg",
+            "/opt/homebrew/opt/llvm/bin/clang",
+            "/usr/local/Cellar/cmake/3.30.0/bin/cmake",
+        ):
+            with self.subTest(safe_pkg_path=safe_pkg_path):
+                res_pkg = self.router._classify_permission_prompt(
+                    f"Allow path access to {safe_pkg_path}?\n❯ 1. Yes\n  2. Yes, and remember this path for this session\n",
+                    target_cwd="~/Development/user-skills",
+                )
+                self.assertEqual(res_pkg["action"], "auto_unblocked")
+                self.assertEqual(res_pkg["kind"], "allow_path_access")
+                self.assertEqual(res_pkg["keys"], ["down", "enter"])
+
+        # 2) Non-negotiable red lines (/, /Volumes, user home root, ~, symlink escape to /etc/passwd or /tmp) MUST be blocked
+        home_dir = str(Path.home())
+        users_root = str(Path.home().parent)
+        other_user_home = str(Path.home().parent / "other_user")
+        redline_paths = [
+            "/",
+            "/Volumes",
+            users_root,
+            home_dir,
+            other_user_home,
+            "~",
+            "/etc/passwd",
+            "/opt/homebrew/bin/evil -> /etc/passwd",
+            "/opt/homebrew/bin/evil -> ../../../etc/passwd",
+            "/opt/homebrew/bin/evil -> /tmp/payload",
+            "/opt/homebrew/etc/my.cnf",
+        ]
+        for forbidden_path in redline_paths:
+            with self.subTest(forbidden_path=forbidden_path):
+                boxed_forbidden = (
+                    "╭──────────────────────────────────────────────────────╮\n"
+                    "│ Allow path access                                    │\n"
+                    "│ ──────────────────────────────────────────────────── │\n"
+                    "│ ╭──────────────────────────────────────────────────╮ │\n"
+                    f"│ │ {forbidden_path}                                 │ │\n"
+                    "│ ╰──────────────────────────────────────────────────╯ │\n"
+                    "│ Do you want to allow this?                           │\n"
+                    "│ ❯ 1. Yes                                             │\n"
+                    "│   2. Yes, and remember this path for this session    │\n"
+                    "│   3. No (Esc)                                        │\n"
+                    "╰──────────────────────────────────────────────────────╯\n"
+                )
+                res_redline = self.router._classify_permission_prompt(
+                    boxed_forbidden,
+                    target_cwd="~/Development/user-skills",
+                )
+                self.assertEqual(res_redline["action"], "owner_decision", f"redline path was not blocked: {forbidden_path}")
+                self.assertEqual(res_redline["blocked_reason"], "owner_decision_required")
+                self.assertEqual(res_redline["keys"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

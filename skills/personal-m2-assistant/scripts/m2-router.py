@@ -56,6 +56,17 @@ DEFAULT_DOMAIN_MAP_PATH = Path(__file__).resolve().parents[1] / "references" / "
 DEFAULT_HOOK_SCRIPT_PATH = Path(__file__).resolve().parent / "m2-board-hook.sh"
 HERDR_BACKGROUND_RE = re.compile(r"(?:^|[-_])(?:goal-tl|writer|reviewer|explorer|pr-monitor)(?:[-_]|$)|/worktrees(?:/|$)", re.I)
 HERDR_INTERACTIVE_AGENTS = {"copilot", "claude", "codex", "pi", "cindy"}
+READONLY_PACKAGE_MANAGER_ROOTS = (
+    "/opt/homebrew/bin",
+    "/opt/homebrew/Cellar",
+    "/opt/homebrew/opt",
+    "/opt/homebrew/lib",
+    "/opt/homebrew/share",
+    "/opt/homebrew/libexec",
+    "/usr/local/Cellar",
+    "/usr/local/opt",
+    "/usr/local/bin",
+)
 SAFE_BASELINE_ROOTS = (
     "~/Development",
     "/Volumes/SSD",
@@ -71,7 +82,70 @@ SAFE_BASELINE_ROOTS = (
     "~/.config/pew",
     "~/Library/Application Support/AIDash",
     "/opt/homebrew/lib/node_modules/@nocoo/pew",
+    *READONLY_PACKAGE_MANAGER_ROOTS,
 )
+WHITELISTED_LINEAR_MCP_TOOLS = {
+    "save_issue",
+    "create_issue",
+    "update_issue",
+    "save_comment",
+    "create_comment",
+    "update_comment",
+    "save_project",
+    "create_project",
+    "update_project",
+    "save_milestone",
+    "create_milestone",
+    "update_milestone",
+    "save_document",
+    "create_document",
+    "update_document",
+    "save_status_update",
+    "create_status_update",
+    "update_status_update",
+    "save_issue_label",
+    "create_issue_label",
+    "save_project_label",
+    "create_project_label",
+    "mark_notification",
+    "whoami",
+    "extract_images",
+}
+WHITELISTED_READONLY_MCP_SERVERS = {
+    "ado",
+    "ado-edge",
+    "github",
+    "github-mcp-server",
+}
+WHITELISTED_ADO_READONLY_MCP_TOOLS = {
+    "wit_work_item",
+    "wit_query",
+    "wit_backlog",
+    "repo_pull_request",
+    "repo_pull_request_org",
+    "repo_pull_request_thread",
+    "repo_repository",
+    "repo_branch",
+    "repo_file",
+    "repo_search_commits",
+    "pipelines_build",
+    "pipelines_build_log",
+    "pipelines_definition",
+    "pipelines_run",
+    "pipelines_artifact",
+    "core_list_projects",
+    "core_list_project_teams",
+    "core_get_identity_ids",
+    "advsec_get_alerts",
+    "advsec_get_alert_details",
+    "testplan",
+    "testplan_show_test_results_from_build_id",
+    "wiki",
+    "work",
+    "search_code",
+    "search_wiki",
+    "search_workitem",
+}
 WHITELISTED_CMD_BINARIES = {
     "gh",
     "git",
@@ -4472,10 +4546,91 @@ def _resolved_within(path_obj: Path, resolved_roots: list[str]) -> bool:
     return False
 
 
+_FORBIDDEN_SINGLE_PATH_CHARS = ("*", "?", "[", "]", "$", "`", ";", "|", "&", "<", ">", '"', "'")
+
+
+def _strip_matching_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"', "`"}:
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def _is_clean_single_path_token(token: str, *, allow_relative: bool = False) -> bool:
+    if not token or "\n" in token or "\r" in token or "\x00" in token:
+        return False
+    if any(ch in token for ch in _FORBIDDEN_SINGLE_PATH_CHARS):
+        return False
+    if re.search(r"\s+(?:~|/)[A-Za-z0-9_.-]", token):
+        return False
+    if allow_relative:
+        return True
+    return token.startswith("/") or token.startswith("~/") or token == "~"
+
+
+def _split_symlink_arrow_path(raw_text: str) -> tuple[str, str] | None:
+    """Parse '<symlink_path> -> <target_path>' into (source_path, resolved_target_path) or None."""
+    candidate = _strip_matching_quotes(_text(raw_text).rstrip("?").strip())
+    if "->" not in candidate and "→" not in candidate:
+        return None
+    parts = re.split(r"\s*(?:->|→)\s*", candidate)
+    if len(parts) != 2:
+        return None
+    src = _strip_matching_quotes(parts[0].strip())
+    dst = _strip_matching_quotes(parts[1].rstrip("?").strip())
+    if not _is_clean_single_path_token(src, allow_relative=False):
+        return None
+    src_parts = [p for p in re.split(r"[/\\]+", src) if p]
+    if ".." in src_parts or "." in src_parts:
+        return None
+    if not _is_clean_single_path_token(dst, allow_relative=True):
+        return None
+    if dst.startswith("/") or dst.startswith("~/") or dst == "~":
+        dst_parts = [p for p in re.split(r"[/\\]+", dst) if p]
+        if ".." in dst_parts or "." in dst_parts:
+            return None
+        resolved_dst = dst
+    else:
+        expanded_src = _expand_cwd(src)
+        if not expanded_src or not os.path.isabs(expanded_src):
+            return None
+        resolved_dst = os.path.normpath(os.path.join(os.path.dirname(expanded_src), dst))
+    return src, resolved_dst
+
+
+def _is_forbidden_redline_path(expanded_path: str) -> bool:
+    norm_abs = os.path.abspath(expanded_path).rstrip("/") or "/"
+    home_obj = Path.home().resolve(strict=False)
+    home_abs = str(home_obj).rstrip("/")
+    users_root = str(home_obj.parent).rstrip("/")
+    if norm_abs in {"/", "/Volumes", "/System", "/Library", "/etc", "/var", "/private", home_abs, users_root}:
+        return True
+    if str(Path(norm_abs).parent).rstrip("/") == users_root:
+        return True
+    return False
+
+
 def _path_is_under_safe_roots(candidate_path: str, safe_roots: list[str]) -> bool:
     raw = _text(candidate_path)
     if not raw or "\n" in raw or "\r" in raw or "\x00" in raw:
         return False
+    if "->" in raw or "→" in raw:
+        arrow_pair = _split_symlink_arrow_path(raw)
+        if arrow_pair is None:
+            return False
+        src_path, dst_path = arrow_pair
+        if not _path_is_under_safe_roots(src_path, safe_roots):
+            return False
+        if not _path_is_under_safe_roots(dst_path, safe_roots):
+            return False
+        expanded_src = os.path.abspath(_expand_cwd(src_path))
+        pkg_roots = [os.path.abspath(r).rstrip("/") for r in READONLY_PACKAGE_MANAGER_ROOTS]
+        if _lexical_within(expanded_src, pkg_roots):
+            expanded_dst = os.path.abspath(_expand_cwd(dst_path))
+            if not _lexical_within(expanded_dst, pkg_roots):
+                return False
+        return True
+
     if re.search(r"[*?\[\]{}$`<>|;]", raw):
         return False
     parts = [p for p in re.split(r"[/\\]+", raw) if p]
@@ -4484,8 +4639,14 @@ def _path_is_under_safe_roots(candidate_path: str, safe_roots: list[str]) -> boo
     expanded = _expand_cwd(raw)
     if not expanded or not os.path.isabs(expanded):
         return False
+    if _is_forbidden_redline_path(expanded):
+        return False
 
-    expanded_roots = [os.path.abspath(_expand_cwd(r)).rstrip("/") for r in safe_roots if _expand_cwd(r)]
+    expanded_roots = [
+        os.path.abspath(_expand_cwd(r)).rstrip("/")
+        for r in safe_roots
+        if _expand_cwd(r) and not _is_forbidden_redline_path(_expand_cwd(r))
+    ]
     if not expanded_roots:
         return False
     if not _lexical_within(expanded, expanded_roots):
@@ -4567,12 +4728,17 @@ def _extract_single_dialog_path(frame_text: str) -> str | None:
     if len(extracted) != 1:
         return None
     single = extracted[0]
+    if "->" in single or "→" in single:
+        arrow_pair = _split_symlink_arrow_path(single)
+        if arrow_pair is None:
+            return None
+        return f"{arrow_pair[0]} -> {arrow_pair[1]}"
     if not (single.startswith("/") or single.startswith("~/") or single == "~"):
         return None
     # Reject multiple unquoted path tokens in the same captured span
     if re.search(r"\s+(?:~|/)[A-Za-z0-9_.-]", single):
         return None
-    if any(ch in single for ch in ("*", "?", "[", "]", "$", "`", ";", "|", "&", "<", ">", '"', "'")):
+    if any(ch in single for ch in _FORBIDDEN_SINGLE_PATH_CHARS):
         return None
     return single
 
@@ -4595,16 +4761,35 @@ def _extract_dialog_paths(frame_text: str) -> list[str]:
     for line in unboxed.splitlines():
         if re.search(r"(?:Allow\s+(?:path|directory)\s+access\s+to|access\s+to)\s+", line, re.I):
             return []
+    raw_lines = [ln.strip() for ln in unboxed.splitlines() if ln.strip()]
+    merged_lines: list[str] = []
+    idx = 0
+    while idx < len(raw_lines):
+        cur = raw_lines[idx]
+        if (cur.endswith("->") or cur.endswith("→")) and idx + 1 < len(raw_lines):
+            merged_lines.append(f"{cur} {raw_lines[idx + 1]}")
+            idx += 2
+            continue
+        merged_lines.append(cur)
+        idx += 1
+
     paths: list[str] = []
-    for raw_line in unboxed.splitlines():
-        line = raw_line.strip()
+    for line in merged_lines:
         if not line or re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", line):
+            continue
+        if "->" in line or "→" in line:
+            arrow_pair = _split_symlink_arrow_path(line)
+            if arrow_pair is None:
+                return []
+            normalized_arrow = f"{arrow_pair[0]} -> {arrow_pair[1]}"
+            if normalized_arrow not in paths:
+                paths.append(normalized_arrow)
             continue
         if not (line.startswith("/") or line.startswith("~/") or line == "~"):
             continue
         if re.search(r"\s+(?:~|/)[A-Za-z0-9_.-]", line):
             return []
-        if any(ch in line for ch in ("*", "?", "[", "]", "$", "`", ";", "|", "&", "<", ">", '"', "'")):
+        if any(ch in line for ch in _FORBIDDEN_SINGLE_PATH_CHARS):
             return []
         if line not in paths:
             paths.append(line)
@@ -4814,6 +4999,7 @@ def _is_whitelisted_command(cmd_text: str) -> bool:
 
 _PROMPT_HEADER_RE = re.compile(
     r"(?:Allow\s+path\s+access|Allow\s+directory\s+access|Read\s+access\s+covers\s+this\s+directory|"
+    r"Do\s+you\s+want\s+to\s+use\s+this\s+tool|"
     r"\bCurate\s+Memory\b|curate\s+this\s+memory|"
     r"\bstore_memory\b|\bvote_memory\b|Confirm\s+folder\s+trust|"
     r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|\bCMD_CONFIRM\b|"
@@ -4834,6 +5020,215 @@ _COMPLETION_BOUNDARY_RE = re.compile(
     r"^(?:Completed\.|Done\.|Finished\.|[✓✔✗✘]\s+|\bExit\s+code\b|---+$|═+$|━+$)",
     re.I,
 )
+_FORBIDDEN_MCP_TOOL_KEYWORDS_RE = re.compile(
+    r"(?:^|_)(?:delete|remove|destroy|drop|purge|wipe|retire|share|unshare|merge|bypass|"
+    r"send|post|reply|exec|execute|run_pipeline|create_pipeline|rename_pipeline|"
+    r"update_build|upload|attachment|diff_review|diff_comment|update_diff)(?:_|$)",
+    re.I,
+)
+_FORBIDDEN_READONLY_MCP_KEYWORDS_RE = re.compile(
+    r"(?:^|_)(?:write|create|update|delete|remove|destroy|drop|upsert|upload|link|unlink|"
+    r"add|set|send|post|reply|merge|submit|vote|approve|reject|close|reopen|cancel|retry|"
+    r"run_pipeline|assign|reorder|bypass|fork|push|commit|patch|edit|save|share|unshare|retire)(?:_|$)",
+    re.I,
+)
+
+
+def _normalize_mcp_server_and_tool(raw_server: str, raw_tool: str) -> tuple[str, str]:
+    server = _strip_matching_quotes(_text(raw_server)).lower()
+    tool = _strip_matching_quotes(_text(raw_tool))
+    if not server and tool:
+        lower_tool = tool.lower()
+        for prefix in ("github-mcp-server-", "ado-edge-", "linear-", "github-", "ado-"):
+            if lower_tool.startswith(prefix):
+                server = prefix[:-1]
+                tool = tool[len(prefix) :]
+                break
+        if not server:
+            for sep in ("/", ":"):
+                if sep in tool:
+                    head, tail = tool.split(sep, 1)
+                    if head.strip() and tail.strip():
+                        server = head.strip().lower()
+                        tool = tail.strip()
+                        break
+    if server in {"linear-mcp", "linear_mcp"}:
+        server = "linear"
+    tool_norm = re.sub(r"[\s_-]+", "_", tool.strip().lower()).strip("_")
+    for prefix in ("github_mcp_server_", "ado_edge_", "linear_", "github_", "ado_"):
+        if tool_norm.startswith(prefix) and not server:
+            server = prefix[:-1].replace("_", "-")
+            tool_norm = tool_norm[len(prefix) :]
+            break
+    if server in {"linear-mcp", "linear_mcp"}:
+        server = "linear"
+    return server, tool_norm
+
+
+def _is_whitelisted_mcp_tool(server: str, tool: str) -> bool:
+    server_norm, tool_norm = _normalize_mcp_server_and_tool(server, tool)
+    if not server_norm or not tool_norm:
+        return False
+    if _FORBIDDEN_MCP_TOOL_KEYWORDS_RE.search(tool_norm):
+        return False
+    if server_norm == "linear":
+        if tool_norm in WHITELISTED_LINEAR_MCP_TOOLS:
+            return True
+        if tool_norm.startswith(("get_", "list_", "search_")):
+            return True
+        return False
+    if server_norm in WHITELISTED_READONLY_MCP_SERVERS:
+        if _FORBIDDEN_READONLY_MCP_KEYWORDS_RE.search(tool_norm):
+            return False
+        if tool_norm in WHITELISTED_ADO_READONLY_MCP_TOOLS:
+            return True
+        if tool_norm.startswith(("get_", "list_", "search_", "show_", "read_", "find_")):
+            return True
+        return False
+    return False
+
+
+def _is_double_boxed_or_json_payload_line(raw_line: str, unboxed_line: str) -> bool:
+    """Return True when a line inside an MCP tool confirmation dialog is part of the inner JSON argument preview box."""
+    if re.match(r"^\s*[│┃]\s*[│┃╭╰]", raw_line):
+        return True
+    stripped = unboxed_line.strip()
+    if not stripped:
+        return True
+    if stripped[0] in {'{', '}', '[', ']', '"'}:
+        return True
+    if re.match(r'^"[A-Za-z0-9_.-]+"\s*:', stripped):
+        return True
+    return False
+
+
+def _extract_mcp_tool_prompt(visible_text: str, raw_active_frame: str) -> dict[str, Any] | None:
+    """Extract active MCP tool confirmation details from a 'Do you want to use this tool?' bottom frame."""
+    raw_lines = [ln for ln in _text(raw_active_frame).splitlines() if ln.strip()]
+    if not raw_lines:
+        return None
+    unboxed_lines = [_strip_tui_box_chrome(ln) for ln in raw_lines]
+    q_idx = -1
+    for idx, uline in enumerate(unboxed_lines):
+        if re.match(r"^Do\s+you\s+want\s+to\s+use\s+this\s+tool\s*\?\s*$", uline.strip(), re.I):
+            q_idx = idx
+    if q_idx < 0:
+        return None
+
+    post_lines = [ln.strip() for ln in unboxed_lines[q_idx + 1 :] if ln.strip()]
+    # If any completion boundary, business decision, or another non-option question appears AFTER the tool question, it is stale/ambiguous.
+    for pline in post_lines:
+        if _COMPLETION_BOUNDARY_RE.search(pline) or _BUSINESS_DECISION_RE.search(pline):
+            return None
+        if pline.endswith("?") and not re.match(r"^(?:[>❯●◉▶]?\s*)?\d+[.)]\s+", pline):
+            return None
+
+    # Check non-JSON lines before 'Do you want to use this tool?' for conflicting dialog headers
+    ambiguous = False
+    header_candidates: list[str] = []
+    for idx in range(q_idx):
+        raw_ln = raw_lines[idx]
+        unboxed_ln = unboxed_lines[idx].strip()
+        if not unboxed_ln or _is_double_boxed_or_json_payload_line(raw_ln, unboxed_ln):
+            continue
+        header_candidates.append(unboxed_ln)
+        if _BUSINESS_DECISION_RE.search(unboxed_ln):
+            ambiguous = True
+        elif re.search(
+            r"(?:Allow\s+(?:path|directory)\s+access|Read\s+access\s+covers\s+this\s+directory|"
+            r"Confirm\s+folder\s+trust|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
+            r"\bCurate\s+Memory\b|curate\s+this\s+memory|\bstore_memory\b|\bvote_memory\b|"
+            r"\bCMD_CONFIRM\b|Do\s+you\s+want\s+to\s+run|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)",
+            unboxed_ln,
+            re.I,
+        ):
+            ambiguous = True
+        elif unboxed_ln.endswith("?"):
+            ambiguous = True
+
+    post_joined = " ".join(post_lines)
+    post_multiline = "\n".join(post_lines)
+    server = ""
+    tool = ""
+
+    # 1. Authoritative extraction from Copilot CLI's Option 2:
+    #    '2. Yes, and don't ask again for tool "Save issue" from "linear" in this repo (...)'
+    m_opt2 = re.search(
+        r"for\s+tool\s+(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_:/ -]+?))\s+from\s+(?:MCP\s+server\s+)?(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_.-]+))",
+        post_joined,
+        re.I,
+    )
+    if m_opt2:
+        tool = (m_opt2.group(1) or m_opt2.group(2) or "").strip()
+        server = (m_opt2.group(3) or m_opt2.group(4) or "").strip()
+    else:
+        m_opt2_tool_only = re.search(
+            r"for\s+tool\s+(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_:/ -]+?))(?:\s+in\s+this\s+repo|\s+for\s+this\s+session|\s*\(|\s+3[.)]|\s*$)",
+            post_joined,
+            re.I,
+        )
+        if m_opt2_tool_only:
+            tool = (m_opt2_tool_only.group(1) or m_opt2_tool_only.group(2) or "").strip()
+
+    # 2. Fallback / supplement from header lines above the JSON box (in frame and visible scrollback)
+    if not server or not tool:
+        all_raw_lines = [ln for ln in _text(visible_text).splitlines() if ln.strip()][-80:]
+        extra_headers: list[str] = []
+        for rln in reversed(all_raw_lines):
+            uln = _strip_tui_box_chrome(rln).strip()
+            if not uln or _is_double_boxed_or_json_payload_line(rln, uln):
+                continue
+            extra_headers.append(uln)
+        for hline in [*header_candidates, *extra_headers]:
+            m_mcp_paren = re.search(
+                r"(?:^|[○●❯>\s]|Tool\s*:\s*)([A-Za-z0-9_ -]+?)\s*\(\s*MCP\s*:\s*([A-Za-z0-9_.-]+)\s*\)",
+                hline,
+                re.I,
+            )
+            if m_mcp_paren:
+                tool = tool or m_mcp_paren.group(1).strip()
+                server = server or m_mcp_paren.group(2).strip()
+                break
+            m_server_kv = re.match(r"^(?:MCP\s+)?Server\s*[:=]\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*$", hline, re.I)
+            if m_server_kv and not server:
+                server = m_server_kv.group(1).strip()
+                continue
+            m_tool_kv = re.match(
+                r"^Tool(?:\s+name)?\s*[:=]\s*[\"']?([A-Za-z0-9_:/ -]+?)[\"']?(?:\s*\(\s*(?:MCP\s*:\s*)?([A-Za-z0-9_.-]+)\s*\))?\s*$",
+                hline,
+                re.I,
+            )
+            if m_tool_kv:
+                tool = tool or m_tool_kv.group(1).strip()
+                if m_tool_kv.group(2) and not server:
+                    server = m_tool_kv.group(2).strip()
+                continue
+            m_pair = re.match(
+                r"^(linear|ado-edge|ado|github-mcp-server|github)\s*(?:/|:|\s+-\s+)\s*([A-Za-z0-9_ -]+?)(?:\s*\(MCP\))?\s*$",
+                hline,
+                re.I,
+            )
+            if m_pair:
+                server = server or m_pair.group(1).strip()
+                tool = tool or m_pair.group(2).strip()
+                break
+
+    server_norm, tool_norm = _normalize_mcp_server_and_tool(server, tool)
+    has_remember_option = bool(
+        re.search(
+            r"(?m)^\s*(?:[>❯●◉▶]\s*)?2[.)]\s*(?:Yes,\s*and\s+(?:don't\s+ask\s+again|remember)|Always\s+allow)\b",
+            post_multiline,
+            re.I,
+        )
+    )
+    return {
+        "ambiguous": ambiguous,
+        "mcp_server": server_norm or server,
+        "mcp_tool": tool or tool_norm,
+        "mcp_tool_norm": tool_norm,
+        "has_remember_option": has_remember_option,
+        "signature_text": f"mcp:{server_norm}:{tool_norm}:{post_joined}",
+    }
 
 
 def _extract_active_bottom_frame(visible_text: str) -> str:
@@ -4896,18 +5291,18 @@ def _validate_apply_receipt_for_target(
     return False
 
 
-def _classify_and_unblock_dialog(
+def _classify_permission_prompt(
     visible_text: str,
-    *,
-    target_ref: str,
     target_cwd: str = "",
+    *,
+    target_ref: str = "",
     live_status: str = "blocked",
-    auto_unblock_enabled: bool = False,
+    auto_unblock_enabled: bool = True,
     herdr_bin: str = "herdr",
-    runner: CommandRunner = _run_command,
+    runner: CommandRunner | None = None,
     already_unblocked_signatures: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Classify the bottom-most active dialog frame and auto-unblock only when authorized."""
+    """Classify the bottom-most active permission prompt and auto-unblock only when authorized."""
     text = _text(visible_text)
     if not text:
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
@@ -4919,6 +5314,74 @@ def _classify_and_unblock_dialog(
     active_frame = _strip_tui_box_chrome(raw_active_frame)
     if not active_frame:
         return {"action": "none", "kind": "", "keys": [], "blocked_reason": "", "auto_unblock_enabled": auto_unblock_enabled}
+
+    mcp_prompt = _extract_mcp_tool_prompt(text, raw_active_frame)
+    if mcp_prompt is not None:
+        if mcp_prompt.get("ambiguous"):
+            return {
+                "action": "owner_decision",
+                "kind": "ambiguous_dialog",
+                "keys": [],
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+        mcp_server = _text(mcp_prompt.get("mcp_server"))
+        mcp_tool = _text(mcp_prompt.get("mcp_tool"))
+        if not _is_whitelisted_mcp_tool(mcp_server, mcp_tool):
+            return {
+                "action": "owner_decision",
+                "kind": "non_whitelisted_mcp_tool",
+                "keys": [],
+                "mcp_server": mcp_server,
+                "mcp_tool": mcp_tool,
+                "blocked_reason": "owner_decision_required",
+                "auto_unblock_enabled": auto_unblock_enabled,
+            }
+        kind = "whitelisted_mcp_tool"
+        keys = ["down", "enter"] if mcp_prompt.get("has_remember_option") else ["enter"]
+        signature_basis = _text(mcp_prompt.get("signature_text")) or active_frame
+        if not auto_unblock_enabled:
+            return {
+                "action": "owner_decision",
+                "kind": kind,
+                "keys": [],
+                "mcp_server": mcp_server,
+                "mcp_tool": mcp_tool,
+                "blocked_reason": "passive_watch_no_verified_apply_receipt",
+                "auto_unblock_enabled": False,
+            }
+        signature = f"{kind}:{hashlib.sha256(signature_basis.encode('utf-8')).hexdigest()[:12]}"
+        if already_unblocked_signatures is not None and signature in already_unblocked_signatures:
+            return {
+                "action": "already_unblocked",
+                "kind": kind,
+                "keys": keys,
+                "mcp_server": mcp_server,
+                "mcp_tool": mcp_tool,
+                "blocked_reason": "",
+                "auto_unblock_enabled": True,
+            }
+        cmd = [herdr_bin, "agent", "send-keys", target_ref, *keys]
+        if runner is None and not target_ref:
+            ok = True
+        else:
+            effective_runner = runner or _run_command
+            res = effective_runner(cmd, timeout=5.0)
+            ok = getattr(res, "returncode", 1) == 0
+        if ok and already_unblocked_signatures is not None:
+            already_unblocked_signatures.add(signature)
+        return {
+            "action": "auto_unblocked" if ok else "unblock_failed",
+            "ok": ok,
+            "kind": kind,
+            "keys": keys,
+            "mcp_server": mcp_server,
+            "mcp_tool": mcp_tool,
+            "command": cmd,
+            "target": target_ref,
+            "blocked_reason": "" if ok else "unblock_send_keys_failed",
+            "auto_unblock_enabled": True,
+        }
 
     # Business / Spec ask_user or custom decision questions must NEVER be auto-unblocked.
     if _BUSINESS_DECISION_RE.search(active_frame):
@@ -4967,7 +5430,8 @@ def _classify_and_unblock_dialog(
         if ln.strip().endswith("?")
         and not re.search(
             r"(?:Allow\s+(?:path|directory)\s+access|Read\s+access\s+covers\s+this\s+directory|"
-            r"Do\s+you\s+want\s+to\s+allow\s+this|Allow\s+Copilot\s+to\s+curate\s+this\s+memory|"
+            r"Do\s+you\s+want\s+to\s+allow\s+this|Do\s+you\s+want\s+to\s+use\s+this\s+tool|"
+            r"Allow\s+Copilot\s+to\s+curate\s+this\s+memory|"
             r"Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
             r"Confirm\s+folder\s+trust|Trust\s+folder|Curate\s+Memory|store_memory|vote_memory|"
             r"CMD_CONFIRM|Do\s+you\s+want\s+to\s+run|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)",
@@ -5005,10 +5469,27 @@ def _classify_and_unblock_dialog(
         dialog_paths = _extract_dialog_paths(raw_active_frame)
         if dialog_paths and all(_path_is_under_safe_roots(p, safe_roots) for p in dialog_paths):
             kind = "allow_path_access"
-            has_tui_remember = (
-                any(ch in raw_active_frame for ch in ("│", "╭", "╰"))
-                and bool(re.search(r"(?m)^[>❯]\s*1[.)]\s*Yes\b", active_frame, re.I))
-                and bool(re.search(r"(?m)^2[.)]\s*Yes,\s*and\s+remember\b", active_frame, re.I))
+            pkg_roots = [os.path.abspath(r).rstrip("/") for r in READONLY_PACKAGE_MANAGER_ROOTS]
+            is_pkg_or_symlink_path = any(
+                ("->" in p or "→" in p)
+                or _lexical_within(os.path.abspath(_expand_cwd(p)), pkg_roots)
+                for p in dialog_paths
+            )
+            has_tui_remember = is_pkg_or_symlink_path or (
+                bool(re.search(r"(?m)^[>❯]?\s*1[.)]\s*Yes\b", active_frame, re.I))
+                and (
+                    (
+                        any(ch in raw_active_frame for ch in ("│", "╭", "╰"))
+                        and bool(re.search(r"(?m)^2[.)]\s*Yes,\s*and\s+remember\b", active_frame, re.I))
+                    )
+                    or bool(
+                        re.search(
+                            r"(?m)^2[.)]\s*Yes,\s*and\s+(?:remember\s+(?:this|these)\s+paths?\b|don't\s+ask\s+again\b)",
+                            active_frame,
+                            re.I,
+                        )
+                    )
+                )
             )
             keys = ["down", "enter"] if has_tui_remember else ["enter"]
         else:
@@ -5074,8 +5555,12 @@ def _classify_and_unblock_dialog(
         return {"action": "already_unblocked", "kind": kind, "keys": keys, "blocked_reason": "", "auto_unblock_enabled": True}
 
     cmd = [herdr_bin, "agent", "send-keys", target_ref, *keys]
-    res = runner(cmd, timeout=5.0)
-    ok = getattr(res, "returncode", 1) == 0
+    if runner is None and not target_ref:
+        ok = True
+    else:
+        effective_runner = runner or _run_command
+        res = effective_runner(cmd, timeout=5.0)
+        ok = getattr(res, "returncode", 1) == 0
     if ok and already_unblocked_signatures is not None:
         already_unblocked_signatures.add(signature)
     return {
@@ -5088,6 +5573,30 @@ def _classify_and_unblock_dialog(
         "blocked_reason": "" if ok else "unblock_send_keys_failed",
         "auto_unblock_enabled": True,
     }
+
+
+def _classify_and_unblock_dialog(
+    visible_text: str,
+    *,
+    target_ref: str = "",
+    target_cwd: str = "",
+    live_status: str = "blocked",
+    auto_unblock_enabled: bool = False,
+    herdr_bin: str = "herdr",
+    runner: CommandRunner = _run_command,
+    already_unblocked_signatures: set[str] | None = None,
+) -> dict[str, Any]:
+    """Classify the bottom-most active dialog frame and auto-unblock only when authorized."""
+    return _classify_permission_prompt(
+        visible_text,
+        target_cwd=target_cwd,
+        target_ref=target_ref,
+        live_status=live_status,
+        auto_unblock_enabled=auto_unblock_enabled,
+        herdr_bin=herdr_bin,
+        runner=runner,
+        already_unblocked_signatures=already_unblocked_signatures,
+    )
 
 
 _VOLATILE_TUI_CHROME_RE = re.compile(
