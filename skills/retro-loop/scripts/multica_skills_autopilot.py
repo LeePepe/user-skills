@@ -100,7 +100,7 @@ def build_autopilot_prompt(
         "   ```\n\n"
         "2. **Stage 2 — Agent Analysis & Root-Cause Synthesis**:\n"
         f"   Read `{collect_path}` and inspect `top_findings`, `S6_unpracticed_hotspots`, `S7_greedy_hotspots`, "
-        "`S9_escape_hotspots`, `S3_skill_health`, and `S12_tool_context_burn`.\n"
+        "`S9_escape_hotspots`, `S3_skill_health`, `eval_effect`, and `S12_tool_context_burn`.\n"
         f"   Write a concise, evidence-backed Markdown root-cause & P3 action plan to `{analysis_path}` covering:\n"
         "   - Top 3 low-ROI / high-repair-loop / high-unpracticed-rate skills with exact numbers (`roi_score`, `r1_pass_rate`, "
         "`unpracticed_rate`, `impl_bug_escapes`, `spec_gap_escapes`);\n"
@@ -205,7 +205,15 @@ def collect_skills_roi_snapshot(
                 "loads_30d": row.get("loads_30d"),
                 "loads_7d": row.get("loads_7d"),
                 "script_execs": row.get("script_execs"),
+                "script_p95_ms": row.get("script_p95_ms"),
+                "script_success_rate": row.get("script_success_rate"),
                 "unpracticed_rate": row.get("unpracticed_rate"),
+                "empty_load_rate": row.get("empty_load_rate"),
+                "empty_load_sessions": row.get("empty_load_sessions"),
+                "reference_hit_count": row.get("reference_hit_count"),
+                "reference_bytes": row.get("reference_bytes"),
+                "eval_interceptions": row.get("eval_interceptions"),
+                "eval_escapes": row.get("eval_escapes"),
                 "post_invocation_repair_loop_rate": row.get("post_invocation_repair_loop_rate"),
                 "impl_bug_escapes": row.get("impl_bug_escapes"),
                 "spec_gap_escapes": row.get("spec_gap_escapes"),
@@ -234,6 +242,10 @@ def collect_skills_roi_snapshot(
     s1_pins = dict(raw.get("S1_pin_drift") or {})
     s12_burn = list(raw.get("S12_tool_context_burn") or [])[:5]
     s4_usage = dict(raw.get("S4_usage_and_r1") or {})
+    s2_gate = dict(raw.get("S2_gate_catch") or {})
+    eval_effect = dict(s2_gate.get("eval_effect") or {})
+    observed_p95 = [float(row["script_p95_ms"]) for row in s10_rows if row.get("script_p95_ms") is not None]
+    observed_reference_hits = sum(int(row.get("reference_hit_count") or 0) for row in s10_rows)
 
     now_cst = datetime.now(CST)
     collected_date = str(raw.get("wall_clock_date") or now_cst.date().isoformat())
@@ -268,11 +280,16 @@ def collect_skills_roi_snapshot(
             "audit_pass_count": s3_health.get("audit_pass_count", 0),
             "audit_pass_rate": s3_health.get("audit_pass_rate"),
             "outdated_pin_count": s1_pins.get("outdated_pin_count", 0),
+            "empty_load_rate": s4_usage.get("empty_load_rate"),
+            "script_p95_ms": max(observed_p95) if observed_p95 else None,
+            "reference_hit_count": observed_reference_hits,
+            "eval_effect": eval_effect,
         },
         "top_findings": top_findings,
         "S6_unpracticed_hotspots": s6_hotspots,
         "S7_greedy_hotspots": s7_hotspots,
         "S9_escape_hotspots": s9_hotspots,
+        "eval_effect": eval_effect,
         "S3_skill_health": {
             "total_skills": s3_health.get("total_skills"),
             "audit_pass_count": s3_health.get("audit_pass_count"),
@@ -323,6 +340,9 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
         f"- **Portfolio Health**: Active `{summary.get('active_skills_count')}` / Audited `{summary.get('total_skills_audited')}` "
         f"(Audit Pass `{_pct(summary.get('audit_pass_rate'))}`, Actionable `{summary.get('actionable_skills_count')}`, "
         f"Outdated Pins `{summary.get('outdated_pin_count')}`)",
+        f"- **Gap Metrics**: Empty-load `{_pct(summary.get('empty_load_rate'))}` · Script p95 `{summary.get('script_p95_ms')} ms` · "
+        f"Reference hits `{summary.get('reference_hit_count', 0)}` · Eval interceptions/escapes `"
+        f"{(summary.get('eval_effect') or {}).get('interceptions_7d', 0)} / {(summary.get('eval_effect') or {}).get('escapes_7d', 0)}`",
         "",
     ]
 
@@ -379,7 +399,10 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
                 "and verify via `python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`."
             )
     if s6_rows:
-        top_unp = ", ".join(f"`{r['skill']}` ({_pct(r.get('unpracticed_rate'))})" for r in s6_rows[:3])
+        top_unp = ", ".join(
+            f"`{r['skill']}` ({_pct(r.get('unpracticed_rate'))}, p95={r.get('script_p95_ms')}ms)"
+            for r in s6_rows[:3]
+        )
         lines.append(
             f"- [ ] **Script Touch Wiring (`S6_load_vs_script`)**: Convert prose-only instructions into deterministic CLI invocations for {top_unp}."
         )
@@ -390,6 +413,17 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
         )
         lines.append(
             f"- [ ] **Escape Sink (`S9_escape_attribution`)**: Sink recurring review escapes into Valve 1 scripts & `eval-cases.json` for {top_esc}."
+        )
+    eval_effect = summary.get("eval_effect") or {}
+    if eval_effect.get("interceptions_7d") or eval_effect.get("escapes_7d"):
+        lines.append(
+            f"- [ ] **Eval Gate Effect (`S2_gate_catch`)**: Review `{eval_effect.get('interceptions_7d', 0)}` interceptions versus "
+            f"`{eval_effect.get('escapes_7d', 0)}` escapes across eval cases."
+        )
+    if summary.get("empty_load_rate") is not None:
+        lines.append(
+            f"- [ ] **Empty-load reduction (`B1`)**: Reduce loads with no references, scripts, or edits from "
+            f"`{_pct(summary.get('empty_load_rate'))}`."
         )
     if s12_rows:
         top_burn = ", ".join(f"`{r['tool_name']}` (p95={r.get('p95_tokens')} tok)" for r in s12_rows[:2])

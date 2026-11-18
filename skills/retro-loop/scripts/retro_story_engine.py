@@ -31,12 +31,14 @@ DEFAULT_SKILLS_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DEV_ROOT = Path.home() / "Development"
 _SKILL_NAME_RE = re.compile(
     r"(?:<skill-context\s+name=[\"'](?P<ctx>[A-Za-z0-9_-]+)[\"']"
-    r"|/skills/(?P<path>[A-Za-z0-9_-]+)/SKILL\.md"
+    r"|(?<![A-Za-z0-9_-])(?:/)?skills/(?P<path>[A-Za-z0-9_-]+)/SKILL\.md"
     r"|\bskill\s*[:=]\s*[\"'](?P<call>[A-Za-z0-9_-]+)[\"'])"
 )
-_REF_PATH_RE = re.compile(r"/skills/(?P<skill>[A-Za-z0-9_-]+)/references/(?P<ref>[A-Za-z0-9_./-]+)")
+_REF_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:/)?skills/(?P<skill>[A-Za-z0-9_-]+)/references/(?P<ref>[A-Za-z0-9_./-]+)"
+)
 _SCRIPT_PATH_RE = re.compile(
-    r"/skills/(?P<skill>[A-Za-z0-9_-]+)/scripts/(?P<script>[A-Za-z0-9_.-]+\.(?:py|sh))"
+    r"(?<![A-Za-z0-9_-])(?:/)?skills/(?P<skill>[A-Za-z0-9_-]+)/scripts/(?P<script>[A-Za-z0-9_.-]+\.(?:py|sh|ts))"
 )
 
 
@@ -788,6 +790,55 @@ def _percent_label(value: float | None) -> str:
     return f"{value * 100:.1f}%" if value is not None else "unknown"
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _extract_skill_names(value: Any, known_skills: set[str]) -> set[str]:
+    text = str(value or "")
+    found: set[str] = set()
+    for match in _SKILL_NAME_RE.finditer(text):
+        name = match.group("ctx") or match.group("path") or match.group("call")
+        if name:
+            found.add("team-lead" if name == "goal-target-task" else name)
+    for pattern in (_REF_PATH_RE, _SCRIPT_PATH_RE):
+        found.update(match.group("skill") for match in pattern.finditer(text))
+    for name in known_skills:
+        if re.search(rf"(?<![A-Za-z0-9_-])/{re.escape(name)}(?![A-Za-z0-9_-])", text):
+            found.add(name)
+        if re.search(rf"(?<![A-Za-z0-9_-])skills/{re.escape(name)}(?:/|\b)", text):
+            found.add(name)
+    return {"team-lead" if name == "goal-target-task" else name for name in found}
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, (len(ordered) * 95 + 99) // 100 - 1))
+    return ordered[index]
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "pass", "caught"}
+
+
 def compute_skill_roi_diagnostics(
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
@@ -839,7 +890,14 @@ def compute_skill_roi_diagnostics(
             "loads_30d": 0,
             "script_execs": 0,
             "script_failures": 0,
+            "script_touch_sessions": 0,
+            "script_durations_ms": [],
             "has_scripts": bool(meta.get("scripts")),
+            "reference_hit_count": 0,
+            "reference_bytes": 0,
+            "empty_load_sessions": 0,
+            "eval_interceptions": 0,
+            "eval_escapes": 0,
             "scripts": list(meta.get("scripts", [])),
             "l0_only_sessions": 0,
             "l1_selective_sessions": 0,
@@ -867,7 +925,14 @@ def compute_skill_roi_diagnostics(
                 "loads_30d": 0,
                 "script_execs": 0,
                 "script_failures": 0,
+                "script_touch_sessions": 0,
+                "script_durations_ms": [],
                 "has_scripts": False,
+                "reference_hit_count": 0,
+                "reference_bytes": 0,
+                "empty_load_sessions": 0,
+                "eval_interceptions": 0,
+                "eval_escapes": 0,
                 "scripts": [],
                 "l0_only_sessions": 0,
                 "l1_selective_sessions": 0,
@@ -895,12 +960,104 @@ def compute_skill_roi_diagnostics(
     s2_gate = {"total_runs_7d": 0, "true_positive_catches_7d": 0, "config_or_rerun_noise_7d": 0,
                "classified_sample_size": 0, "gate_catch_rate": None, "noise_rate": None,
                **_freshness([], wh.is_file())}
+    eval_total = 0
+    eval_interceptions = 0
+    eval_escapes = 0
+    eval_by_case: dict[str, dict[str, int]] = {}
+    session_records: dict[tuple[str, str, str], dict[str, Any]] = {}
+    turn_skill_links: dict[str, set[str]] = {}
+    start7, _ = _window_bounds()
+
+    def session_for(source: str, sid: str, skill: str, stamp: datetime, *, reference_source: bool = False) -> dict[str, Any]:
+        skill = "team-lead" if skill == "goal-target-task" else skill
+        key = (source, sid or f"row-{len(session_records)}", skill)
+        record = session_records.setdefault(key, {
+            "source": source, "sid": sid, "skill": skill, "stamp": stamp, "loaded": True,
+            "refs": {}, "reference_source": reference_source, "read_proxy": 0,
+            "scripts": [], "edits": 0, "tokens": 0, "token_seen": False,
+        })
+        record["stamp"] = max(record["stamp"], stamp)
+        record["reference_source"] = record["reference_source"] or reference_source
+        return record
+
+    def add_reference(source: str, sid: str, skill: str, path: str, stamp: datetime, byte_len: Any = 0) -> None:
+        record = session_for(source, sid, skill, stamp, reference_source=True)
+        ref_path = str(path or "").strip()
+        if ref_path:
+            try:
+                size = max(0, int(byte_len or 0))
+            except (TypeError, ValueError):
+                size = 0
+            record["refs"].setdefault(ref_path, size)
+        observed.append(stamp)
+        observe(skill, "usage", stamp)
+
+    def add_script(source: str, sid: str, skill: str, path: str, stamp: datetime, exit_code: Any = 0, duration_ms: Any = 0) -> None:
+        record = session_for(source, sid, skill, stamp, reference_source=source == "copilot")
+        try:
+            code = int(exit_code if exit_code not in (None, "") else 0)
+        except (TypeError, ValueError):
+            code = 0
+        try:
+            duration = max(0.0, float(duration_ms if duration_ms not in (None, "") else 0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        call = (str(path or ""), stamp.isoformat(), code, duration)
+        if call not in record["scripts"]:
+            record["scripts"].append(call)
+        entry = _ensure_skill(skill)
+        entry["has_scripts"] = True
+        if path and str(path) not in entry["scripts"]:
+            entry["scripts"].append(str(path))
+        observed.append(stamp)
+        observe(skill, "usage", stamp)
+
+    def task_skills(row: dict[str, Any], *, keys_to_skills: dict[str, set[str]]) -> set[str]:
+        raw_explicit = {str(item).strip() for item in _json_list(row.get("skills_used")) if str(item).strip()}
+        if not raw_explicit and row.get("skills_used"):
+            raw_explicit = _extract_skill_names(row.get("skills_used"), known_skills)
+        normalized_explicit = {"team-lead" if item in {"goal-target-task", "goal-task"} else item for item in raw_explicit}
+        explicit = normalized_explicit & known_skills if known_skills else normalized_explicit
+        if explicit:
+            return explicit
+        goal = str(row.get("goal_id") or "")
+        handoff = d_root / "handoff" / goal
+        text_parts: list[str] = []
+        for path in ([handoff / "spec.md"] if handoff.is_dir() else []):
+            if path.is_file():
+                try:
+                    text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+        if handoff.is_dir():
+            for path in sorted((handoff / "briefs").glob("*.md")) if (handoff / "briefs").is_dir() else []:
+                try:
+                    text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+        inferred = _extract_skill_names("\n".join(text_parts), known_skills)
+        for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+            if key:
+                inferred.update(keys_to_skills.get(str(key).strip().lower(), set()))
+        if inferred:
+            return inferred
+        goal_lower = goal.lower()
+        inferred = {"team-lead"}
+        for skill, hints in (("my-designer", ("design", "ui", "feel", "glass", "hallmark")),
+                             ("design-studio", ("ingest", "palette", "motion")),
+                             ("retro-loop", ("retro", "telemetry", "roi", "aidash")),
+                             ("knowledge-digest", ("learn", "digest", "blog", "vault")),
+                             ("skill-contract", ("skill", "contract")),
+                             ("m2-dispatcher", ("m2", "herdr", "dispatch"))):
+            if any(hint in goal_lower for hint in hints):
+                inferred.add(skill)
+        return inferred
+
     if wh.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
             ci_rows = _timed_rows(conn, "fact_ci_job_run")
             catches = sum(row.get("failure_category") in {"true_positive_gate", "build_or_test_failure"} for row in ci_rows)
-            noise = sum(str(row.get("failure_category") or "").startswith("config_drift_") or
-                        row.get("failure_category") == "runner_capacity_or_sim" for row in ci_rows)
+            noise = sum(str(row.get("failure_category") or "").startswith("config_drift_") or row.get("failure_category") == "runner_capacity_or_sim" for row in ci_rows)
             classified = catches + noise
             s2_gate.update(total_runs_7d=len(ci_rows), true_positive_catches_7d=catches,
                            config_or_rerun_noise_7d=noise, classified_sample_size=classified,
@@ -910,49 +1067,71 @@ def compute_skill_roi_diagnostics(
             if not classified:
                 s2_gate["coverage_status"] = "unknown"
             observed.extend(row["_observed_at"] for row in ci_rows)
-            sessions: dict[str, list[dict[str, Any]]] = {}
-            start7, _ = _window_bounds()
-            for row in _timed_rows(conn, "fact_turn", 30):
+            turn_rows = _timed_rows(conn, "fact_turn", 30)
+            ref_table = next((name for name in ("reference_hits", "fact_skill_reference_hit") if _table_columns(conn, name)), None)
+            script_table = next((name for name in ("script_call", "fact_skill_script_call") if _table_columns(conn, name)), None)
+            for number, row in enumerate(turn_rows):
                 stamp = row["_observed_at"]
-                skills = set(json.loads(row.get("skill_names") or "[]"))
+                skills = {str(item) for item in _json_list(row.get("skill_names")) if str(item).strip()}
                 if row.get("attribution_skill"):
                     skills.add(str(row["attribution_skill"]))
-                row["_skills"] = skills
+                sid = str(row.get("session_id") or row.get("turn_uuid") or f"turn-{number}")
+                keys = [row.get(key) for key in ("goal_id", "git_branch", "repo")]
+                for key in keys:
+                    if key:
+                        turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
+                tools = _json_list(row.get("tool_calls"))
                 for skill in skills:
-                    entry = observe(skill, "usage", stamp)
-                    entry["loads_30d"] += 1
-                    entry["loads_7d"] += stamp >= start7
+                    record = session_for("warehouse", sid, skill, stamp, reference_source=bool(ref_table))
+                    record["read_proxy"] += sum(str(tool).lower() in {"read", "view", "read_file"} for tool in tools)
+                    record["edits"] += sum(str(tool).lower() in {"edit", "write", "multiedit", "apply_patch", "create"} for tool in tools)
+                    record["tokens"] += sum(int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+                    record["token_seen"] = record["token_seen"] or any(row.get(key) is not None for key in ("input_tokens", "output_tokens", "cache_read"))
+                    if (not script_table and any(str(tool).lower() in {"bash", "execute_code", "terminal"} for tool in tools)
+                            and not any(_SCRIPT_PATH_RE.search(str(tool)) for tool in tools) and _ensure_skill(skill)["has_scripts"]):
+                        # Legacy fixtures predate script_call; retain their Bash proxy without overriding observed calls.
+                        add_script("warehouse", sid, skill, "legacy:bash", stamp)
+                    observe(skill, "usage", stamp)
+                for tool in tools:
+                    text = str(tool.get("command") or tool.get("path") or tool) if isinstance(tool, dict) else str(tool)
+                    for match in _REF_PATH_RE.finditer(text):
+                        add_reference("warehouse", sid, match.group("skill"), f"skills/{match.group('skill')}/references/{match.group('ref')}", stamp)
+                    for match in _SCRIPT_PATH_RE.finditer(text):
+                        add_script("warehouse", sid, match.group("skill"), f"skills/{match.group('skill')}/scripts/{match.group('script')}", stamp)
                 if skills:
-                    sessions.setdefault(str(row.get("session_id") or ""), []).append(row)
                     observed.append(stamp)
-            for rows in sessions.values():
-                skills = set().union(*(row["_skills"] for row in rows))
-                tokens = sum(int(row.get(key) or 0) for row in rows for key in ("input_tokens", "output_tokens", "cache_read"))
-                tools = [str(tool).lower() for row in rows for tool in json.loads(row.get("tool_calls") or "[]")]
-                read_count = sum(tool in {"read", "view"} for tool in tools)
-                for skill in skills:
-                    entry = _ensure_skill(skill)
-                    entry["session_count"] += 1
-                    entry["total_tokens"] += tokens // max(1, len(skills))
-                    entry["token_session_count"] += any(row.get(key) is not None for row in rows for key in ("input_tokens", "output_tokens", "cache_read"))
-                    # Generic Bash usage is only a script-touch proxy, not an observed script invocation.
-                    if any(tool in {"bash", "execute_code", "terminal"} for tool in tools) and entry["has_scripts"]:
-                        entry["script_execs"] += 1
-                    entry["l0_only_sessions" if read_count <= 1 else "l1_selective_sessions" if read_count <= 3 else "l1_greedy_sessions"] += 1
+            for source_table in ("copilot_cli", "codex_prompts"):
+                if not _table_columns(conn, source_table):
+                    continue
+                for row in _timed_rows(conn, source_table, 30):
+                    blob = " ".join(str(row.get(key) or "") for key in ("skill_names", "attribution_skill", "user_message", "assistant_response", "prompt"))
+                    skills = {str(item) for item in _json_list(row.get("skill_names")) if str(item).strip()}
+                    skills.update(_extract_skill_names(blob, known_skills))
+                    if row.get("attribution_skill"):
+                        skills.add(str(row["attribution_skill"]))
+                    for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+                        if key:
+                            turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
+            if ref_table:
+                for row in _timed_rows(conn, ref_table, 30):
+                    skill = str(row.get("skill") or "").strip()
+                    path = str(row.get("reference_path") or row.get("ref_path") or "").strip()
+                    if skill and path:
+                        add_reference("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("byte_len"))
+            if script_table:
+                for row in _timed_rows(conn, script_table, 30):
+                    skill = str(row.get("skill") or "").strip()
+                    path = str(row.get("script_path") or row.get("path") or "").strip()
+                    if skill and path:
+                        add_script("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("exit_code"), row.get("duration_ms"))
             for row in _timed_rows(conn, "fact_gtt_task_run"):
                 if row.get("role_name") not in {"reviewer", "code_reviewer", "planner_reviewer"}:
                     continue
-                goal = str(row.get("goal_id") or "").lower()
-                inferred = {"team-lead"}
-                for skill, hints in (("my-designer", ("design", "ui", "feel", "glass", "hallmark")),
-                                     ("design-studio", ("ingest", "palette", "motion")),
-                                     ("retro-loop", ("retro", "telemetry", "roi", "aidash")),
-                                     ("knowledge-digest", ("learn", "digest", "blog", "vault")),
-                                     ("skill-contract", ("skill", "contract")),
-                                     ("m2-dispatcher", ("m2", "herdr", "dispatch"))):
-                    if any(hint in goal for hint in hints):
-                        inferred.add(skill)
-                for skill in inferred:
+                reviewed_skills = task_skills(row, keys_to_skills=turn_skill_links)
+                for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+                    if key:
+                        turn_skill_links.setdefault(str(key).strip().lower(), set()).update(reviewed_skills)
+                for skill in reviewed_skills:
                     entry = observe(skill, "reviews", row["_observed_at"])
                     if int(row.get("round_no") or 1) == 1:
                         entry["r1_total"] += 1
@@ -965,62 +1144,101 @@ def compute_skill_roi_diagnostics(
                 observed.append(row["_observed_at"])
             for row in _timed_rows(conn, "fact_gtt_event"):
                 event = row.get("evt_type")
-                if event not in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
-                    continue
-                goal, note = str(row.get("goal_id") or "").lower(), str(row.get("note_preview") or "").upper()
-                skill = "my-designer" if any(hint in goal for hint in ("design", "ui", "feel")) else "team-lead"
-                entry = observe(skill, "events", row["_observed_at"])
-                entry["spec_gap_escapes" if "SPEC_GAP" in note or event in {"RULING", "CHANGE_REQUEST"} else "impl_bug_escapes"] += 1
-                observed.append(row["_observed_at"])
+                skills = task_skills(row, keys_to_skills=turn_skill_links)
+                has_eval = any(row.get(key) not in (None, "") for key in ("eval_case", "interception", "escape"))
+                if has_eval:
+                    case = str(row.get("eval_case") or "unclassified")
+                    bucket = eval_by_case.setdefault(case, {"observations": 0, "interceptions": 0, "escapes": 0})
+                    bucket["observations"] += 1
+                    eval_total += 1
+                    if _flag(row.get("interception")):
+                        eval_interceptions += 1
+                        bucket["interceptions"] += 1
+                    if _flag(row.get("escape")):
+                        eval_escapes += 1
+                        bucket["escapes"] += 1
+                    for skill in skills:
+                        entry = observe(skill, "events", row["_observed_at"])
+                        entry["eval_interceptions"] += int(_flag(row.get("interception")))
+                        entry["eval_escapes"] += int(_flag(row.get("escape")))
+                if event in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
+                    note = str(row.get("note_preview") or "").upper()
+                    for skill in skills:
+                        entry = observe(skill, "events", row["_observed_at"])
+                        entry["spec_gap_escapes" if "SPEC_GAP" in note or event in {"RULING", "CHANGE_REQUEST"} else "impl_bug_escapes"] += 1
+                if event or has_eval:
+                    observed.append(row["_observed_at"])
 
     if cp.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
             files = _timed_rows(conn, "session_files", 30)
             turns = _timed_rows(conn, "turns", 30)
-            sessions: dict[str, set[str]] = {}
-            refs: dict[tuple[str, str], set[str]] = {}
-            session_stamps: dict[str, datetime] = {}
-            edits: dict[tuple[str, str], int] = {}
-            start7, _ = _window_bounds()
-            for row in files:
-                sid, path = str(row.get("session_id") or ""), str(row.get("file_path") or "")
-                stamp = row["_observed_at"]
-                matched = {m.group("ctx") or m.group("path") or m.group("call") for m in _SKILL_NAME_RE.finditer(path)}
-                matched.update(m.group("skill") for m in _REF_PATH_RE.finditer(path))
-                matched.update(m.group("skill") for m in _SCRIPT_PATH_RE.finditer(path))
-                for skill in matched & known_skills:
-                    observe(skill, "usage", stamp)
-                    sessions.setdefault(sid, set()).add(skill)
-                session_stamps[sid] = max(session_stamps.get(sid, stamp), stamp)
-                for match in _REF_PATH_RE.finditer(path):
-                    refs.setdefault((sid, match.group("skill")), set()).add(match.group("ref"))
-                for match in _SCRIPT_PATH_RE.finditer(path):
-                    _ensure_skill(match.group("skill"))["script_execs"] += 1
-                if row.get("tool_name") in {"edit", "apply_patch"}:
-                    edits[(sid, path)] = edits.get((sid, path), 0) + 1
-                observed.append(stamp)
-            for row in turns:
+            pending_edits: dict[str, int] = {}
+            for row in files + turns:
                 sid = str(row.get("session_id") or "")
-                blob = f"{row.get('user_message') or ''}\n{row.get('assistant_response') or ''}"
                 stamp = row["_observed_at"]
-                matched = {m.group("ctx") or m.group("path") or m.group("call") for m in _SKILL_NAME_RE.finditer(blob)}
+                text = str(row.get("file_path") or "") if "file_path" in row else f"{row.get('user_message') or ''}\n{row.get('assistant_response') or ''}"
+                matched = _extract_skill_names(text, known_skills)
+                ref_matches = list(_REF_PATH_RE.finditer(text))
+                script_matches = list(_SCRIPT_PATH_RE.finditer(text))
+                matched.update(match.group("skill") for match in ref_matches)
+                matched.update(match.group("skill") for match in script_matches)
                 for skill in matched:
-                    entry = observe(skill, "usage", stamp)
-                    entry["loads_7d"] += stamp >= start7
-                    entry["loads_30d"] += 1
-                    sessions.setdefault(sid, set()).add(entry["skill"])
-                session_stamps[sid] = max(session_stamps.get(sid, stamp), stamp)
+                    record = session_for("copilot", sid, skill, stamp, reference_source=True)
+                    if "input_tokens" in row:
+                        record["tokens"] += sum(int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+                        record["token_seen"] = True
+                    observe(skill, "usage", stamp)
+                for match in ref_matches:
+                    add_reference("copilot", sid, match.group("skill"), f"skills/{match.group('skill')}/references/{match.group('ref')}", stamp, row.get("byte_len"))
+                for match in script_matches:
+                    add_script("copilot", sid, match.group("skill"), f"skills/{match.group('skill')}/scripts/{match.group('script')}", stamp, row.get("exit_code"), row.get("duration_ms"))
+                tool_name = str(row.get("tool_name") or "").lower()
+                if tool_name in {"edit", "write", "multiedit", "apply_patch", "create"}:
+                    if matched:
+                        for skill in matched:
+                            session_for("copilot", sid, skill, stamp, reference_source=True)["edits"] += 1
+                    else:
+                        pending_edits[sid] = pending_edits.get(sid, 0) + 1
                 observed.append(stamp)
-            for (sid, _), count in edits.items():
-                if count >= 4:
-                    for skill in sessions.get(sid, {"team-lead"}):
-                        observe(skill, "churn", session_stamps[sid])["edit_churn_count"] += count
-            for sid, skills in sessions.items():
-                for skill in skills:
-                    entry = _ensure_skill(skill)
-                    entry["session_count"] += 1
-                    ref_count = len(refs.get((sid, skill), set()))
-                    entry["l0_only_sessions" if ref_count == 0 else "l1_selective_sessions" if ref_count <= 2 else "l1_greedy_sessions"] += 1
+            for (source, sid, skill), record in session_records.items():
+                if source == "copilot" and pending_edits.get(sid):
+                    record["edits"] += pending_edits[sid]
+            for record in session_records.values():
+                if record["source"] == "copilot" and record["edits"] >= 4:
+                    observe(record["skill"], "churn", record["stamp"])["edit_churn_count"] += record["edits"]
+
+    for record in session_records.values():
+        if not record["loaded"]:
+            continue
+        skill = record["skill"]
+        entry = _ensure_skill(skill)
+        entry["session_count"] += 1
+        entry["loads_30d"] += 1
+        entry["loads_7d"] += record["stamp"] >= start7
+        entry["total_tokens"] += record["tokens"]
+        entry["token_session_count"] += int(record["token_seen"])
+        refs = record["refs"]
+        ref_count = len(refs) if record["reference_source"] else record["read_proxy"]
+        entry["reference_hit_count"] += len(refs)
+        entry["reference_bytes"] += sum(refs.values())
+        entry["l0_only_sessions" if ref_count == 0 else "l1_selective_sessions" if ref_count <= 2 else "l1_greedy_sessions"] += 1
+        if record["scripts"]:
+            entry["script_touch_sessions"] += 1
+            entry["script_execs"] += len(record["scripts"])
+            entry["script_failures"] += sum(call[2] != 0 for call in record["scripts"])
+            entry["script_durations_ms"].extend(call[3] for call in record["scripts"])
+        if not refs and not record["scripts"] and record["edits"] == 0:
+            entry["empty_load_sessions"] += 1
+        if record["edits"] >= 4:
+            entry["edit_churn_count"] += record["edits"]
+
+    s2_gate["eval_effect"] = {
+        "interceptions_7d": eval_interceptions,
+        "escapes_7d": eval_escapes,
+        "interception_rate": round(eval_interceptions / (eval_interceptions + eval_escapes), 4) if eval_interceptions + eval_escapes else None,
+        "by_eval_case": eval_by_case,
+    }
     source_meta = _freshness(observed, wh.is_file() or cp.is_file(), 30)
     source_as_of = source_meta["source_as_of"]
     start7, end7 = _window_bounds()
@@ -1062,8 +1280,12 @@ def compute_skill_roi_diagnostics(
         r1_tot = st["r1_total"]
         r1_pass_rate = round(st["r1_pass"] / r1_tot, 4) if r1_tot > 0 else None
         script_execs = st["script_execs"]
-        script_ratio = round(min(1.0, script_execs / loads), 4) if st["has_scripts"] and loads > 0 else None
+        script_ratio = round(st["script_touch_sessions"] / loads, 4) if st["has_scripts"] and loads > 0 else None
         read_only_unpracticed_rate = round(1.0 - script_ratio, 4) if script_ratio is not None else None
+        empty_load_rate = round(st["empty_load_sessions"] / loads, 4) if loads > 0 else None
+        script_durations = [float(value) for value in st["script_durations_ms"]]
+        script_avg_ms = round(sum(script_durations) / len(script_durations), 2) if script_durations else None
+        script_p95_ms = _p95(script_durations)
 
         f_tot = max(1, st["l0_only_sessions"] + st["l1_selective_sessions"] + st["l1_greedy_sessions"])
         l0_rate = round(st["l0_only_sessions"] / f_tot, 4) if loads > 0 else None
@@ -1131,11 +1353,24 @@ def compute_skill_roi_diagnostics(
             "has_scripts": st["has_scripts"],
             "script_execs": script_execs,
             "script_failures": st["script_failures"],
+            "script_success_rate": round((script_execs - st["script_failures"]) / script_execs, 4) if script_execs else None,
+            "script_touch_sessions": st["script_touch_sessions"],
             "script_touch_rate": script_ratio,
             "unpracticed_rate": read_only_unpracticed_rate,
+            "script_avg_ms": script_avg_ms,
+            "script_p95_ms": script_p95_ms,
+            "reference_hit_count": st["reference_hit_count"],
+            "reference_bytes": st["reference_bytes"],
+            "empty_load_sessions": st["empty_load_sessions"],
+            "empty_load_rate": empty_load_rate,
+            "eval_interceptions": st["eval_interceptions"],
+            "eval_escapes": st["eval_escapes"],
             "l0_only_rate": l0_rate,
             "l1_selective_rate": l1_sel_rate,
             "l1_greedy_violation_rate": l1_greedy_rate,
+            "l0_only_sessions": st["l0_only_sessions"],
+            "l1_selective_sessions": st["l1_selective_sessions"],
+            "l1_greedy_sessions": st["l1_greedy_sessions"],
             "avg_context_tokens": avg_tokens,
             "edit_churn_count": st["edit_churn_count"],
             "retry_commands": st["retry_commands"],
@@ -1243,6 +1478,11 @@ def compute_skill_roi_diagnostics(
             **source_meta,
             "active_skills_count": len(active_rows),
             "idle_skills_30d": idle_skills_30d,
+            "empty_load_sessions": sum(int(r.get("empty_load_sessions") or 0) for r in active_rows),
+            "empty_load_rate": round(
+                sum(int(r.get("empty_load_sessions") or 0) for r in active_rows)
+                / max(1, sum(int(r.get("loads_30d") or 0) for r in active_rows)), 4
+            ) if active_rows else None,
             "top_used_skills": sorted(skill_rows, key=lambda r: (-r["loads_30d"], r["skill"]))[:8],
         },
         "S6_load_vs_script": [
@@ -1254,8 +1494,12 @@ def compute_skill_roi_diagnostics(
                 "skill": r["skill"],
                 "loads_30d": r["loads_30d"],
                 "script_execs": r["script_execs"],
+                "script_touch_sessions": r["script_touch_sessions"],
                 "script_touch_rate": r["script_touch_rate"],
                 "unpracticed_rate": r["unpracticed_rate"],
+                "script_success_rate": r["script_success_rate"],
+                "script_avg_ms": r["script_avg_ms"],
+                "script_p95_ms": r["script_p95_ms"],
             }
             for r in active_rows
             if r["has_scripts"]
@@ -1270,6 +1514,11 @@ def compute_skill_roi_diagnostics(
                 "l0_only_rate": r["l0_only_rate"],
                 "l1_selective_rate": r["l1_selective_rate"],
                 "l1_greedy_violation_rate": r["l1_greedy_violation_rate"],
+                "l0_only_sessions": r["l0_only_sessions"],
+                "l1_selective_sessions": r["l1_selective_sessions"],
+                "l1_greedy_sessions": r["l1_greedy_sessions"],
+                "reference_hit_count": r["reference_hit_count"],
+                "reference_bytes": r["reference_bytes"],
                 "avg_context_tokens": r["avg_context_tokens"],
             }
             for r in active_rows
@@ -1296,9 +1545,11 @@ def compute_skill_roi_diagnostics(
                 "skill": r["skill"],
                 "impl_bug_escapes": r["impl_bug_escapes"],
                 "spec_gap_escapes": r["spec_gap_escapes"],
+                "eval_interceptions": r["eval_interceptions"],
+                "eval_escapes": r["eval_escapes"],
             }
             for r in active_rows
-            if r["impl_bug_escapes"] > 0 or r["spec_gap_escapes"] > 0
+            if r["impl_bug_escapes"] > 0 or r["spec_gap_escapes"] > 0 or r["eval_interceptions"] > 0 or r["eval_escapes"] > 0
         ],
         "S10_skill_roi_ranking": sorted(active_rows, key=lambda r: (r["roi_score"] is None, r["roi_score"] if r["roi_score"] is not None else float("inf"), r["skill"])),
         "S11_context_composition": s11_context,
