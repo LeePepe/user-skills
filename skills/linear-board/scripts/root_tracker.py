@@ -1109,7 +1109,8 @@ def classify_jev(item: Mapping[str, Any], roots: Sequence[Mapping[str, Any]], je
             or item_id in CANONICAL_TOPIC_BY_ID
             or context_match
         )
-        if mapped_root and (mapped_root_id != "china-release" or is_china_signal):
+        mapped_score = _root_match_score(item, mapped_root, shared_repositories) if mapped_root else 0
+        if mapped_root and (item_id in CANONICAL_TOPIC_BY_ID or mapped_score > 0) and (mapped_root_id != "china-release" or is_china_signal):
             return {"topic_id": topic_id, "root_id": mapped_root_id, "method": "m2-domain-map", "confidence": 1.0, "match_score": 100}
     deterministic = sorted(
         ((_root_match_score(item, root, shared_repositories), root) for root in roots),
@@ -1227,8 +1228,17 @@ def collect(
                     "pr_number": item.get("pr_number"),
                     "repository": item.get("repository"),
                     "branch": item.get("branch"),
+                    "head_sha": item.get("head_sha"),
+                    "decision_id": decision.get("decision_id"),
                     "url": decision.get("url") or item.get("url"),
                     "signal": "P0 Blocking Decision",
+                    "pending_decisions": [{
+                        "kind": "owner_decision",
+                        "status": decision.get("status"),
+                        "decision_id": decision.get("decision_id"),
+                        "linear_identifier": decision.get("linear_identifier"),
+                        "url": decision.get("url"),
+                    }],
                     "source": str(supervisor_path),
                 }, "PR & PoP")
     for item in sinks:

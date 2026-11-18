@@ -58,6 +58,19 @@ class RootTrackerTests(unittest.TestCase):
         result = root_tracker.classify_jev(item, [china], jev_function=lambda *args, **kwargs: None)
         self.assertEqual(result["root_id"], "NEW_ROOT_CANDIDATE")
 
+    def test_shared_repository_without_context_becomes_new_root_candidate(self):
+        roots = [
+            {"root_id": "china-release", "repos": ["san/bing-growth-sapphire-app"], "branch_globs": ["*china*"], "handoff_files": [], "bug_list_paths": [], "integration_branches": [], "keywords": ["china"]},
+            {"root_id": "sapphire-notification", "repos": ["bing-growth-sapphire-app"], "branch_globs": ["*notification*"], "handoff_files": [], "bug_list_paths": [], "integration_branches": [], "keywords": ["notification"]},
+            {"root_id": "sapphire-smartbanner", "repos": ["san/bing-growth-sapphire-app"], "branch_globs": ["*smartbanner*"], "handoff_files": [], "bug_list_paths": [], "integration_branches": [], "keywords": ["smartbanner"]},
+        ]
+        result = root_tracker.classify_jev(
+            {"id": "PR#278", "repository": "san/bing-growth-sapphire-app", "title": "[Docs] Personalized query PRD, privacy boundary and design references", "branch": "docs/local-query-prd"},
+            roots,
+            jev_function=lambda *args, **kwargs: {"root_id": "sapphire-notification", "confidence": 1},
+        )
+        self.assertEqual(result["root_id"], "NEW_ROOT_CANDIDATE")
+
     def test_repo_relative_topic_map_survives_empty_home(self):
         repo_map = Path(root_tracker.SCRIPT_DIR).parents[1] / "personal-m2-assistant/references/m2-domain-map.json"
         self.assertTrue(repo_map.is_file())
