@@ -1,0 +1,119 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "asset-screener",
+  "trigger_evals": [
+    {
+      "query": "evaluate and compare objective dividend ETFs and gold funds with Morningstar WGC Graham ERP",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "screen broad beta index funds and detect tech growth style drift with AkShare factors",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "diagnose my personal Financial ledger holdings FIFO 30d window and monthly DCA rebalancing",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    },
+    {
+      "query": "build a SwiftUI macOS chart screen with Liquid Glass",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    },
+    {
+      "query": "audit progressive disclosure skill budgets and eval drawers",
+      "should_trigger": false,
+      "near_miss_skill": "skill-contract"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "List 1 universal base + 4 category plugins + 5 multi-source citations",
+      "tags": [
+        "contract"
+      ],
+      "cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py list-models",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "morningstar_mrar",
+        "wgc_macro_gold",
+        "graham_erp",
+        "akshare_quant",
+        "fuli_low_vol_dca",
+        "dividend_value",
+        "broad_beta",
+        "tech_cycle_growth",
+        "macro_hedge_gold_bond"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-002",
+      "title": "Reject personal ledger fields under strict zero-coupling guard",
+      "tags": [
+        "orthogonality"
+      ],
+      "negative_cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py evaluate --input-json '{\"code\":\"017811\",\"name\":\"AI Fund C\",\"holding_shares\":800,\"unrealized_pnl\":-3946}'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "personal_ledger_coupling_forbidden",
+        "holding_shares"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-003",
+      "title": "Detect style drift and oversold divergence on concentrated active tech fund",
+      "tags": [
+        "plugin-tech"
+      ],
+      "cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py evaluate --input-json '{\"code\":\"017811\",\"name\":\"东方人工智能主题混合C\",\"category\":\"tech_cycle_growth\",\"mgmt_fee_pct\":1.2,\"custody_fee_pct\":0.2,\"sales_service_fee_pct\":0.5,\"rsi_14\":29,\"kdj_j\":18,\"bb_pct_b\":0.15,\"percentile_52w\":20,\"turnover_crowding_pct\":30,\"top10_weight_pct\":80.85,\"single_subsector_pct\":80.85,\"quarterly_excess_return_pct\":-18.5}'",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "STYLE_DRIFT_SUBSECTOR_BET",
+        "BENCHMARK_LAG_SEVERE",
+        "D_AVOID",
+        "divergence"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-004",
+      "title": "Score low-fee dividend value and gold hedge as A_CORE with consensus",
+      "tags": [
+        "plugin-defensive"
+      ],
+      "cmd": "python3 skills/asset-screener/scripts/asset_evaluator.py screen --min-tier A_CORE --input-json '[{\"code\":\"007466\",\"name\":\"华泰柏瑞中证红利低波ETF联接A\",\"category\":\"dividend_value\",\"mgmt_fee_pct\":0.15,\"custody_fee_pct\":0.05,\"dividend_yield_pct\":5.1,\"consecutive_dividend_years\":8,\"payout_coverage_ratio\":1.9,\"rsi_14\":42,\"bb_pct_b\":0.38},{\"code\":\"AU_ACC\",\"name\":\"银行积存金\",\"category\":\"macro_hedge_gold_bond\",\"sub_type\":\"gold\",\"mgmt_fee_pct\":0.0,\"custody_fee_pct\":0.0,\"tips_10y_real_yield_pct\":1.6,\"central_bank_tonnes_qtr\":321,\"drawdown_from_peak_pct\":31,\"rsi_14\":34,\"bb_pct_b\":0.22}]'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "count": 2
+      },
+      "expect_stdout_contains": [
+        "A_CORE",
+        "consensus"
+      ],
+      "registered_at": "2026-11-18"
+    },
+    {
+      "id": "EV-005",
+      "title": "L0 and L1 contract links and boundary clauses",
+      "tags": [
+        "contract"
+      ],
+      "file": "skills/asset-screener/SKILL.md",
+      "must_contain": [
+        "When-to-Read & Progressive Disclosure Routing",
+        "references/multi-source-models.md",
+        "references/eval-cases.json",
+        "../portfolio-advisor/SKILL.md",
+        "--strict-no-personal-ledger"
+      ],
+      "registered_at": "2026-11-18"
+    }
+  ],
+  "updated": "2026-11-18"
+}

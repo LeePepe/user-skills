@@ -76,6 +76,18 @@
       "description": "Use for deep, multi-source research with citations and adversarial verification. Break questions into subproblems, cross-check sources, grade confidence, and synthesize disagreements. Not for quick factual lookups."
     },
     {
+      "name": "asset-screener",
+      "source": "./skills/asset-screener",
+      "category": "research",
+      "description": "Evaluate, screen, and compare objective investment assets (funds, ETFs, gold, bonds, broad beta) via 1 universal base + 4 category plugins with Morningstar, WGC, Graham ERP, AkShare f-fund-screener, and Fuli Time consensus/divergence citations. Not for personal ledger holdings, FIFO windows, or portfolio rebalancing."
+    },
+    {
+      "name": "portfolio-advisor",
+      "source": "./skills/portfolio-advisor",
+      "category": "workflow",
+      "description": "Diagnose personal investment portfolios and generate rebalancing plans from Financial CLI/JSON ledgers: invokes asset-screener for objective scores, computes All-Weather Barbell weights, FIFO 30/180/365d fee-free redemption windows, top-10 track overlap, and monthly DCA cashflow switches. Not for ledgerless screening."
+    },
+    {
       "name": "codebase-design",
       "source": "./skills/codebase-design",
       "category": "repo",
