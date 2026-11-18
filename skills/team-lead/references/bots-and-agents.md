@@ -28,7 +28,7 @@ Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务 
 
 ### UI 设计与技术栈 Skill 挂载（Steering / Designer / Writer）
 
-UI/UX design ownership remains with `Steering` during Phase 0 co-design: it loads `my-designer` (`L0 -> L1 -> L2`) when authoring `design.md`/`spec.md`, checking `Package.resolved` and `shared-design-system` upstream primitives as needed. During the UI Demo exploration stage only, dispatch `--role designer` to `magpie/group/designer` (`gpt-6.1-sol` + `grok-4.7`) to independently author 10 prototype prompts (`prompts/v01-prompt.md` through `v10-prompt.md`, or the approved `v01..v10` / `app01..app04` variants). Then dispatch `--role writer` to `magpie/group/coding` to implement the selected prompt as self-contained HTML/CSS/JS prototypes and production code; Designer does not own spec/design files or production implementation. Writer runs `shared-ci/scripts/context/design_contract.py` and exports low-cost real screenshots into the R10 receipt (Apple snapshots via XCTest/ImageRenderer or Web Playwright headless screenshots). The CI Design Gate and Cross-Vendor `Reviewer` performs a **Visual Traceback**; `sips -g pixelWidth`, zero numeric truncation `…`, and the `followed the brief verbatim` V2 P1 rule remain enforced. `[IMPL_BUG]` routes to Writer, while `[SPEC_GAP]` requires Steering to amend `design.md` (`spec_sha`) first; generic recurring cases may use `skill_contract.py sink-rule` / `register-case --id auto` only when they have no private symbols.
+UI/UX design ownership remains with `Steering` during Phase 0 co-design: it loads `my-designer` (`L0 -> L1 -> L2`) when authoring `design.md`/`spec.md`, checking `Package.resolved` and `shared-design-system` upstream primitives as needed. During the UI Demo exploration stage only, dispatch `--role designer` to `magpie/group/designer` (`gemini-4-argon` + `grok-4.7`) to independently author 10 prototype prompts (`prompts/v01-prompt.md` through `v10-prompt.md`, or the approved `v01..v10` / `app01..app04` variants). Then dispatch `--role writer` to `magpie/group/coding` to implement the selected prompt as self-contained HTML/CSS/JS prototypes and production code; Designer does not own spec/design files or production implementation. Writer runs `shared-ci/scripts/context/design_contract.py` and exports low-cost real screenshots into the R10 receipt (Apple snapshots via XCTest/ImageRenderer or Web Playwright headless screenshots). The CI Design Gate and Cross-Vendor `Reviewer` performs a **Visual Traceback**; `sips -g pixelWidth`, zero numeric truncation `…`, and the `followed the brief verbatim` V2 P1 rule remain enforced. `[IMPL_BUG]` routes to Writer, while `[SPEC_GAP]` requires Steering to amend `design.md` (`spec_sha`) first; generic recurring cases may use `skill_contract.py sink-rule` / `register-case --id auto` only when they have no private symbols.
 
 - **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。`Steering`（或按需 `Explorer`）映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**，并记录 **Deprecated Test Clauses to Remove/Rewrite**；随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，`Code/UI Reviewer` 保留非 deprecated regression tests。
 
@@ -42,12 +42,12 @@ UI/UX design ownership remains with `Steering` during Phase 0 co-design: it load
 
 - **1-Hop Communication & Lifecycle Ownership**：独立 Goal TL 存在时，Bot 只沟通、唤醒、解卡并在 `GOAL_DONE` 时回收 TL pane/workspace；TL 独占下属 Subagent 的派发、更新与回收。
 - **同 Goal 共用分支与按需子 Worktree**：同 Goal 下多个 Tasks 默认在同一分支连续 commit；仅在多 Writer 真并发或实验探索时建临时子 Worktree，验证后本地 `keep`（merge）合回 Goal 分支并立即清理临时 Worktree。
-- **Writer 干完即退与 `PR_MERGED` 清理**：`Writer` 完成本地验证与交付后即退出并关闭自己的任务 pane。当临时子 Worktree 已本地 `keep` 合回或最终 PR 已读回 `PR_MERGED` 后，通过 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`（执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`）完成清理。未合并／暂停（HOLD）或 dirty Worktree 保留并报告 Owner。
+- **Writer 干完即退与 `PR_MERGED` 清理**：`Writer` 完成本地验证与交付后即退出并关闭自己的任务 pane。临时子 Worktree 已本地 `keep` 合回或最终 PR 已读回 `PR_MERGED` 后，通过 Layer 0 `ci-monitor.py pr` 与 `git-gc.py task-clean`（执行 `git worktree remove "$TASK_WORKTREE"`、`git worktree prune` 与 `git branch -D "$TASK_BRANCH"`）清理。未合并／暂停（HOLD）或 dirty Worktree 保留并报告 Owner。
 - **Goal / `GOAL_DONE`**：ledger 记录 `EVT=GOAL_DONE` 后，关窗与 Worktree 处置分开验收。**A（MUST）**：关闭该 Goal 的 TL pane 并清空其 herdr workspace（`herdr workspace close "$GOAL_WORKSPACE"`；TL 可延迟自闭 pane，未自闭则协调 Bot 回退关闭），不触碰 `w1`、Owner 会话或活动 Goal。**B（与 A 正交）**：未合并、HOLD 或 dirty Worktree 保留并报告 Owner；保留 Worktree MUST NOT 阻断 A。
 
 ### 会话粘性、上下文污染度阈值与原生 Goal 引擎挂载
 
-- **Sticky TL & Context-Noise Threshold**：存在活动 ledger 时追问继续继承合同。已知模块或中小改动（`≤8` 个文件）由 Steering 直接读取诊断并写 `spec.md`／`briefs/<task>.md`；跨仓搜索、全量盘点 `Obsolete Test Manifest` 或长日志超过 8 个文件时，经 `herdr-dispatch.sh` 派只读 `Explorer`（返回 `<15` 行摘要与 R10 receipt）。`≤3` 个文件轻量修正由 `Steering` 直改，大范围或耗时构建交 `Writer`。
+- **Sticky TL & Context-Noise Threshold**：存在活动 ledger 时追问自动继承合同。已知模块或中小改动（`≤8` 个文件）由 Steering 直读诊断并写 `spec.md`／`briefs/<task>.md`；跨仓搜索、全量盘点 `Obsolete Test Manifest` 或长日志超过 8 个文件时，经 `herdr-dispatch.sh` 派只读 `Explorer`（返回 `<15` 行摘要与 R10 receipt）。`≤3` 文件轻量修正由 `Steering` 直改，大范围或耗时构建交 `Writer`。
 - **Native Goal Continuation Binding**：`ledger.md`、`briefs/<task>.md` 与 Git 是跨进程唯一事实源；Codex `create_goal`／`update_goal`、Copilot `sql` `todos`／`todo_deps`、Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后标 complete；遇阻塞或 V3 两轮失败立即标 `blocked`。
 
 ## 每个 Goal 的责任线、Skill 路由与网关角色
@@ -61,14 +61,14 @@ UI/UX design ownership remains with `Steering` during Phase 0 co-design: it load
 | UI 视觉现代化与客观评审 | `my-designer`（含 `modernization-dimensions.md` 与 Visual Traceback）+ `design-studio` |
 | macOS / iOS SwiftPM 打包、测试与构建 | `xcode-cli` |
 
-所有配额水位、缓存粘性与轻重意图路由由本机网关 **`Magpie (:3425)`** 的三组逻辑模型统一接管（不可达时按 [runtime-profiles.yaml](runtime-profiles.yaml) 回退）：
+所有配额水位、缓存粘性与轻重意图路由由本机网关 **`Magpie (:3425)`** 逻辑组统一接管（全局 `effort: high` + `long_context`，离线按 [runtime-profiles.yaml](runtime-profiles.yaml) 回退）：
 
 | 角色 | 逻辑组 / 档位 | 谁开 | 生命周期 |
 |---|---|---|---|
-| Steering / Team lead (`team_lead`) | `group/steering` (`strong`) | Owner / 协调者 bot | 整个 Goal（探查、规划、Spec/Design ownership、`≤3` 文件直改、调度与 `EVT=RULING`） |
-| Designer (`designer`) | `group/designer` (`mid`; `gpt-6.1-sol` + `grok-4.7`) | Steering | 仅 UI Demo 阶段独立产出 10 个原型 Prompt；不改 Spec/Design 或生产代码 |
-| 写者（`writer`） / 升档写者（`writer_escalated`） | `group/coding` (`worker`) / `group/coding-escalated` (`mid`) | Steering | 按 Designer Prompt 实现 HTML 原型与正式生产代码（`writer_escalated` 仅限 V3 第 2 轮） |
-| 代码 Reviewer (`code_reviewer`) | `group/reviewing` (`mid`，**与写者不同家**） | Steering | Goal 收口单次审查（若仓库 CI 已有 `codex-review-target` 则直接复用） |
+| Steering / Team lead (`team_lead`) | `group/steering` (`strong`: `gemini-4-carbon`/`gemini-4-argon`/`gpt-6.1-sol`) | Owner / 协调者 bot | 整个 Goal（探查、规划、Spec/Design、`≤3` 文件直改、调度与 `EVT=RULING`） |
+| Designer (`designer`) | `group/designer` (`mid`; `gemini-4-argon` + `grok-4.7`) | Steering | 仅 UI Demo 阶段独立产出 10 个原型 Prompt；不改 Spec/Design 或生产代码 |
+| 写者（`writer`） / 升档写者（`writer_escalated`） | `group/coding` (`worker`: `gpt-5.6-luna`/`mai-code-2`/`mai-code-2-flash`) / `group/coding-escalated` (`mid`: `gpt-6.1-sol`) | Steering | 按 Designer Prompt 实现 HTML 原型与生产代码（`writer_escalated` 仅限 V3 第 2 轮） |
+| 代码 Reviewer (`code_reviewer`) | `group/reviewing` (`mid`: `gemini-4-argon`/`gpt-6.1-sol`，**与写者不同家**） | Steering | Goal 收口单次审查（若仓库 CI 已有 `codex-review-target` 则直接复用） |
 | Explorer（可选） | `group/coding` (`worker`) | Steering | 仅 `>8` 文件高噪声跨仓搜索时按需启动 |
 | CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认由 Layer 0 `ci-monitor.py`（0 Token）处理；失败诊断回退 `worker.pr_monitor` | Steering | 异步监控 PR CI、auto-merge 与发布流水线（Job 级 Fail-Fast） |
 
@@ -79,7 +79,7 @@ set -euo pipefail
 SPLIT_JSON="$(herdr pane split --pane "$HERDR_PANE_ID" --direction right --cwd "$TASK_WORKTREE" --no-focus)"
 NEW_PANE_ID="$(printf '%s' "$SPLIT_JSON" | jq -er '.result.pane.pane_id')" && test -n "$NEW_PANE_ID"
 skills/team-lead/scripts/herdr-dispatch.sh --name "merge-tk1a-writer-r1" --kind copilot --cwd "$TASK_WORKTREE" --direction right \
-  --prompt "Read briefs/<task>.md; implement only Owned Paths; write R10 receipt to <receipt-path> and return <15 lines." --wait --timeout 600000 -- --model gpt-5.6-luna
+  --prompt "Read briefs/<task>.md; implement only Owned Paths; write R10 receipt to <receipt-path> and return <15 lines." --wait --timeout 600000 -- --model gpt-5.6-luna --reasoning-effort high --context long_context
 herdr pane close "$NEW_PANE_ID"
 git -C "$MAIN_REPO" worktree remove "$TASK_WORKTREE" && git -C "$MAIN_REPO" worktree prune && git -C "$MAIN_REPO" branch -D "$TASK_BRANCH"
 ```

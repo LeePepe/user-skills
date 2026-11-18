@@ -465,7 +465,7 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
     group/steering)
       case "$KIND" in claude) FALLBACK_MODEL="opus" ;; copilot) FALLBACK_MODEL="gemini-4-carbon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
     group/reviewing-openai)
-      case "$KIND" in copilot) FALLBACK_MODEL="gpt-5.6-luna" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
+      case "$KIND" in copilot|codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac ;;
     group/reviewing)
       case "$KIND" in copilot) FALLBACK_MODEL="gemini-4-argon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; cursor) FALLBACK_MODEL="kimi" ;; esac ;;
     group/coding)
@@ -479,7 +479,7 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
       [[ "$KIND" == "codex" ]] && FALLBACK_MODEL="gpt-6.1-sol"
       ;;
     group/designer)
-      case "$KIND" in copilot|codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac
+      case "$KIND" in copilot) FALLBACK_MODEL="gemini-4-argon" ;; codex) FALLBACK_MODEL="gpt-6.1-sol" ;; esac
       ;;
   esac
   [[ -n "$FALLBACK_MODEL" ]] || FALLBACK_MODEL="$REQUESTED_MODEL"
@@ -526,7 +526,7 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
   fi
   [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" != "copilot" ]] && RESOLVED_MODEL="$LOGICAL_GROUP"
   [[ "$GATEWAY_ONLINE" -eq 1 && "$KIND" == "copilot" && "${AGENT_ARGS[*]}" == *"magpie/$LOGICAL_GROUP"* ]] && RESOLVED_MODEL="magpie/$LOGICAL_GROUP"
-  if [[ "$GATEWAY_ONLINE" -eq 0 && "$KIND" == "copilot" && ( "$LOGICAL_GROUP" == "group/steering" || "$LOGICAL_GROUP" == "group/reviewing" ) && "$RESOLVED_MODEL" == "$FALLBACK_MODEL" ]]; then
+  if [[ "$GATEWAY_ONLINE" -eq 0 && "$KIND" == "copilot" && "$RESOLVED_MODEL" == "$FALLBACK_MODEL" && -n "$RESOLVED_MODEL" ]]; then
     HAS_REASONING_EFFORT=0
     HAS_CONTEXT_TIER=0
     for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
@@ -536,7 +536,11 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
       esac
     done
     [[ "$HAS_REASONING_EFFORT" -eq 0 ]] && AGENT_ARGS+=(--reasoning-effort high)
-    [[ "$HAS_CONTEXT_TIER" -eq 0 ]] && AGENT_ARGS+=(--context long_context)
+    case "$RESOLVED_MODEL" in
+      gemini-4-carbon|gemini-4-argon|gpt-6.1-sol|gpt-5.6-luna|grok-4.7)
+        [[ "$HAS_CONTEXT_TIER" -eq 0 ]] && AGENT_ARGS+=(--context long_context)
+        ;;
+    esac
   fi
 else
   RESOLVED_MODEL="$REQUESTED_MODEL"

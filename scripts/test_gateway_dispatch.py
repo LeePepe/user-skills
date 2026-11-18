@@ -84,7 +84,9 @@ elif args[:2] == ["agent", "prompt"]:
         for group in ("group/steering", "group/reviewing", "group/coding", "group/coding-escalated", "group/designer"):
             self.assertIn(group, text)
         self.assertIn('fallback_models: {claude: "opus", copilot: "gemini-4-carbon", codex: "gpt-6.1-sol"}', text)
+        self.assertIn('fallback_models: {copilot: "gemini-4-argon"}', text)
         self.assertIn("gemini-4-carbon: google", text)
+        self.assertIn("mai-code-2: microsoft", text)
         self.assertIn("grok-4.7: xai", text)
         self.assertIn("alt_by_excluded_vendor: {google: \"group/reviewing-openai\"", text)
 
@@ -175,7 +177,9 @@ elif args[:2] == ["agent", "prompt"]:
         self.assertEqual(offline.returncode, 0, offline.stderr)
         offline_payload = json.loads(offline.stdout)
         self.assertEqual(offline_payload["logical_group"], "group/designer")
-        self.assertEqual(offline_payload["resolved_model"], "gpt-6.1-sol")
+        self.assertEqual(offline_payload["resolved_model"], "gemini-4-argon")
+        self.assertIn('"--reasoning-effort", "high"', offline.mock_log)
+        self.assertIn('"--context", "long_context"', offline.mock_log)
 
     def test_designer_codex_fallback_and_no_vendor_collision(self):
         result = self.run_dispatch("designer", kind="codex", online="0")
@@ -192,11 +196,15 @@ elif args[:2] == ["agent", "prompt"]:
         offline = self.run_dispatch("writer", online="0")
         self.assertEqual(offline.returncode, 0, offline.stderr)
         self.assertEqual(json.loads(offline.stdout)["resolved_model"], "gpt-5.6-luna")
+        self.assertIn('"--reasoning-effort", "high"', offline.mock_log)
+        self.assertIn('"--context", "long_context"', offline.mock_log)
 
     def test_pr_monitor_fallback(self):
         result = self.run_dispatch("pr_monitor")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["resolved_model"], "mai-code-2-flash")
+        self.assertIn('"--reasoning-effort", "high"', result.mock_log)
+        self.assertNotIn('"--context", "long_context"', result.mock_log)
 
     def test_reviewer_exclusion(self):
         google = self.run_dispatch("code_reviewer", extra=("--exclude-vendor", "openai"))
@@ -204,7 +212,9 @@ elif args[:2] == ["agent", "prompt"]:
         self.assertEqual(json.loads(google.stdout)["resolved_model"], "gemini-4-argon")
         openai = self.run_dispatch("code_reviewer", extra=("--exclude-vendor", "google"))
         self.assertEqual(json.loads(openai.stdout)["logical_group"], "group/reviewing-openai")
-        self.assertEqual(json.loads(openai.stdout)["resolved_model"], "gpt-5.6-luna")
+        self.assertEqual(json.loads(openai.stdout)["resolved_model"], "gpt-6.1-sol")
+        self.assertIn('"--reasoning-effort", "high"', openai.mock_log)
+        self.assertIn('"--context", "long_context"', openai.mock_log)
 
     def test_round_one_escalation_is_rejected(self):
         result = self.run_dispatch("writer_escalated", name="goal-tk1-writer-r1")
