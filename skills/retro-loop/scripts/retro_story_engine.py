@@ -1013,11 +1013,13 @@ def compute_skill_roi_diagnostics(
         observe(skill, "usage", stamp)
 
     def task_skills(row: dict[str, Any], *, keys_to_skills: dict[str, set[str]]) -> set[str]:
-        explicit = {str(item).strip() for item in _json_list(row.get("skills_used")) if str(item).strip()}
-        if not explicit and row.get("skills_used"):
-            explicit = _extract_skill_names(row.get("skills_used"), known_skills)
+        raw_explicit = {str(item).strip() for item in _json_list(row.get("skills_used")) if str(item).strip()}
+        if not raw_explicit and row.get("skills_used"):
+            raw_explicit = _extract_skill_names(row.get("skills_used"), known_skills)
+        normalized_explicit = {"team-lead" if item in {"goal-target-task", "goal-task"} else item for item in raw_explicit}
+        explicit = normalized_explicit & known_skills if known_skills else normalized_explicit
         if explicit:
-            return {"team-lead" if item == "goal-target-task" else item for item in explicit}
+            return explicit
         goal = str(row.get("goal_id") or "")
         handoff = d_root / "handoff" / goal
         text_parts: list[str] = []
