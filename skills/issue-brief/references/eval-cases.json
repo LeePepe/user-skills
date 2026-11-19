@@ -1,0 +1,104 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-19",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "verify_issue_format.py CLI exposes render and verify subcommands",
+      "tags": [
+        "cli",
+        "contract"
+      ],
+      "cmd": "python3 skills/issue-brief/scripts/verify_issue_format.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "render",
+        "verify"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "Round-trip render_dual_zone_issue and verify_dual_zone_issue pass with <=15 human lines",
+      "tags": [
+        "render",
+        "verify"
+      ],
+      "cmd": "python3 -c \"import importlib.util, json; p='skills/issue-brief/scripts/verify_issue_format.py'; s=importlib.util.spec_from_file_location('vif', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); md=m.render_dual_zone_issue(tldr='今日3个技能返工偏高，勾选后自动加锁修复。', items=[{'what':'收敛 team-lead 常见漏检','why':'把高频返工规则下沉为脚本检查'}], cursor='skills-roi-2026-11-19', ai_context_md='- `S10`: `0.0199`'); r=m.verify_dual_zone_issue(md); print(json.dumps(r)); assert r['ok'] and r['human_zone_lines'] <= 15\"",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "has_tldr": true,
+        "has_ai_details": true
+      },
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "Verifier exits 2 when Human Zone leaks internal codes, UUIDs, or CLI commands",
+      "tags": [
+        "negative",
+        "human-zone"
+      ],
+      "negative_cmd": "python3 -c \"import subprocess, sys; bad='<!-- multica-cursor:k1 -->\\n\\n**一句话结论**：S10 和 M2 异常 1a895cfa-3ed5-45f5-aaf1-a24b10b502fc\\n\\n- [ ] 1. Run python3 skills/retro-loop/scripts/multica_skills_autopilot.py --dry-run\\n\\n<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\\nctx\\n</details>\\n'; r=subprocess.run([sys.executable, 'skills/issue-brief/scripts/verify_issue_format.py', 'verify', '-'], input=bad, text=True, capture_output=True); sys.stdout.write(r.stdout); sys.exit(r.returncode)\"",
+      "expect_fail_exit": 2,
+      "negative_stdout_contains": [
+        "human-zone-internal-code",
+        "human-zone-uuid",
+        "human-zone-cli-command"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "Human Zone internal code gate regex catches S1..S12, M1..M5, EV-001, DC-001, H1..H5, R10, V1..V5",
+      "tags": [
+        "valve-1",
+        "regex"
+      ],
+      "forbidden_regex": "(?<![A-Za-z0-9_-])(?:S(?:1[0-2]|[1-9])|M[1-5]|EV-\\d{1,4}|DC-\\d{1,4}|H[1-5]|R10|V[1-5])(?![A-Za-z0-9_-])",
+      "bad_snippet": "S10 ROI low and EV-001 escaped R10 gate",
+      "good_snippet": "勾选第 1 项后由后台自动下沉脚本检查并补齐回归测试",
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-005",
+      "title": "SKILL.md and dual-zone-spec.md preserve Dual-Zone contract clauses",
+      "tags": [
+        "contract",
+        "docs"
+      ],
+      "file": "skills/issue-brief/SKILL.md",
+      "must_contain": [
+        "verify_issue_format.py",
+        "🤖 AI 执行上下文与确定性证据（人无需展开）",
+        "multica-cursor:",
+        "一句话结论",
+        "references/dual-zone-spec.md",
+        "references/eval-cases.json"
+      ],
+      "registered_at": "2026-11-19"
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "format a Multica issue body with Dual-Zone <=15 Chinese human lines and collapsible AI details",
+      "should_trigger": true
+    },
+    {
+      "query": "verify Linear issue markdown watermark multica-cursor and checkable items",
+      "should_trigger": true
+    },
+    {
+      "query": "review a pull request code diff for security bugs",
+      "should_trigger": false,
+      "near_miss_skill": "code-review"
+    },
+    {
+      "query": "design a SwiftUI mobile navigation gallery",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    }
+  ]
+}

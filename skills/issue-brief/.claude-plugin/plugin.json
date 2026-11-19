@@ -1,0 +1,6 @@
+{
+  "name": "issue-brief",
+  "description": "Format, render, and verify Multica and Linear issue bodies using the Dual-Zone Issue Format Contract (<=15 plain-Chinese human lines with TL;DR + checkable items above a collapsible AI context <details> block and <!-- multica-cursor:... --> watermark). Not for codebase PR reviews, UI design specs, or blog HTML.",
+  "version": "1.0.0",
+  "category": "workflow"
+}

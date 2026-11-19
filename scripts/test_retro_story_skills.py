@@ -188,6 +188,11 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
         self.assertEqual(snap["summary"]["eval_effect"]["interceptions_7d"], 3)
         self.assertIn("Empty-load", snap["markdown_brief"])
         self.assertIn("450.0 ms", snap["markdown_brief"])
+        issue_brief = AUTOPILOT._load_issue_brief()
+        dz_report = issue_brief.verify_dual_zone_issue(snap["markdown_brief"])
+        self.assertTrue(dz_report["ok"], dz_report)
+        self.assertLessEqual(dz_report["human_zone_lines"], 15)
+        self.assertEqual(dz_report["cursor"], "skills-roi-autopilot-2026-11-18")
 
     def test_collect_snapshot_reads_real_gap_metrics_from_warehouse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

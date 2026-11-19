@@ -1246,11 +1246,99 @@ DAILY_LINEAR_FOOTER = (
 )
 
 
-def _daily_digest_markdown(day: str, topics: list[dict[str, Any]]) -> str:
-    lines = [f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->", f"<!-- KD-DAILY-START:{day} -->", "", _DAILY_NOTICE, ""]
+def _load_issue_brief_module() -> Any:
+    path = SKILLS_ROOT / "issue-brief" / "scripts" / "verify_issue_format.py"
+    mod = _load_helper_module("knowledge_digest_issue_brief", path)
+    if mod is None:
+        raise RuntimeError(f"Unable to load verify_issue_format from {path}")
+    return mod
+
+
+def _short_plain_why(item: dict[str, Any]) -> str:
+    raw = str(item.get("why_now") or item.get("excerpt") or "").strip()
+    cleaned = re.sub(r"[A-Za-z0-9_./-]+:\d+", "", raw)
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ·—-，。;；")
+    if not cleaned:
+        return "补齐近期工程与收藏工具中的高频认知缺口"
+    return cleaned[:48].rstrip("，,；; ")
+
+
+def render_dual_zone_digest_issue(day: str, topics: list[dict[str, Any]]) -> str:
+    """Render a Dual-Zone compliant Daily Learn issue body via `issue-brief`."""
+    issue_brief = _load_issue_brief_module()
+    count = len(topics)
+    tldr = (
+        f"今日从收藏库与近期工程缺口筛出 {count} 个高价值学习主题，勾选对应项或留言即可展开拆解。"
+        if count
+        else "今日暂无新增高价值学习主题，候选池保持清零或冷却状态。"
+    )
+    items: list[dict[str, Any]] = []
+    context_blocks: list[str] = [_DAILY_NOTICE, ""]
+    for item in topics:
+        key = str(item["topic_key"])
+        title = str(item.get("title") or key)
+        brief = item.get("learning_brief") or _learning_brief(item)
+        items.append(
+            {
+                "what": f"[{key}](learning-topic://{key}) {title}",
+                "why": _short_plain_why(item),
+            }
+        )
+        context_blocks.extend(
+            [
+                f"<!-- KD-TOPIC-START:{key} -->",
+                f"### `{key}` — {title}",
+                *(_daily_brief_lines(brief)),
+                f"<!-- KD-TOPIC-END:{key} -->",
+                "",
+            ]
+        )
+    if not items:
+        items.append({"what": "保持现有知识库索引", "why": "今日无待审批新主题"})
+
+    rendered = issue_brief.render_dual_zone_issue(
+        tldr=tldr,
+        items=items,
+        cursor=f"daily-learn-{day}",
+        extra_comments=[
+            f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->",
+            f"<!-- multica-knowledge-autopilot:daily-learn-{day} -->",
+            f"<!-- KD-DAILY-START:{day} -->",
+        ],
+        footer=DAILY_LINEAR_FOOTER,
+        ai_context_md="\n".join(context_blocks).strip(),
+        trailing_comments=[f"<!-- KD-DAILY-END:{day} -->"],
+    )
+    report = issue_brief.verify_dual_zone_issue(rendered)
+    if not report["ok"]:
+        raise ValueError(f"Dual-Zone daily digest verification failed: {report['violations']}")
+    return rendered
+
+
+def _daily_digest_markdown(day: str, topics: list[dict[str, Any]], *, dual_zone: bool = False) -> str:
+    if dual_zone:
+        return render_dual_zone_digest_issue(day, topics)
+    issue_brief = _load_issue_brief_module()
+    context_lines = [f"- `{item['topic_key']}`: `{item['learning_brief']['recommended_command']}`" for item in topics] or ["- `topics`: `none`"]
+    ai_details_lines = [
+        issue_brief.CANONICAL_DETAILS_OPEN,
+        "",
+        *context_lines,
+        "",
+        "</details>",
+    ]
+    lines = [
+        f"<!-- GTT-LINEAR-DEDUP:daily-learn-{day} -->",
+        f"<!-- multica-cursor:daily-learn-{day} -->",
+        f"<!-- KD-DAILY-START:{day} -->",
+        "",
+        _DAILY_NOTICE,
+        "",
+    ]
     for item in topics:
         lines.extend(_daily_topic_lines(item))
-    lines.extend([DAILY_LINEAR_FOOTER, ""])
+    lines.extend([DAILY_LINEAR_FOOTER, "", *ai_details_lines, ""])
     return "\n".join([*lines, f"<!-- KD-DAILY-END:{day} -->", ""])
 
 
@@ -1377,14 +1465,21 @@ def _linear_transport_from_repo() -> Any:
     return client_cls(token)
 
 
-def _upsert_linear_daily_issue(client: Any, day: str, topics: list[dict[str, Any]], *, existing_issue: dict[str, Any] | None = None) -> dict[str, Any]:
+def _upsert_linear_daily_issue(
+    client: Any,
+    day: str,
+    topics: list[dict[str, Any]],
+    *,
+    existing_issue: dict[str, Any] | None = None,
+    dual_zone: bool = False,
+) -> dict[str, Any]:
     title = f"[Daily Learn {day}] 今日 3 个推荐学习主题"
     marker = f"GTT-LINEAR-DEDUP:daily-learn-{day}"
     issue = existing_issue
     if issue is None:
         issues = client.list_issues("TIA", query=title, limit=50)
         issue = next((x for x in issues if marker in str(x.get("description") or "") or x.get("title") == title), None)
-    description = _daily_digest_markdown(day, topics)
+    description = _daily_digest_markdown(day, topics, dual_zone=dual_zone)
     if issue:
         existing = str(issue.get("description") or "")
         desired = description
@@ -1424,6 +1519,7 @@ def discover_topics(
     top: int | None = None,
     propose_aidash: bool = False,
     propose_linear: bool = False,
+    dual_zone: bool = False,
     linear_transport: Any | None = None,
     vault_dir: Path = DEFAULT_VAULT_DIR,
     collected_tools_dir: Path = DEFAULT_COLLECTED_TOOLS_DIR,
@@ -1656,7 +1752,7 @@ def discover_topics(
             try:
                 client = linear_client or linear_transport or _linear_transport_from_repo()
                 day = _cst_day_str(now_dt)
-                linear_issue = _upsert_linear_daily_issue(client, day, selected, existing_issue=remote)
+                linear_issue = _upsert_linear_daily_issue(client, day, selected, existing_issue=remote, dual_zone=dual_zone)
                 external_id = f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}"
                 daily_registry = registry.setdefault("daily_linear_issues", {})
                 daily_registry[day] = {**daily_registry.get(day, {}), "external_id": external_id, "url": linear_issue.get("url"), "identifier": linear_issue.get("identifier"), "title": linear_issue.get("title"), "topic_keys": [str(x.get("topic_key")) for x in selected], "updated_at": now_iso}
@@ -2510,6 +2606,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_disc.add_argument("--top", type=int, default=None)
     p_disc.add_argument("--propose-aidash", action="store_true")
     p_disc.add_argument("--propose-linear", action="store_true", help="Explicitly create/update the daily TIA digest issue")
+    p_disc.add_argument("--dual-zone", action="store_true", help="Render Linear/Multica daily digest issue using strict Dual-Zone contract")
     p_disc.add_argument("--no-materialize", action="store_true")
     p_disc.add_argument("--materialize-before-approval", action="store_true", help="Deprecated; cannot override candidate-only gate")
     p_disc.add_argument("--materialize", action="store_true", help="Explicit standalone archival only")
@@ -2569,6 +2666,7 @@ def main(argv: list[str] | None = None) -> int:
             top=args.top,
             propose_aidash=args.propose_aidash,
             propose_linear=args.propose_linear,
+            dual_zone=getattr(args, "dual_zone", False),
             vault_dir=args.vault_dir,
             collected_tools_dir=args.collected_tools_dir,
             git_roots=() if getattr(args, "no_git", False) else DEFAULT_GIT_ROOTS,

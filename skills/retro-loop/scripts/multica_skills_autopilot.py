@@ -29,6 +29,7 @@ from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENGINE_PATH = SCRIPT_DIR / "retro_story_engine.py"
+ISSUE_BRIEF_SCRIPT_PATH = SCRIPT_DIR.parents[1] / "issue-brief" / "scripts" / "verify_issue_format.py"
 
 DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
 DEFAULT_WEB_URL = "http://192.168.31.17:13000"
@@ -51,6 +52,15 @@ def _load_retro_engine() -> Any:
     spec = importlib.util.spec_from_file_location("retro_story_engine_autopilot", ENGINE_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load retro_story_engine from {ENGINE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_issue_brief() -> Any:
+    spec = importlib.util.spec_from_file_location("issue_brief_autopilot", ISSUE_BRIEF_SCRIPT_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load verify_issue_format from {ISSUE_BRIEF_SCRIPT_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -319,7 +329,21 @@ def build_issue_title(snapshot: dict[str, Any]) -> str:
     return f"[P3 / Priority 3][Skills ROI] {collected_date} 技能效能诊断与可执行优化清单 ({focus})"
 
 
-def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None = None) -> str:
+def _plain_chinese_reason_for_skill(row: dict[str, Any]) -> str:
+    unp = row.get("unpracticed_rate")
+    impl_esc = int(row.get("impl_bug_escapes") or 0)
+    spec_esc = int(row.get("spec_gap_escapes") or 0)
+    reasons: list[str] = []
+    if impl_esc > 0 or spec_esc > 0:
+        reasons.append(f"近期审查打回与规格盲区共 {impl_esc + spec_esc} 次，需把常见漏检下沉为确定性脚本检查")
+    if isinstance(unp, (int, float)) and float(unp) >= 0.4:
+        reasons.append(f"文档读取后未调脚本比例 {_pct(float(unp))}，需改为自动脚本入口")
+    if not reasons:
+        reasons.append("补齐可执行回归断言并收敛入口说明，降低人工返工损耗")
+    return "；".join(reasons[:2]) + "。"
+
+
+def _build_ai_evidence_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None = None) -> str:
     summary = snapshot.get("summary") or {}
     findings = snapshot.get("top_findings") or []
     s6_rows = snapshot.get("S6_unpracticed_hotspots") or []
@@ -331,7 +355,7 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
     lines: list[str] = [
         f"## [P3 / Priority 3] Skills ROI Actionable Diagnostic ({snapshot.get('collected_date')})",
         "",
-        f"- **Dedup Marker**: `<!-- multica-skills-autopilot:{dedup_key} -->`",
+        f"- **Dedup Marker**: `{dedup_key}`",
         f"- **Priority**: Priority 3 (`medium`)",
         f"- **Assigned Owner**: `{DEFAULT_OWNER_EMAIL}` (`{DEFAULT_OWNER_ID}`)",
         f"- **Observation Window**: `{summary.get('window_cst', '7d')}` (30d usage & 7d review freshness) · "
@@ -379,14 +403,14 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
     else:
         lines.append("| — | — | `healthy` | — | — | — | 0 / 0 | No low-ROI anomalies detected |")
 
-    lines.extend(["", "### Actionable P3 Checklist (For Owner Review / Dispatch)", ""])
+    lines.extend(["", "### Remediation Details & Script Wiring", ""])
     if findings:
         for item in findings[:3]:
             sk = item.get("skill")
             diag = item.get("diagnosis")
             cmds = item.get("remediation_commands") or []
             cmd_inline = f" — Run `{cmds[0]}`" if cmds else ""
-            lines.append(f"- [ ] **`{sk}`** (`{item.get('diagnostic_status')}`): {diag}{cmd_inline}")
+            lines.append(f"- **`{sk}`** (`{item.get('diagnostic_status')}`): {diag}{cmd_inline}")
     if s3_health.get("top3_l0_watermarks"):
         over_cap = [
             w for w in s3_health["top3_l0_watermarks"]
@@ -395,7 +419,7 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
         if over_cap:
             over_desc = ", ".join(f"`{w['skill']}` ({w['l0_lines']}/{w['l0_cap']} lines)" for w in over_cap)
             lines.append(
-                f"- [ ] **L0 Budget Trim (`S3_skill_health`)**: Progressive-disclosure split for {over_desc} "
+                f"- **L0 Budget Trim (`S3_skill_health`)**: Progressive-disclosure split for {over_desc} "
                 "and verify via `python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`."
             )
     if s6_rows:
@@ -404,7 +428,7 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
             for r in s6_rows[:3]
         )
         lines.append(
-            f"- [ ] **Script Touch Wiring (`S6_load_vs_script`)**: Convert prose-only instructions into deterministic CLI invocations for {top_unp}."
+            f"- **Script Touch Wiring (`S6_load_vs_script`)**: Convert prose-only instructions into deterministic CLI invocations for {top_unp}."
         )
     if s9_rows:
         top_esc = ", ".join(
@@ -412,22 +436,22 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
             for r in s9_rows[:3]
         )
         lines.append(
-            f"- [ ] **Escape Sink (`S9_escape_attribution`)**: Sink recurring review escapes into Valve 1 scripts & `eval-cases.json` for {top_esc}."
+            f"- **Escape Sink (`S9_escape_attribution`)**: Sink recurring review escapes into Valve 1 scripts & `eval-cases.json` for {top_esc}."
         )
     eval_effect = summary.get("eval_effect") or {}
     if eval_effect.get("interceptions_7d") or eval_effect.get("escapes_7d"):
         lines.append(
-            f"- [ ] **Eval Gate Effect (`S2_gate_catch`)**: Review `{eval_effect.get('interceptions_7d', 0)}` interceptions versus "
+            f"- **Eval Gate Effect (`S2_gate_catch`)**: Review `{eval_effect.get('interceptions_7d', 0)}` interceptions versus "
             f"`{eval_effect.get('escapes_7d', 0)}` escapes across eval cases."
         )
     if summary.get("empty_load_rate") is not None:
         lines.append(
-            f"- [ ] **Empty-load reduction (`B1`)**: Reduce loads with no references, scripts, or edits from "
+            f"- **Empty-load reduction (`B1`)**: Reduce loads with no references, scripts, or edits from "
             f"`{_pct(summary.get('empty_load_rate'))}`."
         )
     if s12_rows:
         top_burn = ", ".join(f"`{r['tool_name']}` (p95={r.get('p95_tokens')} tok)" for r in s12_rows[:2])
-        lines.append(f"- [ ] **Tool Context Burn (`S12`)**: Bound output size on {top_burn}.")
+        lines.append(f"- **Tool Context Burn (`S12`)**: Bound output size on {top_burn}.")
 
     lines.extend(
         [
@@ -441,7 +465,62 @@ def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | Non
             "```",
         ]
     )
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines)
+
+
+def build_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None = None) -> str:
+    """Build Dual-Zone compliant Multica issue body via `issue-brief` contract."""
+    issue_brief = _load_issue_brief()
+    summary = snapshot.get("summary") or {}
+    findings = snapshot.get("top_findings") or []
+    dedup_key = str(snapshot.get("dedup_key") or f"skills-roi-autopilot-{snapshot.get('collected_date') or 'today'}")
+    actionable_count = int(summary.get("actionable_skills_count") or len(findings))
+
+    skill_names = [f"`{item.get('skill')}`" for item in findings[:3] if item.get("skill")]
+    if skill_names:
+        focus_txt = "、".join(skill_names)
+        tldr = (
+            f"今日技能巡检共发现 {actionable_count} 个待治理技能，返工与空读损耗主要集中在 "
+            f"{focus_txt}，勾选对应项后即可由后台总控自动加锁修复。"
+        )
+    else:
+        tldr = "今日技能效能巡检整体健康，未发现需要紧急返工治理的低效技能。"
+
+    human_items: list[dict[str, Any]] = []
+    for item in findings[:3]:
+        sk = str(item.get("skill") or "").strip()
+        if not sk:
+            continue
+        human_items.append(
+            {
+                "what": f"为 `{sk}` 补齐确定性防呆门禁",
+                "why": _plain_chinese_reason_for_skill(item).rstrip("。"),
+            }
+        )
+    if not human_items:
+        human_items.append(
+            {
+                "what": "保持现有技能结构门禁与回归巡检",
+                "why": "当前无高频返工热点，仅需维持日常零成本自动巡检",
+            }
+        )
+
+    ai_context_md = _build_ai_evidence_markdown(snapshot, agent_analysis=agent_analysis)
+    rendered = issue_brief.render_dual_zone_issue(
+        tldr=tldr,
+        items=human_items,
+        cursor=dedup_key,
+        extra_comments=[f"<!-- multica-skills-autopilot:{dedup_key} -->"],
+        ai_context_md=ai_context_md,
+    )
+    verification = issue_brief.verify_dual_zone_issue(rendered)
+    if not verification["ok"]:
+        raise ValueError(f"Dual-Zone issue verification failed: {verification['violations']}")
+    return rendered
+
+
+def render_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None = None) -> str:
+    return build_issue_markdown(snapshot, agent_analysis=agent_analysis)
 
 
 def _default_multica_runner(
@@ -498,6 +577,8 @@ def file_actionable_issue(
     server_url: str = DEFAULT_SERVER_URL,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     allow_duplicate: bool = False,
+    refresh_existing: bool = False,
+    update_issue_id: str | None = None,
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     multica_bin: str | None = None,
@@ -505,9 +586,13 @@ def file_actionable_issue(
     issue_title = (title or snapshot.get("default_issue_title") or build_issue_title(snapshot)).strip()
     if "[P3" not in issue_title and "Priority 3" not in issue_title:
         issue_title = f"[P3 / Priority 3] {issue_title}"
-    description = render_issue_markdown(snapshot, agent_analysis=analysis_markdown)
+    description = build_issue_markdown(snapshot, agent_analysis=analysis_markdown)
+    verification = _load_issue_brief().verify_dual_zone_issue(description)
+    if not verification["ok"]:
+        raise ValueError(f"Dual-Zone issue verification failed before Multica publish: {verification['violations']}")
     dedup_key = str(snapshot.get("dedup_key") or "")
     dedup_marker = f"multica-skills-autopilot:{dedup_key}" if dedup_key else ""
+    cursor_marker = f"multica-cursor:{dedup_key}" if dedup_key else ""
 
     if dry_run:
         return {
@@ -519,6 +604,42 @@ def file_actionable_issue(
             "status": status,
             "assignee_id": assignee_id,
             "description": description,
+            "dual_zone_verification": verification,
+        }
+
+    if update_issue_id:
+        upd_proc = runner(
+            [
+                "issue",
+                "update",
+                update_issue_id,
+                "--title",
+                issue_title,
+                "--description-stdin",
+                "--priority",
+                priority,
+                "--assignee-id",
+                assignee_id,
+                "--status",
+                status,
+                "--no-start",
+                "--output",
+                "json",
+            ],
+            stdin_text=description,
+            multica_bin=multica_bin,
+            server_url=server_url,
+            workspace_id=workspace_id,
+        )
+        updated = _parse_json_stdout(upd_proc, "issue update")
+        return {
+            "ok": True,
+            "action": "updated_existing",
+            "dedup_key": dedup_key,
+            "priority": priority,
+            "status": status,
+            "assignee_id": assignee_id,
+            "issue": updated,
         }
 
     if not allow_duplicate:
@@ -547,7 +668,35 @@ def file_actionable_issue(
                 continue
             ex_title = str(existing.get("title") or "")
             ex_desc = str(existing.get("description") or "")
-            if ex_title == issue_title or (dedup_marker and dedup_marker in ex_desc):
+            if ex_title == issue_title or (dedup_marker and dedup_marker in ex_desc) or (cursor_marker and cursor_marker in ex_desc):
+                if refresh_existing and (existing.get("id") or existing.get("identifier")):
+                    target_id = str(existing.get("id") or existing.get("identifier"))
+                    upd_proc = runner(
+                        [
+                            "issue",
+                            "update",
+                            target_id,
+                            "--title",
+                            issue_title,
+                            "--description-stdin",
+                            "--priority",
+                            priority,
+                            "--no-start",
+                            "--output",
+                            "json",
+                        ],
+                        stdin_text=description,
+                        multica_bin=multica_bin,
+                        server_url=server_url,
+                        workspace_id=workspace_id,
+                    )
+                    updated = _parse_json_stdout(upd_proc, "issue update")
+                    return {
+                        "ok": True,
+                        "action": "refreshed_existing",
+                        "dedup_key": dedup_key,
+                        "issue": updated,
+                    }
                 return {
                     "ok": True,
                     "action": "deduplicated_existing",
@@ -832,6 +981,8 @@ def run_once_pipeline(
     server_url: str = DEFAULT_SERVER_URL,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     allow_duplicate: bool = False,
+    refresh_existing: bool = False,
+    update_issue_id: str | None = None,
     dry_run: bool = False,
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
@@ -880,6 +1031,8 @@ def run_once_pipeline(
         server_url=server_url,
         workspace_id=workspace_id,
         allow_duplicate=allow_duplicate,
+        refresh_existing=refresh_existing,
+        update_issue_id=update_issue_id,
         dry_run=dry_run,
         runner=runner,
         multica_bin=multica_bin,
@@ -923,6 +1076,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_issue.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
     p_issue.add_argument("--multica-bin", default=None)
     p_issue.add_argument("--allow-duplicate", action="store_true")
+    p_issue.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
+    p_issue.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
     p_issue.add_argument("--dry-run", action="store_true")
 
     p_setup = sub.add_parser("setup-autopilot", help="Idempotently configure NAS Multica Autopilot & daily schedule trigger.")
@@ -958,6 +1113,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--magpie-usage", type=Path, default=None)
     p_run.add_argument("--dsh-sessions", type=Path, default=None)
     p_run.add_argument("--allow-duplicate", action="store_true")
+    p_run.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
+    p_run.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
     p_run.add_argument("--dry-run", action="store_true")
 
     return parser
@@ -1010,6 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
             server_url=ns.server_url,
             workspace_id=ns.workspace_id,
             allow_duplicate=ns.allow_duplicate,
+            refresh_existing=ns.refresh_existing,
+            update_issue_id=ns.update_issue_id,
             dry_run=ns.dry_run,
             multica_bin=ns.multica_bin,
         )
@@ -1047,6 +1206,8 @@ def main(argv: list[str] | None = None) -> int:
             server_url=ns.server_url,
             workspace_id=ns.workspace_id,
             allow_duplicate=ns.allow_duplicate,
+            refresh_existing=ns.refresh_existing,
+            update_issue_id=ns.update_issue_id,
             dry_run=ns.dry_run,
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
