@@ -1,0 +1,69 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "knowledge-digest",
+  "updated": "2026-11-19",
+  "trigger_evals": [
+    {
+      "query": "帮我讲懂零知识证明并沉淀这个知识点到 knowledge-vault",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "拆解这篇科普视频脚本的痛点问答与制作技巧 knowledge digest",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "save this GitHub CLI repository to collected-tools for later",
+      "should_trigger": false,
+      "near_miss_skill": "save-tool"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "digest_vault.py exposes precheck-card and reconcile-state CLI subcommands",
+      "tags": [
+        "cli",
+        "guardrail"
+      ],
+      "cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "precheck-card",
+        "reconcile-state",
+        "archive",
+        "discover-topics"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "knowledge-digest L0 wires precheck-card, reconcile-state, and eval-cases.json",
+      "tags": [
+        "contract",
+        "vault"
+      ],
+      "file": "skills/knowledge-digest/SKILL.md",
+      "must_contain": [
+        "precheck-card",
+        "reconcile-state",
+        "[eval-cases.json](references/eval-cases.json)",
+        "topic-ledger.json",
+        "design-studio"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "precheck-card rejects missing card file",
+      "tags": [
+        "negative",
+        "precheck-card"
+      ],
+      "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py precheck-card --file /nonexistent-tia2-card.md",
+      "expect_fail_exit": 1,
+      "registered_at": "2026-11-19"
+    }
+  ]
+}

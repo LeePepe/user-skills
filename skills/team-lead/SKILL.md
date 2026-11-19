@@ -64,7 +64,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 - **R7 执行前一致性**：确认 `Owned Paths`、接口与验证命令真实可运行。
 - **R8 状态机与租约**：Task `planned → ready → in_progress → done`（或 `in_review → changes_requested → in_progress`，可转 `blocked`／`cancelled`）；Goal `planning → in_progress → accepting → done`。租约超时按 git 状态＋R10 回执对账后接手。
 - **R9 本地 `keep / drop` 与单出口交付**：串行 Tasks 同分支连续 commit；并发子 Worktree 验证后本地 `keep` 合回并清理（失败分支 `drop`），整个 Goal 统一提 1 个 PR。
-- **R10 回执对账 & R11 只读探查**：R10 记录 commit SHA、验证结果与实际模型；`>8` 文件高噪声搜索派只读 `Explorer` 附 `file:line` 回报。
+- **R10 回执对账、Pre-Review 防呆门禁 & R11 只读探查**：R10 记录 commit SHA、验证结果与实际模型；派 `Reviewer` 前须跑 `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree <wt> --brief <brief.md> [--receipt <r10.md>]`（拦截越界文件、个人路径／密钥泄漏、未提交改动与残缺 R10，评测集见 [`eval-cases.json`](references/eval-cases.json)）；`>8` 文件高噪声搜索派只读 `Explorer` 附 `file:line` 回报。
 - **角色绑定与交接**：每次只沟通一层 Agent；Bot 只管 Goal TL 唤醒、解卡与 `GOAL_DONE` 关窗（保留 Worktree 不阻断关窗），TL 独占下属派发与回收；新 `Steering` 接手先按 R10、台账与 git 状态对账。
 
 ## 限定审查

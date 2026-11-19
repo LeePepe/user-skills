@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
+import fnmatch
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
+import subprocess
+import sys
 from typing import Any, Mapping, Sequence
 
 
@@ -536,3 +541,438 @@ def attach_task_mapping(task: dict[str, Any], mapping: dict[str, Any]) -> None:
         }
         for item in mapping["acceptance_mapping"]
     ]
+
+
+_PERSONAL_HOME_RE = re.compile(r"(?:/" + r"Users|/home)/[A-Za-z0-9._-]+")
+_TOKEN_LEAK_RE = re.compile(
+    r"(?:ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|"
+    r"lin_api_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{16,})"
+)
+_BRIEF_OWNED_HDR_RE = re.compile(r"(?i)^(?:#{1,6}\s*|[-*+]\s*(?:\*\*)?)owned\s+paths(?:\*\*)?\b(.*)$")
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+
+
+def extract_owned_paths_from_brief(brief_text: str) -> list[str]:
+    """Extract repo-relative Owned Paths patterns from a Markdown task brief."""
+    owned: list[str] = []
+    lines = brief_text.splitlines()
+    in_owned = False
+    base_indent = 0
+    for line in lines:
+        stripped = line.strip()
+        hdr_match = _BRIEF_OWNED_HDR_RE.match(stripped)
+        if hdr_match:
+            in_owned = True
+            base_indent = len(line) - len(line.lstrip(" "))
+            for token in _BACKTICK_RE.findall(hdr_match.group(1)):
+                norm = _normalize_owned_token(token)
+                if norm and norm not in owned:
+                    owned.append(norm)
+            continue
+        if not in_owned:
+            continue
+        if stripped.startswith("#"):
+            break
+        indent = len(line) - len(line.lstrip(" "))
+        if stripped and re.match(r"^[-*+]\s+\*\*[^*]+\*\*\s*:", stripped) and indent <= base_indent:
+            break
+        if not stripped:
+            continue
+        tokens = _BACKTICK_RE.findall(stripped)
+        if not tokens and re.match(r"^[-*+]\s+\S+", stripped):
+            raw_item = re.sub(r"^[-*+]\s+", "", stripped).split()[0].strip(",;:")
+            tokens = [raw_item]
+        for token in tokens:
+            norm = _normalize_owned_token(token)
+            if norm and norm not in owned:
+                owned.append(norm)
+    return owned
+
+
+def _normalize_owned_token(raw: str) -> str:
+    token = raw.strip().strip("\"'").lstrip("./")
+    if not token or " " in token or token.startswith(("-", "http://", "https://", "~/")):
+        return ""
+    # Skip GitHub owner/repo slugs like `LeePepe/user-skills` in Owned Paths headers.
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", token) and "." not in token.split("/", 1)[0]:
+        first_seg = token.split("/", 1)[0]
+        if first_seg[0].isupper() or "-" in token.split("/", 1)[1] and "." not in token.split("/", 1)[1]:
+            if first_seg not in {"skills", "scripts", "references", "tests", "docs", "src", "apps", "packages"}:
+                return ""
+    if "/" not in token and "." not in token and "*" not in token:
+        return ""
+    return token.rstrip("/") if not token.endswith("/**") else token
+
+
+def _matches_owned_path(rel_path: str, owned_patterns: Sequence[str]) -> bool:
+    norm_file = PurePosixPath(rel_path.lstrip("./")).as_posix()
+    for raw_pat in owned_patterns:
+        pat = raw_pat.strip().lstrip("./")
+        if not pat:
+            continue
+        if pat.endswith("/**"):
+            prefix = pat[:-3].rstrip("/")
+            if norm_file == prefix or norm_file.startswith(prefix + "/"):
+                return True
+        if pat.endswith("/*"):
+            prefix = pat[:-2].rstrip("/")
+            if PurePosixPath(norm_file).parent.as_posix() == prefix:
+                return True
+        if norm_file == pat or norm_file.startswith(pat.rstrip("/") + "/"):
+            return True
+        if fnmatch.fnmatchcase(norm_file, pat):
+            return True
+    return False
+
+
+def _clean_receipt_value(raw: str) -> str:
+    return raw.strip().strip("*`'\"").strip()
+
+
+_PLACEHOLDER_VALS = {"n/a", "na", "none", "null", "unknown", "tbd", "todo", "-", "—"}
+
+
+def _is_populated_token(val: str) -> bool:
+    cleaned = _clean_receipt_value(val)
+    return bool(cleaned) and cleaned.lower() not in _PLACEHOLDER_VALS
+
+
+def validate_r10_receipt(receipt_text: str) -> list[str]:
+    """Check required R10 receipt sections/fields (real Commit SHA, actual Role + Model, non-empty Verification/V5)."""
+    violations: list[str] = []
+    sha_match = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+        receipt_text,
+    )
+    sha_val = _clean_receipt_value(sha_match.group(1)) if sha_match else ""
+    if not re.search(r"\b[0-9a-f]{7,40}\b", sha_val, re.IGNORECASE):
+        violations.append("missing_receipt_commit_sha: R10 receipt must record a real 7-40 hex Commit SHA")
+
+    has_role = False
+    has_model = False
+    combined_rm = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?role\s*/\s*model(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+        receipt_text,
+    )
+    if combined_rm:
+        raw_rm = combined_rm.group(1).strip()
+        if "/" in raw_rm:
+            role_part, model_part = raw_rm.split("/", 1)
+            if _is_populated_token(role_part):
+                has_role = True
+            if _is_populated_token(model_part):
+                has_model = True
+    if not has_role:
+        role_only = re.search(
+            r"(?im)^[\s>*-]*(?:\*\*)?(?:role|agent)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+            receipt_text,
+        )
+        if role_only and _is_populated_token(role_only.group(1)):
+            has_role = True
+    if not has_model:
+        model_only = re.search(
+            r"(?im)^[\s>*-]*(?:\*\*)?(?:resolved_model|model)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+            receipt_text,
+        )
+        if model_only and _is_populated_token(model_only.group(1)):
+            has_model = True
+    if not (has_role and has_model):
+        violations.append(
+            "missing_receipt_role_or_model: R10 receipt must record both a non-empty Role and an actual Model value"
+        )
+
+    has_verif_value = False
+    v5_line = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?(?:v5(?:\s+verdict)?|verdict|verification(?:\s+commands?)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+        receipt_text,
+    )
+    if v5_line:
+        v5_val = _clean_receipt_value(v5_line.group(1))
+        if v5_val and v5_val.lower() not in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
+            has_verif_value = True
+    if not has_verif_value:
+        sec_match = re.search(
+            r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)",
+            receipt_text,
+        )
+        if sec_match:
+            sec_lines = [
+                ln.strip()
+                for ln in sec_match.group(1).splitlines()
+                if ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
+            ]
+            if sec_lines:
+                has_verif_value = True
+    if not has_verif_value:
+        violations.append(
+            "missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result"
+        )
+    return violations
+
+
+def run_pre_review_check(
+    *,
+    worktree: Path,
+    brief_path: Path,
+    receipt_path: Path | None = None,
+    base_ref: str | None = None,
+    allow_dirty: bool = False,
+) -> dict[str, Any]:
+    """Deterministic pre-review gate catching recurring R1 Writer failures before Reviewer dispatch."""
+    wt = worktree.expanduser().resolve()
+    brief = brief_path.expanduser().resolve()
+    violations: list[dict[str, Any]] = []
+
+    if not wt.is_dir():
+        return {"ok": False, "violations": [{"code": "missing_worktree", "detail": str(wt)}]}
+    if not brief.is_file():
+        return {"ok": False, "violations": [{"code": "missing_brief", "detail": str(brief)}]}
+
+    owned_paths = extract_owned_paths_from_brief(brief.read_text(encoding="utf-8"))
+    if not owned_paths:
+        violations.append({
+            "code": "empty_owned_paths",
+            "detail": f"No Owned Paths parsed from {brief}",
+        })
+
+    status_proc = subprocess.run(
+        ["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status_proc.returncode != 0:
+        return {
+            "ok": False,
+            "violations": [{"code": "invalid_git_worktree", "detail": status_proc.stderr.strip() or str(wt)}],
+        }
+    dirty_tracked = [
+        line[3:].strip()
+        for line in status_proc.stdout.splitlines()
+        if line.strip()
+    ]
+    if dirty_tracked and not allow_dirty:
+        violations.append({
+            "code": "dirty_tracked_worktree",
+            "files": dirty_tracked,
+            "detail": "Tracked modifications must be committed before Reviewer dispatch",
+        })
+
+    head_probe = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head_probe.returncode != 0:
+        violations.append({
+            "code": "unverified_head_commit",
+            "detail": head_probe.stderr.strip() or "Worktree has no verifiable HEAD commit",
+        })
+
+    resolved_base: str | None = None
+    if base_ref:
+        explicit_probe = subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if explicit_probe.returncode != 0:
+            violations.append({
+                "code": "invalid_base_ref",
+                "base_ref": base_ref,
+                "detail": explicit_probe.stderr.strip() or f"Explicit --base-ref '{base_ref}' cannot be resolved",
+            })
+        else:
+            mb = subprocess.run(
+                ["git", "-C", str(wt), "merge-base", base_ref, "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if mb.returncode != 0 or not mb.stdout.strip():
+                violations.append({
+                    "code": "invalid_base_ref",
+                    "base_ref": base_ref,
+                    "detail": mb.stderr.strip() or f"Cannot compute merge-base between '{base_ref}' and HEAD",
+                })
+            else:
+                resolved_base = mb.stdout.strip()
+    else:
+        head_sha = head_probe.stdout.strip() if head_probe.returncode == 0 else ""
+        for candidate in ("origin/main", "main", "HEAD~1"):
+            probe = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if probe.returncode != 0:
+                continue
+            cand_sha = probe.stdout.strip()
+            if candidate in {"origin/main", "main"} and cand_sha == head_sha:
+                continue
+            mb = subprocess.run(
+                ["git", "-C", str(wt), "merge-base", candidate, "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if mb.returncode == 0 and mb.stdout.strip():
+                resolved_base = mb.stdout.strip()
+                break
+        if not resolved_base:
+            violations.append({
+                "code": "unresolvable_base_ref",
+                "detail": "Could not resolve any valid git comparison base (origin/main, main, or HEAD~1)",
+            })
+
+    changed_files: list[str] = []
+    combined_diff_parts: list[str] = []
+    if resolved_base and head_probe.returncode == 0:
+        diff_names = subprocess.run(
+            ["git", "-C", str(wt), "--no-pager", "diff", "--name-only", f"{resolved_base}..HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff_names.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": diff_names.stderr.strip() or f"git diff --name-only {resolved_base}..HEAD failed",
+            })
+        else:
+            changed_files.extend(
+                f.strip() for f in diff_names.stdout.splitlines() if f.strip()
+            )
+
+        diff_proc = subprocess.run(
+            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", f"{resolved_base}..HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff_proc.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": diff_proc.stderr.strip() or f"git diff --unified=0 {resolved_base}..HEAD failed",
+            })
+        else:
+            combined_diff_parts.append(diff_proc.stdout or "")
+
+    for df in dirty_tracked:
+        if df not in changed_files:
+            changed_files.append(df)
+
+    if owned_paths and changed_files:
+        outside = [f for f in changed_files if not _matches_owned_path(f, owned_paths)]
+        if outside:
+            violations.append({
+                "code": "outside_owned_paths",
+                "files": outside,
+                "owned_paths": owned_paths,
+                "detail": "Modified tracked files fall outside brief Owned Paths",
+            })
+
+    if head_probe.returncode == 0:
+        working_diff_proc = subprocess.run(
+            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if working_diff_proc.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": working_diff_proc.stderr.strip() or "git diff --unified=0 HEAD failed",
+            })
+        else:
+            combined_diff_parts.append(working_diff_proc.stdout or "")
+
+    combined_diff = "\n".join(combined_diff_parts)
+    current_file = ""
+    leaked_paths: list[str] = []
+    leaked_tokens: list[str] = []
+    for raw_line in combined_diff.splitlines():
+        if raw_line.startswith("+++ b/"):
+            current_file = raw_line[6:].strip()
+            continue
+        if not raw_line.startswith("+") or raw_line.startswith("+++"):
+            continue
+        added_line = raw_line[1:]
+        if _PERSONAL_HOME_RE.search(added_line):
+            leaked_paths.append(f"{current_file}: {added_line.strip()[:120]}")
+        if _TOKEN_LEAK_RE.search(added_line):
+            leaked_tokens.append(f"{current_file}: [REDACTED_SECRET_PATTERN]")
+
+    if leaked_paths:
+        violations.append({
+            "code": "hardcoded_personal_path",
+            "matches": leaked_paths[:20],
+            "detail": "Hardcoded personal home directory paths found in added lines",
+        })
+    if leaked_tokens:
+        violations.append({
+            "code": "leaked_secret_token",
+            "matches": leaked_tokens[:20],
+            "detail": "Secret/token pattern detected in added lines",
+        })
+
+    if receipt_path is not None:
+        rcpt = receipt_path.expanduser().resolve()
+        if not rcpt.is_file():
+            violations.append({
+                "code": "missing_receipt_file",
+                "detail": f"R10 receipt file does not exist: {rcpt}",
+            })
+        else:
+            for msg in validate_r10_receipt(rcpt.read_text(encoding="utf-8")):
+                code, _, detail = msg.partition(": ")
+                violations.append({"code": code, "detail": detail or msg})
+
+    return {
+        "ok": len(violations) == 0,
+        "worktree": str(wt),
+        "brief": str(brief),
+        "receipt": str(receipt_path.expanduser().resolve()) if receipt_path is not None else None,
+        "base_ref": resolved_base,
+        "owned_paths": owned_paths,
+        "changed_files": changed_files,
+        "violations": violations,
+    }
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Feedback manifest & pre-review deterministic guardrails")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_pre = sub.add_parser(
+        "pre-review-check",
+        help="Validate Owned Paths, clean git status, personal path/token leaks, and R10 receipt headers",
+    )
+    p_pre.add_argument("--worktree", required=True, type=Path, help="Target git worktree directory")
+    p_pre.add_argument("--brief", required=True, type=Path, help="Task brief markdown declaring Owned Paths")
+    p_pre.add_argument("--receipt", type=Path, default=None, help="Optional R10 receipt markdown file")
+    p_pre.add_argument("--base-ref", default=None, help="Optional git base ref (defaults to merge-base with origin/main)")
+    p_pre.add_argument("--allow-dirty", action="store_true", help="Allow uncommitted tracked changes during local self-check")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_cli_parser().parse_args(argv)
+    if args.command == "pre-review-check":
+        report = run_pre_review_check(
+            worktree=args.worktree,
+            brief_path=args.brief,
+            receipt_path=args.receipt,
+            base_ref=args.base_ref,
+            allow_dirty=args.allow_dirty,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["ok"] else 1
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

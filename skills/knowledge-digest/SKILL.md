@@ -89,7 +89,7 @@ user-invocable: true
 2. **按层落盘文件与 0-Token 归档**（文件名采用 kebab-case，骨架见 [templates.md](references/templates.md)，完整 L2 抽屉见 [card-templates.json](references/card-templates.json)）：
    - **纯概念学习（通道 A）**：写入 `concepts/<topic-slug>.md`；
    - **好内容/脚本拆解（通道 B）**：原始素材存 `raw/<source-slug>.md`，概念卡存 `concepts/<concept-slug>.md`，制作技巧存 `craft/<craft-slug>.md`；
-   - **一键归档与索引同步**：调用 `python3 skills/knowledge-digest/scripts/digest_vault.py archive --slug <slug> --category <cat> --title "..." --file <md>` 自动归档并幂等更新 `index.md`。
+   - **一键预检、归档与状态对账**：落盘前后调用 `python3 skills/knowledge-digest/scripts/digest_vault.py precheck-card --file <md> [--require-index]` 校验三段骨架、索引与 `no-auto-sync-design-studio` 隔离红线，再用 `archive --slug <slug> --category <cat> --title "..." --file <md>` 归档更新 `index.md`；若 `topic-ledger.json` 已 `learned` 而 `learning-topics-state.json`/`proposals.jsonl` 仍残留 `pending`，运行 `reconcile-state [--apply]` 对齐。
 3. **审批与发布分离**：`handle-learning-event --action <Approve|快速学习|深度调研|Done|Dismiss|Snooze|Star|sync_triage> --topic-key <key> --event-id <id>` 在共享锁内幂等记录 Owner 决定；`sync_triage` 仅 transferred，不是批准；Done 为 owner_reported，Dismiss 不自动复活，Snooze 延后 7 天。`learning-topic://<topic-key>` 的 Approve 只授权后台探索；探索完成后仍需显式归档/发布授权。Star 不会自动写卡、发 Blog 或同步 `design-studio`。已存在且明确授权的 `knowledge://<slug>` learned card 仍可按既有发布流程调用 `publish-blog`。
 4. **工程与设计晋升需独立授权（Entry A1 -> Tier 1..3）**：归档不授权自动同步 `design-studio` 或 `my-designer`。仅在 Owner 明确批准设计素材晋升后读取 [`../my-designer/references/design-flow-architecture.md`](../my-designer/references/design-flow-architecture.md) 的「Change Impact Matrix」，按双入口防爆架构提升可复用原语、灵感卡与规则，再运行 `python3 skills/my-designer/scripts/verify_design_cases.py flow-map`。
 5. **简短回报**：向用户展示讲解内容，并在末尾用 1–2 行告知已沉淀的卡片路径（及若触发工程与设计钩子时同步更新的 Tier 1–3 资产 ID）。
@@ -98,6 +98,6 @@ user-invocable: true
 
 ## References
 
-- [templates.md](references/templates.md) & [card-templates.json](references/card-templates.json) — `concepts/`、`craft/`、`thoughts/`、`raw/` 与 `index.md` 的标准骨架及 L2 模板抽屉。
-- [digest_vault.py](scripts/digest_vault.py) — `archive`、`discover-topics --no-materialize`（候选对账与配额门禁）、`handle-learning-event`（Owner 审批状态机）与 `publish-blog`（`DC-006..008` 校验）CLI。
+- [templates.md](references/templates.md), [card-templates.json](references/card-templates.json) & [eval-cases.json](references/eval-cases.json) — `concepts/`、`craft/`、`thoughts/`、`raw/`、`index.md` 骨架与零 Token 回归抽屉。
+- [digest_vault.py](scripts/digest_vault.py) — `precheck-card`、`archive`、`reconcile-state`、`discover-topics --no-materialize`（候选对账与配额门禁）、`handle-learning-event`（Owner 审批状态机）与 `publish-blog`（`DC-006..008` 校验）CLI。
 - [../my-designer/references/design-flow-architecture.md](../my-designer/references/design-flow-architecture.md) — `Entry A (Ingest) ⇄ Tier 0..3 ⇄ Entry B (Design)` 双入口知识流转与 4 道防信息爆炸物理阀门真源。

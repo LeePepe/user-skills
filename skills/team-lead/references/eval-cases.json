@@ -1,0 +1,79 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "team-lead",
+  "updated": "2026-11-19",
+  "trigger_evals": [
+    {
+      "query": "plan and execute a multi-task feature Goal with Steering Writer Reviewer and PR delivery",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "implement bug fix in isolated worktree with pre-review-check and ci-monitor.py",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "save this GitHub tool repository for later reading",
+      "should_trigger": false,
+      "near_miss_skill": "save-tool"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "feedback_guard.py exposes pre-review-check CLI subcommand",
+      "tags": [
+        "cli",
+        "pre-review-check"
+      ],
+      "cmd": "python3 skills/team-lead/scripts/feedback_guard.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "pre-review-check"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "herdr-dispatch.sh baseline allowlist includes /opt/homebrew and /Volumes/SSD",
+      "tags": [
+        "herdr",
+        "allowlist"
+      ],
+      "file": "skills/team-lead/scripts/herdr-dispatch.sh",
+      "must_contain": [
+        "/opt/homebrew",
+        "/Volumes/SSD",
+        "BASELINE_ADD_DIRS"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "team-lead L0 wires pre-review-check and eval-cases.json",
+      "tags": [
+        "contract",
+        "r10"
+      ],
+      "file": "skills/team-lead/SKILL.md",
+      "must_contain": [
+        "pre-review-check",
+        "[`eval-cases.json`](references/eval-cases.json)",
+        "ci-monitor.py"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "pre-review-check rejects missing worktree path",
+      "tags": [
+        "negative",
+        "pre-review-check"
+      ],
+      "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree /nonexistent-tia2-wt --brief /nonexistent-tia2-brief.md",
+      "expect_fail_exit": 1,
+      "registered_at": "2026-11-19"
+    }
+  ]
+}

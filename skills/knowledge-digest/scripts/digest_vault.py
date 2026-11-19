@@ -2831,6 +2831,247 @@ def publish_blog(
     }
 
 
+_KD_AUTO_DESIGN_SYNC_RE = re.compile(
+    r"(?i)(?:自动同步|auto[-_\s]?sync)[^\n。；;!?！？]{0,60}design-studio|"
+    r"design-studio[^\n。；;!?！？]{0,60}(?:自动同步|auto[-_\s]?sync)"
+)
+_KD_NEGATION_RE = re.compile(
+    r"(?i)(?:永不|禁止|严禁|不自动|不得|不会自动|不授权自动|never|must\s+not|do\s+not|don't|cannot|not\s+auto)"
+)
+_KD_CLAUSE_SPLIT_RE = re.compile(
+    r"[。；;！!？?\n]+|(?:\.(?=\s|$))|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:design-studio|knowledge-vault|自动同步|auto[-_\s]?sync|并且|而且|同时|and\b|but\b|then\b)))",
+    re.IGNORECASE,
+)
+
+
+def precheck_card(
+    *,
+    file_path: Path,
+    folder: str | None = None,
+    vault_dir: Path | None = None,
+    require_index: bool = False,
+) -> dict[str, Any]:
+    """Deterministically validate required card sections, frontmatter, index registration, and no-auto-sync-design-studio."""
+    resolved = file_path.expanduser().resolve()
+    if not resolved.is_file():
+        return {"ok": False, "file": str(resolved), "violations": [{"code": "missing_card_file", "detail": str(resolved)}]}
+
+    raw_md = resolved.read_text(encoding="utf-8")
+    meta, body = parse_frontmatter(raw_md)
+    violations: list[dict[str, str]] = []
+
+    eff_folder = folder
+    if eff_folder is None:
+        parent_name = resolved.parent.name
+        if parent_name in {"concepts", "craft", "thoughts", "raw"}:
+            eff_folder = parent_name
+        else:
+            eff_folder = infer_folder(str(meta.get("category") or ""), None)
+
+    for req_fm in ("title", "category", "updated"):
+        if not str(meta.get(req_fm) or "").strip():
+            violations.append({
+                "code": "missing_frontmatter_field",
+                "field": req_fm,
+                "detail": f"Card frontmatter is missing required field '{req_fm}'",
+            })
+
+    if eff_folder == "concepts":
+        section_checks = (
+            ("tldr_section", re.compile(r"(?im)^##\s+.*(?:一句话本质|TL;DR)")),
+            ("pain_point_qa_section", re.compile(r"(?im)^##\s+.*(?:核心痛点(?:直答|问答)|Pain-Point\s+Q&A|FAQ)")),
+            ("actionable_checklist_section", re.compile(r"(?im)^##\s+.*(?:立即可用清单|Actionable\s+Checklist)")),
+        )
+        for sec_code, sec_re in section_checks:
+            if not sec_re.search(body):
+                violations.append({
+                    "code": "missing_card_section",
+                    "section": sec_code,
+                    "detail": f"Concept card is missing required section '{sec_code}'",
+                })
+    elif eff_folder == "craft":
+        if not re.compile(r"(?im)^##\s+.*(?:一句话公式|TL;DR)").search(body):
+            violations.append({
+                "code": "missing_card_section",
+                "section": "tldr_formula_section",
+                "detail": "Craft card is missing TL;DR formula section",
+            })
+
+    if str(meta.get("auto_sync_design_studio") or "").strip().lower() in {"true", "1", "yes"}:
+        violations.append({
+            "code": "design_studio_auto_sync_violation",
+            "detail": "auto_sync_design_studio=true violates knowledge-vault -> design-studio isolation boundary",
+        })
+    for line_no, line in enumerate(raw_md.splitlines(), 1):
+        for raw_clause in _KD_CLAUSE_SPLIT_RE.split(line):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+            m_sync = _KD_AUTO_DESIGN_SYNC_RE.search(clause)
+            if m_sync:
+                neg_window = clause[max(0, m_sync.start() - 24):m_sync.end()]
+                if not _KD_NEGATION_RE.search(neg_window):
+                    violations.append({
+                        "code": "design_studio_auto_sync_violation",
+                        "line": str(line_no),
+                        "detail": "Card claims automatic sync to design-studio without explicit Owner promotion gate",
+                    })
+
+    rel_path = f"{eff_folder}/{resolved.name}"
+    eff_vault = vault_dir.expanduser().resolve() if vault_dir is not None else None
+    if eff_vault is None and resolved.parent.name in {"concepts", "craft", "thoughts", "raw"}:
+        eff_vault = resolved.parent.parent
+    indexed = False
+    if eff_vault is not None and (eff_vault / "index.md").is_file():
+        idx_text = (eff_vault / "index.md").read_text(encoding="utf-8", errors="ignore")
+        indexed = f"({rel_path})" in idx_text
+    if require_index and not indexed:
+        violations.append({
+            "code": "missing_index_registration",
+            "rel_path": rel_path,
+            "detail": f"Card '{rel_path}' is not registered in index.md",
+        })
+
+    return {
+        "ok": len(violations) == 0,
+        "file": str(resolved),
+        "folder": eff_folder,
+        "rel_path": rel_path,
+        "indexed": indexed,
+        "violations": violations,
+    }
+
+
+def reconcile_learning_state(
+    *,
+    vault_dir: Path = DEFAULT_VAULT_DIR,
+    proposals_path: Path = DEFAULT_PROPOSALS_PATH,
+    state_path: Path | None = None,
+    topic_ledger_path: Path | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Detect and optionally repair learned topics in topic-ledger.json that remain pending/proposed in state or proposals."""
+    eff_vault = vault_dir.expanduser().resolve()
+    eff_proposals = proposals_path.expanduser().resolve()
+    eff_state = _resolve_state_path(eff_proposals, state_path.expanduser().resolve() if state_path else None, eff_vault)
+    ledger_entries = _load_topic_ledger(eff_vault, topic_ledger_path.expanduser().resolve() if topic_ledger_path else None)
+    alias_map = _topic_alias_map(ledger_entries)
+    covered_ids, _ = _vault_coverage(eff_vault)
+
+    learned_keys: set[str] = {
+        key
+        for key, item in ledger_entries.items()
+        if str(item.get("learning_state") or "").strip().lower() == "learned" or key in covered_ids
+    }
+
+    with _proposal_lock(eff_proposals):
+        raw_state: dict[str, Any] = {"schema_version": 1, "updated_at": "", "topics": {}, "consumed_events": {}}
+        if eff_state.is_file():
+            loaded = json.loads(eff_state.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw_state.update(loaded)
+        state_topics = raw_state.setdefault("topics", {})
+        history = _reconcile_proposals_history(eff_proposals if eff_proposals.is_file() else None, ledger_entries)
+        by_topic = history["by_topic"]
+
+        drifts: list[dict[str, Any]] = []
+        reconciled: list[str] = []
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+        for raw_key in sorted(set(state_topics) | set(by_topic)):
+            canon_key = alias_map.get(raw_key, raw_key)
+            if canon_key not in learned_keys:
+                continue
+            ledger_item = ledger_entries.get(canon_key, {})
+            st_entry = state_topics.get(raw_key) or state_topics.get(canon_key) or {}
+            prop_rec = by_topic.get(canon_key) or by_topic.get(raw_key) or {}
+
+            st_val = str(st_entry.get("learning_state") or "").strip().lower()
+            prop_state = str(prop_rec.get("learning_state") or "").strip().lower()
+            prop_status = str(prop_rec.get("status") or "").strip().lower()
+
+            state_stale = st_val in {"pending", "proposed", "queued", "approved", "exploring", "transferred"}
+            prop_stale = prop_status == "pending" or prop_state in {"pending", "proposed", "queued"}
+            if not state_stale and not prop_stale:
+                continue
+
+            max_rev = max(
+                int(ledger_item.get("revision") or 1),
+                int(st_entry.get("revision") or 0),
+                int(prop_rec.get("revision") or 0),
+            )
+            new_rev = max_rev + 1
+            drifts.append({
+                "topic_key": canon_key,
+                "ledger_state": "learned",
+                "state_file_learning_state": st_val or None,
+                "proposal_status": prop_status or None,
+                "proposal_learning_state": prop_state or None,
+                "target_revision": new_rev,
+            })
+
+            if apply:
+                merged_entry = {
+                    **ledger_item,
+                    **st_entry,
+                    "topic_key": canon_key,
+                    "learning_state": "learned",
+                    "exploration_authorized": False,
+                    "revision": new_rev,
+                    "updated_at": now_iso,
+                }
+                state_topics[canon_key] = merged_entry
+                if raw_key != canon_key and raw_key in state_topics:
+                    del state_topics[raw_key]
+
+                if prop_stale and eff_proposals.is_file():
+                    prop_id = str(prop_rec.get("id") or merged_entry.get("proposal_id") or f"learning-topic-{canon_key}")
+                    title = str(prop_rec.get("title") or merged_entry.get("title") or canon_key)
+                    detail = str(prop_rec.get("detail") or merged_entry.get("question") or title)
+                    priority = str(prop_rec.get("priority") or merged_entry.get("priority") or "P2")
+                    origin_ref = str(prop_rec.get("origin_ref") or prop_rec.get("ref") or f"learning-topic://{canon_key}")
+                    close_rec: dict[str, Any] = {
+                        "id": prop_id,
+                        "ts": now_iso,
+                        "agent": "knowledge-digest",
+                        "title": title,
+                        "detail": detail,
+                        "priority": priority,
+                        "status": "dismissed",
+                        "ref": origin_ref,
+                        "origin_ref": origin_ref,
+                        "topic_key": canon_key,
+                        "source": "Learning",
+                        "scope": "personal",
+                        "learning_state": "learned",
+                        "outcome": "reconciled_from_ledger",
+                        "revision": new_rev,
+                    }
+                    for keep_k in ("created_at", "proposed_on", "external_id"):
+                        if keep_k in prop_rec:
+                            close_rec[keep_k] = prop_rec[keep_k]
+                    _append_valid_proposal(eff_proposals, close_rec)
+                reconciled.append(canon_key)
+
+        if apply and reconciled:
+            _save_learning_state_registry(
+                raw_state,
+                proposals_path=eff_proposals,
+                state_path=eff_state,
+                vault_dir=eff_vault,
+            )
+
+    return {
+        "ok": len(drifts) == 0 or apply,
+        "apply": apply,
+        "drift_count": len(drifts),
+        "drifts": drifts,
+        "reconciled": reconciled,
+        "state_path": str(eff_state),
+        "proposals_path": str(eff_proposals),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Knowledge Digest vault & blog flywheel CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2878,6 +3119,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--blog-repo", type=Path, default=DEFAULT_BLOG_REPO)
     p_pub.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
     p_pub.add_argument("--mode", choices=("observe", "auto"), default="observe")
+
+    p_pre = sub.add_parser("precheck-card", help="Validate required card sections, frontmatter, index, and isolation redlines")
+    p_pre.add_argument("--file", required=True, type=Path)
+    p_pre.add_argument("--folder", choices=("concepts", "craft", "thoughts", "raw"), default=None)
+    p_pre.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=None)
+    p_pre.add_argument("--require-index", action="store_true")
+
+    p_rec = sub.add_parser("reconcile-state", help="Detect or repair learned topic-ledger drift against learning-topics-state/proposals")
+    p_rec.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
+    p_rec.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+    p_rec.add_argument("--state-path", type=Path, default=None)
+    p_rec.add_argument("--topic-ledger-path", type=Path, default=None)
+    p_rec.add_argument("--apply", action="store_true", help="Write reconciled learned revisions to state and proposals.jsonl")
 
     return parser
 
@@ -2945,6 +3199,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
+    if args.command == "precheck-card":
+        res = precheck_card(
+            file_path=args.file,
+            folder=args.folder,
+            vault_dir=args.vault_dir,
+            require_index=args.require_index,
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("ok") else 1
+    if args.command == "reconcile-state":
+        res = reconcile_learning_state(
+            vault_dir=args.vault_dir,
+            proposals_path=args.proposals_path,
+            state_path=args.state_path,
+            topic_ledger_path=args.topic_ledger_path,
+            apply=args.apply,
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("ok") else 1
     return 1
 
 
