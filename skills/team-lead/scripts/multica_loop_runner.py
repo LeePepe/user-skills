@@ -119,7 +119,20 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_status="todo",
         default_priority="medium",
     ),
+    LoopSpec(
+        loop_id="local-herdr-worktree-gc",
+        aliases=("local_hygiene_patrol", "local-hygiene-patrol", "herdr-worktree-gc"),
+        autopilot_title="Daily Local Herdr & Worktree Hygiene Patrol Autopilot (P3 -> Owner)",
+        cron="30 3 * * *",
+        trigger_label="Daily CST 03:30 Local Herdr & Worktree Hygiene Patrol",
+        delivery_mode="dual_zone_issue",
+        issue_title_template="[P3 / Priority 3][Local Hygiene] {date} 本地环境与主仓卫生异常巡检清单",
+        default_status="todo",
+        default_priority="medium",
+    ),
 )
+
+LOOP_SPECS: tuple[LoopSpec, ...] = CANONICAL_LOOP_SPECS
 
 LOOP_BY_KEY: dict[str, LoopSpec] = {}
 for _spec in CANONICAL_LOOP_SPECS:
@@ -620,6 +633,7 @@ def sync_autopilots(
                 or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest Autopilot" in title_str)
                 or (spec.loop_id == "aidash-retro-delta" and "Daily AIDash Digest & Retro" in title_str)
                 or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in title_str)
+                or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in title_str)
             ):
                 matched = ap
                 break
@@ -732,8 +746,21 @@ def _compute_digest_signature(payload: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
-def _default_loop_collector(spec: LoopSpec, *, target_date: date) -> dict[str, Any]:
+def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False) -> dict[str, Any]:
     date_str = target_date.isoformat()
+    if spec.loop_id == "local-herdr-worktree-gc":
+        hygiene_mod = _load_module("loop_local_hygiene_patrol", TEAM_LEAD_SCRIPTS_DIR / "local_hygiene_patrol.py")
+        dev_root = Path(os.environ.get("HYGIENE_PATROL_DEV_ROOT", "~/Development")).expanduser()
+        handoff_env = os.environ.get("HYGIENE_PATROL_HANDOFF_ROOT")
+        handoff_root = Path(handoff_env).expanduser() if handoff_env else None
+        return hygiene_mod.run_loop_check(
+            dev_root=dev_root,
+            handoff_root=handoff_root,
+            target_date=target_date,
+            auto_gc=True,
+            dry_run=dry_run,
+        )
+
     if spec.loop_id == "daily-brief":
         brief_mod = _load_module("loop_daily_brief", SKILLS_ROOT / "linear-board" / "scripts" / "daily-brief.py")
         res = brief_mod.generate(
@@ -1228,6 +1255,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in t)
             or (spec.loop_id == "aidash-retro-delta" and "AIDash Digest & Retro" in t)
             or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest" in t)
+            or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in t)
         ):
             return str(ap.get("id") or "") or None
     return None
@@ -1259,7 +1287,7 @@ def run_loop(
     elif collector_fn is not None:
         collected = collector_fn(spec, target_date=resolved_date)
     else:
-        collected = _default_loop_collector(spec, target_date=resolved_date)
+        collected = _default_loop_collector(spec, target_date=resolved_date, dry_run=dry_run)
 
     watermarks = load_watermarks(state_path)
     previous_entry = watermarks.get(spec.loop_id) if isinstance(watermarks.get(spec.loop_id), dict) else {}
@@ -1355,7 +1383,15 @@ def run_loop(
                 )
     else:
         md = _render_verified_loop_issue(collected, spec=spec)
-        retire_prefix = "[Daily Brief" if spec.loop_id == "daily-brief" else ("[Daily Learn" if spec.loop_id == "daily-learn-recommend" else None)
+        retire_prefix = (
+            "[Daily Brief"
+            if spec.loop_id == "daily-brief"
+            else (
+                "[Daily Learn"
+                if spec.loop_id == "daily-learn-recommend"
+                else ("[P3 / Priority 3][Local Hygiene]" if spec.loop_id == "local-herdr-worktree-gc" else None)
+            )
+        )
         layer2_result = upsert_multica_dual_zone_issue(
             title=str(collected.get("title") or spec.issue_title_template.format(date=resolved_date.isoformat())),
             description=md,
@@ -1420,7 +1456,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--json", action="store_true", default=True)
 
     p_run = sub.add_parser("run-loop", help="Execute Layer-0 precheck -> Layer-1 Jev -> Layer-2 Wake-on-Actionable")
-    p_run.add_argument("--loop", required=True, help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, aidash-retro-delta)")
+    p_run.add_argument(
+        "--loop",
+        required=True,
+        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, aidash-retro-delta, local-herdr-worktree-gc)",
+    )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)
     p_run.add_argument("--collector-json", type=Path, default=None)

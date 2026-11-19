@@ -89,7 +89,25 @@
         "daily-brief",
         "skills-roi-diagnostic",
         "daily-learn-recommend",
-        "aidash-retro-delta"
+        "aidash-retro-delta",
+        "local-herdr-worktree-gc"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-006",
+      "title": "local_hygiene_patrol.py shared symlink exposes scan, run-gc, and loop-check",
+      "tags": [
+        "hygiene",
+        "herdr",
+        "git-gc"
+      ],
+      "cmd": "python3 skills/m2-dispatcher/scripts/local_hygiene_patrol.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "scan",
+        "run-gc",
+        "loop-check"
       ],
       "registered_at": "2026-11-19"
     }
