@@ -981,6 +981,115 @@ class KnowledgeDigestTests(unittest.TestCase):
         self.assertIn("@bot 1", transport.updated[0][1]["description"])
         self.assertIn("old owner check", transport.updated[0][1]["description"])
 
+    def test_two_track_seed_balanced_selection_and_grouped_rendering(self):
+        # 1. Seed fixture entries all carry valid explicit track
+        for sid, meta in SEED["CANONICAL_COLLECTED_TOOLS_RECONCILIATION"].items():
+            self.assertIn(meta.get("track"), {"workflow", "personal"}, f"missing track on seed {sid}")
+            self.assertEqual(DIGEST.infer_topic_track(meta), meta["track"])
+
+        # 2. Balanced top=2 and top=3 selection across workflow + personal tracks
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault, tools = root / "vault", root / "tools"
+            source_ids = ("bama", "genjutsu", "taste-skill", "emilkowalski-skills")
+            for sid in source_ids:
+                readme = tools / "repos" / sid / "README.md"
+                readme.parent.mkdir(parents=True)
+                readme.write_text(f"# {sid}\nConcrete engineering details.\n", encoding="utf-8")
+            seed_ledger(vault, source_ids)
+
+            transport = FakeLinearTransport()
+            res = DIGEST.discover_topics(
+                top=3,
+                propose_aidash=True,
+                propose_linear=True,
+                dual_zone=True,
+                linear_transport=transport,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=root / "proposals.jsonl",
+                state_path=root / "state.json",
+                now_utc=datetime(2026, 11, 19, 2, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["selected_count"], 3)
+            self.assertEqual(
+                res["tracks_summary"],
+                {
+                    "workflow": [
+                        "bama-agent-cli-story-verification",
+                        "genjutsu-three-tier-choreography-gate",
+                    ],
+                    "personal": [
+                        "emil-spring-choreography-and-interruptibility",
+                    ],
+                },
+            )
+
+            dual_desc = transport.created[0]["description"]
+            self.assertIn("**【板块一 · Workflow 相关学习】**", dual_desc)
+            self.assertIn("**【板块二 · 个人成长与领域新能力】**", dual_desc)
+            self.assertLess(
+                dual_desc.index("**【板块一 · Workflow 相关学习】**"),
+                dual_desc.index("**【板块二 · 个人成长与领域新能力】**"),
+            )
+            self.assertIn("- [ ] 1. [bama-agent-cli-story-verification]", dual_desc)
+            self.assertIn("- [ ] 2. [genjutsu-three-tier-choreography-gate]", dual_desc)
+            self.assertIn("- [ ] 3. [emil-spring-choreography-and-interruptibility]", dual_desc)
+
+            issue_brief = DIGEST._load_issue_brief_module()
+            verified = issue_brief.verify_dual_zone_issue(dual_desc)
+            self.assertTrue(verified["ok"], verified)
+            self.assertLessEqual(verified["human_zone_lines"], 15)
+            self.assertEqual(verified["checkbox_count"], 3)
+
+            # Verify linear-bot-bridge 1..3 continuous numbering compatibility
+            bridge_mod = DIGEST._load_helper_module(
+                "linear_bot_bridge_for_tracks_test",
+                ROOT / "skills/linear-board/scripts/linear-bot-bridge.py",
+            )
+            fake_issue = {"title": "[Daily Learn 2026-11-19] 今日 3 个推荐学习主题", "description": dual_desc}
+            self.assertEqual(
+                bridge_mod.topic_selection(fake_issue, {"body": "@bot 3"}),
+                ["emil-spring-choreography-and-interruptibility"],
+            )
+            self.assertEqual(
+                bridge_mod.topic_selection(fake_issue, {"body": "@bot 都做"}),
+                [
+                    "bama-agent-cli-story-verification",
+                    "genjutsu-three-tier-choreography-gate",
+                    "emil-spring-choreography-and-interruptibility",
+                ],
+            )
+
+            # Verify Dual-Zone create -> rerun idempotency (upper zone stays <= 15 lines)
+            rerun_res = DIGEST.discover_topics(
+                top=3,
+                propose_aidash=True,
+                propose_linear=True,
+                dual_zone=True,
+                linear_transport=transport,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=root / "proposals.jsonl",
+                state_path=root / "state.json",
+                now_utc=datetime(2026, 11, 19, 3, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(rerun_res["ok"])
+            self.assertEqual(transport.updated, [])
+            self.assertTrue(issue_brief.verify_dual_zone_issue(transport.issues[0]["description"])["ok"])
+
+            # Standard mode (`dual_zone=False`) also groups under the two track headings and merges idempotently
+            std_desc = DIGEST._daily_digest_markdown("2026-11-19", res["topics"], dual_zone=False)
+            self.assertIn("板块一 · Workflow 相关学习", std_desc)
+            self.assertIn("板块二 · 个人成长与领域新能力", std_desc)
+            self.assertEqual(
+                DIGEST._merge_daily_digest_description(std_desc, std_desc, res["topics"]),
+                std_desc,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

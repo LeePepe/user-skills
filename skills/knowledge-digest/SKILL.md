@@ -66,9 +66,13 @@ user-invocable: true
 └── raw/                  # 原始好素材与脚本拆解存档（保留原始摘录与溯源信息）
 ```
 
-### 每日候选导读与 Linear（Daily Digest）
+### 每日候选导读、双板块分类与 Linear（Daily Digest Two Tracks）
 
-`discover-topics --top 3 --propose-aidash --propose-linear --no-materialize` 在显式联网授权下，为每个候选生成 `why_now`、恰好 3 个 `preview_questions` 与 `/learn` 或 `/deep-research` 命令，并按 CST 日幂等更新 TIA 父 issue。默认发现仍为单候选、候选-only；`--propose-linear` 才允许 Linear 网络读写。父 issue 使用 `GTT-LINEAR-DEDUP:daily-learn-YYYY-MM-DD` 与 `KD-DAILY-START/END` 边界，缺失本地状态时先按 marker/title 与 canonical topic key 对账远端；迁移旧清单并修复可识别的生成重复，保留勾选、Owner 笔记和完整导读，无法安全区分时拒绝写入。Markdown 规范化不影响去重，语义未变则不更新 issue；重跑保留原日主题，不按新 quota 截断。新建 Daily Learn issue 默认分配给 Owner，并附带 `@bot 1`、`@bot 都做` 与 Bot 回写/重新分配说明；Owner 可通过评论或 Assignee/Delegate 触发个人 M2 bridge；无编号 `learning-topic://` 清单按描述顺序对应 `1/2/3`，支持 `all/都做/全部`，分配给 Bot 时采用最新 Owner 选题评论（否则使用勾选项或首项）。Bridge 仅回写本轮所选主题的新卡或真实 M2 回复；M2 待决策时明确交还 Owner，不宣称学习已完成。
+每日学习候选按两大板块（`track`）均衡分配与分组展示：
+- **【板块一 · Workflow 相关学习 (`track="workflow"`)】**：个人工作流编排、Skill 设计与演进（渐进式披露、Stop-hook、分面检索、复合组件状态隔离）、Multi-Agent 协同与自动化门禁。
+- **【板块二 · 个人成长与领域新能力 (`track="personal"`)】**：理财投资与资产配置（`asset-screener`、`portfolio-advisor`、全天候风险平价、FIFO 护栏）、运动健身科学、iOS/macOS 原生新能力与交互排版质感。
+
+`discover-topics --top 3 --propose-aidash --propose-linear [--dual-zone] --no-materialize` 在显式联网授权下，从 `topic-ledger.json`（缺失 `track` 时由 `infer_topic_track` 确定性归类）均衡抽取两大板块候选并输出 `tracks_summary`，为每项生成 `why_now`、恰好 3 个 `preview_questions` 与 `/learn` 或 `/deep-research` 命令，按板块标题分组写入 TIA 父 issue（兼容 `issue-brief` 双区 ≤15 行门禁与 `1..N` 连续编号）。默认发现仍为单候选、候选-only；`--propose-linear` 才允许 Linear 网络读写。父 issue 使用 `GTT-LINEAR-DEDUP:daily-learn-YYYY-MM-DD` 与 `KD-DAILY-START/END` 边界，缺失本地状态时先按 marker/title 与 canonical topic key 对账远端；迁移旧清单并修复可识别的生成重复，保留勾选、Owner 笔记和完整导读，无法安全区分时拒绝写入。Markdown 规范化不影响去重，语义未变则不更新 issue；重跑保留原日主题，不按新 quota 截断。新建 Daily Learn issue 默认分配给 Owner，并附带 `@bot 1`、`@bot 都做` 与 Bot 回写/重新分配说明；Owner 可通过评论或 Assignee/Delegate 触发个人 M2 bridge；清单按描述顺序对应 `1/2/3`，支持 `all/都做/全部`，分配给 Bot 时采用最新 Owner 选题评论（否则使用勾选项或首项）。Bridge 仅回写本轮所选主题的新卡或真实 M2 回复；M2 待决策时明确交还 Owner，不宣称学习已完成。
 
 ### 门类划分（Category Taxonomy）
 

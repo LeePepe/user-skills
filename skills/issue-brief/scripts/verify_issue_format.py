@@ -72,6 +72,12 @@ def _format_decision_item(index: int, item: str | dict[str, Any]) -> str:
             return stripped
         return f"- [ ] {index}. {stripped}"
 
+    if isinstance(item, dict) and item.get("group_header"):
+        header_text = str(item["group_header"]).strip()
+        if not header_text:
+            raise ValueError("group_header must be non-empty")
+        return header_text
+
     if not isinstance(item, dict):
         raise TypeError(f"Unsupported item type: {type(item).__name__}")
 
@@ -137,8 +143,15 @@ def render_dual_zone_issue(
     lines.append(f"**一句话结论**：{clean_tldr}")
     lines.append("")
 
-    formatted_items = [_format_decision_item(idx, item) for idx, item in enumerate(items, 1)]
-    if not formatted_items:
+    formatted_items: list[str] = []
+    decision_idx = 0
+    for item in items:
+        if isinstance(item, dict) and item.get("group_header"):
+            formatted_items.append(_format_decision_item(decision_idx, item))
+        else:
+            decision_idx += 1
+            formatted_items.append(_format_decision_item(decision_idx, item))
+    if decision_idx == 0:
         raise ValueError("items must contain at least one checkable decision item")
     lines.extend(formatted_items)
 

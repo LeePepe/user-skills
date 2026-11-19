@@ -11,7 +11,11 @@
       "actionable_domain": "个人成长与思考",
       "require_no_materialize_before_approval": true,
       "forbid_auto_design_studio_sync": true,
-      "forbid_auto_blog_publish_on_star": true
+      "forbid_auto_blog_publish_on_star": true,
+      "tracks": {
+        "workflow": "板块一 · Workflow 相关学习",
+        "personal": "板块二 · 个人成长与领域新能力"
+      }
     },
     "vault_coverage_inventory": [
       {
@@ -138,7 +142,8 @@
       "why_now": "collected-tools/hallmark.md & repos/hallmark",
       "category": "工程与设计",
       "heuristic_direct": 0.88,
-      "heuristic_tier": 2.6
+      "heuristic_tier": 2.6,
+      "track": "personal"
     },
     "apple-design-skill": {
       "source_id": "apple-design-skill",
@@ -161,7 +166,8 @@
       "why_now": "repos/apple-design-skill（已被 WWDC26/27 Liquid Glass 与 AppKit/UIKit 概念卡覆盖）",
       "category": "工程与设计",
       "heuristic_direct": 0.8,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "personal"
     },
     "awesome-ios-design-md": {
       "source_id": "awesome-ios-design-md",
@@ -182,7 +188,8 @@
       "why_now": "repos/awesome-ios-design-md（作为按需检索字典使用，无独立未探索原理题）",
       "category": "工程与设计",
       "heuristic_direct": 0.78,
-      "heuristic_tier": 2.2
+      "heuristic_tier": 2.2,
+      "track": "personal"
     },
     "awesome-web-design-md": {
       "source_id": "awesome-web-design-md",
@@ -204,7 +211,8 @@
       "why_now": "repos/awesome-web-design-md（作为按需检索字典使用，无独立未探索原理题）",
       "category": "工程与设计",
       "heuristic_direct": 0.78,
-      "heuristic_tier": 2.2
+      "heuristic_tier": 2.2,
+      "track": "personal"
     },
     "shipswift": {
       "source_id": "shipswift",
@@ -226,7 +234,8 @@
       "why_now": "repos/shipswift（动效与 Shader 管线已被 WWDC26/27 概念卡覆盖）",
       "category": "工程与设计",
       "heuristic_direct": 0.8,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "personal"
     },
     "twostraws-swiftui-skill": {
       "source_id": "twostraws-swiftui-skill",
@@ -248,7 +257,8 @@
       "why_now": "repos/twostraws-swiftui-skill（已被现有 SwiftUI 26/27 卡片覆盖）",
       "category": "工程与设计",
       "heuristic_direct": 0.8,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "personal"
     },
     "awesome-cjk-design-md": {
       "source_id": "awesome-cjk-design-md",
@@ -267,7 +277,8 @@
       "why_now": "repos/awesome-cjk-design-md/README.md:17-29（仅挂载路径，未拆解 CJK 混排禁则原理）",
       "category": "工程与设计",
       "heuristic_direct": 0.91,
-      "heuristic_tier": 2.7
+      "heuristic_tier": 2.7,
+      "track": "personal"
     },
     "bama": {
       "source_id": "bama",
@@ -286,7 +297,8 @@
       "why_now": "repos/bama/README.md:42-65 & skills/code/{agent-cli,improve-architecture}/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.89,
-      "heuristic_tier": 2.6
+      "heuristic_tier": 2.6,
+      "track": "workflow"
     },
     "genjutsu": {
       "source_id": "genjutsu",
@@ -307,7 +319,8 @@
       "why_now": "repos/genjutsu/README.md:57-65 & PLATFORM-CONTRACT.md",
       "category": "工程与设计",
       "heuristic_direct": 0.88,
-      "heuristic_tier": 2.6
+      "heuristic_tier": 2.6,
+      "track": "workflow"
     },
     "avdlee-swiftui-skill": {
       "source_id": "avdlee-swiftui-skill",
@@ -328,7 +341,8 @@
       "why_now": "repos/avdlee-swiftui-skill/.agents/skills/update-swiftui-apis/references/scan-manifest.md",
       "category": "工程与设计",
       "heuristic_direct": 0.87,
-      "heuristic_tier": 2.5
+      "heuristic_tier": 2.5,
+      "track": "personal"
     },
     "dimillian-skills": {
       "source_id": "dimillian-skills",
@@ -350,7 +364,8 @@
       "why_now": "repos/dimillian-skills/{macos-spm-app-packaging,bug-hunt-swarm}/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.86,
-      "heuristic_tier": 2.5
+      "heuristic_tier": 2.5,
+      "track": "workflow"
     },
     "claude-code-apple-skills": {
       "source_id": "claude-code-apple-skills",
@@ -372,7 +387,8 @@
       "why_now": "repos/claude-code-apple-skills/skills/{design/game-feel,app-store/rejection-handler}/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.85,
-      "heuristic_tier": 2.5
+      "heuristic_tier": 2.5,
+      "track": "personal"
     },
     "emilkowalski-skills": {
       "source_id": "emilkowalski-skills",
@@ -393,7 +409,8 @@
       "why_now": "repos/emilkowalski-skills/skills/{remove-animations,animation-performance,choreograph}/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.85,
-      "heuristic_tier": 2.4
+      "heuristic_tier": 2.4,
+      "track": "personal"
     },
     "impeccable": {
       "source_id": "impeccable",
@@ -412,7 +429,8 @@
       "why_now": "repos/impeccable/.agents/skills/impeccable/reference/{mode-operate,mode-persuade,critique}.md",
       "category": "工程与设计",
       "heuristic_direct": 0.84,
-      "heuristic_tier": 2.4
+      "heuristic_tier": 2.4,
+      "track": "workflow"
     },
     "taste-skill": {
       "source_id": "taste-skill",
@@ -433,7 +451,8 @@
       "why_now": "repos/taste-skill/skills/taste-skill/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.83,
-      "heuristic_tier": 2.4
+      "heuristic_tier": 2.4,
+      "track": "workflow"
     },
     "ui-ux-pro-max-skill": {
       "source_id": "ui-ux-pro-max-skill",
@@ -452,7 +471,8 @@
       "why_now": "repos/ui-ux-pro-max-skill/src/ui-ux-pro-max/",
       "category": "工程与设计",
       "heuristic_direct": 0.82,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "workflow"
     },
     "vercel-agent-skills": {
       "source_id": "vercel-agent-skills",
@@ -471,7 +491,8 @@
       "why_now": "repos/vercel-agent-skills/skills/{composition-patterns,react-view-transitions}/SKILL.md",
       "category": "工程与设计",
       "heuristic_direct": 0.82,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "workflow"
     },
     "vibecoded-design-tells": {
       "source_id": "vibecoded-design-tells",
@@ -492,7 +513,8 @@
       "why_now": "repos/vibecoded-design-tells/skill/references/{tells,choosing-a-look}.md",
       "category": "工程与设计",
       "heuristic_direct": 0.81,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "workflow"
     },
     "expo-skills": {
       "source_id": "expo-skills",
@@ -511,7 +533,8 @@
       "why_now": "repos/expo-skills/.claude/skills/expo-skill-eval/agents/visual-grader.md",
       "category": "工程与设计",
       "heuristic_direct": 0.8,
-      "heuristic_tier": 2.3
+      "heuristic_tier": 2.3,
+      "track": "workflow"
     }
   }
 }

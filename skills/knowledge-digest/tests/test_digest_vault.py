@@ -162,6 +162,62 @@ class KnowledgeDigestLearningTopicTests(unittest.TestCase):
             self.assertIsNone(s_roi["S2_gate_catch"]["gate_catch_rate"])
             self.assertEqual(s_roi["S2_gate_catch"]["coverage_status"], "missing")
 
+    def test_two_track_classification_and_balanced_discovery(self):
+        self.assertEqual(
+            DIGEST_VAULT.infer_topic_track({"topic_key": "bama-agent-cli-story-verification", "title": "BAMA Agent CLI"}),
+            "workflow",
+        )
+        self.assertEqual(
+            DIGEST_VAULT.infer_topic_track({"topic_key": "investment-frameworks-and-agent-skills", "title": "资产配置与全天候组合"}),
+            "personal",
+        )
+        self.assertEqual(
+            DIGEST_VAULT.infer_topic_track({"topic_key": "emil-spring-choreography-and-interruptibility", "title": "Emil 动效法则"}),
+            "personal",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "knowledge-vault"
+            tools = root / "collected-tools"
+            for slug in ("bama", "genjutsu", "taste-skill", "emilkowalski-skills"):
+                (tools / "repos" / slug).mkdir(parents=True)
+                (tools / "repos" / slug / "README.md").write_text(f"# {slug}\nConcrete details.\n", encoding="utf-8")
+            proposals = root / "proposals.jsonl"
+            self._write_ledger(
+                vault,
+                {"topic_key": "bama-agent-cli-story-verification", "source_id": "bama", "source_uri": "https://github.com/daveebbelaar/bama", "question": "BAMA 如何转为可验收用户故事？", "learning_state": "queued", "source_fingerprint": "bama", "rank": 1, "track": "workflow"},
+                {"topic_key": "genjutsu-three-tier-choreography-gate", "source_id": "genjutsu", "source_uri": "https://github.com/AThevon/genjutsu", "question": "Genjutsu 如何区分三级编排门禁？", "learning_state": "queued", "source_fingerprint": "genjutsu", "rank": 2, "track": "workflow"},
+                {"topic_key": "taste-skill-stop-hook-and-bento-anti-slop", "source_id": "taste-skill", "source_uri": "https://github.com/Leonxlnx/taste-skill", "question": "Taste Skill 如何通过 Stop-hook 自审回路拦截模板感？", "learning_state": "queued", "source_fingerprint": "taste", "rank": 3, "track": "workflow"},
+                {"topic_key": "emil-spring-choreography-and-interruptibility", "source_id": "emilkowalski-skills", "source_uri": "https://github.com/emilkowalski/skills", "question": "Emil Kowalski 的弹簧手势速度连续如何实现？", "learning_state": "queued", "source_fingerprint": "emil", "rank": 10, "track": "personal"},
+            )
+
+            res = DIGEST_VAULT.discover_topics(
+                top=3,
+                propose_aidash=True,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=proposals,
+            )
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["selected_count"], 3)
+            # Even though emil is rank=10 behind 3 workflow topics (ranks 1..3), balanced two-track quota guarantees personal is represented!
+            self.assertEqual(
+                res["tracks_summary"],
+                {
+                    "workflow": [
+                        "bama-agent-cli-story-verification",
+                        "genjutsu-three-tier-choreography-gate",
+                    ],
+                    "personal": [
+                        "emil-spring-choreography-and-interruptibility",
+                    ],
+                },
+            )
+            self.assertEqual([t["track"] for t in res["topics"]], ["workflow", "workflow", "personal"])
+            self.assertTrue(all(r.get("track") in {"workflow", "personal"} for r in res["proposals_written"]))
+
 
 if __name__ == "__main__":
     unittest.main()
