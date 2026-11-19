@@ -163,6 +163,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_status="todo",
         default_priority="medium",
     ),
+    LoopSpec(
+        loop_id="design-taste-evolution",
+        aliases=("taste-evolution", "design_taste_evolution"),
+        autopilot_title="Daily UI Design Taste Evolution Autopilot (Mac node -> Owner)",
+        cron="50 4 * * *",
+        trigger_label="Daily CST 04:50 UI Design Taste Evolution on Mac node",
+        delivery_mode="dual_zone_issue",
+        issue_title_template="[P3 / Priority 3][Taste Evolution] {date} UI 品味偏好与反模式候选",
+        default_status="todo",
+        default_priority="medium",
+    ),
 )
 
 LOOP_SPECS: tuple[LoopSpec, ...] = CANONICAL_LOOP_SPECS
@@ -602,6 +613,13 @@ def verify_vpn_access(
 
 def build_loop_autopilot_description(spec: LoopSpec) -> str:
     runner_rel = "$HOME/Development/user-skills/skills/m2-dispatcher/scripts/multica_loop_runner.py"
+    if spec.loop_id == "design-taste-evolution":
+        execution_note = (
+            "   Run this collector on the Mac node with access to the local handoff receipts; "
+            "do not use the NAS filesystem as the evidence source.\n"
+        )
+    else:
+        execution_note = ""
     return (
         f"# {spec.autopilot_title}\n\n"
         f"- **Loop ID**: `{spec.loop_id}`\n"
@@ -611,7 +629,8 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
         "   ```bash\n"
         f'   python3 "{runner_rel}" run-loop --loop "{spec.loop_id}" --json\n'
         "   ```\n"
-        "2. **Agent Synthesis Fallback (only when triggered by `multica_loop_runner.py` or manual run)**:\n"
+        + execution_note
+        + "2. **Agent Synthesis Fallback (only when triggered by `multica_loop_runner.py` or manual run)**:\n"
         "   Inspect `/tmp/multica-loop-" + spec.loop_id + "-collect.json`, synthesize root causes, and file/update a Dual-Zone (`issue-brief` verified) issue assigned to Owner (`lee@multica.local`).\n"
     )
 
@@ -830,6 +849,11 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             issues_json=issues_json,
             dry_run=dry_run,
         )
+
+    if spec.loop_id == "design-taste-evolution":
+        taste_mod = _load_module("loop_design_taste_evolution", SKILLS_ROOT / "design-studio" / "scripts" / "taste_evolution_loop.py")
+        handoff_root = Path(os.environ.get("DESIGN_TASTE_HANDOFF_ROOT", "~/Development/handoff")).expanduser()
+        return taste_mod.loop_check(handoff_root, target_date=target_date, mock_jev_json=mock_jev_json)
 
     if spec.loop_id == "daily-brief":
         brief_mod = _load_module("loop_daily_brief", SKILLS_ROOT / "linear-board" / "scripts" / "daily-brief.py")
