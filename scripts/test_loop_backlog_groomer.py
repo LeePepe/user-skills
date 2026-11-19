@@ -312,6 +312,60 @@ class BacklogGroomerLoopTests(unittest.TestCase):
             self.assertEqual(len(created_bodies), 1)
             self.assertTrue(issue_brief.verify_dual_zone_issue(created_bodies[0])["ok"])
 
+    def test_multica_live_listing_paginates_by_raw_rows_with_bounded_contract(self):
+        calls = []
+        pages = [
+            {"has_more": True, "issues": [{"id": "m1", "identifier": "MUL-1", "title": "First", "status": "todo"},
+                                             {"id": "m2", "identifier": "MUL-2", "title": "Second", "status": "todo"}], "limit": 100, "offset": 0, "total": 3},
+            {"has_more": False, "issues": [{"id": "m3", "identifier": "MUL-3", "title": "Third", "status": "todo"}], "limit": 100, "offset": 2, "total": 3},
+        ]
+
+        def runner(args, **kwargs):
+            calls.append((args, kwargs))
+            offset = int(args[args.index("--offset") + 1])
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(pages[offset // 2]), stderr="")
+
+        rows, warnings = groomer.collect_backlog_issues(
+            linear_rows=[], include_multica=True, multica_bin="multica-test", runner=runner, dry_run=True
+        )
+        self.assertEqual([row["identifier"] for row in rows], ["MUL-1", "MUL-2", "MUL-3"])
+        self.assertEqual([int(args[args.index("--offset") + 1]) for args, _ in calls], [0, 2])
+        self.assertEqual([args[args.index("--limit") + 1] for args, _ in calls], ["100", "100"])
+        self.assertTrue(all(call_kwargs.get("timeout") == 15 for _, call_kwargs in calls))
+        self.assertEqual(warnings, [])
+
+    def test_scope_ancestry_excludes_work_and_fails_closed_for_incomplete_parent(self):
+        work_root = {"id": "work", "title": "Work Business root", "team": {"name": "Personal"},
+                     "project": {"name": "user-skills"}, "parent": None}
+        child = {"id": "child", "identifier": "TIA-900", "title": "Personal-looking child", "status": "todo",
+                 "team": {"name": "Personal"}, "project": {"name": "user-skills"}, "parent": work_root}
+        incomplete = {"id": "incomplete", "identifier": "TIA-901", "title": "Unknown parent child", "status": "todo",
+                      "team": {"name": "Personal"}, "project": {"name": "user-skills"}, "parent": {"id": "missing"}}
+        personal = {"id": "personal", "identifier": "TIA-902", "title": "Personal item", "status": "todo",
+                    "team": {"name": "Personal"}, "project": {"name": "user-skills"}, "parent": None}
+        rows, warnings = groomer.collect_backlog_issues(issues_json=[child, incomplete, personal], include_multica=False)
+        self.assertEqual([row["identifier"] for row in rows], ["TIA-902"])
+        self.assertTrue(any("scope" in warning for warning in warnings))
+
+    def test_combined_linear_and_groomed_top3_reuses_planned_action_and_reserves_human_zone(self):
+        linear = []
+        for index in range(9):
+            linear.append({"id": f"lin-{index}", "identifier": f"TIA-{700 + index}", "title": f"Earlier planned {index}",
+                           "url": f"https://linear.app/test/TIA-{700 + index}",
+                           "state": {"name": "Todo", "type": "unstarted"}, "priority": 2,
+                           "project": {"name": "user-skills"}, "team": {"name": "Personal"}, "parent": None,
+                           "labels": {"nodes": []}})
+        groomed = [{"identifier": "TIA-700", "title": "Earlier planned 0", "summary": "顺推 Earlier planned 0",
+                    "url": "https://linear.app/test/TIA-700", "project": "user-skills"}]
+        plan, todos = daily_brief.render_brief(date(2026, 11, 19), linear, [], [], [], groomed_top3=groomed)
+        matched = [row for row in todos if row.get("groomed_top3")]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(sum(row["ref"] == "TIA-700" for row in todos), 1)
+        self.assertIn("Top3 推荐顺推项", plan)
+        dual = daily_brief.render_dual_zone_brief(date(2026, 11, 19), plan, todos)
+        self.assertIn(f"[{matched[0]['number']}]", dual)
+        self.assertIn("Top3", dual)
+
     def test_cli_subcommands_scan_groom_top3_and_loop_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             issues_file = Path(tmp) / "issues.json"

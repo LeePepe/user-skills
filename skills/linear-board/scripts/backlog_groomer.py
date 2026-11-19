@@ -3,7 +3,7 @@
 
 Implements the 3-Stage Loop 3B Contract:
 1. Stage 1 (Layer 0 — Deterministic Backlog Scan & Fingerprint Deduplication):
-   - Scans open `Backlog` / `Todo` issues across Multica (`multica issue list --output json`)
+   - Scans open `Backlog` / `Todo` issues across Multica (`multica issue list --limit 100 --offset N --output json`)
      and Linear TIA (canonical `linear-sync.py` GraphQLClient, or hermetic `--issues-json`).
    - Excludes closed/completed/canceled tickets, Daily Brief/Daily Learn/M2-Sync containers,
      and non-personal Work Business / Bing / Workplace scopes.
@@ -44,6 +44,7 @@ TEAM_LEAD_SCRIPTS_DIR = SKILLS_ROOT / "team-lead" / "scripts"
 LINEAR_SYNC_SCRIPT_PATH = TEAM_LEAD_SCRIPTS_DIR / "linear-sync.py"
 JEV_CLIENT_SCRIPT_PATH = TEAM_LEAD_SCRIPTS_DIR / "jev_client.py"
 ISSUE_BRIEF_SCRIPT_PATH = SKILLS_ROOT / "issue-brief" / "scripts" / "verify_issue_format.py"
+DAILY_BRIEF_SCRIPT_PATH = LINEAR_BOARD_SCRIPTS_DIR / "daily-brief.py"
 
 LOOP_ID = "backlog-grooming-and-push"
 CST = timezone(timedelta(hours=8))
@@ -171,6 +172,10 @@ def _load_issue_brief() -> Any:
     return _load_module("backlog_groomer_issue_brief", ISSUE_BRIEF_SCRIPT_PATH)
 
 
+def _load_daily_brief() -> Any:
+    return _load_module("backlog_groomer_daily_brief", DAILY_BRIEF_SCRIPT_PATH)
+
+
 def _resolve_multica_bin(explicit: str | None = None) -> str:
     if explicit:
         return explicit
@@ -188,6 +193,7 @@ def _default_runner(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
     check: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = dict(os.environ)
     if env:
@@ -199,6 +205,7 @@ def _default_runner(
         capture_output=True,
         text=True,
         check=check,
+        timeout=timeout,
     )
 
 
@@ -284,7 +291,50 @@ def _extract_labels(raw_labels: Any) -> list[str]:
     return []
 
 
-def _normalize_issue_record(raw: Mapping[str, Any], *, default_source: str = "linear") -> dict[str, Any] | None:
+def _scope_view(raw: Mapping[str, Any]) -> dict[str, Any]:
+    view = dict(raw)
+    project = view.get("project")
+    if not isinstance(project, Mapping):
+        view["project"] = {"name": str(project or view.get("project_name") or "").strip()}
+    team = view.get("team")
+    if team is not None and not isinstance(team, Mapping):
+        view["team"] = {"name": str(team).strip()}
+    parent = view.get("parent")
+    if parent is None and view.get("parent_issue") is not None:
+        parent = view.get("parent_issue")
+    if parent is None and view.get("parent_issue_id"):
+        parent = {"id": str(view["parent_issue_id"]).strip()}
+    if parent is not None or "parent" in view or "parent_issue" in view or "parent_issue_id" in view:
+        view["parent"] = parent
+    return view
+
+
+def _scope_excluded(
+    raw: Mapping[str, Any],
+    *,
+    client: Any = None,
+    cache: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+    daily_brief: Any = None,
+) -> bool:
+    parent_ref = raw.get("parent") or raw.get("parent_issue") or raw.get("parent_issue_id")
+    has_parent_scope = parent_ref not in (None, "", {})
+    has_team_scope = raw.get("team") not in (None, "", {})
+    if not has_parent_scope and not has_team_scope:
+        return False
+    module = daily_brief or _load_daily_brief()
+    return bool(module._excluded_issue(_scope_view(raw), client, cache, warnings))
+
+
+def _normalize_issue_record(
+    raw: Mapping[str, Any],
+    *,
+    default_source: str = "linear",
+    scope_client: Any = None,
+    scope_cache: dict[str, Any] | None = None,
+    scope_warnings: list[str] | None = None,
+    daily_brief: Any = None,
+) -> dict[str, Any] | None:
     if not isinstance(raw, Mapping):
         return None
     source = str(raw.get("source") or default_source).strip().lower()
@@ -292,6 +342,15 @@ def _normalize_issue_record(raw: Mapping[str, Any], *, default_source: str = "li
     identifier = str(raw.get("identifier") or raw.get("key") or issue_id).strip()
     title = str(raw.get("title") or "").strip()
     if not title or not (issue_id or identifier):
+        return None
+
+    if _scope_excluded(
+        raw,
+        client=scope_client,
+        cache=scope_cache,
+        warnings=scope_warnings,
+        daily_brief=daily_brief,
+    ):
         return None
 
     description = str(raw.get("description") or "")
@@ -335,7 +394,7 @@ def _normalize_issue_record(raw: Mapping[str, Any], *, default_source: str = "li
     else:
         blocked_by = []
 
-    return {
+    record = {
         "id": issue_id or identifier,
         "identifier": identifier.upper() if re.fullmatch(r"tia-\d+", identifier, re.IGNORECASE) else identifier,
         "source": source,
@@ -351,6 +410,10 @@ def _normalize_issue_record(raw: Mapping[str, Any], *, default_source: str = "li
         "updated_at": updated_at,
         "blocked_by": blocked_by,
     }
+    for key in ("team", "parent", "parent_issue", "parent_issue_id", "project_id"):
+        if key in raw:
+            record[key] = raw[key]
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +663,9 @@ def cluster_and_deduplicate_issues(
 def collect_backlog_issues(
     *,
     issues_json: Path | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    linear_rows: Sequence[Mapping[str, Any]] | None = None,
     linear_client: Any = None,
+    linear_scope_cache: dict[str, Any] | None = None,
     include_multica: bool = True,
     multica_server_url: str = MULTICA_DEFAULT_SERVER_URL,
     multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID,
@@ -626,18 +691,24 @@ def collect_backlog_issues(
                     for item in val:
                         if isinstance(item, Mapping):
                             raw_list.append({"source": item.get("source") or source_hint, **dict(item)})
-        normalized = [
-            rec
-            for item in raw_list
-            if (rec := _normalize_issue_record(item, default_source=str(item.get("source") or "linear"))) is not None
-        ]
+        normalized: list[dict[str, Any]] = []
+        daily_brief = _load_daily_brief()
+        for item in raw_list:
+            rec = _normalize_issue_record(
+                item,
+                default_source=str(item.get("source") or "linear"),
+                scope_warnings=warnings,
+                daily_brief=daily_brief,
+            )
+            if rec is not None:
+                normalized.append(rec)
         return normalized, warnings
 
     collected: list[dict[str, Any]] = []
 
-    # 1. Collect from Linear TIA
+    # 1. Collect from Linear TIA. Reuse rows already fetched by Daily Brief when supplied.
     client = linear_client
-    if client is None:
+    if linear_rows is None and client is None:
         try:
             sync_mod = _load_linear_sync()
             api_key = sync_mod.load_api_key()
@@ -646,42 +717,91 @@ def collect_backlog_issues(
         except Exception:
             client = None
 
-    if client is not None:
+    if linear_rows is not None or client is not None:
+        scope_cache: dict[str, Any] = linear_scope_cache if linear_scope_cache is not None else {}
+        daily_brief = _load_daily_brief()
         try:
-            linear_rows = client.list_issues("TIA", limit=None)
-            for row in linear_rows or []:
-                if isinstance(row, Mapping):
-                    rec = _normalize_issue_record({**dict(row), "source": "linear"}, default_source="linear")
-                    if rec is not None:
-                        collected.append(rec)
+            rows_to_normalize = list(linear_rows) if linear_rows is not None else list(client.list_issues("TIA", limit=None) or [])
+            for row in rows_to_normalize:
+                if not isinstance(row, Mapping):
+                    continue
+                scoped = _scope_view(row)
+                if daily_brief._scope_complete(scoped):
+                    for key in (row.get("id"), row.get("identifier")):
+                        if key:
+                            scope_cache[str(key)] = scoped
+            for row in rows_to_normalize:
+                if not isinstance(row, Mapping):
+                    continue
+                raw = {**dict(row), "source": "linear"}
+                rec = _normalize_issue_record(
+                    raw,
+                    default_source="linear",
+                    scope_client=client,
+                    scope_cache=scope_cache,
+                    scope_warnings=warnings,
+                    daily_brief=daily_brief,
+                )
+                if rec is not None:
+                    collected.append(rec)
         except Exception:
             warnings.append("Linear TIA issue scan unavailable; continuing with remaining sources")
     else:
         warnings.append("Linear credentials unavailable; skipped live Linear scan")
 
-    # 2. Collect from Multica CLI
+    # 2. Collect from Multica CLI. The API accepts at most 100 rows per page.
     if include_multica:
         binary = _resolve_multica_bin(multica_bin)
-        cmd = [binary]
-        if multica_server_url:
-            cmd.extend(["--server-url", multica_server_url])
-        if multica_workspace_id:
-            cmd.extend(["--workspace-id", multica_workspace_id])
-        cmd.extend(["issue", "list", "--limit", "200", "--output", "json"])
-        try:
-            proc = runner(cmd, check=False)
-            if proc.returncode == 0 and (proc.stdout or "").strip():
-                parsed = json.loads(proc.stdout)
-                rows = parsed.get("issues", []) if isinstance(parsed, Mapping) else (parsed if isinstance(parsed, list) else [])
-                for row in rows:
-                    if isinstance(row, Mapping):
-                        rec = _normalize_issue_record({**dict(row), "source": "multica"}, default_source="multica")
-                        if rec is not None:
-                            collected.append(rec)
+        offset = 0
+        page_size = 100
+        while True:
+            cmd = [binary]
+            if multica_server_url:
+                cmd.extend(["--server-url", multica_server_url])
+            if multica_workspace_id:
+                cmd.extend(["--workspace-id", multica_workspace_id])
+            cmd.extend(["issue", "list", "--limit", str(page_size), "--offset", str(offset), "--output", "json"])
+            try:
+                proc = runner(cmd, check=False, timeout=15)
+            except subprocess.TimeoutExpired:
+                warnings.append("Multica issue list timed out; source incomplete")
+                break
+            except (OSError, subprocess.CalledProcessError):
+                warnings.append("Multica issue list execution failed; source incomplete")
+                break
+            if proc.returncode != 0:
+                warnings.append("Multica issue list returned an error; source incomplete")
+                break
+            stdout = (proc.stdout or "").strip()
+            if not stdout:
+                warnings.append("Multica issue list returned no data; source incomplete")
+                break
+            try:
+                parsed = json.loads(stdout)
+            except (TypeError, ValueError):
+                warnings.append("Multica issue list returned invalid JSON; source incomplete")
+                break
+            if isinstance(parsed, list):
+                rows = parsed
+                has_more = False
+            elif isinstance(parsed, Mapping) and isinstance(parsed.get("issues"), list):
+                rows = parsed["issues"]
+                has_more = bool(parsed.get("has_more", False))
             else:
-                warnings.append("Multica issue list unavailable; skipped live Multica scan")
-        except (OSError, ValueError):
-            warnings.append("Multica CLI execution failed; skipped live Multica scan")
+                warnings.append("Multica issue list response was incomplete; source incomplete")
+                break
+            raw_count = len(rows)
+            for row in rows:
+                if isinstance(row, Mapping):
+                    rec = _normalize_issue_record({**dict(row), "source": "multica"}, default_source="multica")
+                    if rec is not None:
+                        collected.append(rec)
+            if not has_more:
+                break
+            if raw_count == 0:
+                warnings.append("Multica issue list reported more pages without rows; source incomplete")
+                break
+            offset += raw_count
 
     return collected, warnings
 

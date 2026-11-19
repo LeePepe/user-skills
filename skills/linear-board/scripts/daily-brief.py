@@ -69,6 +69,10 @@ def _excluded_text(values: list[str], root_self: bool = False) -> bool:
 def _scope_complete(issue: Any) -> bool:
     return isinstance(issue, dict) and all(k in issue for k in ("title", "parent", "team", "project"))
 
+def _scope_name(value: Any) -> str:
+    if isinstance(value, dict): return str(value.get("name") or value.get("key") or "")
+    return str(value or "")
+
 def _scope_lookup(identifier: str, client: Any, cache: dict[str, Any], warnings: list[str]) -> dict[str, Any] | None:
     cached = cache.get(identifier)
     if _scope_complete(cached): return cached
@@ -91,9 +95,13 @@ def _excluded_issue(issue: dict[str, Any], client: Any = None, cache: dict[str, 
     first = True
     while isinstance(current, dict):
         project, team = current.get("project") or {}, current.get("team") or {}
-        if _excluded_text([str(current.get("title") or ""), str(project.get("name") or ""), str(team.get("name") or "")], root_self=first): return True
+        if _excluded_text([str(current.get("title") or ""), _scope_name(project), _scope_name(team)], root_self=first): return True
         first = False
         parent = current.get("parent")
+        if parent is None and current.get("parent_issue") is not None:
+            parent = current.get("parent_issue")
+        if parent is None and current.get("parent_issue_id"):
+            parent = {"id": str(current.get("parent_issue_id"))}
         if parent is None: return False
         if not isinstance(parent, dict):
             warnings.append("Linear ancestor scope incomplete; affected items excluded")
@@ -615,12 +623,10 @@ def _normalize_groomed_top3_items(
     issue_urls: dict[str, str],
 ) -> list[dict[str, Any]]:
     if not raw_items: return []
-    covered_ids = set(REFERENCE_RE.findall(" ".join(str(entry["ref"]) + " " + " ".join(entry["parts"]) for entry in entries.values())))
     out: list[dict[str, Any]] = []
-    for raw in raw_items:
+    for rank, raw in enumerate(raw_items, 1):
         if not isinstance(raw, dict): continue
         ident = str(raw.get("identifier") or raw.get("ref") or "").strip()
-        if ident and ident in covered_ids: continue
         url = str(raw.get("url") or issue_urls.get(ident) or (f"https://linear.app/tianpeili/issue/{ident}" if re.fullmatch(r"TIA-\d+", ident) else "")).strip()
         if ident and url and re.fullmatch(r"TIA-\d+", ident): issue_urls.setdefault(ident, url)
         action = str(raw.get("action") or "").strip()
@@ -644,10 +650,17 @@ def _normalize_groomed_top3_items(
             "next_hop_kind": str(raw.get("readiness_choice") or "backlog_top3_push"),
             "next_hop_priority": score,
             "decision_source": str(raw.get("decision_source") or "backlog_groomer"),
+            "groomed_top3": True,
+            "groomed_rank": rank,
+            "groomed_identifier": ident,
         })
-        if ident: covered_ids.add(ident)
         if len(out) >= 3: break
     return out
+
+def _annotate_groomed_entry(entry: dict[str, Any], groomed: dict[str, Any], rank: int) -> None:
+    entry["groomed_top3"] = True
+    entry["groomed_rank"] = rank
+    entry["groomed_identifier"] = str(groomed.get("identifier") or groomed.get("ref") or "").strip()
 
 def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None) -> tuple[str, list[dict[str, Any]]]:
     yesterday = target - timedelta(days=1)
@@ -695,17 +708,31 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
         if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
-    rec_items = list(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner))
-    if len(rec_items) < 3 and groomed_top3:
-        for extra in _normalize_groomed_top3_items(groomed_top3, {**entries, **{f"rec:{i}": r for i, r in enumerate(rec_items)}}, issue_urls):
-            rec_items.append(extra)
-            if len(rec_items) >= 3: break
-    for index, item in enumerate(rec_items[:3]):
+    base_recommendations = list(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner))
+    groomed_new: list[dict[str, Any]] = []
+    if groomed_top3:
+        groomed_items = _normalize_groomed_top3_items(groomed_top3, entries, issue_urls)
+        for groomed in groomed_items:
+            ident = str(groomed.get("groomed_identifier") or groomed.get("identifier") or groomed.get("ref") or "").strip()
+            existing = entries.get(ident)
+            if existing is None and ident:
+                existing = next((entry for entry in entries.values() if str(entry.get("ref") or "").strip().casefold() == ident.casefold()), None)
+            if existing is not None:
+                _annotate_groomed_entry(existing, groomed, int(groomed.get("groomed_rank") or 1))
+            else:
+                groomed_new.append(groomed)
+        groomed_ids = {str(item.get("groomed_identifier") or item.get("identifier") or item.get("ref") or "").strip() for item in groomed_new}
+        base_recommendations = [item for item in base_recommendations if str(item.get("ref") or "").strip() not in groomed_ids]
+    rec_items = (groomed_new + base_recommendations)[:3]
+    for index, item in enumerate(rec_items):
         entries[f"recommended:{index}"] = item
     todos = []
+    groomed_groups = {entry["group"] for entry in entries.values() if entry.get("groomed_top3")}
     for group, heading in TODO_BUCKETS.items():
         if not any(entry["group"] == group for entry in entries.values()): continue
         if lines[-1]: lines.append("")
+        if group in groomed_groups:
+            heading = f"{heading} · 🔝 Top3 推荐顺推项"
         lines += [f"**{heading}**", ""]
         for entry in entries.values():
             if entry["group"] != group: continue
@@ -720,7 +747,7 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
             lines.append(f"- [ ] **[{number}] {summary}** · {action} · {reference}")
             todos.append({"number": number, "text": " · ".join(dict.fromkeys(entry["parts"])), "summary": summary,
                           "action": action, "ref": refs, "group": group, "stages": list(dict.fromkeys(entry["stages"])),
-                          **{key: entry[key] for key in ("next_hop_kind", "next_hop_priority", "decision_source") if key in entry}})
+                          **{key: entry[key] for key in ("next_hop_kind", "next_hop_priority", "decision_source", "groomed_top3", "groomed_rank", "groomed_identifier") if key in entry}})
     if not todos: lines.append("- 无已核实待办。")
     rollup: list[list[tuple[str, str, str]]] = [[] for _ in LAYERS]
     def add_row(project: str, item: dict[str, Any], primary: str, result: Any) -> None:
@@ -882,14 +909,19 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
         "planned": "今日高优计划与推荐学习事项",
         "recommended": "基于昨日完结成果顺推的下一步动作",
     }
+    groomed = [row for row in todos if row.get("groomed_top3")]
+    ordinary = [row for row in todos if not row.get("groomed_top3")]
+    display_rows = (groomed[:3] + ordinary)[:8] if groomed else todos[:8]
     if todo_total:
-        tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办（展示前 {min(todo_total, 8)} 项），勾选或留言即可派发执行。"
+        tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办（人区展示 {len(display_rows)} 项），勾选或留言即可派发执行。"
     else:
         tldr = f"昨日共完成 {completed_total} 项产出，今日暂无阻塞或待拍板事项。"
 
     items: list[dict[str, Any]] = []
-    for row in todos[:8]:
+    for row in display_rows:
         summary = _sanitize_human_zone_text(str(row.get("summary") or "待办事项")) or "待办事项"
+        if row.get("groomed_top3"):
+            summary = _sanitize_human_zone_text(f"Top3 {summary}") or "Top3 顺推待办"
         action = str(row.get("action") or "").strip()
         ref = str(row.get("ref") or "").strip()
         link_tokens = [tok for tok in (action, ref) if tok and "](" in tok]
@@ -897,7 +929,12 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
             what = f"{summary}（{link_tokens[0]}）"
         else:
             what = summary
+        number = row.get("number")
+        if number is not None:
+            what = f"[{number}] {what}"
         why = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
+        if row.get("groomed_top3"):
+            why = "Top3 推荐顺推项；依赖已就绪，保留 Plan A 编号"
         items.append({"what": what, "why": why})
     if not items:
         items.append({"what": "保持常规巡检与节奏", "why": "当前无阻塞或高优待办事项"})
@@ -975,19 +1012,37 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
     resolved_groomed_top3 = groomed_top3
+    groom_warnings: list[str] = []
     if resolved_groomed_top3 is None and groom_backlog_on_generate:
         groomer_mod = _load_backlog_groomer_module()
         if groomer_mod is not None:
             resolved_groomed_top3 = groomer_mod.load_groomed_top3_state(target_date=target)
-            if not resolved_groomed_top3 and linear:
-                groom_res = groomer_mod.groom_backlog(linear, target_date=target, top_k=3, jev_fn=jev_runner, write_state=not dry_run)
+            if not resolved_groomed_top3:
+                collected, groom_warnings = groomer_mod.collect_backlog_issues(
+                    linear_rows=linear,
+                    linear_client=client,
+                    linear_scope_cache=scope_cache,
+                    include_multica=True,
+                    multica_server_url=multica_server_url,
+                    multica_workspace_id=multica_workspace_id,
+                    runner=multica_runner or groomer_mod._default_runner,
+                    dry_run=dry_run,
+                )
+                groom_warnings = list(groom_warnings)
+                groom_res = groomer_mod.groom_backlog(
+                    collected,
+                    target_date=target,
+                    top_k=3,
+                    jev_fn=jev_runner,
+                    write_state=not dry_run,
+                )
                 resolved_groomed_top3 = list(groom_res.get("top3_push_candidates") or [])
     plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner, groomed_top3=resolved_groomed_top3)
     rollup_counts = {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}
     use_dual_zone = bool(dual_zone or (publish_multica and not propose_linear))
     dual_zone_markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if (use_dual_zone or publish_multica) else ""
     markdown = dual_zone_markdown if use_dual_zone else plan_a_markdown
-    issue = None; multica_result = None; ok = True; warnings = w1 + w2 + w3 + w4; archive_result = None
+    issue = None; multica_result = None; ok = True; warnings = w1 + w2 + w3 + w4 + groom_warnings; archive_result = None
     if propose_linear and not dry_run:
         try:
             if client is None: raise ValueError("Linear client unavailable")
