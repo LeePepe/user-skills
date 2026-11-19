@@ -35,27 +35,28 @@ _SAVE_TOOL_EXEC_RE = re.compile(
 )
 
 
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[。；;！!\n]+|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:save-tool|knowledge-vault|design-studio|并且|而且|同时|and\b|but\b|then\b)))",
+    re.IGNORECASE,
+)
+
+
 def load_canonical_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> tuple[set[str], set[str]]:
-    """Parse canonical node IDs (including expanded ranges like O1–O4) and TK-01..TK-16 from how-to-nodes.md."""
-    valid_nodes: set[str] = {
-        *(f"E{i}" for i in range(1, 13)),
-        "E4a",
-        *(f"Q{i}" for i in range(1, 4)),
-        *(f"I{i}" for i in range(1, 8)),
-        *(f"G{i}" for i in range(1, 3)),
-        *(f"P{i}" for i in range(1, 10)),
-        *(f"O{i}" for i in range(1, 7)),
-    }
-    valid_tks: set[str] = {f"TK-{i:02d}" for i in range(1, 17)}
+    """Parse canonical node IDs (including expanded ranges like O1–O4) and TK-xx exclusively from how-to-nodes.md."""
+    resolved = nodes_doc.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"canonical How-To catalog not found: {resolved}")
 
-    if not nodes_doc.is_file():
-        return valid_nodes, valid_tks
-
-    text = nodes_doc.read_text(encoding="utf-8")
+    text = resolved.read_text(encoding="utf-8")
+    valid_nodes: set[str] = set()
+    valid_tks: set[str] = set()
     for line in text.splitlines():
         if not line.startswith("|"):
             continue
-        first_col = line.split("|")[1].strip()
+        cols = line.split("|")
+        if len(cols) < 3:
+            continue
+        first_col = cols[1].strip()
         for rng in re.finditer(r"\b([EQIGPO])(\d+)[–-](\1)?(\d+)\b", first_col):
             prefix = rng.group(1)
             start_n, end_n = int(rng.group(2)), int(rng.group(4))
@@ -65,6 +66,9 @@ def load_canonical_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> tuple[set[str
             valid_nodes.add(m_node.group(1))
         for m_tk in re.finditer(r"\b(TK-\d{2})\b", first_col):
             valid_tks.add(m_tk.group(1))
+
+    if not valid_nodes:
+        raise ValueError(f"canonical How-To catalog contains zero node definitions: {resolved}")
     return valid_nodes, valid_tks
 
 
@@ -78,7 +82,17 @@ def audit_5tuple(text: str) -> dict[str, Any]:
 
 
 def check_nodes(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
-    valid_nodes, valid_tks = load_canonical_catalog(nodes_doc)
+    try:
+        valid_nodes, valid_tks = load_canonical_catalog(nodes_doc)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        return {
+            "ok": False,
+            "catalog_error": str(exc),
+            "referenced_nodes": [],
+            "referenced_broken_edges": [],
+            "unknown_nodes": [],
+            "unknown_broken_edges": [],
+        }
     raw_tokens = set(_NODE_TOKEN_RE.findall(text))
     # P0 appears in Notify priority levels (P0/P1/P2, P0 拍板/告警); ignore P0 while strictly checking P1..P9+.
     referenced_nodes = sorted(tok for tok in raw_tokens if tok != "P0")
@@ -94,21 +108,33 @@ def check_nodes(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, 
     }
 
 
+def _clause_is_negated(clause: str, match: re.Match[str]) -> bool:
+    start = max(0, match.start() - 24)
+    window = clause[start:match.end()]
+    return bool(_NEGATION_RE.search(window))
+
+
 def check_vault_redlines(text: str) -> list[dict[str, str]]:
     violations: list[dict[str, str]] = []
     for idx, line in enumerate(text.splitlines(), 1):
-        if _AUTO_SYNC_VAULT_RE.search(line) and not _NEGATION_RE.search(line):
-            violations.append({
-                "code": "vault_isolation_violation",
-                "line": str(idx),
-                "detail": "knowledge-vault must never auto-sync to design-studio",
-            })
-        if _SAVE_TOOL_EXEC_RE.search(line) and not _NEGATION_RE.search(line):
-            violations.append({
-                "code": "save_tool_zero_exec_violation",
-                "line": str(idx),
-                "detail": "save-tool is archive/index-only and must maintain zero execution",
-            })
+        for raw_clause in _CLAUSE_SPLIT_RE.split(line):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+            m_vault = _AUTO_SYNC_VAULT_RE.search(clause)
+            if m_vault and not _clause_is_negated(clause, m_vault):
+                violations.append({
+                    "code": "vault_isolation_violation",
+                    "line": str(idx),
+                    "detail": "knowledge-vault must never auto-sync to design-studio",
+                })
+            m_save = _SAVE_TOOL_EXEC_RE.search(clause)
+            if m_save and not _clause_is_negated(clause, m_save):
+                violations.append({
+                    "code": "save_tool_zero_exec_violation",
+                    "line": str(idx),
+                    "detail": "save-tool is archive/index-only and must maintain zero execution",
+                })
     return violations
 
 
@@ -123,6 +149,11 @@ def validate_recipe(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[s
             "code": "missing_5tuple_dimensions",
             "missing": tuple_res["missing"],
             "detail": f"Recipe is missing 5-tuple dimension(s): {', '.join(tuple_res['missing'])}",
+        })
+    if node_res.get("catalog_error"):
+        violations.append({
+            "code": "missing_or_invalid_catalog",
+            "detail": str(node_res["catalog_error"]),
         })
     if node_res["unknown_nodes"]:
         violations.append({

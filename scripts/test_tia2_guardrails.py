@@ -120,6 +120,51 @@ class Tia2TeamLeadGuardrailTests(unittest.TestCase):
             self.assertIn("missing_receipt_role_or_model", codes)
             self.assertIn("missing_receipt_verification", codes)
 
+    def test_pre_review_check_rejects_empty_r10_labels_and_invalid_or_missing_base_ref(self):
+        blank_r10 = self.fg.validate_r10_receipt("Commit SHA: no-commit\nRole / Model:\nV5:\n")
+        self.assertEqual(len(blank_r10), 3, blank_r10)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / "wt"
+            wt.mkdir()
+            self._init_git_repo(wt)
+            (wt / "src" / "other.py").write_text("OTHER = 2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(wt), "commit", "-am", "out of scope"], check=True, capture_output=True)
+            sha = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "--short", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            brief = Path(tmp) / "TK1.md"
+            brief.write_text("# Brief: TK1\n- **Owned Paths**:\n  - `src/allowed.py`\n", encoding="utf-8")
+            receipt = Path(tmp) / "TK1-writer-r1.md"
+            receipt.write_text(
+                f"# R10\n- Commit SHA: {sha}\n- Role / Model: writer / gpt-5.6-luna\n- V5 Verdict: PASS\n",
+                encoding="utf-8",
+            )
+            bad_base = self.fg.run_pre_review_check(
+                worktree=wt,
+                brief_path=brief,
+                receipt_path=receipt,
+                base_ref="nonexistent-base-ref-xyz",
+            )
+            self.assertFalse(bad_base["ok"])
+            self.assertIn("invalid_base_ref", {v["code"] for v in bad_base["violations"]})
+
+            single_wt = Path(tmp) / "single"
+            single_wt.mkdir()
+            subprocess.run(["git", "init", str(single_wt)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(single_wt), "config", "user.name", "Bot"], check=True)
+            subprocess.run(["git", "-C", str(single_wt), "config", "user.email", "bot@example.com"], check=True)
+            (single_wt / "only.py").write_text("X = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(single_wt), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(single_wt), "commit", "-m", "root"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(single_wt), "branch", "-M", "main"], check=True)
+            no_base = self.fg.run_pre_review_check(worktree=single_wt, brief_path=brief, receipt_path=receipt)
+            self.assertFalse(no_base["ok"])
+            self.assertIn("unresolvable_base_ref", {v["code"] for v in no_base["violations"]})
+
     def test_herdr_dispatch_injects_opt_homebrew_baseline_add_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -207,6 +252,36 @@ class Tia2HowtoGuardrailTests(unittest.TestCase):
         self.assertIn("vault_isolation_violation", codes)
         self.assertIn("save_tool_zero_exec_violation", codes)
 
+    def test_clause_scoped_negation_and_strict_canonical_catalog_requirement(self):
+        mixed_text = (
+            "- **Inbound**: User\n- **Internal**: Route\n- **Calls**: E1\n- **PointsTo**: I5\n"
+            "- **Trigger & Notify**: knowledge-vault 永不自动同步 design-studio; save-tool 直接运行脚本\n"
+        )
+        mixed_res = self.hg.validate_recipe(mixed_text)
+        self.assertFalse(mixed_res["ok"])
+        mixed_codes = [v["code"] for v in mixed_res["violations"]]
+        self.assertIn("save_tool_zero_exec_violation", mixed_codes)
+        self.assertNotIn("vault_isolation_violation", mixed_codes)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_doc = Path(tmp) / "missing-how-to-nodes.md"
+            missing_res = self.hg.validate_recipe(
+                "Inbound Internal Calls E1 PointsTo I5 Trigger",
+                nodes_doc=missing_doc,
+            )
+            self.assertFalse(missing_res["ok"])
+            self.assertIn("missing_or_invalid_catalog", {v["code"] for v in missing_res["violations"]})
+
+            narrow_doc = Path(tmp) / "narrow-nodes.md"
+            narrow_doc.write_text(
+                "| 节点 | 触发 |\n|---|---|\n| E1 Feature | Manual |\n| TK-01 | Edge |\n",
+                encoding="utf-8",
+            )
+            narrow_res = self.hg.check_nodes("Calls E1 and E2 with TK-01 and TK-02", nodes_doc=narrow_doc)
+            self.assertFalse(narrow_res["ok"])
+            self.assertEqual(narrow_res["unknown_nodes"], ["E2"])
+            self.assertEqual(narrow_res["unknown_broken_edges"], ["TK-02"])
+
 
 class Tia2KnowledgeDigestGuardrailTests(unittest.TestCase):
     @classmethod
@@ -255,6 +330,23 @@ class Tia2KnowledgeDigestGuardrailTests(unittest.TestCase):
             bad_codes = {v["code"] for v in bad_res["violations"]}
             self.assertIn("missing_card_section", bad_codes)
             self.assertIn("design_studio_auto_sync_violation", bad_codes)
+
+            mixed_card = vault / "concepts" / "mixed-clause.md"
+            mixed_card.write_text(
+                "---\n"
+                "title: Mixed Clause\n"
+                "category: 工程与设计\n"
+                "updated: 2026-11-19\n"
+                "---\n\n"
+                "# Mixed\n\n"
+                "## ⚡ 一句话本质（TL;DR）\n> Do not publish to the blog; auto-sync to design-studio.\n\n"
+                "## 🎯 核心痛点直答（Pain-Point Q&A）\n### Q1？\n- 直答：A。\n\n"
+                "## ✅ 立即可用清单（Actionable Checklist）\n1. Check.\n",
+                encoding="utf-8",
+            )
+            mixed_card_res = self.dv.precheck_card(file_path=mixed_card, vault_dir=vault)
+            self.assertFalse(mixed_card_res["ok"])
+            self.assertIn("design_studio_auto_sync_violation", {v["code"] for v in mixed_card_res["violations"]})
 
     def test_reconcile_state_repairs_learned_ledger_drift_in_state_and_proposals(self):
         with tempfile.TemporaryDirectory() as tmp:

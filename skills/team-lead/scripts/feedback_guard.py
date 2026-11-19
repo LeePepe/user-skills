@@ -625,21 +625,55 @@ def _matches_owned_path(rel_path: str, owned_patterns: Sequence[str]) -> bool:
     return False
 
 
+def _clean_receipt_value(raw: str) -> str:
+    return raw.strip().strip("*`'\"").strip()
+
+
 def validate_r10_receipt(receipt_text: str) -> list[str]:
-    """Check required R10 receipt sections/fields (Commit SHA, Role/Model, Verification/V5)."""
+    """Check required R10 receipt sections/fields (non-placeholder Commit SHA, non-empty Role/Model, non-empty Verification/V5)."""
     violations: list[str] = []
-    if not re.search(
-        r"(?im)(?:commit(?:\s+sha)?|head(?:\s+sha)?)\b[^\n]{0,40}\b(?:[0-9a-f]{7,40}|n/?a|no[-_\s]?commit)\b",
+    sha_match = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
-    ):
-        violations.append("missing_receipt_commit_sha: R10 receipt must record a valid Commit SHA")
-    if not re.search(
-        r"(?im)\b(?:role(?:\s*/\s*model)?|model|resolved_model|agent)\b[\s*`]*[:|=-]",
+    )
+    sha_val = _clean_receipt_value(sha_match.group(1)) if sha_match else ""
+    if not re.search(r"\b[0-9a-f]{7,40}\b", sha_val, re.IGNORECASE):
+        violations.append("missing_receipt_commit_sha: R10 receipt must record a real 7-40 hex Commit SHA")
+
+    role_match = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?(?:role(?:\s*/\s*model)?|model|resolved_model|agent)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
-    ):
-        violations.append("missing_receipt_role_or_model: R10 receipt must record Role / Model")
-    if not re.search(r"(?im)\b(?:v5|verif(?:y|ication)|verdict|test(?:s)?)\b", receipt_text):
-        violations.append("missing_receipt_verification: R10 receipt must record verification commands or V5 verdict")
+    )
+    role_val = _clean_receipt_value(role_match.group(1)) if role_match else ""
+    if not role_val or role_val.lower() in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
+        violations.append("missing_receipt_role_or_model: R10 receipt must record a non-empty Role / Model value")
+
+    has_verif_value = False
+    v5_line = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?(?:v5(?:\s+verdict)?|verdict|verification(?:\s+commands?)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+        receipt_text,
+    )
+    if v5_line:
+        v5_val = _clean_receipt_value(v5_line.group(1))
+        if v5_val and v5_val.lower() not in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
+            has_verif_value = True
+    if not has_verif_value:
+        sec_match = re.search(
+            r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)",
+            receipt_text,
+        )
+        if sec_match:
+            sec_lines = [
+                ln.strip()
+                for ln in sec_match.group(1).splitlines()
+                if ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
+            ]
+            if sec_lines:
+                has_verif_value = True
+    if not has_verif_value:
+        violations.append(
+            "missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result"
+        )
     return violations
 
 
@@ -691,37 +725,109 @@ def run_pre_review_check(
             "detail": "Tracked modifications must be committed before Reviewer dispatch",
         })
 
-    resolved_base = base_ref
-    if not resolved_base:
-        for candidate in ("origin/main", "main", "HEAD~1"):
-            probe = subprocess.run(
-                ["git", "-C", str(wt), "rev-parse", "--verify", candidate],
+    head_probe = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head_probe.returncode != 0:
+        violations.append({
+            "code": "unverified_head_commit",
+            "detail": head_probe.stderr.strip() or "Worktree has no verifiable HEAD commit",
+        })
+
+    resolved_base: str | None = None
+    if base_ref:
+        explicit_probe = subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if explicit_probe.returncode != 0:
+            violations.append({
+                "code": "invalid_base_ref",
+                "base_ref": base_ref,
+                "detail": explicit_probe.stderr.strip() or f"Explicit --base-ref '{base_ref}' cannot be resolved",
+            })
+        else:
+            mb = subprocess.run(
+                ["git", "-C", str(wt), "merge-base", base_ref, "HEAD"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if probe.returncode == 0:
-                mb = subprocess.run(
-                    ["git", "-C", str(wt), "merge-base", candidate, "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                resolved_base = mb.stdout.strip() if mb.returncode == 0 and mb.stdout.strip() else candidate
+            if mb.returncode != 0 or not mb.stdout.strip():
+                violations.append({
+                    "code": "invalid_base_ref",
+                    "base_ref": base_ref,
+                    "detail": mb.stderr.strip() or f"Cannot compute merge-base between '{base_ref}' and HEAD",
+                })
+            else:
+                resolved_base = mb.stdout.strip()
+    else:
+        head_sha = head_probe.stdout.strip() if head_probe.returncode == 0 else ""
+        for candidate in ("origin/main", "main", "HEAD~1"):
+            probe = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if probe.returncode != 0:
+                continue
+            cand_sha = probe.stdout.strip()
+            if candidate in {"origin/main", "main"} and cand_sha == head_sha:
+                continue
+            mb = subprocess.run(
+                ["git", "-C", str(wt), "merge-base", candidate, "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if mb.returncode == 0 and mb.stdout.strip():
+                resolved_base = mb.stdout.strip()
                 break
+        if not resolved_base:
+            violations.append({
+                "code": "unresolvable_base_ref",
+                "detail": "Could not resolve any valid git comparison base (origin/main, main, or HEAD~1)",
+            })
 
     changed_files: list[str] = []
-    if resolved_base:
+    combined_diff_parts: list[str] = []
+    if resolved_base and head_probe.returncode == 0:
         diff_names = subprocess.run(
             ["git", "-C", str(wt), "--no-pager", "diff", "--name-only", f"{resolved_base}..HEAD"],
             capture_output=True,
             text=True,
             check=False,
         )
-        if diff_names.returncode == 0:
+        if diff_names.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": diff_names.stderr.strip() or f"git diff --name-only {resolved_base}..HEAD failed",
+            })
+        else:
             changed_files.extend(
                 f.strip() for f in diff_names.stdout.splitlines() if f.strip()
             )
+
+        diff_proc = subprocess.run(
+            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", f"{resolved_base}..HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff_proc.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": diff_proc.stderr.strip() or f"git diff --unified=0 {resolved_base}..HEAD failed",
+            })
+        else:
+            combined_diff_parts.append(diff_proc.stdout or "")
+
     for df in dirty_tracked:
         if df not in changed_files:
             changed_files.append(df)
@@ -736,20 +842,22 @@ def run_pre_review_check(
                 "detail": "Modified tracked files fall outside brief Owned Paths",
             })
 
-    diff_target = f"{resolved_base}..HEAD" if resolved_base else "HEAD"
-    diff_proc = subprocess.run(
-        ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", diff_target],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    working_diff_proc = subprocess.run(
-        ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    combined_diff = (diff_proc.stdout or "") + "\n" + (working_diff_proc.stdout or "")
+    if head_probe.returncode == 0:
+        working_diff_proc = subprocess.run(
+            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if working_diff_proc.returncode != 0:
+            violations.append({
+                "code": "git_diff_failed",
+                "detail": working_diff_proc.stderr.strip() or "git diff --unified=0 HEAD failed",
+            })
+        else:
+            combined_diff_parts.append(working_diff_proc.stdout or "")
+
+    combined_diff = "\n".join(combined_diff_parts)
     current_file = ""
     leaked_paths: list[str] = []
     leaked_tokens: list[str] = []

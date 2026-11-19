@@ -2836,6 +2836,10 @@ _KD_AUTO_DESIGN_SYNC_RE = re.compile(
     r"design-studio[^\n。；;]{0,60}(?:自动同步|auto[-_\s]?sync)"
 )
 _KD_NEGATION_RE = re.compile(r"(?i)(?:永不|禁止|严禁|不自动|不得|不会自动|不授权自动|never|must\s+not|do\s+not|not\s+auto)")
+_KD_CLAUSE_SPLIT_RE = re.compile(
+    r"[。；;！!\n]+|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:design-studio|knowledge-vault|自动同步|auto[-_\s]?sync|并且|而且|同时|and\b|but\b|then\b)))",
+    re.IGNORECASE,
+)
 
 
 def precheck_card(
@@ -2897,12 +2901,19 @@ def precheck_card(
             "detail": "auto_sync_design_studio=true violates knowledge-vault -> design-studio isolation boundary",
         })
     for line_no, line in enumerate(raw_md.splitlines(), 1):
-        if _KD_AUTO_DESIGN_SYNC_RE.search(line) and not _KD_NEGATION_RE.search(line):
-            violations.append({
-                "code": "design_studio_auto_sync_violation",
-                "line": str(line_no),
-                "detail": "Card claims automatic sync to design-studio without explicit Owner promotion gate",
-            })
+        for raw_clause in _KD_CLAUSE_SPLIT_RE.split(line):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+            m_sync = _KD_AUTO_DESIGN_SYNC_RE.search(clause)
+            if m_sync:
+                neg_window = clause[max(0, m_sync.start() - 24):m_sync.end()]
+                if not _KD_NEGATION_RE.search(neg_window):
+                    violations.append({
+                        "code": "design_studio_auto_sync_violation",
+                        "line": str(line_no),
+                        "detail": "Card claims automatic sync to design-studio without explicit Owner promotion gate",
+                    })
 
     rel_path = f"{eff_folder}/{resolved.name}"
     eff_vault = vault_dir.expanduser().resolve() if vault_dir is not None else None
