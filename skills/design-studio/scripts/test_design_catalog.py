@@ -1615,5 +1615,81 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
             self.assertEqual(portal.count('</script>'), 2)
 
 
+class PreviewSelectionResetTests(unittest.TestCase):
+    def test_reset_and_check_preview_selection_archives_and_clears_state(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
+            goal_dir = Path(directory) / "fin-4goals-r2"
+            receipts = goal_dir / "receipts"
+            receipts.mkdir(parents=True)
+            selection = receipts / "preview-selection.json"
+            selection.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "appearance": "dark",
+                        "allExpanded": True,
+                        "speedMultiplier": 1,
+                        "selectedVariantID": "v02",
+                        "starredVariantIDs": ["v01", "v04"],
+                        "notesByVariant": {"v02": "Keep compact split header"},
+                        "variants": {
+                            "v02": {"variantID": "v02", "isSelected": True, "isStarred": False, "notes": "Keep"}
+                        },
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            stale_check = run("check-preview-selection", "--file", str(selection))
+            self.assertEqual(stale_check.returncode, 2)
+            stale_report = json.loads(stale_check.stderr)
+            self.assertFalse(stale_report["ok"])
+            self.assertIn("stale_selectedVariantID:v02", stale_report["violations"])
+            self.assertIn("stale_or_invalid_starredVariantIDs", stale_report["violations"])
+            self.assertIn("stale_or_invalid_notesByVariant", stale_report["violations"])
+
+            reset_res = run("reset-preview-selection", "--receipts-dir", str(receipts))
+            self.assertEqual(reset_res.returncode, 0, reset_res.stderr)
+            reset_payload = json.loads(reset_res.stdout)
+            self.assertTrue(reset_payload["ok"])
+            self.assertEqual(reset_payload["round"], 2)
+            self.assertTrue(reset_payload["archived"])
+
+            archive = receipts / "preview-selection-r2.json"
+            self.assertTrue(archive.is_file())
+            archived_data = json.loads(archive.read_text(encoding="utf-8"))
+            self.assertEqual(archived_data["selectedVariantID"], "v02")
+            self.assertEqual(archived_data["starredVariantIDs"], ["v01", "v04"])
+
+            clean_data = json.loads(selection.read_text(encoding="utf-8"))
+            self.assertEqual(clean_data["selectedVariantID"], "")
+            self.assertEqual(clean_data["starredVariantIDs"], [])
+            self.assertEqual(clean_data["notesByVariant"], {})
+            self.assertEqual(clean_data["variants"], {})
+            self.assertEqual(clean_data["appearance"], "dark")
+
+            clean_check = run("check-preview-selection", "--file", str(selection), "--require-archive")
+            self.assertEqual(clean_check.returncode, 0, clean_check.stderr)
+            self.assertTrue(json.loads(clean_check.stdout)["ok"])
+
+            # Subsequent round auto-increments r2 -> r3
+            selection.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "selectedVariantID": "v03",
+                        "starredVariantIDs": [],
+                        "notesByVariant": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            next_reset = run("reset-preview-selection", "--receipts-dir", str(receipts))
+            self.assertEqual(next_reset.returncode, 0, next_reset.stderr)
+            self.assertEqual(json.loads(next_reset.stdout)["round"], 3)
+            self.assertTrue((receipts / "preview-selection-r3.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,29 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-19",
+  "trigger_evals": [
+    {
+      "query": "progressive-disclosure product design UI modernization and post-implementation Visual Traceback for desktop mobile and web",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "author design.md spec.md handoff and run Visual Traceback IMPL_BUG vs SPEC_GAP for macOS and iOS UI modernization",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "diagnose personal Financial ledger FIFO 30d redemption windows and DCA switches",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    },
+    {
+      "query": "design bronze silver gold data warehouse SCD lineage and incremental idempotence",
+      "should_trigger": false,
+      "near_miss_skill": "layered-data-warehouse"
+    }
+  ],
   "active_cases": [
     {
       "id": "EV-001",
@@ -306,6 +328,38 @@
         }
       ],
       "registered_at": "2026-11-17"
+    },
+    {
+      "id": "EV-017",
+      "title": "PreviewHost preview-selection.json Round-Archive/Reset CLI & macOS vs iOS Navigation Divergence (AT-011)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack"
+      ],
+      "cmd": "python3 -m unittest skills.design-studio.scripts.test_design_catalog.PreviewSelectionResetTests",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "OK"
+      ],
+      "file": "skills/my-designer/SKILL.md",
+      "must_contain": [
+        "reset-preview-selection",
+        "check-preview-selection",
+        "preview-selection-r<N>.json",
+        "selectedVariantID",
+        "starredVariantIDs",
+        "notesByVariant",
+        "AT-011",
+        "NavigationSplitView"
+      ],
+      "registered_at": "2026-11-19"
     }
   ]
 }

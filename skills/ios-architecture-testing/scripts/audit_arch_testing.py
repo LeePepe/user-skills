@@ -17,8 +17,8 @@ CARDS: tuple[dict[str, Any], ...] = (
         "slug": "ios-architecture-navigation-migration",
         "concept_path": "knowledge-vault/concepts/ios-architecture-navigation-migration.md",
         "origin": "claude-code-apple-skills",
-        "focus": "State-driven NavigationStack/sheet/tab & deep-link routing, OS API migration inventory, VoiceOver/Dynamic Type/keyboard acceptance",
-        "rules": ["AT-001", "AT-002"],
+        "focus": "State-driven NavigationStack/sheet/tab & deep-link routing, macOS vs iOS navigation divergence, OS API migration inventory, VoiceOver/Dynamic Type/keyboard acceptance",
+        "rules": ["AT-001", "AT-002", "AT-011"],
     },
     {
         "index": 11,
@@ -197,6 +197,72 @@ def audit_source(source: str, label: str = "<snippet>") -> list[dict[str, Any]]:
                 line_no,
                 f"Test `{func_name}` relies on wall-clock sleep synchronization",
                 "Inject a deterministic `Clock` / scheduler or await explicit `confirmation` / `XCTestExpectation` signals.",
+            )
+
+    uncommented_lines = [raw.split("//", 1)[0] for raw in lines]
+    uncommented = "\n".join(uncommented_lines)
+    dock_line = 0
+    for idx, line in enumerate(uncommented_lines, start=1):
+        if re.search(
+            r"\b(?:bottomCapsule\w*|floatingCapsule\w*|floatingDock\w*|bottomDock\w*|FinAppRootShell)\b",
+            line,
+        ):
+            dock_line = idx
+            break
+    if dock_line == 0:
+        for idx, line in enumerate(uncommented_lines, start=1):
+            window = "\n".join(uncommented_lines[max(0, idx - 4) : min(len(uncommented_lines), idx + 4)])
+            if (
+                re.search(r"\b(?:safeAreaInset\s*\(\s*edge\s*:\s*\.bottom|overlay\s*\(\s*alignment\s*:\s*\.bottom)\b", line)
+                and re.search(r"\b(?:Capsule|glassEffect|GlassEffectContainer|dock|Tab)\b", window, re.IGNORECASE)
+            ):
+                dock_line = idx
+                break
+    if dock_line == 0:
+        is_root_shell = bool(re.search(r"\b(?:RootShell|AppRoot|MainShell|RootNavigation)\w*\s*:\s*View\b", uncommented))
+        if is_root_shell:
+            for idx, line in enumerate(uncommented_lines, start=1):
+                if re.search(r"\bTabView\b", line):
+                    dock_line = idx
+                    break
+
+    if dock_line > 0:
+        has_platform_split = bool(re.search(r"#if\s+os\s*\(\s*(?:macOS|iOS)\s*\)", uncommented))
+        has_macos_desktop_nav = bool(
+            re.search(r"\b(?:NavigationSplitView|ToolbarItem|CommandMenu|Commands)\b", uncommented)
+            and re.search(r"\.keyboardShortcut\s*\(", uncommented)
+        )
+        macos_has_bottom_capsule = False
+        active_os: str | None = None
+        for line in uncommented_lines:
+            stripped = line.strip()
+            if re.match(r"^#if\s+os\s*\(\s*macOS\s*\)", stripped):
+                active_os = "macOS"
+            elif re.match(r"^#if\s+os\s*\(\s*iOS\s*\)", stripped):
+                active_os = "iOS"
+            elif re.match(r"^#elseif\s+os\s*\(\s*macOS\s*\)", stripped):
+                active_os = "macOS"
+            elif re.match(r"^#elseif\s+os\s*\(\s*iOS\s*\)", stripped):
+                active_os = "iOS"
+            elif stripped.startswith("#else"):
+                active_os = "macOS" if active_os == "iOS" else ("iOS" if active_os == "macOS" else None)
+            elif stripped.startswith("#endif"):
+                active_os = None
+            elif active_os == "macOS" and re.search(
+                r"\b(?:bottomCapsule\w*|floatingCapsule\w*|floatingDock\w*|bottomDock\w*|safeAreaInset\s*\(\s*edge\s*:\s*\.bottom)\b",
+                line,
+            ):
+                macos_has_bottom_capsule = True
+
+        ios_only_guard = has_platform_split and not bool(re.search(r"os\s*\(\s*macOS\s*\)|#else\b", uncommented))
+        if macos_has_bottom_capsule or (not ios_only_guard and (not has_platform_split or not has_macos_desktop_nav)):
+            add(
+                "AT-011",
+                "ios-architecture-navigation-migration",
+                "high",
+                dock_line,
+                "macos_ios_navigation_not_diverged: Cross-platform root/bottom-dock navigation lacks macOS vs iOS divergence (`#if os(macOS)` / `#if os(iOS)`)",
+                "Split root navigation chrome by platform: iOS uses bottom floating glass capsule dock / bottom `TabView` + single-column `NavigationStack`; macOS uses `NavigationSplitView` or top Commander `ToolbarItem` + multi-column layout + `⌘1..⌘4` `.keyboardShortcut` with zero bottom mobile capsule dock.",
             )
 
     return findings
@@ -411,6 +477,7 @@ def _probe_arch_rule_fires(rule_id: str) -> bool:
         "AT-006": "@Test func sleepy() async throws { #expect(true); try await Task.sleep(for: .milliseconds(10)) }",
         "AT-008": "func sync() { _ = CKContainer.default() }",
         "AT-010": "func ask() { _ = LanguageModelSession() }",
+        "AT-011": "struct AppRootShell: View { var body: some View { NavigationStack { Content() }.overlay(alignment: .bottom) { Capsule().glassEffect() } } }",
     }
     if rule_id in source_probes:
         return rule_id in {item["rule_id"] for item in audit_source(source_probes[rule_id])}

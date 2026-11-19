@@ -117,7 +117,30 @@
         "references/eval-cases.json",
         "../ios-concurrency-swiftui/SKILL.md",
         "../ios-debugging-performance/SKILL.md",
-        "audit_arch_testing.py"
+        "audit_arch_testing.py",
+        "AT-011"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-006",
+      "title": "AT-011 enforces macOS vs iOS root navigation divergence and forbids bottom mobile capsule docks on macOS",
+      "tags": [
+        "navigation",
+        "platform-divergence",
+        "AT-011"
+      ],
+      "cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py audit-source --strict --snippet '#if os(macOS)\nstruct MacShell: View { var body: some View { NavigationSplitView { Sidebar() } detail: { Detail() }.toolbar { ToolbarItem { Button(\"1\") {}.keyboardShortcut(\"1\", modifiers: .command) } } } }\n#elseif os(iOS)\nstruct IOSShell: View { var body: some View { NavigationStack { Content() }.safeAreaInset(edge: .bottom) { Capsule().glassEffect() } } }\n#endif'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "finding_count": 0
+      },
+      "negative_cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py audit-source --strict --snippet 'struct FinAppRootShell: View { var body: some View { NavigationStack { Content() }.overlay(alignment: .bottom) { floatingDock } } }'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "AT-011",
+        "macos_ios_navigation_not_diverged"
       ],
       "registered_at": "2026-11-19"
     }

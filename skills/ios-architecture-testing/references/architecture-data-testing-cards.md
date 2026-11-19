@@ -10,8 +10,9 @@ Distilled reference drawer for [`SKILL.md`](../SKILL.md). Every rule maps 1-to-1
 - **Pain-Point FAQs & Checklist**:
   - *Why model navigation as state first?* Push paths, sheets, and tabs are projections of route state; explicit route enums prevent deep links and state restoration from colliding.
   - *Why scan OS deprecations before migrating?* Inventory deprecated APIs (e.g., `NavigationView` -> `NavigationStack`), behavioral shifts, and deployment targets before editing so interaction semantics do not silently drift.
+  - *Why diverge macOS and iOS root navigation (`AT-011`)?* Cross-platform SwiftUI apps targeting both `macOS` and `iOS` MUST split root navigation chrome via `#if os(macOS)` / `#if os(iOS)`: iOS uses a bottom floating glass capsule dock / bottom `TabView` + single-column `NavigationStack` drill-down; macOS uses a desktop `NavigationSplitView` sidebar or top Commander quick-switcher `ToolbarItem` + master-detail multi-column/inspector layout + `⌘1..⌘4` `.keyboardShortcut` bindings—never place a mobile bottom floating capsule dock on a macOS desktop window.
   - *Why bake accessibility in upfront?* Dynamic Type scaling, VoiceOver reading order, `accessibilityLabel` on icon-only buttons, and minimum hit targets reshape layout containers.
-  - **Checklist**: (1) Draw state/route graph + deep-link parser first; (2) track OS API migration inventory with behavioral regression tests; (3) verify VoiceOver, Dynamic Type, and hardware keyboard navigation on every primary flow.
+  - **Checklist**: (1) Draw state/route graph + deep-link parser and split `#if os(macOS)` vs `#if os(iOS)` root navigation (`AT-011`); (2) track OS API migration inventory with behavioral regression tests; (3) verify VoiceOver, Dynamic Type, and hardware keyboard navigation (`⌘1..⌘4`) on every primary flow.
 
 ---
 
