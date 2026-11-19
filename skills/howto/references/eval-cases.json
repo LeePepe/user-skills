@@ -93,7 +93,30 @@
       "cmd": "python3 -c \"from pathlib import Path; assert all(x in Path('skills/howto/SKILL.md').read_text() for x in ['aidash-metrics','../aidash-metrics/SKILL.md']); assert all(x in Path('skills/workflow-hub/references/how-to-nodes.md').read_text() for x in ['aidash-metrics','厚领域流程'])\"",
       "expect_exit": 0,
       "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-005",
+      "title": "howto_guard.py validates 5-tuple, canonical nodes, and vault isolation on SKILL.md",
+      "tags": [
+        "cli",
+        "5tuple",
+        "guardrail"
+      ],
+      "cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --file skills/howto/SKILL.md",
+      "expect_exit": 0,
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-006",
+      "title": "howto_guard.py rejects unknown node IDs and missing 5-tuple dimensions",
+      "tags": [
+        "negative",
+        "guardrail"
+      ],
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text 'Inbound -> Calls E99 -> TK-99'",
+      "expect_fail_exit": 1,
+      "registered_at": "2026-11-19"
     }
   ],
-  "updated": "2026-11-15"
+  "updated": "2026-11-19"
 }

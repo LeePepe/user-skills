@@ -611,6 +611,7 @@ for raw in (
     "/private/var/folders",
     "/Applications/Xcode.app",
     "/Volumes/SSD",
+    "/opt/homebrew",
     *extra_env,
 ):
     remember(raw)
@@ -742,6 +743,7 @@ if [[ "$KIND" == "copilot" ]]; then
     "$HOME/orca"
     "/Volumes/SSD"
     "/Applications/Xcode.app"
+    "/opt/homebrew"
     "/tmp"
     "/private/tmp"
     "/var/folders"
