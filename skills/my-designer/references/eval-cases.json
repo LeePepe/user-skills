@@ -360,6 +360,36 @@
         "NavigationSplitView"
       ],
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-018",
+      "title": "Deterministic Loop 5 Taste Evidence Proposal CLI",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "WebViewport"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/taste_evolution_loop.py loop-check --handoff-root /tmp/does-not-exist",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "design-taste-evolution",
+        "has_delta"
+      ],
+      "expect_json_subset": {
+        "ok": true,
+        "has_delta": false
+      },
+      "registered_at": "2026-11-19"
     }
   ]
 }
