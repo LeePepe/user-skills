@@ -67,6 +67,20 @@ class SpecCodeDriftPatrolTests(unittest.TestCase):
         self.assertIn("deprecated_test_clause", codes)
         self.assertNotIn("feature_only.swift", json.dumps(report))
 
+    def test_tracked_binary_and_non_utf8_blobs_preserve_paths_without_crashing(self):
+        holder, dev, handoff = self.fixture(clean=True)
+        self.addCleanup(holder.cleanup)
+        repo = dev / "Financial"
+        (repo / "Assets").mkdir()
+        (repo / "Assets" / "icon.bin").write_bytes(b"\\x89PNG\\r\\n\\x1a\\n\\x8d\\xff")
+        (repo / "Assets" / "legacy.txt").write_bytes(b"route: legacy\\xff\\n")
+        git("add", ".", cwd=repo)
+        git("commit", "-qm", "add binary and non-utf8 files", cwd=repo)
+        (handoff / "goal-a" / "spec.md").write_text("Repository: Financial\\nBinary asset: `Assets/icon.bin`\\nLegacy text: `Assets/legacy.txt`\\n", encoding="utf-8")
+        report = patrol.scan(dev_root=dev, handoff_root=handoff, repos=("Financial",))
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["missing_repositories"], [])
+
     def test_clean_fixture_and_noise_triage(self):
         holder, dev, handoff = self.fixture(clean=True)
         self.addCleanup(holder.cleanup)

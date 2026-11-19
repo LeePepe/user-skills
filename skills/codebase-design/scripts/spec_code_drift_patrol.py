@@ -28,6 +28,14 @@ ISSUE_BRIEF_PATH = SKILLS_ROOT / "issue-brief" / "scripts" / "verify_issue_forma
 ARCH_AUDIT_PATH = SKILLS_ROOT / "ios-architecture-testing" / "scripts" / "audit_arch_testing.py"
 LOOP_ID = "spec-code-drift-patrol"
 DEFAULT_REPOS = ("Financial", "VoxPocket", "VitalStride", "AIDash")
+GIT_TIMEOUT_SEC = 3.0
+MAX_TRACKED_PATHS = 20_000
+MAX_TEXT_BLOB_BYTES = 2_000_000
+TEXT_SUFFIXES = frozenset({
+    ".c", ".cc", ".cpp", ".css", ".csv", ".go", ".h", ".hpp", ".html", ".java", ".js", ".json",
+    ".jsx", ".kt", ".md", ".m", ".mm", ".py", ".rb", ".rs", ".sh", ".sql", ".swift", ".tds",
+    ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
+})
 PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_-]+)?")
 BACKTICK_RE = re.compile(r"`([^`]+)`")
 REPO_LINE_RE = re.compile(r"(?im)^\s*(?:repository|repo|target\s+repository|目标仓库)\s*[:：]\s*([^\n#]+)")
@@ -60,17 +68,29 @@ def _json_value(value: Any) -> Any:
     return json.loads(raw)
 
 
-def _run_git(repo: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    repo: Path,
+    args: Sequence[str],
+    *,
+    text: bool = True,
+    timeout: float = GIT_TIMEOUT_SEC,
+) -> subprocess.CompletedProcess[Any]:
+    command = ["git", "-C", str(repo), *args]
     try:
         return subprocess.run(
-            ["git", "-C", str(repo), *args],
+            command,
             capture_output=True,
-            text=True,
+            text=text,
             check=False,
+            timeout=timeout,
             env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         )
+    except subprocess.TimeoutExpired:
+        empty: str | bytes = "" if text else b""
+        return subprocess.CompletedProcess(command, 124, empty, "git command timed out")
     except OSError as exc:
-        return subprocess.CompletedProcess(["git", *args], 127, "", str(exc))
+        empty = "" if text else b""
+        return subprocess.CompletedProcess(command, 127, empty, str(exc))
 
 
 def _main_ref(repo: Path) -> str | None:
@@ -80,28 +100,29 @@ def _main_ref(repo: Path) -> str | None:
     return None
 
 
+def _is_text_path(name: str) -> bool:
+    suffix = Path(name).suffix.lower()
+    return not suffix or suffix in TEXT_SUFFIXES
+
+
 def _tracked_snapshot(repo: Path) -> tuple[str | None, dict[str, str], dict[str, int]]:
-    """Return main-ref text, tracked files, and line counts without reading dirty-only files."""
+    """Return tracked main paths and bounded UTF-8 text, tolerating binary blobs."""
     ref = _main_ref(repo)
-    if ref:
-        listed = _run_git(repo, ["ls-tree", "-r", "--name-only", ref])
-        names = [x.strip() for x in listed.stdout.splitlines() if x.strip()] if listed.returncode == 0 else []
-        files: dict[str, str] = {}
-        for name in names:
-            shown = _run_git(repo, ["show", f"{ref}:{name}"])
-            if shown.returncode == 0:
-                files[name] = shown.stdout
-        return ref, files, {name: text.count("\n") + 1 for name, text in files.items()}
-    listed = _run_git(repo, ["ls-files"])
-    files = {}
-    for name in listed.stdout.splitlines():
-        path = repo / name
-        if path.is_file():
-            try:
-                files[name] = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-    return None, files, {name: text.count("\n") + 1 for name, text in files.items()}
+    listed = _run_git(repo, ["ls-tree", "-r", "--name-only", ref] if ref else ["ls-files"])
+    raw_names = listed.stdout.splitlines() if listed.returncode == 0 else []
+    names = [str(x).strip() for x in raw_names if str(x).strip()]
+    files: dict[str, str] = {name: "" for name in names}
+    for name in names[:MAX_TRACKED_PATHS]:
+        if not _is_text_path(name):
+            continue
+        shown = _run_git(repo, ["show", f"{ref}:{name}"] if ref else ["show", ":" + name], text=False)
+        if shown.returncode != 0 or not isinstance(shown.stdout, (bytes, bytearray)):
+            continue
+        blob = bytes(shown.stdout)
+        if len(blob) > MAX_TEXT_BLOB_BYTES:
+            continue
+        files[name] = blob.decode("utf-8", errors="replace")
+    return ref, files, {name: text.count("\n") + 1 for name, text in files.items()}
 
 
 def _line_number(text: str, needle: str) -> int:
