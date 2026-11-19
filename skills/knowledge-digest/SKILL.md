@@ -96,6 +96,18 @@ user-invocable: true
 
 ---
 
+## Workflow Skill & Agent Daily Research
+
+`skills/knowledge-digest/scripts/skill_agent_research_loop.py` is a candidate-only, `track=workflow` loop for Swarm, Harness, Gate, Context Engineering, and public Agent Skills sources. It never publishes cards or marks topics learned.
+
+```bash
+python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py discover --vault-dir <vault> --collected-tools-dir <collected-tools> --radar-path <fact_repo_snapshot-dir>
+python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py loop-check --day YYYY-MM-DD [--mock-jev-json <json-or-file>]
+python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py digest-dual-zone --input-json <ranked.json> --day YYYY-MM-DD
+```
+
+Discovery deduplicates against `topic-ledger.json`; R09 uses `0.65 * p_direct + 0.35 * (s_tier / 3.0)` and falls back deterministically when Jev is unavailable or malformed. Public probes are bounded and opt-in via `--fetch-public`. `digest_vault.py discover-topics --track workflow` provides the shared workflow-track filter.
+
 ## References
 
 - [templates.md](references/templates.md), [card-templates.json](references/card-templates.json) & [eval-cases.json](references/eval-cases.json) — `concepts/`、`craft/`、`thoughts/`、`raw/`、`index.md` 骨架与零 Token 回归抽屉。
