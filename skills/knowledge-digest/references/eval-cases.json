@@ -64,6 +64,23 @@
       "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py precheck-card --file /nonexistent-tia2-card.md",
       "expect_fail_exit": 1,
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "workflow research loop exposes deterministic CLI stages",
+      "tags": [
+        "workflow",
+        "research-loop"
+      ],
+      "cmd": "python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "discover",
+        "rerank-r09",
+        "digest-dual-zone",
+        "loop-check"
+      ],
+      "registered_at": "2026-11-19"
     }
   ]
 }

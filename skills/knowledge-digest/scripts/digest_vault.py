@@ -1724,6 +1724,7 @@ def _update_proposal_external_ids(proposals_path: Path, selected: list[dict[str,
 def discover_topics(
     *,
     top: int | None = None,
+    track: str | None = None,
     propose_aidash: bool = False,
     propose_linear: bool = False,
     dual_zone: bool = False,
@@ -1779,6 +1780,10 @@ def discover_topics(
             _scan_collected_tools_candidates(collected_tools_dir, existing_corpus, vault_dir=vault_dir, ledger_entries=ledger_entries)
             + ([] if propose_aidash else _scan_git_tech_stack_candidates(git_roots, existing_corpus))
         )
+        if track is not None:
+            if track not in VALID_TRACKS:
+                return {"ok": False, "status": "invalid_track", "error": f"unsupported track: {track}", "selected_count": 0, "topics": [], "tracks_summary": {"workflow": [], "personal": []}, "proposals_written": []}
+            raw_candidates = [candidate for candidate in raw_candidates if infer_topic_track(candidate) == track]
         day = _cst_day_str(now_dt)
         daily_map = registry.get("daily_linear_issues", {})
         legacy_map = registry.get("daily_linear_digests", {})
@@ -3087,6 +3092,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_disc = sub.add_parser("discover-topics", help="Scan git tech stack, collected-tools, and vault gaps with R09")
     p_disc.add_argument("--top", type=int, default=None)
+    p_disc.add_argument("--track", choices=VALID_TRACKS, default=None, help="Restrict candidate discovery to one learning track")
     p_disc.add_argument("--propose-aidash", action="store_true")
     p_disc.add_argument("--propose-linear", action="store_true", help="Explicitly create/update the daily TIA digest issue")
     p_disc.add_argument("--dual-zone", action="store_true", help="Render Linear/Multica daily digest issue using strict Dual-Zone contract")
@@ -3160,6 +3166,7 @@ def main(argv: list[str] | None = None) -> int:
             mat = False
         res = discover_topics(
             top=args.top,
+            track=args.track,
             propose_aidash=args.propose_aidash,
             propose_linear=args.propose_linear,
             dual_zone=getattr(args, "dual_zone", False),

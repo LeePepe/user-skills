@@ -109,6 +109,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_priority="medium",
     ),
     LoopSpec(
+        loop_id="skill-agent-daily-research",
+        aliases=("skill-agent-research", "skill_agent_daily_research"),
+        autopilot_title="Daily Skill Agent Architecture Research Autopilot (Workflow -> Owner)",
+        cron="30 4 * * *",
+        trigger_label="Daily CST Workflow Skill & Agent Architecture Research",
+        delivery_mode="dual_zone_issue",
+        issue_title_template="[Skill Agent Research {date}] Workflow 架构候选日报",
+        default_status="todo",
+        default_priority="medium",
+    ),
+    LoopSpec(
         loop_id="aidash-retro-delta",
         aliases=("retro-discover", "retro_discover", "aidash-retro"),
         autopilot_title="Daily AIDash Digest & Retro Improvements Autopilot (P3 -> Owner)",
@@ -596,6 +607,7 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
 
 def sync_autopilots(
     *,
+    loop_id: str | None = None,
     server_url: str = DEFAULT_SERVER_URL,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     agent_id: str = DEFAULT_AGENT_ID,
@@ -605,6 +617,13 @@ def sync_autopilots(
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     multica_bin: str | None = None,
 ) -> dict[str, Any]:
+    selected_specs = CANONICAL_LOOP_SPECS
+    if loop_id is not None:
+        requested = str(loop_id).strip().lower()
+        selected_specs = tuple(spec for spec in CANONICAL_LOOP_SPECS if spec.loop_id == requested or requested in spec.aliases)
+        if not selected_specs:
+            raise ValueError(f"Unknown canonical loop: {loop_id}")
+
     if dry_run:
         return {
             "ok": True,
@@ -617,7 +636,7 @@ def sync_autopilots(
                     "timezone": tz_name,
                     "delivery_mode": s.delivery_mode,
                 }
-                for s in CANONICAL_LOOP_SPECS
+                for s in selected_specs
             ],
         }
 
@@ -631,7 +650,7 @@ def sync_autopilots(
     existing_list = listed.get("autopilots", []) if isinstance(listed, dict) else (listed if isinstance(listed, list) else [])
 
     synced: list[dict[str, Any]] = []
-    for spec in CANONICAL_LOOP_SPECS:
+    for spec in selected_specs:
         matched = None
         for ap in existing_list:
             if not isinstance(ap, dict):
@@ -843,6 +862,21 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             ],
             "raw": snap.get("summary") or {},
         }
+
+    if spec.loop_id == "skill-agent-daily-research":
+        research_script = SKILLS_ROOT / "knowledge-digest" / "scripts" / "skill_agent_research_loop.py"
+        args = [sys.executable, str(research_script), "loop-check", "--day", date_str, "--fetch-public"]
+        proc = subprocess.run(args, capture_output=True, text=True, check=False)
+        try:
+            result = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        except ValueError:
+            result = {"ok": False, "status": "collector_error", "diagnostics": [proc.stderr.strip()[:300]]}
+        if proc.returncode != 0:
+            result.setdefault("ok", False)
+            result.setdefault("status", "collector_error")
+        result.setdefault("loop_id", spec.loop_id)
+        result.setdefault("date", date_str)
+        return result
 
     if spec.loop_id == "daily-learn-recommend":
         dv_script = SKILLS_ROOT / "knowledge-digest" / "scripts" / "digest_vault.py"
@@ -1475,6 +1509,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_vpn.add_argument("--json", action="store_true", default=True)
 
     p_sync = sub.add_parser("sync-autopilots", help="Register/update canonical loops in Multica Autopilot")
+    p_sync.add_argument("--loop", dest="loop_id", default=None, help="Optionally sync only one canonical loop (backwards-compatible selector)")
     p_sync.add_argument("--server-url", default=DEFAULT_SERVER_URL)
     p_sync.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
     p_sync.add_argument("--agent-id", default=DEFAULT_AGENT_ID)
@@ -1487,7 +1522,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, aidash-retro-delta, local-herdr-worktree-gc, backlog-grooming-and-push)",
+        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, backlog-grooming-and-push)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)
@@ -1522,6 +1557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if ns.subcommand == "sync-autopilots":
         report = sync_autopilots(
+            loop_id=ns.loop_id,
             server_url=ns.server_url,
             workspace_id=ns.workspace_id,
             agent_id=ns.agent_id,
