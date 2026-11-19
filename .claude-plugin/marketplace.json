@@ -28,6 +28,12 @@
       "description": "TIA Idea Inbox 与 Global Goal Status Board：收集想法、提升 Goal、同步状态与 Task checklist。"
     },
     {
+      "name": "issue-brief",
+      "source": "./skills/issue-brief",
+      "category": "workflow",
+      "description": "Format, render, and verify Multica and Linear issue bodies using the Dual-Zone Issue Format Contract (<=15 plain-Chinese human lines with TL;DR + checkable items above a collapsible AI context <details> block and <!-- multica-cursor:... --> watermark). Not for codebase PR reviews, UI design specs, or blog HTML."
+    },
+    {
       "name": "retro-loop",
       "source": "./skills/retro-loop",
       "category": "workflow",

@@ -789,14 +789,76 @@ def propose(client: Any, title: str, markdown: str, parent: str | None = DEFAULT
     kwargs["team_id"] = team["id"]; kwargs["state_id"] = todo["id"]
     return client.create_issue(**kwargs)
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+@lru_cache(maxsize=1)
+def _load_issue_brief_module() -> Any:
+    path = Path(__file__).resolve().parents[2] / "issue-brief/scripts/verify_issue_format.py"
+    spec = importlib.util.spec_from_file_location("daily_brief_issue_brief", path)
+    if not spec or not spec.loader: raise ImportError("Canonical verify_issue_format unavailable")
+    module = importlib.util.module_from_spec(spec)
+    old_flag = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally: sys.dont_write_bytecode = old_flag
+    return module
+
+def _sanitize_human_zone_text(text: str) -> str:
+    cleaned = re.sub(r"(?<![A-Za-z0-9_-])(?:S(?:1[0-2]|[1-9])|M[1-5]|EV-\d{1,4}|DC-\d{1,4}|H[1-5]|R10|V[1-5])(?![A-Za-z0-9_-])", "", text)
+    cleaned = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", cleaned)
+    cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" ·—-")
+
+def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[str, Any]], *, rollup_counts: dict[str, int] | None = None) -> str:
+    """Render a strict Dual-Zone issue body wrapping Plan A daily brief context inside <details>."""
+    issue_brief = _load_issue_brief_module()
+    yesterday = target - timedelta(days=1)
+    completed_total = sum((rollup_counts or {}).values()) if rollup_counts else sum(1 for ln in plan_a_markdown.splitlines() if ln.startswith("| **"))
+    todo_total = len(todos)
+    bucket_label_map = {
+        "needs": "待你拍板阻塞项，确认后才能继续推进",
+        "active": "在途跟进任务，保持进度与质量验收",
+        "planned": "今日高优计划与推荐学习事项",
+        "recommended": "基于昨日完结成果顺推的下一步动作",
+    }
+    if todo_total:
+        tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办（展示前 {min(todo_total, 8)} 项），勾选或留言即可派发执行。"
+    else:
+        tldr = f"昨日共完成 {completed_total} 项产出，今日暂无阻塞或待拍板事项。"
+
+    items: list[dict[str, Any]] = []
+    for row in todos[:8]:
+        summary = _sanitize_human_zone_text(str(row.get("summary") or "待办事项")) or "待办事项"
+        action = str(row.get("action") or "").strip()
+        what = f"{summary}（{action}）" if action and "](" in action else summary
+        why = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
+        items.append({"what": what, "why": why})
+    if not items:
+        items.append({"what": "保持常规巡检与节奏", "why": "当前无阻塞或高优待办事项"})
+
+    stripped_plan_a = re.sub(r"\A<!--\s*GTT-LINEAR-DEDUP:[^\n]*-->\n?", "", plan_a_markdown).strip()
+    dedup_key = f"daily-brief-{target.isoformat()}"
+    rendered = issue_brief.render_dual_zone_issue(
+        tldr=tldr,
+        items=items,
+        cursor=dedup_key,
+        extra_comments=[f"<!-- GTT-LINEAR-DEDUP:{dedup_key} -->"],
+        ai_context_md=stripped_plan_a or f"- `date`: `{target.isoformat()}`",
+    )
+    verification = issue_brief.verify_dual_zone_issue(rendered)
+    if not verification["ok"]:
+        raise ValueError(f"Dual-Zone daily brief verification failed: {verification['violations']}")
+    return rendered
+
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
     available_repos = tuple(f"LeePepe/{r}" for r in PERSONAL_REPOS if (dev_root / r).exists())
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
-    markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
+    plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
+    rollup_counts = {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}
+    markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if dual_zone else plan_a_markdown
     issue = None; ok = True; warnings = w1 + w2 + w3 + w4; archive_result = None
     if propose_linear and not dry_run:
         try:
@@ -818,7 +880,8 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
                         )
             except Exception:
                 pass
-    payload = {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
+    payload = {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": rollup_counts, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
+    if dual_zone: payload["plan_a_markdown"] = plan_a_markdown
     if archive_result is not None: payload["archive_completed"] = archive_result
     return payload
 
@@ -928,16 +991,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true")
     parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dual-zone", action="store_true", help="Render Daily Brief using Dual-Zone issue-brief contract")
     parser.add_argument("--json", action="store_true"); parser.add_argument("--verify-markdown", metavar="PATH")
     args = parser.parse_args(argv)
     if args.verify_markdown is not None:
-        try: errors = validate_markdown(_read_verification_input(args.verify_markdown))
+        try:
+            raw_md = _read_verification_input(args.verify_markdown)
+            if args.dual_zone:
+                dz_report = _load_issue_brief_module().verify_dual_zone_issue(raw_md)
+                errors = [] if dz_report["ok"] else [v["message"] for v in dz_report["violations"]]
+            else:
+                errors = validate_markdown(raw_md)
         except (OSError, UnicodeError) as exc: errors = [f"cannot read Markdown input: {type(exc).__name__}"]
         if errors:
             print("Markdown verification failed: " + "; ".join(errors), file=sys.stderr); return 1
         print("Markdown verification passed"); return 0
     try: client = _load_linear_client(dry_run=args.dry_run)
     except Exception: client = None
-    result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue)
+    result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue, dual_zone=args.dual_zone)
     print(json.dumps(result, ensure_ascii=False) if args.json else result["markdown"], end="" if args.json else ""); return 0 if result["ok"] else 1
 if __name__ == "__main__": raise SystemExit(main())

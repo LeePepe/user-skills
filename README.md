@@ -17,7 +17,8 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 [`team-lead`](./skills/team-lead/SKILL.md) 是规划或执行开发工作前加载的 `Goal -> Task` 两层执行合同，适用于 Phase 0 交互共创设计与 Phase 1 自治执行（单会话及 subagent 协作）。它定义范围与验收、唯一写者（`1 Task = 1 Writer = 1 Worktree = 1 PR`）、定义冻结、交接和双轴独立审查，并提供 CLI 分工、嵌套限制及执行台账模板；内附全景手册 [`playbook.md`](./skills/team-lead/references/playbook.md) 与交互式飞轮图 [`ai-native-flywheel.html`](./skills/team-lead/assets/ai-native-flywheel.html)。旧目录名 `goal-target-task` 已移除。
 
 [`linear-board`](./skills/linear-board/SKILL.md) 负责 TIA Idea Inbox、`1 Goal = 1 Issue`
-全局状态看板、Task checklist 和 Idea promotion；[`retro-loop`](./skills/retro-loop/SKILL.md)
+全局状态看板、Task checklist 和 Idea promotion；[`issue-brief`](./skills/issue-brief/SKILL.md)
+负责 Multica / Linear Issue 的「上半区给人看 `<=15` 行纯中文结论与勾选项 / 下半区给 AI 看 `<details>` 折叠证据 + `<!-- multica-cursor:... -->` 水位线」双区格式渲染与确定性门禁；[`retro-loop`](./skills/retro-loop/SKILL.md)
 负责双路复盘与三道物理锁；[`story-craft`](./skills/story-craft/SKILL.md) 负责四元素
 素材抽取、脱敏、Story Series、Tech Deep-Dive Blog 与 Deck 发布读回。
 
@@ -68,6 +69,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install aidash-metrics@user-skills
 /plugin install workflow-hub@user-skills
 /plugin install linear-board@user-skills
+/plugin install issue-brief@user-skills
 /plugin install team-lead@user-skills
 /plugin install m2-dispatcher@user-skills
 /plugin install personal-m2-assistant@user-skills
@@ -89,6 +91,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/team-lead 安装 team-lead。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/workflow-hub 安装 workflow-hub。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/linear-board 安装 linear-board。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/issue-brief 安装 issue-brief。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/m2-dispatcher 安装 m2-dispatcher。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/personal-m2-assistant 安装 personal-m2-assistant。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
