@@ -865,9 +865,7 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
 
     if spec.loop_id == "skill-agent-daily-research":
         research_script = SKILLS_ROOT / "knowledge-digest" / "scripts" / "skill_agent_research_loop.py"
-        args = [sys.executable, str(research_script), "loop-check", "--day", date_str]
-        if os.environ.get("SKILL_AGENT_RESEARCH_FETCH_PUBLIC") == "1":
-            args.append("--fetch-public")
+        args = [sys.executable, str(research_script), "loop-check", "--day", date_str, "--fetch-public"]
         proc = subprocess.run(args, capture_output=True, text=True, check=False)
         try:
             result = json.loads(proc.stdout) if proc.stdout.strip() else {}

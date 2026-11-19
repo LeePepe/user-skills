@@ -106,7 +106,7 @@ python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py loop-check 
 python3 skills/knowledge-digest/scripts/skill_agent_research_loop.py digest-dual-zone --input-json <ranked.json> --day YYYY-MM-DD
 ```
 
-Discovery deduplicates against `topic-ledger.json`; R09 uses `0.65 * p_direct + 0.35 * (s_tier / 3.0)` and falls back deterministically when Jev is unavailable or malformed. Public probes are bounded and opt-in via `--fetch-public`. `digest_vault.py discover-topics --track workflow` provides the shared workflow-track filter.
+Discovery deduplicates against `topic-ledger.json` (including source IDs, URI variants, and 12-character fingerprints); R09 uses `0.65 * p_direct + 0.35 * (s_tier / 3.0)` and falls back deterministically when Jev is unavailable or malformed. Manual public probes are bounded and opt-in via `--fetch-public`; the scheduled runner enables them internally and reads `~/Development/AIDash/aidata/L1_collect/raw/github_repo/*.jsonl`. `digest_vault.py discover-topics --track workflow` provides the shared workflow-track filter. Selected outputs remain candidate-only four-element drafts until Owner approval.
 
 ## References
 
