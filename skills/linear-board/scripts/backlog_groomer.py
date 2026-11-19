@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -127,8 +128,10 @@ ISSUE_ID_RE = re.compile(r"\b(?:TIA|MUL)-\d+\b", re.IGNORECASE)
 PR_REF_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+\b")
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]*|[\u4e00-\u9fff]{2,}")
 BLOCKER_RE = re.compile(
-    r"(?i)\b(?:blocked\s+by|depends\s+on|waiting\s+on|waiting\s+for|blocked|hold|need_go|need_owner_decision|task_blocked)\b"
-    r"|阻塞|等待前置|依赖未就绪|待拍板|暂缓"
+    r"(?i)\b(?:blocked\s+by|depends\s+on|waiting\s+on|waiting\s+for|blocked|hold|need_go|need_owner_decision|needs\s+decision|owner\s+decision|task_blocked|input_blocked|review_fail)\b"
+    r"|阻塞|等待前置|依赖未就绪|待拍板|待选型|暂缓"
+    r"|(?:demo|gallery|选型)[^\n.!。]{0,100}(?:awaiting|waiting\s+for|pending|待拍板|待选|待你选择)"
+    r"|(?:awaiting|waiting\s+for|pending|待拍板|待选)[^\n.!。]{0,100}(?:demo|gallery|选型)"
 )
 HIGH_ROI_RE = re.compile(
     r"(?i)\b(?:roi|automate|automation|loop|dedup|deduplicate|groom|hygiene|verify|gate|guardrail|telemetry|autopilot|zero-token|0-agent)\b"
@@ -317,9 +320,13 @@ def _scope_excluded(
     warnings: list[str] | None = None,
     daily_brief: Any = None,
 ) -> bool:
-    parent_ref = raw.get("parent") or raw.get("parent_issue") or raw.get("parent_issue_id")
-    has_parent_scope = parent_ref not in (None, "", {})
-    has_team_scope = raw.get("team") not in (None, "", {})
+    if raw.get("_scope_verified") is True:
+        return False
+    has_parent_scope = any(
+        key in raw and raw.get(key) not in (None, "")
+        for key in ("parent", "parent_issue", "parent_issue_id")
+    )
+    has_team_scope = "team" in raw and raw.get("team") not in (None, "")
     if not has_parent_scope and not has_team_scope:
         return False
     module = daily_brief or _load_daily_brief()
@@ -409,6 +416,7 @@ def _normalize_issue_record(
         "created_at": created_at,
         "updated_at": updated_at,
         "blocked_by": blocked_by,
+        "_scope_verified": True,
     }
     for key in ("team", "parent", "parent_issue", "parent_issue_id", "project_id"):
         if key in raw:
@@ -556,6 +564,8 @@ def cluster_and_deduplicate_issues(
         norm["problem_fingerprint"] = norm["fingerprint_meta"]["problem_fingerprint"]
         enriched.append(norm)
 
+    enriched.sort(key=_survivor_sort_key)
+
     n = len(enriched)
     parent = list(range(n))
     pair_reasons: dict[tuple[int, int], tuple[float, str]] = {}
@@ -649,6 +659,11 @@ def cluster_and_deduplicate_issues(
                 }
             )
         deduplicated_candidates.append(survivor)
+
+    deduplicated_candidates.sort(key=_survivor_sort_key)
+    duplicate_clusters.sort(
+        key=lambda cl: (str((cl.get("canonical_issue") or {}).get("identifier") or ""), str(cl.get("cluster_id") or ""))
+    )
 
     return {
         "total_open_backlog_issues": len(enriched),
@@ -1153,7 +1168,18 @@ def groom_backlog(
     if write_state or state_output_path is not None:
         out_path = Path(state_output_path).expanduser() if state_output_path is not None else _default_state_path()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        serialized = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+        fd, tmp_name = tempfile.mkstemp(prefix=".top3-groomed-", dir=str(out_path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+            os.replace(tmp_name, out_path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
         result["state_output_path"] = str(out_path)
 
     return result
@@ -1338,8 +1364,16 @@ def load_groomed_top3_state(path: Path | None = None, *, target_date: date | Non
         return []
     if target_date is not None and payload.get("date") and str(payload.get("date")) != target_date.isoformat():
         return []
-    rows = payload.get("top3_push_candidates") or payload.get("top3_recommendations") or []
-    return [dict(r) for r in rows if isinstance(r, Mapping)]
+    top_rows = [dict(r) for r in (payload.get("top3_push_candidates") or payload.get("top3_recommendations") or []) if isinstance(r, Mapping)]
+    seen_ids = {str(r.get("identifier") or r.get("id") or "") for r in top_rows}
+    extra_ready = [
+        dict(r)
+        for r in (payload.get("ranked_candidates") or [])
+        if isinstance(r, Mapping)
+        and r.get("ready_to_push") is not False
+        and str(r.get("identifier") or r.get("id") or "") not in seen_ids
+    ]
+    return top_rows + extra_ready
 
 
 # ---------------------------------------------------------------------------

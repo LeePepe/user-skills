@@ -624,9 +624,12 @@ def _normalize_groomed_top3_items(
 ) -> list[dict[str, Any]]:
     if not raw_items: return []
     out: list[dict[str, Any]] = []
-    for rank, raw in enumerate(raw_items, 1):
+    seen_idents: set[str] = set()
+    for raw in raw_items:
         if not isinstance(raw, dict): continue
+        if raw.get("ready_to_push") is False: continue
         ident = str(raw.get("identifier") or raw.get("ref") or "").strip()
+        if ident and ident.casefold() in seen_idents: continue
         url = str(raw.get("url") or issue_urls.get(ident) or (f"https://linear.app/tianpeili/issue/{ident}" if re.fullmatch(r"TIA-\d+", ident) else "")).strip()
         if ident and url and re.fullmatch(r"TIA-\d+", ident): issue_urls.setdefault(ident, url)
         action = str(raw.get("action") or "").strip()
@@ -638,6 +641,7 @@ def _normalize_groomed_top3_items(
         ref = ident if re.fullmatch(r"TIA-\d+", ident) else (str(raw.get("ref") or project).strip() or "backlog")
         repo = _reference_context(raw, project)
         score = float(raw.get("composite_score") or raw.get("roi_score") or raw.get("next_hop_priority") or 0.75)
+        if ident: seen_idents.add(ident.casefold())
         out.append({
             "group": "recommended",
             "summary": summary,
@@ -651,16 +655,17 @@ def _normalize_groomed_top3_items(
             "next_hop_priority": score,
             "decision_source": str(raw.get("decision_source") or "backlog_groomer"),
             "groomed_top3": True,
-            "groomed_rank": rank,
             "groomed_identifier": ident,
         })
-        if len(out) >= 3: break
     return out
 
 def _annotate_groomed_entry(entry: dict[str, Any], groomed: dict[str, Any], rank: int) -> None:
     entry["groomed_top3"] = True
     entry["groomed_rank"] = rank
-    entry["groomed_identifier"] = str(groomed.get("identifier") or groomed.get("ref") or "").strip()
+    entry["groomed_identifier"] = str(groomed.get("groomed_identifier") or groomed.get("identifier") or groomed.get("ref") or "").strip()
+    raw_summary = _plain(entry.get("summary") or "")
+    if not raw_summary.startswith("Top3 "):
+        entry["summary"] = f"Top3 {raw_summary}".strip()
 
 def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None) -> tuple[str, list[dict[str, Any]]]:
     yesterday = target - timedelta(days=1)
@@ -711,15 +716,30 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
     base_recommendations = list(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner))
     groomed_new: list[dict[str, Any]] = []
     if groomed_top3:
+        closed_or_excluded_ids = {
+            str(issue.get("identifier") or "").strip().casefold()
+            for issue in linear
+            if issue.get("identifier") and (_closed_issue(issue) or _brief_issue(issue))
+        }
         groomed_items = _normalize_groomed_top3_items(groomed_top3, entries, issue_urls)
+        selected_groomed = 0
         for groomed in groomed_items:
+            if selected_groomed >= 3:
+                break
             ident = str(groomed.get("groomed_identifier") or groomed.get("identifier") or groomed.get("ref") or "").strip()
+            if ident and ident.casefold() in closed_or_excluded_ids:
+                continue
             existing = entries.get(ident)
             if existing is None and ident:
                 existing = next((entry for entry in entries.values() if str(entry.get("ref") or "").strip().casefold() == ident.casefold()), None)
             if existing is not None:
-                _annotate_groomed_entry(existing, groomed, int(groomed.get("groomed_rank") or 1))
+                if existing.get("group") in {"needs", "active"}:
+                    continue
+                selected_groomed += 1
+                _annotate_groomed_entry(existing, groomed, selected_groomed)
             else:
+                selected_groomed += 1
+                groomed["groomed_rank"] = selected_groomed
                 groomed_new.append(groomed)
         groomed_ids = {str(item.get("groomed_identifier") or item.get("identifier") or item.get("ref") or "").strip() for item in groomed_new}
         base_recommendations = [item for item in base_recommendations if str(item.get("ref") or "").strip() not in groomed_ids]
@@ -727,12 +747,9 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
     for index, item in enumerate(rec_items):
         entries[f"recommended:{index}"] = item
     todos = []
-    groomed_groups = {entry["group"] for entry in entries.values() if entry.get("groomed_top3")}
     for group, heading in TODO_BUCKETS.items():
         if not any(entry["group"] == group for entry in entries.values()): continue
         if lines[-1]: lines.append("")
-        if group in groomed_groups:
-            heading = f"{heading} · 🔝 Top3 推荐顺推项"
         lines += [f"**{heading}**", ""]
         for entry in entries.values():
             if entry["group"] != group: continue
@@ -909,18 +926,27 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
         "planned": "今日高优计划与推荐学习事项",
         "recommended": "基于昨日完结成果顺推的下一步动作",
     }
-    groomed = [row for row in todos if row.get("groomed_top3")]
-    ordinary = [row for row in todos if not row.get("groomed_top3")]
-    display_rows = (groomed[:3] + ordinary)[:8] if groomed else todos[:8]
+    groomed = [row for row in todos if row.get("groomed_top3") and row.get("group") not in {"needs", "active"}][:3]
+    if groomed:
+        groomed_nums = {row.get("number") for row in groomed}
+        ordinary = [row for row in todos if row.get("number") not in groomed_nums]
+        reserved_ordinary = ordinary[: max(0, 8 - len(groomed))]
+        display_rows = sorted(
+            reserved_ordinary + groomed,
+            key=lambda r: int(r.get("number") or 0),
+        )[:8]
+    else:
+        display_rows = todos[:8]
     if todo_total:
         tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办（人区展示 {len(display_rows)} 项），勾选或留言即可派发执行。"
     else:
         tldr = f"昨日共完成 {completed_total} 项产出，今日暂无阻塞或待拍板事项。"
 
-    items: list[dict[str, Any]] = []
-    for row in display_rows:
+    items: list[str | dict[str, Any]] = []
+    for idx, row in enumerate(display_rows, 1):
+        is_groomed = bool(row.get("groomed_top3")) and row.get("group") not in {"needs", "active"}
         summary = _sanitize_human_zone_text(str(row.get("summary") or "待办事项")) or "待办事项"
-        if row.get("groomed_top3"):
+        if is_groomed and not summary.startswith("Top3"):
             summary = _sanitize_human_zone_text(f"Top3 {summary}") or "Top3 顺推待办"
         action = str(row.get("action") or "").strip()
         ref = str(row.get("ref") or "").strip()
@@ -929,13 +955,11 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
             what = f"{summary}（{link_tokens[0]}）"
         else:
             what = summary
-        number = row.get("number")
-        if number is not None:
-            what = f"[{number}] {what}"
+        number = int(row.get("number") or idx)
         why = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
-        if row.get("groomed_top3"):
-            why = "Top3 推荐顺推项；依赖已就绪，保留 Plan A 编号"
-        items.append({"what": what, "why": why})
+        if is_groomed:
+            why = "Top3 推荐顺推项；依赖已就绪，勾选或按编号派发"
+        items.append(f"- [ ] **[{number}] {what}** — {why}")
     if not items:
         items.append({"what": "保持常规巡检与节奏", "why": "当前无阻塞或高优待办事项"})
 
@@ -1231,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.groomed_top3_json is not None:
         groomer_mod = _load_backlog_groomer_module()
         if groomer_mod is not None:
-            groomed_top3 = groomer_mod.load_groomed_top3_state(args.groomed_top3_json)
+            groomed_top3 = groomer_mod.load_groomed_top3_state(args.groomed_top3_json, target_date=parse_date(args.date))
     result = generate(
         parse_date(args.date),
         dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(),
