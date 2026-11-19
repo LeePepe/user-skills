@@ -465,6 +465,106 @@ def _is_worktree_held(worktree: Path, held_goals: set[str]) -> bool:
     return any(wt_name == g or wt_name.startswith(g + "-") for g in held_goals)
 
 
+def _match_worktree_to_goal(worktree: Path, ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    wt_name = worktree.name
+    if wt_name in ledgers:
+        return wt_name
+    for goal_name in sorted(ledgers, key=len, reverse=True):
+        if wt_name == goal_name or wt_name.startswith(goal_name + "-") or _stem_matches_goal(wt_name, goal_name):
+            return goal_name
+    return None
+
+
+def _is_positively_merged(
+    repo_dir: Path,
+    wt_path: Path,
+    branch: str | None,
+    *,
+    ledgers: Mapping[str, Mapping[str, Any]],
+    git_gc: Any,
+    runner: Runner,
+) -> bool:
+    """Require positive merge evidence; never classify a fresh 0-commit branch as merged."""
+    matched_goal = _match_worktree_to_goal(wt_path, ledgers)
+    goal_meta = ledgers.get(matched_goal) if matched_goal else None
+
+    if not branch:
+        return bool(goal_meta and goal_meta.get("goal_done"))
+
+    # Check if tip equals HEAD and is not in a Merge commit parent
+    head_proc = runner(["git", "-C", str(repo_dir), "rev-parse", "--verify", "HEAD"], check=False)
+    branch_proc = runner(["git", "-C", str(repo_dir), "rev-parse", "--verify", branch], check=False)
+    head_sha = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
+    branch_sha = (branch_proc.stdout or "").strip() if branch_proc.returncode == 0 else ""
+
+    # If the worktree corresponds to a completed Goal ledger (EVT=GOAL_DONE), check ancestor or GitHub PR
+    if goal_meta and goal_meta.get("goal_done"):
+        anc_proc = runner(
+            ["git", "-C", str(repo_dir), "merge-base", "--is-ancestor", branch, "HEAD"],
+            check=False,
+        )
+        if anc_proc.returncode == 0:
+            return True
+
+    # If branch tip is a proper ancestor of HEAD (branch_sha != head_sha) and merged into HEAD
+    if head_sha and branch_sha and branch_sha != head_sha:
+        anc_proc = runner(
+            ["git", "-C", str(repo_dir), "merge-base", "--is-ancestor", branch, "HEAD"],
+            check=False,
+        )
+        if anc_proc.returncode == 0:
+            # Verify branch was merged (e.g. second parent of a merge commit on HEAD) rather than an old base
+            merges_proc = runner(
+                ["git", "-C", str(repo_dir), "rev-list", "--merges", "--parents", f"{branch_sha}..HEAD"],
+                check=False,
+            )
+            if any(branch_sha in line.split()[2:] for line in (merges_proc.stdout or "").splitlines() if len(line.split()) >= 3):
+                return True
+
+    # If branch_sha == head_sha without GOAL_DONE, check if HEAD itself is a fast-forward merge of an explicit PR
+    # Otherwise, delegate to git_gc.is_merged ONLY when branch is not a fresh unmerged checkout at HEAD
+    if head_sha and branch_sha and branch_sha == head_sha and not (goal_meta and goal_meta.get("goal_done")):
+        # Check if there is an explicit MERGED PR on GitHub via gh/REST; do NOT let git merge-base fallback return True
+        slug = git_gc._github_slug(repo_dir, runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)))
+        if not slug:
+            return False
+        try:
+            pr_res = runner(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    slug,
+                    "--state",
+                    "all",
+                    "--head",
+                    branch,
+                    "--limit",
+                    "20",
+                    "--json",
+                    "number,state,mergedAt",
+                ],
+                check=False,
+            )
+            rows = json.loads(pr_res.stdout or "[]")
+            if isinstance(rows, list):
+                if any(str(r.get("state", "")).upper() == "OPEN" for r in rows):
+                    return False
+                return any(r.get("mergedAt") or str(r.get("state", "")).upper() == "MERGED" for r in rows)
+        except (OSError, ValueError, TypeError):
+            return False
+        return False
+
+    return bool(
+        git_gc.is_merged(
+            repo_dir,
+            branch=branch,
+            runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)),
+        )
+    )
+
+
 def scan_worktrees(
     *,
     dev_root: Path,
@@ -477,7 +577,8 @@ def scan_worktrees(
     git_gc = _load_git_gc()
     _, agents = _load_herdr_snapshot(herdr_json=herdr_json, runner=runner)
     active_cwds = _active_pane_cwds(agents)
-    held_goals = _held_goal_names(handoff_root)
+    ledgers = _scan_handoff_ledgers(handoff_root)
+    held_goals = {name for name, meta in ledgers.items() if meta.get("is_held")}
 
     clean_merged: list[dict[str, Any]] = []
     preserved: list[dict[str, Any]] = []
@@ -504,20 +605,25 @@ def scan_worktrees(
                 if ln.strip() and not any(noise in ln for noise in git_gc.NOISE_NAMES)
             ]
             is_dirty = int(len(dirty_lines) > 0)
-            has_active_pane = int(
-                _path_has_active_pane(wt_path, active_cwds)
-                if herdr_json is not None
-                else git_gc.has_active_herdr_pane(wt_path, runner=lambda cmd, **kw: runner(cmd, check=False))
-            )
+            active_detected = _path_has_active_pane(wt_path, active_cwds)
+            if not active_detected and herdr_json is None and not agents:
+                active_detected = git_gc.has_active_herdr_pane(
+                    wt_path,
+                    runner=lambda cmd, **kw: runner(cmd, check=False),
+                )
+            has_active_pane = int(active_detected)
             is_held = int(_is_worktree_held(wt_path, held_goals))
 
             if merge_checker is not None:
                 merged_bool = merge_checker(repo_dir, branch)
             else:
-                merged_bool = git_gc.is_merged(
+                merged_bool = _is_positively_merged(
                     repo_dir,
-                    branch=branch,
-                    runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)),
+                    wt_path,
+                    branch,
+                    ledgers=ledgers,
+                    git_gc=git_gc,
+                    runner=runner,
                 )
             is_merged_to_default = int(bool(merged_bool))
 
@@ -759,6 +865,7 @@ def run_safe_gc(
 
     git_gc = _load_git_gc()
     reclaimed_worktrees: list[dict[str, Any]] = []
+    worktree_errors: list[dict[str, Any]] = []
     for wt_entry in snapshot["worktrees"]["clean_merged_worktrees"]:
         # Triple-check safety invariants before touching any worktree
         if (
@@ -781,15 +888,26 @@ def run_safe_gc(
                 }
             )
             continue
-        clean_res = git_gc.task_clean(
-            repo=repo_path,
-            worktree=wt_path,
-            branch=branch,
-            dry_run=False,
-            allow_unmerged=False,
-            runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)),
-            herdr_check=lambda _: False,
-        )
+        try:
+            clean_res = git_gc.task_clean(
+                repo=repo_path,
+                worktree=wt_path,
+                branch=branch,
+                dry_run=False,
+                allow_unmerged=True,
+                runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)),
+                herdr_check=lambda _: False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            worktree_errors.append(
+                {
+                    "repo": wt_entry["repo"],
+                    "worktree": str(wt_path),
+                    "branch": branch,
+                    "error": str(exc),
+                }
+            )
+            continue
         if clean_res.get("removed"):
             reclaimed_worktrees.append(
                 {
@@ -801,7 +919,9 @@ def run_safe_gc(
                 }
             )
 
-    # Also invoke git-gc.py daily-cleanup in dry-run/safe watermark mode for completed goal log pruning
+    # Always run git-gc.py daily-cleanup with --dry-run on the subprocess sweep so that
+    # unguarded sweep(apply_tier1=True) inside git-gc.py can NEVER delete held or active-pane
+    # worktrees; worktree reclamation is exclusively owned by the guarded loop above.
     daily_summary: dict[str, Any] = {}
     daily_cmd = [
         sys.executable,
@@ -817,11 +937,8 @@ def run_safe_gc(
         str(resolved_state),
         "--repos",
         ",".join(repos),
+        "--dry-run",
     ]
-    if dry_run or merge_checker is not None:
-        # When custom merge_checker is injected (e.g. unit tests), keep subprocess daily-cleanup dry-run
-        # so external GitHub API calls inside git-gc.py sweep cannot mutate or stall hermetic fixtures.
-        daily_cmd.append("--dry-run")
     daily_proc = runner(daily_cmd, check=False)
     if daily_proc.returncode == 0 and (daily_proc.stdout or "").strip():
         try:
@@ -835,6 +952,7 @@ def run_safe_gc(
         "closed_panes": closed_panes,
         "pane_close_errors": pane_errors,
         "reclaimed_worktrees": reclaimed_worktrees,
+        "worktree_reclaim_errors": worktree_errors,
         "preserved_worktrees_count": len(snapshot["worktrees"]["preserved_worktrees"]),
         "daily_cleanup": daily_summary,
     }

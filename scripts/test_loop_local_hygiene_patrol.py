@@ -228,6 +228,43 @@ class LocalHygienePatrolTests(unittest.TestCase):
         self.assertTrue((dev_root / "worktrees" / "goal-active-pane").is_dir())
         self.assertTrue(repo_dir.is_dir())
 
+    def test_production_run_safe_gc_without_merge_checker_preserves_zero_commit_and_held_worktrees(self):
+        holder, dev_root, handoff_root = self._build_fixture_env()
+        self.addCleanup(holder.cleanup)
+        herdr_snap = self._sample_herdr_snapshot(dev_root)
+
+        # Also create a brand-new worktree branched from main with 0 commits and no active pane
+        wt_zero = dev_root / "worktrees" / "goal-fresh-zero-commit"
+        _git(["git", "-C", str(dev_root / "user-skills"), "worktree", "add", "-q", "-b", "feat/fresh-zero", str(wt_zero), "main"])
+
+        def prod_runner(cmd, *, cwd=None, check=False):
+            if list(cmd)[:3] == ["herdr", "pane", "close"]:
+                return subprocess.CompletedProcess(list(cmd), 0, stdout='{"ok":true}', stderr="")
+            if list(cmd)[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(list(cmd), 0, stdout="[]", stderr="")
+            return _git(cmd, cwd=cwd, check=check)
+
+        # Call run_safe_gc with merge_checker=None and dry_run=False (production path)
+        gc_res = patrol.run_safe_gc(
+            dev_root=dev_root,
+            handoff_root=handoff_root,
+            state_dir=dev_root / ".gc-state",
+            repos=("user-skills",),
+            herdr_json=herdr_snap,
+            dry_run=False,
+            runner=prod_runner,
+            merge_checker=None,
+        )
+        self.assertTrue(gc_res["ok"])
+        reclaimed_names = [Path(r["worktree"]).name for r in gc_res["reclaimed_worktrees"]]
+        self.assertEqual(reclaimed_names, ["goal-clean-merged"])
+        # Zero-commit brand-new worktree, held worktree, dirty worktree, unmerged worktree, and active-pane worktree MUST survive
+        self.assertTrue(wt_zero.is_dir())
+        self.assertTrue((dev_root / "worktrees" / "goal-held-wt").is_dir())
+        self.assertTrue((dev_root / "worktrees" / "goal-dirty-wt").is_dir())
+        self.assertTrue((dev_root / "worktrees" / "goal-unmerged-wt").is_dir())
+        self.assertTrue((dev_root / "worktrees" / "goal-active-pane").is_dir())
+
     def test_loop_check_detects_dirty_main_and_behind_origin_and_emits_verified_dual_zone_alert(self):
         holder, dev_root, handoff_root = self._build_fixture_env()
         self.addCleanup(holder.cleanup)
