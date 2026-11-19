@@ -74,6 +74,24 @@
       "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree /nonexistent-tia2-wt --brief /nonexistent-tia2-brief.md",
       "expect_fail_exit": 1,
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-005",
+      "title": "multica_loop_runner.py shared symlink and CLI subcommands",
+      "tags": [
+        "multica",
+        "autopilot",
+        "jev"
+      ],
+      "cmd": "python3 skills/m2-dispatcher/scripts/multica_loop_runner.py sync-autopilots --dry-run",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "daily-brief",
+        "skills-roi-diagnostic",
+        "daily-learn-recommend",
+        "aidash-retro-delta"
+      ],
+      "registered_at": "2026-11-19"
     }
   ]
 }

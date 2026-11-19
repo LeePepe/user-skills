@@ -10,6 +10,10 @@ from typing import Any, Callable
 
 CST = timezone(timedelta(hours=8))
 OWNER_ID = "0680d5e4-720a-4724-a1d4-b9660c0d1495"
+MULTICA_DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
+MULTICA_DEFAULT_WORKSPACE_ID = "6f6b9a0b-4375-4ebc-a997-ff0c99b2645c"
+MULTICA_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
+MULTICA_OWNER_EMAIL = "lee@multica.local"
 DEFAULT_PARENT = ""
 DEFAULT_PROJECT = "user-skills"
 DEFAULT_MILESTONE = "Skills Workflow"
@@ -829,7 +833,12 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
     for row in todos[:8]:
         summary = _sanitize_human_zone_text(str(row.get("summary") or "待办事项")) or "待办事项"
         action = str(row.get("action") or "").strip()
-        what = f"{summary}（{action}）" if action and "](" in action else summary
+        ref = str(row.get("ref") or "").strip()
+        link_tokens = [tok for tok in (action, ref) if tok and "](" in tok]
+        if link_tokens and "](" not in summary:
+            what = f"{summary}（{link_tokens[0]}）"
+        else:
+            what = summary
         why = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
         items.append({"what": what, "why": why})
     if not items:
@@ -849,7 +858,58 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
         raise ValueError(f"Dual-Zone daily brief verification failed: {verification['violations']}")
     return rendered
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+
+@lru_cache(maxsize=1)
+def _load_multica_loop_runner() -> Any:
+    path = Path(__file__).resolve().parents[2] / "team-lead/scripts/multica_loop_runner.py"
+    spec = importlib.util.spec_from_file_location("daily_brief_multica_loop", path)
+    if not spec or not spec.loader:
+        raise ImportError("Canonical multica_loop_runner unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    old_flag = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = old_flag
+    return module
+
+
+def publish_multica_brief(
+    target: date,
+    *,
+    title: str,
+    dual_zone_markdown: str,
+    server_url: str = MULTICA_DEFAULT_SERVER_URL,
+    workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID,
+    assignee_id: str = MULTICA_OWNER_ID,
+    priority: str = "medium",
+    status: str = "todo",
+    dry_run: bool = False,
+    multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    loop_mod = _load_multica_loop_runner()
+    dedup_key = f"daily-brief-{target.isoformat()}"
+    kwargs: dict[str, Any] = {
+        "title": title,
+        "description": dual_zone_markdown,
+        "cursor": dedup_key,
+        "assignee_id": assignee_id,
+        "priority": priority,
+        "status": status,
+        "retire_prior_prefix": "[Daily Brief",
+        "current_date": target.isoformat(),
+        "server_url": server_url,
+        "workspace_id": workspace_id,
+        "dry_run": dry_run,
+    }
+    if multica_runner is not None:
+        kwargs["runner"] = multica_runner
+    return loop_mod.upsert_multica_dual_zone_issue(**kwargs)
+
+
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, publish_multica: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, multica_server_url: str = MULTICA_DEFAULT_SERVER_URL, multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID, multica_assignee_id: str = MULTICA_OWNER_ID, multica_status: str = "todo", multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
@@ -858,8 +918,10 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
     plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
     rollup_counts = {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}
-    markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if dual_zone else plan_a_markdown
-    issue = None; ok = True; warnings = w1 + w2 + w3 + w4; archive_result = None
+    use_dual_zone = bool(dual_zone or (publish_multica and not propose_linear))
+    dual_zone_markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if (use_dual_zone or publish_multica) else ""
+    markdown = dual_zone_markdown if use_dual_zone else plan_a_markdown
+    issue = None; multica_result = None; ok = True; warnings = w1 + w2 + w3 + w4; archive_result = None
     if propose_linear and not dry_run:
         try:
             if client is None: raise ValueError("Linear client unavailable")
@@ -880,8 +942,30 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
                         )
             except Exception:
                 pass
+    if publish_multica:
+        try:
+            with _proposal_lock():
+                multica_result = publish_multica_brief(
+                    target,
+                    title=_brief_title(target),
+                    dual_zone_markdown=dual_zone_markdown,
+                    server_url=multica_server_url,
+                    workspace_id=multica_workspace_id,
+                    assignee_id=multica_assignee_id,
+                    status=multica_status,
+                    dry_run=dry_run,
+                    multica_runner=multica_runner,
+                )
+            if not dry_run and (not isinstance(multica_result, dict) or not multica_result.get("ok")):
+                raise ValueError("Multica publication not confirmed")
+        except Exception:
+            ok = False
+            warning = "Multica publication failed; brief was not published to Multica"
+            warnings.append(warning)
     payload = {"ok": ok, "date": target.isoformat(), "yesterday": yesterday.isoformat(), "title": _brief_title(target), "dedup_key": f"daily-brief-{target.isoformat()}", "markdown": markdown, "rollup_counts": rollup_counts, "todo_items": todos, "linear_issue": issue, "warnings": sorted(set(warnings))}
-    if dual_zone: payload["plan_a_markdown"] = plan_a_markdown
+    if publish_multica: payload["multica_issue"] = multica_result
+    if use_dual_zone: payload["plan_a_markdown"] = plan_a_markdown
+    elif dual_zone_markdown: payload["dual_zone_markdown"] = dual_zone_markdown
     if archive_result is not None: payload["archive_completed"] = archive_result
     return payload
 
@@ -989,10 +1073,19 @@ def _read_verification_input(path: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", default="today"); parser.add_argument("--propose-linear", action="store_true")
-    parser.add_argument("--parent-issue", default=DEFAULT_PARENT); parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--date", default="today")
+    parser.add_argument("--propose-linear", action="store_true")
+    parser.add_argument("--publish-multica", action="store_true", help="Publish Dual-Zone Daily Brief to NAS Multica")
+    parser.add_argument("--target", choices=("linear", "multica", "both"), default=None, help="Target board(s) to publish")
+    parser.add_argument("--multica-server-url", default=MULTICA_DEFAULT_SERVER_URL)
+    parser.add_argument("--multica-workspace-id", default=MULTICA_DEFAULT_WORKSPACE_ID)
+    parser.add_argument("--multica-assignee-id", default=MULTICA_OWNER_ID)
+    parser.add_argument("--multica-status", default="todo")
+    parser.add_argument("--parent-issue", default=DEFAULT_PARENT)
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--dual-zone", action="store_true", help="Render Daily Brief using Dual-Zone issue-brief contract")
-    parser.add_argument("--json", action="store_true"); parser.add_argument("--verify-markdown", metavar="PATH")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--verify-markdown", metavar="PATH")
     args = parser.parse_args(argv)
     if args.verify_markdown is not None:
         try:
@@ -1006,8 +1099,25 @@ def main(argv: list[str] | None = None) -> int:
         if errors:
             print("Markdown verification failed: " + "; ".join(errors), file=sys.stderr); return 1
         print("Markdown verification passed"); return 0
+    propose_linear = bool(args.propose_linear or args.target in {"linear", "both"})
+    publish_multica = bool(args.publish_multica or args.target in {"multica", "both"})
+    dual_zone = bool(args.dual_zone or (publish_multica and not propose_linear))
     try: client = _load_linear_client(dry_run=args.dry_run)
     except Exception: client = None
-    result = generate(parse_date(args.date), dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(), handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(), client=client, propose_linear=args.propose_linear, dry_run=args.dry_run, parent=args.parent_issue, dual_zone=args.dual_zone)
+    result = generate(
+        parse_date(args.date),
+        dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(),
+        handoff_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_HANDOFF_ROOT", "~/Development/handoff")).expanduser(),
+        client=client,
+        propose_linear=propose_linear,
+        publish_multica=publish_multica,
+        dry_run=args.dry_run,
+        parent=args.parent_issue,
+        dual_zone=dual_zone,
+        multica_server_url=args.multica_server_url,
+        multica_workspace_id=args.multica_workspace_id,
+        multica_assignee_id=args.multica_assignee_id,
+        multica_status=args.multica_status,
+    )
     print(json.dumps(result, ensure_ascii=False) if args.json else result["markdown"], end="" if args.json else ""); return 0 if result["ok"] else 1
 if __name__ == "__main__": raise SystemExit(main())
