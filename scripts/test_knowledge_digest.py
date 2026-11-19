@@ -1063,6 +1063,24 @@ class KnowledgeDigestTests(unittest.TestCase):
                 ],
             )
 
+            # Verify Dual-Zone create -> rerun idempotency (upper zone stays <= 15 lines)
+            rerun_res = DIGEST.discover_topics(
+                top=3,
+                propose_aidash=True,
+                propose_linear=True,
+                dual_zone=True,
+                linear_transport=transport,
+                vault_dir=vault,
+                collected_tools_dir=tools,
+                git_roots=(),
+                proposals_path=root / "proposals.jsonl",
+                state_path=root / "state.json",
+                now_utc=datetime(2026, 11, 19, 3, 0, tzinfo=timezone.utc),
+            )
+            self.assertTrue(rerun_res["ok"])
+            self.assertEqual(transport.updated, [])
+            self.assertTrue(issue_brief.verify_dual_zone_issue(transport.issues[0]["description"])["ok"])
+
             # Standard mode (`dual_zone=False`) also groups under the two track headings and merges idempotently
             std_desc = DIGEST._daily_digest_markdown("2026-11-19", res["topics"], dual_zone=False)
             self.assertIn("板块一 · Workflow 相关学习", std_desc)

@@ -1486,7 +1486,7 @@ def render_dual_zone_digest_issue(day: str, topics: list[dict[str, Any]]) -> str
             context_blocks.extend(
                 [
                     f"<!-- KD-TOPIC-START:{key} -->",
-                    f"### [{TRACK_LABELS[track_id]}] `{key}` — {title}",
+                    f"### [{TRACK_LABELS[track_id]}] {title} (`{key}`)",
                     *(_daily_brief_lines(brief)),
                     f"<!-- KD-TOPIC-END:{key} -->",
                     "",
