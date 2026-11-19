@@ -1,0 +1,1 @@
+../../team-lead/scripts/local_hygiene_patrol.py
