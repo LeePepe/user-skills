@@ -312,6 +312,275 @@ class BacklogGroomerLoopTests(unittest.TestCase):
             self.assertEqual(len(created_bodies), 1)
             self.assertTrue(issue_brief.verify_dual_zone_issue(created_bodies[0])["ok"])
 
+    def test_multica_live_listing_paginates_by_raw_rows_with_bounded_contract(self):
+        calls = []
+        # Page 1 has 1 open item + 1 closed item (filtered out) -> offset MUST advance by raw_count (2), not 1
+        pages = [
+            {
+                "has_more": True,
+                "issues": [
+                    {"id": "m1", "identifier": "MUL-1", "title": "First open", "status": "todo"},
+                    {"id": "m2", "identifier": "MUL-2", "title": "Closed on page 1", "status": "done"},
+                ],
+                "limit": 100,
+                "offset": 0,
+                "total": 3,
+            },
+            {
+                "has_more": False,
+                "issues": [{"id": "m3", "identifier": "MUL-3", "title": "Third open", "status": "todo"}],
+                "limit": 100,
+                "offset": 2,
+                "total": 3,
+            },
+        ]
+
+        def runner(args, **kwargs):
+            calls.append((args, kwargs))
+            offset = int(args[args.index("--offset") + 1])
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(pages[offset // 2]), stderr="")
+
+        rows, warnings = groomer.collect_backlog_issues(
+            linear_rows=[], include_multica=True, multica_bin="multica-test", runner=runner, dry_run=True
+        )
+        self.assertEqual([row["identifier"] for row in rows], ["MUL-1", "MUL-3"])
+        self.assertEqual([int(args[args.index("--offset") + 1]) for args, _ in calls], [0, 2])
+        self.assertEqual([args[args.index("--limit") + 1] for args, _ in calls], ["100", "100"])
+        self.assertTrue(all(call_kwargs.get("timeout") == 15 for _, call_kwargs in calls))
+        self.assertEqual(warnings, [])
+
+    def test_scope_ancestry_excludes_work_grandparent_team_empty_parent_and_preserves_multihop_personal(self):
+        personal_root = {
+            "id": "p-root",
+            "identifier": "TIA-300",
+            "title": "[Epic] Personal Platform",
+            "team": {"name": "Personal"},
+            "project": {"name": "user-skills"},
+            "parent": None,
+        }
+        personal_mid = {
+            "id": "p-mid",
+            "identifier": "TIA-301",
+            "title": "Personal Milestone Sub-Epic",
+            "team": {"name": "Personal"},
+            "project": {"name": "user-skills"},
+            "parent": {"id": "p-root"},
+        }
+        personal_leaf = {
+            "id": "p-leaf",
+            "identifier": "TIA-902",
+            "title": "Automate telemetry gate",
+            "state": {"name": "Todo", "type": "unstarted"},
+            "priority": 2,
+            "team": {"name": "Personal"},
+            "project": {"name": "user-skills"},
+            "parent": {"id": "p-mid", "title": "Personal Milestone Sub-Epic"},
+        }
+        work_grandparent = {
+            "id": "w-root",
+            "identifier": "TIA-365",
+            "title": "[Root] Work Business",
+            "team": {"name": "Personal"},
+            "project": {"name": "Work Business"},
+            "parent": None,
+        }
+        work_mid = {
+            "id": "w-mid",
+            "identifier": "TIA-366",
+            "title": "Neutral Mid Container",
+            "team": {"name": "Personal"},
+            "project": {"name": "Personal"},
+            "parent": {"id": "w-root"},
+        }
+        work_leaf = {
+            "id": "w-leaf",
+            "identifier": "TIA-900",
+            "title": "Generic pipeline cleanup",
+            "state": {"name": "Todo", "type": "unstarted"},
+            "priority": 1,
+            "team": {"name": "Personal"},
+            "project": None,
+            "parent": {"id": "w-mid", "title": "Neutral Mid Container"},
+        }
+        work_team_issue = {
+            "id": "w-team",
+            "identifier": "TIA-903",
+            "title": "Generic task under Bing team",
+            "state": {"name": "Todo", "type": "unstarted"},
+            "priority": 2,
+            "team": {"name": "Bing"},
+            "project": {"name": "user-skills"},
+            "parent": None,
+        }
+        empty_parent_dict = {
+            "id": "bad-parent",
+            "identifier": "TIA-901",
+            "title": "Malformed empty parent dict must fail closed",
+            "state": {"name": "Todo", "type": "unstarted"},
+            "priority": 2,
+            "project": {"name": "user-skills"},
+            "parent": {},
+        }
+
+        scope_map = {
+            "p-mid": personal_mid,
+            "p-root": personal_root,
+            "w-mid": work_mid,
+            "w-root": work_grandparent,
+        }
+
+        class ScopeClient:
+            def issue_scope(self, identifier: str):
+                return scope_map[identifier]
+
+        rows, warnings = groomer.collect_backlog_issues(
+            linear_rows=[personal_leaf, work_leaf, work_team_issue, empty_parent_dict],
+            linear_client=ScopeClient(),
+            include_multica=False,
+            dry_run=True,
+        )
+        self.assertEqual([row["identifier"] for row in rows], ["TIA-902"])
+        self.assertTrue(any("scope" in warning for warning in warnings))
+
+        # Ensure second-pass groom_backlog / cluster_and_deduplicate_issues does NOT drop validated 2-hop personal_leaf!
+        groomed = groomer.groom_backlog(
+            rows,
+            target_date=date(2026, 11, 19),
+            top_k=3,
+            jev_fn=lambda *a, **kw: None,
+        )
+        self.assertEqual([c["identifier"] for c in groomed["top3_push_candidates"]], ["TIA-902"])
+
+        # Permutation invariance check for watermark/clusters
+        perm_a = groomer.run_loop_check(
+            target_date=date(2026, 11, 19),
+            issues_json=self._sample_issues(),
+            dry_run=True,
+            jev_fn=lambda *a, **kw: None,
+        )
+        perm_b = groomer.run_loop_check(
+            target_date=date(2026, 11, 19),
+            issues_json=list(reversed(self._sample_issues())),
+            dry_run=True,
+            jev_fn=lambda *a, **kw: None,
+        )
+        self.assertEqual(perm_a["watermark"], perm_b["watermark"])
+
+    def test_combined_linear_and_groomed_top3_beyond_row8_preserves_bot_bridge_selection_and_skips_needs(self):
+        bridge_spec = importlib.util.spec_from_file_location(
+            "backlog_test_bridge", ROOT / "skills/linear-board/scripts/linear-bot-bridge.py"
+        )
+        assert bridge_spec and bridge_spec.loader
+        bridge = importlib.util.module_from_spec(bridge_spec)
+        bridge_spec.loader.exec_module(bridge)
+
+        linear = [
+            # [1] Needs Decision item (even if stale groomed state lists TIA-700, it MUST NOT be marked ready Top3!)
+            {
+                "id": "lin-needs",
+                "identifier": "TIA-700",
+                "title": "Choose gallery v01 or v02",
+                "description": "Demo gallery awaiting Owner selection",
+                "url": "https://linear.app/test/TIA-700",
+                "state": {"name": "Todo", "type": "unstarted"},
+                "priority": 1,
+                "project": {"name": "VoxPocket"},
+                "team": {"name": "Personal"},
+                "parent": None,
+                "labels": {"nodes": [{"name": "Needs Decision"}]},
+            }
+        ]
+        # Add 9 planned P2 items -> [2]..[10], so TIA-708..TIA-709 are at [9] and [10] (beyond row 8!)
+        for index in range(1, 10):
+            linear.append(
+                {
+                    "id": f"lin-{index}",
+                    "identifier": f"TIA-{700 + index}",
+                    "title": f"Automate gate {index}",
+                    "url": f"https://linear.app/test/TIA-{700 + index}",
+                    "state": {"name": "Todo", "type": "unstarted"},
+                    "priority": 2,
+                    "project": {"name": "user-skills"},
+                    "team": {"name": "Personal"},
+                    "parent": None,
+                    "labels": {"nodes": []},
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "top3-groomed.json"
+            # Groomed candidates include stale TIA-700 (now Needs Decision), plus TIA-708 ([9]), TIA-709 ([10]), and MUL-88 ([11])
+            groomed_input = [
+                {
+                    "identifier": "TIA-700",
+                    "title": "Choose gallery v01 or v02",
+                    "url": "https://linear.app/test/TIA-700",
+                    "project": "VoxPocket",
+                    "ready_to_push": True,
+                },
+                {
+                    "identifier": "TIA-708",
+                    "title": "Automate gate 8",
+                    "url": "https://linear.app/test/TIA-708",
+                    "project": "user-skills",
+                    "ready_to_push": True,
+                },
+                {
+                    "identifier": "TIA-709",
+                    "title": "Automate gate 9",
+                    "url": "https://linear.app/test/TIA-709",
+                    "project": "user-skills",
+                    "ready_to_push": True,
+                },
+                {
+                    "identifier": "MUL-88",
+                    "title": "Cross-board Multica ready task",
+                    "project": "AIDash",
+                    "ready_to_push": True,
+                },
+            ]
+            state_path.write_text(
+                json.dumps({"date": "2026-11-19", "top3_push_candidates": groomed_input[:3], "ranked_candidates": groomed_input}),
+                encoding="utf-8",
+            )
+            loaded = groomer.load_groomed_top3_state(state_path, target_date=date(2026, 11, 19))
+
+        plan_a, todos = daily_brief.render_brief(date(2026, 11, 19), linear, [], [], [], groomed_top3=loaded)
+        # Plan A validator MUST pass with 0 errors
+        self.assertEqual(daily_brief.validate_markdown(plan_a), [])
+
+        # TIA-700 is in `needs` and MUST NOT be marked groomed_top3; backfill picks TIA-708 ([9]), TIA-709 ([10]), and MUL-88 ([11])
+        groomed_rows = [row for row in todos if row.get("groomed_top3")]
+        self.assertEqual([row["groomed_identifier"] for row in groomed_rows], ["TIA-708", "TIA-709", "MUL-88"])
+        self.assertEqual([row["number"] for row in groomed_rows], [9, 10, 11])
+        # Zero duplicate TIA-708 / TIA-709 rows
+        self.assertEqual(sum("TIA-708" in row["ref"] for row in todos), 1)
+        self.assertEqual(sum("TIA-709" in row["ref"] for row in todos), 1)
+
+        dual = daily_brief.render_dual_zone_brief(date(2026, 11, 19), plan_a, todos)
+        dz_verify = issue_brief.verify_dual_zone_issue(dual)
+        self.assertTrue(dz_verify["ok"], dz_verify)
+        self.assertLessEqual(dz_verify["human_zone_lines"], 15)
+
+        # Human zone MUST contain [9], [10], [11] without `1. [9]` ordinal prefix drift!
+        human_zone = dual.split("<details>")[0]
+        self.assertIn("- [ ] **[9] Top3 Automate gate 8（[打开](https://linear.app/test/TIA-708)）**", human_zone)
+        self.assertIn("- [ ] **[10] Top3 Automate gate 9（[打开](https://linear.app/test/TIA-709)）**", human_zone)
+        self.assertIn("- [ ] **[11] Top3 顺推 Cross-board Multica", human_zone)
+        self.assertNotIn("1. [", human_zone)
+
+        # Verify linear-bot-bridge.py brief_selection works for BOTH `@bot 9, 11` comment AND checked `- [x] **[9]` box on Dual-Zone!
+        brief_title = "[Daily Brief 2026-11-19] 昨日汇总 (11-18) 与今日 Todo (11-19)"
+        sel_comment = bridge.brief_selection({"title": brief_title, "description": dual}, {"body": "@bot 9, 11"})
+        self.assertIn("[9]", sel_comment)
+        self.assertIn("[11]", sel_comment)
+        self.assertNotIn("[1]", sel_comment)
+
+        checked_dual = dual.replace("- [ ] **[9]", "- [x] **[9]", 1)
+        sel_checked = bridge.brief_selection({"title": brief_title, "description": checked_dual})
+        self.assertIn("[9]", sel_checked)
+        self.assertNotIn("Owner decision required", sel_checked)
+
     def test_cli_subcommands_scan_groom_top3_and_loop_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             issues_file = Path(tmp) / "issues.json"
