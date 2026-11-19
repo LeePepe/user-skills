@@ -1245,6 +1245,148 @@ def command_cleanup_demo(args):
     print(json.dumps(receipt, ensure_ascii=False, indent=2)); return 0
 
 
+def _infer_preview_selection_round(receipts_dir: Path, explicit_round: int | None = None) -> int:
+    if explicit_round is not None:
+        if explicit_round < 1 or explicit_round > 999:
+            raise ValueError("--round must be an integer between 1 and 999")
+        return explicit_round
+    parent_name = receipts_dir.parent.name if receipts_dir.parent else ""
+    existing_rounds = []
+    if receipts_dir.is_dir():
+        for child in receipts_dir.iterdir():
+            m = re.fullmatch(r"preview-selection-r(\d+)(?:-archived)?\.json", child.name)
+            if m:
+                existing_rounds.append(int(m.group(1)))
+    if existing_rounds:
+        return max(existing_rounds) + 1
+    m_parent = re.search(r"(?:^|[-_])r(\d+)(?:[-_]|$)", parent_name)
+    if m_parent:
+        return max(1, int(m_parent.group(1)))
+    return 1
+
+
+def _clean_preview_selection_payload(previous: dict | None = None) -> dict:
+    base = dict(previous) if isinstance(previous, dict) else {}
+    clean: dict = {
+        "schema": base.get("schema", 1) if isinstance(base.get("schema"), int) else 1,
+        "selectedVariantID": "",
+        "starredVariantIDs": [],
+        "notesByVariant": {},
+        "updatedAt": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    for passthrough in ("appearance", "allExpanded", "speedMultiplier"):
+        if passthrough in base:
+            clean[passthrough] = base[passthrough]
+    if "variants" in base:
+        clean["variants"] = {}
+    return clean
+
+
+def command_reset_preview_selection(args):
+    raw_dir = Path(args.receipts_dir).expanduser()
+    if raw_dir.is_symlink():
+        raise ValueError("receipts-dir must not be a symlink")
+    receipts_dir = raw_dir.resolve()
+    if receipts_dir.exists() and not receipts_dir.is_dir():
+        raise ValueError(f"receipts-dir is not a directory: {receipts_dir}")
+    target_file = receipts_dir / "preview-selection.json"
+    if target_file.is_symlink():
+        raise ValueError("refusing symlink preview-selection.json")
+
+    round_num = _infer_preview_selection_round(receipts_dir, getattr(args, "round", None))
+    archive_file = receipts_dir / f"preview-selection-r{round_num}.json"
+    if archive_file.is_symlink():
+        raise ValueError(f"refusing symlink archive file: {archive_file}")
+    if archive_file.exists() and not getattr(args, "force", False):
+        raise ValueError(f"archive already exists (pass --force or explicit --round): {archive_file}")
+
+    previous_data = None
+    archived = False
+    if target_file.is_file():
+        previous_data = load(target_file)
+        if not isinstance(previous_data, dict):
+            raise ValueError(f"preview-selection.json must contain a JSON object: {target_file}")
+        archived = True
+
+    clean_payload = _clean_preview_selection_payload(previous_data)
+    receipt = {
+        "ok": True,
+        "receipts_dir": str(receipts_dir),
+        "round": round_num,
+        "archived": archived,
+        "archive_file": str(archive_file) if archived else None,
+        "selection_file": str(target_file),
+        "reset_state": {
+            "selectedVariantID": clean_payload["selectedVariantID"],
+            "starredVariantIDs": clean_payload["starredVariantIDs"],
+            "notesByVariant": clean_payload["notesByVariant"],
+        },
+    }
+    if getattr(args, "dry_run", False):
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        return 0
+
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    if archived:
+        shutil.copy2(target_file, archive_file)
+    save(target_file, clean_payload)
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_check_preview_selection(args):
+    target_file = Path(args.file).expanduser()
+    violations = []
+    if target_file.is_symlink():
+        violations.append("symlink_forbidden")
+    elif not target_file.is_file():
+        violations.append("file_not_found")
+    else:
+        try:
+            data = load(target_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            violations.append(f"invalid_json:{exc}")
+            data = None
+        if not isinstance(data, dict):
+            if data is not None:
+                violations.append("payload_must_be_object")
+        else:
+            sel = data.get("selectedVariantID", "")
+            if sel not in ("", None):
+                violations.append(f"stale_selectedVariantID:{sel}")
+            stars = data.get("starredVariantIDs")
+            if not isinstance(stars, list) or len(stars) > 0:
+                violations.append("stale_or_invalid_starredVariantIDs")
+            notes = data.get("notesByVariant")
+            if not isinstance(notes, dict) or any(str(v).strip() for v in notes.values()) or len(notes) > 0:
+                violations.append("stale_or_invalid_notesByVariant")
+            variants = data.get("variants")
+            if isinstance(variants, dict):
+                for vid, vstate in variants.items():
+                    if isinstance(vstate, dict) and (
+                        vstate.get("isSelected") is True
+                        or vstate.get("isStarred") is True
+                        or str(vstate.get("notes", "")).strip()
+                    ):
+                        violations.append(f"stale_variant_entry:{vid}")
+            if getattr(args, "require_archive", False):
+                archives = list(target_file.parent.glob("preview-selection-r*.json"))
+                if not archives:
+                    violations.append("missing_round_archive")
+
+    report = {
+        "ok": len(violations) == 0,
+        "file": str(target_file),
+        "violation_count": len(violations),
+        "violations": violations,
+    }
+    if not report["ok"]:
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 2
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 @lru_cache(maxsize=8)
 def _gallery_map_png(width, height):
     """Encode a rounded-rectangle lens: inward Snell offsets in RG, signed light in B."""
@@ -1674,6 +1816,10 @@ def command(args):
         return command_scaffold_gallery(args)
     if args.command == "cleanup-demo":
         return command_cleanup_demo(args)
+    if args.command == "reset-preview-selection":
+        return command_reset_preview_selection(args)
+    if args.command == "check-preview-selection":
+        return command_check_preview_selection(args)
     if args.command == "vault-search":
         return command_vault_search(args)
     catalog_path, markdown_path = catalog_paths(args)
@@ -1874,6 +2020,16 @@ def parser():
     cleanup.add_argument("--blog-repo", default=None)
     cleanup.add_argument("--push-blog", action="store_true")
     cleanup.add_argument("--dry-run", action="store_true")
+
+    reset_sel = sub.add_parser("reset-preview-selection", help="Archive receipts/preview-selection.json to preview-selection-r<N>.json and reset selection/stars/notes.")
+    reset_sel.add_argument("--receipts-dir", required=True, help="Path to handoff/<goal>/receipts directory")
+    reset_sel.add_argument("--round", type=int, default=None, help="Round number N for preview-selection-r<N>.json (inferred if omitted)")
+    reset_sel.add_argument("--force", action="store_true", help="Overwrite existing preview-selection-r<N>.json archive if present")
+    reset_sel.add_argument("--dry-run", action="store_true")
+
+    check_sel = sub.add_parser("check-preview-selection", help="Verify preview-selection.json has clean reset state (empty selectedVariantID, starredVariantIDs, notesByVariant).")
+    check_sel.add_argument("--file", required=True, help="Path to preview-selection.json")
+    check_sel.add_argument("--require-archive", action="store_true", help="Require at least one sibling preview-selection-r<N>.json archive")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
     vsearch.add_argument("--query", default="")

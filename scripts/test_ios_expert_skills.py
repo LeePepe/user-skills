@@ -222,6 +222,69 @@ class IOSExpertSkillsTests(unittest.TestCase):
         """
         self.assertEqual(self.architecture.audit_source(valid_swift_testing), [])
 
+        undiverged_root_shell = """
+        struct FinAppRootShell: View {
+            var body: some View {
+                NavigationStack {
+                    OverviewScreen()
+                }
+                .overlay(alignment: .bottom) {
+                    floatingCapsuleDock
+                }
+            }
+        }
+        """
+        nav_findings = self.architecture.audit_source(undiverged_root_shell)
+        self.assertIn("AT-011", {item["rule_id"] for item in nav_findings})
+
+        macos_with_bottom_capsule = """
+        #if os(macOS)
+        struct MacShell: View {
+            var body: some View {
+                NavigationSplitView { Sidebar() } detail: { Detail() }
+                    .safeAreaInset(edge: .bottom) { bottomCapsuleDock }
+                    .toolbar { ToolbarItem { Button("1") {}.keyboardShortcut("1", modifiers: .command) } }
+            }
+        }
+        #elseif os(iOS)
+        struct IOSShell: View {
+            var body: some View {
+                NavigationStack { OverviewScreen() }
+                    .safeAreaInset(edge: .bottom) { bottomCapsuleDock }
+            }
+        }
+        #endif
+        """
+        self.assertIn("AT-011", {item["rule_id"] for item in self.architecture.audit_source(macos_with_bottom_capsule)})
+
+        diverged_root_shell = """
+        struct FinAppRootShell: View {
+            var body: some View {
+                #if os(macOS)
+                NavigationSplitView {
+                    SidebarList()
+                } detail: {
+                    DetailColumns()
+                }
+                .toolbar {
+                    ToolbarItem {
+                        Button("Overview") {}
+                            .keyboardShortcut("1", modifiers: .command)
+                    }
+                }
+                #elseif os(iOS)
+                NavigationStack {
+                    OverviewScreen()
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Capsule().glassEffect()
+                }
+                #endif
+            }
+        }
+        """
+        self.assertEqual(self.architecture.audit_source(diverged_root_shell), [])
+
         serialized = self.architecture.check_capability_matrix(
             {
                 "capabilities": [

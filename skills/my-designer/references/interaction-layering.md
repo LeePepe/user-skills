@@ -12,7 +12,7 @@ Never design a screen by dumping every feature or candidate component onto a sin
 - **Separate full-app track**: `scaffold-gallery --mode app-nav --platform mobile|desktop|macos|web` generates four bespoke, graph-driven app01..app04 schemes inside live iframe device bezels; `--category` keeps multiple rounds addressable. The Designer supplies four complete target-domain `--app-flows-json` schemes (see [navigation-evidence-contract.md](navigation-evidence-contract.md)); screen/context hints alone reject rather than invent journeys. Each scheme owns operative chrome, action-frequency priorities and push/pop/tab/sheet edges. The no-input fallback is only a starter skeleton, never a fixed template.
 - Record the variant matrix, Owner selection, and feedback through `ask_user`; after selection freeze shared colors, spacing, font sizes, and native conventions before direct production implementation. If round three remains ambiguous, stop for Owner decision; never auto-lock.
 - Product-repository implementation remains No Code Demo: never create `Prototype/` directories or throwaway product code. Handoff-only exploration may use the offline `scaffold-gallery` under `~/Development/handoff/<goal>/r<N>/`; it can also mount to `https://leepepe.github.io/demos/<goal>/`. Preserve B4 Visual Traceback and regression contracts. App/session preferences belong in `session_anti_patterns` and `style_overrides`, not universal laws.
-- When B3 freezes the direction, or the Goal completes, immediately run `design_catalog.py cleanup-demo --goal <goal>` to burn both blog and handoff HTML rounds; receipts and design artifacts remain.
+- When a PreviewHost round is fused or a new round starts (`r<N>` -> `r<N+1>`), immediately run `design_catalog.py reset-preview-selection --receipts-dir <dir> [--round <N>]` (verified by `check-preview-selection --file <path>`) to archive `receipts/preview-selection.json` -> `receipts/preview-selection-r<N>.json` and clear `selectedVariantID` (`""`), `starredVariantIDs` (`[]`), and `notesByVariant` (`{}`). When B3 freezes the direction or the Goal completes, run `design_catalog.py cleanup-demo --goal <goal>` to burn ephemeral HTML rounds while preserving receipts.
 
 ---
 
@@ -28,9 +28,9 @@ Never design a screen by dumping every feature or candidate component onto a sin
 
 ---
 
-## 2. Native Glass and Item-Driven Presentation Contract
+## 2. Native Glass, Platform Navigation Divergence (`AT-011`) & Item-Driven Presentation
 
-On `desktop`/`mobile`, prefer `TabView` + `.tabViewStyle(.sidebarAdaptable)` and `NavigationSplitView`; use one `Identifiable` sheet enum with `.sheet(item:)` and `@Environment(\.dismiss)` in the sheet. Keep Web on its own firewall route.
+Cross-platform SwiftUI apps targeting both `macOS` (`desktop`) and `iOS` (`mobile`) MUST split root navigation chrome via `#if os(macOS)` / `#if os(iOS)` (`AT-011` in `ios-architecture-testing`): on `macOS`, use `NavigationSplitView` or top Commander toolbar + master-detail multi-column/Inspector layout + `⌘1..⌘4` `.keyboardShortcut` bindings (**never** render a mobile bottom floating capsule dock on macOS); on `iOS`, use a bottom floating glass capsule dock / bottom `TabView` + single-column `NavigationStack` push/sheet drill-down; use one `Identifiable` sheet enum with `.sheet(item:)` and `@Environment(\.dismiss)` in the sheet. Keep Web on its own firewall route.
 
 Put adjacent glass controls in one `GlassEffectContainer(spacing:)` whose spacing exactly matches the child `HStack`/`VStack`, and identify transitions with `@Namespace` + `.glassEffectID`. Only `.regular`, `.clear`, and `.identity` are valid `Glass` values; prominent actions use `.buttonStyle(.glassProminent)`. Apply `padding`, `frame`, and `font` before `.glassEffect(...)`.
 
