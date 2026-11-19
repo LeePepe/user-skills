@@ -29,6 +29,7 @@ description: 管理 Linear TIA Idea Inbox 与 Global Goal Status Board；运行�
 | Idea Inbox / Goal / ledger | `scripts/linear-sync.py` 与团队台账 | `idea`、`ensure-goal`、`sync-ledger` |
 | 每日简报、四桶/四层、Jev | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `daily-brief.py --date today --dry-run` |
 | Multica + Linear 极简双区简报 | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `daily-brief.py --date today --target both --json` |
+| Backlog 指纹去重与每日 Top 3 顺推 (Loop 3B) | `scripts/backlog_groomer.py` | `backlog_groomer.py groom\|top3\|loop-check --date today` |
 | 邮件深链提取与预落盘 Actionable Issue | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `email-action-pipeline.py ingest-workiq --input-json PATH --propose-linear` |
 | Markdown 合同验证 | `daily-brief.py` | `daily-brief.py --verify-markdown PATH\| -` |
 | `@bot` 选择、重试、Owner 回收 | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `linear-bot-bridge.py --once --json` |
