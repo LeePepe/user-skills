@@ -39,6 +39,12 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`xcode-cli`](./skills/xcode-cli/SKILL.md) 使用 Swift 与 Xcode 命令行工具进行 Apple 平台构建、测试、模拟器运行和结果检查。
 
+[`ios-concurrency-swiftui`](./skills/ios-concurrency-swiftui/SKILL.md) 面向 Swift 6 严格并发（`Sendable`、actor 隔离、任务生命周期与取消重入）、SwiftUI `@Observable` 状态所有权与稳定视图树身份，以及原生弹簧/触觉/Liquid Glass 交互质感审计。
+
+[`ios-debugging-performance`](./skills/ios-debugging-performance/SKILL.md) 覆盖可复现根因证据链与多角色审查协作、Instruments 五维卡顿剖析、无 `.xcodeproj` 纯 SwiftPM macOS MenuBar `.app` 签名公证打包，以及 App Store 提审前隐私与防拒闸门。
+
+[`ios-architecture-testing`](./skills/ios-architecture-testing/SKILL.md) 负责状态驱动导航与系统迁移、SwiftData `VersionedSchema` 持久化演进、行为契约与重构回归门禁、非重叠工作包拆解、CloudKit/推送协议接缝及 Apple Intelligence/跨端降级矩阵。
+
 [`deep-research`](./skills/deep-research/SKILL.md) 对主题进行多来源调研与交叉核查，输出带引用、按置信度分级的报告。
 
 [`asset-screener`](./skills/asset-screener/SKILL.md) 提供纯客观投资标的评价与筛选（零个人账本耦合）：基于「1 个通用底座 + 4 套分类评估插件」（红利价值、宽基国运 ERP、科技周期成长与风格漂移检测、黄金纯债宏观对冲）输出晨星、WGC、格雷厄姆 ERP、AkShare `f-fund-screener` 与复利时光多源共识与分歧评分卡。
@@ -75,6 +81,9 @@ Claude Code 使用 plugin marketplace：
 /plugin install personal-m2-assistant@user-skills
 /plugin install code-review@user-skills
 /plugin install xcode-cli@user-skills
+/plugin install ios-concurrency-swiftui@user-skills
+/plugin install ios-debugging-performance@user-skills
+/plugin install ios-architecture-testing@user-skills
 /plugin install deep-research@user-skills
 /plugin install asset-screener@user-skills
 /plugin install portfolio-advisor@user-skills
@@ -96,6 +105,9 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/personal-m2-assistant 安装 personal-m2-assistant。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-concurrency-swiftui 安装 ios-concurrency-swiftui。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-debugging-performance 安装 ios-debugging-performance。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-architecture-testing 安装 ios-architecture-testing。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/deep-research 安装 deep-research。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/asset-screener 安装 asset-screener。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/portfolio-advisor 安装 portfolio-advisor。

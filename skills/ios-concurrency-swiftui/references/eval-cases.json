@@ -1,0 +1,106 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "ios-concurrency-swiftui",
+  "trigger_evals": [
+    {
+      "query": "audit Swift 6 strict concurrency Sendable actor isolation and task lifecycle cancellation in our SwiftUI view",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "refactor SwiftUI Observation state layout identity and tune native spring haptic Liquid Glass interaction feel",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "profile Time Profiler Allocations hitches in Instruments and run pre-submission App Store privacy manifest rejection gates",
+      "should_trigger": false,
+      "near_miss_skill": "ios-debugging-performance"
+    },
+    {
+      "query": "design SwiftData VersionedSchema migration plan CloudKit protocol seams and Apple Intelligence device fallback matrix",
+      "should_trigger": false,
+      "near_miss_skill": "ios-architecture-testing"
+    },
+    {
+      "query": "diagnose personal portfolio FIFO redemption windows and monthly DCA rebalancing",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Verify 100% 5-card TIA-3 coverage across SKILL.md, references, and rules",
+      "tags": [
+        "coverage",
+        "contract"
+      ],
+      "cmd": "python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py check-card-coverage",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "expected_cards": 5,
+        "covered_cards": 5
+      },
+      "expect_stdout_contains": [
+        "swift-concurrency-expert-coding",
+        "swift-concurrency-memory-safety",
+        "swiftui-architecture-and-performance",
+        "swiftui-state-layout-and-view-structure",
+        "apple-design-and-game-feel"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "Clean Swift 6 actor + stable SwiftUI ForEach + Reduce Motion passes strict audit",
+      "tags": [
+        "concurrency",
+        "swiftui"
+      ],
+      "cmd": "python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py audit-source --strict --snippet 'struct ItemRow: View { @Environment(\\.accessibilityReduceMotion) private var reduceMotion; let items: [Item]; var body: some View { ForEach(items) { item in Text(item.title).animation(reduceMotion ? nil : .spring(duration: 0.25), value: item.isPinned) } } }'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "finding_count": 0
+      },
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "Reject unchecked Sendable, Task.detached, unstable index ForEach, and body formatter allocation",
+      "tags": [
+        "anti-pattern",
+        "strict-gate"
+      ],
+      "negative_cmd": "python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py audit-source --strict --snippet 'final class Cache: @unchecked Sendable {} struct BadView: View { let rows: [String]; var body: some View { let df = DateFormatter(); ForEach(rows.indices, id: \\.self) { idx in Text(rows[idx]).onAppear { Task.detached { [unowned self] in _ = df } } } } }'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "CS-001",
+        "CS-003",
+        "CS-004",
+        "CS-005",
+        "CS-006"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "L0 progressive-disclosure routing and sibling skill boundaries remain intact",
+      "tags": [
+        "contract"
+      ],
+      "file": "skills/ios-concurrency-swiftui/SKILL.md",
+      "must_contain": [
+        "references/concurrency-and-swiftui-cards.md",
+        "references/eval-cases.json",
+        "../ios-debugging-performance/SKILL.md",
+        "../ios-architecture-testing/SKILL.md",
+        "audit_concurrency_swiftui.py"
+      ],
+      "registered_at": "2026-11-19"
+    }
+  ],
+  "updated": "2026-11-19"
+}

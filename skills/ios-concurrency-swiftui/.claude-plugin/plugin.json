@@ -1,0 +1,5 @@
+{
+  "name": "ios-concurrency-swiftui",
+  "description": "Audit and engineer Swift 6 strict concurrency, Sendable/actor isolation, task lifecycle cancellation, SwiftUI Observation state/layout identity, and native spring/haptic/Liquid Glass interaction feel. Not for Instruments profiling, App Store rejection gates, or SwiftData schema migrations.",
+  "category": "repo"
+}
