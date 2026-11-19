@@ -2832,12 +2832,14 @@ def publish_blog(
 
 
 _KD_AUTO_DESIGN_SYNC_RE = re.compile(
-    r"(?i)(?:自动同步|auto[-_\s]?sync)[^\n。；;]{0,60}design-studio|"
-    r"design-studio[^\n。；;]{0,60}(?:自动同步|auto[-_\s]?sync)"
+    r"(?i)(?:自动同步|auto[-_\s]?sync)[^\n。；;!?！？]{0,60}design-studio|"
+    r"design-studio[^\n。；;!?！？]{0,60}(?:自动同步|auto[-_\s]?sync)"
 )
-_KD_NEGATION_RE = re.compile(r"(?i)(?:永不|禁止|严禁|不自动|不得|不会自动|不授权自动|never|must\s+not|do\s+not|not\s+auto)")
+_KD_NEGATION_RE = re.compile(
+    r"(?i)(?:永不|禁止|严禁|不自动|不得|不会自动|不授权自动|never|must\s+not|do\s+not|don't|cannot|not\s+auto)"
+)
 _KD_CLAUSE_SPLIT_RE = re.compile(
-    r"[。；;！!\n]+|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:design-studio|knowledge-vault|自动同步|auto[-_\s]?sync|并且|而且|同时|and\b|but\b|then\b)))",
+    r"[。；;！!？?\n]+|(?:\.(?=\s|$))|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:design-studio|knowledge-vault|自动同步|auto[-_\s]?sync|并且|而且|同时|and\b|but\b|then\b)))",
     re.IGNORECASE,
 )
 

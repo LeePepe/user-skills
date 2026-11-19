@@ -123,6 +123,20 @@ class Tia2TeamLeadGuardrailTests(unittest.TestCase):
     def test_pre_review_check_rejects_empty_r10_labels_and_invalid_or_missing_base_ref(self):
         blank_r10 = self.fg.validate_r10_receipt("Commit SHA: no-commit\nRole / Model:\nV5:\n")
         self.assertEqual(len(blank_r10), 3, blank_r10)
+        role_only_r10 = self.fg.validate_r10_receipt(
+            "Commit SHA: 7a193be9b1879cdb82f7f56a150fd42648908e6b\nRole: writer\nV5 Verdict: PASS\n"
+        )
+        self.assertEqual(len(role_only_r10), 1, role_only_r10)
+        self.assertIn("missing_receipt_role_or_model", role_only_r10[0])
+        empty_model_slash = self.fg.validate_r10_receipt(
+            "Commit SHA: 7a193be9b1879cdb82f7f56a150fd42648908e6b\nRole / Model: writer /\nV5 Verdict: PASS\n"
+        )
+        self.assertEqual(len(empty_model_slash), 1, empty_model_slash)
+        self.assertIn("missing_receipt_role_or_model", empty_model_slash[0])
+        separate_rm_ok = self.fg.validate_r10_receipt(
+            "Commit SHA: 7a193be9b1879cdb82f7f56a150fd42648908e6b\nRole: writer\nModel: gpt-5.6-luna\nV5 Verdict: PASS\n"
+        )
+        self.assertEqual(separate_rm_ok, [])
 
         with tempfile.TemporaryDirectory() as tmp:
             wt = Path(tmp) / "wt"
@@ -263,6 +277,16 @@ class Tia2HowtoGuardrailTests(unittest.TestCase):
         self.assertIn("save_tool_zero_exec_violation", mixed_codes)
         self.assertNotIn("vault_isolation_violation", mixed_codes)
 
+        en_period_res = self.hg.validate_recipe(
+            "Inbound Internal Calls E1 PointsTo I5 Trigger\n"
+            "Never publish. save-tool 直接运行脚本\n"
+            "Never publish. knowledge-vault 自动同步 design-studio\n"
+        )
+        self.assertFalse(en_period_res["ok"])
+        en_codes = {v["code"] for v in en_period_res["violations"]}
+        self.assertIn("save_tool_zero_exec_violation", en_codes)
+        self.assertIn("vault_isolation_violation", en_codes)
+
         with tempfile.TemporaryDirectory() as tmp:
             missing_doc = Path(tmp) / "missing-how-to-nodes.md"
             missing_res = self.hg.validate_recipe(
@@ -339,7 +363,7 @@ class Tia2KnowledgeDigestGuardrailTests(unittest.TestCase):
                 "updated: 2026-11-19\n"
                 "---\n\n"
                 "# Mixed\n\n"
-                "## ⚡ 一句话本质（TL;DR）\n> Do not publish to the blog; auto-sync to design-studio.\n\n"
+                "## ⚡ 一句话本质（TL;DR）\n> Do not publish. Auto-sync to design-studio.\n\n"
                 "## 🎯 核心痛点直答（Pain-Point Q&A）\n### Q1？\n- 直答：A。\n\n"
                 "## ✅ 立即可用清单（Actionable Checklist）\n1. Check.\n",
                 encoding="utf-8",

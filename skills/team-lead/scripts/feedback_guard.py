@@ -629,8 +629,16 @@ def _clean_receipt_value(raw: str) -> str:
     return raw.strip().strip("*`'\"").strip()
 
 
+_PLACEHOLDER_VALS = {"n/a", "na", "none", "null", "unknown", "tbd", "todo", "-", "—"}
+
+
+def _is_populated_token(val: str) -> bool:
+    cleaned = _clean_receipt_value(val)
+    return bool(cleaned) and cleaned.lower() not in _PLACEHOLDER_VALS
+
+
 def validate_r10_receipt(receipt_text: str) -> list[str]:
-    """Check required R10 receipt sections/fields (non-placeholder Commit SHA, non-empty Role/Model, non-empty Verification/V5)."""
+    """Check required R10 receipt sections/fields (real Commit SHA, actual Role + Model, non-empty Verification/V5)."""
     violations: list[str] = []
     sha_match = re.search(
         r"(?im)^[\s>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
@@ -640,13 +648,38 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
     if not re.search(r"\b[0-9a-f]{7,40}\b", sha_val, re.IGNORECASE):
         violations.append("missing_receipt_commit_sha: R10 receipt must record a real 7-40 hex Commit SHA")
 
-    role_match = re.search(
-        r"(?im)^[\s>*-]*(?:\*\*)?(?:role(?:\s*/\s*model)?|model|resolved_model|agent)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+    has_role = False
+    has_model = False
+    combined_rm = re.search(
+        r"(?im)^[\s>*-]*(?:\*\*)?role\s*/\s*model(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
     )
-    role_val = _clean_receipt_value(role_match.group(1)) if role_match else ""
-    if not role_val or role_val.lower() in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
-        violations.append("missing_receipt_role_or_model: R10 receipt must record a non-empty Role / Model value")
+    if combined_rm:
+        raw_rm = combined_rm.group(1).strip()
+        if "/" in raw_rm:
+            role_part, model_part = raw_rm.split("/", 1)
+            if _is_populated_token(role_part):
+                has_role = True
+            if _is_populated_token(model_part):
+                has_model = True
+    if not has_role:
+        role_only = re.search(
+            r"(?im)^[\s>*-]*(?:\*\*)?(?:role|agent)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+            receipt_text,
+        )
+        if role_only and _is_populated_token(role_only.group(1)):
+            has_role = True
+    if not has_model:
+        model_only = re.search(
+            r"(?im)^[\s>*-]*(?:\*\*)?(?:resolved_model|model)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
+            receipt_text,
+        )
+        if model_only and _is_populated_token(model_only.group(1)):
+            has_model = True
+    if not (has_role and has_model):
+        violations.append(
+            "missing_receipt_role_or_model: R10 receipt must record both a non-empty Role and an actual Model value"
+        )
 
     has_verif_value = False
     v5_line = re.search(

@@ -27,16 +27,14 @@ _NODE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])([EQIGPO]\d+[a-z]?)(?![A-Za-z0-9
 _TK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])(TK-\d{2})(?![A-Za-z0-9_-])")
 
 _AUTO_SYNC_VAULT_RE = re.compile(
-    r"(?i)knowledge-vault[^\n。；;]{0,60}(?:自动同步|auto[-_\s]?sync)[^\n。；;]{0,60}design-studio"
+    r"(?i)knowledge-vault[^\n。；;!?！？]{0,60}(?:自动同步|auto[-_\s]?sync)[^\n。；;!?！？]{0,60}design-studio"
 )
-_NEGATION_RE = re.compile(r"(?i)(?:永不|禁止|严禁|不自动|不得|never|must\s+not|do\s+not|not\s+auto)")
+_NEGATION_RE = re.compile(r"(?i)(?:永不|禁止|严禁|不自动|不得|不会|never|must\s+not|do\s+not|don't|cannot|not\s+auto)")
 _SAVE_TOOL_EXEC_RE = re.compile(
-    r"(?i)save-tool[^\n。；;]{0,60}(?:自动安装|直接运行|执行代码|auto[-_\s]?install|execute\s+tool|run\s+tool)"
+    r"(?i)save-tool[^\n。；;!?！？]{0,60}(?:自动安装|直接运行|执行代码|auto[-_\s]?install|execute\s+tool|run\s+tool)"
 )
-
-
 _CLAUSE_SPLIT_RE = re.compile(
-    r"[。；;！!\n]+|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:save-tool|knowledge-vault|design-studio|并且|而且|同时|and\b|but\b|then\b)))",
+    r"[。；;！!？?\n]+|(?:\.(?=\s|$))|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:save-tool|knowledge-vault|design-studio|并且|而且|同时|and\b|but\b|then\b)))",
     re.IGNORECASE,
 )
 
