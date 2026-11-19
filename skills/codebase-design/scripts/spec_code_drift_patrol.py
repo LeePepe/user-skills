@@ -38,7 +38,13 @@ TEXT_SUFFIXES = frozenset({
 })
 PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_-]+)?")
 BACKTICK_RE = re.compile(r"`([^`]+)`")
-REPO_LINE_RE = re.compile(r"(?im)^\s*(?:repository|repo|target\s+repository|目标仓库)\s*[:：]\s*([^\n#]+)")
+REPO_HEADER_RE = re.compile(
+    r"(?im)^\s*(?:[-*+]\s*)?(?:>\s*)?(?:\*\*)?"
+    r"(?:repository|repo|repos|target\s+repos?(?:itory)?|目标仓库)"
+    r"(?:\*\*)?\s*[:：]\s*([^\n#]+)"
+)
+REPO_SLUGS = (("fin-", "Financial"), ("vox-", "VoxPocket"), ("vital-", "VitalStride"), ("vs-", "VitalStride"), ("aidash-", "AIDash"))
+KNOWN_PATH_ROOTS = frozenset({"Apps", "Features", "Models", "Packages", "Resources", "Sources", "Tests", "Views", "aidata", "docs", "scripts", "src", "test", "tests"})
 SEVERITY_HIGH = {"AT-011", "missing_contract_test", "missing_negative_assertion"}
 
 
@@ -130,6 +136,19 @@ def _line_number(text: str, needle: str) -> int:
     return text.count("\n", 0, max(0, pos)) + 1 if pos >= 0 else 1
 
 
+def _declared_repositories(text: str, repo_names: Sequence[str]) -> tuple[set[str], bool]:
+    matches = list(REPO_HEADER_RE.finditer(text))
+    if not matches:
+        return set(), False
+    declared: set[str] = set()
+    for match in matches:
+        value = match.group(1).replace("\\", "/")
+        for name in repo_names:
+            if re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", value, re.I) or f"/{name}/" in f"/{value}/":
+                declared.add(name)
+    return declared, True
+
+
 def _doc_records(handoff_root: Path, repo_names: Sequence[str]) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     records: dict[str, list[dict[str, Any]]] = {name: [] for name in repo_names}
     unsupported: list[dict[str, Any]] = []
@@ -137,6 +156,11 @@ def _doc_records(handoff_root: Path, repo_names: Sequence[str]) -> tuple[dict[st
         return records, [{"kind": "missing_handoff_root", "path": str(handoff_root), "reason": "handoff root is not a directory"}]
     for goal in sorted(handoff_root.iterdir()):
         if not goal.is_dir() or goal.name.startswith("_"):
+            continue
+        ledger = goal / "ledger.md"
+        ledger_text = ledger.read_text(encoding="utf-8", errors="replace") if ledger.is_file() else ""
+        if re.search(r"\b(?:cancelled|canceled|abandoned|superseded)\b", ledger_text, re.I) or re.search(r"\bEVT=GOAL_DONE\b", ledger_text):
+            unsupported.append({"kind": "historical_handoff_skipped", "path": str(goal), "reason": "ledger marks completed or superseded goal"})
             continue
         docs: list[dict[str, Any]] = []
         for filename in ("spec.md", "design.md", "CONTEXT.md"):
@@ -152,38 +176,56 @@ def _doc_records(handoff_root: Path, repo_names: Sequence[str]) -> tuple[dict[st
         if not docs:
             continue
         joined = "\n".join(d["text"] for d in docs)
-        candidates: set[str] = set()
-        for match in REPO_LINE_RE.finditer(joined):
-            value = match.group(1).strip().strip("`[]()")
-            for name in repo_names:
-                if re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", value, re.I):
-                    candidates.add(name)
-        if goal.name in repo_names:
-            candidates.add(goal.name)
+        candidates, explicit = _declared_repositories(joined, repo_names)
+        if not explicit:
+            if goal.name in repo_names:
+                candidates.add(goal.name)
+            else:
+                for prefix, name in REPO_SLUGS:
+                    if goal.name.lower().startswith(prefix) and name in repo_names:
+                        candidates.add(name)
+                        break
         if not candidates:
-            mentioned = [name for name in repo_names if re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", joined, re.I)]
-            if len(mentioned) == 1:
-                candidates.add(mentioned[0])
-        if len(candidates) != 1:
-            unsupported.append({"kind": "unassociated_handoff", "path": str(goal), "reason": "no unique repository association"})
+            reason = "declared repository is external or not in scan set" if explicit else "no unique repository association"
+            unsupported.append({"kind": "unassociated_handoff", "path": str(goal), "reason": reason})
             continue
-        repo = next(iter(candidates))
-        records[repo].extend(docs)
+        for repo in sorted(candidates):
+            records[repo].extend(docs)
     return records, unsupported
 
 
-def _candidate_paths(text: str) -> list[tuple[str, int]]:
+def _candidate_paths(text: str, *, repo: Path, tracked: Mapping[str, str]) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
     seen: set[str] = set()
     for line_no, line in enumerate(text.splitlines(), 1):
         values = BACKTICK_RE.findall(line) + PATH_RE.findall(line)
         for raw in values:
-            value = raw.strip().strip(".,:;()[]{}")
-            if not value or value.startswith(("http://", "https://", "--")) or " " in value:
+            value = raw.strip().strip(".,:;()[]{}<>\"'").replace("\\", "/")
+            value = re.sub(r":\d+(?:-\d+)?$", "", value)
+            if value.startswith("~/Development/"):
+                value = value[len("~/Development/"):]
+                if not value.startswith(repo.name + "/"):
+                    continue
+                value = value[len(repo.name) + 1:]
+            if not value or "*" in value or value.startswith(("http://", "https://", "--", "/api/", "/howto/")) or " " in value:
                 continue
-            if value in {"spec.md", "design.md", "CONTEXT.md", "README.md"} or value.startswith("/tmp/"):
+            if value.startswith("/"):
+                marker = f"/{repo.name}/"
+                if marker not in value:
+                    continue
+                value = value.split(marker, 1)[1]
+            elif f"/{repo.name}/" in value:
+                value = value.split(f"/{repo.name}/", 1)[1]
+            if value.startswith(("skills/", "shared-ci/")) and repo.name != "user-skills":
                 continue
-            if "/" not in value and not re.search(r"\.(?:swift|py|js|ts|tsx|jsx|json|yaml|yml|md)$", value, re.I):
+            parts = value.lstrip("./").split("/")
+            if len(parts) < 2 or any(part in {"", ".", ".."} for part in parts):
+                continue
+            if parts[0] not in KNOWN_PATH_ROOTS and parts[0] not in {Path(name).parts[0] for name in tracked if Path(name).parts}:
+                continue
+            if value.endswith("/") or ("." not in parts[-1] and value not in tracked and parts[0] not in KNOWN_PATH_ROOTS):
+                continue
+            if value in {"spec.md", "design.md", "CONTEXT.md", "README.md"}:
                 continue
             if value not in seen:
                 seen.add(value)
@@ -197,7 +239,7 @@ def _resolve_reference(repo: Path, value: str, tracked: Mapping[str, str]) -> st
         normalized = normalized[len(repo.name) + 1 :]
     if normalized in tracked:
         return normalized
-    if (repo / normalized).is_file() and normalized in tracked:
+    if any(name.startswith(normalized.rstrip("/") + "/") for name in tracked):
         return normalized
     return None
 
@@ -233,10 +275,13 @@ def _scan_repo(repo_name: str, repo: Path, docs: Sequence[Mapping[str, Any]]) ->
     for root_doc in ("CONTEXT.md", "spec.md", "design.md"):
         if root_doc in tracked and not any(Path(str(item["path"])).name == root_doc for item in docs_to_scan):
             docs_to_scan.append({"path": repo / root_doc, "text": tracked[root_doc], "filename": root_doc})
+    for name, text in tracked.items():
+        if name.startswith("docs/adr/") and name.endswith(".md") and not any(str(item["path"]).endswith(name) for item in docs_to_scan):
+            docs_to_scan.append({"path": repo / name, "text": text, "filename": name})
     for doc in docs_to_scan:
         path = Path(str(doc["path"]))
         text = str(doc["text"])
-        for value, line in _candidate_paths(text):
+        for value, line in _candidate_paths(text, repo=repo, tracked=tracked):
             if value.startswith(("http", "python", "git", "bash")):
                 continue
             if _resolve_reference(repo, value, tracked) is None:
@@ -255,7 +300,7 @@ def _scan_repo(repo_name: str, repo: Path, docs: Sequence[Mapping[str, Any]]) ->
         for idx, raw in enumerate(lines, 1):
             if not re.search(r"\b(route|model|dependency|depends on)\b\s*[:：]", raw, re.I):
                 continue
-            declared = raw.split(":", 1)[-1].strip().strip("` ")
+            declared = re.split(r"[:：]", raw, maxsplit=1)[-1].strip().strip("` ")
             if not declared or len(declared) > 160:
                 continue
             path_hit = _resolve_reference(repo, declared, tracked)
@@ -264,7 +309,7 @@ def _scan_repo(repo_name: str, repo: Path, docs: Sequence[Mapping[str, Any]]) ->
                 stale.append(_finding(repo_name, "spec_staleness", "stale_route_or_model", "Route or model declaration is absent from the main snapshot", file=str(path), line=idx, evidence=raw.strip(), remediation="Synchronize the route/model declaration with the tracked implementation.", action_type="SYNC_SPEC_DOC"))
         contract_lines = [(idx, raw) for idx, raw in enumerate(lines, 1) if re.search(r"contract\s+tests?|tests?\s+contract|regression\s+gate", raw, re.I)]
         for idx, raw in contract_lines:
-            paths = _candidate_paths(raw)
+            paths = _candidate_paths(raw, repo=repo, tracked=tracked)
             if paths and all(_resolve_reference(repo, value, tracked) is None for value, _ in paths):
                 compliance.append(_finding(repo_name, "code_compliance", "missing_contract_test", "Declared contract test is absent from the main snapshot", file=str(path), line=idx, evidence=raw.strip(), remediation="Add the named contract test to the main test tree or correct the specification.", action_type="FIX_CODE_BUG"))
             elif not paths and re.search(r"(?:required|must|missing|add)", raw, re.I) and not test_files:
@@ -278,7 +323,7 @@ def _scan_repo(repo_name: str, repo: Path, docs: Sequence[Mapping[str, Any]]) ->
                 line = next((idx for idx, raw in enumerate(lines, 1) if re.search(r"geometry|screenshot|pixel|design[_ -]?contract|clipping", raw, re.I)), 1)
                 compliance.append(_finding(repo_name, "code_compliance", "missing_ui_geometry_contract", "UI geometry or screenshot gate is declared but absent from tracked tests", file=str(path), line=line, evidence=lines[line - 1].strip(), remediation="Add a deterministic geometry/screenshot contract check and keep it in the main test tree.", action_type="FIX_CODE_BUG"))
     swift_files = {name: text for name, text in tracked.items() if name.endswith(".swift")}
-    if swift_files and any(re.search(r"macOS|iOS|Navigation|bottom.?dock|root.?shell|AT-011", str(d["text"]), re.I) for d in docs):
+    if swift_files and any(re.search(r"macOS|iOS|Navigation|bottom.?dock|root.?shell|AT-011", str(d["text"]), re.I) for d in docs_to_scan):
         if ARCH_AUDIT_PATH.is_file():
             try:
                 auditor = _load_module("spec_drift_arch_audit", ARCH_AUDIT_PATH)
@@ -369,14 +414,54 @@ def _mock_for(mock: Any, finding: Mapping[str, Any], index: int) -> Any:
     return mock if any(k in mock for k in ("drift_classification", "severity_confidence", "confidence")) else None
 
 
+def _mock_entries(mock: Any, findings: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    if isinstance(mock, Mapping) and ("answers" in mock or any(key in mock for key in ("drift_classification", "classification", "choice"))):
+        if len(findings) != 1:
+            raise ValueError("mock_jev_json requires one keyed answer per finding")
+        entries = [mock]
+    elif isinstance(mock, list):
+        if len(mock) != len(findings):
+            raise ValueError("mock_jev_json list must contain exactly one answer per finding")
+        entries = mock
+    elif isinstance(mock, Mapping):
+        expected = [str(finding.get("id")) for finding in findings]
+        if set(mock) != set(expected):
+            raise ValueError("mock_jev_json keys must exactly match finding ids")
+        entries = [mock[key] for key in expected]
+    else:
+        raise ValueError("mock_jev_json must be a JSON object or list")
+    validated: list[Mapping[str, Any]] = []
+    choices = {"SPEC_OUTDATED_SYNC_DOC", "CODE_VIOLATES_SPEC_BUG", "BENIGN_NOISE"}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("each Jev mock answer must be an object")
+        answers = entry.get("answers", entry)
+        if not isinstance(answers, Mapping):
+            raise ValueError("each Jev mock answer requires an answers object")
+        raw_choice = answers.get("drift_classification", answers.get("classification", answers.get("choice")))
+        if isinstance(raw_choice, Mapping):
+            raw_choice = raw_choice.get("choice")
+        confidence = _prob(answers.get("severity_confidence"))
+        if confidence is None:
+            confidence = _prob(answers.get("severity", answers.get("confidence", answers.get("noul"))))
+        if str(raw_choice) not in choices or confidence is None:
+            raise ValueError("each Jev mock answer requires a valid choice and companion noul confidence")
+        validated.append({"choice": str(raw_choice), "confidence": confidence})
+    return validated
+
+
 def triage_findings(findings: Sequence[Mapping[str, Any]], *, mock_jev_json: Any = None, jev_fn: Callable[..., Any] | None = None) -> dict[str, Any]:
     if not findings:
         return {"actionable": False, "actionable_findings": [], "decisions": [], "decision_source": "layer0_clean"}
     mock_supplied = mock_jev_json is not None
-    try:
-        supplied_mock = _json_value(mock_jev_json) if mock_supplied else None
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        supplied_mock = {"__invalid_mock__": True}
+    supplied_mock: Any = None
+    mock_answers: list[Mapping[str, Any]] | None = None
+    if mock_supplied:
+        try:
+            supplied_mock = _json_value(mock_jev_json)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("mock_jev_json is invalid JSON") from exc
+        mock_answers = _mock_entries(supplied_mock, findings)
     questions = {
         "drift_classification": {"type": "choice", "instructions": "Classify this deterministic drift finding.", "criteria": {"SPEC_OUTDATED_SYNC_DOC": "The handoff is stale and should be synchronized.", "CODE_VIOLATES_SPEC_BUG": "Main code or tests violate the declared contract.", "BENIGN_NOISE": "This is harmless noise and should not wake delivery."}},
         "severity_confidence": {"type": "noul", "instructions": "Confidence from 0.0 to 1.0 in the classification."},
@@ -386,31 +471,33 @@ def triage_findings(findings: Sequence[Mapping[str, Any]], *, mock_jev_json: Any
     actionable: list[dict[str, Any]] = []
     for index, finding in enumerate(findings):
         fallback_actionable, fallback_class, fallback_action = _fallback_for(finding)
-        candidate_mock = _mock_for(supplied_mock, finding, index) if mock_supplied else None
-        response = None
-        if not mock_supplied or candidate_mock is not None:
-            response = decide(state={"finding": {k: finding.get(k) for k in ("id", "repo", "direction", "code", "file", "line")}}, questions=questions, agent_role="team-lead", goal_id=f"{LOOP_ID}-{finding.get('id')}", timeout_sec=1.5, falcon_only=True, mock_response=candidate_mock)
         source = "deterministic_fallback_unavailable"
         choice = fallback_class
         confidence: float | None = None
-        if isinstance(response, Mapping) and not response.get("fallback_reason"):
-            answers = response.get("answers", response)
-            if isinstance(answers, Mapping):
-                raw_choice = answers.get("drift_classification", answers.get("classification", answers.get("choice")))
-                if isinstance(raw_choice, Mapping):
-                    raw_choice = raw_choice.get("choice")
-                confidence = _prob(answers.get("severity_confidence"))
-                if confidence is None:
-                    confidence = _prob(answers.get("severity", answers.get("confidence", answers.get("noul"))))
-                if str(raw_choice) in {"SPEC_OUTDATED_SYNC_DOC", "CODE_VIOLATES_SPEC_BUG", "BENIGN_NOISE"} and confidence is not None:
-                    choice = str(raw_choice)
-                    source = "jev_high_confidence" if confidence > 0.70 else "jev_grey_zone_fallback" if confidence >= 0.30 else "jev_low_confidence_reject"
-        if choice == "BENIGN_NOISE" and confidence is not None and confidence >= 0.30:
-            is_actionable = False
-            action = "NONE"
+        if mock_answers is not None:
+            choice = str(mock_answers[index]["choice"])
+            confidence = float(mock_answers[index]["confidence"])
+            source = "mock_jev"
+        else:
+            response = decide(state={"finding": {k: finding.get(k) for k in ("id", "repo", "direction", "code", "file", "line")}}, questions=questions, agent_role="team-lead", goal_id=f"{LOOP_ID}-{finding.get('id')}", timeout_sec=1.5, falcon_only=True, mock_response=None)
+            if isinstance(response, Mapping) and not response.get("fallback_reason"):
+                answers = response.get("answers", response)
+                if isinstance(answers, Mapping):
+                    raw_choice = answers.get("drift_classification", answers.get("classification", answers.get("choice")))
+                    if isinstance(raw_choice, Mapping):
+                        raw_choice = raw_choice.get("choice")
+                    confidence = _prob(answers.get("severity_confidence"))
+                    if confidence is None:
+                        confidence = _prob(answers.get("severity", answers.get("confidence", answers.get("noul"))))
+                    if str(raw_choice) in {"SPEC_OUTDATED_SYNC_DOC", "CODE_VIOLATES_SPEC_BUG", "BENIGN_NOISE"} and confidence is not None:
+                        choice = str(raw_choice)
+                        source = "jev_high_confidence" if confidence > 0.70 else "jev_grey_zone_fallback" if confidence >= 0.30 else "jev_low_confidence_reject"
+        if choice == "BENIGN_NOISE":
+            is_actionable = False if mock_answers is not None or (confidence is not None and confidence >= 0.40) else fallback_actionable
+            action = "NONE" if not is_actionable else fallback_action
         elif confidence is not None and confidence < 0.30:
             is_actionable, choice, action = False, "BENIGN_NOISE", "NONE"
-        elif source == "jev_high_confidence":
+        elif confidence is not None and confidence > 0.70:
             is_actionable = True
             action = "SYNC_SPEC_DOC" if choice == "SPEC_OUTDATED_SYNC_DOC" else "FIX_CODE_BUG"
         else:
@@ -420,12 +507,14 @@ def triage_findings(findings: Sequence[Mapping[str, Any]], *, mock_jev_json: Any
         decisions.append(decision)
         if is_actionable:
             actionable.append({**dict(finding), "classification": choice, "confidence": confidence, "action_type": action})
-    return {"actionable": bool(actionable), "actionable_findings": actionable, "decisions": decisions, "decision_source": "mixed" if decisions else "layer0_clean"}
+    return {"actionable": bool(actionable), "actionable_findings": actionable, "decisions": decisions, "decision_source": "mock" if mock_answers is not None else "mixed"}
 
 
-def _issue_payload(report: Mapping[str, Any], verdict: Mapping[str, Any]) -> dict[str, Any]:
+def _issue_payload(report: Mapping[str, Any], verdict: Mapping[str, Any], *, target_date: date) -> dict[str, Any]:
     issue_brief = _load_module("spec_drift_issue_brief", ISSUE_BRIEF_PATH)
     findings = list(verdict.get("actionable_findings") or [])
+    actionable_stale = [finding for finding in findings if finding.get("action_type") == "SYNC_SPEC_DOC"]
+    actionable_compliance = [finding for finding in findings if finding.get("action_type") == "FIX_CODE_BUG"]
     items = []
     for finding in findings[:6]:
         verb = "同步规格文档" if finding.get("action_type") == "SYNC_SPEC_DOC" else "修复主线契约实现"
@@ -433,23 +522,25 @@ def _issue_payload(report: Mapping[str, Any], verdict: Mapping[str, Any]) -> dic
     if not items:
         items = [{"what": "复核本次规格与代码巡检结果", "why": "保持产品契约与主线实现一致"}]
     summary = f"检测到 {len(findings)} 项规格与主线实现漂移，已按文档同步或代码修复分流。" if findings else "本次规格与主线实现巡检未发现可交付漂移。"
-    markdown = issue_brief.render_dual_zone_issue(tldr=summary, items=items, cursor=f"{LOOP_ID}-{report.get('fingerprint')}", ai_payload={"loop_id": LOOP_ID, "watermark": report.get("watermark"), "spec_stale_findings": report.get("spec_stale_findings"), "code_compliance_findings": report.get("code_compliance_findings"), "triage": verdict.get("decisions"), "missing_repositories": report.get("missing_repositories"), "unsupported": report.get("unsupported")})
+    actionable_ids = {str(finding.get("id")) for finding in findings}
+    markdown = issue_brief.render_dual_zone_issue(tldr=summary, items=items, cursor=f"{LOOP_ID}-{report.get('fingerprint')}", ai_payload={"loop_id": LOOP_ID, "watermark": report.get("watermark"), "spec_stale_findings": actionable_stale, "code_compliance_findings": actionable_compliance, "triage": [decision for decision in verdict.get("decisions", []) if str(decision.get("finding_id")) in actionable_ids], "missing_repositories": report.get("missing_repositories"), "unsupported": report.get("unsupported")})
     checked = issue_brief.verify_dual_zone_issue(markdown)
     if not checked.get("ok"):
         raise ValueError(f"issue-brief verification failed: {checked.get('violations')}")
-    return {"title": f"[P3 / Priority 3][Spec-Code Drift] {date.today().isoformat()} 规格与代码一致性巡检", "priority": "medium", "status": "todo", "assignee_email": "lee@multica.local", "cursor": f"{LOOP_ID}-{report.get('fingerprint')}", "markdown": markdown, "dual_zone_ok": True}
+    date_str = target_date.isoformat()
+    return {"title": f"[P3 / Priority 3][Spec-Code Drift] {date_str} 规格与代码一致性巡检清单", "priority": "medium", "status": "todo", "assignee_email": "lee@multica.local", "cursor": f"{LOOP_ID}-{report.get('fingerprint')}", "markdown": markdown, "dual_zone_ok": True}
 
 
-def loop_check(*, dev_root: Path | str | None = None, handoff_root: Path | str | None = None, repos: Sequence[str] | str | None = None, fixture_root: Path | str | None = None, mock_jev_json: Any = None, jev_fn: Callable[..., Any] | None = None, dry_run: bool = False) -> dict[str, Any]:
+def loop_check(*, dev_root: Path | str | None = None, handoff_root: Path | str | None = None, repos: Sequence[str] | str | None = None, fixture_root: Path | str | None = None, mock_jev_json: Any = None, jev_fn: Callable[..., Any] | None = None, target_date: date | None = None, dry_run: bool = False) -> dict[str, Any]:
     report = scan(dev_root=dev_root, handoff_root=handoff_root, repos=repos, fixture_root=fixture_root)
     verdict = triage_findings(report["findings"], mock_jev_json=mock_jev_json, jev_fn=jev_fn)
-    severity = "high" if any(str(f.get("code")) in SEVERITY_HIGH for f in report["findings"]) else "medium" if report["findings"] else "low"
-    today = date.today().isoformat()
+    severity = "high" if any(str(f.get("code")) in SEVERITY_HIGH for f in verdict.get("actionable_findings", [])) else "medium" if verdict.get("actionable_findings") else "low"
+    date_str = (target_date or date.today()).isoformat()
     result = {
         **report,
-        "date": today,
+        "date": date_str,
         "cursor": f"{LOOP_ID}-{report.get('fingerprint')}",
-        "title": f"[P3 / Priority 3][Spec-Code Drift] {today} 规格与代码一致性巡检",
+        "title": f"[P3 / Priority 3][Spec-Code Drift] {date_str} 规格与代码一致性巡检清单",
         "actionable": bool(verdict["actionable"]),
         "severity": severity,
         "jev": verdict,
@@ -467,7 +558,7 @@ def loop_check(*, dev_root: Path | str | None = None, handoff_root: Path | str |
         for item in verdict.get("actionable_findings", [])[:6]
     ]
     if verdict["actionable"]:
-        issue = _issue_payload(report, verdict)
+        issue = _issue_payload(report, verdict, target_date=target_date or date.today())
         result["dual_zone_markdown"] = issue["markdown"]
         result["alert_issue"] = issue
     return result

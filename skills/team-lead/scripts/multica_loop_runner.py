@@ -675,6 +675,7 @@ def sync_autopilots(
                 or (spec.loop_id == "aidash-retro-delta" and "Daily AIDash Digest & Retro" in title_str)
                 or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in title_str)
                 or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in title_str)
+                or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in title_str)
                 or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in title_str)
             ):
                 matched = ap
@@ -788,7 +789,7 @@ def _compute_digest_signature(payload: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
-def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False) -> dict[str, Any]:
+def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False, mock_jev_json: Any = None) -> dict[str, Any]:
     date_str = target_date.isoformat()
     if spec.loop_id == "local-herdr-worktree-gc":
         hygiene_mod = _load_module("loop_local_hygiene_patrol", TEAM_LEAD_SCRIPTS_DIR / "local_hygiene_patrol.py")
@@ -809,11 +810,14 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         dev_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_DEV_ROOT")
         handoff_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_HANDOFF_ROOT")
         repos_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_REPOS")
+        mock_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_MOCK_JEV_JSON")
         return drift_mod.loop_check(
             fixture_root=Path(fixture_env).expanduser() if fixture_env else None,
             dev_root=Path(dev_env).expanduser() if dev_env else None,
             handoff_root=Path(handoff_env).expanduser() if handoff_env else None,
             repos=repos_env,
+            mock_jev_json=mock_jev_json if mock_jev_json is not None else mock_env,
+            target_date=target_date,
             dry_run=dry_run,
         )
 
@@ -1338,6 +1342,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "aidash-retro-delta" and "AIDash Digest & Retro" in t)
             or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest" in t)
             or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in t)
+            or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in t)
             or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in t)
         ):
             return str(ap.get("id") or "") or None
@@ -1370,7 +1375,7 @@ def run_loop(
     elif collector_fn is not None:
         collected = collector_fn(spec, target_date=resolved_date)
     else:
-        collected = _default_loop_collector(spec, target_date=resolved_date, dry_run=dry_run)
+        collected = _default_loop_collector(spec, target_date=resolved_date, dry_run=dry_run, mock_jev_json=mock_jev_json)
 
     watermarks = load_watermarks(state_path)
     previous_entry = watermarks.get(spec.loop_id) if isinstance(watermarks.get(spec.loop_id), dict) else {}
@@ -1396,13 +1401,27 @@ def run_loop(
         except OSError:
             pass
 
-    # Step 2: Layer-1 Jev Fast-Thinking Judgment
-    jev_verdict = evaluate_jev_actionability(
-        collected,
-        spec=spec,
-        mock_jev_json=mock_jev_json,
-        jev_fn=jev_fn,
+    # Step 2: Layer-1 Jev Fast-Thinking Judgment. Loop 4 may already have
+    # triaged each finding; preserve that verdict instead of re-triaging noise.
+    collector_triaged = (
+        spec.loop_id == "spec-code-drift-patrol"
+        and isinstance(collected.get("actionable"), bool)
+        and isinstance(collected.get("jev"), Mapping)
     )
+    if collector_triaged:
+        jev_verdict = {
+            "actionable": bool(collected.get("actionable")),
+            "route": spec.delivery_mode if collected.get("actionable") else "ignore",
+            "decision_source": "collector_triage",
+            "collector_jev": collected.get("jev"),
+        }
+    else:
+        jev_verdict = evaluate_jev_actionability(
+            collected,
+            spec=spec,
+            mock_jev_json=mock_jev_json,
+            jev_fn=jev_fn,
+        )
     if not jev_verdict["actionable"]:
         if not dry_run and new_watermark:
             watermarks[spec.loop_id] = {
@@ -1475,7 +1494,11 @@ def run_loop(
                 else (
                     "[P3 / Priority 3][Local Hygiene]"
                     if spec.loop_id == "local-herdr-worktree-gc"
-                    else ("[P3 / Priority 3][Backlog Grooming]" if spec.loop_id == "backlog-grooming-and-push" else None)
+                    else (
+                        "[P3 / Priority 3][Spec-Code Drift]"
+                        if spec.loop_id == "spec-code-drift-patrol"
+                        else ("[P3 / Priority 3][Backlog Grooming]" if spec.loop_id == "backlog-grooming-and-push" else None)
+                    )
                 )
             )
         )

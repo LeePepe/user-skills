@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,11 +99,38 @@ class SpecCodeDriftPatrolTests(unittest.TestCase):
         self.assertTrue(grey["actionable"])
         self.assertEqual(grey["decisions"][0]["decision_source"], "deterministic_fallback_grey")
         calls = []
-        invalid = patrol.triage_findings([finding], mock_jev_json="not-json", jev_fn=lambda **kwargs: calls.append(kwargs) or (_ for _ in ()).throw(AssertionError("live Jev called")))
-        self.assertTrue(invalid["actionable"])
+        with self.assertRaises(ValueError):
+            patrol.triage_findings([finding], mock_jev_json="not-json", jev_fn=lambda **kwargs: calls.append(kwargs) or (_ for _ in ()).throw(AssertionError("live Jev called")))
         self.assertEqual(calls, [])
         offline = patrol.triage_findings([finding], jev_fn=lambda **kwargs: None)
         self.assertTrue(offline["actionable"])
+
+    def test_runner_suppresses_noise_and_persists_layer0_watermark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "watermarks.json"
+            collected = {
+                "loop_id": "spec-code-drift-patrol",
+                "has_delta": True,
+                "delta_count": 1,
+                "watermark": "spec-code-drift-patrol:stable",
+                "actionable": False,
+                "jev": {"decision_source": "mock", "actionable_findings": []},
+            }
+            first = runner.run_loop("spec-code-drift-patrol", target_date=date(2026, 11, 19), state_path=state, collector_fn=lambda spec, target_date: collected, dry_run=False)
+            second = runner.run_loop("spec-code-drift-patrol", target_date=date(2026, 11, 19), state_path=state, collector_fn=lambda spec, target_date: collected, dry_run=False)
+            self.assertEqual(first["status"], "SKIPPED_NOT_ACTIONABLE")
+            self.assertEqual(second["status"], "SKIPPED_NO_DELTA")
+            self.assertEqual(runner.load_watermarks(state)["spec-code-drift-patrol"]["watermark"], collected["watermark"])
+
+    def test_foreign_repo_handoff_and_prose_slashes_are_not_scanned(self):
+        holder, dev, handoff = self.fixture(clean=True)
+        self.addCleanup(holder.cleanup)
+        foreign = handoff / "foreign-goal"
+        foreign.mkdir()
+        (foreign / "spec.md").write_text("- **Repository**: LeePepe/user-skills\\nFinancial is only prose: `P0/P1`, `UI/UX`, `/howto`\\n", encoding="utf-8")
+        report = patrol.scan(dev_root=dev, handoff_root=handoff, repos=("Financial",))
+        self.assertEqual(report["spec_stale_findings"], [])
+        self.assertTrue(any(item["kind"] == "unassociated_handoff" for item in report["unsupported"]))
 
     def test_at011_and_runner_repeat_scan(self):
         holder, dev, handoff = self.fixture(clean=True)
@@ -119,8 +147,12 @@ class SpecCodeDriftPatrolTests(unittest.TestCase):
         os.environ["SPEC_CODE_DRIFT_PATROL_REPOS"] = "Financial"
         self.addCleanup(lambda: [os.environ.pop(key, None) for key in ("SPEC_CODE_DRIFT_PATROL_DEV_ROOT", "SPEC_CODE_DRIFT_PATROL_HANDOFF_ROOT", "SPEC_CODE_DRIFT_PATROL_REPOS")])
         first = runner._default_loop_collector(runner.resolve_loop_spec("spec-code-drift-patrol"), target_date=__import__("datetime").date(2026, 11, 19), dry_run=True)
-        second = runner._default_loop_collector(runner.resolve_loop_spec("spec-code-drift-patrol"), target_date=__import__("datetime").date(2026, 11, 19), dry_run=True)
+        second = runner._default_loop_collector(runner.resolve_loop_spec("spec-code-drift-patrol"), target_date=date(2026, 11, 19), dry_run=True)
         self.assertEqual(first["watermark"], second["watermark"])
+        checked = patrol.loop_check(dev_root=dev, handoff_root=handoff, repos=("Financial",), target_date=date(2026, 1, 2), mock_jev_json={item["id"]: {"answers": {"drift_classification": {"choice": "CODE_VIOLATES_SPEC_BUG"}, "severity_confidence": {"noul": 0.9}}} for item in patrol.scan(dev_root=dev, handoff_root=handoff, repos=("Financial",))["findings"]})
+        self.assertEqual(checked["title"], "[P3 / Priority 3][Spec-Code Drift] 2026-01-02 规格与代码一致性巡检清单")
+        fake = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=json.dumps({"autopilots": [{"id": "ap-1", "title": "Daily Spec-Code Drift Patrol Autopilot (P3 -> Owner)"}]}), stderr="")
+        self.assertEqual(runner._find_autopilot_id(runner.resolve_loop_spec("spec-code-drift-patrol"), server_url="", workspace_id="", runner=fake, multica_bin=None), "ap-1")
 
 
 if __name__ == "__main__":
