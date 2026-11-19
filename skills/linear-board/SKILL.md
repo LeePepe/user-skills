@@ -28,6 +28,7 @@ description: 管理 Linear TIA Idea Inbox 与 Global Goal Status Board；运行�
 |---|---|---|
 | Idea Inbox / Goal / ledger | `scripts/linear-sync.py` 与团队台账 | `idea`、`ensure-goal`、`sync-ledger` |
 | 每日简报、四桶/四层、Jev | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `daily-brief.py --date today --dry-run` |
+| Multica + Linear 极简双区简报 | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `daily-brief.py --date today --target both --json` |
 | 邮件深链提取与预落盘 Actionable Issue | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `email-action-pipeline.py ingest-workiq --input-json PATH --propose-linear` |
 | Markdown 合同验证 | `daily-brief.py` | `daily-brief.py --verify-markdown PATH\| -` |
 | `@bot` 选择、重试、Owner 回收 | [daily-brief-and-bot.md](references/daily-brief-and-bot.md) | `linear-bot-bridge.py --once --json` |
@@ -49,11 +50,12 @@ python3 scripts/linear-sync.py sync-ledger --handoff-dir <dir> --issue TIA-123
 
 ## Daily Brief
 
-`daily-brief.py` 在 CST 05:00 生成 Plan A：第一屏是全局编号的 Todo 四桶，随后是昨日完成的 workflow-hub 四层矩阵；具体契约、Jev truth table、发布与 bridge 状态机见 L1。建议先用 `--dry-run`，再由受控 LaunchAgent 调用 `--propose-linear --json`（默认以 `parentId = null` 挂在 `user-skills` / Milestone `Skills Workflow` 顶层，也可显式传 `--parent-issue TIA-xxx` 覆盖）。
+`daily-brief.py` 在 CST 05:00 生成 Plan A（或 `--dual-zone` 极简双区 `issue-brief` 视图，`<=15` 行人看区 + `<details>` 折叠上下文 + `<!-- multica-cursor:daily-brief-YYYY-MM-DD -->` 水位线）。支持 `--propose-linear`、`--publish-multica` 或 `--target linear|multica|both` 双端去重发布并指派给 Owner（Multica `lee@multica.local`）。
 
 ```bash
 python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run
-python3 skills/linear-board/scripts/daily-brief.py --date today --propose-linear --json
+python3 skills/linear-board/scripts/daily-brief.py --date today --publish-multica --json
+python3 skills/linear-board/scripts/daily-brief.py --date today --target both --json
 ```
 
 ## Safety
