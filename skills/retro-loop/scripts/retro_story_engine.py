@@ -456,6 +456,99 @@ def discover_aidata_signals(
     }
 
 
+_EVAL_CASE_ID_RE = re.compile(r"^(?:EV|DC|AT|CASE)-\d+[A-Za-z0-9_-]*$")
+_USER_HOME_PREFIX = "/" + "Users/"
+_USER_HOME_PATH_RE = re.compile(_USER_HOME_PREFIX + r"[^/\s\"']+")
+
+
+def _redact_user_text(text: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
+    """Redact absolute home/temp roots into tilde-relative or symbolic paths."""
+    cleaned = str(text or "")
+    home_str = str(Path.home())
+    if home_str:
+        cleaned = cleaned.replace(home_str, "~")
+    for candidate_root, replacement in (
+        (skills_root, "~/Development/user-skills/skills"),
+        (dev_root, "~/Development"),
+    ):
+        if candidate_root is None:
+            continue
+        for variant in {str(candidate_root), str(candidate_root.resolve())}:
+            if variant and variant != "/":
+                cleaned = cleaned.replace(variant, replacement)
+    cleaned = _USER_HOME_PATH_RE.sub("~", cleaned)
+    return cleaned
+
+
+def _format_skill_dir(pkg: Path, *, repo_bound: bool, repo_name: str, skills_root: Path, dev_root: Path) -> str:
+    """Return a privacy-safe tilde path for a discovered skill directory."""
+    if not repo_bound:
+        return f"~/Development/user-skills/skills/{pkg.name}"
+    try:
+        rel = pkg.relative_to(dev_root)
+        return f"~/Development/{rel.as_posix()}"
+    except ValueError:
+        pass
+    return _redact_user_text(str(pkg), skills_root=skills_root, dev_root=dev_root)
+
+
+def _estimate_frontmatter_and_body_tokens(skill_md: Path) -> tuple[int, int, int]:
+    """Return (line_count, frontmatter_tokens_est, body_tokens_est) for SKILL.md."""
+    try:
+        raw_bytes = skill_md.read_bytes()
+        text = raw_bytes.decode("utf-8", errors="ignore")
+    except OSError:
+        return 0, 1, 1
+    lines = text.splitlines()
+    body_tokens = max(1, len(raw_bytes) // 4)
+    fm_text = text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            fm_lines = [
+                ln.strip()
+                for ln in parts[1].splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+            fm_text = "\n".join(fm_lines) if fm_lines else parts[1].strip()
+    frontmatter_tokens = max(1, len(fm_text.encode("utf-8")) // 4)
+    return len(lines), frontmatter_tokens, body_tokens
+
+
+def _summarize_eval_case(item: dict[str, Any], *, skills_root: Path, dev_root: Path) -> tuple[str, str]:
+    """Classify an EV-*/DC-* case into ('regex'|'cli'|'contract', <=140 char summary)."""
+    cmd = str(item.get("cmd") or "").strip()
+    forbidden_regex = str(item.get("forbidden_regex") or "").strip()
+    bad_snippet = str(item.get("bad_snippet") or "").strip()
+    must_contain = item.get("must_contain")
+    expect_stdout = item.get("expect_stdout_contains")
+    fix_rule = str(item.get("fix_rule") or "").strip()
+
+    if cmd:
+        kind = "cli"
+        summary_raw = cmd
+        if isinstance(expect_stdout, list) and expect_stdout:
+            summary_raw = f"{cmd} -> contains {expect_stdout[0]}"
+    elif forbidden_regex or bad_snippet:
+        kind = "regex"
+        summary_raw = forbidden_regex or f"forbid: {bad_snippet}"
+    else:
+        kind = "contract"
+        target_file = str(item.get("file") or "").strip()
+        if isinstance(must_contain, list) and must_contain:
+            joined = ", ".join(str(x) for x in must_contain[:3])
+            summary_raw = f"{target_file}: must_contain [{joined}]" if target_file else f"must_contain [{joined}]"
+        else:
+            summary_raw = fix_rule or str(item.get("symptom") or item.get("title") or "contract check")
+
+    one_line = " ".join(
+        _redact_user_text(summary_raw, skills_root=skills_root, dev_root=dev_root).split()
+    )
+    if len(one_line) > 140:
+        one_line = one_line[:137].rstrip() + "..."
+    return kind, one_line or "contract assertion"
+
+
 def _discover_skill_inventory(
     skills_root: Path | None = None,
     dev_root: Path | None = None,
@@ -463,15 +556,25 @@ def _discover_skill_inventory(
     """Scan global user-skills and repo-bound skills for scripts, L0/L1 lines, and EV/DC cases."""
     root = skills_root or DEFAULT_SKILLS_ROOT
     d_root = dev_root or DEFAULT_DEV_ROOT
-    search_dirs: list[tuple[Path, bool]] = [(root, False)]
-    for repo_name in ("AIDash", "VitalStride", "VoxPocket"):
+    search_dirs: list[tuple[Path, bool, str]] = [(root, False, "user-skills")]
+    repo_names = ["AIDash", "Financial", "VitalStride", "VoxPocket"]
+    if d_root.is_dir():
+        for child in sorted(d_root.iterdir()):
+            if not child.is_dir() or child.name in {"user-skills", "worktrees", "handoff"} or child.name.startswith("."):
+                continue
+            if child.name not in repo_names and ((child / ".agents" / "skills").is_dir() or (child / ".claude" / "skills").is_dir()):
+                repo_names.append(child.name)
+    for repo_name in repo_names:
         repo_path = d_root / repo_name
-        for rel in (repo_path / ".agents" / "skills", repo_path / "skills"):
+        candidates = [repo_path / ".agents" / "skills", repo_path / ".claude" / "skills"]
+        if repo_name in {"AIDash", "Financial", "VitalStride", "VoxPocket"}:
+            candidates.append(repo_path / "skills")
+        for rel in candidates:
             if rel.is_dir():
-                search_dirs.append((rel, True))
+                search_dirs.append((rel, True, repo_name))
 
     inventory: dict[str, dict[str, Any]] = {}
-    for base_dir, repo_bound in search_dirs:
+    for base_dir, repo_bound, repo_name in search_dirs:
         if not base_dir.is_dir():
             continue
         for pkg in sorted(base_dir.iterdir()):
@@ -481,64 +584,99 @@ def _discover_skill_inventory(
             skill_name = pkg.name
             if skill_name in inventory:
                 continue
-            try:
-                l0_lines = len(skill_md.read_text(encoding="utf-8", errors="ignore").splitlines())
-            except OSError:
-                l0_lines = 0
+            l0_lines, frontmatter_tokens_est, body_tokens_est = _estimate_frontmatter_and_body_tokens(skill_md)
             l0_cap = 80 if skill_name in {"my-designer", "design-studio"} else 180
             refs_dir = pkg / "references"
             ref_files: list[str] = []
+            ref_entries: list[dict[str, Any]] = []
             max_l1_lines = 0
             eval_cases = 0
             recent_eval_cases = 0
+            parsed_eval_cases: list[dict[str, Any]] = []
+            seen_case_ids: set[str] = set()
             cutoff_7d = (date.today() - timedelta(days=7)).isoformat()
             if refs_dir.is_dir():
                 for ref_p in sorted(refs_dir.rglob("*")):
-                    if not ref_p.is_file():
+                    if not ref_p.is_file() or ref_p.name.startswith("."):
                         continue
-                    rel_ref = str(ref_p.relative_to(refs_dir))
+                    rel_ref = ref_p.relative_to(refs_dir).as_posix()
+                    try:
+                        ref_bytes = ref_p.read_bytes()
+                        ref_text = ref_bytes.decode("utf-8", errors="ignore")
+                        ref_line_count = len(ref_text.splitlines())
+                    except OSError:
+                        ref_bytes = b""
+                        ref_line_count = 0
+                    ref_entries.append({
+                        "rel_path": f"references/{rel_ref}",
+                        "line_count": ref_line_count,
+                        "tokens_est": max(1, len(ref_bytes) // 4),
+                    })
                     if ref_p.suffix == ".md":
                         ref_files.append(rel_ref)
-                        try:
-                            max_l1_lines = max(
-                                max_l1_lines,
-                                len(ref_p.read_text(encoding="utf-8", errors="ignore").splitlines()),
-                            )
-                        except OSError:
-                            pass
+                        max_l1_lines = max(max_l1_lines, ref_line_count)
                     elif ref_p.suffix == ".json" and (
                         rel_ref.endswith("eval-cases.json") or rel_ref.endswith("defect-cases/index.json")
                     ):
                         try:
-                            doc = json.loads(ref_p.read_text(encoding="utf-8"))
-                            for item in doc.get("active_cases", []):
-                                if isinstance(item, dict):
-                                    eval_cases += 1
-                                    reg = str(item.get("registered_at") or doc.get("updated") or "")
-                                    if reg >= cutoff_7d:
-                                        recent_eval_cases += 1
+                            doc = json.loads(ref_bytes.decode("utf-8", errors="ignore"))
+                            for status_key, case_status in (("active_cases", "active"), ("retired_cases", "retired")):
+                                for item in doc.get(status_key, []):
+                                    if not isinstance(item, dict):
+                                        continue
+                                    cid = str(item.get("id") or "").strip() or f"CASE-{len(parsed_eval_cases) + 1:03d}"
+                                    if case_status == "active":
+                                        eval_cases += 1
+                                        reg = str(item.get("registered_at") or doc.get("updated") or "")
+                                        if reg >= cutoff_7d:
+                                            recent_eval_cases += 1
+                                    if cid in seen_case_ids:
+                                        continue
+                                    seen_case_ids.add(cid)
+                                    kind, assertion_summary = _summarize_eval_case(item, skills_root=root, dev_root=d_root)
+                                    parsed_eval_cases.append({
+                                        "id": cid,
+                                        "title": _redact_user_text(
+                                            str(item.get("title") or cid).strip(),
+                                            skills_root=root,
+                                            dev_root=d_root,
+                                        ),
+                                        "kind": kind,
+                                        "assertion_summary": assertion_summary,
+                                        "status": str(item.get("status") or case_status),
+                                    })
                         except (OSError, json.JSONDecodeError):
                             pass
             scripts_dir = pkg / "scripts"
             scripts: list[str] = []
+            script_entries: list[str] = []
             if scripts_dir.is_dir():
-                scripts = [
-                    sp.name
-                    for sp in sorted(scripts_dir.iterdir())
-                    if sp.is_file() and sp.suffix in {".py", ".sh", ".ts"} and not sp.name.startswith("test_")
-                ]
+                for sp in sorted(scripts_dir.rglob("*")):
+                    if not sp.is_file() or sp.suffix not in {".py", ".sh", ".ts"} or sp.name.startswith("test_"):
+                        continue
+                    if sp.parent == scripts_dir:
+                        scripts.append(sp.name)
+                    script_entries.append(f"scripts/{sp.relative_to(scripts_dir).as_posix()}")
             budget_ok = l0_lines <= l0_cap and max_l1_lines <= 160
             inventory[skill_name] = {
                 "skill": skill_name,
                 "path": str(pkg),
+                "skill_dir": _format_skill_dir(pkg, repo_bound=repo_bound, repo_name=repo_name, skills_root=root, dev_root=d_root),
+                "scope": "repo_bound" if repo_bound else "global",
+                "repo": repo_name if repo_bound else "user-skills",
                 "repo_bound": repo_bound,
                 "l0_lines": l0_lines,
+                "frontmatter_tokens_est": frontmatter_tokens_est,
+                "body_tokens_est": body_tokens_est,
                 "l0_cap": l0_cap,
                 "max_l1_lines": max_l1_lines,
                 "l1_cap": 160,
                 "budget_ok": budget_ok,
                 "reference_files": ref_files,
+                "reference_entries": ref_entries,
                 "scripts": scripts,
+                "script_entries": script_entries,
+                "eval_cases": parsed_eval_cases,
                 "eval_case_count": eval_cases,
                 "eval_case_weekly_delta": recent_eval_cases,
             }
@@ -839,6 +977,51 @@ def _flag(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "pass", "caught"}
 
 
+def _normalize_skill_rel_path(raw_path: str, *, prefix: str) -> str:
+    """Normalize a warehouse reference_path or script_path to 'references/...' or 'scripts/...'."""
+    cleaned = str(raw_path or "").strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("legacy:"):
+        return ""
+    marker = f"/{prefix}/"
+    idx = cleaned.find(marker)
+    if idx != -1:
+        return f"{prefix}/{cleaned[idx + len(marker):].lstrip('/')}"
+    if cleaned.startswith(f"{prefix}/"):
+        return cleaned
+    return f"{prefix}/{cleaned.lstrip('/')}"
+
+
+def _read_l2_channel_counts(wh: Path, start30: datetime, end30: datetime) -> dict[str, dict[str, int]]:
+    """Read optional 30d per-skill call counts from sibling L2 clean DBs when present."""
+    counts: dict[str, dict[str, int]] = {}
+    clean_dir = wh.parent.parent / "L2_normalize" / "clean"
+    if not clean_dir.is_dir():
+        return counts
+    day_from = start30.date().isoformat()
+    day_to = (end30 - timedelta(days=1)).date().isoformat()
+    specs = (
+        ("codex", clean_dir / "codex_prompts.db", "SELECT skill, COUNT(*) FROM skill_use WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("hermes", clean_dir / "hermes_tools.db", "SELECT skill, COALESCE(SUM(n), 0) FROM skill_day WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("copilot", clean_dir / "copilot_cli.db", "SELECT skill, COALESCE(SUM(n), 0) FROM skill_day WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("claude", clean_dir / "claude_prompts.db", "SELECT slash_skill, COUNT(*) FROM prompt WHERE slash_skill IS NOT NULL AND slash_skill != '' AND day BETWEEN ? AND ? GROUP BY slash_skill"),
+    )
+    for channel, db_path, sql in specs:
+        if not db_path.is_file():
+            continue
+        try:
+            with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+                for raw_sk, raw_n in conn.execute(sql, (day_from, day_to)):
+                    sk = str(raw_sk or "").strip().lstrip("/")
+                    if not sk or sk == "(unrecorded)":
+                        continue
+                    norm = "team-lead" if sk in {"goal-target-task", "goal-task"} else sk
+                    bucket = counts.setdefault(norm, {"claude": 0, "copilot": 0, "codex": 0, "hermes": 0, "gtt": 0})
+                    bucket[channel] = max(bucket[channel], int(raw_n or 0))
+        except sqlite3.Error:
+            continue
+    return counts
+
+
 def compute_skill_roi_diagnostics(
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
@@ -964,12 +1147,28 @@ def compute_skill_roi_diagnostics(
     eval_interceptions = 0
     eval_escapes = 0
     eval_by_case: dict[str, dict[str, int]] = {}
+    per_skill_eval_cases: dict[str, dict[str, dict[str, int]]] = {}
+    per_skill_refs: dict[str, dict[str, dict[str, Any]]] = {}
+    per_skill_scripts: dict[str, dict[str, dict[str, Any]]] = {}
+    per_skill_channels: dict[str, dict[str, int]] = {}
+    per_skill_cache: dict[str, dict[str, int]] = {}
     session_records: dict[tuple[str, str, str], dict[str, Any]] = {}
     turn_skill_links: dict[str, set[str]] = {}
     start7, _ = _window_bounds()
+    start30, end30 = _window_bounds(30)
+    warehouse_present = wh.is_file() or cp.is_file()
+    l2_channels = _read_l2_channel_counts(wh, start30, end30)
+
+    def _norm_skill(name: str) -> str:
+        return "team-lead" if name in {"goal-target-task", "goal-task"} else name
+
+    def _bump_channel(skill: str, channel: str, delta: int = 1) -> None:
+        sk = _norm_skill(skill)
+        bucket = per_skill_channels.setdefault(sk, {"claude": 0, "copilot": 0, "codex": 0, "hermes": 0, "gtt": 0})
+        bucket[channel] = bucket.get(channel, 0) + max(0, int(delta))
 
     def session_for(source: str, sid: str, skill: str, stamp: datetime, *, reference_source: bool = False) -> dict[str, Any]:
-        skill = "team-lead" if skill == "goal-target-task" else skill
+        skill = _norm_skill(skill)
         key = (source, sid or f"row-{len(session_records)}", skill)
         record = session_records.setdefault(key, {
             "source": source, "sid": sid, "skill": skill, "stamp": stamp, "loaded": True,
@@ -981,7 +1180,8 @@ def compute_skill_roi_diagnostics(
         return record
 
     def add_reference(source: str, sid: str, skill: str, path: str, stamp: datetime, byte_len: Any = 0) -> None:
-        record = session_for(source, sid, skill, stamp, reference_source=True)
+        norm_sk = _norm_skill(skill)
+        record = session_for(source, sid, norm_sk, stamp, reference_source=True)
         ref_path = str(path or "").strip()
         if ref_path:
             try:
@@ -989,28 +1189,81 @@ def compute_skill_roi_diagnostics(
             except (TypeError, ValueError):
                 size = 0
             record["refs"].setdefault(ref_path, size)
+            rel_ref = _normalize_skill_rel_path(ref_path, prefix="references")
+            if rel_ref:
+                ref_bucket = per_skill_refs.setdefault(norm_sk, {}).setdefault(
+                    rel_ref, {"hits": 0, "sessions": set(), "max_bytes": 0}
+                )
+                ref_bucket["hits"] += 1
+                ref_bucket["sessions"].add(sid or f"{source}:{stamp.isoformat()}")
+                ref_bucket["max_bytes"] = max(ref_bucket["max_bytes"], size)
         observed.append(stamp)
-        observe(skill, "usage", stamp)
+        observe(norm_sk, "usage", stamp)
 
-    def add_script(source: str, sid: str, skill: str, path: str, stamp: datetime, exit_code: Any = 0, duration_ms: Any = 0) -> None:
-        record = session_for(source, sid, skill, stamp, reference_source=source == "copilot")
+    def add_script(source: str, sid: str, skill: str, path: str, stamp: datetime, exit_code: Any = 0, duration_ms: Any = None) -> None:
+        norm_sk = _norm_skill(skill)
+        record = session_for(source, sid, norm_sk, stamp, reference_source=source == "copilot")
+        has_exit = exit_code not in (None, "")
         try:
-            code = int(exit_code if exit_code not in (None, "") else 0)
+            code = int(exit_code) if has_exit else 0
         except (TypeError, ValueError):
             code = 0
+            has_exit = False
+        has_dur = duration_ms not in (None, "")
         try:
-            duration = max(0.0, float(duration_ms if duration_ms not in (None, "") else 0))
+            duration = max(0.0, float(duration_ms)) if has_dur else 0.0
         except (TypeError, ValueError):
             duration = 0.0
+            has_dur = False
         call = (str(path or ""), stamp.isoformat(), code, duration)
         if call not in record["scripts"]:
             record["scripts"].append(call)
-        entry = _ensure_skill(skill)
+            rel_script = _normalize_skill_rel_path(str(path or ""), prefix="scripts")
+            if rel_script:
+                sc_bucket = per_skill_scripts.setdefault(norm_sk, {}).setdefault(
+                    rel_script, {"calls": 0, "successes": 0, "graded_calls": 0, "durations": []}
+                )
+                sc_bucket["calls"] += 1
+                if has_exit or source == "warehouse":
+                    sc_bucket["graded_calls"] += 1
+                    if code == 0:
+                        sc_bucket["successes"] += 1
+                if has_dur:
+                    sc_bucket["durations"].append(duration)
+        entry = _ensure_skill(norm_sk)
         entry["has_scripts"] = True
         if path and str(path) not in entry["scripts"]:
             entry["scripts"].append(str(path))
         observed.append(stamp)
-        observe(skill, "usage", stamp)
+        observe(norm_sk, "usage", stamp)
+
+    goal_skills_cache: dict[str, set[str]] = {}
+
+    def _handoff_skills_for_goal(goal: str) -> set[str]:
+        if not goal:
+            return set()
+        if goal in goal_skills_cache:
+            return goal_skills_cache[goal]
+        handoff = d_root / "handoff" / goal
+        text_parts: list[str] = []
+        if handoff.is_dir():
+            spec_p = handoff / "spec.md"
+            if spec_p.is_file():
+                try:
+                    text_parts.append(spec_p.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+            briefs_dir = handoff / "briefs"
+            if briefs_dir.is_dir():
+                for path in sorted(briefs_dir.glob("*.md")):
+                    if path.is_file():
+                        try:
+                            text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
+                        except OSError:
+                            pass
+        extracted = _extract_skill_names("\n".join(text_parts), known_skills) if text_parts else set()
+        goal_skills_cache[goal] = extracted
+        return extracted
 
     def task_skills(row: dict[str, Any], *, keys_to_skills: dict[str, set[str]]) -> set[str]:
         raw_explicit = {str(item).strip() for item in _json_list(row.get("skills_used")) if str(item).strip()}
@@ -1021,21 +1274,7 @@ def compute_skill_roi_diagnostics(
         if explicit:
             return explicit
         goal = str(row.get("goal_id") or "")
-        handoff = d_root / "handoff" / goal
-        text_parts: list[str] = []
-        for path in ([handoff / "spec.md"] if handoff.is_dir() else []):
-            if path.is_file():
-                try:
-                    text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
-                except OSError:
-                    pass
-        if handoff.is_dir():
-            for path in sorted((handoff / "briefs").glob("*.md")) if (handoff / "briefs").is_dir() else []:
-                try:
-                    text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
-                except OSError:
-                    pass
-        inferred = _extract_skill_names("\n".join(text_parts), known_skills)
+        inferred = set(_handoff_skills_for_goal(goal))
         for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
             if key:
                 inferred.update(keys_to_skills.get(str(key).strip().lower(), set()))
@@ -1082,6 +1321,11 @@ def compute_skill_roi_diagnostics(
                         turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
                 tools = _json_list(row.get("tool_calls"))
                 for skill in skills:
+                    norm_sk = _norm_skill(skill)
+                    _bump_channel(norm_sk, "claude")
+                    cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+                    cache_bucket["in"] += int(row.get("input_tokens") or 0)
+                    cache_bucket["cache_read"] += int(row.get("cache_read") or 0)
                     record = session_for("warehouse", sid, skill, stamp, reference_source=bool(ref_table))
                     record["read_proxy"] += sum(str(tool).lower() in {"read", "view", "read_file"} for tool in tools)
                     record["edits"] += sum(str(tool).lower() in {"edit", "write", "multiedit", "apply_patch", "create"} for tool in tools)
@@ -1100,15 +1344,24 @@ def compute_skill_roi_diagnostics(
                         add_script("warehouse", sid, match.group("skill"), f"skills/{match.group('skill')}/scripts/{match.group('script')}", stamp)
                 if skills:
                     observed.append(stamp)
-            for source_table in ("copilot_cli", "codex_prompts"):
+            for source_table in ("copilot_cli", "codex_prompts", "skill_day", "hermes_skill_day"):
                 if not _table_columns(conn, source_table):
                     continue
                 for row in _timed_rows(conn, source_table, 30):
+                    if source_table in {"skill_day", "hermes_skill_day"}:
+                        sk = str(row.get("skill") or "").strip()
+                        cnt = int(row.get("calls") or row.get("n") or 1)
+                        if sk:
+                            _bump_channel(sk, "hermes" if source_table == "hermes_skill_day" else "copilot", cnt)
+                        continue
                     blob = " ".join(str(row.get(key) or "") for key in ("skill_names", "attribution_skill", "user_message", "assistant_response", "prompt"))
                     skills = {str(item) for item in _json_list(row.get("skill_names")) if str(item).strip()}
                     skills.update(_extract_skill_names(blob, known_skills))
                     if row.get("attribution_skill"):
                         skills.add(str(row["attribution_skill"]))
+                    ch_name = "codex" if source_table == "codex_prompts" else "copilot"
+                    for sk in skills:
+                        _bump_channel(sk, ch_name)
                     for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
                         if key:
                             turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
@@ -1117,14 +1370,18 @@ def compute_skill_roi_diagnostics(
                     skill = str(row.get("skill") or "").strip()
                     path = str(row.get("reference_path") or row.get("ref_path") or "").strip()
                     if skill and path:
+                        src_col = str(row.get("source") or "").lower()
+                        _bump_channel(skill, "codex" if "codex" in src_col else "copilot")
                         add_reference("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("byte_len"))
             if script_table:
                 for row in _timed_rows(conn, script_table, 30):
                     skill = str(row.get("skill") or "").strip()
                     path = str(row.get("script_path") or row.get("path") or "").strip()
                     if skill and path:
+                        src_col = str(row.get("source") or "").lower()
+                        _bump_channel(skill, "codex" if "codex" in src_col else "copilot")
                         add_script("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("exit_code"), row.get("duration_ms"))
-            for row in _timed_rows(conn, "fact_gtt_task_run"):
+            for row in _timed_rows(conn, "fact_gtt_task_run", 30):
                 if row.get("role_name") not in {"reviewer", "code_reviewer", "planner_reviewer"}:
                     continue
                 reviewed_skills = task_skills(row, keys_to_skills=turn_skill_links)
@@ -1132,6 +1389,9 @@ def compute_skill_roi_diagnostics(
                     if key:
                         turn_skill_links.setdefault(str(key).strip().lower(), set()).update(reviewed_skills)
                 for skill in reviewed_skills:
+                    _bump_channel(skill, "gtt")
+                    if row["_observed_at"] < start7:
+                        continue
                     entry = observe(skill, "reviews", row["_observed_at"])
                     if int(row.get("round_no") or 1) == 1:
                         entry["r1_total"] += 1
@@ -1141,32 +1401,45 @@ def compute_skill_roi_diagnostics(
                             entry["impl_bug_escapes"] += 1
                     elif int(row.get("round_no") or 1) >= 2:
                         entry["rework_rounds"] += 1
-                observed.append(row["_observed_at"])
-            for row in _timed_rows(conn, "fact_gtt_event"):
+                if row["_observed_at"] >= start7:
+                    observed.append(row["_observed_at"])
+            for row in _timed_rows(conn, "fact_gtt_event", 30):
                 event = row.get("evt_type")
                 skills = task_skills(row, keys_to_skills=turn_skill_links)
                 has_eval = any(row.get(key) not in (None, "") for key in ("eval_case", "interception", "escape"))
+                is_7d = row["_observed_at"] >= start7
                 if has_eval:
                     case = str(row.get("eval_case") or "unclassified")
-                    bucket = eval_by_case.setdefault(case, {"observations": 0, "interceptions": 0, "escapes": 0})
-                    bucket["observations"] += 1
-                    eval_total += 1
-                    if _flag(row.get("interception")):
-                        eval_interceptions += 1
-                        bucket["interceptions"] += 1
-                    if _flag(row.get("escape")):
-                        eval_escapes += 1
-                        bucket["escapes"] += 1
+                    int_flag = int(_flag(row.get("interception")))
+                    esc_flag = int(_flag(row.get("escape")))
                     for skill in skills:
-                        entry = observe(skill, "events", row["_observed_at"])
-                        entry["eval_interceptions"] += int(_flag(row.get("interception")))
-                        entry["eval_escapes"] += int(_flag(row.get("escape")))
-                if event in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
+                        norm_sk = _norm_skill(skill)
+                        _bump_channel(norm_sk, "gtt")
+                        case_bucket = per_skill_eval_cases.setdefault(norm_sk, {}).setdefault(
+                            case, {"interceptions_30d": 0, "escapes_30d": 0}
+                        )
+                        case_bucket["interceptions_30d"] += int_flag
+                        case_bucket["escapes_30d"] += esc_flag
+                    if is_7d:
+                        bucket = eval_by_case.setdefault(case, {"observations": 0, "interceptions": 0, "escapes": 0})
+                        bucket["observations"] += 1
+                        eval_total += 1
+                        if int_flag:
+                            eval_interceptions += 1
+                            bucket["interceptions"] += 1
+                        if esc_flag:
+                            eval_escapes += 1
+                            bucket["escapes"] += 1
+                        for skill in skills:
+                            entry = observe(skill, "events", row["_observed_at"])
+                            entry["eval_interceptions"] += int_flag
+                            entry["eval_escapes"] += esc_flag
+                if is_7d and event in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
                     note = str(row.get("note_preview") or "").upper()
                     for skill in skills:
                         entry = observe(skill, "events", row["_observed_at"])
                         entry["spec_gap_escapes" if "SPEC_GAP" in note or event in {"RULING", "CHANGE_REQUEST"} else "impl_bug_escapes"] += 1
-                if event or has_eval:
+                if is_7d and (event or has_eval):
                     observed.append(row["_observed_at"])
 
     if cp.is_file():
@@ -1184,8 +1457,15 @@ def compute_skill_roi_diagnostics(
                 matched.update(match.group("skill") for match in ref_matches)
                 matched.update(match.group("skill") for match in script_matches)
                 for skill in matched:
+                    norm_sk = _norm_skill(skill)
+                    _bump_channel(norm_sk, "copilot")
                     record = session_for("copilot", sid, skill, stamp, reference_source=True)
                     if "input_tokens" in row:
+                        in_tok = int(row.get("input_tokens") or 0)
+                        cr_tok = int(row.get("cache_read") or 0)
+                        cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+                        cache_bucket["in"] += in_tok
+                        cache_bucket["cache_read"] += cr_tok
                         record["tokens"] += sum(int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
                         record["token_seen"] = True
                     observe(skill, "usage", stamp)
@@ -1456,6 +1736,176 @@ def compute_skill_roi_diagnostics(
         p_item.setdefault("window_start", source_meta["window_start"])
         p_item.setdefault("window_end", source_meta["window_end"])
 
+    row_by_skill = {r["skill"]: r for r in skill_rows}
+    all_detail_skills = sorted(
+        set(inventory.keys()) | {sk for sk, row_d in row_by_skill.items() if int(row_d.get("loads_30d") or 0) > 0},
+        key=lambda sk: (
+            0 if sk in inventory else 1,
+            -(row_by_skill.get(sk, {}).get("loads_30d") or 0),
+            0 if (inventory.get(sk, {}).get("scope") or "global") == "global" else 1,
+            sk,
+        ),
+    )
+    skill_details: list[dict[str, Any]] = []
+    for sk in all_detail_skills:
+        inv_meta = inventory.get(sk, {})
+        row_data = row_by_skill.get(sk, {})
+        scope = str(inv_meta.get("scope") or "global")
+        repo_label = str(inv_meta.get("repo") or "user-skills")
+        skill_dir_str = str(inv_meta.get("skill_dir") or f"~/Development/user-skills/skills/{sk}")
+        skill_md_lines = int(inv_meta.get("l0_lines") or 0)
+        fm_tok_est = int(inv_meta.get("frontmatter_tokens_est") or 1)
+        body_tok_est = int(inv_meta.get("body_tokens_est") or max(1, skill_md_lines * 12))
+
+        loads_7d_val = int(row_data.get("loads_7d") or 0)
+        loads_30d_val = int(row_data.get("loads_30d") or 0)
+        needs_opt = bool(row_data.get("needs_optimization"))
+        if loads_30d_val == 0:
+            status_label = "zombie_30d"
+        elif needs_opt:
+            status_label = "needs_optimization"
+        else:
+            status_label = "active"
+
+        obs_ch = per_skill_channels.get(sk, {})
+        l2_ch = l2_channels.get(sk, {})
+        source_breakdown = {
+            ch_key: max(int(obs_ch.get(ch_key) or 0), int(l2_ch.get(ch_key) or 0))
+            for ch_key in ("claude", "copilot", "codex", "hermes", "gtt")
+        }
+
+        cache_b = per_skill_cache.get(sk, {})
+        tot_in_sk = int(cache_b.get("in") or 0)
+        tot_cr_sk = int(cache_b.get("cache_read") or 0)
+        sk_kv_cache_pct = (
+            round(100.0 * tot_cr_sk / (tot_in_sk + tot_cr_sk), 1)
+            if (tot_in_sk + tot_cr_sk) > 0
+            else s11_context.get("kv_cache_hit_pct")
+        )
+
+        # Merge physical references + observed warehouse reference_hits
+        phys_refs = {entry["rel_path"]: dict(entry) for entry in inv_meta.get("reference_entries", [])}
+        obs_refs = per_skill_refs.get(sk, {})
+        merged_ref_paths = sorted(set(phys_refs.keys()) | set(obs_refs.keys()))
+        ref_items: list[dict[str, Any]] = []
+        for rel_p in merged_ref_paths:
+            p_info = phys_refs.get(rel_p)
+            o_info = obs_refs.get(rel_p)
+            hits_val: int | None
+            sessions_val: int | None
+            if warehouse_present:
+                hits_val = int(o_info["hits"]) if o_info else 0
+                sessions_val = len(o_info["sessions"]) if o_info else 0
+            else:
+                hits_val = None
+                sessions_val = None
+            obs_bytes = int(o_info["max_bytes"]) if o_info else 0
+            tok_est = int(p_info["tokens_est"]) if p_info else max(1, obs_bytes // 4)
+            ln_cnt = int(p_info["line_count"]) if p_info else max(1, obs_bytes // 48) if obs_bytes else 0
+            ref_items.append({
+                "rel_path": rel_p,
+                "line_count": ln_cnt,
+                "tokens_est": tok_est,
+                "hits_30d": hits_val,
+                "sessions_30d": sessions_val,
+                "is_unhit": bool(hits_val == 0),
+            })
+
+        # Merge physical scripts + observed warehouse script_call
+        phys_scripts = set(inv_meta.get("script_entries", []))
+        obs_scripts = per_skill_scripts.get(sk, {})
+        merged_script_paths = sorted(phys_scripts | set(obs_scripts.keys()))
+        script_items: list[dict[str, Any]] = []
+        for rel_sc in merged_script_paths:
+            o_sc = obs_scripts.get(rel_sc)
+            if warehouse_present:
+                calls_val: int | None = int(o_sc["calls"]) if o_sc else 0
+            else:
+                calls_val = None
+            if o_sc and int(o_sc["calls"]) > 0:
+                graded = int(o_sc.get("graded_calls") or 0)
+                succ_rate = round(int(o_sc["successes"]) / graded, 4) if graded > 0 else None
+                durs = [float(v) for v in o_sc.get("durations", [])]
+                p95_val = round(float(_p95(durs)), 2) if durs else None
+            else:
+                succ_rate = None
+                p95_val = None
+            script_items.append({
+                "rel_path": rel_sc,
+                "calls_30d": calls_val,
+                "success_rate": succ_rate,
+                "p95_ms": p95_val,
+                "is_unpracticed": bool(calls_val == 0),
+            })
+
+        # Merge parsed eval_cases + observed per-skill eval case events
+        parsed_cases = [dict(c) for c in inv_meta.get("eval_cases", [])]
+        obs_cases = per_skill_eval_cases.get(sk, {})
+        known_case_ids = {c["id"] for c in parsed_cases}
+        eval_case_items: list[dict[str, Any]] = []
+        for c_entry in parsed_cases:
+            cid = c_entry["id"]
+            c_obs = obs_cases.get(cid, {})
+            eval_case_items.append({
+                "id": cid,
+                "title": c_entry["title"],
+                "kind": c_entry["kind"],
+                "assertion_summary": c_entry["assertion_summary"],
+                "status": c_entry.get("status", "active"),
+                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+        for cid, c_obs in sorted(obs_cases.items()):
+            if cid in known_case_ids or not _EVAL_CASE_ID_RE.match(cid):
+                continue
+            eval_case_items.append({
+                "id": cid,
+                "title": cid,
+                "kind": "contract",
+                "assertion_summary": f"Observed gate event for {cid}",
+                "status": "active",
+                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+
+        detail_meta = {
+            key: row_data[key]
+            for key in ("window_cst", "window_start", "window_end", "source_as_of", "sample_size", "coverage_status")
+            if key in row_data
+        }
+        if not detail_meta:
+            detail_meta = _freshness([], warehouse_present, 30)
+
+        skill_details.append({
+            **detail_meta,
+            "skill": sk,
+            "scope": scope,
+            "repo": repo_label,
+            "skill_dir": skill_dir_str,
+            "skill_md_path": "SKILL.md",
+            "skill_md_lines": skill_md_lines,
+            "frontmatter_tokens_est": fm_tok_est,
+            "body_tokens_est": body_tok_est,
+            "loads_7d": loads_7d_val,
+            "loads_30d": loads_30d_val,
+            "empty_load_rate": row_data.get("empty_load_rate"),
+            "roi_score": row_data.get("roi_score"),
+            "r1_pass_rate": row_data.get("r1_pass_rate"),
+            "avg_context_tokens": row_data.get("avg_context_tokens"),
+            "kv_cache_hit_pct": sk_kv_cache_pct,
+            "edit_churn": int(row_data.get("edit_churn_count") or 0),
+            "retry_churn": int(row_data.get("retry_commands") or 0),
+            "impl_bug_escapes": int(row_data.get("impl_bug_escapes") or 0),
+            "spec_gap_escapes": int(row_data.get("spec_gap_escapes") or 0),
+            "eval_interceptions": int(row_data.get("eval_interceptions") or 0),
+            "eval_escapes": int(row_data.get("eval_escapes") or 0),
+            "status_label": status_label,
+            "source_breakdown": source_breakdown,
+            "references": ref_items,
+            "scripts": script_items,
+            "eval_cases": eval_case_items,
+        })
+
     auto_proposed = _queue_recommendations(proposals, prop_path) if auto_propose else []
     proposals_written = len(auto_proposed)
     proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
@@ -1471,6 +1921,7 @@ def compute_skill_roi_diagnostics(
         "source_as_of": source_as_of,
         "sample_size": total_sample_size,
         "coverage_status": cov_status,
+        "skill_details": skill_details,
         "S1_pin_drift": s1_pins,
         "S2_gate_catch": s2_gate,
         "S3_skill_health": s3_health,
@@ -1562,6 +2013,30 @@ def compute_skill_roi_diagnostics(
     }
 
 
+def compute_skill_roi(
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    magpie_usage: Path | None = None,
+    dsh_sessions: Path | None = None,
+    *,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+) -> dict[str, Any]:
+    """Alias for compute_skill_roi_diagnostics()."""
+    return compute_skill_roi_diagnostics(
+        warehouse_db=warehouse_db,
+        copilot_db=copilot_db,
+        skills_root=skills_root,
+        dev_root=dev_root,
+        magpie_usage=magpie_usage,
+        dsh_sessions=dsh_sessions,
+        auto_propose=auto_propose,
+        proposals_path=proposals_path,
+    )
+
+
 CST = timezone(timedelta(hours=8))
 
 
@@ -1642,7 +2117,7 @@ def _usage_records(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
             if not isinstance(rec, dict):
                 raise ValueError(f"invalid usage record at {path}:{number}")
-            stamp = next((_observed_at(rec[key]) for key in ("ts", "timestamp", "created_at", "observed_at")
+            stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
                           if rec.get(key)), None)
             if stamp and start <= stamp < end:
                 rec["_observed_at"] = stamp

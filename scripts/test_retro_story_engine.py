@@ -335,6 +335,280 @@ class RetroStoryEngineTests(unittest.TestCase):
             self.assertIsNone(missing_report["source_as_of"])
             self.assertIsNone(missing_report["staleness_days"])
             self.assertEqual(missing_report["coverage_status"], "missing")
+            missing_details = {d["skill"]: d for d in missing_report["skill_details"]}
+            self.assertIsNone(missing_details["my-designer"]["scripts"][0]["calls_30d"])
+
+    def test_skill_details_global_and_repo_bound_with_t_timestamp_usage_and_redaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wh = root / "warehouse.db"
+            cp = root / "missing-copilot.db"
+            mp = root / "usage.jsonl"
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+
+            # Global skill with references, scripts, EV + DC cases
+            sk_global = skills_root / "aidash-metrics"
+            (sk_global / "references" / "defect-cases").mkdir(parents=True)
+            (sk_global / "scripts").mkdir(parents=True)
+            (sk_global / "SKILL.md").write_text(
+                "---\nname: aidash-metrics\ndescription: Evidence-first AI metric contract for AIDash.\n---\n# aidash-metrics\nBody line 1\nBody line 2\n",
+                encoding="utf-8",
+            )
+            (sk_global / "references" / "aidata-l1-l5-lineage.md").write_text(
+                "# Lineage\nLine 1\nLine 2\n",
+                encoding="utf-8",
+            )
+            (sk_global / "references" / "unhit-drawer.md").write_text(
+                "# Never read\n",
+                encoding="utf-8",
+            )
+            (sk_global / "scripts" / "inspect_aidata_pipeline.py").write_text(
+                "#!/usr/bin/env python3\nprint('ok')\n",
+                encoding="utf-8",
+            )
+            (sk_global / "scripts" / "unused_helper.sh").write_text(
+                "#!/usr/bin/env bash\necho noop\n",
+                encoding="utf-8",
+            )
+            (sk_global / "references" / "eval-cases.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "skill-eval-cases/v2",
+                        "skill": "aidash-metrics",
+                        "active_cases": [
+                            {
+                                "id": "EV-001",
+                                "title": "Inspector CLI help check",
+                                "cmd": f"python3 {sk_global}/scripts/inspect_aidata_pipeline.py --help",
+                                "expect_stdout_contains": ["--aidata-root"],
+                            },
+                            {
+                                "id": "EV-002",
+                                "title": "Contract clause check",
+                                "file": "skills/aidash-metrics/SKILL.md",
+                                "must_contain": ["Four mandatory gates", ("/" + "Users/secretuser/private")],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (sk_global / "references" / "defect-cases" / "index.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "apple-design-defect-cases/v1",
+                        "active_cases": [
+                            {
+                                "id": "DC-001",
+                                "title": "Forbid bare academic codes",
+                                "forbidden_regex": "S1[0-2]?_",
+                                "bad_snippet": "Text(\"S1_pin_drift\")",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # Repo-bound skill under dev_root/AIDash/.claude/skills/aidash-content
+            sk_repo = dev_root / "AIDash" / ".claude" / "skills" / "aidash-content"
+            (sk_repo / "references").mkdir(parents=True)
+            (sk_repo / "SKILL.md").write_text(
+                "---\nname: aidash-content\ndescription: Layer-through briefing card contract.\n---\n# aidash-content\n",
+                encoding="utf-8",
+            )
+            (sk_repo / "references" / "payload-shapes.md").write_text("# Shapes\n", encoding="utf-8")
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            # Usage records using key "t" (as emitted by ~/.config/magpie/usage.jsonl)
+            mp.write_text(
+                json.dumps(
+                    {
+                        "t": now_iso,
+                        "req": "group/steering",
+                        "status": 200,
+                        "in": 2000,
+                        "out": 300,
+                        "cache_read": 8000,
+                        "tries": 1,
+                        "ttft_ms": 420,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with contextlib.closing(sqlite3.connect(wh)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE fact_turn (
+                        session_id TEXT,
+                        attribution_skill TEXT,
+                        skill_names TEXT,
+                        tool_calls TEXT,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        cache_read INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE reference_hits (
+                        source TEXT,
+                        session_id TEXT,
+                        turn_uuid TEXT,
+                        skill TEXT,
+                        reference_path TEXT,
+                        byte_len INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE script_call (
+                        source TEXT,
+                        session_id TEXT,
+                        turn_uuid TEXT,
+                        skill TEXT,
+                        script_path TEXT,
+                        exit_code INTEGER,
+                        duration_ms REAL,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_task_run (
+                        goal_id TEXT,
+                        task_id TEXT,
+                        role_name TEXT,
+                        skills_used TEXT,
+                        round_no INTEGER,
+                        v5_verdict TEXT,
+                        status TEXT,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_event (
+                        goal_id TEXT,
+                        evt_type TEXT,
+                        skills_used TEXT,
+                        note_preview TEXT,
+                        eval_case TEXT,
+                        interception INTEGER,
+                        "escape" INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO fact_turn VALUES ('sess-a', 'aidash-metrics', '[\"aidash-metrics\"]', '[\"Read\", \"Bash\"]', 4000, 500, 12000, ?)",
+                    (now_iso,),
+                )
+                conn.executemany(
+                    "INSERT INTO reference_hits VALUES ('copilot_cli', ?, ?, 'aidash-metrics', 'skills/aidash-metrics/references/aidata-l1-l5-lineage.md', 640, ?)",
+                    [
+                        ("sess-a", "t1", now_iso),
+                        ("sess-b", "t2", now_iso),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO script_call VALUES ('copilot_cli', ?, ?, 'aidash-metrics', 'skills/aidash-metrics/scripts/inspect_aidata_pipeline.py', ?, ?, ?)",
+                    [
+                        ("sess-a", "c1", 0, 120.0, now_iso),
+                        ("sess-a", "c2", 0, 240.0, now_iso),
+                        ("sess-b", "c3", 1, 980.0, now_iso),
+                    ],
+                )
+                conn.execute(
+                    "INSERT INTO fact_gtt_task_run VALUES ('g1', 'T1', 'code_reviewer', '[\"aidash-metrics\"]', 1, 'PASS', 'completed', ?)",
+                    (now_iso,),
+                )
+                conn.executemany(
+                    "INSERT INTO fact_gtt_event VALUES ('g1', 'EVAL_GATE', '[\"aidash-metrics\"]', '', ?, ?, ?, ?)",
+                    [
+                        ("EV-001", 1, 0, now_iso),
+                        ("EV-001", 1, 0, now_iso),
+                        ("DC-001", 0, 1, now_iso),
+                    ],
+                )
+                conn.commit()
+
+            report = ENGINE.compute_skill_roi(
+                warehouse_db=wh,
+                copilot_db=cp,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                magpie_usage=mp,
+            )
+            self.assertTrue(report["ok"])
+            details_by_skill = {item["skill"]: item for item in report["skill_details"]}
+            self.assertIn("aidash-metrics", details_by_skill)
+            self.assertIn("aidash-content", details_by_skill)
+
+            gm = details_by_skill["aidash-metrics"]
+            self.assertEqual(gm["scope"], "global")
+            self.assertEqual(gm["repo"], "user-skills")
+            self.assertEqual(gm["skill_dir"], "~/Development/user-skills/skills/aidash-metrics")
+            self.assertEqual(gm["skill_md_path"], "SKILL.md")
+            self.assertGreater(gm["skill_md_lines"], 0)
+            self.assertGreater(gm["frontmatter_tokens_est"], 0)
+            self.assertGreaterEqual(gm["body_tokens_est"], gm["frontmatter_tokens_est"])
+            self.assertGreaterEqual(gm["loads_30d"], 2)
+            self.assertEqual(gm["status_label"], "active")
+            self.assertGreater(gm["source_breakdown"]["claude"], 0)
+            self.assertGreater(gm["source_breakdown"]["copilot"], 0)
+            self.assertEqual(gm["kv_cache_hit_pct"], 75.0)
+
+            refs_by_path = {r["rel_path"]: r for r in gm["references"]}
+            self.assertEqual(refs_by_path["references/aidata-l1-l5-lineage.md"]["hits_30d"], 2)
+            self.assertEqual(refs_by_path["references/aidata-l1-l5-lineage.md"]["sessions_30d"], 2)
+            self.assertFalse(refs_by_path["references/aidata-l1-l5-lineage.md"]["is_unhit"])
+            self.assertEqual(refs_by_path["references/unhit-drawer.md"]["hits_30d"], 0)
+            self.assertTrue(refs_by_path["references/unhit-drawer.md"]["is_unhit"])
+
+            scripts_by_path = {s["rel_path"]: s for s in gm["scripts"]}
+            insp_sc = scripts_by_path["scripts/inspect_aidata_pipeline.py"]
+            self.assertEqual(insp_sc["calls_30d"], 3)
+            self.assertAlmostEqual(insp_sc["success_rate"], 0.6667, places=4)
+            self.assertEqual(insp_sc["p95_ms"], 980.0)
+            self.assertFalse(insp_sc["is_unpracticed"])
+            unused_sc = scripts_by_path["scripts/unused_helper.sh"]
+            self.assertEqual(unused_sc["calls_30d"], 0)
+            self.assertIsNone(unused_sc["success_rate"])
+            self.assertIsNone(unused_sc["p95_ms"])
+            self.assertTrue(unused_sc["is_unpracticed"])
+
+            cases_by_id = {c["id"]: c for c in gm["eval_cases"]}
+            self.assertEqual(cases_by_id["EV-001"]["kind"], "cli")
+            self.assertEqual(cases_by_id["EV-001"]["interceptions_30d"], 2)
+            self.assertEqual(cases_by_id["EV-001"]["escapes_30d"], 0)
+            self.assertEqual(cases_by_id["EV-002"]["kind"], "contract")
+            self.assertEqual(cases_by_id["DC-001"]["kind"], "regex")
+            self.assertEqual(cases_by_id["DC-001"]["escapes_30d"], 1)
+
+            rb = details_by_skill["aidash-content"]
+            self.assertEqual(rb["scope"], "repo_bound")
+            self.assertEqual(rb["repo"], "AIDash")
+            self.assertEqual(rb["skill_dir"], "~/Development/AIDash/.claude/skills/aidash-content")
+            self.assertEqual(rb["status_label"], "zombie_30d")
+
+            # Verify _usage_records timestamp key "t" works in compute_agent_efficiency M3/M4
+            eff = ENGINE.compute_agent_efficiency(warehouse_db=wh, magpie_usage=mp, copilot_db=cp)
+            self.assertEqual(eff["metrics"]["M3_flow_and_blockers"]["sampled_requests"], 1)
+            self.assertEqual(eff["metrics"]["M4_cache_efficiency"]["overall_cache_hit_rate"], 0.8)
+
+            # Verify zero macOS user home path leaks in serialized report
+            serialized = json.dumps(report, ensure_ascii=False)
+            self.assertNotIn("/" + "Users/", serialized)
 
 
 if __name__ == "__main__":
