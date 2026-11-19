@@ -696,6 +696,7 @@ def sync_autopilots(
                 or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in title_str)
                 or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in title_str)
                 or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in title_str)
+                or (spec.loop_id == "design-taste-evolution" and ("UI Design Taste Evolution" in title_str or "Taste Evolution" in title_str))
             ):
                 matched = ap
                 break
@@ -808,6 +809,64 @@ def _compute_digest_signature(payload: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
+def _decode_mock_for_routing(mock: Any) -> Any:
+    if isinstance(mock, (str, Path)):
+        try:
+            candidate = Path(str(mock)).expanduser()
+            raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else str(mock)
+            return json.loads(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return mock
+    return mock
+
+
+def _mock_answer_keys(mock: Any) -> set[str]:
+    mock = _decode_mock_for_routing(mock)
+    if isinstance(mock, Mapping):
+        keys = set(str(key) for key in mock)
+        answers = mock.get("answers")
+        if isinstance(answers, Mapping):
+            keys.update(str(key) for key in answers)
+        for key in ("default", "collector", "taste", "runner"):
+            if key in mock:
+                keys.update(_mock_answer_keys(mock[key]))
+        return keys
+    if isinstance(mock, list):
+        merged: set[str] = set()
+        for item in mock:
+            merged.update(_mock_answer_keys(item))
+        return merged
+    return set()
+
+
+def _collector_jev_mock(mock: Any) -> Any:
+    mock = _decode_mock_for_routing(mock)
+    if isinstance(mock, Mapping):
+        if "collector" in mock or "taste" in mock:
+            return mock.get("collector", mock.get("taste"))
+        keys = _mock_answer_keys(mock)
+        if keys & {"promotion", "confidence", "score", "classification"}:
+            return mock
+        if keys & {"actionable_probability", "delivery_route", "delivery_route_match", "urgency_score"}:
+            return os.environ.get("DESIGN_TASTE_MOCK_JEV_JSON") or None
+    return mock if mock is not None and not (isinstance(mock, Mapping) and _mock_answer_keys(mock) & {"actionable_probability", "delivery_route"}) else None
+
+
+def _runner_jev_mock(mock: Any) -> Any:
+    mock = _decode_mock_for_routing(mock)
+    if isinstance(mock, Mapping):
+        if "runner" in mock:
+            return mock["runner"]
+        if "collector" in mock or "taste" in mock:
+            return None
+        keys = _mock_answer_keys(mock)
+        if keys & {"actionable_probability", "delivery_route", "delivery_route_match", "urgency_score"}:
+            return mock
+        if keys & {"promotion", "confidence", "score", "classification"}:
+            return None
+    return mock
+
+
 def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False, mock_jev_json: Any = None) -> dict[str, Any]:
     date_str = target_date.isoformat()
     if spec.loop_id == "local-herdr-worktree-gc":
@@ -853,7 +912,7 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
     if spec.loop_id == "design-taste-evolution":
         taste_mod = _load_module("loop_design_taste_evolution", SKILLS_ROOT / "design-studio" / "scripts" / "taste_evolution_loop.py")
         handoff_root = Path(os.environ.get("DESIGN_TASTE_HANDOFF_ROOT", "~/Development/handoff")).expanduser()
-        return taste_mod.loop_check(handoff_root, target_date=target_date, mock_jev_json=mock_jev_json)
+        return taste_mod.loop_check(handoff_root, target_date=target_date, mock_jev_json=_collector_jev_mock(mock_jev_json))
 
     if spec.loop_id == "daily-brief":
         brief_mod = _load_module("loop_daily_brief", SKILLS_ROOT / "linear-board" / "scripts" / "daily-brief.py")
@@ -1368,6 +1427,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in t)
             or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in t)
             or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in t)
+            or (spec.loop_id == "design-taste-evolution" and ("UI Design Taste Evolution" in t or "Taste Evolution" in t))
         ):
             return str(ap.get("id") or "") or None
     return None
@@ -1443,7 +1503,7 @@ def run_loop(
         jev_verdict = evaluate_jev_actionability(
             collected,
             spec=spec,
-            mock_jev_json=mock_jev_json,
+            mock_jev_json=_runner_jev_mock(mock_jev_json),
             jev_fn=jev_fn,
         )
     if not jev_verdict["actionable"]:
@@ -1521,7 +1581,11 @@ def run_loop(
                     else (
                         "[P3 / Priority 3][Spec-Code Drift]"
                         if spec.loop_id == "spec-code-drift-patrol"
-                        else ("[P3 / Priority 3][Backlog Grooming]" if spec.loop_id == "backlog-grooming-and-push" else None)
+                        else (
+                            "[P3 / Priority 3][Backlog Grooming]"
+                            if spec.loop_id == "backlog-grooming-and-push"
+                            else ("[P3 / Priority 3][Taste Evolution]" if spec.loop_id == "design-taste-evolution" else None)
+                        )
                     )
                 )
             )
@@ -1594,7 +1658,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push)",
+        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push, design-taste-evolution)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)
