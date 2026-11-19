@@ -130,6 +130,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_status="todo",
         default_priority="medium",
     ),
+    LoopSpec(
+        loop_id="backlog-grooming-and-push",
+        aliases=("backlog_grooming_and_push", "backlog-groomer", "backlog_groomer"),
+        autopilot_title="Daily Backlog Grooming & Top-3 Push Autopilot (P3 -> Owner)",
+        cron="45 4 * * *",
+        trigger_label="Daily CST 04:45 Backlog Grooming & Top-3 Push",
+        delivery_mode="dual_zone_issue",
+        issue_title_template="[P3 / Priority 3][Backlog Grooming] {date} 待办去重与每日 Top 3 推荐顺推清单",
+        default_status="todo",
+        default_priority="medium",
+    ),
 )
 
 LOOP_SPECS: tuple[LoopSpec, ...] = CANONICAL_LOOP_SPECS
@@ -634,6 +645,7 @@ def sync_autopilots(
                 or (spec.loop_id == "aidash-retro-delta" and "Daily AIDash Digest & Retro" in title_str)
                 or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in title_str)
                 or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in title_str)
+                or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in title_str)
             ):
                 matched = ap
                 break
@@ -761,6 +773,16 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             dry_run=dry_run,
         )
 
+    if spec.loop_id == "backlog-grooming-and-push":
+        groomer_mod = _load_module("loop_backlog_groomer", SKILLS_ROOT / "linear-board" / "scripts" / "backlog_groomer.py")
+        issues_env = os.environ.get("LINEAR_BACKLOG_GROOMER_ISSUES_JSON")
+        issues_json = Path(issues_env).expanduser() if issues_env else None
+        return groomer_mod.run_loop_check(
+            target_date=target_date,
+            issues_json=issues_json,
+            dry_run=dry_run,
+        )
+
     if spec.loop_id == "daily-brief":
         brief_mod = _load_module("loop_daily_brief", SKILLS_ROOT / "linear-board" / "scripts" / "daily-brief.py")
         res = brief_mod.generate(
@@ -771,6 +793,7 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             propose_linear=False,
             dry_run=True,
             dual_zone=True,
+            groom_backlog_on_generate=True,
         )
         todos = list(res.get("todo_items") or [])
         rollup = dict(res.get("rollup_counts") or {})
@@ -1256,6 +1279,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "aidash-retro-delta" and "AIDash Digest & Retro" in t)
             or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest" in t)
             or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in t)
+            or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in t)
         ):
             return str(ap.get("id") or "") or None
     return None
@@ -1389,7 +1413,11 @@ def run_loop(
             else (
                 "[Daily Learn"
                 if spec.loop_id == "daily-learn-recommend"
-                else ("[P3 / Priority 3][Local Hygiene]" if spec.loop_id == "local-herdr-worktree-gc" else None)
+                else (
+                    "[P3 / Priority 3][Local Hygiene]"
+                    if spec.loop_id == "local-herdr-worktree-gc"
+                    else ("[P3 / Priority 3][Backlog Grooming]" if spec.loop_id == "backlog-grooming-and-push" else None)
+                )
             )
         )
         layer2_result = upsert_multica_dual_zone_issue(
@@ -1459,7 +1487,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, aidash-retro-delta, local-herdr-worktree-gc)",
+        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, aidash-retro-delta, local-herdr-worktree-gc, backlog-grooming-and-push)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)

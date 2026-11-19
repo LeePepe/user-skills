@@ -226,6 +226,43 @@
         "standards",
         "cross-layer"
       ]
+    },
+    {
+      "id": "EV-008",
+      "title": "Backlog groomer CLI exposes scan, groom, top3, and loop-check with Daily Brief injection",
+      "cmd": "python3 skills/linear-board/scripts/backlog_groomer.py --help && python3 -m unittest scripts.test_loop_backlog_groomer",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "scan",
+        "groom",
+        "top3",
+        "loop-check"
+      ],
+      "registered_at": "2026-11-19",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "backlog-groomer",
+        "daily-brief"
+      ],
+      "routes": [
+        "backlog-groomer",
+        "daily-brief"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
     }
   ],
   "trigger_evals": [

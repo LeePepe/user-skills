@@ -596,7 +596,60 @@ def _brief_title(target: date) -> str:
     yesterday = target - timedelta(days=1)
     return f"[Daily Brief {target.isoformat()}] 昨日汇总 ({yesterday:%m-%d}) 与今日 Todo ({target:%m-%d})"
 
-def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None) -> tuple[str, list[dict[str, Any]]]:
+@lru_cache(maxsize=1)
+def _load_backlog_groomer_module() -> Any:
+    path = Path(__file__).resolve().parent / "backlog_groomer.py"
+    spec = importlib.util.spec_from_file_location("daily_brief_backlog_groomer", path)
+    if not spec or not spec.loader: return None
+    module = importlib.util.module_from_spec(spec)
+    old_flag = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally: sys.dont_write_bytecode = old_flag
+    return module
+
+def _normalize_groomed_top3_items(
+    raw_items: list[dict[str, Any]] | None,
+    entries: dict[str, dict[str, Any]],
+    issue_urls: dict[str, str],
+) -> list[dict[str, Any]]:
+    if not raw_items: return []
+    covered_ids = set(REFERENCE_RE.findall(" ".join(str(entry["ref"]) + " " + " ".join(entry["parts"]) for entry in entries.values())))
+    out: list[dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict): continue
+        ident = str(raw.get("identifier") or raw.get("ref") or "").strip()
+        if ident and ident in covered_ids: continue
+        url = str(raw.get("url") or issue_urls.get(ident) or (f"https://linear.app/tianpeili/issue/{ident}" if re.fullmatch(r"TIA-\d+", ident) else "")).strip()
+        if ident and url and re.fullmatch(r"TIA-\d+", ident): issue_urls.setdefault(ident, url)
+        action = str(raw.get("action") or "").strip()
+        if not action or not (re.search(r"\]\(", action) or action.startswith("`")):
+            action = _link(url, "打开") if url else _code(f"@bot {ident or 'push'}")
+        raw_title = _plain(raw.get("summary") or raw.get("title") or ident or "顺推待办")
+        summary = (raw_title if raw_title.startswith("顺推") else f"顺推 {raw_title}")[:25].strip()
+        project = str(raw.get("project") or "user-skills").strip()
+        ref = ident if re.fullmatch(r"TIA-\d+", ident) else (str(raw.get("ref") or project).strip() or "backlog")
+        repo = _reference_context(raw, project)
+        score = float(raw.get("composite_score") or raw.get("roi_score") or raw.get("next_hop_priority") or 0.75)
+        out.append({
+            "group": "recommended",
+            "summary": summary,
+            "action": action,
+            "ref": ref,
+            "repo": repo,
+            "stages": [],
+            "topics": [_area(project, raw).casefold()],
+            "parts": [summary, _item(f"{ident} {_plain(raw.get('title') or summary)} [{project}] {url}".strip(), "backlog groomer")],
+            "next_hop_kind": str(raw.get("readiness_choice") or "backlog_top3_push"),
+            "next_hop_priority": score,
+            "decision_source": str(raw.get("decision_source") or "backlog_groomer"),
+        })
+        if ident: covered_ids.add(ident)
+        if len(out) >= 3: break
+    return out
+
+def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[str, str]], events: list[dict[str, str]], warnings: list[str], prs: list[dict[str, Any]] | None = None, ledger_active: list[dict[str, str]] | None = None, *, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None) -> tuple[str, list[dict[str, Any]]]:
     yesterday = target - timedelta(days=1)
     lines = [f"<!-- GTT-LINEAR-DEDUP:daily-brief-{target.isoformat()} -->", "## 🎯 今日 Todo（直接勾 `[x]` 或评论 `@bot 1, 2`）", ""]
     entries: dict[str, dict[str, Any]] = {}
@@ -642,7 +695,12 @@ def render_brief(target: date, linear: list[dict[str, Any]], commits: list[dict[
         entry["parts"].append(_item(_ledger_context(item), "handoff ledger"))
         stage = "/".join(value for value in (item.get("state"), item.get("stage")) if value)
         if stage: entry["stages"].append(f"{item.get('task') or item.get('goal')}: {stage}")
-    for index, item in enumerate(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner)):
+    rec_items = list(_recommendations(yesterday, linear, commits, events, prs or [], entries, issue_urls, jev_runner))
+    if len(rec_items) < 3 and groomed_top3:
+        for extra in _normalize_groomed_top3_items(groomed_top3, {**entries, **{f"rec:{i}": r for i, r in enumerate(rec_items)}}, issue_urls):
+            rec_items.append(extra)
+            if len(rec_items) >= 3: break
+    for index, item in enumerate(rec_items[:3]):
         entries[f"recommended:{index}"] = item
     todos = []
     for group, heading in TODO_BUCKETS.items():
@@ -909,14 +967,22 @@ def publish_multica_brief(
     return loop_mod.upsert_multica_dual_zone_issue(**kwargs)
 
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, publish_multica: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, multica_server_url: str = MULTICA_DEFAULT_SERVER_URL, multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID, multica_assignee_id: str = MULTICA_OWNER_ID, multica_status: str = "todo", multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, publish_multica: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, multica_server_url: str = MULTICA_DEFAULT_SERVER_URL, multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID, multica_assignee_id: str = MULTICA_OWNER_ID, multica_status: str = "todo", multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None, groom_backlog_on_generate: bool = False) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
     available_repos = tuple(f"LeePepe/{r}" for r in PERSONAL_REPOS if (dev_root / r).exists())
     prs, w4 = collect_prs(available_repos, yesterday, runner=runner)
     events, ledger_active, w3 = collect_handoff(handoff_root, target, client=client, scope_cache=scope_cache)
-    plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner)
+    resolved_groomed_top3 = groomed_top3
+    if resolved_groomed_top3 is None and groom_backlog_on_generate:
+        groomer_mod = _load_backlog_groomer_module()
+        if groomer_mod is not None:
+            resolved_groomed_top3 = groomer_mod.load_groomed_top3_state(target_date=target)
+            if not resolved_groomed_top3 and linear:
+                groom_res = groomer_mod.groom_backlog(linear, target_date=target, top_k=3, jev_fn=jev_runner, write_state=not dry_run)
+                resolved_groomed_top3 = list(groom_res.get("top3_push_candidates") or [])
+    plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner, groomed_top3=resolved_groomed_top3)
     rollup_counts = {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}
     use_dual_zone = bool(dual_zone or (publish_multica and not propose_linear))
     dual_zone_markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if (use_dual_zone or publish_multica) else ""
@@ -1084,6 +1150,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parent-issue", default=DEFAULT_PARENT)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--dual-zone", action="store_true", help="Render Daily Brief using Dual-Zone issue-brief contract")
+    parser.add_argument("--groomed-top3-json", type=Path, default=None, help="Inject groomed Top-3 push candidates JSON from backlog_groomer.py")
+    parser.add_argument("--groom-backlog", action="store_true", help="Auto-load or compute Loop 3B groomed Top-3 push items")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify-markdown", metavar="PATH")
     args = parser.parse_args(argv)
@@ -1104,6 +1172,11 @@ def main(argv: list[str] | None = None) -> int:
     dual_zone = bool(args.dual_zone or (publish_multica and not propose_linear))
     try: client = _load_linear_client(dry_run=args.dry_run)
     except Exception: client = None
+    groomed_top3 = None
+    if args.groomed_top3_json is not None:
+        groomer_mod = _load_backlog_groomer_module()
+        if groomer_mod is not None:
+            groomed_top3 = groomer_mod.load_groomed_top3_state(args.groomed_top3_json)
     result = generate(
         parse_date(args.date),
         dev_root=Path(os.environ.get("LINEAR_DAILY_BRIEF_DEV_ROOT", "~/Development")).expanduser(),
@@ -1118,6 +1191,8 @@ def main(argv: list[str] | None = None) -> int:
         multica_workspace_id=args.multica_workspace_id,
         multica_assignee_id=args.multica_assignee_id,
         multica_status=args.multica_status,
+        groomed_top3=groomed_top3,
+        groom_backlog_on_generate=bool(args.groom_backlog),
     )
     print(json.dumps(result, ensure_ascii=False) if args.json else result["markdown"], end="" if args.json else ""); return 0 if result["ok"] else 1
 if __name__ == "__main__": raise SystemExit(main())
