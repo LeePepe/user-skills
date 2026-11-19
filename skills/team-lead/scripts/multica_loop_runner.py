@@ -142,6 +142,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_priority="medium",
     ),
     LoopSpec(
+        loop_id="spec-code-drift-patrol",
+        aliases=("spec_code_drift_patrol", "loop-4-spec-code-drift"),
+        autopilot_title="Daily Spec-Code Drift Patrol Autopilot (P3 -> Owner)",
+        cron="15 3 * * *",
+        trigger_label="Daily CST 03:15 Spec-Code Drift Patrol",
+        delivery_mode="dual_zone_issue",
+        issue_title_template="[P3 / Priority 3][Spec-Code Drift] {date} 规格与代码一致性巡检清单",
+        default_status="todo",
+        default_priority="medium",
+    ),
+    LoopSpec(
         loop_id="backlog-grooming-and-push",
         aliases=("backlog_grooming_and_push", "backlog-groomer", "backlog_groomer"),
         autopilot_title="Daily Backlog Grooming & Top-3 Push Autopilot (P3 -> Owner)",
@@ -789,6 +800,20 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             handoff_root=handoff_root,
             target_date=target_date,
             auto_gc=True,
+            dry_run=dry_run,
+        )
+
+    if spec.loop_id == "spec-code-drift-patrol":
+        drift_mod = _load_module("loop_spec_code_drift_patrol", SKILLS_ROOT / "codebase-design" / "scripts" / "spec_code_drift_patrol.py")
+        fixture_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_FIXTURE_ROOT")
+        dev_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_DEV_ROOT")
+        handoff_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_HANDOFF_ROOT")
+        repos_env = os.environ.get("SPEC_CODE_DRIFT_PATROL_REPOS")
+        return drift_mod.loop_check(
+            fixture_root=Path(fixture_env).expanduser() if fixture_env else None,
+            dev_root=Path(dev_env).expanduser() if dev_env else None,
+            handoff_root=Path(handoff_env).expanduser() if handoff_env else None,
+            repos=repos_env,
             dry_run=dry_run,
         )
 
@@ -1522,7 +1547,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, backlog-grooming-and-push)",
+        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)

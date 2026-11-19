@@ -1,0 +1,28 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Loop 4 scanner exposes both directions and commands",
+      "tags": ["drift", "contract"],
+      "file": "scripts/spec_code_drift_patrol.py",
+      "must_contain": ["spec_stale_findings", "code_compliance_findings", "loop-check"]
+    },
+    {
+      "id": "EV-002",
+      "title": "Codebase design routes drift checks through the executable drawer",
+      "tags": ["routing"],
+      "file": "SKILL.md",
+      "must_contain": ["scripts/spec_code_drift_patrol.py", "loop-check", "Dual-Zone"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Loop 4 CLI remains discoverable",
+      "tags": ["cli"],
+      "cmd": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["scan", "loop-check"]
+    }
+  ]
+}

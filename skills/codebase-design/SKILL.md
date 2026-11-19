@@ -68,6 +68,11 @@ Single-context repo:                  Multi-context repo (CONTEXT-MAP.md):
 - **Decision placement**: canonical terminology (`CONTEXT.md` — glossary only, zero implementation details) uses [CONTEXT-FORMAT.md](references/CONTEXT-FORMAT.md); hard-to-reverse trade-offs (`docs/adr/`) use [ADR-FORMAT.md](references/ADR-FORMAT.md); feature-local investigation lives in `research.md`; outcomes in `spec.md`; implementation design in `plan.md`.
 - **Offer ADRs sparingly** — only when all three hold: (1) **Hard to reverse**, (2) **Surprising without context**, and (3) **Result of a real trade-off**.
 
+## Spec-Code Drift Patrol
+
+- Run `scripts/spec_code_drift_patrol.py scan` for deterministic, read-only comparison of associated handoffs with tracked `main` snapshots; regression cases live in [`references/eval-cases.json`](references/eval-cases.json).
+- Run `scripts/spec_code_drift_patrol.py loop-check` to triage actionable stale specs versus code-contract bugs and emit a verified Dual-Zone payload; missing repositories and unsupported prose remain explicit diagnostics.
+
 ## Going Deeper
 
 - **Deepening a cluster given its dependencies** — see [DEEPENING.md](references/DEEPENING.md): dependency categories, seam discipline, and replace-don't-layer testing.
