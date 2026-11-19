@@ -1,0 +1,120 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "ios-debugging-performance",
+  "trigger_evals": [
+    {
+      "query": "isolate reproducible iOS bug with review swarm and profile SwiftUI scroll hitches in Instruments",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "package signed notarized pure-SwiftPM macOS MenuBar app and run pre-submission App Store privacy rejection gates",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "audit Swift 6 Sendable actor isolation and @Observable SwiftUI state wrapper ownership",
+      "should_trigger": false,
+      "near_miss_skill": "ios-concurrency-swiftui"
+    },
+    {
+      "query": "design SwiftData VersionedSchema migration fixtures characterization test contracts and Apple Intelligence fallback",
+      "should_trigger": false,
+      "near_miss_skill": "ios-architecture-testing"
+    },
+    {
+      "query": "evaluate dividend ETFs and gold funds using Morningstar and Graham ERP",
+      "should_trigger": false,
+      "near_miss_skill": "asset-screener"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Verify 100% 4-card TIA-3 coverage across SKILL.md, references, and rules",
+      "tags": [
+        "coverage",
+        "contract"
+      ],
+      "cmd": "python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py check-card-coverage",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "expected_cards": 4,
+        "covered_cards": 4
+      },
+      "expect_stdout_contains": [
+        "ios-debugger-review-swarm",
+        "instruments-performance-and-swiftui-debugging",
+        "macos-swiftpm-menubar-packaging",
+        "app-store-release-security-rejection-gates"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "Valid pure-SwiftPM macOS MenuBar bundle and App Store release spec passes strict check",
+      "tags": [
+        "menubar-packaging",
+        "app-store-gate"
+      ],
+      "cmd": "python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py verify-bundle-spec --strict --spec-json '{\"mode\":\"both\",\"build_configuration\":\"Release\",\"executable_present\":true,\"resources_copied\":true,\"architectures\":[\"arm64\"],\"distribution\":\"direct\",\"codesigned\":true,\"notarized_and_stapled\":true,\"launch_smoke_tested\":true,\"privacy_manifest_present\":true,\"required_reason_apis\":[\"NSPrivacyAccessedAPICategoryUserDefaults\"],\"declared_reason_apis\":[\"NSPrivacyAccessedAPICategoryUserDefaults\"],\"permissions_used\":[\"NSCameraUsageDescription\"],\"info_plist\":{\"CFBundleIdentifier\":\"com.example.menubar\",\"CFBundleName\":\"MenuPulse\",\"CFBundleShortVersionString\":\"1.2.0\",\"CFBundleExecutable\":\"MenuPulse\",\"LSUIElement\":true,\"NSCameraUsageDescription\":\"Scan pairing QR codes to link your companion device.\"},\"supports_account_creation\":true,\"supports_account_deletion\":true,\"privacy_policy_url\":\"https://example.com/privacy\"}'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "violation_count": 0
+      },
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "Reject Debug archive, undeclared Required Reason API, missing LSUIElement, and missing account deletion",
+      "tags": [
+        "rejection-gate",
+        "strict-gate"
+      ],
+      "negative_cmd": "python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py verify-bundle-spec --strict --spec-json '{\"mode\":\"both\",\"build_configuration\":\"Debug\",\"executable_present\":true,\"architectures\":[\"arm64\"],\"privacy_manifest_present\":false,\"required_reason_apis\":[\"NSPrivacyAccessedAPICategoryUserDefaults\"],\"declared_reason_apis\":[],\"info_plist\":{\"CFBundleIdentifier\":\"com.example.bad\"},\"supports_account_creation\":true,\"supports_account_deletion\":false,\"privacy_policy_url\":\"http://insecure.local\"}'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "DP-006",
+        "DP-007",
+        "DP-008",
+        "menubar_missing_lsuielement",
+        "missing_account_deletion"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "Reject silent error swallowing, cwd bundle assumption, and undeclared UserDefaults API in Swift source",
+      "tags": [
+        "source-audit"
+      ],
+      "negative_cmd": "python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py audit-source --strict --missing-privacy-manifest --snippet 'func load() { let _ = try? save(); let cwd = FileManager.default.currentDirectoryPath; _ = UserDefaults.standard.string(forKey: cwd) }'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "DP-001",
+        "DP-005",
+        "DP-007"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-005",
+      "title": "L0 progressive-disclosure routing and sibling skill boundaries remain intact",
+      "tags": [
+        "contract"
+      ],
+      "file": "skills/ios-debugging-performance/SKILL.md",
+      "must_contain": [
+        "references/debugging-perf-release-cards.md",
+        "references/eval-cases.json",
+        "../ios-concurrency-swiftui/SKILL.md",
+        "../ios-architecture-testing/SKILL.md",
+        "audit_debug_perf_release.py"
+      ],
+      "registered_at": "2026-11-19"
+    }
+  ],
+  "updated": "2026-11-19"
+}

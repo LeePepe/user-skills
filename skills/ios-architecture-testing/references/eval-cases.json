@@ -1,0 +1,126 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "ios-architecture-testing",
+  "trigger_evals": [
+    {
+      "query": "design state-driven iOS navigation SwiftData VersionedSchema persistence and characterization test contracts",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "plan bounded batch refactors CloudKit Push protocol seams and Apple Intelligence multi-platform fallbacks",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "profile SwiftUI scroll hitches in Instruments and verify App Store submission privacy manifest gates",
+      "should_trigger": false,
+      "near_miss_skill": "ios-debugging-performance"
+    },
+    {
+      "query": "audit Swift 6 Sendable actor isolation task cancellation and Liquid Glass spring feel",
+      "should_trigger": false,
+      "near_miss_skill": "ios-concurrency-swiftui"
+    },
+    {
+      "query": "diagnose personal Financial ledger FIFO 30d redemption windows and DCA switches",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Verify 100% 6-card TIA-3 coverage across SKILL.md, references, and rules",
+      "tags": [
+        "coverage",
+        "contract"
+      ],
+      "cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py check-card-coverage",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "expected_cards": 6,
+        "covered_cards": 6
+      },
+      "expect_stdout_contains": [
+        "ios-architecture-navigation-migration",
+        "swiftdata-persistence-and-migration",
+        "test-contracts-and-regression-gates",
+        "refactor-review-and-skill-audit",
+        "feature-generators-and-apple-platform-integration",
+        "apple-intelligence-and-special-platforms"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-002",
+      "title": "Valid Apple Intelligence fallback matrix and disjoint batch-refactor packages pass strict check",
+      "tags": [
+        "capability-matrix",
+        "batch-refactor"
+      ],
+      "cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py check-capability-matrix --strict --matrix-json '{\"capabilities\":[{\"name\":\"smart_reply\",\"availability_checked\":true,\"fallback_mode\":\"template_quick_replies\",\"permission_denied_handled\":true,\"offline_or_timeout_budget_ms\":2500,\"memory_budget_mb\":96}],\"work_packages\":[{\"id\":\"WP1\",\"owned_paths\":[\"Sources/Router\"],\"verify_cmd\":\"swift test --filter RouterTests\"},{\"id\":\"WP2\",\"owned_paths\":[\"Sources/Store\"],\"verify_cmd\":\"swift test --filter StoreTests\"}],\"proposes_new_skill\":true,\"skill_audit_checked_existing\":true}'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "violation_count": 0
+      },
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-003",
+      "title": "Reject overlapping parallel work packages and missing Apple Intelligence fallback/permission handling",
+      "tags": [
+        "strict-gate",
+        "refactor-boundary"
+      ],
+      "negative_cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py check-capability-matrix --strict --matrix-json '{\"capabilities\":[{\"name\":\"ai_digest\",\"availability_checked\":false,\"fallback_mode\":\"\",\"permission_denied_handled\":false,\"offline_or_timeout_budget_ms\":0,\"memory_budget_mb\":0}],\"work_packages\":[{\"id\":\"WP1\",\"owned_paths\":[\"Sources/Shared\"],\"verify_cmd\":\"swift test\"},{\"id\":\"WP2\",\"owned_paths\":[\"Sources/Shared/Sub\"],\"verify_cmd\":\"swift test\"}],\"proposes_new_skill\":true,\"skill_audit_checked_existing\":false}'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "AT-007",
+        "AT-009",
+        "AT-010",
+        "parallel_path_overlap:WP1:WP2",
+        "missing_skill_dedup_audit"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-004",
+      "title": "Reject deprecated NavigationView, missing SwiftData deleteRule, assertionless sleep test, and unguarded LanguageModelSession",
+      "tags": [
+        "source-audit"
+      ],
+      "negative_cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py audit-source --strict --snippet 'struct Root: View { var body: some View { NavigationView { Button { } label: { Image(systemName: \"gear\") } } } } @Model final class Folder { @Relationship var items: [Item] = [] } func boot() { _ = try! ModelContainer(for: Folder.self); _ = LanguageModelSession() } @Test func smoke() async throws { try await Task.sleep(for: .milliseconds(50)) }'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "AT-001",
+        "AT-002",
+        "AT-003",
+        "AT-004",
+        "AT-005",
+        "AT-006",
+        "AT-010"
+      ],
+      "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-005",
+      "title": "L0 progressive-disclosure routing and sibling skill boundaries remain intact",
+      "tags": [
+        "contract"
+      ],
+      "file": "skills/ios-architecture-testing/SKILL.md",
+      "must_contain": [
+        "references/architecture-data-testing-cards.md",
+        "references/eval-cases.json",
+        "../ios-concurrency-swiftui/SKILL.md",
+        "../ios-debugging-performance/SKILL.md",
+        "audit_arch_testing.py"
+      ],
+      "registered_at": "2026-11-19"
+    }
+  ],
+  "updated": "2026-11-19"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "ios-architecture-testing",
+  "description": "Design state-driven iOS navigation/migrations, SwiftData VersionedSchema persistence, behavior/characterization test contracts, bounded batch refactors, CloudKit/Push protocol seams, and Apple Intelligence/multi-platform fallbacks. Not for Instruments profiling or App Store submission gates.",
+  "category": "repo"
+}

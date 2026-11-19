@@ -1,0 +1,5 @@
+{
+  "name": "ios-debugging-performance",
+  "description": "Isolate reproducible iOS/macOS bugs with multi-role review swarms, profile SwiftUI hitches in Instruments, package signed/notarized pure-SwiftPM macOS MenuBar apps, and enforce pre-submission App Store privacy/rejection gates. Not for SwiftData schema modeling or Swift 6 Sendable design.",
+  "category": "repo"
+}

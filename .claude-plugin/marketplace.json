@@ -76,6 +76,24 @@
       "description": "Use for Apple-platform builds, tests, simulator runs, and xcresult inspection through Swift/Xcode CLI. Choose SwiftPM for package-only changes; escalate to xcodebuild for app integration. Not for Xcode GUI automation."
     },
     {
+      "name": "ios-concurrency-swiftui",
+      "source": "./skills/ios-concurrency-swiftui",
+      "category": "repo",
+      "description": "Audit and engineer Swift 6 strict concurrency, Sendable/actor isolation, task lifecycle cancellation, SwiftUI Observation state/layout identity, and native spring/haptic/Liquid Glass interaction feel. Not for Instruments profiling, App Store rejection gates, or SwiftData schema migrations."
+    },
+    {
+      "name": "ios-debugging-performance",
+      "source": "./skills/ios-debugging-performance",
+      "category": "repo",
+      "description": "Isolate reproducible iOS/macOS bugs with multi-role review swarms, profile SwiftUI hitches in Instruments, package signed/notarized pure-SwiftPM macOS MenuBar apps, and enforce pre-submission App Store privacy/rejection gates. Not for SwiftData schema modeling or Swift 6 Sendable design."
+    },
+    {
+      "name": "ios-architecture-testing",
+      "source": "./skills/ios-architecture-testing",
+      "category": "repo",
+      "description": "Design state-driven iOS navigation/migrations, SwiftData VersionedSchema persistence, behavior/characterization test contracts, bounded batch refactors, CloudKit/Push protocol seams, and Apple Intelligence/multi-platform fallbacks. Not for Instruments profiling or App Store submission gates."
+    },
+    {
       "name": "deep-research",
       "source": "./skills/deep-research",
       "category": "research",
