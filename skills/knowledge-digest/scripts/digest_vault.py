@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
@@ -45,6 +46,186 @@ DAILY_NEW_TOPIC_QUOTA = 1
 MAX_PENDING_LEARNING_PROPOSALS = 3
 DISMISS_COOLDOWN_DAYS = 30
 SNOOZE_COOLDOWN_DAYS = 7
+
+VALID_TRACKS = ("workflow", "personal")
+TRACK_LABELS = {
+    "workflow": "板块一 · Workflow 相关学习",
+    "personal": "板块二 · 个人成长与领域新能力",
+}
+TRACK_SECTION_HEADERS = {
+    "workflow": "**【板块一 · Workflow 相关学习】**",
+    "personal": "**【板块二 · 个人成长与领域新能力】**",
+}
+TRACK_STANDARD_HEADINGS = {
+    "workflow": "### 🛠️ 板块一 · Workflow 相关学习（Workflow & Agent 编排）",
+    "personal": "### 🌱 板块二 · 个人成长与领域新能力（理财 / 健身 / 原生设计）",
+}
+
+_WORKFLOW_EXACT_KEYS = frozenset({
+    "bama",
+    "bama-agent-cli-story-verification",
+    "bama-budget-aware-multi-agent",
+    "genjutsu",
+    "genjutsu-three-tier-choreography-gate",
+    "genjutsu-styled-image-generation",
+    "taste-skill",
+    "taste-skill-stop-hook-and-bento-anti-slop",
+    "ui-ux-pro-max-skill",
+    "uupm-csv-faceted-design-retrieval",
+    "vercel-agent-skills",
+    "vercel-composition-patterns-and-view-transitions",
+    "vibecoded-design-tells",
+    "vibecoded-reddit-empirical-slop-tells",
+    "expo-skills",
+    "expo-visual-grader-and-web-to-native-false-friends",
+    "impeccable",
+    "impeccable-mode-operate-vs-persuade-critique",
+    "refactor-review-and-skill-audit",
+    "test-contracts-and-regression-gates",
+    "ios-debugger-review-swarm",
+    "dimillian-spm-app-packaging-and-bug-swarm",
+    "jev-r09-r06-truth-table",
+    "progressive-disclosure-four-valves",
+    "aidash-xpc-event-bridge-flywheel",
+})
+
+_PERSONAL_EXACT_KEYS = frozenset({
+    "jp-mixed-script-line-breaking",
+    "emil-spring-choreography-and-interruptibility",
+    "apple-game-feel-and-store-rejection-gates",
+    "apple-design-and-game-feel",
+    "apple-design-skill-hig-liquid-glass",
+    "awesome-ios-design-md-tokens",
+    "awesome-web-design-md-tokens",
+    "shipswift-animation-metal-components",
+    "twostraws-swiftui-pro-patterns",
+    "swiftui-26-api-migration-scan-manifest",
+    "hallmark-anti-slop-anatomy",
+    "appkit-uikit-27-modernization",
+    "liquid-glass-optics-and-swiftui-26-27",
+    "swiftui-27-scrolling-and-drag-drop-motion",
+    "swiftui-27-shader-and-motion-pipeline",
+    "wifi-invisible-light",
+    "wwdc27-liquid-glass-and-motion-map",
+    "study-switch-long-press-ac",
+    "swift-concurrency-expert-coding",
+    "swiftui-architecture-and-performance",
+    "macos-swiftpm-menubar-packaging",
+    "ios-architecture-navigation-migration",
+    "swift-concurrency-memory-safety",
+    "swiftui-state-layout-and-view-structure",
+    "swiftdata-persistence-and-migration",
+    "instruments-performance-and-swiftui-debugging",
+    "app-store-release-security-rejection-gates",
+    "feature-generators-and-apple-platform-integration",
+    "apple-intelligence-and-special-platforms",
+    "investment-frameworks-and-agent-skills",
+    "investment-all-weather-and-fifo-rebalancing",
+})
+
+_PERSONAL_SIGNAL_RE = re.compile(
+    r"(?:investment|asset-screener|portfolio-advisor|fifo|理财|投资|基金|红利|全天候|风险平价|调仓|"
+    r"workout|fitness|vitalstride|运动|健身|有氧|心率|科学健康|智能家居|物理与硬件|"
+    r"study-switch|wifi-invisible-light|kinsoku|jp-mixed-script|emil-spring|game-feel|"
+    r"swiftui|liquid-glass|appkit|uikit|swift-concurrency|swiftdata|instruments|app-store|"
+    r"shipswift|twostraws|avdlee|apple-design|apple-intelligence|core\s*ml|hallmark)",
+    re.IGNORECASE,
+)
+
+_WORKFLOW_SIGNAL_RE = re.compile(
+    r"(?:workflow|skill-contract|multi-agent|agent-cli|agent-skills|stop-hook|sloplint|"
+    r"visual-grader|bm25|composition-patterns|bug-hunt-swarm|event-bridge|xpc|"
+    r"bama|genjutsu|taste-skill|uupm|ui-ux-pro-max|vibecoded|impeccable|"
+    r"编排|工作流|自审回路|评测门禁|回归门禁|分面索引|检索)",
+    re.IGNORECASE,
+)
+
+
+def infer_topic_track(item: Mapping[str, Any]) -> str:
+    """Deterministically classify a learning topic into `'workflow'` or `'personal'`."""
+    explicit = str(item.get("track") or "").strip().lower()
+    if explicit in VALID_TRACKS:
+        return explicit
+
+    key_candidates = {
+        str(item.get("topic_key") or "").strip().lower(),
+        str(item.get("slug") or "").strip().lower(),
+        str(item.get("source_id") or "").strip().lower(),
+    }
+    raw_aliases = item.get("aliases")
+    if isinstance(raw_aliases, list):
+        key_candidates.update(str(a).strip().lower() for a in raw_aliases if str(a).strip())
+
+    if key_candidates & _WORKFLOW_EXACT_KEYS:
+        return "workflow"
+    if key_candidates & _PERSONAL_EXACT_KEYS:
+        return "personal"
+
+    haystack = " ".join(
+        str(item.get(field) or "")
+        for field in ("topic_key", "slug", "source_id", "category", "title", "question", "why_now")
+    )
+    if _PERSONAL_SIGNAL_RE.search(haystack) and not re.search(
+        r"(?:bama|genjutsu|taste-skill|ui-ux-pro-max|uupm|vercel-agent-skills|vibecoded|expo-skills|impeccable|bug-hunt-swarm|skill-contract)",
+        haystack,
+        re.IGNORECASE,
+    ):
+        return "personal"
+    if _WORKFLOW_SIGNAL_RE.search(haystack):
+        return "workflow"
+    if _PERSONAL_SIGNAL_RE.search(haystack):
+        return "personal"
+    return "workflow"
+
+
+def _select_balanced_by_track(ranked: list[dict[str, Any]], eff_top: int) -> list[dict[str, Any]]:
+    """Balance multi-slot selection across `workflow` and `personal` tracks, grouped by track."""
+    if eff_top <= 0 or not ranked:
+        return []
+    if eff_top == 1:
+        return list(ranked[:1])
+
+    workflow_pool = [c for c in ranked if infer_topic_track(c) == "workflow"]
+    personal_pool = [c for c in ranked if infer_topic_track(c) == "personal"]
+    if not workflow_pool or not personal_pool:
+        return list(ranked[:eff_top])
+
+    per_track_quota = eff_top // 2
+    picked: list[dict[str, Any]] = []
+    picked_keys: set[str] = set()
+
+    for pool in (workflow_pool, personal_pool):
+        for cand in pool[:per_track_quota]:
+            tk = str(cand.get("topic_key") or cand.get("slug") or "")
+            if tk not in picked_keys:
+                picked.append(cand)
+                picked_keys.add(tk)
+
+    if len(picked) < eff_top:
+        for cand in ranked:
+            if len(picked) >= eff_top:
+                break
+            tk = str(cand.get("topic_key") or cand.get("slug") or "")
+            if tk not in picked_keys:
+                picked.append(cand)
+                picked_keys.add(tk)
+
+    track_order = {"workflow": 0, "personal": 1}
+    return sorted(
+        picked,
+        key=lambda item: (
+            track_order.get(infer_topic_track(item), 9),
+            int(item.get("rank", 99)),
+            str(item.get("topic_key", "")),
+        ),
+    )
+
+
+def _tracks_summary(selected: list[dict[str, Any]]) -> dict[str, list[str]]:
+    return {
+        "workflow": [str(x.get("topic_key") or x.get("slug")) for x in selected if infer_topic_track(x) == "workflow"],
+        "personal": [str(x.get("topic_key") or x.get("slug")) for x in selected if infer_topic_track(x) == "personal"],
+    }
 
 _INTEGRATION_EVIDENCE_RE = re.compile(
     r"(?:实际使用|已接入|集成记录|統合済み|已集成|used\s+in|integrated\s+(?:into|with)|entry\s+a\s*\(a1\.\.a4\))",
@@ -761,6 +942,7 @@ def _scan_collected_tools_candidates(
             "source_ref": str(source_ref), "why_now": str(item.get("why_now") or question),
             "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": question,
             "rank": int(item.get("rank") or item.get("priority_rank") or 99), "scope": "personal",
+            "track": infer_topic_track(item),
         })
     return sorted(candidates, key=lambda item: (item["rank"], item["topic_key"]))
 
@@ -841,6 +1023,7 @@ def _scan_git_tech_stack_candidates(git_roots: tuple[Path, ...], existing_corpus
                 "heuristic_tier": s_tier,
                 "rank": 120,
                 "scope": "personal",
+                "track": infer_topic_track({"topic_key": slug, "title": title, "category": category}),
             })
     return candidates
 
@@ -1256,45 +1439,60 @@ def _load_issue_brief_module() -> Any:
 
 def _short_plain_why(item: dict[str, Any]) -> str:
     raw = str(item.get("why_now") or item.get("excerpt") or "").strip()
-    cleaned = re.sub(r"[A-Za-z0-9_./-]+:\d+", "", raw)
+    cleaned = re.sub(r"[A-Za-z0-9_./-]+:\d+(?:-\d+)?", "", raw)
+    cleaned = re.sub(r"(?:repos|collected-tools|knowledge-vault|skills)/[^\s（(]+", "", cleaned)
     cleaned = re.sub(r"https?://\S+", "", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ·—-，。;；")
+    cleaned = re.sub(r"^[（(](.+)[）)]$", r"\1", cleaned.strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ·—-，。;；()（）")
     if not cleaned:
-        return "补齐近期工程与收藏工具中的高频认知缺口"
-    return cleaned[:48].rstrip("，,；; ")
+        track = infer_topic_track(item)
+        return (
+            "补齐个人工作流、技能设计与多角色编排的确定性门禁缺口"
+            if track == "workflow"
+            else "补齐个人理财、运动健康或原生端交互质感的底层认知缺口"
+        )
+    return cleaned[:48].rstrip("，,；;（( ")
 
 
 def render_dual_zone_digest_issue(day: str, topics: list[dict[str, Any]]) -> str:
-    """Render a Dual-Zone compliant Daily Learn issue body via `issue-brief`."""
+    """Render a Dual-Zone compliant Daily Learn issue body grouped into Two Tracks via `issue-brief`."""
     issue_brief = _load_issue_brief_module()
     count = len(topics)
     tldr = (
-        f"今日从收藏库与近期工程缺口筛出 {count} 个高价值学习主题，勾选对应项或留言即可展开拆解。"
+        f"今日按两大板块筛出 {count} 个高价值学习主题，勾选对应项或留言即可展开拆解。"
         if count
         else "今日暂无新增高价值学习主题，候选池保持清零或冷却状态。"
     )
     items: list[dict[str, Any]] = []
     context_blocks: list[str] = [_DAILY_NOTICE, ""]
-    for item in topics:
-        key = str(item["topic_key"])
-        title = str(item.get("title") or key)
-        brief = item.get("learning_brief") or _learning_brief(item)
-        items.append(
-            {
-                "what": f"[{key}](learning-topic://{key}) {title}",
-                "why": _short_plain_why(item),
-            }
-        )
-        context_blocks.extend(
-            [
-                f"<!-- KD-TOPIC-START:{key} -->",
-                f"### `{key}` — {title}",
-                *(_daily_brief_lines(brief)),
-                f"<!-- KD-TOPIC-END:{key} -->",
-                "",
-            ]
-        )
-    if not items:
+
+    workflow_topics = [t for t in topics if infer_topic_track(t) == "workflow"]
+    personal_topics = [t for t in topics if infer_topic_track(t) == "personal"]
+
+    for track_id, group_topics in (("workflow", workflow_topics), ("personal", personal_topics)):
+        if not group_topics:
+            continue
+        items.append({"group_header": TRACK_SECTION_HEADERS[track_id]})
+        for item in group_topics:
+            key = str(item["topic_key"])
+            title = str(item.get("title") or key)
+            brief = item.get("learning_brief") or _learning_brief(item)
+            items.append(
+                {
+                    "what": f"[{key}](learning-topic://{key}) {title}",
+                    "why": _short_plain_why(item),
+                }
+            )
+            context_blocks.extend(
+                [
+                    f"<!-- KD-TOPIC-START:{key} -->",
+                    f"### [{TRACK_LABELS[track_id]}] `{key}` — {title}",
+                    *(_daily_brief_lines(brief)),
+                    f"<!-- KD-TOPIC-END:{key} -->",
+                    "",
+                ]
+            )
+    if not topics:
         items.append({"what": "保持现有知识库索引", "why": "今日无待审批新主题"})
 
     rendered = issue_brief.render_dual_zone_issue(
@@ -1320,7 +1518,10 @@ def _daily_digest_markdown(day: str, topics: list[dict[str, Any]], *, dual_zone:
     if dual_zone:
         return render_dual_zone_digest_issue(day, topics)
     issue_brief = _load_issue_brief_module()
-    context_lines = [f"- `{item['topic_key']}`: `{item['learning_brief']['recommended_command']}`" for item in topics] or ["- `topics`: `none`"]
+    context_lines = [
+        f"- [`{infer_topic_track(item)}`] `{item['topic_key']}`: `{item['learning_brief']['recommended_command']}`"
+        for item in topics
+    ] or ["- `topics`: `none`"]
     ai_details_lines = [
         issue_brief.CANONICAL_DETAILS_OPEN,
         "",
@@ -1336,8 +1537,14 @@ def _daily_digest_markdown(day: str, topics: list[dict[str, Any]], *, dual_zone:
         _DAILY_NOTICE,
         "",
     ]
-    for item in topics:
-        lines.extend(_daily_topic_lines(item))
+    workflow_topics = [t for t in topics if infer_topic_track(t) == "workflow"]
+    personal_topics = [t for t in topics if infer_topic_track(t) == "personal"]
+    for track_id, group_topics in (("workflow", workflow_topics), ("personal", personal_topics)):
+        if not group_topics:
+            continue
+        lines.extend([TRACK_STANDARD_HEADINGS[track_id], ""])
+        for item in group_topics:
+            lines.extend(_daily_topic_lines(item))
     lines.extend([DAILY_LINEAR_FOOTER, "", *ai_details_lines, ""])
     return "\n".join([*lines, f"<!-- KD-DAILY-END:{day} -->", ""])
 
@@ -1534,7 +1741,15 @@ def discover_topics(
     mock_r09_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if top is not None and top <= 0:
-        return {"ok": False, "status": "invalid_quota", "error": "--top must be a positive integer", "selected_count": 0, "topics": [], "proposals_written": []}
+        return {
+            "ok": False,
+            "status": "invalid_quota",
+            "error": "--top must be a positive integer",
+            "selected_count": 0,
+            "topics": [],
+            "tracks_summary": {"workflow": [], "personal": []},
+            "proposals_written": [],
+        }
     propose_aidash = propose_aidash or propose_linear
     with _proposal_lock(proposals_path):
         now_dt = now_utc or datetime.now(timezone.utc)
@@ -1555,7 +1770,7 @@ def discover_topics(
             effective_entries = registry["topics"]
             history = _reconcile_proposals_history(proposals_path, effective_entries, now_dt)
         except (TopicLedgerError, ValueError) as exc:
-            return {"ok": False, "status": "health_error", "error": str(exc), "selected_count": 0, "topics": [], "proposals_written": []}
+            return {"ok": False, "status": "health_error", "error": str(exc), "selected_count": 0, "topics": [], "tracks_summary": {"workflow": [], "personal": []}, "proposals_written": []}
         excluded_topics: set[str] = set(history["excluded_topics"])
         pending_topics: set[str] = set(history["pending_topics"])
         proposed_today_cst: set[str] = set(history["proposed_today_cst"])
@@ -1589,19 +1804,19 @@ def discover_topics(
                     registry.setdefault("daily_linear_issues", {})[day] = {**daily_topics, **recovered}
                     registry.setdefault("daily_linear_digests", {})[day] = {**daily_topics, **recovered, "date": day, "dedup_key": f"daily-learn-{day}"}
             except Exception as exc:
-                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest lookup failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": []}
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest lookup failed: {exc}", "selected_count": 0, "topics": [], "tracks_summary": {"workflow": [], "personal": []}, "proposals_written": []}
         if daily_topic_keys:
             known = {str(c.get("topic_key")) for c in raw_candidates}
             for key in sorted(daily_topic_keys):
                 if key in known or key not in ledger_entries:
                     continue
                 item = ledger_entries[key]
-                raw_candidates.append({"slug": key, "topic_key": key, "source_id": item.get("source_id", key), "source_uri": item.get("source_uri", ""), "source_fingerprint": item.get("source_fingerprint", ""), "aliases": list(item.get("aliases", [])), "title": item.get("title") or item.get("question") or key, "question": item.get("question") or key, "category": item.get("category", "工程与设计"), "source_kind": item.get("source_kind", "collected_tools"), "source_ref": item.get("source_uri", ""), "why_now": item.get("why_now") or item.get("excerpt") or f"Daily digest topic {key}", "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": item.get("excerpt") or item.get("question") or key, "rank": int(item.get("rank") or 99), "scope": item.get("scope", "personal"), "learning_guide": item.get("learning_guide")})
+                raw_candidates.append({"slug": key, "topic_key": key, "source_id": item.get("source_id", key), "source_uri": item.get("source_uri", ""), "source_fingerprint": item.get("source_fingerprint", ""), "aliases": list(item.get("aliases", [])), "title": item.get("title") or item.get("question") or key, "question": item.get("question") or key, "category": item.get("category", "工程与设计"), "source_kind": item.get("source_kind", "collected_tools"), "source_ref": item.get("source_uri", ""), "why_now": item.get("why_now") or item.get("excerpt") or f"Daily digest topic {key}", "coverage_refs": list(item.get("coverage_refs", [])), "excerpt": item.get("excerpt") or item.get("question") or key, "rank": int(item.get("rank") or 99), "scope": item.get("scope", "personal"), "track": infer_topic_track(item), "learning_guide": item.get("learning_guide")})
         if daily_topic_keys:
             reconstructable = {str(c.get("topic_key")) for c in raw_candidates}
             missing_daily = sorted(daily_topic_keys - reconstructable)
             if missing_daily:
-                return {"ok": False, "status": "daily_reconciliation_error", "error": f"Unable to reconstruct existing daily topics: {', '.join(missing_daily)}", "selected_count": 0, "topics": [], "proposals_written": []}
+                return {"ok": False, "status": "daily_reconciliation_error", "error": f"Unable to reconstruct existing daily topics: {', '.join(missing_daily)}", "selected_count": 0, "topics": [], "tracks_summary": {"workflow": [], "personal": []}, "proposals_written": []}
         deduped: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         seen_questions: set[str] = set()
@@ -1620,6 +1835,7 @@ def discover_topics(
             if aliases & excluded_topics and not (propose_linear and t_key in daily_topic_keys):
                 excluded_count += 1
                 continue
+            cand["track"] = infer_topic_track(cand)
             deduped.append(cand)
 
         # Explicit multi-topic/Linear mode opts into a larger daily quota; legacy AIDash
@@ -1655,6 +1871,7 @@ def discover_topics(
                 "pending_learning_count": len(pending_topics),
                 "selected_count": 0,
                 "topics": [],
+                "tracks_summary": {"workflow": [], "personal": []},
                 "archived_cards": [],
                 "proposals_written": [],
             }
@@ -1665,8 +1882,19 @@ def discover_topics(
         # Legacy AIDash callers retain their one/day contract even when they pass
         # --top; the explicit Linear mode opts into the requested multi-topic quota.
         eff_top = len(daily_topic_keys) if propose_linear and daily_topic_keys else quota if propose_aidash else max(1, top or 1)
-        selected = ranked[:eff_top]
+        if eff_top >= 2 and not (propose_linear and daily_topic_keys):
+            selected = _select_balanced_by_track(ranked, eff_top)
+        elif propose_linear and daily_topic_keys:
+            ordered_existing_keys = list(daily_topics.get("topic_keys") or [])
+            order_index = {k: idx for idx, k in enumerate(ordered_existing_keys)}
+            selected = sorted(
+                ranked[:eff_top],
+                key=lambda item: (order_index.get(str(item.get("topic_key")), 999), int(item.get("rank", 99)), str(item.get("topic_key", ""))),
+            )
+        else:
+            selected = ranked[:eff_top]
         for item in selected:
+            item["track"] = infer_topic_track(item)
             item["learning_brief"] = _learning_brief(item)
         if not selected:
             return {
@@ -1678,6 +1906,7 @@ def discover_topics(
                 "pending_learning_count": len(pending_topics),
                 "selected_count": 0,
                 "topics": [],
+                "tracks_summary": {"workflow": [], "personal": []},
                 "archived_cards": [],
                 "proposals_written": [],
             }
@@ -1689,6 +1918,7 @@ def discover_topics(
 
         for item in selected:
             slug = str(item.get("topic_key") or item["slug"]).strip()
+            item_track = infer_topic_track(item)
             if eff_materialize:
                 card_path = vault_dir / "concepts" / f"{slug}.md"
                 if not card_path.is_file():
@@ -1711,7 +1941,7 @@ def discover_topics(
                 cov_refs = list(item.get("coverage_refs") or [])
                 cov_note = f"已核对相邻卡片: {', '.join(cov_refs)}" if cov_refs else "未覆盖缺口（6 concepts / 2 craft 均无同题）"
                 detail_text = (
-                    f"为什么现在学：{why_now} · 来源依据：{source_uri} · 覆盖对账：{cov_note} · "
+                    f"[{TRACK_LABELS[item_track]}] 为什么现在学：{why_now} · 来源依据：{source_uri} · 覆盖对账：{cov_note} · "
                     f"批准后由后台启动 knowledge-digest 探索并归档至 knowledge-vault；不自动发博客，不同步 design-studio。"
                 )
                 prior = effective_entries.get(slug, {})
@@ -1720,6 +1950,7 @@ def discover_topics(
                     "ref": ref_uri,
                     "origin_ref": ref_uri,
                     "topic_key": slug,
+                    "track": item_track,
                     "source": "Learning",
                     "scope": "personal",
                     "source_uri": source_uri,
@@ -1755,17 +1986,27 @@ def discover_topics(
                 linear_issue = _upsert_linear_daily_issue(client, day, selected, existing_issue=remote, dual_zone=dual_zone)
                 external_id = f"linear://{linear_issue.get('identifier') or linear_issue.get('id')}"
                 daily_registry = registry.setdefault("daily_linear_issues", {})
-                daily_registry[day] = {**daily_registry.get(day, {}), "external_id": external_id, "url": linear_issue.get("url"), "identifier": linear_issue.get("identifier"), "title": linear_issue.get("title"), "topic_keys": [str(x.get("topic_key")) for x in selected], "updated_at": now_iso}
+                daily_registry[day] = {
+                    **daily_registry.get(day, {}),
+                    "external_id": external_id,
+                    "url": linear_issue.get("url"),
+                    "identifier": linear_issue.get("identifier"),
+                    "title": linear_issue.get("title"),
+                    "topic_keys": [str(x.get("topic_key")) for x in selected],
+                    "tracks_summary": _tracks_summary(selected),
+                    "updated_at": now_iso,
+                }
                 registry.setdefault("daily_linear_digests", {})[day] = {**registry.get("daily_linear_digests", {}).get(day, {}), **daily_registry[day], "date": day, "dedup_key": f"daily-learn-{day}"}
                 for item in selected:
                     entry = registry["topics"].get(item["topic_key"], {})
                     entry["external_id"] = external_id
                     entry["daily_linear_issue"] = external_id
+                    entry["track"] = infer_topic_track(item)
                     registry["topics"][item["topic_key"]] = entry
                 _update_proposal_external_ids(proposals_path, selected, external_id)
                 _save_topic_ledger(vault_dir, registry["topics"], topic_ledger_path=topic_ledger_path)
             except Exception as exc:
-                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest failed: {exc}", "selected_count": 0, "topics": [], "proposals_written": proposals_written}
+                return {"ok": False, "status": "linear_error", "error": f"Linear daily digest failed: {exc}", "selected_count": 0, "topics": [], "tracks_summary": {"workflow": [], "personal": []}, "proposals_written": proposals_written}
 
         if proposals_written or linear_issue:
             _save_learning_state_registry(registry, proposals_path=proposals_path, state_path=state_path, vault_dir=vault_dir)
@@ -1781,6 +2022,7 @@ def discover_topics(
             "pending_learning_count": len(pending_topics) + len(proposals_written),
             "selected_count": len(selected),
             "topics": selected,
+            "tracks_summary": _tracks_summary(selected),
             "archived_cards": archived_cards,
             "proposals_written": proposals_written,
             "linear_issue": linear_issue,

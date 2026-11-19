@@ -203,12 +203,22 @@ class IssueBriefSkillTests(unittest.TestCase):
     def test_digest_vault_dual_zone_digest_issue_passes_verifier(self) -> None:
         topics = [
             {
+                "topic_key": "bama-agent-cli-story-verification",
+                "title": "BAMA 如何把页面清单转为免 GUI 可验收用户故事？",
+                "question": "BAMA 如何把页面清单转为免 GUI 可验收用户故事？",
+                "source_id": "bama",
+                "source_uri": "https://example.test/bama",
+                "why_now": "自动化工作流与多角色验收门禁需要确定性故事切片",
+                "track": "workflow",
+            },
+            {
                 "topic_key": "swift-concurrency-isolation",
                 "title": "Swift 并发隔离如何消除跨线程状态竞争？",
                 "question": "Swift 并发隔离如何消除跨线程状态竞争？",
                 "source_id": "dimillian-skills",
                 "source_uri": "https://example.test/swift",
                 "why_now": "近期客户端异步任务频繁涉及隔离边界校验",
+                "track": "personal",
             },
             {
                 "topic_key": "spring-interrupt-velocity",
@@ -217,6 +227,7 @@ class IssueBriefSkillTests(unittest.TestCase):
                 "source_id": "emil-skills",
                 "source_uri": "https://example.test/motion",
                 "why_now": "交互卡片切换需要零顿挫跟手过渡",
+                "track": "personal",
             },
         ]
         for t in topics:
@@ -225,9 +236,18 @@ class IssueBriefSkillTests(unittest.TestCase):
         report = ISSUE_BRIEF.verify_dual_zone_issue(md)
         self.assertTrue(report["ok"], report)
         self.assertLessEqual(report["human_zone_lines"], 15)
+        self.assertEqual(report["checkbox_count"], 3)
+        self.assertIn("**【板块一 · Workflow 相关学习】**", md)
+        self.assertIn("**【板块二 · 个人成长与领域新能力】**", md)
+        self.assertIn("- [ ] 1. [bama-agent-cli-story-verification]", md)
+        self.assertIn("- [ ] 2. [swift-concurrency-isolation]", md)
+        self.assertIn("- [ ] 3. [spring-interrupt-velocity]", md)
         self.assertIn("<!-- KD-DAILY-START:2026-11-19 -->", md)
         self.assertIn("<!-- KD-DAILY-END:2026-11-19 -->", md)
-        self.assertEqual(DIGEST._daily_description_keys(md), {"swift-concurrency-isolation", "spring-interrupt-velocity"})
+        self.assertEqual(
+            DIGEST._daily_description_keys(md),
+            {"bama-agent-cli-story-verification", "swift-concurrency-isolation", "spring-interrupt-velocity"},
+        )
 
     def test_daily_brief_dual_zone_flag_and_verifier(self) -> None:
         sample_issues = [
