@@ -275,6 +275,7 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
         self.assertTrue(all(topic.get("space") for topic in domain_map["topics"]))
+        self.assertEqual(len({topic["space"].casefold() for topic in domain_map["topics"]}), len(domain_map["topics"]))
         self.assertNotIn("app-ios", {topic["topic_id"] for topic in domain_map["topics"]})
         self.assertEqual(domain_map["topics"][0]["topic_id"], "sapphire-notification")
 
@@ -1579,7 +1580,7 @@ class M2RouterTests(unittest.TestCase):
         self.assertIsNone(warning)
         self.assertEqual(sessions[0]["workspace_label"], "AIDash")
 
-    def test_new_m2_uses_mapped_workspace_and_never_caller_pane(self):
+    def test_new_m2_always_creates_new_workspace_and_never_tab_or_caller_pane(self):
         calls = []
         plan = {"schema_version": 1, "plan_id": "m2p-space", "approval": {"approved": False}, "discovery": {"workspaces": [{"workspace_id": "w1P", "label": "AIDash"}]}, "targets": [{
             "wave_order": 1, "topic_id": "aidash-aidata", "target_repo": "AIDash", "space": "AIDash", "space_aliases": [],
@@ -1589,31 +1590,46 @@ class M2RouterTests(unittest.TestCase):
             calls.append(args)
             if args[1:3] == ["workspace", "list"]:
                 return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": [{"workspace_id": "w1P", "label": "AIDash"}]}), stderr="")
-            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w1P", "tab_id": "t1", "pane_id": "w1P:p1"}), stderr="")
+            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-new-aidash", "pane_id": "w-new-aidash:p1"}), stderr="")
         with patch.dict("os.environ", {"HERDR_PANE_ID": "w2J:p1"}):
             result = self.router.apply_plan(plan, approve=True, runner=runner)
-        dispatch = next(call for call in calls if "--workspace" in call)
-        self.assertIn("--workspace", dispatch)
-        self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w1P")
-        self.assertEqual(dispatch[dispatch.index("--tab-label") + 1], "m2-aidash-aidata-r1")
+        dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
+        self.assertIn("--new-workspace", dispatch)
+        self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], "AIDash")
+        self.assertNotIn("--workspace", dispatch)
+        self.assertNotIn("--tab-label", dispatch)
         self.assertNotIn("--pane", dispatch)
         self.assertNotIn("w2J:p1", dispatch)
-        self.assertEqual(result["receipts"][0]["spawn_mode"], "workspace_tab")
+        self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
+        self.assertEqual(result["receipts"][0]["workspace_id"], "w-new-aidash")
 
-    def test_new_space_is_created_once_then_reused_for_same_space(self):
+    def test_same_batch_multi_m2_always_creates_independent_new_spaces_never_tabs(self):
         calls = []
-        targets = [{"wave_order": 1, "topic_id": "new-a", "target_repo": "Alpha", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Alpha", "sub_prompt": "a", "dispatch_script": "/tmp/fake-dispatch"}, {"wave_order": 1, "topic_id": "new-b", "target_repo": "Beta", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Beta", "sub_prompt": "b", "dispatch_script": "/tmp/fake-dispatch"}]
-        plan = {"schema_version": 1, "plan_id": "m2p-new-space", "approval": {"approved": False}, "discovery": {"workspaces": []}, "targets": targets}
+        targets = [
+            {"wave_order": 1, "topic_id": "info-email", "target_repo": "dsh-personal-plugins", "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/dsh-personal-plugins", "sub_prompt": "email", "dispatch_script": "/tmp/fake-dispatch"},
+            {"wave_order": 1, "topic_id": "info-teams", "target_repo": "dsh-personal-plugins", "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/teams-cli", "sub_prompt": "teams", "dispatch_script": "/tmp/fake-dispatch"},
+            {"wave_order": 1, "topic_id": "new-a", "target_repo": "Alpha", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Alpha", "sub_prompt": "a", "dispatch_script": "/tmp/fake-dispatch"},
+            {"wave_order": 1, "topic_id": "new-b", "target_repo": "Beta", "space": "Personal", "space_aliases": [], "m2_status": "NEW_M2", "transport": "herdr", "cwd": "/repo/Beta", "sub_prompt": "b", "dispatch_script": "/tmp/fake-dispatch"},
+        ]
+        plan = {"schema_version": 1, "plan_id": "m2p-new-space", "approval": {"approved": False}, "discovery": {"workspaces": [{"workspace_id": "w-existing", "label": "dsh-personal-plugins"}]}, "targets": targets}
+        ws_seq = 0
         def runner(args, **kwargs):
+            nonlocal ws_seq
             calls.append(args)
             if args[1:3] == ["workspace", "list"]:
                 return SimpleNamespace(returncode=0, stdout="[]", stderr="")
-            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-new", "pane_id": "w-new:p1"}), stderr="")
-        self.router.apply_plan(plan, approve=True, runner=runner)
-        dispatch_calls = [call for call in calls if "--new-workspace" in call or "--workspace" in call]
-        self.assertIn("--new-workspace", dispatch_calls[0])
-        self.assertIn("--workspace", dispatch_calls[1])
-        self.assertEqual(dispatch_calls[1][dispatch_calls[1].index("--workspace") + 1], "w-new")
+            ws_seq += 1
+            return __import__("types").SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": f"w-new-{ws_seq}", "pane_id": f"w-new-{ws_seq}:p1"}), stderr="")
+        result = self.router.apply_plan(plan, approve=True, runner=runner)
+        dispatch_calls = [call for call in calls if call[0] == "/tmp/fake-dispatch"]
+        self.assertEqual(len(dispatch_calls), 4)
+        for idx, (call, expected_label) in enumerate(zip(dispatch_calls, ["info-email", "info-teams", "Personal", "Personal"]), start=1):
+            self.assertIn("--new-workspace", call)
+            self.assertEqual(call[call.index("--workspace-label") + 1], expected_label)
+            self.assertNotIn("--workspace", call)
+            self.assertNotIn("--tab-label", call)
+            self.assertEqual(result["receipts"][idx - 1]["spawn_mode"], "new_workspace")
+            self.assertEqual(result["receipts"][idx - 1]["workspace_id"], f"w-new-{idx}")
 
     def test_real_flow_preserves_embedded_workspaces_and_reuses_done_space_session(self):
         sessions, warnings = self.router.discover_sessions(
@@ -1646,7 +1662,7 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
         self.assertEqual(plan["targets"][0]["session_id"], "aidash-done")
 
-    def test_apply_revalidates_live_canonical_space_and_ignores_stale_workspace_id(self):
+    def test_apply_revalidates_authoritative_space_and_ignores_stale_workspace_id(self):
         calls = []
         plan = {
             "schema_version": 1, "plan_id": "m2p-authority", "approval": {"approved": False},
@@ -1663,12 +1679,16 @@ class M2RouterTests(unittest.TestCase):
             calls.append(args)
             if args[1:3] == ["workspace", "list"]:
                 return SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": [{"workspace_id": "w-live", "label": "AIDash"}]}), stderr="")
-            return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-live"}), stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "workspace_id": "w-new-aidash"}), stderr="")
 
         result = self.router.apply_plan(plan, approve=True, runner=runner)
-        dispatch = next(call for call in calls if "--workspace" in call)
-        self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w-live")
-        self.assertEqual(result["receipts"][0]["workspace_id"], "w-live")
+        dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
+        self.assertIn("--new-workspace", dispatch)
+        self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], "AIDash")
+        self.assertNotIn("--workspace", dispatch)
+        self.assertNotIn("--tab-label", dispatch)
+        self.assertEqual(result["receipts"][0]["workspace_id"], "w-new-aidash")
+        self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
 
     def test_space_matching_and_markdown_include_alias_priority_and_workspace_state(self):
         workspaces = [
@@ -1685,11 +1705,14 @@ class M2RouterTests(unittest.TestCase):
             "workspace_id": "w-canonical", "workspace_label": "bing-growth-sapphire-app",
         }]
         self.assertEqual(self.router._target_session(target, self.router._topic_by_id(self.router.load_domain_map())["sapphire-notification"], sessions)["session_id"], "space-session")
-        plan = {"plan_id": "m2p-preview", "decision": {"route": "ROUTE_SINGLE"}, "targets": [{**target, "m2_status": "NEW_M2"}]}
-        markdown = self.router.render_preview_markdown(plan)
-        self.assertIn("| Space |", markdown)
-        self.assertIn("bing-growth-sapphire-app (w-canonical)", markdown)
-        self.assertIn("- **Space**:", markdown)
+        new_plan = {"plan_id": "m2p-preview", "decision": {"route": "ROUTE_SINGLE"}, "targets": [{**target, "m2_status": "NEW_M2"}]}
+        new_markdown = self.router.render_preview_markdown(new_plan)
+        self.assertIn("| Space |", new_markdown)
+        self.assertIn("Sapphire Notification (new-space)", new_markdown)
+        self.assertIn("- **Space**:", new_markdown)
+        existing_plan = {"plan_id": "m2p-preview-existing", "decision": {"route": "ROUTE_SINGLE"}, "targets": [{**target, "m2_status": "EXISTING_M2", "workspace_id": "w-canonical"}]}
+        existing_markdown = self.router.render_preview_markdown(existing_plan)
+        self.assertIn("Sapphire Notification (w-canonical)", existing_markdown)
 
     def test_discovered_mixed_case_spaces_and_aliases_reuse_mapped_sessions(self):
         topics = self.router._topic_by_id(self.router.load_domain_map())
@@ -1817,16 +1840,19 @@ class M2RouterTests(unittest.TestCase):
                     domain_map_file=map_path if mode in {"explicit", "registration"} else None,
                 )
                 dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
-                self.assertIn("--workspace", dispatch)
-                self.assertEqual(dispatch[dispatch.index("--workspace") + 1], "w-custom")
+                self.assertIn("--new-workspace", dispatch)
+                self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], expected_space)
+                self.assertNotIn("--workspace", dispatch)
+                self.assertNotIn("--tab-label", dispatch)
                 self.assertEqual(result["receipts"][0]["space"], expected_space)
+                self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
                 if registration:
                     self.assertEqual(result["registered_new_domains"], [target["topic_id"]])
                     registered_topic = self.router._topic_by_id(self.router.load_domain_map(map_path))[target["topic_id"]]
                     self.assertEqual(registered_topic["space"], "Registered Space")
                     self.assertEqual(registered_topic["space_aliases"], ["Registered Alias"])
 
-    def test_apply_distinguishes_empty_live_inventory_from_invalid_success(self):
+    def test_apply_always_spawns_new_workspace_regardless_of_live_workspace_inventory(self):
         canonical = {"workspace_id": "w-canonical", "label": "bing-growth-sapphire-app"}
         alias = {"workspace_id": "w-alias", "label": "Sapphire"}
         cases = [
@@ -1842,7 +1868,7 @@ class M2RouterTests(unittest.TestCase):
             ('{"workspaces": "invalid"}', "w-canonical"), ("[{}]", "w-canonical"),
             ('{"result": {"agents": [{"name": "wrong", "workspace_id": "w-receipt"}]}}', "w-canonical"),
         ]
-        for stdout, expected_workspace in cases:
+        for stdout, _ in cases:
             with self.subTest(stdout=stdout):
                 plan = self.router.build_plan(
                     "continue", [], workspace_payload=[alias, canonical],
@@ -1853,18 +1879,16 @@ class M2RouterTests(unittest.TestCase):
 
                 def runner(args, **kwargs):
                     calls.append(args)
-                    return SimpleNamespace(returncode=0, stdout=stdout if args[1:3] == ["workspace", "list"] else '{"ok": true}', stderr="")
+                    return SimpleNamespace(returncode=0, stdout=stdout if args[1:3] == ["workspace", "list"] else '{"ok": true, "workspace_id": "w-spawned"}', stderr="")
 
                 result = self.router.apply_plan(plan, approve=True, runner=runner)
                 dispatch = next(call for call in calls if call[0] == "/tmp/fake-dispatch")
-                if expected_workspace:
-                    self.assertIn("--workspace", dispatch)
-                    self.assertEqual(dispatch[dispatch.index("--workspace") + 1], expected_workspace)
-                    self.assertEqual(result["receipts"][0]["spawn_mode"], "workspace_tab")
-                else:
-                    self.assertIn("--new-workspace", dispatch)
-                    self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], canonical["label"])
-                    self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
+                self.assertIn("--new-workspace", dispatch)
+                self.assertEqual(dispatch[dispatch.index("--workspace-label") + 1], "Sapphire Notification")
+                self.assertNotIn("--workspace", dispatch)
+                self.assertNotIn("--tab-label", dispatch)
+                self.assertEqual(result["receipts"][0]["spawn_mode"], "new_workspace")
+                self.assertEqual(result["receipts"][0]["workspace_id"], "w-spawned")
 
     def test_per_m2_watchdog_tasks_and_rolling_cumulative_rollup_abc_d_a2(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -23,8 +23,9 @@
             "weather units",
             "notification settings"
           ],
-          "space": "bing-growth-sapphire-app",
+          "space": "Sapphire Notification",
           "space_aliases": [
+            "bing-growth-sapphire-app",
             "Sapphire",
             "Notification"
           ]
@@ -46,10 +47,11 @@
             "universal links",
             "upsell"
           ],
-          "space": "bing-growth-sapphire-app",
+          "space": "SmartBanner",
           "space_aliases": [
+            "bing-growth-sapphire-app",
             "Sapphire",
-            "SmartBanner"
+            "Sapphire SmartBanner"
           ]
         },
         {
@@ -73,10 +75,12 @@
             "china bug",
             "dev sync"
           ],
-          "space": "bing-growth-sapphire-app",
+          "space": "China bugs 修复",
           "space_aliases": [
+            "bing-growth-sapphire-app",
             "Sapphire",
-            "China bugs 修复"
+            "Sapphire China Bugs",
+            "China Bugs"
           ]
         },
         {
@@ -93,9 +97,11 @@
             "discovery feed",
             "kumo"
           ],
-          "space": "bing-growth-sapphire-app",
+          "space": "Sapphire Discovery Kumo",
           "space_aliases": [
-            "Sapphire"
+            "bing-growth-sapphire-app",
+            "Sapphire",
+            "Discovery Kumo"
           ]
         },
         {
@@ -116,9 +122,11 @@
             "crash",
             "user feedback"
           ],
-          "space": "bing-growth-sapphire-app",
+          "space": "Sapphire DSAT QA-DE",
           "space_aliases": [
-            "Sapphire"
+            "bing-growth-sapphire-app",
+            "Sapphire",
+            "DSAT QA-DE"
           ]
         },
         {
@@ -176,9 +184,12 @@
             "mail summary",
             "outlook"
           ],
-          "space": "dsh-personal-plugins",
+          "space": "info-email",
           "space_aliases": [
-            "Deepseek 插件开发"
+            "dsh-personal-plugins",
+            "Deepseek 插件开发",
+            "Work Information Email",
+            "Email 日报"
           ]
         },
         {
@@ -197,9 +208,12 @@
             "teams cli",
             "group chat"
           ],
-          "space": "dsh-personal-plugins",
+          "space": "info-teams",
           "space_aliases": [
-            "Deepseek 插件开发"
+            "dsh-personal-plugins",
+            "Deepseek 插件开发",
+            "Work Information Teams",
+            "Teams 巡检"
           ]
         },
         {
@@ -250,7 +264,11 @@
             "m2",
             "linear"
           ],
-          "space": "user-skills"
+          "space": "skills-workflow",
+          "space_aliases": [
+            "user-skills",
+            "Skills Workflow"
+          ]
         },
         {
           "topic_id": "skills-design",
@@ -269,7 +287,11 @@
             "designer",
             "visual"
           ],
-          "space": "user-skills"
+          "space": "skills-design",
+          "space_aliases": [
+            "user-skills",
+            "Skills Design"
+          ]
         },
         {
           "topic_id": "skills-research-knowledge",
@@ -289,7 +311,11 @@
             "knowledge skill maintenance",
             "digest implementation"
           ],
-          "space": "user-skills"
+          "space": "skills-research-knowledge",
+          "space_aliases": [
+            "user-skills",
+            "Skills Research and Knowledge Maintenance"
+          ]
         },
         {
           "topic_id": "skills-retro-story",
@@ -307,7 +333,11 @@
             "retro skill code",
             "story skill maintenance"
           ],
-          "space": "user-skills"
+          "space": "skills-retro-story",
+          "space_aliases": [
+            "user-skills",
+            "Skills Retro and Story Maintenance"
+          ]
         },
         {
           "topic_id": "skills-repo-ci",
@@ -328,7 +358,11 @@
             "contracts",
             "ci"
           ],
-          "space": "user-skills"
+          "space": "skills-repo-ci",
+          "space_aliases": [
+            "user-skills",
+            "Skills Repository and CI"
+          ]
         }
       ]
     },
@@ -553,9 +587,10 @@
             "technical blog",
             "daily digest"
           ],
-          "space": "Personal",
+          "space": "学习与写博客",
           "space_aliases": [
-            "学习与写博客"
+            "Personal",
+            "learning-and-blog"
           ]
         },
         {
