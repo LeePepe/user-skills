@@ -914,10 +914,15 @@ def _sanitize_human_zone_text(text: str) -> str:
     cleaned = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", cleaned)
     cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
     cleaned = re.sub(
-        r"(?:(?<![A-Za-z0-9_/-])(?:python3?|pytest|bash|sh|curl|gh|multica|git)\s+\S+(?:\s+--?[A-Za-z0-9_-]+|\s+\S+\.py\b))"
+        r"`[^`\n]*(?:python3?|pytest|bash|sh|curl|gh|multica|git|\.\/scripts\/|skills\/[A-Za-z0-9_-]+\/scripts\/)[^`\n]*`",
+        "该高频探针模式",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?:(?<![A-Za-z0-9_/-])(?:python3?|pytest|bash|sh|curl|gh|multica|git)\s+\S+(?:\s+--?[A-Za-z0-9_-]+|\s+\S+\.py\b)(?:\s+--?[A-Za-z0-9_=.-]+)*)"
         r"|(?:\./scripts/[A-Za-z0-9_./-]+)"
         r"|(?:\bskills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.py\b)",
-        "",
+        "脚本入口",
         cleaned,
     )
     return re.sub(r"\s+", " ", cleaned).strip(" ·—-：:")
@@ -940,8 +945,21 @@ def _load_daily_patrol_digest_entries(target: date) -> dict[str, dict[str, Any]]
         loop_mod = _load_multica_loop_runner()
         buf = loop_mod.load_daily_digest_buffer()
         entries = buf.get("entries") if isinstance(buf, dict) else {}
-        day_map = entries.get(target.isoformat()) if isinstance(entries, dict) else {}
-        return dict(day_map) if isinstance(day_map, dict) else {}
+        if not isinstance(entries, dict):
+            return {}
+        merged: dict[str, dict[str, Any]] = {}
+        today_map = entries.get(target.isoformat())
+        if isinstance(today_map, dict):
+            for lid, entry in today_map.items():
+                if isinstance(entry, dict):
+                    merged[lid] = dict(entry)
+        # Fallback to yesterday's actionable entries if a loop ran after yesterday's 05:00 brief and hasn't run yet today
+        prev_map = entries.get((target - timedelta(days=1)).isoformat())
+        if isinstance(prev_map, dict):
+            for lid, entry in prev_map.items():
+                if lid not in merged and isinstance(entry, dict) and entry.get("actionable"):
+                    merged[lid] = dict(entry)
+        return merged
     except Exception:
         return {}
 

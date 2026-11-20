@@ -38,7 +38,7 @@ DEFAULT_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
 DEFAULT_OWNER_EMAIL = "lee@multica.local"
 DEFAULT_AGENT_ID = "d550a00a-1173-4bed-8bf3-621384cdfb10"
 DEFAULT_AUTOPILOT_TITLE = "Daily Skills ROI Diagnostic Autopilot (P3 -> Owner)"
-DEFAULT_CRON = "20 8 * * *"
+DEFAULT_CRON = "20 4 * * *"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_COLLECT_OUTPUT = Path("/tmp/multica-skills-autopilot-collect.json")
 DEFAULT_ANALYSIS_OUTPUT = Path("/tmp/multica-skills-autopilot-analysis.md")
@@ -98,6 +98,20 @@ def _sanitize_human_zone_label(text: str) -> str:
     )
     cleaned = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", cleaned)
     cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
+    # Neutralize embedded shell/CLI command snippets so Human Zone never trips CLI_COMMAND_RE;
+    # exact command strings remain preserved in `title`, `plain_reason`, `action`, and `<details>`.
+    cleaned = re.sub(
+        r"`[^`\n]*(?:python3?|pytest|bash|sh|curl|gh|multica|git|\.\/scripts\/|skills\/[A-Za-z0-9_-]+\/scripts\/)[^`\n]*`",
+        "该高频探针模式",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?:(?<![A-Za-z0-9_/-])(?:python3?|pytest|bash|sh|curl|gh|multica|git)\s+\S+(?:\s+--?[A-Za-z0-9_-]+|\s+\S+\.py\b)(?:\s+--?[A-Za-z0-9_=.-]+)*)"
+        r"|(?:\./scripts/[A-Za-z0-9_./-]+)"
+        r"|(?:\bskills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.py\b)",
+        "脚本入口",
+        cleaned,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ·—-：:")
     return cleaned
 
@@ -121,9 +135,12 @@ def _summarize_skill_retro_report(raw_retro: dict[str, Any] | None) -> dict[str,
     proposals: list[dict[str, Any]] = []
     for prop in raw_proposals[:6]:
         sk = str(prop.get("skill") or "skills").strip()
+        cat = str(prop.get("category") or "").strip()
         raw_title = str(prop.get("title") or "").strip()
         raw_reason = str(prop.get("plain_reason") or prop.get("action") or "").strip()
         human_what = _sanitize_human_zone_label(raw_title) or f"演进 `{sk}` 渐进式防呆契约"
+        if "该高频探针模式" in human_what and cat == "wild_pattern_crystallization":
+            human_what = f"为 `{sk}` 柔性沉淀高频手工探针脚本"
         human_why = _sanitize_human_zone_label(raw_reason).rstrip("。") or f"`{sk}` 观测到高信号摩擦或漏检样本"
         proposals.append(
             {
@@ -351,6 +368,7 @@ def collect_skills_roi_snapshot(
     include_skill_retro: bool | None = None,
     skill_retro_auto_propose: bool = False,
     skill_retro_watermark_path: Path | None = None,
+    persist_cohort_watermark: bool = True,
     diagnostics_fn: Callable[..., dict[str, Any]] | None = None,
     skill_retro_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -491,13 +509,14 @@ def collect_skills_roi_snapshot(
     )
     prev_wm_state = _load_skill_retro_watermark(skill_retro_watermark_path) if skill_retro_watermark_path is not None else {}
     prev_cohort_watermark = str(prev_wm_state.get("cohort_watermark") or "")
+    prev_proposed_watermark = str(prev_wm_state.get("proposed_cohort_watermark") or prev_cohort_watermark)
     has_cohort_delta = bool((len(actionable) + len(retro_proposals)) > 0 and cohort_watermark != prev_cohort_watermark)
+    has_propose_delta = bool(retro_proposals and (skill_retro_watermark_path is None or cohort_watermark != prev_proposed_watermark))
 
     if (
         should_run_skill_retro
         and skill_retro_auto_propose
-        and retro_proposals
-        and (skill_retro_watermark_path is None or has_cohort_delta)
+        and has_propose_delta
     ):
         if skill_retro_fn is not None:
             proposed_res = skill_retro_fn(
@@ -530,17 +549,24 @@ def collect_skills_roi_snapshot(
         if isinstance(proposed_res, dict):
             skill_retro["proposals_written"] = int(proposed_res.get("proposals_written") or 0)
             skill_retro["auto_proposed_ids"] = list(proposed_res.get("auto_proposed") or [])
+        if skill_retro_watermark_path is not None:
+            updated_state = dict(prev_wm_state)
+            updated_state["proposed_cohort_watermark"] = cohort_watermark
+            updated_state["proposed_at"] = now_cst.isoformat(timespec="seconds")
+            _save_skill_retro_watermark(updated_state, skill_retro_watermark_path)
+            prev_wm_state = updated_state
 
-    if skill_retro_watermark_path is not None and has_cohort_delta:
-        _save_skill_retro_watermark(
+    if skill_retro_watermark_path is not None and persist_cohort_watermark and has_cohort_delta:
+        updated_state = dict(prev_wm_state)
+        updated_state.update(
             {
                 "cohort_watermark": cohort_watermark,
                 "collected_date": collected_date,
                 "updated_at": now_cst.isoformat(timespec="seconds"),
                 "skill_retro_proposals_count": len(retro_proposals),
-            },
-            skill_retro_watermark_path,
+            }
         )
+        _save_skill_retro_watermark(updated_state, skill_retro_watermark_path)
 
     snapshot: dict[str, Any] = {
         "schema": "multica-skills-autopilot-collect/v1",
@@ -1375,6 +1401,7 @@ def run_once_pipeline(
         include_skill_retro=include_skill_retro,
         skill_retro_auto_propose=(skill_retro_auto_propose and not dry_run),
         skill_retro_watermark_path=(None if dry_run else skill_retro_watermark_path),
+        persist_cohort_watermark=False,
         diagnostics_fn=diagnostics_fn,
         skill_retro_fn=skill_retro_fn,
     )
@@ -1425,6 +1452,17 @@ def run_once_pipeline(
         runner=runner,
         multica_bin=multica_bin,
     )
+    if not dry_run and skill_retro_watermark_path is not None and cohort_gate.get("cohort_watermark"):
+        wm_state = _load_skill_retro_watermark(skill_retro_watermark_path)
+        wm_state.update(
+            {
+                "cohort_watermark": str(cohort_gate["cohort_watermark"]),
+                "collected_date": snapshot.get("collected_date"),
+                "delivered_at": datetime.now(CST).isoformat(timespec="seconds"),
+                "skill_retro_proposals_count": len((snapshot.get("skill_retro") or {}).get("proposals") or []),
+            }
+        )
+        _save_skill_retro_watermark(wm_state, skill_retro_watermark_path)
     return {
         "ok": True,
         "collect_output": str(collect_output),

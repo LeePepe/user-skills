@@ -483,6 +483,85 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
             self.assertEqual(propose_calls, [False])
             self.assertEqual(multica_calls, [])
 
+    def test_l3_wild_pattern_cli_command_sanitization_and_failed_publish_watermark_retry(self) -> None:
+        l3_retro = {
+            "ok": True,
+            "schema": "skill-retro-diagnostic/v1",
+            "sample_size": 58,
+            "summary": {"wild_patterns_count": 1, "slow_flywheel_ready": True},
+            "proposals": [
+                {
+                    "id": "skill-retro-l3-wild-code-review-99aa11bb",
+                    "skill": "code-review",
+                    "layer": "L3",
+                    "category": "wild_pattern_crystallization",
+                    "priority": "P3",
+                    "title": "[Skill Retro L3] 柔性沉淀高频手工探针 `git diff --stat --cached`（重复 7 次）",
+                    "plain_reason": "跨 6 个会话重复手敲 `git diff --stat --cached` 共 7 次，适合沉淀为只采数不代拍板的柔性脚本",
+                    "action": "Crystallize read-only fact collector subcommand under `skills/code-review/scripts/`.",
+                    "detail": "layer=L3 | category=wild_pattern_crystallization | pattern=`git diff --stat --cached`",
+                    "scope_triage": {"emit_proposal": True},
+                }
+            ],
+            "observation_pool": [],
+            "proposals_written": 1,
+            "auto_proposed": ["skill-retro-l3-wild-code-review-99aa11bb"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            wm_path = Path(tmp) / "retry-wm.json"
+            collect_out = Path(tmp) / "collect-l3.json"
+            propose_calls: list[bool] = []
+            fail_publish = True
+
+            def fake_l3_retro(**kwargs):
+                propose_calls.append(bool(kwargs.get("auto_propose")))
+                return l3_retro
+
+            def flaky_runner(args: list[str], *, stdin_text: str | None = None, **_kwargs) -> subprocess.CompletedProcess[str]:
+                if fail_publish:
+                    return subprocess.CompletedProcess(args, 1, "", "Multica server unavailable")
+                if args[:2] == ["issue", "list"]:
+                    return subprocess.CompletedProcess(args, 0, '{"issues": []}', "")
+                if args[:2] == ["issue", "create"]:
+                    return subprocess.CompletedProcess(args, 0, '{"id": "mul-ok-2", "identifier": "TIA-88"}', "")
+                return subprocess.CompletedProcess(args, 0, "{}", "")
+
+            # First attempt: L3 command-bearing proposal renders cleanly (no CLI_COMMAND_RE crash),
+            # proposals are queued once, and failed publication does NOT commit delivery watermark.
+            with self.assertRaises(RuntimeError):
+                AUTOPILOT.run_once_pipeline(
+                    collect_output=collect_out,
+                    include_skill_retro=True,
+                    skill_retro_auto_propose=True,
+                    skill_retro_watermark_path=wm_path,
+                    skip_if_no_cohort_delta=True,
+                    diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
+                    skill_retro_fn=fake_l3_retro,
+                    runner=flaky_runner,
+                )
+            snap_l3 = json.loads(collect_out.read_text(encoding="utf-8"))
+            dz_res = AUTOPILOT._load_issue_brief().verify_dual_zone_issue(snap_l3["markdown_brief"])
+            self.assertTrue(dz_res["ok"], dz_res)
+            self.assertIn("git diff --stat --cached", snap_l3["markdown_brief"].split("<details>", 1)[1])
+            self.assertNotIn("git diff --stat", snap_l3["markdown_brief"].split("<details>", 1)[0])
+            self.assertEqual(propose_calls, [False, True])
+
+            # Retry after transient publication failure: still has_delta=True, skips duplicate auto_propose, and delivers!
+            fail_publish = False
+            propose_calls.clear()
+            recovered = AUTOPILOT.run_once_pipeline(
+                collect_output=collect_out,
+                include_skill_retro=True,
+                skill_retro_auto_propose=True,
+                skill_retro_watermark_path=wm_path,
+                skip_if_no_cohort_delta=True,
+                diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
+                skill_retro_fn=fake_l3_retro,
+                runner=flaky_runner,
+            )
+            self.assertEqual(recovered["issue_result"]["action"], "created")
+            self.assertEqual(propose_calls, [False])
+
 
 if __name__ == "__main__":
     unittest.main()

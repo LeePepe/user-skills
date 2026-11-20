@@ -803,6 +803,27 @@ class DailyBriefDualTargetTests(unittest.TestCase):
                 self.assertIn("check_ui.py", dz_md)
                 self.assertEqual(daily_brief.validate_markdown(brief_payload["plan_a_markdown"]), [])
 
+                # 4. Schedule ordering invariant: skills-roi-diagnostic cron runs BEFORE daily-brief (04:20 < 05:00),
+                # AND if a brief runs on the next day before today's patrol runs, yesterday's actionable buffer still surfaces.
+                roi_spec = loop_runner.resolve_loop_spec("skills-roi-diagnostic")
+                brief_spec = loop_runner.resolve_loop_spec("daily-brief")
+                roi_min, roi_hr = (int(tok) for tok in roi_spec.cron.split()[:2])
+                brief_min, brief_hr = (int(tok) for tok in brief_spec.cron.split()[:2])
+                self.assertLess((roi_hr, roi_min), (brief_hr, brief_min))
+
+                next_day_brief = daily_brief.generate(
+                    date(2026, 11, 21),
+                    dev_root=dev_root,
+                    handoff_root=handoff_root,
+                    client=None,
+                    propose_linear=False,
+                    publish_multica=False,
+                    dual_zone=True,
+                    dry_run=True,
+                )
+                self.assertIn("技能自演进提案", next_day_brief["markdown"])
+                self.assertTrue(issue_brief.verify_dual_zone_issue(next_day_brief["markdown"])["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
