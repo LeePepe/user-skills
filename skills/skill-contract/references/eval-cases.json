@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-14",
+  "updated": "2026-11-20",
   "active_cases": [
     {
       "id": "EV-001",
@@ -124,6 +124,24 @@
       ],
       "cmd": "python3 -I -B scripts/test_verify_skills.py SkillContractV2Tests.test_star_agents_path_refresh_and_snapshot_validation SkillContractV2Tests.test_star_markers_dedupe_fallback_eviction_and_saturation",
       "expect_exit": 0
+    },
+    {
+      "id": "EV-009",
+      "title": "Self-disclosing valve guidance documented and unit-tested",
+      "tags": [
+        "audit",
+        "self-disclosing",
+        "valve-3",
+        "valve-4"
+      ],
+      "cmd": "python3 -I -B scripts/test_verify_runner.py VerifyRunnerAndGuidanceTests.test_skill_contract_audit_emits_self_disclosing_drawer_pointers_on_valve_failure",
+      "expect_exit": 0,
+      "file": "skills/skill-contract/references/valves-and-metabolism.md",
+      "must_contain": [
+        "Self-disclosing audit findings",
+        "guidance_drawer"
+      ],
+      "registered_at": "2026-11-20"
     }
   ],
   "trigger_evals": [

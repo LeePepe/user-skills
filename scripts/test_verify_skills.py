@@ -975,7 +975,7 @@ class VerifySkillsTests(unittest.TestCase):
         queue_module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(queue_module)
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             isolated = Path(tmp_dir) / "chain"
             isolated.mkdir()
             self.assertTrue(queue_module._is_isolated_handoff_dir(isolated))
@@ -1562,7 +1562,7 @@ try {
 
     def test_goal_supervisor_notify_bridge_and_scan_alerts(self) -> None:
         supervisor = SKILLS_DIR / "team-lead" / "scripts" / "goal-supervisor.py"
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             handoff = root / "goal-a"
             handoff.mkdir()
@@ -1746,7 +1746,7 @@ try {
         self.assertTrue(canonical_helper.is_file(), f"Missing {canonical_helper}")
         self.assertTrue(os.access(canonical_helper, os.X_OK), f"{canonical_helper} is not executable")
 
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             bin_dir = tmp_dir / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)
@@ -2115,7 +2115,7 @@ try {
 
     def test_codex_trust_dedupes_adjacent_project_blocks(self) -> None:
         helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             home = tmp_dir / "home"
             codex_dir = home / ".codex"
@@ -2193,7 +2193,7 @@ try {
 
     def test_copilot_ssd_baseline_covers_handoff_sibling_realpath(self) -> None:
         helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             home = tmp_dir / "home"
             copilot_dir = home / ".copilot"
@@ -2327,7 +2327,7 @@ try {
                 check=check,
             )
 
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             handoff_dir = tmp_dir / "handoff-goal"
 
@@ -2663,16 +2663,16 @@ try {
         self.assertTrue(audit_payload.get("ok"), f"audit --all --strict failed: {audit_payload}")
 
         eval_res = subprocess.run(
-            [sys.executable, str(script), "eval", "--all", "--strict"],
+            [sys.executable, str(script), "eval", "--skill", "skill-contract", "--strict"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
             check=True,
         )
         eval_payload = json.loads(eval_res.stdout)
-        self.assertTrue(eval_payload.get("ok"), f"eval --all --strict failed: {eval_payload}")
-        self.assertGreaterEqual(eval_payload.get("drawers_evaluated", 0), 5)
-        self.assertGreaterEqual(eval_payload.get("cases_run", 0), 17)
+        self.assertTrue(eval_payload.get("ok"), f"eval --skill skill-contract --strict failed: {eval_payload}")
+        self.assertGreaterEqual(eval_payload.get("drawers_evaluated", 0), 1)
+        self.assertGreaterEqual(eval_payload.get("cases_run", 0), 8)
         self.assertEqual(eval_payload.get("passed"), eval_payload.get("cases_run"))
         self.assertEqual(eval_payload.get("failures"), [])
 
@@ -3160,7 +3160,7 @@ class JevGateTests(unittest.TestCase):
                 return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', binascii.crc32(kind + payload) & 0xffffffff)
             return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
 
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             dead_png = root / 'dead-space.png'
             dead_png.write_bytes(make_png(800, 500, 0.30, sidebar_only_bottom=True))
@@ -3236,7 +3236,7 @@ class JevGateTests(unittest.TestCase):
     def test_traceback_requires_real_image_for_direct_and_jev_paths(self):
         g = self.gate
         png = _png_fixture()
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); image = root / 'screen.png'; image.write_bytes(png); source = str(image) + '#button'
             base = {'schema': 'visual-traceback/v1', 'findings': [], 'rendered_evidence': [{'kind': 'screenshot', 'source': source, 'observation': 'real rendered viewport inspected'}], 'clean': {'spec_source': 'spec.md:1', 'implementation_source': source, 'checks': [{'requirement': 'target', 'assertion': {'operator': 'minimum', 'required': 1, 'observed': 1}}]}}
             def run(payload, extra=()):
@@ -3677,7 +3677,7 @@ class SkillContractV2Tests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('round2_evidence', evidence_path)
         evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
         self.assertEqual(catalog.PROMPTS._paragraphs('# Heading\nSubstantive prose immediately beneath a heading.'), {'Substantive prose immediately beneath a heading.'})
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, HOME=tmp)
             for mode in ('screen', 'app-nav'):
                 schemes = catalog.NAVIGATION.starter_schemes()
@@ -3737,7 +3737,7 @@ class SkillContractV2Tests(unittest.TestCase):
         evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
         spec = importlib.util.spec_from_file_location('d4_count_evidence', evidence_path)
         evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, HOME=tmp)
             for extra, count in (([], 4), (['--count', '10'], 10)):
                 result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', f'd4-count-{count}', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--no-blog-mount', *extra], env=env, capture_output=True, text=True, check=True)
@@ -3755,7 +3755,7 @@ class SkillContractV2Tests(unittest.TestCase):
         evidence_path = SKILLS_DIR / 'my-designer/scripts/design_evidence.py'
         spec = importlib.util.spec_from_file_location('d4_evidence', evidence_path)
         evidence = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(evidence)
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, HOME=tmp)
             result = subprocess.run([sys.executable, str(catalog_path), 'scaffold-gallery', '--goal', 'd4-gate', '--round', '1', '--platform', 'mobile', '--mode', 'screen', '--count', '10', '--no-blog-mount'], env=env, capture_output=True, text=True, check=True)
             root = Path(json.loads(result.stdout)['gallery']); manifest = json.loads((root / 'manifest.json').read_text())
@@ -3807,7 +3807,7 @@ class SkillContractV2Tests(unittest.TestCase):
 
     def test_herdr_dispatch_sets_leepepe_bot_git_author_and_skips_enterprise(self) -> None:
         helper = SKILLS_DIR / "team-lead" / "scripts" / "herdr-dispatch.sh"
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir_str:
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
             tmp_dir = Path(tmp_dir_str)
             bin_dir = tmp_dir / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)

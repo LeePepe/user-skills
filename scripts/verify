@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() {
-  echo "Usage: ./scripts/verify [--all]" >&2
-}
-
-if [[ $# -gt 1 ]]; then
-  usage
-  exit 2
-fi
-
-if [[ $# -eq 1 && "$1" != "--all" ]]; then
-  usage
-  exit 2
-fi
-
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,10 +8,4 @@ cd "$REPO_ROOT"
 
 export GTT_LINEAR_SYNC="${GTT_LINEAR_SYNC:-0}"
 
-git diff --check
-git diff --cached --check
-python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict
-python3 skills/skill-contract/scripts/skill_contract.py eval --all --strict
-python3 -I -B -m unittest discover -s skills/code-review/scripts -p 'test_*.py'
-python3 -I -B -m unittest discover -s skills/design-studio/scripts -p 'test_*.py'
-python3 -I -B -m unittest discover -s scripts -p 'test_*.py'
+exec python3 -B "$REPO_ROOT/scripts/verify_runner.py" "$@"

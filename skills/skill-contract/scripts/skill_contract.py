@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 import json
 import math
@@ -32,6 +33,96 @@ EVAL_DRAWERS = (
     "scripts/data/defect-cases/index.json",
     "references/defect-cases/index.json",
 )
+VALVE_REFERENCE_BASE = "skills/skill-contract/references/valves-and-metabolism.md"
+VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
+    "private-identifier": (
+        f"{VALVE_REFERENCE_BASE}#valve-1--sink-deterministic-checks",
+        "Remove project-private symbols from global skills or scope via --repo (see Valve 1).",
+    ),
+    "raw-regex-gates-in-markdown": (
+        f"{VALVE_REFERENCE_BASE}#valve-1--sink-deterministic-checks",
+        "Sink deterministic regex gates into executable scripts or JSON drawers instead of Markdown.",
+    ),
+    "invalid-drawer": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Ensure drawer JSON is valid UTF-8 JSON matching schema v1.",
+    ),
+    "drawer-not-list": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Drawer entries key (e.g. active_cases) must be a JSON array.",
+    ),
+    "top-3-disclosure-cap": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Keep active_cases <= 15; archive the oldest ordinary case via One-In-One-Out.",
+    ),
+    "invalid-case": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Each drawer entry must be a JSON object with id, coordinates, and zero-token assertions.",
+    ),
+    "missing-coordinate": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Add required coordinate arrays (e.g. tags, platforms, dimensions, containers, routes, or layers).",
+    ),
+    "missing-skill": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Create SKILL.md with valid YAML frontmatter (init --skill <name> --category <cat>).",
+    ),
+    "description-length": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep SKILL.md and plugin.json description non-empty and <= 320 characters.",
+    ),
+    "invalid-manifest": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Fix .claude-plugin/plugin.json syntax and ensure description <= 320 characters.",
+    ),
+    "l0-lines": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep SKILL.md <= 180 lines (<= 80 for design skills); move deep details to references/.",
+    ),
+    "l0-bytes": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep SKILL.md <= 16KB; move detailed procedures into references/ or scripts/.",
+    ),
+    "l1-lines": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep each references/*.md drawer <= 160 lines; split or sink deterministic checks into scripts/.",
+    ),
+    "l1-bytes": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep each references/*.md drawer <= 16KB.",
+    ),
+    "fenced-code-lines": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Keep fenced code blocks in Markdown <= 25 lines; move longer code to scripts/.",
+    ),
+    "broken-symlink": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Use valid package-relative symlinks (never absolute paths or missing targets).",
+    ),
+    "orphan-reference": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Link every references/* file from SKILL.md, a sibling drawer, or archive unused drawers.",
+    ),
+    "duplicate-skill": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Deduplicate identically named skill directories within the same root.",
+    ),
+    "duplicate-script-fork": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Consolidate duplicate scripts into one canonical script and delegate via a <=25-line _CANONICAL_PATH wrapper.",
+    ),
+}
+
+
+def _enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    code = str(finding.get("code", ""))
+    ref, hint = VALVE_FINDING_GUIDANCE.get(
+        code,
+        (VALVE_REFERENCE_BASE, "Inspect skills/skill-contract/references/valves-and-metabolism.md for contract limits."),
+    )
+    finding.setdefault("reference", ref)
+    finding.setdefault("hint", hint)
+    return finding
 
 
 def package_roots(repo: str | Path | None = None) -> list[Path]:
@@ -686,6 +777,7 @@ def run_eval(args: argparse.Namespace) -> int:
     passed = 0
     failures: list[dict[str, Any]] = []
 
+    pending_evals: list[tuple[str, str, dict[str, Any], Path]] = []
     for pkg in packages:
         for rel_drawer in EVAL_DRAWERS:
             drawer_path = pkg / rel_drawer
@@ -699,7 +791,13 @@ def run_eval(args: argparse.Namespace) -> int:
             try:
                 doc = json.loads(resolved.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                failures.append({"skill": pkg.name, "drawer": rel_drawer, "id": "<drawer>", "reasons": [str(exc)]})
+                failures.append({
+                    "skill": pkg.name,
+                    "drawer": rel_drawer,
+                    "id": "<drawer>",
+                    "reasons": [str(exc)],
+                    "reference": f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+                })
                 continue
             for case in doc.get("active_cases", []):
                 if not isinstance(case, dict):
@@ -713,22 +811,46 @@ def run_eval(args: argparse.Namespace) -> int:
                 if not has_assertion:
                     if rel_drawer.endswith("eval-cases.json"):
                         cases_run += 1
-                        failures.append({"skill": pkg.name, "drawer": rel_drawer, "id": case.get("id"), "reasons": ["eval case has no executable assertion"]})
+                        failures.append({
+                            "skill": pkg.name,
+                            "drawer": rel_drawer,
+                            "id": case.get("id"),
+                            "reasons": ["eval case has no executable assertion"],
+                            "reference": f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+                        })
                     continue
                 cases_run += 1
-                reasons = evaluate_case(case, pkg, repo_root)
-                if reasons:
-                    failures.append({"skill": pkg.name, "drawer": rel_drawer, "id": case.get("id"), "reasons": reasons})
-                else:
-                    passed += 1
+                pending_evals.append((pkg.name, rel_drawer, case, pkg))
 
-    payload = {
+    requested_jobs = getattr(args, "jobs", None)
+    max_workers = max(1, int(requested_jobs)) if requested_jobs else min(8, max(1, os.cpu_count() or 4))
+    if max_workers == 1 or len(pending_evals) <= 1:
+        eval_outcomes = [evaluate_case(case, pkg, repo_root) for _, _, case, pkg in pending_evals]
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(pending_evals))) as pool:
+            eval_outcomes = list(pool.map(lambda item: evaluate_case(item[2], item[3], repo_root), pending_evals))
+
+    for (skill_name, rel_drawer, case, _), reasons in zip(pending_evals, eval_outcomes):
+        if reasons:
+            failures.append({
+                "skill": skill_name,
+                "drawer": rel_drawer,
+                "id": case.get("id"),
+                "reasons": reasons,
+                "reference": f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+            })
+        else:
+            passed += 1
+
+    payload: dict[str, Any] = {
         "ok": len(failures) == 0,
         "drawers_evaluated": drawers_evaluated,
         "cases_run": cases_run,
         "passed": passed,
         "failures": failures,
     }
+    if failures:
+        payload["guidance_drawer"] = f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers"
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if failures else 0
 
@@ -852,7 +974,7 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     skill = path.name
     md = path / "SKILL.md"
     if not md.exists():
-        return [{"skill": skill, "code": "missing-skill"}]
+        return [_enrich_finding({"skill": skill, "code": "missing-skill"})]
     text = md.read_text(encoding="utf-8")
     desc = _frontmatter_description(md)
     if not desc or len(desc) > 320:
@@ -921,7 +1043,7 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     data_defect = path / "scripts" / "data" / "defect-cases" / "index.json"
     if data_defect.is_file():
         _audit_drawer(skill, data_defect, findings, pkg_dir=path)
-    return findings
+    return [_enrich_finding(item) for item in findings]
 
 
 def audit(args: argparse.Namespace) -> int:
@@ -957,7 +1079,15 @@ def audit(args: argparse.Namespace) -> int:
             real = [path for path in paths if not _thin_wrapper(path)]
             if len(real) >= 2:
                 findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in real]})
-    result = {"ok": not findings, "skills": len(selected), "findings": findings}
+    findings = [_enrich_finding(item) for item in findings]
+    result: dict[str, Any] = {"ok": not findings, "skills": len(selected), "findings": findings}
+    if findings:
+        result["guidance_drawer"] = VALVE_REFERENCE_BASE
+        refs = sorted({str(item["reference"]) for item in findings if item.get("reference")})
+        sys.stderr.write(
+            f"[skill-contract] {len(findings)} valve finding(s) detected. "
+            f"Read {', '.join(refs[:3])} for remediation rules.\n"
+        )
     print(json.dumps(result, indent=2))
     return 1 if findings and args.strict else 0
 
@@ -1315,6 +1445,7 @@ def parser() -> argparse.ArgumentParser:
     eval_group.add_argument("--all", action="store_true")
     eval_group.add_argument("--skill")
     eval_p.add_argument("--repo", default=None)
+    eval_p.add_argument("--jobs", type=int, default=None, help="Max worker threads for case execution")
     eval_p.add_argument("--json", action="store_true")
     eval_p.add_argument("--strict", action="store_true")
 
