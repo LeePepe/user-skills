@@ -95,6 +95,51 @@ class VerifyRunnerAndGuidanceTests(unittest.TestCase):
         )
         self.assertEqual(m_forced, "all")
 
+    def test_scoped_plan_preserves_all_repo_wide_verify_guards(self) -> None:
+        _, wave = verify_runner.build_execution_plan(
+            scope_mode="scoped",
+            target_skills=["story-craft"],
+            jobs=4,
+            repo_root=REPO_ROOT,
+        )
+        scoped_cmds = " ".join(" ".join(t.cmd) for t in wave)
+        for required_guard in (
+            "test_json_files_valid_and_plugin_manifests_consistent",
+            "test_skill_frontmatter_valid",
+            "test_relative_markdown_links_resolve",
+            "test_model_surface_budget_and_topology",
+            "test_tracked_files_do_not_leak_personal_paths_or_tokens",
+            "test_hooks_verify_and_ci_workflow_contract",
+            "test_universal_skill_anti_explosion_valves",
+        ):
+            self.assertIn(required_guard, scoped_cmds)
+
+    def test_detect_changed_files_unions_dirty_working_tree_with_committed_branch_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "skills" / "story-craft").mkdir(parents=True)
+            (repo / "scripts" / "shared.py").write_text("v1\n", encoding="utf-8")
+            (repo / "skills" / "story-craft" / "SKILL.md").write_text("---\nname: story-craft\ndescription: x\n---\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+
+            # Create feature branch that commits a shared script edit, then dirties a single skill file
+            subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "feat/mixed"], check=True)
+            (repo / "scripts" / "shared.py").write_text("v2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "scripts/shared.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "touch shared"], check=True)
+            (repo / "skills" / "story-craft" / "SKILL.md").write_text("---\nname: story-craft\ndescription: y\n---\n", encoding="utf-8")
+
+            changed = verify_runner.detect_changed_files(repo, base_ref="main")
+            self.assertEqual(changed, ["scripts/shared.py", "skills/story-craft/SKILL.md"])
+            mode, targets, _ = verify_runner.classify_scope(changed, repo_root=repo)
+            self.assertEqual(mode, "all")
+            self.assertEqual(targets, [])
+
     def test_tiered_fast_fail_stops_before_wave_when_tier0_fails(self) -> None:
         tier0 = [
             verify_runner.TaskSpec("fast-pass", 0, "pass", (sys.executable, "-c", "raise SystemExit(0)")),

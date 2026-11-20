@@ -60,6 +60,17 @@ SKILL_PATH_RE_1 = re.compile(r"skills[\"']?\s*/\s*[\"']([A-Za-z0-9_-]+)[\"']")
 SKILL_PATH_RE_2 = re.compile(r"skills/([A-Za-z0-9_-]+)")
 SKILL_PATH_RE_3 = re.compile(r"SKILLS_DIR\s*/\s*[\"']([A-Za-z0-9_-]+)")
 
+# Markers indicating a test method sweeps across all skills or repository-wide surfaces,
+# even if it also mentions specific skill names in budgets or exemptions.
+REPO_WIDE_METHOD_MARKERS: tuple[str, ...] = (
+    "SKILLS_DIR.iterdir",
+    "SKILLS_DIR.rglob",
+    "SKILLS_DIR.glob",
+    "tracked_and_candidate_files",
+    "MODEL_SURFACE_BYTE_BUDGETS",
+    "BANNED_SURFACE_PHRASES",
+)
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -112,32 +123,31 @@ def _git_lines(args: Sequence[str], repo_root: Path) -> list[str]:
 
 
 def detect_changed_files(repo_root: Path = REPO_ROOT, base_ref: str | None = None) -> list[str]:
-    """Collect working-tree, staged, untracked, and branch-ahead changed file paths."""
+    """Union working-tree, staged, untracked, and committed branch-ahead changed file paths."""
     changed: set[str] = set()
     changed.update(_git_lines(["diff", "--name-only"], repo_root))
     changed.update(_git_lines(["diff", "--cached", "--name-only"], repo_root))
     changed.update(_git_lines(["ls-files", "--others", "--exclude-standard"], repo_root))
 
-    if not changed:
-        candidates = [base_ref] if base_ref else ["origin/main", "main"]
-        for ref in candidates:
-            if not ref:
-                continue
-            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-            mb = subprocess.run(
-                ["git", "merge-base", "HEAD", ref],
-                cwd=repo_root,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if mb.returncode == 0 and mb.stdout.strip():
-                base_sha = mb.stdout.strip()
-                head_sha = _git_lines(["rev-parse", "HEAD"], repo_root)
-                if head_sha and head_sha[0] != base_sha:
-                    changed.update(_git_lines(["diff", "--name-only", f"{base_sha}...HEAD"], repo_root))
-                break
+    candidates = [base_ref] if base_ref else ["origin/main", "main"]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    for ref in candidates:
+        if not ref:
+            continue
+        mb = subprocess.run(
+            ["git", "merge-base", "HEAD", ref],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if mb.returncode == 0 and mb.stdout.strip():
+            base_sha = mb.stdout.strip()
+            head_sha = _git_lines(["rev-parse", "HEAD"], repo_root)
+            if head_sha and head_sha[0] != base_sha:
+                changed.update(_git_lines(["diff", "--name-only", f"{base_sha}...HEAD"], repo_root))
+            break
 
     return sorted(changed)
 
@@ -256,13 +266,14 @@ def map_verify_skills_methods(
             for helper_name, helper_src in helpers.items():
                 if f"self.{helper_name}" in body:
                     body += "\n" + helper_src
+            is_repo_wide = any(marker in body for marker in REPO_WIDE_METHOD_MARKERS)
             refs = _extract_skill_refs(body, valid_skills)
             if node.name == "JevGateTests" and "my-designer" in valid_skills:
                 refs.add("my-designer")
             elif node.name == "SkillContractV2Tests" and "skill-contract" in valid_skills:
                 refs.add("skill-contract")
             dotted = f"test_verify_skills.{node.name}.{item.name}"
-            if not refs:
+            if is_repo_wide or not refs:
                 universal.append(dotted)
             else:
                 for sk in refs:
@@ -417,19 +428,16 @@ def build_execution_plan(
                     )
             elif len(classes) == 1 and rel in HEAVY_SHARD_WEIGHTS and total_methods >= 6:
                 cls_name, methods = next(iter(classes.items()))
-                dotted_methods = [f"{tf.stem}.{cls_name}.{m}" for m in methods]
-                chunk_size = 2
-                for idx in range(0, len(dotted_methods), chunk_size):
-                    chunk = dotted_methods[idx : idx + chunk_size]
-                    shard_no = idx // chunk_size + 1
+                for shard_no, method_name in enumerate(methods, 1):
+                    dotted = f"{tf.stem}.{cls_name}.{method_name}"
                     wave.append(
                         TaskSpec(
                             task_id=f"{rel}::shard-{shard_no}",
                             tier=1,
-                            label=f"{rel}::shard-{shard_no}",
-                            cmd=_unittest_class_cmd(tf, methods=chunk),
-                            expected_tests=len(chunk),
-                            weight=max(2.0, len(chunk) * 1.5),
+                            label=f"{rel}::{method_name}",
+                            cmd=_unittest_class_cmd(tf, methods=[dotted]),
+                            expected_tests=1,
+                            weight=3.0,
                         )
                     )
             else:
