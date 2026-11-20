@@ -127,6 +127,25 @@
       ],
       "negative_cmd": "python3 skills/m2-dispatcher/scripts/multica_vpn_bridge.py generate-azure-bridge-script --bind-host 0.0.0.0",
       "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-008",
+      "title": "icloud_skills_sync.py shared symlink exposes publish/pull/heal-symlinks/export-telemetry/sync",
+      "tags": [
+        "icloud",
+        "sync",
+        "telemetry",
+        "symlinks"
+      ],
+      "cmd": "python3 skills/m2-dispatcher/scripts/icloud_skills_sync.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "heal-symlinks",
+        "export-telemetry",
+        "install-launchd"
+      ],
+      "negative_cmd": "python3 skills/m2-dispatcher/scripts/icloud_skills_sync.py invalid-subcmd",
+      "registered_at": "2026-11-20"
     }
   ]
 }

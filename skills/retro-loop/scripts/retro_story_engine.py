@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import fcntl
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,12 @@ DEFAULT_COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 DEFAULT_DSH_SESSIONS = Path.home() / ".dsh" / "sessions"
 DEFAULT_SKILLS_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DEV_ROOT = Path.home() / "Development"
+DEFAULT_ICLOUD_SYNC_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync"
+DEFAULT_ICLOUD_TELEMETRY_SHARDS_DIR = DEFAULT_ICLOUD_SYNC_DIR / "telemetry-shards"
+DEFAULT_ICLOUD_SKILLS_ROI_PATH = DEFAULT_ICLOUD_SYNC_DIR / "jobs" / "aidata-digest" / "skills-roi.json"
+DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH = (
+    Path.home() / "Library" / "Application Support" / "AIDash" / "jobs" / "aidata-digest" / "skills-roi.json"
+)
 _SKILL_NAME_RE = re.compile(
     r"(?:<skill-context\s+name=[\"'](?P<ctx>[A-Za-z0-9_-]+)[\"']"
     r"|(?<![A-Za-z0-9_-])(?:/)?skills/(?P<path>[A-Za-z0-9_-]+)/SKILL\.md"
@@ -977,6 +984,7 @@ def _compute_s11_s12_context_and_tools(
     magpie_usage: Path | None = None,
     copilot_db: Path | None = None,
     dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Token allocation and per-tool burn are proxies, never measured savings."""
     mp, cp = magpie_usage or DEFAULT_MAGPIE_USAGE, copilot_db or DEFAULT_COPILOT_DB
@@ -989,7 +997,14 @@ def _compute_s11_s12_context_and_tools(
     if warehouse_db.is_file():
         with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
             rows = _timed_rows(conn, "fact_turn")
+    seen_turn_sigs: set[tuple[str, str, str]] = set()
     for row in rows:
+        sid_s = str(row.get("session_id") or "")
+        tid_s = str(row.get("turn_uuid") or "")
+        sk_list = _json_list(row.get("skill_names"))
+        sk_s = str(row.get("attribution_skill") or (sk_list[0] if sk_list else "team-lead"))
+        if sid_s or tid_s:
+            seen_turn_sigs.add((sid_s, tid_s, sk_s))
         in_t, out_t, cache = (int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
         total_in += in_t
         total_cache_read += cache
@@ -1019,8 +1034,46 @@ def _compute_s11_s12_context_and_tools(
             elif name in {"edit", "apply_patch", "write", "create"}:
                 name = "edit/write"
             tool_calls.setdefault(name, []).append((round(context * 0.36 / len(tools)), skill, stamp))
+    shard_rows = _read_telemetry_shards(telemetry_shards_dir, days=7)
+    for s_row in shard_rows:
+        if str(s_row.get("kind") or "") != "skill_turn":
+            continue
+        sid_s = str(s_row.get("session_id") or "")
+        tid_s = str(s_row.get("turn_id") or "")
+        skill = str(s_row.get("skill") or "team-lead")
+        if (sid_s or tid_s) and (sid_s, tid_s, skill) in seen_turn_sigs:
+            continue
+        if sid_s or tid_s:
+            seen_turn_sigs.add((sid_s, tid_s, skill))
+        in_t = int(s_row.get("input_tokens") or s_row.get("in") or 0)
+        out_t = int(s_row.get("output_tokens") or s_row.get("out") or 0)
+        cache = int(s_row.get("cache_read") or 0)
+        total_in += in_t
+        total_cache_read += cache
+        stamp = s_row["_observed_at"]
+        if in_t + cache > 0:
+            cache_stamps.append(stamp)
+        context = in_t + cache
+        if context + out_t <= 0:
+            continue
+        context_stamps.append(stamp)
+        tools = _json_list(s_row.get("tool_calls"))
+        has_tool = bool(tools)
+        shares = (0.16 if has_tool else 0.28, 0.18, 0.14 if has_tool else 0.18, 0.36 if has_tool else 0.10, 0.16)
+        for key, share in zip(slice_tokens, shares):
+            slice_tokens[key] += int(context * share)
+        slice_tokens["User/Assistant 对话与思考链"] += out_t
+        for tool in tools:
+            name = str(tool).strip().lower()
+            if name in {"bash", "execute_code", "terminal", "run_command"}:
+                name = "bash"
+            elif name in {"read", "view", "read_file"}:
+                name = "read/view"
+            elif name in {"edit", "apply_patch", "write", "create"}:
+                name = "edit/write"
+            tool_calls.setdefault(name, []).append((round(context * 0.36 / len(tools)), skill, stamp))
     if not cache_stamps:
-        usage = _usage_records(mp)
+        usage = _usage_records(mp, telemetry_shards_dir=telemetry_shards_dir)
         for row in usage:
             in_t, cache = int(row.get("in") or 0), int(row.get("cache_read") or 0)
             if in_t + cache > 0:
@@ -1037,7 +1090,8 @@ def _compute_s11_s12_context_and_tools(
                     cache_stamps.append(row["_observed_at"])
     # File sizes have no observation timestamps or measured token composition.
     # Do not synthesize slices from an unbounded DSH byte-count fallback.
-    present = warehouse_db.is_file() or mp.is_file() or cp.is_file()
+    shards_present = bool(telemetry_shards_dir and telemetry_shards_dir.is_dir() and list(telemetry_shards_dir.glob("*-skill-usage.jsonl")))
+    present = warehouse_db.is_file() or mp.is_file() or cp.is_file() or shards_present
     context_meta = _freshness(context_stamps, present)
     cache_meta = _freshness(cache_stamps, present)
     total_ctx = sum(slice_tokens.values())
@@ -1362,10 +1416,13 @@ def compute_skill_roi_diagnostics(
     dev_root: Path | None = None,
     magpie_usage: Path | None = None,
     dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
     icloud_sync_dir: Path | None = None,
+    mirror_icloud_roi: bool | None = None,
+    icloud_roi_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute S1-S4, S6-S10 Skill ROI diagnostics, and S11-S12 Context & Tool Burn."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
@@ -1373,6 +1430,24 @@ def compute_skill_roi_diagnostics(
     s_root = skills_root or DEFAULT_SKILLS_ROOT
     d_root = dev_root or DEFAULT_DEV_ROOT
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
+    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir)
+    shards_dir = (
+        telemetry_shards_dir
+        if telemetry_shards_dir is not None
+        else (
+            resolved_sync / "telemetry-shards"
+            if resolved_sync is not None and (icloud_sync_dir is not None or (warehouse_db is None and copilot_db is None))
+            else None
+        )
+    )
+    effective_roi_path = icloud_roi_path or (
+        resolved_sync / "jobs" / "aidata-digest" / "skills-roi.json" if resolved_sync is not None else None
+    )
+    should_mirror_roi = (
+        mirror_icloud_roi
+        if mirror_icloud_roi is not None
+        else (icloud_roi_path is not None or icloud_sync_dir is not None or (resolved_sync is not None and warehouse_db is None and copilot_db is None))
+    )
 
     inventory = _discover_skill_inventory(s_root, d_root)
     known_skills = set(inventory.keys())
@@ -1490,8 +1565,13 @@ def compute_skill_roi_diagnostics(
     turn_skill_links: dict[str, set[str]] = {}
     start7, _ = _window_bounds()
     start30, end30 = _window_bounds(30)
-    warehouse_present = wh.is_file() or cp.is_file()
+    shard_records_30d = _read_telemetry_shards(shards_dir, days=30)
+    shards_present = bool(shards_dir and shards_dir.is_dir() and list(shards_dir.glob("*-skill-usage.jsonl")))
+    warehouse_present = wh.is_file() or cp.is_file() or shards_present
     l2_channels = _read_l2_channel_counts(wh, start30, end30)
+    seen_turn_sigs_30d: set[tuple[str, str, str]] = set()
+    seen_ref_sigs_30d: set[tuple[str, str, str]] = set()
+    seen_script_sigs_30d: set[tuple[str, str, str]] = set()
 
     def _norm_skill(name: str) -> str:
         return "team-lead" if name in {"goal-target-task", "goal-task"} else name
@@ -1518,6 +1598,9 @@ def compute_skill_roi_diagnostics(
         record = session_for(source, sid, norm_sk, stamp, reference_source=True)
         ref_path = str(path or "").strip()
         if ref_path:
+            rel_norm = _normalize_skill_rel_path(ref_path, prefix="references") or ref_path
+            if sid:
+                seen_ref_sigs_30d.add((sid, norm_sk, rel_norm))
             try:
                 size = max(0, int(byte_len or 0))
             except (TypeError, ValueError):
@@ -1550,6 +1633,9 @@ def compute_skill_roi_diagnostics(
             duration = 0.0
             has_dur = False
         call = (str(path or ""), stamp.isoformat(), code, duration)
+        rel_script_sig = _normalize_skill_rel_path(str(path or ""), prefix="scripts") or str(path or "")
+        if sid and rel_script_sig:
+            seen_script_sigs_30d.add((sid, norm_sk, rel_script_sig))
         if call not in record["scripts"]:
             record["scripts"].append(call)
             rel_script = _normalize_skill_rel_path(str(path or ""), prefix="scripts")
@@ -1656,6 +1742,7 @@ def compute_skill_roi_diagnostics(
                 tools = _json_list(row.get("tool_calls"))
                 for skill in skills:
                     norm_sk = _norm_skill(skill)
+                    seen_turn_sigs_30d.add((sid, str(row.get("turn_uuid") or f"turn-{number}"), norm_sk))
                     _bump_channel(norm_sk, "claude")
                     cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
                     cache_bucket["in"] += int(row.get("input_tokens") or 0)
@@ -1792,6 +1879,8 @@ def compute_skill_roi_diagnostics(
                 matched.update(match.group("skill") for match in script_matches)
                 for skill in matched:
                     norm_sk = _norm_skill(skill)
+                    if sid:
+                        seen_turn_sigs_30d.add((sid, f"turn-{row.get('turn_index', '')}", norm_sk))
                     _bump_channel(norm_sk, "copilot")
                     record = session_for("copilot", sid, skill, stamp, reference_source=True)
                     if "input_tokens" in row:
@@ -1821,6 +1910,60 @@ def compute_skill_roi_diagnostics(
             for record in session_records.values():
                 if record["source"] == "copilot" and record["edits"] >= 4:
                     observe(record["skill"], "churn", record["stamp"])["edit_churn_count"] += record["edits"]
+
+    # Ingest deduplicated multi-device iCloud telemetry shards (*-skill-usage.jsonl)
+    for s_row in shard_records_30d:
+        kind = str(s_row.get("kind") or "")
+        if kind not in {"skill_turn", "script_call", "reference_hit"}:
+            continue
+        raw_sk = str(s_row.get("skill") or "").strip()
+        if not raw_sk:
+            continue
+        norm_sk = _norm_skill(raw_sk)
+        sid = str(s_row.get("session_id") or "")
+        tid = str(s_row.get("turn_id") or s_row.get("call_uid") or s_row.get("hit_uid") or "")
+        host_tag = str(s_row.get("host") or "shard").strip()
+        shard_src = f"shard:{host_tag}"
+        stamp = s_row["_observed_at"]
+        ch = str(s_row.get("channel") or "copilot").strip().lower()
+        if ch not in {"claude", "copilot", "codex", "hermes", "gtt"}:
+            ch = "copilot"
+
+        if kind == "skill_turn":
+            if (sid or tid) and (sid, tid, norm_sk) in seen_turn_sigs_30d:
+                continue
+            if sid or tid:
+                seen_turn_sigs_30d.add((sid, tid, norm_sk))
+            _bump_channel(norm_sk, ch)
+            in_tok = int(s_row.get("input_tokens") or s_row.get("in") or 0)
+            out_tok = int(s_row.get("output_tokens") or s_row.get("out") or 0)
+            cr_tok = int(s_row.get("cache_read") or 0)
+            cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+            cache_bucket["in"] += in_tok
+            cache_bucket["cache_read"] += cr_tok
+            record = session_for(shard_src, sid or tid, norm_sk, stamp, reference_source=True)
+            tools = _json_list(s_row.get("tool_calls"))
+            record["read_proxy"] += sum(str(t).lower() in {"read", "view", "read_file"} for t in tools)
+            record["edits"] += sum(str(t).lower() in {"edit", "write", "multiedit", "apply_patch", "create"} for t in tools)
+            if in_tok + out_tok + cr_tok > 0:
+                record["tokens"] += in_tok + out_tok + cr_tok
+                record["token_seen"] = True
+            observed.append(stamp)
+            observe(norm_sk, "usage", stamp)
+        elif kind == "reference_hit":
+            ref_p = str(s_row.get("reference_path") or "").strip()
+            rel_norm = _normalize_skill_rel_path(ref_p, prefix="references") or ref_p
+            if sid and (sid, norm_sk, rel_norm) in seen_ref_sigs_30d:
+                continue
+            _bump_channel(norm_sk, ch)
+            add_reference(shard_src, sid or tid, norm_sk, ref_p, stamp, s_row.get("byte_len"))
+        elif kind == "script_call":
+            sc_p = str(s_row.get("script_path") or "").strip()
+            rel_sc = _normalize_skill_rel_path(sc_p, prefix="scripts") or sc_p
+            if sid and (sid, norm_sk, rel_sc) in seen_script_sigs_30d:
+                continue
+            _bump_channel(norm_sk, ch)
+            add_script(shard_src, sid or tid, norm_sk, sc_p, stamp, s_row.get("exit_code"), s_row.get("duration_ms"))
 
     for record in session_records.values():
         if not record["loaded"]:
@@ -1853,11 +1996,11 @@ def compute_skill_roi_diagnostics(
         "interception_rate": round(eval_interceptions / (eval_interceptions + eval_escapes), 4) if eval_interceptions + eval_escapes else None,
         "by_eval_case": eval_by_case,
     }
-    source_meta = _freshness(observed, wh.is_file() or cp.is_file(), 30)
+    source_meta = _freshness(observed, warehouse_present, 30)
     source_as_of = source_meta["source_as_of"]
     start7, end7 = _window_bounds()
     root_stamps = [stamp for stamp in observed if start7 <= stamp < end7]
-    root_meta = _freshness(root_stamps, wh.is_file() or cp.is_file())
+    root_meta = _freshness(root_stamps, warehouse_present)
 
     # 3. Synthesize S1, S2, S3, S4, S6, S7, S8, S9, S10
     s1_pins = _compute_s1_pin_drift(d_root)
@@ -1952,7 +2095,7 @@ def compute_skill_roi_diagnostics(
 
         kinds = populations.get(s_name, {})
         stamps = [stamp for values in kinds.values() for stamp in values]
-        row_meta = _freshness(stamps, wh.is_file() or cp.is_file(), 30)
+        row_meta = _freshness(stamps, warehouse_present, 30)
         skill_rows.append({
             **row_meta, "estimated": True,
             "estimation_method": "session/tool and goal-name skill attribution proxies",
@@ -2041,6 +2184,7 @@ def compute_skill_roi_diagnostics(
         magpie_usage=magpie_usage,
         copilot_db=cp,
         dsh_sessions=dsh_sessions,
+        telemetry_shards_dir=shards_dir,
     )
     for bp in burn_proposals[:2]:
         bp_enriched = dict(bp)
@@ -2051,7 +2195,7 @@ def compute_skill_roi_diagnostics(
             recommendations.append(bp_enriched)
 
     total_sample_size = max(len(root_stamps), int(s11_context["sample_size"] or 0))
-    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if wh.is_file() or cp.is_file() else "missing")
+    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if warehouse_present else "missing")
     observed_as_of = [value for value in (root_meta["source_as_of"], s11_context["source_as_of"]) if value]
     source_as_of = max(observed_as_of) if observed_as_of else None
     inventory_paths = [path for meta in inventory.values() for path in
@@ -2092,7 +2236,7 @@ def compute_skill_roi_diagnostics(
     auto_proposed = _queue_recommendations(proposals, prop_path) if auto_propose else []
     proposals_written = len(auto_proposed)
     proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
-    return {
+    report_payload = {
         "ok": True,
         "generated_at": generated_at,
         "query_id": "retro/skill_roi_diagnostics",
@@ -2125,7 +2269,7 @@ def compute_skill_roi_diagnostics(
                 **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
                                           "sample_size", "coverage_status", "estimated", "estimation_method")},
                 **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
-                             wh.is_file() or cp.is_file(), 30),
+                             warehouse_present, 30),
                 "skill": r["skill"],
                 "loads_30d": r["loads_30d"],
                 "script_execs": r["script_execs"],
@@ -2144,7 +2288,7 @@ def compute_skill_roi_diagnostics(
                 **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
                                           "sample_size", "coverage_status", "estimated", "estimation_method")},
                 **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
-                             wh.is_file() or cp.is_file(), 30),
+                             warehouse_present, 30),
                 "skill": r["skill"],
                 "l0_only_rate": r["l0_only_rate"],
                 "l1_selective_rate": r["l1_selective_rate"],
@@ -2163,7 +2307,7 @@ def compute_skill_roi_diagnostics(
                 **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
                                           "sample_size", "coverage_status", "estimated", "estimation_method")},
                 **_freshness([stamp for kind in ('churn',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
-                             wh.is_file() or cp.is_file(), 30),
+                             warehouse_present, 30),
                 "skill": r["skill"],
                 "edit_churn_count": r["edit_churn_count"],
                 "retry_commands": r["retry_commands"],
@@ -2176,7 +2320,7 @@ def compute_skill_roi_diagnostics(
                 **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
                                           "sample_size", "coverage_status", "estimated", "estimation_method")},
                 **_freshness([stamp for kind in ('reviews', 'events') for stamp in populations.get(r["skill"], {}).get(kind, [])],
-                             wh.is_file() or cp.is_file(), 7),
+                             warehouse_present, 7),
                 "skill": r["skill"],
                 "impl_bug_escapes": r["impl_bug_escapes"],
                 "spec_gap_escapes": r["spec_gap_escapes"],
@@ -2195,6 +2339,9 @@ def compute_skill_roi_diagnostics(
         "proposals_written": proposals_written,
         "proposals_skipped": proposals_skipped,
     }
+    if should_mirror_roi:
+        _mirror_skills_roi_snapshot_to_icloud(report_payload, icloud_roi_path=effective_roi_path)
+    return report_payload
 
 
 def compute_skill_roi(
@@ -2204,10 +2351,13 @@ def compute_skill_roi(
     dev_root: Path | None = None,
     magpie_usage: Path | None = None,
     dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
     icloud_sync_dir: Path | None = None,
+    mirror_icloud_roi: bool | None = None,
+    icloud_roi_path: Path | None = None,
 ) -> dict[str, Any]:
     """Alias for compute_skill_roi_diagnostics()."""
     report = compute_skill_roi_diagnostics(
@@ -2217,9 +2367,12 @@ def compute_skill_roi(
         dev_root=dev_root,
         magpie_usage=magpie_usage,
         dsh_sessions=dsh_sessions,
+        telemetry_shards_dir=telemetry_shards_dir,
         auto_propose=auto_propose,
         proposals_path=proposals_path,
         icloud_sync_dir=icloud_sync_dir,
+        mirror_icloud_roi=mirror_icloud_roi,
+        icloud_roi_path=icloud_roi_path,
     )
     report.setdefault(
         "generated_at",
@@ -2293,26 +2446,161 @@ def _snapshot_freshness(paths: list[Path], sample_size: int) -> dict[str, Any]:
             "freshness_basis": "source_file_mtime"}
 
 
-def _usage_records(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
+def _event_fingerprint(rec: dict[str, Any]) -> str:
+    explicit = str(rec.get("event_id") or "").strip()
+    if explicit:
+        return explicit
+    host = str(rec.get("host") or "local").strip().lower()
+    kind = str(rec.get("kind") or rec.get("event_type") or "usage").strip()
+    sid = str(rec.get("session_id") or rec.get("route_id") or "").strip()
+    turn_id = str(rec.get("turn_id") or rec.get("call_uid") or rec.get("hit_uid") or "").strip()
+    ts = str(rec.get("ts") or rec.get("t") or rec.get("timestamp") or rec.get("created_at") or "").strip()
+    skill = str(rec.get("skill") or "").strip()
+    tool_or_path = str(
+        rec.get("script_path")
+        or rec.get("reference_path")
+        or rec.get("tool")
+        or rec.get("req")
+        or rec.get("model")
+        or ""
+    ).strip()
+    tokens_sig = f"{rec.get('in', rec.get('input_tokens', 0))}:{rec.get('out', rec.get('output_tokens', 0))}:{rec.get('cache_read', 0)}"
+    raw_key = f"{host}|{kind}|{sid}|{turn_id}|{ts}|{skill}|{tool_or_path}|{tokens_sig}"
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:32]
+
+
+def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict[str, Any]]:
+    if shards_dir is None or not shards_dir.is_dir():
         return []
-    start, end = _window_bounds()
-    records = []
-    with path.open(encoding="utf-8") as handle:
-        for number, line in enumerate(handle, 1):
-            if not line.strip():
-                continue
+    start, end = _window_bounds(days)
+    seen_ids: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for shard_file in sorted(shards_dir.glob("*-skill-usage.jsonl")):
+        if not shard_file.is_file():
+            continue
+        default_host = shard_file.name[: -len("-skill-usage.jsonl")]
+        try:
+            with shard_file.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    rec.setdefault("host", default_host)
+                    stamp = next(
+                        (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
+                        None,
+                    )
+                    if not stamp or not (start <= stamp < end):
+                        continue
+                    fp = _event_fingerprint(rec)
+                    if fp in seen_ids:
+                        continue
+                    seen_ids.add(fp)
+                    enriched = dict(rec)
+                    enriched["event_id"] = fp
+                    enriched["_observed_at"] = stamp
+                    merged.append(enriched)
+        except OSError:
+            continue
+    return merged
+
+
+def _mirror_skills_roi_snapshot_to_icloud(
+    report: dict[str, Any],
+    *,
+    icloud_roi_path: Path | None = None,
+    local_snapshot_path: Path | None = None,
+) -> Path | None:
+    target = icloud_roi_path or DEFAULT_ICLOUD_SKILLS_ROI_PATH
+    sync_root = target.parents[2] if len(target.parents) >= 3 else target.parent
+    if icloud_roi_path is None and not sync_root.is_dir():
+        return None
+    local_snap = local_snapshot_path or DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
+    daily: list[dict[str, Any]] = []
+    for candidate in (local_snap, target):
+        if candidate.is_file():
             try:
-                rec = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
-            if not isinstance(rec, dict):
-                raise ValueError(f"invalid usage record at {path}:{number}")
-            stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
-                          if rec.get(key)), None)
-            if stamp and start <= stamp < end:
-                rec["_observed_at"] = stamp
-                records.append(rec)
+                existing = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and isinstance(existing.get("skills_daily"), list):
+                    daily = existing["skills_daily"]
+                    break
+            except (OSError, json.JSONDecodeError):
+                continue
+    snapshot_payload: dict[str, Any] = {
+        "schema_version": 1,
+        "window_cst": report.get("window_cst") or "7d",
+        "window_start": report.get("window_start"),
+        "window_end": report.get("window_end"),
+        "source_as_of": report.get("source_as_of"),
+        "sample_size": int(report.get("sample_size") or 0),
+        "coverage_status": report.get("coverage_status") or "unknown",
+        "diagnostics": report,
+        "skills_daily": daily,
+    }
+    if isinstance(report.get("skill_details"), list):
+        snapshot_payload["skill_details"] = report["skill_details"]
+    try:
+        _write_json(target, snapshot_payload)
+        return target
+    except OSError:
+        return None
+
+
+def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> list[dict[str, Any]]:
+    start, end = _window_bounds()
+    records: list[dict[str, Any]] = []
+    seen_route_sigs: set[tuple[str, str, int, int]] = set()
+    seen_fps: set[str] = set()
+    if path.is_file():
+        with path.open(encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
+                if not isinstance(rec, dict):
+                    raise ValueError(f"invalid usage record at {path}:{number}")
+                stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
+                              if rec.get(key)), None)
+                if stamp and start <= stamp < end:
+                    rec["_observed_at"] = stamp
+                    fp = _event_fingerprint(rec)
+                    seen_fps.add(fp)
+                    route_sig = (
+                        str(rec.get("route_id") or ""),
+                        str(rec.get("req") or rec.get("model") or ""),
+                        int(rec.get("in") or 0),
+                        int(rec.get("out") or 0),
+                    )
+                    if route_sig[0]:
+                        seen_route_sigs.add(route_sig)
+                    records.append(rec)
+    for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=7):
+        kind = str(s_rec.get("kind") or "")
+        if kind and kind not in {"gateway_usage", "usage"}:
+            continue
+        fp = str(s_rec.get("event_id") or _event_fingerprint(s_rec))
+        if fp in seen_fps:
+            continue
+        route_sig = (
+            str(s_rec.get("route_id") or ""),
+            str(s_rec.get("req") or s_rec.get("model") or ""),
+            int(s_rec.get("in") or 0),
+            int(s_rec.get("out") or 0),
+        )
+        if route_sig[0] and route_sig in seen_route_sigs:
+            continue
+        seen_fps.add(fp)
+        if route_sig[0]:
+            seen_route_sigs.add(route_sig)
+        records.append(s_rec)
     return records
 
 
@@ -2320,6 +2608,7 @@ def compute_agent_efficiency(
     warehouse_db: Path | None = None,
     magpie_usage: Path | None = None,
     copilot_db: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
@@ -2328,6 +2617,15 @@ def compute_agent_efficiency(
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     mp = magpie_usage or DEFAULT_MAGPIE_USAGE
     cp = copilot_db or DEFAULT_COPILOT_DB
+    shards_dir = (
+        telemetry_shards_dir
+        if telemetry_shards_dir is not None
+        else (
+            DEFAULT_ICLOUD_TELEMETRY_SHARDS_DIR
+            if warehouse_db is None and magpie_usage is None and copilot_db is None
+            else None
+        )
+    )
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
     review_rows, event_rows, edit_rows, ci_rows = [], [], [], []
     if wh.is_file():
@@ -2369,7 +2667,8 @@ def compute_agent_efficiency(
           "floor_max_edits_per_session": 5, "breached": bool(churn),
           **_freshness([r["_observed_at"] for r in edit_rows], cp.is_file())}
 
-    records = _usage_records(mp)
+    shards_eff_present = bool(shards_dir and shards_dir.is_dir() and list(shards_dir.glob("*-skill-usage.jsonl")))
+    records = _usage_records(mp, telemetry_shards_dir=shards_dir)
     ttfts, retries, gateway_4xx = [], 0, 0
     group_tokens: dict[str, dict[str, int]] = {}
     cache_stamps, token_stamps = [], []
@@ -2404,7 +2703,7 @@ def compute_agent_efficiency(
           "blocked_events_7d": len(event_rows),
           "blocked_events_freshness": _freshness([r["_observed_at"] for r in event_rows], wh.is_file()),
           "breached": bool((total_reqs and ((p90 or 0) > 3000 or retry_rate > 0.05 or gateway_4xx)) or len(event_rows) > 3),
-          **_freshness([r["_observed_at"] for r in records + event_rows], mp.is_file() or wh.is_file())}
+          **_freshness([r["_observed_at"] for r in records + event_rows], mp.is_file() or wh.is_file() or shards_eff_present)}
     total_in = sum(b["in"] for b in group_tokens.values())
     total_cr = sum(b["cache_read"] for b in group_tokens.values())
     overall_cache_hit = round(total_cr / (total_in + total_cr), 4) if total_in + total_cr else None
@@ -2412,7 +2711,7 @@ def compute_agent_efficiency(
           "by_group": {g: round(b["cache_read"] / (b["in"] + b["cache_read"]), 4) if b["in"] + b["cache_read"] else None
                        for g, b in group_tokens.items()},
           "breached": overall_cache_hit is not None and overall_cache_hit < 0.75,
-          **_freshness(cache_stamps, mp.is_file())}
+          **_freshness(cache_stamps, mp.is_file() or shards_eff_present)}
     total_tokens = sum(b["in"] + b["out"] + b["cache_read"] for b in group_tokens.values())
     steering_tokens = sum(b["in"] + b["out"] + b["cache_read"] for g, b in group_tokens.items() if "steering" in g)
     share = round(steering_tokens / total_tokens, 4) if total_tokens else None
@@ -2422,9 +2721,9 @@ def compute_agent_efficiency(
           "first_pass_pr_green_rate": first_pass_pr_green_rate,
           "first_pass_pr_green_freshness": _freshness([r["_observed_at"] for r in ci_rows], wh.is_file()),
           "breached": bool((share is not None and share > 0.35) or (first_pass_pr_green_rate is not None and first_pass_pr_green_rate < 0.80)),
-          **_freshness(token_stamps + [r["_observed_at"] for r in ci_rows], mp.is_file() or wh.is_file())}
+          **_freshness(token_stamps + [r["_observed_at"] for r in ci_rows], mp.is_file() or wh.is_file() or shards_eff_present)}
     observed = [r["_observed_at"] for r in reviews + edit_rows + records + event_rows + ci_rows]
-    freshness = _freshness(observed, wh.is_file() or cp.is_file() or mp.is_file())
+    freshness = _freshness(observed, wh.is_file() or cp.is_file() or mp.is_file() or shards_eff_present)
     eff_as_of, eff_cov, eff_sample = (freshness[k] for k in ("source_as_of", "coverage_status", "sample_size"))
 
     metric_ids = ["agent-efficiency-m1-review-pingpong", "agent-efficiency-m2-retry-tax", "agent-efficiency-m3-automated-share", "agent-efficiency-m4-steer-autonomy", "agent-efficiency-m5-first-pass-pr-green"]
@@ -2695,9 +2994,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args_list and args_list[0] == "agent-efficiency":
         p = argparse.ArgumentParser(prog="retro_story_engine.py agent-efficiency")
-        p.add_argument("--warehouse-db", type=Path, default=DEFAULT_WAREHOUSE_DB)
-        p.add_argument("--magpie-usage", type=Path, default=DEFAULT_MAGPIE_USAGE)
-        p.add_argument("--copilot-db", type=Path, default=DEFAULT_COPILOT_DB)
+        p.add_argument("--warehouse-db", type=Path, default=None)
+        p.add_argument("--magpie-usage", type=Path, default=None)
+        p.add_argument("--copilot-db", type=Path, default=None)
+        p.add_argument("--telemetry-shards-dir", type=Path, default=None)
         p.add_argument("--auto-propose", action="store_true")
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
@@ -2705,6 +3005,7 @@ def main(argv: list[str] | None = None) -> int:
             ns.warehouse_db,
             ns.magpie_usage,
             ns.copilot_db,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
         )
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("recommendations", []), ns.proposals_path)
@@ -2713,13 +3014,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args_list and args_list[0] == "skill-roi":
         p = argparse.ArgumentParser(prog="retro_story_engine.py skill-roi")
-        p.add_argument("--warehouse-db", type=Path, default=DEFAULT_WAREHOUSE_DB)
-        p.add_argument("--copilot-db", type=Path, default=DEFAULT_COPILOT_DB)
+        p.add_argument("--warehouse-db", type=Path, default=None)
+        p.add_argument("--copilot-db", type=Path, default=None)
         p.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
         p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
-        p.add_argument("--magpie-usage", type=Path, default=DEFAULT_MAGPIE_USAGE)
+        p.add_argument("--magpie-usage", type=Path, default=None)
         p.add_argument("--dsh-sessions", type=Path, default=DEFAULT_DSH_SESSIONS)
         p.add_argument("--icloud-sync-dir", type=Path, default=None)
+        p.add_argument("--telemetry-shards-dir", type=Path, default=None)
+        p.add_argument("--icloud-roi-path", type=Path, default=None)
+        p.add_argument("--no-icloud-mirror", action="store_true")
         p.add_argument("--auto-propose", action="store_true")
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
@@ -2730,7 +3034,10 @@ def main(argv: list[str] | None = None) -> int:
             dev_root=ns.dev_root,
             magpie_usage=ns.magpie_usage,
             dsh_sessions=ns.dsh_sessions,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
             icloud_sync_dir=ns.icloud_sync_dir,
+            mirror_icloud_roi=False if ns.no_icloud_mirror else None,
+            icloud_roi_path=ns.icloud_roi_path,
         )
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)

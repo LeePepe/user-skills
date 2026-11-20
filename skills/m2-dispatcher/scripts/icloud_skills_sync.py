@@ -1,0 +1,1 @@
+../../team-lead/scripts/icloud_skills_sync.py

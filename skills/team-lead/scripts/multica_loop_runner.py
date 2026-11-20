@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -1214,6 +1215,12 @@ def _runner_jev_mock(mock: Any) -> Any:
 def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False, mock_jev_json: Any = None) -> dict[str, Any]:
     date_str = target_date.isoformat()
     if spec.loop_id == "local-herdr-worktree-gc":
+        if not dry_run:
+            icloud_script = TEAM_LEAD_SCRIPTS_DIR / "icloud_skills_sync.py"
+            if icloud_script.is_file():
+                with contextlib.suppress(Exception):
+                    icloud_mod = _load_module("loop_icloud_skills_sync", icloud_script)
+                    icloud_mod.run_full_sync(run_pi_harness=False)
         hygiene_mod = _load_module("loop_local_hygiene_patrol", TEAM_LEAD_SCRIPTS_DIR / "local_hygiene_patrol.py")
         dev_root = Path(os.environ.get("HYGIENE_PATROL_DEV_ROOT", "~/Development")).expanduser()
         handoff_env = os.environ.get("HYGIENE_PATROL_HANDOFF_ROOT")
@@ -1293,6 +1300,12 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         }
 
     if spec.loop_id == "skills-roi-diagnostic":
+        if not dry_run:
+            icloud_script = TEAM_LEAD_SCRIPTS_DIR / "icloud_skills_sync.py"
+            if icloud_script.is_file():
+                with contextlib.suppress(Exception):
+                    icloud_mod = _load_module("loop_icloud_skills_sync_telem", icloud_script)
+                    icloud_mod.export_telemetry_shards()
         roi_mod = _load_module("loop_skills_roi", SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py")
         snap = roi_mod.collect_skills_roi_snapshot(top_n=3)
         findings = list(snap.get("top_findings") or [])
