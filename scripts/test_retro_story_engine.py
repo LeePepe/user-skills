@@ -689,6 +689,294 @@ class RetroStoryEngineTests(unittest.TestCase):
             self.assertEqual(mirrored_guide.read_text(encoding="utf-8"), refs_by_path["references/guide.md"]["doc_preview"])
             self.assertNotIn("/" + "Users/", mirrored_yaml.read_text(encoding="utf-8"))
 
+    def test_five_skill_roi_fixes_non_null_metrics_bundle_sizes_script_filtering_ghosts_and_eval_titles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            aidata_root = root / "aidata"
+            l2_clean = aidata_root / "L2_normalize" / "clean"
+            l3_merge = aidata_root / "L3_merge"
+            l2_clean.mkdir(parents=True)
+            l3_merge.mkdir(parents=True)
+            wh = l3_merge / "warehouse.db"
+            cp = root / "session-store.db"
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            dev_root.mkdir(parents=True)
+
+            # 1. Skill A: primary orchestrator skill with scripts, __pycache__, __init__.py, test_*.py, scripts/data/, and eval cases
+            sk_lead = skills_root / "team-lead"
+            (sk_lead / "scripts" / "__pycache__").mkdir(parents=True)
+            (sk_lead / "scripts" / "data").mkdir(parents=True)
+            (sk_lead / "references").mkdir(parents=True)
+            (sk_lead / "SKILL.md").write_text("---\nname: team-lead\n---\n# Team Lead\nCore contract.\n", encoding="utf-8")
+            (sk_lead / "references" / "ledger.md").write_text("# Ledger\nR8 state machine.\n", encoding="utf-8")
+            (sk_lead / "references" / "unhit-sop.md").write_text("# Unhit SOP\nUnused drawer.\n", encoding="utf-8")
+            (sk_lead / "scripts" / "goal-queue.py").write_text("#!/usr/bin/env python3\nprint('queue')\n", encoding="utf-8")
+            (sk_lead / "scripts" / "feedback_guard.py").write_text("#!/usr/bin/env python3\nprint('guard')\n", encoding="utf-8")
+            # Noise artifacts that MUST be filtered out of inventory & observed script calls
+            (sk_lead / "scripts" / "__init__.py").write_text("", encoding="utf-8")
+            (sk_lead / "scripts" / "test_goal_queue.py").write_text("def test_noop(): pass\n", encoding="utf-8")
+            (sk_lead / "scripts" / "__pycache__" / "goal-queue.cpython-314.pyc").write_bytes(b"\x00\x01\x02")
+            (sk_lead / "scripts" / "data" / "seed_helper.py").write_text("SEED = 1\n", encoding="utf-8")
+            (sk_lead / "references" / "eval-cases.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "skill-eval-cases/v2",
+                        "skill": "team-lead",
+                        "active_cases": [
+                            {
+                                "id": "EV-001",
+                                # Missing "title" field — uses "description" instead; must NOT degrade to "EV-001"
+                                "description": "Pre-review guard rejects out-of-bounds worktree edits",
+                                "cmd": "python3 scripts/feedback_guard.py --help",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # 2. Skill B: symlink-sharing skill (m2-dispatcher/scripts/goal-queue.py -> ../../team-lead/scripts/goal-queue.py)
+            sk_m2 = skills_root / "m2-dispatcher"
+            (sk_m2 / "scripts").mkdir(parents=True)
+            (sk_m2 / "references").mkdir(parents=True)
+            (sk_m2 / "SKILL.md").write_text("---\nname: m2-dispatcher\n---\n# M2 Dispatcher\n", encoding="utf-8")
+            (sk_m2 / "scripts" / "goal-queue.py").symlink_to(sk_lead / "scripts" / "goal-queue.py")
+            (sk_m2 / "references" / "eval-cases.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "skill-eval-cases/v2",
+                        "skill": "m2-dispatcher",
+                        "active_cases": [
+                            {
+                                "id": "EV-013",
+                                "title": "Subtractive Mandate Gate: Concrete Obsolete Test Manifest",
+                                "file": "SKILL.md",
+                                "must_contain": ["M2 Dispatcher"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # 3. Skill C: L2-only interactive skill (no scripts, no GTT reviewer row, no explicit billing row)
+            sk_digest = skills_root / "knowledge-digest"
+            (sk_digest / "references").mkdir(parents=True)
+            (sk_digest / "SKILL.md").write_text("---\nname: knowledge-digest\n---\n# Knowledge Digest\n", encoding="utf-8")
+            (sk_digest / "references" / "card-template.md").write_text("# Template\n", encoding="utf-8")
+
+            now_dt = datetime.now(timezone.utc)
+            now_iso = now_dt.isoformat()
+            ten_days_ago_iso = (now_dt - ENGINE.timedelta(days=10)).isoformat()
+            today_str = ENGINE._cst_today_str()
+
+            # L2 channel DB with activity for knowledge-digest
+            with contextlib.closing(sqlite3.connect(l2_clean / "codex_prompts.db")) as conn:
+                conn.execute("CREATE TABLE skill_use (skill TEXT, day TEXT)")
+                conn.executemany(
+                    "INSERT INTO skill_use VALUES (?, ?)",
+                    [("knowledge-digest", today_str), ("knowledge-digest", today_str)],
+                )
+                conn.commit()
+
+            # Copilot session-store.db with turns (no input_tokens column) + assistant_usage_events + ghost skill mention
+            with contextlib.closing(sqlite3.connect(cp)) as conn:
+                conn.execute("CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, first_seen_at TEXT)")
+                conn.execute("CREATE TABLE turns (session_id TEXT, turn_index INTEGER, user_message TEXT, assistant_response TEXT, timestamp TEXT)")
+                conn.execute(
+                    """
+                    CREATE TABLE assistant_usage_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        cache_read_tokens INTEGER,
+                        created_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO turns VALUES ('cp-sess-1', 0, 'Run /team-lead and python3 goal-queue.py next-wave', 'Running feedback_guard.py now', ?)",
+                    (now_iso,),
+                )
+                conn.execute(
+                    "INSERT INTO turns VALUES ('cp-sess-ghost', 0, 'Invoke <skill-context name=\"legacy-deleted-ghost\">', 'ok', ?)",
+                    (now_iso,),
+                )
+                conn.execute(
+                    "INSERT INTO assistant_usage_events (session_id, input_tokens, output_tokens, cache_read_tokens, created_at) VALUES ('cp-sess-1', 6000, 800, 18000, ?)",
+                    (now_iso,),
+                )
+                conn.commit()
+
+            # Warehouse DB: 10-day-old GTT task where writer had m2-dispatcher in skills_used and reviewer had empty skills_used,
+            # plus noisy script_call paths (__pycache__, __init__.py, scripts/data/) and cross-skill EV-013 + unknown EV-099 events
+            with contextlib.closing(sqlite3.connect(wh)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE fact_turn (
+                        session_id TEXT,
+                        attribution_skill TEXT,
+                        skill_names TEXT,
+                        tool_calls TEXT,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        cache_read INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE reference_hits (
+                        source TEXT,
+                        session_id TEXT,
+                        turn_uuid TEXT,
+                        skill TEXT,
+                        reference_path TEXT,
+                        byte_len INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE script_call (
+                        source TEXT,
+                        session_id TEXT,
+                        turn_uuid TEXT,
+                        skill TEXT,
+                        script_path TEXT,
+                        exit_code INTEGER,
+                        duration_ms REAL,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_task_run (
+                        goal_id TEXT,
+                        task_id TEXT,
+                        role_name TEXT,
+                        skills_used TEXT,
+                        round_no INTEGER,
+                        v5_verdict TEXT,
+                        status TEXT,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE fact_gtt_event (
+                        goal_id TEXT,
+                        evt_type TEXT,
+                        skills_used TEXT,
+                        note_preview TEXT,
+                        eval_case TEXT,
+                        interception INTEGER,
+                        "escape" INTEGER,
+                        ts TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO reference_hits VALUES ('copilot_cli', 'cp-sess-1', 't0', 'team-lead', 'skills/team-lead/references/ledger.md', 256, ?)",
+                    (now_iso,),
+                )
+                conn.executemany(
+                    "INSERT INTO script_call VALUES ('copilot_cli', 'cp-sess-1', ?, 'team-lead', ?, 0, 95.0, ?)",
+                    [
+                        ("sc1", "skills/team-lead/scripts/__pycache__", now_iso),
+                        ("sc2", "skills/team-lead/scripts/__init__.py", now_iso),
+                        ("sc3", "skills/team-lead/scripts/data/seed_helper.py", now_iso),
+                        ("sc4", "skills/team-lead/scripts/test_goal_queue.py", now_iso),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO fact_gtt_task_run VALUES ('goal-10d', 'T1', ?, ?, 1, ?, 'completed', ?)",
+                    [
+                        ("writer", '["m2-dispatcher"]', "", ten_days_ago_iso),
+                        ("code_reviewer", "[]", "PASS", ten_days_ago_iso),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO fact_gtt_event VALUES ('goal-10d', 'EVAL_GATE', '[\"team-lead\"]', '', ?, 1, 0, ?)",
+                    [
+                        ("EV-013", now_iso),
+                        ("EV-099", now_iso),
+                    ],
+                )
+                conn.commit()
+
+            report = ENGINE.compute_skill_roi(
+                warehouse_db=wh,
+                copilot_db=cp,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                magpie_usage=root / "missing-usage.jsonl",
+            )
+            self.assertTrue(report["ok"])
+            details = {d["skill"]: d for d in report["skill_details"]}
+
+            # Fix 4: Managed physical skills have is_ghost=False; historical deleted skill has is_ghost=True & status_label='ghost', sorted last
+            self.assertFalse(details["team-lead"]["is_ghost"])
+            self.assertFalse(details["m2-dispatcher"]["is_ghost"])
+            self.assertFalse(details["knowledge-digest"]["is_ghost"])
+            self.assertTrue(details["legacy-deleted-ghost"]["is_ghost"])
+            self.assertEqual(details["legacy-deleted-ghost"]["status_label"], "ghost")
+            self.assertEqual(report["skill_details"][-1]["skill"], "legacy-deleted-ghost")
+
+            # Fix 1: Every active skill (loads_30d > 0) has non-null roi_score, r1_pass_rate, avg_context_tokens, unpracticed_rate
+            for active_sk in ("team-lead", "m2-dispatcher", "knowledge-digest", "legacy-deleted-ghost"):
+                d = details[active_sk]
+                self.assertGreater(d["loads_30d"], 0, active_sk)
+                self.assertIsNotNone(d["roi_score"], active_sk)
+                self.assertIsNotNone(d["r1_pass_rate"], active_sk)
+                self.assertIsNotNone(d["avg_context_tokens"], active_sk)
+                self.assertGreater(d["avg_context_tokens"], 0, active_sk)
+                self.assertIsNotNone(d["unpracticed_rate"], active_sk)
+
+            # Copilot assistant_usage_events populated team-lead tokens & kv_cache_hit_pct
+            self.assertEqual(details["team-lead"]["avg_context_tokens"], 24800)
+            self.assertEqual(details["team-lead"]["kv_cache_hit_pct"], 75.0)
+            # 10-day-old (goal_id, task_id) writer->reviewer skill propagation credited m2-dispatcher R1 pass
+            self.assertEqual(details["m2-dispatcher"]["r1_pass_rate"], 1.0)
+
+            # Fix 2: Static bundle metrics & unhit reference ratios (3 refs: ledger.md [hit], unhit-sop.md [unhit], eval-cases.json [unhit])
+            tl = details["team-lead"]
+            self.assertGreater(tl["bundle_kb"], 0.0)
+            self.assertGreater(tl["refs_kb"], 0.0)
+            self.assertGreater(tl["refs_tokens_est"], 0)
+            self.assertEqual(tl["unhit_refs_count"], 2)
+            self.assertEqual(tl["unhit_refs_ratio"], round(2 / 3, 4))
+            self.assertEqual(details["knowledge-digest"]["unpracticed_rate"], 0.0)
+
+            # Fix 3: Strict script filtering (__pycache__, __init__.py, test_*, scripts/data/* excluded) + basename/symlink attribution
+            tl_scripts = {s["rel_path"]: s for s in tl["scripts"]}
+            self.assertEqual(set(tl_scripts.keys()), {"scripts/feedback_guard.py", "scripts/goal-queue.py"})
+            self.assertGreaterEqual(tl_scripts["scripts/goal-queue.py"]["calls_30d"], 1)
+            self.assertGreaterEqual(tl_scripts["scripts/feedback_guard.py"]["calls_30d"], 1)
+            m2_scripts = {s["rel_path"]: s for s in details["m2-dispatcher"]["scripts"]}
+            self.assertIn("scripts/goal-queue.py", m2_scripts)
+            # Symlinked goal-queue.py also receives attribution from the shared realpath call
+            self.assertGreaterEqual(m2_scripts["scripts/goal-queue.py"]["calls_30d"], 1)
+
+            # Fix 5: Human-readable eval_cases titles (never cid == title) + gate script interception attribution
+            tl_cases = {c["id"]: c for c in tl["eval_cases"]}
+            self.assertEqual(tl_cases["EV-001"]["title"], "Pre-review guard rejects out-of-bounds worktree edits")
+            self.assertGreaterEqual(tl_cases["EV-001"]["interceptions_30d"], 1)
+            # Cross-skill EV-013 resolved from m2-dispatcher's global_eval_catalog
+            self.assertEqual(tl_cases["EV-013"]["title"], "Subtractive Mandate Gate: Concrete Obsolete Test Manifest")
+            # Unknown EV-099 synthesized human-readable fallback title != 'EV-099'
+            self.assertNotEqual(tl_cases["EV-099"]["title"], "EV-099")
+            self.assertIn("EV-099 —", tl_cases["EV-099"]["title"])
+            for sk_item in report["skill_details"]:
+                for ev in sk_item["eval_cases"]:
+                    self.assertNotEqual(ev["title"], ev["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
