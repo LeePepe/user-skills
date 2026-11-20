@@ -188,9 +188,16 @@ class RouterError(RuntimeError):
 class DiscoverySessions(list[dict[str, Any]]):
     """List-compatible session results carrying the workspace inventory."""
 
-    def __init__(self, values: Iterable[dict[str, Any]] = (), *, workspaces: Iterable[dict[str, Any]] = ()):
+    def __init__(
+        self,
+        values: Iterable[dict[str, Any]] = (),
+        *,
+        workspaces: Iterable[dict[str, Any]] = (),
+        discovery_source: str = "",
+    ):
         super().__init__(values)
         self.workspaces = list(workspaces)
+        self.discovery_source = discovery_source
 
 
 def _text(value: Any, default: str = "") -> str:
@@ -703,6 +710,8 @@ def read_recent_session_context(
         return None
 
     raw_pane_text = _text(session.get("recent_unwrapped") or session.get("pane_recent_unwrapped"))
+    if session.get("_from_issue_cache") and not raw_pane_text:
+        return None
     should_call_herdr = bool(
         raw_pane_text
         or runner is not _run_command
@@ -839,6 +848,8 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
         norm["recent_session_context"] = dict(value["recent_session_context"])
     if value.get("_live_herdr"):
         norm["_live_herdr"] = True
+    if value.get("_from_issue_cache"):
+        norm["_from_issue_cache"] = True
     return norm
 
 
@@ -1006,7 +1017,238 @@ def discover_herdr(
         if ws and ws in workspace_by_id:
             item["workspace_label"] = workspace_by_id[ws].get("label", "")
     sessions = [normalize_session(item, "herdr", allow_interactive_herdr=True) for item in records]
-    return DiscoverySessions((item for item in sessions if item), workspaces=workspace_records), None
+    return DiscoverySessions(
+        (item for item in sessions if item),
+        workspaces=workspace_records,
+        discovery_source="herdr_live" if used_live_herdr else "herdr_fixture",
+    ), None
+
+
+def discover_from_issue_cache(
+    *,
+    state_file: str | Path | None = None,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+    cross_device_state: dict[str, Any] | None = None,
+    domain_map: dict[str, Any] | None = None,
+    domain_map_file: str | Path | None = None,
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
+) -> tuple[DiscoverySessions, str | None]:
+    """Read stored spaces (workspaces) and M2 agents (sessions) from Linear Issue TIA-463 and local cache snapshots without invoking herdr."""
+    host = _resolve_local_hostname(local_hostname)
+    state_path = _resolve_supervision_state_path(state_file, persist_by_default=True)
+    cache_path = _resolve_cross_device_cache_path(state_file)
+    try:
+        loaded_domain_map = domain_map or load_domain_map(domain_map_file)
+    except RouterError:
+        loaded_domain_map = {}
+    topics_by_id = _topic_by_id(loaded_domain_map) if isinstance(loaded_domain_map, dict) else {}
+
+    hub_state: dict[str, Any] = {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
+    warning: str | None = None
+    explicit_issue_fixture = hub_issue_payload is not None or cross_device_state is not None
+    if isinstance(hub_issue_payload, dict):
+        if isinstance(hub_issue_payload.get("devices"), dict):
+            hub_state = copy.deepcopy(hub_issue_payload)
+        else:
+            remote_issue = dict(
+                hub_issue_payload.get("issue")
+                if isinstance(hub_issue_payload.get("issue"), dict)
+                else hub_issue_payload
+            )
+            parsed_hub = parse_cross_device_hub_description(_text(remote_issue.get("description")))
+            hub_state = copy.deepcopy(parsed_hub.get("state") or hub_state)
+            if state_file is not None:
+                _save_cross_device_cache(cache_path, hub_state)
+    elif isinstance(cross_device_state, dict):
+        hub_state = copy.deepcopy(cross_device_state)
+    else:
+        hub_state = _load_cross_device_cache(cache_path)
+
+    local_sup_state: dict[str, Any] = {}
+    if (not explicit_issue_fixture or state_file is not None) and state_path and state_path.is_file():
+        try:
+            loaded_sup = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_sup, dict):
+                local_sup_state = loaded_sup
+        except (OSError, ValueError):
+            local_sup_state = {}
+
+    devices_map = hub_state.get("devices") if isinstance(hub_state.get("devices"), dict) else {}
+    host_shard: dict[str, Any] = {}
+    for dev_key, dev_val in devices_map.items():
+        if isinstance(dev_val, dict) and str(dev_key).casefold() == host.casefold():
+            host_shard = dict(dev_val)
+            break
+
+    has_cached_local = bool(
+        host_shard.get("spaces")
+        or host_shard.get("workspaces")
+        or host_shard.get("agents")
+        or host_shard.get("sessions")
+        or host_shard.get("in_flight")
+        or local_sup_state.get("spaces")
+        or local_sup_state.get("workspaces")
+        or local_sup_state.get("agents")
+        or local_sup_state.get("slots")
+    )
+    can_fetch_linear = bool(
+        not no_sync_linear
+        and (
+            sync_linear
+            or linear_runner is not None
+            or (
+                not has_cached_local
+                and not _is_isolated_test_state_path(state_path)
+                and _text(os.environ.get("GTT_LINEAR_SYNC")) != "0"
+            )
+        )
+    )
+    if can_fetch_linear and hub_issue_payload is None and cross_device_state is None:
+        issue_id = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
+        exec_runner = linear_runner or _run_command
+        linear_script = _text(os.environ.get("M2_LINEAR_SYNC_SCRIPT"), str(LINEAR_SYNC_SCRIPT_PATH))
+        try:
+            get_res = exec_runner([sys.executable, linear_script, "get-issue", "--id", issue_id], timeout=10.0)
+            parsed_get = _parse_json_output(getattr(get_res, "stdout", "")) if getattr(get_res, "returncode", 1) == 0 else None
+            if isinstance(parsed_get, dict) and isinstance(parsed_get.get("issue"), dict):
+                parsed_hub = parse_cross_device_hub_description(_text(parsed_get["issue"].get("description")))
+                if isinstance(parsed_hub.get("state"), dict):
+                    hub_state = parsed_hub["state"]
+                    _save_cross_device_cache(cache_path, hub_state)
+                    devices_map = hub_state.get("devices") if isinstance(hub_state.get("devices"), dict) else {}
+                    for dev_key, dev_val in devices_map.items():
+                        if isinstance(dev_val, dict) and str(dev_key).casefold() == host.casefold():
+                            host_shard = dict(dev_val)
+                            break
+        except (OSError, subprocess.SubprocessError) as error:
+            warning = f"issue cache linear fetch failed: {error}"
+
+    raw_spaces: list[dict[str, Any]] = []
+    for sp_list in (
+        host_shard.get("spaces"),
+        host_shard.get("workspaces"),
+        local_sup_state.get("spaces"),
+        local_sup_state.get("workspaces"),
+    ):
+        if isinstance(sp_list, list):
+            for sp in _workspace_records(sp_list):
+                raw_spaces.append(sp)
+    workspace_by_id: dict[str, dict[str, Any]] = {}
+    workspace_records: list[dict[str, Any]] = []
+    for sp in raw_spaces:
+        ws_id = _text(sp.get("workspace_id"))
+        if ws_id and ws_id not in workspace_by_id:
+            workspace_by_id[ws_id] = sp
+            workspace_records.append(sp)
+
+    merged_candidates: dict[str, dict[str, Any]] = {}
+    in_flight_ids: set[str] = set()
+    for item in (host_shard.get("in_flight") or []):
+        if isinstance(item, dict):
+            key = _text(item.get("pane_id") or item.get("session_id") or item.get("slot_id"))
+            if key:
+                in_flight_ids.add(key)
+
+    candidate_lists: list[tuple[str, list[Any]]] = [
+        ("in_flight", list(host_shard.get("in_flight") or [])),
+        ("slots", list(local_sup_state.get("slots") or [])),
+        ("sup_agents", list(local_sup_state.get("agents") or local_sup_state.get("sessions") or [])),
+        ("shard_agents", list(host_shard.get("agents") or host_shard.get("sessions") or [])),
+    ]
+    for source_kind, items in candidate_lists:
+        for raw_item in items:
+            if not isinstance(raw_item, dict):
+                continue
+            if _text(raw_item.get("method")).lower() == "stdout":
+                continue
+            pane_id = _text(raw_item.get("pane_id") or raw_item.get("paneId"))
+            sid = _text(
+                raw_item.get("session_id")
+                or raw_item.get("target")
+                or raw_item.get("herdr_target")
+                or raw_item.get("name")
+                or raw_item.get("slot_id")
+            )
+            key = pane_id or sid
+            if not key:
+                continue
+            cur = merged_candidates.setdefault(key, {})
+            for field, val in raw_item.items():
+                if val not in (None, ""):
+                    cur[field] = val
+            if source_kind == "in_flight" and "status" not in cur and "agent_status" not in cur:
+                cur["status"] = "working"
+
+    sessions: list[dict[str, Any]] = []
+    for key, rec in merged_candidates.items():
+        pane_id = _text(rec.get("pane_id") or rec.get("paneId"))
+        sid = _text(
+            rec.get("session_id")
+            or rec.get("target")
+            or rec.get("herdr_target")
+            or rec.get("name")
+            or rec.get("slot_id")
+        )
+        topic_id = _text(rec.get("topic_id") or rec.get("topicId"))
+        topic_meta = topics_by_id.get(topic_id, {})
+        ws_id = _text(
+            rec.get("workspace_id")
+            or rec.get("workspaceId")
+            or (pane_id.split(":", 1)[0] if ":" in pane_id else "")
+        )
+        ws_label = _text(
+            rec.get("workspace_label")
+            or rec.get("workspaceLabel")
+            or (workspace_by_id.get(ws_id, {}).get("label") if ws_id else "")
+            or (topic_meta.get("space") if ws_id and topic_meta else "")
+        )
+        status = _text(rec.get("agent_status") or rec.get("status"), "working" if key in in_flight_ids else "idle").lower()
+        target_repo = _text(rec.get("target_repo") or rec.get("repo") or topic_meta.get("target_repo"))
+        cwd = _expand_cwd(rec.get("cwd") or rec.get("foreground_cwd") or topic_meta.get("cwd"))
+        title = _text(rec.get("title") or rec.get("terminal_title") or topic_meta.get("title") or sid)
+        summary = _text(rec.get("summary") or rec.get("m1_progress") or rec.get("visible_summary"))
+        enriched = {
+            **rec,
+            "session_id": sid,
+            "herdr_target": _text(rec.get("herdr_target") or rec.get("target") or sid),
+            "pane_id": pane_id,
+            "workspace_id": ws_id,
+            "workspace_label": ws_label,
+            "topic_id": topic_id,
+            "target_repo": target_repo,
+            "title": title,
+            "status": status,
+            "agent_status": status,
+            "cwd": cwd,
+            "summary": summary,
+            "is_m2": True,
+        }
+        norm = normalize_session(enriched, _text(rec.get("source"), "herdr"), allow_interactive_herdr=True)
+        if norm is not None:
+            for extra_key in ("linear_issue", "parent_linear_issue", "handoff_dir", "goal_id", "m1_progress"):
+                if _text(rec.get(extra_key)):
+                    norm[extra_key] = _text(rec.get(extra_key))
+            if rec.get("issue") and "linear_issue" not in norm:
+                norm["linear_issue"] = _text(rec.get("issue"))
+            norm["_from_issue_cache"] = True
+            sessions.append(norm)
+            if ws_id and ws_label and ws_id not in workspace_by_id:
+                synthesized_ws = {
+                    "workspace_id": ws_id,
+                    "label": ws_label,
+                    "active_tab_id": "",
+                    "tab_count": 1,
+                    "pane_count": 1,
+                    "agent_status": status,
+                }
+                workspace_by_id[ws_id] = synthesized_ws
+                workspace_records.append(synthesized_ws)
+
+    return DiscoverySessions(sessions, workspaces=workspace_records, discovery_source="issue_cache"), warning
 
 
 def _fetch_json(url: str, *, token: str = "", timeout: float = 3.0) -> Any:
@@ -1051,14 +1293,45 @@ def discover_sessions(
     fetcher: Callable[..., Any] = _fetch_json,
     include_herdr: bool = True,
     include_dsh: bool = True,
+    prefer_issue_cache: bool = False,
+    state_file: str | Path | None = None,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+    cross_device_state: dict[str, Any] | None = None,
+    domain_map: dict[str, Any] | None = None,
+    domain_map_file: str | Path | None = None,
+    sync_linear: bool = False,
+    no_sync_linear: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     sessions: list[dict[str, Any]] = []
     warnings: list[str] = []
     discovered_workspaces: list[dict[str, Any]] = []
+    discovery_source = ""
+    has_explicit_herdr_fixture = any(
+        val is not None
+        for val in (herdr_payload, herdr_pane_payload, herdr_agent_payload, workspace_payload, herdr_workspace_payload)
+    )
     if include_herdr:
-        found, warning = discover_herdr(payload=herdr_payload, pane_payload=herdr_pane_payload, agent_payload=herdr_agent_payload, workspace_payload=workspace_payload, herdr_workspace_payload=herdr_workspace_payload, herdr_bin=herdr_bin, runner=runner)
+        if prefer_issue_cache and not has_explicit_herdr_fixture:
+            found, warning = discover_from_issue_cache(
+                state_file=state_file,
+                hub_issue=hub_issue,
+                local_hostname=local_hostname,
+                linear_runner=linear_runner,
+                hub_issue_payload=hub_issue_payload,
+                cross_device_state=cross_device_state,
+                domain_map=domain_map,
+                domain_map_file=domain_map_file,
+                sync_linear=sync_linear,
+                no_sync_linear=no_sync_linear,
+            )
+        else:
+            found, warning = discover_herdr(payload=herdr_payload, pane_payload=herdr_pane_payload, agent_payload=herdr_agent_payload, workspace_payload=workspace_payload, herdr_workspace_payload=herdr_workspace_payload, herdr_bin=herdr_bin, runner=runner)
         sessions.extend(found)
         discovered_workspaces = list(getattr(found, "workspaces", []))
+        discovery_source = _text(getattr(found, "discovery_source", ""))
         if warning:
             warnings.append(warning)
     if include_dsh:
@@ -1072,7 +1345,7 @@ def discover_sessions(
     workspace_inventory = _workspace_inventory(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
     if workspace_inventory is None:
         workspace_inventory = discovered_workspaces
-    return DiscoverySessions(deduped.values(), workspaces=workspace_inventory), warnings
+    return DiscoverySessions(deduped.values(), workspaces=workspace_inventory, discovery_source=discovery_source), warnings
 
 
 def load_domain_map(path: str | Path | None = None) -> dict[str, Any]:
@@ -2133,7 +2406,7 @@ def write_preview_markdown(plan: dict[str, Any], path: str | Path | None = None)
 
 def build_plan(
     message: str,
-    sessions: list[dict[str, Any]],
+    sessions: list[dict[str, Any]] | None = None,
     warnings: Iterable[str] = (),
     *,
     domain_map: dict[str, Any] | None = None,
@@ -2163,15 +2436,34 @@ def build_plan(
     no_supervision: bool = False,
     no_routine: bool = False,
     agent_records: Iterable[dict[str, Any]] | None = None,
+    prefer_issue_cache: bool = False,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
         raise RouterError("message is required")
     plan_id = f"m2p-{uuid.uuid4().hex[:10]}"
     loaded_domain_map = domain_map or load_domain_map(domain_map_file)
+    warnings_list = list(warnings)
+    if sessions is None or (prefer_issue_cache and len(sessions) == 0 and not getattr(sessions, "discovery_source", "")):
+        cached_sessions, cache_warn = discover_from_issue_cache(
+            state_file=state_file,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+            cross_device_state=cross_device_state,
+            domain_map=loaded_domain_map,
+            domain_map_file=domain_map_file,
+            sync_linear=sync_linear,
+            no_sync_linear=no_sync_linear,
+        )
+        sessions = cached_sessions
+        if cache_warn:
+            warnings_list.append(cache_warn)
     workspace_inventory = _workspace_inventory(workspace_payload if workspace_payload is not None else herdr_workspace_payload)
     if workspace_inventory is None:
         workspace_inventory = _workspace_records(getattr(sessions, "workspaces", []))
+    discovery_source = _text(getattr(sessions, "discovery_source", "")) or ("issue_cache" if prefer_issue_cache else "sessions")
     route, targets, decision = classify(
         message,
         sessions,
@@ -2259,7 +2551,7 @@ def build_plan(
         "default_model_label": DEFAULT_M2_MODEL_LABEL,
         "decision": {"route": route, **decision},
         "domain_map_file": loaded_domain_map.get("path", str(domain_map_file or DEFAULT_DOMAIN_MAP_PATH)),
-        "discovery": {"sessions": sessions, "workspaces": workspace_inventory, "warnings": list(warnings)},
+        "discovery": {"source": discovery_source, "sessions": sessions, "workspaces": workspace_inventory, "warnings": warnings_list},
         "waves": sorted({target["wave_order"] for target in targets}),
         "targets": targets,
         "new_domain_candidates": decision.get("new_domain_candidates", []),
@@ -2305,6 +2597,7 @@ def build_plan(
         agent_records=agent_records if agent_records is not None else (sessions if sessions else None),
         herdr_bin=herdr_bin,
         runner=runner,
+        probe_herdr=not (prefer_issue_cache or discovery_source == "issue_cache"),
     ):
         plan["quota_protection_mode"] = GROK_QUOTA_PROTECTION_MODE
         plan["quota_protection"] = _quota_protection_payload()
@@ -2709,6 +3002,7 @@ def _with_locked_supervision_state(
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             current: dict[str, Any] = {"schema_version": 1, "slots": [], "events": []}
+            preserved_keys: dict[str, Any] = {}
             if not reset and state_path.is_file():
                 try:
                     loaded = json.loads(state_path.read_text(encoding="utf-8"))
@@ -2720,9 +3014,22 @@ def _with_locked_supervision_state(
                         }
                         if "backlog" in loaded and isinstance(loaded.get("backlog"), list):
                             current["backlog"] = [dict(b) for b in loaded["backlog"] if isinstance(b, dict)]
+                            preserved_keys["backlog"] = current["backlog"]
+                        if "spaces" in loaded and isinstance(loaded.get("spaces"), list):
+                            current["spaces"] = [dict(sp) for sp in loaded["spaces"] if isinstance(sp, dict)]
+                            preserved_keys["spaces"] = current["spaces"]
+                        if "agents" in loaded and isinstance(loaded.get("agents"), list):
+                            current["agents"] = [dict(ag) for ag in loaded["agents"] if isinstance(ag, dict)]
+                            preserved_keys["agents"] = current["agents"]
+                        if "reported_issue_markers" in loaded and isinstance(loaded.get("reported_issue_markers"), list):
+                            current["reported_issue_markers"] = [str(m) for m in loaded["reported_issue_markers"] if _text(m)]
+                            preserved_keys["reported_issue_markers"] = current["reported_issue_markers"]
                 except (OSError, ValueError):
                     pass
             updated = mutator(current)
+            for p_key, p_val in preserved_keys.items():
+                if p_key not in updated:
+                    updated[p_key] = p_val
             temp_path = state_path.with_suffix(state_path.suffix + f".{os.getpid()}.tmp")
             temp_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             temp_path.replace(state_path)
@@ -3514,6 +3821,8 @@ def _build_local_device_shard(
     *,
     previous_shard: dict[str, Any] | None = None,
     now_iso: str = "",
+    spaces: list[dict[str, Any]] | None = None,
+    agents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     timestamp = now_iso or _cst_now_iso()
     prev = previous_shard if isinstance(previous_shard, dict) else {}
@@ -3521,6 +3830,7 @@ def _build_local_device_shard(
         domain_map = load_domain_map()
     except RouterError:
         domain_map = {}
+    topics_by_id = _topic_by_id(domain_map) if isinstance(domain_map, dict) else {}
     slots = [dict(s) for s in (board_rollup.get("slots") or []) if isinstance(s, dict)]
     in_flight_items: list[dict[str, Any]] = []
     pending_decisions: list[str] = []
@@ -3593,8 +3903,104 @@ def _build_local_device_shard(
             b_copy["scope"] = _classify_hub_scope(b_copy, domain_map=domain_map)
             backlog_items.append(b_copy)
 
+    # Build stored spaces and agents for fast --plan Issue-cache discovery
+    raw_spaces = (
+        spaces
+        if spaces is not None
+        else (
+            board_rollup.get("spaces")
+            if isinstance(board_rollup.get("spaces"), list)
+            else (
+                board_rollup.get("workspaces")
+                if isinstance(board_rollup.get("workspaces"), list)
+                else prev.get("spaces")
+            )
+        )
+    )
+    resolved_spaces: list[dict[str, Any]] = _workspace_records(raw_spaces) if isinstance(raw_spaces, list) else []
+    space_by_id = {_text(sp.get("workspace_id")): sp for sp in resolved_spaces if _text(sp.get("workspace_id"))}
+
+    raw_agents_source = (
+        agents
+        if agents is not None
+        else (
+            board_rollup.get("agents")
+            if isinstance(board_rollup.get("agents"), list)
+            else prev.get("agents")
+        )
+    )
+    agent_by_key: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_agents_source, list):
+        for ag in raw_agents_source:
+            if not isinstance(ag, dict):
+                continue
+            ag_pane = _text(ag.get("pane_id") or ag.get("paneId"))
+            ag_sid = _text(ag.get("session_id") or ag.get("herdr_target") or ag.get("target") or ag.get("name"))
+            ag_key = ag_pane or ag_sid
+            if ag_key:
+                clean_ag = {
+                    k: v
+                    for k, v in ag.items()
+                    if k not in {"_live_herdr", "_from_issue_cache", "recent_session_context", "last_session_activity_at"}
+                }
+                agent_by_key[ag_key] = clean_ag
+
+    for slot in slots:
+        pane_id = _text(slot.get("pane_id"))
+        session_id = _text(slot.get("target") or slot.get("session_id") or slot.get("slot_id"))
+        key = pane_id or session_id
+        if not key:
+            continue
+        topic_id = _text(slot.get("topic_id"))
+        topic_meta = topics_by_id.get(topic_id, {})
+        ws_id = _text(slot.get("workspace_id") or (pane_id.split(":", 1)[0] if ":" in pane_id else ""))
+        ws_label = _text(
+            slot.get("workspace_label")
+            or (space_by_id.get(ws_id, {}).get("label") if ws_id else "")
+            or (topic_meta.get("space") if ws_id and topic_meta else "")
+        )
+        status = _text(slot.get("status"), "idle").lower()
+        target_repo = _text(slot.get("target_repo") or topic_meta.get("target_repo"))
+        cwd = _expand_cwd(slot.get("cwd") or topic_meta.get("cwd"))
+        title = _text(slot.get("terminal_title") or slot.get("title") or topic_meta.get("title") or session_id)
+        summary = _text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"))[:280]
+        existing_ag = dict(agent_by_key.get(key) or {})
+        existing_ag.update({
+            "session_id": session_id,
+            "herdr_target": _text(slot.get("target") or existing_ag.get("herdr_target") or session_id),
+            "pane_id": pane_id or _text(existing_ag.get("pane_id")),
+            "workspace_id": ws_id or _text(existing_ag.get("workspace_id")),
+            "workspace_label": ws_label or _text(existing_ag.get("workspace_label")),
+            "topic_id": topic_id or _text(existing_ag.get("topic_id")),
+            "target_repo": target_repo or _text(existing_ag.get("target_repo")),
+            "title": title,
+            "status": status if status in ACTIVE_STATUSES else "idle",
+            "cwd": cwd or _text(existing_ag.get("cwd")),
+            "source": _text(slot.get("source") or existing_ag.get("source"), "herdr"),
+            "summary": summary,
+            "is_m2": True,
+        })
+        if _text(slot.get("agent_session_id")):
+            existing_ag["agent_session_id"] = _text(slot.get("agent_session_id"))
+        if _text(slot.get("linear_issue")):
+            existing_ag["linear_issue"] = _text(slot.get("linear_issue"))
+        agent_by_key[key] = existing_ag
+        if ws_id and ws_label and ws_id not in space_by_id:
+            synth_ws = {
+                "workspace_id": ws_id,
+                "label": ws_label,
+                "active_tab_id": "",
+                "tab_count": 1,
+                "pane_count": 1,
+                "agent_status": status,
+            }
+            space_by_id[ws_id] = synth_ws
+            resolved_spaces.append(synth_ws)
+
     shard_out: dict[str, Any] = {
         "updated_at": timestamp,
+        "spaces": resolved_spaces,
+        "agents": list(agent_by_key.values()),
         "in_flight": in_flight_items,
         "pending_decisions": pending_decisions,
         "recent_completed": recent_completed[:12],
@@ -3901,6 +4307,10 @@ def _substantive_hub_signature(description: str) -> tuple[dict[str, Any], str]:
                 for item in (host_shard.get("in_flight") or []):
                     if isinstance(item, dict):
                         item.pop("updated_at", None)
+                for ag in (host_shard.get("agents") or []):
+                    if isinstance(ag, dict):
+                        ag.pop("updated_at", None)
+                        ag.pop("last_session_activity_at", None)
     body = str(description or "").split("<details>", 1)[0]
     body_norm = re.sub(r"\|\s*`\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}`\s*\|", "| `<CST>` |", body).strip()
     return state, body_norm
@@ -4024,6 +4434,8 @@ def sync_cross_device_hub(
     linear_runner: CommandRunner | None = None,
     hub_issue_payload: dict[str, Any] | None = None,
     now_iso: str = "",
+    spaces: list[dict[str, Any]] | None = None,
+    agents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     issue_id = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
     host = _resolve_local_hostname(local_hostname)
@@ -4084,6 +4496,8 @@ def sync_cross_device_hub(
         board_rollup,
         previous_shard=devices.get(host),
         now_iso=timestamp,
+        spaces=spaces,
+        agents=agents,
     )
     devices[host] = local_shard
     merged_state["schema"] = M2_SYNC_SCHEMA
@@ -4153,7 +4567,142 @@ def sync_cross_device_hub(
     }
 
 
-def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", sync_linear: bool = False, no_sync_linear: bool = False, hub_issue: str | None = None, local_hostname: str | None = None, linear_runner: CommandRunner | None = None, hub_issue_payload: dict[str, Any] | None = None, caller_bot: str = "", no_supervision: bool = False, no_routine: bool = False, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
+def sync_herdr_inventory_to_issue(
+    *,
+    state_file: str | Path | None = None,
+    plan_file: str | Path | None = None,
+    apply_receipt_file: str | Path | None = None,
+    handoff_root: str | Path | None = None,
+    herdr_payload: Any = None,
+    herdr_pane_payload: Any = None,
+    herdr_agent_payload: Any = None,
+    herdr_workspace_payload: Any = None,
+    herdr_bin: str | None = None,
+    hub_issue: str | None = None,
+    local_hostname: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    hub_issue_payload: dict[str, Any] | None = None,
+    runner: CommandRunner = _run_command,
+    no_sync_linear: bool = False,
+) -> dict[str, Any]:
+    """Scan live Herdr spaces (workspaces) and agents (panes + agents), update local supervision state, and write back to Linear Issue TIA-463."""
+    state_path = _resolve_supervision_state_path(
+        state_file,
+        plan_file=plan_file,
+        apply_receipt_file=apply_receipt_file,
+        persist_by_default=True,
+    )
+    cache_path = _resolve_cross_device_cache_path(
+        state_file,
+        plan_file=plan_file,
+        apply_receipt_file=apply_receipt_file,
+    )
+    binary = _text(herdr_bin or os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
+    discovered, warning = discover_herdr(
+        payload=herdr_payload,
+        pane_payload=herdr_pane_payload,
+        agent_payload=herdr_agent_payload,
+        workspace_payload=herdr_workspace_payload,
+        herdr_bin=binary,
+        runner=runner,
+    )
+    live_spaces = list(getattr(discovered, "workspaces", []))
+    live_agents = [dict(item) for item in discovered if isinstance(item, dict)]
+
+    has_fixture = any(v is not None for v in (herdr_payload, herdr_pane_payload, herdr_agent_payload))
+    if has_fixture:
+        pane_recs = _records(herdr_pane_payload)
+        agent_recs = _records(herdr_agent_payload)
+        if not pane_recs and not agent_recs and herdr_payload is not None:
+            if isinstance(herdr_payload, dict) and ("panes" in herdr_payload or "agents" in herdr_payload):
+                pane_recs = _records(herdr_payload.get("panes"))
+                agent_recs = _records(herdr_payload.get("agents"))
+            else:
+                agent_recs = _records(herdr_payload)
+        raw_records = _merge_herdr_records(pane_recs, agent_recs)
+    else:
+        raw_records = _live_agent_records(binary, runner=runner)
+
+    settled_ids: list[str] = []
+
+    def _update_state(state: dict[str, Any]) -> dict[str, Any]:
+        _discover_and_enrich_global_m2_slots(
+            state,
+            agent_records=raw_records if raw_records else live_agents,
+            runner=runner,
+            herdr_bin=binary,
+            handoff_root=handoff_root,
+            allow_quiescent_settle=True,
+            settled_slot_ids_out=settled_ids,
+        )
+        state["slots"] = _compute_board_rollup(state, just_settled_slots=settled_ids)["slots"]
+        state["spaces"] = live_spaces
+        state["agents"] = live_agents
+        return state
+
+    updated_state = _with_locked_supervision_state(state_path, _update_state)
+    board_rollup = _compute_board_rollup(updated_state, just_settled_slots=settled_ids)
+    board_rollup["spaces"] = live_spaces
+    board_rollup["agents"] = live_agents
+
+    host = _resolve_local_hostname(local_hostname)
+    existing_cache = _load_cross_device_cache(cache_path)
+    existing_devices = existing_cache.setdefault("devices", {})
+    now_ts = _cst_now_iso()
+    existing_devices[host] = _build_local_device_shard(
+        board_rollup,
+        previous_shard=existing_devices.get(host),
+        now_iso=now_ts,
+        spaces=live_spaces,
+        agents=live_agents,
+    )
+    existing_cache["schema"] = M2_SYNC_SCHEMA
+    existing_cache["updated_at"] = now_ts
+    _save_cross_device_cache(cache_path, existing_cache)
+
+    should_sync, sync_reason = _should_trigger_linear_sync(
+        sync_linear=not no_sync_linear,
+        no_sync_linear=no_sync_linear,
+        auto_trigger=True,
+        state_path=state_path,
+        linear_runner=linear_runner,
+        hub_issue_payload=hub_issue_payload,
+    )
+    if should_sync:
+        linear_sync_result = sync_cross_device_hub(
+            board_rollup,
+            hub_issue=hub_issue,
+            local_hostname=local_hostname,
+            cache_path=cache_path,
+            linear_runner=linear_runner,
+            hub_issue_payload=hub_issue_payload,
+            spaces=live_spaces,
+            agents=live_agents,
+        )
+    else:
+        linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+    _attach_cross_device_to_rollup(
+        board_rollup,
+        linear_sync_result.get("state") if isinstance(linear_sync_result.get("state"), dict) else existing_cache,
+        local_hostname=local_hostname,
+        cache_path=cache_path,
+    )
+    return {
+        "ok": True,
+        "supervision_state_path": str(state_path),
+        "cross_device_cache_path": str(cache_path),
+        "spaces": live_spaces,
+        "agents": live_agents,
+        "spaces_count": len(live_spaces),
+        "agents_count": len(live_agents),
+        "discovery_warning": warning,
+        "linear_sync": linear_sync_result,
+        "board_rollup": board_rollup,
+        "summary_markdown": board_rollup["unified_rollup_markdown"],
+    }
+
+
+def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_domains: bool = False, cleanup_duplicates: bool = False, replace_stale_m2: bool = False, domain_map_file: str | Path | None = None, plan_file: str | Path | None = None, apply_receipt_file: str | Path | None = None, state_file: str | Path | None = None, reset_state: bool = False, handoff_root: str | Path | None = None, agent_records: list[dict[str, Any]] | None = None, transport: str = "auto", sync_linear: bool = False, no_sync_linear: bool = False, hub_issue: str | None = None, local_hostname: str | None = None, linear_runner: CommandRunner | None = None, hub_issue_payload: dict[str, Any] | None = None, caller_bot: str = "", no_supervision: bool = False, no_routine: bool = False, spawn_background_sync: bool = False, runner: Callable[..., subprocess.CompletedProcess[str]] = _run_command, poster: Callable[..., dict[str, Any]] = _post_json) -> dict[str, Any]:
     if plan.get("schema_version") != SCHEMA_VERSION:
         raise RouterError("unsupported plan schema")
     if not approve:
@@ -4253,9 +4802,12 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     )
     assert resolved_state_path is not None
     binary = _text(os.environ.get("HERDR_BIN") or shutil.which("herdr"), "herdr")
-    live_records = agent_records
-    if live_records is None:
-        live_records = _live_agent_records(binary, runner=runner) if "herdr" in resolved_initial_transports and not is_stdout_only else []
+    explicit_sync_requested = bool(sync_linear or linear_runner is not None or hub_issue_payload is not None)
+    live_records = agent_records if agent_records is not None else (
+        _live_agent_records(binary, runner=runner)
+        if explicit_sync_requested and "herdr" in resolved_initial_transports and not is_stdout_only
+        else []
+    )
 
     def _register_dispatched_slots(state: dict[str, Any]) -> dict[str, Any]:
         slots = [dict(s) for s in (state.get("slots") or []) if isinstance(s, dict)]
@@ -4365,10 +4917,23 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
     board_state = _with_locked_supervision_state(resolved_state_path, _register_dispatched_slots, reset=reset_state)
     board_rollup = _compute_board_rollup(board_state)
     cache_path = _resolve_cross_device_cache_path(state_file, plan_file=plan_file, apply_receipt_file=apply_receipt_file)
+    host = _resolve_local_hostname(local_hostname)
+    existing_cache = _load_cross_device_cache(cache_path)
+    existing_devices = existing_cache.setdefault("devices", {})
+    now_ts = _cst_now_iso()
+    existing_devices[host] = _build_local_device_shard(
+        board_rollup,
+        previous_shard=existing_devices.get(host),
+        now_iso=now_ts,
+    )
+    existing_cache["schema"] = M2_SYNC_SCHEMA
+    existing_cache["updated_at"] = now_ts
+    _save_cross_device_cache(cache_path, existing_cache)
+
     should_sync, sync_reason = _should_trigger_linear_sync(
         sync_linear=sync_linear,
         no_sync_linear=no_sync_linear,
-        auto_trigger=True,
+        auto_trigger=explicit_sync_requested,
         state_path=resolved_state_path,
         linear_runner=linear_runner,
         hub_issue_payload=hub_issue_payload,
@@ -4384,26 +4949,79 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
             hub_issue_payload=hub_issue_payload,
         )
     else:
-        linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
+        linear_sync_result = {
+            "ok": True if not no_sync_linear else False,
+            "updated": False,
+            "deferred_to_background_task": not no_sync_linear and not is_stdout_only,
+            "skipped_reason": sync_reason if no_sync_linear else "deferred_to_post_apply_background_task",
+        }
     _attach_cross_device_to_rollup(
         board_rollup,
-        linear_sync_result.get("state") if isinstance(linear_sync_result.get("state"), dict) else None,
+        linear_sync_result.get("state") if isinstance(linear_sync_result.get("state"), dict) else existing_cache,
         local_hostname=local_hostname,
         cache_path=cache_path,
     )
 
     handoff_watch_arg = f" --handoff-root {shlex.quote(str(handoff_root))}" if handoff_root else ""
+    effective_hub_issue = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
+    host_watch_arg = f" --local-hostname {shlex.quote(str(local_hostname))}" if local_hostname else ""
     quota_protection = _resolve_quota_protection(
         plan=plan,
         caller_bot=caller_bot,
         no_supervision=no_supervision,
         no_routine=no_routine,
-        agent_records=live_records,
+        agent_records=live_records if live_records else None,
         herdr_bin=binary,
         runner=runner,
-        probe_herdr=not is_stdout_only,
+        probe_herdr=False,
     )
     grok_supervision_disabled = bool(quota_protection.get("active"))
+    post_apply_sync_cmd = None if (is_stdout_only or no_sync_linear) else (
+        f"python3 ~/Development/user-skills/skills/personal-m2-assistant/scripts/m2-router.py "
+        f"--sync-herdr-to-issue --plan-file {shlex.quote(resolved_plan_file)} "
+        f"--apply-receipt-file {shlex.quote(str(resolved_receipt_path))} "
+        f"--state-file {shlex.quote(str(resolved_state_path))} "
+        f"--hub-issue {shlex.quote(effective_hub_issue)}{host_watch_arg} --json{handoff_watch_arg}"
+    )
+    post_apply_sync_task = None if post_apply_sync_cmd is None else {
+        "tool": "bash",
+        "mode": "async",
+        "detach": True,
+        "shellId": f"sync-m2-issue-{safe_plan_id}",
+        "description": f"Scan live Herdr spaces/agents in background and write back to Issue {effective_hub_issue}",
+        "command": post_apply_sync_cmd,
+    }
+    background_sync_pid: int | None = None
+    if (
+        post_apply_sync_cmd is not None
+        and (spawn_background_sync or _text(os.environ.get("M2_SPAWN_POST_APPLY_SYNC")) == "1")
+        and runner is _run_command
+    ):
+        try:
+            bg_args = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--sync-herdr-to-issue",
+                "--plan-file", str(resolved_plan_file),
+                "--apply-receipt-file", str(resolved_receipt_path),
+                "--state-file", str(resolved_state_path),
+                "--hub-issue", effective_hub_issue,
+                "--json",
+            ]
+            if local_hostname:
+                bg_args.extend(["--local-hostname", str(local_hostname)])
+            if handoff_root:
+                bg_args.extend(["--handoff-root", str(handoff_root)])
+            proc = subprocess.Popen(
+                bg_args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            background_sync_pid = proc.pid
+        except OSError:
+            background_sync_pid = None
     watchdog_tasks: list[dict[str, Any]] = []
     for rec in receipts:
         slot_id = _text(rec.get("slot_id"), "m2")
@@ -4470,6 +5088,9 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
         "cleanup_receipts": cleanup_receipts,
         "pruned_cleanup_slots": pruned_cleanup_slots,
         "receipts": receipts,
+        "post_apply_sync_cmd": post_apply_sync_cmd,
+        "post_apply_sync_task": post_apply_sync_task,
+        **({"post_apply_sync_pid": background_sync_pid} if background_sync_pid is not None else {}),
         "watchdog_tasks": watchdog_tasks,
         "unified_rollup_markdown": board_rollup["unified_rollup_markdown"],
         "in_flight_details": board_rollup["in_flight_details"],
@@ -5620,6 +6241,158 @@ def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner =
     return stdout
 
 
+def write_watch_results_to_issues(
+    plan: dict[str, Any],
+    target_reports: list[dict[str, Any]],
+    *,
+    state_path: Path | None = None,
+    hub_issue: str | None = None,
+    target_issue: str | None = None,
+    linear_runner: CommandRunner | None = None,
+    linear_sync_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Directly write each settled/blocked M2 watchdog report to its corresponding Linear Issue."""
+    effective_hub = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
+    exec_runner = linear_runner or _run_command
+    linear_script = _text(os.environ.get("M2_LINEAR_SYNC_SCRIPT"), str(LINEAR_SYNC_SCRIPT_PATH))
+    plan_id = _text(plan.get("plan_id"), "m2p-plan")
+    reported_markers: set[str] = set()
+    if state_path and state_path.is_file():
+        try:
+            loaded_state = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_state, dict) and isinstance(loaded_state.get("reported_issue_markers"), list):
+                reported_markers = {str(m) for m in loaded_state["reported_issue_markers"] if _text(m)}
+        except (OSError, ValueError):
+            reported_markers = set()
+
+    new_markers: list[str] = []
+    receipts: list[dict[str, Any]] = []
+    for rep in target_reports:
+        if rep.get("superseded_by_run_seq"):
+            continue
+        slot_id = _text(rep.get("slot_id") or rep.get("run_label"), "m2")
+        run_seq = int(rep.get("run_seq") or 1)
+        run_label = _text(rep.get("run_label"), slot_id)
+        status = _text(rep.get("status"), "done")
+        marker = f"<!-- M2-WATCH-REPORT:{plan_id}:{slot_id}:r{run_seq}:{status} -->"
+
+        issue_id = _text(target_issue or rep.get("linear_issue") or plan.get("linear_issue"))
+        if not issue_id:
+            text_blob = "\n".join(_text(rep.get(k)) for k in ("sub_prompt", "visible_summary", "terminal_title", "m1_progress"))
+            found_issues = re.findall(r"\bTIA-\d+\b", text_blob, re.I)
+            parent_issue = _text(rep.get("parent_linear_issue")).upper()
+            issue_id = next((i.upper() for i in found_issues if i.upper() != parent_issue), "") or (found_issues[0].upper() if found_issues else "")
+
+        topic_id = _text(rep.get("topic_id") or slot_id)
+        target_name = _text(rep.get("target") or rep.get("session_id") or slot_id)
+        pane_id = _text(rep.get("pane_id"))
+        target_repo = _text(rep.get("target_repo"), "unspecified")
+        m1_prog = _text(rep.get("m1_progress"), "—")
+        vis_summary = _text(rep.get("visible_summary"), "—")
+        attn_line = (
+            f"\n- **阻塞原因 (`Needs Owner Decision`)**: `{_text(rep.get('blocked_reason'), 'owner_decision_required')}`"
+            if rep.get("needs_owner_attention")
+            else ""
+        )
+        report_body = (
+            f"{marker}\n"
+            f"### 🤖 M2 Watchdog 任务回报 · `{run_label}` (`{topic_id}`)\n"
+            f"- **状态 (`Status`)**: `{status}` (`quiescent={bool(rep.get('quiescent'))}`){attn_line}\n"
+            f"- **会话 / 窗格 (`Session / Pane`)**: `{target_name}`"
+            + (f" (`{pane_id}`)" if pane_id else "")
+            + f" · Wave `{rep.get('wave_order', 1)}`\n"
+            f"- **关联仓库 (`Target Repo`)**: `{target_repo}`\n"
+            f"- **M1 推进进度 (`M1 Progress`)**: {m1_prog}\n"
+            f"- **最新结果摘要 (`Result Summary`)**:\n"
+            f"```text\n{vis_summary}\n```"
+        )
+
+        # If target is bound to a specific issue (distinct from Hub Issue TIA-463, or explicitly requested via --target-issue)
+        if issue_id and (issue_id.upper() != effective_hub.upper() or bool(_text(target_issue))):
+            if marker in reported_markers:
+                receipts.append({
+                    "slot_id": slot_id,
+                    "issue": issue_id,
+                    "ok": True,
+                    "updated": False,
+                    "skipped_reason": "already_reported",
+                    "method": "linear_comment",
+                    "marker": marker,
+                })
+                continue
+            handoff_dir = _text(rep.get("handoff_dir"))
+            ledger_synced = False
+            if handoff_dir and (Path(handoff_dir).expanduser() / "ledger.md").is_file():
+                try:
+                    sl_res = exec_runner(
+                        [sys.executable, linear_script, "sync-ledger", "--handoff-dir", str(Path(handoff_dir).expanduser()), "--quiet"],
+                        timeout=15.0,
+                    )
+                    ledger_synced = getattr(sl_res, "returncode", 1) == 0
+                except (OSError, subprocess.SubprocessError):
+                    ledger_synced = False
+            try:
+                c_res = exec_runner(
+                    [sys.executable, linear_script, "comment", "--id", issue_id, "--body", report_body],
+                    timeout=15.0,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                receipts.append({
+                    "slot_id": slot_id,
+                    "issue": issue_id,
+                    "ok": False,
+                    "updated": False,
+                    "method": "linear_comment",
+                    "marker": marker,
+                    "error": str(error),
+                })
+                continue
+            if getattr(c_res, "returncode", 1) != 0:
+                receipts.append({
+                    "slot_id": slot_id,
+                    "issue": issue_id,
+                    "ok": False,
+                    "updated": False,
+                    "method": "linear_comment",
+                    "marker": marker,
+                    "error": _text(getattr(c_res, "stderr", "") or getattr(c_res, "stdout", ""), "comment failed"),
+                })
+                continue
+            reported_markers.add(marker)
+            new_markers.append(marker)
+            receipts.append({
+                "slot_id": slot_id,
+                "issue": issue_id,
+                "ok": True,
+                "updated": True,
+                "method": "linear_comment",
+                "ledger_synced": ledger_synced,
+                "marker": marker,
+                "body": report_body,
+            })
+        else:
+            receipts.append({
+                "slot_id": slot_id,
+                "issue": effective_hub,
+                "ok": bool((linear_sync_result or {}).get("ok")),
+                "updated": bool((linear_sync_result or {}).get("updated")),
+                "method": "hub_issue_sync",
+                "marker": marker,
+            })
+
+    if new_markers and state_path is not None:
+        def _record_markers(st: dict[str, Any]) -> dict[str, Any]:
+            existing_m = [str(m) for m in (st.get("reported_issue_markers") or []) if _text(m)]
+            for m in new_markers:
+                if m not in existing_m:
+                    existing_m.append(m)
+            st["reported_issue_markers"] = existing_m[-200:]
+            return st
+        _with_locked_supervision_state(state_path, _record_markers)
+
+    return receipts
+
+
 def watch_dispatched_m2(
     plan: dict[str, Any],
     *,
@@ -5636,6 +6409,7 @@ def watch_dispatched_m2(
     sync_linear: bool = False,
     no_sync_linear: bool = False,
     hub_issue: str | None = None,
+    target_issue: str | None = None,
     local_hostname: str | None = None,
     linear_runner: CommandRunner | None = None,
     hub_issue_payload: dict[str, Any] | None = None,
@@ -6142,6 +6916,7 @@ def watch_dispatched_m2(
         linear_runner=linear_runner,
         hub_issue_payload=hub_issue_payload,
     )
+    target_issue_writes: list[dict[str, Any]] = []
     if should_sync:
         linear_sync_result = sync_cross_device_hub(
             board_rollup,
@@ -6150,6 +6925,15 @@ def watch_dispatched_m2(
             cache_path=cache_path,
             linear_runner=linear_runner,
             hub_issue_payload=hub_issue_payload,
+        )
+        target_issue_writes = write_watch_results_to_issues(
+            plan,
+            target_reports,
+            state_path=resolved_state_path,
+            hub_issue=hub_issue,
+            target_issue=target_issue,
+            linear_runner=linear_runner,
+            linear_sync_result=linear_sync_result,
         )
     else:
         linear_sync_result = {"ok": False, "updated": False, "skipped_reason": sync_reason}
@@ -6221,6 +7005,7 @@ def watch_dispatched_m2(
         "cross_device_in_flight": board_rollup.get("cross_device_in_flight", []),
         "cross_device_pending_decisions": board_rollup.get("cross_device_pending_decisions", []),
         "linear_sync": linear_sync_result,
+        "target_issue_writes": target_issue_writes,
         "board_rollup": board_rollup,
         "targets": target_reports,
         "summary_markdown": "\n".join(summary_lines),
@@ -6431,6 +7216,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
+    mode.add_argument("--sync-herdr-to-issue", "--post-apply-sync", dest="sync_herdr_to_issue", action="store_true", help="scan live Herdr spaces/agents in background and write back to Linear Issue TIA-463")
     mode.add_argument("--gc", action="store_true", help="preview or owner-approved safe global cleanup")
     mode.add_argument("--board-fingerprint", action="store_true", help="print SHA-256 fingerprint of local supervision state")
     mode.add_argument("--install-hook", action="store_true", help="idempotently install m2-board.json and m2-board-hook.sh into ~/.copilot/hooks")
@@ -6438,6 +7224,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sync-linear", action="store_true", help="bidirectional per-device shard sync with Linear cross-device M2 hub (TIA-463)")
     parser.add_argument("--no-sync-linear", action="store_true", help="explicitly disable automatic Linear cross-device hub sync")
     parser.add_argument("--hub-issue", default=os.environ.get("M2_SYNC_HUB_ISSUE", DEFAULT_M2_SYNC_HUB_ISSUE), help="Linear cross-device M2 sync hub issue identifier (default: TIA-463)")
+    parser.add_argument("--hub-issue-json", help="offline Linear hub issue JSON fixture for --plan / --sync-herdr-to-issue")
+    parser.add_argument("--target-issue", default="", help="explicit Linear issue identifier to write watchdog result into")
+    parser.add_argument("--live-herdr", "--refresh-herdr", dest="live_herdr", action="store_true", help="force live Herdr pane/agent/workspace scan during --plan instead of reading Issue cache")
+    parser.add_argument("--spawn-post-apply-sync", action="store_true", help="spawn detached background --sync-herdr-to-issue process during --apply")
     parser.add_argument("--local-hostname", default=os.environ.get("M2_LOCAL_HOSTNAME", ""), help="override local device hostname shard key")
     parser.add_argument("--handoff-root", help="Goal ledger root (default: M2_HANDOFF_ROOT or ~/Development/handoff)")
     parser.add_argument("--message")
@@ -6496,17 +7286,39 @@ def _message(args: argparse.Namespace) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if not (args.plan or args.apply or args.watch or args.status or args.gc or args.board_fingerprint or args.install_hook):
+    if not (args.plan or args.apply or args.watch or args.status or args.sync_herdr_to_issue or args.gc or args.board_fingerprint or args.install_hook):
         if args.sync_linear:
             args.status = True
         else:
-            parser.error("one of the arguments --plan --apply --watch --status --gc --sync-linear --board-fingerprint --install-hook is required")
+            parser.error("one of the arguments --plan --apply --watch --status --sync-herdr-to-issue --gc --sync-linear --board-fingerprint --install-hook is required")
     try:
+        hub_issue_payload = _json_value(args.hub_issue_json) if getattr(args, "hub_issue_json", None) else None
         if args.board_fingerprint:
             fp = compute_board_fingerprint(args.state_file)
             output: Any = {"ok": True, "fingerprint": fp} if args.json else fp
         elif args.install_hook:
             output = install_m2_board_hook(hooks_dir=args.hooks_dir)
+        elif args.sync_herdr_to_issue:
+            herdr_payload = _json_value(args.herdr_json) if args.herdr_json else (_json_value(args.sessions_json) if args.sessions_json else None)
+            herdr_pane_payload = _json_value(args.herdr_pane_json) if args.herdr_pane_json else None
+            herdr_agent_payload = _json_value(args.herdr_agent_json) if args.herdr_agent_json else None
+            herdr_workspace_payload = _json_value(args.herdr_workspace_json) if args.herdr_workspace_json else None
+            sync_res = sync_herdr_inventory_to_issue(
+                state_file=args.state_file,
+                plan_file=args.plan_file,
+                apply_receipt_file=args.apply_receipt_file,
+                handoff_root=args.handoff_root,
+                herdr_payload=herdr_payload,
+                herdr_pane_payload=herdr_pane_payload,
+                herdr_agent_payload=herdr_agent_payload,
+                herdr_workspace_payload=herdr_workspace_payload,
+                herdr_bin=args.herdr_bin,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
+                hub_issue_payload=hub_issue_payload,
+                no_sync_linear=args.no_sync_linear,
+            )
+            output = sync_res if args.json else sync_res["summary_markdown"]
         elif args.plan:
             payload = _json_value(args.sessions_json) if args.sessions_json else None
             herdr_payload = _json_value(args.herdr_json) if args.herdr_json else payload
@@ -6514,7 +7326,31 @@ def main(argv: list[str] | None = None) -> int:
             herdr_agent_payload = _json_value(args.herdr_agent_json) if args.herdr_agent_json else None
             herdr_workspace_payload = _json_value(args.herdr_workspace_json) if args.herdr_workspace_json else None
             dsh_payload = _json_value(args.dsh_state_json) if args.dsh_state_json else payload
-            sessions, warnings = discover_sessions(herdr_payload=herdr_payload, herdr_pane_payload=herdr_pane_payload, herdr_agent_payload=herdr_agent_payload, workspace_payload=herdr_workspace_payload, dsh_payload=dsh_payload, herdr_bin=args.herdr_bin, dsh_state_url=args.dsh_state_url, dsh_token=args.dsh_token, include_herdr=not args.no_herdr, include_dsh=not args.no_dsh)
+            has_herdr_fixture = any(
+                val is not None
+                for val in (herdr_payload, herdr_pane_payload, herdr_agent_payload, herdr_workspace_payload)
+            )
+            use_issue_cache = not bool(args.live_herdr or has_herdr_fixture)
+            sessions, warnings = discover_sessions(
+                herdr_payload=herdr_payload,
+                herdr_pane_payload=herdr_pane_payload,
+                herdr_agent_payload=herdr_agent_payload,
+                workspace_payload=herdr_workspace_payload,
+                dsh_payload=dsh_payload,
+                herdr_bin=args.herdr_bin,
+                dsh_state_url=args.dsh_state_url,
+                dsh_token=args.dsh_token,
+                include_herdr=not args.no_herdr,
+                include_dsh=not args.no_dsh,
+                prefer_issue_cache=use_issue_cache,
+                state_file=args.state_file,
+                hub_issue=args.hub_issue,
+                local_hostname=args.local_hostname or None,
+                hub_issue_payload=hub_issue_payload,
+                domain_map_file=args.domain_map_file,
+                sync_linear=args.sync_linear,
+                no_sync_linear=args.no_sync_linear,
+            )
             raw_gc_records = _merge_herdr_records(_records(herdr_pane_payload), _records(herdr_agent_payload))
             if not raw_gc_records and herdr_payload is not None:
                 raw_gc_records = _records(herdr_payload)
@@ -6536,11 +7372,13 @@ def main(argv: list[str] | None = None) -> int:
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
+                hub_issue_payload=hub_issue_payload,
                 herdr_bin=args.herdr_bin,
                 caller_bot=args.caller_bot,
                 no_supervision=args.no_supervision,
                 no_routine=args.no_routine,
-                agent_records=raw_gc_records if raw_gc_records else ([] if args.no_herdr else None),
+                agent_records=raw_gc_records if raw_gc_records else ([] if (args.no_herdr or use_issue_cache) else None),
+                prefer_issue_cache=use_issue_cache,
             )
             if raw_gc_records:
                 plan["gc_candidates"] = discover_gc_candidates(raw_gc_records, handoff_root=args.handoff_root)
@@ -6604,9 +7442,11 @@ def main(argv: list[str] | None = None) -> int:
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
                 local_hostname=args.local_hostname or None,
+                hub_issue_payload=hub_issue_payload,
                 caller_bot=args.caller_bot,
                 no_supervision=args.no_supervision,
                 no_routine=args.no_routine,
+                spawn_background_sync=bool(getattr(args, "spawn_post_apply_sync", False)),
             )
         else:
             if not args.plan_file:
@@ -6632,7 +7472,9 @@ def main(argv: list[str] | None = None) -> int:
                 sync_linear=args.sync_linear,
                 no_sync_linear=args.no_sync_linear,
                 hub_issue=args.hub_issue,
+                target_issue=args.target_issue or None,
                 local_hostname=args.local_hostname or None,
+                hub_issue_payload=hub_issue_payload,
                 caller_bot=args.caller_bot,
                 no_supervision=args.no_supervision,
                 no_routine=args.no_routine,

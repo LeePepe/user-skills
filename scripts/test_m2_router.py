@@ -3421,6 +3421,347 @@ class M2RouterTests(unittest.TestCase):
                 self.assertEqual(res_redline["blocked_reason"], "owner_decision_required")
                 self.assertEqual(res_redline["keys"], [])
 
+    def test_plan_reads_spaces_and_agents_from_issue_cache_without_herdr_calls(self):
+        # Populate Linear Hub Issue TIA-463 description with stored spaces + agents + in_flight
+        remote_issue = {"identifier": "TIA-463", "title": "[M2-Sync] 跨设备总账本", "description": ""}
+
+        def fake_linear_runner(args, **kwargs):
+            if "get-issue" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            if "update-issue" in args:
+                remote_issue["description"] = args[args.index("--description") + 1]
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            raise AssertionError(args)
+
+        cache_path = self.test_root / "m2-cross-device-sync-cache.json"
+        board = self.router._compute_board_rollup({
+            "schema_version": 1,
+            "slots": [
+                {
+                    "slot_id": "aidash-aidata",
+                    "run_label": "aidash-aidata",
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "target": "m2-aidash-aidata-r1",
+                    "pane_id": "wC7:p1",
+                    "linear_issue": "TIA-616",
+                    "status": "working",
+                    "m1_progress": "T2-aidash-icloud-sync (in_progress)",
+                }
+            ],
+        })
+        sync_res = self.router.sync_cross_device_hub(
+            board,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            cache_path=cache_path,
+            linear_runner=fake_linear_runner,
+            spaces=[
+                {"workspace_id": "wC7", "label": "AIDash"},
+                {"workspace_id": "w7N", "label": "Sapphire"},
+            ],
+            agents=[
+                {
+                    "session_id": "m2-aidash-aidata-r1",
+                    "herdr_target": "m2-aidash-aidata-r1",
+                    "pane_id": "wC7:p1",
+                    "workspace_id": "wC7",
+                    "workspace_label": "AIDash",
+                    "topic_id": "aidash-aidata",
+                    "target_repo": "AIDash",
+                    "status": "working",
+                    "cwd": "~/Development/AIDash",
+                }
+            ],
+        )
+        self.assertTrue(sync_res["ok"])
+        parsed_state = self.router.parse_cross_device_hub_description(remote_issue["description"])["state"]
+        mbp_shard = parsed_state["devices"]["MacBook-Pro"]
+        self.assertEqual(len(mbp_shard["spaces"]), 2)
+        self.assertEqual(mbp_shard["agents"][0]["session_id"], "m2-aidash-aidata-r1")
+
+        # Now run discover_sessions & build_plan with prefer_issue_cache=True and a runner that fails if herdr is called
+        def forbid_herdr_runner(args, **kwargs):
+            raise AssertionError(f"herdr must NOT be called during cached --plan: {args}")
+
+        sessions, warnings = self.router.discover_sessions(
+            prefer_issue_cache=True,
+            local_hostname="MacBook-Pro",
+            include_dsh=False,
+            runner=forbid_herdr_runner,
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(sessions.discovery_source, "issue_cache")
+        self.assertEqual({w["workspace_id"] for w in sessions.workspaces}, {"wC7", "w7N"})
+        self.assertEqual(sessions[0]["session_id"], "m2-aidash-aidata-r1")
+        self.assertEqual(sessions[0]["pane_id"], "wC7:p1")
+
+        plan = self.router.build_plan(
+            "继续推进 AIDash 指标并新建 Sapphire 通知会话",
+            sessions,
+            local_hostname="MacBook-Pro",
+            runner=forbid_herdr_runner,
+            prefer_issue_cache=True,
+            mock_magpie={
+                "route": "ROUTE_CROSS_SESSION",
+                "targets": [
+                    {
+                        "topic_id": "aidash-aidata",
+                        "target_repo": "AIDash",
+                        "session_id": "m2-aidash-aidata-r1",
+                        "sub_prompt": "继续推进 AIDash 指标",
+                        "wave_order": 1,
+                    },
+                    {
+                        "topic_id": "sapphire-notification",
+                        "target_repo": "bing-growth-sapphire-app",
+                        "sub_prompt": "检查通知开关",
+                        "wave_order": 2,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(plan["discovery"]["source"], "issue_cache")
+        self.assertEqual(plan["targets"][0]["m2_status"], "EXISTING_M2")
+        self.assertEqual(plan["targets"][0]["session_id"], "m2-aidash-aidata-r1")
+        self.assertEqual(plan["targets"][0]["target_workspace_id"], "wC7")
+        self.assertEqual(plan["targets"][1]["m2_status"], "NEW_M2")
+        self.assertEqual(plan["targets"][1]["target_workspace_id"], "w7N")
+
+        # Also verify CLI --plan defaults to Issue cache and never invokes --herdr-bin
+        cli_res = subprocess.run(
+            [
+                str(CANONICAL_ROUTER_PATH),
+                "--plan",
+                "--message", "继续推进 AIDash 指标",
+                "--local-hostname", "MacBook-Pro",
+                "--herdr-bin", "/nonexistent/herdr-must-not-be-called",
+                "--no-dsh",
+                "--no-sync-linear",
+                "--mock-magpie-json", json.dumps({
+                    "route": "ROUTE_SINGLE",
+                    "targets": [{
+                        "topic_id": "aidash-aidata",
+                        "target_repo": "AIDash",
+                        "session_id": "m2-aidash-aidata-r1",
+                        "sub_prompt": "继续推进 AIDash",
+                        "wave_order": 1,
+                    }],
+                }),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(cli_res.returncode, 0, cli_res.stderr)
+        cli_plan = json.loads(cli_res.stdout)
+        self.assertEqual(cli_plan["discovery"]["source"], "issue_cache")
+        self.assertEqual(cli_plan["targets"][0]["m2_status"], "EXISTING_M2")
+        self.assertEqual(cli_plan["targets"][0]["session_id"], "m2-aidash-aidata-r1")
+        self.assertEqual(cli_plan["targets"][0]["target_workspace_id"], "wC7")
+
+    def test_apply_emits_background_sync_task_and_sync_herdr_to_issue_updates_tia463(self):
+        remote_issue = {"identifier": "TIA-463", "title": "[M2-Sync] 跨设备总账本", "description": ""}
+        linear_calls: list[list[str]] = []
+
+        def fake_linear_runner(args, **kwargs):
+            linear_calls.append(list(args))
+            if "get-issue" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            if "update-issue" in args:
+                remote_issue["description"] = args[args.index("--description") + 1]
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_issue}), stderr="")
+            raise AssertionError(args)
+
+        plan_file = self.test_root / "plan.json"
+        receipt_file = self.test_root / "apply.json"
+        state_file = self.test_root / "state.json"
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-bg-sync-01",
+            "approval": {"approved": False},
+            "discovery": {"workspaces": []},
+            "targets": [{
+                "wave_order": 1,
+                "topic_id": "voxpocket",
+                "target_repo": "VoxPocket",
+                "space": "VoxPocket",
+                "space_aliases": [],
+                "m2_status": "NEW_M2",
+                "transport": "herdr",
+                "cwd": "~/Development/VoxPocket",
+                "sub_prompt": "实现语音转写流式优化",
+                "linear_issue": "TIA-565",
+                "dispatch_script": "/tmp/fake-herdr-dispatch",
+            }],
+        }
+        plan_file.write_text(json.dumps(plan), encoding="utf-8")
+
+        def apply_runner(args, **kwargs):
+            if args[1:3] == ["workspace", "list"]:
+                return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+            if args[0] == "/tmp/fake-herdr-dispatch":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps({"ok": True, "workspace_id": "wVox", "pane_id": "wVox:p1", "reused_existing": False}),
+                    stderr="",
+                )
+            raise AssertionError(f"apply_plan must not block on extra herdr calls: {args}")
+
+        applied = self.router.apply_plan(
+            plan,
+            approve=True,
+            plan_file=plan_file,
+            apply_receipt_file=receipt_file,
+            state_file=state_file,
+            local_hostname="MacBook-Pro",
+            runner=apply_runner,
+        )
+        self.assertTrue(applied["ok"])
+        self.assertIsNotNone(applied["post_apply_sync_cmd"])
+        self.assertIn("--sync-herdr-to-issue", applied["post_apply_sync_cmd"])
+        self.assertEqual(applied["post_apply_sync_task"]["tool"], "bash")
+        self.assertEqual(applied["post_apply_sync_task"]["mode"], "async")
+        self.assertTrue(applied["post_apply_sync_task"]["detach"])
+        self.assertEqual(applied["post_apply_sync_task"]["shellId"], "sync-m2-issue-m2p-bg-sync-01")
+        self.assertTrue(applied["linear_sync"].get("deferred_to_background_task"))
+        self.assertEqual(linear_calls, [])
+
+        # Now run the background task (`sync_herdr_inventory_to_issue`) which scans live Herdr spaces + agents and writes to TIA-463
+        def bg_herdr_runner(args, **kwargs):
+            cmd = args[1:3]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [
+                    {"pane_id": "wVox:p1", "workspace_id": "wVox", "name": "m2-voxpocket-r1", "agent": "copilot", "status": "working", "cwd": "~/Development/VoxPocket", "topic_id": "voxpocket"},
+                ]}), stderr="")
+            if cmd == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [
+                    {"pane_id": "wVox:p1", "workspace_id": "wVox", "name": "m2-voxpocket-r1", "agent": "copilot", "agent_status": "working", "cwd": "~/Development/VoxPocket", "topic_id": "voxpocket", "visible": "Working on VoxPocket"},
+                ]}), stderr="")
+            if cmd == ["workspace", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"workspaces": [
+                    {"workspace_id": "wVox", "label": "VoxPocket", "tab_count": 1, "pane_count": 1, "agent_status": "working"},
+                ]}), stderr="")
+            raise AssertionError(args)
+
+        bg_sync_res = self.router.sync_herdr_inventory_to_issue(
+            state_file=state_file,
+            plan_file=plan_file,
+            apply_receipt_file=receipt_file,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            linear_runner=fake_linear_runner,
+            runner=bg_herdr_runner,
+        )
+        self.assertTrue(bg_sync_res["ok"])
+        self.assertEqual(bg_sync_res["spaces_count"], 1)
+        self.assertEqual(bg_sync_res["agents_count"], 1)
+        self.assertTrue(bg_sync_res["linear_sync"]["ok"])
+        self.assertTrue(bg_sync_res["linear_sync"]["updated"])
+        self.assertIn("`wVox:p1`", remote_issue["description"])
+        parsed_after = self.router.parse_cross_device_hub_description(remote_issue["description"])["state"]
+        self.assertEqual(parsed_after["devices"]["MacBook-Pro"]["spaces"][0]["workspace_id"], "wVox")
+        self.assertEqual(parsed_after["devices"]["MacBook-Pro"]["agents"][0]["session_id"], "m2-voxpocket-r1")
+
+    def test_watch_writes_completion_and_blocked_results_directly_to_target_issues(self):
+        remote_hub = {"identifier": "TIA-463", "title": "[M2-Sync] 跨设备总账本", "description": ""}
+        comments_posted: list[tuple[str, str]] = []
+        ledger_syncs: list[str] = []
+
+        def fake_linear_runner(args, **kwargs):
+            if "get-issue" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_hub}), stderr="")
+            if "update-issue" in args:
+                remote_hub["description"] = args[args.index("--description") + 1]
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "issue": remote_hub}), stderr="")
+            if "comment" in args:
+                cid = args[args.index("--id") + 1]
+                cbody = args[args.index("--body") + 1]
+                comments_posted.append((cid, cbody))
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True, "identifier": cid}), stderr="")
+            if "sync-ledger" in args:
+                hdir = args[args.index("--handoff-dir") + 1]
+                ledger_syncs.append(hdir)
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
+            raise AssertionError(args)
+
+        handoff_dir = self.test_root / "handoff" / "wat-email-goal"
+        handoff_dir.mkdir(parents=True)
+        (handoff_dir / "ledger.md").write_text(
+            "# Goal: wat-email-goal\n- status: done\n- Linear: TIA-373\n## Tasks\n| ID | 依赖 | 标题 | 负责 | 状态 | PR |\n| TK1 | — | Email Jev | writer | done | #12 |\n## Events\n- 2026-11-20T15:35:00+08:00 | EVT=GOAL_DONE | id=E9 | note=PR #12 merged\n",
+            encoding="utf-8",
+        )
+        state_file = self.test_root / "watch-issue-state.json"
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-watch-writeback",
+            "targets": [{
+                "slot_id": "info-email",
+                "wave_order": 1,
+                "topic_id": "info-email",
+                "target_repo": "dsh-personal-plugins",
+                "herdr_target": "m2-info-email-r1",
+                "pane_id": "w7J:p1",
+                "transport": "herdr",
+                "cwd": "~/Development/dsh-personal-plugins",
+                "linear_issue": "TIA-373",
+                "handoff_dir": str(handoff_dir),
+                "sub_prompt": "完成 Email Jev 拆分并归档 TIA-373",
+            }],
+        }
+
+        def watch_runner(args, **kwargs):
+            cmd = args[1:3]
+            if cmd == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"panes": [{"pane_id": "w7J:p1", "name": "m2-info-email-r1"}]}), stderr="")
+            if cmd == ["agent", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"agents": [{"pane_id": "w7J:p1", "name": "m2-info-email-r1", "agent_status": "done", "completion_seq": 2}]}), stderr="")
+            if cmd == ["agent", "read"]:
+                return SimpleNamespace(returncode=0, stdout="● PR #12 merged and verified with 0 errors", stderr="")
+            raise AssertionError(args)
+
+        watch_res = self.router.watch_dispatched_m2(
+            plan,
+            watch_target="info-email",
+            state_file=state_file,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            linear_runner=fake_linear_runner,
+            runner=watch_runner,
+            max_polls=1,
+        )
+        self.assertTrue(watch_res["ok"])
+        self.assertTrue(watch_res["all_settled"])
+        self.assertEqual(len(watch_res["target_issue_writes"]), 1)
+        write_rec = watch_res["target_issue_writes"][0]
+        self.assertTrue(write_rec["ok"])
+        self.assertTrue(write_rec["updated"])
+        self.assertEqual(write_rec["issue"], "TIA-373")
+        self.assertEqual(write_rec["method"], "linear_comment")
+        self.assertTrue(write_rec["ledger_synced"])
+        self.assertEqual(len(comments_posted), 1)
+        self.assertEqual(comments_posted[0][0], "TIA-373")
+        self.assertIn("<!-- M2-WATCH-REPORT:m2p-watch-writeback:info-email:r1:done -->", comments_posted[0][1])
+        self.assertIn("PR #12 merged and verified with 0 errors", comments_posted[0][1])
+        self.assertEqual(len(ledger_syncs), 1)
+
+        # Re-running watch on the same settled state is idempotent and does not duplicate comments on TIA-373
+        watch_res_2 = self.router.watch_dispatched_m2(
+            plan,
+            watch_target="info-email",
+            state_file=state_file,
+            hub_issue="TIA-463",
+            local_hostname="MacBook-Pro",
+            linear_runner=fake_linear_runner,
+            runner=watch_runner,
+            max_polls=1,
+        )
+        self.assertTrue(watch_res_2["target_issue_writes"][0]["ok"])
+        self.assertFalse(watch_res_2["target_issue_writes"][0]["updated"])
+        self.assertEqual(watch_res_2["target_issue_writes"][0]["skipped_reason"], "already_reported")
+        self.assertEqual(len(comments_posted), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
