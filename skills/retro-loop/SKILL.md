@@ -12,6 +12,7 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 |---|---|---|
 | anomaly/ROI query | `SKILL.md` | `retro_story_engine.py discover` |
 | proposal lifecycle | `SKILL.md` | `retro_story_engine.py agent-efficiency --auto-propose` |
+| trace backfill / observability | `SKILL.md` | `trace_backfill_exporter.py --target both --dry-run` |
 | verification | `SKILL.md` | `skill_contract.py eval --skill retro-loop --strict` |
 
 ## Role-Based Routing
@@ -40,6 +41,9 @@ Repeated issues require one concrete lock, not a reminder: Skill/Config lock, Ho
 python3 skills/retro-loop/scripts/retro_story_engine.py discover
 python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose
 python3 skills/retro-loop/scripts/retro_story_engine.py skill-roi --auto-propose
+python3 skills/retro-loop/scripts/trace_backfill_exporter.py --target both --limit-goals 35 --limit-sessions 55 --json
 ```
 
-`proposals.jsonl.lock` serializes idempotent writes. `learning-topic://` remains a separate Owner-approved exploration path; Star never auto-publishes or syncs design data. Implementations live in `retro_story_engine.py` and `multica_skills_autopilot.py`.
+Trace backfill uses recorded execution telemetry, injected skill contexts, and structured receipt `- Tokens:` headers—not path mentions or recommendations. Copilot tool start/completion pairs provide measured durations; point events use a 1 ms display width with `timing.measured=false` and `timing.provenance=point_event_unmeasured` in attributes/output. Generations use all token-bearing rows from the first available source (Copilot usage → usage JSONL → warehouse). Missing process exits stay unknown even when tool transport fails. Five-category presence is coverage, not proof of measured timing or complete history.
+
+`proposals.jsonl.lock` serializes idempotent writes. `learning-topic://` remains a separate Owner-approved exploration path; Star never auto-publishes or syncs design data. Implementations live in `retro_story_engine.py`, `multica_skills_autopilot.py`, and `trace_backfill_exporter.py`.
