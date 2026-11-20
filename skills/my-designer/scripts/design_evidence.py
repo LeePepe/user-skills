@@ -821,9 +821,11 @@ def _decode_png(data):
     if len(data) < 33 or data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
         raise ValueError('not a valid PNG')
     width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack('>IIBBBBB', data[16:29])
-    if width < 1 or height < 1 or bit_depth != 8 or color_type not in (2, 6) or comp != 0 or filt != 0 or interlace != 0:
-        raise ValueError('unsupported PNG format (requires 8-bit non-interlaced RGB/RGBA)')
-    channels = 3 if color_type == 2 else 4
+    if width < 1 or height < 1 or bit_depth not in (8, 16) or color_type not in (0, 2, 4, 6) or comp != 0 or filt != 0 or interlace != 0:
+        raise ValueError('unsupported PNG format (requires 8/16-bit non-interlaced Grayscale/RGB/RGBA)')
+    samples_per_pixel = {0: 1, 2: 3, 4: 2, 6: 4}[color_type]
+    bytes_per_sample = 2 if bit_depth == 16 else 1
+    bpp = samples_per_pixel * bytes_per_sample
     idat = bytearray()
     offset = 8
     seen_iend = False
@@ -841,7 +843,7 @@ def _decode_png(data):
         offset = chunk_end + 4
     if not seen_iend or not idat:
         raise ValueError('incomplete PNG stream')
-    stride = width * channels
+    stride = width * bpp
     expected = height * (1 + stride)
     raw = zlib.decompress(bytes(idat))
     if len(raw) != expected:
@@ -849,35 +851,57 @@ def _decode_png(data):
     rows = []
     cursor = 0
     prior = bytearray(stride)
+    out_channels = 4 if color_type in (4, 6) else 3
     for _ in range(height):
         filter_type = raw[cursor]
         cursor += 1
         row = bytearray(raw[cursor:cursor + stride])
         cursor += stride
         if filter_type == 1:
-            for i in range(channels, stride):
-                row[i] = (row[i] + row[i - channels]) & 255
+            for i in range(bpp, stride):
+                row[i] = (row[i] + row[i - bpp]) & 255
         elif filter_type == 2:
             for i in range(stride):
                 row[i] = (row[i] + prior[i]) & 255
         elif filter_type == 3:
             for i in range(stride):
-                left = row[i - channels] if i >= channels else 0
+                left = row[i - bpp] if i >= bpp else 0
                 row[i] = (row[i] + ((left + prior[i]) >> 1)) & 255
         elif filter_type == 4:
             for i in range(stride):
-                a = row[i - channels] if i >= channels else 0
+                a = row[i - bpp] if i >= bpp else 0
                 b = prior[i]
-                c = prior[i - channels] if i >= channels else 0
+                c = prior[i - bpp] if i >= bpp else 0
                 p = a + b - c
                 pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
                 pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
                 row[i] = (row[i] + pr) & 255
         elif filter_type != 0:
             raise ValueError(f'invalid PNG filter type: {filter_type}')
-        rows.append(bytes(row))
         prior = row
-    return width, height, rows, channels
+        if bit_depth == 8 and color_type in (2, 6):
+            rows.append(bytes(row))
+        else:
+            norm = bytearray(width * out_channels)
+            for x in range(width):
+                base = x * bpp
+                if color_type in (0, 4):
+                    g = row[base]
+                    dst = x * out_channels
+                    norm[dst] = g
+                    norm[dst + 1] = g
+                    norm[dst + 2] = g
+                    if out_channels == 4:
+                        norm[dst + 3] = row[base + bytes_per_sample]
+                else:
+                    dst = x * out_channels
+                    norm[dst] = row[base]
+                    norm[dst + 1] = row[base + bytes_per_sample]
+                    norm[dst + 2] = row[base + 2 * bytes_per_sample]
+                    if out_channels == 4:
+                        norm[dst + 3] = row[base + 3 * bytes_per_sample]
+            rows.append(bytes(norm))
+    return width, height, rows, out_channels
 
 
 def _region_bottom_dead_space_ratio(width, height, rows, channels, x_start_ratio, x_end_ratio):
