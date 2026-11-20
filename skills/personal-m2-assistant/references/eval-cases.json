@@ -78,9 +78,33 @@
         "--no-supervision",
         "--force-watch",
         "grok_bot_supervision_disabled",
-        "--new-workspace --workspace-label <space>"
+        "--new-workspace --workspace-label <space>",
+        "--sync-herdr-to-issue",
+        "post_apply_sync_task",
+        "target_issue_writes"
       ],
       "registered_at": "2026-11-16"
+    },
+    {
+      "id": "EV-005",
+      "title": "m2-router.py --plan reads spaces and agents from Issue cache without live herdr calls",
+      "tags": [
+        "plan",
+        "issue-cache",
+        "fast-prep"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message '继续检查 AIDash 指标' --hub-issue-json '{\"devices\":{\"TestHost\":{\"spaces\":[{\"workspace_id\":\"w-cache\",\"label\":\"AIDash\"}],\"agents\":[{\"session_id\":\"m2-aidash-cached\",\"herdr_target\":\"m2-aidash-cached\",\"pane_id\":\"w-cache:p1\",\"workspace_id\":\"w-cache\",\"workspace_label\":\"AIDash\",\"topic_id\":\"aidash-aidata\",\"target_repo\":\"AIDash\",\"status\":\"idle\",\"cwd\":\"~/Development/AIDash\"}]}}}' --local-hostname TestHost --herdr-bin /nonexistent/herdr --no-dsh --no-sync-linear --mock-jev-json '{}' --mock-magpie-json '{\"route\":\"ROUTE_SINGLE\",\"targets\":[{\"topic_id\":\"aidash-aidata\",\"target_repo\":\"AIDash\",\"session_id\":\"m2-aidash-cached\",\"sub_prompt\":\"继续检查指标\",\"wave_order\":1}]}' --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "local_hostname": "TestHost"
+      },
+      "expect_stdout_contains": [
+        "\"source\": \"issue_cache\"",
+        "\"session_id\": \"m2-aidash-cached\"",
+        "\"target_workspace_id\": \"w-cache\"",
+        "\"m2_status\": \"EXISTING_M2\""
+      ],
+      "registered_at": "2026-11-20"
     }
   ],
   "trigger_evals": [

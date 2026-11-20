@@ -13,19 +13,20 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 - 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
 - **M3 只管按业务话题直接转发，绝不预设 `Hot-Append` 或越权替 M2 拆 Goal**：收到后续指令时，M3 只按业务话题原意直达对应 M2，绝不在 M3 层预设包装为「热追加（`Hot-Append`）合并进当前任务」或自行拆 Goal；是同页面微调走 `Hot-Append` 还是独立新 Feature 拆分为第二个 Goal（新建 `handoff/<goal-2>/spec.md` + 独立 TL/Task/PR）完全由接收方 `M2-Dispatcher` 判定。
 - 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
-- 发现阶段读取公开的 `herdr workspace list`；交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
+- **派发前准备阶段（`--plan`）默认从 Issue 缓存读取 `spaces` 与 `agents`**：`--plan` 默认直接从 Linear 同步总账本 `TIA-463` 及其持久化快照（`/tmp/m2-cross-device-sync-cache.json`、`m2-supervision-state.json`）读取已存好的 `spaces`（`workspaces`）和 `agents`（`sessions`，`discovery.source="issue_cache"`），不每次实时扫描 `herdr`，极大加快派发前准备速度（仅显式传入 `--live-herdr` 时才实时探测 Herdr）。交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
 
 ## 默认配置与强制 Owner Gate
 
-1. 只读发现公开的 Herdr `pane/agent list` 与 dsh Omni Hub 状态；不读取 dsh 私有 session 存储。
+1. `--plan` 默认只读消费 `TIA-463` Issue 快照中的 `spaces`/`agents` 与 dsh Omni Hub 状态（或显式 `--live-herdr` 读取公开 Herdr `pane/agent/workspace list`）；不读取 dsh 私有 session 存储。
 2. 调用 Jev/Falcon 做枚举选路，再由 Magpie 语义拆解并绑定已有会话；离线或网关不可达时只使用确定性兜底。
 3. **默认模型/Context 与 `~` 展开**：所有目标 M2 默认使用 `Gemini 4 Argon · 983K context`（`--model gemini-4-argon --context long_context`）；所有 `cwd`（含 `m2-domain-map.json`、会话发现、新话题候选与派发参数）统一先展开 `~` 为绝对路径再传给 `herdr-dispatch.sh` 或 `dsh create-session`。
 4. **`--plan` 尾部 64KB 直读与增量接续（`1 -> 子窗格私聊 2,3 -> 总入口 4` · M3 原意直达不代判 Goal 边界）**：绑定 `EXISTING_M2` 时优先按 `agent_session.value` seek 读取 `~/.copilot/session-state/<uuid>/events.jsonl` 末尾 `64KB`（缺失时回退 `herdr pane read <pane> --source recent-unwrapped --lines 50`），提取最近 3 轮真实 `user.message` 与最终 `assistant.message` 摘要及 `last_session_activity_at` 写入 `recent_session_context`，注入 Magpie 拆解器上下文（强制在最新 `2、3` 基础上生成增量 `sub_prompt` `4`）并展示在 `preview_markdown` / `preview_text` 中。`recent_session_context` 仅用于保证话题归属与避免覆盖子窗格最新对话上下文，生成的 `sub_prompt` 保持对用户新指令的原意直达，严禁在 M3 层预设为 `Hot-Append` 合并进当前 Goal 或替 M2 拆 Goal，由接收方 `M2-Dispatcher` 自行判定是同页面微调（`Hot-Append`）还是独立新 Feature（新建第二个 `handoff/<goal-2>/spec.md` + 独立 Task/PR）。
 5. **Linear Team TIA 同步与终端摘要预览**：`--plan` 生成结构化 `plan.json`，其中 `preview_markdown` 保留完整 Markdown 正文，`preview_text(plan)` 提供终端摘要；计划与 Spec 拆解直接同步/展示在 Linear Team TIA（对应 Root/Goal Issue，如 `TIA-375`）及终端，不生成临时 `.md` 或打开 Orca。需要文件时只能显式传入 `--preview-md-file`。
 6. 使用 `ask_user` 请求 Owner 确认或修改。计划阶段绝不创建会话、关闭窗格或投递消息。
 7. 仅 Owner 明确批准后运行 `--apply --plan-file <plan.json> --approve`；未带 `--approve` 必须 fail-closed。
-8. **每个 M2 独立后台监督与增量滚动汇总（`--watch --watch-target` + `watchdog_tasks`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护共享监督状态账本 `m2-supervision-state.json`（或 `--state-file`），并为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）：
-   - **单 M2 独立完成即刻唤醒与累积汇总**：每个 M2 由各自独立的 background `bash` 任务运行 `m2-router.py --watch --watch-target <slot_id>`，任一 M2 经真静默判定（`idle`/`done` 且无活动尾部）后退出唤醒并更新账本，输出完整 `unified_rollup_markdown`，同时保留累积汇总码 `completed_rollup_code`。例如派发 `ABC`：`A` 完成报告 `A`，`B` 完成报告 `AB`；若此时新增 `D` 且向 `A` 追加新任务 `A2`（`A` 槽位转为运行 `A2`），随后 `C` 完成报告 `BC`，`A2` 完成报告 `A2BC`，`D` 完成报告 `A2BCD`。
+8. **派发后后台异步扫描 Herdr 写回 Issue + 每个 M2 独立后台监督与结果直写对应 Issue（`--sync-herdr-to-issue` + `--watch --watch-target`）**：`--apply` 将回执落盘至 `/tmp/m2-apply-<plan_id>.json`（或 `--apply-receipt-file`），同步维护本地监督状态账本 `m2-supervision-state.json`（或 `--state-file`），不再同步阻塞等待实时 Herdr 全量扫描与 Linear 请求，而是输出：
+   - **派发后异步扫描写回 Issue（`post_apply_sync_task` · `--sync-herdr-to-issue`）**：`--apply` 生成后台任务 `post_apply_sync_task`（`mode="async", detach=true, shellId="sync-m2-issue-<plan_id>"`），在后台运行 `m2-router.py --sync-herdr-to-issue` 扫描真实 Herdr `workspace/pane/agent list`，将最新 `spaces` 与 `agents` 更新回写至 Linear `TIA-463`（`devices.<hostname>.spaces` 与 `devices.<hostname>.agents`）及本地缓存快照，供后续 `--plan` 极速读取。
+   - **单 M2 独立完成即刻唤醒、累积汇总与结果直写对应 Issue（`watchdog_tasks` + `target_issue_writes`）**：为**每个已派发 M2 单独生成一条** `watchdog_copilot_cli`（汇总于 `watchdog_tasks`，每条 `mode="async", detach=true, shellId="watch-m2-<plan_id>-<slot>-r<seq>"`，带 `--watch-target <slot_id>`）。任一 M2 经真静默判定（`idle`/`done` 且无活动尾部）或阻塞退出时，立即更新 `TIA-463` 总账本，并**直接将看门狗/任务回报结果写入对应 Linear Issue**（`linear_issue` 如 `TIA-373` 或 `--target-issue`，通过 `linear-sync.py comment` 写入带 `<!-- M2-WATCH-REPORT:<plan_id>:<slot_id>:r<seq>:<status> -->` 幂等标记的结构化回报及 `sync-ledger`，回执见 `target_issue_writes`），同时输出完整 `unified_rollup_markdown` 与累积汇总码 `completed_rollup_code`（如 `A` → `AB` → `BC` → `A2BC` → `A2BCD`）。
    - **安全 Allow 自动解卡与 Owner 决策门禁**：仅当传入经校验的 `apply_receipt`（`ok=true`、`approved=true`、`plan_id` 与目标匹配）且目标处于 `blocked`/`needs_input` 时，对底部当前活动帧的安全权限弹窗（词法与 `resolve` 均落在安全基线/目标 `cwd`/本机只读工具目录 `/opt/homebrew` 含 `symlink -> target` 箭头解析且无越界的 `Allow path access`/`Confirm folder trust`、`Curate Memory`、受信任 MCP 工具确认 `Do you want to use this tool?` 如 `linear` 看板工具与 `ado`/`github` 只读工具，以及单行无元字符只读白名单命令 `CMD_CONFIRM`）自动放行（含记住会话选项 `["down", "enter"]` 或单次 `["enter"]`）；无有效回执时保持纯被动只读观察（`auto_unblock_enabled=false`）。遇到业务/Spec 级 `ask_user`、`Proceed with`、`/` 与 `/Volumes` 与 `~` 主目录根红线/路径越界、未知/写/删除/外发 MCP 工具或非只读命令，**绝不代拍板**，标记 `needs_owner_attention=true`（`blocked_reason="owner_decision_required"`）；目标缺失或发现中断持续重试至超时后返回 `ok=false, all_settled=false, blocked_reason="target_missing_or_unreachable"`。
 8. **Grok Bot 省流防烧额度规则（`grok_bot_no_supervision` · Fire-and-Forget）**：当总控运行在 Grok Bot 环境（显式 `--caller-bot grok` / `--no-supervision` / `--no-routine`，或环境变量 `M2_CALLER_BOT`/`BOT_KIND`/`GROK_BOT`/`*_MODEL` 含 `grok`，或当前 `HERDR_PANE_ID` 绑定 `grok-4.7` / `magpie/grok/*` 模型）时，自动启用 `quota_protection_mode: grok_bot_no_supervision`：
    - **严禁启动后台 `--watch` 监督看门狗或定时 Routine 轮询**：仅执行 `--plan` → `ask_user` → `--apply` 即刻结束本轮，`--apply` 强制返回 `watchdog_tasks: []` 与 `watchdog_cmd: null`，等待用户主动查询 `--status`。
@@ -47,11 +48,13 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --plan \
   --message '先检查通知开关，再写篇学习博客' --json > /tmp/m2-plan.json
 ```
 
-Owner 审阅拍板后派发，并按 `watchdog_tasks` 为每个目标 M2 单独挂载后台 `--watch --watch-target`：
+Owner 审阅拍板后派发，后台异步执行 `post_apply_sync_task`（`--sync-herdr-to-issue` 扫描 Herdr 写回 Issue）并按 `watchdog_tasks` 为每个目标 M2 单独挂载后台 `--watch --watch-target`（完成/阻塞后自动将结果写入对应 Issue）：
 
 ```bash
 python3 skills/personal-m2-assistant/scripts/m2-router.py --apply \
   --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json --approve --json
+python3 skills/personal-m2-assistant/scripts/m2-router.py --sync-herdr-to-issue \
+  --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json --hub-issue TIA-463 --json
 python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json \
   --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
