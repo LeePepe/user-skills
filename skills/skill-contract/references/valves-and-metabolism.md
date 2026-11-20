@@ -18,6 +18,10 @@ S1 checks package-local links and reports absolute or missing `broken-symlink` t
 
 When adding an L1 mental-model row, replace the least useful row in the same table (One-In-One-Out), preserving a stable heading and recording the replacement.
 
+## Self-disclosing audit findings
+
+`valves-and-metabolism.md` is an on-demand remediation drawer (silent when checks pass, consulted when a valve trips). When `audit` or `eval` reports findings, the JSON output includes `guidance_drawer`, and each item includes `reference` (`skills/skill-contract/references/valves-and-metabolism.md#<section>`) and a concise `hint`, plus a stderr pointer so callers jump straight to the failing valve rule without bloating L0.
+
 ## Repo-bound skills
 
 Business repositories may colocate skills under `<repo>/skills/*` or `<repo>/.agents/skills/*`. `audit --repo <path> --strict` and `eval --repo <path> --strict` discover them; `repo_bound=True` waives cross-project private identifiers while budgets, drawers, and sharing checks remain enforced.

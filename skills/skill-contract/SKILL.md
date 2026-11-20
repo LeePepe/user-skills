@@ -29,10 +29,12 @@ python3 skills/skill-contract/scripts/skill_contract.py sync-jev-stars --skill <
 
 `add-case --negative-cmd` is a standalone pre-write self-test; it requires a genuine nonzero exit, optionally exact `--expect-fail-exit` and output checks. Launch errors and empty commands fail. `sync-jev-stars` preserves snapshot data and existing assertions on refresh, validates file or safe `--cmd-template` assertions, and plans the same changes in `--dry-run`. It archives only the oldest ordinary case at the 15-case cap; IDs or `jev-star` tags protect golden cases from eviction.
 
-Read [valves-and-metabolism.md](references/valves-and-metabolism.md) for repo-bound governance and drawer details. Keep deep procedures in references and deterministic gates in scripts.
+Read [valves-and-metabolism.md](references/valves-and-metabolism.md) when any Valve 1–4 check fails, or for repo-bound governance and Star backflow rules. Keep deep procedures in references and deterministic gates in scripts.
+
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | primary task | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py --help` |
+| valve failure / repo-bound | `references/valves-and-metabolism.md` | `python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict` |
 | verification | `references/eval-cases.json` | `skill_contract.py eval --skill skill-contract --strict` |

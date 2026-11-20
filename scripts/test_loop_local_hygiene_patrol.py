@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,7 +36,22 @@ def _git(cmd, *, cwd=None, check=True):
 
 
 class LocalHygienePatrolTests(unittest.TestCase):
-    def _build_fixture_env(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
+    _TEMPLATE_HOLDER: tempfile.TemporaryDirectory[str] | None = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls._TEMPLATE_HOLDER = cls._create_raw_fixture_env()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._TEMPLATE_HOLDER is not None:
+            cls._TEMPLATE_HOLDER.cleanup()
+            cls._TEMPLATE_HOLDER = None
+        super().tearDownClass()
+
+    @classmethod
+    def _create_raw_fixture_env(cls) -> tempfile.TemporaryDirectory[str]:
         holder = tempfile.TemporaryDirectory()
         base = Path(holder.name)
         dev_root = base / "Development"
@@ -104,8 +120,25 @@ class LocalHygienePatrolTests(unittest.TestCase):
             "- 2026-11-19T09:00:00+08:00 | EVT=GOAL_DONE | id=E2 | note=merged\n",
             encoding="utf-8",
         )
+        return holder
 
-        return holder, dev_root, handoff_root
+    def _build_fixture_env(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
+        assert self._TEMPLATE_HOLDER is not None
+        src_base = Path(self._TEMPLATE_HOLDER.name)
+        holder = tempfile.TemporaryDirectory()
+        dst_base = Path(holder.name)
+        shutil.copytree(src_base, dst_base, dirs_exist_ok=True)
+        old_prefix = str(src_base)
+        new_prefix = str(dst_base)
+        old_res = str(src_base.resolve())
+        new_res = str(dst_base.resolve())
+        # Rewrite absolute worktree/remote gitdir pointers inside the cloned fixture
+        repo_git = dst_base / "Development" / "user-skills" / ".git"
+        for p in [repo_git / "config", *repo_git.glob("worktrees/*/gitdir"), *(dst_base / "Development" / "worktrees").glob("*/.git")]:
+            if p.is_file():
+                txt = p.read_text(encoding="utf-8")
+                p.write_text(txt.replace(old_res, new_res).replace(old_prefix, new_prefix), encoding="utf-8")
+        return holder, dst_base / "Development", dst_base / "Development" / "handoff"
 
     def _sample_herdr_snapshot(self, dev_root: Path) -> dict:
         wt_active = dev_root / "worktrees" / "goal-active-pane"
@@ -430,6 +463,12 @@ class LocalHygienePatrolTests(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         herdr_file = dev_root / "herdr.json"
         herdr_file.write_text(json.dumps({"workspaces": [], "agents": []}), encoding="utf-8")
+        bin_dir = dev_root / "fake-bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_gh = bin_dir / "gh"
+        fake_gh.write_text("#!/usr/bin/env sh\necho '[]'\n", encoding="utf-8")
+        fake_gh.chmod(0o755)
+        cli_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}", "GTT_JEV_LIVE": "0"}
 
         for subcmd, extra in (
             ("scan", []),
@@ -452,6 +491,7 @@ class LocalHygienePatrolTests(unittest.TestCase):
                     str(herdr_file),
                     *extra,
                 ],
+                env=cli_env,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -492,6 +532,7 @@ class LocalHygienePatrolTests(unittest.TestCase):
             repos=("user-skills",),
             herdr_json={"workspaces": [], "agents": []},
             dry_run=False,
+            jev_fn=lambda *a, **kw: None,
             merge_checker=lambda _r, _b: False,
         )
         self.assertEqual(res["anomalies"], [])

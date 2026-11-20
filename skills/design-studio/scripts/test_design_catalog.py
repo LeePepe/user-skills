@@ -23,7 +23,7 @@ DESIGN_CATALOG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DESIGN_CATALOG)
 CATALOG = SCRIPT.parents[1] / "scripts" / "data" / "catalog.json"
 MARKDOWN = SCRIPT.parents[1] / "references" / "toolchain-20-matrix.md"
-TEMP_DIR_ROOT = SCRIPT.parents[3]
+TEMP_DIR_ROOT = Path(tempfile.gettempdir())
 
 
 def run(*args, **kwargs):

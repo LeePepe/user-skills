@@ -183,7 +183,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
         return self.run_queue(handoff_dir, *args, check=check)
 
     def test_grouping_requires_evidence_and_preserves_mapping(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "tracked"
             grouped = manifest(
                 task_ids=["TK1"],
@@ -225,7 +225,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(queue_data["tasks"][0]["feedback_ids"], ["FB-1", "FB-2"])
 
     def test_tracked_queue_rejects_coverage_duplicates_and_omissions(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "tracked"
             tracked = manifest(task_ids=["TK1"])
             self.enqueue(handoff_dir, ["TK1"], feedback_manifest=tracked)
@@ -245,7 +245,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertIn("duplicate", duplicate_result.stderr.lower())
 
     def test_completion_requires_per_acceptance_evidence(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "tracked"
             self.enqueue(
                 handoff_dir,
@@ -291,7 +291,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertTrue(completed["drained"])
 
     def test_supersession_requires_replacement_and_preserves_acceptance(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "tracked"
             tracked = manifest(task_ids=["TK1", "TK2"], feedback_ids=["FB-1", "FB-2"])
             self.enqueue(handoff_dir, ["TK1", "TK2"], feedback_manifest=tracked)
@@ -372,7 +372,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(queue_data["tasks"][1]["feedback_ids"], ["FB-1", "FB-2"])
 
     def test_legacy_queue_is_explicitly_unverified_but_compatible(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "legacy"
             enqueued = json.loads(self.enqueue(handoff_dir, ["TK1"]).stdout)
             self.assertEqual(enqueued["feedback_validation"], "unverified_legacy")
@@ -393,7 +393,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(done["feedback_validation"], "unverified_legacy")
 
     def test_malformed_manifest_and_ci_cancellation_are_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "tracked"
             malformed = self.enqueue(
                 handoff_dir,
@@ -439,7 +439,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertIn("CI", cancelled.stderr)
 
     def test_real_one_to_one_replacement_runs_and_completes(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "replacement"
             initial = manifest_for_tasks({"TK1": ["FB-1"]})
             self.enqueue(handoff_dir, ["TK1"], feedback_manifest=initial)
@@ -511,7 +511,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertTrue(result["drained"])
 
     def test_hot_append_preserves_all_original_acceptance_text_and_ids(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "immutable"
             tracked = manifest_for_tasks(
                 {"TK1": ["FB-1"], "TK2": ["FB-2"]},
@@ -544,7 +544,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertIn("preserve", result.stderr.lower())
 
     def test_chained_replacements_are_order_independent_and_keep_terminal_owner(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "chain"
             initial = manifest_for_tasks({"TK1": ["FB-1"]})
             self.enqueue(handoff_dir, ["TK1"], feedback_manifest=initial)
@@ -624,7 +624,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual([task["task_id"] for task in wave["wave"]], ["TK3"])
 
     def test_explicit_cancelled_dependency_stays_blocked(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "explicit-dependency"
             first_manifest = manifest_for_tasks({"TK1": ["FB-1"]})
             self.enqueue(handoff_dir, ["TK1"], feedback_manifest=first_manifest)
@@ -673,7 +673,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertIn("dependencies", blocked.stderr)
 
     def test_malformed_tracked_state_never_downgrades_to_legacy(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "malformed"
             handoff_dir.mkdir()
             (handoff_dir / "queue.json").write_text(
@@ -699,7 +699,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertNotIn("unverified_legacy", result.stdout)
 
     def test_supersession_cycles_are_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "cycle"
             handoff_dir.mkdir()
             tracked = manifest_for_tasks({"TK1": ["FB-1"], "TK2": ["FB-1"]})
@@ -744,7 +744,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertIn("cycle", result.stderr.lower())
 
     def test_reopening_task_clears_stale_terminal_metadata(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "reopen"
             self.enqueue(
                 handoff_dir,
@@ -788,7 +788,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertNotIn("superseded_by", task)
 
     def test_mandate_drift_ack_and_ruling(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "mandate"
             (handoff_dir / "briefs").mkdir(parents=True)
             (handoff_dir / "spec.md").write_text("v1", encoding="utf-8")
@@ -815,7 +815,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(task["mandate"]["owned_paths"], ["src/a", "src/b"])
 
     def test_human_priority_slot_and_evolve_budget(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "evolve"
             self.run_queue(
                 handoff_dir,
@@ -840,7 +840,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertTrue(stopped["budget_exhausted"])
 
     def test_steer_handback_and_herdr_effect(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "steer"
             self.enqueue(handoff_dir, ["TK1"], paths="src/a")
             self.run_queue(handoff_dir, "next-wave", "--mark-in-progress")
@@ -932,7 +932,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
             self.assertEqual(missing_selector["disposition"], "needs_tl_eval")
 
     def test_state_sqlite_tables_effect_coalescing_and_later(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "state"
             self.enqueue(handoff_dir, ["TK1"])
             with closing(sqlite3.connect(handoff_dir / "state.sqlite")) as db:
@@ -988,7 +988,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 connection.close()
 
     def test_experiment_keep_discard_and_budget_exhaustion(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "experiment"
             self.enqueue(handoff_dir, ["TK1"])
             self.run_queue(handoff_dir, "init-goal", "--intent", "evolve")
@@ -1018,7 +1018,7 @@ class GoalQueueFeedbackGuardTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM experiments").fetchone()[0], 4)
 
     def test_receive_routes_and_bootstrap_fixture_defects(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir:
             handoff_dir = Path(tmp_dir) / "receive"
             self.enqueue(handoff_dir, ["TK1"], paths="src/a")
             self.run_queue(handoff_dir, "next-wave", "--mark-in-progress")
