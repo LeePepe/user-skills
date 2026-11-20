@@ -14,8 +14,9 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 from urllib.request import Request, urlopen
 
 STATES = ("draft", "brief_review", "scripting", "script_review", "production", "final_review", "ready")
@@ -458,7 +459,19 @@ def discover_aidata_signals(
 
 _EVAL_CASE_ID_RE = re.compile(r"^(?:EV|DC|AT|CASE)-\d+[A-Za-z0-9_-]*$")
 _USER_HOME_PREFIX = "/" + "Users/"
-_USER_HOME_PATH_RE = re.compile(_USER_HOME_PREFIX + r"[^/\s\"']+")
+_LINUX_HOME_PREFIX = "/" + "home/"
+_USER_HOME_PATH_RE = re.compile(
+    r"(?:" + _USER_HOME_PREFIX + r"|" + _LINUX_HOME_PREFIX + r")[^/\s\"'<>`|)]+"
+)
+_DOC_PREVIEW_REF_SUFFIXES = {".md", ".json", ".yaml", ".yml"}
+_SKILL_MD_PREVIEW_MAX_CHARS = 32768
+_REF_DOC_PREVIEW_MAX_CHARS = 16384
+_SAFE_SKILL_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _redact_home_paths(text: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
+    """Redact absolute macOS and Linux user home directories into tilde paths."""
+    return _redact_user_text(text, skills_root=skills_root, dev_root=dev_root)
 
 
 def _redact_user_text(text: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
@@ -478,6 +491,115 @@ def _redact_user_text(text: str, *, skills_root: Path | None = None, dev_root: P
                 cleaned = cleaned.replace(variant, replacement)
     cleaned = _USER_HOME_PATH_RE.sub("~", cleaned)
     return cleaned
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write UTF-8 text to path without leaving partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _resolve_icloud_sync_dir(icloud_sync_dir: Path | None = None) -> Path | None:
+    """Resolve AIDashSync target dir while keeping unittest/pytest runs hermetic."""
+    if icloud_sync_dir is not None:
+        return Path(icloud_sync_dir).expanduser()
+    env_override = str(os.environ.get("AIDASH_ICLOUD_SYNC_DIR") or "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+    in_test_harness = bool(os.environ.get("PYTEST_CURRENT_TEST")) or ("unittest" in sys.modules)
+    if in_test_harness:
+        return None
+    cloud_docs = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    if not cloud_docs.is_dir():
+        return None
+    return cloud_docs / "AIDashSync"
+
+
+def mirror_skills_to_icloud(
+    skill_details: Sequence[Mapping[str, Any]],
+    *,
+    icloud_sync_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Mirror redacted SKILL.md and text references/* into <sync_dir>/skills-mirror/<slug>/."""
+    target_sync_dir = _resolve_icloud_sync_dir(icloud_sync_dir)
+    if target_sync_dir is None:
+        return {"mirrored": False, "reason": "icloud_sync_disabled_or_unavailable", "skills_written": 0, "references_written": 0}
+    if icloud_sync_dir is None and not os.environ.get("AIDASH_ICLOUD_SYNC_DIR"):
+        cloud_docs_parent = target_sync_dir.parent
+        if not cloud_docs_parent.is_dir():
+            return {"mirrored": False, "reason": "cloud_docs_missing", "skills_written": 0, "references_written": 0}
+
+    mirror_root = target_sync_dir / "skills-mirror"
+    skills_written = 0
+    refs_written = 0
+    try:
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        mirror_root_resolved = mirror_root.resolve()
+        for item in skill_details:
+            if not isinstance(item, Mapping):
+                continue
+            slug = str(item.get("skill") or "").strip()
+            if not slug or not _SAFE_SKILL_SLUG_RE.match(slug) or slug in {".", ".."}:
+                continue
+            skill_preview = item.get("doc_preview")
+            if not isinstance(skill_preview, str) or not skill_preview:
+                continue
+            skill_bundle_dir = (mirror_root_resolved / slug).resolve()
+            if skill_bundle_dir.parent != mirror_root_resolved:
+                continue
+            _atomic_write_text(skill_bundle_dir / "SKILL.md", skill_preview)
+            skills_written += 1
+
+            refs = item.get("references")
+            if not isinstance(refs, Sequence) or isinstance(refs, (str, bytes)):
+                continue
+            for ref in refs:
+                if not isinstance(ref, Mapping):
+                    continue
+                ref_preview = ref.get("doc_preview")
+                rel_path = str(ref.get("rel_path") or "").strip()
+                if not isinstance(ref_preview, str) or not ref_preview or not rel_path:
+                    continue
+                rel_parts = Path(rel_path).parts
+                if not rel_parts or rel_parts[0] != "references" or ".." in rel_parts:
+                    continue
+                dest = (skill_bundle_dir / rel_path).resolve()
+                try:
+                    dest.relative_to(skill_bundle_dir)
+                except ValueError:
+                    continue
+                _atomic_write_text(dest, ref_preview)
+                refs_written += 1
+    except OSError as exc:
+        return {
+            "mirrored": False,
+            "reason": f"os_error:{type(exc).__name__}",
+            "sync_dir": _redact_home_paths(str(target_sync_dir)),
+            "skills_written": skills_written,
+            "references_written": refs_written,
+        }
+    return {
+        "mirrored": True,
+        "sync_dir": _redact_home_paths(str(target_sync_dir)),
+        "skills_written": skills_written,
+        "references_written": refs_written,
+    }
 
 
 def _format_skill_dir(pkg: Path, *, repo_bound: bool, repo_name: str, skills_root: Path, dev_root: Path) -> str:
@@ -588,6 +710,15 @@ def _discover_skill_inventory(
             if skill_name in inventory:
                 continue
             l0_lines, frontmatter_tokens_est, body_tokens_est = _estimate_frontmatter_and_body_tokens(skill_md)
+            try:
+                skill_md_raw_text = skill_md.read_bytes().decode("utf-8", errors="ignore")
+            except OSError:
+                skill_md_raw_text = ""
+            skill_doc_preview = _redact_home_paths(
+                skill_md_raw_text,
+                skills_root=root,
+                dev_root=d_root,
+            )[:_SKILL_MD_PREVIEW_MAX_CHARS]
             l0_cap = 80 if skill_name in {"my-designer", "design-studio"} else 180
             refs_dir = pkg / "references"
             ref_files: list[str] = []
@@ -609,12 +740,20 @@ def _discover_skill_inventory(
                         ref_line_count = len(ref_text.splitlines())
                     except OSError:
                         ref_bytes = b""
+                        ref_text = ""
                         ref_line_count = 0
-                    ref_entries.append({
+                    ref_entry: dict[str, Any] = {
                         "rel_path": f"references/{rel_ref}",
                         "line_count": ref_line_count,
                         "tokens_est": max(1, len(ref_bytes) // 4),
-                    })
+                    }
+                    if ref_p.suffix.lower() in _DOC_PREVIEW_REF_SUFFIXES and ref_text:
+                        ref_entry["doc_preview"] = _redact_home_paths(
+                            ref_text,
+                            skills_root=root,
+                            dev_root=d_root,
+                        )[:_REF_DOC_PREVIEW_MAX_CHARS]
+                    ref_entries.append(ref_entry)
                     if ref_p.suffix == ".md":
                         ref_files.append(rel_ref)
                         max_l1_lines = max(max_l1_lines, ref_line_count)
@@ -675,6 +814,7 @@ def _discover_skill_inventory(
                 "max_l1_lines": max_l1_lines,
                 "l1_cap": 160,
                 "budget_ok": budget_ok,
+                "doc_preview": skill_doc_preview,
                 "reference_files": ref_files,
                 "reference_entries": ref_entries,
                 "scripts": scripts,
@@ -1025,6 +1165,196 @@ def _read_l2_channel_counts(wh: Path, start30: datetime, end30: datetime) -> dic
     return counts
 
 
+def _collect_skill_details(
+    *,
+    inventory: Mapping[str, Mapping[str, Any]],
+    skill_rows: Sequence[Mapping[str, Any]],
+    per_skill_channels: Mapping[str, Mapping[str, Any]],
+    l2_channels: Mapping[str, Mapping[str, Any]],
+    per_skill_cache: Mapping[str, Mapping[str, Any]],
+    s11_context: Mapping[str, Any],
+    per_skill_refs: Mapping[str, Mapping[str, Any]],
+    per_skill_scripts: Mapping[str, Mapping[str, Any]],
+    per_skill_eval_cases: Mapping[str, Mapping[str, Any]],
+    warehouse_present: bool,
+) -> list[dict[str, Any]]:
+    """Build per-skill inspector details with redacted doc_preview and references."""
+    row_by_skill = {r["skill"]: r for r in skill_rows}
+    all_detail_skills = sorted(
+        set(inventory.keys()) | {sk for sk, row_d in row_by_skill.items() if int(row_d.get("loads_30d") or 0) > 0},
+        key=lambda sk: (
+            0 if sk in inventory else 1,
+            -(row_by_skill.get(sk, {}).get("loads_30d") or 0),
+            0 if (inventory.get(sk, {}).get("scope") or "global") == "global" else 1,
+            sk,
+        ),
+    )
+    skill_details: list[dict[str, Any]] = []
+    for sk in all_detail_skills:
+        inv_meta = inventory.get(sk, {})
+        row_data = row_by_skill.get(sk, {})
+        scope = str(inv_meta.get("scope") or "global")
+        repo_label = str(inv_meta.get("repo") or "user-skills")
+        skill_dir_str = str(inv_meta.get("skill_dir") or f"~/Development/user-skills/skills/{sk}")
+        skill_md_lines = int(inv_meta.get("l0_lines") or 0)
+        fm_tok_est = int(inv_meta.get("frontmatter_tokens_est") or 1)
+        body_tok_est = int(inv_meta.get("body_tokens_est") or max(1, skill_md_lines * 12))
+
+        loads_7d_val = int(row_data.get("loads_7d") or 0)
+        loads_30d_val = int(row_data.get("loads_30d") or 0)
+        needs_opt = bool(row_data.get("needs_optimization"))
+        if loads_30d_val == 0:
+            status_label = "zombie_30d"
+        elif needs_opt:
+            status_label = "needs_optimization"
+        else:
+            status_label = "active"
+
+        obs_ch = per_skill_channels.get(sk, {})
+        l2_ch = l2_channels.get(sk, {})
+        source_breakdown = {
+            ch_key: max(int(obs_ch.get(ch_key) or 0), int(l2_ch.get(ch_key) or 0))
+            for ch_key in ("claude", "copilot", "codex", "hermes", "gtt")
+        }
+
+        cache_b = per_skill_cache.get(sk, {})
+        tot_in_sk = int(cache_b.get("in") or 0)
+        tot_cr_sk = int(cache_b.get("cache_read") or 0)
+        sk_kv_cache_pct = (
+            round(100.0 * tot_cr_sk / (tot_in_sk + tot_cr_sk), 1)
+            if (tot_in_sk + tot_cr_sk) > 0
+            else s11_context.get("kv_cache_hit_pct")
+        )
+
+        # Merge physical references + observed warehouse reference_hits
+        phys_refs = {entry["rel_path"]: dict(entry) for entry in inv_meta.get("reference_entries", [])}
+        obs_refs = per_skill_refs.get(sk, {})
+        merged_ref_paths = sorted(set(phys_refs.keys()) | set(obs_refs.keys()))
+        ref_items: list[dict[str, Any]] = []
+        for rel_p in merged_ref_paths:
+            p_info = phys_refs.get(rel_p)
+            o_info = obs_refs.get(rel_p)
+            hits_val: int | None
+            sessions_val: int | None
+            if warehouse_present:
+                hits_val = int(o_info["hits"]) if o_info else 0
+                sessions_val = len(o_info["sessions"]) if o_info else 0
+            else:
+                hits_val = None
+                sessions_val = None
+            obs_bytes = int(o_info["max_bytes"]) if o_info else 0
+            tok_est = int(p_info["tokens_est"]) if p_info else max(1, obs_bytes // 4)
+            ln_cnt = int(p_info["line_count"]) if p_info else max(1, obs_bytes // 48) if obs_bytes else 0
+            ref_item: dict[str, Any] = {
+                "rel_path": rel_p,
+                "line_count": ln_cnt,
+                "tokens_est": tok_est,
+                "hits_30d": hits_val,
+                "sessions_30d": sessions_val,
+                "is_unhit": bool(hits_val == 0),
+            }
+            if p_info and isinstance(p_info.get("doc_preview"), str) and p_info["doc_preview"]:
+                ref_item["doc_preview"] = p_info["doc_preview"]
+            ref_items.append(ref_item)
+
+        # Merge physical scripts + observed warehouse script_call
+        phys_scripts = set(inv_meta.get("script_entries", []))
+        obs_scripts = per_skill_scripts.get(sk, {})
+        merged_script_paths = sorted(phys_scripts | set(obs_scripts.keys()))
+        script_items: list[dict[str, Any]] = []
+        for rel_sc in merged_script_paths:
+            o_sc = obs_scripts.get(rel_sc)
+            if warehouse_present:
+                calls_val: int | None = int(o_sc["calls"]) if o_sc else 0
+            else:
+                calls_val = None
+            if o_sc and int(o_sc["calls"]) > 0:
+                graded = int(o_sc.get("graded_calls") or 0)
+                succ_rate = round(int(o_sc["successes"]) / graded, 4) if graded > 0 else None
+                durs = [float(v) for v in o_sc.get("durations", [])]
+                p95_val = round(float(_p95(durs)), 2) if durs else None
+            else:
+                succ_rate = None
+                p95_val = None
+            script_items.append({
+                "rel_path": rel_sc,
+                "calls_30d": calls_val,
+                "success_rate": succ_rate,
+                "p95_ms": p95_val,
+                "is_unpracticed": bool(calls_val == 0),
+            })
+
+        # Merge parsed eval_cases + observed per-skill eval case events
+        parsed_cases = [dict(c) for c in inv_meta.get("eval_cases", [])]
+        obs_cases = per_skill_eval_cases.get(sk, {})
+        known_case_ids = {c["id"] for c in parsed_cases}
+        eval_case_items: list[dict[str, Any]] = []
+        for c_entry in parsed_cases:
+            cid = c_entry["id"]
+            c_obs = obs_cases.get(cid, {})
+            eval_case_items.append({
+                "id": cid,
+                "title": c_entry["title"],
+                "kind": c_entry["kind"],
+                "assertion_summary": c_entry["assertion_summary"],
+                "status": c_entry.get("status", "active"),
+                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+        for cid, c_obs in sorted(obs_cases.items()):
+            if cid in known_case_ids or not _EVAL_CASE_ID_RE.match(cid):
+                continue
+            eval_case_items.append({
+                "id": cid,
+                "title": cid,
+                "kind": "contract",
+                "assertion_summary": f"Observed gate event for {cid}",
+                "status": "active",
+                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+
+        detail_meta = {
+            key: row_data[key]
+            for key in ("window_cst", "window_start", "window_end", "source_as_of", "sample_size", "coverage_status")
+            if key in row_data
+        }
+        if not detail_meta:
+            detail_meta = _freshness([], warehouse_present, 30)
+
+        skill_details.append({
+            **detail_meta,
+            "skill": sk,
+            "scope": scope,
+            "repo": repo_label,
+            "skill_dir": skill_dir_str,
+            "skill_md_path": "SKILL.md",
+            "skill_md_lines": skill_md_lines,
+            "frontmatter_tokens_est": fm_tok_est,
+            "body_tokens_est": body_tok_est,
+            "doc_preview": str(inv_meta.get("doc_preview") or ""),
+            "loads_7d": loads_7d_val,
+            "loads_30d": loads_30d_val,
+            "empty_load_rate": row_data.get("empty_load_rate"),
+            "roi_score": row_data.get("roi_score"),
+            "r1_pass_rate": row_data.get("r1_pass_rate"),
+            "avg_context_tokens": row_data.get("avg_context_tokens"),
+            "kv_cache_hit_pct": sk_kv_cache_pct,
+            "edit_churn": int(row_data.get("edit_churn_count") or 0),
+            "retry_churn": int(row_data.get("retry_commands") or 0),
+            "impl_bug_escapes": int(row_data.get("impl_bug_escapes") or 0),
+            "spec_gap_escapes": int(row_data.get("spec_gap_escapes") or 0),
+            "eval_interceptions": int(row_data.get("eval_interceptions") or 0),
+            "eval_escapes": int(row_data.get("eval_escapes") or 0),
+            "status_label": status_label,
+            "source_breakdown": source_breakdown,
+            "references": ref_items,
+            "scripts": script_items,
+            "eval_cases": eval_case_items,
+        })
+    return skill_details
+
+
 def compute_skill_roi_diagnostics(
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
@@ -1035,6 +1365,7 @@ def compute_skill_roi_diagnostics(
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Compute S1-S4, S6-S10 Skill ROI diagnostics, and S11-S12 Context & Tool Burn."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
@@ -1739,181 +2070,31 @@ def compute_skill_roi_diagnostics(
         p_item.setdefault("window_start", source_meta["window_start"])
         p_item.setdefault("window_end", source_meta["window_end"])
 
-    row_by_skill = {r["skill"]: r for r in skill_rows}
-    all_detail_skills = sorted(
-        set(inventory.keys()) | {sk for sk, row_d in row_by_skill.items() if int(row_d.get("loads_30d") or 0) > 0},
-        key=lambda sk: (
-            0 if sk in inventory else 1,
-            -(row_by_skill.get(sk, {}).get("loads_30d") or 0),
-            0 if (inventory.get(sk, {}).get("scope") or "global") == "global" else 1,
-            sk,
-        ),
+    skill_details = _collect_skill_details(
+        inventory=inventory,
+        skill_rows=skill_rows,
+        per_skill_channels=per_skill_channels,
+        l2_channels=l2_channels,
+        per_skill_cache=per_skill_cache,
+        s11_context=s11_context,
+        per_skill_refs=per_skill_refs,
+        per_skill_scripts=per_skill_scripts,
+        per_skill_eval_cases=per_skill_eval_cases,
+        warehouse_present=warehouse_present,
     )
-    skill_details: list[dict[str, Any]] = []
-    for sk in all_detail_skills:
-        inv_meta = inventory.get(sk, {})
-        row_data = row_by_skill.get(sk, {})
-        scope = str(inv_meta.get("scope") or "global")
-        repo_label = str(inv_meta.get("repo") or "user-skills")
-        skill_dir_str = str(inv_meta.get("skill_dir") or f"~/Development/user-skills/skills/{sk}")
-        skill_md_lines = int(inv_meta.get("l0_lines") or 0)
-        fm_tok_est = int(inv_meta.get("frontmatter_tokens_est") or 1)
-        body_tok_est = int(inv_meta.get("body_tokens_est") or max(1, skill_md_lines * 12))
 
-        loads_7d_val = int(row_data.get("loads_7d") or 0)
-        loads_30d_val = int(row_data.get("loads_30d") or 0)
-        needs_opt = bool(row_data.get("needs_optimization"))
-        if loads_30d_val == 0:
-            status_label = "zombie_30d"
-        elif needs_opt:
-            status_label = "needs_optimization"
-        else:
-            status_label = "active"
-
-        obs_ch = per_skill_channels.get(sk, {})
-        l2_ch = l2_channels.get(sk, {})
-        source_breakdown = {
-            ch_key: max(int(obs_ch.get(ch_key) or 0), int(l2_ch.get(ch_key) or 0))
-            for ch_key in ("claude", "copilot", "codex", "hermes", "gtt")
-        }
-
-        cache_b = per_skill_cache.get(sk, {})
-        tot_in_sk = int(cache_b.get("in") or 0)
-        tot_cr_sk = int(cache_b.get("cache_read") or 0)
-        sk_kv_cache_pct = (
-            round(100.0 * tot_cr_sk / (tot_in_sk + tot_cr_sk), 1)
-            if (tot_in_sk + tot_cr_sk) > 0
-            else s11_context.get("kv_cache_hit_pct")
-        )
-
-        # Merge physical references + observed warehouse reference_hits
-        phys_refs = {entry["rel_path"]: dict(entry) for entry in inv_meta.get("reference_entries", [])}
-        obs_refs = per_skill_refs.get(sk, {})
-        merged_ref_paths = sorted(set(phys_refs.keys()) | set(obs_refs.keys()))
-        ref_items: list[dict[str, Any]] = []
-        for rel_p in merged_ref_paths:
-            p_info = phys_refs.get(rel_p)
-            o_info = obs_refs.get(rel_p)
-            hits_val: int | None
-            sessions_val: int | None
-            if warehouse_present:
-                hits_val = int(o_info["hits"]) if o_info else 0
-                sessions_val = len(o_info["sessions"]) if o_info else 0
-            else:
-                hits_val = None
-                sessions_val = None
-            obs_bytes = int(o_info["max_bytes"]) if o_info else 0
-            tok_est = int(p_info["tokens_est"]) if p_info else max(1, obs_bytes // 4)
-            ln_cnt = int(p_info["line_count"]) if p_info else max(1, obs_bytes // 48) if obs_bytes else 0
-            ref_items.append({
-                "rel_path": rel_p,
-                "line_count": ln_cnt,
-                "tokens_est": tok_est,
-                "hits_30d": hits_val,
-                "sessions_30d": sessions_val,
-                "is_unhit": bool(hits_val == 0),
-            })
-
-        # Merge physical scripts + observed warehouse script_call
-        phys_scripts = set(inv_meta.get("script_entries", []))
-        obs_scripts = per_skill_scripts.get(sk, {})
-        merged_script_paths = sorted(phys_scripts | set(obs_scripts.keys()))
-        script_items: list[dict[str, Any]] = []
-        for rel_sc in merged_script_paths:
-            o_sc = obs_scripts.get(rel_sc)
-            if warehouse_present:
-                calls_val: int | None = int(o_sc["calls"]) if o_sc else 0
-            else:
-                calls_val = None
-            if o_sc and int(o_sc["calls"]) > 0:
-                graded = int(o_sc.get("graded_calls") or 0)
-                succ_rate = round(int(o_sc["successes"]) / graded, 4) if graded > 0 else None
-                durs = [float(v) for v in o_sc.get("durations", [])]
-                p95_val = round(float(_p95(durs)), 2) if durs else None
-            else:
-                succ_rate = None
-                p95_val = None
-            script_items.append({
-                "rel_path": rel_sc,
-                "calls_30d": calls_val,
-                "success_rate": succ_rate,
-                "p95_ms": p95_val,
-                "is_unpracticed": bool(calls_val == 0),
-            })
-
-        # Merge parsed eval_cases + observed per-skill eval case events
-        parsed_cases = [dict(c) for c in inv_meta.get("eval_cases", [])]
-        obs_cases = per_skill_eval_cases.get(sk, {})
-        known_case_ids = {c["id"] for c in parsed_cases}
-        eval_case_items: list[dict[str, Any]] = []
-        for c_entry in parsed_cases:
-            cid = c_entry["id"]
-            c_obs = obs_cases.get(cid, {})
-            eval_case_items.append({
-                "id": cid,
-                "title": c_entry["title"],
-                "kind": c_entry["kind"],
-                "assertion_summary": c_entry["assertion_summary"],
-                "status": c_entry.get("status", "active"),
-                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
-                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
-            })
-        for cid, c_obs in sorted(obs_cases.items()):
-            if cid in known_case_ids or not _EVAL_CASE_ID_RE.match(cid):
-                continue
-            eval_case_items.append({
-                "id": cid,
-                "title": cid,
-                "kind": "contract",
-                "assertion_summary": f"Observed gate event for {cid}",
-                "status": "active",
-                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
-                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
-            })
-
-        detail_meta = {
-            key: row_data[key]
-            for key in ("window_cst", "window_start", "window_end", "source_as_of", "sample_size", "coverage_status")
-            if key in row_data
-        }
-        if not detail_meta:
-            detail_meta = _freshness([], warehouse_present, 30)
-
-        skill_details.append({
-            **detail_meta,
-            "skill": sk,
-            "scope": scope,
-            "repo": repo_label,
-            "skill_dir": skill_dir_str,
-            "skill_md_path": "SKILL.md",
-            "skill_md_lines": skill_md_lines,
-            "frontmatter_tokens_est": fm_tok_est,
-            "body_tokens_est": body_tok_est,
-            "loads_7d": loads_7d_val,
-            "loads_30d": loads_30d_val,
-            "empty_load_rate": row_data.get("empty_load_rate"),
-            "roi_score": row_data.get("roi_score"),
-            "r1_pass_rate": row_data.get("r1_pass_rate"),
-            "avg_context_tokens": row_data.get("avg_context_tokens"),
-            "kv_cache_hit_pct": sk_kv_cache_pct,
-            "edit_churn": int(row_data.get("edit_churn_count") or 0),
-            "retry_churn": int(row_data.get("retry_commands") or 0),
-            "impl_bug_escapes": int(row_data.get("impl_bug_escapes") or 0),
-            "spec_gap_escapes": int(row_data.get("spec_gap_escapes") or 0),
-            "eval_interceptions": int(row_data.get("eval_interceptions") or 0),
-            "eval_escapes": int(row_data.get("eval_escapes") or 0),
-            "status_label": status_label,
-            "source_breakdown": source_breakdown,
-            "references": ref_items,
-            "scripts": script_items,
-            "eval_cases": eval_case_items,
-        })
+    try:
+        mirror_skills_to_icloud(skill_details, icloud_sync_dir=icloud_sync_dir)
+    except Exception:
+        pass
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     auto_proposed = _queue_recommendations(proposals, prop_path) if auto_propose else []
     proposals_written = len(auto_proposed)
     proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
     return {
         "ok": True,
+        "generated_at": generated_at,
         "query_id": "retro/skill_roi_diagnostics",
         "wall_clock_date": wall_clock_date,
         "staleness_days": staleness_days,
@@ -2026,9 +2207,10 @@ def compute_skill_roi(
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Alias for compute_skill_roi_diagnostics()."""
-    return compute_skill_roi_diagnostics(
+    report = compute_skill_roi_diagnostics(
         warehouse_db=warehouse_db,
         copilot_db=copilot_db,
         skills_root=skills_root,
@@ -2037,7 +2219,13 @@ def compute_skill_roi(
         dsh_sessions=dsh_sessions,
         auto_propose=auto_propose,
         proposals_path=proposals_path,
+        icloud_sync_dir=icloud_sync_dir,
     )
+    report.setdefault(
+        "generated_at",
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    )
+    return report
 
 
 CST = timezone(timedelta(hours=8))
@@ -2531,16 +2719,18 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
         p.add_argument("--magpie-usage", type=Path, default=DEFAULT_MAGPIE_USAGE)
         p.add_argument("--dsh-sessions", type=Path, default=DEFAULT_DSH_SESSIONS)
+        p.add_argument("--icloud-sync-dir", type=Path, default=None)
         p.add_argument("--auto-propose", action="store_true")
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
-        report = compute_skill_roi_diagnostics(
+        report = compute_skill_roi(
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
             skills_root=ns.skills_root,
             dev_root=ns.dev_root,
             magpie_usage=ns.magpie_usage,
             dsh_sessions=ns.dsh_sessions,
+            icloud_sync_dir=ns.icloud_sync_dir,
         )
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)
