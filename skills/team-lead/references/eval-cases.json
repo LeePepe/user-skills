@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v2",
   "skill": "team-lead",
-  "updated": "2026-11-19",
+  "updated": "2026-11-20",
   "trigger_evals": [
     {
       "query": "plan and execute a multi-task feature Goal with Steering Writer Reviewer and PR delivery",
@@ -110,6 +110,23 @@
         "loop-check"
       ],
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-007",
+      "title": "multica_vpn_bridge.py shared symlink exposes serve/install-launchd/status and rejects wildcard Azure bind",
+      "tags": [
+        "multica",
+        "vpn",
+        "bridge",
+        "security"
+      ],
+      "cmd": "python3 skills/m2-dispatcher/scripts/multica_vpn_bridge.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "generate-azure-bridge-script"
+      ],
+      "negative_cmd": "python3 skills/m2-dispatcher/scripts/multica_vpn_bridge.py generate-azure-bridge-script --bind-host 0.0.0.0",
+      "registered_at": "2026-11-20"
     }
   ]
 }
