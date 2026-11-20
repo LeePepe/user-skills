@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -609,6 +610,84 @@ class RetroStoryEngineTests(unittest.TestCase):
             # Verify zero macOS user home path leaks in serialized report
             serialized = json.dumps(report, ensure_ascii=False)
             self.assertNotIn("/" + "Users/", serialized)
+            self.assertTrue(str(report.get("generated_at") or "").endswith("Z"))
+
+    def test_skill_details_doc_preview_redaction_and_icloud_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            icloud_sync = root / "AIDashSync"
+            dev_root.mkdir(parents=True)
+
+            mac_secret = "/" + "Users/secretmac/Development/private-repo/config.json"
+            linux_secret = "/" + "home/secretlinux/.config/secret.yaml"
+
+            sk = skills_root / "sync-probe-skill"
+            (sk / "references" / "nested").mkdir(parents=True)
+            (sk / "SKILL.md").write_text(
+                f"---\nname: sync-probe-skill\ndescription: Probe skill.\n---\n# Sync Probe\nPath A: {mac_secret}\nPath B: {linux_secret}\n"
+                + ("X" * 35000),
+                encoding="utf-8",
+            )
+            (sk / "references" / "guide.md").write_text(
+                f"# Guide\nInspect {mac_secret} and {linux_secret}\n" + ("Y" * 18000),
+                encoding="utf-8",
+            )
+            (sk / "references" / "nested" / "policy.yaml").write_text(
+                f"owner_home: {mac_secret}\nlinux_home: {linux_secret}\n",
+                encoding="utf-8",
+            )
+            (sk / "references" / "binary.bin").write_bytes(b"\x00\x01\x02\x03")
+
+            # Without explicit icloud_sync_dir or env var under unittest, host iCloud must not be touched
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("AIDASH_ICLOUD_SYNC_DIR", None)
+                hermetic_res = ENGINE.mirror_skills_to_icloud([])
+                self.assertFalse(hermetic_res["mirrored"])
+
+            report = ENGINE.compute_skill_roi(
+                warehouse_db=root / "missing-wh.db",
+                copilot_db=root / "missing-cp.db",
+                skills_root=skills_root,
+                dev_root=dev_root,
+                magpie_usage=root / "missing-mp.jsonl",
+                dsh_sessions=root / "missing-dsh",
+                icloud_sync_dir=icloud_sync,
+            )
+            self.assertTrue(report["ok"])
+            self.assertIn("generated_at", report)
+            self.assertTrue(str(report["generated_at"]).endswith("Z"))
+
+            details_by_skill = {item["skill"]: item for item in report["skill_details"]}
+            detail = details_by_skill["sync-probe-skill"]
+            self.assertIn("doc_preview", detail)
+            self.assertEqual(len(detail["doc_preview"]), 32768)
+            self.assertNotIn("/" + "Users/", detail["doc_preview"])
+            self.assertNotIn("/" + "home/", detail["doc_preview"])
+            self.assertIn("~/Development/private-repo/config.json", detail["doc_preview"])
+            self.assertIn("~/.config/secret.yaml", detail["doc_preview"])
+
+            refs_by_path = {r["rel_path"]: r for r in detail["references"]}
+            self.assertEqual(len(refs_by_path["references/guide.md"]["doc_preview"]), 16384)
+            self.assertNotIn("/" + "Users/", refs_by_path["references/guide.md"]["doc_preview"])
+            self.assertNotIn("/" + "home/", refs_by_path["references/guide.md"]["doc_preview"])
+            self.assertIn("~/.config/secret.yaml", refs_by_path["references/nested/policy.yaml"]["doc_preview"])
+            self.assertNotIn("doc_preview", refs_by_path["references/binary.bin"])
+
+            # Verify mirror_skills_to_icloud wrote SKILL.md and text references atomically
+            mirrored_skill_md = icloud_sync / "skills-mirror" / "sync-probe-skill" / "SKILL.md"
+            mirrored_guide = icloud_sync / "skills-mirror" / "sync-probe-skill" / "references" / "guide.md"
+            mirrored_yaml = icloud_sync / "skills-mirror" / "sync-probe-skill" / "references" / "nested" / "policy.yaml"
+            mirrored_bin = icloud_sync / "skills-mirror" / "sync-probe-skill" / "references" / "binary.bin"
+
+            self.assertTrue(mirrored_skill_md.is_file())
+            self.assertTrue(mirrored_guide.is_file())
+            self.assertTrue(mirrored_yaml.is_file())
+            self.assertFalse(mirrored_bin.exists())
+            self.assertEqual(mirrored_skill_md.read_text(encoding="utf-8"), detail["doc_preview"])
+            self.assertEqual(mirrored_guide.read_text(encoding="utf-8"), refs_by_path["references/guide.md"]["doc_preview"])
+            self.assertNotIn("/" + "Users/", mirrored_yaml.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
