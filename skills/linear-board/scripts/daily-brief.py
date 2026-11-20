@@ -909,10 +909,31 @@ def _load_issue_brief_module() -> Any:
     return module
 
 def _sanitize_human_zone_text(text: str) -> str:
-    cleaned = re.sub(r"(?<![A-Za-z0-9_-])(?:S(?:1[0-2]|[1-9])|M[1-5]|EV-\d{1,4}|DC-\d{1,4}|H[1-5]|R10|V[1-5])(?![A-Za-z0-9_-])", "", text)
+    cleaned = re.sub(r"\[Skill Retro\s+L[0-3]\]\s*", "", str(text or ""), flags=re.I)
+    cleaned = re.sub(r"(?<![A-Za-z0-9_-])(?:S(?:1[0-2]|[1-9])|M[1-5]|EV-\d{1,4}|DC-\d{1,4}|H[1-5]|R10|V[1-5])(?![A-Za-z0-9_-])", "", cleaned)
     cleaned = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", cleaned)
     cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip(" ·—-")
+    cleaned = re.sub(
+        r"(?:(?<![A-Za-z0-9_/-])(?:python3?|pytest|bash|sh|curl|gh|multica|git)\s+\S+(?:\s+--?[A-Za-z0-9_-]+|\s+\S+\.py\b))"
+        r"|(?:\./scripts/[A-Za-z0-9_./-]+)"
+        r"|(?:\bskills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.py\b)",
+        "",
+        cleaned,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip(" ·—-：:")
+
+
+def _extract_skill_retro_digest_proposals(patrol_digest: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    roi_entry = patrol_digest.get("skills-roi-diagnostic")
+    if not isinstance(roi_entry, dict):
+        return {}, []
+    sr = roi_entry.get("skill_retro")
+    if not isinstance(sr, dict):
+        return {}, []
+    raw_props = sr.get("proposals")
+    if not isinstance(raw_props, list):
+        return sr, []
+    return sr, [p for p in raw_props if isinstance(p, dict)]
 
 def _load_daily_patrol_digest_entries(target: date) -> dict[str, dict[str, Any]]:
     try:
@@ -939,10 +960,11 @@ def render_dual_zone_brief(
     completed_total = sum((rollup_counts or {}).values()) if rollup_counts else sum(1 for ln in plan_a_markdown.splitlines() if ln.startswith("| **"))
     todo_total = len(todos)
     resolved_patrol = patrol_digest if patrol_digest is not None else _load_daily_patrol_digest_entries(target)
+    skill_retro_meta, skill_retro_proposals = _extract_skill_retro_digest_proposals(resolved_patrol)
     actionable_patrols = [
         (lid, entry)
         for lid, entry in sorted(resolved_patrol.items())
-        if isinstance(entry, dict) and entry.get("actionable") and entry.get("items")
+        if isinstance(entry, dict) and entry.get("actionable") and (entry.get("items") or (lid == "skills-roi-diagnostic" and skill_retro_proposals))
     ]
     bucket_label_map = {
         "needs": "待你拍板阻塞项，确认后才能继续推进",
@@ -961,13 +983,15 @@ def render_dual_zone_brief(
         )[:8]
     else:
         display_rows = todos[:8]
-    patrol_note = f"（已聚合 {len(resolved_patrol)} 路工程自动巡检）" if resolved_patrol else ""
+    retro_note = f"、含 {len(skill_retro_proposals)} 项技能自演进提案" if skill_retro_proposals else ""
+    patrol_note = f"（已聚合 {len(resolved_patrol)} 路工程自动巡检{retro_note}）" if resolved_patrol else ""
     if todo_total or actionable_patrols:
         tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办{patrol_note}，勾选或留言即可派发执行。"
     else:
         tldr = f"昨日共完成 {completed_total} 项产出{patrol_note}，今日暂无阻塞或待拍板事项。"
 
     items: list[str | dict[str, Any]] = []
+    seen_human_what: set[str] = set()
     for idx, row in enumerate(display_rows, 1):
         is_groomed = bool(row.get("groomed_top3")) and row.get("group") not in {"needs", "active"}
         summary = _sanitize_human_zone_text(str(row.get("summary") or "待办事项")) or "待办事项"
@@ -986,16 +1010,39 @@ def render_dual_zone_brief(
             why = f"Top3 顺推 #{number}（{summary[:18]}）：依赖已就绪，勾选或按编号派发"
         else:
             why = f"#{number} {bucket_desc}（{summary[:16]}）"
+        seen_human_what.add(_plain(what).casefold())
         items.append(f"- [ ] **[{number}] {what}** — {why}")
     next_num = len(items) + 1
+    # Surface up to 2 high-signal skill-retro proposals distinctly before generic patrol rollups
+    for prop in skill_retro_proposals[:2]:
+        if len(items) >= 10:
+            break
+        raw_what = str(prop.get("human_what") or prop.get("title") or "").strip()
+        raw_why = str(prop.get("human_why") or prop.get("plain_reason") or prop.get("action") or "").strip()
+        p_what = _sanitize_human_zone_text(raw_what)[:42]
+        p_why = _sanitize_human_zone_text(raw_why)[:52] or "技能四层自演进高信号防呆项"
+        norm_what = _plain(p_what).casefold()
+        if p_what and norm_what not in seen_human_what:
+            seen_human_what.add(norm_what)
+            items.append(f"- [ ] **[{next_num}] {p_what}** — {p_why}")
+            next_num += 1
     for lid, entry in actionable_patrols[:3]:
-        first_item = (entry.get("items") or [{}])[0]
-        if isinstance(first_item, dict):
-            p_what = _sanitize_human_zone_text(str(first_item.get("what") or lid))[:42]
-            p_why = _sanitize_human_zone_text(str(first_item.get("why") or entry.get("summary") or "巡检聚合跟进"))[:48]
-            if p_what:
+        if len(items) >= 11:
+            break
+        if lid == "skills-roi-diagnostic" and skill_retro_proposals:
+            # Already surfaced high-signal skill-retro proposals above; only add non-duplicate ROI items if any
+            candidate_items = [it for it in (entry.get("items") or []) if isinstance(it, dict)]
+        else:
+            candidate_items = [it for it in (entry.get("items") or [])[:1] if isinstance(it, dict)]
+        for cand in candidate_items:
+            p_what = _sanitize_human_zone_text(str(cand.get("what") or lid))[:42]
+            p_why = _sanitize_human_zone_text(str(cand.get("why") or entry.get("summary") or "巡检聚合跟进"))[:48]
+            norm_what = _plain(p_what).casefold()
+            if p_what and norm_what not in seen_human_what:
+                seen_human_what.add(norm_what)
                 items.append(f"- [ ] **[{next_num}] {p_what}** — {p_why}")
                 next_num += 1
+                break
     if not items:
         items.append({"what": "保持常规巡检与节奏", "why": "当前无阻塞或高优待办事项"})
 
@@ -1008,6 +1055,23 @@ def render_dual_zone_brief(
             patrol_md_lines.append(
                 f"- **`{lid}`** (`actionable={entry.get('actionable')}`, `delta={entry.get('delta_count', 0)}`): {entry.get('summary') or 'clean'}"
             )
+        if skill_retro_meta or skill_retro_proposals:
+            patrol_md_lines.extend(
+                [
+                    "",
+                    "### 🧬 4-Layer Skill Retro Digest (`retro_story_engine.py skill-retro`)",
+                    "",
+                    f"- **Cohort**: `sessions={skill_retro_meta.get('sample_size', 0)}` · "
+                    f"`slow_flywheel_ready={skill_retro_meta.get('slow_flywheel_ready', False)}` · "
+                    f"`proposals={len(skill_retro_proposals)}` · "
+                    f"`observation_pool={skill_retro_meta.get('observation_pool_count', 0)}`",
+                ]
+            )
+            for prop in skill_retro_proposals[:4]:
+                patrol_md_lines.append(
+                    f"- **`[{prop.get('priority', 'P2')}][{prop.get('layer', 'L0')}] {prop.get('skill')}`** "
+                    f"(`{prop.get('category')}`): {prop.get('plain_reason') or prop.get('title') or ''} — {prop.get('action') or ''}"
+                )
         stripped_plan_a = (stripped_plan_a + "\n" + "\n".join(patrol_md_lines)).strip()
     dedup_key = f"daily-brief-{target.isoformat()}"
     rendered = issue_brief.render_dual_zone_issue(
@@ -1073,7 +1137,7 @@ def publish_multica_brief(
     return loop_mod.upsert_multica_dual_zone_issue(**kwargs)
 
 
-def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, publish_multica: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, multica_server_url: str = MULTICA_DEFAULT_SERVER_URL, multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID, multica_assignee_id: str = MULTICA_OWNER_ID, multica_status: str = "todo", multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None, groom_backlog_on_generate: bool = False) -> dict[str, Any]:
+def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = None, propose_linear: bool = False, publish_multica: bool = False, dry_run: bool = False, parent: str | None = DEFAULT_PARENT, dual_zone: bool = False, multica_server_url: str = MULTICA_DEFAULT_SERVER_URL, multica_workspace_id: str = MULTICA_DEFAULT_WORKSPACE_ID, multica_assignee_id: str = MULTICA_OWNER_ID, multica_status: str = "todo", multica_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, runner: Callable[..., Any] = subprocess.check_output, jev_runner: Callable[..., Any] | None = None, groomed_top3: list[dict[str, Any]] | None = None, groom_backlog_on_generate: bool = False, patrol_digest: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     yesterday = target - timedelta(days=1); scope_cache: dict[str, Any] = {}
     linear, w1 = collect_linear(client, target, scope_cache=scope_cache)
     commits, w2 = collect_git(dev_root, yesterday, runner=runner)
@@ -1109,7 +1173,7 @@ def generate(target: date, *, dev_root: Path, handoff_root: Path, client: Any = 
     plan_a_markdown, todos = render_brief(target, linear, commits, events, w1 + w2 + w3 + w4, prs, ledger_active, jev_runner=jev_runner, groomed_top3=resolved_groomed_top3)
     rollup_counts = {"linear": sum(_issue_is_completed(i, yesterday) for i in linear), "commits": len(commits), "prs": len(prs), "events": len(events)}
     use_dual_zone = bool(dual_zone or (publish_multica and not propose_linear))
-    dual_zone_markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts) if (use_dual_zone or publish_multica) else ""
+    dual_zone_markdown = render_dual_zone_brief(target, plan_a_markdown, todos, rollup_counts=rollup_counts, patrol_digest=patrol_digest) if (use_dual_zone or publish_multica) else ""
     markdown = dual_zone_markdown if use_dual_zone else plan_a_markdown
     issue = None; multica_result = None; ok = True; warnings = w1 + w2 + w3 + w4 + groom_warnings; archive_result = None
     if propose_linear and not dry_run:

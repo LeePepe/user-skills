@@ -902,6 +902,74 @@ class DailyBriefTests(unittest.TestCase):
             self.assertIn(f"[📧 打开原邮件]({raw_applink})", markdown)
             self.assertIn("[TIA-562](https://linear.app/test/TIA-562)", markdown)
 
+    def test_render_dual_zone_brief_surfaces_skill_retro_digest_proposals_cleanly(self):
+        plan_a, todos = daily_brief.render_brief(TODAY, [issue("TIA-1", "Ship gateway", priority=1)], [], [], [])
+        patrol_digest = {
+            "skills-roi-diagnostic": {
+                "loop_id": "skills-roi-diagnostic",
+                "date": TODAY.isoformat(),
+                "actionable": True,
+                "has_delta": True,
+                "delta_count": 2,
+                "summary": "四层技能自演进巡检发现 2 项高信号改进提案。",
+                "items": [
+                    {
+                        "what": "消除脚本参数路障 `team-lead/goal-supervisor.py`",
+                        "why": "`goal-supervisor.py` 触发 3 次参数报错，需补自解释提示",
+                    }
+                ],
+                "skill_retro": {
+                    "schema": "skill-retro-diagnostic/v1",
+                    "sample_size": 62,
+                    "slow_flywheel_ready": True,
+                    "high_signal_proposals_count": 2,
+                    "observation_pool_count": 1,
+                    "proposals": [
+                        {
+                            "id": "skill-retro-l2-roadblock-team-lead",
+                            "skill": "team-lead",
+                            "layer": "L2",
+                            "category": "rigid_roadblock",
+                            "priority": "P1",
+                            "title": "[Skill Retro L2] 消除脚本参数路障 `team-lead/goal-supervisor.py`（S10 / a1b2c3d4）",
+                            "plain_reason": "运行 python3 skills/team-lead/scripts/goal-supervisor.py --bad 触发 3 次报错，需补自解释提示",
+                            "action": "Emit valid flags on exit=2",
+                        },
+                        {
+                            "id": "skill-retro-l1-unwired-my-designer",
+                            "skill": "my-designer",
+                            "layer": "L1",
+                            "category": "unwired_disconnected_drawer",
+                            "priority": "P2",
+                            "human_what": "补齐断链抽屉 `my-designer/a11y.md` 的自解释路由",
+                            "human_why": "`my-designer` 脚本报错后未引导读取对应抽屉",
+                            "plain_reason": "`my-designer` 脚本报错后未引导读取对应抽屉",
+                            "action": "Wire self-disclosing stderr pointer",
+                        },
+                    ],
+                },
+            }
+        }
+        dz_md = daily_brief.render_dual_zone_brief(
+            TODAY,
+            plan_a,
+            todos,
+            rollup_counts={"linear": 0, "commits": 0, "prs": 0, "events": 0},
+            patrol_digest=patrol_digest,
+        )
+        dz_verify = daily_brief._load_issue_brief_module().verify_dual_zone_issue(dz_md)
+        self.assertTrue(dz_verify["ok"], dz_verify)
+        upper_zone = dz_md.split("<details>", 1)[0]
+        lower_zone = dz_md.split("<details>", 1)[1]
+        self.assertIn("含 2 项技能自演进提案", upper_zone)
+        self.assertIn("goal-supervisor.py", upper_zone)
+        self.assertIn("my-designer/a11y.md", upper_zone)
+        self.assertNotIn("S10", upper_zone)
+        self.assertNotIn("a1b2c3d4", upper_zone)
+        self.assertIn("4-Layer Skill Retro Digest (`retro_story_engine.py skill-retro`)", lower_zone)
+        self.assertIn("`slow_flywheel_ready=True`", lower_zone)
+        self.assertEqual(daily_brief.validate_markdown(plan_a), [])
+
 
 if __name__ == "__main__":
     unittest.main()
