@@ -59,10 +59,6 @@ class TraceBackfillExporterTests(unittest.TestCase):
         )
         (goal_dir / "receipts" / "TK1-writer-r10.md").write_text(
             "# TK1 Writer R10\n"
-            "- Skill: `team-lead` and `retro-loop`\n"
-            "- Read: skills/retro-loop/SKILL.md and skills/team-lead/references/ledger.md\n"
-            "- Ran: python3 skills/skill-contract/scripts/skill_contract.py audit --strict\n"
-            "- Tokens: input_tokens=4200 output_tokens=950\n"
             "- V5 Verdict: PASS\n",
             encoding="utf-8",
         )
@@ -84,7 +80,7 @@ class TraceBackfillExporterTests(unittest.TestCase):
             {
                 "type": "user.message",
                 "timestamp": "2026-11-20T02:10:01.000Z",
-                "data": {"content": "Implement retro-loop trace backfill exporter"},
+                "data": {"content": "Read handoff/sample-goal-eval/spec.md and run retro-loop"},
             },
             {
                 "type": "skill.invoked",
@@ -107,7 +103,12 @@ class TraceBackfillExporterTests(unittest.TestCase):
             {
                 "type": "tool.execution_complete",
                 "timestamp": "2026-11-20T02:10:04.250Z",
-                "data": {"toolCallId": "call_1", "success": True},
+                "data": {
+                    "toolCallId": "call_1",
+                    "success": True,
+                    "shellExecution": {"exitCode": 0},
+                    "result": {"content": "ok\n<shellId: 1 completed with exit code 0>"},
+                },
             },
             {
                 "type": "session.usage_record",
@@ -210,6 +211,258 @@ class TraceBackfillExporterTests(unittest.TestCase):
                     else:
                         self.assertIn(sp.parent_span_id, span_ids)
                         self.assertGreater(sp.end_ns, sp.start_ns)
+
+    def test_sparse_goal_never_fabricates_unexecuted_spans_or_brief_mentions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "handoff" / "sparse-goal"
+            (goal_dir / "briefs").mkdir(parents=True)
+            (goal_dir / "ledger.md").write_text(
+                "# Goal: sparse-goal\n"
+                "- 目标: Sparse goal without executed telemetry\n"
+                "## Tasks\n"
+                "| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
+                "|---|---|---|---|---|---|\n"
+                "| T1 | — | Planned only | — | ready | — |\n"
+                "## Events\n"
+                "- 2026-11-20T12:00:00+08:00 | EVT=READY | id=E1 | task=T1 | ref=briefs/T1.md\n",
+                encoding="utf-8",
+            )
+            # Mentioning a script/skill in a brief MUST NOT be fabricated into executed spans
+            (goal_dir / "briefs" / "T1.md").write_text(
+                "Run `python3 skills/team-lead/scripts/feedback_guard.py` and read `skills/team-lead/SKILL.md`.\n",
+                encoding="utf-8",
+            )
+
+            tr = EXPORTER.build_goal_trace(
+                goal_dir,
+                EXPORTER._load_warehouse_maps(root / "nonexistent.db"),
+                linked_sessions=[],
+                skills_root=ROOT / "skills",
+            )
+            assert tr is not None
+            cats = {sp.category for sp in tr.spans}
+            self.assertEqual(cats, {"root", "stage_role"})
+            self.assertEqual(tr.output_payload["total_input_tokens"], 0)
+            self.assertEqual(
+                set(tr.output_payload["missing_categories"]),
+                {"skill_load", "l1_reference_read", "l2_script_exec", "llm_generation"},
+            )
+
+    def test_session_exports_all_generations_and_reconciles_root_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sess_id = "99999999-1111-2222-3333-444444444444"
+            sdir = root / "session-state" / sess_id
+            sdir.mkdir(parents=True)
+            events: list[dict[str, object]] = [
+                {
+                    "type": "session.start",
+                    "data": {"sessionId": sess_id, "startTime": "2026-11-20T03:00:00.000Z", "selectedModel": "gpt-5.4"},
+                },
+                {
+                    "type": "user.message",
+                    "timestamp": "2026-11-20T03:00:01.000Z",
+                    "data": {"content": "Run 15 turns"},
+                },
+            ]
+            for idx in range(15):
+                events.append(
+                    {
+                        "id": f"u-{idx}",
+                        "type": "session.usage_record",
+                        "timestamp": f"2026-11-20T03:00:{idx + 2:02d}.000Z",
+                        "data": {
+                            "usage": {
+                                "model": "gpt-5.4",
+                                "inputTokens": 1000 + idx,
+                                "outputTokens": 100 + idx,
+                                "cacheReadTokens": 500 + idx,
+                                "duration": 250,
+                            }
+                        },
+                    }
+                )
+            (sdir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+            tr = EXPORTER.build_session_trace_from_copilot(
+                sdir / "events.jsonl",
+                EXPORTER._load_warehouse_maps(root / "none.db"),
+                {},
+                skills_root=ROOT / "skills",
+            )
+            assert tr is not None
+            llm_spans = [sp for sp in tr.spans if sp.category == "llm_generation"]
+            self.assertEqual(len(llm_spans), 15)
+            self.assertEqual(tr.output_payload["llm_generations"], 15)
+            self.assertEqual(sum(sp.input_tokens for sp in llm_spans), tr.output_payload["total_input_tokens"])
+            self.assertEqual(sum(sp.output_tokens for sp in llm_spans), tr.output_payload["total_output_tokens"])
+            self.assertEqual(sum(sp.cache_read for sp in llm_spans), tr.output_payload["total_cache_read"])
+
+            lf_events = EXPORTER.build_langfuse_ingestion_events(tr)
+            lf_gens = [e for e in lf_events if e["type"] == "generation-create"]
+            self.assertEqual(len(lf_gens), 15)
+            self.assertEqual(
+                sum(e["body"]["usage"]["input"] for e in lf_gens),
+                tr.output_payload["total_input_tokens"],
+            )
+
+    def test_process_exit_code_and_async_shell_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sess_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            sdir = root / "session-state" / sess_id
+            sdir.mkdir(parents=True)
+            events = [
+                {
+                    "type": "session.start",
+                    "data": {"sessionId": sess_id, "startTime": "2026-11-20T04:00:00.000Z", "selectedModel": "gpt-5.4"},
+                },
+                # Case A: Tool transport success=True, but process exited with code 2
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": "2026-11-20T04:00:01.000Z",
+                    "data": {
+                        "toolCallId": "call_sync_fail",
+                        "toolName": "bash",
+                        "arguments": {"command": "bash skills/team-lead/scripts/herdr-dispatch.sh --role invalid"},
+                    },
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": "2026-11-20T04:00:01.400Z",
+                    "data": {
+                        "toolCallId": "call_sync_fail",
+                        "success": True,
+                        "shellExecution": {"exitCode": 2},
+                        "result": {"content": "Error: unsupported --role\n<shellId: 115 completed with exit code 2>"},
+                    },
+                },
+                # Case B: Async bash starts, then completes in read_bash with exit code 0
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": "2026-11-20T04:00:02.000Z",
+                    "data": {
+                        "toolCallId": "call_bg_start",
+                        "toolName": "bash",
+                        "arguments": {"command": "python3 skills/team-lead/scripts/ci-monitor.py pr --pr 1"},
+                    },
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": "2026-11-20T04:00:02.050Z",
+                    "data": {
+                        "toolCallId": "call_bg_start",
+                        "success": True,
+                        "shellExecution": None,
+                        "result": {"content": "<command started in background with shellId: bg_1>"},
+                    },
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": "2026-11-20T04:00:05.000Z",
+                    "data": {
+                        "toolCallId": "call_bg_read",
+                        "toolName": "read_bash",
+                        "arguments": {"shellId": "bg_1", "delay": 0},
+                    },
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": "2026-11-20T04:00:05.100Z",
+                    "data": {
+                        "toolCallId": "call_bg_read",
+                        "success": True,
+                        "shellExecution": None,
+                        "result": {"content": "PR_CHECKS_GREEN\n<shellId: bg_1 completed with exit code 0>"},
+                    },
+                },
+            ]
+            (sdir / "events.jsonl").write_text(
+                "\n".join(json.dumps(e) for e in events) + "\n" + (" " * 512) + "\n",
+                encoding="utf-8",
+            )
+
+            tr = EXPORTER.build_session_trace_from_copilot(
+                sdir / "events.jsonl",
+                EXPORTER._load_warehouse_maps(root / "none.db"),
+                {},
+                skills_root=ROOT / "skills",
+            )
+            assert tr is not None
+            scripts = [sp for sp in tr.spans if sp.category == "l2_script_exec"]
+            self.assertEqual(len(scripts), 2)
+            by_name = {sp.name: sp for sp in scripts}
+
+            herdr_sp = by_name["L2 Script Exec: herdr-dispatch.sh"]
+            self.assertEqual(herdr_sp.attributes["script.exit_code"], 2)
+            self.assertIs(herdr_sp.status_ok, False)
+
+            cimon_sp = by_name["L2 Script Exec: ci-monitor.py"]
+            self.assertEqual(cimon_sp.attributes["script.exit_code"], 0)
+            self.assertIs(cimon_sp.status_ok, True)
+            self.assertGreaterEqual(int(cimon_sp.attributes["script.duration_ms"]), 3000)
+
+    def test_fallback_session_deduplication_preserves_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage_jsonl = root / "usage.jsonl"
+            usage_jsonl.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "kind": "skill_turn",
+                                "session_id": "sess-overlap",
+                                "ts": "2026-11-20T01:00:00Z",
+                                "skill": "team-lead",
+                                "model": "claude-opus-4-6",
+                                "input_tokens": 100,
+                                "output_tokens": 20,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "kind": "skill_turn",
+                                "session_id": "sess-unique-2",
+                                "ts": "2026-11-20T01:05:00Z",
+                                "skill": "retro-loop",
+                                "model": "claude-opus-4-6",
+                                "input_tokens": 200,
+                                "output_tokens": 40,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            warehouse_db = root / "warehouse.db"
+            with contextlib.closing(sqlite3.connect(warehouse_db)) as conn:
+                conn.execute(
+                    "CREATE TABLE fact_turn (turn_uuid TEXT, session_id TEXT, ts TEXT, model TEXT, "
+                    "input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER)"
+                )
+                conn.executemany(
+                    "INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        ("t1", "sess-overlap", "2026-11-20T01:00:00Z", "claude-opus-4-6", 100, 20, 0),
+                        ("t2", "sess-unique-3", "2026-11-20T01:10:00Z", "gpt-5.4", 300, 60, 0),
+                    ],
+                )
+                conn.commit()
+
+            _, sessions = EXPORTER.collect_historical_traces(
+                handoff_root=root / "empty-handoff",
+                copilot_sessions_dir=root / "empty-copilot",
+                usage_jsonl=usage_jsonl,
+                warehouse_db=warehouse_db,
+                limit_goals=0,
+                limit_sessions=3,
+                skills_root=ROOT / "skills",
+            )
+            self.assertEqual([s.entity_id for s in sessions], ["sess-overlap", "sess-unique-2", "sess-unique-3"])
+            self.assertEqual(len({s.trace_id for s in sessions}), 3)
 
     def test_live_mock_dual_export_and_cli_dry_run(self) -> None:
         received: dict[str, list[tuple[dict[str, str], bytes]]] = {"otlp": [], "langfuse": []}

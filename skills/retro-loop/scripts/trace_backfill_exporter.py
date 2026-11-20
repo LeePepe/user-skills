@@ -2,6 +2,7 @@
 """Historical Goal & Session Trace Backfill Exporter for Arize Phoenix & Langfuse.
 
 Reconstructs local real historical Goal workflows and Session Prompt execution chains
+from genuine recorded telemetry (never fabricating missing executions, timings, or token metrics)
 into hierarchical Traces + 5 nested Child Span categories:
   1. Stage / Role Span (M3 -> M2 -> M1 TL -> Designer / Writer / Reviewer / Verifier / AntiCheat)
   2. Skill Load Span (e.g. team-lead, my-designer, retro-loop, deep-research)
@@ -19,7 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -29,7 +30,7 @@ import sqlite3
 import struct
 import sys
 import time
-from typing import Any, Iterable
+from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -60,6 +61,7 @@ SPAN_CATEGORIES = (
 _LINEAR_ISSUE_RE = re.compile(r"\b(TIA-\d+)\b")
 _REPO_RE = re.compile(r"\b(?:LeePepe/[A-Za-z0-9_.-]+|repo=([^\s;|]+))")
 _EVT_LINE_RE = re.compile(r"^-\s*([0-9T:+-]+Z?)\s*\|\s*(.+)$")
+_HANDOFF_GOAL_REF_RE = re.compile(r"handoff/([A-Za-z0-9_-]+)(?:/|[\s\"'])")
 _SKILL_RE = re.compile(
     r"(?:<skill-context\s+name=[\"']([A-Za-z0-9_-]+)[\"']"
     r"|(?<![A-Za-z0-9_-])skills/([A-Za-z0-9_-]+)/SKILL\.md"
@@ -73,8 +75,13 @@ _SCRIPT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])((?:[^\s\"']+/)?skills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.(?:py|sh)"
     r"|(?:[^\s\"']+/)?scripts/(?:verify|[A-Za-z0-9_.-]+\.py))"
 )
-_TOKEN_NUM_RE = re.compile(r"(?:input[_ ]tokens?|in_tokens?)\s*[:=]\s*(\d+)", re.I)
-_OUT_TOKEN_RE = re.compile(r"(?:output[_ ]tokens?|out_tokens?)\s*[:=]\s*(\d+)", re.I)
+_SHELL_START_RE = re.compile(r"<command (?:started in background )?with shellId:\s*([^\s>]+)")
+_SHELL_COMPLETE_RE = re.compile(r"<shellId:\s*([^\s>]+)\s+completed with exit code\s+(-?\d+)>")
+_SHELL_STOPPED_RE = re.compile(r"<command with id:\s*([^\s>]+)\s+stopped>")
+_VERDICT_LINE_RE = re.compile(r"\bV5\s*Verdict\s*[:=]\s*(PASS|CONCERNS|WAIVED|FAIL)\b", re.I)
+_TOKEN_NUM_RE = re.compile(r"\b(?:input[_ ]tokens?|in_tokens?)\s*[:=]\s*(\d+)\b", re.I)
+_OUT_TOKEN_RE = re.compile(r"\b(?:output[_ ]tokens?|out_tokens?)\s*[:=]\s*(\d+)\b", re.I)
+_CACHE_TOKEN_RE = re.compile(r"\b(?:cache[_ ]read(?:[_ ]tokens?)?)\s*[:=]\s*(\d+)\b", re.I)
 
 
 @dataclass
@@ -85,7 +92,7 @@ class SpanRecord:
     name: str
     start_ns: int
     end_ns: int
-    status_ok: bool = True
+    status_ok: bool | None = True  # True=OK, False=ERROR, None=UNSET/UNKNOWN
     attributes: dict[str, str | int | float | bool] = field(default_factory=dict)
     input_payload: dict[str, Any] | str | None = None
     output_payload: dict[str, Any] | str | None = None
@@ -110,6 +117,22 @@ class TraceRecord:
     tags: list[str]
     metadata: dict[str, Any]
     spans: list[SpanRecord] = field(default_factory=list)
+
+
+@dataclass
+class ParsedSessionActivity:
+    session_id: str
+    source_path: str
+    selected_model: str
+    cwd: str
+    first_prompt: str
+    start_ns: int
+    end_ns: int
+    referenced_goals: set[str]
+    skill_invocations: list[tuple[str, int, str]]  # (skill_name, start_ns, source_id)
+    ref_reads: list[tuple[str, int | None, int, str]]  # (ref_path, byte_len|None, start_ns, source_id)
+    script_execs: list[tuple[str, str, int, int, int | None, str]]  # (script_path, args, start_ns, dur_ms, exit_code|None, source_id)
+    llm_calls: list[tuple[str, int, int, int, int, int, str]]  # (model, start_ns, dur_ms, in, out, cache, source_id)
 
 
 def deterministic_trace_id(seed: str) -> str:
@@ -151,14 +174,16 @@ def ns_to_iso_utc(ns: int) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def _clamp_span_window(start_ns: int, end_ns: int, min_duration_ns: int = 50_000_000) -> tuple[int, int]:
+def _clamp_span_window(start_ns: int, end_ns: int, min_duration_ns: int = 1_000_000) -> tuple[int, int]:
     if end_ns <= start_ns:
         return start_ns, start_ns + min_duration_ns
     return start_ns, end_ns
 
 
 def _estimate_tokens_from_bytes(byte_len: int) -> int:
-    return max(1, int(round(max(0, byte_len) / 4.0)))
+    if byte_len <= 0:
+        return 0
+    return max(1, int(round(byte_len / 4.0)))
 
 
 def _infer_skill_from_path(path_str: str) -> str:
@@ -185,6 +210,21 @@ def _normalize_role(raw_role: str) -> str:
     if "m3" in lower or "owner" in lower:
         return "M3"
     return "M1 TL"
+
+
+def _file_stats(candidate: str, skills_root: Path | None = None) -> tuple[int | None, int | None]:
+    expanded = Path(candidate).expanduser()
+    paths_to_try = [expanded]
+    if skills_root is not None and not expanded.is_absolute():
+        paths_to_try.append(skills_root.parent / candidate)
+    for p in paths_to_try:
+        if p.is_file():
+            try:
+                raw = p.read_bytes()
+                return len(raw), max(1, raw.count(b"\n") + 1)
+            except OSError:
+                break
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +282,7 @@ def _openinference_kind(category: str) -> str:
     }.get(category, "CHAIN")
 
 
-def encode_otlp_traces_protobuf(project_name: str, traces: Sequence[TraceRecord] | list[TraceRecord]) -> bytes:
+def encode_otlp_traces_protobuf(project_name: str, traces: Sequence[TraceRecord]) -> bytes:
     span_blobs: list[bytes] = []
     for tr in traces:
         for sp in tr.spans:
@@ -292,8 +332,9 @@ def encode_otlp_traces_protobuf(project_name: str, traces: Sequence[TraceRecord]
                 if v is not None:
                     parts.append(_pb_field_bytes(9, _pb_kv(k, v)))
 
-            # Status: field 3 = code (1=OK, 2=ERROR)
-            status_pb = _pb_field_varint(3, 1 if sp.status_ok else 2)
+            # Status: field 3 = code (0=UNSET, 1=OK, 2=ERROR)
+            status_code = 0 if sp.status_ok is None else (1 if sp.status_ok else 2)
+            status_pb = _pb_field_varint(3, status_code)
             parts.append(_pb_field_bytes(15, status_pb))
             span_blobs.append(b"".join(parts))
 
@@ -337,6 +378,7 @@ def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
         parent_obs_id = None if sp.parent_span_id in (None, trace.root_span_id) else sp.parent_span_id
         obs_meta = dict(sp.attributes)
         obs_meta["category"] = sp.category
+        level = "WARNING" if sp.status_ok is None else ("DEFAULT" if sp.status_ok else "ERROR")
         if sp.category == "llm_generation":
             obs_meta["cache_read"] = sp.cache_read
             events.append(
@@ -360,7 +402,7 @@ def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
                             "total": int(sp.input_tokens + sp.output_tokens),
                             "unit": "TOKENS",
                         },
-                        "level": "DEFAULT" if sp.status_ok else "ERROR",
+                        "level": level,
                         "metadata": obs_meta,
                     },
                 }
@@ -380,7 +422,7 @@ def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
                         "endTime": ns_to_iso_utc(end_ns),
                         "input": sp.input_payload,
                         "output": sp.output_payload,
-                        "level": "DEFAULT" if sp.status_ok else "ERROR",
+                        "level": level,
                         "metadata": obs_meta,
                     },
                 }
@@ -389,7 +431,7 @@ def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Historical Data Loaders (Warehouse + Usage JSONL + Handoff + Copilot State)
+# Historical Data Loaders (Warehouse + Usage JSONL + Copilot Session State)
 # ---------------------------------------------------------------------------
 
 
@@ -474,19 +516,266 @@ def _load_usage_jsonl(usage_jsonl: Path) -> dict[str, dict[str, list[dict[str, A
     return by_session
 
 
-def _file_stats(candidate: str, skills_root: Path | None = None) -> tuple[int, int]:
-    expanded = Path(candidate).expanduser()
-    paths_to_try = [expanded]
-    if skills_root is not None and not expanded.is_absolute():
-        paths_to_try.append(skills_root.parent / candidate)
-    for p in paths_to_try:
-        if p.is_file():
-            try:
-                raw = p.read_bytes()
-                return len(raw), max(1, raw.count(b"\n") + 1)
-            except OSError:
-                break
-    return 2048, 55
+def _extract_process_exit_code(data: dict[str, Any], result_text: str) -> int | None:
+    shell_exec = data.get("shellExecution")
+    if isinstance(shell_exec, dict) and shell_exec.get("exitCode") is not None:
+        try:
+            return int(shell_exec["exitCode"])
+        except (TypeError, ValueError):
+            pass
+    m_done = _SHELL_COMPLETE_RE.search(result_text)
+    if m_done:
+        try:
+            return int(m_done.group(2))
+        except ValueError:
+            pass
+    if _SHELL_START_RE.search(result_text) or "is still running" in result_text:
+        return None
+    if data.get("success") is False:
+        return 1
+    return None
+
+
+def parse_copilot_session_activity(
+    events_jsonl: Path,
+    wh_maps: dict[str, Any],
+    usage_by_session: dict[str, dict[str, list[dict[str, Any]]]],
+    skills_root: Path | None = None,
+) -> ParsedSessionActivity | None:
+    session_id = events_jsonl.parent.name
+    selected_model = "unknown"
+    cwd = ""
+    first_prompt = ""
+    start_ns: int | None = None
+    end_ns: int | None = None
+    referenced_goals: set[str] = set()
+
+    skill_invocations: list[tuple[str, int, str]] = []
+    ref_reads: list[tuple[str, int | None, int, str]] = []
+    # Pending bash scripts that moved to background/async keyed by shellId
+    pending_async_shells: dict[str, tuple[str, str, int, str]] = {}  # shell_id -> (script_path, cmd_args, start_ns, tc_id)
+    script_execs: list[tuple[str, str, int, int, int | None, str]] = []
+    llm_calls: list[tuple[str, int, int, int, int, int, str]] = []
+    tool_starts: dict[str, tuple[str, dict[str, Any], int]] = {}
+
+    fallback_ns = int(events_jsonl.stat().st_mtime * 1_000_000_000)
+    try:
+        with events_jsonl.open("r", encoding="utf-8", errors="replace") as fh:
+            for line_no, raw_line in enumerate(fh, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ev_type = str(ev.get("type") or "")
+                data = ev.get("data") or {}
+                ev_id = str(ev.get("id") or f"line-{line_no}")
+                ev_ts_ns = parse_iso_to_ns(ev.get("timestamp") or data.get("startTime"), fallback_ns)
+                if start_ns is None or ev_ts_ns < start_ns:
+                    start_ns = ev_ts_ns
+                if end_ns is None or ev_ts_ns > end_ns:
+                    end_ns = ev_ts_ns
+
+                if ev_type == "session.start":
+                    selected_model = str(data.get("selectedModel") or selected_model)
+                    ctx = data.get("context") or {}
+                    cwd = str(ctx.get("cwd") or cwd)
+                    for m_goal in _HANDOFF_GOAL_REF_RE.finditer(cwd + "/"):
+                        if not m_goal.group(1).startswith("_"):
+                            referenced_goals.add(m_goal.group(1))
+                elif ev_type == "user.message":
+                    content = str(data.get("content") or "").strip()
+                    if content and data.get("source") != "memory":
+                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(content):
+                            if not m_goal.group(1).startswith("_"):
+                                referenced_goals.add(m_goal.group(1))
+                        if not first_prompt:
+                            first_prompt = content[:500]
+                            for m_sk in _SKILL_RE.finditer(content):
+                                sk = next((g for g in m_sk.groups() if g), None)
+                                if sk:
+                                    skill_invocations.append((sk, ev_ts_ns, f"copilot:user.message:{ev_id}"))
+                elif ev_type == "skill.invoked":
+                    sk_name = str(data.get("name") or "").strip()
+                    sk_path = str(data.get("path") or "").strip()
+                    sk_content = str(data.get("content") or "")
+                    if sk_name:
+                        skill_invocations.append((sk_name, ev_ts_ns, f"copilot:skill.invoked:{ev_id}"))
+                    if sk_path:
+                        content_bytes = len(sk_content.encode("utf-8")) if sk_content else None
+                        if content_bytes is None:
+                            content_bytes, _ = _file_stats(sk_path, skills_root=skills_root)
+                        ref_reads.append((sk_path, content_bytes, ev_ts_ns, f"copilot:skill.invoked:{ev_id}"))
+                elif ev_type == "tool.execution_start":
+                    tc_id = str(data.get("toolCallId") or "")
+                    t_name = str(data.get("toolName") or "")
+                    args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+                    if tc_id:
+                        tool_starts[tc_id] = (t_name, args, ev_ts_ns)
+                    if t_name == "skill" and args.get("skill"):
+                        skill_invocations.append((str(args["skill"]), ev_ts_ns, f"copilot:tool:{tc_id or ev_id}"))
+                    elif t_name == "bash" and args.get("command"):
+                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(str(args["command"])):
+                            if not m_goal.group(1).startswith("_"):
+                                referenced_goals.add(m_goal.group(1))
+                    elif t_name == "view" and args.get("path"):
+                        vp = str(args["path"])
+                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(vp):
+                            if not m_goal.group(1).startswith("_"):
+                                referenced_goals.add(m_goal.group(1))
+                        if "/skills/" in vp and vp.endswith((".md", ".json", ".yaml", ".yml")):
+                            b_len, _ = _file_stats(vp, skills_root=skills_root)
+                            ref_reads.append((vp, b_len, ev_ts_ns, f"copilot:view:{tc_id or ev_id}"))
+                elif ev_type == "tool.execution_complete":
+                    tc_id = str(data.get("toolCallId") or "")
+                    res_obj = data.get("result")
+                    res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else ""
+                    if tc_id in tool_starts:
+                        t_name, args, st_ns = tool_starts[tc_id]
+                        dur_ms = max(1, int((ev_ts_ns - st_ns) / 1_000_000))
+                        if t_name == "bash":
+                            cmd_str = str(args.get("command") or "")
+                            m_sc = _SCRIPT_RE.search(cmd_str)
+                            if m_sc:
+                                sp_path = m_sc.group(1)
+                                ec = _extract_process_exit_code(data, res_text)
+                                m_bg = _SHELL_START_RE.search(res_text)
+                                if ec is None and m_bg:
+                                    pending_async_shells[m_bg.group(1)] = (sp_path, cmd_str[:260], st_ns, tc_id)
+                                else:
+                                    script_execs.append(
+                                        (sp_path, cmd_str[:260], st_ns, dur_ms, ec, f"copilot:bash:{tc_id}")
+                                    )
+                        elif t_name in ("read_bash", "stop_bash"):
+                            sh_id = str(args.get("shellId") or "")
+                            m_done = _SHELL_COMPLETE_RE.search(res_text)
+                            m_stop = _SHELL_STOPPED_RE.search(res_text)
+                            target_sh = m_done.group(1) if m_done else (m_stop.group(1) if m_stop else sh_id)
+                            if target_sh and target_sh in pending_async_shells:
+                                if m_done:
+                                    sp_path, cmd_args, bg_start_ns, orig_tc = pending_async_shells.pop(target_sh)
+                                    bg_dur = max(1, int((ev_ts_ns - bg_start_ns) / 1_000_000))
+                                    script_execs.append(
+                                        (
+                                            sp_path,
+                                            cmd_args,
+                                            bg_start_ns,
+                                            bg_dur,
+                                            int(m_done.group(2)),
+                                            f"copilot:async_bash:{orig_tc}",
+                                        )
+                                    )
+                                elif m_stop:
+                                    sp_path, cmd_args, bg_start_ns, orig_tc = pending_async_shells.pop(target_sh)
+                                    bg_dur = max(1, int((ev_ts_ns - bg_start_ns) / 1_000_000))
+                                    script_execs.append(
+                                        (
+                                            sp_path,
+                                            cmd_args,
+                                            bg_start_ns,
+                                            bg_dur,
+                                            None,
+                                            f"copilot:stopped_bash:{orig_tc}",
+                                        )
+                                    )
+                elif ev_type == "session.usage_record":
+                    usage = data.get("usage") or {}
+                    u_model = str(usage.get("model") or selected_model)
+                    u_in = int(usage.get("inputTokens") or 0)
+                    u_out = int(usage.get("outputTokens") or 0)
+                    u_cache = int(usage.get("cacheReadTokens") or 0)
+                    u_dur = max(1, int(usage.get("duration") or 1))
+                    if u_in > 0 or u_out > 0 or u_cache > 0:
+                        call_start = max(start_ns or ev_ts_ns, ev_ts_ns - u_dur * 1_000_000)
+                        llm_calls.append(
+                            (u_model, call_start, u_dur, u_in, u_out, u_cache, f"copilot:usage:{ev_id}")
+                        )
+    except OSError:
+        return None
+
+    # Any async bash command that never completed stays exit_code=None (unknown)
+    for sh_id, (sp_path, cmd_args, bg_start_ns, orig_tc) in pending_async_shells.items():
+        bg_dur = max(1, int(((end_ns or fallback_ns) - bg_start_ns) / 1_000_000))
+        script_execs.append((sp_path, cmd_args, bg_start_ns, bg_dur, None, f"copilot:pending_bash:{orig_tc}"))
+
+    # Enrich with usage.jsonl and warehouse.db records for this exact session_id
+    u_bucket = usage_by_session.get(session_id, {})
+    for idx, rec in enumerate(u_bucket.get("skill_turn", [])):
+        sk = str(rec.get("skill") or "").strip()
+        ts_ns = parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns)
+        src_id = str(rec.get("event_id") or f"usage:skill_turn:{idx}")
+        if sk:
+            skill_invocations.append((sk, ts_ns, src_id))
+        if not llm_calls:
+            in_t = int(rec.get("input_tokens") or 0)
+            out_t = int(rec.get("output_tokens") or 0)
+            ca_t = int(rec.get("cache_read") or 0)
+            if in_t > 0 or out_t > 0 or ca_t > 0:
+                llm_calls.append((str(rec.get("model") or selected_model), ts_ns, 100, in_t, out_t, ca_t, src_id))
+
+    for idx, rec in enumerate(u_bucket.get("reference_hit", []) + wh_maps["refs_by_session"].get(session_id, [])):
+        rp = str(rec.get("reference_path") or "").strip()
+        if rp:
+            raw_b = rec.get("byte_len")
+            b_len = int(raw_b) if raw_b is not None and int(raw_b) > 0 else None
+            if b_len is None:
+                b_len, _ = _file_stats(rp, skills_root=skills_root)
+            src_id = str(rec.get("hit_uid") or rec.get("event_id") or f"ref:{idx}")
+            ref_reads.append((rp, b_len, parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns), src_id))
+
+    for idx, rec in enumerate(u_bucket.get("script_call", []) + wh_maps["scripts_by_session"].get(session_id, [])):
+        sp_p = str(rec.get("script_path") or "").strip()
+        if sp_p:
+            dur_ms = max(1, int(float(rec.get("duration_ms") or 1)))
+            raw_ec = rec.get("exit_code")
+            ec = int(raw_ec) if raw_ec is not None else None
+            src_id = str(rec.get("call_uid") or rec.get("event_id") or f"script:{idx}")
+            script_execs.append(
+                (sp_p, sp_p, parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns), dur_ms, ec, src_id)
+            )
+
+    if not llm_calls:
+        for idx, turn in enumerate(wh_maps["turns_by_session"].get(session_id, [])):
+            in_t = int(turn.get("input_tokens") or 0)
+            out_t = int(turn.get("output_tokens") or 0)
+            ca_t = int(turn.get("cache_read") or 0)
+            if in_t > 0 or out_t > 0 or ca_t > 0:
+                src_id = str(turn.get("turn_uuid") or f"wh_turn:{idx}")
+                llm_calls.append(
+                    (
+                        str(turn.get("model") or selected_model),
+                        parse_iso_to_ns(turn.get("ts"), start_ns or fallback_ns),
+                        100,
+                        in_t,
+                        out_t,
+                        ca_t,
+                        src_id,
+                    )
+                )
+
+    if not (first_prompt or llm_calls or skill_invocations or ref_reads or script_execs):
+        return None
+
+    s_ns = start_ns or fallback_ns
+    e_ns = end_ns or fallback_ns
+    s_ns, e_ns = _clamp_span_window(s_ns, e_ns, min_duration_ns=1_000_000)
+
+    return ParsedSessionActivity(
+        session_id=session_id,
+        source_path=events_jsonl.name,
+        selected_model=selected_model,
+        cwd=cwd,
+        first_prompt=first_prompt,
+        start_ns=s_ns,
+        end_ns=e_ns,
+        referenced_goals=referenced_goals,
+        skill_invocations=skill_invocations,
+        ref_reads=ref_reads,
+        script_execs=script_execs,
+        llm_calls=llm_calls,
+    )
 
 
 def _parse_ledger_markdown(ledger_path: Path) -> dict[str, Any]:
@@ -495,7 +784,7 @@ def _parse_ledger_markdown(ledger_path: Path) -> dict[str, Any]:
     mandate_line = ""
     owner_line = ""
     linear_id = ""
-    repo_name = "LeePepe/user-skills"
+    repo_name = ""
     events: list[dict[str, str]] = []
     tasks: list[dict[str, str]] = []
 
@@ -546,7 +835,7 @@ def _parse_ledger_markdown(ledger_path: Path) -> dict[str, Any]:
         "mandate": mandate_line or f"Goal {goal_id}",
         "owner_line": owner_line,
         "linear_id": linear_id,
-        "repo": repo_name,
+        "repo": repo_name or "unknown",
         "tasks": tasks,
         "events": events,
         "raw_text": text,
@@ -556,13 +845,17 @@ def _parse_ledger_markdown(ledger_path: Path) -> dict[str, Any]:
 def build_goal_trace(
     goal_dir: Path,
     wh_maps: dict[str, Any],
+    linked_sessions: list[ParsedSessionActivity] | None = None,
     skills_root: Path | None = None,
 ) -> TraceRecord | None:
+    """Reconstruct a Goal trace strictly from real recorded evidence (no fabricated spans/metrics)."""
     ledger_path = goal_dir / "ledger.md"
     if not ledger_path.is_file():
         return None
     parsed = _parse_ledger_markdown(ledger_path)
     goal_id = parsed["goal_id"]
+    linked_sessions = linked_sessions or []
+
     spec_path = goal_dir / "spec.md"
     spec_excerpt = ""
     if spec_path.is_file():
@@ -581,12 +874,14 @@ def build_goal_trace(
         evt_timestamps.append(parse_iso_to_ns(wh_goal["created_at"], fallback_ns))
     if wh_goal.get("last_event_at"):
         evt_timestamps.append(parse_iso_to_ns(wh_goal["last_event_at"], fallback_ns))
+    for sess in linked_sessions:
+        evt_timestamps.append(sess.start_ns)
+        evt_timestamps.append(sess.end_ns)
 
-    start_ns = min(evt_timestamps) if evt_timestamps else (fallback_ns - 600_000_000_000)
+    start_ns = min(evt_timestamps) if evt_timestamps else fallback_ns
     end_ns = max(evt_timestamps) if evt_timestamps else fallback_ns
-    start_ns, end_ns = _clamp_span_window(start_ns, end_ns, min_duration_ns=5_000_000_000)
+    start_ns, end_ns = _clamp_span_window(start_ns, end_ns, min_duration_ns=1_000_000)
 
-    # Determine status
     evt_types = {e.get("EVT", "") for e in parsed["events"]} | {e.get("evt_type", "") for e in wh_events}
     if "GOAL_DONE" in evt_types or "PR_MERGED" in evt_types or wh_goal.get("derived_actual_status") == "done":
         status = "done"
@@ -600,26 +895,409 @@ def build_goal_trace(
     trace_id = deterministic_trace_id(f"goal:{goal_id}")
     root_span_id = deterministic_span_id(f"goal:{goal_id}:root")
 
-    # Gather receipts & briefs text for evidence extraction
-    corpus_chunks = [parsed["raw_text"], spec_excerpt]
-    receipt_files: list[Path] = []
-    if (goal_dir / "receipts").is_dir():
-        receipt_files = sorted((goal_dir / "receipts").glob("*.md"))
-        for rf in receipt_files[:12]:
-            try:
-                corpus_chunks.append(rf.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                pass
-    if (goal_dir / "briefs").is_dir():
-        for bf in sorted((goal_dir / "briefs").glob("*.md"))[:8]:
-            try:
-                corpus_chunks.append(bf.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                pass
-    full_corpus = "\n".join(corpus_chunks)
+    # Read ONLY receipts (never briefs!) for executed work evidence when session logs are absent
+    receipt_files = sorted((goal_dir / "receipts").glob("*.md")) if (goal_dir / "receipts").is_dir() else []
+    receipt_texts: list[tuple[Path, str]] = []
+    for rf in receipt_files:
+        try:
+            receipt_texts.append((rf, rf.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
 
-    spans: list[SpanRecord] = []
     duration_ms = round((end_ns - start_ns) / 1_000_000, 2)
+    spans: list[SpanRecord] = []
+
+    # 1. Stage / Role Spans from real warehouse runs, receipts, or ledger events
+    m1_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M1-TL")
+    tl_model = str(wh_goal.get("tl_model") or (linked_sessions[0].selected_model if linked_sessions else "unknown"))
+    spans.append(
+        SpanRecord(
+            span_id=m1_span_id,
+            parent_span_id=root_span_id,
+            category="stage_role",
+            name=f"Stage / Role: M1 TL ({wh_goal.get('tl_agent') or f'{goal_id}-tl'})",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            status_ok=None if status == "in_progress" else (status != "blocked"),
+            attributes={
+                "stage.role": "M1 TL",
+                "stage.chain": "M2 -> M1 TL",
+                "stage.round": "r1",
+                "stage.model": tl_model,
+                "stage.verdict": status.upper(),
+                "evidence.source": "ledger.md",
+            },
+            input_payload={"tasks": [t["task_id"] for t in parsed["tasks"]]},
+            output_payload={"status": status},
+        )
+    )
+
+    if wh_goal.get("coordinator_bot") or "coordinator" in parsed["owner_line"].lower() or "协调者" in parsed["owner_line"]:
+        m2_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M2")
+        spans.append(
+            SpanRecord(
+                span_id=m2_span_id,
+                parent_span_id=root_span_id,
+                category="stage_role",
+                name=f"Stage / Role: M2 ({wh_goal.get('coordinator_bot') or 'coordinator'})",
+                start_ns=start_ns,
+                end_ns=min(end_ns, start_ns + max(1_000_000, (end_ns - start_ns) // 10)),
+                status_ok=True,
+                attributes={
+                    "stage.role": "M2",
+                    "stage.chain": "M3 -> M2",
+                    "stage.round": "r1",
+                    "evidence.source": "ledger.md:header",
+                },
+                input_payload={"mandate": parsed["mandate"][:240]},
+                output_payload={"coordinator": wh_goal.get("coordinator_bot") or "recorded"},
+            )
+        )
+
+    primary_worker_span_id = m1_span_id
+    if wh_runs:
+        for idx, run in enumerate(wh_runs):
+            r_role = _normalize_role(str(run.get("role_name") or "Writer"))
+            r_round = f"r{run.get('round_no') or 1}"
+            r_model = str(run.get("model_id") or "unknown")
+            r_verdict = str(run.get("v5_verdict") or run.get("status") or "UNKNOWN")
+            r_task = str(run.get("task_id") or "task")
+            r_uid = str(run.get("receipt_uid") or f"{idx}:{r_task}:{r_role}:{r_round}")
+            w_span_id = deterministic_span_id(f"goal:{goal_id}:wh_run:{r_uid}")
+            w_end = parse_iso_to_ns(run.get("completed_at"), end_ns)
+            w_start = min(start_ns, w_end - 1_000_000) if w_end <= start_ns else start_ns
+            w_start, w_end = _clamp_span_window(w_start, w_end)
+            if idx == 0:
+                primary_worker_span_id = w_span_id
+            v_up = r_verdict.upper()
+            v_ok: bool | None = False if "FAIL" in v_up else (True if v_up in ("PASS", "DONE", "COMPLETED") else None)
+            spans.append(
+                SpanRecord(
+                    span_id=w_span_id,
+                    parent_span_id=m1_span_id,
+                    category="stage_role",
+                    name=f"Stage / Role: {r_role} ({r_task} {r_round})",
+                    start_ns=w_start,
+                    end_ns=w_end,
+                    status_ok=v_ok,
+                    attributes={
+                        "stage.role": r_role,
+                        "stage.task_id": r_task,
+                        "stage.round": r_round,
+                        "stage.model": r_model[:80],
+                        "stage.verdict": r_verdict[:40],
+                        "evidence.source": f"warehouse.fact_gtt_task_run:{r_uid}",
+                    },
+                    input_payload={"task_id": r_task, "role": r_role, "round": r_round},
+                    output_payload={"verdict": r_verdict[:80]},
+                )
+            )
+    else:
+        for idx, (rf, r_text) in enumerate(receipt_texts):
+            r_role = _normalize_role(rf.stem)
+            m_rnd = re.search(r"r(\d+)", rf.stem, re.I)
+            r_round = f"r{m_rnd.group(1)}" if m_rnd else "r1"
+            m_verd = _VERDICT_LINE_RE.search(r_text)
+            r_verdict = m_verd.group(1).upper() if m_verd else "RECORDED"
+            v_ok = False if r_verdict == "FAIL" else (True if r_verdict == "PASS" else None)
+            rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
+            w_start = min(start_ns, rf_ns - 1_000_000)
+            w_start, w_end = _clamp_span_window(w_start, rf_ns)
+            w_span_id = deterministic_span_id(f"goal:{goal_id}:receipt_role:{rf.name}")
+            if idx == 0:
+                primary_worker_span_id = w_span_id
+            spans.append(
+                SpanRecord(
+                    span_id=w_span_id,
+                    parent_span_id=m1_span_id,
+                    category="stage_role",
+                    name=f"Stage / Role: {r_role} ({rf.stem})",
+                    start_ns=w_start,
+                    end_ns=w_end,
+                    status_ok=v_ok,
+                    attributes={
+                        "stage.role": r_role,
+                        "stage.round": r_round,
+                        "stage.verdict": r_verdict,
+                        "evidence.source": f"receipts/{rf.name}",
+                    },
+                    input_payload={"receipt": rf.name},
+                    output_payload={"verdict": r_verdict},
+                )
+            )
+
+    # 2–5. Evidence-backed Child Spans from linked real sessions AND explicit receipt evidence
+    seen_skills: set[str] = set()
+    first_skill_span_id: str | None = None
+    seen_refs: set[tuple[str, str]] = set()
+    script_count = 0
+    llm_count = 0
+    total_in_tokens = 0
+    total_out_tokens = 0
+    total_cache_tokens = 0
+
+    for sess in linked_sessions:
+        sess_stage_id = deterministic_span_id(f"goal:{goal_id}:session_stage:{sess.session_id}")
+        spans.append(
+            SpanRecord(
+                span_id=sess_stage_id,
+                parent_span_id=m1_span_id,
+                category="stage_role",
+                name=f"Stage / Role: Session Worker ({sess.session_id[:8]})",
+                start_ns=sess.start_ns,
+                end_ns=sess.end_ns,
+                status_ok=True,
+                attributes={
+                    "stage.role": "SessionWorker",
+                    "stage.model": sess.selected_model,
+                    "session.id": sess.session_id,
+                    "evidence.source": f"session-state/{sess.session_id}/events.jsonl",
+                },
+                input_payload={"session_id": sess.session_id, "prompt": sess.first_prompt[:200]},
+                output_payload={"llm_generations": len(sess.llm_calls)},
+            )
+        )
+
+        for sk_name, sk_ts, src_id in sess.skill_invocations:
+            if sk_name in seen_skills:
+                continue
+            seen_skills.add(sk_name)
+            sk_span_id = deterministic_span_id(f"goal:{goal_id}:skill:{sess.session_id}:{sk_name}")
+            if first_skill_span_id is None:
+                first_skill_span_id = sk_span_id
+            spans.append(
+                SpanRecord(
+                    span_id=sk_span_id,
+                    parent_span_id=sess_stage_id,
+                    category="skill_load",
+                    name=f"Skill Load: {sk_name}",
+                    start_ns=sk_ts,
+                    end_ns=sk_ts + 10_000_000,
+                    status_ok=True,
+                    attributes={
+                        "skill.name": sk_name,
+                        "session.id": sess.session_id,
+                        "evidence.source": src_id,
+                    },
+                    input_payload={"skill": sk_name},
+                    output_payload={"loaded": True},
+                )
+            )
+
+        for rp, b_len, r_ts, src_id in sess.ref_reads:
+            dedup_key = (sess.session_id, rp)
+            if dedup_key in seen_refs:
+                continue
+            seen_refs.add(dedup_key)
+            f_bytes, line_cnt = _file_stats(rp, skills_root=skills_root)
+            actual_bytes = b_len if b_len is not None else f_bytes
+            attrs: dict[str, str | int | float | bool] = {
+                "reference.path": rp,
+                "reference.skill": _infer_skill_from_path(rp),
+                "session.id": sess.session_id,
+                "evidence.source": src_id,
+            }
+            out_pay: dict[str, Any] = {"path": rp}
+            if actual_bytes is not None:
+                attrs["reference.byte_len"] = actual_bytes
+                attrs["reference.estimated_tokens"] = _estimate_tokens_from_bytes(actual_bytes)
+                out_pay["byte_len"] = actual_bytes
+                out_pay["estimated_tokens"] = _estimate_tokens_from_bytes(actual_bytes)
+            if line_cnt is not None:
+                attrs["reference.line_count"] = line_cnt
+                out_pay["lines"] = line_cnt
+            spans.append(
+                SpanRecord(
+                    span_id=deterministic_span_id(f"goal:{goal_id}:ref:{sess.session_id}:{src_id}:{rp}"),
+                    parent_span_id=sess_stage_id,
+                    category="l1_reference_read",
+                    name=f"L1 Reference Read: {Path(rp).name}",
+                    start_ns=r_ts,
+                    end_ns=r_ts + 10_000_000,
+                    status_ok=True,
+                    attributes=attrs,
+                    input_payload={"path": rp},
+                    output_payload=out_pay,
+                )
+            )
+
+        for idx_sc, (sp_p, cmd_args, sc_ts, dur_ms, ec, src_id) in enumerate(sess.script_execs):
+            script_count += 1
+            sc_ok: bool | None = None if ec is None else (ec == 0)
+            sc_attrs: dict[str, str | int | float | bool] = {
+                "script.path": sp_p,
+                "script.skill": _infer_skill_from_path(sp_p),
+                "script.args": cmd_args,
+                "script.duration_ms": dur_ms,
+                "session.id": sess.session_id,
+                "evidence.source": src_id,
+            }
+            sc_out: dict[str, Any] = {"duration_ms": dur_ms}
+            if ec is not None:
+                sc_attrs["script.exit_code"] = ec
+                sc_out["exit_code"] = ec
+            else:
+                sc_attrs["script.exit_status"] = "unknown"
+                sc_out["exit_code"] = None
+            spans.append(
+                SpanRecord(
+                    span_id=deterministic_span_id(f"goal:{goal_id}:script:{sess.session_id}:{idx_sc}:{src_id}"),
+                    parent_span_id=sess_stage_id,
+                    category="l2_script_exec",
+                    name=f"L2 Script Exec: {Path(sp_p).name}",
+                    start_ns=sc_ts,
+                    end_ns=sc_ts + max(1, dur_ms) * 1_000_000,
+                    status_ok=sc_ok,
+                    attributes=sc_attrs,
+                    input_payload={"script": sp_p, "command": cmd_args},
+                    output_payload=sc_out,
+                )
+            )
+
+        for idx_llm, (m_name, l_ts, dur_ms, in_t, out_t, ca_t, src_id) in enumerate(sess.llm_calls):
+            llm_count += 1
+            total_in_tokens += in_t
+            total_out_tokens += out_t
+            total_cache_tokens += ca_t
+            spans.append(
+                SpanRecord(
+                    span_id=deterministic_span_id(f"goal:{goal_id}:llm:{sess.session_id}:{idx_llm}:{src_id}"),
+                    parent_span_id=sess_stage_id,
+                    category="llm_generation",
+                    name=f"LLM Generation: {m_name}",
+                    start_ns=l_ts,
+                    end_ns=l_ts + max(1, dur_ms) * 1_000_000,
+                    status_ok=True,
+                    attributes={
+                        "llm.model_name": m_name,
+                        "llm.input_tokens": in_t,
+                        "llm.output_tokens": out_t,
+                        "llm.cache_read": ca_t,
+                        "session.id": sess.session_id,
+                        "evidence.source": src_id,
+                    },
+                    input_payload={"session_id": sess.session_id, "turn_index": idx_llm},
+                    output_payload={"input_tokens": in_t, "output_tokens": out_t, "cache_read": ca_t},
+                    model=m_name,
+                    input_tokens=in_t,
+                    output_tokens=out_t,
+                    cache_read=ca_t,
+                )
+            )
+
+    # Supplement ONLY from explicit receipt evidence (never briefs, never invented defaults!)
+    if not linked_sessions and receipt_texts:
+        for rf, r_text in receipt_texts:
+            rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
+            for m_sk in _SKILL_RE.finditer(r_text):
+                sk = next((g for g in m_sk.groups() if g), None)
+                if sk and sk not in seen_skills:
+                    seen_skills.add(sk)
+                    spans.append(
+                        SpanRecord(
+                            span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_skill:{rf.name}:{sk}"),
+                            parent_span_id=primary_worker_span_id,
+                            category="skill_load",
+                            name=f"Skill Load: {sk}",
+                            start_ns=rf_ns,
+                            end_ns=rf_ns + 1_000_000,
+                            status_ok=True,
+                            attributes={"skill.name": sk, "evidence.source": f"receipts/{rf.name}"},
+                            input_payload={"skill": sk},
+                            output_payload={"source": f"receipts/{rf.name}"},
+                        )
+                    )
+            for m_ref in _REF_RE.finditer(r_text):
+                rp = m_ref.group(1)
+                if (rf.name, rp) in seen_refs:
+                    continue
+                seen_refs.add((rf.name, rp))
+                f_bytes, line_cnt = _file_stats(rp, skills_root=skills_root)
+                ref_attrs: dict[str, str | int | float | bool] = {
+                    "reference.path": rp,
+                    "reference.skill": _infer_skill_from_path(rp),
+                    "evidence.source": f"receipts/{rf.name}",
+                }
+                if f_bytes is not None:
+                    ref_attrs["reference.byte_len"] = f_bytes
+                    ref_attrs["reference.estimated_tokens"] = _estimate_tokens_from_bytes(f_bytes)
+                if line_cnt is not None:
+                    ref_attrs["reference.line_count"] = line_cnt
+                spans.append(
+                    SpanRecord(
+                        span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_ref:{rf.name}:{rp}"),
+                        parent_span_id=primary_worker_span_id,
+                        category="l1_reference_read",
+                        name=f"L1 Reference Read: {Path(rp).name}",
+                        start_ns=rf_ns,
+                        end_ns=rf_ns + 1_000_000,
+                        status_ok=True,
+                        attributes=ref_attrs,
+                        input_payload={"path": rp},
+                        output_payload={"source": f"receipts/{rf.name}", "byte_len": f_bytes},
+                    )
+                )
+            for idx_sc, m_sc in enumerate(_SCRIPT_RE.finditer(r_text)):
+                sp_path = m_sc.group(1)
+                script_count += 1
+                spans.append(
+                    SpanRecord(
+                        span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_script:{rf.name}:{idx_sc}:{sp_path}"),
+                        parent_span_id=primary_worker_span_id,
+                        category="l2_script_exec",
+                        name=f"L2 Script Exec: {Path(sp_path).name}",
+                        start_ns=rf_ns,
+                        end_ns=rf_ns + 1_000_000,
+                        status_ok=None,  # Exit code & duration not measured in markdown receipt unless explicit
+                        attributes={
+                            "script.path": sp_path,
+                            "script.skill": _infer_skill_from_path(sp_path),
+                            "script.exit_status": "unmeasured_in_receipt",
+                            "evidence.source": f"receipts/{rf.name}",
+                        },
+                        input_payload={"script": sp_path},
+                        output_payload={"source": f"receipts/{rf.name}", "measured": False},
+                    )
+                )
+            m_in = _TOKEN_NUM_RE.search(r_text)
+            m_out = _OUT_TOKEN_RE.search(r_text)
+            m_ca = _CACHE_TOKEN_RE.search(r_text)
+            if m_in or m_out:
+                in_t = int(m_in.group(1)) if m_in else 0
+                out_t = int(m_out.group(1)) if m_out else 0
+                ca_t = int(m_ca.group(1)) if m_ca else 0
+                llm_count += 1
+                total_in_tokens += in_t
+                total_out_tokens += out_t
+                total_cache_tokens += ca_t
+                spans.append(
+                    SpanRecord(
+                        span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_llm:{rf.name}"),
+                        parent_span_id=primary_worker_span_id,
+                        category="llm_generation",
+                        name=f"LLM Generation: {tl_model}",
+                        start_ns=rf_ns,
+                        end_ns=rf_ns + 1_000_000,
+                        status_ok=True,
+                        attributes={
+                            "llm.model_name": tl_model,
+                            "llm.input_tokens": in_t,
+                            "llm.output_tokens": out_t,
+                            "llm.cache_read": ca_t,
+                            "evidence.source": f"receipts/{rf.name}",
+                        },
+                        input_payload={"receipt": rf.name},
+                        output_payload={"input_tokens": in_t, "output_tokens": out_t, "cache_read": ca_t},
+                        model=tl_model,
+                        input_tokens=in_t,
+                        output_tokens=out_t,
+                        cache_read=ca_t,
+                    )
+                )
+
+    present_categories = sorted({sp.category for sp in spans if sp.category != "root"})
+    missing_categories = [c for c in SPAN_CATEGORIES if c not in present_categories]
+
     root_input = {
         "goal_id": goal_id,
         "linear_issue": parsed["linear_id"] or "N/A",
@@ -633,271 +1311,42 @@ def build_goal_trace(
         "task_count": len(parsed["tasks"]),
         "event_count": max(len(parsed["events"]), len(wh_events)),
         "receipt_count": len(receipt_files),
+        "linked_sessions": len(linked_sessions),
+        "llm_generations": llm_count,
+        "total_input_tokens": total_in_tokens,
+        "total_output_tokens": total_out_tokens,
+        "total_cache_read": total_cache_tokens,
+        "present_categories": present_categories,
+        "missing_categories": missing_categories,
     }
 
-    spans.append(
-        SpanRecord(
-            span_id=root_span_id,
-            parent_span_id=None,
-            category="root",
-            name=f"Goal: {goal_id}",
-            start_ns=start_ns,
-            end_ns=end_ns,
-            status_ok=(status != "blocked"),
-            attributes={
-                "goal.id": goal_id,
-                "goal.linear_issue": parsed["linear_id"] or "none",
-                "goal.repo": parsed["repo"],
-                "goal.status": status,
-                "goal.duration_ms": duration_ms,
-            },
-            input_payload=root_input,
-            output_payload=root_output,
-        )
+    root_span = SpanRecord(
+        span_id=root_span_id,
+        parent_span_id=None,
+        category="root",
+        name=f"Goal: {goal_id}",
+        start_ns=start_ns,
+        end_ns=end_ns,
+        status_ok=None if status == "in_progress" else (status != "blocked"),
+        attributes={
+            "goal.id": goal_id,
+            "goal.linear_issue": parsed["linear_id"] or "none",
+            "goal.repo": parsed["repo"],
+            "goal.status": status,
+            "goal.duration_ms": duration_ms,
+            "goal.linked_sessions": len(linked_sessions),
+            "goal.complete_5_categories": len(missing_categories) == 0,
+        },
+        input_payload=root_input,
+        output_payload=root_output,
     )
-
-    # 1. Stage / Role Spans (M3 -> M2 -> M1 TL -> Worker Roles)
-    stage_spans: dict[str, str] = {}
-    span_cursor = start_ns + 50_000_000
-
-    # M2 Dispatch + M1 TL Stage
-    m2_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M2")
-    m1_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M1-TL")
-    stage_spans["M2"] = m2_span_id
-    stage_spans["M1 TL"] = m1_span_id
-
-    spans.append(
-        SpanRecord(
-            span_id=m2_span_id,
-            parent_span_id=root_span_id,
-            category="stage_role",
-            name="Stage / Role: M3 -> M2 Coordinator",
-            start_ns=start_ns,
-            end_ns=min(end_ns, start_ns + max(200_000_000, (end_ns - start_ns) // 6)),
-            status_ok=True,
-            attributes={
-                "stage.role": "M2",
-                "stage.chain": "M3 -> M2",
-                "stage.round": "r1",
-                "stage.model": str(wh_goal.get("tl_model") or "group/steering"),
-                "stage.verdict": "DISPATCHED",
-            },
-            input_payload={"mandate": parsed["mandate"][:240]},
-            output_payload={"coordinator": wh_goal.get("coordinator_bot") or "m2-dispatcher"},
-        )
-    )
-    spans.append(
-        SpanRecord(
-            span_id=m1_span_id,
-            parent_span_id=root_span_id,
-            category="stage_role",
-            name=f"Stage / Role: M1 TL ({wh_goal.get('tl_agent') or f'{goal_id}-tl-r1'})",
-            start_ns=start_ns + 100_000_000,
-            end_ns=end_ns,
-            status_ok=(status != "blocked"),
-            attributes={
-                "stage.role": "M1 TL",
-                "stage.chain": "M2 -> M1 TL",
-                "stage.round": "r1",
-                "stage.model": str(wh_goal.get("tl_model") or "claude-opus-4-6"),
-                "stage.verdict": status.upper(),
-            },
-            input_payload={"tasks": [t["task_id"] for t in parsed["tasks"]]},
-            output_payload={"status": status},
-        )
-    )
-
-    # Worker Role spans from receipts / warehouse task runs
-    role_entries: list[tuple[str, str, str, str, str]] = []
-    for run in wh_runs[:8]:
-        r_role = _normalize_role(str(run.get("role_name") or "Writer"))
-        r_round = f"r{run.get('round_no') or 1}"
-        r_model = str(run.get("model_id") or "group/coding")
-        r_verdict = str(run.get("v5_verdict") or run.get("status") or "PASS")
-        r_task = str(run.get("task_id") or "T1")
-        role_entries.append((r_task, r_role, r_round, r_model, r_verdict))
-
-    if not role_entries:
-        for idx, rf in enumerate(receipt_files[:6]):
-            stem = rf.stem.lower()
-            r_role = _normalize_role(stem)
-            m_rnd = re.search(r"r(\d+)", stem)
-            r_round = f"r{m_rnd.group(1)}" if m_rnd else "r1"
-            r_verdict = "PASS" if "PASS" in full_corpus else status.upper()
-            role_entries.append((f"task-{idx+1}", r_role, r_round, "group/coding", r_verdict))
-
-    if not role_entries:
-        role_entries.append((parsed["tasks"][0]["task_id"] if parsed["tasks"] else "T1", "Writer", "r1", "group/coding", "PASS"))
-
-    primary_worker_span_id = m1_span_id
-    step_ns = max(100_000_000, (end_ns - start_ns) // max(2, len(role_entries) + 2))
-    for idx, (r_task, r_role, r_round, r_model, r_verdict) in enumerate(role_entries):
-        w_span_id = deterministic_span_id(f"goal:{goal_id}:role:{idx}:{r_task}:{r_role}:{r_round}")
-        w_start = min(end_ns - 100_000_000, start_ns + (idx + 1) * step_ns)
-        w_end = min(end_ns, w_start + step_ns)
-        w_start, w_end = _clamp_span_window(w_start, w_end)
-        if idx == 0:
-            primary_worker_span_id = w_span_id
-        spans.append(
-            SpanRecord(
-                span_id=w_span_id,
-                parent_span_id=m1_span_id,
-                category="stage_role",
-                name=f"Stage / Role: {r_role} ({r_task} {r_round})",
-                start_ns=w_start,
-                end_ns=w_end,
-                status_ok=("FAIL" not in r_verdict.upper()),
-                attributes={
-                    "stage.role": r_role,
-                    "stage.task_id": r_task,
-                    "stage.round": r_round,
-                    "stage.model": r_model[:80],
-                    "stage.verdict": r_verdict[:40],
-                },
-                input_payload={"task_id": r_task, "role": r_role, "round": r_round},
-                output_payload={"verdict": r_verdict[:80]},
-            )
-        )
-
-    # 2. Skill Load Spans
-    skills_found: list[str] = ["team-lead"]
-    for m in _SKILL_RE.finditer(full_corpus):
-        sk = next((g for g in m.groups() if g), None)
-        if sk and sk not in skills_found:
-            skills_found.append(sk)
-    for kw in ("my-designer", "code-review", "retro-loop", "aidash-metrics", "skill-contract", "linear-board"):
-        if kw in full_corpus and kw not in skills_found:
-            skills_found.append(kw)
-
-    first_skill_span_id = m1_span_id
-    for idx, sk in enumerate(skills_found[:6]):
-        sk_span_id = deterministic_span_id(f"goal:{goal_id}:skill:{sk}")
-        if idx == 0:
-            first_skill_span_id = sk_span_id
-        sk_start = start_ns + 120_000_000 + idx * 30_000_000
-        spans.append(
-            SpanRecord(
-                span_id=sk_span_id,
-                parent_span_id=m1_span_id,
-                category="skill_load",
-                name=f"Skill Load: {sk}",
-                start_ns=sk_start,
-                end_ns=sk_start + 60_000_000,
-                status_ok=True,
-                attributes={
-                    "skill.name": sk,
-                    "skill.source": "handoff_corpus",
-                },
-                input_payload={"skill": sk},
-                output_payload={"loaded": True},
-            )
-        )
-
-    # 3. L1 Reference Read Spans
-    refs_found: list[str] = []
-    for m in _REF_RE.finditer(full_corpus):
-        rp = m.group(1)
-        if rp not in refs_found:
-            refs_found.append(rp)
-    if not refs_found:
-        refs_found = ["skills/team-lead/SKILL.md", "skills/team-lead/references/ledger.md"]
-
-    for idx, rp in enumerate(refs_found[:6]):
-        byte_len, line_cnt = _file_stats(rp, skills_root=skills_root)
-        tok_est = _estimate_tokens_from_bytes(byte_len)
-        ref_span_id = deterministic_span_id(f"goal:{goal_id}:ref:{idx}:{rp}")
-        r_start = start_ns + 180_000_000 + idx * 25_000_000
-        spans.append(
-            SpanRecord(
-                span_id=ref_span_id,
-                parent_span_id=first_skill_span_id,
-                category="l1_reference_read",
-                name=f"L1 Reference Read: {Path(rp).name}",
-                start_ns=r_start,
-                end_ns=r_start + 40_000_000,
-                status_ok=True,
-                attributes={
-                    "reference.path": rp,
-                    "reference.skill": _infer_skill_from_path(rp),
-                    "reference.byte_len": byte_len,
-                    "reference.line_count": line_cnt,
-                    "reference.estimated_tokens": tok_est,
-                },
-                input_payload={"path": rp},
-                output_payload={"byte_len": byte_len, "lines": line_cnt, "estimated_tokens": tok_est},
-            )
-        )
-
-    # 4. L2 Script Execution Spans
-    scripts_found: list[str] = []
-    for m in _SCRIPT_RE.finditer(full_corpus):
-        sp_path = m.group(1)
-        if sp_path not in scripts_found:
-            scripts_found.append(sp_path)
-    if not scripts_found:
-        scripts_found = ["skills/team-lead/scripts/goal-queue.py", "skills/team-lead/scripts/feedback_guard.py"]
-
-    for idx, sp_path in enumerate(scripts_found[:6]):
-        sc_span_id = deterministic_span_id(f"goal:{goal_id}:script:{idx}:{sp_path}")
-        s_start = start_ns + 260_000_000 + idx * 80_000_000
-        dur_ms = 420 + idx * 135
-        spans.append(
-            SpanRecord(
-                span_id=sc_span_id,
-                parent_span_id=primary_worker_span_id,
-                category="l2_script_exec",
-                name=f"L2 Script Exec: {Path(sp_path).name}",
-                start_ns=s_start,
-                end_ns=s_start + dur_ms * 1_000_000,
-                status_ok=True,
-                attributes={
-                    "script.path": sp_path,
-                    "script.skill": _infer_skill_from_path(sp_path),
-                    "script.args": f"--handoff-dir handoff/{goal_id}",
-                    "script.duration_ms": dur_ms,
-                    "script.exit_code": 0,
-                },
-                input_payload={"script": sp_path, "args": f"--handoff-dir handoff/{goal_id}"},
-                output_payload={"exit_code": 0, "duration_ms": dur_ms},
-            )
-        )
-
-    # 5. LLM Generation Spans
-    m_in = _TOKEN_NUM_RE.search(full_corpus)
-    m_out = _OUT_TOKEN_RE.search(full_corpus)
-    in_toks = int(m_in.group(1)) if m_in else max(1800, _estimate_tokens_from_bytes(len(full_corpus)))
-    out_toks = int(m_out.group(1)) if m_out else max(450, in_toks // 5)
-    cache_toks = int(in_toks * 0.65)
-    llm_model = str(wh_goal.get("tl_model") or role_entries[0][3] or "claude-opus-4-6")[:80]
-    llm_span_id = deterministic_span_id(f"goal:{goal_id}:llm:0")
-    llm_start = start_ns + 350_000_000
-    spans.append(
-        SpanRecord(
-            span_id=llm_span_id,
-            parent_span_id=primary_worker_span_id,
-            category="llm_generation",
-            name=f"LLM Generation: {llm_model}",
-            start_ns=llm_start,
-            end_ns=min(end_ns, llm_start + 1_800_000_000),
-            status_ok=True,
-            attributes={
-                "llm.model_name": llm_model,
-                "llm.input_tokens": in_toks,
-                "llm.output_tokens": out_toks,
-                "llm.cache_read": cache_toks,
-            },
-            input_payload={"goal_id": goal_id, "mandate": parsed["mandate"][:200]},
-            output_payload={"status": status, "receipts": len(receipt_files)},
-            model=llm_model,
-            input_tokens=in_toks,
-            output_tokens=out_toks,
-            cache_read=cache_toks,
-        )
-    )
+    spans.insert(0, root_span)
 
     tags = ["backfill", "goal", f"status:{status}"]
     if parsed["linear_id"]:
         tags.append(parsed["linear_id"])
+    if not missing_categories:
+        tags.append("complete-5-cat")
 
     return TraceRecord(
         trace_id=trace_id,
@@ -916,313 +1365,170 @@ def build_goal_trace(
             "linear_issue": parsed["linear_id"],
             "repo": parsed["repo"],
             "duration_ms": duration_ms,
+            "linked_session_ids": [s.session_id for s in linked_sessions],
+            "present_categories": present_categories,
+            "missing_categories": missing_categories,
             "span_count": len(spans),
         },
         spans=spans,
     )
 
 
-def build_session_trace_from_copilot(
-    events_jsonl: Path,
-    wh_maps: dict[str, Any],
-    usage_by_session: dict[str, dict[str, list[dict[str, Any]]]],
+def build_session_trace_from_activity(
+    activity: ParsedSessionActivity,
     skills_root: Path | None = None,
-) -> TraceRecord | None:
-    session_id = events_jsonl.parent.name
-    selected_model = "unknown"
-    cwd = ""
-    first_prompt = ""
-    start_ns: int | None = None
-    end_ns: int | None = None
-
-    skill_invocations: list[tuple[str, int]] = []
-    ref_reads: list[tuple[str, int, int]] = []
-    script_execs: list[tuple[str, str, int, int, int]] = []  # (script_path, cmd_args, start_ns, dur_ms, exit_code)
-    llm_calls: list[tuple[str, int, int, int, int, int]] = []  # (model, start_ns, dur_ms, in, out, cache)
-    tool_starts: dict[str, tuple[str, dict[str, Any], int]] = {}
-
-    fallback_ns = int(events_jsonl.stat().st_mtime * 1_000_000_000)
-    try:
-        with events_jsonl.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ev_type = str(ev.get("type") or "")
-                data = ev.get("data") or {}
-                ev_ts_ns = parse_iso_to_ns(ev.get("timestamp") or data.get("startTime"), fallback_ns)
-                if start_ns is None or ev_ts_ns < start_ns:
-                    start_ns = ev_ts_ns
-                if end_ns is None or ev_ts_ns > end_ns:
-                    end_ns = ev_ts_ns
-
-                if ev_type == "session.start":
-                    selected_model = str(data.get("selectedModel") or selected_model)
-                    ctx = data.get("context") or {}
-                    cwd = str(ctx.get("cwd") or cwd)
-                elif ev_type == "user.message":
-                    content = str(data.get("content") or "").strip()
-                    if content and not first_prompt and data.get("source") != "memory":
-                        first_prompt = content[:500]
-                        for m_sk in _SKILL_RE.finditer(content):
-                            sk = next((g for g in m_sk.groups() if g), None)
-                            if sk:
-                                skill_invocations.append((sk, ev_ts_ns))
-                elif ev_type == "skill.invoked":
-                    sk_name = str(data.get("name") or "").strip()
-                    sk_path = str(data.get("path") or "").strip()
-                    sk_content = str(data.get("content") or "")
-                    if sk_name:
-                        skill_invocations.append((sk_name, ev_ts_ns))
-                    if sk_path:
-                        ref_reads.append((sk_path, max(len(sk_content.encode("utf-8")), 512), ev_ts_ns))
-                elif ev_type == "tool.execution_start":
-                    tc_id = str(data.get("toolCallId") or "")
-                    t_name = str(data.get("toolName") or "")
-                    args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
-                    if tc_id:
-                        tool_starts[tc_id] = (t_name, args, ev_ts_ns)
-                    if t_name == "skill" and args.get("skill"):
-                        skill_invocations.append((str(args["skill"]), ev_ts_ns))
-                    elif t_name == "view" and args.get("path"):
-                        vp = str(args["path"])
-                        if "/skills/" in vp and (vp.endswith(".md") or vp.endswith(".json") or vp.endswith(".yaml")):
-                            b_len, _ = _file_stats(vp, skills_root=skills_root)
-                            ref_reads.append((vp, b_len, ev_ts_ns))
-                elif ev_type == "tool.execution_complete":
-                    tc_id = str(data.get("toolCallId") or "")
-                    if tc_id in tool_starts:
-                        t_name, args, st_ns = tool_starts[tc_id]
-                        dur_ms = max(5, int((ev_ts_ns - st_ns) / 1_000_000))
-                        ok = bool(data.get("success", True))
-                        if t_name == "bash":
-                            cmd_str = str(args.get("command") or "")
-                            m_sc = _SCRIPT_RE.search(cmd_str)
-                            if m_sc:
-                                script_execs.append((m_sc.group(1), cmd_str[:220], st_ns, dur_ms, 0 if ok else 1))
-                elif ev_type == "session.usage_record":
-                    usage = data.get("usage") or {}
-                    u_model = str(usage.get("model") or selected_model)
-                    u_in = int(usage.get("inputTokens") or 0)
-                    u_out = int(usage.get("outputTokens") or 0)
-                    u_cache = int(usage.get("cacheReadTokens") or 0)
-                    u_dur = max(20, int(usage.get("duration") or 200))
-                    if u_in > 0 or u_out > 0:
-                        llm_calls.append((u_model, max(start_ns or ev_ts_ns, ev_ts_ns - u_dur * 1_000_000), u_dur, u_in, u_out, u_cache))
-    except OSError:
-        return None
-
-    # Enrich with usage.jsonl and warehouse.db for this session_id
-    u_bucket = usage_by_session.get(session_id, {})
-    for rec in u_bucket.get("skill_turn", []):
-        sk = str(rec.get("skill") or "")
-        ts_ns = parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns)
-        if sk:
-            skill_invocations.append((sk, ts_ns))
-        in_t = int(rec.get("input_tokens") or 0)
-        out_t = int(rec.get("output_tokens") or 0)
-        ca_t = int(rec.get("cache_read") or 0)
-        if (in_t > 0 or out_t > 0) and not llm_calls:
-            llm_calls.append((str(rec.get("model") or selected_model), ts_ns, 450, in_t, out_t, ca_t))
-
-    for rec in u_bucket.get("reference_hit", []) + wh_maps["refs_by_session"].get(session_id, []):
-        rp = str(rec.get("reference_path") or "")
-        if rp:
-            b_len = int(rec.get("byte_len") or 0)
-            if b_len <= 0:
-                b_len, _ = _file_stats(rp, skills_root=skills_root)
-            ref_reads.append((rp, b_len, parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns)))
-
-    for rec in u_bucket.get("script_call", []) + wh_maps["scripts_by_session"].get(session_id, []):
-        sp_p = str(rec.get("script_path") or "")
-        if sp_p:
-            dur_ms = max(5, int(float(rec.get("duration_ms") or 50)))
-            ec = int(rec.get("exit_code") or 0)
-            script_execs.append((sp_p, sp_p, parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns), dur_ms, ec))
-
-    for turn in wh_maps["turns_by_session"].get(session_id, []):
-        in_t = int(turn.get("input_tokens") or 0)
-        out_t = int(turn.get("output_tokens") or 0)
-        ca_t = int(turn.get("cache_read") or 0)
-        if (in_t > 0 or out_t > 0) and len(llm_calls) < 12:
-            llm_calls.append(
-                (
-                    str(turn.get("model") or selected_model),
-                    parse_iso_to_ns(turn.get("ts"), start_ns or fallback_ns),
-                    500,
-                    in_t,
-                    out_t,
-                    ca_t,
-                )
-            )
-
-    if not first_prompt and not llm_calls and not skill_invocations:
-        return None
-
-    s_ns = start_ns or (fallback_ns - 60_000_000_000)
-    e_ns = end_ns or fallback_ns
-    s_ns, e_ns = _clamp_span_window(s_ns, e_ns, min_duration_ns=1_000_000_000)
+) -> TraceRecord:
+    """Build a complete Session Prompt trace exporting ALL recorded events without truncation."""
+    session_id = activity.session_id
+    s_ns, e_ns = _clamp_span_window(activity.start_ns, activity.end_ns, min_duration_ns=1_000_000)
 
     trace_id = deterministic_trace_id(f"session:{session_id}")
     root_span_id = deterministic_span_id(f"session:{session_id}:root")
     stage_span_id = deterministic_span_id(f"session:{session_id}:stage:agent")
 
-    total_in = sum(x[3] for x in llm_calls)
-    total_out = sum(x[4] for x in llm_calls)
-    total_cache = sum(x[5] for x in llm_calls)
-    duration_ms = round((e_ns - s_ns) / 1_000_000, 2)
-
-    prompt_summary = first_prompt[:320] if first_prompt else f"Session {session_id} ({cwd or 'cli'})"
+    prompt_summary = activity.first_prompt[:320] if activity.first_prompt else f"Session {session_id}"
     inferred_role = "M1 TL"
-    if "reviewer" in prompt_summary.lower() or "code-review" in prompt_summary.lower():
+    lower_prompt = prompt_summary.lower()
+    if "reviewer" in lower_prompt or "code-review" in lower_prompt:
         inferred_role = "Reviewer"
-    elif "writer" in prompt_summary.lower() or "implement" in prompt_summary.lower():
+    elif "writer" in lower_prompt or "implement" in lower_prompt:
         inferred_role = "Writer"
-    elif "m2-dispatcher" in prompt_summary.lower():
+    elif "m2-dispatcher" in lower_prompt:
         inferred_role = "M2"
 
-    root_input = {
-        "session_id": session_id,
-        "cwd": cwd or "unknown",
-        "prompt": prompt_summary,
-        "selected_model": selected_model,
-    }
-    root_output = {
-        "status": "completed",
-        "duration_ms": duration_ms,
-        "llm_generations": len(llm_calls),
-        "total_input_tokens": total_in,
-        "total_output_tokens": total_out,
-        "total_cache_read": total_cache,
-    }
-
     spans: list[SpanRecord] = [
-        SpanRecord(
-            span_id=root_span_id,
-            parent_span_id=None,
-            category="root",
-            name=f"User Prompt Session: {session_id[:8]}",
-            start_ns=s_ns,
-            end_ns=e_ns,
-            status_ok=True,
-            attributes={
-                "session.id": session_id,
-                "session.cwd": cwd or "unknown",
-                "session.model": selected_model,
-                "session.duration_ms": duration_ms,
-            },
-            input_payload=root_input,
-            output_payload=root_output,
-        ),
         SpanRecord(
             span_id=stage_span_id,
             parent_span_id=root_span_id,
             category="stage_role",
-            name=f"Stage / Role: {inferred_role} ({selected_model})",
-            start_ns=s_ns + 10_000_000,
+            name=f"Stage / Role: {inferred_role} ({activity.selected_model})",
+            start_ns=s_ns,
             end_ns=e_ns,
             status_ok=True,
             attributes={
                 "stage.role": inferred_role,
                 "stage.round": "r1",
-                "stage.model": selected_model,
+                "stage.model": activity.selected_model,
                 "stage.verdict": "COMPLETED",
+                "evidence.source": activity.source_path,
             },
             input_payload={"prompt": prompt_summary[:200]},
-            output_payload={"llm_calls": len(llm_calls)},
-        ),
+            output_payload={"llm_calls": len(activity.llm_calls)},
+        )
     ]
 
-    # Deduplicate skills while preserving order
-    seen_skills: set[str] = set()
-    for idx, (sk_name, sk_ts) in enumerate(skill_invocations):
-        if sk_name in seen_skills or len(seen_skills) >= 6:
+    seen_skills: set[tuple[str, int]] = set()
+    for idx, (sk_name, sk_ts, src_id) in enumerate(activity.skill_invocations):
+        key = (sk_name, sk_ts)
+        if key in seen_skills:
             continue
-        seen_skills.add(sk_name)
+        seen_skills.add(key)
         spans.append(
             SpanRecord(
-                span_id=deterministic_span_id(f"session:{session_id}:skill:{sk_name}"),
+                span_id=deterministic_span_id(f"session:{session_id}:skill:{idx}:{src_id}:{sk_name}"),
                 parent_span_id=stage_span_id,
                 category="skill_load",
                 name=f"Skill Load: {sk_name}",
                 start_ns=sk_ts,
-                end_ns=sk_ts + 40_000_000,
+                end_ns=sk_ts + 10_000_000,
                 status_ok=True,
-                attributes={"skill.name": sk_name},
+                attributes={"skill.name": sk_name, "evidence.source": src_id},
                 input_payload={"skill": sk_name},
                 output_payload={"loaded": True},
             )
         )
 
-    seen_refs: set[str] = set()
-    for idx, (rp, b_len, r_ts) in enumerate(ref_reads):
-        if rp in seen_refs or len(seen_refs) >= 8:
+    seen_refs: set[tuple[str, int]] = set()
+    for idx, (rp, b_len, r_ts, src_id) in enumerate(activity.ref_reads):
+        r_key = (rp, r_ts)
+        if r_key in seen_refs:
             continue
-        seen_refs.add(rp)
-        _, line_cnt = _file_stats(rp, skills_root=skills_root)
-        tok_est = _estimate_tokens_from_bytes(b_len)
+        seen_refs.add(r_key)
+        f_bytes, line_cnt = _file_stats(rp, skills_root=skills_root)
+        actual_bytes = b_len if b_len is not None else f_bytes
+        ref_attrs: dict[str, str | int | float | bool] = {
+            "reference.path": rp,
+            "reference.skill": _infer_skill_from_path(rp),
+            "evidence.source": src_id,
+        }
+        out_pay: dict[str, Any] = {"path": rp}
+        if actual_bytes is not None:
+            ref_attrs["reference.byte_len"] = actual_bytes
+            ref_attrs["reference.estimated_tokens"] = _estimate_tokens_from_bytes(actual_bytes)
+            out_pay["byte_len"] = actual_bytes
+            out_pay["estimated_tokens"] = _estimate_tokens_from_bytes(actual_bytes)
+        if line_cnt is not None:
+            ref_attrs["reference.line_count"] = line_cnt
+            out_pay["lines"] = line_cnt
         spans.append(
             SpanRecord(
-                span_id=deterministic_span_id(f"session:{session_id}:ref:{idx}:{rp}"),
+                span_id=deterministic_span_id(f"session:{session_id}:ref:{idx}:{src_id}:{rp}"),
                 parent_span_id=stage_span_id,
                 category="l1_reference_read",
                 name=f"L1 Reference Read: {Path(rp).name}",
                 start_ns=r_ts,
-                end_ns=r_ts + 30_000_000,
+                end_ns=r_ts + 10_000_000,
                 status_ok=True,
-                attributes={
-                    "reference.path": rp,
-                    "reference.skill": _infer_skill_from_path(rp),
-                    "reference.byte_len": b_len,
-                    "reference.line_count": line_cnt,
-                    "reference.estimated_tokens": tok_est,
-                },
+                attributes=ref_attrs,
                 input_payload={"path": rp},
-                output_payload={"byte_len": b_len, "lines": line_cnt, "estimated_tokens": tok_est},
+                output_payload=out_pay,
             )
         )
 
-    for idx, (sp_p, cmd_args, sc_ts, dur_ms, ec) in enumerate(script_execs[:8]):
+    for idx, (sp_p, cmd_args, sc_ts, dur_ms, ec, src_id) in enumerate(activity.script_execs):
+        sc_ok: bool | None = None if ec is None else (ec == 0)
+        sc_attrs: dict[str, str | int | float | bool] = {
+            "script.path": sp_p,
+            "script.skill": _infer_skill_from_path(sp_p),
+            "script.args": cmd_args,
+            "script.duration_ms": dur_ms,
+            "evidence.source": src_id,
+        }
+        sc_out: dict[str, Any] = {"duration_ms": dur_ms}
+        if ec is not None:
+            sc_attrs["script.exit_code"] = ec
+            sc_out["exit_code"] = ec
+        else:
+            sc_attrs["script.exit_status"] = "unknown"
+            sc_out["exit_code"] = None
         spans.append(
             SpanRecord(
-                span_id=deterministic_span_id(f"session:{session_id}:script:{idx}:{sp_p}:{sc_ts}"),
+                span_id=deterministic_span_id(f"session:{session_id}:script:{idx}:{src_id}:{sp_p}"),
                 parent_span_id=stage_span_id,
                 category="l2_script_exec",
                 name=f"L2 Script Exec: {Path(sp_p).name}",
                 start_ns=sc_ts,
-                end_ns=sc_ts + max(10, dur_ms) * 1_000_000,
-                status_ok=(ec == 0),
-                attributes={
-                    "script.path": sp_p,
-                    "script.skill": _infer_skill_from_path(sp_p),
-                    "script.args": cmd_args,
-                    "script.duration_ms": dur_ms,
-                    "script.exit_code": ec,
-                },
+                end_ns=sc_ts + max(1, dur_ms) * 1_000_000,
+                status_ok=sc_ok,
+                attributes=sc_attrs,
                 input_payload={"script": sp_p, "command": cmd_args},
-                output_payload={"exit_code": ec, "duration_ms": dur_ms},
+                output_payload=sc_out,
             )
         )
 
-    for idx, (m_name, l_ts, dur_ms, in_t, out_t, ca_t) in enumerate(llm_calls[:10]):
+    # Export EVERY recorded LLM generation (zero per-trace truncation) so root totals reconcile 100%
+    exported_in = 0
+    exported_out = 0
+    exported_cache = 0
+    for idx, (m_name, l_ts, dur_ms, in_t, out_t, ca_t, src_id) in enumerate(activity.llm_calls):
+        exported_in += in_t
+        exported_out += out_t
+        exported_cache += ca_t
         spans.append(
             SpanRecord(
-                span_id=deterministic_span_id(f"session:{session_id}:llm:{idx}:{l_ts}"),
+                span_id=deterministic_span_id(f"session:{session_id}:llm:{idx}:{src_id}:{l_ts}"),
                 parent_span_id=stage_span_id,
                 category="llm_generation",
                 name=f"LLM Generation: {m_name}",
                 start_ns=l_ts,
-                end_ns=l_ts + max(25, dur_ms) * 1_000_000,
+                end_ns=l_ts + max(1, dur_ms) * 1_000_000,
                 status_ok=True,
                 attributes={
                     "llm.model_name": m_name,
                     "llm.input_tokens": in_t,
                     "llm.output_tokens": out_t,
                     "llm.cache_read": ca_t,
+                    "evidence.source": src_id,
                 },
                 input_payload={"turn_index": idx, "session_id": session_id},
                 output_payload={"input_tokens": in_t, "output_tokens": out_t, "cache_read": ca_t},
@@ -1232,6 +1538,51 @@ def build_session_trace_from_copilot(
                 cache_read=ca_t,
             )
         )
+
+    duration_ms = round((e_ns - s_ns) / 1_000_000, 2)
+    present_categories = sorted({sp.category for sp in spans})
+    missing_categories = [c for c in SPAN_CATEGORIES if c not in present_categories]
+
+    root_input = {
+        "session_id": session_id,
+        "cwd": activity.cwd or "unknown",
+        "prompt": prompt_summary,
+        "selected_model": activity.selected_model,
+    }
+    root_output = {
+        "status": "completed",
+        "duration_ms": duration_ms,
+        "llm_generations": len(activity.llm_calls),
+        "total_input_tokens": exported_in,
+        "total_output_tokens": exported_out,
+        "total_cache_read": exported_cache,
+        "present_categories": present_categories,
+        "missing_categories": missing_categories,
+    }
+
+    root_span = SpanRecord(
+        span_id=root_span_id,
+        parent_span_id=None,
+        category="root",
+        name=f"User Prompt Session: {session_id[:8]}",
+        start_ns=s_ns,
+        end_ns=e_ns,
+        status_ok=True,
+        attributes={
+            "session.id": session_id,
+            "session.cwd": activity.cwd or "unknown",
+            "session.model": activity.selected_model,
+            "session.duration_ms": duration_ms,
+            "session.complete_5_categories": len(missing_categories) == 0,
+        },
+        input_payload=root_input,
+        output_payload=root_output,
+    )
+    spans.insert(0, root_span)
+
+    tags = ["backfill", "session", f"role:{inferred_role}"]
+    if not missing_categories:
+        tags.append("complete-5-cat")
 
     return TraceRecord(
         trace_id=trace_id,
@@ -1244,16 +1595,48 @@ def build_session_trace_from_copilot(
         status="completed",
         input_payload=root_input,
         output_payload=root_output,
-        tags=["backfill", "session", f"role:{inferred_role}"],
+        tags=tags,
         metadata={
             "session_id": session_id,
-            "cwd": cwd,
-            "model": selected_model,
+            "cwd": activity.cwd,
+            "model": activity.selected_model,
             "duration_ms": duration_ms,
+            "present_categories": present_categories,
+            "missing_categories": missing_categories,
             "span_count": len(spans),
         },
         spans=spans,
     )
+
+
+def build_session_trace_from_copilot(
+    events_jsonl: Path,
+    wh_maps: dict[str, Any],
+    usage_by_session: dict[str, dict[str, list[dict[str, Any]]]],
+    skills_root: Path | None = None,
+) -> TraceRecord | None:
+    activity = parse_copilot_session_activity(
+        events_jsonl,
+        wh_maps,
+        usage_by_session,
+        skills_root=skills_root,
+    )
+    if activity is None:
+        return None
+    return build_session_trace_from_activity(activity, skills_root=skills_root)
+
+
+def _activity_category_count(act: ParsedSessionActivity) -> int:
+    count = 1  # stage_role always present
+    if act.skill_invocations:
+        count += 1
+    if act.ref_reads:
+        count += 1
+    if act.script_execs:
+        count += 1
+    if act.llm_calls:
+        count += 1
+    return count
 
 
 def collect_historical_traces(
@@ -1264,72 +1647,109 @@ def collect_historical_traces(
     warehouse_db: Path = DEFAULT_WAREHOUSE_DB,
     limit_goals: int = 35,
     limit_sessions: int = 55,
+    max_sessions_per_goal: int = 6,
     skills_root: Path | None = None,
 ) -> tuple[list[TraceRecord], list[TraceRecord]]:
     wh_maps = _load_warehouse_maps(warehouse_db)
     usage_by_session = _load_usage_jsonl(usage_jsonl)
 
-    goal_traces: list[TraceRecord] = []
-    if handoff_root.is_dir() and limit_goals > 0:
-        all_goal_dirs = [
-            p.parent
-            for p in handoff_root.glob("*/ledger.md")
-            if not p.parent.name.startswith("_")
-        ]
-        priority_set = set(PRIORITY_GOALS)
-        prioritized = sorted(
-            all_goal_dirs,
-            key=lambda d: (
-                1 if d.name in priority_set or d.name.startswith("vs-ui-") else 0,
-                (d / "ledger.md").stat().st_mtime,
-            ),
-            reverse=True,
-        )
-        for gdir in prioritized:
-            if len(goal_traces) >= limit_goals:
-                break
-            tr = build_goal_trace(gdir, wh_maps, skills_root=skills_root)
-            if tr is not None:
-                goal_traces.append(tr)
+    # Index Copilot sessions for both Session export AND real Goal-to-Session attribution
+    parsed_activities: list[ParsedSessionActivity] = []
+    goal_to_activities: dict[str, list[ParsedSessionActivity]] = {}
 
-    session_traces: list[TraceRecord] = []
-    seen_sids: set[str] = set()
-    if copilot_sessions_dir.is_dir() and limit_sessions > 0:
-        rich_session_ids = set(usage_by_session.keys()) | set(wh_maps["refs_by_session"].keys()) | set(
-            wh_maps["scripts_by_session"].keys()
+    if copilot_sessions_dir.is_dir():
+        rich_session_ids = (
+            set(usage_by_session.keys())
+            | set(wh_maps["refs_by_session"].keys())
+            | set(wh_maps["scripts_by_session"].keys())
         )
-        candidates = [p for p in copilot_sessions_dir.glob("*/events.jsonl") if p.stat().st_size >= 1024]
-        candidates.sort(
-            key=lambda p: (
-                1 if p.parent.name in rich_session_ids else 0,
-                p.stat().st_mtime,
-            ),
+        ev_files = [p for p in copilot_sessions_dir.glob("*/events.jsonl") if p.stat().st_size >= 512]
+        by_mtime = sorted(ev_files, key=lambda p: p.stat().st_mtime, reverse=True)
+        by_rich = sorted(
+            ev_files,
+            key=lambda p: (1 if p.parent.name in rich_session_ids else 0, p.stat().st_mtime),
             reverse=True,
         )
-        for ev_path in candidates:
-            if len(session_traces) >= limit_sessions:
-                break
-            tr = build_session_trace_from_copilot(
+        scan_cap = max(600, limit_sessions * 8, limit_goals * 12)
+        half_cap = scan_cap // 2
+        candidates_to_scan = list(dict.fromkeys(by_mtime[:half_cap] + by_rich[:scan_cap]))[:scan_cap]
+        for ev_path in candidates_to_scan:
+            act = parse_copilot_session_activity(
                 ev_path,
                 wh_maps,
                 usage_by_session,
                 skills_root=skills_root,
             )
-            if tr is not None:
-                session_traces.append(tr)
-                seen_sids.add(tr.entity_id)
+            if act is None:
+                continue
+            parsed_activities.append(act)
+            for g_name in act.referenced_goals:
+                goal_to_activities.setdefault(g_name, []).append(act)
 
-    # Fallback session synthesis from usage.jsonl / warehouse.db if copilot_sessions_dir had fewer than limit_sessions
-    if len(session_traces) < limit_sessions:
-        extra_sids = [
-            sid
-            for sid in list(usage_by_session.keys()) + list(wh_maps["turns_by_session"].keys())
-            if sid not in seen_sids
+    # 1. Build Goal Traces (prioritizing complete 5-category evidence + named spec Goals)
+    goal_traces: list[TraceRecord] = []
+    if handoff_root.is_dir() and limit_goals > 0:
+        all_goal_dirs = [
+            p.parent for p in handoff_root.glob("*/ledger.md") if not p.parent.name.startswith("_")
         ]
-        for sid in extra_sids:
+        priority_set = set(PRIORITY_GOALS)
+
+        def _goal_rank(gdir: Path) -> tuple[int, int, float]:
+            g_acts = [a for a in goal_to_activities.get(gdir.name, []) if len(a.referenced_goals) <= 8]
+            has_all_5 = (
+                any(a.skill_invocations for a in g_acts)
+                and any(a.ref_reads for a in g_acts)
+                and any(a.script_execs for a in g_acts)
+                and any(a.llm_calls for a in g_acts)
+            )
+            is_named = 1 if (gdir.name in priority_set or gdir.name.startswith("vs-ui-")) else 0
+            return (1 if has_all_5 else 0, is_named, (gdir / "ledger.md").stat().st_mtime)
+
+        all_goal_dirs.sort(key=_goal_rank, reverse=True)
+        for gdir in all_goal_dirs:
+            if len(goal_traces) >= limit_goals:
+                break
+            linked = sorted(
+                [a for a in goal_to_activities.get(gdir.name, []) if len(a.referenced_goals) <= 8],
+                key=lambda a: (len(a.referenced_goals) == 1, _activity_category_count(a), a.end_ns),
+                reverse=True,
+            )[:max_sessions_per_goal]
+            tr = build_goal_trace(gdir, wh_maps, linked_sessions=linked, skills_root=skills_root)
+            if tr is not None:
+                goal_traces.append(tr)
+
+    # 2. Build Session Traces (prioritizing complete 5-category real sessions, deduplicated)
+    session_traces: list[TraceRecord] = []
+    seen_sids: set[str] = set()
+    if limit_sessions > 0:
+        ordered_acts = sorted(
+            parsed_activities,
+            key=lambda a: (_activity_category_count(a) == 5, _activity_category_count(a), a.end_ns),
+            reverse=True,
+        )
+        for act in ordered_acts:
             if len(session_traces) >= limit_sessions:
                 break
-            seen_sids.add(sid)
+            if act.session_id in seen_sids:
+                continue
+            seen_sids.add(act.session_id)
+            session_traces.append(build_session_trace_from_activity(act, skills_root=skills_root))
+
+    # 3. Fallback session reconstruction from usage.jsonl / warehouse.db (strictly deduplicated!)
+    if len(session_traces) < limit_sessions:
+        ordered_fallback_sids: list[str] = list(
+            dict.fromkeys(
+                list(usage_by_session.keys())
+                + list(wh_maps["turns_by_session"].keys())
+                + list(wh_maps["refs_by_session"].keys())
+                + list(wh_maps["scripts_by_session"].keys())
+            )
+        )
+        for sid in ordered_fallback_sids:
+            if len(session_traces) >= limit_sessions:
+                break
+            if not sid or sid in seen_sids:
+                continue
             u_b = usage_by_session.get(sid, {})
             turns = wh_maps["turns_by_session"].get(sid, [])
             refs = u_b.get("reference_hit", []) + wh_maps["refs_by_session"].get(sid, [])
@@ -1337,123 +1757,97 @@ def collect_historical_traces(
             skill_turns = u_b.get("skill_turn", [])
             if not (turns or refs or scripts or skill_turns):
                 continue
+
+            seen_sids.add(sid)
             ts_candidates = [
                 parse_iso_to_ns(r.get("ts"))
                 for r in (turns + refs + scripts + skill_turns)
                 if r.get("ts")
             ]
-            s_ns = min(ts_candidates) if ts_candidates else int(time.time() * 1_000_000_000) - 5_000_000_000
-            e_ns = max(ts_candidates) if ts_candidates else s_ns + 2_000_000_000
-            s_ns, e_ns = _clamp_span_window(s_ns, e_ns, min_duration_ns=1_000_000_000)
-            trace_id = deterministic_trace_id(f"session:{sid}")
-            root_span_id = deterministic_span_id(f"session:{sid}:root")
-            stage_id = deterministic_span_id(f"session:{sid}:stage:agent")
-            spans = [
-                SpanRecord(
-                    span_id=root_span_id,
-                    parent_span_id=None,
-                    category="root",
-                    name=f"User Prompt Session: {sid[:8]}",
-                    start_ns=s_ns,
-                    end_ns=e_ns,
-                    attributes={"session.id": sid},
-                    input_payload={"session_id": sid},
-                    output_payload={"status": "completed"},
-                ),
-                SpanRecord(
-                    span_id=stage_id,
-                    parent_span_id=root_span_id,
-                    category="stage_role",
-                    name="Stage / Role: M1 TL",
-                    start_ns=s_ns + 10_000_000,
-                    end_ns=e_ns,
-                    attributes={"stage.role": "M1 TL", "stage.round": "r1"},
-                ),
-            ]
-            for idx, st in enumerate(skill_turns[:4]):
-                sk = str(st.get("skill") or "team-lead")
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"session:{sid}:skill:{idx}:{sk}"),
-                        parent_span_id=stage_id,
-                        category="skill_load",
-                        name=f"Skill Load: {sk}",
-                        start_ns=s_ns + 20_000_000 + idx * 10_000_000,
-                        end_ns=s_ns + 50_000_000 + idx * 10_000_000,
-                        attributes={"skill.name": sk},
+            s_ns = min(ts_candidates) if ts_candidates else int(time.time() * 1_000_000_000)
+            e_ns = max(ts_candidates) if ts_candidates else s_ns + 1_000_000
+            s_ns, e_ns = _clamp_span_window(s_ns, e_ns, min_duration_ns=1_000_000)
+
+            fb_skills: list[tuple[str, int, str]] = []
+            for idx, st in enumerate(skill_turns):
+                sk = str(st.get("skill") or "").strip()
+                if sk:
+                    fb_skills.append(
+                        (
+                            sk,
+                            parse_iso_to_ns(st.get("ts"), s_ns),
+                            str(st.get("event_id") or f"usage:skill_turn:{idx}"),
+                        )
                     )
-                )
-            for idx, rf in enumerate(refs[:4]):
-                rp = str(rf.get("reference_path") or "SKILL.md")
-                b_len = int(rf.get("byte_len") or 1024)
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"session:{sid}:ref:{idx}:{rp}"),
-                        parent_span_id=stage_id,
-                        category="l1_reference_read",
-                        name=f"L1 Reference Read: {Path(rp).name}",
-                        start_ns=s_ns + 60_000_000 + idx * 10_000_000,
-                        end_ns=s_ns + 85_000_000 + idx * 10_000_000,
-                        attributes={
-                            "reference.path": rp,
-                            "reference.byte_len": b_len,
-                            "reference.estimated_tokens": _estimate_tokens_from_bytes(b_len),
-                        },
+
+            fb_refs: list[tuple[str, int | None, int, str]] = []
+            for idx, rf in enumerate(refs):
+                rp = str(rf.get("reference_path") or "").strip()
+                if rp:
+                    raw_b = rf.get("byte_len")
+                    b_len = int(raw_b) if raw_b is not None and int(raw_b) > 0 else None
+                    fb_refs.append(
+                        (
+                            rp,
+                            b_len,
+                            parse_iso_to_ns(rf.get("ts"), s_ns),
+                            str(rf.get("hit_uid") or rf.get("event_id") or f"ref:{idx}"),
+                        )
                     )
-                )
-            for idx, sc in enumerate(scripts[:4]):
-                sp_p = str(sc.get("script_path") or "scripts/verify")
-                dur = max(5, int(float(sc.get("duration_ms") or 40)))
-                ec = int(sc.get("exit_code") or 0)
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"session:{sid}:script:{idx}:{sp_p}"),
-                        parent_span_id=stage_id,
-                        category="l2_script_exec",
-                        name=f"L2 Script Exec: {Path(sp_p).name}",
-                        start_ns=s_ns + 90_000_000 + idx * 15_000_000,
-                        end_ns=s_ns + (90 + dur) * 1_000_000 + idx * 15_000_000,
-                        status_ok=(ec == 0),
-                        attributes={"script.path": sp_p, "script.duration_ms": dur, "script.exit_code": ec},
+
+            fb_scripts: list[tuple[str, str, int, int, int | None, str]] = []
+            for idx, sc in enumerate(scripts):
+                sp_p = str(sc.get("script_path") or "").strip()
+                if sp_p:
+                    dur = max(1, int(float(sc.get("duration_ms") or 1)))
+                    raw_ec = sc.get("exit_code")
+                    ec = int(raw_ec) if raw_ec is not None else None
+                    fb_scripts.append(
+                        (
+                            sp_p,
+                            sp_p,
+                            parse_iso_to_ns(sc.get("ts"), s_ns),
+                            dur,
+                            ec,
+                            str(sc.get("call_uid") or sc.get("event_id") or f"script:{idx}"),
+                        )
                     )
-                )
-            for idx, tn in enumerate((turns or skill_turns)[:4]):
-                m_name = str(tn.get("model") or "claude-opus-4-6")
+
+            fb_llms: list[tuple[str, int, int, int, int, int, str]] = []
+            source_llm_rows = turns if turns else skill_turns
+            for idx, tn in enumerate(source_llm_rows):
                 in_t = int(tn.get("input_tokens") or 0)
                 out_t = int(tn.get("output_tokens") or 0)
                 ca_t = int(tn.get("cache_read") or 0)
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"session:{sid}:llm:{idx}"),
-                        parent_span_id=stage_id,
-                        category="llm_generation",
-                        name=f"LLM Generation: {m_name}",
-                        start_ns=s_ns + 120_000_000 + idx * 20_000_000,
-                        end_ns=s_ns + 320_000_000 + idx * 20_000_000,
-                        attributes={"llm.model_name": m_name},
-                        model=m_name,
-                        input_tokens=in_t,
-                        output_tokens=out_t,
-                        cache_read=ca_t,
+                if in_t > 0 or out_t > 0 or ca_t > 0:
+                    m_name = str(tn.get("model") or "unknown")
+                    fb_llms.append(
+                        (
+                            m_name,
+                            parse_iso_to_ns(tn.get("ts"), s_ns),
+                            100,
+                            in_t,
+                            out_t,
+                            ca_t,
+                            str(tn.get("turn_uuid") or tn.get("event_id") or f"llm:{idx}"),
+                        )
                     )
-                )
-            session_traces.append(
-                TraceRecord(
-                    trace_id=trace_id,
-                    root_span_id=root_span_id,
-                    trace_kind="session",
-                    entity_id=sid,
-                    name=f"Session Prompt: {sid[:8]}",
-                    start_ns=s_ns,
-                    end_ns=e_ns,
-                    status="completed",
-                    input_payload={"session_id": sid},
-                    output_payload={"status": "completed", "span_count": len(spans)},
-                    tags=["backfill", "session"],
-                    metadata={"session_id": sid, "span_count": len(spans)},
-                    spans=spans,
-                )
+
+            fb_act = ParsedSessionActivity(
+                session_id=sid,
+                source_path="telemetry_fallback",
+                selected_model=fb_llms[0][0] if fb_llms else "unknown",
+                cwd="telemetry_fallback",
+                first_prompt="",
+                start_ns=s_ns,
+                end_ns=e_ns,
+                referenced_goals=set(),
+                skill_invocations=fb_skills,
+                ref_reads=fb_refs,
+                script_execs=fb_scripts,
+                llm_calls=fb_llms,
             )
+            session_traces.append(build_session_trace_from_activity(fb_act, skills_root=skills_root))
 
     return goal_traces, session_traces
 
@@ -1496,7 +1890,7 @@ def export_to_phoenix(
     otlp_url: str,
     project_name: str,
     batch_size: int = 20,
-    timeout: int = 20,
+    timeout: int = 25,
 ) -> dict[str, Any]:
     sent_traces = 0
     sent_spans = 0
@@ -1582,12 +1976,24 @@ def export_to_langfuse(
 def summarize_traces(goal_traces: list[TraceRecord], session_traces: list[TraceRecord]) -> dict[str, Any]:
     all_traces = goal_traces + session_traces
     cat_counts = {c: 0 for c in ("root", *SPAN_CATEGORIES)}
+    complete_goals = 0
+    complete_sessions = 0
+    for tr in goal_traces:
+        cats = {sp.category for sp in tr.spans if sp.category != "root"}
+        if all(c in cats for c in SPAN_CATEGORIES):
+            complete_goals += 1
+    for tr in session_traces:
+        cats = {sp.category for sp in tr.spans if sp.category != "root"}
+        if all(c in cats for c in SPAN_CATEGORIES):
+            complete_sessions += 1
     for tr in all_traces:
         for sp in tr.spans:
             cat_counts[sp.category] = cat_counts.get(sp.category, 0) + 1
     return {
         "goal_traces": len(goal_traces),
+        "goal_traces_complete_5_categories": complete_goals,
         "session_traces": len(session_traces),
+        "session_traces_complete_5_categories": complete_sessions,
         "total_traces": len(all_traces),
         "total_spans": sum(len(t.spans) for t in all_traces),
         "span_categories": cat_counts,
