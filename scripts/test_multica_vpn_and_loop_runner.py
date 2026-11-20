@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 LOOP_PATH = ROOT / "skills/team-lead/scripts/multica_loop_runner.py"
 M2_SYMLINK_PATH = ROOT / "skills/m2-dispatcher/scripts/multica_loop_runner.py"
+VPN_BRIDGE_PATH = ROOT / "skills/team-lead/scripts/multica_vpn_bridge.py"
+M2_VPN_BRIDGE_SYMLINK_PATH = ROOT / "skills/m2-dispatcher/scripts/multica_vpn_bridge.py"
 BRIEF_PATH = ROOT / "skills/linear-board/scripts/daily-brief.py"
 ISSUE_BRIEF_PATH = ROOT / "skills/issue-brief/scripts/verify_issue_format.py"
 
@@ -26,6 +28,7 @@ def _load(name: str, path: Path):
 
 
 loop_runner = _load("test_multica_loop_runner_mod", LOOP_PATH)
+vpn_bridge = _load("test_multica_vpn_bridge_mod", VPN_BRIDGE_PATH)
 daily_brief = _load("test_daily_brief_multica_mod", BRIEF_PATH)
 issue_brief = _load("test_issue_brief_mod", ISSUE_BRIEF_PATH)
 
@@ -160,6 +163,179 @@ class MulticaVpnVerificationTests(unittest.TestCase):
             self.assertIn("Secure over plain HTTP", auth_findings)
             self.assertIn("IP literal Domain", auth_findings)
             self.assertFalse(report["checks"]["websocket_upgrade"]["ok"])
+
+    def test_verify_vpn_with_openvpn_gateway_and_client_peer_bundle(self):
+        sample_ifconfig = (
+            "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n"
+            "\tinet 127.0.0.1 netmask 0xff000000\n"
+            "utun10: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1500\n"
+            "\tinet 10.9.0.6 --> 10.9.0.1 netmask 0xffffff00\n"
+        )
+        tunnels = loop_runner.detect_active_openvpn_tunnel(ifconfig_output=sample_ifconfig)
+        self.assertEqual(
+            tunnels,
+            [{"interface": "utun10", "client_ip": "10.9.0.6", "gateway_ip": "10.9.0.1"}],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            multica_dir = Path(tmp)
+            (multica_dir / "desktop.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "apiUrl": "http://192.168.31.17:18080",
+                        "wsUrl": "ws://192.168.31.17:18080/ws",
+                        "appUrl": "http://192.168.31.17:13000",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (multica_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "server_url": "http://192.168.31.17:18080",
+                        "app_url": "http://192.168.31.17:13000",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            seen_urls = []
+            seen_ws = []
+
+            def fake_http(url: str, *, method: str = "GET", headers=None, body=None, timeout: float = 8.0):
+                seen_urls.append((method, url))
+                hdrs = dict(headers or {})
+                if method == "GET" and url.endswith("/login"):
+                    return 200, {"content-type": ["text/html"]}, "<html>Multica Login</html>"
+                if method == "GET" and url.endswith("/api/config"):
+                    return 200, {"x-middleware-rewrite": ["http://server:8080/api/config"]}, '{"allow_signup":true}'
+                if method == "GET" and url.endswith("/health"):
+                    return 200, {}, '{"status":"ok"}'
+                if method == "OPTIONS":
+                    origin = hdrs.get("Origin", "")
+                    return (
+                        200,
+                        {
+                            "access-control-allow-origin": [origin],
+                            "access-control-allow-credentials": ["true"],
+                        },
+                        "",
+                    )
+                if method == "POST" and url.endswith("/auth/send-code"):
+                    return 200, {}, '{"message":"Verification code sent"}'
+                if method == "POST" and url.endswith("/auth/verify-code"):
+                    return (
+                        200,
+                        {
+                            "set-cookie": [
+                                "multica_auth=jwt_vpn_ok; Path=/; HttpOnly; SameSite=Lax",
+                                "multica_csrf_session=csrf_vpn_ok; Path=/; SameSite=Lax",
+                            ]
+                        },
+                        '{"token":"jwt_vpn_ok"}',
+                    )
+                if method == "GET" and url.endswith("/api/workspaces"):
+                    if "multica_auth=jwt_vpn_ok" in hdrs.get("Cookie", ""):
+                        return 200, {}, '[{"slug":"leepepe"}]'
+                    return 401, {}, '{"error":"unauthorized"}'
+                return 404, {}, "not found"
+
+            def fake_ws(ws_url: str, *, origin=None, cookie_header=None, timeout: float = 6.0):
+                seen_ws.append((ws_url, origin, cookie_header))
+                return {"ok": True, "status_code": 101, "status_line": "HTTP/1.1 101 Switching Protocols", "origin": origin}
+
+            report = loop_runner.verify_vpn_access(
+                multica_dir=multica_dir,
+                auto_probe_vpn_gateway=True,
+                ifconfig_output=sample_ifconfig,
+                http_requester=fake_http,
+                ws_prober=fake_ws,
+            )
+            self.assertTrue(report["ok"], report)
+            gw_section = report["checks"]["openvpn_gateway_bridge"]
+            self.assertTrue(gw_section["ok"], gw_section)
+            self.assertEqual(gw_section["gateway"]["app_url"], "http://10.9.0.1:13000")
+            self.assertEqual(gw_section["gateway"]["cookie_samesite"], "lax")
+            self.assertIn("10.9.0.6", gw_section["client_peers"])
+            self.assertTrue(gw_section["client_peers"]["10.9.0.6"]["ok"])
+            self.assertTrue(any(u == "http://10.9.0.1:13000/login" for _, u in seen_urls))
+            self.assertTrue(any(ws.startswith("ws://10.9.0.1:18080/ws") for ws, _, _ in seen_ws))
+
+
+class MulticaVpnBridgeTests(unittest.TestCase):
+    def test_vpn_bridge_symlink_points_to_team_lead_script(self):
+        self.assertTrue(M2_VPN_BRIDGE_SYMLINK_PATH.is_symlink())
+        self.assertEqual(M2_VPN_BRIDGE_SYMLINK_PATH.resolve(), VPN_BRIDGE_PATH.resolve())
+
+    def test_azure_gateway_bind_validation_rejects_public_or_wildcard_ips(self):
+        self.assertEqual(
+            vpn_bridge.validate_internal_gateway_bind_hosts(["10.9.0.1", "10.8.0.1"]),
+            ["10.9.0.1", "10.8.0.1"],
+        )
+        for forbidden in ("0.0.0.0", "::", "172.17.0.4", "20.198.1.2", "192.168.31.17"):
+            with self.assertRaises(ValueError):
+                vpn_bridge.validate_internal_gateway_bind_hosts([forbidden])
+
+        rendered = vpn_bridge.render_azure_gateway_bridge_script()
+        self.assertIn("ALLOWED_GATEWAY_IPS = ('10.9.0.1', '10.8.0.1')", rendered)
+        self.assertIn("PREFERRED_CLIENT_IP = '10.9.0.6'", rendered)
+
+    def test_async_tcp_bridge_server_forwards_bidirectional_payloads(self):
+        import asyncio
+
+        async def _exercise():
+            async def echo_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+                data = await reader.read(1024)
+                writer.write(b"UPSTREAM:" + data)
+                await writer.drain()
+                writer.close()
+                await writer.wait_closed()
+
+            upstream = await asyncio.start_server(echo_handler, "127.0.0.1", 0)
+            up_port = upstream.sockets[0].getsockname()[1]
+
+            bridge = vpn_bridge.AsyncTcpBridgeServer(
+                [
+                    vpn_bridge.PortMapping(
+                        bind_host="127.0.0.1",
+                        listen_port=0,
+                        upstream_host="127.0.0.1",
+                        upstream_port=up_port,
+                    )
+                ]
+            )
+            await bridge.start()
+            bridge_port = bridge.bound_endpoints[0][1]
+            try:
+                r, w = await asyncio.open_connection("127.0.0.1", bridge_port)
+                w.write(b"hello-vpn")
+                if w.can_write_eof():
+                    w.write_eof()
+                await w.drain()
+                reply = await r.read(1024)
+                w.close()
+                await w.wait_closed()
+                self.assertEqual(reply, b"UPSTREAM:hello-vpn")
+            finally:
+                await bridge.close()
+                upstream.close()
+                await upstream.wait_closed()
+
+        asyncio.run(_exercise())
+
+    def test_install_launchd_dry_run_emits_valid_keepalive_plist_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist_file = Path(tmp) / "com.tianpli.multica.vpn-bridge.plist"
+            res = vpn_bridge.install_launchd_agent(
+                plist_path=plist_file,
+                log_dir=Path(tmp),
+                dry_run=True,
+            )
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["payload"]["Label"], "com.tianpli.multica.vpn-bridge")
+            self.assertTrue(res["payload"]["KeepAlive"])
+            self.assertTrue(res["payload"]["RunAtLoad"])
 
 
 class MulticaLoopRunnerPipelineTests(unittest.TestCase):

@@ -49,6 +49,9 @@ JEV_CLIENT_SCRIPT_PATH = TEAM_LEAD_SCRIPTS_DIR / "jev_client.py"
 DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
 DEFAULT_APP_URL = "http://192.168.31.17:13000"
 DEFAULT_WS_URL = "ws://192.168.31.17:18080/ws"
+DEFAULT_VPN_GATEWAY_HOST = "10.9.0.1"
+DEFAULT_VPN_GATEWAY_APP_URL = "http://10.9.0.1:13000"
+DEFAULT_VPN_GATEWAY_API_URL = "http://10.9.0.1:18080"
 DEFAULT_WORKSPACE_ID = "6f6b9a0b-4375-4ebc-a997-ff0c99b2645c"
 DEFAULT_WORKSPACE_SLUG = "leepepe"
 DEFAULT_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
@@ -354,8 +357,11 @@ def _default_http_requester(
     timeout: float = 8.0,
 ) -> tuple[int, dict[str, list[str]], str]:
     req = urllib.request.Request(url, data=body, headers=dict(headers or {}), method=method)
-    # Prevent urllib from auto-discarding Set-Cookie headers across redirects
-    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+    # Bypass system HTTP proxies for LAN/OpenVPN IPs and preserve Set-Cookie headers across redirects
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPRedirectHandler(),
+    )
     try:
         with opener.open(req, timeout=timeout) as resp:
             status = int(resp.status)
@@ -416,11 +422,219 @@ def _default_ws_prober(
     }
 
 
+def detect_active_openvpn_tunnel(
+    *,
+    ifconfig_output: str | None = None,
+) -> list[dict[str, str]]:
+    """Detect active OpenVPN utun/tun interfaces on 10.9.0.x or 10.8.0.x."""
+    if ifconfig_output is None:
+        proc = subprocess.run(["ifconfig"], capture_output=True, text=True, check=False)
+        ifconfig_output = proc.stdout or ""
+    found: list[dict[str, str]] = []
+    current_iface = ""
+    hdr_re = re.compile(r"^([a-zA-Z0-9_]+):\s+flags=")
+    inet_re = re.compile(r"^\s*inet\s+(10\.(?:9|8)\.0\.\d+)(?:\s+-->\s+(\d+\.\d+\.\d+\.\d+))?")
+    for line in ifconfig_output.splitlines():
+        m_hdr = hdr_re.match(line)
+        if m_hdr:
+            current_iface = m_hdr.group(1)
+            continue
+        m_inet = inet_re.match(line)
+        if m_inet and current_iface:
+            ip_val = m_inet.group(1)
+            subnet_prefix = ".".join(ip_val.split(".")[:3])
+            peer_val = m_inet.group(2) or f"{subnet_prefix}.1"
+            found.append(
+                {
+                    "interface": current_iface,
+                    "client_ip": ip_val,
+                    "gateway_ip": peer_val,
+                }
+            )
+    return found
+
+
+def _verify_endpoint_bundle(
+    *,
+    app_url: str,
+    server_url: str,
+    ws_url: str | None,
+    workspace_slug: str,
+    email: str,
+    verification_code: str,
+    perform_login_code_exchange: bool = True,
+    shared_auth_cookie: str = "",
+    http_requester: Callable[..., tuple[int, dict[str, list[str]], str]],
+    ws_prober: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    """Verify HTTP 200, CORS preflight, 888888 login Cookie SameSite/non-Secure, and WS 101 across a VPN/bridge endpoint."""
+    clean_app = app_url.rstrip("/")
+    clean_server = server_url.rstrip("/")
+    parsed_server = urllib.parse.urlparse(clean_server)
+    resolved_ws_base = (ws_url or f"{'wss' if parsed_server.scheme == 'https' else 'ws'}://{parsed_server.netloc}/ws").rstrip("/")
+    findings: list[str] = []
+
+    # 1. Web UI HTTP 200 + /api/config + /health
+    try:
+        login_st, _, _ = http_requester(f"{clean_app}/login", method="GET")
+    except OSError as exc:
+        login_st = 0
+        findings.append(f"{clean_app}/login unreachable: {exc}")
+    else:
+        if login_st != 200:
+            findings.append(f"{clean_app}/login returned HTTP {login_st}")
+
+    try:
+        cfg_st, _, _ = http_requester(f"{clean_app}/api/config", method="GET")
+    except OSError as exc:
+        cfg_st = 0
+        findings.append(f"{clean_app}/api/config unreachable: {exc}")
+    else:
+        if cfg_st != 200:
+            findings.append(f"{clean_app}/api/config returned HTTP {cfg_st}")
+
+    try:
+        health_st, _, _ = http_requester(f"{clean_server}/health", method="GET")
+    except OSError as exc:
+        health_st = 0
+        findings.append(f"{clean_server}/health unreachable: {exc}")
+    else:
+        if health_st != 200:
+            findings.append(f"{clean_server}/health returned HTTP {health_st}")
+
+    # 2. CORS preflight (Origin = clean_app -> Access-Control-Allow-Origin = clean_app)
+    cors_st = 0
+    allow_origin = ""
+    try:
+        cors_st, cors_hdrs, _ = http_requester(
+            f"{clean_server}/auth/send-code",
+            method="OPTIONS",
+            headers={
+                "Origin": clean_app,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,authorization,x-csrf-token",
+            },
+        )
+        allow_origin = (cors_hdrs.get("access-control-allow-origin") or [""])[0]
+    except OSError as exc:
+        findings.append(f"CORS preflight to {clean_server}/auth/send-code failed: {exc}")
+    else:
+        if not (cors_st in (200, 204) and allow_origin in (clean_app, "*")):
+            findings.append(
+                f"CORS preflight rejected Origin={clean_app} on {clean_server} (allow_origin={allow_origin!r}, status={cors_st})"
+            )
+
+    # 3. Auth send-code + verify-code (888888) & Cookie SameSite / non-Secure over HTTP
+    send_st = 0
+    ver_st = 0
+    ws_me_st = 0
+    auth_cookie_val = shared_auth_cookie
+    samesite_policy = "reused_from_gateway" if (not perform_login_code_exchange and shared_auth_cookie) else ""
+    try:
+        if perform_login_code_exchange:
+            for attempt in range(2):
+                send_st, _, send_body = http_requester(
+                    f"{clean_app}/auth/send-code",
+                    method="POST",
+                    headers={"Content-Type": "application/json", "Origin": clean_app},
+                    body=json.dumps({"email": email}).encode("utf-8"),
+                )
+                if send_st == 429 and attempt == 0 and http_requester is _default_http_requester:
+                    # Wait out Multica's 60s per-email send-code cooldown if an earlier probe just requested a code
+                    import time as _time
+                    _time.sleep(61.0)
+                    continue
+                break
+            if send_st != 200:
+                findings.append(f"{clean_app}/auth/send-code failed with HTTP {send_st}: {send_body[:120]}")
+
+            ver_st, ver_hdrs, ver_body = http_requester(
+                f"{clean_app}/auth/verify-code",
+                method="POST",
+                headers={"Content-Type": "application/json", "Origin": clean_app},
+                body=json.dumps({"email": email, "code": verification_code}).encode("utf-8"),
+            )
+            if ver_st != 200:
+                findings.append(f"{clean_app}/auth/verify-code failed with HTTP {ver_st}: {ver_body[:120]}")
+            auth_cookie_val = ""
+            is_http = clean_app.lower().startswith("http://")
+            for raw_sc in ver_hdrs.get("set-cookie") or []:
+                lower_sc = raw_sc.lower()
+                if raw_sc.startswith("multica_auth="):
+                    auth_cookie_val = raw_sc.split(";", 1)[0].split("=", 1)[1]
+                    ss_match = re.search(r"samesite=([a-z]+)", lower_sc)
+                    samesite_policy = ss_match.group(1) if ss_match else ""
+                    if samesite_policy not in {"lax", "strict"}:
+                        findings.append(f"multica_auth unexpected SameSite={samesite_policy!r} on {clean_app}")
+                    if is_http and "; secure" in lower_sc:
+                        findings.append(f"multica_auth sets Secure over plain HTTP on {clean_app}")
+                    if "domain=" in lower_sc:
+                        dom_m = re.search(r"domain=([^;]+)", lower_sc)
+                        if dom_m and re.match(r"^\.?\d+\.\d+\.\d+\.\d+$", dom_m.group(1).strip()):
+                            findings.append(f"multica_auth sets IP literal Domain={dom_m.group(1)} on {clean_app}")
+            if ver_st == 200 and not auth_cookie_val:
+                findings.append(f"missing multica_auth Set-Cookie on {clean_app}/auth/verify-code")
+
+        if auth_cookie_val:
+            ws_me_st, _, ws_me_body = http_requester(
+                f"{clean_app}/api/workspaces",
+                method="GET",
+                headers={"Cookie": f"multica_auth={auth_cookie_val}", "Origin": clean_app},
+            )
+            if ws_me_st != 200:
+                findings.append(f"Cookie-authenticated {clean_app}/api/workspaces returned HTTP {ws_me_st}: {ws_me_body[:120]}")
+    except OSError as exc:
+        findings.append(f"Auth flow on {clean_app} failed: {exc}")
+
+    # 4. WebSocket 101 Switching Protocols on ws://<gateway>:18080/ws and same-origin :13000/ws
+    cookie_hdr_opt = f"multica_auth={auth_cookie_val}" if auth_cookie_val else None
+    direct_ws_url = f"{resolved_ws_base}?workspace_slug={urllib.parse.quote(workspace_slug)}"
+    parsed_app = urllib.parse.urlparse(clean_app)
+    app_ws_url = f"{'wss' if parsed_app.scheme == 'https' else 'ws'}://{parsed_app.netloc}/ws?workspace_slug={urllib.parse.quote(workspace_slug)}"
+
+    ws_results: dict[str, Any] = {}
+    for label, target_ws in (
+        ("api_ws_upgrade", direct_ws_url),
+        ("web_proxy_ws_upgrade", app_ws_url),
+    ):
+        try:
+            res = ws_prober(target_ws, origin=clean_app, cookie_header=cookie_hdr_opt)
+        except OSError as exc:
+            res = {"ok": False, "status_code": 0, "error": str(exc), "origin": clean_app}
+        ws_results[label] = res
+        if not res.get("ok"):
+            findings.append(f"WebSocket upgrade failed for {label} ({target_ws}, Origin={clean_app}): {res}")
+
+    return {
+        "ok": len(findings) == 0,
+        "app_url": clean_app,
+        "server_url": clean_server,
+        "ws_url": resolved_ws_base,
+        "login_status": login_st,
+        "api_config_status": cfg_st,
+        "health_status": health_st,
+        "cors_allow_origin": allow_origin,
+        "verify_code_status": ver_st,
+        "cookie_samesite": samesite_policy,
+        "cookie_workspaces_status": ws_me_st,
+        "has_auth_cookie": bool(auth_cookie_val),
+        "_auth_cookie": auth_cookie_val,
+        "websocket": ws_results,
+        "findings": findings,
+    }
+
+
 def verify_vpn_access(
     *,
     server_url: str = DEFAULT_SERVER_URL,
     app_url: str = DEFAULT_APP_URL,
     ws_url: str | None = None,
+    vpn_gateway_host: str | None = None,
+    vpn_gateway_url: str | None = None,
+    vpn_api_url: str | None = None,
+    vpn_ws_url: str | None = None,
+    auto_probe_vpn_gateway: bool | None = None,
+    ifconfig_output: str | None = None,
     workspace_slug: str = DEFAULT_WORKSPACE_SLUG,
     email: str = DEFAULT_OWNER_EMAIL,
     verification_code: str = DEFAULT_DEV_CODE,
@@ -500,12 +714,20 @@ def verify_vpn_access(
     # Check 4: Auth send-code + verify-code via Web proxy (:13000) & Cookie SameSite / non-Secure over HTTP
     auth_findings: list[str] = []
     send_payload = json.dumps({"email": email}).encode("utf-8")
-    send_status, _, send_body = http_requester(
-        f"{clean_app}/auth/send-code",
-        method="POST",
-        headers={"Content-Type": "application/json", "Origin": clean_app},
-        body=send_payload,
-    )
+    send_status = 0
+    send_body = ""
+    for attempt in range(2):
+        send_status, _, send_body = http_requester(
+            f"{clean_app}/auth/send-code",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": clean_app},
+            body=send_payload,
+        )
+        if send_status == 429 and attempt == 0 and http_requester is _default_http_requester:
+            import time as _time
+            _time.sleep(61.0)
+            continue
+        break
     if send_status != 200:
         auth_findings.append(f"/auth/send-code failed with HTTP {send_status}: {send_body[:160]}")
 
@@ -596,6 +818,65 @@ def verify_vpn_access(
         "probes": ws_probes,
         "findings": ws_findings,
     }
+
+    # Check 6: Option A OpenVPN Internal Gateway Bridge (10.9.0.1 / 10.8.0.1 -> Mac mini 10.9.0.6 -> NAS)
+    explicit_vpn_requested = any(
+        val is not None for val in (vpn_gateway_host, vpn_gateway_url, vpn_api_url, vpn_ws_url)
+    )
+    should_auto_probe = (
+        auto_probe_vpn_gateway
+        if auto_probe_vpn_gateway is not None
+        else (explicit_vpn_requested or http_requester is _default_http_requester)
+    )
+    tunnels = detect_active_openvpn_tunnel(ifconfig_output=ifconfig_output) if should_auto_probe else []
+
+    if explicit_vpn_requested or tunnels:
+        gw_host = vpn_gateway_host or (tunnels[0]["gateway_ip"] if tunnels else DEFAULT_VPN_GATEWAY_HOST)
+        gw_app = vpn_gateway_url or f"http://{gw_host}:13000"
+        gw_api = vpn_api_url or f"http://{gw_host}:18080"
+        gw_bundle = _verify_endpoint_bundle(
+            app_url=gw_app,
+            server_url=gw_api,
+            ws_url=vpn_ws_url,
+            workspace_slug=workspace_slug,
+            email=email,
+            verification_code=verification_code,
+            perform_login_code_exchange=True,
+            http_requester=http_requester,
+            ws_prober=ws_prober,
+        )
+        gw_cookie = str(gw_bundle.pop("_auth_cookie", "") or auth_cookie_val)
+
+        peer_bundles: dict[str, Any] = {}
+        peer_findings: list[str] = []
+        for tun in tunnels:
+            peer_ip = tun["client_ip"]
+            if peer_ip and peer_ip != gw_host:
+                p_bundle = _verify_endpoint_bundle(
+                    app_url=f"http://{peer_ip}:13000",
+                    server_url=f"http://{peer_ip}:18080",
+                    ws_url=f"ws://{peer_ip}:18080/ws",
+                    workspace_slug=workspace_slug,
+                    email=email,
+                    verification_code=verification_code,
+                    perform_login_code_exchange=False,
+                    shared_auth_cookie=gw_cookie,
+                    http_requester=http_requester,
+                    ws_prober=ws_prober,
+                )
+                p_bundle.pop("_auth_cookie", None)
+                peer_bundles[peer_ip] = p_bundle
+                if not p_bundle["ok"]:
+                    peer_findings.extend(p_bundle["findings"])
+
+        combined_vpn_findings = list(gw_bundle["findings"]) + peer_findings
+        checks["openvpn_gateway_bridge"] = {
+            "ok": len(combined_vpn_findings) == 0,
+            "detected_tunnels": tunnels,
+            "gateway": gw_bundle,
+            "client_peers": peer_bundles,
+            "findings": combined_vpn_findings,
+        }
 
     overall_ok = all(section.get("ok") for section in checks.values())
     return {
@@ -1634,10 +1915,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    p_vpn = sub.add_parser("verify-vpn", help="Run deterministic 5-point VPN / cross-network Multica probe")
+    p_vpn = sub.add_parser("verify-vpn", help="Run deterministic LAN + OpenVPN internal gateway Multica probe")
     p_vpn.add_argument("--server-url", default=DEFAULT_SERVER_URL)
     p_vpn.add_argument("--app-url", default=DEFAULT_APP_URL)
     p_vpn.add_argument("--ws-url", default=None)
+    p_vpn.add_argument("--vpn-gateway-host", default=None, help="OpenVPN internal gateway host (e.g. 10.9.0.1)")
+    p_vpn.add_argument("--vpn-gateway-url", default=None, help="OpenVPN internal Web URL (e.g. http://10.9.0.1:13000)")
+    p_vpn.add_argument("--vpn-api-url", default=None, help="OpenVPN internal API URL (e.g. http://10.9.0.1:18080)")
+    p_vpn.add_argument("--vpn-ws-url", default=None, help="OpenVPN internal WS URL (e.g. ws://10.9.0.1:18080/ws)")
+    p_vpn.add_argument("--no-vpn-gateway", action="store_true", help="Skip auto-probing active OpenVPN 10.9.0.x/10.8.0.x gateway")
     p_vpn.add_argument("--workspace-slug", default=DEFAULT_WORKSPACE_SLUG)
     p_vpn.add_argument("--email", default=DEFAULT_OWNER_EMAIL)
     p_vpn.add_argument("--verification-code", default=DEFAULT_DEV_CODE)
@@ -1683,6 +1969,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             server_url=ns.server_url,
             app_url=ns.app_url,
             ws_url=ns.ws_url,
+            vpn_gateway_host=ns.vpn_gateway_host,
+            vpn_gateway_url=ns.vpn_gateway_url,
+            vpn_api_url=ns.vpn_api_url,
+            vpn_ws_url=ns.vpn_ws_url,
+            auto_probe_vpn_gateway=(False if ns.no_vpn_gateway else None),
             workspace_slug=ns.workspace_slug,
             email=ns.email,
             verification_code=ns.verification_code,
