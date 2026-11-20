@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   herdr-dispatch.sh --name <agent-name> --kind <kind> --cwd <worktree-or-dir> --prompt <text> \
-    [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace <workspace-id>] [--tab-label <label>] [--workspace-label <label>] \
+    [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace-label <label>] \
     [--role <role>] [--exclude-vendor <vendor>] [--gateway-mode auto|magpie|direct] \
     [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
@@ -881,51 +881,25 @@ PY
     exit 0
   fi
 
-  if [[ -n "$TARGET_WORKSPACE_ID" ]]; then
-    TAB_LABEL_EFFECTIVE="${TAB_LABEL:-${WORKSPACE_LABEL:-$NAME}}"
-    TAB_JSON="$(
-      herdr tab create \
-        --workspace "$TARGET_WORKSPACE_ID" \
-        --cwd "$CWD" \
-        --label "$TAB_LABEL_EFFECTIVE" \
-        --no-focus
-    )"
-    IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_TAB_ID NEW_PANE_ID <<< "$(
-      printf '%s' "$TAB_JSON" | python3 -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-except Exception:
-    sys.exit(1)
-res = d.get("result") or {}
-tab = res.get("tab") or {}
-ws = tab.get("workspace_id") or sys.argv[1]
-tab_id = tab.get("tab_id") or ""
-pane = (res.get("root_pane") or {}).get("pane_id") or (res.get("pane") or {}).get("pane_id") or ""
-if not isinstance(pane, str) or not pane.strip():
-    sys.exit(1)
-print(f"{str(ws).strip()}\t{str(tab_id).strip()}\t{pane.strip()}")
-' "$TARGET_WORKSPACE_ID"
-    )"
-  else
-    # Normalize handoff/<goal> cwd to shared parent root so Herdr groups the workspace cleanly.
-    WS_CWD="$CWD"
-    if [[ "$(basename "$(dirname "$CWD")")" == "handoff" ]]; then
-      if [[ "$CWD" == /Volumes/SSD/* ]]; then
-        WS_CWD="$(dirname "$CWD")"
-      else
-        WS_CWD="$HOME/Development"
-      fi
+  # Normalize handoff/<goal> cwd to shared parent root so Herdr groups the workspace cleanly.
+  # Always create a new independent top-level Herdr Space (never a tab inside an existing workspace).
+  WS_CWD="$CWD"
+  if [[ "$(basename "$(dirname "$CWD")")" == "handoff" ]]; then
+    if [[ "$CWD" == /Volumes/SSD/* ]]; then
+      WS_CWD="$(dirname "$CWD")"
+    else
+      WS_CWD="$HOME/Development"
     fi
-    WS_LABEL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
-    WS_JSON="$(
-      herdr workspace create \
-        --cwd "$WS_CWD" \
-        --label "$WS_LABEL" \
-        --no-focus
-    )"
-    IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_PANE_ID <<< "$(
-      printf '%s' "$WS_JSON" | python3 -c '
+  fi
+  WS_LABEL="${WORKSPACE_LABEL:-${TAB_LABEL:-${NAME%-goal-tl-r*}}}"
+  WS_JSON="$(
+    herdr workspace create \
+      --cwd "$WS_CWD" \
+      --label "$WS_LABEL" \
+      --no-focus
+  )"
+  IFS=$'\t' read -r NEW_WORKSPACE_ID NEW_PANE_ID <<< "$(
+    printf '%s' "$WS_JSON" | python3 -c '
 import json, sys
 try:
     d = json.loads(sys.stdin.read())
@@ -941,8 +915,7 @@ if not isinstance(pane, str) or not pane.strip():
 ws = ws.strip() if isinstance(ws, str) and ws.strip() else (pane.split(":")[0] if ":" in pane else "")
 print(f"{ws}\t{pane.strip()}")
 '
-    )"
-  fi
+  )"
 else
   SPLIT_JSON="$(
     herdr pane split \

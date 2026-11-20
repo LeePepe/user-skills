@@ -2026,20 +2026,30 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
     for target in plan.get("targets", []):
         model_label = _text(target.get("model_label"), DEFAULT_M2_MODEL_LABEL)
         cwd = _expand_cwd(target.get("cwd"))
+        ws_badge = (
+            "new-space"
+            if _text(target.get("m2_status")) == "NEW_M2"
+            else (_text(target.get("workspace_id") or target.get("target_workspace_id")) or "new-space")
+        )
         lines.append(
             f"| {target.get('wave_order', 1)} | `{_text(target.get('topic_id'))}` | "
             f"`{_text(target.get('domain_status'))}` | `{_text(target.get('target_repo'), 'unspecified')}` | "
-            f"`{_text(target.get('space'), 'M2')} ({_text(target.get('target_workspace_id')) or 'new-space'})` | "
+            f"`{_text(target.get('space'), 'M2')} ({ws_badge})` | "
             f"`{_text(target.get('m2_status'))}` | `{_text(target.get('transport'), 'auto')}` | "
             f"`{model_label}` | `{cwd}` |"
         )
     lines.extend(["", "## Target Instructions"])
     for index, target in enumerate(plan.get("targets", []), start=1):
+        ws_badge = (
+            "new-space"
+            if _text(target.get("m2_status")) == "NEW_M2"
+            else (_text(target.get("workspace_id") or target.get("target_workspace_id")) or "new-space")
+        )
         lines.extend([
             "",
             f"### {index}. Wave {target.get('wave_order', 1)} · `{_text(target.get('topic_id'))}` → `{_text(target.get('target_repo'), 'unspecified')}` ({_text(target.get('m2_status'))})",
             f"- **Model / Context**: `{_text(target.get('model_label'), DEFAULT_M2_MODEL_LABEL)}` (`{_text(target.get('model'), DEFAULT_M2_MODEL)}` / `{_text(target.get('context'), DEFAULT_M2_CONTEXT)}`)",
-            f"- **Space**: `{_text(target.get('space'), 'M2')} ({_text(target.get('target_workspace_id')) or 'new-space'})`",
+            f"- **Space**: `{_text(target.get('space'), 'M2')} ({ws_badge})`",
             f"- **CWD**: `{_expand_cwd(target.get('cwd'))}`",
             f"- **Transport**: `{_text(target.get('transport'), 'auto')}`",
             "",
@@ -2327,7 +2337,12 @@ def preview_text(plan: dict[str, Any]) -> str:
     ])
     for target in plan.get("targets", []):
         marker = " [NEW_DOMAIN_CANDIDATE]" if target.get("domain_status") == NEW_DOMAIN_CANDIDATE else ""
-        lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('space', 'M2')} ({target.get('target_workspace_id') or 'new-space'}) | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
+        ws_badge = (
+            "new-space"
+            if _text(target.get("m2_status")) == "NEW_M2"
+            else (_text(target.get("workspace_id") or target.get("target_workspace_id")) or "new-space")
+        )
+        lines.append(f"{target.get('wave_order', 1)} | {target.get('topic_id', '')} | {target.get('space', 'M2')} ({ws_badge}) | {target.get('domain_status', '')}{marker} | {target.get('target_repo', 'unspecified')} | {target.get('m2_status')} | {target.get('transport', 'auto')} | {target.get('sub_prompt', '')}")
         hint = _text(target.get("rag_context_hint"))
         if hint:
             lines.append(f"  rag_context_hint: {hint}")
@@ -2457,46 +2472,6 @@ def _resolve_target_transport(target: dict[str, Any], plan: dict[str, Any], requ
     raise RouterError(f"cannot resolve delivery transport for NEW_M2 target {target.get('target_repo', 'unspecified')}; specify --transport herdr|dsh|stdout")
 
 
-def _apply_workspace_id(
-    mapped_space: str,
-    aliases: list[Any],
-    plan: dict[str, Any],
-    *,
-    binary: str,
-    runner: CommandRunner,
-    created_workspaces: dict[str, str] | None,
-) -> str:
-    space_key = mapped_space.casefold()
-    if created_workspaces and _text(created_workspaces.get(space_key)):
-        return _text(created_workspaces[space_key])
-
-    discovery = _workspace_records((plan.get("discovery") or {}).get("workspaces"))
-    live_inventory: list[dict[str, Any]] | None = None
-    try:
-        result = runner([binary, "workspace", "list"], timeout=3.0)
-        if getattr(result, "returncode", 1) == 0:
-            live_inventory = _workspace_inventory(_parse_json_output(result.stdout))
-    except (OSError, subprocess.SubprocessError):
-        live_inventory = None
-    inventory = live_inventory if live_inventory is not None else discovery
-    labels = [mapped_space, *aliases]
-    for wanted in labels:
-        wanted_key = _text(wanted).casefold()
-        if wanted_key == "大总管" and space_key != "大总管":
-            continue
-        match = next(
-            (
-                item for item in inventory
-                if _text(item.get("label")).casefold() == wanted_key
-                and _text(item.get("workspace_id"))
-            ),
-            None,
-        )
-        if match:
-            return _text(match.get("workspace_id"))
-    return ""
-
-
 def _authoritative_apply_space(target: dict[str, Any], plan: dict[str, Any], domain_map_file: str | Path | None = None) -> tuple[str, list[str]]:
     topic_id = _text(target.get("topic_id"))
     if topic_id and topic_id != NEW_UNMAPPED_DOMAIN:
@@ -2530,23 +2505,27 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
 
     name = _new_herdr_agent_name(target, index=index, used_names=used_names)
     dispatch = _text(target.get("dispatch_script") or os.environ.get("M2_ROUTER_HERDR_DISPATCH")) or str(Path.home() / "Development" / "user-skills" / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh")
-    mapped_space, space_aliases = _authoritative_apply_space(target, plan, domain_map_file)
-    space_key = mapped_space.casefold()
-    workspace_id = _apply_workspace_id(
+    mapped_space, _ = _authoritative_apply_space(target, plan, domain_map_file)
+    spawn_mode = "new_workspace"
+    args = [
+        dispatch,
+        "--name",
+        name,
+        "--kind",
+        _text(target.get("kind"), "copilot"),
+        "--cwd",
+        expanded_cwd,
+        "--prompt",
+        prompt,
+        "--new-workspace",
+        "--workspace-label",
         mapped_space,
-        space_aliases,
-        plan,
-        binary=binary,
-        runner=runner,
-        created_workspaces=created_workspaces,
-    )
-    args = [dispatch, "--name", name, "--kind", _text(target.get("kind"), "copilot"), "--cwd", expanded_cwd, "--prompt", prompt]
-    spawn_mode = "workspace_tab" if workspace_id else "new_workspace"
-    if workspace_id:
-        args.extend(["--workspace", workspace_id, "--tab-label", name])
-    else:
-        args.extend(["--new-workspace", "--workspace-label", mapped_space])
-    args.extend(["--", "--model", model, "--context", context])
+        "--",
+        "--model",
+        model,
+        "--context",
+        context,
+    ]
     result = runner(args, timeout=30.0)
     if result.returncode != 0:
         raise RouterError(f"Herdr new M2 failed for {name}: {result.stderr.strip()}")
@@ -2554,12 +2533,12 @@ def _apply_herdr(target: dict[str, Any], plan: dict[str, Any], prompt: str, *, r
     reused = bool(isinstance(parsed, dict) and parsed.get("reused_existing"))
     resolved_ws = _text((parsed or {}).get("workspace_id")) if isinstance(parsed, dict) else ""
     if resolved_ws and created_workspaces is not None:
-        created_workspaces[space_key] = resolved_ws
+        created_workspaces[name] = resolved_ws
     if reused and _text((parsed or {}).get("agent_status")).casefold() == "working":
         prompt_res = runner([binary, "agent", "prompt", name, prompt], timeout=10.0)
         if prompt_res.returncode != 0:
             raise RouterError(f"Herdr prompt failed for reused working agent {name}: {prompt_res.stderr.strip()}")
-    return {"ok": True, "method": "herdr-dispatch", "target": name, "created": not reused, "model": model, "context": context, "model_label": model_label, "cwd": expanded_cwd, "space": mapped_space, "workspace_id": resolved_ws or workspace_id, "spawn_mode": spawn_mode, "receipt": parsed or result.stdout.strip()}
+    return {"ok": True, "method": "herdr-dispatch", "target": name, "created": not reused, "model": model, "context": context, "model_label": model_label, "cwd": expanded_cwd, "space": mapped_space, "workspace_id": resolved_ws, "spawn_mode": spawn_mode, "receipt": parsed or result.stdout.strip()}
 
 
 def _register_new_domains(plan: dict[str, Any], domain_map_file: str | Path | None = None, *, dry_run: bool = False) -> list[str]:

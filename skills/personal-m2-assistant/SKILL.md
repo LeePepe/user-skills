@@ -64,7 +64,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 ## 安全与顺序
 
 - `wave_order` 只表示软顺序；真实上游结果通过 `rag_context_hint`/`context_pass` 传递，不伪造结果。
-- Herdr 只向已有 agent prompt；新 M2 通过安全 dispatch wrapper 启动并传入 `-- --model gemini-4-argon --context long_context`。Space 已存在时使用 `--workspace <workspace_id> --tab-label <name>` 创建 Tab，不存在时使用 `--new-workspace --workspace-label <space>`；绝不把调用方 `HERDR_PANE_ID` 作为 NEW_M2 分裂源。dsh 优先 Session Sink，失败时回退到明确目标的 Omni Hub dispatch。
+- Herdr 只向已有 agent prompt；新 M2（`NEW_M2` / `CREATE_NEW_M2`，含同批次多 M2 或同名仓库已有 Space 时）一律通过安全 dispatch wrapper 传入 `--new-workspace --workspace-label <space> -- --model gemini-4-argon --context long_context` 创建独立新 Space，绝不使用 `--workspace <workspace_id> --tab-label <name>` 创建 Copilot Tab，也绝不把调用方 `HERDR_PANE_ID` 作为 NEW_M2 分裂源。dsh 优先 Session Sink，失败时回退到明确目标的 Omni Hub dispatch。
 - `--cleanup-duplicates` 只清理安全的重复 idle M2；`--replace-stale-m2` 可关闭安全 idle 旧窗并重开。保护 `HERDR_PANE_ID`、`w1:p1`、`w2J:p1`、Cindy/大总管与 working/blocked 窗格。
 - Context Eviction 只有严格 AND 才成立：旧 Goal 当前有效完成且无 review/Owner decision，且 Jev 同时给出 `is_same_goal_continuation < 0.35` 与 `prior_context_value=noise_or_irrelevant`。缺失、无效、部分或冲突语义一律 `REUSE_EXISTING_M2`；Context 使用量、百分比或不同 Issue 单独绝不触发替换。
 - `stdout` transport 只输出 receipt，不产生副作用；`auto` 依据发现来源选择适配器。

@@ -77,7 +77,8 @@
         "--caller-bot grok",
         "--no-supervision",
         "--force-watch",
-        "grok_bot_supervision_disabled"
+        "grok_bot_supervision_disabled",
+        "--new-workspace --workspace-label <space>"
       ],
       "registered_at": "2026-11-16"
     }
