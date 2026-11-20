@@ -109,11 +109,14 @@
         "When-to-Read & Progressive Disclosure Routing",
         "references/multi-source-models.md",
         "references/eval-cases.json",
-        "../portfolio-advisor/SKILL.md",
+        "scripts/asset_evaluator.py",
         "--strict-no-personal-ledger",
         "lookahead_bias_forbidden"
       ],
-      "registered_at": "2026-11-18"
+      "registered_at": "2026-11-18",
+      "must_not_contain": [
+        "../portfolio-advisor/SKILL.md"
+      ]
     },
     {
       "id": "EV-006",

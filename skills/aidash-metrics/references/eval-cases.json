@@ -53,7 +53,7 @@
       "tags": [
         "contract"
       ],
-      "cmd": "python3 -c \"from pathlib import Path; p=Path('skills/aidash-metrics/SKILL.md').read_text(); assert all(x in p for x in ['When-to-Read & CLI Routing','Four mandatory gates','aidata-l1-l5-lineage.md','/layered-data-warehouse','../my-designer/SKILL.md'])\"",
+      "cmd": "python3 -c \"from pathlib import Path; p=Path('skills/aidash-metrics/SKILL.md').read_text(); assert all(x in p for x in ['When-to-Read L1','Four mandatory gates','aidata-l1-l5-lineage.md','/layered-data-warehouse','no skill hop'])\"",
       "expect_exit": 0,
       "registered_at": "2026-11-15"
     },

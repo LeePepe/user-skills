@@ -546,6 +546,16 @@ else
   RESOLVED_MODEL="$REQUESTED_MODEL"
 fi
 
+# Resolve the main checkout for worktrees so trust and session allowlists cover both roots.
+MAIN_REPO_DIR=""
+if [[ -d "$CWD" ]] && git -C "$CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  COMMON_GIT_DIR="$(git -C "$CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || git -C "$CWD" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$COMMON_GIT_DIR" ]]; then
+    COMMON_GIT_DIR="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$COMMON_GIT_DIR" 2>/dev/null || printf '%s' "$COMMON_GIT_DIR")"
+    [[ "$(basename "$COMMON_GIT_DIR")" == ".git" ]] && MAIN_REPO_DIR="$(dirname "$COMMON_GIT_DIR")"
+  fi
+fi
+
 # Pre-register folder trust for CWD & shared roots so headless panes never block on startup folder-trust dialogs.
 if [[ -d "$CWD" && "${HERDR_SKIP_GIT_AUTHOR:-0}" != "1" ]]; then
   if git -C "$CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -576,10 +586,10 @@ if [[ -d "$CWD" && "${HERDR_SKIP_GIT_AUTHOR:-0}" != "1" ]]; then
 fi
 
 if [[ -z "${MOCK_HERDR_LOG:-}" && "${HERDR_DISPATCH_SKIP_TRUST:-0}" != "1" ]]; then
-  python3 - "$KIND" "$CWD" <<'PY' || true
+  python3 - "$KIND" "$CWD" "$MAIN_REPO_DIR" "$HOME/Development/user-skills" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AIDashSync" <<'PY' || true
 import json, os, pathlib, re, sys
 
-kind, cwd_arg = sys.argv[1], sys.argv[2]
+kind, cwd_arg, main_repo_arg, user_skills_arg, aidash_sync_arg = sys.argv[1:]
 home = pathlib.Path.home()
 candidates = []
 extra_env = [p for p in os.environ.get("HERDR_EXTRA_ADD_DIRS", "").split(":") if p.strip()]
@@ -600,6 +610,9 @@ def remember(raw: str) -> None:
 
 for raw in (
     cwd_arg,
+    main_repo_arg,
+    user_skills_arg,
+    aidash_sync_arg,
     str(home / "Development"),
     str(home / "Development" / "handoff"),
     str(home / "Development" / "worktrees"),
@@ -736,6 +749,9 @@ if [[ "$KIND" == "copilot" ]]; then
   # on readonly_receipt_flags, not fewer temp roots.
   BASELINE_ADD_DIRS=(
     "$CWD"
+    "$MAIN_REPO_DIR"
+    "$HOME/Development/user-skills"
+    "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AIDashSync"
     "$HOME/Development"
     "$HOME/.copilot"
     "$HOME/.agents"
@@ -783,6 +799,7 @@ if [[ "$KIND" == "copilot" ]]; then
     fi
   fi
   for req_dir in "${BASELINE_ADD_DIRS[@]}"; do
+    [[ -n "$req_dir" ]] || continue
     already_present=0
     for ex_dir in "${EXISTING_ADD_DIRS[@]+"${EXISTING_ADD_DIRS[@]}"}"; do
       if [[ "$ex_dir" == "$req_dir" ]]; then

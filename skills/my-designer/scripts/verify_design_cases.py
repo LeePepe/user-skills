@@ -22,8 +22,8 @@ def _load_gate_module(name):
 
 EVIDENCE = _load_gate_module('design_evidence')
 JEV = _load_gate_module('design_jev')
-DEFAULT_CASES = ROOT / "references" / "defect-cases" / "index.json"
-DEFAULT_TAXONOMY = ROOT.parent / "design-studio" / "references" / "taxonomy-v2.json"
+DEFAULT_CASES = ROOT / "scripts" / "data" / "defect-cases" / "index.json"
+DEFAULT_TAXONOMY = ROOT.parent / "design-studio" / "scripts" / "data" / "taxonomy-v2.json"
 EXT_REPOS_ROOT = "~/Development/Personal/collected-tools/repos"
 
 EXTERNAL_SKILL_SOURCES: dict[str, dict[str, str]] = {
@@ -108,6 +108,105 @@ def _mask_swift(text: str) -> str:
     """Hide comments and string literals while preserving line/column offsets."""
     pattern = re.compile(r'("(?:\\\\.|[^"\\\\])*"|//[^\\n]*|/\\*[\\s\\S]*?\\*/)')
     return pattern.sub(lambda m: ''.join('\\n' if c == '\\n' else ' ' for c in m.group()), text)
+
+
+def _swiftui_view_candidates(text: str) -> list[dict[str, Any]]:
+    """Return masked source spans for SwiftUI View declarations."""
+    masked = _mask_swift(text)
+    candidates: list[dict[str, Any]] = []
+    header = re.compile(r'\bstruct\s+([A-Za-z_]\w*)\s*:[^{\n]*\bView\b[^\{]*\{')
+    for match in header.finditer(masked):
+        start = match.start()
+        open_brace = masked.find('{', match.start(), match.end())
+        end = _balanced_brace_end(masked, open_brace)
+        candidates.append({
+            'name': match.group(1),
+            'start': start,
+            'end': end,
+            'source': text[start:end],
+            'masked': masked[start:end],
+            'line': text.count('\n', 0, start) + 1,
+        })
+    if candidates:
+        return candidates
+    return [{'name': '<snippet>', 'start': 0, 'end': len(text), 'source': text, 'masked': masked, 'line': 1}]
+
+
+def _interactivity_result(text: str, path: str) -> tuple[bool, list[dict[str, Any]], list[str]]:
+    primitive = re.compile(r'@(?:State|Binding|Bindable)\b|\b(?:DisclosureGroup|ClippedRevealLayout|SW[A-Z]\w*)\b')
+    static_only = re.compile(r'^(?:[\s{}()\[\].,;:+\-]|(?:RoundedRectangle|Rectangle|Circle|Capsule|Color|fill|Text|Spacer|VStack|HStack|ZStack|body|some|View|var|let|return|frame|foregroundStyle|background|padding|overlay|cornerRadius|font|foregroundColor|opacity|lineLimit|resizable|scaledToFit|contentShape|self|\d+|\w+))*$', re.MULTILINE)
+    views: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for candidate in _swiftui_view_candidates(text):
+        masked = candidate['masked']
+        tokens = sorted(set(re.findall(r'@(?:State|Binding|Bindable)\b|\b(?:DisclosureGroup|ClippedRevealLayout|SW[A-Z]\w*)\b', masked)))
+        has_primitive = bool(primitive.search(masked))
+        has_static_shape = bool(re.search(r'\b(?:RoundedRectangle|Rectangle|Circle|Capsule|Color)\b|\.fill\s*\(', masked))
+        is_static = has_static_shape and not has_primitive and bool(static_only.match(masked.replace('\n', ' ')))
+        valid = has_primitive and not is_static
+        view = {'name': candidate['name'], 'line': candidate['line'], 'ok': valid, 'interactive_tokens': tokens, 'static_placeholder': is_static}
+        views.append(view)
+        if not has_primitive:
+            errors.append(f"{candidate['name']}: missing interactive state, disclosure, ClippedRevealLayout, or SW* component")
+        elif is_static:
+            errors.append(f"{candidate['name']}: static color-block placeholder")
+    return not errors, views, errors
+
+
+def _load_defect_entries(path: Path) -> list[dict[str, Any]]:
+    doc = _load_json(path)
+    entries: list[dict[str, Any]] = []
+    for key in ('active_cases', 'archived_templates'):
+        values = doc.get(key, [])
+        if isinstance(values, list):
+            entries.extend(item for item in values if isinstance(item, dict))
+    return entries
+
+
+def command_lookup_defect(args: argparse.Namespace) -> int:
+    path = Path(args.cases_file)
+    if not path.is_file() and path == DEFAULT_CASES:
+        path = ROOT / 'references' / 'defect-cases' / 'index.json'
+    keyword = str(args.lookup_defect or args.query or '').strip()
+    if not keyword:
+        print(json.dumps({'ok': False, 'error': 'lookup-defect requires a keyword'}, ensure_ascii=False))
+        return 2
+    terms = [term.casefold() for term in re.findall(r'[\w-]+', keyword, re.UNICODE)] or [keyword.casefold()]
+    matches: list[dict[str, Any]] = []
+    for entry in _load_defect_entries(path):
+        haystack = ' '.join(str(entry.get(field, '')) for field in ('id', 'title', 'symptom', 'fix_rule', 'platforms', 'dimensions', 'containers')).casefold()
+        if keyword.casefold() in haystack or any(term in haystack for term in terms):
+            matches.append(entry)
+    print(json.dumps({'ok': True, 'query': keyword, 'count': len(matches), 'matches': matches}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_check_section_interactivity(args: argparse.Namespace) -> int:
+    target = Path(args.interactivity_path).expanduser() if args.interactivity_path else None
+    files = [target] if target and target.is_file() else sorted(target.rglob('*.swift')) if target and target.is_dir() else []
+    if args.snippet is not None:
+        files = []
+        sources = [('<snippet>', args.snippet)]
+    else:
+        sources = []
+        for file in files:
+            try:
+                sources.append((str(file), file.read_text(encoding='utf-8', errors='ignore')))
+            except OSError as error:
+                sources.append((str(file), ''))
+                print(json.dumps({'ok': False, 'status': 'REJECT_STATIC_PLACEHOLDER', 'path': str(target), 'errors': [str(error)], 'views': []}, ensure_ascii=False))
+                return 1
+    all_views: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for name, source in sources:
+        ok, views, found = _interactivity_result(source, name)
+        all_views.extend([{'file': name, **view} for view in views])
+        errors.extend(f'{name}: {error}' for error in found)
+    if not sources:
+        errors.append(f'no Swift source found at {target}')
+    payload = {'ok': not errors, 'status': 'PASS' if not errors else 'REJECT_STATIC_PLACEHOLDER', 'path': str(target) if target else '<snippet>', 'errors': errors, 'views': all_views}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
 
 
 def _balanced_brace_end(text: str, open_brace_index: int) -> int:
@@ -804,7 +903,7 @@ def command_register_case(args: argparse.Namespace) -> int:
 def command_flow_map(args: argparse.Namespace) -> int:
     cases_doc = _load_json(Path(args.cases_file))
     taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
-    ds_refs = ROOT.parent / "design-studio" / "references"
+    ds_refs = ROOT.parent / "design-studio" / "scripts" / "data"
     desktop_vault = _load_json(ds_refs / "vault" / "desktop-macos.json")
     mobile_vault = _load_json(ds_refs / "vault" / "mobile-ios.json")
     web_vault = _load_json(ds_refs / "vault" / "web.json")
@@ -1122,6 +1221,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check-whitespace-ratio", dest="top_whitespace_path", default=None, metavar="PNG_OR_DIR")
     parser.add_argument("--max-dead-space", type=float, default=0.40)
     parser.add_argument("--audit-geometry", dest="top_geometry_path", default=None, metavar="GEOMETRY_JSON")
+    parser.add_argument("--check-section-interactivity", dest="top_interactivity_path", default=None, metavar="SWIFT_OR_DIR")
+    parser.add_argument("--snippet", dest="top_snippet", default=None)
+    parser.add_argument("--lookup-defect", dest="top_lookup_defect", default=None, metavar="KEYWORD")
     parser.add_argument("--collision-threshold", type=float, default=2.0)
     parser.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default="desktop")
     sub = parser.add_subparsers(dest="command", required=False)
@@ -1154,6 +1256,14 @@ def build_parser() -> argparse.ArgumentParser:
     geom.add_argument("--path", required=True, metavar="GEOMETRY_JSON")
     geom.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default="desktop")
     geom.add_argument("--collision-threshold", type=float, default=2.0)
+
+    interactivity = sub.add_parser("check-section-interactivity", parents=[common], help="Reject static SwiftUI section/preview placeholders")
+    interactivity.add_argument("--path", required=True, dest="interactivity_path", metavar="SWIFT_OR_DIR")
+    interactivity.add_argument("--snippet", default=None)
+
+    lookup = sub.add_parser("lookup-defect", parents=[common], help="Query the deterministic defect-case index")
+    lookup.add_argument("--query", required=True)
+    lookup.set_defaults(lookup_defect=None)
 
     gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
     gate.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
@@ -1193,10 +1303,23 @@ def main(argv: list[str] | None = None) -> int:
         return command_check_whitespace_ratio(args)
     if args.command == "audit-geometry":
         return command_audit_geometry(args)
+    if args.command == "check-section-interactivity":
+        args.interactivity_path = args.interactivity_path
+        return command_check_section_interactivity(args)
+    if args.command == "lookup-defect":
+        args.lookup_defect = args.query
+        return command_lookup_defect(args)
     if args.command == "register-case":
         return command_register_case(args)
     if args.command == "jev-gate":
         return command_jev_gate(args)
+    if args.top_interactivity_path:
+        args.interactivity_path = args.top_interactivity_path
+        args.snippet = args.top_snippet
+        return command_check_section_interactivity(args)
+    if args.top_lookup_defect:
+        args.lookup_defect = args.top_lookup_defect
+        return command_lookup_defect(args)
     if args.top_whitespace_path or args.top_geometry_path:
         ws_errors, ws_metrics = ([], [])
         geom_errors, geom_details = ([], [])
@@ -1213,7 +1336,7 @@ def main(argv: list[str] | None = None) -> int:
             'geometry_details': geom_details,
         }, ensure_ascii=False, indent=2))
         return 0 if not errors else 1
-    parser.error("a subcommand or --check-whitespace-ratio / --audit-geometry is required")
+    parser.error("a subcommand or --check-whitespace-ratio / --audit-geometry / --check-section-interactivity / --lookup-defect is required")
     return 2
 
 

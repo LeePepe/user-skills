@@ -15,7 +15,7 @@ Use this skill for any AIDash AI-metric or telemetry-card change. It is an evide
 | Deterministic discovery | `python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --aidata-root <root> --metrics <csv> --json` |
 | Metric acceptance cases | [`references/eval-cases.json`](references/eval-cases.json) |
 | Layered model design | `/layered-data-warehouse` and its `SKILL.md` |
-| Product/UI flow | [`../my-designer/SKILL.md`](../my-designer/SKILL.md) |
+| Product/UI flow | UI handoff contract (consume `design.md`, no skill hop) |
 
 ## Four mandatory gates
 
@@ -29,3 +29,9 @@ Use this skill for any AIDash AI-metric or telemetry-card change. It is an evide
 Treat `fact_turn.tool_calls` as a JSON tool-name column, not a per-call table. Keep `fact_gtt_task_run` and `fact_gtt_event` at their distinct grains. The ROI SQL is an extension surface; the canonical producer and Snapshot remain the source of truth. If L1 strips tool inputs or paths, classify the metric as collection work rather than inventing evidence.
 
 No UI gallery, AIDash pipeline, private Session-log, credential, or live-database change belongs in this skill task. Use hermetic fixtures for regressions and keep all source reads read-only.
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/aidata-l1-l5-lineage.md` | `python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --help` |
+| verification | `references/aidata-l1-l5-lineage.md` | `skill_contract.py eval --skill aidash-metrics --strict` |

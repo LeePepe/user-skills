@@ -135,8 +135,8 @@ def tracked_and_candidate_files() -> tuple[Path, ...]:
 class VerifySkillsTests(unittest.TestCase):
     def test_web_liquid_glass_capability_isolated_from_mobile(self) -> None:
         catalog = SKILLS_DIR / "design-studio" / "scripts" / "design_catalog.py"
-        taxonomy = SKILLS_DIR / "design-studio" / "references" / "taxonomy-v2.json"
-        vault = SKILLS_DIR / "design-studio" / "references" / "vault"
+        taxonomy = SKILLS_DIR / "design-studio" / "scripts" / "data" / "taxonomy-v2.json"
+        vault = SKILLS_DIR / "design-studio" / "scripts" / "data" / "vault"
         def run_catalog(platform: str) -> dict:
             result = subprocess.run([sys.executable, str(catalog), "vault-search", "--platform", platform, "--dimension", "glass-material", "--query", "Liquid Glass", "--taxonomy", str(taxonomy), "--vault-dir", str(vault)], capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
@@ -628,7 +628,7 @@ class VerifySkillsTests(unittest.TestCase):
 
     def test_design_case_surface_contains_no_project_private_identifiers(self) -> None:
         for rel_path in (
-            "skills/my-designer/references/defect-cases/index.json",
+            "skills/my-designer/scripts/data/defect-cases/index.json",
             "skills/my-designer/scripts/verify_design_cases.py",
         ):
             text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
@@ -1022,7 +1022,7 @@ class VerifySkillsTests(unittest.TestCase):
         designer_text = (designer_dir / "SKILL.md").read_text(encoding="utf-8")
         studio_text = (studio_dir / "SKILL.md").read_text(encoding="utf-8")
         routing_text = (designer_dir / "references" / "routing-index.md").read_text(encoding="utf-8")
-        cases_text = (designer_dir / "references" / "defect-cases" / "index.json").read_text(encoding="utf-8")
+        cases_text = (designer_dir / "scripts" / "data" / "defect-cases" / "index.json").read_text(encoding="utf-8")
         modernization_text = (designer_dir / "references" / "modernization-dimensions.md").read_text(encoding="utf-8")
         goal_text = (SKILLS_DIR / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
         agents_text = (SKILLS_DIR / "team-lead" / "references" / "bots-and-agents.md").read_text(encoding="utf-8")
@@ -1031,7 +1031,7 @@ class VerifySkillsTests(unittest.TestCase):
             designer_dir / "SKILL.md",
             designer_dir / "references" / "routing-index.md",
             designer_dir / "references" / "modernization-dimensions.md",
-            designer_dir / "references" / "defect-cases" / "index.json",
+            designer_dir / "scripts" / "data" / "defect-cases" / "index.json",
             designer_dir / "scripts" / "verify_design_cases.py",
             studio_dir / "SKILL.md",
             studio_dir / "scripts" / "design_catalog.py",
@@ -1047,27 +1047,18 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue(ds_script.exists(), f"Missing shared design script in design-studio: {ds_script}")
             self.assertEqual(md_script.resolve(), ds_script.resolve())
 
-        shared_design_refs = (
-            "appearance-ledger.md",
-            "breathing-and-clarity.md",
-            "design-flow-architecture.md",
-            "interaction-layering.md",
-            "routing-index.md",
-            "modernization-dimensions.md",
-            "defect-cases",
-            "eval-cases.json",
-            "catalog.json",
-            "taxonomy-v2.json",
-            "remotion-video.md",
-            "toolchain-20-matrix.md",
-            "vault",
-        )
-        for ref_name in shared_design_refs:
+        for ref_name in ("appearance-ledger.md", "breathing-and-clarity.md", "design-flow-architecture.md", "interaction-layering.md", "routing-index.md", "modernization-dimensions.md", "navigation-evidence-contract.md", "eval-cases.json"):
             md_ref = designer_dir / "references" / ref_name
+            self.assertTrue(md_ref.is_file(), f"Missing independent my-designer reference: {md_ref}")
+            self.assertFalse(md_ref.is_symlink())
+        for ref_name in ("eval-cases.json", "remotion-video.md", "toolchain-20-matrix.md"):
             ds_ref = studio_dir / "references" / ref_name
-            self.assertTrue(md_ref.exists(), f"Missing shared design reference in my-designer: {md_ref}")
-            self.assertTrue(ds_ref.exists(), f"Missing shared design reference in design-studio: {ds_ref}")
-            self.assertEqual(md_ref.resolve(), ds_ref.resolve())
+            self.assertTrue(ds_ref.is_file(), f"Missing design-studio reference: {ds_ref}")
+            self.assertFalse(ds_ref.is_symlink())
+        self.assertTrue((studio_dir / "scripts" / "data" / "catalog.json").is_file())
+        self.assertTrue((studio_dir / "scripts" / "data" / "taxonomy-v2.json").is_file())
+        self.assertTrue((studio_dir / "scripts" / "data" / "vault").is_dir())
+        self.assertTrue((designer_dir / "scripts" / "data" / "defect-cases" / "index.json").is_file())
 
         for token in ("L0 -> L1 -> L2", "Plan A", "Plan C"):
             self.assertIn(token, routing_text)

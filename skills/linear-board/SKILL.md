@@ -62,3 +62,9 @@ python3 skills/linear-board/scripts/daily-brief.py --date today --target both --
 ## Safety
 
 不要绕过 admin consent、parent membership、Todo 状态、timeline confirmation 或 dedup marker。异常应保留 sanitized warning 与 receipt；不要用终端输出冒充 Linear 证据。详细 bridge 的 ack → dispatch → wait → result-comment → owner-reassign 合同，以及 canonical credential implementation link，统一看 [daily-brief-and-bot.md](references/daily-brief-and-bot.md)。
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/daily-brief-and-bot.md` | `python3 skills/linear-board/scripts/backlog_groomer.py --help` |
+| verification | `references/daily-brief-and-bot.md` | `skill_contract.py eval --skill linear-board --strict` |

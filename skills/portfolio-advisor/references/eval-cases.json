@@ -101,10 +101,12 @@
         "When-to-Read & Progressive Disclosure Routing",
         "references/rebalance-and-fifo-rules.md",
         "references/eval-cases.json",
-        "../asset-screener/SKILL.md",
-        "skills/asset-screener/scripts/asset_evaluator.py"
+        "scripts/asset_evaluator.py"
       ],
-      "registered_at": "2026-11-18"
+      "registered_at": "2026-11-18",
+      "must_not_contain": [
+        "../asset-screener/SKILL.md"
+      ]
     }
   ],
   "updated": "2026-11-18"

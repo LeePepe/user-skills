@@ -94,12 +94,14 @@
       "file": "skills/ios-concurrency-swiftui/SKILL.md",
       "must_contain": [
         "references/concurrency-and-swiftui-cards.md",
-        "references/eval-cases.json",
-        "../ios-debugging-performance/SKILL.md",
-        "../ios-architecture-testing/SKILL.md",
+        "## When-to-Read L1",
+        "必跑 L2",
         "audit_concurrency_swiftui.py"
       ],
-      "registered_at": "2026-11-19"
+      "registered_at": "2026-11-19",
+      "must_not_contain": [
+        "../ios-"
+      ]
     }
   ],
   "updated": "2026-11-19"

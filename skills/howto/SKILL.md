@@ -62,7 +62,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 | Canonical Vault | 唯一写入技能 / 本地事实源 | Blog 挂载 | 适合内容 |
 |---|---|---|---|
-| Design & Motion Vault | `design-studio` / 该技能的 `references/vault/` | `/vault/` | 设计灵感、动效、测量卡 |
+| Design & Motion Vault | `design-studio` / 该技能的 `scripts/data/vault/` | `/vault/` | 设计灵感、动效、测量卡 |
 | Collected Tools Vault | `save-tool` / `~/Development/Personal/collected-tools/` | `/vault/` | 工具、Repo、使用入口 |
 | Personal Knowledge Vault | `knowledge-digest` / `~/Development/Personal/knowledge-vault/` | `/learn/` | 知识卡、文章/视频拆解 |
 | Retro & Story Vault | `retro-loop` → `story-craft` / Goal 的已验收叙事 handoff | `/thoughts/` | 复盘、技术叙事、公开素材 |
@@ -79,3 +79,9 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 2. **核心范式（“Judgments from Jev, decisions in code”）**：
    - **四题型**：`choice`（互斥枚举 + `criteria` 字典）、`noul`（`0~1` 真值概率，默认 `>0.70` Yes / `<0.30` No / 灰区升维）、`score`（量表重排）、`box`（UI 截图视觉框选）。
    - **写题五铁律**：① 一题只问一件事（禁 `and`/`or`）；② 同一份 `state` 多题打包单次请求并发问完（Speculative Fan-Out）；③ 只问客观可观察判断，决策逻辑写在代码真值表（Truth Table）；④ `choice` 必配伴生 `noul` 处理都不匹配的 Null Case；⑤ 在 Falcon UI 用 `⌘Return` 审阅并点 **Star** 将边界样本沉淀为永久回归集。
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/eval-cases.json` | `python3 skills/howto/scripts/howto_flow.py --help` |
+| verification | `references/eval-cases.json` | `skill_contract.py eval --skill howto --strict` |

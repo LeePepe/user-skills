@@ -77,3 +77,9 @@ Canonical companions:
 - [sub-workflow-specs.json](references/sub-workflow-specs.json)
 - [skills-drift-check.py](scripts/skills-drift-check.py)
 - [otter-workspace.template.json](references/otter-workspace.template.json)
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/his-fm-nocoo-study-and-roadmap.md` | `python3 skills/workflow-hub/scripts/skills-drift-check.py --help` |
+| verification | `references/his-fm-nocoo-study-and-roadmap.md` | `skill_contract.py eval --skill workflow-hub --strict` |

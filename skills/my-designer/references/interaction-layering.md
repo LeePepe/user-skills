@@ -1,76 +1,13 @@
-# Orthogonal X-Y-Z Interactive Layering & Anti-Flat-Tiling Framework (`L1` Reference)
+# Interaction Layering
 
-Load this file on demand when designing `layout-navigation` (`LN`), `component` (`CP`), `chart-dataviz` (`DV`), or `motion-interaction` (`MI`) surfaces, or when resolving `DC-001` / `DC-002` flat-tiling defects.
+Keep three layers explicit: Content (solid task material), Functional (bars and controls), and Feedback (state, motion, haptics). Liquid Glass belongs only to functional chrome; content remains readable and state remains recoverable.
 
-Never design a screen by dumping every feature or candidate component onto a single vertical scroll plane. Every screen in `design.md` MUST pass the **3 Orthogonal Axes (`X-Y-Z`) of Interactive Layering** below, synthesizing the 5 canonical HCI/design laws into one executable contract.
+| Rule | Evidence |
+|---|---|
+| ownership | one control owns one transition |
+| state | idle → intent → commit/cancel → settle |
+| motion | bounded transforms and reduced-motion fallback |
+| touch | >=44pt mobile, keyboard alternative on desktop |
+| preview | `PreviewHostKit`, `#Preview`, 120Hz for native Apple |
 
-## Direction-Lock & Four-Variant Exploration Gate (`B0 -> B2`)
-- **Native Apple (`desktop` / `mobile`) SwiftUI Exploration Iron Law**: For iOS / macOS native SwiftUI projects (`--platform mobile|desktop`), `v01..v04` variant exploration and motion/interaction previews MUST exclusively use the **Local Native 120Hz SwiftUI Preview Host (`PreviewHostKit` + Xcode `#Preview`)**. Strictly forbid generating Web HTML/CSS simulations or recording low-fps MP4 video galleries (`r5-todo-swiftui-preview` style on `leepepe.github.io/demos/`) for native SwiftUI projects! Web HTML Choosers (`scaffold-gallery` / `leepepe.github.io/demos/`) are strictly reserved for **Web frontend (`--platform web`) or static image/card projects**.
-- **Known direction**: collect a reference app/screenshot and anti-patterns, then explore four high-craft orthogonal depth variants (`PreviewHostKit` + Xcode `#Preview` for native SwiftUI; `scaffold-gallery --mode screen --count 4 --direction VS-* --screen-content "domain content"` for Web/static card projects, with explicit `--count 10` when a ten-candidate study is intentional) before locking coordinates. Never batch-script cloned design/code shells.
-- **Two-Stage Demo Pipeline**: Stage 1 Designer (`--role designer` → `magpie/group/designer`, Copilot `gemini-4-argon` + `grok-4.7`) authors FOUR independent screen (`--count 4`, with explicit `--count 10` compatibility) or FOUR app-nav prompts, each defining metaphor, one P0, P1/P2 folding, color/surface polarity, Liquid Glass optical parameters, inline SVG icons and anti-patterns. Stage 2 Coding (`--role writer` → `magpie/group/coding`) implements approved HTML/CSS/JS, then production after selection; design decisions remain Designer-owned. Routing is an upstream interface only.
-- **Ambiguous direction**: explore 1–3 rounds with >=2 substantive axes per pair, not palette/radius swaps. `--prompts-dir` binds exact `prompts/<id>-prompt.md` files and manifest `prompt_file`; generated prompts are unapproved starters, not an automatic prose-to-UI compiler. Reject caustic repeating stripes, `.ruler` boxes, Active / Matte bars and duplicate inner gallery controls; preserve real product navigation.
-- **Separate full-app track**: `scaffold-gallery --mode app-nav --platform mobile|desktop|macos|web` generates four bespoke, graph-driven app01..app04 schemes inside live iframe device bezels; `--category` keeps multiple rounds addressable. The Designer supplies four complete target-domain `--app-flows-json` schemes (see [navigation-evidence-contract.md](navigation-evidence-contract.md)); screen/context hints alone reject rather than invent journeys. Each scheme owns operative chrome, action-frequency priorities and push/pop/tab/sheet edges. The no-input fallback is only a starter skeleton, never a fixed template.
-- Record the variant matrix, Owner selection, and feedback through `ask_user`; after selection freeze shared colors, spacing, font sizes, and native conventions before direct production implementation. If round three remains ambiguous, stop for Owner decision; never auto-lock.
-- Product-repository implementation remains No Code Demo: never create `Prototype/` directories or throwaway product code. Handoff-only exploration may use the offline `scaffold-gallery` under `~/Development/handoff/<goal>/r<N>/`; it can also mount to `https://leepepe.github.io/demos/<goal>/`. Preserve B4 Visual Traceback and regression contracts. App/session preferences belong in `session_anti_patterns` and `style_overrides`, not universal laws.
-- When a PreviewHost round is fused or a new round starts (`r<N>` -> `r<N+1>`), immediately run `design_catalog.py reset-preview-selection --receipts-dir <dir> [--round <N>]` (verified by `check-preview-selection --file <path>`) to archive `receipts/preview-selection.json` -> `receipts/preview-selection-r<N>.json` and clear `selectedVariantID` (`""`), `starredVariantIDs` (`[]`), and `notesByVariant` (`{}`). When B3 freezes the direction or the Goal completes, run `design_catalog.py cleanup-demo --goal <goal>` to burn ephemeral HTML rounds while preserving receipts.
-
----
-
-## 1. The 5 Industry Layering Laws & Their Synthesis
-
-| # | Canonical Law / Framework | Origin / Authority | What Dimension It Governs | Failure Mode If Ignored |
-|---|---|---|---|---|
-| **1** | **Role × Frequency Priority Matrix** (`Display / Action / Display+Action` × `P0..P3`) | Owner's VitalStride Matrix + Emil Kowalski Frequency Gate + Hick's Law | **Information & Control Filtering (`What stays vs. hides`)** | Too many columns, inline buttons, or blocking modals on routine `100+/day` actions. |
-| **2** | **Progressive Disclosure & Chunking Cap** (`<= 3` Visual Groups per Viewport) | Jakob Nielsen (NN/g) & George Miller (`3±1` working-memory chunks) | **Spatial Folding (`How sections fold in X/Y`)** | Single-plane vertical flat tiling (`>1000pt` scroll columns with 4–6 stacked cards/lists). |
-| **3** | **Visual Information-Seeking Mantra** (`Overview -> Zoom & Filter -> Details-on-Demand`) | Ben Shneiderman & Edward Tufte (Data-Ink Ratio / Zero Redundancy) | **Cognitive Drill-Down & Data Uniqueness** | Rendering the same dataset twice (e.g., Donut legend + redundant `ProgressView` category bars) or dumping raw database fields inline. |
-| **4** | **Two-Layer Z-Axis Material Hierarchy** (`Functional Glass Chrome` vs. `Solid Content`) | Apple HIG (iOS 26 / macOS 26 Liquid Glass) | **Z-Axis Elevation (`Floating Control vs. Scrolling Content`)** | Putting `.glassEffect` on content rows, or letting global filters scroll out of reach. |
-| **5** | **Pace Layering** (`Fast / Medium / Slow` Change Cadence) | Stewart Brand / Linear & Flighty Cockpit Design | **Temporal Separation (`Live state vs. static config`)** | Mixing second-by-second live timers/waveforms with monthly account settings on the same visual tier. |
-
----
-
-## 2. Native Glass, Platform Navigation Divergence (`AT-011`) & Item-Driven Presentation
-
-Cross-platform SwiftUI apps targeting both `macOS` (`desktop`) and `iOS` (`mobile`) MUST split root navigation chrome via `#if os(macOS)` / `#if os(iOS)` (`AT-011` in `ios-architecture-testing`): on `macOS`, use `NavigationSplitView` or top Commander toolbar + master-detail multi-column/Inspector layout + `⌘1..⌘4` `.keyboardShortcut` bindings (**never** render a mobile bottom floating capsule dock on macOS); on `iOS`, use a bottom floating glass capsule dock / bottom `TabView` + single-column `NavigationStack` push/sheet drill-down; use one `Identifiable` sheet enum with `.sheet(item:)` and `@Environment(\.dismiss)` in the sheet. Keep Web on its own firewall route.
-
-Put adjacent glass controls in one `GlassEffectContainer(spacing:)` whose spacing exactly matches the child `HStack`/`VStack`, and identify transitions with `@Namespace` + `.glassEffectID`. Only `.regular`, `.clear`, and `.identity` are valid `Glass` values; prominent actions use `.buttonStyle(.glassProminent)`. Apply `padding`, `frame`, and `font` before `.glassEffect(...)`.
-
-## 3. Executable 3-Step (`X-Y-Z`) Layering Protocol for `design.md`
-
-### Axis X · Filter by `Interaction Role × Frequency Priority (P0..P3)` (Who Stays vs. Who Folds)
-
-Before drawing layout boxes, classify every domain element in a `3 × 4` table:
-
-| Priority Tier | 1. `Display Only` (纯展示) | 2. `Action Only` (纯操作 · `Spatial Action Priority: Bottom > Top > Secondary Menu`) | 3. `Display + Action` (展示+操作复合) |
-|---|---|---|---|
-| **`P0` · Primary Focal**<br>*(1 per viewport; `100+/day`)* | Single primary anchor metric or active object title (e.g., Active Exercise / Monthly Total Spend Hero) | **`Bottom` (Thumb Golden Zone)**: Single primary commit CTA (`✓ Complete Set`, `Record`) anchored in `.safeAreaInset(edge: .bottom)`, primary card footer, or separated `Tab(role: .prominent)` (`.topBarPinnedTrailing` on desktop) | Primary direct-manipulation target (`Weight × Reps` cells, active interactive chart/table) |
-| **`P1` · Inline Companion**<br>*(Non-blocking; `10s/day`)* | Non-blocking companion status bar (`⏱ Rest 01:42 · ♥ 136 BPM`, active filter summary pill) | **`Bottom` Creation vs. `Top` Lens**: High-frequency creation (`+ Add Exercise`) in `Bottom` thumb zone; session/global lens switchers in `Top` `.toolbar` (`.visibilityPriority(.high)`, `ToolbarSpacer` — never cram creation next to session finish in top bar) | **Merged Placeholder Hints & Direct Filter Tiles**: put `Previous / Suggested` values inside input placeholders (kill separate "Previous" columns!); make chart Bento tiles directly clickable to filter rows |
-| **`P2` · Collapsed Context**<br>*(Folded by default)* | **Collapsed siblings**: completed/upcoming exercises folded to single-line headers; secondary account cards tucked inside `SWWallet` `ZStack` | **`Top` Session / Inline Nudge**: Session finish (`Finish`), undo toast, `±15s` timer nudge, expand/collapse toggle, `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)` | Secondary perspective folded behind Segmented Control or 3D `ZStack` card deck (tap card header to peek/filter) |
-| **`P3` · On-Demand Drill-Down**<br>*(Rare / configuration)* | Audit metadata (`external_id`, `transfer_group_id`, full 40-category tail) hidden until requested | **`Secondary Menu` (`⋯` / Sheet / Swipe)**: Reorder, replace, AI substitute, unit toggle, delete, or discard auto-collapsed into `ToolbarOverflowMenu` (`⋯`) or `Sheet` | Tucked into row/toolbar `ToolbarOverflowMenu` (`>=44×44pt`), custom keypad function keys, or `L3` Receipt Detail `Sheet` / `Inspector` |
-
-### Axis Y · Fold Space via Chunking Cap & Shneiderman Mantra (`<= 2–3` Groups per Pane)
-
-1. **Hard Cap of `2–3` Visual Container Groups per Viewport / Split-View Column (`aspect_ratio <= 2.6`)**:
-   - Pattern for Dashboards / Ledgers (`Shneiderman Mantra`):
-     - **Group 1 (`Overview`)**: Compact Hero Stage Card (primary metric + inline proportion bar).
-     - **Group 2 (`Zoom & Filter`)**: Interactive Secondary Stage — **pick ONE active lens** or toggle via a Segmented Control (`[ 支出结构 Donut+Bento | 账户卡包 SWWallet ]`), or use a collapsed 3D `ZStack` pocket (`SWWallet` `~220pt` height).
-     - **Group 3 (`Details-on-Demand`)**: Grouped timeline/list rows; clicking a row opens `L3` `Sheet`/`Inspector`.
-2. **Three Mandatory Folding Mechanisms (Pick at least 1 when modules `>= 3`)**:
-   - **Mechanism A · Accordion Single-Active (`VitalStride` Tiled Mode)**: Expand ONLY the currently active item (`selectedExerciseID`); fold all completed/upcoming items into 1-line summary headers.
-   - **Mechanism B · Segmented Lens Switcher (`Operate ⇄ Focus` / `Breakdown ⇄ Accounts`)**: Share the same stage footprint between mutually exclusive analytical lenses instead of stacking them vertically.
-   - **Mechanism C · 3D `ZStack` Pocket Stack (`ShipSwift SWWallet`)**: Stack multi-card collections along the Z-axis (`ZStack` + `zIndex` + `offset(y:)` + `scaleEffect`, `~220pt` collapsed height) that fan out only when revealed.
-   - **In-Place Card Unfold vs. Top-Stacked Duplicate/Focus Card (`DC-015` / `DC-016`)**: When the Owner requests *"tap item to unfold detail"* (`点击展开具体内容`), the tapped row/card MUST unfold **in-place at its own position inside the single `ForEach` list** (`IOSTodoExpandableCard`). Unless the Owner explicitly requests a split hero stage ("置顶抽离聚焦舞台"), NEVER hoist the tapped item into a separate top card (`IOSTopFocusTodoCard`) above a `"其余待办"` companion list! Across collapsed and expanded states, persistent pills (`status`, `priority`) must keep identical label visibility and height (`UI_EXPAND_STATE_MUTATION`), persistent header rows must stay contiguous without interleaved `if isExpanded` blocks (`UI_HEADER_INTERLEAVED_INSERTION`), and inline drawers/tag panels must unroll inside a continuous height-interpolating clip container (`TodoExpandRevealLayout` + `.clipped()`) rather than `.transition(.move(edge: .top))` (`UI_UNCLIPPED_PANEL_OVERLAP`).
-   - **Subtractive Mandate Contract (`Negative DOM/View Assertions` + `Obsolete Test Manifest`)**: Whenever the Owner gives a subtractive rule ("不要 X，只保留 A 和 B"), `design.md` MUST include an explicit **`Negative DOM/View Assertions` (`count == 0` / `!exists`)** block for every removed chrome element (e.g., `148pt` dock mask, waveform bars, feedback banners) and a concrete **`Obsolete Test Manifest` (`file:line`)** listing every legacy UI test assertion to remove/rewrite (validated via `design_contract.py --audit-spec` and `verify_design_cases.py audit-spec`).
-3. **Tufte Zero-Redundancy Rule (`DC-002`)**:
-   - Never render the same dataset twice in one viewport (e.g., `SWDonutChart` with a 6-row legend + an 8-row `ProgressView` category bar list below it). Fuse the chart and legend into a single **Donut + 2-Column Interactive Bento Grid** where tapping a tile filters the list.
-4. **Compact Width Anti-Overflow & Shared Table Column Geometry (`DC-003` / `DC-005`)**:
-   - Wrap dynamic horizontal `HStack { ForEach(...) }` rails in `ScrollView(.horizontal, showsIndicators: false)` scoped to the active parent item; cap complex interactive cards at `<= 2` per compact horizontal row (`2 + 1` vertical split for 3 modules like `L + R + Reps`); apply `.containerRelativeFrame(.horizontal)` on vertical `ScrollView` content roots; and enforce 100% shared column geometry between multi-column table Headers and data Rows (identical fixed widths, identical `maxWidth: .infinity` flex columns, matching per-column alignment, and identical outer `HStack` spacing/padding, or `Grid`/`GridRow` — never pair a `maxWidth: .infinity` header with fixed-width-only rows).
-
-### Axis Z · Separate Functional Glass Chrome from Solid Content (`Apple Two-Layer & Optical Sampling Rule`)
-
-- **Top Z-Layer (Floating Functional Chrome — `.glassEffect` + `GlassEffectContainer` + `Bottom > Top > Secondary Menu` Action Hierarchy)**:
-  - Houses unified 1-row `Top` `.toolbar` (session/global lens switchers, `Period Menu`, `SWSearchBar`, compact `32pt` filter pills) and `Bottom` `.safeAreaInset(edge: .bottom)` thumb-zone bars (`P0/P1` core commits & creation on mobile; `P2/P3` low-frequency/destructive actions tucked into `⋯` `ToolbarOverflowMenu` or `Sheet`).
-  - **WWDC25/26 Optical Lensing Contract (`GM-003`)**: Liquid Glass refracts via optical lensing, not simple blur—**glass cannot sample glass**. Group adjacent glass controls inside a single `GlassEffectContainer` with `@Namespace` + `.glassEffectID` for fluid morphing; use `Glass.regular` by default and restrict `Glass.clear` to surfaces satisfying all **3 preconditions** (media-rich backdrop + dimming scrim + bold bright foreground); on macOS 27 add `.interactive()` to custom glass controls for click bounce and observe `@Environment(\.appearsActive)` to dim accents when the window is inactive.
-- **Bottom Z-Layer (Scrolling Content Canvas — Solid Semantic Luminance Tiers & 120Hz Prefetch)**:
-  - Houses `L0` canvas, `L1` grouped sections/lists, and `L2` focal cards. Never apply `.glassEffect` inside content rows, and keep `LazyVStack`/`LazyHStack` `ForEach` closures strictly `1:1` (filter in `@Query(#Predicate)`, never a top-level `if` inside `ForEach` per `DC-004`).
-- **Breathing Room & Zero-Guessing UX (`L1` Companion)**:
-  - When tuning spacing ratios (`1:3:6`, `padding >= spacing`), luminance borders, `90/10` chromatic restraint, or novice-friendly microcopy (`说法 · 入口 · 反馈`), load [breathing-and-clarity.md](breathing-and-clarity.md).
+The `magpie/group/designer` proposal is frozen before `magpie/group/coding` implementation.

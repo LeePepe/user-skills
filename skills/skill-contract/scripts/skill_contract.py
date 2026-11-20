@@ -29,6 +29,7 @@ DRAWERS = {
 }
 EVAL_DRAWERS = (
     "references/eval-cases.json",
+    "scripts/data/defect-cases/index.json",
     "references/defect-cases/index.json",
 )
 
@@ -120,6 +121,14 @@ def _target_path(target: Path, value: str | None, default: str) -> Path:
         return target / default
     p = Path(value)
     return p if p.is_absolute() or (ROOT / p).exists() or value.startswith("skills/") else target / p
+
+
+def _defect_drawer_path(target: Path, explicit: str | None = None) -> Path:
+    if explicit:
+        return _target_path(target, explicit, explicit)
+    canonical = target / "scripts" / "data" / "defect-cases" / "index.json"
+    legacy = target / "references" / "defect-cases" / "index.json"
+    return canonical if canonical.exists() or not legacy.exists() else legacy
 
 
 def _lookup_dot_path(data: Any, dot_path: str) -> tuple[bool, Any]:
@@ -747,7 +756,7 @@ def sink_rule(args: argparse.Namespace) -> int:
             raise SystemExit(f"row not found in {path}")
         path.write_text(text.replace(replacement, args.value, 1), encoding="utf-8")
     elif args.kind == "case-card":
-        path = _target_path(target, args.target_file, "references/defect-cases/index.json")
+        path = _defect_drawer_path(target, args.target_file)
         if any(PRIVATE.search(value or "") for value in (args.regex, args.title, args.remediation, args.bad_snippet, args.good_snippet)):
             raise SystemExit("project-private identifiers are forbidden in case cards")
         doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"active_cases": []}
@@ -909,6 +918,9 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
         canonical_link = re.search(rf"(?:\.\./)?{re.escape(skill)}/references/{re.escape(ref.name)}", sibling_corpus)
         if not local_link and not canonical_link:
             findings.append({"skill": skill, "code": "orphan-reference", "file": str(ref)})
+    data_defect = path / "scripts" / "data" / "defect-cases" / "index.json"
+    if data_defect.is_file():
+        _audit_drawer(skill, data_defect, findings, pkg_dir=path)
     return findings
 
 

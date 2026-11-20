@@ -47,7 +47,7 @@ else:
                 with self.subTest(flags=flag_args):
                     if log.exists():
                         log.unlink()
-                    env = dict(os.environ, PATH=f"{temp}:{os.environ['PATH']}", HERDR_TEST_LOG=str(log), HERDR_PROMPT_IDLE_GRACE="0")
+                    env = dict(os.environ, PATH=f"{temp}:{os.environ['PATH']}", HERDR_TEST_LOG=str(log), MOCK_HERDR_LOG=str(log), HERDR_PROMPT_IDLE_GRACE="0")
                     result = subprocess.run([
                         str(DISPATCH), "--name", "m2-test-r1", "--kind", "copilot", "--cwd", temp,
                         "--prompt", "hello", *flag_args,
@@ -63,6 +63,9 @@ else:
                     self.assertEqual(ws_create, ["workspace", "create", "--cwd", temp, "--label", expected_label, "--no-focus"])
                     start = next(call for call in calls if call[:2] == ["agent", "start"])
                     self.assertIn("w-space:p1", start)
+                    self.assertIn(temp, start)
+                    self.assertIn(str(Path.home() / "Development" / "user-skills"), start)
+                    self.assertIn(str(Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync"), start)
 
 
 if __name__ == "__main__":

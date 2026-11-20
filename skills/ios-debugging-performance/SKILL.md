@@ -13,7 +13,7 @@ Evidence-driven iOS/macOS debugging, Instruments performance engineering, pure-S
 |---|---|
 | **Inbound** | Bug reproduction specs, Swift/macOS source files, Instruments baseline metrics, pure-SwiftPM macOS MenuBar bundle specs (`Info.plist`, `LSUIElement`, signing/notarization), or archive/IPA release-readiness manifests (`PrivacyInfo.xcprivacy`, permission purpose strings, account deletion). |
 | **Internal** | `scripts/audit_debug_perf_release.py`: deterministic source & release-hygiene scanner (`audit-source`), MenuBar `.app` & App Store submission manifest verifier (`verify-bundle-spec`), 4-card catalog (`list-cards`), and 100% card-coverage checker (`check-card-coverage`). |
-| **Calls** | Zero-token Layer-0 Python CLI (`audit_debug_perf_release.py`); pairs with [`xcode-cli`](../xcode-cli/SKILL.md) for `swift build` / `xcodebuild` / `.xcresult` extraction and [`code-review`](../code-review/SKILL.md) for two-axis review. |
+| **Calls** | Zero-token Layer-0 Python CLI (`audit_debug_perf_release.py`); pairs with `xcode-cli` for `swift build` / `xcodebuild` / `.xcresult` extraction and `code-review` for two-axis review. |
 | **PointsTo** | Reproducible root-cause evidence chains (`file:line` + minimal proof experiment + fail-first regression test), single-variable Instruments delta reports, verified `.app` bundle layouts, and zero-surprise App Store submission checklists. |
 | **Trigger & Notify** | Invoked on bug hunts, scroll/startup hitch investigations, `.xcodeproj`-less macOS MenuBar packaging, or App Store / TestFlight release readiness; exits `2` under `--strict` on blocking defects. |
 
@@ -23,8 +23,8 @@ Evidence-driven iOS/macOS debugging, Instruments performance engineering, pure-S
 - **Layer 1 (4-Card Playbooks, FAQs & Checklists)**: Read [`references/debugging-perf-release-cards.md`](references/debugging-perf-release-cards.md) for criminal-scene bug isolation, 5-bucket Instruments profiling, pure-SwiftPM `.app` assembly/notarization, and App Store privacy/rejection gates.
 - **Layer 2 (Regression & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when adding regression cases or running `skill_contract.py`.
 - **Sibling Routing**:
-  - Swift 6 `Sendable` / actor isolation, task cancellation ownership, SwiftUI `@Observable` state matrices, or spring/Liquid Glass feel -> [`ios-concurrency-swiftui`](../ios-concurrency-swiftui/SKILL.md).
-  - State-driven navigation/deep links, SwiftData `VersionedSchema` migrations, characterization/snapshot test contracts, CloudKit/Push seams, or Apple Intelligence fallbacks -> [`ios-architecture-testing`](../ios-architecture-testing/SKILL.md).
+  - Swift 6 `Sendable` / actor isolation, task cancellation ownership, SwiftUI `@Observable` state matrices, or spring/Liquid Glass feel -> `ios-concurrency-swiftui`.
+  - State-driven navigation/deep links, SwiftData `VersionedSchema` migrations, characterization/snapshot test contracts, CloudKit/Push seams, or Apple Intelligence fallbacks -> `ios-architecture-testing`.
 
 ## Complete 4-Card Coverage Matrix (`TIA-3`)
 
@@ -57,3 +57,9 @@ python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py aud
 # Verify pure-SwiftPM macOS MenuBar bundle + App Store release-readiness spec JSON
 python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py verify-bundle-spec --spec-json '{"mode":"app_store","build_configuration":"Release","privacy_manifest_present":true,"required_reason_apis":["NSPrivacyAccessedAPICategoryUserDefaults"],"declared_reason_apis":["NSPrivacyAccessedAPICategoryUserDefaults"],"permissions_used":["NSCameraUsageDescription"],"info_plist":{"NSCameraUsageDescription":"Scan QR codes to pair your device."},"supports_account_creation":true,"supports_account_deletion":true,"privacy_policy_url":"https://example.com/privacy"}' --strict
 ```
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/debugging-perf-release-cards.md` | `python3 skills/ios-debugging-performance/scripts/audit_debug_perf_release.py --help` |
+| verification | `references/debugging-perf-release-cards.md` | `skill_contract.py eval --skill ios-debugging-performance --strict` |

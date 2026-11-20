@@ -30,10 +30,10 @@ _chooser_spec.loader.exec_module(CHOOSER)
 _prompt_spec = importlib.util.spec_from_file_location('gallery_prompts', ROOT / 'scripts' / 'gallery_prompts.py')
 PROMPTS = importlib.util.module_from_spec(_prompt_spec)
 _prompt_spec.loader.exec_module(PROMPTS)
-DEFAULT_CATALOG = ROOT / "references" / "catalog.json"
+DEFAULT_CATALOG = ROOT / "scripts" / "data" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
-DEFAULT_TAXONOMY = ROOT / "references" / "taxonomy-v2.json"
-DEFAULT_VAULT_DIR = ROOT / "references" / "vault"
+DEFAULT_TAXONOMY = ROOT / "scripts" / "data" / "taxonomy-v2.json"
+DEFAULT_VAULT_DIR = ROOT / "scripts" / "data" / "vault"
 PLATFORMS = {"desktop", "web", "mobile", "shared"}
 VAULT_PLATFORMS = {"desktop", "mobile", "web"}
 DIMENSIONS = {
@@ -1729,6 +1729,40 @@ def command_scaffold_gallery(args):
     return 0
 
 
+def command_query(args):
+    catalog_path = Path(args.catalog)
+    catalog = validate(load(catalog_path))
+    ranked = []
+    for item in all_items(catalog):
+        if args.platform and args.platform not in item.get('platforms', []):
+            continue
+        if args.dimension and args.dimension not in str(item.get('category', '')) and args.dimension not in searchable(item):
+            continue
+        score = similarity(args.query, searchable(item))
+        if score >= 0.15:
+            ranked.append({'source': 'catalog', 'id': item['id'], 'name': item['name'], 'score': score,
+                           'kind': 'tool' if item['id'].startswith('T-') else 'pattern',
+                           'platforms': item.get('platforms', []), 'dimension': item.get('category', '')})
+    vault_dir = Path(args.vault_dir)
+    vault_files = {'desktop': vault_dir / 'desktop-macos.json', 'mobile': vault_dir / 'mobile-ios.json', 'web': vault_dir / 'web.json'}
+    platforms = [args.platform] if args.platform in VAULT_PLATFORMS else list(vault_files)
+    for platform in platforms:
+        vpath = vault_files[platform]
+        if not vpath.is_file():
+            continue
+        for item in load(vpath).get('inspirations', []):
+            if args.dimension and args.dimension not in {item.get('primary_dimension'), *item.get('secondary_dimensions', [])}:
+                continue
+            blob = ' '.join(str(item.get(key, '')) for key in ('id', 'name', 'source_prompt_zh', 'canonical_prompt', 'primary_dimension', 'sub_category'))
+            score = similarity(args.query, blob)
+            if score >= 0.15:
+                ranked.append({'source': 'vault', 'id': item.get('id'), 'name': item.get('name', ''), 'score': score,
+                               'kind': 'inspiration', 'platform': platform, 'dimension': item.get('primary_dimension')})
+    ranked.sort(key=lambda item: (-item['score'], item['source'], item['id'] or ''))
+    print(json.dumps({'ok': True, 'query': args.query, 'top': args.top, 'matches': ranked[:max(1, args.top)]}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def command_vault_search(args):
     vault_dir = Path(args.vault_dir)
     taxonomy = load(Path(args.taxonomy))
@@ -1804,6 +1838,8 @@ def _read_ingest_source(args):
 
 
 def command(args):
+    if args.command is None and args.query:
+        return command_query(args)
     if args.command == "classify":
         return command_classify(args)
     if args.command == "vault-ingest":
@@ -1907,7 +1943,13 @@ def parser():
     common.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     common.add_argument("--markdown", default=str(DEFAULT_MARKDOWN))
     root = argparse.ArgumentParser()
-    sub = root.add_subparsers(dest="command", required=True)
+    root.add_argument("--query", default=None, help="Top-level query across catalog and vault")
+    root.add_argument("--top", type=int, default=3)
+    root.add_argument("--platform", choices=sorted(PLATFORMS), default=None)
+    root.add_argument("--dimension", choices=sorted(DIMENSIONS), default=None)
+    root.add_argument("--catalog", default=str(DEFAULT_CATALOG))
+    root.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
+    sub = root.add_subparsers(dest="command", required=False)
     intake = sub.add_parser("ingest", parents=[common])
     source = intake.add_mutually_exclusive_group(required=True)
     source.add_argument("--text")

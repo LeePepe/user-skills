@@ -114,13 +114,14 @@
       "file": "skills/ios-architecture-testing/SKILL.md",
       "must_contain": [
         "references/architecture-data-testing-cards.md",
-        "references/eval-cases.json",
-        "../ios-concurrency-swiftui/SKILL.md",
-        "../ios-debugging-performance/SKILL.md",
-        "audit_arch_testing.py",
-        "AT-011"
+        "## When-to-Read L1",
+        "必跑 L2",
+        "audit_arch_testing.py"
       ],
-      "registered_at": "2026-11-19"
+      "registered_at": "2026-11-19",
+      "must_not_contain": [
+        "../ios-"
+      ]
     },
     {
       "id": "EV-006",
