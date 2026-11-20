@@ -9,6 +9,7 @@ import contextlib
 import fcntl
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,9 @@ DEFAULT_WAREHOUSE_DB = DEFAULT_AIDATA_DIR / "L3_merge" / "warehouse.db"
 DEFAULT_RETRO_QUERIES_DIR = DEFAULT_AIDATA_DIR / "L4_serve" / "queries" / "retro"
 DEFAULT_MAGPIE_USAGE = Path.home() / ".config" / "magpie" / "usage.jsonl"
 DEFAULT_COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
+DEFAULT_COPILOT_SESSIONS_DIR = Path.home() / ".copilot" / "session-state"
+DEFAULT_SKILL_TELEMETRY_USAGE_JSONL = Path.home() / ".local" / "share" / "skill-telemetry" / "usage.jsonl"
+DEFAULT_HANDOFF_ROOT = Path.home() / "Development" / "handoff"
 DEFAULT_DSH_SESSIONS = Path.home() / ".dsh" / "sessions"
 DEFAULT_SKILLS_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DEV_ROOT = Path.home() / "Development"
@@ -2956,11 +2960,142 @@ def _mirror_skills_roi_snapshot_to_icloud(
     }
     if isinstance(report.get("skill_details"), list):
         snapshot_payload["skill_details"] = report["skill_details"]
+    if isinstance(report.get("skill_retro"), dict):
+        snapshot_payload["skill_retro"] = report["skill_retro"]
     try:
         _write_json(target, snapshot_payload)
         return target
     except OSError:
         return None
+
+
+def _load_skill_retro_module() -> Any:
+    path = Path(__file__).resolve().parent / "skill_retro_diagnostic.py"
+    spec = importlib.util.spec_from_file_location("retro_loop_skill_retro_diagnostic", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load skill_retro_diagnostic from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _merge_skill_retro_into_roi_snapshot(
+    skill_retro_report: dict[str, Any],
+    *,
+    icloud_roi_path: Path | None = None,
+    local_snapshot_path: Path | None = None,
+) -> None:
+    targets = [p for p in (icloud_roi_path, local_snapshot_path) if p is not None]
+    for target in targets:
+        if not target.is_file() and icloud_roi_path is None:
+            continue
+        existing: dict[str, Any] = {}
+        if target.is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+        existing.setdefault("schema_version", 1)
+        existing.setdefault("window_cst", skill_retro_report.get("window_cst") or "30d")
+        existing.setdefault("source_as_of", skill_retro_report.get("source_as_of"))
+        existing.setdefault("sample_size", skill_retro_report.get("sample_size", 0))
+        existing.setdefault("coverage_status", skill_retro_report.get("coverage_status") or "unknown")
+        existing["skill_retro"] = skill_retro_report
+        with contextlib.suppress(OSError):
+            _write_json(target, existing)
+
+
+def compute_skill_retro(
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    trace_export_path: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    *,
+    skill: str | None = None,
+    emit_briefs_dir: Path | None = None,
+    days: int = 30,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
+    icloud_roi_path: Path | None = None,
+    local_roi_path: Path | None = None,
+    mirror_roi_snapshot: bool | None = None,
+) -> dict[str, Any]:
+    """Compute the 4-Layer Progressive Skill Evolution & Wide-Probe Multi-Angle Diagnostic."""
+    explicit_source_override = any(
+        val is not None
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path, handoff_root)
+    )
+    wh = warehouse_db if warehouse_db is not None else (None if explicit_source_override else DEFAULT_WAREHOUSE_DB)
+    cp = copilot_db if copilot_db is not None else (None if explicit_source_override else DEFAULT_COPILOT_DB)
+    sess_dir = (
+        copilot_sessions_dir
+        if copilot_sessions_dir is not None
+        else (None if explicit_source_override else DEFAULT_COPILOT_SESSIONS_DIR)
+    )
+    u_jsonl = (
+        usage_jsonl
+        if usage_jsonl is not None
+        else (None if explicit_source_override else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL)
+    )
+    h_root = handoff_root if handoff_root is not None else (None if explicit_source_override else DEFAULT_HANDOFF_ROOT)
+    s_root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
+
+    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir)
+    shards_dir = (
+        telemetry_shards_dir
+        if telemetry_shards_dir is not None
+        else (
+            resolved_sync / "telemetry-shards"
+            if resolved_sync is not None and (icloud_sync_dir is not None or not explicit_source_override)
+            else None
+        )
+    )
+    inventory = _discover_skill_inventory(s_root, d_root)
+    mod = _load_skill_retro_module()
+    report = mod.compute_skill_retro_diagnostics(
+        inventory=inventory,
+        skill_filter=skill,
+        emit_briefs_dir=emit_briefs_dir,
+        warehouse_db=wh,
+        copilot_db=cp,
+        copilot_sessions_dir=sess_dir,
+        usage_jsonl=u_jsonl,
+        telemetry_shards_dir=shards_dir,
+        trace_export_path=trace_export_path,
+        handoff_root=h_root,
+        skills_root=s_root,
+        dev_root=d_root,
+        days=days,
+        shard_reader=_read_telemetry_shards,
+        queue_fn=_queue_recommendations,
+        auto_propose=auto_propose,
+        proposals_path=prop_path,
+    )
+    should_mirror = (
+        mirror_roi_snapshot
+        if mirror_roi_snapshot is not None
+        else (icloud_roi_path is not None or local_roi_path is not None or not explicit_source_override)
+    )
+    if should_mirror:
+        eff_icloud_roi = icloud_roi_path or (
+            resolved_sync / "jobs" / "aidata-digest" / "skills-roi.json" if resolved_sync is not None else None
+        )
+        eff_local_roi = local_roi_path or (DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH if not explicit_source_override else None)
+        _merge_skill_retro_into_roi_snapshot(
+            report,
+            icloud_roi_path=eff_icloud_roi,
+            local_snapshot_path=eff_local_roi,
+        )
+    return report
 
 
 def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -3329,6 +3464,11 @@ def route_retro_candidate(
         "scope": scope,
     }
     for extra_key in (
+        "layer",
+        "category",
+        "skill",
+        "plain_reason",
+        "scope_triage",
         "metric_id",
         "action",
         "legacy_ids",
@@ -3454,6 +3594,50 @@ def main(argv: list[str] | None = None) -> int:
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)
             report.update(auto_proposed=queued, proposals_written=len(queued), proposals_skipped=len(report.get("low_roi_proposals", [])) - len(queued))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if args_list and args_list[0] == "skill-retro":
+        p = argparse.ArgumentParser(prog="retro_story_engine.py skill-retro")
+        p.add_argument("--skill", default=None, help="Evaluate/emit briefs for a single isolated skill name.")
+        p.add_argument("--emit-briefs", type=Path, default=None, help="Handoff directory to emit per-skill Writer & Reviewer briefs.")
+        p.add_argument("--warehouse-db", type=Path, default=None)
+        p.add_argument("--copilot-db", type=Path, default=None)
+        p.add_argument("--copilot-sessions-dir", type=Path, default=None)
+        p.add_argument("--usage-jsonl", type=Path, default=None)
+        p.add_argument("--trace-export", type=Path, default=None)
+        p.add_argument("--handoff-root", type=Path, default=None)
+        p.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
+        p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
+        p.add_argument("--icloud-sync-dir", type=Path, default=None)
+        p.add_argument("--telemetry-shards-dir", type=Path, default=None)
+        p.add_argument("--icloud-roi-path", type=Path, default=None)
+        p.add_argument("--local-roi-path", type=Path, default=None)
+        p.add_argument("--no-roi-mirror", action="store_true")
+        p.add_argument("--days", type=int, default=30)
+        p.add_argument("--auto-propose", action="store_true")
+        p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p.add_argument("--json", action="store_true", default=True)
+        ns = p.parse_args(args_list[1:])
+        report = compute_skill_retro(
+            warehouse_db=ns.warehouse_db,
+            copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            trace_export_path=ns.trace_export,
+            handoff_root=ns.handoff_root,
+            skills_root=ns.skills_root,
+            dev_root=ns.dev_root,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
+            skill=ns.skill,
+            emit_briefs_dir=ns.emit_briefs,
+            days=ns.days,
+            auto_propose=ns.auto_propose,
+            proposals_path=ns.proposals_path,
+            icloud_sync_dir=ns.icloud_sync_dir,
+            icloud_roi_path=ns.icloud_roi_path,
+            local_roi_path=ns.local_roi_path,
+            mirror_roi_snapshot=False if ns.no_roi_mirror else None,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args_list and args_list[0] == "propose":
