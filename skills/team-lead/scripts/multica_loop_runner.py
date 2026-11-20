@@ -94,8 +94,8 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         loop_id="skills-roi-diagnostic",
         aliases=("skills-roi", "skills_roi"),
         autopilot_title="Daily Skills ROI Diagnostic Autopilot (Auto-Fix + Daily Brief Digest)",
-        cron="20 8 * * *",
-        trigger_label="Daily CST Morning Skills ROI Diagnostic",
+        cron="20 4 * * *",
+        trigger_label="Daily CST 04:20 Morning Skills ROI & Skill-Retro Diagnostic",
         delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Skills ROI] {date} 技能效能诊断与待优化清单",
         default_status="backlog",
@@ -326,6 +326,7 @@ def record_daily_digest_entry(
         "items": list(collected.get("items") or [])[:6],
         "auto_gc": collected.get("auto_gc") or (collected.get("gc") if isinstance(collected.get("gc"), Mapping) else None),
         "auto_fixed": collected.get("auto_fixed"),
+        "skill_retro": collected.get("skill_retro") if isinstance(collected.get("skill_retro"), Mapping) else None,
     }
     if not dry_run:
         buf = load_daily_digest_buffer(target)
@@ -1307,29 +1308,106 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
                     icloud_mod = _load_module("loop_icloud_skills_sync_telem", icloud_script)
                     icloud_mod.export_telemetry_shards()
         roi_mod = _load_module("loop_skills_roi", SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py")
-        snap = roi_mod.collect_skills_roi_snapshot(top_n=3)
+        wh_env = os.environ.get("SKILLS_ROI_WAREHOUSE_DB")
+        cp_env = os.environ.get("SKILLS_ROI_COPILOT_DB")
+        sess_env = os.environ.get("SKILLS_ROI_COPILOT_SESSIONS_DIR")
+        usage_env = os.environ.get("SKILLS_ROI_USAGE_JSONL")
+        handoff_env = os.environ.get("SKILLS_ROI_HANDOFF_ROOT")
+        skills_env = os.environ.get("SKILLS_ROI_SKILLS_ROOT")
+        dev_env = os.environ.get("SKILLS_ROI_DEV_ROOT")
+        prop_env = os.environ.get("SKILLS_ROI_PROPOSALS_PATH")
+        wm_env = os.environ.get("MULTICA_SKILL_RETRO_WATERMARK_FILE")
+        snap = roi_mod.collect_skills_roi_snapshot(
+            warehouse_db=Path(wh_env).expanduser() if wh_env else None,
+            copilot_db=Path(cp_env).expanduser() if cp_env else None,
+            copilot_sessions_dir=Path(sess_env).expanduser() if sess_env else None,
+            usage_jsonl=Path(usage_env).expanduser() if usage_env else None,
+            handoff_root=Path(handoff_env).expanduser() if handoff_env else None,
+            skills_root=Path(skills_env).expanduser() if skills_env else None,
+            dev_root=Path(dev_env).expanduser() if dev_env else None,
+            proposals_path=Path(prop_env).expanduser() if prop_env else None,
+            top_n=3,
+            include_skill_retro=True,
+            skill_retro_auto_propose=not dry_run,
+            skill_retro_watermark_path=(
+                None
+                if dry_run
+                else (Path(wm_env).expanduser() if wm_env else roi_mod._default_skill_retro_watermark_path())
+            ),
+        )
         findings = list(snap.get("top_findings") or [])
-        opt_count = int((snap.get("summary") or {}).get("actionable_skill_count") or len(findings))
-        sig = _compute_digest_signature([{"skill": f.get("skill"), "status": f.get("diagnostic_status")} for f in findings])
+        skill_retro = dict(snap.get("skill_retro") or {})
+        retro_proposals = list(skill_retro.get("proposals") or [])
+        summary_dict = dict(snap.get("summary") or {})
+        actionable_roi_count = int(
+            summary_dict["actionable_skills_count"]
+            if "actionable_skills_count" in summary_dict
+            else len(findings)
+        )
+        retro_count = len(retro_proposals)
+        total_delta_count = actionable_roi_count + retro_count
+        cohort_sig = _compute_digest_signature(
+            {
+                "roi": [{"skill": f.get("skill"), "status": f.get("diagnostic_status")} for f in findings if actionable_roi_count > 0],
+                "skill_retro": [
+                    {"id": p.get("id"), "skill": p.get("skill"), "layer": p.get("layer"), "priority": p.get("priority")}
+                    for p in retro_proposals
+                ],
+                "slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
+            }
+        )
+        items: list[dict[str, str]] = []
+        seen_what: set[str] = set()
+        for prop in retro_proposals[:3]:
+            what_txt = str(prop.get("human_what") or "").strip()
+            why_txt = str(prop.get("human_why") or "").strip()
+            if what_txt and what_txt.casefold() not in seen_what:
+                seen_what.add(what_txt.casefold())
+                items.append({"what": what_txt, "why": why_txt or "补齐四层技能自演进防呆指引"})
+        for f in findings[:3]:
+            if actionable_roi_count <= 0 or len(items) >= 5:
+                break
+            what_txt = f"收敛技能 `{f.get('skill')}` 的触发与回归门禁"
+            if what_txt.casefold() not in seen_what:
+                seen_what.add(what_txt.casefold())
+                items.append(
+                    {
+                        "what": what_txt,
+                        "why": roi_mod._plain_chinese_reason_for_skill(f).rstrip("。"),
+                    }
+                )
+        if retro_count > 0 and actionable_roi_count > 0:
+            summary_text = f"检测到 {actionable_roi_count} 个待治理技能与 {retro_count} 项四层自演进提案。"
+        elif retro_count > 0:
+            summary_text = f"四层技能自演进巡检发现 {retro_count} 项高信号改进提案。"
+        elif actionable_roi_count > 0:
+            summary_text = f"检测到 {actionable_roi_count} 个需优化的低效能或高频返工技能。"
+        else:
+            summary_text = "今日技能效能与四层自演进巡检无新增异常。"
+        has_high_priority = any(str(p.get("priority") or "") in {"P0", "P1"} for p in retro_proposals)
         return {
             "loop_id": spec.loop_id,
             "date": date_str,
-            "has_delta": opt_count > 0,
-            "delta_count": opt_count,
-            "severity": "medium" if opt_count > 0 else "low",
-            "watermark": f"skills-roi:{date_str}:{sig}",
+            "has_delta": total_delta_count > 0,
+            "delta_count": total_delta_count,
+            "severity": "high" if has_high_priority else ("medium" if total_delta_count > 0 else "low"),
+            "watermark": f"skills-roi:cohort:{cohort_sig}",
             "cursor": str(snap.get("dedup_key") or f"skills-roi-{date_str}"),
             "title": str(snap.get("default_issue_title") or spec.issue_title_template.format(date=date_str)),
-            "dual_zone_markdown": roi_mod.build_issue_markdown(snap) if findings else "",
-            "summary": f"检测到 {opt_count} 个需优化的低效能或高频返工技能。",
-            "items": [
-                {
-                    "what": f"收敛技能 `{f.get('skill')}` 的触发与回归门禁",
-                    "why": roi_mod._plain_chinese_reason_for_skill(f).rstrip("。"),
-                }
-                for f in findings[:3]
-            ],
-            "raw": snap.get("summary") or {},
+            "dual_zone_markdown": roi_mod.build_issue_markdown(snap) if total_delta_count > 0 else "",
+            "summary": summary_text,
+            "items": items,
+            "skill_retro": {
+                "schema": skill_retro.get("schema"),
+                "sample_size": skill_retro.get("sample_size", 0),
+                "slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
+                "high_signal_proposals_count": retro_count,
+                "observation_pool_count": skill_retro.get("observation_pool_count", 0),
+                "proposals_written": skill_retro.get("proposals_written", 0),
+                "summary": skill_retro.get("summary") or {},
+                "proposals": retro_proposals[:4],
+            },
+            "raw": summary_dict,
         }
 
     if spec.loop_id == "skill-agent-daily-research":

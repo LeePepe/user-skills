@@ -38,7 +38,7 @@ DEFAULT_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
 DEFAULT_OWNER_EMAIL = "lee@multica.local"
 DEFAULT_AGENT_ID = "d550a00a-1173-4bed-8bf3-621384cdfb10"
 DEFAULT_AUTOPILOT_TITLE = "Daily Skills ROI Diagnostic Autopilot (P3 -> Owner)"
-DEFAULT_CRON = "20 8 * * *"
+DEFAULT_CRON = "20 4 * * *"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_COLLECT_OUTPUT = Path("/tmp/multica-skills-autopilot-collect.json")
 DEFAULT_ANALYSIS_OUTPUT = Path("/tmp/multica-skills-autopilot-analysis.md")
@@ -46,6 +46,197 @@ DEFAULT_ISSUE_STATUS = "backlog"
 DEFAULT_ISSUE_PRIORITY = "medium"
 
 CST = timezone(timedelta(hours=8))
+
+
+def _default_skill_retro_watermark_path() -> Path:
+    override = os.environ.get("MULTICA_SKILL_RETRO_WATERMARK_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cache" / "multica-skills-autopilot" / "skill-retro-watermark.json"
+
+
+def _compute_cohort_watermark(payload: Any) -> str:
+    import hashlib
+
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_skill_retro_watermark(path: Path | None = None) -> dict[str, Any]:
+    target = path or _default_skill_retro_watermark_path()
+    if not target.is_file():
+        return {}
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_skill_retro_watermark(state: dict[str, Any], path: Path | None = None) -> None:
+    target = path or _default_skill_retro_watermark_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _sanitize_human_zone_label(text: str) -> str:
+    import re
+
+    cleaned = re.sub(
+        r"\[Skill Retro\s+L[0-3]\]\s*",
+        "",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?<![A-Za-z0-9_-])(?:S(?:1[0-2]|[1-9])|M[1-5]|EV-\d{1,4}|DC-\d{1,4}|H[1-5]|R10|V[1-5])(?![A-Za-z0-9_-])",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", cleaned)
+    cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
+    # Neutralize embedded shell/CLI command snippets so Human Zone never trips CLI_COMMAND_RE;
+    # exact command strings remain preserved in `title`, `plain_reason`, `action`, and `<details>`.
+    cleaned = re.sub(
+        r"`[^`\n]*(?:python3?|pytest|bash|sh|curl|gh|multica|git|\.\/scripts\/|skills\/[A-Za-z0-9_-]+\/scripts\/)[^`\n]*`",
+        "该高频探针模式",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?:(?<![A-Za-z0-9_/-])(?:python3?|pytest|bash|sh|curl|gh|multica|git)\s+\S+(?:\s+--?[A-Za-z0-9_-]+|\s+\S+\.py\b)(?:\s+--?[A-Za-z0-9_=.-]+)*)"
+        r"|(?:\./scripts/[A-Za-z0-9_./-]+)"
+        r"|(?:\bskills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.py\b)",
+        "脚本入口",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ·—-：:")
+    return cleaned
+
+
+def _summarize_skill_retro_report(raw_retro: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(raw_retro, dict) or not raw_retro.get("ok"):
+        return {
+            "enabled": False,
+            "schema": None,
+            "sample_size": 0,
+            "slow_flywheel_ready": False,
+            "high_signal_proposals_count": 0,
+            "observation_pool_count": 0,
+            "summary": {},
+            "proposals": [],
+            "observation_pool": [],
+            "cohort_watermark": "",
+        }
+    retro_summary = dict(raw_retro.get("summary") or {})
+    raw_proposals = [p for p in (raw_retro.get("proposals") or []) if isinstance(p, dict)]
+    proposals: list[dict[str, Any]] = []
+    for prop in raw_proposals[:6]:
+        sk = str(prop.get("skill") or "skills").strip()
+        cat = str(prop.get("category") or "").strip()
+        raw_title = str(prop.get("title") or "").strip()
+        raw_reason = str(prop.get("plain_reason") or prop.get("action") or "").strip()
+        human_what = _sanitize_human_zone_label(raw_title) or f"演进 `{sk}` 渐进式防呆契约"
+        if "该高频探针模式" in human_what and cat == "wild_pattern_crystallization":
+            human_what = f"为 `{sk}` 柔性沉淀高频手工探针脚本"
+        human_why = _sanitize_human_zone_label(raw_reason).rstrip("。") or f"`{sk}` 观测到高信号摩擦或漏检样本"
+        proposals.append(
+            {
+                "id": prop.get("id"),
+                "skill": sk,
+                "layer": prop.get("layer"),
+                "category": prop.get("category"),
+                "priority": prop.get("priority") or "P2",
+                "title": raw_title,
+                "plain_reason": raw_reason,
+                "action": prop.get("action"),
+                "detail": prop.get("detail"),
+                "scope_triage": prop.get("scope_triage") if isinstance(prop.get("scope_triage"), dict) else {},
+                "human_what": human_what[:46],
+                "human_why": human_why[:64],
+            }
+        )
+    obs_pool = [
+        {
+            "id": item.get("id"),
+            "skill": item.get("skill"),
+            "layer": item.get("layer"),
+            "category": item.get("category"),
+            "title": item.get("title"),
+        }
+        for item in (raw_retro.get("observation_pool") or [])[:5]
+        if isinstance(item, dict)
+    ]
+    cohort_sig = _compute_cohort_watermark(
+        {
+            "proposals": [
+                {
+                    "id": p.get("id"),
+                    "skill": p.get("skill"),
+                    "layer": p.get("layer"),
+                    "category": p.get("category"),
+                    "priority": p.get("priority"),
+                }
+                for p in proposals
+            ],
+            "slow_flywheel_ready": bool(retro_summary.get("slow_flywheel_ready")),
+        }
+    )
+    return {
+        "enabled": True,
+        "schema": raw_retro.get("schema") or "skill-retro-diagnostic/v1",
+        "source_as_of": raw_retro.get("source_as_of"),
+        "sample_size": int(raw_retro.get("sample_size") or 0),
+        "coverage_status": raw_retro.get("coverage_status"),
+        "slow_flywheel_ready": bool(retro_summary.get("slow_flywheel_ready")),
+        "high_signal_proposals_count": len(proposals),
+        "observation_pool_count": int(retro_summary.get("observation_pool_count") or len(obs_pool)),
+        "proposals_written": int(raw_retro.get("proposals_written") or 0),
+        "summary": retro_summary,
+        "proposals": proposals,
+        "observation_pool": obs_pool,
+        "cohort_watermark": cohort_sig,
+    }
+
+
+def _invoke_pure_skill_retro_cli(
+    *,
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    proposals_path: Path | None = None,
+    auto_propose: bool = False,
+    no_roi_mirror: bool = True,
+) -> dict[str, Any]:
+    cmd = [sys.executable, str(ENGINE_PATH), "skill-retro", "--json"]
+    if no_roi_mirror:
+        cmd.append("--no-roi-mirror")
+    if auto_propose:
+        cmd.append("--auto-propose")
+    flag_pairs: tuple[tuple[str, Path | None], ...] = (
+        ("--warehouse-db", warehouse_db),
+        ("--copilot-db", copilot_db),
+        ("--copilot-sessions-dir", copilot_sessions_dir),
+        ("--usage-jsonl", usage_jsonl),
+        ("--handoff-root", handoff_root),
+        ("--skills-root", skills_root),
+        ("--dev-root", dev_root),
+        ("--proposals-path", proposals_path),
+    )
+    for flag, val in flag_pairs:
+        if val is not None:
+            cmd.extend([flag, str(val)])
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"retro_story_engine.py skill-retro failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[:300]}")
+    parsed = json.loads(proc.stdout or "{}")
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _load_retro_engine() -> Any:
@@ -103,13 +294,13 @@ def build_autopilot_prompt(
         "# Daily Skills ROI Diagnostic Autopilot (`collect -> analyze -> P3 Actionable Issue`)\n\n"
         "Follow this strict 3-step execution protocol without modifying any business code or `aidata` schemas:\n\n"
         "1. **Stage 1 — Deterministic Script Collection (0 LLM Guesswork)**:\n"
-        "   Run the deterministic collector over existing `aidata` (`warehouse.db` + `session-store.db` + `user-skills`):\n"
+        "   Run the deterministic collector over existing `aidata` (`warehouse.db` + `session-store.db` + `user-skills` + pure `retro_story_engine.py skill-retro`):\n"
         "   ```bash\n"
         f"   {script_expr}\n"
         f'   python3 "$SCRIPT" collect --output "{collect_path}"\n'
         "   ```\n\n"
         "2. **Stage 2 — Agent Analysis & Root-Cause Synthesis**:\n"
-        f"   Read `{collect_path}` and inspect `top_findings`, `S6_unpracticed_hotspots`, `S7_greedy_hotspots`, "
+        f"   Read `{collect_path}` and inspect `top_findings`, `skill_retro` (4-layer `proposals` + `summary`), `S6_unpracticed_hotspots`, `S7_greedy_hotspots`, "
         "`S9_escape_hotspots`, `S3_skill_health`, `eval_effect`, and `S12_tool_context_burn`.\n"
         f"   Write a concise, evidence-backed Markdown root-cause & P3 action plan to `{analysis_path}` covering:\n"
         "   - Top 3 low-ROI / high-repair-loop / high-unpracticed-rate skills with exact numbers (`roi_score`, `r1_pass_rate`, "
@@ -165,13 +356,23 @@ def collect_skills_roi_snapshot(
     *,
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    handoff_root: Path | None = None,
     skills_root: Path | None = None,
     dev_root: Path | None = None,
     magpie_usage: Path | None = None,
     dsh_sessions: Path | None = None,
+    proposals_path: Path | None = None,
     top_n: int = 5,
+    include_skill_retro: bool | None = None,
+    skill_retro_auto_propose: bool = False,
+    skill_retro_watermark_path: Path | None = None,
+    persist_cohort_watermark: bool = True,
     diagnostics_fn: Callable[..., dict[str, Any]] | None = None,
+    skill_retro_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    explicit_custom_diagnostics = diagnostics_fn is not None
     if diagnostics_fn is None:
         engine = _load_retro_engine()
         diagnostics_fn = engine.compute_skill_roi_diagnostics
@@ -185,6 +386,43 @@ def collect_skills_roi_snapshot(
         dsh_sessions=dsh_sessions,
         auto_propose=False,
     )
+
+    should_run_skill_retro = (
+        include_skill_retro
+        if include_skill_retro is not None
+        else (skill_retro_fn is not None or not explicit_custom_diagnostics)
+    )
+    raw_skill_retro: dict[str, Any] | None = None
+    if should_run_skill_retro:
+        if skill_retro_fn is not None:
+            raw_skill_retro = skill_retro_fn(
+                warehouse_db=warehouse_db,
+                copilot_db=copilot_db,
+                copilot_sessions_dir=copilot_sessions_dir,
+                usage_jsonl=usage_jsonl,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                proposals_path=proposals_path,
+                auto_propose=False,
+            )
+        else:
+            raw_skill_retro = _invoke_pure_skill_retro_cli(
+                warehouse_db=warehouse_db,
+                copilot_db=copilot_db,
+                copilot_sessions_dir=copilot_sessions_dir,
+                usage_jsonl=usage_jsonl,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                proposals_path=proposals_path,
+                auto_propose=False,
+                no_roi_mirror=any(
+                    val is not None
+                    for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, handoff_root)
+                ),
+            )
+    skill_retro = _summarize_skill_retro_report(raw_skill_retro)
 
     s10_rows: list[dict[str, Any]] = list(raw.get("S10_skill_roi_ranking") or [])
     actionable = [r for r in s10_rows if r.get("needs_optimization")]
@@ -261,12 +499,89 @@ def collect_skills_roi_snapshot(
     collected_date = str(raw.get("wall_clock_date") or now_cst.date().isoformat())
     dedup_key = f"skills-roi-autopilot-{collected_date}"
 
+    roi_sig_items = [{"skill": f.get("skill"), "status": f.get("diagnostic_status")} for f in top_findings]
+    retro_proposals = list(skill_retro.get("proposals") or [])
+    cohort_watermark = _compute_cohort_watermark(
+        {
+            "roi": roi_sig_items,
+            "skill_retro": skill_retro.get("cohort_watermark") or "",
+        }
+    )
+    prev_wm_state = _load_skill_retro_watermark(skill_retro_watermark_path) if skill_retro_watermark_path is not None else {}
+    prev_cohort_watermark = str(prev_wm_state.get("cohort_watermark") or "")
+    prev_proposed_watermark = str(prev_wm_state.get("proposed_cohort_watermark") or prev_cohort_watermark)
+    has_cohort_delta = bool((len(actionable) + len(retro_proposals)) > 0 and cohort_watermark != prev_cohort_watermark)
+    has_propose_delta = bool(retro_proposals and (skill_retro_watermark_path is None or cohort_watermark != prev_proposed_watermark))
+
+    if (
+        should_run_skill_retro
+        and skill_retro_auto_propose
+        and has_propose_delta
+    ):
+        if skill_retro_fn is not None:
+            proposed_res = skill_retro_fn(
+                warehouse_db=warehouse_db,
+                copilot_db=copilot_db,
+                copilot_sessions_dir=copilot_sessions_dir,
+                usage_jsonl=usage_jsonl,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                proposals_path=proposals_path,
+                auto_propose=True,
+            )
+        else:
+            proposed_res = _invoke_pure_skill_retro_cli(
+                warehouse_db=warehouse_db,
+                copilot_db=copilot_db,
+                copilot_sessions_dir=copilot_sessions_dir,
+                usage_jsonl=usage_jsonl,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                proposals_path=proposals_path,
+                auto_propose=True,
+                no_roi_mirror=any(
+                    val is not None
+                    for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, handoff_root)
+                ),
+            )
+        if isinstance(proposed_res, dict):
+            skill_retro["proposals_written"] = int(proposed_res.get("proposals_written") or 0)
+            skill_retro["auto_proposed_ids"] = list(proposed_res.get("auto_proposed") or [])
+        if skill_retro_watermark_path is not None:
+            updated_state = dict(prev_wm_state)
+            updated_state["proposed_cohort_watermark"] = cohort_watermark
+            updated_state["proposed_at"] = now_cst.isoformat(timespec="seconds")
+            _save_skill_retro_watermark(updated_state, skill_retro_watermark_path)
+            prev_wm_state = updated_state
+
+    if skill_retro_watermark_path is not None and persist_cohort_watermark and has_cohort_delta:
+        updated_state = dict(prev_wm_state)
+        updated_state.update(
+            {
+                "cohort_watermark": cohort_watermark,
+                "collected_date": collected_date,
+                "updated_at": now_cst.isoformat(timespec="seconds"),
+                "skill_retro_proposals_count": len(retro_proposals),
+            }
+        )
+        _save_skill_retro_watermark(updated_state, skill_retro_watermark_path)
+
     snapshot: dict[str, Any] = {
         "schema": "multica-skills-autopilot-collect/v1",
         "ok": True,
         "collected_at": now_cst.isoformat(timespec="seconds"),
         "collected_date": collected_date,
         "dedup_key": dedup_key,
+        "cohort_gate": {
+            "cohort_watermark": cohort_watermark,
+            "previous_cohort_watermark": prev_cohort_watermark,
+            "has_delta": has_cohort_delta if skill_retro_watermark_path is not None else bool(len(actionable) + len(retro_proposals) > 0),
+            "token_cost": 0,
+            "slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
+            "session_sample_size": skill_retro.get("sample_size", 0),
+        },
         "target_priority": {
             "linear_priority_number": 3,
             "multica_priority": DEFAULT_ISSUE_PRIORITY,
@@ -286,6 +601,8 @@ def collect_skills_roi_snapshot(
             "idle_skills_30d_count": len(s4_usage.get("idle_skills_30d") or []),
             "idle_skills_30d": list(s4_usage.get("idle_skills_30d") or [])[:10],
             "actionable_skills_count": len(actionable),
+            "skill_retro_proposals_count": len(retro_proposals),
+            "skill_retro_slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
             "total_skills_audited": s3_health.get("total_skills", 0),
             "audit_pass_count": s3_health.get("audit_pass_count", 0),
             "audit_pass_rate": s3_health.get("audit_pass_rate"),
@@ -296,6 +613,7 @@ def collect_skills_roi_snapshot(
             "eval_effect": eval_effect,
         },
         "top_findings": top_findings,
+        "skill_retro": skill_retro,
         "S6_unpracticed_hotspots": s6_hotspots,
         "S7_greedy_hotspots": s7_hotspots,
         "S9_escape_hotspots": s9_hotspots,
@@ -457,6 +775,41 @@ def _build_ai_evidence_markdown(snapshot: dict[str, Any], *, agent_analysis: str
         top_burn = ", ".join(f"`{r['tool_name']}` (p95={r.get('p95_tokens')} tok)" for r in s12_rows[:2])
         lines.append(f"- **Tool Context Burn (`S12`)**: Bound output size on {top_burn}.")
 
+    skill_retro = snapshot.get("skill_retro") if isinstance(snapshot.get("skill_retro"), dict) else {}
+    retro_proposals = list(skill_retro.get("proposals") or [])
+    if skill_retro.get("enabled"):
+        retro_sum = skill_retro.get("summary") or {}
+        lines.extend(
+            [
+                "",
+                "## 4-Layer Progressive Skill Retro (`retro_story_engine.py skill-retro`)",
+                "",
+                f"- **Session Cohort**: `sessions={skill_retro.get('sample_size', 0)}` · "
+                f"`slow_flywheel_ready={skill_retro.get('slow_flywheel_ready', False)}` · "
+                f"`high_signal_proposals={len(retro_proposals)}` · "
+                f"`observation_pool={skill_retro.get('observation_pool_count', 0)}`",
+                f"- **Layer Signals**: L0 trigger_misses=`{retro_sum.get('trigger_miss_skills', 0)}` / drifts=`{retro_sum.get('directional_drifts', 0)}` · "
+                f"L1 unwired_drawers=`{retro_sum.get('unwired_drawers_count', 0)}` / deadwood=`{retro_sum.get('true_deadwood_drawers_count', 0)}` · "
+                f"L2 roadblocks=`{retro_sum.get('rigid_roadblock_scripts_count', 0)}` / latency_sinks=`{retro_sum.get('latency_sink_scripts_count', 0)}` · "
+                f"L3 wild_patterns=`{retro_sum.get('wild_patterns_count', 0)}`",
+            ]
+        )
+        if retro_proposals:
+            lines.extend(
+                [
+                    "",
+                    "| Priority | Layer | Skill | Category | Proposal & Recommended Action |",
+                    "|---|---|---|---|---|",
+                ]
+            )
+            for prop in retro_proposals[:6]:
+                p_title = str(prop.get("title") or "").replace("|", "\\|")
+                p_act = str(prop.get("action") or "").replace("|", "\\|")
+                lines.append(
+                    f"| `{prop.get('priority', 'P2')}` | `{prop.get('layer', 'L0')}` | `{prop.get('skill')}` | "
+                    f"`{prop.get('category')}` | {p_title} — {p_act} |"
+                )
+
     lines.extend(
         [
             "",
@@ -464,6 +817,7 @@ def _build_ai_evidence_markdown(snapshot: dict[str, Any], *, agent_analysis: str
             "",
             "```bash",
             "python3 skills/retro-loop/scripts/multica_skills_autopilot.py collect --output /tmp/multica-skills-autopilot-collect.json",
+            "python3 skills/retro-loop/scripts/retro_story_engine.py skill-retro --json",
             "python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict",
             "./scripts/verify",
             "```",
@@ -477,11 +831,25 @@ def build_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None
     issue_brief = _load_issue_brief()
     summary = snapshot.get("summary") or {}
     findings = snapshot.get("top_findings") or []
+    skill_retro = snapshot.get("skill_retro") if isinstance(snapshot.get("skill_retro"), dict) else {}
+    retro_proposals = list(skill_retro.get("proposals") or [])
     dedup_key = str(snapshot.get("dedup_key") or f"skills-roi-autopilot-{snapshot.get('collected_date') or 'today'}")
     actionable_count = int(summary.get("actionable_skills_count") or len(findings))
+    retro_count = len(retro_proposals)
 
-    skill_names = [f"`{item.get('skill')}`" for item in findings[:3] if item.get("skill")]
-    if skill_names:
+    focus_skills: list[str] = []
+    for raw_sk in [*(item.get("skill") for item in findings[:3]), *(p.get("skill") for p in retro_proposals[:3])]:
+        sk_clean = str(raw_sk or "").strip()
+        if sk_clean and f"`{sk_clean}`" not in focus_skills:
+            focus_skills.append(f"`{sk_clean}`")
+    skill_names = focus_skills[:3]
+    if skill_names and retro_count:
+        focus_txt = "、".join(skill_names)
+        tldr = (
+            f"今日技能巡检共发现 {actionable_count} 个待治理技能与 {retro_count} 项四层自演进提案，"
+            f"主要集中在 {focus_txt}，勾选对应项后即可由后台总控自动加锁修复。"
+        )
+    elif skill_names:
         focus_txt = "、".join(skill_names)
         tldr = (
             f"今日技能巡检共发现 {actionable_count} 个待治理技能，返工与空读损耗主要集中在 "
@@ -491,16 +859,28 @@ def build_issue_markdown(snapshot: dict[str, Any], *, agent_analysis: str | None
         tldr = "今日技能效能巡检整体健康，未发现需要紧急返工治理的低效技能。"
 
     human_items: list[dict[str, Any]] = []
+    seen_targets: set[str] = set()
     for item in findings[:3]:
         sk = str(item.get("skill") or "").strip()
         if not sk:
             continue
+        what_txt = f"为 `{sk}` 补齐确定性防呆门禁"
+        seen_targets.add(what_txt.casefold())
         human_items.append(
             {
-                "what": f"为 `{sk}` 补齐确定性防呆门禁",
+                "what": what_txt,
                 "why": _plain_chinese_reason_for_skill(item).rstrip("。"),
             }
         )
+    for prop in retro_proposals[:2]:
+        if len(human_items) >= 5:
+            break
+        what_txt = str(prop.get("human_what") or "").strip()
+        why_txt = str(prop.get("human_why") or "").strip()
+        if not what_txt or what_txt.casefold() in seen_targets:
+            continue
+        seen_targets.add(what_txt.casefold())
+        human_items.append({"what": what_txt, "why": why_txt or "补齐四层技能自演进防呆指引"})
     if not human_items:
         human_items.append(
             {
@@ -990,25 +1370,56 @@ def run_once_pipeline(
     dry_run: bool = False,
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    handoff_root: Path | None = None,
     skills_root: Path | None = None,
     dev_root: Path | None = None,
     magpie_usage: Path | None = None,
     dsh_sessions: Path | None = None,
+    proposals_path: Path | None = None,
+    include_skill_retro: bool | None = None,
+    skill_retro_auto_propose: bool = False,
+    skill_retro_watermark_path: Path | None = None,
+    skip_if_no_cohort_delta: bool = False,
     diagnostics_fn: Callable[..., dict[str, Any]] | None = None,
+    skill_retro_fn: Callable[..., dict[str, Any]] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     multica_bin: str | None = None,
 ) -> dict[str, Any]:
     snapshot = collect_skills_roi_snapshot(
         warehouse_db=warehouse_db,
         copilot_db=copilot_db,
+        copilot_sessions_dir=copilot_sessions_dir,
+        usage_jsonl=usage_jsonl,
+        handoff_root=handoff_root,
         skills_root=skills_root,
         dev_root=dev_root,
         magpie_usage=magpie_usage,
         dsh_sessions=dsh_sessions,
+        proposals_path=proposals_path,
+        include_skill_retro=include_skill_retro,
+        skill_retro_auto_propose=(skill_retro_auto_propose and not dry_run),
+        skill_retro_watermark_path=(None if dry_run else skill_retro_watermark_path),
+        persist_cohort_watermark=False,
         diagnostics_fn=diagnostics_fn,
+        skill_retro_fn=skill_retro_fn,
     )
     collect_output.parent.mkdir(parents=True, exist_ok=True)
     collect_output.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    cohort_gate = snapshot.get("cohort_gate") if isinstance(snapshot.get("cohort_gate"), dict) else {}
+    if skip_if_no_cohort_delta and not cohort_gate.get("has_delta", True):
+        return {
+            "ok": True,
+            "status": "SKIPPED_NO_DELTA",
+            "token_cost": 0,
+            "collect_output": str(collect_output),
+            "collected_date": snapshot.get("collected_date"),
+            "cohort_gate": cohort_gate,
+            "top_findings_count": len(snapshot.get("top_findings") or []),
+            "skill_retro_proposals_count": len((snapshot.get("skill_retro") or {}).get("proposals") or []),
+        }
 
     analysis_md: str | None = None
     if analysis_cmd:
@@ -1041,6 +1452,17 @@ def run_once_pipeline(
         runner=runner,
         multica_bin=multica_bin,
     )
+    if not dry_run and skill_retro_watermark_path is not None and cohort_gate.get("cohort_watermark"):
+        wm_state = _load_skill_retro_watermark(skill_retro_watermark_path)
+        wm_state.update(
+            {
+                "cohort_watermark": str(cohort_gate["cohort_watermark"]),
+                "collected_date": snapshot.get("collected_date"),
+                "delivered_at": datetime.now(CST).isoformat(timespec="seconds"),
+                "skill_retro_proposals_count": len((snapshot.get("skill_retro") or {}).get("proposals") or []),
+            }
+        )
+        _save_skill_retro_watermark(wm_state, skill_retro_watermark_path)
     return {
         "ok": True,
         "collect_output": str(collect_output),
@@ -1057,13 +1479,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    p_collect = sub.add_parser("collect", help="Deterministically collect existing aidata Skills ROI snapshot.")
+    p_collect = sub.add_parser("collect", help="Deterministically collect existing aidata Skills ROI + 4-layer skill-retro snapshot.")
     p_collect.add_argument("--warehouse-db", type=Path, default=None)
     p_collect.add_argument("--copilot-db", type=Path, default=None)
+    p_collect.add_argument("--copilot-sessions-dir", type=Path, default=None)
+    p_collect.add_argument("--usage-jsonl", type=Path, default=None)
+    p_collect.add_argument("--handoff-root", type=Path, default=None)
     p_collect.add_argument("--skills-root", type=Path, default=None)
     p_collect.add_argument("--dev-root", type=Path, default=None)
     p_collect.add_argument("--magpie-usage", type=Path, default=None)
     p_collect.add_argument("--dsh-sessions", type=Path, default=None)
+    p_collect.add_argument("--proposals-path", type=Path, default=None)
+    p_collect.add_argument("--no-skill-retro", action="store_true", help="Skip invoking pure retro_story_engine.py skill-retro.")
+    p_collect.add_argument("--skill-retro-auto-propose", action="store_true", help="Queue gated high-signal skill-retro proposals to proposals.jsonl.")
+    p_collect.add_argument("--watermark-file", type=Path, default=None, help="Optional cohort watermark file for zero-token no-delta gating.")
     p_collect.add_argument("--top-n", type=int, default=5)
     p_collect.add_argument("--output", type=Path, default=None, help="Optional JSON output file path.")
     p_collect.add_argument("--markdown-output", type=Path, default=None, help="Optional rendered Markdown output path.")
@@ -1112,10 +1541,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--multica-bin", default=None)
     p_run.add_argument("--warehouse-db", type=Path, default=None)
     p_run.add_argument("--copilot-db", type=Path, default=None)
+    p_run.add_argument("--copilot-sessions-dir", type=Path, default=None)
+    p_run.add_argument("--usage-jsonl", type=Path, default=None)
+    p_run.add_argument("--handoff-root", type=Path, default=None)
     p_run.add_argument("--skills-root", type=Path, default=None)
     p_run.add_argument("--dev-root", type=Path, default=None)
     p_run.add_argument("--magpie-usage", type=Path, default=None)
     p_run.add_argument("--dsh-sessions", type=Path, default=None)
+    p_run.add_argument("--proposals-path", type=Path, default=None)
+    p_run.add_argument("--no-skill-retro", action="store_true", help="Skip invoking pure retro_story_engine.py skill-retro.")
+    p_run.add_argument("--skill-retro-auto-propose", action="store_true", help="Queue gated high-signal skill-retro proposals to proposals.jsonl.")
+    p_run.add_argument("--watermark-file", type=Path, default=None, help="Optional cohort watermark file for zero-token no-delta gating.")
+    p_run.add_argument("--skip-if-no-delta", action="store_true", help="Skip filing issue at 0 token cost when cohort watermark is unchanged.")
     p_run.add_argument("--allow-duplicate", action="store_true")
     p_run.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
     p_run.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
@@ -1132,11 +1569,18 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = collect_skills_roi_snapshot(
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            handoff_root=ns.handoff_root,
             skills_root=ns.skills_root,
             dev_root=ns.dev_root,
             magpie_usage=ns.magpie_usage,
             dsh_sessions=ns.dsh_sessions,
+            proposals_path=ns.proposals_path,
             top_n=ns.top_n,
+            include_skill_retro=(False if ns.no_skill_retro else True),
+            skill_retro_auto_propose=bool(ns.skill_retro_auto_propose),
+            skill_retro_watermark_path=ns.watermark_file,
         )
         if ns.output is not None:
             ns.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1215,10 +1659,18 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=ns.dry_run,
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            handoff_root=ns.handoff_root,
             skills_root=ns.skills_root,
             dev_root=ns.dev_root,
             magpie_usage=ns.magpie_usage,
             dsh_sessions=ns.dsh_sessions,
+            proposals_path=ns.proposals_path,
+            include_skill_retro=(False if ns.no_skill_retro else True),
+            skill_retro_auto_propose=bool(ns.skill_retro_auto_propose),
+            skill_retro_watermark_path=ns.watermark_file,
+            skip_if_no_cohort_delta=bool(ns.skip_if_no_delta),
             multica_bin=ns.multica_bin,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -640,6 +640,190 @@ class DailyBriefDualTargetTests(unittest.TestCase):
             self.assertEqual(dz_verify["cursor"], "daily-brief-2026-11-19")
             self.assertEqual(daily_brief.validate_markdown(payload["plan_a_markdown"]), [])
 
+    def test_skills_roi_loop_wires_pure_skill_retro_gates_cohort_and_surfaces_in_daily_brief(self):
+        from unittest import mock as _mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wh = root / "warehouse.db"
+            cp = root / "session-store.db"
+            sessions_dir = root / "sessions"
+            sessions_dir.mkdir()
+            usage_jsonl = root / "usage.jsonl"
+            usage_jsonl.write_text("", encoding="utf-8")
+            handoff_root = root / "handoff"
+            handoff_root.mkdir()
+            skills_root = root / "skills"
+            (skills_root / "my-designer" / "references").mkdir(parents=True)
+            (skills_root / "my-designer" / "scripts").mkdir(parents=True)
+            (skills_root / "my-designer" / ".claude-plugin").mkdir(parents=True)
+            (skills_root / "my-designer" / "SKILL.md").write_text(
+                "---\nname: my-designer\ndescription: UI design skill\n---\n# my-designer\n",
+                encoding="utf-8",
+            )
+            (skills_root / "my-designer" / ".claude-plugin" / "plugin.json").write_text(
+                '{"name":"my-designer","description":"UI","category":"design"}\n',
+                encoding="utf-8",
+            )
+            (skills_root / "my-designer" / "references" / "unwired-guide.md").write_text(
+                "# Unwired Guide\n",
+                encoding="utf-8",
+            )
+            (skills_root / "my-designer" / "scripts" / "check_ui.py").write_text(
+                "#!/usr/bin/env python3\n",
+                encoding="utf-8",
+            )
+            dev_root = root / "dev"
+            dev_root.mkdir()
+            proposals_path = root / "proposals.jsonl"
+            wm_file = root / "skill-retro-wm.json"
+            state_file = root / "loop-watermarks.json"
+            digest_buf_file = root / "daily-digest-buffer.json"
+
+            # Seed 2 UI sessions where check_ui.py failed exit=2 (rigid_roadblock) and unwired-guide.md was never read
+            from datetime import datetime, timedelta, timezone as _tz
+            now_iso = (datetime.now(_tz(timedelta(hours=8))) - timedelta(hours=1)).replace(microsecond=0)
+            for idx in (1, 2):
+                sdir = sessions_dir / f"sess-{idx}"
+                sdir.mkdir()
+                events = [
+                    {"type": "session.start", "timestamp": now_iso.isoformat(), "data": {"selectedModel": "gpt-5.4"}},
+                    {
+                        "type": "skill.invoked",
+                        "timestamp": (now_iso + timedelta(seconds=1)).isoformat(),
+                        "data": {"name": "my-designer", "path": "skills/my-designer/SKILL.md"},
+                    },
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now_iso + timedelta(seconds=2)).isoformat(),
+                        "data": {
+                            "toolCallId": f"call-{idx}",
+                            "toolName": "bash",
+                            "arguments": {"command": f"python3 {skills_root}/my-designer/scripts/check_ui.py --bad-flag"},
+                        },
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now_iso + timedelta(seconds=3)).isoformat(),
+                        "data": {"toolCallId": f"call-{idx}", "result": {"content": "<shellId: 1 completed with exit code 2>"}},
+                    },
+                ]
+                (sdir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+            import sqlite3
+            import contextlib as _cl
+            with _cl.closing(sqlite3.connect(wh)):
+                pass
+            with _cl.closing(sqlite3.connect(cp)):
+                pass
+
+            env_overrides = {
+                "SKILLS_ROI_WAREHOUSE_DB": str(wh),
+                "SKILLS_ROI_COPILOT_DB": str(cp),
+                "SKILLS_ROI_COPILOT_SESSIONS_DIR": str(sessions_dir),
+                "SKILLS_ROI_USAGE_JSONL": str(usage_jsonl),
+                "SKILLS_ROI_HANDOFF_ROOT": str(handoff_root),
+                "SKILLS_ROI_SKILLS_ROOT": str(skills_root),
+                "SKILLS_ROI_DEV_ROOT": str(dev_root),
+                "SKILLS_ROI_PROPOSALS_PATH": str(proposals_path),
+                "MULTICA_SKILL_RETRO_WATERMARK_FILE": str(wm_file),
+                "MULTICA_DAILY_DIGEST_BUFFER_FILE": str(digest_buf_file),
+            }
+            mock_jev = {
+                "answers": {
+                    "actionable_probability": {"noul": 0.90},
+                    "delivery_route": {"choice": "ignore"},
+                    "delivery_route_match": {"noul": 0.80},
+                    "urgency_score": {"score": 0.80},
+                }
+            }
+            real_loader = loop_runner._load_module
+
+            def patched_loader(name: str, path: Path):
+                if name == "loop_icloud_skills_sync_telem":
+                    return _mock.Mock(export_telemetry_shards=lambda: {"ok": True})
+                return real_loader(name, path)
+
+            with _mock.patch.dict("os.environ", env_overrides), _mock.patch.object(
+                loop_runner,
+                "_load_module",
+                side_effect=patched_loader,
+            ):
+                # 1st scheduled run: executes pure skill-retro CLI, queues proposal, buffers into daily-digest-buffer.json
+                res1 = loop_runner.run_loop(
+                    "skills-roi-diagnostic",
+                    target_date=date(2026, 11, 20),
+                    state_path=state_file,
+                    digest_buffer_path=digest_buf_file,
+                    mock_jev_json=mock_jev,
+                )
+                self.assertEqual(res1["status"], "ACTION_TAKEN")
+                self.assertEqual(res1["route"], "auto_fix_and_digest_only")
+                self.assertTrue(proposals_path.is_file())
+                buf_entry = res1["delivery"]["entry"]
+                self.assertGreaterEqual(buf_entry["skill_retro"]["high_signal_proposals_count"], 1)
+
+                # 2nd scheduled run on next day with unchanged cohort: skips at Layer 0 with 0 token cost!
+                jev_called = False
+
+                def forbid_jev(*_a, **_kw):
+                    nonlocal jev_called
+                    jev_called = True
+                    return None
+
+                res2 = loop_runner.run_loop(
+                    "skills-roi-diagnostic",
+                    target_date=date(2026, 11, 21),
+                    state_path=state_file,
+                    digest_buffer_path=digest_buf_file,
+                    jev_fn=forbid_jev,
+                )
+                self.assertEqual(res2["status"], "SKIPPED_NO_DELTA")
+                self.assertEqual(res2["layer_reached"], 0)
+                self.assertEqual(res2["token_cost"], 0)
+                self.assertFalse(jev_called)
+
+                # 3. Daily Brief surfaces buffered skill-retro proposals cleanly in Dual-Zone Human + AI Context zones
+                brief_payload = daily_brief.generate(
+                    date(2026, 11, 20),
+                    dev_root=dev_root,
+                    handoff_root=handoff_root,
+                    client=None,
+                    propose_linear=False,
+                    publish_multica=False,
+                    dual_zone=True,
+                    dry_run=True,
+                )
+                self.assertTrue(brief_payload["ok"])
+                dz_md = brief_payload["markdown"]
+                dz_check = issue_brief.verify_dual_zone_issue(dz_md)
+                self.assertTrue(dz_check["ok"], dz_check)
+                self.assertIn("技能自演进提案", dz_md)
+                self.assertIn("4-Layer Skill Retro Digest (`retro_story_engine.py skill-retro`)", dz_md)
+                self.assertIn("check_ui.py", dz_md)
+                self.assertEqual(daily_brief.validate_markdown(brief_payload["plan_a_markdown"]), [])
+
+                # 4. Schedule ordering invariant: skills-roi-diagnostic cron runs BEFORE daily-brief (04:20 < 05:00),
+                # AND if a brief runs on the next day before today's patrol runs, yesterday's actionable buffer still surfaces.
+                roi_spec = loop_runner.resolve_loop_spec("skills-roi-diagnostic")
+                brief_spec = loop_runner.resolve_loop_spec("daily-brief")
+                roi_min, roi_hr = (int(tok) for tok in roi_spec.cron.split()[:2])
+                brief_min, brief_hr = (int(tok) for tok in brief_spec.cron.split()[:2])
+                self.assertLess((roi_hr, roi_min), (brief_hr, brief_min))
+
+                next_day_brief = daily_brief.generate(
+                    date(2026, 11, 21),
+                    dev_root=dev_root,
+                    handoff_root=handoff_root,
+                    client=None,
+                    propose_linear=False,
+                    publish_multica=False,
+                    dual_zone=True,
+                    dry_run=True,
+                )
+                self.assertIn("技能自演进提案", next_day_brief["markdown"])
+                self.assertTrue(issue_brief.verify_dual_zone_issue(next_day_brief["markdown"])["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
