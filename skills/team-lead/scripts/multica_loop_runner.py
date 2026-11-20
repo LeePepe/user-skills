@@ -92,12 +92,12 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     ),
     LoopSpec(
         loop_id="skills-roi-diagnostic",
-        aliases=("skills-roi", "skills_roi"),
-        autopilot_title="Daily Skills ROI Diagnostic Autopilot (Auto-Fix + Daily Brief Digest)",
+        aliases=("skill-retro-diagnostic", "skill-retro", "skill_retro", "skill_retro_diagnostic", "skills-roi", "skills_roi"),
+        autopilot_title="Daily Skill Progressive Retro Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="20 4 * * *",
-        trigger_label="Daily CST 04:20 Morning Skills ROI & Skill-Retro Diagnostic",
+        trigger_label="Daily CST 04:20 Skill Progressive Retro Diagnostic",
         delivery_mode="auto_fix_and_digest_only",
-        issue_title_template="[P3 / Priority 3][Skills ROI] {date} 技能效能诊断与待优化清单",
+        issue_title_template="[P3 / Priority 3][Skill Retro] {date} 技能四层渐进式自演进诊断",
         default_status="backlog",
         default_priority="medium",
     ),
@@ -957,8 +957,26 @@ def verify_vpn_access(
 # Deliverable 2: 0-Agent Script Precheck + Jev -> Wake-on-Actionable Hub
 # ---------------------------------------------------------------------------
 
+CANONICAL_SKILL_RETRO_AUTOPILOT_ID_PREFIX = "4e06bf2a"
+
+
 def build_loop_autopilot_description(spec: LoopSpec) -> str:
-    runner_rel = "$HOME/Development/user-skills/skills/m2-dispatcher/scripts/multica_loop_runner.py"
+    runner_rel = "$HOME/Development/user-skills/skills/team-lead/scripts/multica_loop_runner.py"
+    if spec.loop_id == "skills-roi-diagnostic":
+        return (
+            f"# {spec.autopilot_title}\n\n"
+            f"- **Loop ID**: `skill-retro-diagnostic` (compatible alias: `{spec.loop_id}`)\n"
+            "- **Primary Engine**: `retro_story_engine.py skill-retro` (4-Layer Progressive Self-Evolution)\n"
+            f"- **Execution Architecture**: `Layer 0 Deterministic Script Precheck -> Layer 1 Jev Fast-Thinking -> Layer 2 Wake-on-Actionable ({spec.delivery_mode})`\n\n"
+            "## Execution Protocol\n\n"
+            "1. **Normal Scheduled Tick (`04:20` CST, 0-Agent Precheck)**:\n"
+            "   ```bash\n"
+            f'   python3 "{runner_rel}" run-loop --loop "skill-retro-diagnostic" --json\n'
+            "   ```\n"
+            "   Executes pure 4-Layer `skill-retro` (`L0` Trigger/Drift, `L1` Drawer Metabolism, `L2` Script Efficacy/Roadblocks/Speed, `L3` Wild Crystallization & Dual-Flywheel Cohort Gate), queues high-signal proposals to `proposals.jsonl`, and buffers actionable findings for the `05:00` Daily Brief at `$0` LLM cost when the cohort watermark is unchanged.\n"
+            "2. **Agent Synthesis Fallback (only when triggered by `multica_loop_runner.py` or manual run)**:\n"
+            f"   Inspect `/tmp/multica-loop-{spec.loop_id}-collect.json` (or run `python3 \"$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py\" collect`), synthesize L0–L3 root causes, and file/update a Dual-Zone (`issue-brief` verified) issue assigned to Owner (`lee@multica.local`).\n"
+        )
     if spec.loop_id == "design-taste-evolution":
         execution_note = (
             "   Run this collector on the Mac node with access to the local handoff receipts; "
@@ -1031,14 +1049,23 @@ def sync_autopilots(
         for ap in existing_list:
             if not isinstance(ap, dict):
                 continue
+            ap_id_str = str(ap.get("id") or "")
             title_str = str(ap.get("title") or "")
             desc_str = str(ap.get("description") or "")
             if (
                 title_str == spec.autopilot_title
                 or f"`{spec.loop_id}`" in desc_str
+                or any(f"`{alias}`" in desc_str for alias in spec.aliases)
+                or (
+                    spec.loop_id == "skills-roi-diagnostic"
+                    and (
+                        ap_id_str.startswith(CANONICAL_SKILL_RETRO_AUTOPILOT_ID_PREFIX)
+                        or "Skill Progressive Retro" in title_str
+                        or "Skills ROI" in title_str
+                    )
+                )
                 or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest Autopilot" in title_str)
                 or (spec.loop_id == "aidash-retro-delta" and "Daily AIDash Digest & Retro" in title_str)
-                or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in title_str)
                 or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in title_str)
                 or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in title_str)
                 or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in title_str)
@@ -1135,13 +1162,46 @@ def sync_autopilots(
             )
             trig_action = "created"
         else:
-            trig_action = "kept"
+            sched_id = str(sched.get("id") or "")
+            sched_cron = str(sched.get("cron") or sched.get("cron_expression") or "")
+            sched_tz = str(sched.get("timezone") or "")
+            sched_label = str(sched.get("label") or "")
+            preserve_custom_trigger = spec.loop_id in {"daily-learn-recommend", "aidash-retro-delta"}
+            needs_trigger_update = (
+                bool(sched_id)
+                and not preserve_custom_trigger
+                and (sched_cron != spec.cron or sched_tz != tz_name or sched_label != spec.trigger_label)
+            )
+            if needs_trigger_update:
+                trig_upd = runner(
+                    [
+                        "autopilot",
+                        "trigger-update",
+                        autopilot_id,
+                        sched_id,
+                        "--cron",
+                        spec.cron,
+                        "--timezone",
+                        tz_name,
+                        "--label",
+                        spec.trigger_label,
+                        "--output",
+                        "json",
+                    ],
+                    multica_bin=multica_bin,
+                    server_url=server_url,
+                    workspace_id=workspace_id,
+                )
+                _parse_json_stdout(trig_upd, "autopilot trigger-update")
+                trig_action = "updated"
+            else:
+                trig_action = "kept"
 
         synced.append(
             {
                 "loop_id": spec.loop_id,
                 "autopilot_id": autopilot_id,
-                "title": matched.get("title") if matched else spec.autopilot_title,
+                "title": matched.get("title") if (matched and spec.loop_id in {"daily-learn-recommend", "aidash-retro-delta"}) else spec.autopilot_title,
                 "action": ap_action,
                 "trigger_action": trig_action,
             }
@@ -1307,17 +1367,17 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
                 with contextlib.suppress(Exception):
                     icloud_mod = _load_module("loop_icloud_skills_sync_telem", icloud_script)
                     icloud_mod.export_telemetry_shards()
-        roi_mod = _load_module("loop_skills_roi", SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py")
-        wh_env = os.environ.get("SKILLS_ROI_WAREHOUSE_DB")
-        cp_env = os.environ.get("SKILLS_ROI_COPILOT_DB")
-        sess_env = os.environ.get("SKILLS_ROI_COPILOT_SESSIONS_DIR")
-        usage_env = os.environ.get("SKILLS_ROI_USAGE_JSONL")
-        handoff_env = os.environ.get("SKILLS_ROI_HANDOFF_ROOT")
-        skills_env = os.environ.get("SKILLS_ROI_SKILLS_ROOT")
-        dev_env = os.environ.get("SKILLS_ROI_DEV_ROOT")
-        prop_env = os.environ.get("SKILLS_ROI_PROPOSALS_PATH")
+        retro_mod = _load_module("loop_skill_retro", SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py")
+        wh_env = os.environ.get("SKILL_RETRO_WAREHOUSE_DB") or os.environ.get("SKILLS_ROI_WAREHOUSE_DB")
+        cp_env = os.environ.get("SKILL_RETRO_COPILOT_DB") or os.environ.get("SKILLS_ROI_COPILOT_DB")
+        sess_env = os.environ.get("SKILL_RETRO_COPILOT_SESSIONS_DIR") or os.environ.get("SKILLS_ROI_COPILOT_SESSIONS_DIR")
+        usage_env = os.environ.get("SKILL_RETRO_USAGE_JSONL") or os.environ.get("SKILLS_ROI_USAGE_JSONL")
+        handoff_env = os.environ.get("SKILL_RETRO_HANDOFF_ROOT") or os.environ.get("SKILLS_ROI_HANDOFF_ROOT")
+        skills_env = os.environ.get("SKILL_RETRO_SKILLS_ROOT") or os.environ.get("SKILLS_ROI_SKILLS_ROOT")
+        dev_env = os.environ.get("SKILL_RETRO_DEV_ROOT") or os.environ.get("SKILLS_ROI_DEV_ROOT")
+        prop_env = os.environ.get("SKILL_RETRO_PROPOSALS_PATH") or os.environ.get("SKILLS_ROI_PROPOSALS_PATH")
         wm_env = os.environ.get("MULTICA_SKILL_RETRO_WATERMARK_FILE")
-        snap = roi_mod.collect_skills_roi_snapshot(
+        snap = retro_mod.collect_skill_retro_snapshot(
             warehouse_db=Path(wh_env).expanduser() if wh_env else None,
             copilot_db=Path(cp_env).expanduser() if cp_env else None,
             copilot_sessions_dir=Path(sess_env).expanduser() if sess_env else None,
@@ -1326,75 +1386,53 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             skills_root=Path(skills_env).expanduser() if skills_env else None,
             dev_root=Path(dev_env).expanduser() if dev_env else None,
             proposals_path=Path(prop_env).expanduser() if prop_env else None,
-            top_n=3,
-            include_skill_retro=True,
+            top_n=5,
             skill_retro_auto_propose=not dry_run,
             skill_retro_watermark_path=(
                 None
                 if dry_run
-                else (Path(wm_env).expanduser() if wm_env else roi_mod._default_skill_retro_watermark_path())
+                else (Path(wm_env).expanduser() if wm_env else retro_mod._default_skill_retro_watermark_path())
             ),
         )
-        findings = list(snap.get("top_findings") or [])
         skill_retro = dict(snap.get("skill_retro") or {})
         retro_proposals = list(skill_retro.get("proposals") or [])
         summary_dict = dict(snap.get("summary") or {})
-        actionable_roi_count = int(
-            summary_dict["actionable_skills_count"]
-            if "actionable_skills_count" in summary_dict
-            else len(findings)
-        )
         retro_count = len(retro_proposals)
-        total_delta_count = actionable_roi_count + retro_count
-        cohort_sig = _compute_digest_signature(
-            {
-                "roi": [{"skill": f.get("skill"), "status": f.get("diagnostic_status")} for f in findings if actionable_roi_count > 0],
-                "skill_retro": [
-                    {"id": p.get("id"), "skill": p.get("skill"), "layer": p.get("layer"), "priority": p.get("priority")}
-                    for p in retro_proposals
-                ],
-                "slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
-            }
+        cohort_sig = str(
+            skill_retro.get("cohort_watermark")
+            or _compute_digest_signature(
+                {
+                    "skill_retro": [
+                        {"id": p.get("id"), "skill": p.get("skill"), "layer": p.get("layer"), "priority": p.get("priority")}
+                        for p in retro_proposals
+                    ],
+                    "slow_flywheel_ready": bool(skill_retro.get("slow_flywheel_ready")),
+                }
+            )
         )
         items: list[dict[str, str]] = []
         seen_what: set[str] = set()
-        for prop in retro_proposals[:3]:
+        for prop in retro_proposals[:5]:
             what_txt = str(prop.get("human_what") or "").strip()
             why_txt = str(prop.get("human_why") or "").strip()
             if what_txt and what_txt.casefold() not in seen_what:
                 seen_what.add(what_txt.casefold())
                 items.append({"what": what_txt, "why": why_txt or "补齐四层技能自演进防呆指引"})
-        for f in findings[:3]:
-            if actionable_roi_count <= 0 or len(items) >= 5:
-                break
-            what_txt = f"收敛技能 `{f.get('skill')}` 的触发与回归门禁"
-            if what_txt.casefold() not in seen_what:
-                seen_what.add(what_txt.casefold())
-                items.append(
-                    {
-                        "what": what_txt,
-                        "why": roi_mod._plain_chinese_reason_for_skill(f).rstrip("。"),
-                    }
-                )
-        if retro_count > 0 and actionable_roi_count > 0:
-            summary_text = f"检测到 {actionable_roi_count} 个待治理技能与 {retro_count} 项四层自演进提案。"
-        elif retro_count > 0:
-            summary_text = f"四层技能自演进巡检发现 {retro_count} 项高信号改进提案。"
-        elif actionable_roi_count > 0:
-            summary_text = f"检测到 {actionable_roi_count} 个需优化的低效能或高频返工技能。"
+        if retro_count > 0:
+            summary_text = f"四层技能渐进式自演进巡检发现 {retro_count} 项高信号改进提案。"
         else:
-            summary_text = "今日技能效能与四层自演进巡检无新增异常。"
+            summary_text = "今日四层技能渐进式自演进巡检无新增异常。"
         has_high_priority = any(str(p.get("priority") or "") in {"P0", "P1"} for p in retro_proposals)
         return {
             "loop_id": spec.loop_id,
             "date": date_str,
-            "has_delta": total_delta_count > 0,
-            "delta_count": total_delta_count,
-            "severity": "high" if has_high_priority else ("medium" if total_delta_count > 0 else "low"),
-            "watermark": f"skills-roi:cohort:{cohort_sig}",
-            "cursor": str(snap.get("dedup_key") or f"skills-roi-{date_str}"),
+            "has_delta": retro_count > 0,
+            "delta_count": retro_count,
+            "severity": "high" if has_high_priority else ("medium" if retro_count > 0 else "low"),
+            "watermark": f"skill-retro:cohort:{cohort_sig}",
+            "cursor": str(snap.get("dedup_key") or f"skill-retro-{date_str}"),
             "title": str(snap.get("default_issue_title") or spec.issue_title_template.format(date=date_str)),
-            "dual_zone_markdown": roi_mod.build_issue_markdown(snap) if total_delta_count > 0 else "",
+            "dual_zone_markdown": retro_mod.build_issue_markdown(snap) if retro_count > 0 else "",
             "summary": summary_text,
             "items": items,
             "skill_retro": {
@@ -1851,12 +1889,21 @@ def _find_autopilot_id(
     for ap in autopilots:
         if not isinstance(ap, dict):
             continue
+        ap_id = str(ap.get("id") or "")
         t = str(ap.get("title") or "")
         d = str(ap.get("description") or "")
         if (
             t == spec.autopilot_title
             or f"`{spec.loop_id}`" in d
-            or (spec.loop_id == "skills-roi-diagnostic" and "Skills ROI" in t)
+            or any(f"`{alias}`" in d for alias in spec.aliases)
+            or (
+                spec.loop_id == "skills-roi-diagnostic"
+                and (
+                    ap_id.startswith(CANONICAL_SKILL_RETRO_AUTOPILOT_ID_PREFIX)
+                    or "Skill Progressive Retro" in t
+                    or "Skills ROI" in t
+                )
+            )
             or (spec.loop_id == "aidash-retro-delta" and "AIDash Digest & Retro" in t)
             or (spec.loop_id == "daily-learn-recommend" and "Daily Knowledge Digest" in t)
             or (spec.loop_id == "local-herdr-worktree-gc" and "Local Herdr & Worktree Hygiene Patrol" in t)
@@ -1864,7 +1911,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in t)
             or (spec.loop_id == "design-taste-evolution" and ("UI Design Taste Evolution" in t or "Taste Evolution" in t))
         ):
-            return str(ap.get("id") or "") or None
+            return ap_id or None
     return None
 
 
@@ -2140,7 +2187,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push, design-taste-evolution)",
+        help="Loop ID (daily-brief, skill-retro-diagnostic / skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push, design-taste-evolution)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)

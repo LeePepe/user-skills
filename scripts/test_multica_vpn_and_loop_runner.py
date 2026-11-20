@@ -530,6 +530,58 @@ class MulticaLoopRunnerPipelineTests(unittest.TestCase):
             self.assertEqual(res["delivery"]["autopilot_id"], "ap-roi-123")
             self.assertIn(["autopilot", "trigger", "ap-roi-123", "--output", "json"], calls)
 
+    def test_sync_autopilots_updates_live_4e06bf2a_in_place_and_fixes_stale_path_and_cron(self):
+        calls = []
+        autopilots_state = [
+            {
+                "id": "4e06bf2a-5842-4b3a-928f-fcde3bea7c41",
+                "title": "Daily Skills ROI Diagnostic Autopilot (Auto-Fix + Daily Brief Digest)",
+                "description": 'python3 "$HOME/Development/user-skills/skills/m2-dispatcher/scripts/multica_loop_runner.py" run-loop --loop "skills-roi-diagnostic" --json',
+            }
+        ]
+        triggers_state = [
+            {
+                "id": "ad0a2d4e-c902-433f-99cb-6bc318561454",
+                "kind": "schedule",
+                "cron_expression": "20 8 * * *",
+                "timezone": "Asia/Shanghai",
+                "label": "Daily CST Morning Skills ROI Diagnostic",
+            }
+        ]
+
+        def fake_runner(args, *, stdin_text=None, **kwargs):
+            calls.append(list(args))
+            if args[:2] == ["autopilot", "list"]:
+                return subprocess.CompletedProcess(["multica", *args], 0, stdout=json.dumps({"autopilots": autopilots_state}), stderr="")
+            if args[:2] == ["autopilot", "create"]:
+                raise AssertionError("sync_autopilots must update 4e06bf2a in-place, never create a duplicate!")
+            if args[:2] == ["autopilot", "update"]:
+                autopilots_state[0]["title"] = args[args.index("--title") + 1]
+                autopilots_state[0]["description"] = args[args.index("--description") + 1]
+                return subprocess.CompletedProcess(["multica", *args], 0, stdout=json.dumps(autopilots_state[0]), stderr="")
+            if args[:2] == ["autopilot", "trigger-list"]:
+                return subprocess.CompletedProcess(["multica", *args], 0, stdout=json.dumps({"triggers": triggers_state}), stderr="")
+            if args[:2] == ["autopilot", "trigger-update"]:
+                self.assertEqual(args[2], "4e06bf2a-5842-4b3a-928f-fcde3bea7c41")
+                self.assertEqual(args[3], "ad0a2d4e-c902-433f-99cb-6bc318561454")
+                triggers_state[0]["cron_expression"] = args[args.index("--cron") + 1]
+                triggers_state[0]["timezone"] = args[args.index("--timezone") + 1]
+                triggers_state[0]["label"] = args[args.index("--label") + 1]
+                return subprocess.CompletedProcess(["multica", *args], 0, stdout=json.dumps(triggers_state[0]), stderr="")
+            return subprocess.CompletedProcess(["multica", *args], 0, stdout="{}", stderr="")
+
+        res = loop_runner.sync_autopilots(loop_id="skill-retro-diagnostic", runner=fake_runner)
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(res["autopilots"]), 1)
+        synced_entry = res["autopilots"][0]
+        self.assertEqual(synced_entry["autopilot_id"], "4e06bf2a-5842-4b3a-928f-fcde3bea7c41")
+        self.assertEqual(synced_entry["action"], "updated")
+        self.assertEqual(synced_entry["trigger_action"], "updated")
+        self.assertIn("Skill Progressive Retro", autopilots_state[0]["title"])
+        self.assertIn("skills/team-lead/scripts/multica_loop_runner.py", autopilots_state[0]["description"])
+        self.assertNotIn("skills/m2-dispatcher/scripts/multica_loop_runner.py", autopilots_state[0]["description"])
+        self.assertEqual(triggers_state[0]["cron_expression"], "20 4 * * *")
+
     def test_engineering_patrol_loops_default_to_auto_fix_and_digest_only_unless_forced(self):
         for loop_id in (
             "local-herdr-worktree-gc",
@@ -749,9 +801,9 @@ class DailyBriefDualTargetTests(unittest.TestCase):
                 "_load_module",
                 side_effect=patched_loader,
             ):
-                # 1st scheduled run: executes pure skill-retro CLI, queues proposal, buffers into daily-digest-buffer.json
+                # 1st scheduled run: executes pure skill-retro CLI via skill-retro-diagnostic alias, queues proposal, buffers into daily-digest-buffer.json
                 res1 = loop_runner.run_loop(
-                    "skills-roi-diagnostic",
+                    "skill-retro-diagnostic",
                     target_date=date(2026, 11, 20),
                     state_path=state_file,
                     digest_buffer_path=digest_buf_file,
@@ -759,6 +811,7 @@ class DailyBriefDualTargetTests(unittest.TestCase):
                 )
                 self.assertEqual(res1["status"], "ACTION_TAKEN")
                 self.assertEqual(res1["route"], "auto_fix_and_digest_only")
+                self.assertTrue(res1["watermark"].startswith("skill-retro:cohort:"))
                 self.assertTrue(proposals_path.is_file())
                 buf_entry = res1["delivery"]["entry"]
                 self.assertGreaterEqual(buf_entry["skill_retro"]["high_signal_proposals_count"], 1)
