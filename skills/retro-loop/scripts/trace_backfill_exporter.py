@@ -28,6 +28,7 @@ from pathlib import Path
 import re
 import sqlite3
 import struct
+import subprocess
 import sys
 import time
 from typing import Any, Sequence
@@ -73,7 +74,14 @@ _SCRIPT_RE = re.compile(
 _SHELL_START_RE = re.compile(r"<command (?:started in background )?with shellId:\s*([^\s>]+)")
 _SHELL_COMPLETE_RE = re.compile(r"<shellId:\s*([^\s>]+)\s+completed with exit code\s+(-?\d+)>")
 _SHELL_STOPPED_RE = re.compile(r"<command with id:\s*([^\s>]+)\s+stopped>")
-_VERDICT_LINE_RE = re.compile(r"\bV5\s*Verdict\s*[:=]\s*(PASS|CONCERNS|WAIVED|FAIL)\b", re.I)
+_VERDICT_LINE_RE = re.compile(
+    r"(?:\bV5\s*Verdict|\bVERIFIER_VERDICT|\bANTICHEAT_VERDICT|\bFinal\s*Verdict)\s*(?:\*\*|`)*\s*[:=]\s*(?:\*\*|`)*\s*"
+    r"(PASS|CONCERNS|WAIVED|FAIL|CLEAN_NO_CHEATING_DETECTED|DONE|COMPLETED)\b",
+    re.I,
+)
+_RECEIPT_FILE_REF_RE = re.compile(r"receipts/([A-Za-z0-9_.-]+\.md)")
+_BRIEF_FILE_REF_RE = re.compile(r"briefs/([A-Za-z0-9_.-]+\.md)")
+_WORKTREE_GOAL_RE = re.compile(r"/worktrees/([A-Za-z0-9_-]+)")
 _TOKEN_NUM_RE = re.compile(r"\b(?:input[_ ]tokens?|in_tokens?)\s*[:=]\s*(\d+)\b", re.I)
 _OUT_TOKEN_RE = re.compile(r"\b(?:output[_ ]tokens?|out_tokens?)\s*[:=]\s*(\d+)\b", re.I)
 _CACHE_TOKEN_RE = re.compile(r"\b(?:cache[_ ]read(?:[_ ]tokens?)?)\s*[:=]\s*(\d+)\b", re.I)
@@ -130,6 +138,11 @@ class ParsedSessionActivity:
     llm_calls: list[tuple[str, int, int, int, int, int, str]]  # (model, start_ns, dur_ms, in, out, cache, source_id)
     measured_durations_ms: dict[str, int] = field(default_factory=dict)
     tool_transport_success: dict[str, bool] = field(default_factory=dict)
+    primary_goal_id: str | None = None
+    receipt_writes: set[str] = field(default_factory=set)
+    receipt_mentions: set[str] = field(default_factory=set)
+    brief_mentions: set[str] = field(default_factory=set)
+    last_assistant_excerpt: str = ""
 
 
 def _point_event_timing() -> dict[str, Any]:
@@ -214,23 +227,209 @@ def _infer_skill_from_path(path_str: str) -> str:
     return "repo-gate"
 
 
-def _normalize_role(raw_role: str) -> str:
-    lower = raw_role.lower()
-    if "designer" in lower:
-        return "Designer"
-    if "reviewer" in lower or "review" in lower:
-        return "Reviewer"
-    if "anticheat" in lower or "anti-cheat" in lower:
+_NON_ROLE_ARTIFACT_TOKENS = frozenset(
+    {
+        "matrix",
+        "baseline",
+        "metrics",
+        "inventory",
+        "snapshot",
+        "manifest",
+        "index",
+        "summary",
+        "changelog",
+        "readme",
+        "telemetry",
+    }
+)
+
+
+def _classify_receipt_role(raw_role: str) -> str | None:
+    """Return canonical role name ONLY when raw_role represents an actual agent/role receipt.
+
+    Non-role artifact filenames (such as `all-skills-before-after-matrix` or `baseline-metrics`)
+    return None so they are never misclassified as `M1 TL` leaf stage_role spans.
+    """
+    cleaned = raw_role.strip()
+    if not cleaned:
+        return None
+    lower = cleaned.lower()
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", lower) if tok]
+    token_set = set(tokens)
+
+    if "anticheat" in lower or ("anti" in token_set and "cheat" in token_set):
         return "AntiCheat"
-    if "verifier" in lower or "verify" in lower:
+    if "designer" in token_set or (tokens and tokens[0] == "des"):
+        return "Designer"
+    if "reviewer" in token_set or "review" in token_set or "code_reviewer" in lower or any(
+        re.fullmatch(r"rev|rv\d*", tok) for tok in tokens
+    ):
+        return "Reviewer"
+    if "verifier" in token_set or "verify" in token_set:
         return "Verifier"
-    if "writer" in lower or "coder" in lower or "worker" in lower:
+    if "writer" in token_set or "coder" in token_set or "worker" in token_set:
         return "Writer"
-    if "m2" in lower or "coordinator" in lower or "dispatcher" in lower:
-        return "M2"
-    if "m3" in lower or "owner" in lower:
+    if "pr_monitor" in lower or ("pr" in token_set and "monitor" in token_set):
+        return "Verifier"
+    if "m3" in token_set or "owner" in token_set:
         return "M3"
+    if "m2" in token_set or "coordinator" in token_set or "dispatcher" in token_set:
+        return "M2"
+    if (
+        "m1" in token_set
+        or "tl" in token_set
+        or "steering" in token_set
+        or "team_lead" in lower
+        or lower.startswith(("goal-r10", "goal_done", "r10-final-goal", "r10-goal"))
+    ):
+        return "M1 TL"
+    if token_set & _NON_ROLE_ARTIFACT_TOKENS:
+        return None
+    if any(re.fullmatch(r"(?:tk|t)\d+[a-z]*", tok) for tok in tokens) and any(
+        re.fullmatch(r"r\d+", tok) for tok in tokens
+    ):
+        return "Writer"
+    return None
+
+
+def _normalize_role(raw_role: str) -> str | None:
+    """Normalize a role string or receipt stem; returns None for non-role artifacts."""
+    return _classify_receipt_role(raw_role)
+
+
+def _extract_receipt_verdict(markdown_text: str) -> str:
+    m_verd = _VERDICT_LINE_RE.search(markdown_text)
+    if not m_verd:
+        return "RECORDED"
+    raw = m_verd.group(1).upper()
+    if raw in ("CLEAN_NO_CHEATING_DETECTED", "DONE", "COMPLETED"):
+        return "PASS"
+    return raw
+
+
+def _extract_receipt_excerpt(markdown_text: str, max_chars: int = 600) -> str:
+    """Extract a concise, high-signal markdown summary/verdict excerpt up to max_chars."""
+    lines: list[str] = []
+    for raw_line in markdown_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped == "---" or stripped.startswith("|---"):
+            continue
+        lines.append(stripped)
+        if sum(len(x) + 1 for x in lines) >= max_chars + 120:
+            break
+    joined = "\n".join(lines).strip()
+    if len(joined) <= max_chars:
+        return joined
+    return joined[: max_chars - 1].rstrip() + "…"
+
+
+def _infer_session_role(activity: ParsedSessionActivity) -> str:
+    lower_prompt = (activity.first_prompt or "").lower()
+    lower_model = (activity.selected_model or "").lower()
+    writes_lower = {w.lower() for w in activity.receipt_writes}
+
+    # Explicit top-level M1 Steering / M2 Dispatcher prompts take precedence over subagent receipt mentions
+    if "anti-cheat" in lower_prompt or "anticheat" in lower_prompt or any(
+        "anticheat" in w or "anti-cheat" in w for w in writes_lower
+    ):
+        return "AntiCheat"
+    if (
+        "m2-skills-verifier" in lower_prompt
+        or "functional & efficacy verification" in lower_prompt
+        or any("verifier" in w for w in writes_lower)
+    ):
+        return "Verifier"
+    if (
+        lower_prompt.startswith("load /team-lead")
+        or lower_prompt.startswith("load skill team-lead")
+        or "steering" in lower_model
+        or "m1 tl" in lower_prompt
+        or "m1 team lead" in lower_prompt
+        or "m1 steering" in lower_prompt
+        or any(w.startswith(("goal-r10", "goal_done")) for w in writes_lower)
+    ):
+        return "M1 TL"
+    if "m2-dispatcher" in lower_prompt or "load skill m2-dispatcher" in lower_prompt or "load /m2-dispatcher" in lower_prompt:
+        return "M2"
+    if (
+        any("reviewer" in w or "review" in w for w in writes_lower)
+        or "reviewing" in lower_model
+        or "load /code-review" in lower_prompt
+        or "load skills code-review" in lower_prompt
+        or "independent v1-v5" in lower_prompt
+        or "reviewer" in lower_prompt
+    ):
+        return "Reviewer"
+    if "designer" in lower_model or "role: designer" in lower_prompt:
+        return "Designer"
+    if (
+        any("writer" in w for w in writes_lower)
+        or "coding" in lower_model
+        or ("you do not dispatch subagents" in lower_prompt and "review" not in lower_prompt)
+    ):
+        return "Writer"
+    if "team-lead" in lower_prompt:
+        return "M1 TL"
+    if "writer" in lower_prompt or "implement" in lower_prompt:
+        return "Writer"
     return "M1 TL"
+
+
+def _resolve_primary_goal_id(
+    *,
+    cwd: str,
+    first_prompt: str,
+    ordered_goals: Sequence[str],
+    known_goals: set[str] | None = None,
+) -> str | None:
+    """Resolve the authoritative Goal ID that owns a Session Activity, if any."""
+    candidates: list[str] = []
+
+    for m_goal in _HANDOFF_GOAL_REF_RE.finditer((cwd or "") + "/"):
+        g = m_goal.group(1)
+        if not g.startswith("_"):
+            candidates.append(g)
+
+    m_wt = _WORKTREE_GOAL_RE.search(cwd or "")
+    if m_wt:
+        wt_name = m_wt.group(1)
+        if known_goals:
+            if wt_name in known_goals:
+                candidates.append(wt_name)
+            else:
+                prefix_matches = sorted(
+                    (g for g in known_goals if wt_name.startswith(g + "-")),
+                    key=len,
+                    reverse=True,
+                )
+                if prefix_matches:
+                    candidates.append(prefix_matches[0])
+        elif wt_name in ordered_goals:
+            candidates.append(wt_name)
+
+    for m_goal in _HANDOFF_GOAL_REF_RE.finditer(first_prompt or ""):
+        g = m_goal.group(1)
+        if not g.startswith("_"):
+            candidates.append(g)
+
+    m_named = re.search(r"\bGoal\s+`?([a-z0-9]+(?:-[a-z0-9]+)+)`?", first_prompt or "")
+    if m_named:
+        g_named = m_named.group(1)
+        if not g_named.startswith("_") and (not known_goals or g_named in known_goals):
+            candidates.append(g_named)
+
+    candidates.extend(ordered_goals)
+
+    for cand in candidates:
+        if cand in ("merge", "goal", "example", "sample"):
+            continue
+        if known_goals and cand not in known_goals:
+            continue
+        return cand
+    for cand in candidates:
+        if cand not in ("merge", "goal", "example"):
+            return cand
+    return None
 
 
 def _file_stats(candidate: str, skills_root: Path | None = None) -> tuple[int | None, int | None]:
@@ -374,6 +573,10 @@ def encode_otlp_traces_protobuf(project_name: str, traces: Sequence[TraceRecord]
 
 
 def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
+    session_id = str(
+        trace.metadata.get("langfuse_session_id")
+        or (f"goal:{trace.entity_id}" if trace.trace_kind == "goal" else trace.entity_id)
+    )
     events: list[dict[str, Any]] = [
         {
             "id": deterministic_trace_id(f"lf-evt:trace:{trace.trace_id}"),
@@ -383,7 +586,7 @@ def build_langfuse_ingestion_events(trace: TraceRecord) -> list[dict[str, Any]]:
                 "id": trace.trace_id,
                 "timestamp": ns_to_iso_utc(trace.start_ns),
                 "name": trace.name,
-                "sessionId": trace.entity_id if trace.trace_kind == "session" else f"goal:{trace.entity_id}",
+                "sessionId": session_id,
                 "input": trace.input_payload,
                 "output": trace.output_payload,
                 "tags": trace.tags,
@@ -560,14 +763,35 @@ def parse_copilot_session_activity(
     wh_maps: dict[str, Any],
     usage_by_session: dict[str, dict[str, list[dict[str, Any]]]],
     skills_root: Path | None = None,
+    known_goals: set[str] | None = None,
 ) -> ParsedSessionActivity | None:
     session_id = events_jsonl.parent.name
     selected_model = "unknown"
     cwd = ""
     first_prompt = ""
+    last_assistant_excerpt = ""
     start_ns: int | None = None
     end_ns: int | None = None
     referenced_goals: set[str] = set()
+    ordered_goals: list[str] = []
+    receipt_writes: set[str] = set()
+    receipt_mentions: set[str] = set()
+    brief_mentions: set[str] = set()
+
+    def _record_goal_ref(goal_name: str) -> None:
+        if goal_name and not goal_name.startswith("_") and goal_name not in ("merge", "goal", "example"):
+            referenced_goals.add(goal_name)
+            if goal_name not in ordered_goals:
+                ordered_goals.append(goal_name)
+
+    def _record_file_mentions(raw_text: str, *, is_write: bool = False) -> None:
+        for m_rcpt in _RECEIPT_FILE_REF_RE.finditer(raw_text):
+            r_name = m_rcpt.group(1)
+            receipt_mentions.add(r_name)
+            if is_write:
+                receipt_writes.add(r_name)
+        for m_br in _BRIEF_FILE_REF_RE.finditer(raw_text):
+            brief_mentions.add(m_br.group(1))
 
     skill_invocations: list[tuple[str, int, str]] = []
     ref_reads: list[tuple[str, int | None, int, str]] = []
@@ -605,21 +829,40 @@ def parse_copilot_session_activity(
                     ctx = data.get("context") or {}
                     cwd = str(ctx.get("cwd") or cwd)
                     for m_goal in _HANDOFF_GOAL_REF_RE.finditer(cwd + "/"):
-                        if not m_goal.group(1).startswith("_"):
-                            referenced_goals.add(m_goal.group(1))
+                        _record_goal_ref(m_goal.group(1))
                 elif ev_type == "user.message":
                     content = str(data.get("content") or "").strip()
                     if content and data.get("source") != "memory":
                         for m_goal in _HANDOFF_GOAL_REF_RE.finditer(content):
-                            if not m_goal.group(1).startswith("_"):
-                                referenced_goals.add(m_goal.group(1))
-                        if not first_prompt:
-                            first_prompt = content[:500]
+                            _record_goal_ref(m_goal.group(1))
+                        _record_file_mentions(content)
                         context_match = _SKILL_CONTEXT_RE.fullmatch(content)
                         if context_match:
                             skill_invocations.append(
                                 (context_match.group(1), ev_ts_ns, f"copilot:skill-context:{ev_id}")
                             )
+                        elif not first_prompt:
+                            # Strip leading <skill-context> wrapper if embedded in user turn
+                            cleaned_prompt = re.sub(
+                                r"<skill-context\b[^>]*>[\s\S]*?</skill-context>",
+                                "",
+                                content,
+                            )
+                            cleaned_prompt = re.sub(
+                                r"<system_reminder>[\s\S]*?</system_reminder>",
+                                "",
+                                cleaned_prompt,
+                            )
+                            cleaned_prompt = re.sub(
+                                r"<current_datetime>[\s\S]*?</current_datetime>",
+                                "",
+                                cleaned_prompt,
+                            ).strip()
+                            first_prompt = (cleaned_prompt or content)[:500]
+                elif ev_type == "assistant.message":
+                    a_content = str(data.get("content") or "").strip()
+                    if a_content:
+                        last_assistant_excerpt = a_content[:400]
                 elif ev_type == "skill.invoked":
                     sk_name = str(data.get("name") or "").strip()
                     sk_path = str(data.get("path") or "").strip()
@@ -641,15 +884,24 @@ def parse_copilot_session_activity(
                             timestamped_tool_starts.add(tc_id)
                     if t_name == "skill" and args.get("skill"):
                         skill_invocations.append((str(args["skill"]), ev_ts_ns, f"copilot:tool:{tc_id or ev_id}"))
+                    elif t_name in ("create", "edit", "apply_patch"):
+                        arg_path = str(args.get("path") or args.get("patch") or "")
+                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(arg_path):
+                            _record_goal_ref(m_goal.group(1))
+                        _record_file_mentions(arg_path, is_write=True)
                     elif t_name == "bash" and args.get("command"):
-                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(str(args["command"])):
-                            if not m_goal.group(1).startswith("_"):
-                                referenced_goals.add(m_goal.group(1))
+                        cmd_text = str(args["command"])
+                        for m_goal in _HANDOFF_GOAL_REF_RE.finditer(cmd_text):
+                            _record_goal_ref(m_goal.group(1))
+                        is_bash_write = any(
+                            op in cmd_text for op in (">", "tee ", "write_text", "cp ", "mv ", "cat <<")
+                        )
+                        _record_file_mentions(cmd_text, is_write=is_bash_write)
                     elif t_name == "view" and args.get("path"):
                         vp = str(args["path"])
                         for m_goal in _HANDOFF_GOAL_REF_RE.finditer(vp):
-                            if not m_goal.group(1).startswith("_"):
-                                referenced_goals.add(m_goal.group(1))
+                            _record_goal_ref(m_goal.group(1))
+                        _record_file_mentions(vp)
                         if (vp.startswith("skills/") or "/skills/" in vp) and vp.endswith((".md", ".json", ".yaml", ".yml")):
                             b_len, _ = _file_stats(vp, skills_root=skills_root)
                             ref_reads.append((vp, b_len, ev_ts_ns, f"copilot:view:{tc_id or ev_id}"))
@@ -802,6 +1054,15 @@ def parse_copilot_session_activity(
     e_ns = end_ns or fallback_ns
     s_ns, e_ns = _clamp_span_window(s_ns, e_ns, min_duration_ns=1_000_000)
 
+    primary_goal_id = _resolve_primary_goal_id(
+        cwd=cwd,
+        first_prompt=first_prompt,
+        ordered_goals=ordered_goals,
+        known_goals=known_goals,
+    )
+    if primary_goal_id:
+        referenced_goals.add(primary_goal_id)
+
     return ParsedSessionActivity(
         session_id=session_id,
         source_path=events_jsonl.name,
@@ -817,6 +1078,11 @@ def parse_copilot_session_activity(
         llm_calls=llm_calls,
         measured_durations_ms=measured_durations_ms,
         tool_transport_success=tool_transport_success,
+        primary_goal_id=primary_goal_id,
+        receipt_writes=receipt_writes,
+        receipt_mentions=receipt_mentions,
+        brief_mentions=brief_mentions,
+        last_assistant_excerpt=last_assistant_excerpt,
     )
 
 
@@ -949,30 +1215,70 @@ def build_goal_trace(
     duration_ms = round((end_ns - start_ns) / 1_000_000, 2)
     spans: list[SpanRecord] = []
 
+    # Separate real role receipts vs non-role markdown artifacts (e.g., matrices/inventories)
+    non_role_artifacts: list[dict[str, Any]] = []
+    goal_r10_excerpt = ""
+    role_receipt_records: list[dict[str, Any]] = []
+    for rf, r_text in receipt_texts:
+        r_role = _classify_receipt_role(rf.stem)
+        excerpt = _extract_receipt_excerpt(r_text, max_chars=600)
+        verdict = _extract_receipt_verdict(r_text)
+        if r_role is None:
+            non_role_artifacts.append(
+                {
+                    "filename": rf.name,
+                    "verdict": verdict,
+                    "excerpt": excerpt[:320],
+                }
+            )
+            continue
+        if r_role == "M1 TL" and rf.stem.lower().startswith(("goal-r10", "goal_done", "r10-final-goal", "r10-goal")):
+            goal_r10_excerpt = excerpt
+            continue
+        m_rnd = re.search(r"r(\d+)", rf.stem, re.I)
+        r_round = f"r{m_rnd.group(1)}" if m_rnd else "r1"
+        rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
+        role_receipt_records.append(
+            {
+                "path": rf,
+                "filename": rf.name,
+                "stem": rf.stem,
+                "role": r_role,
+                "round": r_round,
+                "verdict": verdict,
+                "excerpt": excerpt,
+                "mtime_ns": rf_ns,
+            }
+        )
+
     # 1. Stage / Role Spans from real warehouse runs, receipts, or ledger events
     m1_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M1-TL")
     tl_model = str(wh_goal.get("tl_model") or (linked_sessions[0].selected_model if linked_sessions else "unknown"))
-    spans.append(
-        SpanRecord(
-            span_id=m1_span_id,
-            parent_span_id=root_span_id,
-            category="stage_role",
-            name=f"Stage / Role: M1 TL ({wh_goal.get('tl_agent') or f'{goal_id}-tl'})",
-            start_ns=start_ns,
-            end_ns=end_ns,
-            status_ok=None if status == "in_progress" else (status != "blocked"),
-            attributes={
-                "stage.role": "M1 TL",
-                "stage.chain": "M2 -> M1 TL",
-                "stage.round": "r1",
-                "stage.model": tl_model,
-                "stage.verdict": status.upper(),
-                "evidence.source": "ledger.md",
-            },
-            input_payload={"tasks": [t["task_id"] for t in parsed["tasks"]]},
-            output_payload={"status": status},
-        )
+    m1_output: dict[str, Any] = {"status": status}
+    if goal_r10_excerpt:
+        m1_output["receipt_excerpt"] = goal_r10_excerpt
+    if non_role_artifacts:
+        m1_output["artifacts"] = non_role_artifacts
+    m1_stage_span = SpanRecord(
+        span_id=m1_span_id,
+        parent_span_id=root_span_id,
+        category="stage_role",
+        name=f"Stage / Role: M1 TL ({wh_goal.get('tl_agent') or f'{goal_id}-tl'})",
+        start_ns=start_ns,
+        end_ns=end_ns,
+        status_ok=None if status == "in_progress" else (status != "blocked"),
+        attributes={
+            "stage.role": "M1 TL",
+            "stage.chain": "M2 -> M1 TL",
+            "stage.round": "r1",
+            "stage.model": tl_model,
+            "stage.verdict": status.upper(),
+            "evidence.source": "ledger.md",
+        },
+        input_payload={"tasks": [t["task_id"] for t in parsed["tasks"]]},
+        output_payload=m1_output,
     )
+    spans.append(m1_stage_span)
 
     if wh_goal.get("coordinator_bot") or "coordinator" in parsed["owner_line"].lower() or "协调者" in parsed["owner_line"]:
         m2_span_id = deterministic_span_id(f"goal:{goal_id}:stage:M2")
@@ -998,80 +1304,154 @@ def build_goal_trace(
         )
 
     primary_worker_span_id = m1_span_id
+    role_stage_spans: list[tuple[SpanRecord, dict[str, Any]]] = []
+    receipt_excerpt_by_name = {
+        rec["filename"]: rec["excerpt"] for rec in role_receipt_records
+    }
     if wh_runs:
         for idx, run in enumerate(wh_runs):
-            r_role = _normalize_role(str(run.get("role_name") or "Writer"))
+            r_uid = str(run.get("receipt_uid") or "")
+            uid_stem = Path(r_uid).stem if r_uid else ""
+            r_role = _classify_receipt_role(str(run.get("role_name") or "")) or _classify_receipt_role(uid_stem)
+            if r_role is None:
+                continue
             r_round = f"r{run.get('round_no') or 1}"
             r_model = str(run.get("model_id") or "unknown")
             r_verdict = str(run.get("v5_verdict") or run.get("status") or "UNKNOWN")
             r_task = str(run.get("task_id") or "task")
-            r_uid = str(run.get("receipt_uid") or f"{idx}:{r_task}:{r_role}:{r_round}")
-            w_span_id = deterministic_span_id(f"goal:{goal_id}:wh_run:{r_uid}")
+            r_uid_key = r_uid or f"{idx}:{r_task}:{r_role}:{r_round}"
+            rcpt_filename = Path(r_uid).name if r_uid.endswith(".md") else ""
+            rcpt_excerpt = receipt_excerpt_by_name.get(rcpt_filename, "")
+            w_span_id = deterministic_span_id(f"goal:{goal_id}:wh_run:{r_uid_key}")
             w_start = parse_iso_to_ns(run.get("started_at") or run.get("completed_at"), end_ns)
             run_measured = bool(run.get("started_at") and run.get("completed_at"))
             w_end = parse_iso_to_ns(run["completed_at"], w_start) if run_measured else w_start + 1_000_000
             w_start, w_end = _clamp_span_window(w_start, w_end)
-            run_timing = ({"timing.measured": True, "timing.provenance": "measured"}
-                          if run_measured else _point_event_timing())
-            if idx == 0:
+            run_timing = (
+                {"timing.measured": True, "timing.provenance": "measured"}
+                if run_measured
+                else _point_event_timing()
+            )
+            if primary_worker_span_id == m1_span_id:
                 primary_worker_span_id = w_span_id
             v_up = r_verdict.upper()
             v_ok: bool | None = False if "FAIL" in v_up else (True if v_up in ("PASS", "DONE", "COMPLETED") else None)
-            spans.append(
-                SpanRecord(
-                    span_id=w_span_id,
-                    parent_span_id=m1_span_id,
-                    category="stage_role",
-                    name=f"Stage / Role: {r_role} ({r_task} {r_round})",
-                    start_ns=w_start,
-                    end_ns=w_end,
-                    status_ok=v_ok,
-                    attributes={
-                        "stage.role": r_role,
-                        "stage.task_id": r_task,
-                        "stage.round": r_round,
-                        "stage.model": r_model[:80],
-                        "stage.verdict": r_verdict[:40],
-                        "evidence.source": f"warehouse.fact_gtt_task_run:{r_uid}",
-                        **run_timing,
+            out_dict: dict[str, Any] = {"verdict": r_verdict[:80], **run_timing}
+            if rcpt_excerpt:
+                out_dict["receipt_excerpt"] = rcpt_excerpt
+            sp_rec = SpanRecord(
+                span_id=w_span_id,
+                parent_span_id=m1_span_id,
+                category="stage_role",
+                name=f"Stage / Role: {r_role} ({r_task} {r_round})",
+                start_ns=w_start,
+                end_ns=w_end,
+                status_ok=v_ok,
+                attributes={
+                    "stage.role": r_role,
+                    "stage.task_id": r_task,
+                    "stage.round": r_round,
+                    "stage.model": r_model[:80],
+                    "stage.verdict": r_verdict[:40],
+                    "evidence.source": f"warehouse.fact_gtt_task_run:{r_uid_key}",
+                    **run_timing,
+                },
+                input_payload={"task_id": r_task, "role": r_role, "round": r_round},
+                output_payload=out_dict,
+            )
+            spans.append(sp_rec)
+            role_stage_spans.append(
+                (
+                    sp_rec,
+                    {
+                        "role": r_role,
+                        "filename": rcpt_filename,
+                        "stem": uid_stem or f"{r_task} {r_round}",
+                        "mtime_ns": w_end,
+                        "matched": False,
                     },
-                    input_payload={"task_id": r_task, "role": r_role, "round": r_round},
-                    output_payload={"verdict": r_verdict[:80], **run_timing},
                 )
             )
     else:
-        for idx, (rf, r_text) in enumerate(receipt_texts):
-            r_role = _normalize_role(rf.stem)
-            m_rnd = re.search(r"r(\d+)", rf.stem, re.I)
-            r_round = f"r{m_rnd.group(1)}" if m_rnd else "r1"
-            m_verd = _VERDICT_LINE_RE.search(r_text)
-            r_verdict = m_verd.group(1).upper() if m_verd else "RECORDED"
+        for rec in role_receipt_records:
+            r_role = rec["role"]
+            r_round = rec["round"]
+            r_verdict = rec["verdict"]
             v_ok = False if r_verdict == "FAIL" else (True if r_verdict == "PASS" else None)
-            rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
+            rf_ns = rec["mtime_ns"]
             w_start, w_end = rf_ns, rf_ns + 1_000_000
-            w_span_id = deterministic_span_id(f"goal:{goal_id}:receipt_role:{rf.name}")
-            if idx == 0:
+            w_span_id = deterministic_span_id(f"goal:{goal_id}:receipt_role:{rec['filename']}")
+            if primary_worker_span_id == m1_span_id:
                 primary_worker_span_id = w_span_id
-            spans.append(
-                SpanRecord(
-                    span_id=w_span_id,
-                    parent_span_id=m1_span_id,
-                    category="stage_role",
-                    name=f"Stage / Role: {r_role} ({rf.stem})",
-                    start_ns=w_start,
-                    end_ns=w_end,
-                    status_ok=v_ok,
-                    attributes={
-                        "stage.role": r_role,
-                        "stage.round": r_round,
-                        "stage.verdict": r_verdict,
-                        "evidence.source": f"receipts/{rf.name}:mtime",
-                        **_point_event_timing(),
+            out_dict = {"verdict": r_verdict, **_point_event_timing()}
+            if rec["excerpt"]:
+                out_dict["receipt_excerpt"] = rec["excerpt"]
+            sp_rec = SpanRecord(
+                span_id=w_span_id,
+                parent_span_id=m1_span_id,
+                category="stage_role",
+                name=f"Stage / Role: {r_role} ({rec['stem']})",
+                start_ns=w_start,
+                end_ns=w_end,
+                status_ok=v_ok,
+                attributes={
+                    "stage.role": r_role,
+                    "stage.round": r_round,
+                    "stage.verdict": r_verdict,
+                    "stage.receipt": rec["filename"],
+                    "evidence.source": f"receipts/{rec['filename']}:mtime",
+                    **_point_event_timing(),
+                },
+                input_payload={"receipt": rec["filename"]},
+                output_payload=out_dict,
+            )
+            spans.append(sp_rec)
+            role_stage_spans.append(
+                (
+                    sp_rec,
+                    {
+                        "role": r_role,
+                        "filename": rec["filename"],
+                        "stem": rec["stem"],
+                        "mtime_ns": rf_ns,
+                        "matched": False,
                     },
-                    input_payload={"receipt": rf.name},
-                    output_payload={"verdict": r_verdict, **_point_event_timing()},
                 )
             )
+
+    def _match_session_to_stage(sess: ParsedSessionActivity) -> SpanRecord | None:
+        s_role = _infer_session_role(sess)
+        # 1. M1 Steering TL session hangs directly under the Goal's M1 TL stage span
+        if s_role == "M1 TL":
+            return m1_stage_span
+        # 2. Exact receipt write match where receipt role aligns with session role
+        for sp_cand, meta in role_stage_spans:
+            if meta["matched"] or not meta["filename"]:
+                continue
+            if meta["filename"] in sess.receipt_writes and meta["role"] == s_role:
+                meta["matched"] = True
+                return sp_cand
+        # 3. Receipt filename mentioned in session prompt/events with matching role
+        for sp_cand, meta in role_stage_spans:
+            if meta["matched"] or not meta["filename"]:
+                continue
+            if meta["filename"] in sess.receipt_mentions and meta["role"] == s_role:
+                meta["matched"] = True
+                return sp_cand
+        # 4. Role + closest timestamp window match among unmatched stage_role spans
+        same_role_candidates = [
+            (sp_cand, meta)
+            for sp_cand, meta in role_stage_spans
+            if not meta["matched"] and meta["role"] == s_role
+        ]
+        if same_role_candidates:
+            best_sp, best_meta = min(
+                same_role_candidates,
+                key=lambda item: abs(int(item[1]["mtime_ns"]) - sess.end_ns),
+            )
+            best_meta["matched"] = True
+            return best_sp
+        return None
 
     # 2–5. Evidence-backed Child Spans from linked real sessions AND explicit receipt evidence
     seen_skills: set[str] = set()
@@ -1085,26 +1465,57 @@ def build_goal_trace(
 
     for sess in linked_sessions:
         session_span_start = len(spans)
-        sess_stage_id = deterministic_span_id(f"goal:{goal_id}:session_stage:{sess.session_id}")
-        spans.append(
-            SpanRecord(
-                span_id=sess_stage_id,
-                parent_span_id=m1_span_id,
-                category="stage_role",
-                name=f"Stage / Role: Session Worker ({sess.session_id[:8]})",
-                start_ns=sess.start_ns,
-                end_ns=sess.end_ns,
-                status_ok=True,
-                attributes={
-                    "stage.role": "SessionWorker",
-                    "stage.model": sess.selected_model,
-                    "session.id": sess.session_id,
-                    "evidence.source": f"session-state/{sess.session_id}/events.jsonl",
-                },
-                input_payload={"session_id": sess.session_id, "prompt": sess.first_prompt[:200]},
-                output_payload={"llm_generations": len(sess.llm_calls)},
+        matched_stage = _match_session_to_stage(sess)
+        s_role = _infer_session_role(sess)
+        if matched_stage is not None:
+            sess_stage_id = matched_stage.span_id
+            if matched_stage is not m1_stage_span:
+                matched_stage.start_ns, matched_stage.end_ns = _clamp_span_window(sess.start_ns, sess.end_ns)
+                base_label = matched_stage.attributes.get("stage.receipt")
+                stem_label = Path(str(base_label)).stem if base_label else matched_stage.name.split("(", 1)[-1].rstrip(")")
+                matched_stage.name = (
+                    f"Stage / Role: {matched_stage.attributes.get('stage.role', s_role)} "
+                    f"({stem_label} · {sess.session_id[:8]})"
+                )
+                matched_stage.attributes["session.id"] = sess.session_id
+                matched_stage.attributes["stage.model"] = sess.selected_model
+                matched_stage.attributes["timing.measured"] = True
+                matched_stage.attributes["timing.provenance"] = "measured"
+                if isinstance(matched_stage.input_payload, dict):
+                    matched_stage.input_payload["session_id"] = sess.session_id
+                    matched_stage.input_payload["prompt"] = sess.first_prompt[:200]
+                if isinstance(matched_stage.output_payload, dict):
+                    matched_stage.output_payload["llm_generations"] = len(sess.llm_calls)
+                    matched_stage.output_payload["timing.measured"] = True
+                    matched_stage.output_payload["timing.provenance"] = "measured"
+            else:
+                matched_stage.attributes["session.id"] = sess.session_id
+                if isinstance(matched_stage.output_payload, dict):
+                    matched_stage.output_payload["tl_session_id"] = sess.session_id
+                    matched_stage.output_payload["tl_llm_generations"] = len(sess.llm_calls)
+        else:
+            sess_stage_id = deterministic_span_id(f"goal:{goal_id}:session_stage:{sess.session_id}")
+            spans.append(
+                SpanRecord(
+                    span_id=sess_stage_id,
+                    parent_span_id=m1_span_id,
+                    category="stage_role",
+                    name=f"Stage / Role: {s_role} ({sess.session_id[:8]})",
+                    start_ns=sess.start_ns,
+                    end_ns=sess.end_ns,
+                    status_ok=True,
+                    attributes={
+                        "stage.role": s_role,
+                        "stage.model": sess.selected_model,
+                        "session.id": sess.session_id,
+                        "timing.measured": True,
+                        "timing.provenance": "measured",
+                        "evidence.source": f"session-state/{sess.session_id}/events.jsonl",
+                    },
+                    input_payload={"session_id": sess.session_id, "role": s_role, "prompt": sess.first_prompt[:200]},
+                    output_payload={"llm_generations": len(sess.llm_calls), "timing.measured": True, "timing.provenance": "measured"},
+                )
             )
-        )
 
         for sk_name, sk_ts, src_id in sess.skill_invocations:
             if sk_name in seen_skills:
@@ -1363,6 +1774,7 @@ def build_goal_trace(
 def build_session_trace_from_activity(
     activity: ParsedSessionActivity,
     skills_root: Path | None = None,
+    handoff_root: Path | None = None,
 ) -> TraceRecord:
     """Build a complete Session Prompt trace exporting ALL recorded events without truncation."""
     session_id = activity.session_id
@@ -1373,14 +1785,38 @@ def build_session_trace_from_activity(
     stage_span_id = deterministic_span_id(f"session:{session_id}:stage:agent")
 
     prompt_summary = activity.first_prompt[:320] if activity.first_prompt else f"Session {session_id}"
-    inferred_role = "M1 TL"
-    lower_prompt = prompt_summary.lower()
-    if "reviewer" in lower_prompt or "code-review" in lower_prompt:
-        inferred_role = "Reviewer"
-    elif "writer" in lower_prompt or "implement" in lower_prompt:
-        inferred_role = "Writer"
-    elif "m2-dispatcher" in lower_prompt:
-        inferred_role = "M2"
+    inferred_role = _infer_session_role(activity)
+    primary_goal_id = activity.primary_goal_id or (
+        sorted(activity.referenced_goals)[0] if len(activity.referenced_goals) == 1 else None
+    )
+    langfuse_session_id = f"goal:{primary_goal_id}" if primary_goal_id else session_id
+
+    receipt_targets = sorted(activity.receipt_writes or activity.receipt_mentions)
+    brief_targets = sorted(activity.brief_mentions)
+    receipt_excerpt = ""
+    receipt_verdict = "COMPLETED"
+    if primary_goal_id and handoff_root is not None:
+        goal_rcpts_dir = handoff_root / primary_goal_id / "receipts"
+        candidate_rcpt_names = sorted(activity.receipt_writes) + sorted(activity.receipt_mentions)
+        if goal_rcpts_dir.is_dir():
+            for rf_cand in sorted(goal_rcpts_dir.glob("*.md")):
+                if _classify_receipt_role(rf_cand.stem) == inferred_role and rf_cand.name not in candidate_rcpt_names:
+                    candidate_rcpt_names.append(rf_cand.name)
+        for rcpt_name in candidate_rcpt_names:
+            cand_role = _classify_receipt_role(Path(rcpt_name).stem)
+            if cand_role != inferred_role:
+                continue
+            rcpt_path = goal_rcpts_dir / rcpt_name
+            if rcpt_path.is_file():
+                try:
+                    r_txt = rcpt_path.read_text(encoding="utf-8", errors="replace")
+                    receipt_excerpt = _extract_receipt_excerpt(r_txt, max_chars=600)
+                    v_cand = _extract_receipt_verdict(r_txt)
+                    if v_cand != "RECORDED":
+                        receipt_verdict = v_cand
+                    break
+                except OSError:
+                    continue
 
     spans: list[SpanRecord] = [
         SpanRecord(
@@ -1390,16 +1826,16 @@ def build_session_trace_from_activity(
             name=f"Stage / Role: {inferred_role} ({activity.selected_model})",
             start_ns=s_ns,
             end_ns=e_ns,
-            status_ok=True,
+            status_ok=False if receipt_verdict == "FAIL" else True,
             attributes={
                 "stage.role": inferred_role,
                 "stage.round": "r1",
                 "stage.model": activity.selected_model,
-                "stage.verdict": "COMPLETED",
+                "stage.verdict": receipt_verdict,
                 "evidence.source": activity.source_path,
             },
-            input_payload={"prompt": prompt_summary[:200]},
-            output_payload={"llm_calls": len(activity.llm_calls)},
+            input_payload={"prompt": prompt_summary[:200], "role": inferred_role},
+            output_payload={"llm_calls": len(activity.llm_calls), "verdict": receipt_verdict},
         )
     ]
 
@@ -1531,68 +1967,106 @@ def build_session_trace_from_activity(
     present_categories = sorted({sp.category for sp in spans})
     missing_categories = [c for c in SPAN_CATEGORIES if c not in present_categories]
 
-    root_input = {
+    script_summaries = [
+        {
+            "script": Path(sp_p).name,
+            "exit_code": ec,
+            "duration_ms": dur_ms if src_id in activity.measured_durations_ms else None,
+        }
+        for sp_p, _args, _ts, dur_ms, ec, src_id in activity.script_execs[:8]
+    ]
+    summary_excerpt = receipt_excerpt or activity.last_assistant_excerpt
+
+    root_input: dict[str, Any] = {
         "session_id": session_id,
+        "role": inferred_role,
         "cwd": activity.cwd or "unknown",
         "prompt": prompt_summary,
         "selected_model": activity.selected_model,
     }
-    root_output = {
+    if primary_goal_id:
+        root_input["goal_id"] = primary_goal_id
+    if brief_targets:
+        root_input["brief_targets"] = brief_targets[:6]
+    if receipt_targets:
+        root_input["receipt_targets"] = receipt_targets[:6]
+
+    root_output: dict[str, Any] = {
         "status": "completed",
+        "role": inferred_role,
+        "verdict": receipt_verdict,
         "duration_ms": duration_ms,
         "llm_generations": len(activity.llm_calls),
+        "script_executions": len(activity.script_execs),
         "total_input_tokens": exported_in,
         "total_output_tokens": exported_out,
         "total_cache_read": exported_cache,
         "present_categories": present_categories,
         "missing_categories": missing_categories,
     }
+    if summary_excerpt:
+        root_output["receipt_excerpt"] = summary_excerpt
+    if script_summaries:
+        root_output["scripts"] = script_summaries
+
+    root_attrs: dict[str, str | int | float | bool] = {
+        "session.id": session_id,
+        "session.role": inferred_role,
+        "session.cwd": activity.cwd or "unknown",
+        "session.model": activity.selected_model,
+        "session.duration_ms": duration_ms,
+        "session.complete_5_categories": len(missing_categories) == 0,
+    }
+    if primary_goal_id:
+        root_attrs["goal.id"] = primary_goal_id
 
     root_span = SpanRecord(
         span_id=root_span_id,
         parent_span_id=None,
         category="root",
-        name=f"User Prompt Session: {session_id[:8]}",
+        name=f"User Prompt Session: {session_id[:8]} ({inferred_role})",
         start_ns=s_ns,
         end_ns=e_ns,
-        status_ok=True,
-        attributes={
-            "session.id": session_id,
-            "session.cwd": activity.cwd or "unknown",
-            "session.model": activity.selected_model,
-            "session.duration_ms": duration_ms,
-            "session.complete_5_categories": len(missing_categories) == 0,
-        },
+        status_ok=False if receipt_verdict == "FAIL" else True,
+        attributes=root_attrs,
         input_payload=root_input,
         output_payload=root_output,
     )
     spans.insert(0, root_span)
 
     tags = ["backfill", "session", f"role:{inferred_role}"]
+    if primary_goal_id:
+        tags.append(f"goal:{primary_goal_id}")
     if not missing_categories:
         tags.append("complete-5-cat")
+
+    meta_dict: dict[str, Any] = {
+        "session_id": session_id,
+        "langfuse_session_id": langfuse_session_id,
+        "role": inferred_role,
+        "cwd": activity.cwd,
+        "model": activity.selected_model,
+        "duration_ms": duration_ms,
+        "present_categories": present_categories,
+        "missing_categories": missing_categories,
+        "span_count": len(spans),
+    }
+    if primary_goal_id:
+        meta_dict["goal_id"] = primary_goal_id
 
     return TraceRecord(
         trace_id=trace_id,
         root_span_id=root_span_id,
         trace_kind="session",
         entity_id=session_id,
-        name=f"Session Prompt: {session_id[:8]}",
+        name=f"Session Prompt: {session_id[:8]} ({inferred_role})",
         start_ns=s_ns,
         end_ns=e_ns,
         status="completed",
         input_payload=root_input,
         output_payload=root_output,
         tags=tags,
-        metadata={
-            "session_id": session_id,
-            "cwd": activity.cwd,
-            "model": activity.selected_model,
-            "duration_ms": duration_ms,
-            "present_categories": present_categories,
-            "missing_categories": missing_categories,
-            "span_count": len(spans),
-        },
+        metadata=meta_dict,
         spans=spans,
     )
 
@@ -1602,16 +2076,23 @@ def build_session_trace_from_copilot(
     wh_maps: dict[str, Any],
     usage_by_session: dict[str, dict[str, list[dict[str, Any]]]],
     skills_root: Path | None = None,
+    handoff_root: Path | None = None,
 ) -> TraceRecord | None:
+    known_goals = (
+        {p.parent.name for p in handoff_root.glob("*/ledger.md") if not p.parent.name.startswith("_")}
+        if handoff_root is not None and handoff_root.is_dir()
+        else None
+    )
     activity = parse_copilot_session_activity(
         events_jsonl,
         wh_maps,
         usage_by_session,
         skills_root=skills_root,
+        known_goals=known_goals,
     )
     if activity is None:
         return None
-    return build_session_trace_from_activity(activity, skills_root=skills_root)
+    return build_session_trace_from_activity(activity, skills_root=skills_root, handoff_root=handoff_root)
 
 
 def _activity_category_count(act: ParsedSessionActivity) -> int:
@@ -1641,6 +2122,13 @@ def collect_historical_traces(
     wh_maps = _load_warehouse_maps(warehouse_db)
     usage_by_session = _load_usage_jsonl(usage_jsonl)
 
+    all_goal_dirs: list[Path] = (
+        [p.parent for p in handoff_root.glob("*/ledger.md") if not p.parent.name.startswith("_")]
+        if handoff_root.is_dir()
+        else []
+    )
+    known_goals: set[str] | None = {p.name for p in all_goal_dirs} if all_goal_dirs else None
+
     # Index Copilot sessions for both Session export AND real Goal-to-Session attribution
     parsed_activities: list[ParsedSessionActivity] = []
     goal_to_activities: dict[str, list[ParsedSessionActivity]] = {}
@@ -1667,23 +2155,29 @@ def collect_historical_traces(
                 wh_maps,
                 usage_by_session,
                 skills_root=skills_root,
+                known_goals=known_goals,
             )
             if act is None:
                 continue
             parsed_activities.append(act)
-            for g_name in act.referenced_goals:
-                goal_to_activities.setdefault(g_name, []).append(act)
+            if act.primary_goal_id:
+                goal_to_activities.setdefault(act.primary_goal_id, []).append(act)
+            else:
+                for g_name in act.referenced_goals:
+                    goal_to_activities.setdefault(g_name, []).append(act)
 
     # 1. Build Goal Traces (prioritizing complete 5-category evidence + named spec Goals)
     goal_traces: list[TraceRecord] = []
-    if handoff_root.is_dir() and limit_goals > 0:
-        all_goal_dirs = [
-            p.parent for p in handoff_root.glob("*/ledger.md") if not p.parent.name.startswith("_")
-        ]
+    selected_goal_linked_acts: list[ParsedSessionActivity] = []
+    if all_goal_dirs and limit_goals > 0:
         priority_set = set(PRIORITY_GOALS)
 
         def _goal_rank(gdir: Path) -> tuple[int, int, float]:
-            g_acts = [a for a in goal_to_activities.get(gdir.name, []) if len(a.referenced_goals) <= 8]
+            g_acts = [
+                a
+                for a in goal_to_activities.get(gdir.name, [])
+                if a.primary_goal_id == gdir.name or len(a.referenced_goals) <= 8
+            ]
             has_all_5 = (
                 any(a.skill_invocations for a in g_acts)
                 and any(a.ref_reads for a in g_acts)
@@ -1698,21 +2192,37 @@ def collect_historical_traces(
             if len(goal_traces) >= limit_goals:
                 break
             linked = sorted(
-                [a for a in goal_to_activities.get(gdir.name, []) if len(a.referenced_goals) <= 8],
-                key=lambda a: (len(a.referenced_goals) == 1, _activity_category_count(a), a.end_ns),
+                [
+                    a
+                    for a in goal_to_activities.get(gdir.name, [])
+                    if a.primary_goal_id == gdir.name or len(a.referenced_goals) <= 8
+                ],
+                key=lambda a: (
+                    a.primary_goal_id == gdir.name,
+                    len(a.referenced_goals) == 1,
+                    _activity_category_count(a),
+                    a.end_ns,
+                ),
                 reverse=True,
             )[:max_sessions_per_goal]
             tr = build_goal_trace(gdir, wh_maps, linked_sessions=linked, skills_root=skills_root)
             if tr is not None:
                 goal_traces.append(tr)
+                selected_goal_linked_acts.extend(linked)
 
-    # 2. Build Session Traces (prioritizing complete 5-category real sessions, deduplicated)
+    # 2. Build Session Traces (prioritizing Goal-linked multi-trace relays + complete 5-category sessions)
     session_traces: list[TraceRecord] = []
     seen_sids: set[str] = set()
     if limit_sessions > 0:
+        linked_priority_sids = {a.session_id for a in selected_goal_linked_acts}
         ordered_acts = sorted(
             parsed_activities,
-            key=lambda a: (_activity_category_count(a) == 5, _activity_category_count(a), a.end_ns),
+            key=lambda a: (
+                a.session_id in linked_priority_sids,
+                _activity_category_count(a) == 5,
+                _activity_category_count(a),
+                a.end_ns,
+            ),
             reverse=True,
         )
         for act in ordered_acts:
@@ -1721,7 +2231,13 @@ def collect_historical_traces(
             if act.session_id in seen_sids:
                 continue
             seen_sids.add(act.session_id)
-            session_traces.append(build_session_trace_from_activity(act, skills_root=skills_root))
+            session_traces.append(
+                build_session_trace_from_activity(
+                    act,
+                    skills_root=skills_root,
+                    handoff_root=handoff_root if handoff_root.is_dir() else None,
+                )
+            )
 
     # 3. Fallback session reconstruction from usage.jsonl / warehouse.db (strictly deduplicated!)
     if len(session_traces) < limit_sessions:
@@ -1871,6 +2387,46 @@ def load_obs_config(config_path: Path = DEFAULT_OBS_CONFIG) -> dict[str, Any]:
     }
 
 
+def _clear_local_phoenix_project(otlp_url: str, project_name: str, timeout: int = 15) -> bool:
+    """Clear stale spans in local Phoenix project before idempotent re-backfill via official GraphQL mutation."""
+    if not any(host in otlp_url for host in ("127.0.0.1:6006", "localhost:6006")):
+        return False
+    base_url = otlp_url.split("/v1/traces", 1)[0].rstrip("/")
+    gql_url = f"{base_url}/graphql"
+    try:
+        q_proj = {"query": "{ projects { edges { node { id name } } } }"}
+        req_p = Request(
+            gql_url,
+            data=json.dumps(q_proj).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req_p, timeout=timeout) as resp_p:
+            proj_data = json.loads(resp_p.read().decode("utf-8", errors="replace"))
+        edges = ((proj_data.get("data") or {}).get("projects") or {}).get("edges") or []
+        proj_id = next(
+            (e["node"]["id"] for e in edges if (e.get("node") or {}).get("name") == project_name),
+            None,
+        )
+        if not proj_id:
+            return False
+        mut = {
+            "query": "mutation ClearProj($id: ID!) { clearProject(input: { id: $id }) { __typename } }",
+            "variables": {"id": proj_id},
+        }
+        req_m = Request(
+            gql_url,
+            data=json.dumps(mut).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req_m, timeout=timeout) as resp_m:
+            mut_res = json.loads(resp_m.read().decode("utf-8", errors="replace"))
+        return not bool(mut_res.get("errors"))
+    except (HTTPError, URLError, OSError, ValueError, KeyError):
+        return False
+
+
 def export_to_phoenix(
     traces: list[TraceRecord],
     *,
@@ -1878,7 +2434,9 @@ def export_to_phoenix(
     project_name: str,
     batch_size: int = 20,
     timeout: int = 25,
+    replace_local_project: bool = True,
 ) -> dict[str, Any]:
+    cleared = _clear_local_phoenix_project(otlp_url, project_name, timeout=timeout) if replace_local_project else False
     sent_traces = 0
     sent_spans = 0
     batches = 0
@@ -1902,10 +2460,86 @@ def export_to_phoenix(
         "ok": True,
         "endpoint": otlp_url,
         "project": project_name,
+        "project_cleared": cleared,
         "batches": batches,
         "traces_exported": sent_traces,
         "spans_exported": sent_spans,
     }
+
+
+def _prune_langfuse_orphan_sessions(
+    *,
+    db_container: str = "agent-obs-langfuse-db",
+    db_user: str = "langfuse",
+    db_name: str = "langfuse",
+) -> int:
+    """Remove 0-trace orphan rows in local self-hosted Langfuse `trace_sessions`."""
+    sql = (
+        "WITH deleted AS ("
+        "DELETE FROM trace_sessions s "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM traces t WHERE t.session_id = s.id AND t.project_id = s.project_id"
+        ") RETURNING 1"
+        ") SELECT COUNT(*) FROM deleted;"
+    )
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", db_container, "psql", "-U", db_user, "-d", db_name, "-t", "-A", "-c", sql],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode == 0:
+            out = (proc.stdout or "").strip().splitlines()
+            if out and out[-1].strip().isdigit():
+                return int(out[-1].strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return 0
+
+
+def _delete_stale_langfuse_observations(
+    traces: Sequence[TraceRecord],
+    *,
+    db_container: str = "agent-obs-langfuse-db",
+    db_user: str = "langfuse",
+    db_name: str = "langfuse",
+) -> int:
+    """Prune stale child observations on re-exported traces when local Langfuse DB is present."""
+    if not traces:
+        return 0
+    total_deleted = 0
+    for tr in traces:
+        if not re.fullmatch(r"[0-9a-f]{32}", tr.trace_id):
+            continue
+        valid_ids = [
+            sp.span_id
+            for sp in tr.spans
+            if sp.span_id != tr.root_span_id and re.fullmatch(r"[0-9a-f]{16}", sp.span_id)
+        ]
+        if valid_ids:
+            quoted = ",".join(f"'{sid}'" for sid in valid_ids)
+            where_expr = f"trace_id = '{tr.trace_id}' AND id NOT IN ({quoted})"
+        else:
+            where_expr = f"trace_id = '{tr.trace_id}'"
+        sql = f"WITH deleted AS (DELETE FROM observations WHERE {where_expr} RETURNING 1) SELECT COUNT(*) FROM deleted;"
+        try:
+            proc = subprocess.run(
+                ["docker", "exec", "-i", db_container, "psql", "-U", db_user, "-d", db_name, "-t", "-A"],
+                input=sql,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if proc.returncode == 0:
+                out = (proc.stdout or "").strip().splitlines()
+                if out and out[-1].strip().isdigit():
+                    total_deleted += int(out[-1].strip())
+        except (OSError, subprocess.SubprocessError, ValueError):
+            break
+    return total_deleted
 
 
 def export_to_langfuse(
@@ -1916,6 +2550,7 @@ def export_to_langfuse(
     secret_key: str,
     event_batch_size: int = 80,
     timeout: int = 25,
+    prune_orphan_sessions: bool = True,
 ) -> dict[str, Any]:
     if not public_key or not secret_key:
         raise ValueError("Langfuse credentials missing; configure ~/.local/share/agent-observability/config.json")
@@ -1949,6 +2584,12 @@ def export_to_langfuse(
                 errors.extend(parsed["errors"])
         batches += 1
 
+    stale_obs_pruned = 0
+    orphan_sessions_pruned = 0
+    if prune_orphan_sessions and any(host in base_url for host in ("127.0.0.1:13100", "localhost:13100")):
+        stale_obs_pruned = _delete_stale_langfuse_observations(traces)
+        orphan_sessions_pruned = _prune_langfuse_orphan_sessions()
+
     return {
         "ok": len(errors) == 0,
         "endpoint": ingestion_url,
@@ -1956,6 +2597,8 @@ def export_to_langfuse(
         "traces_exported": len(traces),
         "events_submitted": len(all_events),
         "events_succeeded": successes,
+        "stale_observations_pruned": stale_obs_pruned,
+        "orphan_sessions_pruned": orphan_sessions_pruned,
         "errors": errors[:10],
     }
 
