@@ -79,3 +79,9 @@ Single-context repo:                  Multi-context repo (CONTEXT-MAP.md):
 - **Exploring alternative interfaces** — see [DESIGN-IT-TWICE.md](references/DESIGN-IT-TWICE.md): parallel sub-agent exploration compared on depth, locality, and seam placement.
 - **Domain glossary & ADR templates** — see [CONTEXT-FORMAT.md](references/CONTEXT-FORMAT.md) and [ADR-FORMAT.md](references/ADR-FORMAT.md).
 - **Phase 0 disagreements & CAS locks** — use the [Proposal -> Checkpoint -> Pop protocol](references/PHASE0-PROPOSAL-CHECKPOINT.md) and `scripts/spec_gate.py` (`push`, `checkpoint`, `pop`, `stamp`, `verify-lock`).
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/ADR-FORMAT.md` | `python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --help` |
+| verification | `references/ADR-FORMAT.md` | `skill_contract.py eval --skill codebase-design --strict` |

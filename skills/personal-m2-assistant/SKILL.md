@@ -77,3 +77,9 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 - How-To 节点：[`I7 Unified M2 Ingress`](../workflow-hub/references/how-to-nodes.md)。
 - 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../m2-dispatcher/scripts/m2-router.py) 仅作 wrapper，权威实现位于本技能 `scripts/m2-router.py`。
 - 验证与回归用例：[`eval-cases.json`](references/eval-cases.json)、`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/eval-cases.json` | `sh skills/personal-m2-assistant/scripts/install-m2-board-hook.sh --help` |
+| verification | `references/eval-cases.json` | `skill_contract.py eval --skill personal-m2-assistant --strict` |

@@ -23,3 +23,9 @@ do not scan alternative ports or bypass SSH. Before approved modifications,
 verify a fresh snapshot and separate configuration backup. Never infer
 credentials, silently grant approval, delete media, or restart unrelated
 services. Keep private verification evidence outside the public repository.
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/topology-and-backlog.md` | `skill_contract.py eval --skill nas-smart-home --strict` |
+| verification | `references/topology-and-backlog.md` | `skill_contract.py eval --skill nas-smart-home --strict` |

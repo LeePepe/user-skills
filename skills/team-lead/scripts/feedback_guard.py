@@ -710,6 +710,55 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
     return violations
 
 
+def _mask_swift_source(text: str) -> str:
+    pattern = re.compile(r'("(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/)')
+    return pattern.sub(lambda match: ''.join('\n' if char == '\n' else ' ' for char in match.group()), text)
+
+
+def _strip_swift_comments_preserve_strings(text: str) -> str:
+    pattern = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/')
+    return pattern.sub(lambda match: ''.join('\n' if char == '\n' else ' ' for char in match.group()), text)
+
+
+def check_swiftui_and_error_retry_guards(
+    worktree: Path,
+    changed_files: Sequence[str],
+    diff_text: str = "",
+) -> list[dict[str, Any]]:
+    """Check changed Swift files for platform-safe environment and error recovery contracts."""
+    violations: list[dict[str, Any]] = []
+    wt = Path(worktree).expanduser().resolve()
+    for relative in changed_files:
+        if not str(relative).lower().endswith('.swift'):
+            continue
+        path = wt / str(relative)
+        try:
+            source = path.read_text(encoding='utf-8', errors='ignore') if path.is_file() else diff_text
+        except OSError:
+            source = diff_text
+        masked = _mask_swift_source(source)
+        if re.search(r'@Environment\s*\(\s*AppNavigation\.self\s*\)', masked) and re.search(r'@EnvironmentObject\b', masked):
+            violations.append({'code': 'swiftui_environment_or_macos_incompat', 'file': str(relative), 'detail': 'Observation @Environment(AppNavigation.self) is mixed with @EnvironmentObject'})
+        elif re.search(r'@EnvironmentObject\b[^\n]*\bAppNavigation\b', masked):
+            violations.append({'code': 'swiftui_environment_or_macos_incompat', 'file': str(relative), 'detail': 'AppNavigation must not be bound through @EnvironmentObject'})
+        ios_only = r'\b(?:UIColor|UIImage|UIScreen|UIApplication|UIImpactFeedbackGenerator)\b|\.(?:navigationBarTitleDisplayMode|fullScreenCover)\s*\('
+        if re.search(ios_only, masked) and not re.search(r'(?m)^\s*#if\s+(?:os\(iOS\)|canImport\(UIKit\))', source):
+            violations.append({'code': 'swiftui_environment_or_macos_incompat', 'file': str(relative), 'detail': 'unguarded iOS-only UIKit/SwiftUI symbol'})
+        error_markers = list(re.finditer(r'case\s+\.(?:error|failed)\b|\berrorMessage\b|ContentUnavailableView\s*\([^)]*(?:error|failed|错误|失败)|\bstruct\s+\w*Error\w*View\s*:\s*View', masked, re.IGNORECASE))
+        if error_markers:
+            retry_source = _strip_swift_comments_preserve_strings(source)
+            has_retry = bool(re.search(r'\b(?:retry|onRetry|reload|tryAgain)\b|"(?:Retry|重试|Try Again|Reload)"', retry_source, re.IGNORECASE))
+            for marker in error_markers:
+                region_end = masked.find('case .', marker.end())
+                region = source[marker.start(): region_end if region_end >= 0 else len(source)]
+                if re.search(r'\bButton\b', _mask_swift_source(region)):
+                    has_retry = True
+                    break
+            if not has_retry:
+                violations.append({'code': 'missing_error_state_retry_action', 'file': str(relative), 'detail': 'explicit error UI branch has no retry/recovery action'})
+    return violations
+
+
 def run_pre_review_check(
     *,
     worktree: Path,
@@ -891,6 +940,7 @@ def run_pre_review_check(
             combined_diff_parts.append(working_diff_proc.stdout or "")
 
     combined_diff = "\n".join(combined_diff_parts)
+    violations.extend(check_swiftui_and_error_retry_guards(wt, changed_files, combined_diff))
     current_file = ""
     leaked_paths: list[str] = []
     leaked_tokens: list[str] = []

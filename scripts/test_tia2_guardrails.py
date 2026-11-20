@@ -233,6 +233,35 @@ class Tia2TeamLeadGuardrailTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             started = json.loads(capture.read_text(encoding="utf-8"))
             self.assertIn("/opt/homebrew", started)
+            for required in (
+                str(tmp_path),
+                str(tmp_path),
+                str(Path.home() / "Development" / "user-skills"),
+                str(Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync"),
+            ):
+                self.assertIn(required, started)
+
+    def test_tia14_section_interactivity_gate_accepts_state_and_rejects_placeholder(self):
+        gate = ROOT / "skills" / "my-designer" / "scripts" / "verify_design_cases.py"
+        good = 'struct Good: View { @State private var open = false; var body: some View { DisclosureGroup("More", isExpanded: $open) { Text("x") } } }'
+        bad = 'struct Bad: View { var body: some View { RoundedRectangle(cornerRadius: 8).fill(.blue) } }'
+        accepted = subprocess.run([sys.executable, str(gate), "--check-section-interactivity", "<snippet>", "--snippet", good], capture_output=True, text=True)
+        rejected = subprocess.run([sys.executable, str(gate), "--check-section-interactivity", "<snippet>", "--snippet", bad], capture_output=True, text=True)
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+        self.assertEqual(json.loads(rejected.stdout)["status"], "REJECT_STATIC_PLACEHOLDER")
+
+    def test_tia14_swiftui_environment_and_retry_guards_have_positive_and_negative_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            swift = root / "Screen.swift"
+            swift.write_text("@Environment(AppNavigation.self) var nav\\n@EnvironmentObject var old: AppNavigation\\nlet c = UIColor.red\\ncase .error: Text(\\\"failed\\\")\\n", encoding="utf-8")
+            bad = self.fg.check_swiftui_and_error_retry_guards(root, ["Screen.swift"])
+            codes = {item["code"] for item in bad}
+            self.assertIn("swiftui_environment_or_macos_incompat", codes)
+            self.assertIn("missing_error_state_retry_action", codes)
+            swift.write_text("#if os(iOS)\\nlet c = UIColor.red\\n#endif\\ncase .error: Button(\\\"Retry\\\") {}\\n", encoding="utf-8")
+            self.assertEqual(self.fg.check_swiftui_and_error_retry_guards(root, ["Screen.swift"]), [])
 
 
 class Tia2HowtoGuardrailTests(unittest.TestCase):

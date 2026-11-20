@@ -13,7 +13,7 @@ End-to-end iOS/macOS architecture, SwiftData persistence migration, behavior-con
 |---|---|
 | **Inbound** | iOS/macOS navigation & deep-link models, SwiftData `@Model` / `VersionedSchema` definitions, test suites, batch-refactor work packages (`Owned Paths` + DAG), CloudKit/Push/Widget integrations, or Apple Intelligence / Core ML / multi-platform capability matrices. |
 | **Internal** | `scripts/audit_arch_testing.py`: deterministic architecture/SwiftData/testing source scanner (`audit-source`), platform capability & refactor work-package validator (`check-capability-matrix`), 6-card catalog (`list-cards`), and 100% card-coverage verifier (`check-card-coverage`). |
-| **Calls** | Zero-token Layer-0 Python CLI (`audit_arch_testing.py`); coordinates with [`codebase-design`](../codebase-design/SKILL.md) for deep seams/`CONTEXT.md`, [`xcode-cli`](../xcode-cli/SKILL.md) for `swift test` / `xcodebuild test`, and [`skill-contract`](../skill-contract/SKILL.md) for skill deduplication audits. |
+| **Calls** | Zero-token Layer-0 Python CLI (`audit_arch_testing.py`); coordinates with `codebase-design` for deep seams/`CONTEXT.md`, `xcode-cli` for `swift test` / `xcodebuild test`, and `skill-contract` for skill deduplication audits. |
 | **PointsTo** | State-driven router & accessibility contracts, migration-tested SwiftData schemas, non-brittle behavior/characterization gates, conflict-free refactor waves, protocol-isolated system capabilities, and zero-crash device fallback matrices. |
 | **Trigger & Notify** | Invoked when planning or auditing iOS navigation, SwiftData schema evolution, TDD/refactor guardrails, CloudKit/Push generators, or Apple Intelligence / watchOS / visionOS feature boundaries; exits `2` under `--strict` on violations. |
 
@@ -23,8 +23,8 @@ End-to-end iOS/macOS architecture, SwiftData persistence migration, behavior-con
 - **Layer 1 (6-Card Blueprints, FAQs & Checklists)**: Read [`references/architecture-data-testing-cards.md`](references/architecture-data-testing-cards.md) for state-driven navigation + accessibility, SwiftData migration fixtures, test contracts, bounded refactor packages, system capability seams, and Apple Intelligence fallbacks.
 - **Layer 2 (Regression & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when adding regression cases or running `skill_contract.py`.
 - **Sibling Routing**:
-  - Swift 6 strict concurrency, `Sendable` / actor boundaries, task cancellation, SwiftUI `@Observable` view trees, or spring/haptic/Liquid Glass feel -> [`ios-concurrency-swiftui`](../ios-concurrency-swiftui/SKILL.md).
-  - Bug-hunt swarms, Instruments profiling, pure-SwiftPM macOS MenuBar `.app` signing/notarization, or App Store rejection/privacy manifests -> [`ios-debugging-performance`](../ios-debugging-performance/SKILL.md).
+  - Swift 6 strict concurrency, `Sendable` / actor boundaries, task cancellation, SwiftUI `@Observable` view trees, or spring/haptic/Liquid Glass feel -> `ios-concurrency-swiftui`.
+  - Bug-hunt swarms, Instruments profiling, pure-SwiftPM macOS MenuBar `.app` signing/notarization, or App Store rejection/privacy manifests -> `ios-debugging-performance`.
 
 ## Complete 6-Card Coverage Matrix (`TIA-3`)
 
@@ -59,3 +59,9 @@ python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py audit-sour
 # Validate capability fallback matrix & disjoint batch-refactor work packages
 python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py check-capability-matrix --matrix-json '{"capabilities":[{"name":"apple_intelligence_summary","availability_checked":true,"fallback_mode":"deterministic_extractive_summary","permission_denied_handled":true,"offline_or_timeout_budget_ms":3000,"memory_budget_mb":120}],"work_packages":[{"id":"WP1","owned_paths":["Sources/Navigation"],"verify_cmd":"swift test --filter NavigationTests"},{"id":"WP2","owned_paths":["Sources/Persistence"],"verify_cmd":"swift test --filter PersistenceTests"}],"skill_audit_checked_existing":true}' --strict
 ```
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/architecture-data-testing-cards.md` | `python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py --help` |
+| verification | `references/architecture-data-testing-cards.md` | `skill_contract.py eval --skill ios-architecture-testing --strict` |

@@ -1,89 +1,13 @@
-# Offline navigation and evidence contract
+# Navigation Evidence Contract
 
-Load for `scaffold-gallery --mode app-nav|screen --platform mobile|desktop|macos|web`, known-direction depth, `--category` portal aggregation, `jev-gate`, or structured Visual Traceback. **Native Apple (`desktop` / `mobile`) SwiftUI Exploration Iron Law**: For iOS / macOS native SwiftUI projects (`--platform mobile|desktop`), `v01..v04` variant exploration and motion/interaction previews MUST exclusively use the **Local Native 120Hz SwiftUI Preview Host (`PreviewHostKit` + Xcode `#Preview`)**; strictly forbid generating Web HTML/CSS approximations or recording low-fps MP4 video galleries (`r5-todo-swiftui-preview` style) on `leepepe.github.io/demos/` for native SwiftUI projects! Web HTML/CSS Choosers (`scaffold-gallery` / `demos/<goal>/`) are handoff-only explorations reserved for **Web frontend (`--platform web`) or static card/graphic projects**, never native production code. `scaffold-gallery` may mount a Web/static round to `~/Development/leepepe.github.io/demos/<goal>/` (or an explicit `--blog-repo`); use `--no-blog-mount` for isolated verification. Run `cleanup-demo --goal <goal>` immediately after B3 freeze or Goal completion to remove ephemeral blog and handoff rounds while preserving receipts.
+The two-stage route uses `magpie/group/designer` then `magpie/group/coding`. Every design handoff declares platform, container, entry/exit, selection ownership, and recovery. Desktop favors `NavigationSplitView` and Inspector; mobile favors `NavigationStack` with platform-native actions; Web uses a semantic viewport and Playwright evidence.
 
-## Two-Stage Demo Pipeline and prompt binding
-
-Stage 1 **Designer** (`--role designer` → `magpie/group/designer`, Copilot `gemini-4-argon` + `grok-4.7`) authors FOUR independent screen prompts by default (`--count 4`; explicit `--count 10` remains supported) or FOUR app-nav prompts, each specifying metaphor, single P0, P1/P2 folding, color/surface polarity, Liquid Glass optical parameters, inline SVG icons and anti-patterns. Stage 2 **Coding** (`--role writer` → `magpie/group/coding`) implements approved concrete HTML/CSS/JS, then production after Owner selection; Coding does not make the prototype design decisions. This only documents the upstream routing interface.
-`scaffold-gallery` writes `prompts/v01-prompt.md..v04-prompt.md` by default (`--count 10` writes v01..v10) or `prompts/app01-prompt.md..app04-prompt.md`; Python batch-scripted clone generation is forbidden; `--prompts-dir <dir>` copies the exact expected UTF-8 files verbatim after validating the whole set (no missing/empty/symlink files or source-directory symlink). Manifest `prompt_file` and SHA-256 bind every candidate, never the current reference. `prompt_contract.source=starter|provided` is provenance, not design approval. Prompt Markdown is not rendered UI, and the deterministic CLI does not translate arbitrary prose into semantic layouts; Stage 2 implements that handoff explicitly.
-
-## Bespoke full-app schemes
-
-Supply `--app-flows-json` (JSON or path) with `app_context` and exactly four `schemes`. Each scheme has a nonempty `navigation_model` label, `title`, `screens`, and a complete `architecture`. Labels never certify architecture. Custom labels are unrestricted; the operative primitives compose domain-specific hypotheses rather than four named app templates.
-
-| Field | Executable meaning |
+| Evidence | Required |
 |---|---|
-| `screens[].id/name/p0_summary/role` | Unique content or `sheet`/`popover` destinations; overlays do not replace content |
-| `actions[]` | `{label, frequency: P0..P3, commit?: domain-key, transition?: edge}`; legacy strings map to indexed edges |
-| `transitions[]` | `{type, to}`: pushScreen, popScreen, switchTab, toggleSheet, togglePopover; dismissOverlay needs no target |
-| `architecture.kind` | `stack`: sticky back/toolbar + bottom commit; `tabs`: tab-local stacks + separated prominent pill; `lens`: top lens + safe-area dock; `deck`: horizontally revealed destinations + inspector tools |
-| `architecture.root/destinations` | Declared content root and visible journey destinations; each tab/root owns its own history |
-| `architecture.primary` | `{screen, action: index}` referencing a declared P0 action, not a generic button |
-| `architecture.sheet/overflow` | Optional sheet ID and array of declared `{screen, action}` references for rare actions |
-| `architecture.collapse_title` | Boolean, default true; collapses large title after content scroll |
-| `architecture.initial_state` | Optional active content/history, owned sheet or reachable popover, detent, overflow and title collapse; never closed-root baseline |
+| native preview | `PreviewHostKit`, Xcode `#Preview`, 120Hz |
+| screenshots | ImageRenderer states or Playwright viewport captures |
+| state | loading, empty, error, retry, success and cancellation |
+| geometry | no clipping, overlap, or truncated numbers |
+| handoff | `design.md`, `spec_sha`, and file:line obsolete tests |
 
-Minimal architecture fragment (provide screens/actions and four complete schemes alongside it):
-
-```json
-{
-  "navigation_model": "capture-first voice journey",
-  "architecture": {
-    "kind": "lens", "root": "capture",
-    "destinations": ["capture", "library"],
-    "primary": {"screen": "capture", "action": 0},
-    "sheet": "tools",
-    "overflow": [{"screen": "tools", "action": 0}],
-    "collapse_title": true
-  }
-}
-```
-
-`--app-screens` or `--app-context` alone is rejected: Designer must supply the operative domain schemes, not ask the scaffolder to invent journeys. A no-input smoke call supplies overridable starter schemes only. Unknown/missing architecture, invalid targets/roles/actions and label-only orthogonality reject before writing.
-
-**STRICT ANTI-FABRICATION RED-LINE:** Never invent fake screens or product features to pad route graphs (including `voice_notes`, `todo_detail`, `runner_status`, or extra history libraries). Every scheme is bounded to the App's declared real inventory, even when it has only 2–3 layers such as Recorder ⇄ Todo ⇄ Settings. Optional `initial_state` must reference declared content/overlay screens, valid history, supported detents, available overflow, and real transitions; generated showcase states must be reachable and distinct. Rendered HTML uses production copy only: sandbox disclaimers and internal ready/empty/stale/failed state `<select>` controls are rejected. Prompt files must not repeat >20% of non-heading paragraphs, and screen variants must expose four distinct DOM morphologies by default (or ten when `--count 10` is explicit).
-
-Automatic boot chooses exactly four distinct non-baseline states from declared destinations, ordered push paths, owned sheet detents, reachable popovers, overflow and supported title collapse. Destination chrome (including the stack journey menu) supports switching without a push edge; only nonempty history requires real push edges. History starts at a visible destination and may visit any declared content screen, with no loops; that starting destination owns the initial stack. Explicit states remain fixed; overflow and overlays cannot boot open simultaneously, and popovers must be reachable without replacing the active content. If the inventory/capabilities cannot expose four distinct states, scaffolding fails precisely instead of fabricating screens, actions, collapse support or overlays. `current.html` alone uses the closed-root baseline.
-
-Action frequency controls disclosure: P0/P1 stay inline, P2 is collapsed behind details, P3 content actions must be routed through the declared overflow; overlay actions remain accessible. Action commits update domain counters and visible lists, and feedback survives navigation and overlay dismissal for the current sandbox session. Tabs restore their own pushed screen/history; Back never consumes another tab's history. Sheet and popover actions use the same dispatcher as content and chrome.
-
-## Material and geometry
-
-App HTML and its round-local `tokens.css` keep content solid. Floating chrome uses the signed squircle Snell/Fresnel map, three chromatic displacement channels, blur/saturate and specular rims. Blink filters the backdrop; WebKit uses a soft ambient veil/rim and blur fallback, not native optical equivalence. Never use `.caustic-veil` repeating-linear-gradient zebra stripes or refract a striped overlay. No `.ruler` dashed debug boxes, Active / Matte bars, or duplicate inner platform/theme/viewport/selection controls; legitimate navigation/actions remain. `gallery_errors` inspects actual HTML/style nodes and linked local CSS (including imports), not benign prompt/prose prohibitions. Copy checks keep independent blocks/control labels, join nested inline text, ignore scripts/styles/comments/data attributes, and apply prohibition polarity only to the banned term's clause. Void input labels/values are checked immediately; internal select option labels/values match exact tokens, not product terms such as Error policy or ready-to-ship.
-
-Medium and large use explicit 45vh/80vh height and max-height, with a grabber and independently scrollable overlay. Mobile controls have minimum 44px dimensions; docks reserve safe-area padding. `surface=solid|warm|dark` and `density=regular|compact|airy` apply to chrome/content. Supported anti-patterns are `no glass on content`/`no content glass` (guaranteed) and `no top capsule`/`no top glass` (removes top floating material). Unknown anti-patterns/style keys reject rather than certify unimplemented preferences; `style_overrides.note` alone is inert.
-
-## Ten-screen breadth and depth
-
-`--direction VS-005..VS-008` preserves the archetype. Every pair differs on >=2 of P0, folding, archetype, content layout, whitespace and glass geometry. Layout changes hero placement/grid; whitespace changes content padding; glass geometry changes width/shape/elevation; folding controls execute accordion/lens/deck state. `--screen-content` reaches the rendered hero in every variant. Breadth remains the default; legacy `tenfold-gallery/v1` is retained. Each morphology styles an inner component, leaving the main three-row viewport frame intact. Evidence compares parented child tag/arity/role trees independently of cosmetic IDs/classes, not just unique wrapper names; cloned or swapped inner structures fail. Prompt overlap shares one parser between prepare and evidence: strip heading lines within each blank-line chunk, normalize the retained body, keep bodies >=20 characters, and reject intersection/minimum-set-size ratios strictly >20% before creating artifacts.
-
-## Deterministic correspondence versus live Jev
-
-The gallery gate parses per-page `application/json` coordinates, validates the manifest graph, regenerates canonical DOM/CSS/JS from the same versioned renderer, and compares actual artifacts. Copied pages, inert/comment-only bindings, mismatched coordinates and modified assets reject without a browser. Only this renderer's canonical rounds are supported: regenerate after a renderer upgrade; hand-edited third-party HTML is not silently certified. Behavioral Node tests independently execute the renderer; real WebKit is still required for optical/geometry acceptance.
-
-`jev-gate --platform mobile|desktop|web --stage gallery|spec|traceback` is fail-closed. The default performs a bounded local POST to `http://127.0.0.1:19823/v1/systemone`, using all required taxonomy questions plus actual spec/graph evidence and deterministic errors. `--jev-url` is loopback-only; redirects, proxies and remote endpoints are forbidden. `--jev-timeout` is >0 and <=5s (default 1.5s). Falcon auth uses environment credentials or the local skill source-key file, never receipts. Repository JS/CSS and secrets are not included in gallery evidence.
-
-Every required question must contain finite numeric `score` or `noul` in [0,1], >=0.6; booleans, empty dictionaries, invalid strings and contradictions reject. Any explicit negative/unknown `status` or `decision` rejects even with score 1. Top-level success cannot override a failed/missing answer. `--mock-jev-json` validates the same table; `--no-jev` is explicitly deterministic-only and is incompatible with a mock. A failed deterministic structure always rejects final status.
-
-Native spec firewalls process clause-local polarity: “Never use SVG” is compliant but does not suppress “Implement React DOM” in another clause. Native desktop has the same Web isolation. Scope exploratory HTML under `## HTML sandbox`; resume native directives in a separate implementation section. Web anti-pattern prohibitions are not violations; prohibiting required CJK wrapping/refraction is a contradiction.
-
-## Structured Visual Traceback
-
-Use a JSON file or one fenced JSON record with `schema: visual-traceback/v1`, `findings: [...]`. Classification vocabulary/prose alone is rejected with a schema error; neither arbitrary numbers nor the word “declared” determines responsibility.
-
-```json
-{
-  "schema": "visual-traceback/v1",
-  "findings": [{
-    "classification": "IMPL_BUG",
-    "constraint": {"declared": true, "source": "spec.md:12", "requirement": "48pt targets"},
-    "implementation": {"source": "screen.png#button", "observation": "36pt measured", "conforms": false,
-      "assertion": {"operator": "minimum", "required": 48, "observed": 36}},
-    "route": {"owner": "Writer", "amend_spec_first": false}
-  }]
-}
-```
-
-Explicit declared constraint + failed implementation assertion => `[IMPL_BUG]`, Writer, no spec amendment. Supported assertions are `minimum`, `maximum`, `equal`, `absent` with required/observed values; evidence must agree with `conforms`. An undeclared missing requirement (`declared:false`, `missing_requirement`, specification source) + implementation following declared constraints (`conforms:true`, source + observation) => `[SPEC_GAP]`, Steering, `amend_spec_first:true`. Semantic adequacy of source observations is evaluated by the additional required `q_traceback_evidence_attribution` live answer; deterministic-only does not independently establish the truth of reported measurements.
-
-An explicit clean result uses `findings:[]` plus `clean:{spec_source,implementation_source,checks:[{requirement,assertion}]}`; every check must pass and have meaningful source references. Findings and clean result cannot coexist.
+A reviewer must be able to reproduce the route without inventing architecture.

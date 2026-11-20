@@ -5,13 +5,13 @@ description: "Diagnose personal investment portfolios and generate rebalancing p
 
 # portfolio-advisor
 
-Personal portfolio diagnosis, FIFO fee-window calculation, track-overlap detection, and cashflow-driven rebalancing skill. It consumes personal ledger snapshots (from `Financial` CLI `--json` or `--portfolio-json` fixtures) and delegates all objective fund/ETF/gold/bond scoring to [`asset-screener`](../asset-screener/SKILL.md) (`scripts/asset_evaluator.py`) without duplicating asset valuation formulas.
+Personal portfolio diagnosis, FIFO fee-window calculation, track-overlap detection, and cashflow-driven rebalancing skill. It consumes personal ledger snapshots (from `Financial` CLI `--json` or `--portfolio-json` fixtures) and delegates all objective fund/ETF/gold/bond scoring to `asset-screener` (`scripts/asset_evaluator.py`) without duplicating asset valuation formulas.
 
 ## `/howto` P7 Global 5-Tuple
 
 | Dimension | Contract |
 |---|---|
-| **Inbound** | 1) Personal Financial ledger data via `--financial-root` (`cli/finance funds --json`, `cli/finance funds --by-fund --json`, `cli/finance accounts --json`) or hermetic `--portfolio-json`; 2) Objective asset scores fetched from [`asset-screener`](../asset-screener/SKILL.md); 3) Optional `research-models.md` cross-check. |
+| **Inbound** | 1) Personal Financial ledger data via `--financial-root` (`cli/finance funds --json`, `cli/finance funds --by-fund --json`, `cli/finance accounts --json`) or hermetic `--portfolio-json`; 2) Objective asset scores fetched from `asset-screener`; 3) Optional `research-models.md` cross-check. |
 | **Internal** | `scripts/portfolio_rebalancer.py`: **All-Weather Barbell Allocation** (Offensive Growth vs. Trunk Broad Beta vs. Defensive Gold + Dividend Low-Vol + Pure Bond), **FIFO Holding Window Engine** (`<7d` punitive, `7–29d`, `>=30d`, `>=180d`, `>=365d` 0-fee unlocked shares + exact unlock dates), **Track & Top-10 Overlap Matrix** (Jaccard/weighted stock overlap + same-fund A/C share duplicate + redundant broad-beta feeders), and **Cashflow-Driven Rebalancing Engine**. |
 | **Calls** | Invokes `skills/asset-screener/scripts/asset_evaluator.py` after stripping personal ledger keys so `asset-screener`'s `--strict-no-personal-ledger` lock stays intact; invokes `Financial` CLI read-only when `--financial-root` is used. |
 | **PointsTo** | Deterministic JSON or Markdown advisory plan containing Barbell drift table, FIFO fee-free share breakdown, overlap alerts, monthly freed DCA cashflow, 6-month projected allocation, and per-holding action enums. |
@@ -22,7 +22,7 @@ Personal portfolio diagnosis, FIFO fee-window calculation, track-overlap detecti
 - **Layer 0 (Default Execution)**: Run `scripts/portfolio_rebalancer.py` (`diagnose`, `rebalance`, `fifo-window`, `overlap`) to produce exact numbers before drafting recommendations.
 - **Layer 1 (Allocation, FIFO & Action Rules)**: Read [`references/rebalance-and-fifo-rules.md`](references/rebalance-and-fifo-rules.md) when customizing Barbell target sleeves, redemption fee schedules, overlap thresholds, or conservative vs. active rebalancing modes.
 - **Layer 2 (Contract & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when adding regression assertions.
-- **Upstream Objective Scoring**: For pure, ledgerless asset screening or model explanations, route to [`asset-screener`](../asset-screener/SKILL.md).
+- **Upstream Objective Scoring**: For pure, ledgerless asset screening or model explanations, route to `asset-screener`.
 
 ## Four Core Engines
 
@@ -67,3 +67,9 @@ python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py overlap --portf
 - **Never Re-Implement Asset Scoring**: Always obtain objective `total_score`, `tier`, `consensus`, and `divergence` by calling `skills/asset-screener/scripts/asset_evaluator.py` with personal keys stripped.
 - **Never Recommend Punitive `<7d` (`1.50%`) Redemptions**: Any redemption action must respect FIFO lot ages and disclose locked shares plus exact unlock dates.
 - **Zero Hardcoded Personal Paths or Secrets**: Resolve `--financial-root` dynamically or via `Path.home() / "Development" / "Financial"` only when requested at runtime.
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/eval-cases.json` | `python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py --help` |
+| verification | `references/eval-cases.json` | `skill_contract.py eval --skill portfolio-advisor --strict` |

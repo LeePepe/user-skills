@@ -6,9 +6,26 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 
 > 唯一技能名是 `team-lead`。旧目录 `goal-target-task` 已移除，不再提供兼容安装路径或固定锚点。
 
+## Role-Based Routing（按角色唯一必读抽屉 + 唯一必跑 CLI）
+
+| Role | Single mandatory L1 drawer | Single mandatory L2 CLI |
+|---|---|---|
+| Role: M1-TL | `references/ledger.md` | `goal-supervisor.py status --check` |
+| Role: Designer | `references/bots-and-agents.md` | `herdr-dispatch.sh --role designer` |
+| Role: Writer | `references/playbook.md` | `ci-monitor.py workflow` |
+| Role: Reviewer | `references/eval-cases.json` | `feedback_guard.py pre-review-check` |
+
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| Goal state/lease | `references/ledger.md` | `goal-supervisor.py status --check` |
+| implementation/review | `references/playbook.md` | `feedback_guard.py pre-review-check` |
+| CI/release | `references/eval-cases.json` | `ci-monitor.py workflow` |
+
 ## Workflow Hub & Linear Integration
 
-总工作流中枢见 [`workflow-hub`](../workflow-hub/SKILL.md)，Idea 与状态看板见 [`linear-board`](../linear-board/SKILL.md)，双路复盘见 [`retro-loop`](../retro-loop/SKILL.md)，叙事产出见 [`story-craft`](../story-craft/SKILL.md)，推进路线图见 [`workflow-refine-roadmap.md`](references/workflow-refine-roadmap.md)。Linear Team `TIA` 映射 `1 Goal = 1 Issue`（Checklist 为 Tasks），由 `skills/team-lead/scripts/linear-sync.py` 同步 R8 状态，本地 [`ledger.md`](references/ledger.md) 为唯一权威源。读取本合同不授予额外委派或发布权限，事实问答与诊断不自动变成实施。
+总工作流见 [`workflow-hub`](../workflow-hub/SKILL.md)，看板见 [`linear-board`](../linear-board/SKILL.md)，复盘见 [`retro-loop`](../retro-loop/SKILL.md)，叙事见 [`story-craft`](../story-craft/SKILL.md)，路线图见 [`workflow-refine-roadmap.md`](references/workflow-refine-roadmap.md)。`TIA` 为 `1 Goal = 1 Issue`；`ledger.md` 是 R8 权威源。
 
 ## 两层定义与单出口执行模型（`Goal -> Task`）
 
@@ -30,7 +47,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 | **Phase 0：交互共创期** | **Co-Design 顾问态** | 探讨性问题或存在产品／交互／架构未决项 | 只读探查（R11）＋每次聚焦 1–2 个决策点对齐＋UI/UX 设计 → 落盘 `~/Development/handoff/<goal>/spec.md`；**未获 GO 前不改业务代码** |
 | **Phase 1：自治执行期** | **Steering 执行/协调态** | Owner 明确拍板（GO）或范围清晰直接指令 | 锁定 `spec.md`（`Mandate`）→ `≤3` 文件直改或派 `Writer` 同分支推进，收口 **1 次** 异构审查＋Layer 0 `ci-monitor.py` 读回 |
 
-- **`M2-Dispatcher` 只写简单 Spec 边界**：外层 M2 入口会话作为 `M2-Dispatcher` **只允许创建/修改简单 Spec 与交接文件（`spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`specs/*.md`、`briefs/*.md`），严禁修改任何业务代码、测试或配置**。凡涉及代码修改，须调用 `skills/team-lead/scripts/herdr-dispatch.sh`（`--new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude`）在后台拉起绑定 `Magpie (:3425)` `group/steering` 的独立 `Steering`，在独立 Worktree 修改与提交；同步宿主启动后须运行 `skills/team-lead/scripts/goal-supervisor.py`（`watch --interval 15 --max-wait 600 --json`）盯完解卡与完结。
+- **`M2-Dispatcher` 只写简单 Spec 边界**：M2 只改 `spec.md`、`design.md`、`ledger.md`、`plan.md`、`handoff/**`、`briefs/*.md`，严禁改代码、测试、配置；代码须经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude`。独立 Worktree 完成后由 `goal-supervisor.py watch --interval 15 --max-wait 600 --json` 读回。
 - **Goal 内唯一 `Steering` 铁律**：一旦进入 `<goal>-goal-tl-r1`，当前 `Steering`（TL）是该 Goal 唯一主控，**never spawns a second `Steering`** 或独立 `Planner`；仅内联完成 `≤3` 文件改动或派发叶子 `Writer`／`Reviewer` 并运行 Layer 0 `ci-monitor.py`。
 - **Phase 0 允许动作**：① **只读探查（R11）**（直接读有界代码，`>8` 文件高噪声跨仓搜索才派 `Explorer` 附 `file:line`；UI 核对 `shared-design-system`／`DesignKit` `Package.resolved` 及 upstream primitives）；② **需求收敛**（`codebase-design`，含领域建模 `CONTEXT.md` 与 ADR）；③ **UI/UX 设计**（直接加载 `my-designer`，产出 `design.md`／`spec.md`，`writes: handoff-only`，遵循 Plan A + Plan C 与 `shared-design-system` upstream 规范）；④ **产出冻结候选**（落盘 `spec.md` 与 `briefs/<task>.md`）。
 - **Phase 1 Worktree 与分屏**：一切代码修改在独立 Worktree 完成；分屏使用 `herdr pane split --pane "$HERDR_PANE_ID" --direction right|down --cwd "$TASK_WORKTREE" --no-focus`。`M2-Dispatcher` 协同与 `PR_MERGED`／`GOAL_DONE` 回收见 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
@@ -55,7 +72,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 | 独立验收（Reviewer） | Goal 收口执行 **1 次** V1–V5 双轴跨厂商独立审查（若目标仓 PR CI 已运行 `codex-review-target` 则直接复用） |
 | CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认后台运行 `skills/team-lead/scripts/ci-monitor.py`（Layer 0、0 Token），不为纯状态轮询启动 LLM；仅失败需 LLM 诊断时回退 `worker.pr_monitor`。Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，Run `in_progress` 时读 `actions/jobs/<id>/logs` |
 
-技术栈到 Required Skills 的路由见 [`bots-and-agents.md`](references/bots-and-agents.md)；个人偏好与系统底盘分离配置见 [`operator-policy.json`](references/operator-policy.json)（由 `goal-supervisor.py check-operator-policy` 校验升级兼容性）；模型与启动参数见 [`runtime-profiles.yaml`](references/runtime-profiles.yaml)（历史归档见 [`model-roles.md`](references/model-roles.md)）。
+参考索引：[`bots-and-agents.md`](references/bots-and-agents.md)、[`ledger.md`](references/ledger.md)、[`playbook.md`](references/playbook.md)、[`playbook-herdr-sop.md`](references/playbook-herdr-sop.md)、[`playbook-narrative-extract.md`](references/playbook-narrative-extract.md)、[`playbook-retro-loop.md`](references/playbook-retro-loop.md)、[`workflow-refine-roadmap.md`](references/workflow-refine-roadmap.md)、[`runtime-profiles.yaml`](references/runtime-profiles.yaml)、[`operator-policy.json`](references/operator-policy.json)、[`dispatch-recipes.json`](references/dispatch-recipes.json)、[`eval-cases.json`](references/eval-cases.json)。
 
 ## 定义、冻结与缺口
 
@@ -77,5 +94,5 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 ## CLI 用法与 UI Inner Loop
 
 - **并发监督与网关路由**：用 `skills/team-lead/scripts/goal-supervisor.py`（`scan`、`status --check`、`check-pins`、`telemetry --handoff-dir <goal> --write`）监控，子 Agent 等待用 `30–60s` 有界 slices，检查 `ZOMBIE_LEASE`、`BLOCKED_AGENT` 与 R10 receipts（关联 `good-des-*`／`gd-e1-*`，基线祖先 `/Volumes/SSD`；回收执行 `herdr pane close "$HERDR_PANE_ID"`）。`skills/team-lead/scripts/herdr-dispatch.sh` 协同 `Magpie (:3425)` 调度（`--kind claude` 走 `direct_quota_gated`，超限自动改派 `copilot --model magpie/group/steering`），分屏必传 `--direction right|down`（如 `herdr pane split --pane "$HERDR_PANE_ID" --direction down --cwd "$TASK_WORKTREE" --no-focus`）。
-- **Layer 0 监控、Worktree 清理、VPN 内网桥接、iCloud 跨端同步与卫生巡检（Loop 3A）**：异步跑 `python3 skills/team-lead/scripts/ci-monitor.py workflow|pr`（0 Token，仅失败回退 `pr_monitor`）。`Writer` 干完即退；子 Worktree `keep` 合回或 `PR_MERGED` 后用 `skills/team-lead/scripts/git-gc.py`（或 `git worktree remove`）清理；`GOAL_DONE` 关窗，未合并／暂停（HOLD）现场保留报 `Owner`。跨网经 `multica_vpn_bridge.py` 与 `multica_loop_runner.py verify-vpn` 零公网暴露验收 `10.9.0.1`／`10.8.0.1` -> Mac mini -> NAS Multica。跨端定义、四端软链与遥测分片由 `skills/team-lead/scripts/icloud_skills_sync.py` 经 `AIDashSync` 自动同步并在 `retro_story_engine.py` 去重合并。卫生巡检由 `local_hygiene_patrol.py` 与 `multica_loop_runner.py`（`local-herdr-worktree-gc`）0-Agent 回收残留窗格与洁净 Worktree，仅 Jev 判 actionable 时发双区单。详见 [`bots-and-agents.md`](references/bots-and-agents.md)、[`m2-dispatcher`](../m2-dispatcher/SKILL.md)、[`playbook.md`](references/playbook.md) 与 [`ledger.md`](references/ledger.md)。
+- **Layer 0 监控与 Worktree 清理**：异步跑 `ci-monitor.py workflow|pr`（0 Token，仅失败回退 `pr_monitor`）。`Writer` 完成后，`keep` 合回；`PR_MERGED` 后用 `git worktree remove` 清理；`GOAL_DONE` 关窗，未合并／暂停（HOLD）现场保留并报 `Owner`。跨端同步由 `AIDashSync` 负责；详见 `bots-and-agents.md`、`playbook.md`、`ledger.md`。
 - **UI implementation inner loop**：调用 `python3 shared-ci/scripts/context/design_contract.py --audit-code --platform <desktop|mobile|web>`、`--audit-l10n`、`--check-edge-clipping`、`--audit-geometry`（禁走 `xcode-cli`），通过后导出真实截图（Apple: `XCTest` / `xcrun simctl io booted screenshot` / `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot）写入 R10 receipt，由 `Reviewer` 执行 **Visual Traceback** 判分 `[IMPL_BUG]` vs `[SPEC_GAP]`。

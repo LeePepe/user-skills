@@ -108,12 +108,14 @@
       "file": "skills/ios-debugging-performance/SKILL.md",
       "must_contain": [
         "references/debugging-perf-release-cards.md",
-        "references/eval-cases.json",
-        "../ios-concurrency-swiftui/SKILL.md",
-        "../ios-architecture-testing/SKILL.md",
+        "## When-to-Read L1",
+        "必跑 L2",
         "audit_debug_perf_release.py"
       ],
-      "registered_at": "2026-11-19"
+      "registered_at": "2026-11-19",
+      "must_not_contain": [
+        "../ios-"
+      ]
     }
   ],
   "updated": "2026-11-19"

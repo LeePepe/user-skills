@@ -1,85 +1,14 @@
-# Progressive Disclosure Routing Index (`L0 -> L1 -> L2`)
+# Routing Index: L0 -> L1 -> L2
 
-This file is the **Level 1 (L1) Router** for Apple-First UI/UX design. Never load the entire HIG directory or all vault files at once. Follow the 3-step progressive disclosure flow below to load only the **8–12 leaf files** needed for the current screen.
+Use the smallest drawer that answers the question. Plan A covers Apple HIG/native evidence; Plan C covers recurring defect cases and deterministic gates.
 
----
+| Trigger | L1 drawer | L2 command |
+|---|---|---|
+| route/platform | `navigation-evidence-contract.md` | `verify_design_cases.py route --platform <p> --dimensions <d>` |
+| interaction/material | `interaction-layering.md` | `verify_design_cases.py audit-code --platform <p> --path <path>` |
+| Visual Traceback `[IMPL_BUG]`/`[SPEC_GAP]` | `design-flow-architecture.md` | `verify_design_cases.py flow-map` |
+| defect/gate | `eval-cases.json` | `verify_design_cases.py --lookup-defect <keyword>` |
 
-## Step 1: Lock Platform Topology (`desktop` vs `mobile` vs `web`)
+Native evidence uses `PreviewHostKit`, `#Preview`, 120Hz and ImageRenderer; Web evidence uses Playwright. Freeze `design.md` and `spec_sha` before Writer work. Generic recurring findings qualify for `sink-rule` only when symbol-free.
 
-| Platform | Status | Host Containers | Ergonomics & Navigation Floor (Plan A) | Distilled Base (`distilled_in_plan_a` — Skip Raw Read by Default) |
-|---|---|---|---|---|
-| **`desktop`** (macOS Native) | **Active Primary** | `NSWindow`, `NSPopover`, `MenuBarExtra`, `NavigationSplitView`, `Settings`, `Inspector` | Default target `28×28pt` (min `20×20pt`); default font `13pt` (min `10pt`); Menu Bar command parity, pointer hover, keyboard focus ring, `Esc`/`⌘1..⌘4` `.keyboardShortcut` bindings; split `#if os(macOS)` desktop `NavigationSplitView`/Commander toolbar + multi-column Inspector vs `#if os(iOS)` (`AT-011`) — **never place a mobile bottom floating capsule dock on macOS**; `v01..v04` exploration & motion previews MUST exclusively use the **Local Native 120Hz SwiftUI Preview Host (`PreviewHostKit` + Xcode `#Preview`)** (ban Web HTML/CSS approximations or MP4 video galleries; archive `preview-selection-r<N>.json` & reset `preview-selection.json` via `reset-preview-selection` after each round fusion) | `designing-for-macos.md`, `accessibility.md`, `layout.md`, `color.md`, `typography.md` (already distilled into Plan A 5 Lenses) |
-| **`mobile`** (iOS / iPadOS / iPhone Duo) | **Active Primary** | `NavigationStack`, `TabView`, `Sheet`, `Widget`, `LiveActivity`, `iPhoneDuoSplit` | Default target `44×44pt` (min `28×28pt`); default font `17pt` (min `11pt`); `#if os(iOS)` bottom floating glass capsule dock / `TabView` + single-column `NavigationStack` push/sheet drill-down (`AT-011`), `.toolbar` for actions, `Sheet` with grabber/detents, Size Classes instead of hardcoded screen widths; `v01..v04` exploration & motion previews MUST exclusively use the **Local Native 120Hz SwiftUI Preview Host (`PreviewHostKit` + Xcode `#Preview`)** (ban Web HTML/CSS approximations or MP4 video galleries; archive `preview-selection-r<N>.json` & reset `preview-selection.json` via `reset-preview-selection` after each round fusion) | `designing-for-ios.md`, `designing-for-ipados.md`, `accessibility.md`, `layout.md`, `color.md`, `typography.md` (already distilled into Plan A 5 Lenses) |
-| **`web`** (Web / Video) | **Active** | `WebViewport`, `RemotionComposition` | Default target `44×44px` mobile / `32–40px` desktop; prose `16–17px` (`line-height 1.7–1.8`, `max-width 680px` / `60–72ch`), UI chrome `13–14px`; single site-wide sticky header (the ONLY `backdrop-filter` glass layer) — never mix top nav with `300px` sub-route sidebars; right-side borderless sticky TOC (`aside.toc`, hidden `<1100px`); single token CSS chain (`colors.css -> strata-theme.css -> app.css`); Web HTML/CSS Choosers (`scaffold-gallery` / `demos/<goal>/`) are strictly reserved for Web frontend (`--platform web`) or static card/graphic projects | `breathing-and-clarity.md`, `interaction-layering.md`, `appearance-ledger.md` + 9 Web reference repos (`impeccable`, `taste-skill`, `emilkowalski-skills`, `ui-ux-pro-max-skill`, `awesome-web-design-md`, `vercel-agent-skills`, `awesome-cjk-design-md`, `vibecoded-design-tells`, `hallmark`) via `route --platform web` |
-
----
-
-## Step 2: Disclose by Design Dimension (`8 Dimensions -> Native APIs + Leaf HIG`)
-
-Query the inspiration vault for only the active platform and dimension:
-
-```bash
-python3 skills/design-studio/scripts/design_catalog.py vault-search \
-  --platform desktop --dimension chart-dataviz --query "<intent>" --top 3
-```
-
-| Dimension ID | Prefix | Apple Native Primitives + Per-App `AppTheme` & `ShipSwift` Recipes | On-Demand HIG & External Skill Refs |
-|---|---|---|---|
-| `color-palette` | `CL` | `.primary`, `.secondary`, adaptive Asset Catalog colors, per-app `AppTheme` brand seed (`CL-001..008`, `CL-005` hue-arc rule), `awesome-ios-design-md` 200-app palettes, [breathing-and-clarity.md](breathing-and-clarity.md) | `color.md`, `dark-mode.md`, `branding.md`, `accessibility.md`; Web: `impeccable/colorize.md`, `taste-skill/library/palettes.json`, `ui-ux-pro-max/colors.csv` |
-| `visual-style` | `VS` | `ConcentricRectangle`, `.rect(corner: .containerConcentric)`, `NSView.cornerConfiguration`, `.backgroundStyle`, `.symbolRenderingMode(.hierarchical)`, [appearance-ledger.md](appearance-ledger.md) (`VS-001..008`), [breathing-and-clarity.md](breathing-and-clarity.md) | `design-principles.md`, `branding.md`, `materials.md`, `dark-mode.md`, `icons.md`, `sf-symbols.md`, `native-slop.md`; Web: `impeccable/craft-floor.md`, `awesome-web-design-md`, `vibecoded-design-tells` |
-| `component` | `CP` | Native `NavigationSplitView`, `TabView`, `Tab(role: .prominent)`, `List`, `Table`, `.toolbar`, `ToolbarSpacer`, `ToolbarOverflowMenu`, `.sheet(item:)`, `ContentUnavailableView` + 7-domain `avdlee-swiftui-skill` `update-swiftui-apis/references/scan-manifest.md` + `ShipSwift` `SWComponent/` (`SWWallet`, `SWKPICard`), [interaction-layering.md](interaction-layering.md) | `buttons.md`, `menus.md`, `the-menu-bar.md`, `toolbars.md`, `tab-bars.md`, `sidebars.md`, `split-views.md`, `sheets.md`, `popovers.md`, `lists-and-tables.md`; Web: `taste-skill/cards.md`, `emilkowalski/ui-cheatsheet.md`, `vercel-agent-skills` |
-| `chart-dataviz` | `DV` | Swift Charts (`Chart`, `LineMark`, `AreaMark`, `BarMark`, `SectorMark`, `.chartXSelection`) + `ShipSwift` `SWChart/` (`SWActivityHeatmap`, `SWRadarChart`, `SWRingChart`, `SWNetworkGraph`), [interaction-layering.md](interaction-layering.md) | `charts.md`, `charting-data.md`, `gauges.md`, `progress-indicators.md`; Web: `impeccable/visualize.md`, `taste-skill/diagrams.md`, `ui-ux-pro-max/charts.csv` |
-| `glass-material` | `GM` | `.glassEffect(.regular / .clear / .identity)`, `GlassEffectContainer` with 1:1 stack spacing, `.glassEffectID` + `@Namespace`, `.buttonStyle(.glassProminent)`, `@Environment(\.appearsActive)`, `.backgroundExtensionEffect()`, `.scrollEdgeEffectStyle(.hard, for:)` + `ShipSwift` `SWMetal/` & `genjutsu` (`GM-003`) | `liquid-glass.md`, `materials.md`, `color.md`, `toolbars.md`, `tab-bars.md`, `sidebars.md`; Web: `taste-skill/backgrounds.md`, `effects-usage.md` |
-| `motion-interaction` | `MI` | `Spring(response:dampingRatio:)`, `.matchedGeometryEffect`, `KeyframeAnimator`, `.onScrollTargetVisibilityChange`, `.swipeActionsContainer()`, `.reorderContainer`, `.dragContainer`, `.dropConfiguration` (`MI-008`, `MP-008/009`), [interaction-layering.md](interaction-layering.md) | `motion.md`, `playing-haptics.md`, `gestures.md`, `feedback.md`, `drag-and-drop.md`, `undo-and-redo.md`; Web: `emilkowalski/animate`, `impeccable/animate.md`, `vercel/react-view-transitions` |
-| `layout-navigation` | `LN` | `TabView` + `.tabViewStyle(.sidebarAdaptable)`, `NavigationSplitView`, `Tab("…", systemImage:value:)`, `ViewThatFits`, `Grid`, `.rect(corner: .containerConcentric)`, `.visibilityPriority(.high)`, `.topBarPinnedTrailing`, `.toolbarMinimizeBehavior(.onScrollDown, for: .navigationBar)`, `@Environment(\.horizontalSizeClass)`, `.alignmentGuide` pin-flip (`LN-002`, `IP-008`), one `Identifiable` enum `.sheet(item:)`, [interaction-layering.md](interaction-layering.md) | `layout.md`, `designing-for-ios.md`, `designing-for-ipados.md`, `designing-for-macos.md`, `designing-for-iphone-duo.md`, `windows.md`, `scroll-views.md`; Web: `impeccable/layout.md`, `taste-skill/layout-v4.md`, `vercel/web-design-guidelines` |
-| `typography-copy` | `TC` | `AppTextStyle` (`font + lineSpacing + tracking + .monospacedDigit()`), `.bold()`, CJK typography rules, localized `.xcstrings`, [breathing-and-clarity.md](breathing-and-clarity.md) | `typography.md`, `writing.md`, `labels.md`, `loading.md`, `feedback.md`, `right-to-left.md`; Web: `impeccable/typeset.md` & `mode-read.md`, `awesome-cjk-design-md`, `vercel/writing-guidelines` |
-
----
-
-## Step 3: Baseline Gate (Plan A Default + Plan C On-Demand Defect Cases)
-
-Run the progressive gate router and code auditor:
-
-```bash
-# 1. Disclose active Plan A lenses + any matching Plan C defect cases for this surface
-python3 skills/my-designer/scripts/verify_design_cases.py route \
-  --platform desktop --dimensions glass-material,chart-dataviz
-
-# 2. Run Plan A Apple Native Code Audit (+ active Plan C checks) on Swift files
-python3 shared-ci/scripts/context/design_contract.py --audit-code \
-  --platform desktop --path <SwiftUI-File-Or-Dir>
-```
-
-### Plan A — Five Apple Native Lenses (Always Active)
-1. **Lens 1 · Accessibility (Critical)**: Dynamic Type scaling, `>=4.5:1` text contrast (`>=3:1` large/bold), `44×44pt` mobile / `28×28pt` desktop hit targets, VoiceOver labels on icon-only controls, Reduce Motion & Reduce Transparency fallbacks.
-2. **Lens 2 · Platform Conventions (High)**: Native `TabView`/`NavigationSplitView`/`.toolbar`/`MenuBarExtra`; no bottom bars on macOS; no custom hand-drawn tab/navigation bars; iPhone Duo & iPad adapt via Size Classes rather than fixed device widths.
-3. **Lens 3 · Visual & Liquid Glass Craft (High)**:
-   - **Two-Layer Rule**: Liquid Glass (`glassEffect`, `UIGlassEffect`, `NSGlassEffectView`) belongs strictly to the **Functional Layer** (floating bars, toolbars, popovers, transient controls). Never apply Liquid Glass to the **Content Layer** (cards, list rows, tables, backgrounds).
-   - **Color & Stacking Restraint**: Group adjacent glass shapes in `GlassEffectContainer`; at most 1–2 `.glassProminent` tinted controls per view; never paint opaque backgrounds behind system toolbars/tab bars.
-4. **Lens 4 · Interaction & State Completeness (Medium)**: Immediate loading feedback, inline error recovery, `ContentUnavailableView` for empty/no-result states, confirmation on destructive actions, undo for common actions.
-5. **Lens 5 · Typography & Copy (Medium)**: Platform title/sentence capitalization consistency, `.monospacedDigit()` for changing numbers, clear action verbs ("Save Changes", not "OK").
-
-### Plan C — Defect-Driven Case Evolution (`defect-cases/index.json`)
-- **Active Plan C Registry**: [defect-cases/index.json](defect-cases/index.json) enforces verified interaction-layering, anti-flat-tiling, compact anti-overflow, 120Hz scroll prefetching, shared table column geometry, and Web editorial/Hallmark anti-slop guards (`DC-001..010`: `SWWallet` pocket stack, single-source chart legend, bounded horizontal rails, `LazyStack` 1:1 root views, shared table column geometry, no raw HTML frontmatter, no decorative heading Emojis/box-in-box, natural CJK table wrapping, no tracked-capital eyebrows, no fake submit forms).
-- **When a new defect is discovered**: Register a scoped case (`--id auto` assigns the next sequential `DC-00N`) so future tasks automatically check for it:
-  ```bash
-  python3 skills/my-designer/scripts/verify_design_cases.py register-case \
-    --id auto \
-    --title "macOS NSPopover Frame-Before-Padding Clipping" \
-    --platforms desktop \
-    --dimensions layout-navigation \
-    --containers NSPopover \
-    --symptom "Applying .frame(width:).padding() clips trailing content" \
-    --fix-rule "Always apply .padding(P).frame(width: W)" \
-    --forbidden-regex '\.frame\(\s*width\s*:[^)]+\)\s*\.padding\('
-  ```
-
----
-
-## Step 4: Touchpoint 2 — Post-Implementation Visual Traceback (`[IMPL_BUG]` vs `[SPEC_GAP]`)
-
-1. **Writer Low-Cost Screenshot Capture**: After `shared-ci/scripts/context/design_contract.py` passes, `Writer` captures real rendered screenshots (Apple: `XCTest` snapshot / `xcrun simctl io booted screenshot` / headless `ImageRenderer` 4 states × 2 appearances PNG; Web: Playwright headless screenshot) and logs paths in the R10 receipt. **Writer implements declared constraints only and never guesses undeclared rules.**
-2. **Independent Reviewer Attribution (`code-review` + `my-designer`)**: The cross-vendor `Reviewer` inspects both code diff and R10 rendered screenshots, tagging every visual finding:
-   - **`[IMPL_BUG]` (Implementation Deviation)**: Explicit `design.md` or `design_contract.py` violation → route directly back to `Writer` to fix against existing `design.md`.
-   - **`[SPEC_GAP]` (Phase 0 Spec Omission)**: `Writer` followed `design.md`, but real pixels expose crowding, CJK wrapping, column drift, or hierarchy conflict missed in Phase 0 → **never send `Writer` to blind-guess**; `Steering` must **amend `design.md` first (re-stamping `spec_sha`)** with concrete layout parameters before dispatching `Writer`.
-3. **Anti-Explosion Promotion Gate**: Every `[SPEC_GAP]` updates the current Goal's `design.md` (100%). Sink to `shared-ci` (`design_contract.py`) or `my-designer` (`verify_design_cases.py register-case --id auto` via `skill_contract.py sink-rule`) **only when cross-project generic, zero private symbols, and recurring on the same container**.
+Plan A and Plan C are complementary: route first, disclose one drawer, run one CLI, then record the receipt.

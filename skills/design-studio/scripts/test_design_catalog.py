@@ -21,7 +21,7 @@ SCRIPT = Path(__file__).with_name("design_catalog.py")
 SPEC = importlib.util.spec_from_file_location("design_catalog", SCRIPT)
 DESIGN_CATALOG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DESIGN_CATALOG)
-CATALOG = SCRIPT.parents[1] / "references" / "catalog.json"
+CATALOG = SCRIPT.parents[1] / "scripts" / "data" / "catalog.json"
 MARKDOWN = SCRIPT.parents[1] / "references" / "toolchain-20-matrix.md"
 TEMP_DIR_ROOT = SCRIPT.parents[3]
 
@@ -57,6 +57,15 @@ class DesignCatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog["tools"]), 20)
         self.assertEqual(len(catalog["patterns"]), 17)
         self.assertEqual(run("render", "--check").returncode, 0)
+
+    def test_top_level_query_searches_catalog_and_vault_with_top_k(self):
+        result = run("--query", "filter", "--top", "3", "--platform", "mobile")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["top"], 3)
+        self.assertLessEqual(len(payload["matches"]), 3)
+        self.assertTrue(all(item["source"] in {"catalog", "vault"} for item in payload["matches"]))
 
     def test_variant_summary_is_rendered_and_synthesized_in_chinese(self):
         manifest = {
@@ -989,7 +998,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
         self.taxonomy = self.directory / "taxonomy-v2.json"
         self.vault_dir = self.directory / "vault"
         self.vault_dir.mkdir(parents=True)
-        src_refs = SCRIPT.parents[1] / "references"
+        src_refs = SCRIPT.parents[1] / "scripts" / "data"
         self.taxonomy.write_bytes((src_refs / "taxonomy-v2.json").read_bytes())
         for vf in ("desktop-macos.json", "mobile-ios.json", "web.json"):
             (self.vault_dir / vf).write_bytes((src_refs / "vault" / vf).read_bytes())

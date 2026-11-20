@@ -33,3 +33,9 @@ Deterministic Dual-Zone formatting and verification contract for all Multica and
 2. **Pre-flight verify (`exit 0` vs `exit 2`)**: Call `verify_dual_zone_issue()` before `multica issue create/update` or Linear `create_issue/update_issue`. Never publish an unverified Dual-Zone body.
 3. **HTML comment cursor exemption**: Watermarks (`<!-- multica-cursor:... -->`, `<!-- multica-skills-autopilot:... -->`, `<!-- GTT-LINEAR-DEDUP:... -->`) are invisible to readers and excluded from the 45-line Human Zone count.
 4. **Anti-boilerplate enforcement**: Every `- [ ]` item must specify a unique concrete target and reason; duplicate actions or copy-pasted generic rationales trigger `duplicate_boilerplate_items` (`exit 2`).
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/dual-zone-spec.md` | `python3 skills/issue-brief/scripts/verify_issue_format.py --help` |
+| verification | `references/dual-zone-spec.md` | `skill_contract.py eval --skill issue-brief --strict` |

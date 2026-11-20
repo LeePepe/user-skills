@@ -48,3 +48,9 @@ API key、token、cookie、客户数据和未批准的内部标识永不进入�
 读回构建产物、摘要、版本和页面/平台状态，并将读者反馈回流 `linear-board`。
 
 提示槽配置：[prompt-slots.json](references/prompt-slots.json)。
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/prompt-slots.json` | `skill_contract.py eval --skill story-craft --strict` |
+| verification | `references/prompt-slots.json` | `skill_contract.py eval --skill story-craft --strict` |

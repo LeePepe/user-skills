@@ -4,7 +4,7 @@
 
 ## Step 1–4 — 预检、分屏、具名启动与派发
 
-命名格式 `<goal>-<task>-<role>-r<round>`（满足 `[a-z][a-z0-9_-]{0,31}`），按 [`runtime-profiles.yaml`](./runtime-profiles.yaml)（历史归档见 [`model-roles.md`](./model-roles.md)）显式传参，宽窗格用 `right`、窄/高窗格用 `down`（**严禁省略 `--direction`**），`--` 后严禁重复传二进制名：
+命名格式 `<goal>-<task>-<role>-r<round>`（满足 `[a-z][a-z0-9_-]{0,31}`），按 [`runtime-profiles.yaml`](./runtime-profiles.yaml) 显式传参，宽窗格用 `right`、窄/高窗格用 `down`（**严禁省略 `--direction`**），`--` 后严禁重复传二进制名：
 
 ```sh
 set -euo pipefail

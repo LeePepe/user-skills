@@ -74,3 +74,9 @@ Use the narrowest command-line layer that owns the changed files.
   source. Follow repository rules before regenerating them.
 - Respect hook-driven verification. Do not manually repeat suites that the
   repository explicitly delegates to commit or push hooks.
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/build-cases.json` | `python3 skills/xcode-cli/scripts/classify_changes.py --help` |
+| verification | `references/build-cases.json` | `skill_contract.py eval --skill xcode-cli --strict` |

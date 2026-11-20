@@ -13,7 +13,7 @@ Expert iOS/macOS concurrency and SwiftUI engineering contract distilling **5 `TI
 |---|---|
 | **Inbound** | Swift/SwiftUI source files or snippets containing `async/await`, `actor`, `Sendable`, `@MainActor`, `Task`, `@Observable`, `@State`, `ForEach`, `GeometryReader`, springs, haptics, or Liquid Glass modifiers. |
 | **Internal** | `scripts/audit_concurrency_swiftui.py`: deterministic AST/token-masked source scanner (`audit-source`), 5-card catalog (`list-cards`), and 100% card-coverage verifier (`check-card-coverage`). |
-| **Calls** | Zero-token Layer-0 Python CLI (`audit_concurrency_swiftui.py`); escalates to [`xcode-cli`](../xcode-cli/SKILL.md) for `swift test` / Thread Sanitizer runs or [`my-designer`](../my-designer/SKILL.md) for Visual Traceback. |
+| **Calls** | Zero-token Layer-0 Python CLI (`audit_concurrency_swiftui.py`); escalates to `xcode-cli` for `swift test` / Thread Sanitizer runs or `my-designer` for Visual Traceback. |
 | **PointsTo** | Structured JSON/Markdown findings with `rule_id`, `card_slug`, `severity`, `line`, and concrete remediation for concurrency races, task leaks, unstable SwiftUI identity, and unguarded motion/glass modifiers. |
 | **Trigger & Notify** | Invoked before/during Swift 6 concurrency migration, SwiftUI view decomposition, or native interaction polish; emits fail-closed exit code `2` under `--strict` when blocking violations remain. |
 
@@ -23,8 +23,8 @@ Expert iOS/macOS concurrency and SwiftUI engineering contract distilling **5 `TI
 - **Layer 1 (5-Card Rules, FAQs & Checklists)**: Read [`references/concurrency-and-swiftui-cards.md`](references/concurrency-and-swiftui-cards.md) when designing actor boundaries, migrating completion handlers, choosing SwiftUI property wrappers, or tuning native spring/haptic/Liquid Glass restraint.
 - **Layer 2 (Regression & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when registering new anti-patterns or running `skill_contract.py eval/description-eval`.
 - **Sibling Routing**:
-  - Frame-drop profiling with Instruments, bug-hunt swarms, macOS SwiftPM `.app` packaging, or App Store rejection/privacy manifests -> [`ios-debugging-performance`](../ios-debugging-performance/SKILL.md).
-  - State-driven navigation/deep links, SwiftData migrations, characterization/snapshot tests, CloudKit/Push seams, or Apple Intelligence fallbacks -> [`ios-architecture-testing`](../ios-architecture-testing/SKILL.md).
+  - Frame-drop profiling with Instruments, bug-hunt swarms, macOS SwiftPM `.app` packaging, or App Store rejection/privacy manifests -> `ios-debugging-performance`.
+  - State-driven navigation/deep links, SwiftData migrations, characterization/snapshot tests, CloudKit/Push seams, or Apple Intelligence fallbacks -> `ios-architecture-testing`.
 
 ## Complete 5-Card Coverage Matrix (`TIA-3`)
 
@@ -55,3 +55,9 @@ python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py chec
 # Audit Swift/SwiftUI source files or inline snippet (fails with exit 2 on --strict violations)
 python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py audit-source --snippet 'Task.detached { self.reload() }' --strict
 ```
+## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
+
+| Trigger | Single L1 drawer | Single L2 CLI |
+|---|---|---|
+| primary task | `references/concurrency-and-swiftui-cards.md` | `python3 skills/ios-concurrency-swiftui/scripts/audit_concurrency_swiftui.py --help` |
+| verification | `references/concurrency-and-swiftui-cards.md` | `skill_contract.py eval --skill ios-concurrency-swiftui --strict` |

@@ -862,6 +862,20 @@ def _discover_skill_inventory(
                                     })
                         except (OSError, json.JSONDecodeError):
                             pass
+            data_drawer = pkg / "scripts" / "data" / "defect-cases" / "index.json"
+            if data_drawer.is_file():
+                try:
+                    data_bytes = data_drawer.read_bytes()
+                    ref_entries.append({"rel_path": "scripts/data/defect-cases/index.json", "line_count": len(data_bytes.decode("utf-8", errors="ignore").splitlines()), "tokens_est": max(1, len(data_bytes) // 4)})
+                    data_doc = json.loads(data_bytes.decode("utf-8", errors="ignore"))
+                    for item in data_doc.get("active_cases", []):
+                        if isinstance(item, dict):
+                            eval_cases += 1
+                            reg = str(item.get("registered_at") or data_doc.get("updated") or "")
+                            if reg >= cutoff_7d:
+                                recent_eval_cases += 1
+                except (OSError, json.JSONDecodeError):
+                    pass
             scripts_dir = pkg / "scripts"
             scripts: list[str] = []
             script_entries: list[str] = []

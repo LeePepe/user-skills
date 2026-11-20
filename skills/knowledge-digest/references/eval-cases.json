@@ -52,7 +52,11 @@
         "topic-ledger.json",
         "design-studio"
       ],
-      "registered_at": "2026-11-19"
+      "registered_at": "2026-11-19",
+      "must_not_contain": [
+        "../deep-research/SKILL.md",
+        "../my-designer/SKILL.md"
+      ]
     },
     {
       "id": "EV-003",
