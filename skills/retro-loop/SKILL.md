@@ -12,6 +12,7 @@ description: 结合 aidata 数仓（L1–L4）发现产品与工程异常，定�
 |---|---|---|
 | anomaly/ROI query | `SKILL.md` | `retro_story_engine.py discover` |
 | proposal lifecycle | `SKILL.md` | `retro_story_engine.py agent-efficiency --auto-propose` |
+| trace backfill / observability | `SKILL.md` | `trace_backfill_exporter.py --target both --dry-run` |
 | verification | `SKILL.md` | `skill_contract.py eval --skill retro-loop --strict` |
 
 ## Role-Based Routing
@@ -40,6 +41,7 @@ Repeated issues require one concrete lock, not a reminder: Skill/Config lock, Ho
 python3 skills/retro-loop/scripts/retro_story_engine.py discover
 python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --auto-propose
 python3 skills/retro-loop/scripts/retro_story_engine.py skill-roi --auto-propose
+python3 skills/retro-loop/scripts/trace_backfill_exporter.py --target both --limit-goals 35 --limit-sessions 55 --json
 ```
 
-`proposals.jsonl.lock` serializes idempotent writes. `learning-topic://` remains a separate Owner-approved exploration path; Star never auto-publishes or syncs design data. Implementations live in `retro_story_engine.py` and `multica_skills_autopilot.py`.
+`proposals.jsonl.lock` serializes idempotent writes. `learning-topic://` remains a separate Owner-approved exploration path; Star never auto-publishes or syncs design data. Implementations live in `retro_story_engine.py`, `multica_skills_autopilot.py`, and `trace_backfill_exporter.py`.
