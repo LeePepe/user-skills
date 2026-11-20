@@ -430,6 +430,10 @@ class ICloudSkillsSyncTests(unittest.TestCase):
             self.assertEqual(parsed_plist["Label"], "com.tianpli.skills.icloud-sync")
             self.assertEqual(parsed_plist["StartInterval"], 300)
             self.assertIn(str(icloud_dir / "skills-sync-manifest.json"), parsed_plist["WatchPaths"])
+            # Ensure git status --porcelain in repo remains clean (no untracked .githooks/post-merge dirtiness)
+            st_proc = subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True)
+            self.assertEqual(st_proc.stdout.strip(), "")
+            self.assertTrue((repo / ".git" / "hooks" / "post-merge").is_file())
 
             # Verify CLI status subcommand returns valid JSON
             buf = io.StringIO()

@@ -1133,7 +1133,10 @@ def install_launchd_agent(
         else Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     )
     canonical_repo = Path.home() / "Development" / "user-skills"
-    effective_repo = canonical_repo if (canonical_repo / "skills").is_dir() else repo
+    if repo_root is not None:
+        effective_repo = repo
+    else:
+        effective_repo = canonical_repo if (canonical_repo / "skills").is_dir() else repo
     canonical_script = effective_repo / "skills" / "team-lead" / "scripts" / "icloud_skills_sync.py"
     chosen_script = script_path or canonical_script
 
@@ -1163,18 +1166,20 @@ def install_launchd_agent(
 
     hook_installed = False
     if install_post_merge_hook and (effective_repo / ".git").exists():
-        hooks_dir = effective_repo / ".githooks"
-        if hooks_dir.is_dir():
+        git_dir = effective_repo / ".git"
+        hooks_dir = git_dir / "hooks" if git_dir.is_dir() else None
+        if hooks_dir is not None:
+            hooks_dir.mkdir(parents=True, exist_ok=True)
             post_merge = hooks_dir / "post-merge"
             marker = "icloud_skills_sync.py"
             hook_snippet = (
-                '#!/usr/bin/env bash\n'
-                'set -euo pipefail\n'
-                'REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"\n'
                 'SYNC_SCRIPT="$REPO_ROOT/skills/team-lead/scripts/icloud_skills_sync.py"\n'
                 'if [[ -f "$SYNC_SCRIPT" ]]; then\n'
                 '  python3 "$SYNC_SCRIPT" sync --quiet >/dev/null 2>&1 || true\n'
-                'fi\n'
+                "fi\n"
             )
             if not post_merge.exists():
                 _atomic_write_bytes(post_merge, hook_snippet.encode("utf-8"))
@@ -1184,10 +1189,11 @@ def install_launchd_agent(
                 existing_txt = post_merge.read_text(encoding="utf-8", errors="replace")
                 if marker not in existing_txt:
                     updated_txt = existing_txt.rstrip() + (
-                        '\n\nSYNC_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/team-lead/scripts/icloud_skills_sync.py"\n'
+                        '\n\nREPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"\n'
+                        'SYNC_SCRIPT="$REPO_ROOT/skills/team-lead/scripts/icloud_skills_sync.py"\n'
                         'if [[ -f "$SYNC_SCRIPT" ]]; then\n'
                         '  python3 "$SYNC_SCRIPT" sync --quiet >/dev/null 2>&1 || true\n'
-                        'fi\n'
+                        "fi\n"
                     )
                     _atomic_write_bytes(post_merge, updated_txt.encode("utf-8"))
                     post_merge.chmod(0o755)
