@@ -390,6 +390,44 @@
         "has_delta": false
       },
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-019",
+      "title": "Progressive Self-Evolution: 3-Tier 2+1+1 Spectrum, Softened CLI Aliases & Self-Disclosing Drawer Guidance",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "WebViewport"
+      ],
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "OK"
+      ],
+      "negative_cmd": "python3 skills/my-designer/scripts/verify_design_cases.py --check-section-interactivity --snippet 'struct StaticBox: View { var body: some View { RoundedRectangle(cornerRadius: 8).fill(.blue) } }'",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "REJECT_STATIC_PLACEHOLDER",
+        "skills/my-designer/references/interaction-layering.md"
+      ],
+      "file": "skills/my-designer/SKILL.md",
+      "must_contain": [
+        "Tier 1 · Universal Invariants",
+        "Tier 2 · Product Persona & Intent Weighting",
+        "Tier 3 · Controlled Exploration",
+        "2+1+1"
+      ],
+      "registered_at": "2026-11-20"
     }
   ]
 }
