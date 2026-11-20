@@ -62,15 +62,10 @@ _LINEAR_ISSUE_RE = re.compile(r"\b(TIA-\d+)\b")
 _REPO_RE = re.compile(r"\b(?:LeePepe/[A-Za-z0-9_.-]+|repo=([^\s;|]+))")
 _EVT_LINE_RE = re.compile(r"^-\s*([0-9T:+-]+Z?)\s*\|\s*(.+)$")
 _HANDOFF_GOAL_REF_RE = re.compile(r"handoff/([A-Za-z0-9_-]+)(?:/|[\s\"'])")
-_SKILL_RE = re.compile(
-    r"(?:<skill-context\s+name=[\"']([A-Za-z0-9_-]+)[\"']"
-    r"|(?<![A-Za-z0-9_-])skills/([A-Za-z0-9_-]+)/SKILL\.md"
-    r"|\bskill\s*[:=]\s*[\"']([A-Za-z0-9_-]+)[\"'])"
+_SKILL_CONTEXT_RE = re.compile(
+    r"^\s*<skill-context\s+name=[\"']([A-Za-z0-9_-]+)[\"']\s*>[\s\S]*?</skill-context>\s*$"
 )
-_REF_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])((?:skills/[A-Za-z0-9_-]+|(?:~/.copilot|[^\s\"']+?\.copilot)/skills/[A-Za-z0-9_-]+)"
-    r"/(?:SKILL\.md|references/[A-Za-z0-9_./-]+\.(?:md|json|yaml|yml)))"
-)
+_RECEIPT_TOKENS_RE = re.compile(r"^-\s+(?:\*\*)?Tokens:(?:\*\*)?\s*(.+)$", re.M | re.I)
 _SCRIPT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])((?:[^\s\"']+/)?skills/[A-Za-z0-9_-]+/scripts/[A-Za-z0-9_.-]+\.(?:py|sh)"
     r"|(?:[^\s\"']+/)?scripts/(?:verify|[A-Za-z0-9_.-]+\.py))"
@@ -133,6 +128,31 @@ class ParsedSessionActivity:
     ref_reads: list[tuple[str, int | None, int, str]]  # (ref_path, byte_len|None, start_ns, source_id)
     script_execs: list[tuple[str, str, int, int, int | None, str]]  # (script_path, args, start_ns, dur_ms, exit_code|None, source_id)
     llm_calls: list[tuple[str, int, int, int, int, int, str]]  # (model, start_ns, dur_ms, in, out, cache, source_id)
+    measured_durations_ms: dict[str, int] = field(default_factory=dict)
+    tool_transport_success: dict[str, bool] = field(default_factory=dict)
+
+
+def _point_event_timing() -> dict[str, Any]:
+    return {"timing.measured": False, "timing.provenance": "point_event_unmeasured"}
+
+
+def _apply_activity_evidence(spans: list[SpanRecord], activity: ParsedSessionActivity) -> None:
+    for span in spans:
+        if span.category not in ("skill_load", "l1_reference_read", "l2_script_exec", "llm_generation"):
+            continue
+        source_id = str(span.attributes["evidence.source"])
+        duration_ms = activity.measured_durations_ms.get(source_id)
+        timing = ({"timing.measured": True, "timing.provenance": "measured"}
+                  if duration_ms is not None else _point_event_timing())
+        # A 1 ms display width is not an execution-duration measurement.
+        span.end_ns = span.start_ns + (duration_ms if duration_ms is not None else 1) * 1_000_000
+        span.attributes.update(timing)
+        span.output_payload.update(timing)
+        if span.category == "l2_script_exec" and duration_ms is None:
+            span.attributes.pop("script.duration_ms", None)
+            span.output_payload["duration_ms"] = None
+        if source_id in activity.tool_transport_success:
+            span.attributes["tool.transport_success"] = activity.tool_transport_success[source_id]
 
 
 def deterministic_trace_id(seed: str) -> str:
@@ -164,7 +184,8 @@ def parse_iso_to_ns(raw: str | int | float | None, fallback_ns: int | None = Non
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1_000_000_000)
+        epoch_delta = dt - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return (epoch_delta.days * 86400 + epoch_delta.seconds) * 1_000_000_000 + epoch_delta.microseconds * 1000
     except ValueError:
         return fallback_ns if fallback_ns is not None else int(time.time() * 1_000_000_000)
 
@@ -531,8 +552,6 @@ def _extract_process_exit_code(data: dict[str, Any], result_text: str) -> int | 
             pass
     if _SHELL_START_RE.search(result_text) or "is still running" in result_text:
         return None
-    if data.get("success") is False:
-        return 1
     return None
 
 
@@ -557,6 +576,9 @@ def parse_copilot_session_activity(
     script_execs: list[tuple[str, str, int, int, int | None, str]] = []
     llm_calls: list[tuple[str, int, int, int, int, int, str]] = []
     tool_starts: dict[str, tuple[str, dict[str, Any], int]] = {}
+    timestamped_tool_starts: set[str] = set()
+    measured_durations_ms: dict[str, int] = {}
+    tool_transport_success: dict[str, bool] = {}
 
     fallback_ns = int(events_jsonl.stat().st_mtime * 1_000_000_000)
     try:
@@ -593,10 +615,11 @@ def parse_copilot_session_activity(
                                 referenced_goals.add(m_goal.group(1))
                         if not first_prompt:
                             first_prompt = content[:500]
-                            for m_sk in _SKILL_RE.finditer(content):
-                                sk = next((g for g in m_sk.groups() if g), None)
-                                if sk:
-                                    skill_invocations.append((sk, ev_ts_ns, f"copilot:user.message:{ev_id}"))
+                        context_match = _SKILL_CONTEXT_RE.fullmatch(content)
+                        if context_match:
+                            skill_invocations.append(
+                                (context_match.group(1), ev_ts_ns, f"copilot:skill-context:{ev_id}")
+                            )
                 elif ev_type == "skill.invoked":
                     sk_name = str(data.get("name") or "").strip()
                     sk_path = str(data.get("path") or "").strip()
@@ -614,6 +637,8 @@ def parse_copilot_session_activity(
                     args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
                     if tc_id:
                         tool_starts[tc_id] = (t_name, args, ev_ts_ns)
+                        if ev.get("timestamp"):
+                            timestamped_tool_starts.add(tc_id)
                     if t_name == "skill" and args.get("skill"):
                         skill_invocations.append((str(args["skill"]), ev_ts_ns, f"copilot:tool:{tc_id or ev_id}"))
                     elif t_name == "bash" and args.get("command"):
@@ -625,7 +650,7 @@ def parse_copilot_session_activity(
                         for m_goal in _HANDOFF_GOAL_REF_RE.finditer(vp):
                             if not m_goal.group(1).startswith("_"):
                                 referenced_goals.add(m_goal.group(1))
-                        if "/skills/" in vp and vp.endswith((".md", ".json", ".yaml", ".yml")):
+                        if (vp.startswith("skills/") or "/skills/" in vp) and vp.endswith((".md", ".json", ".yaml", ".yml")):
                             b_len, _ = _file_stats(vp, skills_root=skills_root)
                             ref_reads.append((vp, b_len, ev_ts_ns, f"copilot:view:{tc_id or ev_id}"))
                 elif ev_type == "tool.execution_complete":
@@ -635,6 +660,10 @@ def parse_copilot_session_activity(
                     if tc_id in tool_starts:
                         t_name, args, st_ns = tool_starts[tc_id]
                         dur_ms = max(1, int((ev_ts_ns - st_ns) / 1_000_000))
+                        has_completion_timestamp = bool(ev.get("timestamp")) and tc_id in timestamped_tool_starts
+                        if t_name in ("view", "skill") and has_completion_timestamp:
+                            source_id = f"copilot:{'view' if t_name == 'view' else 'tool'}:{tc_id}"
+                            measured_durations_ms[source_id] = dur_ms
                         if t_name == "bash":
                             cmd_str = str(args.get("command") or "")
                             m_sc = _SCRIPT_RE.search(cmd_str)
@@ -645,9 +674,12 @@ def parse_copilot_session_activity(
                                 if ec is None and m_bg:
                                     pending_async_shells[m_bg.group(1)] = (sp_path, cmd_str[:260], st_ns, tc_id)
                                 else:
-                                    script_execs.append(
-                                        (sp_path, cmd_str[:260], st_ns, dur_ms, ec, f"copilot:bash:{tc_id}")
-                                    )
+                                    source_id = f"copilot:bash:{tc_id}"
+                                    script_execs.append((sp_path, cmd_str[:260], st_ns, dur_ms, ec, source_id))
+                                    if has_completion_timestamp:
+                                        measured_durations_ms[source_id] = dur_ms
+                                    if isinstance(data.get("success"), bool):
+                                        tool_transport_success[source_id] = data["success"]
                         elif t_name in ("read_bash", "stop_bash"):
                             sh_id = str(args.get("shellId") or "")
                             m_done = _SHELL_COMPLETE_RE.search(res_text)
@@ -657,6 +689,8 @@ def parse_copilot_session_activity(
                                 if m_done:
                                     sp_path, cmd_args, bg_start_ns, orig_tc = pending_async_shells.pop(target_sh)
                                     bg_dur = max(1, int((ev_ts_ns - bg_start_ns) / 1_000_000))
+                                    if ev.get("timestamp") and orig_tc in timestamped_tool_starts:
+                                        measured_durations_ms[f"copilot:async_bash:{orig_tc}"] = bg_dur
                                     script_execs.append(
                                         (
                                             sp_path,
@@ -670,6 +704,8 @@ def parse_copilot_session_activity(
                                 elif m_stop:
                                     sp_path, cmd_args, bg_start_ns, orig_tc = pending_async_shells.pop(target_sh)
                                     bg_dur = max(1, int((ev_ts_ns - bg_start_ns) / 1_000_000))
+                                    if ev.get("timestamp") and orig_tc in timestamped_tool_starts:
+                                        measured_durations_ms[f"copilot:stopped_bash:{orig_tc}"] = bg_dur
                                     script_execs.append(
                                         (
                                             sp_path,
@@ -689,9 +725,10 @@ def parse_copilot_session_activity(
                     u_dur = max(1, int(usage.get("duration") or 1))
                     if u_in > 0 or u_out > 0 or u_cache > 0:
                         call_start = max(start_ns or ev_ts_ns, ev_ts_ns - u_dur * 1_000_000)
-                        llm_calls.append(
-                            (u_model, call_start, u_dur, u_in, u_out, u_cache, f"copilot:usage:{ev_id}")
-                        )
+                        source_id = f"copilot:usage:{ev_id}"
+                        llm_calls.append((u_model, call_start, u_dur, u_in, u_out, u_cache, source_id))
+                        if usage.get("duration") is not None:
+                            measured_durations_ms[source_id] = u_dur
     except OSError:
         return None
 
@@ -702,18 +739,19 @@ def parse_copilot_session_activity(
 
     # Enrich with usage.jsonl and warehouse.db records for this exact session_id
     u_bucket = usage_by_session.get(session_id, {})
+    had_copilot_llm_calls = bool(llm_calls)
     for idx, rec in enumerate(u_bucket.get("skill_turn", [])):
         sk = str(rec.get("skill") or "").strip()
         ts_ns = parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns)
         src_id = str(rec.get("event_id") or f"usage:skill_turn:{idx}")
         if sk:
             skill_invocations.append((sk, ts_ns, src_id))
-        if not llm_calls:
+        if not had_copilot_llm_calls:
             in_t = int(rec.get("input_tokens") or 0)
             out_t = int(rec.get("output_tokens") or 0)
             ca_t = int(rec.get("cache_read") or 0)
             if in_t > 0 or out_t > 0 or ca_t > 0:
-                llm_calls.append((str(rec.get("model") or selected_model), ts_ns, 100, in_t, out_t, ca_t, src_id))
+                llm_calls.append((str(rec.get("model") or selected_model), ts_ns, 1, in_t, out_t, ca_t, src_id))
 
     for idx, rec in enumerate(u_bucket.get("reference_hit", []) + wh_maps["refs_by_session"].get(session_id, [])):
         rp = str(rec.get("reference_path") or "").strip()
@@ -732,6 +770,8 @@ def parse_copilot_session_activity(
             raw_ec = rec.get("exit_code")
             ec = int(raw_ec) if raw_ec is not None else None
             src_id = str(rec.get("call_uid") or rec.get("event_id") or f"script:{idx}")
+            if rec.get("duration_ms") is not None:
+                measured_durations_ms[src_id] = dur_ms
             script_execs.append(
                 (sp_p, sp_p, parse_iso_to_ns(rec.get("ts"), start_ns or fallback_ns), dur_ms, ec, src_id)
             )
@@ -747,7 +787,7 @@ def parse_copilot_session_activity(
                     (
                         str(turn.get("model") or selected_model),
                         parse_iso_to_ns(turn.get("ts"), start_ns or fallback_ns),
-                        100,
+                        1,
                         in_t,
                         out_t,
                         ca_t,
@@ -775,6 +815,8 @@ def parse_copilot_session_activity(
         ref_reads=ref_reads,
         script_execs=script_execs,
         llm_calls=llm_calls,
+        measured_durations_ms=measured_durations_ms,
+        tool_transport_success=tool_transport_success,
     )
 
 
@@ -941,16 +983,17 @@ def build_goal_trace(
                 category="stage_role",
                 name=f"Stage / Role: M2 ({wh_goal.get('coordinator_bot') or 'coordinator'})",
                 start_ns=start_ns,
-                end_ns=min(end_ns, start_ns + max(1_000_000, (end_ns - start_ns) // 10)),
+                end_ns=start_ns + 1_000_000,
                 status_ok=True,
                 attributes={
                     "stage.role": "M2",
                     "stage.chain": "M3 -> M2",
                     "stage.round": "r1",
                     "evidence.source": "ledger.md:header",
+                    **_point_event_timing(),
                 },
                 input_payload={"mandate": parsed["mandate"][:240]},
-                output_payload={"coordinator": wh_goal.get("coordinator_bot") or "recorded"},
+                output_payload={"coordinator": wh_goal.get("coordinator_bot") or "recorded", **_point_event_timing()},
             )
         )
 
@@ -964,9 +1007,12 @@ def build_goal_trace(
             r_task = str(run.get("task_id") or "task")
             r_uid = str(run.get("receipt_uid") or f"{idx}:{r_task}:{r_role}:{r_round}")
             w_span_id = deterministic_span_id(f"goal:{goal_id}:wh_run:{r_uid}")
-            w_end = parse_iso_to_ns(run.get("completed_at"), end_ns)
-            w_start = min(start_ns, w_end - 1_000_000) if w_end <= start_ns else start_ns
+            w_start = parse_iso_to_ns(run.get("started_at") or run.get("completed_at"), end_ns)
+            run_measured = bool(run.get("started_at") and run.get("completed_at"))
+            w_end = parse_iso_to_ns(run["completed_at"], w_start) if run_measured else w_start + 1_000_000
             w_start, w_end = _clamp_span_window(w_start, w_end)
+            run_timing = ({"timing.measured": True, "timing.provenance": "measured"}
+                          if run_measured else _point_event_timing())
             if idx == 0:
                 primary_worker_span_id = w_span_id
             v_up = r_verdict.upper()
@@ -987,9 +1033,10 @@ def build_goal_trace(
                         "stage.model": r_model[:80],
                         "stage.verdict": r_verdict[:40],
                         "evidence.source": f"warehouse.fact_gtt_task_run:{r_uid}",
+                        **run_timing,
                     },
                     input_payload={"task_id": r_task, "role": r_role, "round": r_round},
-                    output_payload={"verdict": r_verdict[:80]},
+                    output_payload={"verdict": r_verdict[:80], **run_timing},
                 )
             )
     else:
@@ -1001,8 +1048,7 @@ def build_goal_trace(
             r_verdict = m_verd.group(1).upper() if m_verd else "RECORDED"
             v_ok = False if r_verdict == "FAIL" else (True if r_verdict == "PASS" else None)
             rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
-            w_start = min(start_ns, rf_ns - 1_000_000)
-            w_start, w_end = _clamp_span_window(w_start, rf_ns)
+            w_start, w_end = rf_ns, rf_ns + 1_000_000
             w_span_id = deterministic_span_id(f"goal:{goal_id}:receipt_role:{rf.name}")
             if idx == 0:
                 primary_worker_span_id = w_span_id
@@ -1019,10 +1065,11 @@ def build_goal_trace(
                         "stage.role": r_role,
                         "stage.round": r_round,
                         "stage.verdict": r_verdict,
-                        "evidence.source": f"receipts/{rf.name}",
+                        "evidence.source": f"receipts/{rf.name}:mtime",
+                        **_point_event_timing(),
                     },
                     input_payload={"receipt": rf.name},
-                    output_payload={"verdict": r_verdict},
+                    output_payload={"verdict": r_verdict, **_point_event_timing()},
                 )
             )
 
@@ -1037,6 +1084,7 @@ def build_goal_trace(
     total_cache_tokens = 0
 
     for sess in linked_sessions:
+        session_span_start = len(spans)
         sess_stage_id = deterministic_span_id(f"goal:{goal_id}:session_stage:{sess.session_id}")
         spans.append(
             SpanRecord(
@@ -1072,7 +1120,7 @@ def build_goal_trace(
                     category="skill_load",
                     name=f"Skill Load: {sk_name}",
                     start_ns=sk_ts,
-                    end_ns=sk_ts + 10_000_000,
+                    end_ns=sk_ts + 1_000_000,
                     status_ok=True,
                     attributes={
                         "skill.name": sk_name,
@@ -1113,7 +1161,7 @@ def build_goal_trace(
                     category="l1_reference_read",
                     name=f"L1 Reference Read: {Path(rp).name}",
                     start_ns=r_ts,
-                    end_ns=r_ts + 10_000_000,
+                    end_ns=r_ts + 1_000_000,
                     status_ok=True,
                     attributes=attrs,
                     input_payload={"path": rp},
@@ -1185,83 +1233,19 @@ def build_goal_trace(
                 )
             )
 
-    # Supplement ONLY from explicit receipt evidence (never briefs, never invented defaults!)
+        _apply_activity_evidence(spans[session_span_start:], sess)
+
+    # Supplement ONLY from structured receipt token headers (never prose mentions).
     if not linked_sessions and receipt_texts:
         for rf, r_text in receipt_texts:
             rf_ns = int(rf.stat().st_mtime * 1_000_000_000)
-            for m_sk in _SKILL_RE.finditer(r_text):
-                sk = next((g for g in m_sk.groups() if g), None)
-                if sk and sk not in seen_skills:
-                    seen_skills.add(sk)
-                    spans.append(
-                        SpanRecord(
-                            span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_skill:{rf.name}:{sk}"),
-                            parent_span_id=primary_worker_span_id,
-                            category="skill_load",
-                            name=f"Skill Load: {sk}",
-                            start_ns=rf_ns,
-                            end_ns=rf_ns + 1_000_000,
-                            status_ok=True,
-                            attributes={"skill.name": sk, "evidence.source": f"receipts/{rf.name}"},
-                            input_payload={"skill": sk},
-                            output_payload={"source": f"receipts/{rf.name}"},
-                        )
-                    )
-            for m_ref in _REF_RE.finditer(r_text):
-                rp = m_ref.group(1)
-                if (rf.name, rp) in seen_refs:
-                    continue
-                seen_refs.add((rf.name, rp))
-                f_bytes, line_cnt = _file_stats(rp, skills_root=skills_root)
-                ref_attrs: dict[str, str | int | float | bool] = {
-                    "reference.path": rp,
-                    "reference.skill": _infer_skill_from_path(rp),
-                    "evidence.source": f"receipts/{rf.name}",
-                }
-                if f_bytes is not None:
-                    ref_attrs["reference.byte_len"] = f_bytes
-                    ref_attrs["reference.estimated_tokens"] = _estimate_tokens_from_bytes(f_bytes)
-                if line_cnt is not None:
-                    ref_attrs["reference.line_count"] = line_cnt
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_ref:{rf.name}:{rp}"),
-                        parent_span_id=primary_worker_span_id,
-                        category="l1_reference_read",
-                        name=f"L1 Reference Read: {Path(rp).name}",
-                        start_ns=rf_ns,
-                        end_ns=rf_ns + 1_000_000,
-                        status_ok=True,
-                        attributes=ref_attrs,
-                        input_payload={"path": rp},
-                        output_payload={"source": f"receipts/{rf.name}", "byte_len": f_bytes},
-                    )
-                )
-            for idx_sc, m_sc in enumerate(_SCRIPT_RE.finditer(r_text)):
-                sp_path = m_sc.group(1)
-                script_count += 1
-                spans.append(
-                    SpanRecord(
-                        span_id=deterministic_span_id(f"goal:{goal_id}:rcpt_script:{rf.name}:{idx_sc}:{sp_path}"),
-                        parent_span_id=primary_worker_span_id,
-                        category="l2_script_exec",
-                        name=f"L2 Script Exec: {Path(sp_path).name}",
-                        start_ns=rf_ns,
-                        end_ns=rf_ns + 1_000_000,
-                        status_ok=None,  # Exit code & duration not measured in markdown receipt unless explicit
-                        attributes={
-                            "script.path": sp_path,
-                            "script.skill": _infer_skill_from_path(sp_path),
-                            "script.exit_status": "unmeasured_in_receipt",
-                            "evidence.source": f"receipts/{rf.name}",
-                        },
-                        input_payload={"script": sp_path},
-                        output_payload={"source": f"receipts/{rf.name}", "measured": False},
-                    )
-                )
-            m_in = _TOKEN_NUM_RE.search(r_text)
-            m_out = _OUT_TOKEN_RE.search(r_text)
-            m_ca = _CACHE_TOKEN_RE.search(r_text)
+            token_header = _RECEIPT_TOKENS_RE.search(r_text)
+            if token_header is None:
+                continue
+            token_fields = token_header.group(1)
+            m_in = _TOKEN_NUM_RE.search(token_fields)
+            m_out = _OUT_TOKEN_RE.search(token_fields)
+            m_ca = _CACHE_TOKEN_RE.search(token_fields)
             if m_in or m_out:
                 in_t = int(m_in.group(1)) if m_in else 0
                 out_t = int(m_out.group(1)) if m_out else 0
@@ -1284,10 +1268,12 @@ def build_goal_trace(
                             "llm.input_tokens": in_t,
                             "llm.output_tokens": out_t,
                             "llm.cache_read": ca_t,
-                            "evidence.source": f"receipts/{rf.name}",
+                            "evidence.source": f"receipts/{rf.name}:Tokens",
+                            **_point_event_timing(),
                         },
                         input_payload={"receipt": rf.name},
-                        output_payload={"input_tokens": in_t, "output_tokens": out_t, "cache_read": ca_t},
+                        output_payload={"input_tokens": in_t, "output_tokens": out_t, "cache_read": ca_t,
+                                        **_point_event_timing()},
                         model=tl_model,
                         input_tokens=in_t,
                         output_tokens=out_t,
@@ -1430,7 +1416,7 @@ def build_session_trace_from_activity(
                 category="skill_load",
                 name=f"Skill Load: {sk_name}",
                 start_ns=sk_ts,
-                end_ns=sk_ts + 10_000_000,
+                end_ns=sk_ts + 1_000_000,
                 status_ok=True,
                 attributes={"skill.name": sk_name, "evidence.source": src_id},
                 input_payload={"skill": sk_name},
@@ -1467,7 +1453,7 @@ def build_session_trace_from_activity(
                 category="l1_reference_read",
                 name=f"L1 Reference Read: {Path(rp).name}",
                 start_ns=r_ts,
-                end_ns=r_ts + 10_000_000,
+                end_ns=r_ts + 1_000_000,
                 status_ok=True,
                 attributes=ref_attrs,
                 input_payload={"path": rp},
@@ -1538,6 +1524,8 @@ def build_session_trace_from_activity(
                 cache_read=ca_t,
             )
         )
+
+    _apply_activity_evidence(spans, activity)
 
     duration_ms = round((e_ns - s_ns) / 1_000_000, 2)
     present_categories = sorted({sp.category for sp in spans})
@@ -1795,6 +1783,7 @@ def collect_historical_traces(
                         )
                     )
 
+            fb_durations: dict[str, int] = {}
             fb_scripts: list[tuple[str, str, int, int, int | None, str]] = []
             for idx, sc in enumerate(scripts):
                 sp_p = str(sc.get("script_path") or "").strip()
@@ -1802,19 +1791,16 @@ def collect_historical_traces(
                     dur = max(1, int(float(sc.get("duration_ms") or 1)))
                     raw_ec = sc.get("exit_code")
                     ec = int(raw_ec) if raw_ec is not None else None
-                    fb_scripts.append(
-                        (
-                            sp_p,
-                            sp_p,
-                            parse_iso_to_ns(sc.get("ts"), s_ns),
-                            dur,
-                            ec,
-                            str(sc.get("call_uid") or sc.get("event_id") or f"script:{idx}"),
-                        )
-                    )
+                    source_id = str(sc.get("call_uid") or sc.get("event_id") or f"script:{idx}")
+                    if sc.get("duration_ms") is not None:
+                        fb_durations[source_id] = dur
+                    fb_scripts.append((sp_p, sp_p, parse_iso_to_ns(sc.get("ts"), s_ns), dur, ec, source_id))
 
             fb_llms: list[tuple[str, int, int, int, int, int, str]] = []
-            source_llm_rows = turns if turns else skill_turns
+            token_skill_turns = [row for row in skill_turns if any(
+                int(row.get(key) or 0) > 0 for key in ("input_tokens", "output_tokens", "cache_read")
+            )]
+            source_llm_rows = token_skill_turns if token_skill_turns else turns
             for idx, tn in enumerate(source_llm_rows):
                 in_t = int(tn.get("input_tokens") or 0)
                 out_t = int(tn.get("output_tokens") or 0)
@@ -1825,7 +1811,7 @@ def collect_historical_traces(
                         (
                             m_name,
                             parse_iso_to_ns(tn.get("ts"), s_ns),
-                            100,
+                            1,
                             in_t,
                             out_t,
                             ca_t,
@@ -1846,6 +1832,7 @@ def collect_historical_traces(
                 ref_reads=fb_refs,
                 script_execs=fb_scripts,
                 llm_calls=fb_llms,
+                measured_durations_ms=fb_durations,
             )
             session_traces.append(build_session_trace_from_activity(fb_act, skills_root=skills_root))
 

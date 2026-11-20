@@ -234,6 +234,15 @@ class TraceBackfillExporterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            (goal_dir / "receipts").mkdir()
+            (goal_dir / "receipts" / "T1-writer-r1.md").write_text(
+                "Not executed: python3 skills/team-lead/scripts/feedback_guard.py; "
+                "not loaded or read: skills/team-lead/SKILL.md or "
+                "skills/team-lead/references/ledger.md. Follow-up recommendations only.\n"
+                "Example, not measured: input_tokens=900 output_tokens=100.\n",
+                encoding="utf-8",
+            )
+
             tr = EXPORTER.build_goal_trace(
                 goal_dir,
                 EXPORTER._load_warehouse_maps(root / "nonexistent.db"),
@@ -248,6 +257,120 @@ class TraceBackfillExporterTests(unittest.TestCase):
                 set(tr.output_payload["missing_categories"]),
                 {"skill_load", "l1_reference_read", "l2_script_exec", "llm_generation"},
             )
+            (goal_dir / "receipts" / "T1-writer-r1.md").write_text(
+                "- Tokens: input_tokens=100 output_tokens=20 cache_read=30\n", encoding="utf-8",
+            )
+            attested_tokens = EXPORTER.build_goal_trace(goal_dir, EXPORTER._load_warehouse_maps(root / "none.db"))
+            generations = [sp for sp in attested_tokens.spans if sp.category == "llm_generation"]
+            self.assertEqual(len(generations), 1)
+            self.assertEqual(attested_tokens.output_payload["total_input_tokens"], 100)
+            self.assertEqual(generations[0].end_ns - generations[0].start_ns, 1_000_000)
+            self.assertIs(generations[0].attributes["timing.measured"], False)
+
+    def test_user_mentions_are_not_skill_execution_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sdir = root / "session-state" / "negative-mentions"
+            sdir.mkdir(parents=True)
+            events_path = sdir / "events.jsonl"
+            events_path.write_text(json.dumps({
+                "type": "user.message",
+                "timestamp": "2026-11-20T02:00:00Z",
+                "data": {"content": "Do not load skills/team-lead/SKILL.md or read "
+                         "skills/team-lead/references/ledger.md or execute "
+                         "python3 skills/team-lead/scripts/feedback_guard.py."},
+            }) + "\n", encoding="utf-8")
+            tr = EXPORTER.build_session_trace_from_copilot(
+                events_path, EXPORTER._load_warehouse_maps(root / "none.db"), {},
+            )
+            self.assertEqual({sp.category for sp in tr.spans}, {"root", "stage_role"})
+
+    def test_point_events_and_measured_tool_timing_in_goal_and_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handoff, sessions, _, db = self._seed_synthetic_workspace(root)
+            events_path = next(sessions.glob("*/events.jsonl"))
+            events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+            for idx, (tool, args, complete) in enumerate([
+                ("skill", {"skill": "team-lead"}, True),
+                ("view", {"path": "skills/team-lead/references/ledger.md"}, True),
+                ("skill", {"skill": "deep-research"}, False),
+                ("view", {"path": "skills/deep-research/SKILL.md"}, False),
+            ]):
+                events.append({
+                    "type": "tool.execution_start", "timestamp": f"2026-11-20T02:10:{10 + idx:02d}.000Z",
+                    "data": {"toolCallId": f"timing-{idx}", "toolName": tool, "arguments": args},
+                })
+                if complete:
+                    events.append({
+                        "type": "tool.execution_complete", "timestamp": f"2026-11-20T02:10:{10 + idx:02d}.250Z",
+                        "data": {"toolCallId": f"timing-{idx}", "success": True},
+                    })
+            events.append({
+                "type": "user.message", "timestamp": "2026-11-20T02:10:14Z",
+                "data": {"content": '<skill-context name="code-review">\nLoaded context\n</skill-context>'},
+            })
+            events_path.write_text("\n".join(json.dumps(ev) for ev in events) + "\n", encoding="utf-8")
+            sid = events_path.parent.name
+            usage = {sid: {
+                "skill_turn": [{"skill": "skill-contract", "event_id": "usage-skill", "ts": "2026-11-20T02:10:15Z"}],
+                "reference_hit": [{"reference_path": "skills/skill-contract/SKILL.md", "event_id": "usage-ref",
+                                   "ts": "2026-11-20T02:10:15Z"}],
+            }}
+            maps = EXPORTER._load_warehouse_maps(db)
+            activity = EXPORTER.parse_copilot_session_activity(events_path, maps, usage)
+            traces = [
+                EXPORTER.build_session_trace_from_activity(activity),
+                EXPORTER.build_goal_trace(handoff / "sample-goal-eval", maps, [activity]),
+            ]
+            for tr in traces:
+                with self.subTest(kind=tr.trace_kind):
+                    spans = [sp for sp in tr.spans if sp.category in ("skill_load", "l1_reference_read")]
+                    self.assertTrue(any(sp.attributes.get("skill.name") == "code-review" for sp in spans))
+                    measured = [sp for sp in spans if sp.attributes["evidence.source"] in
+                                ("copilot:tool:timing-0", "copilot:view:timing-1")]
+                    self.assertEqual(len(measured), 2)
+                    for sp in spans:
+                        is_measured = sp in measured
+                        self.assertEqual(sp.end_ns - sp.start_ns, (250 if is_measured else 1) * 1_000_000)
+                        for payload in (sp.attributes, sp.output_payload):
+                            self.assertIs(payload["timing.measured"], is_measured)
+                            self.assertEqual(payload["timing.provenance"],
+                                             "measured" if is_measured else "point_event_unmeasured")
+            m2 = next(sp for sp in traces[1].spans if sp.attributes.get("stage.role") == "M2")
+            self.assertEqual(m2.end_ns - m2.start_ns, 1_000_000)
+            self.assertIs(m2.attributes["timing.measured"], False)
+            self.assertEqual(m2.output_payload["timing.provenance"], "point_event_unmeasured")
+
+    def test_all_fallback_generations_use_one_authoritative_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sdir = root / "session-state" / "fallback-rows"
+            sdir.mkdir(parents=True)
+            events = [{"type": "user.message", "timestamp": "2026-11-20T02:00:00Z",
+                       "data": {"content": "Read recorded telemetry"}}]
+            events_path = sdir / "events.jsonl"
+            rows = [{"kind": "skill_turn", "session_id": sdir.name, "skill": "team-lead",
+                     "ts": f"2026-11-20T02:00:0{idx}Z", "event_id": f"row-{idx}",
+                     "model": "test-model", "input_tokens": tokens, "output_tokens": 10}
+                    for idx, tokens in enumerate((100, 200, 300), start=1)]
+            usage_path = root / "usage.jsonl"
+            usage_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            usage = EXPORTER._load_usage_jsonl(usage_path)
+            maps = EXPORTER._load_warehouse_maps(root / "none.db")
+            maps["turns_by_session"][sdir.name] = [dict(row, turn_uuid=f"wh-{idx}") for idx, row in enumerate(rows)]
+            for source, expected_count, expected_tokens in (("usage", 3, 600), ("warehouse", 3, 600), ("copilot", 1, 900)):
+                with self.subTest(source=source):
+                    if source == "copilot":
+                        events.append({"type": "session.usage_record", "timestamp": "2026-11-20T02:00:05Z",
+                                       "data": {"usage": {"inputTokens": 900, "duration": 250}}})
+                    events_path.write_text("\n".join(json.dumps(ev) for ev in events) + "\n", encoding="utf-8")
+                    selected_usage = usage if source != "warehouse" else {sdir.name: {"skill_turn": [{"skill": "team-lead"}]}}
+                    tr = EXPORTER.build_session_trace_from_copilot(events_path, maps, selected_usage)
+                    generations = [sp for sp in tr.spans if sp.category == "llm_generation"]
+                    self.assertEqual(len(generations), expected_count)
+                    self.assertEqual(sum(sp.input_tokens for sp in generations), expected_tokens)
+                    self.assertEqual(tr.output_payload["total_input_tokens"], expected_tokens)
 
     def test_session_exports_all_generations_and_reconciles_root_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -402,6 +525,30 @@ class TraceBackfillExporterTests(unittest.TestCase):
             self.assertEqual(cimon_sp.attributes["script.exit_code"], 0)
             self.assertIs(cimon_sp.status_ok, True)
             self.assertGreaterEqual(int(cimon_sp.attributes["script.duration_ms"]), 3000)
+
+            events.extend([
+                {"type": "tool.execution_start", "timestamp": "2026-11-20T04:00:06Z",
+                 "data": {"toolCallId": "transport-failure", "toolName": "bash",
+                          "arguments": {"command": "python3 skills/team-lead/scripts/feedback_guard.py"}}},
+                {"type": "tool.execution_complete", "timestamp": "2026-11-20T04:00:06.100Z",
+                 "data": {"toolCallId": "transport-failure", "success": False, "error": {"message": "unavailable"}}},
+            ])
+            (sdir / "events.jsonl").write_text("\n".join(json.dumps(ev) for ev in events) + "\n", encoding="utf-8")
+            maps = EXPORTER._load_warehouse_maps(root / "none.db")
+            activity = EXPORTER.parse_copilot_session_activity(sdir / "events.jsonl", maps, {})
+            self.assertIsNone(activity.script_execs[-1][4])
+            handoff, _, _, _ = self._seed_synthetic_workspace(root)
+            for tr in (EXPORTER.build_session_trace_from_activity(activity),
+                       EXPORTER.build_goal_trace(handoff / "sample-goal-eval", maps, [activity])):
+                failed = next(sp for sp in tr.spans if sp.name == "L2 Script Exec: feedback_guard.py")
+                self.assertIsNone(failed.status_ok)
+                self.assertIsNone(failed.output_payload["exit_code"])
+                self.assertNotIn("script.exit_code", failed.attributes)
+                self.assertEqual(failed.attributes["script.exit_status"], "unknown")
+                self.assertIs(failed.attributes["tool.transport_success"], False)
+                observation = next(ev for ev in EXPORTER.build_langfuse_ingestion_events(tr)
+                                   if ev["body"]["id"] == failed.span_id)
+                self.assertEqual(observation["body"]["level"], "WARNING")
 
     def test_fallback_session_deduplication_preserves_quota(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
