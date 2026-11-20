@@ -77,17 +77,18 @@
     },
     {
       "id": "EV-005",
-      "title": "multica_loop_runner.py shared symlink and CLI subcommands",
+      "title": "multica_loop_runner.py canonical CLI and shared symlink sync-autopilots",
       "tags": [
         "multica",
         "autopilot",
         "jev"
       ],
-      "cmd": "python3 skills/m2-dispatcher/scripts/multica_loop_runner.py sync-autopilots --dry-run",
+      "cmd": "python3 skills/team-lead/scripts/multica_loop_runner.py sync-autopilots --dry-run",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "daily-brief",
         "skills-roi-diagnostic",
+        "Daily Skill Progressive Retro Autopilot",
         "daily-learn-recommend",
         "aidash-retro-delta",
         "local-herdr-worktree-gc"

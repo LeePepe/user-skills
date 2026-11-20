@@ -929,7 +929,7 @@ def _sanitize_human_zone_text(text: str) -> str:
 
 
 def _extract_skill_retro_digest_proposals(patrol_digest: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    roi_entry = patrol_digest.get("skills-roi-diagnostic")
+    roi_entry = patrol_digest.get("skill-retro-diagnostic") or patrol_digest.get("skills-roi-diagnostic")
     if not isinstance(roi_entry, dict):
         return {}, []
     sr = roi_entry.get("skill_retro")
@@ -982,7 +982,9 @@ def render_dual_zone_brief(
     actionable_patrols = [
         (lid, entry)
         for lid, entry in sorted(resolved_patrol.items())
-        if isinstance(entry, dict) and entry.get("actionable") and (entry.get("items") or (lid == "skills-roi-diagnostic" and skill_retro_proposals))
+        if isinstance(entry, dict)
+        and entry.get("actionable")
+        and (entry.get("items") or (lid in {"skills-roi-diagnostic", "skill-retro-diagnostic"} and skill_retro_proposals))
     ]
     bucket_label_map = {
         "needs": "待你拍板阻塞项，确认后才能继续推进",
@@ -1047,11 +1049,10 @@ def render_dual_zone_brief(
     for lid, entry in actionable_patrols[:3]:
         if len(items) >= 11:
             break
-        if lid == "skills-roi-diagnostic" and skill_retro_proposals:
-            # Already surfaced high-signal skill-retro proposals above; only add non-duplicate ROI items if any
-            candidate_items = [it for it in (entry.get("items") or []) if isinstance(it, dict)]
-        else:
-            candidate_items = [it for it in (entry.get("items") or [])[:1] if isinstance(it, dict)]
+        if lid in {"skills-roi-diagnostic", "skill-retro-diagnostic"} and skill_retro_proposals:
+            # High-signal skill-retro proposals are already surfaced directly above
+            continue
+        candidate_items = [it for it in (entry.get("items") or [])[:1] if isinstance(it, dict)]
         for cand in candidate_items:
             p_what = _sanitize_human_zone_text(str(cand.get("what") or lid))[:42]
             p_why = _sanitize_human_zone_text(str(cand.get("why") or entry.get("summary") or "巡检聚合跟进"))[:48]

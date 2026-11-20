@@ -200,39 +200,38 @@ class IssueBriefSkillTests(unittest.TestCase):
             self.assertFalse(bad_parsed["ok"])
 
     def test_multica_skills_autopilot_renders_dual_zone_and_supports_update_issue_id(self) -> None:
-        raw = {
+        raw_skill_retro = {
             "ok": True,
-            "wall_clock_date": "2026-11-18",
-            "window_cst": "7d",
-            "source_as_of": "2026-11-18T22:52:43+08:00",
-            "sample_size": 31751,
+            "schema": "skill-retro-diagnostic/v1",
+            "wall_clock_date": "2026-11-21",
+            "window_cst": "30d",
+            "source_as_of": "2026-11-21T00:30:00+08:00",
+            "sample_size": 68,
             "coverage_status": "healthy",
-            "S1_pin_drift": {"outdated_pin_count": 1, "all_up_to_date": False},
-            "S3_skill_health": {"total_skills": 30, "audit_pass_count": 30, "audit_pass_rate": 1.0},
-            "S2_gate_catch": {"eval_effect": {"interceptions_7d": 10, "escapes_7d": 2}},
-            "S4_usage_and_r1": {"active_skills_count": 15, "idle_skills_30d": [], "empty_load_rate": 0.02},
-            "S6_load_vs_script": [],
-            "S7_disclosure_funnel": [],
-            "S9_escape_attribution": [{"skill": "team-lead", "impl_bug_escapes": 4, "spec_gap_escapes": 6}],
-            "S10_skill_roi_ranking": [
+            "summary": {
+                "trigger_miss_skills": 0,
+                "directional_drifts": 1,
+                "unwired_drawers_count": 1,
+                "rigid_roadblock_scripts_count": 1,
+                "slow_flywheel_ready": True,
+                "observation_pool_count": 0,
+            },
+            "proposals": [
                 {
+                    "id": "skill-retro-l2-roadblock-team-lead-goal-queue-py",
                     "skill": "team-lead",
-                    "diagnostic_status": "high_repair_loop",
-                    "roi_score": 0.0199,
-                    "r1_pass_rate": 0.667,
-                    "loads_30d": 100,
-                    "script_execs": 80,
-                    "unpracticed_rate": 0.2,
-                    "impl_bug_escapes": 4,
-                    "spec_gap_escapes": 6,
-                    "diagnosis": "[IMPL_BUG] 漏网 4 次；[SPEC_GAP] 盲区 6 次",
-                    "needs_optimization": True,
+                    "layer": "L2",
+                    "category": "rigid_roadblock",
+                    "priority": "P1",
+                    "title": "[Skill Retro L2] 柔化 `team-lead/goal-queue.py` 参数路障（`exit=2` 触发 4 次）",
+                    "plain_reason": "`team-lead` 的脚本 `goal-queue.py` 发生 4 次参数报错，需补兼容参数与自解释提示",
+                    "action": "Add compatible CLI flag aliases to `skills/team-lead/scripts/goal-queue.py`.",
+                    "scope_triage": {"emit_proposal": True},
                 }
             ],
-            "S12_tool_context_burn": [],
-            "recommendations": [],
+            "observation_pool": [],
         }
-        snap = AUTOPILOT.collect_skills_roi_snapshot(diagnostics_fn=lambda **_kw: raw)
+        snap = AUTOPILOT.collect_skill_retro_snapshot(skill_retro_fn=lambda **_kw: raw_skill_retro)
         report = ISSUE_BRIEF.verify_dual_zone_issue(snap["markdown_brief"])
         self.assertTrue(report["ok"], report)
         self.assertLessEqual(report["human_zone_lines"], 15)

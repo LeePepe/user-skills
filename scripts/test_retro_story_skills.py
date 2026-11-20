@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Unit tests for Multica Skills ROI Autopilot (`multica_skills_autopilot.py`)."""
+"""Unit tests for Multica Skill Progressive Retro Autopilot (`multica_skills_autopilot.py`)."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
 import json
@@ -14,6 +15,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+CST = timezone(timedelta(hours=8))
 
 
 def _load_autopilot_module():
@@ -28,219 +30,209 @@ def _load_autopilot_module():
 AUTOPILOT = _load_autopilot_module()
 
 
-def _sample_raw_diagnostics() -> dict:
+def _sample_skill_retro_report() -> dict:
     return {
         "ok": True,
-        "wall_clock_date": "2026-11-18",
-        "window_cst": "7d",
-        "source_as_of": "2026-11-18T19:00:00+08:00",
-        "sample_size": 1420,
+        "schema": "skill-retro-diagnostic/v1",
+        "wall_clock_date": "2026-11-21",
+        "window_cst": "30d",
+        "source_as_of": "2026-11-21T00:30:00+08:00",
+        "sample_size": 64,
         "coverage_status": "healthy",
-        "window_anchor": {
-            "anchor_date": "2026-11-18",
-            "source_as_of": "2026-11-18",
-            "staleness_days": 0,
-            "coverage_status": "fresh",
+        "sources_ingested": {
+            "sessions_observed": 64,
+            "trace_spans_ingested": 180,
+            "skills_in_inventory": 28,
         },
-        "S1_pin_drift": {
-            "outdated_pin_count": 2,
-            "all_up_to_date": False,
+        "summary": {
+            "trigger_miss_skills": 1,
+            "zero_action_load_skills": 1,
+            "healthy_r1_r2_convergences": 3,
+            "directional_drifts": 1,
+            "hot_drawers_count": 2,
+            "on_demand_drawers_count": 5,
+            "unwired_drawers_count": 1,
+            "true_deadwood_drawers_count": 0,
+            "true_catcher_scripts_count": 12,
+            "ceremonial_scripts_count": 2,
+            "rigid_roadblock_scripts_count": 1,
+            "latency_sink_scripts_count": 1,
+            "wild_patterns_count": 1,
+            "high_signal_proposals_count": 2,
+            "observation_pool_count": 1,
+            "slow_flywheel_ready": True,
         },
-        "S3_skill_health": {
-            "total_skills": 30,
-            "audit_pass_count": 27,
-            "audit_pass_rate": 0.9,
-            "top3_l0_watermarks": [
-                {"skill": "legacy-bloated-skill", "l0_lines": 240, "l0_cap": 180},
-                {"skill": "retro-loop", "l0_lines": 106, "l0_cap": 180},
+        "layer0_direction_and_triggers": {
+            "trigger_misses": [{"skill": "my-designer", "missed_sessions": 2, "domain_sessions": 6, "miss_rate": 0.33}],
+            "zero_action_loads": [],
+            "healthy_convergence_count": 3,
+            "directional_drift_count": 1,
+        },
+        "layer1_drawer_metabolism": {
+            "hot_drawers": [],
+            "on_demand_correction_drawers": [],
+            "unwired_disconnected_drawers": [
+                {"skill": "my-designer", "drawer": "references/unwired-a11y.md", "domain_failure_count": 3, "scenario_sessions": 6}
             ],
-            "top3_l1_watermarks": [],
-            "eval_case_total": 68,
-            "eval_case_weekly_delta": 4,
+            "true_zero_hit_deadwood": [],
         },
-        "S2_gate_catch": {
-            "eval_effect": {
-                "interceptions_7d": 3,
-                "escapes_7d": 1,
-                "interception_rate": 0.75,
-                "by_eval_case": {"case-a": {"interceptions": 3, "escapes": 1}},
-            }
+        "layer2_script_efficacy_and_speed": {
+            "true_catchers": [],
+            "ceremonial_rubber_stamps": [],
+            "rigid_roadblocks": [
+                {"skill": "team-lead", "script": "scripts/goal-supervisor.py", "exit_2_count": 3, "exit_2_sessions": 2}
+            ],
+            "latency_sinks": [],
         },
-        "S4_usage_and_r1": {
-            "active_skills_count": 12,
-            "idle_skills_30d": ["unused-skill-a", "unused-skill-b"],
-            "empty_load_rate": 0.25,
+        "layer3_wild_patterns_and_eval": {
+            "wild_patterns": [],
+            "taste_and_diversity_summary": {"selection_receipt_count": 2},
         },
-
-        "S6_load_vs_script": [
+        "proposals": [
             {
+                "id": "skill-retro-l2-roadblock-team-lead-goal-supervisor-py",
+                "ref": "retro://skill-retro/l2-roadblock/team-lead/goal-supervisor.py",
+                "metric_id": "skill-retro-l2-roadblock-team-lead",
                 "skill": "team-lead",
-                "loads_30d": 120,
-                "script_execs": 12,
-                "script_touch_rate": 0.1,
-                "script_p95_ms": 450.0,
-                "script_success_rate": 0.9,
-                "unpracticed_rate": 0.9,
-                "empty_load_rate": 0.7,
-                "reference_hit_count": 2,
-                "eval_interceptions": 3,
-                "eval_escapes": 1,
+                "layer": "L2",
+                "category": "rigid_roadblock",
+                "priority": "P1",
+                "title": "[Skill Retro L2] 消除脚本参数路障 `team-lead/goal-supervisor.py`（exit=2 失败 3 次）",
+                "plain_reason": "`goal-supervisor.py` 因参数过严触发 3 次 `exit=2`，需补兼容参数与报错自引导",
+                "action": "Add compatible CLI flag aliases and self-disclosing usage on exit=2.",
+                "detail": "layer=L2 | category=rigid_roadblock | skill=team-lead",
+                "scope_triage": {"emit_proposal": True},
             },
             {
-                "skill": "aidash-content",
-                "loads_30d": 4,
-                "script_execs": 2,
-                "script_touch_rate": 0.5,
-                "unpracticed_rate": 0.5,
-            },
-        ],
-        "S7_disclosure_funnel": [
-            {
-                "skill": "team-lead",
-                "l0_only_rate": 0.7,
-                "l1_selective_rate": 0.2,
-                "l1_greedy_violation_rate": 0.1,
-                "avg_context_tokens": 18000,
-            }
-        ],
-        "S9_escape_attribution": [
-            {"skill": "team-lead", "impl_bug_escapes": 5, "spec_gap_escapes": 8},
-            {"skill": "my-designer", "impl_bug_escapes": 2, "spec_gap_escapes": 4},
-        ],
-        "S10_skill_roi_ranking": [
-            {
-                "skill": "team-lead",
-                "diagnostic_status": "high_repair_loop",
-                "roi_score": 0.085,
-                "r1_pass_rate": 0.5,
-                "r1_total": 6,
-                "loads_30d": 120,
-                "loads_7d": 25,
-                "script_execs": 12,
-                "script_p95_ms": 450.0,
-                "script_success_rate": 0.9,
-                "unpracticed_rate": 0.9,
-                "empty_load_rate": 0.7,
-                "reference_hit_count": 2,
-                "eval_interceptions": 3,
-                "eval_escapes": 1,
-                "post_invocation_repair_loop_rate": 0.35,
-                "impl_bug_escapes": 5,
-                "spec_gap_escapes": 8,
-                "edit_churn_count": 1,
-                "l1_greedy_violation_rate": 0.1,
-                "diagnosis": "光读不练率 90%（脚本未充分触发）；[IMPL_BUG] 漏网 5 次",
-                "source_as_of": "2026-11-18T18:30:00+08:00",
-                "sample_size": 120,
-                "needs_optimization": True,
-            },
-            {
+                "id": "skill-retro-l1-unwired-my-designer-unwired-a11y",
+                "ref": "retro://skill-retro/l1-unwired/my-designer/unwired-a11y.md",
+                "metric_id": "skill-retro-l1-unwired-my-designer",
                 "skill": "my-designer",
-                "diagnostic_status": "high_repair_loop",
-                "roi_score": None,
-                "r1_pass_rate": 0.3333,
-                "r1_total": 3,
-                "loads_30d": 24,
-                "loads_7d": 6,
-                "script_execs": 18,
-                "unpracticed_rate": 0.25,
-                "post_invocation_repair_loop_rate": 0.6,
-                "impl_bug_escapes": 2,
-                "spec_gap_escapes": 4,
-                "edit_churn_count": 0,
-                "l1_greedy_violation_rate": 0.0,
-                "diagnosis": "[SPEC_GAP] 盲区 4 次",
-                "source_as_of": "2026-11-18T18:00:00+08:00",
-                "sample_size": 24,
-                "needs_optimization": True,
+                "layer": "L1",
+                "category": "unwired_disconnected_drawer",
+                "priority": "P1",
+                "title": "[Skill Retro L1] 打通 `my-designer` 断连纠偏抽屉 `unwired-a11y.md`（报错 3 次但 0 读取）",
+                "plain_reason": "`my-designer` 在 3 次失败中均未触发 `unwired-a11y.md` 读取，需在脚本报错中直链该抽屉",
+                "action": "Link `references/unwired-a11y.md` directly in `verify_design_cases.py` stderr.",
+                "detail": "layer=L1 | category=unwired_disconnected_drawer | skill=my-designer",
+                "scope_triage": {"emit_proposal": True},
             },
         ],
-        "S12_tool_context_burn": [
-            {"tool_name": "bash", "call_count": 40, "total_tokens": 90000, "p95_tokens": 12000}
+        "observation_pool": [
+            {
+                "id": "obs-1",
+                "skill": "aidash-metrics",
+                "layer": "L1",
+                "category": "dormant_scenario_drawer",
+                "title": "Low-sample drawer held in observation pool",
+            }
         ],
-        "recommendations": [
-            {"id": "skill-roi-team-lead", "skill": "team-lead", "priority": "P1"}
+        "proposals_written": 2,
+        "auto_proposed": [
+            "skill-retro-l2-roadblock-team-lead-goal-supervisor-py",
+            "skill-retro-l1-unwired-my-designer-unwired-a11y",
         ],
     }
 
 
 class MulticaSkillsAutopilotTests(unittest.TestCase):
-    def test_collect_snapshot_ranks_low_roi_and_renders_p3_markdown(self) -> None:
-        snap = AUTOPILOT.collect_skills_roi_snapshot(
-            diagnostics_fn=lambda **_kwargs: _sample_raw_diagnostics(),
+    def test_collect_snapshot_runs_pure_skill_retro_without_legacy_roi_ranking(self) -> None:
+        snap = AUTOPILOT.collect_skill_retro_snapshot(
+            skill_retro_fn=lambda **_kwargs: _sample_skill_retro_report(),
             top_n=3,
         )
         self.assertTrue(snap["ok"])
-        self.assertEqual(snap["collected_date"], "2026-11-18")
-        self.assertEqual(snap["dedup_key"], "skills-roi-autopilot-2026-11-18")
+        self.assertEqual(snap["schema"], "multica-skill-retro-collect/v2")
+        self.assertEqual(snap["engine"], "skill-retro")
+        self.assertEqual(snap["collected_date"], "2026-11-21")
+        self.assertEqual(snap["dedup_key"], "skill-retro-autopilot-2026-11-21")
         self.assertEqual(snap["target_priority"]["multica_priority"], "medium")
         self.assertEqual(snap["target_priority"]["linear_priority_number"], 3)
         self.assertEqual(snap["target_owner"]["assignee_id"], AUTOPILOT.DEFAULT_OWNER_ID)
-        self.assertIn("[P3 / Priority 3]", snap["default_issue_title"])
+        self.assertIn("[P3 / Priority 3][Skill Retro]", snap["default_issue_title"])
         self.assertEqual(len(snap["top_findings"]), 2)
         self.assertEqual(snap["top_findings"][0]["skill"], "team-lead")
+        self.assertEqual(snap["top_findings"][0]["layer"], "L2")
         self.assertTrue(snap["top_findings"][0]["remediation_commands"])
-        self.assertIn("multica-skills-autopilot:skills-roi-autopilot-2026-11-18", snap["markdown_brief"])
+        # Legacy S-code tables must NOT be present as primary snapshot keys or markdown sections
+        for legacy_key in ("S6_unpracticed_hotspots", "S7_greedy_hotspots", "S9_escape_hotspots", "S3_skill_health", "S12_tool_context_burn"):
+            self.assertNotIn(legacy_key, snap)
+        self.assertNotIn("ROI (`S10`)", snap["markdown_brief"])
+        self.assertIn("4-Layer Progressive Skill Retro Diagnostic", snap["markdown_brief"])
+        self.assertIn("multica-skills-autopilot:skill-retro-autopilot-2026-11-21", snap["markdown_brief"])
         self.assertIn("Priority 3 (`medium`)", snap["markdown_brief"])
         self.assertIn("lee@multica.local", snap["markdown_brief"])
-        self.assertEqual(snap["top_findings"][0]["script_p95_ms"], 450.0)
-        self.assertEqual(snap["top_findings"][0]["reference_hit_count"], 2)
-        self.assertEqual(snap["summary"]["eval_effect"]["interceptions_7d"], 3)
-        self.assertIn("Empty-load", snap["markdown_brief"])
-        self.assertIn("450.0 ms", snap["markdown_brief"])
         issue_brief = AUTOPILOT._load_issue_brief()
         dz_report = issue_brief.verify_dual_zone_issue(snap["markdown_brief"])
         self.assertTrue(dz_report["ok"], dz_report)
         self.assertLessEqual(dz_report["human_zone_lines"], 15)
-        self.assertEqual(dz_report["cursor"], "skills-roi-autopilot-2026-11-18")
+        self.assertEqual(dz_report["cursor"], "skill-retro-autopilot-2026-11-21")
 
-    def test_collect_snapshot_reads_real_gap_metrics_from_warehouse(self) -> None:
+    def test_collect_snapshot_invokes_real_pure_skill_retro_cli_on_synthetic_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             warehouse = root / "warehouse.db"
             copilot = root / "session-store.db"
+            sessions_dir = root / "sessions"
+            sessions_dir.mkdir()
+            usage_jsonl = root / "usage.jsonl"
+            usage_jsonl.write_text("", encoding="utf-8")
+            handoff_root = root / "handoff"
+            handoff_root.mkdir()
             skills_root = root / "skills"
             dev_root = root / "dev"
             dev_root.mkdir()
             skill_dir = skills_root / "alpha"
             (skill_dir / "scripts").mkdir(parents=True)
             (skill_dir / "references").mkdir()
-            (skill_dir / "SKILL.md").write_text("---\nname: alpha\n---\n", encoding="utf-8")
-            with sqlite3.connect(warehouse) as conn:
-                conn.execute("CREATE TABLE fact_turn (session_id TEXT, attribution_skill TEXT, skill_names TEXT, tool_calls TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cst_day TEXT)")
-                conn.execute("CREATE TABLE reference_hits (session_id TEXT, skill TEXT, reference_path TEXT, byte_len INTEGER, cst_day TEXT)")
-                conn.execute("CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, cst_day TEXT)")
-                conn.execute("CREATE TABLE fact_gtt_task_run (goal_id TEXT, task_id TEXT, role_name TEXT, round_no INTEGER, v5_verdict TEXT, status TEXT, skills_used TEXT, cst_day TEXT)")
-                conn.execute('CREATE TABLE fact_gtt_event (goal_id TEXT, evt_type TEXT, note_preview TEXT, eval_case TEXT, interception INTEGER, "escape" INTEGER, cst_day TEXT)')
-                today = "date('now')"
-                conn.execute("INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("s1", "alpha", '["alpha"]', "[]", 100, 10, 0))
-                conn.execute("INSERT INTO fact_turn VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("s2", "alpha", '["alpha"]', "[]", 100, 10, 0))
-                conn.execute(f"INSERT INTO reference_hits VALUES ('s1', 'alpha', 'skills/alpha/references/a.md', 42, {today})")
-                for duration in (10, 20, 30, 40):
-                    conn.execute(f"INSERT INTO script_call VALUES ('s1', 'alpha', 'skills/alpha/scripts/check.py', 0, {duration}, {today})")
-                conn.execute("INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, ?, ?, date('now'))", ("goal-alpha", "T1", "reviewer", 1, "PASS", "done", '["alpha"]'))
-                conn.execute(f"INSERT INTO fact_gtt_event VALUES ('goal-alpha', 'EVAL', '', 'case-a', 1, 0, {today})")
-                conn.execute(f"INSERT INTO fact_gtt_event VALUES ('goal-alpha', 'EVAL', '', 'case-a', 0, 1, {today})")
-                conn.commit()
+            (skill_dir / ".claude-plugin").mkdir()
+            (skill_dir / "SKILL.md").write_text("---\nname: alpha\ndescription: Alpha skill\n---\n# alpha\n", encoding="utf-8")
+            (skill_dir / ".claude-plugin" / "plugin.json").write_text('{"name":"alpha","description":"Alpha","category":"workflow"}\n', encoding="utf-8")
+            (skill_dir / "scripts" / "check.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            now_iso = (datetime.now(CST) - timedelta(hours=1)).replace(microsecond=0)
+            for idx in (1, 2):
+                sdir = sessions_dir / f"s-{idx}"
+                sdir.mkdir()
+                evs = [
+                    {"type": "session.start", "timestamp": now_iso.isoformat(), "data": {"selectedModel": "gpt-5.4"}},
+                    {"type": "skill.invoked", "timestamp": (now_iso + timedelta(seconds=1)).isoformat(), "data": {"name": "alpha", "path": "skills/alpha/SKILL.md"}},
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now_iso + timedelta(seconds=2)).isoformat(),
+                        "data": {"toolCallId": f"c-{idx}", "toolName": "bash", "arguments": {"command": f"python3 {skills_root}/alpha/scripts/check.py --bad"}},
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now_iso + timedelta(seconds=3)).isoformat(),
+                        "data": {"toolCallId": f"c-{idx}", "result": {"content": "<shellId: 1 completed with exit code 2>"}},
+                    },
+                ]
+                (sdir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in evs) + "\n", encoding="utf-8")
+
+            sqlite3.connect(warehouse).close()
             sqlite3.connect(copilot).close()
+
             report = _load_autopilot_module().collect_skills_roi_snapshot(
                 warehouse_db=warehouse,
                 copilot_db=copilot,
+                copilot_sessions_dir=sessions_dir,
+                usage_jsonl=usage_jsonl,
+                handoff_root=handoff_root,
                 skills_root=skills_root,
                 dev_root=dev_root,
                 top_n=5,
             )
+            self.assertEqual(report["engine"], "skill-retro")
+            self.assertEqual(report["summary"]["sample_size"], 2)
+            self.assertGreaterEqual(report["summary"]["rigid_roadblock_scripts_count"], 1)
             row = next(item for item in report["top_findings"] if item["skill"] == "alpha")
-            self.assertEqual(row["script_p95_ms"], 40.0)
-            self.assertEqual(row["reference_hit_count"], 1)
-            self.assertEqual(row["empty_load_rate"], 0.5)
-            self.assertEqual(row["eval_interceptions"], 1)
-            self.assertEqual(row["eval_escapes"], 1)
-            self.assertEqual(report["summary"]["eval_effect"]["escapes_7d"], 1)
+            self.assertEqual(row["layer"], "L2")
+            self.assertEqual(row["category"], "rigid_roadblock")
 
     def test_file_actionable_issue_creates_p3_assigned_to_owner_and_deduplicates(self) -> None:
-        snap = AUTOPILOT.collect_skills_roi_snapshot(
-            diagnostics_fn=lambda **_kwargs: _sample_raw_diagnostics()
+        snap = AUTOPILOT.collect_skill_retro_snapshot(
+            skill_retro_fn=lambda **_kwargs: _sample_skill_retro_report()
         )
         recorded_calls: list[tuple[list[str], str | None]] = []
         existing_issues: list[dict] = []
@@ -265,14 +257,14 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
 
         first = AUTOPILOT.file_actionable_issue(
             snap,
-            analysis_markdown="### Root Cause\n- Sink recurring escapes into deterministic scripts.",
+            analysis_markdown="### Root Cause\n- Soften CLI roadblock and wire disconnected drawer.",
             runner=fake_runner,
         )
         self.assertEqual(first["action"], "created")
         self.assertEqual(first["issue"]["priority"], "medium")
         self.assertEqual(first["issue"]["assignee_id"], AUTOPILOT.DEFAULT_OWNER_ID)
         self.assertEqual(first["issue"]["status"], "backlog")
-        self.assertIn("Agent Root-Cause Analysis", first["issue"]["description"])
+        self.assertIn("Agent Root-Cause Synthesis & Evolution Plan", first["issue"]["description"])
 
         second = AUTOPILOT.file_actionable_issue(
             snap,
@@ -284,51 +276,68 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
         create_calls = [c for c, _ in recorded_calls if c[:2] == ["issue", "create"]]
         self.assertEqual(len(create_calls), 1)
 
-    def test_setup_multica_autopilot_idempotent_create_and_update(self) -> None:
-        state: dict[str, list[dict]] = {"autopilots": [], "triggers": []}
+    def test_setup_multica_autopilot_updates_legacy_4e06bf2a_in_place_without_duplicates(self) -> None:
+        state: dict[str, list[dict]] = {
+            "autopilots": [
+                {
+                    "id": "4e06bf2a-5842-4b3a-928f-fcde3bea7c41",
+                    "title": "Daily Skills ROI Diagnostic Autopilot (Auto-Fix + Daily Brief Digest)",
+                    "description": 'python3 "$HOME/Development/user-skills/skills/m2-dispatcher/scripts/multica_loop_runner.py" run-loop --loop "skills-roi-diagnostic" --json',
+                    "mode": "run_only",
+                    "agent_id": AUTOPILOT.DEFAULT_AGENT_ID,
+                }
+            ],
+            "triggers": [
+                {
+                    "id": "ad0a2d4e-c902-433f-99cb-6bc318561454",
+                    "kind": "schedule",
+                    "cron_expression": "20 8 * * *",
+                    "timezone": "Asia/Shanghai",
+                    "label": "Daily CST Morning Skills ROI Diagnostic",
+                }
+            ],
+        }
 
         def fake_runner(args: list[str], *, stdin_text: str | None = None, **_kwargs) -> subprocess.CompletedProcess[str]:
             del stdin_text
             if args[:2] == ["autopilot", "list"]:
                 return subprocess.CompletedProcess(args, 0, json.dumps({"autopilots": state["autopilots"]}), "")
             if args[:2] == ["autopilot", "create"]:
-                ap = {
-                    "id": "ap-uuid-123",
-                    "title": args[args.index("--title") + 1],
-                    "mode": args[args.index("--mode") + 1],
-                    "agent_id": args[args.index("--agent") + 1],
-                }
-                state["autopilots"].append(ap)
-                return subprocess.CompletedProcess(args, 0, json.dumps(ap), "")
+                raise AssertionError("Must update 4e06bf2a in-place, never create a duplicate autopilot!")
             if args[:2] == ["autopilot", "update"]:
                 ap = state["autopilots"][0]
-                ap["updated"] = True
+                self.assertEqual(args[2], "4e06bf2a-5842-4b3a-928f-fcde3bea7c41")
+                ap["title"] = args[args.index("--title") + 1]
+                ap["description"] = args[args.index("--description") + 1]
                 return subprocess.CompletedProcess(args, 0, json.dumps(ap), "")
             if args[:2] == ["autopilot", "trigger-list"]:
                 return subprocess.CompletedProcess(args, 0, json.dumps({"triggers": state["triggers"]}), "")
-            if args[:2] == ["autopilot", "trigger-add"]:
-                trig = {
-                    "id": "trig-uuid-456",
-                    "kind": "schedule",
-                    "cron": args[args.index("--cron") + 1],
-                    "timezone": args[args.index("--timezone") + 1],
-                }
-                state["triggers"].append(trig)
+            if args[:2] == ["autopilot", "trigger-update"]:
+                self.assertEqual(args[2], "4e06bf2a-5842-4b3a-928f-fcde3bea7c41")
+                self.assertEqual(args[3], "ad0a2d4e-c902-433f-99cb-6bc318561454")
+                trig = state["triggers"][0]
+                trig["cron_expression"] = args[args.index("--cron") + 1]
+                trig["timezone"] = args[args.index("--timezone") + 1]
+                trig["label"] = args[args.index("--label") + 1]
                 return subprocess.CompletedProcess(args, 0, json.dumps(trig), "")
             if args[:2] == ["autopilot", "trigger"]:
                 return subprocess.CompletedProcess(args, 0, json.dumps({"run_id": "run-uuid-789"}), "")
             raise AssertionError(f"Unexpected command: {args}")
 
-        created = AUTOPILOT.setup_multica_autopilot(trigger_now=True, runner=fake_runner)
-        self.assertEqual(created["autopilot_action"], "created")
-        self.assertEqual(created["trigger_action"], "created")
-        self.assertEqual(created["autopilot_id"], "ap-uuid-123")
-        self.assertEqual(created["triggered_run"]["run_id"], "run-uuid-789")
-
-        updated = AUTOPILOT.setup_multica_autopilot(trigger_now=False, runner=fake_runner)
+        updated = AUTOPILOT.setup_multica_autopilot(trigger_now=True, runner=fake_runner)
         self.assertEqual(updated["autopilot_action"], "updated")
-        self.assertEqual(updated["trigger_action"], "unchanged")
-        self.assertIsNone(updated["triggered_run"])
+        self.assertEqual(updated["autopilot_id"], "4e06bf2a-5842-4b3a-928f-fcde3bea7c41")
+        self.assertEqual(updated["trigger_action"], "updated")
+        self.assertEqual(len(state["autopilots"]), 1)
+        self.assertIn("Skill Progressive Retro", state["autopilots"][0]["title"])
+        self.assertIn("skills/team-lead/scripts/multica_loop_runner.py", state["autopilots"][0]["description"])
+        self.assertNotIn("skills/m2-dispatcher/scripts/multica_loop_runner.py", state["autopilots"][0]["description"])
+        self.assertEqual(state["triggers"][0]["cron_expression"], "20 4 * * *")
+
+        second = AUTOPILOT.setup_multica_autopilot(trigger_now=False, runner=fake_runner)
+        self.assertEqual(second["autopilot_action"], "updated")
+        self.assertEqual(second["trigger_action"], "unchanged")
+        self.assertIsNone(second["triggered_run"])
 
     def test_cli_collect_and_run_once_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -338,19 +347,8 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
 
             with mock.patch.object(
                 AUTOPILOT,
-                "_load_retro_engine",
-                return_value=mock.Mock(compute_skill_roi_diagnostics=lambda **_kw: _sample_raw_diagnostics()),
-            ), mock.patch.object(
-                AUTOPILOT,
                 "_invoke_pure_skill_retro_cli",
-                return_value={
-                    "ok": True,
-                    "schema": "skill-retro-diagnostic/v1",
-                    "sample_size": 12,
-                    "summary": {"slow_flywheel_ready": False, "observation_pool_count": 1},
-                    "proposals": [],
-                    "observation_pool": [],
-                },
+                return_value=_sample_skill_retro_report(),
             ):
                 buf = io.StringIO()
                 with mock.patch("sys.stdout", buf):
@@ -358,6 +356,7 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 self.assertTrue(out_json.is_file())
                 parsed = json.loads(out_json.read_text(encoding="utf-8"))
+                self.assertEqual(parsed["engine"], "skill-retro")
                 self.assertEqual(parsed["top_findings"][0]["skill"], "team-lead")
                 self.assertTrue(parsed["skill_retro"]["enabled"])
 
@@ -382,49 +381,7 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
                 self.assertIn("Custom agent finding", run_res["issue_result"]["description"])
 
     def test_skill_retro_cli_wiring_and_cohort_watermark_skip_no_delta(self) -> None:
-        sample_skill_retro = {
-            "ok": True,
-            "schema": "skill-retro-diagnostic/v1",
-            "source_as_of": "2026-11-20T08:00:00+08:00",
-            "sample_size": 54,
-            "coverage_status": "healthy",
-            "summary": {
-                "trigger_miss_skills": 1,
-                "directional_drifts": 0,
-                "unwired_drawers_count": 1,
-                "true_deadwood_drawers_count": 0,
-                "rigid_roadblock_scripts_count": 1,
-                "latency_sink_scripts_count": 0,
-                "wild_patterns_count": 1,
-                "observation_pool_count": 1,
-                "slow_flywheel_ready": True,
-            },
-            "proposals": [
-                {
-                    "id": "skill-retro-l2-roadblock-team-lead-goal-supervisor-py",
-                    "skill": "team-lead",
-                    "layer": "L2",
-                    "category": "rigid_roadblock",
-                    "priority": "P1",
-                    "title": "[Skill Retro L2] 消除脚本参数路障 `team-lead/goal-supervisor.py`（exit=2 失败 3 次）",
-                    "plain_reason": "`goal-supervisor.py` 因 CLI 参数契约过严触发 3 次 `exit=2`，需补自解释报错",
-                    "action": "Soften CLI argument ergonomics or emit exact valid usage on exit=2.",
-                    "detail": "layer=L2 | category=rigid_roadblock | skill=team-lead",
-                    "scope_triage": {"emit_proposal": True},
-                }
-            ],
-            "observation_pool": [
-                {
-                    "id": "obs-1",
-                    "skill": "aidash-metrics",
-                    "layer": "L1",
-                    "category": "dormant_scenario_drawer",
-                    "title": "Low-sample drawer held in observation pool",
-                }
-            ],
-            "proposals_written": 1,
-            "auto_proposed": ["skill-retro-l2-roadblock-team-lead-goal-supervisor-py"],
-        }
+        sample_skill_retro = _sample_skill_retro_report()
 
         with tempfile.TemporaryDirectory() as tmp:
             wm_path = Path(tmp) / "skill-retro-watermark.json"
@@ -446,11 +403,9 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
 
             first_run = AUTOPILOT.run_once_pipeline(
                 collect_output=collect_out,
-                include_skill_retro=True,
                 skill_retro_auto_propose=True,
                 skill_retro_watermark_path=wm_path,
                 skip_if_no_cohort_delta=True,
-                diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
                 skill_retro_fn=fake_skill_retro,
                 runner=fake_runner,
             )
@@ -460,8 +415,8 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
             saved_snap = json.loads(collect_out.read_text(encoding="utf-8"))
             self.assertTrue(saved_snap["cohort_gate"]["has_delta"])
             self.assertTrue(saved_snap["cohort_gate"]["slow_flywheel_ready"])
-            self.assertEqual(saved_snap["summary"]["skill_retro_proposals_count"], 1)
-            self.assertIn("4-Layer Progressive Skill Retro", saved_snap["markdown_brief"])
+            self.assertEqual(saved_snap["summary"]["skill_retro_proposals_count"], 2)
+            self.assertIn("4-Layer Progressive Skill Retro Diagnostic", saved_snap["markdown_brief"])
             dz = AUTOPILOT._load_issue_brief().verify_dual_zone_issue(saved_snap["markdown_brief"])
             self.assertTrue(dz["ok"], dz)
 
@@ -470,11 +425,9 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
             multica_calls.clear()
             second_run = AUTOPILOT.run_once_pipeline(
                 collect_output=collect_out,
-                include_skill_retro=True,
                 skill_retro_auto_propose=True,
                 skill_retro_watermark_path=wm_path,
                 skip_if_no_cohort_delta=True,
-                diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
                 skill_retro_fn=fake_skill_retro,
                 runner=fake_runner,
             )
@@ -526,16 +479,12 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 0, '{"id": "mul-ok-2", "identifier": "TIA-88"}', "")
                 return subprocess.CompletedProcess(args, 0, "{}", "")
 
-            # First attempt: L3 command-bearing proposal renders cleanly (no CLI_COMMAND_RE crash),
-            # proposals are queued once, and failed publication does NOT commit delivery watermark.
             with self.assertRaises(RuntimeError):
                 AUTOPILOT.run_once_pipeline(
                     collect_output=collect_out,
-                    include_skill_retro=True,
                     skill_retro_auto_propose=True,
                     skill_retro_watermark_path=wm_path,
                     skip_if_no_cohort_delta=True,
-                    diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
                     skill_retro_fn=fake_l3_retro,
                     runner=flaky_runner,
                 )
@@ -546,16 +495,13 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
             self.assertNotIn("git diff --stat", snap_l3["markdown_brief"].split("<details>", 1)[0])
             self.assertEqual(propose_calls, [False, True])
 
-            # Retry after transient publication failure: still has_delta=True, skips duplicate auto_propose, and delivers!
             fail_publish = False
             propose_calls.clear()
             recovered = AUTOPILOT.run_once_pipeline(
                 collect_output=collect_out,
-                include_skill_retro=True,
                 skill_retro_auto_propose=True,
                 skill_retro_watermark_path=wm_path,
                 skip_if_no_cohort_delta=True,
-                diagnostics_fn=lambda **_kw: _sample_raw_diagnostics(),
                 skill_retro_fn=fake_l3_retro,
                 runner=flaky_runner,
             )
