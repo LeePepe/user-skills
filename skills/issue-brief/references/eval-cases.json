@@ -75,10 +75,22 @@
         "🤖 AI 执行上下文与确定性证据（人无需展开）",
         "multica-cursor:",
         "一句话结论",
+        "duplicate_boilerplate_items",
         "references/dual-zone-spec.md",
         "references/eval-cases.json"
       ],
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-006",
+      "title": "Verifier allows rich concrete tables (TIA-15 style) and rejects repetitive boilerplate checklist items",
+      "tags": [
+        "tables",
+        "anti-boilerplate"
+      ],
+      "cmd": "python3 -c \"import importlib.util; s=importlib.util.spec_from_file_location('vif','skills/issue-brief/scripts/verify_issue_format.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); rich='<!-- multica-cursor:fin-2026-11-20 -->\\n\\n**核心结论**：科技进攻占比 83.39%（¥86,358.24，超配 +48.39%），8天后 017811 免赎回费解锁。\\n\\n| 象限 | 市值 | 占比 |\\n|---|---:|---:|\\n| 科技进攻 | ¥86,358.24 | 83.39% |\\n\\n- [ ] 1. 停投超配科技定投 — 将月度 ¥10,000 切换至黄金 15% 与红利 10%\\n- [ ] 2. 预约 017811 解锁调仓 — 800.00 份满 30 天免赎回费后转防守\\n\\n<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\\nctx\\n</details>\\n'; ok_r=m.verify_dual_zone_issue(rich); assert ok_r['ok'], ok_r; bad='<!-- multica-cursor:bad-dup -->\\n\\n**一句话结论**：发现漂移。\\n\\n- [ ] 1. 同步规格文档（VitalStride） — Specification references a path absent from the main snapshot\\n- [ ] 2. 同步规格文档（VitalStride） — Specification references a path absent from the main snapshot\\n\\n<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\\nctx\\n</details>\\n'; bad_r=m.verify_dual_zone_issue(bad); assert not bad_r['ok'] and any(v['code']=='duplicate_boilerplate_items' for v in bad_r['violations']), bad_r\"",
+      "expect_exit": 0,
+      "registered_at": "2026-11-20"
     }
   ],
   "trigger_evals": [

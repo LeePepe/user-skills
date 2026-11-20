@@ -23,17 +23,18 @@ Every automated or agent-authored Multica / Linear issue must separate **Owner d
 
 ## 2. Upper Zone Rules (`上半区 · 给人看`)
 
-1. **Line Budget (`human_zone_lines <= 15`)**:
+1. **Line Budget (`human_zone_lines <= 45`)**:
    - Count non-empty lines appearing **before** `<details>`, excluding HTML comments (`<!-- ... -->`) and horizontal rules (`---`).
-   - Hard ceiling: `15` lines.
-2. **Required Structure**:
-   - **Plain-Chinese TL;DR**: A single sentence starting with `**一句话结论**：` (or `> **一句话结论**：`).
-   - **Checkable Decision Items**: Concise `- [ ]` or `- [x]` items (`- [ ] 1. <做什么> — <为什么（1句话）>`) so the Owner can check boxes directly.
-3. **Forbidden Noise in Human Zone**:
-   - **Internal Metric / Stage Codes**: `S1`..`S12`, `M1`..`M5`, `EV-001` (or `EV-\d+`), `DC-001` (or `DC-\d+`), `H1`..`H5`, `R10`, `V1`..`V5`. (Note: role name `M2-Dispatcher` is normalized to plain wording such as `自动调度助手` or `后台总控` in Human Zone so `M2` never trips code-noise gates.)
-   - **Raw Hashes & UUIDs**: Commit SHAs (`\b[0-9a-f]{7,40}\b`) and UUIDs (`\b[0-9a-f]{8}-[0-9a-f]{4}-...`).
+   - Practical ceiling: `45` lines by default (`max_human_lines: int = 45`, overridable by callers) so executive summaries and compact Markdown tables fit naturally.
+2. **Encouraged Concrete Content**:
+   - Concrete numbers, percentages (`83.39%`), currency amounts (`¥86,358.24`), fund codes (`017811`), issue/PR identifiers (`TIA-15`, `#196`), file/module names, and **compact Markdown tables** (such as 5-quadrant portfolio tables and FIFO unlock tables) are explicitly allowed and encouraged in the Upper Zone.
+3. **Required Structure & Anti-Boilerplate Gate (`duplicate_boilerplate_items`)**:
+   - **Plain-Chinese TL;DR**: A sentence starting with `**一句话结论**：` or `**核心结论**：`.
+   - **Distinct Checkable Decision Items**: Concise `- [ ]` or `- [x]` items where every item names a **distinct concrete target** and a **specific metric/reason**. Repeating identical targets or copy-pasted generic rationales across 2+ items is rejected with `duplicate_boilerplate_items`.
+4. **Forbidden Noise in Human Zone**:
+   - **Internal Metric / Stage Codes**: `S1`..`S12`, `M1`..`M5`, `EV-001` (or `EV-\d+`), `DC-001` (or `DC-\d+`), `H1`..`H5`, `R10`, `V1`..`V5`.
+   - **Raw Hashes & UUIDs**: Commit SHAs (`\b[0-9a-f]{7,40}\b` hex with letters+digits or 40-char SHA) and UUIDs (`\b[0-9a-f]{8}-[0-9a-f]{4}-...`).
    - **Fenced Code & CLI Invocations**: Multi-line fences (` ``` ` or `~~~`) and CLI commands (`python3 ... --flag`, `multica issue ...`, `./scripts/verify`).
-   - **Markdown Tables**: Pipe tables (`| col | col |`) belong in the Lower Zone unless `allow_compact_table=True` is explicitly enabled for Plan A daily-brief compatibility.
 
 ## 3. Lower Zone & Watermark Rules (`下半区 · 给 AI 看`)
 
@@ -47,7 +48,7 @@ Every automated or agent-authored Multica / Linear issue must separate **Owner d
 ## 4. Python & CLI Contract (`verify_issue_format.py`)
 
 - `render_dual_zone_issue(*, tldr, items, cursor, ai_context_md="", ai_payload=None, extra_comments=None, heading=None, footer=None) -> str`
-- `verify_dual_zone_issue(markdown_text, *, max_human_lines=15, require_cursor=True, allow_compact_table=False) -> dict[str, Any]`
+- `verify_dual_zone_issue(markdown_text, *, max_human_lines=45, require_cursor=True, allow_compact_table=True) -> dict[str, Any]`
 - CLI exit codes:
   - `0`: Compliant Dual-Zone Markdown (`{"ok": true, ...}`).
   - `2`: Contract violation or unreadable input (`{"ok": false, "violations": [...]}`).

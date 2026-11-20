@@ -504,10 +504,26 @@ def propose_gates(harvested: Mapping[str, Any], clustered: Mapping[str, Any] | N
 def _issue_markdown(proposal: Mapping[str, Any], harvested: Mapping[str, Any], *, target_date: date | str | None = None, cursor: str | None = None) -> str:
     issue = _load_issue_brief()
     items = []
-    for row in list(proposal.get("positive_preferences") or [])[:4]:
-        items.append({"what": f"保留偏好：{_sanitize_human_text(row.get('text'), '稳定的界面偏好')}", "why": "多轮证据支持沉淀为可复用审美规则"})
-    for row in list(proposal.get("anti_pattern_gates") or [])[:4]:
-        items.append({"what": f"加入反模式门禁：{_sanitize_human_text(row.get('text'), '重复出现的界面问题')}", "why": "视觉回溯或明确拒绝记录显示需要拦截"})
+    seen_whats: set[str] = set()
+    for row in list(proposal.get("positive_preferences") or []):
+        label = _sanitize_human_text(row.get("text"), "稳定的界面偏好")
+        vid = _sanitize_human_text(row.get("variant_id"), "")
+        what = f"保留偏好：{label}" + (f"（`{vid}`）" if vid and label not in seen_whats else "")
+        if what in seen_whats:
+            continue
+        seen_whats.add(what)
+        items.append({"what": what, "why": f"连续 {max(1, int(row.get('count') or 1))} 轮选型证据支持沉淀为审美规则"})
+        if len(items) >= 4:
+            break
+    for row in list(proposal.get("anti_pattern_gates") or []):
+        label = _sanitize_human_text(row.get("text"), "重复出现的界面问题")
+        what = f"加入反模式门禁：{label}"
+        if what in seen_whats:
+            continue
+        seen_whats.add(what)
+        items.append({"what": what, "why": f"视觉回溯或拒绝记录（{max(1, int(row.get('count') or 1))} 次）显示需要拦截"})
+        if len(items) >= 8:
+            break
     if not items:
         items = [{"what": "暂不新增审美门禁", "why": "当前证据不足以形成稳定偏好或反模式"}]
     date_text = str(target_date or datetime.now(timezone.utc).date())

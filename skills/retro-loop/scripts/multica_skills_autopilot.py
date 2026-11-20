@@ -330,16 +330,20 @@ def build_issue_title(snapshot: dict[str, Any]) -> str:
 
 
 def _plain_chinese_reason_for_skill(row: dict[str, Any]) -> str:
+    sk = str(row.get("skill") or "skill").strip()
     unp = row.get("unpracticed_rate")
+    r1_rate = row.get("r1_pass_rate")
+    loads_30d = int(row.get("loads_30d") or 0)
     impl_esc = int(row.get("impl_bug_escapes") or 0)
     spec_esc = int(row.get("spec_gap_escapes") or 0)
     reasons: list[str] = []
     if impl_esc > 0 or spec_esc > 0:
-        reasons.append(f"近期审查打回与规格盲区共 {impl_esc + spec_esc} 次，需把常见漏检下沉为确定性脚本检查")
+        reasons.append(f"`{sk}` 近期实现缺陷 {impl_esc} 次、规格盲区 {spec_esc} 次，需将高频漏检下沉为确定性脚本")
     if isinstance(unp, (int, float)) and float(unp) >= 0.4:
-        reasons.append(f"文档读取后未调脚本比例 {_pct(float(unp))}，需改为自动脚本入口")
+        reasons.append(f"`{sk}` 30天加载 {loads_30d} 次中未调脚本率 {_pct(float(unp))}，需改为强制首选脚本入口")
     if not reasons:
-        reasons.append("补齐可执行回归断言并收敛入口说明，降低人工返工损耗")
+        r1_txt = f"首轮通过率 {_pct(float(r1_rate))}" if isinstance(r1_rate, (int, float)) else f"30天调用 {loads_30d} 次"
+        reasons.append(f"`{sk}`（{r1_txt}）需补齐可执行抽屉断言以收敛返工损耗")
     return "；".join(reasons[:2]) + "。"
 
 

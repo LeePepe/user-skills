@@ -530,6 +530,74 @@ class MulticaLoopRunnerPipelineTests(unittest.TestCase):
             self.assertEqual(res["delivery"]["autopilot_id"], "ap-roi-123")
             self.assertIn(["autopilot", "trigger", "ap-roi-123", "--output", "json"], calls)
 
+    def test_engineering_patrol_loops_default_to_auto_fix_and_digest_only_unless_forced(self):
+        for loop_id in (
+            "local-herdr-worktree-gc",
+            "spec-code-drift-patrol",
+            "design-taste-evolution",
+            "backlog-grooming-and-push",
+            "skills-roi-diagnostic",
+            "aidash-retro-delta",
+        ):
+            self.assertEqual(loop_runner.resolve_loop_spec(loop_id).delivery_mode, "auto_fix_and_digest_only", loop_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "watermarks.json"
+            buf_file = Path(tmp) / "daily-digest-buffer.json"
+            multica_calls = []
+
+            def forbid_multica(args, **kwargs):
+                multica_calls.append(list(args))
+                return subprocess.CompletedProcess(["multica", *args], 0, stdout='{"issues":[]}', stderr="")
+
+            collected = {
+                "loop_id": "spec-code-drift-patrol",
+                "date": "2026-11-20",
+                "has_delta": True,
+                "delta_count": 1,
+                "actionable": True,
+                "severity": "medium",
+                "watermark": "spec-code-drift-patrol:wm-buf-1",
+                "cursor": "spec-code-drift-patrol-wm-buf-1",
+                "title": "[P3 / Priority 3][Spec-Code Drift] 2026-11-20 规格与代码一致性巡检清单",
+                "summary": "检测到 1 项规格与主线实现漂移。",
+                "items": [{"what": "同步 VitalStride `spec.md:12`", "why": "消除路径漂移"}],
+                "jev": {"actionable": True, "decision_source": "mock"},
+            }
+            res = loop_runner.run_loop(
+                "spec-code-drift-patrol",
+                target_date=date(2026, 11, 20),
+                state_path=state_file,
+                digest_buffer_path=buf_file,
+                collector_fn=lambda _s, target_date: collected,
+                runner=forbid_multica,
+            )
+            self.assertEqual(res["status"], "ACTION_TAKEN")
+            self.assertEqual(res["route"], "auto_fix_and_digest_only")
+            self.assertEqual(res["delivery"]["action"], "buffered_to_daily_digest")
+            self.assertEqual(multica_calls, [])
+            buf_data = loop_runner.load_daily_digest_buffer(buf_file)
+            self.assertIn("spec-code-drift-patrol", buf_data["entries"]["2026-11-20"])
+
+            # With force_create_issue=True, standalone issue creation still works
+            forced = loop_runner.run_loop(
+                "spec-code-drift-patrol",
+                target_date=date(2026, 11, 20),
+                state_path=state_file,
+                digest_buffer_path=buf_file,
+                force=True,
+                force_create_issue=True,
+                collector_fn=lambda _s, target_date: collected,
+                runner=lambda args, **kw: subprocess.CompletedProcess(
+                    ["multica", *args],
+                    0,
+                    stdout='{"issues":[]}' if args[:2] == ["issue", "list"] else '{"id":"forced-1","identifier":"TIA-999"}',
+                    stderr="",
+                ),
+            )
+            self.assertEqual(forced["route"], "dual_zone_issue")
+            self.assertEqual(forced["delivery"]["action"], "created")
+
 
 class DailyBriefDualTargetTests(unittest.TestCase):
     def test_generate_publish_multica_produces_verified_dual_zone_issue_and_keeps_plan_a(self):

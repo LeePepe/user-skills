@@ -67,7 +67,7 @@ class IssueBriefSkillTests(unittest.TestCase):
             "```bash",
             "python3 skills/retro-loop/scripts/multica_skills_autopilot.py --dry-run",
             "```",
-            *[f"- [ ] {idx}. 额外人类区噪音行 {idx}" for idx in range(1, 12)],
+            *[f"- [ ] {idx}. 额外人类区噪音行 {idx} — 具体原因 #{idx}" for idx in range(1, 42)],
             "",
             ISSUE_BRIEF.CANONICAL_DETAILS_OPEN,
             "context",
@@ -81,7 +81,60 @@ class IssueBriefSkillTests(unittest.TestCase):
         self.assertIn("human-zone-uuid", codes)
         self.assertIn("human-zone-fenced-code", codes)
         self.assertIn("human-zone-cli-command", codes)
-        self.assertIn("human-zone-markdown-table", codes)
+
+        forbid_table_report = ISSUE_BRIEF.verify_dual_zone_issue(
+            "\n".join(noisy_lines),
+            allow_compact_table=False,
+        )
+        self.assertIn("human-zone-markdown-table", {v["code"] for v in forbid_table_report["violations"]})
+
+    def test_verify_allows_rich_tia15_tables_and_rejects_duplicate_boilerplate_items(self) -> None:
+        tia15_rich = (
+            "<!-- multica-cursor:loop-financial-rebalance-pulse-2026-11-20 -->\n\n"
+            "**核心结论**：当前组合**科技进攻仓位占比 83.39%（¥86,358.24，较目标 35% 超配 +48.39%）**，且 **8 天后（11月28日）有 3 笔 C 类份额满 30 天免赎回费解锁**。\n\n"
+            "### 1. 全天候五象限仓位偏离表（实盘净值）\n"
+            "| 象限 | 当前市值 (CNY) | 实际占比 | 目标占比 | 偏离度 |\n"
+            "|---|---:|---:|---:|---:|\n"
+            "| **科技进攻** | ¥86,358.24 | **83.39%** | 35.0% | **+48.39%** |\n"
+            "| **宽基指数** | ¥17,198.75 | **16.61%** | 30.0% | -13.39% |\n\n"
+            "### 2. 近期即将满期 0 赎回费解锁批次（FIFO 精确份额）\n"
+            "| 基金代码 | 确认日期 | 剩余份额 | **0 费率解锁日** | 距离解锁 |\n"
+            "|---|---|---:|---|---:|\n"
+            "| **017811** | 2026-10-29 | **800.00 份** (≈¥1,969) | **2026-11-28** | **8 天** |\n\n"
+            "### 3. 待你拍板的执行项\n"
+            "- [ ] **1. 停投超配科技定投** — 将月度 ¥10,000 定投预算从科技进攻切换至黄金（15%）+ 红利低波（10%）\n"
+            "- [ ] **2. 11月28日解锁批次预约提醒** — `017811`（800份）满 30 天免赎回费后评估调仓至防守象限\n\n"
+            f"{ISSUE_BRIEF.CANONICAL_DETAILS_OPEN}\n"
+            "- `source`: `Financial ledger`\n"
+            "</details>\n"
+        )
+        rich_report = ISSUE_BRIEF.verify_dual_zone_issue(tia15_rich)
+        self.assertTrue(rich_report["ok"], rich_report)
+        self.assertEqual(rich_report["max_human_lines"], 45)
+        self.assertLessEqual(rich_report["human_zone_lines"], 45)
+
+        tia5_bad = (
+            "<!-- multica-cursor:spec-code-drift-patrol-bad -->\n\n"
+            "**一句话结论**：检测到漂移。\n\n"
+            "- [ ] 1. 同步规格文档（VitalStride） — Specification references a path absent from the main snapshot\n"
+            "- [ ] 2. 同步规格文档（VitalStride） — Specification references a path absent from the main snapshot\n\n"
+            f"{ISSUE_BRIEF.CANONICAL_DETAILS_OPEN}\nctx\n</details>\n"
+        )
+        tia5_res = ISSUE_BRIEF.verify_dual_zone_issue(tia5_bad)
+        self.assertFalse(tia5_res["ok"])
+        self.assertIn("duplicate_boilerplate_items", {v["code"] for v in tia5_res["violations"]})
+
+        tia14_bad = (
+            "<!-- multica-cursor:skills-roi-bad -->\n\n"
+            "**一句话结论**：检测到 3 个技能需优化。\n\n"
+            "- [ ] 1. 收敛技能 team-lead 的触发与回归门禁 — 降低返工率与无效上下文消耗\n"
+            "- [ ] 2. 收敛技能 howto 的触发与回归门禁 — 降低返工率与无效上下文消耗\n"
+            "- [ ] 3. 收敛技能 update-swiftui-apis 的触发与回归门禁 — 降低返工率与无效上下文消耗\n\n"
+            f"{ISSUE_BRIEF.CANONICAL_DETAILS_OPEN}\nctx\n</details>\n"
+        )
+        tia14_res = ISSUE_BRIEF.verify_dual_zone_issue(tia14_bad)
+        self.assertFalse(tia14_res["ok"])
+        self.assertIn("duplicate_boilerplate_items", {v["code"] for v in tia14_res["violations"]})
 
     def test_verify_catches_commit_sha_missing_cursor_and_unbalanced_details(self) -> None:
         bad_md = (

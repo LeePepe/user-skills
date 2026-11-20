@@ -71,7 +71,7 @@ class LoopSpec:
     autopilot_title: str
     cron: str
     trigger_label: str
-    delivery_mode: str  # "dual_zone_issue" | "autopilot_trigger"
+    delivery_mode: str  # "auto_fix_and_digest_only" | "dual_zone_issue" | "autopilot_trigger"
     issue_title_template: str
     default_status: str = "todo"
     default_priority: str = "medium"
@@ -92,10 +92,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="skills-roi-diagnostic",
         aliases=("skills-roi", "skills_roi"),
-        autopilot_title="Daily Skills ROI Diagnostic Autopilot (P3 -> Owner)",
+        autopilot_title="Daily Skills ROI Diagnostic Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="20 8 * * *",
         trigger_label="Daily CST Morning Skills ROI Diagnostic",
-        delivery_mode="autopilot_trigger",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Skills ROI] {date} 技能效能诊断与待优化清单",
         default_status="backlog",
         default_priority="medium",
@@ -114,7 +114,7 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="skill-agent-daily-research",
         aliases=("skill-agent-research", "skill_agent_daily_research"),
-        autopilot_title="Daily Skill Agent Architecture Research Autopilot (Workflow -> Owner)",
+        autopilot_title="Daily Skill Agent Architecture Research Autopilot (Workflow -> Daily Learn)",
         cron="30 4 * * *",
         trigger_label="Daily CST Workflow Skill & Agent Architecture Research",
         delivery_mode="dual_zone_issue",
@@ -125,10 +125,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="aidash-retro-delta",
         aliases=("retro-discover", "retro_discover", "aidash-retro"),
-        autopilot_title="Daily AIDash Digest & Retro Improvements Autopilot (P3 -> Owner)",
+        autopilot_title="Daily AIDash Digest & Retro Improvements Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="0 4 * * *",
         trigger_label="Daily CST AIDash Digest & Retro Delta",
-        delivery_mode="autopilot_trigger",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][AIDash & Retro] {date} 异常与工程卫生待办清单",
         default_status="todo",
         default_priority="medium",
@@ -136,10 +136,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="local-herdr-worktree-gc",
         aliases=("local_hygiene_patrol", "local-hygiene-patrol", "herdr-worktree-gc"),
-        autopilot_title="Daily Local Herdr & Worktree Hygiene Patrol Autopilot (P3 -> Owner)",
+        autopilot_title="Daily Local Herdr & Worktree Hygiene Patrol Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="30 3 * * *",
         trigger_label="Daily CST 03:30 Local Herdr & Worktree Hygiene Patrol",
-        delivery_mode="dual_zone_issue",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Local Hygiene] {date} 本地环境与主仓卫生异常巡检清单",
         default_status="todo",
         default_priority="medium",
@@ -147,10 +147,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="spec-code-drift-patrol",
         aliases=("spec_code_drift_patrol", "loop-4-spec-code-drift"),
-        autopilot_title="Daily Spec-Code Drift Patrol Autopilot (P3 -> Owner)",
+        autopilot_title="Daily Spec-Code Drift Patrol Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="15 3 * * *",
         trigger_label="Daily CST 03:15 Spec-Code Drift Patrol",
-        delivery_mode="dual_zone_issue",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Spec-Code Drift] {date} 规格与代码一致性巡检清单",
         default_status="todo",
         default_priority="medium",
@@ -158,10 +158,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="backlog-grooming-and-push",
         aliases=("backlog_grooming_and_push", "backlog-groomer", "backlog_groomer"),
-        autopilot_title="Daily Backlog Grooming & Top-3 Push Autopilot (P3 -> Owner)",
+        autopilot_title="Daily Backlog Grooming & Top-3 Push Autopilot (Auto-Fix + Daily Brief Digest)",
         cron="45 4 * * *",
         trigger_label="Daily CST 04:45 Backlog Grooming & Top-3 Push",
-        delivery_mode="dual_zone_issue",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Backlog Grooming] {date} 待办去重与每日 Top 3 推荐顺推清单",
         default_status="todo",
         default_priority="medium",
@@ -169,10 +169,10 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="design-taste-evolution",
         aliases=("taste-evolution", "design_taste_evolution"),
-        autopilot_title="Daily UI Design Taste Evolution Autopilot (Mac node -> Owner)",
+        autopilot_title="Daily UI Design Taste Evolution Autopilot (Mac node -> Daily Brief Digest)",
         cron="50 4 * * *",
         trigger_label="Daily CST 04:50 UI Design Taste Evolution on Mac node",
-        delivery_mode="dual_zone_issue",
+        delivery_mode="auto_fix_and_digest_only",
         issue_title_template="[P3 / Priority 3][Taste Evolution] {date} UI 品味偏好与反模式候选",
         default_status="todo",
         default_priority="medium",
@@ -280,6 +280,69 @@ def _parse_json_stdout(proc: subprocess.CompletedProcess[str], context: str) -> 
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"multica {context} returned invalid JSON: {raw[:300]}") from exc
+
+
+def _default_digest_buffer_path() -> Path:
+    override = os.environ.get("MULTICA_DAILY_DIGEST_BUFFER_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".local" / "share" / "multica-loops" / "daily-digest-buffer.json"
+
+
+def load_daily_digest_buffer(path: Path | None = None) -> dict[str, Any]:
+    target = path or _default_digest_buffer_path()
+    if not target.is_file():
+        return {"version": 1, "entries": {}}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("entries"), dict):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"version": 1, "entries": {}}
+
+
+def record_daily_digest_entry(
+    *,
+    loop_id: str,
+    target_date: str,
+    collected: Mapping[str, Any],
+    actionable: bool,
+    buffer_path: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    target = buffer_path or _default_digest_buffer_path()
+    entry = {
+        "loop_id": loop_id,
+        "date": target_date,
+        "recorded_at": datetime.now(CST).isoformat(timespec="seconds"),
+        "actionable": bool(actionable),
+        "has_delta": bool(collected.get("has_delta")),
+        "delta_count": int(collected.get("delta_count") or 0),
+        "severity": str(collected.get("severity") or "low"),
+        "watermark": str(collected.get("watermark") or ""),
+        "summary": str(collected.get("summary") or ""),
+        "items": list(collected.get("items") or [])[:6],
+        "auto_gc": collected.get("auto_gc") or (collected.get("gc") if isinstance(collected.get("gc"), Mapping) else None),
+        "auto_fixed": collected.get("auto_fixed"),
+    }
+    if not dry_run:
+        buf = load_daily_digest_buffer(target)
+        entries = buf.setdefault("entries", {})
+        day_bucket = entries.setdefault(target_date, {})
+        if isinstance(day_bucket, dict):
+            day_bucket[loop_id] = entry
+        buf["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(buf, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "action": "dry_run_buffered_to_daily_digest" if dry_run else "buffered_to_daily_digest",
+        "buffer_path": str(target),
+        "loop_id": loop_id,
+        "date": target_date,
+        "entry": entry,
+    }
 
 
 def _default_watermark_path() -> Path:
@@ -1248,8 +1311,8 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
             "summary": f"检测到 {opt_count} 个需优化的低效能或高频返工技能。",
             "items": [
                 {
-                    "what": f"收敛技能 {f.get('skill')} 的触发与回归门禁",
-                    "why": "降低返工率与无效上下文消耗",
+                    "what": f"收敛技能 `{f.get('skill')}` 的触发与回归门禁",
+                    "why": roi_mod._plain_chinese_reason_for_skill(f).rstrip("。"),
                 }
                 for f in findings[:3]
             ],
@@ -1337,10 +1400,10 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         "summary": f"发现 {len(pending_rows)} 项待处理的工程复盘与质量改进提案。",
         "items": [
             {
-                "what": str(r.get("title") or "处理复盘改进项")[:40],
-                "why": "消除重复踩坑并固化脚本门禁",
+                "what": f"处理提案 `{r.get('id') or idx}`：{str(r.get('title') or '复盘改进项')[:36]}",
+                "why": str(r.get("root_cause") or r.get("category") or f"固化第 {idx} 项工程防回归门禁")[:48],
             }
-            for r in pending_rows[:5]
+            for idx, r in enumerate(pending_rows[:5], 1)
         ],
         "raw": {"pending_count": len(pending_rows)},
     }
@@ -1444,7 +1507,7 @@ def evaluate_jev_actionability(
     valid_route = (
         str(route_raw)
         if isinstance(route_raw, str)
-        and route_raw in {"dual_zone_issue", "autopilot_trigger", "ignore"}
+        and route_raw in {"auto_fix_and_digest_only", "dual_zone_issue", "autopilot_trigger", "ignore"}
         and (route_match is None or route_match >= 0.50)
         else default_route
     )
@@ -1719,7 +1782,9 @@ def run_loop(
     *,
     target_date: date | None = None,
     state_path: Path | None = None,
+    digest_buffer_path: Path | None = None,
     force: bool = False,
+    force_create_issue: bool = False,
     dry_run: bool = False,
     mock_jev_json: Any = None,
     collector_json: Path | None = None,
@@ -1748,6 +1813,15 @@ def run_loop(
     new_watermark = str(collected.get("watermark") or "")
 
     if not force and (not collected.get("has_delta") or (new_watermark and new_watermark == prev_watermark)):
+        if spec.delivery_mode == "auto_fix_and_digest_only":
+            record_daily_digest_entry(
+                loop_id=spec.loop_id,
+                target_date=resolved_date.isoformat(),
+                collected=collected,
+                actionable=False,
+                buffer_path=digest_buffer_path,
+                dry_run=dry_run,
+            )
         return {
             "ok": True,
             "loop_id": spec.loop_id,
@@ -1788,6 +1862,15 @@ def run_loop(
             jev_fn=jev_fn,
         )
     if not jev_verdict["actionable"]:
+        if spec.delivery_mode == "auto_fix_and_digest_only":
+            record_daily_digest_entry(
+                loop_id=spec.loop_id,
+                target_date=resolved_date.isoformat(),
+                collected=collected,
+                actionable=False,
+                buffer_path=digest_buffer_path,
+                dry_run=dry_run,
+            )
         if not dry_run and new_watermark:
             watermarks[spec.loop_id] = {
                 "watermark": new_watermark,
@@ -1805,8 +1888,30 @@ def run_loop(
         }
 
     # Step 3: Layer-2 Wake-on-Actionable
-    route = str(jev_verdict.get("route") or spec.delivery_mode)
-    if route == "autopilot_trigger":
+    explicit_mock_route = False
+    decoded_runner_mock = _runner_jev_mock(mock_jev_json)
+    if isinstance(decoded_runner_mock, Mapping):
+        ans_obj = decoded_runner_mock.get("answers", decoded_runner_mock)
+        if isinstance(ans_obj, Mapping) and ans_obj.get("delivery_route") is not None:
+            explicit_mock_route = True
+
+    if spec.delivery_mode == "auto_fix_and_digest_only" and not force_create_issue and not explicit_mock_route:
+        route = "auto_fix_and_digest_only"
+    elif force_create_issue and spec.delivery_mode == "auto_fix_and_digest_only":
+        route = "dual_zone_issue"
+    else:
+        route = str(jev_verdict.get("route") or spec.delivery_mode)
+
+    if route == "auto_fix_and_digest_only":
+        layer2_result = record_daily_digest_entry(
+            loop_id=spec.loop_id,
+            target_date=resolved_date.isoformat(),
+            collected=collected,
+            actionable=True,
+            buffer_path=digest_buffer_path,
+            dry_run=dry_run,
+        )
+    elif route == "autopilot_trigger":
         if dry_run:
             layer2_result: dict[str, Any] = {
                 "action": "dry_run_autopilot_trigger",
@@ -1948,9 +2053,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)
+    p_run.add_argument("--digest-buffer-file", type=Path, default=None, help="Path to daily-digest-buffer.json")
     p_run.add_argument("--collector-json", type=Path, default=None)
     p_run.add_argument("--mock-jev-json", default=None)
     p_run.add_argument("--force", action="store_true")
+    p_run.add_argument("--force-create-issue", action="store_true", help="Force creating/updating a standalone Multica issue even for auto_fix_and_digest_only loops")
     p_run.add_argument("--dry-run", action="store_true")
     p_run.add_argument("--server-url", default=DEFAULT_SERVER_URL)
     p_run.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
@@ -2001,7 +2108,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ns.loop,
             target_date=target,
             state_path=ns.state_file,
+            digest_buffer_path=ns.digest_buffer_file,
             force=ns.force,
+            force_create_issue=ns.force_create_issue,
             dry_run=ns.dry_run,
             mock_jev_json=ns.mock_jev_json,
             collector_json=ns.collector_json,
