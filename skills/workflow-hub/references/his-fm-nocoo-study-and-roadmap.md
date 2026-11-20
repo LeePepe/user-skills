@@ -91,3 +91,14 @@
 | **R20** | 三缺陷灰色地带自举靶场 + 标准 JSON `Inbox` | **SW3（`team-lead`）** | Stage 4 |
 | **R09** | 个人项目检索重排（`WebIQSearch` / `deep-research` Reranking） | **SW2（调研与应用）** | Stage 4 |
 | **Backlog** | 常驻 Bot 拆分（七域 Bot、M2 四形态 `Grok`/`Hermes`/`OpenClaw`/`Cindy`、Scoped Tokens） | **Backlog（`m2-dispatcher`）** | Backlog |
+
+## 5. dsh 正式版机制对齐（2026-11-10）
+
+`dsh` (`deepseek-ai/deepseek-harness`) supersedes `dsh-superagent-prototype`; keep `Linear TIA + Herdr + AIDash`.
+
+- **SW0**: Cordis patch mounts Magpie groups/Raven via `dsh-llm-pi-ai` and `~/.agents/skills` via `dsh-skill-filesystem`.
+- **SW2/SW4**: bounded, fenced, redacted `run_code`; executable catalog/snapshot/prose gates.
+- **SW3**: `subagent_oar` R10 handbacks plus `revision`, `--expected-revision`, `write_scope_warnings`, and structured `blocked_reason`.
+- **SW5**: `--dsh-sessions-dir` redacts `session.v*.jsonl` events into `TelemetryEnvelope v1`.
+
+[`sub-workflow-specs.json`](sub-workflow-specs.json) is the L2 contract; Valve 3 budget is 160 lines/16KB.
