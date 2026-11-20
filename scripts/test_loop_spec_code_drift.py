@@ -154,6 +154,57 @@ class SpecCodeDriftPatrolTests(unittest.TestCase):
         fake = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=json.dumps({"autopilots": [{"id": "ap-1", "title": "Daily Spec-Code Drift Patrol Autopilot (P3 -> Owner)"}]}), stderr="")
         self.assertEqual(runner._find_autopilot_id(runner.resolve_loop_spec("spec-code-drift-patrol"), server_url="", workspace_id="", runner=fake, multica_bin=None), "ap-1")
 
+    def test_skips_completed_and_archived_handoffs_and_supports_collect_auto_fix(self):
+        holder, dev, handoff = self.fixture(clean=True)
+        self.addCleanup(holder.cleanup)
+        repo = dev / "Financial"
+        (repo / "Sources" / "RenamedModule.swift").write_text("struct RenamedModule {}\n", encoding="utf-8")
+        git("add", ".", cwd=repo)
+        git("commit", "-qm", "add renamed module", cwd=repo)
+
+        # 1) Completed goal via EVT=GOAL_DONE -> MUST be skipped even with broken path
+        done_goal = handoff / "fin-done-goal"
+        done_goal.mkdir()
+        (done_goal / "ledger.md").write_text("# Goal: fin-done-goal\n- 2026-11-19T10:00:00+08:00 | EVT=GOAL_DONE | id=E1\n", encoding="utf-8")
+        (done_goal / "spec.md").write_text("Repository: Financial\nMissing: `Sources/NonExistentOld.swift`\n", encoding="utf-8")
+
+        # 2) Drained queue.json goal -> MUST be skipped
+        drained_goal = handoff / "fin-drained-goal"
+        drained_goal.mkdir()
+        (drained_goal / "queue.json").write_text(json.dumps({"drained": True, "tasks": [{"task_id": "T1", "status": "done"}]}), encoding="utf-8")
+        (drained_goal / "spec.md").write_text("Repository: Financial\nMissing: `Sources/AlsoGone.swift`\n", encoding="utf-8")
+
+        # 3) Active goal with unambiguous renamed path -> collect --auto-fix rewrites path and leaves 0 findings
+        active_spec = handoff / "goal-a" / "spec.md"
+        active_spec.write_text(
+            "Repository: Financial\nContract tests: `Tests/RouterTests.swift`\nMoved file: `Sources/OldSubdir/RenamedModule.swift`\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "collect",
+                "--dev-root",
+                str(dev),
+                "--handoff-root",
+                str(handoff),
+                "--repos",
+                "Financial",
+                "--auto-fix",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["spec_stale_findings"], [])
+        self.assertFalse(out["actionable"])
+        self.assertGreaterEqual(out["skipped_historical_handoffs_count"], 2)
+        self.assertEqual(len(out["auto_fixed"]), 1)
+        self.assertIn("Sources/RenamedModule.swift", active_spec.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

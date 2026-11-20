@@ -57,6 +57,15 @@ DEFAULT_CORE_REPOS: tuple[str, ...] = (
     "shared-design-system",
 )
 
+KNOWN_RUNTIME_CACHE_EXCLUDES: tuple[str, ...] = (
+    "skills/linear-board/scripts/state/",
+    ".agents/",
+    ".orca/",
+    "aidata/L5_apps/digest/state/",
+    "docs/prompts/",
+    "tmp????????/",
+)
+
 PROTECTED_WORKSPACE_IDS: frozenset[str] = frozenset({"w1", "w2J"})
 HOLD_LEDGER_PATTERN = re.compile(
     r"\bEVT=(?:HOLD|FREEZE|NEED_GO|NEED_OWNER_DECISION|TASK_BLOCKED|INPUT_BLOCKED)\b"
@@ -86,16 +95,22 @@ def _default_runner(
     *,
     cwd: Path | None = None,
     check: bool = False,
+    timeout: float = 20.0,
 ) -> subprocess.CompletedProcess[str]:
     clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return subprocess.run(
-        list(command),
-        cwd=str(cwd) if cwd is not None else None,
-        env=clean_env,
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+    clean_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    try:
+        return subprocess.run(
+            list(command),
+            cwd=str(cwd) if cwd is not None else None,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+            check=check,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(list(command), 124, "", "command timed out")
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -403,7 +418,7 @@ def scan_herdr_panes(
                     "reason": "orphan_done_leaf_subagent",
                 }
             )
-        elif status in {"blocked", "error", "zombie"}:
+        elif status in {"error", "zombie"}:
             zombie_panes.append(
                 {
                     "pane_id": pane_id,
@@ -414,6 +429,31 @@ def scan_herdr_panes(
                     "reason": f"m1_pane_{status}",
                 }
             )
+        elif status == "blocked":
+            # A blocked leaf/TL pane in an active in-progress Goal is handled by notify-bridge / its active TL;
+            # only flag as a zombie hygiene anomaly when orphan or no active goal owns it.
+            has_active_goal = bool(goal_meta and not goal_meta.get("goal_done"))
+            if not has_active_goal:
+                zombie_panes.append(
+                    {
+                        "pane_id": pane_id,
+                        "workspace_id": ws_id,
+                        "name": name,
+                        "status": status,
+                        "goal": matched_goal,
+                        "reason": "m1_pane_blocked",
+                    }
+                )
+            else:
+                active_m1_panes.append(
+                    {
+                        "pane_id": pane_id,
+                        "workspace_id": ws_id,
+                        "name": name,
+                        "status": status,
+                        "goal": matched_goal,
+                    }
+                )
         else:
             active_m1_panes.append(
                 {
@@ -433,8 +473,9 @@ def scan_herdr_panes(
     }
 
 
-def _active_pane_cwds(agents: Sequence[Mapping[str, Any]]) -> list[Path]:
+def _active_pane_cwds(agents: Sequence[Mapping[str, Any]], *, dev_root: Path | None = None) -> list[Path]:
     paths: list[Path] = []
+    wt_root = (dev_root / "worktrees") if dev_root is not None else None
     for ag in agents:
         status = str(ag.get("agent_status") or ag.get("status") or "").lower()
         if status not in {"active", "working", "idle", "blocked", "running"}:
@@ -444,7 +485,18 @@ def _active_pane_cwds(agents: Sequence[Mapping[str, Any]]) -> list[Path]:
             try:
                 paths.append(Path(str(raw_cwd)).expanduser().resolve())
             except OSError:
-                continue
+                pass
+        for title_field in ("terminal_title_stripped", "terminal_title"):
+            title_val = str(ag.get(title_field) or "")
+            for m in re.finditer(r"/(?:worktrees|handoff)/([A-Za-z0-9_.-]+)", title_val):
+                slug = m.group(1)
+                if wt_root is not None:
+                    cand = wt_root / slug
+                    if cand.exists():
+                        try:
+                            paths.append(cand.resolve())
+                        except OSError:
+                            pass
     return paths
 
 
@@ -576,7 +628,7 @@ def scan_worktrees(
 ) -> dict[str, Any]:
     git_gc = _load_git_gc()
     _, agents = _load_herdr_snapshot(herdr_json=herdr_json, runner=runner)
-    active_cwds = _active_pane_cwds(agents)
+    active_cwds = _active_pane_cwds(agents, dev_root=dev_root)
     ledgers = _scan_handoff_ledgers(handoff_root)
     held_goals = {name for name, meta in ledgers.items() if meta.get("is_held")}
 
@@ -602,7 +654,9 @@ def scan_worktrees(
             status_proc = runner(["git", "-C", str(wt_path), "status", "--porcelain"], check=False)
             dirty_lines = [
                 ln for ln in (status_proc.stdout or "").splitlines()
-                if ln.strip() and not any(noise in ln for noise in git_gc.NOISE_NAMES)
+                if ln.strip()
+                and not any(noise in ln for noise in git_gc.NOISE_NAMES)
+                and not _is_known_runtime_cache_status_line(ln)
             ]
             is_dirty = int(len(dirty_lines) > 0)
             active_detected = _path_has_active_pane(wt_path, active_cwds)
@@ -655,6 +709,210 @@ def scan_worktrees(
     return {
         "clean_merged_worktrees": clean_merged,
         "preserved_worktrees": preserved,
+    }
+
+
+def _resolve_git_info_exclude_path(repo_or_wt: Path) -> Path | None:
+    dot_git = repo_or_wt / ".git"
+    if dot_git.is_dir():
+        return dot_git / "info" / "exclude"
+    if dot_git.is_file():
+        try:
+            raw = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if raw.startswith("gitdir:"):
+            gitdir_str = raw.split(":", 1)[1].strip()
+            gitdir_path = Path(gitdir_str)
+            if not gitdir_path.is_absolute():
+                gitdir_path = (repo_or_wt / gitdir_path).resolve()
+            commondir_file = gitdir_path / "commondir"
+            if commondir_file.is_file():
+                try:
+                    rel_common = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+                    common_path = (gitdir_path / rel_common).resolve()
+                    return common_path / "info" / "exclude"
+                except OSError:
+                    pass
+            return gitdir_path / "info" / "exclude"
+    return None
+
+
+def _is_known_runtime_cache_status_line(status_line: str) -> bool:
+    stripped = status_line.strip()
+    if not stripped.startswith("?? "):
+        return False
+    rel = stripped[3:].strip().strip('"')
+    if re.fullmatch(r"tmp[a-z0-9_]{8}/?", rel):
+        return True
+    return any(
+        pat != "tmp????????/" and (rel == pat.rstrip("/") or rel.startswith(pat))
+        for pat in KNOWN_RUNTIME_CACHE_EXCLUDES
+    )
+
+
+def ensure_runtime_cache_excludes(
+    repo_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
+    """Idempotently ensure known untracked runtime cache patterns are listed in .git/info/exclude."""
+    exclude_path = _resolve_git_info_exclude_path(repo_dir)
+    if exclude_path is None:
+        return []
+    existing_lines: list[str] = []
+    if exclude_path.is_file():
+        try:
+            existing_lines = exclude_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+    existing_set = {ln.strip() for ln in existing_lines if ln.strip() and not ln.strip().startswith("#")}
+    missing = [pat for pat in KNOWN_RUNTIME_CACHE_EXCLUDES if pat not in existing_set and pat.rstrip("/") not in existing_set]
+    if not missing:
+        return []
+    if not dry_run:
+        try:
+            exclude_path.parent.mkdir(parents=True, exist_ok=True)
+            prefix = ""
+            if existing_lines and existing_lines[-1].strip():
+                prefix = "\n"
+            block = prefix + "# local_hygiene_patrol runtime state excludes\n" + "\n".join(missing) + "\n"
+            with exclude_path.open("a", encoding="utf-8") as handle:
+                handle.write(block)
+        except OSError:
+            return []
+    return missing
+
+
+def _remove_runtime_cache_in_merged_worktree(wt_dir: Path) -> None:
+    for rel in KNOWN_RUNTIME_CACHE_EXCLUDES:
+        cand = wt_dir / rel.rstrip("/")
+        if cand.is_dir():
+            import shutil as _shutil
+            _shutil.rmtree(cand, ignore_errors=True)
+        elif cand.is_file():
+            cand.unlink(missing_ok=True)
+
+
+def _remove_empty_or_stale_linear_state_dir(checkout_dir: Path, *, dry_run: bool = False) -> bool:
+    state_dir = checkout_dir / "skills" / "linear-board" / "scripts" / "state"
+    if not state_dir.is_dir():
+        return False
+    entries = [p for p in state_dir.iterdir() if p.name != ".DS_Store"]
+    if not entries:
+        if not dry_run:
+            try:
+                for ds in state_dir.glob(".DS_Store"):
+                    ds.unlink(missing_ok=True)
+                state_dir.rmdir()
+            except OSError:
+                return False
+        return True
+    return False
+
+
+def remediate_main_checkouts(
+    *,
+    dev_root: Path,
+    repos: Sequence[str] = DEFAULT_CORE_REPOS,
+    fetch_remote: bool = False,
+    dry_run: bool = False,
+    runner: Runner = _default_runner,
+) -> dict[str, Any]:
+    """Auto-exclude known runtime caches and fast-forward clean behind main checkouts."""
+    excluded_repos: list[dict[str, Any]] = []
+    fast_forwarded_repos: list[dict[str, Any]] = []
+    ff_errors: list[dict[str, Any]] = []
+
+    for repo_name in repos:
+        repo_dir = (dev_root / repo_name).expanduser()
+        if not (repo_dir / ".git").exists():
+            continue
+        status_before = runner(["git", "-C", str(repo_dir), "status", "--porcelain"], check=False)
+        raw_lines = [ln.strip() for ln in (status_before.stdout or "").splitlines() if ln.strip()]
+        has_runtime_untracked = any(_is_known_runtime_cache_status_line(ln) for ln in raw_lines)
+        removed_empty = _remove_empty_or_stale_linear_state_dir(repo_dir, dry_run=dry_run)
+        added_patterns: list[str] = []
+        if has_runtime_untracked:
+            added_patterns = ensure_runtime_cache_excludes(repo_dir, dry_run=dry_run)
+        if added_patterns or removed_empty:
+            excluded_repos.append(
+                {
+                    "repo": repo_name,
+                    "added_excludes": added_patterns,
+                    "removed_empty_state_dir": removed_empty,
+                    "dry_run": dry_run,
+                }
+            )
+
+        if fetch_remote and not dry_run:
+            runner(["git", "-C", str(repo_dir), "fetch", "--quiet", "origin"], check=False)
+
+        branch_proc = runner(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"], check=False)
+        branch = (branch_proc.stdout or "").strip() or "HEAD"
+        if branch not in {"main", "master"}:
+            continue
+
+        origin_ref = f"origin/{branch}"
+        origin_probe = runner(["git", "-C", str(repo_dir), "rev-parse", "--verify", origin_ref], check=False)
+        if origin_probe.returncode != 0:
+            continue
+
+        rev_proc = runner(
+            ["git", "-C", str(repo_dir), "rev-list", "--left-right", "--count", f"HEAD...{origin_ref}"],
+            check=False,
+        )
+        parts = (rev_proc.stdout or "").strip().split()
+        if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+            continue
+        ahead_count, behind_count = int(parts[0]), int(parts[1])
+        if behind_count <= 0 or ahead_count != 0:
+            continue
+
+        status_after = runner(["git", "-C", str(repo_dir), "status", "--porcelain"], check=False)
+        tracked_conflicts = [
+            ln.strip()
+            for ln in (status_after.stdout or "").splitlines()
+            if ln.strip() and not ln.strip().startswith("?? ") and not ln.strip().endswith(".DS_Store")
+        ]
+        if tracked_conflicts:
+            continue
+
+        if dry_run:
+            fast_forwarded_repos.append(
+                {
+                    "repo": repo_name,
+                    "branch": branch,
+                    "behind_before": behind_count,
+                    "action": "dry_run_ff_only",
+                }
+            )
+            continue
+
+        pull_proc = runner(["git", "-C", str(repo_dir), "pull", "--ff-only", "--quiet", "origin", branch], check=False)
+        if pull_proc.returncode == 0:
+            fast_forwarded_repos.append(
+                {
+                    "repo": repo_name,
+                    "branch": branch,
+                    "behind_before": behind_count,
+                    "action": "fast_forwarded",
+                }
+            )
+        else:
+            ff_errors.append(
+                {
+                    "repo": repo_name,
+                    "branch": branch,
+                    "behind_before": behind_count,
+                    "error": (pull_proc.stderr or pull_proc.stdout or "").strip()[:200],
+                }
+            )
+
+    return {
+        "excluded_runtime_cache_repos": excluded_repos,
+        "fast_forwarded_repos": fast_forwarded_repos,
+        "fast_forward_errors": ff_errors,
     }
 
 
@@ -795,12 +1053,20 @@ def scan_environment(
         if wt.get("is_dirty") and not wt.get("has_active_pane")
     ]
     for u_wt in dirty_unmerged_wts:
+        wt_path_obj = Path(str(u_wt["worktree"]))
+        try:
+            age_sec = datetime.now(CST).timestamp() - wt_path_obj.stat().st_mtime
+        except OSError:
+            age_sec = 0.0
+        # Historical archived worktrees untouched for >7 days are preserved safely without noisy daily alerts
+        if age_sec > 7 * 86400:
+            continue
         anomalies.append(
             {
                 "kind": "unattended_dirty_worktree",
                 "repo": u_wt["repo"],
-                "worktree": Path(str(u_wt["worktree"])).name,
-                "detail": f"工作树 {Path(str(u_wt['worktree'])).name} 含未提交改动且无活跃窗格，已安全保留",
+                "worktree": wt_path_obj.name,
+                "detail": f"工作树 {wt_path_obj.name} 含未提交改动且无活跃窗格，已安全保留",
             }
         )
 
@@ -834,9 +1100,17 @@ def run_safe_gc(
         else (Path.home() / ".local" / "state" / "git-gc")
     )
 
+    main_remediation = remediate_main_checkouts(
+        dev_root=resolved_dev,
+        repos=repos,
+        fetch_remote=False,
+        dry_run=dry_run,
+        runner=runner,
+    )
+
     snapshot = dict(
         scan_result
-        if scan_result is not None
+        if (scan_result is not None and dry_run)
         else scan_environment(
             dev_root=resolved_dev,
             handoff_root=resolved_handoff,
@@ -889,15 +1163,27 @@ def run_safe_gc(
             )
             continue
         try:
-            clean_res = git_gc.task_clean(
-                repo=repo_path,
-                worktree=wt_path,
-                branch=branch,
-                dry_run=False,
-                allow_unmerged=True,
-                runner=lambda cmd, **kw: runner(cmd, check=kw.get("check", True)),
-                herdr_check=lambda _: False,
-            )
+            _remove_runtime_cache_in_merged_worktree(wt_path)
+            removed_items: list[str] = []
+            git_gc.clean_noise(wt_path)
+            wt_rm = runner(["git", "-C", str(repo_path), "worktree", "remove", str(wt_path)], check=False)
+            if wt_rm.returncode == 0:
+                removed_items.append(str(wt_path))
+                runner(["git", "-C", str(repo_path), "worktree", "prune"], check=False)
+                if branch:
+                    br_rm = runner(["git", "-C", str(repo_path), "branch", "-D", str(branch)], check=False)
+                    if br_rm.returncode == 0:
+                        removed_items.append(f"local:{branch}")
+            else:
+                worktree_errors.append(
+                    {
+                        "repo": wt_entry["repo"],
+                        "worktree": str(wt_path),
+                        "branch": branch,
+                        "error": (wt_rm.stderr or wt_rm.stdout or "").strip()[:200],
+                    }
+                )
+                continue
         except (OSError, subprocess.SubprocessError) as exc:
             worktree_errors.append(
                 {
@@ -908,14 +1194,14 @@ def run_safe_gc(
                 }
             )
             continue
-        if clean_res.get("removed"):
+        if removed_items:
             reclaimed_worktrees.append(
                 {
                     "repo": wt_entry["repo"],
                     "worktree": str(wt_path),
                     "branch": branch,
                     "action": "reclaimed",
-                    "removed": clean_res["removed"],
+                    "removed": removed_items,
                 }
             )
 
@@ -954,6 +1240,9 @@ def run_safe_gc(
         "reclaimed_worktrees": reclaimed_worktrees,
         "worktree_reclaim_errors": worktree_errors,
         "preserved_worktrees_count": len(snapshot["worktrees"]["preserved_worktrees"]),
+        "fast_forwarded_repos": main_remediation["fast_forwarded_repos"],
+        "fast_forward_errors": main_remediation["fast_forward_errors"],
+        "excluded_runtime_cache_repos": main_remediation["excluded_runtime_cache_repos"],
         "daily_cleanup": daily_summary,
     }
 
@@ -1123,43 +1412,49 @@ def _build_human_items(scan_report: Mapping[str, Any], gc_report: Mapping[str, A
     items: list[dict[str, str]] = []
     for d_repo in scan_report.get("main_checkouts", {}).get("dirty_main_repos", []):
         repo_name = _sanitize_human_text(str(d_repo.get("repo") or "仓库"))
+        branch_name = _sanitize_human_text(str(d_repo.get("branch") or "main"))
+        dirty_sample = _sanitize_human_text(
+            ", ".join(str(x).split()[-1] for x in (d_repo.get("dirty_files") or [])[:2])
+        )[:36]
         if int(d_repo.get("dirty_count") or 0) > 0:
             items.append(
                 {
-                    "what": f"清理或归档 {repo_name} 主分支上的 {d_repo['dirty_count']} 个未提交文件",
-                    "why": "避免污染主分支基线与阻塞后续自动同步",
+                    "what": f"清理或归档 `{repo_name}` 主分支的 {d_repo['dirty_count']} 个未提交文件",
+                    "why": f"{repo_name} ({branch_name}) 含 `{dirty_sample or '未跟踪改动'}`，需保持主分支基线干净",
                 }
             )
         elif d_repo.get("non_default_checkout"):
             items.append(
                 {
-                    "what": f"将 {repo_name} 主工作目录切回默认主分支",
-                    "why": "当前停留在特性分支，易引发主仓误提交",
+                    "what": f"将 `{repo_name}` 主工作目录切回默认主分支",
+                    "why": f"{repo_name} 当前停留在特性分支 `{branch_name}`，易引发主仓误提交",
                 }
             )
     for b_repo in scan_report.get("main_checkouts", {}).get("behind_origin_repos", []):
         repo_name = _sanitize_human_text(str(b_repo.get("repo") or "仓库"))
         items.append(
             {
-                "what": f"快进同步 {repo_name} 主分支（落后远端 {b_repo['behind_origin_main']} 个提交）",
-                "why": "消除本地新开分支时的基线落后冲突",
+                "what": f"快进同步 `{repo_name}` 主分支（落后远端 {b_repo['behind_origin_main']} 个提交）",
+                "why": f"{repo_name} 落后远端主线 {b_repo['behind_origin_main']} 个提交，需对齐最新基线",
             }
         )
     for z_pane in scan_report.get("herdr", {}).get("zombie_panes", []):
         pane_label = _sanitize_human_text(str(z_pane.get("name") or z_pane.get("pane_id") or "异常窗格"))
+        reason_label = _sanitize_human_text(str(z_pane.get("reason") or "blocked"))
         items.append(
             {
-                "what": f"检查并处置异常滞留窗格 {pane_label}",
-                "why": "该会话处于阻塞或已完成目标后仍残留状态",
+                "what": f"检查并处置异常滞留窗格 `{pane_label}`",
+                "why": f"会话 `{pane_label}` 处于 `{reason_label}` 滞留状态，需确认后回收",
             }
         )
     for p_wt in scan_report.get("worktrees", {}).get("preserved_worktrees", []):
         if p_wt.get("is_dirty") and not p_wt.get("has_active_pane"):
             wt_label = _sanitize_human_text(Path(str(p_wt.get("worktree") or "工作树")).name)
+            repo_label = _sanitize_human_text(str(p_wt.get("repo") or "repo"))
             items.append(
                 {
-                    "what": f"审阅已保留的未合并脏工作树 {wt_label}",
-                    "why": "含未提交改动且无活跃会话，自动回收已跳过保护",
+                    "what": f"审阅已保留的未合并脏工作树 `{wt_label}`",
+                    "why": f"{repo_label} 工作树 `{wt_label}` 含未提交改动且无活跃会话，已跳过自动删除",
                 }
             )
     if not items:
@@ -1204,6 +1499,11 @@ def run_loop_check(
     )
 
     if auto_gc:
+        if fetch_remote and not dry_run:
+            for repo_name in repos:
+                repo_dir = (Path(dev_root).expanduser() / repo_name).expanduser()
+                if (repo_dir / ".git").exists():
+                    runner(["git", "-C", str(repo_dir), "fetch", "--quiet", "origin"], check=False)
         gc_report = run_safe_gc(
             dev_root=dev_root,
             handoff_root=handoff_root,
@@ -1211,10 +1511,20 @@ def run_loop_check(
             repos=repos,
             herdr_json=herdr_json,
             dry_run=dry_run,
-            scan_result=scan_report,
+            scan_result=scan_report if dry_run else None,
             runner=runner,
             merge_checker=merge_checker,
         )
+        if not dry_run:
+            scan_report = scan_environment(
+                dev_root=dev_root,
+                handoff_root=handoff_root,
+                repos=repos,
+                herdr_json=herdr_json,
+                fetch_remote=False,
+                runner=runner,
+                merge_checker=merge_checker,
+            )
     else:
         gc_report = {
             "ok": True,
@@ -1222,6 +1532,9 @@ def run_loop_check(
             "closed_panes": [],
             "pane_close_errors": [],
             "reclaimed_worktrees": [],
+            "fast_forwarded_repos": [],
+            "fast_forward_errors": [],
+            "excluded_runtime_cache_repos": [],
             "preserved_worktrees_count": len(scan_report["worktrees"]["preserved_worktrees"]),
             "daily_cleanup": {},
         }
@@ -1264,6 +1577,8 @@ def run_loop_check(
             "auto_gc": {
                 "closed_panes": gc_report.get("closed_panes"),
                 "reclaimed_worktrees": gc_report.get("reclaimed_worktrees"),
+                "fast_forwarded_repos": gc_report.get("fast_forwarded_repos"),
+                "excluded_runtime_cache_repos": gc_report.get("excluded_runtime_cache_repos"),
                 "preserved_worktrees_count": gc_report.get("preserved_worktrees_count"),
             },
             "anomalies": anomalies,
@@ -1285,6 +1600,15 @@ def run_loop_check(
         "date": date_str,
         "has_delta": len(anomalies) > 0,
         "delta_count": len(anomalies),
+        "anomalies": anomalies,
+        "anomaly_count": len(anomalies),
+        "auto_gc": {
+            "closed_panes": gc_report.get("closed_panes", []),
+            "reclaimed_worktrees": gc_report.get("reclaimed_worktrees", []),
+            "fast_forwarded_repos": gc_report.get("fast_forwarded_repos", []),
+            "excluded_runtime_cache_repos": gc_report.get("excluded_runtime_cache_repos", []),
+            "preserved_worktrees_count": gc_report.get("preserved_worktrees_count", 0),
+        },
         "actionable": actionable,
         "severity": severity,
         "watermark": watermark,
@@ -1331,7 +1655,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     for name, help_text in (
         ("scan", "Scan Herdr orphan/completed panes, worktrees, and core main checkouts without mutating"),
-        ("run-gc", "Run safe Auto-GC on GOAL_DONE M1 panes and clean merged worktrees only"),
+        ("run-gc", "Run safe Auto-GC on GOAL_DONE M1 panes, clean merged worktrees, runtime excludes, and --ff-only pulls"),
+        ("collect", "Run safe auto-remediation (excludes + --ff-only + GC) and emit full hygiene snapshot"),
         ("loop-check", "Run full Stage 1 scan + safe Auto-GC -> Stage 2 Jev -> Stage 3 Dual-Zone payload"),
     ):
         p = sub.add_parser(name, help=help_text)
@@ -1344,12 +1669,12 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--repos", default=",".join(DEFAULT_CORE_REPOS))
         p.add_argument("--herdr-json", type=Path, default=None)
         p.add_argument("--json", action="store_true", default=True)
-        if name in {"scan", "loop-check"}:
+        if name in {"scan", "collect", "loop-check"}:
             p.add_argument("--fetch-remote", action="store_true")
-        if name in {"run-gc", "loop-check"}:
+        if name in {"run-gc", "collect", "loop-check"}:
             p.add_argument("--state-dir", type=Path, default=None)
             p.add_argument("--dry-run", action="store_true")
-        if name == "loop-check":
+        if name in {"collect", "loop-check"}:
             p.add_argument("--date", default="today")
             p.add_argument("--mock-jev-json", default=None)
             p.add_argument("--no-gc", action="store_true")
@@ -1385,7 +1710,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    if ns.subcommand == "loop-check":
+    if ns.subcommand in {"collect", "loop-check"}:
         target = datetime.now(CST).date() if ns.date == "today" else date.fromisoformat(ns.date)
         payload = run_loop_check(
             dev_root=ns.dev_root,

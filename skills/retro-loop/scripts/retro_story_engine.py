@@ -582,6 +582,9 @@ def _discover_skill_inventory(
             if not pkg.is_dir() or not skill_md.is_file():
                 continue
             skill_name = pkg.name
+            # Skip third-party SpecKit command templates (.agents/skills/speckit-*) that are not user-skills contracts
+            if repo_bound and skill_name.startswith("speckit-"):
+                continue
             if skill_name in inventory:
                 continue
             l0_lines, frontmatter_tokens_est, body_tokens_est = _estimate_frontmatter_and_body_tokens(skill_md)

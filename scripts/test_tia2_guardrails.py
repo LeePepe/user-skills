@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FEEDBACK_GUARD = ROOT / "skills" / "team-lead" / "scripts" / "feedback_guard.py"
 HERDR_DISPATCH = ROOT / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh"
 HOWTO_GUARD = ROOT / "skills" / "howto" / "scripts" / "howto_guard.py"
+HOWTO_FLOW = ROOT / "skills" / "howto" / "scripts" / "howto_flow.py"
+RETRO_ENGINE = ROOT / "skills" / "retro-loop" / "scripts" / "retro_story_engine.py"
 DIGEST_VAULT = ROOT / "skills" / "knowledge-digest" / "scripts" / "digest_vault.py"
 
 
@@ -305,6 +307,31 @@ class Tia2HowtoGuardrailTests(unittest.TestCase):
             self.assertFalse(narrow_res["ok"])
             self.assertEqual(narrow_res["unknown_nodes"], ["E2"])
             self.assertEqual(narrow_res["unknown_broken_edges"], ["TK-02"])
+
+    def test_howto_flow_cli_and_retro_engine_speckit_exclusion(self):
+        flow = _load_module("tia2_howto_flow", HOWTO_FLOW)
+        listed = flow.list_nodes()
+        self.assertTrue(listed["ok"])
+        self.assertGreaterEqual(listed["node_count"], 30)
+        self.assertEqual(listed["broken_edge_count"], 16)
+
+        looked_up = flow.lookup_howto("AIDash AI metrics")
+        self.assertTrue(looked_up["ok"])
+        self.assertIn("aidash-metrics", looked_up["target_skills"])
+
+        scaffolded = flow.scaffold_tuple("fix bug list")
+        self.assertTrue(scaffolded["ok"])
+        self.assertTrue(scaffolded["guard_validation"]["ok"])
+
+        engine = _load_module("tia2_retro_engine", RETRO_ENGINE)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_dev = Path(tmp) / "dev"
+            speckit_pkg = fake_dev / "VoxPocket" / ".agents" / "skills" / "speckit-checklist"
+            speckit_pkg.mkdir(parents=True)
+            (speckit_pkg / "SKILL.md").write_text("\n".join(["line"] * 300), encoding="utf-8")
+            inv = engine._discover_skill_inventory(ROOT / "skills", fake_dev)
+            self.assertNotIn("speckit-checklist", inv)
+            self.assertTrue(all(v["budget_ok"] for v in inv.values()))
 
 
 class Tia2KnowledgeDigestGuardrailTests(unittest.TestCase):

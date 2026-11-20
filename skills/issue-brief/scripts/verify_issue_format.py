@@ -3,11 +3,13 @@
 
 Enforces the Dual-Zone Issue Format Contract for Multica and Linear issues:
 1. Upper Zone (Human Zone, before `<details>`):
-   - `<= 15` non-empty visible lines (excluding HTML comments and `---` dividers).
-   - Contains `**一句话结论**：...` and checkable `- [ ]` / `- [x]` items.
+   - `<= 45` non-empty visible lines by default (excluding HTML comments and `---` dividers),
+     supporting concrete numbers, percentages, currency amounts, fund codes (`017811`),
+     issue/PR identifiers (`TIA-15`, `#196`), file/module names, and compact Markdown tables!
+   - Contains `**一句话结论**：...` (or `**核心结论**：...`) and checkable `- [ ]` / `- [x]` items.
+   - Rejects repetitive boilerplate checklist items (`duplicate_boilerplate_items`).
    - Zero internal metric/stage codes (`S1..S12`, `M1..M5`, `EV-*`, `DC-*`, `H1..H5`, `R10`, `V1..V5`),
-     zero raw commit SHAs / UUIDs, zero fenced code blocks or CLI invocations, and zero Markdown tables
-     (unless `allow_compact_table=True`).
+     zero raw commit SHAs / UUIDs, and zero fenced code blocks or CLI invocations.
 2. Lower Zone (AI Context Zone):
    - Balanced `<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>...</details>`.
    - Carries `<!-- multica-cursor:... -->` watermark.
@@ -35,7 +37,7 @@ DETAILS_OPEN_RE = re.compile(
 DETAILS_ANY_OPEN_RE = re.compile(r"<details\b[^>]*>", re.IGNORECASE)
 DETAILS_CLOSE_RE = re.compile(r"</details>", re.IGNORECASE)
 
-TLDR_RE = re.compile(r"^(?:>\s*)?\*\*一句话结论\*\*\s*[：:]\s*\S+")
+TLDR_RE = re.compile(r"^(?:>\s*)?\*\*(?:一句话结论|核心结论)\*\*\s*[：:]\s*\S+")
 CHECKBOX_ITEM_RE = re.compile(r"^\s*[-*+]\s*\[[ xX]\]\s+\S+")
 
 INTERNAL_CODE_RE = re.compile(
@@ -185,14 +187,92 @@ def _strip_markdown_link_targets(line: str) -> str:
     return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)
 
 
+def _extract_checkbox_parts(line: str) -> tuple[str, str, str] | None:
+    stripped = _strip_markdown_link_targets(line).strip()
+    m = re.match(r"^[-*+]\s*\[[ xX]\]\s+(.*)$", stripped)
+    if not m:
+        return None
+    body = m.group(1).strip()
+    body = re.sub(r"^(?:\*\*\s*)?(?:\[\d+\]|\d+\.)\s*", "", body)
+    body = body.replace("**", "").replace("`", "").strip()
+    parts = re.split(r"\s+(?:—|--|·|:|：)\s+", body, maxsplit=1)
+    what_part = re.sub(r"\s+", " ", parts[0]).strip().lower()
+    why_part = re.sub(r"\s+", " ", parts[1]).strip().lower() if len(parts) > 1 else ""
+    full_norm = re.sub(r"\s+", " ", body).strip().lower()
+    return full_norm, what_part, why_part
+
+
+GENERIC_BOILERPLATE_WHY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)specification\s+references\s+a\s+path\s+absent\s+from\s+the\s+main\s+snapshot"),
+    re.compile(r"(?i)deprecated\s+test\s+clause\s+remains\s+in\s+the\s+handoff"),
+    re.compile(r"降低返工率与无效上下文消耗"),
+    re.compile(r"避免污染主分支基线与阻塞后续自动同步"),
+    re.compile(r"核对数仓或消费端状态"),
+)
+
+
+def _detect_duplicate_boilerplate_items(human_visible_lines: Sequence[tuple[int, str]]) -> list[dict[str, Any]]:
+    checkbox_entries: list[tuple[int, str, str, str]] = []
+    for line_no, line in human_visible_lines:
+        parsed = _extract_checkbox_parts(line)
+        if parsed is not None:
+            checkbox_entries.append((line_no, *parsed))
+    if len(checkbox_entries) < 2:
+        return []
+
+    seen_full: dict[str, int] = {}
+    seen_what: dict[str, int] = {}
+    seen_why: dict[str, list[tuple[int, str]]] = {}
+    duplicate_lines: list[int] = []
+    reasons: list[str] = []
+
+    for line_no, full_norm, what_part, why_part in checkbox_entries:
+        if full_norm in seen_full:
+            duplicate_lines.append(line_no)
+            reasons.append(f"line {line_no} duplicates checklist item on line {seen_full[full_norm]}")
+            continue
+        seen_full[full_norm] = line_no
+
+        if what_part and what_part in seen_what:
+            duplicate_lines.append(line_no)
+            reasons.append(f"line {line_no} repeats identical target action '{what_part[:40]}' from line {seen_what[what_part]}")
+            continue
+        if what_part:
+            seen_what[what_part] = line_no
+
+        if len(why_part) >= 6:
+            seen_why.setdefault(why_part, []).append((line_no, what_part))
+
+    for why_part, occurrences in seen_why.items():
+        if len(occurrences) >= 2 and any(pat.search(why_part) for pat in GENERIC_BOILERPLATE_WHY_PATTERNS):
+            for ln, _ in occurrences[1:]:
+                if ln not in duplicate_lines:
+                    duplicate_lines.append(ln)
+                    reasons.append(f"line {ln} repeats boilerplate rationale '{why_part[:40]}'")
+
+    if not duplicate_lines:
+        return []
+    return [
+        {
+            "code": "duplicate_boilerplate_items",
+            "lines": sorted(set(duplicate_lines)),
+            "details": reasons,
+            "message": (
+                "Human Zone contains repetitive/boilerplate checklist items "
+                f"at lines {sorted(set(duplicate_lines))}; each item must name a distinct concrete target and specific metric/reason."
+            ),
+        }
+    ]
+
+
 def verify_dual_zone_issue(
     markdown_text: str,
     *,
-    max_human_lines: int = 15,
+    max_human_lines: int = 45,
     require_cursor: bool = True,
     require_tldr: bool = True,
     require_checkbox: bool = True,
-    allow_compact_table: bool = False,
+    allow_compact_table: bool = True,
 ) -> dict[str, Any]:
     """Validate a Markdown string against the Dual-Zone Issue Format Contract."""
     text = str(markdown_text or "")
@@ -293,6 +373,8 @@ def verify_dual_zone_issue(
             }
         )
 
+    violations.extend(_detect_duplicate_boilerplate_items(human_visible_lines))
+
     for line_no, line in human_visible_lines:
         inspect_text = _strip_markdown_link_targets(line)
         code_hits = INTERNAL_CODE_RE.findall(inspect_text)
@@ -320,7 +402,8 @@ def verify_dual_zone_issue(
             sha_hits = [
                 tok
                 for tok in HEX_SHA_RE.findall(inspect_text)
-                if any(ch in "abcdef" for ch in tok) or len(tok) >= 12
+                if (any(ch in "abcdef" for ch in tok) and any(ch in "0123456789" for ch in tok))
+                or len(tok) == 40
             ]
             if sha_hits:
                 violations.append(
@@ -383,8 +466,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser("verify", help="Verify a Markdown file or stdin against the Dual-Zone contract.")
     p_verify.add_argument("path", nargs="?", default="-", help="Markdown file path or '-' for stdin.")
-    p_verify.add_argument("--max-human-lines", type=int, default=15)
-    p_verify.add_argument("--allow-compact-table", action="store_true")
+    p_verify.add_argument("--max-human-lines", type=int, default=45)
+    p_verify.add_argument("--allow-compact-table", action="store_true", default=True)
+    p_verify.add_argument("--forbid-markdown-table", dest="allow_compact_table", action="store_false")
     p_verify.add_argument("--no-require-cursor", dest="require_cursor", action="store_false", default=True)
     p_verify.add_argument("--json", action="store_true", default=True, help="Emit structured JSON report (default).")
 

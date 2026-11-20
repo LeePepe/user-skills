@@ -914,12 +914,36 @@ def _sanitize_human_zone_text(text: str) -> str:
     cleaned = re.sub(r"(?<![A-Za-z0-9_-])[0-9a-f]{7,40}(?![A-Za-z0-9_-])", "", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip(" ·—-")
 
-def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[str, Any]], *, rollup_counts: dict[str, int] | None = None) -> str:
+def _load_daily_patrol_digest_entries(target: date) -> dict[str, dict[str, Any]]:
+    try:
+        loop_mod = _load_multica_loop_runner()
+        buf = loop_mod.load_daily_digest_buffer()
+        entries = buf.get("entries") if isinstance(buf, dict) else {}
+        day_map = entries.get(target.isoformat()) if isinstance(entries, dict) else {}
+        return dict(day_map) if isinstance(day_map, dict) else {}
+    except Exception:
+        return {}
+
+
+def render_dual_zone_brief(
+    target: date,
+    plan_a_markdown: str,
+    todos: list[dict[str, Any]],
+    *,
+    rollup_counts: dict[str, int] | None = None,
+    patrol_digest: dict[str, dict[str, Any]] | None = None,
+) -> str:
     """Render a strict Dual-Zone issue body wrapping Plan A daily brief context inside <details>."""
     issue_brief = _load_issue_brief_module()
     yesterday = target - timedelta(days=1)
     completed_total = sum((rollup_counts or {}).values()) if rollup_counts else sum(1 for ln in plan_a_markdown.splitlines() if ln.startswith("| **"))
     todo_total = len(todos)
+    resolved_patrol = patrol_digest if patrol_digest is not None else _load_daily_patrol_digest_entries(target)
+    actionable_patrols = [
+        (lid, entry)
+        for lid, entry in sorted(resolved_patrol.items())
+        if isinstance(entry, dict) and entry.get("actionable") and entry.get("items")
+    ]
     bucket_label_map = {
         "needs": "待你拍板阻塞项，确认后才能继续推进",
         "active": "在途跟进任务，保持进度与质量验收",
@@ -937,10 +961,11 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
         )[:8]
     else:
         display_rows = todos[:8]
-    if todo_total:
-        tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办（人区展示 {len(display_rows)} 项），勾选或留言即可派发执行。"
+    patrol_note = f"（已聚合 {len(resolved_patrol)} 路工程自动巡检）" if resolved_patrol else ""
+    if todo_total or actionable_patrols:
+        tldr = f"昨日共完成 {completed_total} 项产出，今日聚焦 {todo_total} 项重点待办{patrol_note}，勾选或留言即可派发执行。"
     else:
-        tldr = f"昨日共完成 {completed_total} 项产出，今日暂无阻塞或待拍板事项。"
+        tldr = f"昨日共完成 {completed_total} 项产出{patrol_note}，今日暂无阻塞或待拍板事项。"
 
     items: list[str | dict[str, Any]] = []
     for idx, row in enumerate(display_rows, 1):
@@ -956,14 +981,34 @@ def render_dual_zone_brief(target: date, plan_a_markdown: str, todos: list[dict[
         else:
             what = summary
         number = int(row.get("number") or idx)
-        why = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
+        bucket_desc = bucket_label_map.get(str(row.get("group") or ""), "今日重点跟进事项")
         if is_groomed:
-            why = "Top3 推荐顺推项；依赖已就绪，勾选或按编号派发"
+            why = f"Top3 顺推 #{number}（{summary[:18]}）：依赖已就绪，勾选或按编号派发"
+        else:
+            why = f"#{number} {bucket_desc}（{summary[:16]}）"
         items.append(f"- [ ] **[{number}] {what}** — {why}")
+    next_num = len(items) + 1
+    for lid, entry in actionable_patrols[:3]:
+        first_item = (entry.get("items") or [{}])[0]
+        if isinstance(first_item, dict):
+            p_what = _sanitize_human_zone_text(str(first_item.get("what") or lid))[:42]
+            p_why = _sanitize_human_zone_text(str(first_item.get("why") or entry.get("summary") or "巡检聚合跟进"))[:48]
+            if p_what:
+                items.append(f"- [ ] **[{next_num}] {p_what}** — {p_why}")
+                next_num += 1
     if not items:
         items.append({"what": "保持常规巡检与节奏", "why": "当前无阻塞或高优待办事项"})
 
     stripped_plan_a = re.sub(r"\A<!--\s*GTT-LINEAR-DEDUP:[^\n]*-->\n?", "", plan_a_markdown).strip()
+    if resolved_patrol:
+        patrol_md_lines = ["", "## 🛡️ 工程自动巡检与自愈摘要（`auto_fix_and_digest_only`）", ""]
+        for lid, entry in sorted(resolved_patrol.items()):
+            if not isinstance(entry, dict):
+                continue
+            patrol_md_lines.append(
+                f"- **`{lid}`** (`actionable={entry.get('actionable')}`, `delta={entry.get('delta_count', 0)}`): {entry.get('summary') or 'clean'}"
+            )
+        stripped_plan_a = (stripped_plan_a + "\n" + "\n".join(patrol_md_lines)).strip()
     dedup_key = f"daily-brief-{target.isoformat()}"
     rendered = issue_brief.render_dual_zone_issue(
         tldr=tldr,

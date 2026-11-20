@@ -434,6 +434,7 @@ class LocalHygienePatrolTests(unittest.TestCase):
         for subcmd, extra in (
             ("scan", []),
             ("run-gc", ["--dry-run"]),
+            ("collect", ["--dry-run", "--date", "2026-11-19"]),
             ("loop-check", ["--dry-run", "--date", "2026-11-19"]),
         ):
             proc = subprocess.run(
@@ -457,6 +458,48 @@ class LocalHygienePatrolTests(unittest.TestCase):
             )
             parsed = json.loads(proc.stdout)
             self.assertTrue(parsed["ok"], subcmd)
+
+    def test_collect_auto_excludes_runtime_caches_and_fast_forwards_behind_main(self):
+        holder, dev_root, handoff_root = self._build_fixture_env()
+        self.addCleanup(holder.cleanup)
+        repo_dir = dev_root / "user-skills"
+        remote_bare = dev_root.parent / "remotes" / "user-skills.git"
+
+        # Advance origin/main by 1 commit
+        other_clone = dev_root.parent / "other-ff-clone"
+        _git(["git", "clone", "-q", str(remote_bare), str(other_clone)])
+        _git(["git", "-C", str(other_clone), "config", "user.email", "test@example.com"])
+        _git(["git", "-C", str(other_clone), "config", "user.name", "Test"])
+        (other_clone / "ff_update.txt").write_text("ff\n", encoding="utf-8")
+        _git(["git", "-C", str(other_clone), "add", "ff_update.txt"])
+        _git(["git", "-C", str(other_clone), "commit", "-qm", "ff commit"])
+        _git(["git", "-C", str(other_clone), "push", "-q", "origin", "main"])
+        _git(["git", "-C", str(repo_dir), "fetch", "-q", "origin"])
+
+        # Add known runtime cache dir on main checkout + remove dirty fixture worktree so repo has 0 residual anomalies
+        import shutil as _shutil
+        _shutil.rmtree(dev_root / "worktrees" / "goal-dirty-wt")
+        _git(["git", "-C", str(repo_dir), "worktree", "prune"])
+        cache_dir = repo_dir / ".agents"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "local-state.json").write_text("{}", encoding="utf-8")
+
+        res = patrol.run_loop_check(
+            dev_root=dev_root,
+            handoff_root=handoff_root,
+            state_dir=dev_root / ".gc-state",
+            target_date=date(2026, 11, 20),
+            repos=("user-skills",),
+            herdr_json={"workspaces": [], "agents": []},
+            dry_run=False,
+            merge_checker=lambda _r, _b: False,
+        )
+        self.assertEqual(res["anomalies"], [])
+        self.assertFalse(res["actionable"])
+        self.assertEqual(len(res["auto_gc"]["fast_forwarded_repos"]), 1)
+        self.assertEqual(len(res["auto_gc"]["excluded_runtime_cache_repos"]), 1)
+        st = _git(["git", "-C", str(repo_dir), "status", "--porcelain"])
+        self.assertEqual(st.stdout.strip(), "")
 
 
 if __name__ == "__main__":
