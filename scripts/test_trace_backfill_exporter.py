@@ -733,6 +733,226 @@ class TraceBackfillExporterTests(unittest.TestCase):
             self.assertFalse(out["ok"])
             self.assertIn("credentials missing", out["exports"]["error"])
 
+    def test_normalize_role_skips_non_role_matrix_and_classifies_real_roles(self) -> None:
+        self.assertIsNone(EXPORTER._normalize_role("all-skills-before-after-matrix"))
+        self.assertIsNone(EXPORTER._normalize_role("baseline-metrics"))
+        self.assertIsNone(EXPORTER._normalize_role("contract-telemetry"))
+        self.assertEqual(EXPORTER._normalize_role("TK1-writer-r10"), "Writer")
+        self.assertEqual(EXPORTER._normalize_role("TK1-reviewer-r10"), "Reviewer")
+        self.assertEqual(EXPORTER._normalize_role("m2-verifier-report"), "Verifier")
+        self.assertEqual(EXPORTER._normalize_role("m2-anticheat-report"), "AntiCheat")
+        self.assertEqual(EXPORTER._normalize_role("DES-r1"), "Designer")
+        self.assertEqual(EXPORTER._normalize_role("GOAL-R10"), "M1 TL")
+        self.assertEqual(EXPORTER._normalize_role("TK1-r1"), "Writer")
+
+    def test_goal_grouped_multi_trace_session_and_reconciled_receipt_hierarchy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handoff_root = root / "handoff"
+            goal_id = "demo-multi-agent-goal"
+            goal_dir = handoff_root / goal_id
+            (goal_dir / "receipts").mkdir(parents=True)
+            (goal_dir / "briefs").mkdir(parents=True)
+
+            (goal_dir / "spec.md").write_text("# Spec\nGoal-grouped relay test.\n", encoding="utf-8")
+            (goal_dir / "ledger.md").write_text(
+                f"# Goal: {goal_id}\n"
+                "- 目标: Verify Goal-grouped Sessions and unified Receipt/Session spans\n"
+                "- Owner: owner · 协调者 bot: m2-hub · TL: demo-tl-r1\n\n"
+                "## Tasks\n"
+                "| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
+                "|---|---|---|---|---|---|\n"
+                "| TK1 | — | Demo task | demo-writer-r1 | done | #1 |\n\n"
+                "## Events\n"
+                "- 2026-11-20T08:00:00Z | EVT=READY | id=E1 | task=TK1\n"
+                "- 2026-11-20T08:40:00Z | EVT=GOAL_DONE | id=E2 | task=ALL | ref=receipts/GOAL-R10.md\n",
+                encoding="utf-8",
+            )
+            (goal_dir / "receipts" / "all-skills-before-after-matrix.md").write_text(
+                "# Matrix Artifact\n| Skill | Status |\n|---|---|\n| retro-loop | PASS |\n",
+                encoding="utf-8",
+            )
+            (goal_dir / "receipts" / "GOAL-R10.md").write_text(
+                "# Goal R10\n- Final Verdict: PASS\n- Summary: Delivered full relay.\n",
+                encoding="utf-8",
+            )
+            (goal_dir / "receipts" / "TK1-writer-r10.md").write_text(
+                "# TK1 Writer R10\n- V5 Verdict: PASS\n- Implemented exporter hierarchy.\n",
+                encoding="utf-8",
+            )
+            (goal_dir / "receipts" / "TK1-reviewer-r10.md").write_text(
+                "# TK1 Reviewer R10\n- **V5 Verdict**: **PASS**\n- Independent two-axis review green.\n",
+                encoding="utf-8",
+            )
+
+            sessions_dir = root / "session-state"
+
+            def _write_session(
+                sid: str,
+                model: str,
+                cwd: str,
+                prompt: str,
+                start_ts: str,
+                rcpt_write: str | None,
+                skill_name: str,
+            ) -> None:
+                sdir = sessions_dir / sid
+                sdir.mkdir(parents=True)
+                evs: list[dict[str, object]] = [
+                    {
+                        "type": "session.start",
+                        "data": {"sessionId": sid, "startTime": start_ts, "selectedModel": model, "context": {"cwd": cwd}},
+                    },
+                    {"type": "user.message", "timestamp": start_ts, "data": {"content": prompt}},
+                    {
+                        "type": "skill.invoked",
+                        "timestamp": start_ts,
+                        "data": {"name": skill_name, "path": "skills/team-lead/SKILL.md", "content": "# Skill\n"},
+                    },
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": start_ts,
+                        "data": {
+                            "toolCallId": f"bash-{sid[:4]}",
+                            "toolName": "bash",
+                            "arguments": {"command": "python3 ./scripts/verify"},
+                        },
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": start_ts,
+                        "data": {
+                            "toolCallId": f"bash-{sid[:4]}",
+                            "success": True,
+                            "shellExecution": {"exitCode": 0},
+                            "result": {"content": "<shellId: 1 completed with exit code 0>"},
+                        },
+                    },
+                    {
+                        "id": f"usage-{sid[:4]}",
+                        "type": "session.usage_record",
+                        "timestamp": start_ts,
+                        "data": {
+                            "usage": {
+                                "model": model,
+                                "inputTokens": 1200,
+                                "outputTokens": 240,
+                                "cacheReadTokens": 400,
+                                "duration": 300,
+                            }
+                        },
+                    },
+                ]
+                if rcpt_write:
+                    evs.insert(
+                        3,
+                        {
+                            "type": "tool.execution_start",
+                            "timestamp": start_ts,
+                            "data": {
+                                "toolCallId": f"create-{sid[:4]}",
+                                "toolName": "create",
+                                "arguments": {"path": str(goal_dir / "receipts" / rcpt_write)},
+                            },
+                        },
+                    )
+                (sdir / "events.jsonl").write_text(
+                    "\n".join(json.dumps(e) for e in evs) + "\n" + (" " * 600) + "\n",
+                    encoding="utf-8",
+                )
+
+            _write_session(
+                "tl111111-0000-0000-0000-000000000001",
+                "magpie/group/steering",
+                str(ROOT),
+                f"Load /team-lead. Execute Goal {goal_id}. Read handoff/{goal_id}/spec.md and briefs/TK1.md.",
+                "2026-11-20T08:01:00.000Z",
+                "GOAL-R10.md",
+                "team-lead",
+            )
+            _write_session(
+                "wr222222-0000-0000-0000-000000000002",
+                "magpie/group/coding",
+                f"/tmp/worktrees/{goal_id}-tk1",
+                f"You Do Not Dispatch Subagents. Read handoff/{goal_id}/briefs/TK1.md and write handoff/{goal_id}/receipts/TK1-writer-r10.md.",
+                "2026-11-20T08:10:00.000Z",
+                "TK1-writer-r10.md",
+                "retro-loop",
+            )
+            _write_session(
+                "rv333333-0000-0000-0000-000000000003",
+                "magpie/group/reviewing",
+                f"/tmp/worktrees/{goal_id}-tk1",
+                f"You Do Not Dispatch Subagents. Load /code-review. Read handoff/{goal_id}/briefs/TK1.md and write handoff/{goal_id}/receipts/TK1-reviewer-r10.md.",
+                "2026-11-20T08:25:00.000Z",
+                "TK1-reviewer-r10.md",
+                "code-review",
+            )
+            _write_session(
+                "solo4444-0000-0000-0000-000000000004",
+                "gpt-5.4",
+                "/tmp/standalone",
+                "Standalone ad-hoc question unrelated to any handoff goal.",
+                "2026-11-20T09:00:00.000Z",
+                None,
+                "deep-research",
+            )
+
+            goals, sessions = EXPORTER.collect_historical_traces(
+                handoff_root=handoff_root,
+                copilot_sessions_dir=sessions_dir,
+                usage_jsonl=root / "none.jsonl",
+                warehouse_db=root / "none.db",
+                limit_goals=10,
+                limit_sessions=10,
+                skills_root=ROOT / "skills",
+            )
+            self.assertEqual(len(goals), 1)
+            goal_tr = goals[0]
+
+            # 1. Non-role matrix must NOT appear as an M1 TL stage_role span; it belongs in M1 TL output artifacts
+            stage_spans = [sp for sp in goal_tr.spans if sp.category == "stage_role"]
+            stage_names = [sp.name for sp in stage_spans]
+            self.assertFalse(any("before-after-matrix" in n for n in stage_names), stage_names)
+            self.assertFalse(any("Session Worker" in n for n in stage_names), stage_names)
+
+            children_by_parent: dict[str | None, list[object]] = {}
+            for sp in goal_tr.spans:
+                children_by_parent.setdefault(sp.parent_span_id, []).append(sp)
+
+            m1_sp = next(sp for sp in stage_spans if sp.attributes.get("stage.role") == "M1 TL")
+            self.assertIn("all-skills-before-after-matrix.md", [a["filename"] for a in m1_sp.output_payload["artifacts"]])
+            self.assertIn("Goal R10", m1_sp.output_payload["receipt_excerpt"])
+
+            # 2. Writer and Reviewer receipt spans have child execution spans AND <=600-char receipt_excerpt
+            writer_sp = next(sp for sp in stage_spans if sp.attributes.get("stage.role") == "Writer")
+            reviewer_sp = next(sp for sp in stage_spans if sp.attributes.get("stage.role") == "Reviewer")
+            for role_sp, expected_substr in (
+                (writer_sp, "TK1 Writer R10"),
+                (reviewer_sp, "TK1 Reviewer R10"),
+            ):
+                kids = children_by_parent.get(role_sp.span_id, [])
+                self.assertGreater(len(kids), 0, f"{role_sp.name} should have reconciled session child spans")
+                self.assertIn("receipt_excerpt", role_sp.output_payload)
+                self.assertIn(expected_substr, role_sp.output_payload["receipt_excerpt"])
+                self.assertLessEqual(len(role_sp.output_payload["receipt_excerpt"]), 600)
+
+            # 3. Goal-linked session traces bind sessionId = f"goal:{goal_id}", while standalone keeps its session_id
+            session_by_prefix = {st.entity_id[:8]: st for st in sessions}
+            for pref, expected_role in (("tl111111", "M1 TL"), ("wr222222", "Writer"), ("rv333333", "Reviewer")):
+                st = session_by_prefix[pref]
+                self.assertIn(f"({expected_role})", st.name)
+                lf_trace_body = EXPORTER.build_langfuse_ingestion_events(st)[0]["body"]
+                self.assertEqual(lf_trace_body["sessionId"], f"goal:{goal_id}")
+                self.assertEqual(st.input_payload["role"], expected_role)
+                self.assertEqual(st.input_payload["goal_id"], goal_id)
+                self.assertIn("receipt_excerpt", st.output_payload)
+                self.assertEqual(st.output_payload["verdict"], "PASS")
+
+            solo_tr = session_by_prefix["solo4444"]
+            solo_lf_body = EXPORTER.build_langfuse_ingestion_events(solo_tr)[0]["body"]
+            self.assertEqual(solo_lf_body["sessionId"], solo_tr.entity_id)
+
 
 if __name__ == "__main__":
     unittest.main()
