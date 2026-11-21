@@ -845,6 +845,7 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             self.assertEqual(healthy_diag["emitted_briefs"]["status"], "HEALTHY_NO_ISSUES")
             self.assertEqual(healthy_diag["emitted_briefs"]["writers_spawned"], 0)
             self.assertEqual(healthy_diag["emitted_briefs"]["count"], 0)
+            self.assertEqual(healthy_diag["emitted_briefs"]["m2_dispatch_plan"]["m1_tls_to_spawn"], 0)
 
             # 1-M2 -> K-M1 (K=1..3) -> M2-Rollup: remove the simulated worktree lease so both
             # `my-designer` and `team-lead` are actionable, then emit per-skill M1 Goal specs/ledgers
@@ -882,6 +883,100 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                     ["FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"],
                 )
                 self.assertIn("WITHOUT spawning a Writer or Reviewer", Path(b_item["goal_spec_path"]).read_text(encoding="utf-8"))
+
+    def test_one_m2_to_parallel_m1_tls_and_rollup_to_single_m2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            handoff_batch = root / "handoff-m2-3m1"
+
+            # 1. Stage 2 Triage (`--pick-top 3`) under 1 M2 selects K=2 disjoint skills (`my-designer` and `team-lead`),
+            # emits 2 separate M1 Goal handoff dirs (`skill-retro-my-designer/spec.md`, `skill-retro-team-lead/spec.md`),
+            # and builds `m2_dispatch_plan` with 2 independent `herdr-dispatch.sh --role team_lead` commands.
+            triage_batch = SKILL_RETRO.triage_skills(
+                pick_top=3,
+                use_jev=False,
+                emit_briefs_dir=handoff_batch,
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+            )
+            self.assertTrue(triage_batch["ok"])
+            self.assertEqual(triage_batch["status"], "ACTIONABLE")
+            self.assertEqual(triage_batch["m1_tls_to_spawn"], 2)
+            self.assertTrue(triage_batch["autonomous_daily_execution"]["one_skill_equals_one_independent_m1_tl"])
+            m2_plan = triage_batch["m2_dispatch_plan"]
+            self.assertEqual(m2_plan["schema"], "skill-retro-m2-dispatch-plan/v1")
+            self.assertEqual(m2_plan["m2_coordinator_count"], 1)
+            self.assertEqual(m2_plan["probe_worker_count"], 1)
+            self.assertEqual(m2_plan["m1_tls_to_spawn"], 2)
+            self.assertEqual(len(m2_plan["parallel_m1_dispatches"]), 2)
+            self.assertEqual(len(m2_plan["herdr_dispatch_commands"]), 2)
+
+            spec_md_1 = Path(handoff_batch / "skill-retro-my-designer" / "spec.md")
+            spec_md_2 = Path(handoff_batch / "skill-retro-team-lead" / "spec.md")
+            self.assertTrue(spec_md_1.is_file())
+            self.assertTrue(spec_md_2.is_file())
+            self.assertIn("HEALTHY_NO_ISSUES", spec_md_1.read_text(encoding="utf-8"))
+            self.assertTrue(any("--role team_lead --name skill-retro-my-designer-goal-tl-r1" in cmd for cmd in m2_plan["herdr_dispatch_commands"]))
+            self.assertTrue(any("--role team_lead --name skill-retro-team-lead-goal-tl-r1" in cmd for cmd in m2_plan["herdr_dispatch_commands"]))
+
+            # 2. Simulate parallel M1 TL outcomes:
+            # - M1-1 (`my-designer`): confirms real issue, runs Writer -> Reviewer, merges PR #215 (`FIXED_AND_MERGED`)
+            # - M1-2 (`team-lead`): deep reasoning finds signal is benign (`HEALTHY_NO_ISSUES`, 0 Writers spawned)
+            r1 = SKILL_RETRO.record_m1_retro_receipt(
+                skill="my-designer",
+                status="FIXED_AND_MERGED",
+                handoff_root=handoff_batch,
+                pr_url="https://github.com/LeePepe/user-skills/pull/215",
+                pr_number=215,
+                commit_sha="abc1234",
+                summary="Softened verify_design_cases.py CLI roadblock and wired unwired-a11y.md pointer.",
+            )
+            self.assertEqual(r1["writers_spawned"], 1)
+
+            r2 = SKILL_RETRO.record_m1_retro_receipt(
+                skill="team-lead",
+                status="HEALTHY_NO_ISSUES",
+                handoff_root=handoff_batch,
+                summary="Deep reasoning confirmed ci-monitor.py latency is external GitHub Actions wait (benign).",
+            )
+            self.assertEqual(r2["writers_spawned"], 0)
+            self.assertEqual(r2["reviewers_spawned"], 0)
+
+            # 3. Single M2 runs `skill_retro.py rollup` via CLI to aggregate all K M1 receipts
+            proc_rollup = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "skills/skill-retro/scripts/skill_retro.py"),
+                    "rollup",
+                    "--handoff-root",
+                    str(handoff_batch),
+                    "--date",
+                    "2026-11-21",
+                    "--json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_rollup.returncode, 0, proc_rollup.stderr)
+            rollup_out = json.loads(proc_rollup.stdout)
+            self.assertTrue(rollup_out["ok"])
+            self.assertEqual(rollup_out["schema"], "skill-retro-m2-rollup/v1")
+            self.assertEqual(rollup_out["m1_tls_spawned"], 2)
+            self.assertEqual(rollup_out["writers_spawned_total"], 1)
+            self.assertEqual(rollup_out["counts"]["fixed_and_merged"], 1)
+            self.assertEqual(rollup_out["counts"]["healthy_no_issues"], 1)
+            self.assertIn("`skill-retro-my-designer-goal-tl-r1`", rollup_out["markdown_summary"])
+            self.assertIn("`skill-retro-team-lead-goal-tl-r1`", rollup_out["markdown_summary"])
+            self.assertIn("`HEALTHY_NO_ISSUES`", rollup_out["markdown_summary"])
 
 
 if __name__ == "__main__":

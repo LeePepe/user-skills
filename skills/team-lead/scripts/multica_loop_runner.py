@@ -962,20 +962,25 @@ CANONICAL_SKILL_RETRO_AUTOPILOT_ID_PREFIX = "4e06bf2a"
 
 def build_loop_autopilot_description(spec: LoopSpec) -> str:
     runner_rel = "$HOME/Development/user-skills/skills/team-lead/scripts/multica_loop_runner.py"
+    skill_retro_rel = "$HOME/Development/user-skills/skills/skill-retro/scripts/skill_retro.py"
     if spec.loop_id == "skills-roi-diagnostic":
         return (
             f"# {spec.autopilot_title}\n\n"
             f"- **Loop ID**: `skill-retro-diagnostic` (compatible alias: `{spec.loop_id}`)\n"
-            "- **Primary Engine**: `retro_story_engine.py skill-retro` (4-Layer Progressive Self-Evolution)\n"
+            f"- **Primary Engine**: `skills/skill-retro/scripts/skill_retro.py` (`{skill_retro_rel}`, compatible alias `retro_story_engine.py skill-retro`)\n"
+            "- **Orchestration Topology**: `1 M2 Coordinator -> 1 Cheap Probe Worker -> K (0..3) Independent Parallel M1 TLs (deep reasoning per skill) -> Rollup to Single M2 -> Daily Summary Issue`\n"
             f"- **Execution Architecture**: `Layer 0 Deterministic Script Precheck -> Layer 1 Jev Fast-Thinking -> Layer 2 Wake-on-Actionable ({spec.delivery_mode})`\n\n"
-            "## Execution Protocol\n\n"
-            "1. **Normal Scheduled Tick (`04:20` CST, 0-Agent Precheck)**:\n"
+            "## Execution Protocol (`1 M2 -> Probe Worker -> 0..3 M1 TLs -> M2 Rollup`)\n\n"
+            "1. **Stage 1+2 · Scheduled Tick & Cheap Probe Worker Triage (`04:20` CST, `0..3` Honest Cap)**:\n"
             "   ```bash\n"
             f'   python3 "{runner_rel}" run-loop --loop "skill-retro-diagnostic" --json\n'
+            f'   python3 "{skill_retro_rel}" triage --pick-top 3 --use-jev --emit-briefs "$HOME/Development/handoff" --json\n'
             "   ```\n"
-            "   Executes pure 4-Layer `skill-retro` (`L0` Trigger/Drift, `L1` Drawer Metabolism, `L2` Script Efficacy/Roadblocks/Speed, `L3` Wild Crystallization & Dual-Flywheel Cohort Gate), queues high-signal proposals to `proposals.jsonl`, and buffers actionable findings for the `05:00` Daily Brief at `$0` LLM cost when the cohort watermark is unchanged.\n"
-            "2. **Agent Synthesis Fallback (only when triggered by `multica_loop_runner.py` or manual run)**:\n"
-            f"   Inspect `/tmp/multica-loop-{spec.loop_id}-collect.json` (or run `python3 \"$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py\" collect`), synthesize L0–L3 root causes, and file/update a Dual-Zone (`issue-brief` verified) issue assigned to Owner (`lee@multica.local`).\n"
+            "   Under **1 M2**, spawn **1 Cheap Probe Worker** (`--role explorer` / `--role mechanical`, `mai-code-2-flash` / `worker` tier + Jev) to select `K` (`0..3` honest cap, never a forced quota) disjoint skills. If `K == 0`, report `HEALTHY_NO_ISSUES` (`0` M1 TLs spawned); if `K = 1..3`, emit `K` per-skill M1 Goal specs (`~/Development/handoff/skill-retro-<skill>/spec.md`) + `m2_dispatch_plan`.\n"
+            "2. **Stage 3 · `K (1..3)` Parallel M1 TL Deep Reasoning (`1 Skill = 1 Independent M1 TL`)**:\n"
+            "   The **single M2** spawns **`K` separate M1 TL agents in parallel** (`herdr-dispatch.sh --new-workspace --role team_lead --name skill-retro-<skill>-goal-tl-r1 --kind claude`) in `~/Development/worktrees/skill-retro-<skill>`. If M1 TL's deep reasoning finds its skill is healthy/benign, **M1 TL writes `HEALTHY_NO_ISSUES` and returns to M2 with `0` Writers/Reviewers spawned**; if a real fix is confirmed, M1 TL runs `Writer -> Reviewer`, Positive + Counter-Case Replay, `./scripts/verify`, merges its PR, and writes its R10 receipt (`FIXED_AND_MERGED` or `CROSS_SKILL_RELAY`).\n"
+            "3. **Final Rollup to the Single M2 (`skill_retro.py rollup`)**:\n"
+            f"   All `K` M1 TLs report back to the **same single M2**, which runs `python3 \"{skill_retro_rel}\" rollup --handoff-root \"$HOME/Development/handoff\" --json` and `python3 \"$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py\" file-issue` to publish the single Dual-Zone (`issue-brief` verified) `[Skill Retro YYYY-MM-DD]` summary issue assigned to Owner (`lee@multica.local`).\n"
         )
     if spec.loop_id == "design-taste-evolution":
         execution_note = (

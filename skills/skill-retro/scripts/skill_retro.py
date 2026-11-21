@@ -1371,6 +1371,103 @@ def emit_cross_skill_relay(
     return payload
 
 
+def _resolve_per_skill_goal_handoff_dir(emit_dir: Path, safe_slug: str) -> Path:
+    """Resolve the isolated M1 Goal handoff directory (`<root>/skill-retro-<slug>`) for a single skill."""
+    base = emit_dir.parent if emit_dir.name == "briefs" else emit_dir
+    goal_name = f"skill-retro-{safe_slug}"
+    if base.name == goal_name:
+        return base
+    return base / goal_name
+
+
+def build_m2_dispatch_plan(
+    selected_briefs: Sequence[Mapping[str, Any]],
+    *,
+    handoff_root: Path,
+    dev_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the 1-M2 -> K (0..3) Independent M1 TL parallel dispatch plan and final M2 rollup command."""
+    resolved_dev_root = (dev_root or DEFAULT_DEV_ROOT).expanduser()
+    resolved_handoff_root = handoff_root.parent if handoff_root.name == "briefs" else handoff_root
+    parallel_m1_tls: list[dict[str, Any]] = []
+    seen_skills: set[str] = set()
+
+    for item in selected_briefs:
+        if not isinstance(item, Mapping):
+            continue
+        sk = _norm_skill(str(item.get("skill") or ""))
+        if not sk or sk in seen_skills:
+            continue
+        seen_skills.add(sk)
+        safe_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sk).strip("-") or "skill"
+        goal_id = str(item.get("goal_id") or f"skill-retro-{safe_slug}")
+        tl_agent_name = str(item.get("m1_tl_agent_name") or f"skill-retro-{safe_slug}-goal-tl-r1")
+        goal_handoff_dir = Path(str(item.get("goal_handoff_dir") or _resolve_per_skill_goal_handoff_dir(resolved_handoff_root, safe_slug)))
+        spec_md = Path(str(item.get("spec_md") or (goal_handoff_dir / "spec.md")))
+        ledger_md = Path(str(item.get("ledger_md") or (goal_handoff_dir / "ledger.md")))
+        receipt_json = Path(str(item.get("m1_receipt_json") or (goal_handoff_dir / "receipts" / "m1-tl-receipt.json")))
+        worktree_dir = Path(str(item.get("worktree_dir") or (resolved_dev_root / "worktrees" / goal_id)))
+        mode_val = str(item.get("mode") or "full")
+        aspects_list = list(item.get("aspects") or CANONICAL_ASPECTS)
+        aspects_csv = ",".join(str(a) for a in aspects_list)
+        owned_paths = list(item.get("owned_paths") or [f"skills/{sk}/**", f"scripts/test_{sk.replace('-', '_')}_*.py"])
+        dispatch_cmd = (
+            f"skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead "
+            f"--name {tl_agent_name} --kind claude"
+        )
+        m1_boot_prompt = (
+            f"Load /team-lead and /skill-retro. You are the independent M1 TL ({tl_agent_name}) for single-skill Goal {goal_id} "
+            f"(1 Skill = 1 Independent M1 TL). Read {spec_md} and {ledger_md}. "
+            f"Create/use isolated worktree {worktree_dir}. Perform deep reasoning (`--mode {mode_val} --aspects {aspects_csv}`) for `{sk}`: "
+            f"if the signal is benign/healthy after deep investigation, write `status=HEALTHY_NO_ISSUES` to {receipt_json} and return to M2 "
+            f"with ZERO Writers/Reviewers spawned; if a real issue is confirmed, run Writer -> Reviewer strictly within {owned_paths}, "
+            f"pass Positive + Counter-Case Replay + `./scripts/verify`, merge PR, and write `status=FIXED_AND_MERGED` (or `CROSS_SKILL_RELAY`) to {receipt_json}."
+        )
+        parallel_m1_tls.append(
+            {
+                "skill": sk,
+                "goal_id": goal_id,
+                "m1_tl_agent_name": tl_agent_name,
+                "role": "team_lead",
+                "kind": "claude",
+                "mode": mode_val,
+                "aspects": aspects_list,
+                "goal_handoff_dir": str(goal_handoff_dir),
+                "spec_md": str(spec_md),
+                "ledger_md": str(ledger_md),
+                "m1_receipt_json": str(receipt_json),
+                "worktree_dir": str(worktree_dir),
+                "owned_paths": owned_paths,
+                "herdr_dispatch_cmd": dispatch_cmd,
+                "m1_boot_prompt": m1_boot_prompt,
+            }
+        )
+
+    k_count = len(parallel_m1_tls)
+    skills_flag = f" --skills {','.join(x['skill'] for x in parallel_m1_tls)}" if parallel_m1_tls else ""
+    rollup_cmd = (
+        f"python3 skills/skill-retro/scripts/skill_retro.py rollup "
+        f"--handoff-root {resolved_handoff_root}{skills_flag} --json"
+    )
+    return {
+        "schema": "skill-retro-m2-dispatch-plan/v1",
+        "topology": "1_m2 -> 1_cheap_probe_worker -> 0..3_parallel_m1_tls -> 1_m2_rollup",
+        "deep_reasoning_owner": "M1-TL (1 independent M1 TL per skill)",
+        "m2_coordinator_count": 1,
+        "probe_worker_count": 1,
+        "m1_tls_to_spawn": k_count,
+        "max_parallel_m1_tls": 3,
+        "honest_zero_to_three_cap": True,
+        "m1_healthy_early_exit_rule": (
+            "If an M1 TL's deep reasoning finds its assigned skill is benign/healthy, "
+            "that M1 TL directly writes a HEALTHY_NO_ISSUES receipt and returns to M2 without spawning any Writer or Reviewer."
+        ),
+        "parallel_m1_dispatches": parallel_m1_tls,
+        "herdr_dispatch_commands": [x["herdr_dispatch_cmd"] for x in parallel_m1_tls],
+        "m2_rollup_cmd": rollup_cmd,
+    }
+
+
 def emit_skill_retro_briefs(
     report: Mapping[str, Any],
     emit_dir: Path,
@@ -1381,9 +1478,10 @@ def emit_skill_retro_briefs(
     coupled_with: Sequence[str] | str | None = None,
     relays: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Generate per-skill isolated M1-TL, Writer & Reviewer briefs (plus Wave 2 relays) reusing M1 -> Writer -> Reviewer slots."""
+    """Generate per-skill isolated M1 Goal handoff dirs (`<root>/skill-retro-<skill>/spec.md`) + Writer & Reviewer briefs."""
     briefs_dir = emit_dir / "briefs" if emit_dir.name != "briefs" else emit_dir
     briefs_dir.mkdir(parents=True, exist_ok=True)
+    handoff_root_base = emit_dir.parent if emit_dir.name == "briefs" else emit_dir
 
     norm_mode = "partial" if str(mode or "full").strip().lower() == "partial" else "full"
     selected_aspects = _normalize_aspects(aspects, mode=norm_mode)
@@ -1478,56 +1576,68 @@ def emit_skill_retro_briefs(
         m1_path = briefs_dir / f"skill-retro-{safe_slug}-m1-tl.md"
         writer_path = briefs_dir / f"skill-retro-{safe_slug}-writer.md"
         reviewer_path = briefs_dir / f"skill-retro-{safe_slug}-reviewer.md"
-        goal_id = f"skill-retro-{safe_slug}"
-        m1_tl_agent_name = f"skill-retro-{safe_slug}-goal-tl-r1"
-        handoff_base = emit_dir.parent if emit_dir.name == "briefs" else emit_dir
-        per_skill_goal_dir = (
-            handoff_base
-            if handoff_base.name == goal_id
-            else (handoff_base / goal_id)
-        )
-        per_skill_goal_dir.mkdir(parents=True, exist_ok=True)
-        (per_skill_goal_dir / "briefs").mkdir(parents=True, exist_ok=True)
-        (per_skill_goal_dir / "receipts").mkdir(parents=True, exist_ok=True)
-        per_skill_spec_path = per_skill_goal_dir / "spec.md"
-        per_skill_ledger_path = per_skill_goal_dir / "ledger.md"
-        isolated_worktree = f"~/Development/worktrees/{goal_id}"
         aspects_csv = ",".join(selected_aspects)
 
-        # Build Dedicated M1-TL Orchestration Brief & Per-Skill Goal Spec (`1 Skill = 1 Dedicated M1 TL`)
+        goal_id = f"skill-retro-{safe_slug}"
+        m1_tl_agent_name = f"skill-retro-{safe_slug}-goal-tl-r1"
+        goal_handoff_dir = _resolve_per_skill_goal_handoff_dir(handoff_root_base, safe_slug)
+        goal_briefs_dir = goal_handoff_dir / "briefs"
+        goal_receipts_dir = goal_handoff_dir / "receipts"
+        goal_briefs_dir.mkdir(parents=True, exist_ok=True)
+        goal_receipts_dir.mkdir(parents=True, exist_ok=True)
+        spec_path = goal_handoff_dir / "spec.md"
+        ledger_path = goal_handoff_dir / "ledger.md"
+        m1_receipt_path = goal_receipts_dir / "m1-tl-receipt.json"
+        worktree_dir = DEFAULT_DEV_ROOT / "worktrees" / goal_id
+        herdr_dispatch_cmd = (
+            f"skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead "
+            f"--name {m1_tl_agent_name} --kind claude"
+        )
+
+        # Build M1-TL Orchestration Brief & Per-Skill M1 Goal Spec (`1 Skill = 1 Independent M1 TL`)
         m1_lines = [
-            f"# M1-TL Goal Spec & Brief: `{goal_id}` — Dedicated M1 Deep Reasoning (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+            f"# M1-TL Brief & Goal Spec (`{goal_id}`): `{sk}` — Stage 3 Independent M1 Deep Reasoning (`mode={norm_mode}`, `aspects={aspects_csv}`)",
             "",
-            f"- **Goal ID**: `{goal_id}`",
-            f"- **M1 TL Agent (`1 Skill = 1 Dedicated M1 TL`)**: `{m1_tl_agent_name}` (`herdr-dispatch.sh --new-workspace --role team_lead --name {m1_tl_agent_name}`)",
-            f"- **Isolated Handoff & Worktree**: `{per_skill_goal_dir}` · `{isolated_worktree}`",
+            f"- **Goal ID**: `{goal_id}` (`1 Skill = 1 Independent M1 TL`)",
+            f"- **M1 TL Agent**: `{m1_tl_agent_name}` (dispatched in parallel by the single M2 Coordinator)",
+            f"- **Isolated Worktree**: `{worktree_dir}`",
+            "- **Role Slot**: `M1-TL` (`team-lead` Steering -> `Writer` -> `Reviewer` only if issue confirmed; zero new agent role types)",
             f"- **Host Skill**: `{sk}`" + (f" (Locked Coupled Pair: `{', '.join(coupled_for_sk)}`)" if coupled_for_sk else " (Strict Single-Skill Isolation)"),
             f"- **Check Mode & Aspects**: `--mode {norm_mode} --aspects {aspects_csv}`",
-            "- **M1 Deep Reasoning & Honest Zero-Issue Gate**:",
-            "  1. Conduct 6-Dimension (or Partial) deep investigation for this single assigned skill.",
-            "  2. If deep investigation determines the skill is healthy (`HEALTHY_NO_ISSUES`), write the honest diagnosis receipt and finish immediately **WITHOUT spawning a Writer or Reviewer**.",
-            f"  3. If a genuine issue is confirmed, dispatch `Writer` (`{writer_path.name}`) -> run `feedback_guard.py pre-review-check` -> dispatch `Reviewer` (`{reviewer_path.name}`) -> merge PR.",
-            "  4. Report final outcome (`FIXED_AND_MERGED`, `HEALTHY_NO_ISSUES`, or `CROSS_SKILL_RELAY`) back to the single M2 Coordinator for the daily `[Skill Retro YYYY-MM-DD]` summary issue.",
+            "- **M1 Deep-Reasoning Early-Exit Rule (`HEALTHY_NO_ISSUES`)**:",
+            f"  - M1 TL performs the deep reasoning & investigation for `{sk}` first.",
+            f"  - If M1 TL's deep reasoning finds that the flagged signal is benign/healthy (e.g. normal `R1->R2` convergence), **M1 TL directly writes a `HEALTHY_NO_ISSUES` receipt to `{m1_receipt_path}` and returns to M2 WITHOUT spawning a Writer or Reviewer (`writers_spawned=0`)**.",
             "- **Anti-Collision Locks**:",
             f"  - **Lock 1 (Disjoint Owned Paths)**: `{', '.join(owned_paths)}` (NEVER edit `README.md`, `AGENTS.md`, `.claude-plugin/marketplace.json`, or uncoupled guest skills)",
             "  - **Lock 2 (Active Lease Guard)**: Verified not leased by another active worktree/ledger.",
             "  - **Lock 3 (Host/Guest Wave Relay)**: Any uncoupled Guest Skill requirement is emitted as a Wave 2 Relay Brief (`emit-relay`).",
+            "- **Dispatch & Rollup Sequence**:",
+            f"  1. Deep-reason `{sk}` in `{worktree_dir}` (`python3 skills/skill-retro/scripts/skill_retro.py diagnose --skill {sk} --mode {norm_mode} --aspects {aspects_csv} --json`).",
+            f"  2. If benign/healthy -> write `{m1_receipt_path}` (`status=HEALTHY_NO_ISSUES`, `writers_spawned=0`) and report back to the single M2.",
+            f"  3. If real issue confirmed -> dispatch `Writer` with `{writer_path.name}`, run `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree . --brief {writer_path}`, dispatch `Reviewer` with `{reviewer_path.name}`, merge PR, and write `{m1_receipt_path}` (`status=FIXED_AND_MERGED` or `CROSS_SKILL_RELAY`).",
         ]
         m1_md = "\n".join(m1_lines).rstrip() + "\n"
         m1_path.write_text(m1_md, encoding="utf-8")
-        per_skill_spec_path.write_text(m1_md, encoding="utf-8")
-        if not per_skill_ledger_path.is_file():
-            per_skill_ledger_path.write_text(
-                f"# Goal Ledger: `{goal_id}`\n\n"
-                f"- Mandate: Stage 3 Deep Reasoning & Progressive Evolution for `{sk}` (`mode={norm_mode}`, `aspects={aspects_csv}`)\n"
-                "- Owner: M2-Dispatcher\n"
-                "- Repo: LeePepe/user-skills\n\n"
-                "## Tasks\n\n"
-                "| ID | Wave | Title | Assignee | Status | PR |\n"
-                "|---|---|---|---|---|---|\n"
-                f"| T1 | 1 | Deep reasoning & evolution for skills/{sk} | {m1_tl_agent_name} | pending | - |\n",
-                encoding="utf-8",
-            )
+        spec_path.write_text(m1_md, encoding="utf-8")
+        if not ledger_path.is_file():
+            ledger_lines = [
+                f"# Goal Ledger: `{goal_id}`",
+                "",
+                f"- Mandate: Independent M1 TL deep reasoning & scoped evolution for `{sk}` (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+                "- Owner: M2-Dispatcher",
+                f"- TL: {m1_tl_agent_name}",
+                "- Repo: LeePepe/user-skills",
+                "",
+                "## Tasks",
+                "",
+                "| ID | Wave | Title | Assignee | Status | PR |",
+                "|---|---|---|---|---|---|",
+                f"| T1 | 1 | Deep-reason `{sk}` and either record HEALTHY_NO_ISSUES or run Writer -> Reviewer + merge PR | {m1_tl_agent_name} | pending | - |",
+                "",
+                "## Events",
+                f"- {_cst_today_str()}T04:20:00+08:00 | EVT=GOAL_CREATED | goal={goal_id} | skill={sk} | from=m2-dispatcher | to={m1_tl_agent_name}",
+            ]
+            ledger_path.write_text("\n".join(ledger_lines).rstrip() + "\n", encoding="utf-8")
 
         # Build Writer Brief (reusing standard `writer` / `writer_escalated` role slot)
         w_lines: list[str] = [
@@ -1693,6 +1803,9 @@ def emit_skill_retro_briefs(
         )
         writer_md = "\n".join(w_lines).rstrip() + "\n"
         writer_path.write_text(writer_md, encoding="utf-8")
+        if goal_briefs_dir.resolve() != briefs_dir.resolve():
+            (goal_briefs_dir / m1_path.name).write_text(m1_md, encoding="utf-8")
+            (goal_briefs_dir / writer_path.name).write_text(writer_md, encoding="utf-8")
 
         # Build Reviewer Brief (reusing standard `reviewer` role slot + `code-review` & `skill-contract`)
         r_lines: list[str] = [
@@ -1729,23 +1842,24 @@ def emit_skill_retro_briefs(
         ]
         reviewer_md = "\n".join(r_lines).rstrip() + "\n"
         reviewer_path.write_text(reviewer_md, encoding="utf-8")
-
-        if per_skill_goal_dir != handoff_base:
-            (per_skill_goal_dir / "briefs" / writer_path.name).write_text(writer_md, encoding="utf-8")
-            (per_skill_goal_dir / "briefs" / reviewer_path.name).write_text(reviewer_md, encoding="utf-8")
+        if goal_briefs_dir.resolve() != briefs_dir.resolve():
+            (goal_briefs_dir / reviewer_path.name).write_text(reviewer_md, encoding="utf-8")
 
         brief_record = {
             "skill": sk,
             "goal_id": goal_id,
             "m1_tl_agent": m1_tl_agent_name,
-            "goal_handoff_dir": str(per_skill_goal_dir),
-            "goal_spec_path": str(per_skill_spec_path),
-            "goal_ledger_path": str(per_skill_ledger_path),
-            "isolated_worktree": isolated_worktree,
-            "m1_dispatch_cmd": (
-                f"skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead "
-                f"--name {m1_tl_agent_name} --kind claude"
-            ),
+            "m1_tl_agent_name": m1_tl_agent_name,
+            "goal_handoff_dir": str(goal_handoff_dir),
+            "goal_spec_path": str(spec_path),
+            "goal_ledger_path": str(ledger_path),
+            "spec_md": str(spec_path),
+            "ledger_md": str(ledger_path),
+            "m1_receipt_json": str(m1_receipt_path),
+            "isolated_worktree": str(worktree_dir),
+            "worktree_dir": str(worktree_dir),
+            "m1_dispatch_cmd": herdr_dispatch_cmd,
+            "herdr_dispatch_cmd": herdr_dispatch_cmd,
             "m1_outcomes_allowed": ["FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"],
             "wave": 1,
             "mode": norm_mode,
@@ -1767,8 +1881,13 @@ def emit_skill_retro_briefs(
                 "skill": sk,
                 "goal_id": goal_id,
                 "m1_tl_agent": m1_tl_agent_name,
-                "goal_spec_path": str(per_skill_spec_path),
-                "isolated_worktree": isolated_worktree,
+                "m1_tl_agent_name": m1_tl_agent_name,
+                "goal_handoff_dir": str(goal_handoff_dir),
+                "goal_spec_path": str(spec_path),
+                "spec_md": str(spec_path),
+                "isolated_worktree": str(worktree_dir),
+                "worktree_dir": str(worktree_dir),
+                "herdr_dispatch_cmd": herdr_dispatch_cmd,
                 "wave": 1,
                 "mode": norm_mode,
                 "aspects": selected_aspects,
@@ -1804,23 +1923,47 @@ def emit_skill_retro_briefs(
                 )
 
     overall_status = "ACTIONABLE" if (emitted or emitted_relays) else "HEALTHY_NO_ISSUES"
+    m2_dispatch_plan = build_m2_dispatch_plan(emitted, handoff_root=handoff_root_base)
     return {
         "briefs_dir": str(briefs_dir),
+        "handoff_root": str(handoff_root_base),
         "status": overall_status,
         "status_message": (
-            f"Emitted {len(emitted)} dedicated M1 Goal spec(s)/brief(s)"
+            f"Emitted {len(emitted)} per-skill M1 Goal spec(s) & brief(s)"
             if overall_status == "ACTIONABLE"
             else "healthy / 0 issues found (no changes needed)"
         ),
-        "m1_goals_to_dispatch": len(emitted),
-        "writers_spawned": len(emitted),
         "orchestration_topology": "1_M2 -> K_PARALLEL_M1_TLS (K=0..3) -> M2_ROLLUP",
+        "m1_goals_to_dispatch": len(emitted),
+        "m1_tls_to_spawn": len(emitted),
+        "writers_spawned": len(emitted),
         "mode": norm_mode,
         "aspects": selected_aspects,
         "role_slots_reused": ["M1-TL", "writer", "reviewer"] if emitted else [],
         "new_agent_roles_created": 0,
         "count": len(emitted),
         "briefs": emitted,
+        "m1_goal_specs": [
+            {
+                "skill": b["skill"],
+                "goal_id": b["goal_id"],
+                "m1_tl_agent": b["m1_tl_agent"],
+                "m1_tl_agent_name": b["m1_tl_agent_name"],
+                "goal_handoff_dir": b["goal_handoff_dir"],
+                "goal_spec_path": b["goal_spec_path"],
+                "goal_ledger_path": b["goal_ledger_path"],
+                "spec_md": b["spec_md"],
+                "ledger_md": b["ledger_md"],
+                "m1_receipt_json": b["m1_receipt_json"],
+                "isolated_worktree": b["isolated_worktree"],
+                "worktree_dir": b["worktree_dir"],
+                "m1_dispatch_cmd": b["m1_dispatch_cmd"],
+                "herdr_dispatch_cmd": b["herdr_dispatch_cmd"],
+                "m1_outcomes_allowed": b["m1_outcomes_allowed"],
+            }
+            for b in emitted
+        ],
+        "m2_dispatch_plan": m2_dispatch_plan,
         "cross_skill_relays": emitted_relays,
         "wave_plan": {
             "wave_1_disjoint_hosts": wave1_tasks,
@@ -6010,28 +6153,44 @@ def triage_skills(
     today_cst = _cst_today_str()
     triage_status = "ACTIONABLE" if selected_targets else "HEALTHY_NO_ISSUES"
     triage_status_msg = (
-        f"Selected {len(selected_targets)}/{effective_top_n} skill(s) with evidence-backed issues"
+        f"Selected {len(selected_targets)}/{effective_top_n} skill(s) for parallel M1 TL deep reasoning"
         if selected_targets
         else "healthy / 0 issues found (no changes needed)"
     )
 
-    m1_dispatches = [
+    handoff_root_for_plan = emit_briefs_dir or handoff_root or DEFAULT_HANDOFF_ROOT
+    preliminary_plan_items = [
         {
             "skill": t["skill"],
-            "goal_id": f"skill-retro-{t['skill']}",
-            "m1_tl_agent": f"skill-retro-{t['skill']}-goal-tl-r1",
-            "handoff_spec": f"~/Development/handoff/skill-retro-{t['skill']}/spec.md",
-            "isolated_worktree": f"~/Development/worktrees/skill-retro-{t['skill']}",
             "mode": t["mode"],
             "aspects": t["aspects"],
             "owned_paths": t["owned_paths"],
-            "dispatch_cmd": (
-                f"skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead "
-                f"--name skill-retro-{t['skill']}-goal-tl-r1 --kind claude"
-            ),
-            "rollup_outcomes": ["FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"],
         }
         for t in selected_targets
+    ]
+    m2_dispatch_plan = build_m2_dispatch_plan(
+        preliminary_plan_items,
+        handoff_root=handoff_root_for_plan,
+        dev_root=dev_root,
+    )
+    m1_parallel_dispatches = [
+        {
+            "skill": d["skill"],
+            "goal_id": d["goal_id"],
+            "m1_tl_agent": d["m1_tl_agent_name"],
+            "m1_tl_agent_name": d["m1_tl_agent_name"],
+            "handoff_spec": d["spec_md"],
+            "spec_md": d["spec_md"],
+            "isolated_worktree": d["worktree_dir"],
+            "worktree_dir": d["worktree_dir"],
+            "mode": d["mode"],
+            "aspects": d["aspects"],
+            "owned_paths": d["owned_paths"],
+            "dispatch_cmd": d["herdr_dispatch_cmd"],
+            "herdr_dispatch_cmd": d["herdr_dispatch_cmd"],
+            "rollup_outcomes": ["FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"],
+        }
+        for d in m2_dispatch_plan["parallel_m1_dispatches"]
     ]
 
     result: dict[str, Any] = {
@@ -6040,18 +6199,23 @@ def triage_skills(
         "stage": "stage2_triage",
         "status": triage_status,
         "status_message": triage_status_msg,
+        "orchestration_topology": "1_M2 -> K_PARALLEL_M1_TLS (K=0..3, 1 M1 per skill) -> M2_ROLLUP",
         "m1_tls_to_spawn": len(selected_targets),
         "writers_to_spawn": len(selected_targets),
-        "orchestration_topology": "1_M2 -> K_PARALLEL_M1_TLS (K=0..3, 1 M1 per skill) -> M2_ROLLUP",
         "autonomous_daily_execution": {
             "owner_approval_gate_required": False,
             "daily_batch_default_pick_top": 3,
             "pick_top_is_upper_cap_not_quota": True,
-            "zero_issue_policy": "HEALTHY_NO_ISSUES (spawn 0 Writers; never invent or force cosmetic edits)",
-            "pipeline": "1 M2 -> Cheap Probe Worker -> K (0..3) Parallel M1 TLs (each deep-reasons 1 skill -> Writer/Reviewer if needed) -> Rollup to 1 M2 -> Daily Summary Issue",
+            "one_skill_equals_one_independent_m1_tl": True,
+            "zero_issue_policy": "HEALTHY_NO_ISSUES (spawn 0 M1 TLs / 0 Writers; never invent or force cosmetic edits)",
+            "m1_healthy_early_exit_policy": (
+                "If an M1 TL's deep reasoning finds its assigned skill is healthy/benign, "
+                "M1 TL writes HEALTHY_NO_ISSUES receipt and returns to M2 with 0 Writers/Reviewers spawned"
+            ),
+            "pipeline": "1 M2 -> 1 Cheap Probe Worker -> K (0..3) Parallel M1 TLs (deep reasoning per skill) -> Rollup to Single M2 -> Daily Summary Issue",
             "daily_summary_issue_title": f"[Skill Retro {today_cst}] Autonomous Evolution Summary ({len(selected_targets)} skill(s))",
         },
-        "m1_parallel_dispatches": m1_dispatches,
+        "m1_parallel_dispatches": m1_parallel_dispatches,
         "worker_role_slot": {
             "role": "explorer",
             "compatible_roles": ["explorer", "mechanical"],
@@ -6071,10 +6235,13 @@ def triage_skills(
             "lock2_active_lease_exclusion": True,
             "lock3_wave1_disjoint_wave2_relays": True,
         },
+        "m2_dispatch_plan": m2_dispatch_plan,
         "wave_plan": {
             "wave_1_disjoint_hosts": [
                 {
                     "skill": t["skill"],
+                    "goal_id": f"skill-retro-{t['skill']}",
+                    "m1_tl_agent_name": f"skill-retro-{t['skill']}-goal-tl-r1",
                     "mode": t["mode"],
                     "aspects": t["aspects"],
                     "owned_paths": t["owned_paths"],
@@ -6088,10 +6255,11 @@ def triage_skills(
 
     if emit_briefs_dir is not None and selected_targets:
         stage3_runs: list[dict[str, Any]] = []
-        merged_briefs: list[dict[str, Any]] = []
-        merged_relays: list[dict[str, Any]] = []
-        merged_w1: list[dict[str, Any]] = []
-        merged_w2: list[dict[str, Any]] = []
+        combined_brief_records: list[dict[str, Any]] = []
+        combined_specs: list[dict[str, Any]] = []
+        combined_relays: list[dict[str, Any]] = []
+        combined_w1: list[dict[str, Any]] = []
+        combined_w2: list[dict[str, Any]] = []
         for target_item in selected_targets:
             diag = compute_skill_retro(
                 warehouse_db=warehouse_db,
@@ -6114,27 +6282,38 @@ def triage_skills(
             )
             eb = diag.get("emitted_briefs") or {}
             stage3_runs.append(eb)
-            merged_briefs.extend(eb.get("briefs") or [])
-            merged_relays.extend(eb.get("cross_skill_relays") or [])
-            merged_w1.extend((eb.get("wave_plan") or {}).get("wave_1_disjoint_hosts") or [])
-            merged_w2.extend((eb.get("wave_plan") or {}).get("wave_2_cross_skill_relays") or [])
+            combined_brief_records.extend(eb.get("briefs") or [])
+            combined_specs.extend(eb.get("m1_goal_specs") or [])
+            combined_relays.extend(eb.get("cross_skill_relays") or [])
+            combined_w1.extend((eb.get("wave_plan") or {}).get("wave_1_disjoint_hosts") or [])
+            combined_w2.extend((eb.get("wave_plan") or {}).get("wave_2_cross_skill_relays") or [])
+        updated_m2_plan = build_m2_dispatch_plan(
+            combined_brief_records,
+            handoff_root=emit_briefs_dir,
+            dev_root=dev_root,
+        )
+        result["m2_dispatch_plan"] = updated_m2_plan
         result["emitted_briefs"] = (
             stage3_runs[0]
             if len(stage3_runs) == 1
             else {
                 "briefs_dir": str(emit_briefs_dir / "briefs" if emit_briefs_dir.name != "briefs" else emit_briefs_dir),
-                "status": "ACTIONABLE" if merged_briefs else "HEALTHY_NO_ISSUES",
-                "m1_goals_to_dispatch": len(merged_briefs),
-                "writers_spawned": len(merged_briefs),
+                "handoff_root": str(emit_briefs_dir.parent if emit_briefs_dir.name == "briefs" else emit_briefs_dir),
+                "status": "ACTIONABLE" if combined_brief_records else "HEALTHY_NO_ISSUES",
                 "orchestration_topology": "1_M2 -> K_PARALLEL_M1_TLS (K=0..3) -> M2_ROLLUP",
-                "role_slots_reused": ["M1-TL", "writer", "reviewer"] if merged_briefs else [],
+                "m1_goals_to_dispatch": len(combined_brief_records),
+                "m1_tls_to_spawn": len(combined_brief_records),
+                "writers_spawned": len(combined_brief_records),
+                "role_slots_reused": ["M1-TL", "writer", "reviewer"] if combined_brief_records else [],
                 "new_agent_roles_created": 0,
-                "count": len(merged_briefs),
-                "briefs": merged_briefs,
-                "cross_skill_relays": merged_relays,
+                "count": len(combined_brief_records),
+                "briefs": combined_brief_records,
+                "m1_goal_specs": combined_specs,
+                "m2_dispatch_plan": updated_m2_plan,
+                "cross_skill_relays": combined_relays,
                 "wave_plan": {
-                    "wave_1_disjoint_hosts": merged_w1,
-                    "wave_2_cross_skill_relays": merged_w2,
+                    "wave_1_disjoint_hosts": combined_w1,
+                    "wave_2_cross_skill_relays": combined_w2,
                 },
             }
         )
@@ -6142,11 +6321,251 @@ def triage_skills(
     return result
 
 
+def record_m1_retro_receipt(
+    *,
+    skill: str,
+    status: str,
+    handoff_root: Path | None = None,
+    summary: str = "",
+    pr_url: str | None = None,
+    pr_number: int | None = None,
+    commit_sha: str | None = None,
+    writers_spawned: int | None = None,
+    reviewers_spawned: int | None = None,
+    relay_to: str | None = None,
+    relay_requirement: str = "",
+    mode: str = "full",
+    aspects: Sequence[str] | str | None = None,
+    observation_notes: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Write a canonical M1 TL deep-reasoning receipt (`FIXED_AND_MERGED` | `HEALTHY_NO_ISSUES` | `CROSS_SKILL_RELAY`) for M2 Rollup."""
+    norm_sk = _norm_skill(skill)
+    if not norm_sk:
+        raise ValueError("--skill is required to record an M1 retro receipt.")
+    norm_status = str(status or "").strip().upper()
+    canonical_statuses = {"FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"}
+    if norm_status not in canonical_statuses:
+        raise ValueError(f"Invalid M1 receipt status {status!r}; must be one of {sorted(canonical_statuses)}.")
+
+    resolved_root = (handoff_root or DEFAULT_HANDOFF_ROOT).expanduser()
+    safe_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", norm_sk).strip("-") or "skill"
+    goal_dir = _resolve_per_skill_goal_handoff_dir(resolved_root, safe_slug)
+    receipts_dir = goal_dir / "receipts"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = receipts_dir / "m1-tl-receipt.json"
+
+    norm_mode = "partial" if str(mode or "full").strip().lower() == "partial" else "full"
+    aspect_list = _normalize_aspects(aspects, mode=norm_mode)
+    if norm_status == "HEALTHY_NO_ISSUES":
+        eff_writers = 0 if writers_spawned is None else int(writers_spawned)
+        eff_reviewers = 0 if reviewers_spawned is None else int(reviewers_spawned)
+        default_summary = f"M1 TL deep reasoning confirmed `{norm_sk}` signal is healthy/benign (0 Writers/Reviewers spawned)."
+    elif norm_status == "CROSS_SKILL_RELAY":
+        eff_writers = 0 if writers_spawned is None else int(writers_spawned)
+        eff_reviewers = 0 if reviewers_spawned is None else int(reviewers_spawned)
+        default_summary = f"M1 TL emitted Wave 2 Cross-Skill Relay from `{norm_sk}` to `{_norm_skill(relay_to or '')}`."
+    else:
+        eff_writers = 1 if writers_spawned is None else int(writers_spawned)
+        eff_reviewers = 1 if reviewers_spawned is None else int(reviewers_spawned)
+        default_summary = f"M1 TL fixed `{norm_sk}` via Writer -> Reviewer, passed Positive + Counter-Case Replay, and merged PR."
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "schema": "skill-retro-m1-receipt/v1",
+        "skill": norm_sk,
+        "goal_id": f"skill-retro-{safe_slug}",
+        "m1_tl_agent_name": f"skill-retro-{safe_slug}-goal-tl-r1",
+        "status": norm_status,
+        "mode": norm_mode,
+        "aspects": aspect_list,
+        "writers_spawned": eff_writers,
+        "reviewers_spawned": eff_reviewers,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "commit_sha": commit_sha,
+        "relay_to": _norm_skill(relay_to) if relay_to else None,
+        "relay_requirement": relay_requirement,
+        "summary": summary.strip() or default_summary,
+        "observation_notes": list(observation_notes or []),
+        "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "receipt_path": str(receipt_path),
+    }
+    receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def rollup_m1_retro_receipts(
+    *,
+    handoff_root: Path | None = None,
+    skills: Sequence[str] | str | None = None,
+    observation_pool: Sequence[Mapping[str, Any]] | None = None,
+    target_date: str | None = None,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    """Aggregate K (0..3) independent M1 TL receipts (`FIXED_AND_MERGED` | `HEALTHY_NO_ISSUES` | `CROSS_SKILL_RELAY`) back to the single M2."""
+    resolved_root = (handoff_root or DEFAULT_HANDOFF_ROOT).expanduser()
+    date_str = str(target_date or _cst_today_str()).strip()
+    filter_skills: list[str] = []
+    if isinstance(skills, str):
+        filter_skills = [_norm_skill(s) for s in re.split(r"[,;\s]+", skills) if _norm_skill(s)]
+    elif isinstance(skills, Sequence):
+        for item in skills:
+            for s in re.split(r"[,;\s]+", str(item)):
+                if _norm_skill(s):
+                    filter_skills.append(_norm_skill(s))
+
+    candidate_dirs: list[Path] = []
+    if filter_skills:
+        for sk in filter_skills:
+            safe_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sk).strip("-") or "skill"
+            candidate_dirs.append(_resolve_per_skill_goal_handoff_dir(resolved_root, safe_slug))
+    elif resolved_root.is_dir():
+        if resolved_root.name.startswith("skill-retro-") and (resolved_root / "spec.md").is_file():
+            candidate_dirs.append(resolved_root)
+        else:
+            for child in sorted(resolved_root.glob("skill-retro-*")):
+                if child.is_dir() and child.name not in {"skill-retro-m2-3m1-rollup"}:
+                    candidate_dirs.append(child)
+
+    m1_receipts: list[dict[str, Any]] = []
+    relays_collected: list[dict[str, Any]] = []
+    for gdir in candidate_dirs:
+        if not gdir.is_dir():
+            continue
+        sk_guess = gdir.name[len("skill-retro-") :] if gdir.name.startswith("skill-retro-") else gdir.name
+        r_file = gdir / "receipts" / "m1-tl-receipt.json"
+        loaded_receipt: dict[str, Any] | None = None
+        if r_file.is_file():
+            try:
+                raw_r = json.loads(r_file.read_text(encoding="utf-8"))
+                if isinstance(raw_r, dict):
+                    loaded_receipt = dict(raw_r)
+            except (OSError, ValueError, TypeError):
+                loaded_receipt = None
+        if loaded_receipt is None:
+            # Fallback: inspect ledger.md or relay JSONs inside goal handoff dir
+            ledger_file = gdir / "ledger.md"
+            ledger_txt = ledger_file.read_text(encoding="utf-8") if ledger_file.is_file() else ""
+            relay_files = sorted((gdir / "briefs").glob("skill-retro-relay-*.json")) if (gdir / "briefs").is_dir() else []
+            if "HEALTHY_NO_ISSUES" in ledger_txt:
+                loaded_receipt = {
+                    "skill": sk_guess,
+                    "goal_id": gdir.name,
+                    "m1_tl_agent_name": f"{gdir.name}-goal-tl-r1",
+                    "status": "HEALTHY_NO_ISSUES",
+                    "writers_spawned": 0,
+                    "reviewers_spawned": 0,
+                    "summary": f"M1 TL deep reasoning found `{sk_guess}` healthy (`0` Writers spawned).",
+                }
+            elif "PR_MERGED" in ledger_txt or "GOAL_DONE" in ledger_txt or "FIXED_AND_MERGED" in ledger_txt:
+                pr_match = re.search(r"(https://github\.com/\S+/pull/\d+|#\d+)", ledger_txt)
+                loaded_receipt = {
+                    "skill": sk_guess,
+                    "goal_id": gdir.name,
+                    "m1_tl_agent_name": f"{gdir.name}-goal-tl-r1",
+                    "status": "FIXED_AND_MERGED",
+                    "writers_spawned": 1,
+                    "reviewers_spawned": 1,
+                    "pr_url": pr_match.group(1) if pr_match else None,
+                    "summary": f"M1 TL completed Writer -> Reviewer fix and merged PR for `{sk_guess}`.",
+                }
+            elif relay_files:
+                rel_data = json.loads(relay_files[0].read_text(encoding="utf-8"))
+                loaded_receipt = {
+                    "skill": sk_guess,
+                    "goal_id": gdir.name,
+                    "m1_tl_agent_name": f"{gdir.name}-goal-tl-r1",
+                    "status": "CROSS_SKILL_RELAY",
+                    "writers_spawned": 0,
+                    "reviewers_spawned": 0,
+                    "relay_to": rel_data.get("to_skill"),
+                    "relay_requirement": rel_data.get("requirement"),
+                    "summary": f"M1 TL scheduled Wave 2 Cross-Skill Relay `{sk_guess}` -> `{rel_data.get('to_skill')}`.",
+                }
+        if loaded_receipt is not None:
+            m1_receipts.append(loaded_receipt)
+        for rf in sorted((gdir / "briefs").glob("skill-retro-relay-*.json")) if (gdir / "briefs").is_dir() else []:
+            try:
+                relays_collected.append(json.loads(rf.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                pass
+
+    for rf in sorted((resolved_root / "briefs").glob("skill-retro-relay-*.json")) if (resolved_root / "briefs").is_dir() else []:
+        try:
+            rel_obj = json.loads(rf.read_text(encoding="utf-8"))
+            if not any(r.get("relay_id") == rel_obj.get("relay_id") for r in relays_collected):
+                relays_collected.append(rel_obj)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    fixed_items = [r for r in m1_receipts if r.get("status") == "FIXED_AND_MERGED"]
+    healthy_items = [r for r in m1_receipts if r.get("status") == "HEALTHY_NO_ISSUES"]
+    relay_items = [r for r in m1_receipts if r.get("status") == "CROSS_SKILL_RELAY"]
+    overall_status = (
+        "FIXED_AND_MERGED"
+        if fixed_items
+        else ("CROSS_SKILL_RELAY" if (relay_items or relays_collected) else "HEALTHY_NO_ISSUES")
+    )
+
+    md_lines = [
+        f"## `[Skill Retro {date_str}]` `1 M2 -> K ({len(m1_receipts)}) M1 TLs -> Single M2 Rollup` Summary",
+        "",
+        "- **Topology**: `1 M2 Coordinator -> 1 Cheap Probe Worker -> K (0..3) Independent M1 TLs -> Single M2 Rollup`",
+        f"- **M1 TLs Spawned (`K`)**: `{len(m1_receipts)}` (max cap `3`, never a forced quota)",
+        f"- **Rollup Breakdown**: `FIXED_AND_MERGED={len(fixed_items)}` · `HEALTHY_NO_ISSUES={len(healthy_items)}` · `CROSS_SKILL_RELAY={len(relay_items) or len(relays_collected)}`",
+        "",
+        "| Skill | Independent M1 TL | Outcome | Writers Spawned | PR / Relay / Evidence |",
+        "|---|---|---|---|---|",
+    ]
+    if m1_receipts:
+        for rec in m1_receipts:
+            ev_cell = str(rec.get("pr_url") or (f"relay->{rec.get('relay_to')}" if rec.get("relay_to") else rec.get("summary") or "—")).replace("|", "\\|")
+            md_lines.append(
+                f"| `{rec.get('skill')}` | `{rec.get('m1_tl_agent_name')}` | `{rec.get('status')}` | `{rec.get('writers_spawned', 0)}` | {ev_cell} |"
+            )
+    else:
+        md_lines.append("| — | `0 M1 TLs spawned` | `HEALTHY_NO_ISSUES` | `0` | Probe Worker found 0 issues; no M1 TL or Writer spawned |")
+
+    obs_list = list(observation_pool or [])
+    if obs_list:
+        md_lines.extend(["", "### Observation Pool (Held Below Threshold)", ""])
+        for ob in obs_list[:6]:
+            if isinstance(ob, Mapping):
+                md_lines.append(f"- `{ob.get('skill', 'unknown')}` (`{ob.get('category', 'signal')}`): {ob.get('title', '')}")
+
+    summary_md = "\n".join(md_lines).rstrip() + "\n"
+    rollup_payload: dict[str, Any] = {
+        "ok": True,
+        "schema": "skill-retro-m2-rollup/v1",
+        "date": date_str,
+        "topology": "1_m2 -> 1_cheap_probe_worker -> 0..3_parallel_m1_tls -> 1_m2_rollup",
+        "status": overall_status,
+        "handoff_root": str(resolved_root),
+        "m1_tls_spawned": len(m1_receipts),
+        "writers_spawned_total": sum(int(r.get("writers_spawned") or 0) for r in m1_receipts),
+        "counts": {
+            "fixed_and_merged": len(fixed_items),
+            "healthy_no_issues": len(healthy_items),
+            "cross_skill_relay": max(len(relay_items), len(relays_collected)),
+            "observation_pool": len(obs_list),
+        },
+        "m1_receipts": m1_receipts,
+        "cross_skill_relays": relays_collected,
+        "observation_pool": obs_list,
+        "daily_summary_issue_title": f"[Skill Retro {date_str}] Autonomous Evolution Summary ({len(fixed_items)} fixed, {len(healthy_items)} healthy)",
+        "markdown_summary": summary_md,
+    }
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(rollup_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return rollup_payload
+
+
 class _SelfDisclosingArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[skill-retro] CLI error: {message}\n"
-            "  Fix: run `python3 skills/skill-retro/scripts/skill_retro.py {probe,triage,diagnose,emit-briefs,emit-relay,roi} --help`\n"
+            "  Fix: run `python3 skills/skill-retro/scripts/skill_retro.py {probe,triage,diagnose,emit-briefs,emit-relay,record-m1-receipt,rollup,roi} --help`\n"
             "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
         )
         raise SystemExit(2)
@@ -6170,18 +6589,29 @@ def _add_common_source_args(p: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
-    known_subcommands = {"probe", "triage", "diagnose", "emit-briefs", "emit-relay", "skill-retro", "roi", "skill-roi"}
+    known_subcommands = {
+        "probe",
+        "triage",
+        "diagnose",
+        "emit-briefs",
+        "emit-relay",
+        "record-m1-receipt",
+        "rollup",
+        "skill-retro",
+        "roi",
+        "skill-roi",
+    }
 
     if not args_list or args_list[0] in {"-h", "--help"}:
         top = _SelfDisclosingArgumentParser(
             prog="skill_retro.py",
-            description="3-Stage Skill Progressive Self-Evolution: Fast Probe -> Cheap Worker + Jev Triage -> Scoped 6D Deep Reasoning.",
+            description="3-Stage Skill Progressive Self-Evolution: Fast Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup.",
         )
         top.add_argument(
             "command",
             nargs="?",
             choices=sorted(known_subcommands),
-            help="Subcommand: probe | triage | diagnose | emit-briefs | emit-relay | roi",
+            help="Subcommand: probe | triage | diagnose | emit-briefs | emit-relay | record-m1-receipt | rollup | roi",
         )
         _add_common_source_args(top)
         top.parse_args(args_list)
@@ -6195,7 +6625,7 @@ def main(argv: list[str] | None = None) -> int:
     elif cmd not in known_subcommands:
         sys.stderr.write(
             f"[skill-retro] Unknown subcommand: {cmd!r}\n"
-            "  Valid subcommands: probe, triage, diagnose, emit-briefs, emit-relay, roi\n"
+            "  Valid subcommands: probe, triage, diagnose, emit-briefs, emit-relay, record-m1-receipt, rollup, roi\n"
             "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
         )
         raise SystemExit(2)
@@ -6297,6 +6727,67 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
+    if cmd == "record-m1-receipt":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py record-m1-receipt")
+        p.add_argument("--skill", "--target-skill", dest="skill", required=True, help="Skill investigated by this independent M1 TL.")
+        p.add_argument(
+            "--status",
+            required=True,
+            choices=("FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"),
+            help="Final M1 TL deep-reasoning outcome.",
+        )
+        p.add_argument("--handoff-root", "--emit-briefs", "--handoff-dir", dest="handoff_root", type=Path, default=DEFAULT_HANDOFF_ROOT)
+        p.add_argument("--summary", default="", help="Concise M1 TL finding / fix summary.")
+        p.add_argument("--pr-url", default=None)
+        p.add_argument("--pr-number", type=int, default=None)
+        p.add_argument("--commit-sha", default=None)
+        p.add_argument("--writers-spawned", type=int, default=None)
+        p.add_argument("--reviewers-spawned", type=int, default=None)
+        p.add_argument("--relay-to", default=None)
+        p.add_argument("--relay-requirement", default="")
+        p.add_argument("--mode", choices=("full", "partial"), default="full")
+        p.add_argument("--aspects", "--aspect", dest="aspects", default=None)
+        p.add_argument("--json", action="store_true", default=True)
+        ns = p.parse_args(rest)
+        out = record_m1_retro_receipt(
+            skill=ns.skill,
+            status=ns.status,
+            handoff_root=ns.handoff_root,
+            summary=ns.summary,
+            pr_url=ns.pr_url,
+            pr_number=ns.pr_number,
+            commit_sha=ns.commit_sha,
+            writers_spawned=ns.writers_spawned,
+            reviewers_spawned=ns.reviewers_spawned,
+            relay_to=ns.relay_to,
+            relay_requirement=ns.relay_requirement,
+            mode=ns.mode,
+            aspects=ns.aspects,
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if cmd == "rollup":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py rollup")
+        p.add_argument("--handoff-root", "--emit-briefs", "--handoff-dir", dest="handoff_root", type=Path, default=DEFAULT_HANDOFF_ROOT)
+        p.add_argument("--skills", "--skill", dest="skills", default=None, help="Optional comma-separated skill list to roll up.")
+        p.add_argument("--date", dest="target_date", default=None, help="Target date YYYY-MM-DD (default CST today).")
+        p.add_argument("--output", type=Path, default=None, help="Optional output JSON path.")
+        p.add_argument("--markdown-output", type=Path, default=None, help="Optional markdown summary output path.")
+        p.add_argument("--json", action="store_true", default=True)
+        ns = p.parse_args(rest)
+        out = rollup_m1_retro_receipts(
+            handoff_root=ns.handoff_root,
+            skills=ns.skills,
+            target_date=ns.target_date,
+            output_path=ns.output,
+        )
+        if ns.markdown_output is not None:
+            ns.markdown_output.parent.mkdir(parents=True, exist_ok=True)
+            ns.markdown_output.write_text(str(out.get("markdown_summary") or ""), encoding="utf-8")
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
     if cmd in {"roi", "skill-roi"}:
         p = _SelfDisclosingArgumentParser(prog=f"skill_retro.py {cmd}")
         _add_common_source_args(p)
@@ -6354,16 +6845,14 @@ def main(argv: list[str] | None = None) -> int:
     eff_aspects = ns.aspects
     triage_meta: dict[str, Any] | None = None
 
-    if (ns.pick_one or ns.pick_top is not None or ns.mode == "auto" or cmd == "emit-briefs") and not target_skill:
+    if (ns.pick_one or ns.pick_top is not None or ns.mode == "auto") and not target_skill:
         triage_meta = triage_skills(
             skill=None,
             aspect=ns.aspects,
-            pick_one=bool(ns.pick_one),
-            pick_top=ns.pick_top if ns.pick_top is not None else (1 if ns.pick_one else 3),
+            pick_one=True if ns.pick_top is None else False,
+            pick_top=ns.pick_top,
             use_jev=ns.use_jev,
             mock_jev_json=ns.mock_jev_json,
-            emit_briefs_dir=ns.emit_briefs if (ns.pick_top and ns.pick_top > 1) else None,
-            coupled_with=ns.coupled_with,
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
             copilot_sessions_dir=ns.copilot_sessions_dir,
@@ -6375,11 +6864,106 @@ def main(argv: list[str] | None = None) -> int:
             telemetry_shards_dir=ns.telemetry_shards_dir,
             days=ns.days,
         )
-        if ns.pick_one or (ns.pick_top == 1):
-            target_skill = triage_meta.get("picked_skill")
+        if ns.pick_top is not None and int(ns.pick_top) > 1 and ns.emit_briefs is not None:
+            multi_selected = list(triage_meta.get("selected_skills") or [])
+            combined_briefs: list[dict[str, Any]] = []
+            combined_specs: list[dict[str, Any]] = []
+            combined_relays: list[dict[str, Any]] = []
+            wave1_hosts: list[dict[str, Any]] = []
+            wave2_relays: list[dict[str, Any]] = []
+            last_report: dict[str, Any] | None = None
+            for item in multi_selected:
+                sk_name = str(item.get("skill") or "")
+                sk_mode = str(item.get("mode") or ("full" if ns.mode == "auto" else ns.mode))
+                sk_aspects = item.get("aspects") if ns.aspects is None else ns.aspects
+                sub_rep = compute_skill_retro(
+                    warehouse_db=ns.warehouse_db,
+                    copilot_db=ns.copilot_db,
+                    copilot_sessions_dir=ns.copilot_sessions_dir,
+                    usage_jsonl=ns.usage_jsonl,
+                    trace_export_path=ns.trace_export,
+                    handoff_root=ns.handoff_root,
+                    skills_root=ns.skills_root,
+                    dev_root=ns.dev_root,
+                    telemetry_shards_dir=ns.telemetry_shards_dir,
+                    skill=sk_name,
+                    emit_briefs_dir=ns.emit_briefs,
+                    mode=sk_mode,
+                    aspects=sk_aspects,
+                    coupled_with=ns.coupled_with,
+                    days=ns.days,
+                    auto_propose=ns.auto_propose,
+                    proposals_path=ns.proposals_path,
+                    icloud_sync_dir=ns.icloud_sync_dir,
+                    icloud_roi_path=ns.icloud_roi_path,
+                    local_roi_path=ns.local_roi_path,
+                    mirror_roi_snapshot=False if ns.no_roi_mirror else None,
+                )
+                last_report = sub_rep
+                eb = sub_rep.get("emitted_briefs") or {}
+                combined_briefs.extend(eb.get("briefs") or [])
+                combined_specs.extend(eb.get("m1_goal_specs") or [])
+                combined_relays.extend(eb.get("cross_skill_relays") or [])
+                wp = eb.get("wave_plan") or {}
+                wave1_hosts.extend(wp.get("wave_1_disjoint_hosts") or [])
+                wave2_relays.extend(wp.get("wave_2_cross_skill_relays") or [])
+            base_report = last_report or compute_skill_retro(
+                warehouse_db=ns.warehouse_db,
+                copilot_db=ns.copilot_db,
+                copilot_sessions_dir=ns.copilot_sessions_dir,
+                usage_jsonl=ns.usage_jsonl,
+                trace_export_path=ns.trace_export,
+                handoff_root=ns.handoff_root,
+                skills_root=ns.skills_root,
+                dev_root=ns.dev_root,
+                telemetry_shards_dir=ns.telemetry_shards_dir,
+                skill=None,
+                emit_briefs_dir=None,
+                mode=eff_mode,
+                aspects=eff_aspects,
+                days=ns.days,
+                mirror_roi_snapshot=False,
+            )
+            m2_plan = build_m2_dispatch_plan(combined_briefs, handoff_root=ns.emit_briefs, dev_root=ns.dev_root)
+            base_report["emitted_briefs"] = {
+                "briefs_dir": str(ns.emit_briefs / "briefs" if ns.emit_briefs.name != "briefs" else ns.emit_briefs),
+                "handoff_root": str(ns.emit_briefs.parent if ns.emit_briefs.name == "briefs" else ns.emit_briefs),
+                "status": "ACTIONABLE" if combined_briefs else "HEALTHY_NO_ISSUES",
+                "status_message": (
+                    f"Emitted {len(combined_briefs)} per-skill M1 Goal spec(s) & brief(s)"
+                    if combined_briefs
+                    else "healthy / 0 issues found (no changes needed)"
+                ),
+                "m1_tls_to_spawn": len(combined_briefs),
+                "writers_spawned": len(combined_briefs),
+                "mode": eff_mode,
+                "role_slots_reused": ["M1-TL", "writer", "reviewer"] if combined_briefs else [],
+                "new_agent_roles_created": 0,
+                "count": len(combined_briefs),
+                "briefs": combined_briefs,
+                "m1_goal_specs": combined_specs,
+                "m2_dispatch_plan": m2_plan,
+                "cross_skill_relays": combined_relays,
+                "wave_plan": {
+                    "wave_1_disjoint_hosts": wave1_hosts,
+                    "wave_2_cross_skill_relays": wave2_relays,
+                },
+            }
+            base_report["m2_dispatch_plan"] = m2_plan
+            base_report["stage2_triage"] = {
+                "picked_skill": triage_meta.get("picked_skill"),
+                "picked_mode": triage_meta.get("picked_mode"),
+                "picked_aspects": triage_meta.get("picked_aspects"),
+                "selected_skills": triage_meta.get("selected_skills"),
+                "excluded_by_active_lease": triage_meta.get("excluded_by_active_lease"),
+                "m2_dispatch_plan": m2_plan,
+            }
+            print(json.dumps(base_report, ensure_ascii=False, indent=2))
+            return 0
+        target_skill = triage_meta.get("picked_skill")
         if ns.mode == "auto" and triage_meta.get("picked_mode") in {"partial", "full"}:
             eff_mode = str(triage_meta["picked_mode"])
-        if not eff_aspects and triage_meta.get("picked_aspects") and target_skill:
+        if not eff_aspects and triage_meta.get("picked_aspects"):
             eff_aspects = ",".join(triage_meta["picked_aspects"])
 
     relays_list = (

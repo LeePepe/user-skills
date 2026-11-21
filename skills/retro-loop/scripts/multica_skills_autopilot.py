@@ -33,6 +33,7 @@ from typing import Any, Callable, Mapping
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENGINE_PATH = SCRIPT_DIR / "retro_story_engine.py"
+SKILL_RETRO_SCRIPT_PATH = SCRIPT_DIR.parents[1] / "skill-retro" / "scripts" / "skill_retro.py"
 ISSUE_BRIEF_SCRIPT_PATH = SCRIPT_DIR.parents[1] / "issue-brief" / "scripts" / "verify_issue_format.py"
 
 DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
@@ -123,12 +124,12 @@ def _remediation_commands_for_proposal(prop: Mapping[str, Any]) -> list[str]:
     cmds: list[str] = []
     if sk and sk != "repo-gate":
         cmds.append(
-            f"python3 skills/retro-loop/scripts/retro_story_engine.py skill-retro --skill {sk} "
+            f"python3 skills/skill-retro/scripts/skill_retro.py emit-briefs --skill {sk} "
             f"--emit-briefs ~/Development/handoff/skill-retro-{sk} --json"
         )
         cmds.append(f"python3 skills/skill-contract/scripts/skill_contract.py audit --skill {sk} --strict")
     else:
-        cmds.append("python3 skills/retro-loop/scripts/retro_story_engine.py skill-retro --json")
+        cmds.append("python3 skills/skill-retro/scripts/skill_retro.py triage --pick-top 3 --use-jev --emit-briefs ~/Development/handoff --json")
         cmds.append("python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict")
     return cmds
 
@@ -275,7 +276,9 @@ def _invoke_pure_skill_retro_cli(
     auto_propose: bool = False,
     no_roi_mirror: bool = True,
 ) -> dict[str, Any]:
-    cmd = [sys.executable, str(ENGINE_PATH), "skill-retro", "--days", str(days), "--json"]
+    cli_path = SKILL_RETRO_SCRIPT_PATH if SKILL_RETRO_SCRIPT_PATH.is_file() else ENGINE_PATH
+    subcmd = "diagnose" if cli_path == SKILL_RETRO_SCRIPT_PATH else "skill-retro"
+    cmd = [sys.executable, str(cli_path), subcmd, "--days", str(days), "--json"]
     if skill:
         cmd.extend(["--skill", skill])
     if no_roi_mirror:
@@ -297,7 +300,7 @@ def _invoke_pure_skill_retro_cli(
             cmd.extend([flag, str(val)])
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        raise RuntimeError(f"retro_story_engine.py skill-retro failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[:300]}")
+        raise RuntimeError(f"skill_retro.py failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[:300]}")
     parsed = json.loads(proc.stdout or "{}")
     return parsed if isinstance(parsed, dict) else {}
 
@@ -341,19 +344,26 @@ def build_autopilot_prompt(
     resolved_script = script_path or (
         "$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py"
     )
+    skill_retro_cli = "$HOME/Development/user-skills/skills/skill-retro/scripts/skill_retro.py"
     return (
         "# Daily Skill Progressive Retro Autopilot (Auto-Fix + Daily Brief Digest)\n\n"
         f"- **Loop ID**: `{loop_id}` (compatible alias: `skills-roi-diagnostic`)\n"
-        "- **Primary Engine**: `retro_story_engine.py skill-retro` (4-Layer Progressive Self-Evolution)\n"
+        f"- **Primary Engine**: `skills/skill-retro/scripts/skill_retro.py` (`{skill_retro_cli}`, compatible alias `retro_story_engine.py skill-retro`)\n"
+        "- **Orchestration Topology**: `1 M2 Coordinator -> 1 Cheap Probe Worker -> K (0..3) Independent Parallel M1 TLs (deep reasoning per skill) -> Rollup to Single M2 -> Daily Summary Issue`\n"
         "- **Execution Architecture**: `Layer 0 Deterministic Script Precheck -> Layer 1 Jev Fast-Thinking -> Layer 2 Wake-on-Actionable (auto_fix_and_digest_only)`\n\n"
-        "## Execution Protocol\n\n"
-        "1. **Normal Scheduled Tick (`04:20` CST, 0-Agent Precheck)**:\n"
+        "## Execution Protocol (`1 M2 -> Probe Worker -> 0..3 M1 TLs -> M2 Rollup`)\n\n"
+        "1. **Stage 1+2 · Scheduled Tick & Cheap Probe Worker Triage (`04:20` CST, `0..3` Honest Cap)**:\n"
         "   ```bash\n"
         f'   python3 "{resolved_runner}" run-loop --loop "{loop_id}" --json\n'
+        f'   python3 "{skill_retro_cli}" triage --pick-top 3 --use-jev --emit-briefs "$HOME/Development/handoff" --json\n'
         "   ```\n"
-        "   Runs pure 4-Layer `skill-retro` (`L0` Trigger/Drift, `L1` Drawer Metabolism, `L2` Script Efficacy/Roadblocks/Speed, `L3` Wild Crystallization & Dual-Flywheel Cohort Gate), queues high-signal proposals to `proposals.jsonl`, and buffers actionable findings for the `05:00` Daily Brief at `$0` LLM cost when the cohort watermark is unchanged.\n\n"
-        "2. **Agent Synthesis Fallback (only when triggered by `multica_loop_runner.py` or manual run)**:\n"
-        f"   Inspect `{collect_path}` (or run `python3 \"{resolved_script}\" collect --output \"{DEFAULT_COLLECT_OUTPUT}\"`), synthesize L0–L3 root causes into `{analysis_path}`, and file/update a Dual-Zone (`issue-brief` verified) Priority 3 issue assigned to Owner `{owner_email}` (`{owner_id}`):\n"
+        "   A single M2 spawns **1 Cheap Probe Worker** (`--role explorer` / `--role mechanical`, `mai-code-2-flash` / `worker` tier + Jev) to probe and triage `K` (`0..3` max cap, never a forced quota) disjoint skills. If `K == 0`, report `HEALTHY_NO_ISSUES` (`0` M1 TLs spawned); if `K = 1..3`, emit `K` per-skill M1 Goal specs (`~/Development/handoff/skill-retro-<skill>/spec.md`) + `m2_dispatch_plan`.\n\n"
+        "2. **Stage 3 · `K (1..3)` Parallel M1 TL Deep Reasoning (`1 Skill = 1 Independent M1 TL`)**:\n"
+        "   For each selected skill, the **single M2** spawns **1 independent M1 TL** in parallel (`herdr-dispatch.sh --new-workspace --role team_lead --name skill-retro-<skill>-goal-tl-r1 --kind claude`) in `~/Development/worktrees/skill-retro-<skill>`:\n"
+        "   - If M1 TL's deep reasoning finds the signal is benign/healthy, **M1 TL directly writes `HEALTHY_NO_ISSUES` (`record-m1-receipt --skill <skill> --status HEALTHY_NO_ISSUES`) and returns to M2 without spawning any Writer or Reviewer**.\n"
+        "   - If M1 TL confirms a real issue, M1 TL runs `Writer -> Reviewer`, Positive + Counter-Case Replay, and `./scripts/verify`, merges its PR, and writes its R10 receipt (`FIXED_AND_MERGED` or `CROSS_SKILL_RELAY`).\n\n"
+        "3. **Final Rollup to the Single M2 (`skill_retro.py rollup` -> `[Skill Retro YYYY-MM-DD]` Issue)**:\n"
+        f"   All `K` M1 TLs report back to the **same single M2**, which runs `python3 \"{skill_retro_cli}\" rollup --handoff-root \"$HOME/Development/handoff\" --markdown-output \"{analysis_path}\" --json` (and `{collect_path}` / `python3 \"{resolved_script}\" collect --output \"{DEFAULT_COLLECT_OUTPUT}\"`) to publish the single Dual-Zone (`issue-brief` verified) `[Skill Retro YYYY-MM-DD]` summary issue assigned to Owner `{owner_email}` (`{owner_id}`):\n"
         "   ```bash\n"
         f'   python3 "{resolved_script}" file-issue \\\n'
         f'     --input "{DEFAULT_COLLECT_OUTPUT}" \\\n'
@@ -607,7 +617,8 @@ def _build_ai_evidence_markdown(snapshot: Mapping[str, Any], *, agent_analysis: 
         f"## [P3 / Priority 3] 4-Layer Progressive Skill Retro Diagnostic ({snapshot.get('collected_date')})",
         "",
         f"- **Dedup Marker**: `{dedup_key}`",
-        "- **Primary Engine**: `retro_story_engine.py skill-retro` (`skill-retro-diagnostic/v1`)",
+        "- **Primary Engine**: `skills/skill-retro/scripts/skill_retro.py` (`retro_story_engine.py skill-retro` / `skill-retro-diagnostic/v1`)",
+        "- **Orchestration Topology**: `1 M2 -> 1 Cheap Probe Worker -> K (0..3) Independent M1 TLs -> Rollup to Single M2`",
         "- **Priority**: Priority 3 (`medium`)",
         f"- **Assigned Owner**: `{DEFAULT_OWNER_EMAIL}` (`{DEFAULT_OWNER_ID}`)",
         f"- **Observation Cohort**: `{summary.get('window_cst', '30d')}` · "
@@ -668,7 +679,8 @@ def _build_ai_evidence_markdown(snapshot: Mapping[str, Any], *, agent_analysis: 
             "",
             "```bash",
             "python3 skills/retro-loop/scripts/multica_skills_autopilot.py collect --output /tmp/multica-skills-autopilot-collect.json",
-            "python3 skills/retro-loop/scripts/retro_story_engine.py skill-retro --json",
+            "python3 skills/skill-retro/scripts/skill_retro.py triage --pick-top 3 --use-jev --emit-briefs ~/Development/handoff --json",
+            "python3 skills/skill-retro/scripts/skill_retro.py rollup --handoff-root ~/Development/handoff --json",
             "python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict",
             "./scripts/verify",
             "```",
