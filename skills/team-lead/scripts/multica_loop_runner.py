@@ -1295,12 +1295,21 @@ def _probe_readable_dir(path: Path | None) -> bool:
 def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False, mock_jev_json: Any = None) -> dict[str, Any]:
     date_str = target_date.isoformat()
     if spec.loop_id == "local-herdr-worktree-gc":
-        if not dry_run:
+        if not dry_run and os.environ.get("MULTICA_SKIP_ICLOUD_SYNC") != "1":
             icloud_script = TEAM_LEAD_SCRIPTS_DIR / "icloud_skills_sync.py"
             if icloud_script.is_file():
                 with contextlib.suppress(Exception):
                     icloud_mod = _load_module("loop_icloud_skills_sync", icloud_script)
-                    icloud_mod.run_full_sync(run_pi_harness=False)
+                    if getattr(icloud_mod, "__file__", None) == str(icloud_script):
+                        subprocess.run(
+                            [sys.executable, str(icloud_script), "sync"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5.0,
+                            check=False,
+                        )
+                    else:
+                        icloud_mod.run_full_sync(run_pi_harness=False)
         hygiene_mod = _load_module("loop_local_hygiene_patrol", TEAM_LEAD_SCRIPTS_DIR / "local_hygiene_patrol.py")
         dev_root = Path(os.environ.get("HYGIENE_PATROL_DEV_ROOT", "~/Development")).expanduser()
         handoff_env = os.environ.get("HYGIENE_PATROL_HANDOFF_ROOT")
@@ -1380,12 +1389,21 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         }
 
     if spec.loop_id == "skills-roi-diagnostic":
-        if not dry_run:
+        if not dry_run and os.environ.get("MULTICA_SKIP_ICLOUD_SYNC") != "1":
             icloud_script = TEAM_LEAD_SCRIPTS_DIR / "icloud_skills_sync.py"
             if icloud_script.is_file():
                 with contextlib.suppress(Exception):
                     icloud_mod = _load_module("loop_icloud_skills_sync_telem", icloud_script)
-                    icloud_mod.export_telemetry_shards()
+                    if getattr(icloud_mod, "__file__", None) == str(icloud_script):
+                        subprocess.run(
+                            [sys.executable, str(icloud_script), "export-telemetry"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5.0,
+                            check=False,
+                        )
+                    else:
+                        icloud_mod.export_telemetry_shards()
         retro_mod = _load_module("loop_skill_retro", SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py")
         wh_env = os.environ.get("SKILL_RETRO_WAREHOUSE_DB") or os.environ.get("SKILLS_ROI_WAREHOUSE_DB")
         cp_env = os.environ.get("SKILL_RETRO_COPILOT_DB") or os.environ.get("SKILLS_ROI_COPILOT_DB")
