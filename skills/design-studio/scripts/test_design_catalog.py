@@ -27,8 +27,21 @@ TEMP_DIR_ROOT = Path(tempfile.gettempdir())
 
 
 def run(*args, **kwargs):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], text=True,
-                          capture_output=True, **kwargs)
+    argv = [str(a) for a in args]
+    env = kwargs.get("env")
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+    env_ctx = mock.patch.dict(os.environ, env, clear=False) if env is not None else contextlib.nullcontext()
+    with env_ctx, contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+        try:
+            rc = DESIGN_CATALOG.main(argv)
+        except SystemExit as exc:
+            rc = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
+    return subprocess.CompletedProcess(
+        args=[sys.executable, str(SCRIPT), *argv],
+        returncode=int(rc or 0),
+        stdout=out_buf.getvalue(),
+        stderr=err_buf.getvalue(),
+    )
 
 
 class DesignCatalogTests(unittest.TestCase):
@@ -57,6 +70,8 @@ class DesignCatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog["tools"]), 20)
         self.assertEqual(len(catalog["patterns"]), 17)
         self.assertEqual(run("render", "--check").returncode, 0)
+        smoke = subprocess.run([sys.executable, str(SCRIPT), "render", "--check"], text=True, capture_output=True)
+        self.assertEqual(smoke.returncode, 0, smoke.stderr)
 
     def test_top_level_query_searches_catalog_and_vault_with_top_k(self):
         result = run("--query", "filter", "--top", "3", "--platform", "mobile")
@@ -250,6 +265,61 @@ assert.equal(telemetry.textContent,'已记录 0 条观察 · 0 个收藏 · 0 �
 EVIDENCE_SPEC = importlib.util.spec_from_file_location('round2_evidence', SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py')
 EVIDENCE = importlib.util.module_from_spec(EVIDENCE_SPEC)
 EVIDENCE_SPEC.loader.exec_module(EVIDENCE)
+EVIDENCE.catalog = lambda: DESIGN_CATALOG
+
+_REAL_SUBPROCESS_RUN = subprocess.run
+_VERIFY_RUNTIME_CACHE = {}
+
+
+def _cached_evidence_subprocess_run(cmd, *args, **kwargs):
+    if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[-1] == '--verify-runtime':
+        key = (tuple(str(c) for c in cmd), kwargs.get('input'))
+        cached = _VERIFY_RUNTIME_CACHE.get(key)
+        if cached is not None:
+            return cached
+        res = _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+        _VERIFY_RUNTIME_CACHE[key] = res
+        return res
+    return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+
+EVIDENCE.subprocess = types.SimpleNamespace(
+    run=_cached_evidence_subprocess_run,
+    TimeoutExpired=subprocess.TimeoutExpired,
+    CalledProcessError=subprocess.CalledProcessError,
+)
+
+
+def _inprocess_gallery_gate(gallery, platform='mobile'):
+    root = Path(gallery)
+    norm_plat = 'desktop' if platform == 'macos' else platform
+    errors, details = [], []
+    manifest_path = root / 'manifest.json'
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        manifest = None
+    if not isinstance(manifest, dict):
+        errors.append('missing or malformed manifest.json')
+    else:
+        if manifest.get('platform') != norm_plat:
+            errors.append('manifest platform does not match gate platform')
+        found, details = EVIDENCE.gallery_errors(root, manifest)
+        errors.extend(found)
+    payload = {
+        'ok': not errors,
+        'platform': norm_plat,
+        'stage': 'gallery',
+        'status': 'PASS' if not errors else 'REJECT_REVISE',
+        'errors': errors,
+        'evidence': details,
+    }
+    return subprocess.CompletedProcess(
+        args=['verify_design_cases.py', 'jev-gate', '--platform', norm_plat, '--stage', 'gallery', '--gallery-dir', str(root), '--no-jev'],
+        returncode=0 if not errors else 1,
+        stdout=json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+        stderr='',
+    )
 
 
 def minimal_schemes(sheet=False):
@@ -469,14 +539,16 @@ class AppNavigationBehaviorTests(unittest.TestCase):
                 manifest = json.loads((gallery / 'manifest.json').read_text())
                 self.assertEqual(self.gate(gallery).returncode, 0)
                 self.assertEqual(len({navigation.initial_state_signature(s) for s in manifest['schemes']}), 4)
+                batch_items = []
                 for scheme in manifest['schemes']:
                     state = scheme['architecture']['initial_state']
-                    self.node(gallery / (scheme['id'] + '.html'), f'''const n=window.navigationDemo;
+                    batch_items.append((gallery / (scheme['id'] + '.html'), f'''const n=window.navigationDemo;
 assert.equal(n.currentScreen(),{state['active_screen']!r});assert.equal(n.state.titleCollapsed,{json.dumps(state['title_collapsed'])});
 assert.equal(document.getElementById('sheet').hidden,{json.dumps(state['overlay'] is None)});
 assert.equal(document.getElementById('screen').hasAttribute('inert'),{json.dumps(state['overlay'] is not None)});
 assert.equal(document.getElementById('overflow-menu').hidden,true);
-''' + (f"assert.equal(document.getElementById('sheet').dataset.detent,{state['detent']!r});" if state['overlay'] else ''))
+''' + (f"assert.equal(document.getElementById('sheet').dataset.detent,{state['detent']!r});" if state['overlay'] else '')))
+                self.node_batch(batch_items)
                 bad = copy.deepcopy(manifest)
                 bad['schemes'][0]['architecture']['initial_state'] = {'active_screen': 'capture', 'history': [], 'overlay': None, 'detent': None, 'overflow_open': False, 'title_collapsed': False}
                 self.assertTrue(any('closed root baseline' in e for e in EVIDENCE.gallery_errors(gallery, bad)[0]))
@@ -575,12 +647,18 @@ document.querySelector('.tab[data-screen="capture"]').click();assert.equal(n.cur
             self.assertEqual(EVIDENCE.rendered_gallery_errors(root), [])
 
     def gate(self, gallery):
-        script = SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'
-        return subprocess.run([sys.executable, str(script), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], text=True, capture_output=True)
+        return _inprocess_gallery_gate(gallery, platform='mobile')
 
     def node(self, page, assertions):
         result = subprocess.run(['node', str(SCRIPT.with_name('navigation_dom_harness.js'))],
                                 input=json.dumps({'html': page.read_text(), 'assertions': assertions}), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['ok'])
+
+    def node_batch(self, items):
+        payload = {'batch': [{'html': page.read_text(), 'assertions': assertions} for page, assertions in items]}
+        result = subprocess.run(['node', str(SCRIPT.with_name('navigation_dom_harness.js'))],
+                                input=json.dumps(payload), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)['ok'])
 
@@ -595,6 +673,7 @@ document.querySelector('.tab[data-screen="capture"]').click();assert.equal(n.cur
             self.assertEqual(result.returncode, 0, result.stderr)
             gallery = Path(json.loads(result.stdout)['gallery'])
             expected = [('todo', 'capture', 'false'), ('todo', '', 'false'), ('todo', '', 'true'), ('capture', '', 'true'), ('capture', '', 'false')]
+            batch_items = []
             for i, (screen, history, collapsed) in enumerate(expected, 1):
                 page = gallery / f'app{i:02d}.html' if i < 5 else gallery / 'current.html'
                 assertions = f'''const n=window.navigationDemo;assert.equal(n.currentScreen(),{screen!r});assert.equal(document.querySelector('.app').dataset.initialScreen,{screen!r});assert.equal(document.querySelector('.app').classList.contains('title-collapsed'),{collapsed});'''
@@ -608,7 +687,8 @@ assert.equal(document.getElementById('overflow-menu').hidden,{str(i != 3).lower(
                     assertions += "document.getElementById('overflow').click();assert.equal(document.getElementById('overflow-menu').hidden,true);"
                 if history:
                     assertions += f"assert.equal(n.state.tabs.capture.history[0],{history!r});assert.equal(document.getElementById('back').disabled,false);document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);"
-                self.node(page, assertions)
+                batch_items.append((page, assertions))
+            self.node_batch(batch_items)
 
     def test_bespoke_runtime_primary_commit_all_surfaces_and_tab_owned_history(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -655,8 +735,7 @@ click('#open-sheet');click('#sheet [data-action-index="0"]');assert.equal(n.stat
 """
 
 
-            for i in range(1, 5):
-                self.node(gallery / f'app{i:02d}.html', assertions)
+            self.node_batch([(gallery / f'app{i:02d}.html', assertions) for i in range(1, 5)])
             original = (gallery / 'app02.html').read_text()
             (gallery / 'app02.html').write_text((gallery / 'app01.html').read_text())
             self.assertNotEqual(self.gate(gallery).returncode, 0)
@@ -687,13 +766,12 @@ click('#open-sheet');click('#sheet [data-action-index="0"]');assert.equal(n.stat
                     topology_signatures.append(EVIDENCE.topology_signature(text)[1])
                 self.assertEqual(len(set(topology_signatures)), 10)
                 extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
-                for v in manifest['variants']:
-                    extra = 'assert.match(document.querySelector(".hero p").textContent,/Transcript timeline/);' if known else ''
-                    self.node(gallery / (v['id'] + '.html'), extra + r'''const tabs=[...document.querySelectorAll('[role=tab]')];
+                variant_assertion = extra + r'''const tabs=[...document.querySelectorAll('[role=tab]')];
 if(tabs.length){tabs[1].click();assert.equal(tabs[1].getAttribute('aria-selected'),'true');assert.equal(document.getElementById('panel-detail').hidden,false);}
 const next=document.getElementById('next-pocket');if(next){const before=document.querySelector('.stack button').dataset.depth;next.click();assert.notEqual(document.querySelector('.stack button').dataset.depth,before);}
 document.getElementById('continue').click();assert.equal(document.getElementById('action-state').textContent,'Direction selected');
-document.getElementById('reset-view').click();assert.equal(document.getElementById('action-state').textContent,'View reset');''')
+document.getElementById('reset-view').click();assert.equal(document.getElementById('action-state').textContent,'View reset');'''
+                self.node_batch([(gallery / (v['id'] + '.html'), variant_assertion) for v in manifest['variants']])
                 for i in range(2, 11): (gallery / f'v{i:02d}.html').write_text((gallery / 'v01.html').read_text())
                 self.assertNotEqual(self.gate(gallery).returncode, 0)
 
@@ -716,13 +794,13 @@ const tabsBefore=JSON.stringify(n.state.tabs);assert.equal(n.state.commits['capt
 assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);assert.equal(n.state.commits['captured-only'].count,1);
 assert.equal(n.state.activeTab,'capture');assert.equal(n.state.overlay,null);
 document.querySelector('#screen [data-action-index="0"]').click();assert.equal(n.state.commits['captured-only'].count,2);assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);''')
-            for i in (2, 3, 4):
-                self.node(gallery / f'app{i:02d}.html', r'''const n=window.navigationDemo;
+            legacy_assertion = r'''const n=window.navigationDemo;
 if(n.state.overlay)document.getElementById('close-sheet').click();
 document.querySelector('.tab[data-screen="capture"]').click();assert.equal(n.currentScreen(),'capture');
 const action=document.querySelector('#screen [data-action-index="0"]');assert.equal(action.textContent,'Legacy capture');action.click();
 assert.equal(n.currentScreen(),'todo');assert.equal(n.state.activeTab,'capture');assert.equal(n.state.tabs.capture.history.join(','),'capture');
-document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);''')
+document.getElementById('back').click();assert.equal(n.currentScreen(),'capture');assert.equal(n.state.tabs.capture.history.length,0);'''
+            self.node_batch([(gallery / f'app{i:02d}.html', legacy_assertion) for i in (2, 3, 4)])
 
     def test_both_gallery_indexes_require_canonical_round_bindings(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
@@ -1325,10 +1403,7 @@ class TaxonomyV2AndVaultTests(unittest.TestCase):
 class PromptAndRenderedGuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py'
-        spec = importlib.util.spec_from_file_location('prompt_evidence_test', path)
-        cls.evidence = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.evidence)
+        cls.evidence = EVIDENCE
 
     def scaffold(self, directory, mode, *options):
         count = ['--count', '10'] if mode == 'screen' else []
@@ -1350,7 +1425,7 @@ class PromptAndRenderedGuardTests(unittest.TestCase):
                 self.assertIn('data-lp-theme="light"', index)
                 self.assertIn('class="site-header shell"', index)
                 self.assertIn('class="gallery-breadcrumbs site-nav"', index)
-                gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'mobile', '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
+                gate = _inprocess_gallery_gate(gallery, platform='mobile')
                 self.assertEqual(gate.returncode, 0, gate.stdout)
 
     def test_starter_and_supplied_prompts_bind_verbatim_and_mount(self):
@@ -1498,7 +1573,7 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
                     self.assertEqual(sum(a.get('type') == 'radio' for _, a, _ in parsed.controls), expected - 1)
                     self.assertEqual(html.count('class="device-titlebar"'), 0 if frame_mode != 'macos' else expected)
                     self.assertIn('data-theme="dark"', html); self.assertIn('copy-summary', html)
-                    gate = subprocess.run([sys.executable, str(SCRIPT.parents[2] / 'my-designer/scripts/verify_design_cases.py'), 'jev-gate', '--platform', 'desktop' if requested == 'macos' else requested, '--stage', 'gallery', '--gallery-dir', str(gallery), '--no-jev'], capture_output=True, text=True)
+                    gate = _inprocess_gallery_gate(gallery, platform='desktop' if requested == 'macos' else requested)
                     self.assertEqual(gate.returncode, 0, gate.stdout)
 
     def test_blog_same_round_categories_and_corrupt_sibling_are_safe(self):
@@ -1601,9 +1676,7 @@ class MultiplatformGalleryRegressionTests(unittest.TestCase):
     def test_portal_gate_rejects_summary_and_hiding_mutations(self):
         with tempfile.TemporaryDirectory(dir=TEMP_DIR_ROOT) as directory:
             root = Path(directory); (root / 'index.html').write_text('<main><nav class="gallery-breadcrumbs"><a href="/demos/">Demos</a></nav><button id="copy-summary">Copy</button><p id="selection-telemetry"></p><article class="variant-card" data-group="a" data-select data-star data-note aria-hidden="true"></article><article class="variant-card" data-group="b" hidden aria-hidden="true"></article><script>const text="SELECT:";</script></main>', encoding='utf-8')
-            evidence_path = SCRIPT.parents[2] / 'my-designer/scripts/design_evidence.py'
-            spec = importlib.util.spec_from_file_location('repair_evidence', evidence_path); evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
-            errors = evidence.portal_errors(root)
+            errors = EVIDENCE.portal_errors(root)
             self.assertTrue(any('summary' in error for error in errors)); self.assertTrue(any('hidden' in error for error in errors))
 
     def test_category_path_rejects_before_writes_and_title_is_inert(self):

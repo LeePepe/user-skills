@@ -21,17 +21,25 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_nav_spec = importlib.util.spec_from_file_location('navigation_demo', ROOT / 'scripts' / 'navigation_demo.py')
-NAVIGATION = importlib.util.module_from_spec(_nav_spec)
-_nav_spec.loader.exec_module(NAVIGATION)
-_chooser_spec = importlib.util.spec_from_file_location('gallery_chooser', ROOT / 'scripts' / 'gallery_chooser.py')
-CHOOSER = importlib.util.module_from_spec(_chooser_spec)
-_chooser_spec.loader.exec_module(CHOOSER)
-_prompt_spec = importlib.util.spec_from_file_location('gallery_prompts', ROOT / 'scripts' / 'gallery_prompts.py')
-PROMPTS = importlib.util.module_from_spec(_prompt_spec)
-_prompt_spec.loader.exec_module(PROMPTS)
+
+
+def _load_sibling_module(cache_name: str, path: Path):
+    cached = sys.modules.get(cache_name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(cache_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[cache_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+NAVIGATION = _load_sibling_module("design_studio_navigation_demo", ROOT / "scripts" / "navigation_demo.py")
+CHOOSER = _load_sibling_module("design_studio_gallery_chooser", ROOT / "scripts" / "gallery_chooser.py")
+PROMPTS = _load_sibling_module("design_studio_gallery_prompts", ROOT / "scripts" / "gallery_prompts.py")
 DEFAULT_CATALOG = ROOT / "scripts" / "data" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
+DEFAULT_EVAL_CASES = ROOT / "references" / "eval-cases.json"
 DEFAULT_TAXONOMY = ROOT / "scripts" / "data" / "taxonomy-v2.json"
 DEFAULT_VAULT_DIR = ROOT / "scripts" / "data" / "vault"
 PLATFORMS = {"desktop", "web", "mobile", "shared"}
@@ -911,10 +919,15 @@ def command_classify(args):
     taxonomy = load(taxonomy_path)
     text = _read_ingest_source(args)
     segments = [text] if args.no_split else (split_segments(text) or [text])
+    platform_override = getattr(args, "platform", None)
     results = []
     learned_written = False
     for seg in segments:
         res = classify_v2_segment(seg, taxonomy, args)
+        if platform_override and res.get("status") == "classified":
+            res["platforms"] = [platform_override]
+            for card in res.get("cards", []):
+                card["platforms"] = [platform_override]
         if args.learn and res.get("status") == "classified":
             if _apply_learned_keywords(taxonomy, taxonomy_path, res.get("learned_keywords_candidate", {})):
                 learned_written = True
@@ -925,6 +938,8 @@ def command_classify(args):
         "learned_keywords_updated": learned_written,
         "results": results,
     }
+    if platform_override:
+        payload["platform_filter"] = platform_override
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -1652,11 +1667,11 @@ def command_scaffold_app_nav(args):
     overrides = _json_or_csv(args.style_overrides, kind='style')
     NAVIGATION.presentation(overrides)
     NAVIGATION.session_contract(anti_patterns, overrides)
-    if args.platform not in {'mobile', 'ios', 'desktop', 'macos', 'web'}:
+    if args.platform not in {'mobile', 'ios', 'ipados', 'desktop', 'macos', 'web'}:
         raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
-    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform == 'ios' else args.platform)
+    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform in {'ios', 'ipados'} else args.platform)
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
-    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']], **({k: x[k] for k in ('summary', 'one_liner', 'summary_zh') if k in x})} for x in schemes]}
+    manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if platform == 'desktop' else platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']], **({k: x[k] for k in ('summary', 'one_liner', 'summary_zh') if k in x})} for x in schemes]}
     for variant, scheme in zip(manifest['variants'], schemes):
         variant['summary'] = CHOOSER._summary_for(manifest, variant, scheme)
     prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
@@ -1702,8 +1717,8 @@ def command_scaffold_gallery(args):
                  "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}',
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
-    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform == 'ios' else args.platform)
-    manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "count": count, "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
+    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform in {'ios', 'ipados'} else args.platform)
+    manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "count": count, "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if platform == 'desktop' else platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     for variant in variants:
         variant['summary'] = CHOOSER._summary_for(manifest, variant)
     prompts = PROMPTS.prepare(manifest, getattr(args, 'prompts_dir', None))
@@ -1839,7 +1854,113 @@ def _read_ingest_source(args):
     return text
 
 
+def command_stats(args):
+    catalog_path = Path(getattr(args, "catalog", DEFAULT_CATALOG))
+    taxonomy_path = Path(getattr(args, "taxonomy", DEFAULT_TAXONOMY))
+    vault_dir = Path(getattr(args, "vault_dir", DEFAULT_VAULT_DIR))
+    eval_cases_path = Path(getattr(args, "eval_cases", DEFAULT_EVAL_CASES))
+    platform_filter = getattr(args, "platform", None)
+
+    catalog = validate(load(catalog_path)) if catalog_path.is_file() else {"tools": [], "patterns": []}
+    taxonomy = load(taxonomy_path) if taxonomy_path.is_file() else {"dimensions": []}
+    eval_doc = load(eval_cases_path) if eval_cases_path.is_file() else {"active_cases": []}
+
+    vault_files = {
+        "desktop": vault_dir / "desktop-macos.json",
+        "mobile": vault_dir / "mobile-ios.json",
+        "web": vault_dir / "web.json",
+    }
+    target_platforms = [platform_filter] if platform_filter in VAULT_PLATFORMS else ["desktop", "mobile", "web"]
+    per_platform = {}
+    unique_inspirations = {}
+    dim_counts = {prefix: 0 for prefix in ("CL", "VS", "CP", "DV", "GM", "MI", "LN", "TC")}
+
+    for plat in ("desktop", "mobile", "web"):
+        vpath = vault_files[plat]
+        items = load(vpath).get("inspirations", []) if vpath.is_file() else []
+        per_platform[plat] = len(items)
+        if plat in target_platforms:
+            for item in items:
+                iid = str(item.get("id", ""))
+                if iid and iid not in unique_inspirations:
+                    unique_inspirations[iid] = item
+
+    for iid, item in unique_inspirations.items():
+        pdim = str(item.get("primary_dimension", ""))
+        prefix = DIMENSION_PREFIXES.get(pdim) or (iid.split("-", 1)[0] if "-" in iid else "")
+        if prefix in dim_counts:
+            dim_counts[prefix] += 1
+
+    expected_archetypes = ("VS-005", "VS-006", "VS-007", "VS-008")
+    present_archetypes = sorted(aid for aid in expected_archetypes if aid in unique_inspirations)
+
+    tools = catalog.get("tools", [])
+    patterns = catalog.get("patterns", [])
+    payload = {
+        "schema": "design-studio-stats/v1",
+        "ok": True,
+        "advisory_mode": "soft_exit_0",
+        "platform_filter": platform_filter,
+        "catalog": {
+            "tools_count": len(tools),
+            "patterns_count": len(patterns),
+            "ip_count": sum(1 for item in patterns if str(item.get("id", "")).startswith("IP-")),
+            "mp_count": sum(1 for item in patterns if str(item.get("id", "")).startswith("MP-")),
+        },
+        "vault": {
+            "desktop": per_platform["desktop"],
+            "mobile": per_platform["mobile"],
+            "web": per_platform["web"],
+            "total_inspirations": len(unique_inspirations),
+            "taxonomy_dimensions": len(taxonomy.get("dimensions", [])),
+            "dimensions": dim_counts,
+        },
+        "creative_spectrum_2_1_1": {
+            "archetypes_present": present_archetypes,
+            "quota_formula": "2_persona_deepening + 1_cross_domain + 1_wildcard",
+            "vs_005_to_008_ready": len(present_archetypes) == 4,
+        },
+        "eval_cases_count": len(eval_doc.get("active_cases", [])),
+        "drawers": [
+            "toolchain-20-matrix.md",
+            "remotion-video.md",
+            "eval-cases.json",
+        ],
+        "references": [
+            "skills/design-studio/references/toolchain-20-matrix.md",
+            "skills/design-studio/references/remotion-video.md",
+            "skills/design-studio/references/eval-cases.json",
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _resolve_cli_aliases(args, root_parser=None):
+    surface_arg = getattr(args, "surface_arg", None)
+    if surface_arg is not None:
+        kind, norm = surface_arg
+        if kind == "platform" and getattr(args, "platform", None) is None:
+            args.platform = norm
+        elif kind == "surface_mode" and getattr(args, "surface_mode", None) is None:
+            args.surface_mode = norm
+    if getattr(args, "command", None) == "vault-search" and not getattr(args, "query", ""):
+        if getattr(args, "query_pos", None):
+            args.query = args.query_pos
+    if getattr(args, "command", None) == "search" and not getattr(args, "query", None):
+        if getattr(args, "query_pos", None):
+            args.query = args.query_pos
+        elif root_parser is not None:
+            root_parser.error("search requires --query/-q or a positional <query>")
+        else:
+            raise ValueError("search requires --query/-q or a positional <query>")
+    return args
+
+
 def command(args):
+    _resolve_cli_aliases(args)
+    if getattr(args, "stats", False) or args.command in {"stats", "inspect-vault"}:
+        return command_stats(args)
     if args.command is None and args.query:
         return command_query(args)
     if args.command == "classify":
@@ -1965,6 +2086,19 @@ def normalize_surface_mode(value):
     raise argparse.ArgumentTypeError(f"expected surface mode in {sorted(SURFACE_MODES)} (or video)")
 
 
+def normalize_surface_or_platform(value):
+    try:
+        return ("surface_mode", normalize_surface_mode(value))
+    except argparse.ArgumentTypeError:
+        pass
+    try:
+        return ("platform", normalize_platform(value))
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(
+            f"expected surface mode in {sorted(SURFACE_MODES)} (or video) or platform in {sorted(PLATFORMS)} (or macos/ios)"
+        )
+
+
 def csv_choices(value, choices):
     raw_parts = csv_values(value)
     values = []
@@ -1987,8 +2121,8 @@ class _SelfDisclosingDesignParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"design_catalog.py error: {message}\n"
-            "  Fix: run `python3 skills/design-studio/scripts/design_catalog.py --help` (use `--query <kw>` or subcommands `search`, `vault-search`, `classify`, `vault-ingest`, `scaffold-gallery`, `recommend`, `render`).\n"
-            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/remotion-video.md\n"
+            "  Fix: run `python3 skills/design-studio/scripts/design_catalog.py --help` (use `--query <kw>`, `--stats`, or subcommands `search`, `vault-search`, `classify`, `vault-ingest`, `scaffold-gallery`, `recommend`, `render`, `stats`).\n"
+            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/remotion-video.md · skills/design-studio/references/eval-cases.json\n"
         )
         raise SystemExit(2)
 
@@ -1999,12 +2133,16 @@ def parser():
     common.add_argument("--markdown", default=str(DEFAULT_MARKDOWN))
     root = _SelfDisclosingDesignParser()
     root.add_argument("--query", "-q", dest="query", default=None, help="Top-level query across catalog and vault")
+    root.add_argument("--stats", action="store_true", help="Emit L3 soft JSON summary facts across catalog, vault, and 2+1+1 archetypes")
     root.add_argument("--top", "-k", dest="top", type=int, default=3)
     root.add_argument("--platform", type=normalize_platform, default=None)
     root.add_argument("--dimension", choices=sorted(DIMENSIONS), default=None)
-    root.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode, default=None)
+    root.add_argument("--surface-mode", dest="surface_mode", type=normalize_surface_mode, default=None)
+    root.add_argument("--surface", dest="surface_arg", type=normalize_surface_or_platform, default=None)
     root.add_argument("--catalog", default=str(DEFAULT_CATALOG))
+    root.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
     root.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
+    root.add_argument("--eval-cases", default=str(DEFAULT_EVAL_CASES))
     sub = root.add_subparsers(dest="command", required=False, parser_class=_SelfDisclosingDesignParser)
     intake = sub.add_parser("ingest", parents=[common])
     source = intake.add_mutually_exclusive_group(required=True)
@@ -2025,10 +2163,12 @@ def parser():
     intake.add_argument("--no-jev", action="store_true")
     intake.add_argument("--compact", action="store_true")
     search = sub.add_parser("search", parents=[common])
-    search.add_argument("--query", "-q", dest="query", required=True)
+    search.add_argument("query_pos", nargs="?", default=None, help="Optional positional query")
+    search.add_argument("--query", "-q", dest="query", default=None)
     search.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
     search.add_argument("--platform", type=normalize_platform)
-    search.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode)
+    search.add_argument("--surface-mode", dest="surface_mode", type=normalize_surface_mode)
+    search.add_argument("--surface", dest="surface_arg", type=normalize_surface_or_platform, default=None)
     search.add_argument("--threshold", type=float, default=0.25)
     render_parser = sub.add_parser("render", parents=[common])
     render_parser.add_argument("--check", action="store_true")
@@ -2056,7 +2196,8 @@ def parser():
     use.add_argument("--notes")
     rec = sub.add_parser("recommend", parents=[common])
     rec.add_argument("--platform", type=normalize_platform)
-    rec.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode)
+    rec.add_argument("--surface-mode", dest="surface_mode", type=normalize_surface_mode)
+    rec.add_argument("--surface", dest="surface_arg", type=normalize_surface_or_platform, default=None)
     rec.add_argument("--motion-tier", choices=["M1", "M2", "M3", "M4"])
     rec.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
 
@@ -2075,6 +2216,7 @@ def parser():
     cls_source.add_argument("--text", "--prompt", dest="text")
     cls_source.add_argument("--file")
     cls_source.add_argument("--image")
+    cls_parser.add_argument("--platform", "--surface", dest="platform", type=normalize_vault_platform, default=None)
     cls_parser.add_argument("--no-split", action="store_true")
     cls_parser.add_argument("--learn", action="store_true")
 
@@ -2095,7 +2237,8 @@ def parser():
     gallery = sub.add_parser("scaffold-gallery")
     gallery.add_argument("--goal", "--goal-id", dest="goal", required=True)
     gallery.add_argument("--round", "-r", dest="round", type=int, required=True)
-    gallery.add_argument("--platform", choices=["desktop", "macos", "mobile", "ios", "web"], required=True)
+    gallery.add_argument("--platform", "--surface", dest="platform",
+                         choices=["desktop", "macos", "mobile", "ios", "ipados", "web"], required=True)
     gallery.add_argument("--category", default="")
     gallery.add_argument("--category-title", default="")
     gallery.add_argument("--prompts-dir", help="Directory of exact Designer-authored <variant>-prompt.md files; validated before writes")
@@ -2130,21 +2273,43 @@ def parser():
     check_sel.add_argument("--require-archive", action="store_true", help="Require at least one sibling preview-selection-r<N>.json archive")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
+    vsearch.add_argument("query_pos", nargs="?", default=None, help="Optional positional query")
     vsearch.add_argument("--query", "-q", dest="query", default="")
-    vsearch.add_argument("--platform", type=normalize_vault_platform)
+    vsearch.add_argument("--platform", "--surface", dest="platform", type=normalize_vault_platform)
     vsearch.add_argument("--dimension", choices=sorted(DIMENSIONS))
     vsearch.add_argument("--threshold", type=float, default=0.15)
     vsearch.add_argument("--top", "-k", dest="top", type=int, default=5)
+
+    for stats_cmd in ("stats", "inspect-vault"):
+        sp = sub.add_parser(stats_cmd, help="L3 soft fact collector across catalog, vault, taxonomy, and 2+1+1 spectrum")
+        sp.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
+        sp.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
+        sp.add_argument("--catalog", default=str(DEFAULT_CATALOG))
+        sp.add_argument("--eval-cases", default=str(DEFAULT_EVAL_CASES))
+        sp.add_argument("--platform", "--surface", dest="platform", type=normalize_vault_platform, default=None)
+        sp.add_argument("--json", action="store_true")
     return root
 
 
-if __name__ == "__main__":
+def main(argv=None) -> int:
+    root_parser = parser()
+    args = root_parser.parse_args(sys.argv[1:] if argv is None else argv)
+    _resolve_cli_aliases(args, root_parser)
+    if args.command is None and not args.query and not getattr(args, "stats", False):
+        root_parser.error(
+            "the following arguments are required: --query/-q, --stats, or command "
+            "(search, vault-search, classify, vault-ingest, scaffold-gallery, recommend, render, stats)"
+        )
     try:
-        raise SystemExit(command(parser().parse_args()))
+        return command(args)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(
             f"error: {error}\n"
-            "  Reference: skills/design-studio/references/remotion-video.md · skills/design-studio/references/toolchain-20-matrix.md",
+            "  Reference: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/remotion-video.md · skills/design-studio/references/eval-cases.json",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,7 +1,10 @@
 """Bind independent Designer prompt files without pretending to interpret free text."""
+import argparse
 import hashlib
+import json
 import re
 from pathlib import Path
+import sys
 
 
 def _paragraphs(text):
@@ -166,3 +169,45 @@ def write(destination, payload):
     (destination / 'prompts').mkdir()
     for relative, data in payload.items():
         (destination / relative).write_bytes(data)
+
+
+class _PromptsParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"gallery_prompts.py error: {message}\n"
+            "  Fix: run `python3 skills/design-studio/scripts/gallery_prompts.py --self-check` or pass `--prompts-dir` via `design_catalog.py scaffold-gallery`.\n"
+            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/eval-cases.json\n"
+        )
+        raise SystemExit(2)
+
+
+def main(argv=None) -> int:
+    parser = _PromptsParser(description="Designer prompt binding and anti-boilerplate overlap helper.")
+    parser.add_argument("--self-check", action="store_true", help="Run fast prompt contract self-check (default)")
+    parser.add_argument("--json", action="store_true", help="Emit JSON summary (default)")
+    parser.parse_args(sys.argv[1:] if argv is None else argv)
+    sample_manifest = {
+        "platform": "mobile",
+        "mode": "screen",
+        "variants": [
+            {"id": "v01", "p0": "next-action", "axis_y": "accordion", "archetype": "VS-005", "layout": "hero-top", "whitespace": "balanced", "glass_geometry": "wide", "content": "Capture flow"},
+            {"id": "v02", "p0": "timeline", "axis_y": "segmented-lens", "archetype": "VS-006", "layout": "hero-inline", "whitespace": "open", "glass_geometry": "compact", "content": "Review flow"},
+        ],
+    }
+    prepared = prepare(sample_manifest)
+    ok = len(prepared) == 2 and sample_manifest.get("prompt_contract", {}).get("schema") == "design-prompts/v1"
+    print(json.dumps({
+        "ok": ok,
+        "module": "gallery_prompts",
+        "prompts_checked": len(prepared),
+        "archetypes": sorted(PALETTES),
+        "references": [
+            "skills/design-studio/references/toolchain-20-matrix.md",
+            "skills/design-studio/references/eval-cases.json",
+        ],
+    }, ensure_ascii=False))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
