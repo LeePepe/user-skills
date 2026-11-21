@@ -23,7 +23,7 @@ SPEC.loader.exec_module(CLASSIFIER)
 
 class ClassifyChangesTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory(prefix=".classify-test-", dir=SKILL_DIR)
+        self.directory = tempfile.TemporaryDirectory(prefix="classify-test-")
         self.addCleanup(self.directory.cleanup)
         self.repo = Path(self.directory.name)
         self.git("init", "--quiet", "-b", "main")
