@@ -846,6 +846,43 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             self.assertEqual(healthy_diag["emitted_briefs"]["writers_spawned"], 0)
             self.assertEqual(healthy_diag["emitted_briefs"]["count"], 0)
 
+            # 1-M2 -> K-M1 (K=1..3) -> M2-Rollup: remove the simulated worktree lease so both
+            # `my-designer` and `team-lead` are actionable, then emit per-skill M1 Goal specs/ledgers
+            active_wt.rmdir()
+            multi_m1_handoff = paths["handoff_root"] / "batch-m2-rollup"
+            batch_triage = SKILL_RETRO.triage_skills(
+                pick_top=3,
+                use_jev=False,
+                emit_briefs_dir=multi_m1_handoff,
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+            )
+            self.assertEqual(batch_triage["status"], "ACTIONABLE")
+            self.assertEqual(batch_triage["m1_tls_to_spawn"], 2)
+            self.assertIn("1_M2 -> K_PARALLEL_M1_TLS", batch_triage["orchestration_topology"])
+            m1_dispatches = {d["skill"]: d for d in batch_triage["m1_parallel_dispatches"]}
+            self.assertIn("my-designer", m1_dispatches)
+            self.assertIn("team-lead", m1_dispatches)
+            self.assertEqual(m1_dispatches["my-designer"]["m1_tl_agent"], "skill-retro-my-designer-goal-tl-r1")
+            self.assertEqual(m1_dispatches["team-lead"]["m1_tl_agent"], "skill-retro-team-lead-goal-tl-r1")
+
+            eb_batch = batch_triage["emitted_briefs"]
+            self.assertEqual(eb_batch["m1_goals_to_dispatch"], 2)
+            for b_item in eb_batch["briefs"]:
+                self.assertTrue(Path(b_item["goal_spec_path"]).is_file())
+                self.assertTrue(Path(b_item["goal_ledger_path"]).is_file())
+                self.assertEqual(
+                    b_item["m1_outcomes_allowed"],
+                    ["FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY"],
+                )
+                self.assertIn("WITHOUT spawning a Writer or Reviewer", Path(b_item["goal_spec_path"]).read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
