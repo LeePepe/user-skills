@@ -1,4 +1,7 @@
 """Bounded loopback SystemOne evaluator; never certifies absent evidence."""
+import argparse
+import importlib.util
+import sys
 import http.client
 import ipaddress
 import json
@@ -132,7 +135,7 @@ class _DeadlineHandler(urllib.request.HTTPHandler):
         return self.do_open(lambda host, **kwargs: _DeadlineConnection(host, self.deadline, **kwargs), request)
 
 
-def live_response(url, timeout, state, questions):
+def _validate_url(url):
     parsed = urllib.parse.urlsplit(url)
     try:
         local = parsed.hostname == 'localhost' or ipaddress.ip_address(parsed.hostname).is_loopback
@@ -140,6 +143,11 @@ def live_response(url, timeout, state, questions):
         local = False
     if not local or parsed.scheme != 'http' or parsed.username or parsed.password or parsed.path != '/v1/systemone' or parsed.query or parsed.fragment:
         raise ValueError('Jev URL must be a loopback http://host:port/v1/systemone; external endpoints/redirects forbidden')
+    return parsed
+
+
+def live_response(url, timeout, state, questions):
+    _validate_url(url)
     if type(timeout) not in {float, int} or not math.isfinite(timeout) or not 0 < timeout <= 5:
         raise ValueError('Jev timeout must be >0 and <=5 seconds')
     if not isinstance(state, dict) or not state.get('evidence') or not questions:
@@ -200,3 +208,77 @@ def response(args, evidence, platform, taxonomy):
     except (OSError, ValueError, TypeError) as error:
         # Never include auth headers or the request body in an error/receipt.
         return {'status': 'REJECT_REVISE', 'mode': mode, 'reason': f'SystemOne inaccessible/invalid: {type(error).__name__}'}
+
+
+CLI_GUIDANCE = [
+    'Read skills/my-designer/references/eval-cases.json for positive/counter-case Jev evidence replays.',
+    'Read skills/my-designer/references/routing-index.md for stage/platform routing.',
+]
+
+
+class JevArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write(f'{self.prog}: {message}\n' + '\n'.join(CLI_GUIDANCE) + '\n')
+        self.exit(2)
+
+
+def build_parser():
+    parser = JevArgumentParser(description=__doc__)
+    parser.add_argument('--self-check', action='store_true')
+    parser.add_argument('--stage', choices=['gallery', 'spec', 'traceback'])
+    parser.add_argument('--platform', '--surface', choices=['desktop', 'macos', 'mobile', 'ios', 'web'], default='desktop')
+    parser.add_argument('--spec-file', '--spec', dest='spec_file')
+    parser.add_argument('--gallery-dir', '--dir', dest='gallery_dir')
+    parser.add_argument('--taxonomy', default=str(Path(__file__).resolve().parents[2] / 'design-studio/scripts/data/taxonomy-v2.json'))
+    parser.add_argument('--no-jev', action='store_true')
+    parser.add_argument('--mock-jev-json')
+    parser.add_argument('--jev-url', default='http://127.0.0.1:19823/v1/systemone')
+    parser.add_argument('--jev-timeout', type=float, default=1.5)
+    parser.add_argument('--json', action='store_true', help='Emit JSON output (default)')
+    return parser
+
+
+def self_check():
+    questions = {'q': 'Evidence satisfies the constraint'}
+    cases = [({'q': {'noul': 1}}, True), ({'q': {'score': .6}}, True),
+             ({'q': {'noul': 0, 'status': 'PASS'}}, False), ({'q': {'noul': True}}, False),
+             ({'q': {'score': '1'}}, False), ({'q': {'score': float('nan')}}, False),
+             ({'q': {'score': 1, 'decision': 'REJECT'}}, False), ({}, False)]
+    checks = {'truth_table': all((validate_response(data, questions, 'self-check')['status'] == 'PASS') == expected for data, expected in cases)}
+    guards = []
+    for url, expected in [('http://127.0.0.1:19823/v1/systemone', True), ('http://[::1]:19823/v1/systemone', True),
+                          ('https://127.0.0.1/v1/systemone', False), ('http://example.com/v1/systemone', False),
+                          ('http://user@localhost/v1/systemone', False), ('http://localhost/v1/systemone?leak=1', False)]:
+        try:
+            _validate_url(url)
+            guards.append(expected)
+        except ValueError:
+            guards.append(not expected)
+    checks['loopback_url_guard'] = all(guards)
+    return {'ok': all(checks.values()), 'checks': checks}
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.self_check:
+        result = self_check()
+        print(json.dumps(result))
+        if not result['ok']:
+            sys.stderr.write('\n'.join(CLI_GUIDANCE) + '\n')
+        return 0 if result['ok'] else 1
+    if not args.stage:
+        parser.error('choose --self-check or --stage with --spec-file/--gallery-dir evidence')
+    args.platform = {'ios': 'mobile', 'macos': 'desktop'}.get(args.platform, args.platform)
+    # Reuse the deterministic stage gate; standalone Jev must not certify absent evidence.
+    spec = importlib.util.spec_from_file_location('standalone_design_gate', Path(__file__).with_name('verify_design_cases.py'))
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    code = gate.command_jev_gate(args)
+    if code:
+        sys.stderr.write('\n'.join(CLI_GUIDANCE) + '\n')
+    return code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

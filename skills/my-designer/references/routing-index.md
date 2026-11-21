@@ -11,7 +11,14 @@ Use the smallest drawer that answers the question. Plan A covers Apple HIG/nativ
 | subtractive modernization (`DC-015`) | `modernization-dimensions.md` | `verify_design_cases.py audit-spec <design.md...>` |
 | Visual Traceback `[IMPL_BUG]`/`[SPEC_GAP]` & `2+1+1` | `design-flow-architecture.md` | `verify_design_cases.py flow-map` |
 | defect / eval gates | `eval-cases.json` | `verify_design_cases.py --lookup-defect <keyword>` |
+| JSON artifact facts (read-only, soft advisory) | `routing-index.md` | `verify_design_cases.py inspect-json <path>` or `--inspect-json <path>` |
+| standalone geometry / PNG / traceback | `navigation-evidence-contract.md` | `design_evidence.py --self-check` / `--audit-geometry <json>` / `--check-whitespace <png_or_dir>` / `--verify-traceback <file>` |
+| standalone Jev truth-table / stage | `eval-cases.json` | `design_jev.py --self-check` or `--stage <gallery\|spec\|traceback> --spec-file <file> --no-jev` |
 
 Native evidence uses `PreviewHostKit`, `#Preview`, 120Hz and ImageRenderer; Web evidence uses Playwright. Freeze `design.md` and `spec_sha` before Writer work. Generic recurring findings qualify for `sink-rule` only when symbol-free.
 
 Plan A and Plan C are complementary: route first, let L2 runtime checks self-disclose the exact L1 drawer on failure, then record the receipt.
+
+Platform-aware commands accept `--surface` as `--platform` (`ios -> mobile`, `macos -> desktop`). `route --platform <p> --surface <hint>` also retains UI surface hints. `audit-code --path <code> --spec-file <design.md>` validates both inputs and reports `spec_files` / `spec_validated`. Standalone Jev accepts `--gallery-dir` for gallery evidence, `--mock-jev-json` for offline replays, and only bounded loopback `--jev-url` endpoints for live checks.
+
+Missing optional design-studio taxonomy/vaults use local routing defaults; missing canonical gallery renderers remain UNVALIDATED, never a fabricated PASS. `inspect-json` reports facts, not evidence certification. Repeated catalog imports and identical chooser-runtime checks are cached until their source mtime/runtime digest changes.

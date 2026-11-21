@@ -1,6 +1,6 @@
 ---
 name: my-designer
-description: "Entry B of the Dual-Entry Design Flow: progressive-disclosure product design, UI modernization, and post-implementation Visual Traceback for desktop, mobile, and web."
+description: "Entry B of the Dual-Entry Design Flow: SwiftUI View; UI redesign; layout/density/whitespace; PreviewHostKit/#Preview; Liquid Glass; design.md/spec.md; Visual Traceback [IMPL_BUG]/[SPEC_GAP]. Not for external inspiration vault ingestion (use design-studio), backend telemetry readers, entitlements, or non-UI unit tests."
 allowed-tools: Read, Write, Edit, Bash, Skill
 ---
 
@@ -51,4 +51,5 @@ python3 skills/my-designer/scripts/verify_design_cases.py audit-spec <design.md.
 python3 skills/my-designer/scripts/verify_design_cases.py check-whitespace-ratio --persona compact <png_or_dir>
 python3 skills/my-designer/scripts/verify_design_cases.py --check-section-interactivity <path>
 python3 skills/my-designer/scripts/verify_design_cases.py --lookup-defect <keyword>
+python3 skills/my-designer/scripts/verify_design_cases.py inspect-json <artifact.json>
 ```
