@@ -392,6 +392,60 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(bad_payload["verdict"], "INCONCLUSIVE")
         self.assertTrue(bad_payload["errors"])
 
+    def test_pr_flag_resolves_pull_ref_and_fails_closed_when_unresolvable(self) -> None:
+        root = self.make_repo()
+        write(root, "AGENTS.md", "# Index\n")
+        write(root, "app.py", "value = 1\n")
+        self.commit(root, "base")
+
+        # Create a PR commit recorded under refs/pull/42/head while main stays on an unrelated commit
+        run("git", "checkout", "-b", "pr-42-branch", cwd=root)
+        write(root, "pr_feature.py", "enabled = True\n")
+        self.commit(root, "pr 42 feature")
+        pr_sha = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+        run("git", "update-ref", "refs/pull/42/head", pr_sha, cwd=root)
+
+        run("git", "checkout", "main", cwd=root)
+        write(root, "unrelated_local.py", "local = True\n")
+        self.commit(root, "local head commit on main")
+
+        # Stub `gh` in a local bin directory so tests are deterministic and offline
+        fake_bin = Path(tempfile.mkdtemp(prefix="code-review-fake-bin-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(fake_bin, ignore_errors=True))
+        fake_gh = fake_bin / "gh"
+        fake_gh.write_text("#!/bin/sh\necho 'no gh remote configured' >&2\nexit 1\n", encoding="utf-8")
+        fake_gh.chmod(0o755)
+        base_env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("GIT_")}
+        base_env["PATH"] = f"{fake_bin}:{base_env.get('PATH', '')}"
+
+        # 1. Resolvable refs/pull/42/head reviews PR 42 (not unrelated_local.py)
+        ok_pr = subprocess.run(
+            ["python3", str(SCRIPT), "--repo", str(root), "--pr", "42"],
+            cwd=root,
+            env=base_env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        ok_data = json.loads(ok_pr.stdout)
+        self.assertEqual([c["path"] for c in ok_data["changed_files"]], ["pr_feature.py"])
+        self.assertEqual(ok_data["mode"], "committed-only")
+
+        # 2. Unresolvable --pr 999 fails closed with exit=1 (never silently falls back to local HEAD!)
+        bad_pr = subprocess.run(
+            ["python3", str(SCRIPT), "--repo", str(root), "--pr", "999"],
+            cwd=root,
+            env=base_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bad_pr.returncode, 1)
+        self.assertEqual(bad_pr.stdout.strip(), "")
+        self.assertIn("cannot resolve pull request", bad_pr.stderr)
+        self.assertIn("skills/code-review/references/review-rubric.md", bad_pr.stderr)
+        self.assertIn("skills/code-review/references/output-contract.md", bad_pr.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

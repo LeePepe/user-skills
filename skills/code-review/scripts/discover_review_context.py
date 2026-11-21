@@ -50,7 +50,11 @@ REQUIRED_FINDING_FIELDS = (
 )
 
 
-class EmptyReviewSurfaceError(RuntimeError):
+class ReviewSurfaceDomainError(RuntimeError):
+    """Domain-level error for review surface resolution (exit code 1)."""
+
+
+class EmptyReviewSurfaceError(ReviewSurfaceDomainError):
     """Domain-level signal that no changed files exist on the review surface (exit code 1)."""
 
 
@@ -868,6 +872,108 @@ def schema_template_payload() -> dict[str, object]:
     }
 
 
+def resolve_pull_request_surface(
+    repo: Path,
+    pr_raw: str,
+    requested_base: str | None,
+    requested_head: str,
+) -> tuple[str | None, str]:
+    """Resolve `--pr <num|ref>` fail-closed into `(base_ref_or_none, head_commit_or_ref)`."""
+    pr_spec = pr_raw.strip().lstrip("#")
+    if not pr_spec:
+        raise ReviewSurfaceDomainError("--pr value cannot be empty")
+
+    resolved_base = requested_base
+    resolved_head: str | None = None if requested_head == "HEAD" else requested_head
+
+    # 1. Try explicit ref (e.g. refs/pull/123/head or branch/tag ref passed via --pr)
+    pull_ref_candidates = (
+        [pr_spec]
+        if pr_spec.startswith("refs/")
+        else [f"refs/pull/{pr_spec}/head", f"refs/remotes/origin/pr/{pr_spec}"]
+    )
+    for ref_cand in pull_ref_candidates:
+        verified = git(repo, "rev-parse", "--verify", f"{ref_cand}^{{commit}}", check=False)
+        if verified and resolved_head is None:
+            resolved_head = ref_cand
+            break
+
+    # 2. Query `gh pr view` for baseRefName and headRefOid
+    gh_err = ""
+    try:
+        pr_view = subprocess.run(
+            ["gh", "pr", "view", pr_spec, "--json", "baseRefName,headRefOid"],
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        pr_view = None
+        gh_err = str(exc)
+
+    if pr_view is not None:
+        if pr_view.returncode == 0 and pr_view.stdout.strip():
+            try:
+                pr_meta = json.loads(pr_view.stdout)
+            except json.JSONDecodeError:
+                pr_meta = None
+            if isinstance(pr_meta, dict):
+                cand_base = str(pr_meta.get("baseRefName") or "").strip()
+                if cand_base and not resolved_base:
+                    resolved_base = (
+                        f"origin/{cand_base}"
+                        if git(repo, "rev-parse", "--verify", f"origin/{cand_base}^{{commit}}", check=False)
+                        else cand_base
+                    )
+                cand_head = str(pr_meta.get("headRefOid") or "").strip()
+                if cand_head and resolved_head is None:
+                    if git(repo, "rev-parse", "--verify", f"{cand_head}^{{commit}}", check=False):
+                        resolved_head = cand_head
+                    elif pr_spec.isdigit():
+                        fetch_proc = subprocess.run(
+                            ["git", "-C", str(repo), "fetch", "--quiet", "origin", f"pull/{pr_spec}/head"],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                        )
+                        if fetch_proc.returncode == 0 and git(
+                            repo, "rev-parse", "--verify", f"{cand_head}^{{commit}}", check=False
+                        ):
+                            resolved_head = cand_head
+                        elif fetch_proc.returncode == 0 and git(
+                            repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}", check=False
+                        ):
+                            resolved_head = git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+        else:
+            gh_err = pr_view.stderr.strip()
+
+    # 3. Last-resort fetch of origin pull/<num>/head if still unresolved and numeric
+    if resolved_head is None and pr_spec.isdigit() and git(repo, "remote", "get-url", "origin", check=False):
+        fetch_proc = subprocess.run(
+            ["git", "-C", str(repo), "fetch", "--quiet", "origin", f"pull/{pr_spec}/head"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if fetch_proc.returncode == 0 and git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}", check=False):
+            resolved_head = git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+
+    if resolved_head is None:
+        detail = f" ({gh_err})" if gh_err else ""
+        raise ReviewSurfaceDomainError(
+            f"cannot resolve pull request {pr_raw!r} via gh pr view or refs/pull/{pr_spec}/head{detail}; refusing to fall back to local HEAD"
+        )
+    if resolved_base and not git(repo, "rev-parse", "--verify", f"{resolved_base}^{{commit}}", check=False):
+        raise ReviewSurfaceDomainError(
+            f"pull request {pr_raw!r} base ref {resolved_base!r} is not present locally; fetch base ref or pass --range <base>..<head>"
+        )
+    return resolved_base, resolved_head
+
+
 class _SelfDisclosingReviewParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
@@ -972,28 +1078,14 @@ def main(argv: list[str] | None = None) -> int:
     committed_only = bool(args.committed_only)
     three_dot = True
 
-    if args.pr and not requested_base and not args.diff_range:
-        pr_view = subprocess.run(
-            ["gh", "pr", "view", str(args.pr), "--json", "baseRefName,headRefOid"],
-            cwd=repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+    if args.pr is not None and not args.diff_range:
+        requested_base, head_ref = resolve_pull_request_surface(
+            repo,
+            args.pr,
+            requested_base=requested_base,
+            requested_head=head_ref,
         )
-        if pr_view.returncode == 0 and pr_view.stdout.strip():
-            try:
-                pr_meta = json.loads(pr_view.stdout)
-                if isinstance(pr_meta, dict) and pr_meta.get("baseRefName"):
-                    cand_base = str(pr_meta["baseRefName"])
-                    requested_base = f"origin/{cand_base}" if git(repo, "rev-parse", "--verify", f"origin/{cand_base}^{{commit}}", check=False) else cand_base
-                if isinstance(pr_meta, dict) and pr_meta.get("headRefOid") and args.head == "HEAD":
-                    cand_head = str(pr_meta["headRefOid"])
-                    if git(repo, "rev-parse", "--verify", f"{cand_head}^{{commit}}", check=False):
-                        head_ref = cand_head
-                        committed_only = True
-            except json.JSONDecodeError:
-                pass
+        committed_only = True
 
     if args.diff_range:
         range_base, range_head, three_dot = parse_diff_range(args.diff_range)
@@ -1006,7 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
     changes = changed_files(repo, merge_base, committed_only, head_ref=head_ref, three_dot=three_dot)
     fallback_base: str | None = None
 
-    if not changes and not args.strict_non_empty and not args.base and not args.diff_range:
+    if not changes and not args.strict_non_empty and not args.base and not args.diff_range and args.pr is None:
         head_sha = git(repo, "rev-parse", "--verify", f"{head_ref}^{{commit}}", check=False)
         base_sha = git(repo, "rev-parse", "--verify", f"{base_ref}^{{commit}}", check=False)
         parent_sha = git(repo, "rev-parse", "--verify", f"{head_ref}~1^{{commit}}", check=False)
@@ -1072,6 +1164,13 @@ if __name__ == "__main__":
     except EmptyReviewSurfaceError as error:
         print(
             f"code-review discovery: {error} (pass --empty-ok to inspect context without diff, or --base <ref> / --range <base>..<head>).\n"
+            "  Reference: skills/code-review/references/review-rubric.md · skills/code-review/references/output-contract.md",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    except ReviewSurfaceDomainError as error:
+        print(
+            f"code-review discovery: {error}\n"
             "  Reference: skills/code-review/references/review-rubric.md · skills/code-review/references/output-contract.md",
             file=sys.stderr,
         )
