@@ -1,9 +1,11 @@
 """One card, bezel, and runtime contract for round choosers and goal portals."""
+import argparse
 from html import escape
 from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
+import sys
 
 ASSETS = Path(__file__).resolve().parents[1] / 'assets'
 STRATA_HEAD = '<link rel="stylesheet" href="/assets/colors.css"><link rel="stylesheet" href="/assets/strata-theme.css"><link rel="stylesheet" href="/assets/blog.css">'
@@ -358,3 +360,43 @@ def render_demos_hub(demos_root, tokens):
     runtime = r"""(() => { const config = JSON.parse(document.getElementById('hub-config').textContent), goals = config.map(item => item.goal), inventories = new Map(config.map(item => [item.goal, item.cards])), {activeItems, telemetryText, selectionSummary} = window.galleryChooser; const themeSelect = document.getElementById('theme'); const setHubTheme = value => { const mode = ['system', 'light', 'dark'].includes(value) ? value : 'system'; if (themeSelect) themeSelect.value = mode; if (document.documentElement?.dataset) { if (mode === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = mode; } if (document.body?.dataset) { if (mode === 'system') delete document.body.dataset.theme; else document.body.dataset.theme = mode; } try { localStorage?.setItem?.('profile-theme', mode); } catch {} }; try { setHubTheme(localStorage?.getItem?.('profile-theme') || 'system'); } catch { setHubTheme('system'); } themeSelect?.addEventListener?.('change', e => setHubTheme(e.target?.value || themeSelect.value)); const safeObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}; const parse = goal => { const merged = {}; for (const key of [`design-gallery:${goal}`, `design-gallery-${goal}`]) { try { Object.assign(merged, safeObject(JSON.parse(localStorage.getItem(key) || '{}'))); } catch {} } if (goal === 'aidash-cards-redesign') { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i) || ''; if (!key.startsWith('aidash-cards-r2:')) continue; const parts = key.slice('aidash-cards-r2:'.length).split(':'); if (parts[0] === 'selection' && parts[1]) { const category = parts[1].replace(/^select-/, ''), id = String(localStorage.getItem(key) || ''); if (id) { const entry = JSON.stringify([category, 2, id]); merged[entry] = {...merged[entry], category, round: 2, id, selected: true}; } } else if ((parts[0] === 'star' || parts[0] === 'note') && parts.length >= 3) { const category = parts[1], id = parts.slice(2).join(':'), entry = JSON.stringify([category, 2, id]), item = {...merged[entry], category, round: 2, id}; if (parts[0] === 'star' && localStorage.getItem(key) === '1') item.starred = true; if (parts[0] === 'note') item.notes = String(localStorage.getItem(key) || ''); merged[entry] = item; } } } return merged; }; const summary = (goal, state) => selectionSummary(goal, state, undefined, inventories.get(goal) || []); const update = () => goals.forEach(goal => { let state = {}; try { state = parse(goal); } catch {} const node = document.querySelector(`[data-goal-telemetry="${CSS.escape(goal)}"]`); if (node) node.textContent = telemetryText(activeItems(state, undefined, inventories.get(goal) || [])); }); const copy = async text => { try { await navigator.clipboard.writeText(text); } catch { const area = document.getElementById('hub-summary-text'); area.hidden = false; area.value = text; area.focus(); area.select(); } }; document.addEventListener('click', event => { const button = event.target.closest('[data-copy-goal],#copy-all-demos-summary'); if (!button) return; copy(button.id ? goals.map(goal => summary(goal, parse(goal))).join('\n\n') : summary(button.dataset.copyGoal, parse(button.dataset.copyGoal))); }); window.addEventListener('storage', update); window.addEventListener('pageshow', update); update(); })();"""
     header = _site_header(hub=True)
     return f'''<!doctype html><html lang="zh-CN" {ROOT_ATTRS}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design Demos 总目录 · Active Ephemeral Galleries</title>{STRATA_HEAD}<style>{NOTEBOOK_CSS}\n{tokens}\n.demo-goal-card{{padding:20px;margin:16px 0;border:1px solid var(--line,var(--border));border-radius:12px;background:var(--surface,var(--white));color:var(--text,var(--ink))}}.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{margin-right:12px;min-height:28px;display:inline-flex;align-items:center;color:var(--accent,var(--action))}}button{{padding:10px 14px;border:1px solid var(--line,var(--border-strong));border-radius:10px;background:var(--surface,var(--white));color:var(--text,var(--ink))}}@media(max-width:480px){{.gallery-page .gallery-breadcrumbs a,.demo-goal-card a{{min-height:44px}}}}</style></head><body class="gallery-page"><main class="gallery">{header}<h1>Design Demos 总目录 · Active Ephemeral Galleries</h1><div id="demo-goals">{"".join(cards)}</div><button id="copy-all-demos-summary">📋 复制全部项目观察摘要</button><textarea id="hub-summary-text" readonly hidden></textarea></main><script id="hub-config" type="application/json">{config}</script><script>{shared_runtime}</script><script>{runtime}</script></body></html>'''
+
+
+class _ChooserParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"gallery_chooser.py error: {message}\n"
+            "  Fix: run `python3 skills/design-studio/scripts/gallery_chooser.py --self-check` or use `design_catalog.py scaffold-gallery`.\n"
+            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/eval-cases.json\n"
+        )
+        raise SystemExit(2)
+
+
+def main(argv=None) -> int:
+    parser = _ChooserParser(description="Round chooser and goal portal contract helper.")
+    parser.add_argument("--self-check", action="store_true", help="Run fast chooser contract self-check (default)")
+    parser.add_argument("--json", action="store_true", help="Emit JSON summary (default)")
+    parser.parse_args(sys.argv[1:] if argv is None else argv)
+    sample_manifest = {
+        "goal": "self-check",
+        "round": 1,
+        "platform": "web",
+        "mode": "screen",
+        "variants": [{"id": "v01", "p0": "next-action", "axis_y": "accordion", "archetype": "VS-005", "layout": "hero-top", "glass_geometry": "wide"}],
+    }
+    cards = cards_for(sample_manifest)
+    ok = len(cards) == 2 and (ASSETS / "gallery-chooser.js").is_file() and (ASSETS / "tenfold-gallery.css").is_file()
+    print(json.dumps({
+        "ok": ok,
+        "module": "gallery_chooser",
+        "cards_checked": len(cards),
+        "references": [
+            "skills/design-studio/references/toolchain-20-matrix.md",
+            "skills/design-studio/references/eval-cases.json",
+        ],
+    }, ensure_ascii=False))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

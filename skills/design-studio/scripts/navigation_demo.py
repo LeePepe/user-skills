@@ -3,11 +3,13 @@
 Custom model names are labels; architecture is the executable contract. This module
 is shared by the generator and evidence gate, which accepts canonical artifacts only.
 """
+import argparse
 from copy import deepcopy
 from html import escape
 import json
 from pathlib import Path
 import re
+import sys
 
 ASSETS = Path(__file__).resolve().parents[1] / 'assets'
 KINDS = {'stack', 'tabs', 'lens', 'deck'}
@@ -439,3 +441,39 @@ def app_html(scheme, app_index, platform, optical_svg, anti_patterns=None, overr
 <section id="sheet" class="floating overlay" role="dialog" aria-modal="true" aria-label="Tools" hidden><div class="grabber" aria-hidden="true"></div><div class="detents"><button id="close-sheet">Close</button><button id="medium-sheet">Medium</button><button id="large-sheet">Large</button></div><div id="sheet-content"></div></section>
 <section id="overflow-menu" class="floating" aria-label="More actions" hidden>{overflow}<div id="popover-content"></div></section>
 </main><script id="page-config" type="application/json">{json_script(config)}</script><script>{runtime}</script></body></html>'''
+
+
+class _NavigationDemoParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"navigation_demo.py error: {message}\n"
+            "  Fix: run `python3 skills/design-studio/scripts/navigation_demo.py --self-check` or use `design_catalog.py scaffold-gallery --mode app-nav`.\n"
+            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/eval-cases.json\n"
+        )
+        raise SystemExit(2)
+
+
+def main(argv=None) -> int:
+    parser = _NavigationDemoParser(description="Validated app navigation sandbox and operative graph helper.")
+    parser.add_argument("--self-check", action="store_true", help="Run fast navigation graph self-check (default)")
+    parser.add_argument("--json", action="store_true", help="Emit JSON summary (default)")
+    parser.parse_args(sys.argv[1:] if argv is None else argv)
+    schemes = [validate_scheme(s, idx, "SelfCheck") for idx, s in enumerate(starter_schemes("SelfCheck"), 1)]
+    distinct_archs = len({architecture_signature(s) for s in schemes})
+    ok = distinct_archs == 4 and (ASSETS / "navigation-demo.js").is_file() and (ASSETS / "navigation-demo.css").is_file()
+    print(json.dumps({
+        "ok": ok,
+        "module": "navigation_demo",
+        "schemes_checked": len(schemes),
+        "distinct_architectures": distinct_archs,
+        "kinds": sorted(KINDS),
+        "references": [
+            "skills/design-studio/references/toolchain-20-matrix.md",
+            "skills/design-studio/references/eval-cases.json",
+        ],
+    }, ensure_ascii=False))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

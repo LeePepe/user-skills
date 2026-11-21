@@ -1,6 +1,6 @@
 ---
 name: design-studio
-description: "Entry A of the Dual-Entry Design Flow: ingest, classify, and stockpile design inspirations, measured palettes, interaction/motion patterns, and video assets."
+description: "Entry A of Dual-Entry Design Flow: ingest, classify, stockpile design vault inspirations, measured hex palettes (--measure-palette), 8D taxonomy-v2 cards, catalog interaction/motion patterns, Web galleries, and Remotion video. Not for design.md/spec.md, UI audits, Visual Traceback (my-designer), or knowledge-digest."
 allowed-tools: Read, Write, Edit, Bash, Skill
 ---
 

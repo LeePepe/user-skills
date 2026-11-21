@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const rawInput = JSON.parse(fs.readFileSync(0, 'utf8'));
 function decode(s) { return s.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'); }
 class Element {
   constructor(tag) {
@@ -55,25 +55,33 @@ function match(e, selector) {
   while (parts.length) { const part = parts.pop(); while (parent && !simple(parent, part)) parent = parent.parentNode; if (!parent) return false; parent = parent.parentNode; }
   return true;
 }
-const document = new Element('document');
-document.createElement = tag => new Element(tag);
-document.getElementById = id => document.descendants().find(e => e.id === id) || null;
-const stack = [document];
-const voidTags = new Set(['meta', 'link', 'input', 'img', 'br', 'hr']);
-for (const token of input.html.match(/<!--[\s\S]*?-->|<![^>]*>|<[^>]+>|[^<]+/g) || []) {
-  if (/^<!/.test(token)) continue;
-  if (/^<\//.test(token)) { const tag = token.slice(2, -1).trim().toUpperCase(); if (stack.at(-1).tagName === tag) stack.pop(); continue; }
-  if (token[0] === '<') {
-    const tag = token.match(/^<([\w-]+)/)?.[1]; if (!tag) continue;
-    const e = new Element(tag);
-    for (const m of token.slice(tag.length + 1, -1).matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) e.setAttribute(m[1], decode(m[2] ?? m[3] ?? m[4] ?? ''));
-    stack.at(-1).append(e); if (!voidTags.has(tag) && !token.endsWith('/>')) stack.push(e);
-  } else stack.at(-1).text += decode(token);
+function runSingle(input) {
+  const document = new Element('document');
+  document.createElement = tag => new Element(tag);
+  document.getElementById = id => document.descendants().find(e => e.id === id) || null;
+  const stack = [document];
+  const voidTags = new Set(['meta', 'link', 'input', 'img', 'br', 'hr']);
+  for (const token of input.html.match(/<!--[\s\S]*?-->|<![^>]*>|<[^>]+>|[^<]+/g) || []) {
+    if (/^<!/.test(token)) continue;
+    if (/^<\//.test(token)) { const tag = token.slice(2, -1).trim().toUpperCase(); if (stack.at(-1).tagName === tag) stack.pop(); continue; }
+    if (token[0] === '<') {
+      const tag = token.match(/^<([\w-]+)/)?.[1]; if (!tag) continue;
+      const e = new Element(tag);
+      for (const m of token.slice(tag.length + 1, -1).matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) e.setAttribute(m[1], decode(m[2] ?? m[3] ?? m[4] ?? ''));
+      stack.at(-1).append(e); if (!voidTags.has(tag) && !token.endsWith('/>')) stack.push(e);
+    } else stack.at(-1).text += decode(token);
+  }
+  document.body = document.querySelector('body');
+  const window = {scrollY: 0, events: {}, addEventListener(type, fn) {this.events[type] = fn;}};
+  const context = {document, window, navigator: {userAgent: 'WebKit'}, console, assert, JSON, Object, Number, Error, String};
+  vm.createContext(context);
+  for (const script of document.querySelectorAll('script')) if (script.getAttribute('type') !== 'application/json') vm.runInContext(script.textContent, context, {timeout: 1000});
+  vm.runInContext('(function(){' + input.assertions + '\n})();', context, {timeout: 1000});
+  return {ok: true, state: window.navigationDemo?.state};
 }
-document.body = document.querySelector('body');
-const window = {scrollY: 0, events: {}, addEventListener(type, fn) {this.events[type] = fn;}};
-const context = {document, window, navigator: {userAgent: 'WebKit'}, console, assert, JSON, Object, Number, Error, String};
-vm.createContext(context);
-for (const script of document.querySelectorAll('script')) if (script.getAttribute('type') !== 'application/json') vm.runInContext(script.textContent, context, {timeout: 1000});
-vm.runInContext('(function(){' + input.assertions + '\n})();', context, {timeout: 1000});
-console.log(JSON.stringify({ok: true, state: window.navigationDemo?.state}));
+if (Array.isArray(rawInput.batch)) {
+  const results = rawInput.batch.map(runSingle);
+  console.log(JSON.stringify({ok: results.every(r => r.ok), count: results.length, results}));
+} else {
+  console.log(JSON.stringify(runSingle(rawInput)));
+}
