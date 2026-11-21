@@ -208,12 +208,20 @@ fi
             ('if [ "$mode" = ci ]; then xcodebuild test; fi\n', 'scripts/verify --mode=ci\n'),
             ('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', 'RUN_HEAVY=1 scripts/verify\n'),
             ('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', 'RUN_HEAVY=1\nscripts/verify\n'),
+            ('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', 'export RUN_HEAVY=1\nscripts/verify\n'),
+            ('if [ "$RUN_XCODEBUILD" = 1 ]; then xcodebuild test; fi\n', 'export RUN_XCODEBUILD=1\nscripts/verify\n'),
+            ('if [ "$RUN_XCODEBUILD" = 1 ]; then xcodebuild test; fi\n', 'RUN_XCODEBUILD=1\nscripts/verify\n'),
+            ('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', 'helper() { scripts/verify; }\nexport RUN_HEAVY=1\nhelper\n'),
+            ('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', 'helper() { export RUN_HEAVY=1; scripts/verify; }\nhelper\n'),
             ('heavy() { if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi; }\nheavy\n', 'RUN_HEAVY=1 scripts/verify\n'),
         ]
         for verify, hook in cases:
             with self.subTest(hook=hook):
                 self.assertTrue(self.health(verify, hook)["prepush_blocks_on_unconditional_xcodebuild"])
                 self.assertFalse(self.health(verify, 'if [ "$RUN_HEAVY" = 1 ]; then ' + hook.strip() + '; fi\n')["prepush_blocks_on_unconditional_xcodebuild"])
+        for hook in ('export RUN_HEAVY=0\nscripts/verify\n', 'echo export RUN_HEAVY=1\nscripts/verify\n'):
+            with self.subTest(hook=hook):
+                self.assertFalse(self.health('if [ "$RUN_HEAVY" = 1 ]; then xcodebuild test; fi\n', hook)["prepush_blocks_on_unconditional_xcodebuild"])
 
     def test_verify_gate_comments_build_only_and_absent_hooks_are_counter_cases(self) -> None:
         health = self.health()

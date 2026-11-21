@@ -216,7 +216,7 @@ def verify_gate_health(repo: Path) -> dict[str, object]:
             name = _command_name(tokens)
             opt_in = any(re.fullmatch(r"(?:RUN_(?:XCODEBUILD|HEAVY)=(?:1|true)|(?:mode|MODE)=ci)", token) for token in tokens)
             opt_in |= "--mode=ci" in tokens or any(tokens[i:i + 2] == ["--mode", "ci"] for i in range(len(tokens)))
-            if not name and opt_in and not protected:
+            if name in {"", "export"} and opt_in and not protected:
                 forced = True
             elif Path(name).name == "xcodebuild" and any(action in tokens for action in ("test", "test-without-building")):
                 if not protected:

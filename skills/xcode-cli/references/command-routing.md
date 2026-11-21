@@ -36,7 +36,8 @@ executing them. The four indicators are:
 `tier` is `blocking_prepush_xcodebuild`, `local_fast_spm`, or `not_detected`.
 These are static indicators, not proof of hook safety or lock correctness; dynamic
 commands, external script chains, and complex shell control flow require manual review.
-A hook that always opts into `RUN_HEAVY=1` or `--mode ci` still blocks pre-push.
+Inline, standalone, and exported `RUN_HEAVY=1` / `RUN_XCODEBUILD=1` assignments
+or an unconditional `--mode ci` invocation still block pre-push.
 Propose local fast SwiftPM checks and CI/explicit opt-in for heavy app tests, but do not
 edit hooks or bypass repository gates without owner approval.
 
