@@ -59,6 +59,18 @@ KNOWN_PATH_ROOTS = frozenset({"Apps", "Features", "Models", "Packages", "Resourc
 SEVERITY_HIGH = {"AT-011", "missing_contract_test", "missing_negative_assertion"}
 ADR_SKIP_BASENAMES = frozenset({"readme.md", "template.md", "index.md"})
 UNTRACKED_SINGLE_FILE_ARTIFACTS = frozenset({"Package.resolved"})
+OWNS_PLACEHOLDERS = frozenset({"", "-", "—", "–", "*", "none", "(none)", "(无)", "无", "n/a", "tbd", "null", "~"})
+BARE_REPO_DIR_ROOTS = KNOWN_PATH_ROOTS | frozenset({
+    "Examples", "Fixtures", "Plugins", "Prototypes", "Public", "Schemas",
+    "Services", "Targets", "Templates", "Tools", "agents", "ai", "app",
+    "apps", "assets", "backend", "bin", "cli", "cmd", "config", "contracts",
+    "core", "data", "db", "design", "dist", "doc", "examples", "fastlane",
+    "features", "frontend", "include", "internal", "ios", "lib", "libs",
+    "macos", "migrations", "models", "packages", "pkg", "plugins", "prototype",
+    "public", "resources", "schemas", "sdks", "server", "services", "shared",
+    "sources", "specs", "sql", "stack", "templates", "tokens", "tools", "ui",
+    "views", "web", "workflows",
+})
 
 
 class _SelfDisclosingParser(argparse.ArgumentParser):
@@ -498,6 +510,13 @@ def _finding(
     }
 
 
+def _has_frontmatter_key(text: str, key_name: str) -> bool:
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.S)
+    if not match:
+        return False
+    return bool(re.search(rf"(?m)^\s*{re.escape(key_name)}\s*:", match.group(1)))
+
+
 def _parse_frontmatter_path_lists(text: str) -> dict[str, list[tuple[str, int]]]:
     match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.S)
     if not match:
@@ -554,15 +573,18 @@ def _scan_tech_context_and_adrs(
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     seen_missing: set[tuple[str, str]] = set()
+    root_tc_text = tracked.get("docs/architecture/tech-context.md") or tracked.get("tech-context.md") or ""
+    repo_uses_repokit_layer_map = _has_frontmatter_key(root_tc_text, "layer")
     for rel_path in sorted(tracked):
         is_tech_context = rel_path == "tech-context.md" or rel_path.endswith("/tech-context.md")
         if is_tech_context:
             text = tracked[rel_path]
             full_path = str(repo / rel_path)
-            for _field, items in _parse_frontmatter_path_lists(text).items():
+            is_legacy_prose_role_doc = (not repo_uses_repokit_layer_map) and _has_frontmatter_key(text, "role")
+            for field, items in _parse_frontmatter_path_lists(text).items():
                 for raw_entry, line_no in items:
-                    norm = raw_entry.strip().replace("\\", "/").lstrip("./")
-                    if not norm:
+                    norm = raw_entry.strip().replace("\\", "/").lstrip("./").rstrip("/")
+                    if not norm or norm.lower() in OWNS_PLACEHOLDERS:
                         continue
                     if any(ch in norm for ch in ("*", "?", "[")):
                         prefix = re.split(r"[*?[]", norm, maxsplit=1)[0].rstrip("/")
@@ -583,12 +605,31 @@ def _scan_tech_context_and_adrs(
                                 )
                             )
                     else:
-                        is_explicit_path = ("/" in norm) or (
-                            "." in Path(norm).name
-                            and Path(norm).suffix.lower() in TEXT_SUFFIXES
-                            and norm not in UNTRACKED_SINGLE_FILE_ARTIFACTS
+                        is_bare_dir_root = (
+                            "/" not in norm
+                            and "." not in norm
+                            and " " not in norm
+                            and (
+                                field in {"scope", "test_paths"}
+                                or norm in BARE_REPO_DIR_ROOTS
+                                or not is_legacy_prose_role_doc
+                            )
                         )
-                        if is_explicit_path and _resolve_reference(repo, norm, tracked) is None and (full_path, raw_entry) not in seen_missing:
+                        is_explicit_path = (
+                            ("/" in norm)
+                            or (
+                                "." in Path(norm).name
+                                and Path(norm).suffix.lower() in TEXT_SUFFIXES
+                                and norm not in UNTRACKED_SINGLE_FILE_ARTIFACTS
+                            )
+                            or is_bare_dir_root
+                        )
+                        exists_in_tracked = (
+                            norm in tracked or any(t.startswith(f"{norm}/") for t in tracked)
+                            if is_bare_dir_root
+                            else _resolve_reference(repo, norm, tracked) is not None
+                        )
+                        if is_explicit_path and not exists_in_tracked and (full_path, raw_entry) not in seen_missing:
                             seen_missing.add((full_path, raw_entry))
                             findings.append(
                                 _finding(

@@ -142,6 +142,41 @@ class CodebaseDesignPatrolTests(unittest.TestCase):
         self.assertIn("skills/codebase-design/references/CONTEXT-FORMAT.md", drift_proc.stderr)
         self.assertIn("skills/codebase-design/references/ADR-FORMAT.md", drift_proc.stderr)
 
+    def test_bare_single_segment_owns_root_drift_and_valid_resolution(self) -> None:
+        holder, dev, handoff, repo = self._init_repo_fixture()
+        self.addCleanup(holder.cleanup)
+
+        # Counter-case: `owns: [Sources]` with NO tracked files under `Sources/` -> missing_referenced_path
+        (repo / "Packages" / "Core" / "Impl").mkdir(parents=True)
+        (repo / "Packages" / "Core" / "Impl" / "Model.swift").write_text("public struct Model {}\n", encoding="utf-8")
+        (repo / "tech-context.md").write_text(
+            "---\nlayer: Core\nowns: [Sources, none, n/a, tbd, -, *]\ndepends_on: []\n---\n\n# Core\n",
+            encoding="utf-8",
+        )
+        _git("add", ".", cwd=repo)
+        _git("commit", "-qm", "bare owns Sources without root tracked directory", cwd=repo)
+
+        report = patrol.scan(dev_root=dev, handoff_root=handoff, repos=("SampleRepo",))
+        findings = report["spec_stale_findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["code"], "missing_referenced_path")
+        self.assertEqual(findings[0]["evidence"], "Sources")
+        self.assertEqual(findings[0]["reference_drawer"], "skills/codebase-design/references/CONTEXT-FORMAT.md")
+
+        # Positive case: once `Sources/RootModel.swift` is tracked at repo root, `owns: ["Sources"]` passes cleanly
+        (repo / "Sources").mkdir(parents=True)
+        (repo / "Sources" / "RootModel.swift").write_text("public struct RootModel {}\n", encoding="utf-8")
+        (repo / "tech-context.md").write_text(
+            "---\nlayer: Core\nowns: [\"Sources\"]\ndepends_on: []\n---\n\n# Core\n",
+            encoding="utf-8",
+        )
+        _git("add", ".", cwd=repo)
+        _git("commit", "-qm", "add tracked Sources directory", cwd=repo)
+
+        clean_report = patrol.scan(dev_root=dev, handoff_root=handoff, repos=("SampleRepo",))
+        self.assertEqual(clean_report["findings"], [])
+        self.assertTrue(clean_report["clean"])
+
     def test_self_disclosing_drawer_pointers_on_spec_gate_and_patrol_failures(self) -> None:
         for script_path in (SPEC_GATE_SCRIPT, PATROL_SCRIPT):
             bad_cli = subprocess.run(
