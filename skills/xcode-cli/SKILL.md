@@ -1,6 +1,6 @@
 ---
 name: xcode-cli
-description: "Use for Apple-platform builds, tests, simulator runs, and xcresult inspection through Swift/Xcode CLI. Choose SwiftPM for package-only changes; escalate to xcodebuild for app integration. Not for Xcode GUI automation."
+description: "Use when editing .swift, .entitlements, .xcodeproj or Package.swift; running swift build, swift test or xcodebuild; triaging Apple pre-push verify gates; or inspecting simulator/xcresult output. Classify scope first: SwiftPM for packages, Xcode for app integration. Not for Xcode GUI automation."
 ---
 
 # Xcode CLI
@@ -21,9 +21,12 @@ Use the narrowest command-line layer that owns the changed files.
    python3 <skill-dir>/scripts/classify_changes.py --repo <repo> --base <base>
    ```
 
-   Omit `--base` for uncommitted changes. Confirm every reported package root
-   against its `Package.swift`, especially repositories combining a root
-   package with app targets.
+   Without `--base`, staged/unstaged/untracked files define the scope; a clean
+   tree automatically compares the `origin/main` (fallback `main`) merge-base
+   to `HEAD`. Use explicit refs/ranges to override; `--committed-only` excludes
+   local edits. Confirm roots against `Package.swift`, including custom targets.
+   `--worktree` / `--repo-dir` / `--cwd`, `--base-ref`, `--head-ref`,
+   `--diff-range`, and `--json` are compatible aliases/options.
 3. Follow exactly one route:
    - `swiftpm`: run `swift build` and `swift test` for each affected package.
      This route is a hard scope gate: keep `xcodebuild`, XcodeGen, simulators,
@@ -74,9 +77,25 @@ Use the narrowest command-line layer that owns the changed files.
   source. Follow repository rules before regenerating them.
 - Respect hook-driven verification. Do not manually repeat suites that the
   repository explicitly delegates to commit or push hooks.
+- Before Apple pre-push gate triage, run `classify_changes.py --repo <repo>
+  --check-verify-gate`. Standard classification also includes `verifyGateHealth`.
+  Report blocking unconditional `xcodebuild test`, incremental layer selection,
+  and DerivedData/build-lock indicators. This is advisory static inspection:
+  never run hooks or weaken gates automatically. Propose fast local SwiftPM
+  checks plus heavy app tests in CI or explicit `RUN_XCODEBUILD=1` / `RUN_HEAVY=1`;
+  gate changes require repository-owner approval.
+
+## Role-Based Routing
+
+| Role | Single mandatory L1 drawer | Single mandatory L2 CLI |
+|---|---|---|
+| Role: Writer | `references/build-cases.json` | `python3 skills/xcode-cli/scripts/classify_changes.py --repo <repo>` |
+| Role: Reviewer | `references/command-routing.md` | `python3 skills/xcode-cli/scripts/classify_changes.py --repo <repo> --check-verify-gate` |
+
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
-| primary task | `references/build-cases.json` | `python3 skills/xcode-cli/scripts/classify_changes.py --help` |
-| verification | `references/build-cases.json` | `skill_contract.py eval --skill xcode-cli --strict` |
+| `.swift`, `.entitlements`, `.xcodeproj`, `Package.swift`; `swift build`, `swift test`, `xcodebuild` | `references/build-cases.json` | `python3 skills/xcode-cli/scripts/classify_changes.py --repo <repo>` |
+| Apple pre-push verify gate / slow hook triage | `references/command-routing.md` | `python3 skills/xcode-cli/scripts/classify_changes.py --repo <repo> --check-verify-gate` |
+| classifier regression verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill xcode-cli --strict` |

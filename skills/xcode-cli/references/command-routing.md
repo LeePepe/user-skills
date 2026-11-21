@@ -2,6 +2,44 @@
 
 Load only the section selected by `SKILL.md`.
 
+## Classifier options and verify-gate triage
+
+Run the classifier before choosing a build; output is always JSON (`--json` is a no-op).
+
+| Scope | Command/options |
+|---|---|
+| Local edits; clean committed branch auto-base | `classify_changes.py --repo <repo>` |
+| Repository aliases or single directory with `.git` | `--worktree <repo>`, `--repo-dir <repo>`, `--cwd <repo>`, or `<repo>` |
+| Merge-base to selected head, plus local edits | `--base <ref> --head <ref>` (aliases `--base-ref`, `--head-ref`) |
+| Snapshot / merge-base range, plus local edits | `--range <a..b>` / `--diff-range <a...b>`; do not combine with base/head |
+| Only committed changes, even with dirty working tree | `--committed-only`; auto-base still applies |
+| Gate inspection without builds or diff discovery | `--repo <repo> --check-verify-gate` |
+
+Explicit repo-relative paths override git discovery. A clean tree uses the first available
+`origin/main` or `main` merge-base; no available shared base means no detected branch diff.
+A dirty tree without explicit refs stays scoped to local edits. `--head` without `--base`
+uses the same auto-base candidates. Invalid syntax, repositories, or refs exit 2 with
+three-line fix guidance and pointers to this reference and `build-cases.json`.
+
+`verifyGateHealth` is included in standard JSON and returned alone by gate-check mode.
+It inspects `scripts/verify`, `.githooks/pre-push`, and `scripts/hooks/pre-push` without
+executing them. The four indicators are:
+
+- `has_verify_script`: the canonical local verify entry exists.
+- `prepush_blocks_on_unconditional_xcodebuild`: a literal `xcodebuild test` or
+  `test-without-building` is reachable from a hook or its `scripts/verify` call without
+  a `RUN_XCODEBUILD`, `RUN_HEAVY`, or `mode=ci` opt-in guard. Function calls, `if/else`,
+  and simple `&&` / `||` guards are followed; unused functions/comments are not gates.
+- `uses_incremental_layer_selection`: changed-file/layer selection command indicators.
+- `has_derived_data_or_build_lock`: explicit DerivedData or build-lock indicators.
+
+`tier` is `blocking_prepush_xcodebuild`, `local_fast_spm`, or `not_detected`.
+These are static indicators, not proof of hook safety or lock correctness; dynamic
+commands, external script chains, and complex shell control flow require manual review.
+A hook that always opts into `RUN_HEAVY=1` or `--mode ci` still blocks pre-push.
+Propose local fast SwiftPM checks and CI/explicit opt-in for heavy app tests, but do not
+edit hooks or bypass repository gates without owner approval.
+
 ## SwiftPM route
 
 Prefer `--package-path` so commands remain reproducible from any working directory:
