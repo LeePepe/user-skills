@@ -41,6 +41,7 @@ MODEL_SURFACE_BYTE_BUDGETS: dict[str, int] = {
     "skills/personal-m2-assistant/SKILL.md": 16 * 1024,
     "skills/linear-board/SKILL.md": 16 * 1024,
     "skills/retro-loop/SKILL.md": 16 * 1024,
+    "skills/skill-retro/SKILL.md": 12 * 1024,
     "skills/story-craft/SKILL.md": 16 * 1024,
     "skills/my-designer/SKILL.md": 12 * 1024,
     "skills/codebase-design/SKILL.md": 12 * 1024,

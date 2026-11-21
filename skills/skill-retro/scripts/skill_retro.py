@@ -1,0 +1,6315 @@
+#!/usr/bin/env python3
+"""4-Layer Progressive Self-Evolution & Wide-Probe Multi-Angle Skill Diagnostic (`skill-retro`).
+
+Implements the Progressive Self-Evolution Blueprint across:
+  - Layer 0: Direction & Trigger Guardrails (trigger misses / domain edits without loading skill,
+             0-action empty loads, directional drift vs healthy R1->R2 convergence)
+  - Layer 1: Reference Drawer Metabolism (Context-Aware cross-check against scenario/domain
+             occurrence: hot_drawer, on_demand_correction_drawer, unwired_disconnected_drawer
+             where domain/script failed exit=1 without reading the drawer, true_zero_hit_deadwood,
+             dormant_scenario_drawer)
+  - Layer 2: Script Efficacy & Multi-Angle Speed Diagnosis (true_catcher fail->pass,
+             ceremonial_rubber_stamp 100% exit=0 with escapes or slow runtime,
+             rigid_roadblock exit_code=2 CLI argument friction with exact failing command samples,
+             latency_sink >180s or P50/max bottleneck with multi-angle attribution:
+             external_wait vs serial_queuing vs nested_reruns vs heavy_full_scan + 4 speedup axes)
+  - Layer 3: Wild Pattern Crystallization & Cross-Session Taste/Eval (repeated manual shell
+             commands >=5x suitable for soft script crystallization, preview-selection 2+1+1
+             diversity/taste feedback, and Fast Flywheel scope-triage vs Slow Flywheel cohort gate)
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+import fcntl
+import hashlib
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any, Callable, Mapping, Sequence
+
+CST = timezone(timedelta(hours=8))
+
+DEFAULT_AIDATA_DIR = Path.home() / "Development" / "AIDash" / "aidata"
+DEFAULT_WAREHOUSE_DB = DEFAULT_AIDATA_DIR / "L3_merge" / "warehouse.db"
+DEFAULT_PROPOSALS_PATH = DEFAULT_AIDATA_DIR / "L5_apps" / "digest" / "state" / "proposals.jsonl"
+DEFAULT_MAGPIE_USAGE = Path.home() / ".config" / "magpie" / "usage.jsonl"
+DEFAULT_COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
+DEFAULT_COPILOT_SESSIONS_DIR = Path.home() / ".copilot" / "session-state"
+DEFAULT_USAGE_JSONL = Path.home() / ".local" / "share" / "skill-telemetry" / "usage.jsonl"
+DEFAULT_SKILL_TELEMETRY_USAGE_JSONL = DEFAULT_USAGE_JSONL
+DEFAULT_DSH_SESSIONS = Path.home() / ".dsh" / "sessions"
+DEFAULT_HANDOFF_ROOT = Path.home() / "Development" / "handoff"
+DEFAULT_SKILLS_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DEV_ROOT = Path.home() / "Development"
+DEFAULT_ICLOUD_SYNC_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync"
+DEFAULT_ICLOUD_TELEMETRY_SHARDS_DIR = DEFAULT_ICLOUD_SYNC_DIR / "telemetry-shards"
+DEFAULT_ICLOUD_SKILLS_ROI_PATH = DEFAULT_ICLOUD_SYNC_DIR / "jobs" / "aidata-digest" / "skills-roi.json"
+DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH = (
+    Path.home() / "Library" / "Application Support" / "AIDash" / "jobs" / "aidata-digest" / "skills-roi.json"
+)
+CANONICAL_ASPECTS: tuple[str, ...] = ("l0", "l1", "l2", "l3", "creative", "eval")
+_ASPECT_ALIASES: dict[str, str] = {
+    "l0": "l0",
+    "layer0": "l0",
+    "direction": "l0",
+    "triggers": "l0",
+    "dim1": "l0",
+    "l1": "l1",
+    "layer1": "l1",
+    "drawers": "l1",
+    "references": "l1",
+    "dim2": "l1",
+    "l2": "l2",
+    "layer2": "l2",
+    "scripts": "l2",
+    "speed": "l2",
+    "latency": "l2",
+    "dim3": "l2",
+    "l3": "l3",
+    "layer3": "l3",
+    "wild": "l3",
+    "dim4": "l3",
+    "creative": "creative",
+    "spectrum": "creative",
+    "persona": "creative",
+    "2+1+1": "creative",
+    "dim5": "creative",
+    "eval": "eval",
+    "flywheel": "eval",
+    "triage": "eval",
+    "dim6": "eval",
+    "all": "all",
+}
+
+SLOW_FLYWHEEL_COHORT_MIN_SESSIONS = 50
+WILD_PATTERN_MIN_COUNT = 5
+LATENCY_SINK_MAX_MS = 180_000.0
+LATENCY_SINK_P50_MS = 30_000.0
+LATENCY_SINK_MIN_CALLS_FOR_P50 = 3
+
+_SKILL_CONTEXT_RE = re.compile(
+    r"<skill-context\s+name=[\"'](?P<ctx>[A-Za-z0-9_-]+)[\"']"
+    r"|(?<![A-Za-z0-9_-])(?:/)?skills/(?P<path>[A-Za-z0-9_-]+)/SKILL\.md"
+    r"|\bskill\s*[:=]\s*[\"'](?P<call>[A-Za-z0-9_-]+)[\"']"
+)
+_REF_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:/)?skills/(?P<skill>[A-Za-z0-9_-]+)/references/(?P<ref>[A-Za-z0-9_./-]+\.(?:md|json|yaml|yml))"
+)
+_SKILL_SCRIPT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:[^\s\"']+/)?skills/(?P<skill>[A-Za-z0-9_-]+)/scripts/(?P<script>[A-Za-z0-9_./-]+\.(?:py|sh))"
+)
+_REPO_VERIFY_SCRIPT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:\./|(?:[^\s\"']+/)?)scripts/(?P<script>verify(?:\s+--all)?|test_[A-Za-z0-9_.-]+\.py)"
+)
+_SHELL_START_RE = re.compile(r"<command (?:started in background )?with shellId:\s*([^\s>]+)")
+_SHELL_COMPLETE_RE = re.compile(r"<shellId:\s*([^\s>]+)\s+completed with exit code\s+(-?\d+)>")
+_HANDOFF_GOAL_RE = re.compile(r"handoff/([A-Za-z0-9_-]+)(?:/|[\s\"'])")
+_SELECTION_FILE_RE = re.compile(r"^preview-selection(?:-r\d+)?\.json$")
+
+_EXTERNAL_WAIT_SCRIPT_HINTS = (
+    "ci-monitor.py",
+    "goal-supervisor.py",
+    "linear-sync.py",
+    "multica_skills_autopilot.py",
+    "multica_vpn_bridge.py",
+    "herdr-dispatch.sh",
+    "trace_backfill_exporter.py",
+)
+_SERIAL_RUNNER_HINTS = (
+    "scripts/verify",
+    "unittest discover",
+    "skill_contract.py eval --all",
+    "skill_contract.py audit --all",
+)
+_DOMAIN_HINTS: tuple[tuple[str, Callable[[set[str], set[str]], bool]], ...] = (
+    (
+        "my-designer",
+        lambda files, cmds: any(
+            f.endswith((".swift", ".tsx", ".jsx", ".css", ".scss", ".html"))
+            and any(tok in f.lower() for tok in ("view", "screen", "card", "sheet", "studio", "dashboard", "components/", "ui/"))
+            for f in files
+        )
+        or any("design.md" in f.lower() for f in files),
+    ),
+    (
+        "aidash-metrics",
+        lambda files, cmds: any("aidata/" in f and f.endswith((".sql", ".py")) for f in files),
+    ),
+    (
+        "skill-contract",
+        lambda files, cmds: any(
+            ("skills/" in f and f.endswith("SKILL.md")) or f.endswith("eval-cases.json")
+            for f in files
+        ),
+    ),
+    (
+        "xcode-cli",
+        lambda files, cmds: any("xcodebuild" in c or "xcrun simctl" in c for c in cmds),
+    ),
+)
+
+_SECRET_SCRUB_RE = re.compile(
+    r"(?i)(?:bearer\s+[A-Za-z0-9._-]+|gh[pousr]_[A-Za-z0-9_]+|lin_api_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})"
+)
+
+
+def _norm_skill(name: str) -> str:
+    cleaned = str(name or "").strip().lstrip("/")
+    if cleaned in {"goal-target-task", "goal-task"}:
+        return "team-lead"
+    return cleaned
+
+
+def _redact_command_sample(raw_cmd: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
+    text = " ".join(str(raw_cmd or "").strip().split())
+    text = _SECRET_SCRUB_RE.sub("<REDACTED>", text)
+    home_str = str(Path.home())
+    if dev_root is not None:
+        text = text.replace(str(dev_root), "~/Development")
+    if skills_root is not None:
+        text = text.replace(str(skills_root.parent), "~/Development/user-skills")
+    if home_str and home_str != "/":
+        text = text.replace(home_str, "~")
+    text = re.sub(r"(?:/" + r"Users|/home)/[^/\s\"']+", "~", text)
+    text = re.sub(r"/private/var/" + r"folders/[^\s\"']+", "/tmp/<temp>", text)
+    if len(text) > 220:
+        text = text[:217].rstrip() + "..."
+    return text
+
+
+def _percentile(values: Sequence[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    idx = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * (pct / 100.0)) - 1))
+    return round(ordered[idx], 2)
+
+
+def _parse_ts(raw: Any, fallback: datetime | None = None) -> datetime | None:
+    if raw is None or raw == "":
+        return fallback
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+        if val > 1e16:
+            sec = val / 1_000_000_000.0
+        elif val > 1e12:
+            sec = val / 1_000.0
+        else:
+            sec = val
+        try:
+            return datetime.fromtimestamp(sec, tz=timezone.utc).astimezone(CST)
+        except (OSError, OverflowError, ValueError):
+            return fallback
+    text = str(raw).strip()
+    if not text:
+        return fallback
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=CST if len(text) == 10 else timezone.utc)
+        return dt.astimezone(CST)
+    except ValueError:
+        return fallback
+
+
+@dataclass
+class ScriptCallEvent:
+    session_id: str
+    skill: str
+    script_rel: str
+    command: str
+    ts: datetime
+    exit_code: int | None
+    duration_ms: float | None
+    measured: bool
+    seq: int = 0
+
+
+@dataclass
+class SessionObservation:
+    session_id: str
+    source: str
+    started_at: datetime
+    ended_at: datetime
+    skills_loaded: set[str] = field(default_factory=set)
+    ref_reads: list[tuple[str, str, datetime, int]] = field(default_factory=list)  # (skill, rel_ref, ts, seq)
+    script_calls: list[ScriptCallEvent] = field(default_factory=list)
+    edited_files: set[str] = field(default_factory=set)
+    edit_count: int = 0
+    bash_commands: list[tuple[str, int | None, float | None, int]] = field(default_factory=list)
+    referenced_goals: set[str] = field(default_factory=set)
+    seq_counter: int = 0
+
+    def next_seq(self) -> int:
+        self.seq_counter += 1
+        return self.seq_counter
+
+
+def _extract_exit_code_from_tool_complete(data: Mapping[str, Any], result_text: str) -> int | None:
+    shell_exec = data.get("shellExecution")
+    if isinstance(shell_exec, Mapping) and shell_exec.get("exitCode") is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return int(shell_exec["exitCode"])
+    m_done = _SHELL_COMPLETE_RE.search(result_text)
+    if m_done:
+        with contextlib.suppress(ValueError):
+            return int(m_done.group(2))
+    return None
+
+
+def _normalize_ref_rel(raw_path: str) -> tuple[str, str] | None:
+    m = _REF_PATH_RE.search(raw_path)
+    if m:
+        return _norm_skill(m.group("skill")), f"references/{m.group('ref').lstrip('/')}"
+    return None
+
+
+def _extract_script_targets(
+    command: str,
+    *,
+    known_skills: set[str],
+    basename_to_targets: Mapping[str, list[tuple[str, str]]],
+    active_skills: set[str],
+) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _SKILL_SCRIPT_RE.finditer(command):
+        sk = _norm_skill(m.group("skill"))
+        rel = f"scripts/{m.group('script').lstrip('/')}"
+        if (sk, rel) not in seen:
+            seen.add((sk, rel))
+            targets.append((sk, rel))
+    for m_ver in _REPO_VERIFY_SCRIPT_RE.finditer(command):
+        sc_token = m_ver.group("script").split()[0]
+        rel_ver = f"scripts/{sc_token}"
+        if ("repo-gate", rel_ver) not in seen:
+            seen.add(("repo-gate", rel_ver))
+            targets.append(("repo-gate", rel_ver))
+    for bname, candidates in basename_to_targets.items():
+        if bname in command and not any(rel.endswith(f"/{bname}") for _, rel in targets):
+            if re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(bname)}(?![A-Za-z0-9_.-])", command):
+                chosen = [c for c in candidates if c[0] in active_skills] or (candidates if len(candidates) == 1 else [])
+                for item in chosen:
+                    if item[0] in known_skills and item not in seen:
+                        seen.add(item)
+                        targets.append(item)
+    return targets
+
+
+_WILD_CMD_PREFIXES = (
+    "python3 -c ",
+    "python -c ",
+    "sqlite3 ",
+    "jq ",
+    "rg ",
+    "grep ",
+    "awk ",
+    "sed ",
+    "git worktree ",
+    "git log ",
+    "git diff ",
+    "gh pr ",
+    "gh run ",
+    "gh api ",
+    "find ",
+    "sips ",
+)
+_TRIVIAL_SHELL_EXACT = {
+    "pwd",
+    "ls",
+    "git status",
+    "git status -sb",
+    "git --no-pager status -sb",
+    "git branch",
+    "true",
+}
+
+
+def _extract_wild_manual_signature(
+    raw_command: str,
+    *,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+) -> tuple[str, str] | None:
+    """Return (canonical_pattern_signature, redacted_example) for manual ad-hoc diagnostic commands."""
+    segments = [seg.strip() for seg in re.split(r"\s*(?:&&|;|\|\|)\s*", raw_command or "") if seg.strip()]
+    for seg in segments:
+        if _SKILL_SCRIPT_RE.search(seg) or _REPO_VERIFY_SCRIPT_RE.search(seg):
+            continue
+        if "unittest" in seg or "pytest" in seg:
+            continue
+        lower = seg.lower()
+        if lower in _TRIVIAL_SHELL_EXACT:
+            continue
+        has_pipe_probe = "|" in seg and any(tok in lower for tok in ("jq", "awk", "sed", "sort", "uniq", "wc", "python3 -c"))
+        if not (any(lower.startswith(pref) for pref in _WILD_CMD_PREFIXES) or has_pipe_probe):
+            continue
+        redacted = _redact_command_sample(seg, skills_root=skills_root, dev_root=dev_root)
+        sig = redacted
+        if lower.startswith(("python3 -c", "python -c")):
+            imports = sorted(set(re.findall(r"\bimport\s+([A-Za-z0-9_]+)", seg)))
+            mod_tag = "+".join(imports[:4]) if imports else "inline_probe"
+            if "sqlite3" in seg:
+                sig = f"python3 -c [sqlite3:{mod_tag}]"
+            elif "json" in seg:
+                sig = f"python3 -c [json:{mod_tag}]"
+            else:
+                sig = f"python3 -c [{mod_tag}]"
+        elif lower.startswith("sqlite3 "):
+            parts = seg.split(None, 2)
+            db_part = Path(parts[1]).name if len(parts) >= 2 else "db"
+            sql_verb = "query"
+            m_sql = re.search(r"(?i)\b(select|pragma|with)\b\s+([A-Za-z0-9_*.,()]+)?", seg)
+            if m_sql:
+                sql_verb = m_sql.group(1).upper()
+            sig = f"sqlite3 {db_part} '{sql_verb} ...'"
+        else:
+            sig = re.sub(r"\"[^\"]{16,}\"", '"<STR>"', sig)
+            sig = re.sub(r"'[^']{16,}'", "'<STR>'", sig)
+            sig = re.sub(r"~/[^\s\"']+", "~/...", sig)
+            sig = re.sub(r"\b[0-9a-f]{7,40}\b", "<SHA>", sig)
+            sig = re.sub(r"\b\d{2,}\b", "<N>", sig)
+            sig = " ".join(sig.split()[:6])
+        return sig, redacted
+    return None
+
+
+def _parse_copilot_sessions(
+    sessions_dir: Path | None,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    known_skills: set[str],
+    basename_to_targets: Mapping[str, list[tuple[str, str]]],
+    max_sessions: int = 250,
+) -> dict[str, SessionObservation]:
+    observations: dict[str, SessionObservation] = {}
+    if sessions_dir is None or not sessions_dir.is_dir():
+        return observations
+
+    candidate_files: list[tuple[float, Path]] = []
+    with contextlib.suppress(OSError):
+        for child in sessions_dir.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            ev_file = child / "events.jsonl"
+            if not ev_file.is_file():
+                continue
+            with contextlib.suppress(OSError):
+                mtime = ev_file.stat().st_mtime
+                mtime_dt = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(CST)
+                if mtime_dt >= window_start:
+                    candidate_files.append((mtime, ev_file))
+
+    candidate_files.sort(key=lambda item: -item[0])
+    for mtime, ev_file in candidate_files[:max_sessions]:
+        sid = ev_file.parent.name
+        fallback_dt = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(CST)
+        obs = SessionObservation(
+            session_id=sid,
+            source="copilot_events",
+            started_at=fallback_dt,
+            ended_at=fallback_dt,
+        )
+        tool_starts: dict[str, tuple[str, dict[str, Any], datetime, bool]] = {}
+        pending_shells: dict[str, tuple[str, datetime, bool]] = {}
+        seen_any = False
+
+        try:
+            with ev_file.open("r", encoding="utf-8", errors="replace") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    ev_type = str(ev.get("type") or "")
+                    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                    raw_ts = ev.get("timestamp") or data.get("startTime")
+                    ts = _parse_ts(raw_ts, fallback_dt) or fallback_dt
+                    if not (window_start <= ts < window_end) and raw_ts is not None:
+                        continue
+                    seen_any = True
+                    obs.started_at = min(obs.started_at, ts)
+                    obs.ended_at = max(obs.ended_at, ts)
+
+                    if ev_type == "session.start":
+                        cwd = str((data.get("context") or {}).get("cwd") or "")
+                        for m_goal in _HANDOFF_GOAL_RE.finditer(cwd + "/"):
+                            if not m_goal.group(1).startswith("_"):
+                                obs.referenced_goals.add(m_goal.group(1))
+                    elif ev_type == "user.message":
+                        content = str(data.get("content") or "")
+                        for m_goal in _HANDOFF_GOAL_RE.finditer(content):
+                            if not m_goal.group(1).startswith("_"):
+                                obs.referenced_goals.add(m_goal.group(1))
+                        for m_sk in _SKILL_CONTEXT_RE.finditer(content):
+                            sk_raw = m_sk.group("ctx") or m_sk.group("path") or m_sk.group("call")
+                            if sk_raw:
+                                norm_sk = _norm_skill(sk_raw)
+                                if not known_skills or norm_sk in known_skills:
+                                    obs.skills_loaded.add(norm_sk)
+                    elif ev_type == "skill.invoked":
+                        sk_name = _norm_skill(data.get("name") or "")
+                        if sk_name and (not known_skills or sk_name in known_skills):
+                            obs.skills_loaded.add(sk_name)
+                    elif ev_type == "tool.execution_start":
+                        tc_id = str(data.get("toolCallId") or "")
+                        t_name = str(data.get("toolName") or "")
+                        args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+                        has_ts = bool(ev.get("timestamp"))
+                        if tc_id:
+                            tool_starts[tc_id] = (t_name, args, ts, has_ts)
+                        if t_name == "skill" and args.get("skill"):
+                            sk_name = _norm_skill(args["skill"])
+                            if not known_skills or sk_name in known_skills:
+                                obs.skills_loaded.add(sk_name)
+                        elif t_name in {"view", "read_file", "read"} and args.get("path"):
+                            vp = str(args.get("path") or "")
+                            for m_goal in _HANDOFF_GOAL_RE.finditer(vp):
+                                if not m_goal.group(1).startswith("_"):
+                                    obs.referenced_goals.add(m_goal.group(1))
+                            norm_ref = _normalize_ref_rel(vp)
+                            if norm_ref:
+                                ref_sk, ref_rel = norm_ref
+                                obs.skills_loaded.add(ref_sk)
+                                obs.ref_reads.append((ref_sk, ref_rel, ts, obs.next_seq()))
+                            else:
+                                for m_sk in _SKILL_CONTEXT_RE.finditer(vp):
+                                    sk_p = m_sk.group("path")
+                                    if sk_p:
+                                        norm_sk = _norm_skill(sk_p)
+                                        if not known_skills or norm_sk in known_skills:
+                                            obs.skills_loaded.add(norm_sk)
+                        elif t_name in {"edit", "create", "apply_patch", "write", "multiedit"}:
+                            fp = str(args.get("path") or args.get("file_path") or "")
+                            if fp:
+                                obs.edited_files.add(fp)
+                            obs.edit_count += 1
+                    elif ev_type == "tool.execution_complete":
+                        tc_id = str(data.get("toolCallId") or "")
+                        res_obj = data.get("result")
+                        res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else ""
+                        if tc_id not in tool_starts:
+                            continue
+                        t_name, args, st_ts, st_has_ts = tool_starts[tc_id]
+                        measured = bool(ev.get("timestamp")) and st_has_ts
+                        dur_ms = max(1.0, (ts - st_ts).total_seconds() * 1000.0) if measured else None
+                        if t_name == "bash":
+                            cmd_str = str(args.get("command") or "").strip()
+                            if not cmd_str:
+                                continue
+                            for m_goal in _HANDOFF_GOAL_RE.finditer(cmd_str):
+                                if not m_goal.group(1).startswith("_"):
+                                    obs.referenced_goals.add(m_goal.group(1))
+                            for m_ref in _REF_PATH_RE.finditer(cmd_str):
+                                ref_sk = _norm_skill(m_ref.group("skill"))
+                                obs.ref_reads.append((ref_sk, f"references/{m_ref.group('ref').lstrip('/')}", st_ts, obs.next_seq()))
+                            ec = _extract_exit_code_from_tool_complete(data, res_text)
+                            m_bg = _SHELL_START_RE.search(res_text)
+                            if ec is None and m_bg:
+                                pending_shells[m_bg.group(1)] = (cmd_str, st_ts, st_has_ts)
+                                continue
+                            seq_no = obs.next_seq()
+                            obs.bash_commands.append((cmd_str, ec, dur_ms, seq_no))
+                            for sk_t, sc_rel in _extract_script_targets(
+                                cmd_str,
+                                known_skills=known_skills,
+                                basename_to_targets=basename_to_targets,
+                                active_skills=obs.skills_loaded,
+                            ):
+                                obs.script_calls.append(
+                                    ScriptCallEvent(
+                                        session_id=sid,
+                                        skill=sk_t,
+                                        script_rel=sc_rel,
+                                        command=cmd_str,
+                                        ts=st_ts,
+                                        exit_code=ec,
+                                        duration_ms=dur_ms,
+                                        measured=measured,
+                                        seq=seq_no,
+                                    )
+                                )
+                        elif t_name in {"read_bash", "stop_bash"}:
+                            sh_id = str(args.get("shellId") or "")
+                            m_done = _SHELL_COMPLETE_RE.search(res_text)
+                            target_sh = m_done.group(1) if m_done else sh_id
+                            if target_sh and target_sh in pending_shells and m_done:
+                                cmd_str, bg_st, bg_has_ts = pending_shells.pop(target_sh)
+                                bg_measured = bool(ev.get("timestamp")) and bg_has_ts
+                                bg_dur = max(1.0, (ts - bg_st).total_seconds() * 1000.0) if bg_measured else None
+                                ec_val = int(m_done.group(2))
+                                seq_no = obs.next_seq()
+                                obs.bash_commands.append((cmd_str, ec_val, bg_dur, seq_no))
+                                for sk_t, sc_rel in _extract_script_targets(
+                                    cmd_str,
+                                    known_skills=known_skills,
+                                    basename_to_targets=basename_to_targets,
+                                    active_skills=obs.skills_loaded,
+                                ):
+                                    obs.script_calls.append(
+                                        ScriptCallEvent(
+                                            session_id=sid,
+                                            skill=sk_t,
+                                            script_rel=sc_rel,
+                                            command=cmd_str,
+                                            ts=bg_st,
+                                            exit_code=ec_val,
+                                            duration_ms=bg_dur,
+                                            measured=bg_measured,
+                                            seq=seq_no,
+                                        )
+                                    )
+        except OSError:
+            continue
+
+        if seen_any and (obs.skills_loaded or obs.ref_reads or obs.script_calls or obs.edited_files or obs.bash_commands):
+            observations[sid] = obs
+
+    return observations
+
+
+def _ingest_usage_jsonl_and_shards(
+    observations: dict[str, SessionObservation],
+    *,
+    usage_jsonl: Path | None,
+    shard_records: Sequence[Mapping[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+    known_skills: set[str],
+) -> None:
+    rows: list[Mapping[str, Any]] = []
+    if usage_jsonl is not None and usage_jsonl.is_file():
+        with contextlib.suppress(OSError):
+            with usage_jsonl.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    with contextlib.suppress(json.JSONDecodeError):
+                        parsed = json.loads(line)
+                        if isinstance(parsed, dict):
+                            rows.append(parsed)
+    rows.extend(shard_records)
+
+    for idx, rec in enumerate(rows):
+        kind = str(rec.get("kind") or "").strip()
+        if kind not in {"skill_turn", "reference_hit", "script_call"}:
+            continue
+        ts = _parse_ts(rec.get("ts") or rec.get("timestamp") or rec.get("observed_at"))
+        if ts is None or not (window_start <= ts < window_end):
+            continue
+        sid = str(rec.get("session_id") or f"telemetry-{idx}").strip()
+        sk = _norm_skill(rec.get("skill") or "")
+        if not sk:
+            continue
+        obs = observations.get(sid)
+        is_new_obs = obs is None
+        if obs is None:
+            obs = SessionObservation(session_id=sid, source="usage_jsonl", started_at=ts, ended_at=ts)
+            observations[sid] = obs
+        obs.started_at = min(obs.started_at, ts)
+        obs.ended_at = max(obs.ended_at, ts)
+
+        if kind == "skill_turn":
+            if not known_skills or sk in known_skills:
+                obs.skills_loaded.add(sk)
+            for tc in rec.get("tool_calls") or []:
+                tc_low = str(tc).lower()
+                if tc_low in {"edit", "write", "multiedit", "apply_patch", "create"} and is_new_obs:
+                    obs.edit_count += 1
+        elif kind == "reference_hit":
+            raw_ref = str(rec.get("reference_path") or "").strip()
+            norm_pair = _normalize_ref_rel(raw_ref)
+            rel_ref = norm_pair[1] if norm_pair else (raw_ref if raw_ref.startswith("references/") else f"references/{Path(raw_ref).name}")
+            if not any(r_sk == sk and r_rel == rel_ref for r_sk, r_rel, _, _ in obs.ref_reads):
+                obs.skills_loaded.add(sk)
+                obs.ref_reads.append((sk, rel_ref, ts, obs.next_seq()))
+        elif kind == "script_call":
+            raw_sc = str(rec.get("script_path") or "").strip()
+            m_sc = _SKILL_SCRIPT_RE.search(raw_sc)
+            sc_rel = f"scripts/{m_sc.group('script').lstrip('/')}" if m_sc else (raw_sc if raw_sc.startswith("scripts/") else f"scripts/{Path(raw_sc).name}")
+            raw_ec = rec.get("exit_code")
+            ec = int(raw_ec) if raw_ec not in (None, "") else None
+            raw_dur = rec.get("duration_ms")
+            dur = max(0.0, float(raw_dur)) if raw_dur not in (None, "") else None
+            if not any(c.skill == sk and c.script_rel == sc_rel and c.exit_code == ec for c in obs.script_calls):
+                obs.script_calls.append(
+                    ScriptCallEvent(
+                        session_id=sid,
+                        skill=sk,
+                        script_rel=sc_rel,
+                        command=str(rec.get("command") or raw_sc),
+                        ts=ts,
+                        exit_code=ec,
+                        duration_ms=dur,
+                        measured=dur is not None,
+                        seq=obs.next_seq(),
+                    )
+                )
+
+
+def _ingest_trace_export(
+    observations: dict[str, SessionObservation],
+    *,
+    trace_export_path: Path | None,
+    window_start: datetime,
+    window_end: datetime,
+    known_skills: set[str],
+) -> int:
+    if trace_export_path is None or not trace_export_path.is_file():
+        return 0
+    ingested_spans = 0
+    try:
+        raw_text = trace_export_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return 0
+    if not raw_text:
+        return 0
+
+    records: list[dict[str, Any]] = []
+    if raw_text.startswith("{") or raw_text.startswith("["):
+        with contextlib.suppress(json.JSONDecodeError):
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("traces"), list):
+                    records.extend(t for t in parsed["traces"] if isinstance(t, dict))
+                elif isinstance(parsed.get("batch"), list):
+                    records.extend(t for t in parsed["batch"] if isinstance(t, dict))
+                else:
+                    records.append(parsed)
+            elif isinstance(parsed, list):
+                records.extend(t for t in parsed if isinstance(t, dict))
+    if not records:
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            with contextlib.suppress(json.JSONDecodeError):
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    records.append(obj)
+
+    for idx, tr in enumerate(records):
+        sid = str(tr.get("entity_id") or tr.get("session_id") or tr.get("trace_id") or f"trace-{idx}")
+        spans = tr.get("spans") if isinstance(tr.get("spans"), list) else []
+        for sp in spans:
+            if not isinstance(sp, dict):
+                continue
+            cat = str(sp.get("category") or (sp.get("attributes") or {}).get("multica.span.category") or "")
+            ts = _parse_ts(sp.get("start_ns") or sp.get("startTime") or tr.get("start_ns")) or window_start
+            if not (window_start <= ts < window_end):
+                continue
+            obs = observations.setdefault(
+                sid,
+                SessionObservation(session_id=sid, source="trace_export", started_at=ts, ended_at=ts),
+            )
+            obs.started_at = min(obs.started_at, ts)
+            obs.ended_at = max(obs.ended_at, ts)
+            attrs = sp.get("attributes") if isinstance(sp.get("attributes"), dict) else {}
+            out_p = sp.get("output_payload") if isinstance(sp.get("output_payload"), dict) else {}
+            in_p = sp.get("input_payload") if isinstance(sp.get("input_payload"), dict) else {}
+            ingested_spans += 1
+            if cat == "skill_load":
+                sk = _norm_skill(attrs.get("skill.name") or sp.get("name", "").replace("skill:", ""))
+                if sk and (not known_skills or sk in known_skills):
+                    obs.skills_loaded.add(sk)
+            elif cat == "l1_reference_read":
+                rp = str(attrs.get("reference.path") or in_p.get("path") or "")
+                norm_pair = _normalize_ref_rel(rp)
+                if norm_pair:
+                    obs.skills_loaded.add(norm_pair[0])
+                    if not any(r_sk == norm_pair[0] and r_rel == norm_pair[1] for r_sk, r_rel, _, _ in obs.ref_reads):
+                        obs.ref_reads.append((norm_pair[0], norm_pair[1], ts, obs.next_seq()))
+            elif cat == "l2_script_exec":
+                sp_path = str(attrs.get("script.path") or in_p.get("script") or "")
+                cmd_str = str(in_p.get("command") or sp_path)
+                measured = bool(attrs.get("timing.measured", out_p.get("timing.measured", False)))
+                raw_dur = attrs.get("script.duration_ms", out_p.get("duration_ms"))
+                dur = float(raw_dur) if measured and raw_dur is not None else None
+                raw_ec = attrs.get("script.exit_code", out_p.get("exit_code"))
+                ec = int(raw_ec) if raw_ec is not None else None
+                m_sc = _SKILL_SCRIPT_RE.search(sp_path)
+                if m_sc:
+                    sk = _norm_skill(m_sc.group("skill"))
+                    sc_rel = f"scripts/{m_sc.group('script').lstrip('/')}"
+                else:
+                    sk = _norm_skill(attrs.get("skill.name") or "repo-gate")
+                    sc_rel = sp_path if sp_path.startswith("scripts/") else f"scripts/{Path(sp_path or 'unknown.py').name}"
+                obs.script_calls.append(
+                    ScriptCallEvent(
+                        session_id=sid,
+                        skill=sk,
+                        script_rel=sc_rel,
+                        command=cmd_str,
+                        ts=ts,
+                        exit_code=ec,
+                        duration_ms=dur,
+                        measured=measured,
+                        seq=obs.next_seq(),
+                    )
+                )
+    return ingested_spans
+
+
+def _ingest_warehouse_and_copilot_db(
+    observations: dict[str, SessionObservation],
+    *,
+    warehouse_db: Path | None,
+    copilot_db: Path | None,
+    window_start: datetime,
+    window_end: datetime,
+    known_skills: set[str],
+    basename_to_targets: Mapping[str, list[tuple[str, str]]],
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "r1_to_r2_converged_tasks": [],
+        "directional_drift_tasks": [],
+        "skill_escapes": {},  # skill -> {"impl_bug": int, "spec_gap": int}
+    }
+
+    def bump_escape(sk: str, kind: str) -> None:
+        bucket = meta["skill_escapes"].setdefault(_norm_skill(sk), {"impl_bug": 0, "spec_gap": 0})
+        bucket[kind] = bucket.get(kind, 0) + 1
+
+    if warehouse_db is not None and warehouse_db.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "fact_turn" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_turn")')]
+                for values in conn.execute('SELECT * FROM "fact_turn"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("ts") or row.get("timestamp") or row.get("cst_day"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    sid = str(row.get("session_id") or row.get("turn_uuid") or "").strip()
+                    if not sid:
+                        continue
+                    obs = observations.setdefault(
+                        sid,
+                        SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
+                    )
+                    obs.started_at = min(obs.started_at, ts)
+                    obs.ended_at = max(obs.ended_at, ts)
+                    raw_sk = row.get("skill_names")
+                    sk_list: list[str] = []
+                    if isinstance(raw_sk, str) and raw_sk.strip().startswith("["):
+                        with contextlib.suppress(json.JSONDecodeError):
+                            sk_list = [str(x) for x in json.loads(raw_sk) if str(x).strip()]
+                    elif raw_sk:
+                        sk_list = [str(raw_sk)]
+                    if row.get("attribution_skill"):
+                        sk_list.append(str(row["attribution_skill"]))
+                    for s in sk_list:
+                        ns = _norm_skill(s)
+                        if ns and (not known_skills or ns in known_skills):
+                            obs.skills_loaded.add(ns)
+                    raw_tools = row.get("tool_calls")
+                    tools: list[Any] = []
+                    if isinstance(raw_tools, str) and raw_tools.strip().startswith("["):
+                        with contextlib.suppress(json.JSONDecodeError):
+                            tools = json.loads(raw_tools)
+                    for t in tools:
+                        if isinstance(t, dict):
+                            cmd_or_p = str(t.get("command") or t.get("path") or "")
+                            if cmd_or_p and str(t.get("name") or "").lower() in {"edit", "write", "create", "apply_patch"}:
+                                obs.edited_files.add(cmd_or_p)
+                                obs.edit_count += 1
+                            elif cmd_or_p:
+                                obs.bash_commands.append((cmd_or_p, t.get("exit_code"), t.get("duration_ms"), obs.next_seq()))
+                        elif str(t).lower() in {"edit", "write", "create", "apply_patch"}:
+                            obs.edit_count += 1
+
+            for ref_tbl in ("reference_hits", "fact_skill_reference_hit"):
+                if ref_tbl not in tables:
+                    continue
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ref_tbl}")')]
+                for values in conn.execute(f'SELECT * FROM "{ref_tbl}"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("ts") or row.get("timestamp") or row.get("observed_at") or row.get("cst_day"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    sid = str(row.get("session_id") or row.get("turn_uuid") or "wh-ref")
+                    sk = _norm_skill(row.get("skill") or "")
+                    rp = str(row.get("reference_path") or row.get("ref_path") or "").strip()
+                    if not sk or not rp:
+                        continue
+                    norm_pair = _normalize_ref_rel(rp)
+                    rel_ref = norm_pair[1] if norm_pair else (rp if rp.startswith("references/") else f"references/{Path(rp).name}")
+                    obs = observations.setdefault(
+                        sid,
+                        SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
+                    )
+                    obs.skills_loaded.add(sk)
+                    if not any(r_sk == sk and r_rel == rel_ref for r_sk, r_rel, _, _ in obs.ref_reads):
+                        obs.ref_reads.append((sk, rel_ref, ts, obs.next_seq()))
+
+            for sc_tbl in ("script_call", "fact_skill_script_call"):
+                if sc_tbl not in tables:
+                    continue
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{sc_tbl}")')]
+                for values in conn.execute(f'SELECT * FROM "{sc_tbl}"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("ts") or row.get("timestamp") or row.get("observed_at") or row.get("cst_day"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    sid = str(row.get("session_id") or row.get("turn_uuid") or "wh-script")
+                    sk = _norm_skill(row.get("skill") or "")
+                    sp = str(row.get("script_path") or row.get("path") or "").strip()
+                    if not sk or not sp:
+                        continue
+                    m_sc = _SKILL_SCRIPT_RE.search(sp)
+                    sc_rel = f"scripts/{m_sc.group('script').lstrip('/')}" if m_sc else (sp if sp.startswith("scripts/") else f"scripts/{Path(sp).name}")
+                    raw_ec = row.get("exit_code")
+                    ec = int(raw_ec) if raw_ec not in (None, "") else None
+                    raw_dur = row.get("duration_ms")
+                    dur = max(0.0, float(raw_dur)) if raw_dur not in (None, "") else None
+                    cmd_str = str(row.get("command") or sp)
+                    obs = observations.setdefault(
+                        sid,
+                        SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
+                    )
+                    seq_no = obs.next_seq()
+                    obs.script_calls.append(
+                        ScriptCallEvent(
+                            session_id=sid,
+                            skill=sk,
+                            script_rel=sc_rel,
+                            command=cmd_str,
+                            ts=ts,
+                            exit_code=ec,
+                            duration_ms=dur,
+                            measured=dur is not None,
+                            seq=seq_no,
+                        )
+                    )
+
+            if "fact_gtt_task_run" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_task_run")')]
+                grouped_tasks: dict[tuple[str, str], list[dict[str, Any]]] = {}
+                for values in conn.execute('SELECT * FROM "fact_gtt_task_run"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("ended_at") or row.get("started_at") or row.get("cst_day"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    g_id = str(row.get("goal_id") or "")
+                    t_id = str(row.get("task_id") or "")
+                    if g_id and t_id:
+                        grouped_tasks.setdefault((g_id, t_id), []).append(row)
+
+                for (g_id, t_id), runs in grouped_tasks.items():
+                    max_r = max(int(r.get("round_no") or 1) for r in runs)
+                    passed_later = any(str(r.get("v5_verdict") or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and int(r.get("round_no") or 1) >= 2 for r in runs)
+                    still_failed_r3 = max_r >= 3 or (max_r >= 2 and not passed_later and any(str(r.get("v5_verdict") or "").upper() == "FAIL" for r in runs))
+                    sk_set: set[str] = set()
+                    for r in runs:
+                        raw_su = r.get("skills_used")
+                        if isinstance(raw_su, str) and raw_su.strip().startswith("["):
+                            with contextlib.suppress(json.JSONDecodeError):
+                                sk_set.update(_norm_skill(x) for x in json.loads(raw_su) if str(x).strip())
+                        elif raw_su:
+                            for m_sk in _SKILL_CONTEXT_RE.finditer(str(raw_su)):
+                                tok = m_sk.group("ctx") or m_sk.group("path") or m_sk.group("call")
+                                if tok:
+                                    sk_set.add(_norm_skill(tok))
+                    if max_r == 2 and passed_later:
+                        meta["r1_to_r2_converged_tasks"].append({"goal_id": g_id, "task_id": t_id, "skills": sorted(sk_set)})
+                    elif still_failed_r3:
+                        meta["directional_drift_tasks"].append({"goal_id": g_id, "task_id": t_id, "max_round": max_r, "skills": sorted(sk_set)})
+                        for sk in sk_set:
+                            bump_escape(sk, "impl_bug")
+
+            if "fact_gtt_event" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_event")')]
+                for values in conn.execute('SELECT * FROM "fact_gtt_event"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("ts") or row.get("observed_at") or row.get("cst_day"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    evt = str(row.get("evt_type") or "").upper()
+                    note = str(row.get("note_preview") or row.get("note") or "")
+                    g_id = str(row.get("goal_id") or "")
+                    sk_hits = {_norm_skill(m.group("ctx") or m.group("path") or m.group("call") or "") for m in _SKILL_CONTEXT_RE.finditer(note)}
+                    sk_hits.discard("")
+                    if not sk_hits and "design" in g_id.lower():
+                        sk_hits.add("my-designer")
+                    if evt in {"CHANGE_REQUEST", "NEED_OWNER_DECISION"}:
+                        meta["directional_drift_tasks"].append({"goal_id": g_id, "task_id": str(row.get("task_id") or ""), "event": evt, "skills": sorted(sk_hits)})
+                        for sk in sk_hits:
+                            bump_escape(sk, "spec_gap")
+                    elif evt == "REVIEW_FAIL":
+                        kind = "spec_gap" if "SPEC_GAP" in note.upper() else "impl_bug"
+                        for sk in sk_hits:
+                            bump_escape(sk, kind)
+
+    if copilot_db is not None and copilot_db.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{copilot_db}?mode=ro", uri=True)) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "session_files" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("session_files")')]
+                for values in conn.execute('SELECT * FROM "session_files"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("first_seen_at") or row.get("timestamp"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    sid = str(row.get("session_id") or "").strip()
+                    fp = str(row.get("file_path") or "").strip()
+                    if not sid or not fp:
+                        continue
+                    obs = observations.setdefault(
+                        sid,
+                        SessionObservation(session_id=sid, source="copilot_db", started_at=ts, ended_at=ts),
+                    )
+                    if str(row.get("tool_name") or "").lower() in {"edit", "create", "apply_patch"}:
+                        obs.edited_files.add(fp)
+                        obs.edit_count += 1
+            if "turns" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("turns")')]
+                for values in conn.execute('SELECT * FROM "turns"'):
+                    row = dict(zip(cols, values))
+                    ts = _parse_ts(row.get("timestamp"))
+                    if ts is None or not (window_start <= ts < window_end):
+                        continue
+                    sid = str(row.get("session_id") or "").strip()
+                    if not sid:
+                        continue
+                    blob = f"{row.get('user_message') or ''}\n{row.get('assistant_response') or ''}"
+                    obs = observations.get(sid)
+                    matched_sk = {
+                        _norm_skill(m.group("ctx") or m.group("path") or m.group("call") or "")
+                        for m in _SKILL_CONTEXT_RE.finditer(blob)
+                    }
+                    matched_sk.discard("")
+                    if known_skills:
+                        matched_sk &= known_skills
+                    if matched_sk or obs is not None:
+                        obs = observations.setdefault(
+                            sid,
+                            SessionObservation(session_id=sid, source="copilot_db", started_at=ts, ended_at=ts),
+                        )
+                        obs.skills_loaded.update(matched_sk)
+                        for m_ref in _REF_PATH_RE.finditer(blob):
+                            r_sk = _norm_skill(m_ref.group("skill"))
+                            r_rel = f"references/{m_ref.group('ref').lstrip('/')}"
+                            if not any(x_sk == r_sk and x_rel == r_rel for x_sk, x_rel, _, _ in obs.ref_reads):
+                                obs.ref_reads.append((r_sk, r_rel, ts, obs.next_seq()))
+
+    return meta
+
+
+def _drawer_linked_in_scripts(pkg_path: Path, ref_rel: str) -> bool:
+    scripts_dir = pkg_path / "scripts"
+    if not scripts_dir.is_dir():
+        return False
+    ref_name = Path(ref_rel).name
+    for sp in scripts_dir.rglob("*"):
+        if not sp.is_file() or sp.suffix not in {".py", ".sh"}:
+            continue
+        with contextlib.suppress(OSError):
+            txt = sp.read_text(encoding="utf-8", errors="ignore")
+            if ref_rel in txt or ref_name in txt:
+                return True
+    return False
+
+
+def _drawer_linked_in_l0(pkg_path: Path, ref_rel: str) -> bool:
+    ref_name = Path(ref_rel).name
+    skill_md = pkg_path / "SKILL.md"
+    if skill_md.is_file():
+        with contextlib.suppress(OSError):
+            txt = skill_md.read_text(encoding="utf-8", errors="ignore")
+            if ref_rel in txt or ref_name in txt:
+                return True
+    return False
+
+
+def _harvest_cross_session_taste_and_eval(handoff_root: Path | None) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "selection_receipt_count": 0,
+        "selected_variants_count": 0,
+        "starred_variants_count": 0,
+        "rejected_variants_count": 0,
+        "spectrum_2_1_1_compliant_goals": 0,
+        "low_diversity_goals": [],
+        "product_persona_notes": [],
+    }
+    if handoff_root is None or not handoff_root.is_dir():
+        return summary
+
+    notes_counter: dict[str, dict[str, Any]] = {}
+    for goal_dir in sorted(handoff_root.iterdir()):
+        if not goal_dir.is_dir() or goal_dir.name.startswith("_"):
+            continue
+        receipts_dir = goal_dir / "receipts"
+        if not receipts_dir.is_dir():
+            continue
+        for sel_file in sorted(receipts_dir.iterdir()):
+            if not sel_file.is_file() or not _SELECTION_FILE_RE.match(sel_file.name):
+                continue
+            try:
+                doc = json.loads(sel_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            summary["selection_receipt_count"] += 1
+            if doc.get("selectedVariantID"):
+                summary["selected_variants_count"] += 1
+            starred = doc.get("starredVariantIDs")
+            if isinstance(starred, list):
+                summary["starred_variants_count"] += len(starred)
+            rejected = doc.get("rejectedVariantIDs")
+            if isinstance(rejected, list):
+                summary["rejected_variants_count"] += len(rejected)
+
+            variants = doc.get("variants")
+            if isinstance(variants, dict) and len(variants) >= 4:
+                summary["spectrum_2_1_1_compliant_goals"] += 1
+                titles = {
+                    str((v or {}).get("title") or (v or {}).get("summary") or "").strip().lower()
+                    for v in variants.values()
+                    if isinstance(v, dict)
+                }
+                titles.discard("")
+                if 0 < len(titles) < min(3, len(variants)):
+                    summary["low_diversity_goals"].append(goal_dir.name)
+
+            notes_map = doc.get("notesByVariant")
+            if isinstance(notes_map, dict):
+                for vid, note_raw in notes_map.items():
+                    note_txt = " ".join(str(note_raw or "").split()).strip()
+                    if not note_txt:
+                        continue
+                    norm_key = note_txt.lower()
+                    bucket = notes_counter.setdefault(
+                        norm_key,
+                        {"note": note_txt[:140], "count": 0, "goals": set(), "variant_id": str(vid)},
+                    )
+                    bucket["count"] += 1
+                    bucket["goals"].add(goal_dir.name)
+
+    ranked_notes = sorted(notes_counter.values(), key=lambda x: (-x["count"], x["note"]))[:5]
+    summary["product_persona_notes"] = [
+        {"note": item["note"], "count": item["count"], "goals": sorted(item["goals"])[:4]}
+        for item in ranked_notes
+    ]
+    summary["low_diversity_goals"] = sorted(set(summary["low_diversity_goals"]))[:5]
+    return summary
+
+
+def _triage_proposal_scope(
+    *,
+    occurrence_sessions: int,
+    total_sessions: int,
+    is_objective_bug_or_friction: bool,
+    domain_scoped: bool,
+) -> dict[str, Any]:
+    """Apply Dual-Flywheel Scope Triage (Fast Flywheel 3-question guard vs Slow Flywheel cohort)."""
+    slow_flywheel_ready = total_sessions >= SLOW_FLYWHEEL_COHORT_MIN_SESSIONS
+    if is_objective_bug_or_friction and occurrence_sessions >= 2:
+        scope_verdict = "global_invariant_or_cli_compat"
+        flywheel = "slow_flywheel" if slow_flywheel_ready else "fast_flywheel_verified"
+        should_emit = True
+    elif domain_scoped and occurrence_sessions >= 2:
+        scope_verdict = "scenario_conditioned_branch"
+        flywheel = "slow_flywheel" if slow_flywheel_ready else "fast_flywheel_scoped"
+        should_emit = True
+    elif is_objective_bug_or_friction and occurrence_sessions == 1:
+        # Objective CLI exit=2 or unwired error drawer with concrete failing sample
+        scope_verdict = "global_cli_or_drawer_wiring"
+        flywheel = "fast_flywheel_verified"
+        should_emit = True
+    else:
+        scope_verdict = "observation_pool_hold"
+        flywheel = "hold_until_3_cases"
+        should_emit = False
+    return {
+        "scope_verdict": scope_verdict,
+        "flywheel": flywheel,
+        "slow_flywheel_cohort_ready": slow_flywheel_ready,
+        "occurrence_sessions": occurrence_sessions,
+        "emit_proposal": should_emit,
+    }
+
+
+def _multi_angle_speed_diagnosis(
+    script_rel: str,
+    calls: Sequence[ScriptCallEvent],
+) -> dict[str, Any]:
+    """Attribute script latency across external_wait, serial_queuing, nested_reruns, heavy_full_scan."""
+    measured_durs = [float(c.duration_ms) for c in calls if c.measured and c.duration_ms is not None]
+    p50_ms = _percentile(measured_durs, 50)
+    p95_ms = _percentile(measured_durs, 95)
+    max_ms = round(max(measured_durs), 2) if measured_durs else None
+
+    per_session_counts: dict[str, int] = {}
+    for c in calls:
+        per_session_counts[c.session_id] = per_session_counts.get(c.session_id, 0) + 1
+    repeated_sessions = {sid: cnt for sid, cnt in per_session_counts.items() if cnt >= 2}
+    nested_rerun_calls = sum(cnt - 1 for cnt in repeated_sessions.values())
+
+    bname = Path(script_rel).name
+    cmd_corpus = " ".join(c.command for c in calls)
+    is_external = any(hint in script_rel or hint in bname for hint in _EXTERNAL_WAIT_SCRIPT_HINTS)
+    is_serial_suite = any(hint in script_rel or hint in cmd_corpus for hint in _SERIAL_RUNNER_HINTS)
+
+    angles: list[str] = []
+    primary_cause = "heavy_full_scan"
+    if is_external:
+        primary_cause = "external_wait"
+        angles.append("external_wait: dominated by remote CI/API/daemon polling rather than local CPU")
+    if is_serial_suite:
+        if primary_cause == "heavy_full_scan":
+            primary_cause = "serial_queuing"
+        angles.append("serial_queuing: sequential test/audit targets queued in a single process")
+    if nested_rerun_calls >= 2:
+        if primary_cause == "heavy_full_scan":
+            primary_cause = "nested_reruns"
+        angles.append(
+            f"nested_reruns: {nested_rerun_calls} repeated invocations across {len(repeated_sessions)} session(s)"
+        )
+    if not angles:
+        angles.append("heavy_full_scan: full-history or unindexed scan without incremental watermark")
+
+    speedup_plan = {
+        "angle_a_path_scoped": "Scope execution to `git diff --name-only` affected skills/tests on inner-loop edits.",
+        "angle_b_watermark_cache": "Persist content-hash / session watermark so unchanged artifacts skip re-scanning.",
+        "angle_c_parallel_dag": "Run independent unittest / static audit targets via concurrent worker pool.",
+        "angle_d_tiered_fast_fail": "Run <0.5s CLI/contract checks in Tier 0 and move >30s suites/CI to async background.",
+    }
+    return {
+        "primary_bottleneck": primary_cause,
+        "p50_ms": p50_ms,
+        "p95_ms": p95_ms,
+        "max_ms": max_ms,
+        "nested_rerun_calls": nested_rerun_calls,
+        "repeated_session_count": len(repeated_sessions),
+        "attribution_angles": angles,
+        "four_angle_speedup_options": speedup_plan,
+    }
+
+
+def _normalize_aspects(
+    raw_aspects: Sequence[str] | str | None,
+    *,
+    mode: str = "full",
+) -> list[str]:
+    """Normalize aspect list into canonical subset of ('l0', 'l1', 'l2', 'l3', 'creative', 'eval')."""
+    if (mode or "full").strip().lower() == "full" and not raw_aspects:
+        return list(CANONICAL_ASPECTS)
+    tokens: list[str] = []
+    if isinstance(raw_aspects, str):
+        tokens = [t.strip().lower() for t in re.split(r"[,;\s]+", raw_aspects) if t.strip()]
+    elif isinstance(raw_aspects, Sequence):
+        for item in raw_aspects:
+            tokens.extend(t.strip().lower() for t in re.split(r"[,;\s]+", str(item)) if t.strip())
+    if not tokens or "all" in tokens:
+        return list(CANONICAL_ASPECTS)
+    resolved: list[str] = []
+    for tok in tokens:
+        mapped = _ASPECT_ALIASES.get(tok, tok)
+        if mapped in CANONICAL_ASPECTS and mapped not in resolved:
+            resolved.append(mapped)
+    return resolved or list(CANONICAL_ASPECTS)
+
+
+def discover_active_skill_leases(
+    *,
+    dev_root: Path | None = None,
+    handoff_root: Path | None = None,
+    known_skills: set[str] | None = None,
+) -> dict[str, Any]:
+    """Scan active worktrees, in_progress handoff ledgers, and pending cross-skill relays for Lock 2 exclusion."""
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    h_root = handoff_root if handoff_root is not None else (d_root / "handoff")
+    worktrees_dir = d_root / "worktrees"
+    leased: dict[str, list[str]] = {}
+    pending_relay_targets: dict[str, list[str]] = {}
+
+    def _mark(sk: str, reason: str) -> None:
+        norm = _norm_skill(sk)
+        if not norm or (known_skills and norm not in known_skills):
+            return
+        bucket = leased.setdefault(norm, [])
+        if reason not in bucket:
+            bucket.append(reason)
+
+    if worktrees_dir.is_dir():
+        with contextlib.suppress(OSError):
+            for child in sorted(worktrees_dir.iterdir()):
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                wt_name = child.name.lower()
+                for sk in sorted(known_skills or set()):
+                    if re.search(rf"(?<![a-z0-9]){re.escape(sk.lower())}(?![a-z0-9])", wt_name):
+                        _mark(sk, f"active_worktree:{child.name}")
+
+    if h_root is not None and h_root.is_dir():
+        with contextlib.suppress(OSError):
+            for goal_dir in sorted(h_root.iterdir()):
+                if not goal_dir.is_dir() or goal_dir.name.startswith("_"):
+                    continue
+                ledger_p = goal_dir / "ledger.md"
+                if ledger_p.is_file():
+                    with contextlib.suppress(OSError):
+                        l_txt = ledger_p.read_text(encoding="utf-8", errors="ignore")
+                        if "in_progress" in l_txt and "EVT=GOAL_DONE" not in l_txt:
+                            for sk in sorted(known_skills or set()):
+                                if f"skills/{sk}" in l_txt or f"skill-retro-{sk}" in goal_dir.name:
+                                    _mark(sk, f"in_progress_ledger:{goal_dir.name}")
+                briefs_d = goal_dir / "briefs"
+                if briefs_d.is_dir():
+                    with contextlib.suppress(OSError):
+                        for relay_f in sorted(briefs_d.glob("skill-retro-relay-*.json")):
+                            with contextlib.suppress(OSError, json.JSONDecodeError):
+                                rdoc = json.loads(relay_f.read_text(encoding="utf-8"))
+                                if isinstance(rdoc, dict) and str(rdoc.get("status") or "pending") == "pending":
+                                    to_sk = _norm_skill(rdoc.get("to_skill") or "")
+                                    if to_sk:
+                                        pending_relay_targets.setdefault(to_sk, []).append(str(relay_f))
+                                        _mark(to_sk, f"pending_relay_target:{goal_dir.name}")
+
+    return {
+        "leased_skills": sorted(leased.keys()),
+        "lease_reasons": leased,
+        "pending_relay_targets": pending_relay_targets,
+    }
+
+
+def emit_cross_skill_relay(
+    *,
+    from_skill: str,
+    to_skill: str,
+    requirement: str,
+    emit_dir: Path,
+    evidence_summary: str = "",
+    wave: int = 2,
+) -> dict[str, Any]:
+    """Emit a Wave 2 Cross-Skill Relay Brief (Host -> Guest) so Host never edits Guest out-of-bounds."""
+    host = _norm_skill(from_skill)
+    guest = _norm_skill(to_skill)
+    if not host or not guest:
+        raise ValueError("Both --from (host skill) and --to (guest skill) are required for emit-relay.")
+    if host == guest:
+        raise ValueError("Host and Guest skill cannot be identical for a cross-skill relay.")
+    briefs_dir = emit_dir / "briefs" if emit_dir.name != "briefs" else emit_dir
+    briefs_dir.mkdir(parents=True, exist_ok=True)
+    host_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", host).strip("-")
+    guest_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", guest).strip("-")
+    relay_id = f"relay-{host_slug}-to-{guest_slug}"
+    md_path = briefs_dir / f"skill-retro-relay-{host_slug}-to-{guest_slug}-wave{wave}.md"
+    json_path = briefs_dir / f"skill-retro-relay-{host_slug}-to-{guest_slug}-wave{wave}.json"
+
+    req_clean = " ".join(str(requirement or "").strip().split()) or f"Align `{guest}` interface consumed by `{host}`."
+    md_lines = [
+        f"# Cross-Skill Relay Brief (Wave {wave}): `{host}` (Host) -> `{guest}` (Guest)",
+        "",
+        f"- **Relay ID**: `{relay_id}`",
+        f"- **Wave**: `{wave}` (scheduled AFTER Wave 1 Host `{host}` merges — parallel anti-collision Lock 3)",
+        f"- **Host Skill (Origin)**: `{host}` (strictly forbidden from editing `skills/{guest}/**` in Wave 1)",
+        f"- **Guest Skill (Target Owner)**: `{guest}`",
+        "- **Role Slot**: `writer` -> `reviewer` (`M1 TL -> Writer -> Reviewer`)",
+        "- **Owned Paths**:",
+        f"  - `skills/{guest}/**`",
+        f"  - `scripts/test_{guest.replace('-', '_')}_*.py`",
+        "- **Forbidden Shared Paths (Anti-Collision Lock 1)**:",
+        "  - `README.md`, `AGENTS.md`, `.claude-plugin/marketplace.json`, and `skills/" + host + "/**`",
+        "- **Interfaces**:",
+        f"  - **Consumes**: Relay requirement from `{host}`: {req_clean}",
+        f"  - **Produces**: Backward-compatible contract/CLI update in `skills/{guest}/**` + Positive & Counter-Case Replay",
+        "",
+        "## Relay Requirement & Evidence",
+        f"- **Requirement**: {req_clean}",
+    ]
+    if evidence_summary:
+        md_lines.append(f"- **Observed Evidence**: {evidence_summary}")
+    md_lines.extend(
+        [
+            "",
+            "## Verification Commands",
+            "```bash",
+            f"python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree . --brief {md_path}",
+            f"python3 skills/skill-contract/scripts/skill_contract.py audit --skill {guest} --strict",
+            f"python3 skills/skill-contract/scripts/skill_contract.py eval --skill {guest} --strict",
+            "./scripts/verify",
+            "```",
+        ]
+    )
+    md_path.write_text("\n".join(md_lines).rstrip() + "\n", encoding="utf-8")
+    payload = {
+        "ok": True,
+        "schema": "skill-retro-relay/v1",
+        "relay_id": relay_id,
+        "wave": wave,
+        "status": "pending",
+        "from_skill": host,
+        "to_skill": guest,
+        "requirement": req_clean,
+        "evidence_summary": evidence_summary,
+        "owned_paths": [f"skills/{guest}/**", f"scripts/test_{guest.replace('-', '_')}_*.py"],
+        "relay_brief_md": str(md_path),
+        "relay_brief_json": str(json_path),
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def emit_skill_retro_briefs(
+    report: Mapping[str, Any],
+    emit_dir: Path,
+    *,
+    skill_filter: str | None = None,
+    mode: str = "full",
+    aspects: Sequence[str] | str | None = None,
+    coupled_with: Sequence[str] | str | None = None,
+    relays: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Generate per-skill isolated M1-TL, Writer & Reviewer briefs (plus Wave 2 relays) reusing M1 -> Writer -> Reviewer slots."""
+    briefs_dir = emit_dir / "briefs" if emit_dir.name != "briefs" else emit_dir
+    briefs_dir.mkdir(parents=True, exist_ok=True)
+
+    norm_mode = "partial" if str(mode or "full").strip().lower() == "partial" else "full"
+    selected_aspects = _normalize_aspects(aspects, mode=norm_mode)
+    if norm_mode == "full":
+        selected_aspects = list(CANONICAL_ASPECTS)
+    coupled_skills: list[str] = []
+    if isinstance(coupled_with, str):
+        coupled_skills = [_norm_skill(s) for s in re.split(r"[,;\s]+", coupled_with) if _norm_skill(s)]
+    elif isinstance(coupled_with, Sequence):
+        for item in coupled_with:
+            for s in re.split(r"[,;\s]+", str(item)):
+                if _norm_skill(s):
+                    coupled_skills.append(_norm_skill(s))
+
+    norm_filter = _norm_skill(skill_filter) if skill_filter else ""
+    l0 = report.get("layer0_direction_and_triggers") or {}
+    l1 = report.get("layer1_drawer_metabolism") or {}
+    l2 = report.get("layer2_script_efficacy_and_speed") or {}
+    l3 = report.get("layer3_wild_patterns_and_eval") or {}
+    proposals = list(report.get("proposals") or [])
+    obs_pool = list(report.get("observation_pool") or [])
+
+    target_skills: set[str] = set()
+    if norm_filter:
+        target_skills.add(norm_filter)
+    else:
+        for p in proposals:
+            sk = str(p.get("skill") or "").strip()
+            if sk and sk != "repo-gate":
+                target_skills.add(sk)
+        if not target_skills:
+            for item in (l2.get("rigid_roadblocks") or []) + (l1.get("unwired_disconnected_drawers") or []):
+                sk = str(item.get("skill") or "").strip()
+                if sk and sk != "repo-gate":
+                    target_skills.add(sk)
+
+    taste_eval = l3.get("taste_and_eval_diversity") or {}
+    emitted: list[dict[str, Any]] = []
+    emitted_relays: list[dict[str, Any]] = []
+    wave1_tasks: list[dict[str, Any]] = []
+    wave2_tasks: list[dict[str, Any]] = []
+
+    for sk in sorted(target_skills):
+        safe_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sk).strip("-") or "skill"
+        sk_triggers = [x for x in (l0.get("trigger_misses") or []) if x.get("skill") == sk]
+        sk_empty = [x for x in (l0.get("zero_action_loads") or []) if x.get("skill") == sk]
+        sk_drifts = [x for x in (l0.get("directional_drifts") or []) if sk in (x.get("skills") or [])]
+        sk_converged = [x for x in (l0.get("healthy_r1_to_r2_convergences") or []) if sk in (x.get("skills") or [])]
+        sk_hot = [x for x in (l1.get("hot_drawers") or []) if x.get("skill") == sk]
+        sk_ondemand = [x for x in (l1.get("on_demand_correction_drawers") or []) if x.get("skill") == sk]
+        sk_unwired = [x for x in (l1.get("unwired_disconnected_drawers") or []) if x.get("skill") == sk]
+        sk_deadwood = [x for x in (l1.get("true_zero_hit_deadwood") or []) if x.get("skill") == sk]
+        sk_catchers = [x for x in (l2.get("true_catchers") or []) if x.get("skill") == sk]
+        sk_ceremonial = [x for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk]
+        sk_roadblocks = [x for x in (l2.get("rigid_roadblocks") or []) if x.get("skill") == sk]
+        sk_sinks = [x for x in (l2.get("latency_sinks") or []) if x.get("skill") in {sk, "repo-gate"}]
+        sk_wild = [x for x in (l3.get("wild_patterns") or []) if x.get("candidate_skill") == sk]
+        sk_proposals = [x for x in proposals if x.get("skill") == sk]
+        sk_held = [x for x in obs_pool if x.get("skill") == sk]
+        own_actionable_sinks = [
+            x
+            for x in sk_sinks
+            if x.get("skill") == sk and (x.get("primary_bottleneck") != "external_wait" or int(x.get("nested_rerun_calls") or 0) >= 1)
+        ]
+        has_actionable_evidence = bool(
+            sk_proposals
+            or sk_triggers
+            or sk_empty
+            or sk_drifts
+            or sk_unwired
+            or sk_hot
+            or sk_deadwood
+            or sk_roadblocks
+            or [x for x in sk_ceremonial if int(x.get("co_occurring_skill_escapes") or 0) > 0]
+            or own_actionable_sinks
+            or sk_wild
+            or relays
+        )
+        if not has_actionable_evidence:
+            continue
+
+        owned_paths = [
+            f"skills/{sk}/**",
+            f"scripts/test_{sk.replace('-', '_')}_*.py",
+            "scripts/test_skill_retro.py",
+        ]
+        coupled_for_sk = [g for g in coupled_skills if g != sk]
+        for guest_sk in coupled_for_sk:
+            owned_paths.append(f"skills/{guest_sk}/**")
+            owned_paths.append(f"scripts/test_{guest_sk.replace('-', '_')}_*.py")
+
+        m1_path = briefs_dir / f"skill-retro-{safe_slug}-m1-tl.md"
+        writer_path = briefs_dir / f"skill-retro-{safe_slug}-writer.md"
+        reviewer_path = briefs_dir / f"skill-retro-{safe_slug}-reviewer.md"
+        aspects_csv = ",".join(selected_aspects)
+
+        # Build M1-TL Orchestration Brief
+        m1_lines = [
+            f"# M1-TL Brief: `{sk}` — Stage 3 Scoped Progressive Evolution (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+            "",
+            "- **Role Slot**: `M1-TL` (`team-lead` Steering -> `Writer` -> `Reviewer`; zero new agent role types)",
+            f"- **Host Skill**: `{sk}`" + (f" (Locked Coupled Pair: `{', '.join(coupled_for_sk)}`)" if coupled_for_sk else " (Strict Single-Skill Isolation)"),
+            f"- **Check Mode & Aspects**: `--mode {norm_mode} --aspects {aspects_csv}`",
+            "- **Anti-Collision Locks**:",
+            f"  - **Lock 1 (Disjoint Owned Paths)**: `{', '.join(owned_paths)}` (NEVER edit `README.md`, `AGENTS.md`, `.claude-plugin/marketplace.json`, or uncoupled guest skills)",
+            "  - **Lock 2 (Active Lease Guard)**: Verified not leased by another active worktree/ledger.",
+            "  - **Lock 3 (Host/Guest Wave Relay)**: Any uncoupled Guest Skill requirement is emitted as a Wave 2 Relay Brief (`emit-relay`).",
+            "- **Dispatch Sequence**:",
+            f"  1. Dispatch `Writer` with `{writer_path.name}`.",
+            f"  2. Run `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree . --brief {writer_path}`.",
+            f"  3. Dispatch `Reviewer` with `{reviewer_path.name}`.",
+        ]
+        m1_md = "\n".join(m1_lines).rstrip() + "\n"
+        m1_path.write_text(m1_md, encoding="utf-8")
+
+        # Build Writer Brief (reusing standard `writer` / `writer_escalated` role slot)
+        w_lines: list[str] = [
+            f"# Writer Brief: `{sk}` — 6-Dimension Progressive Skill Self-Evolution (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+            "",
+            "- **Role Slot**: `writer` (standard `M1 TL -> Writer -> Reviewer` pipeline; zero new agent role types)",
+            f"- **Target Skill**: `{sk}` (strict per-skill isolation — do NOT edit sibling skills, shared root docs, or scheduler runners)",
+            f"- **Check Mode & Aspects**: `mode={norm_mode}` · `aspects={aspects_csv}`",
+            "- **Background**: Evolve this skill contract, drawers, and deterministic scripts from observed runtime telemetry using runtime progressive disclosure.",
+            "- **Owned Paths**:",
+        ]
+        for op in owned_paths:
+            w_lines.append(f"  - `{op}`")
+        w_lines.extend(
+            [
+                "- **Forbidden Shared / Guest Paths (Anti-Collision Lock 1 & Host/Guest Protocol)**:",
+                "  - Never edit `README.md`, `AGENTS.md`, `.claude-plugin/marketplace.json`, or any uncoupled `skills/<guest>/**`.",
+                f"  - If a Guest Skill contract change is required, run `python3 skills/skill-retro/scripts/skill_retro.py emit-relay --from {sk} --to <guest> --requirement \"...\" --emit-briefs {emit_dir}` for Wave 2.",
+                "- **Interfaces**:",
+                f"  - **Consumes**: `skills/{sk}/SKILL.md`, `skills/{sk}/references/*`, `skills/{sk}/scripts/*`, `python3 skills/skill-retro/scripts/skill_retro.py diagnose --skill {sk} --mode {norm_mode} --aspects {aspects_csv} --json`",
+                "  - **Produces**: Softened CLI compatibility aliases, self-disclosing error guidance (`<=3 lines + references/*.md` pointer), and Positive + Counter-Case Replay tests",
+                "",
+                f"## Observed Telemetry Evidence (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+                "",
+            ]
+        )
+
+        if "l0" in selected_aspects:
+            w_lines.append("### Dim 1 (`l0`) — L0 Direction vs Healthy `R1->R2` Progressive Convergence")
+            w_lines.append(
+                f"- **Healthy `R1->R2` Convergences (Preserve, do NOT bloat L0)**: `{len(sk_converged)}` task(s) "
+                f"| **True Directional Drifts (`r3+` / `CHANGE_REQUEST`)**: `{len(sk_drifts)}` task(s)"
+            )
+            for tm in sk_triggers:
+                w_lines.append(
+                    f"- **L0 Trigger Miss**: missed `{tm['missed_sessions']}/{tm['domain_sessions']}` domain sessions (`miss_rate={tm['miss_rate']}`)"
+                )
+            for ze in sk_empty:
+                w_lines.append(
+                    f"- **L0 Zero-Action Load**: `{ze['zero_action_sessions']}/{ze['loads']}` loads had 0 actions"
+                )
+            w_lines.append("")
+
+        if "l1" in selected_aspects:
+            w_lines.append("### Dim 2 (`l1`) — Scenario-Aware Reference Drawer Metabolism (`hits` vs `scenario_sessions`)")
+            if sk_unwired or sk_hot or sk_ondemand or sk_deadwood:
+                for uw in sk_unwired:
+                    w_lines.append(
+                        f"- **Unwired Disconnected Drawer**: `{uw['drawer']}` — `hits={uw['hits']}` vs `scenario_sessions={uw['scenario_sessions']}`, "
+                        f"`domain_failures={uw['domain_failure_count']}` (wire self-disclosing pointer on script `exit=1`)"
+                    )
+                for hd in sk_hot:
+                    w_lines.append(
+                        f"- **Hot Drawer**: `{hd['drawer']}` — `hit_sessions={hd['hit_sessions']}/{hd['scenario_sessions']}` (`{hd['scenario_hit_rate']*100:.0f}%`); "
+                        "sink repeated checklist lines into script"
+                    )
+                for od in sk_ondemand:
+                    w_lines.append(
+                        f"- **On-Demand Correction Drawer (Healthy — Preserve)**: `{od['drawer']}` — `hit_sessions={od['hit_sessions']}/{od['scenario_sessions']}`"
+                    )
+                for dw in sk_deadwood:
+                    w_lines.append(
+                        f"- **True Zero-Hit Deadwood**: `{dw['drawer']}` — `0` hits across `{dw['scenario_sessions']}` scenario sessions"
+                    )
+            else:
+                w_lines.append("- No drawer anomalies recorded in current window (preserve low-frequency scenario docs with `scenario_sessions < 5`).")
+            w_lines.append("")
+
+        if "l2" in selected_aspects:
+            w_lines.append("### Dim 3 (`l2`) — Script Efficacy & 4-Angle Slow Script Deep-Dive")
+            for rb in sk_roadblocks:
+                w_lines.append(
+                    f"- **Rigid CLI Roadblock (`exit_code = 2`)**: `{rb['script']}` — `exit=2` count `{rb['exit_2_count']}` across `{rb['exit_2_sessions']}` session(s) "
+                    f"(arg-only retry sessions: `{rb['arg_retry_sessions']}`)"
+                )
+                for sample in rb.get("failing_command_samples") or []:
+                    w_lines.append(f"  - Failing command sample: `{sample}`")
+            for tc in sk_catchers:
+                w_lines.append(
+                    f"- **True Catcher (Keep)**: `{tc['script']}` (`fail->pass` sessions=`{tc['fail_to_pass_sessions']}`, calls=`{tc['calls']}`)"
+                )
+            for cs in sk_ceremonial:
+                w_lines.append(
+                    f"- **Ceremonial Rubber-Stamp**: `{cs['script']}` (`100% exit=0` over `{cs['calls']}` runs, co-occurring skill escapes=`{cs['co_occurring_skill_escapes']}`)"
+                )
+            for ls in sk_sinks:
+                w_lines.append(
+                    f"- **Latency Sink (`>180s` / `P50>=30s`)**: `{ls['script']}` — `max_ms={ls['max_ms']}`, `p50_ms={ls['p50_ms']}`, "
+                    f"`primary_bottleneck={ls['primary_bottleneck']}`, `nested_reruns={ls['nested_rerun_calls']}` "
+                    f"({'; '.join(ls.get('attribution_angles') or [])})"
+                )
+                opts = ls.get("four_angle_speedup_options") or {}
+                if opts:
+                    w_lines.append(
+                        f"  - **4-Angle Speedup Options**: (a) `{opts.get('angle_a_path_scoped')}` | (b) `{opts.get('angle_b_watermark_cache')}` | "
+                        f"(c) `{opts.get('angle_c_parallel_dag')}` | (d) `{opts.get('angle_d_tiered_fast_fail')}`"
+                    )
+            w_lines.append("")
+
+        if "l3" in selected_aspects:
+            w_lines.append("### Dim 4 (`l3`) — Wild Pattern Soft Crystallization (Facts-Only, Self-Disclosing, Hard vs Soft Gate)")
+            if sk_wild:
+                for wp in sk_wild:
+                    w_lines.append(
+                        f"- **Wild Manual Pattern (`>={WILD_PATTERN_MIN_COUNT}x`)**: `{wp['pattern_signature']}` (`{wp['occurrences']}` occurrences across `{wp['session_count']}` sessions; "
+                        "crystallize as facts-only `soft_advisory_exit_0` with self-disclosing error pointer)"
+                    )
+            else:
+                w_lines.append("- No wild manual command pattern >=5x for this skill in the current window.")
+            w_lines.append("")
+
+        if "creative" in selected_aspects:
+            w_lines.append("### Dim 5 (`creative`) — Cross-Session Creative Spectrum (`Invariants + Product Persona + 2+1+1 Quota`)")
+            w_lines.append(
+                f"- **Preview Selections Observed**: `receipts={taste_eval.get('selection_receipt_count', 0)}`, "
+                f"`2+1+1_compliant_goals={taste_eval.get('spectrum_2_1_1_compliant_goals', 0)}`, "
+                f"`low_diversity_goals={taste_eval.get('low_diversity_goals', [])}`"
+            )
+            w_lines.append(
+                "- **3-Tier Spectrum Contract**: Tier 1 Universal Invariants (alignment/hierarchy/platform firewall) + "
+                "Tier 2 Product Persona Intent Weighting (primary visual anchor vs muted secondary budget) + "
+                "Tier 3 Controlled Exploration (`2+1+1` quota: 2 persona-deepening + 1 cross-domain borrow + 1 bold wildcard)."
+            )
+            w_lines.append("")
+
+        if "eval" in selected_aspects:
+            flywheel_guard = l3.get("dual_flywheel_guard") or {}
+            w_lines.append("### Dim 6 (`eval`) — 3-Tier Eval (`L1 Baseline / L2 Diversity / L3 Taste`) & Fast/Slow Flywheel Guardrails")
+            w_lines.append(
+                f"- **Flywheel Cohort Status**: `active_mode={flywheel_guard.get('active_mode', 'fast_flywheel_scope_triaged')}` "
+                f"(`observed_sessions={flywheel_guard.get('observed_sessions', 0)}`, `slow_flywheel_ready={flywheel_guard.get('slow_flywheel_ready', False)}`, "
+                f"`observation_pool_held={len(sk_held)}`)"
+            )
+            w_lines.append(
+                "- **3-Tier Eval Audit**: Verify L1 Baseline deterministic assertions (`eval-cases.json`), L2 Variant Diversity & Intent Weighting, and L3 Human Taste (`jev-star` / `preview-selection.json`) backflow."
+            )
+            w_lines.append("")
+
+        flywheel_guard = l3.get("dual_flywheel_guard") or {}
+        w_lines.extend(
+            [
+                "## Mandatory Execution Guardrails (Scope Triage + Self-Disclosing Errors + Dual-Case Replay)",
+                "",
+                f"1. **Scope Triage (Active Flywheel: `{flywheel_guard.get('active_mode', 'fast_flywheel_scope_triaged')}`)**:",
+                "   - **Objective Bug / `exit=2` CLI Friction**: Fix global parser compatibility aliases & positional defaults.",
+                "   - **Scenario-Specific Requirement**: Encode as a **scenario-conditioned branch** — NEVER mutate global defaults across unrelated scenarios!",
+                f"   - **Observation Pool Hold (`{len(sk_held)}` held items)**: Do NOT over-fit ambiguous single-session anecdotes into L0.",
+                "2. **Self-Disclosing Error Guidance**:",
+                f"   - Silent when passing; when failing (`exit=1` or `exit=2`), print `<=3` concrete remediation lines plus the exact `skills/{sk}/references/<drawer>.md` path.",
+                "   - Wild manual patterns (`Layer 3`) crystallize ONLY as data-collection helpers (`soft_advisory_exit_0`), never subjective aesthetic hard-locks.",
+                "3. **Positive + Counter-Case Replay Verification**:",
+                "   - Add a **Positive Replay Case** proving the historical failing command / defect is now caught or accepted.",
+                "   - Add a **Counter-Case Replay** proving standard/neighboring scenarios and existing baseline behavior are NOT broken or over-constrained.",
+                "",
+                "## Verification Commands",
+                "",
+                "```bash",
+                f"python3 skills/skill-contract/scripts/skill_contract.py audit --skill {sk} --strict",
+                f"python3 skills/skill-contract/scripts/skill_contract.py eval --skill {sk} --strict",
+                "./scripts/verify",
+                "```",
+            ]
+        )
+        writer_md = "\n".join(w_lines).rstrip() + "\n"
+        writer_path.write_text(writer_md, encoding="utf-8")
+
+        # Build Reviewer Brief (reusing standard `reviewer` role slot + `code-review` & `skill-contract`)
+        r_lines: list[str] = [
+            f"# Reviewer Brief: `{sk}` — Progressive Evolution & Anti-Rigidity Gate (`mode={norm_mode}`, `aspects={aspects_csv}`)",
+            "",
+            "- **Role Slot**: `reviewer` (standard `M1 TL -> Writer -> Reviewer` cross-vendor V1–V5 review; zero new agent role types)",
+            f"- **Skills to Load**: `code-review`, `skill-contract` (target skill: `{sk}`)",
+            f"- **Check Mode & Aspects**: `mode={norm_mode}` · `aspects={aspects_csv}`",
+            f"- **Companion Writer Brief**: `{writer_path.name}`",
+            f"- **Targeted Proposals**: `{len(sk_proposals)}` actionable (`{', '.join(str(p.get('id')) for p in sk_proposals) or 'baseline-audit'}`)",
+            "",
+            "## V1–V5 Review Checklist (Anti-Overcorrection, Host/Guest Isolation & Replay Proof)",
+            "",
+            "1. **Per-Skill Scope Isolation & Anti-Collision Lock 1 (`Axis 1`)**:",
+            f"   - Confirm diff stays strictly within `{', '.join(owned_paths)}`; reject any edit to uncoupled Guest Skills, shared root files (`README.md`, `AGENTS.md`, `marketplace.json`), or scheduler/cron files (`feedback_guard.py pre-review-check`).",
+            "   - Confirm `SKILL.md` and `references/*.md` pass `skill_contract.py audit --skill " + sk + " --strict` (L0/L1 line & byte caps, zero private identifiers).",
+            "2. **Reject Global-Default Over-Correction (`Scope Triage Gate`)**:",
+            "   - **FAIL (`[SPEC_GAP]` / `[IMPL_BUG]`)** if a scenario-specific preference was promoted into a global unconditional default instead of a scenario-conditioned branch.",
+            "   - **FAIL** if low-occurrence scenario drawers (`scenario_sessions < 5`) were prematurely deleted as deadwood.",
+            "3. **Reject Rigid Hardcoding & Opaque Errors (`Anti-Rigidity Gate`)**:",
+            "   - **FAIL** if newly crystallized Layer 3 helpers hard-lock subjective choices (`exit=1`) instead of factual collection / soft advisory (`exit=0`).",
+            f"   - Verify script error paths emit concise self-disclosing guidance pointing to `skills/{sk}/references/*.md`.",
+            "4. **Verify Positive + Counter-Case Replay & Creative Spectrum (`Axis 2`)**:",
+            "   - Verify the test suite executes BOTH a **Positive Case** (historical `exit=2` / escape fixed) AND a **Counter-Case** (neighboring scenario preserved without false-positive regression).",
+            "   - For creative/design skills, verify `2+1+1` exploration quota and Product Persona Intent Weighting are preserved.",
+            "",
+            "## Mandatory Pre-Review & Audit Commands",
+            "",
+            "```bash",
+            f"python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree . --brief {writer_path}",
+            f"python3 skills/skill-contract/scripts/skill_contract.py audit --skill {sk} --strict",
+            f"python3 skills/skill-contract/scripts/skill_contract.py eval --skill {sk} --strict",
+            "```",
+        ]
+        reviewer_md = "\n".join(r_lines).rstrip() + "\n"
+        reviewer_path.write_text(reviewer_md, encoding="utf-8")
+
+        brief_record = {
+            "skill": sk,
+            "wave": 1,
+            "mode": norm_mode,
+            "aspects": selected_aspects,
+            "coupled_with": coupled_for_sk,
+            "owned_paths": owned_paths,
+            "role_pipeline": ["M1-TL", "writer", "reviewer"],
+            "m1_tl_brief": str(m1_path),
+            "writer_brief": str(writer_path),
+            "reviewer_brief": str(reviewer_path),
+            "m1_tl_prompt": m1_md,
+            "writer_prompt": writer_md,
+            "reviewer_prompt": reviewer_md,
+            "proposal_ids": [p.get("id") for p in sk_proposals],
+        }
+        emitted.append(brief_record)
+        wave1_tasks.append({"skill": sk, "wave": 1, "mode": norm_mode, "aspects": selected_aspects, "owned_paths": owned_paths})
+
+    if relays:
+        for rel_spec in relays:
+            if not isinstance(rel_spec, Mapping):
+                continue
+            from_sk = _norm_skill(str(rel_spec.get("from_skill") or norm_filter or (sorted(target_skills)[0] if target_skills else "")))
+            to_sk = _norm_skill(str(rel_spec.get("to_skill") or ""))
+            req_txt = str(rel_spec.get("requirement") or "")
+            if from_sk and to_sk and from_sk != to_sk:
+                rel_out = emit_cross_skill_relay(
+                    from_skill=from_sk,
+                    to_skill=to_sk,
+                    requirement=req_txt,
+                    emit_dir=emit_dir,
+                    evidence_summary=str(rel_spec.get("evidence_summary") or ""),
+                    wave=int(rel_spec.get("wave") or 2),
+                )
+                emitted_relays.append(rel_out)
+                wave2_tasks.append(
+                    {
+                        "relay_id": rel_out["relay_id"],
+                        "from_skill": from_sk,
+                        "to_skill": to_sk,
+                        "wave": rel_out["wave"],
+                        "owned_paths": rel_out["owned_paths"],
+                    }
+                )
+
+    overall_status = "ACTIONABLE" if (emitted or emitted_relays) else "HEALTHY_NO_ISSUES"
+    return {
+        "briefs_dir": str(briefs_dir),
+        "status": overall_status,
+        "status_message": (
+            f"Emitted {len(emitted)} actionable skill brief(s)"
+            if overall_status == "ACTIONABLE"
+            else "healthy / 0 issues found (no changes needed)"
+        ),
+        "writers_spawned": len(emitted),
+        "mode": norm_mode,
+        "aspects": selected_aspects,
+        "role_slots_reused": ["M1-TL", "writer", "reviewer"] if emitted else [],
+        "new_agent_roles_created": 0,
+        "count": len(emitted),
+        "briefs": emitted,
+        "cross_skill_relays": emitted_relays,
+        "wave_plan": {
+            "wave_1_disjoint_hosts": wave1_tasks,
+            "wave_2_cross_skill_relays": wave2_tasks,
+        },
+    }
+
+
+def compute_skill_retro_diagnostics(
+    *,
+    inventory: Mapping[str, Mapping[str, Any]],
+    skill_filter: str | None = None,
+    emit_briefs_dir: Path | None = None,
+    mode: str = "full",
+    aspects: Sequence[str] | str | None = None,
+    coupled_with: Sequence[str] | str | None = None,
+    relays: Sequence[Mapping[str, Any]] | None = None,
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    trace_export_path: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    days: int = 30,
+    shard_reader: Callable[[Path | None, int], list[dict[str, Any]]] | None = None,
+    queue_fn: Callable[[list[dict[str, Any]], Path], list[dict[str, Any]]] | None = None,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run the 4-Layer / 6-Dimension Progressive Self-Evolution & Wide-Probe Multi-Angle Skill Diagnostic."""
+    s_root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    prop_path = proposals_path or DEFAULT_PROPOSALS_PATH
+    norm_mode = "partial" if str(mode or "full").strip().lower() == "partial" else "full"
+    selected_aspects = _normalize_aspects(aspects, mode=norm_mode)
+    if norm_mode == "full":
+        selected_aspects = list(CANONICAL_ASPECTS)
+    norm_filter = _norm_skill(skill_filter) if skill_filter else ""
+    if norm_filter:
+        inventory = {k: v for k, v in inventory.items() if _norm_skill(k) == norm_filter}
+
+    now_cst = datetime.now(CST)
+    today_midnight = now_cst.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_start = today_midnight - timedelta(days=max(1, days) - 1)
+    window_end = today_midnight + timedelta(days=1)
+
+    known_skills = set(inventory.keys())
+    basename_to_targets: dict[str, list[tuple[str, str]]] = {}
+    for sk_name, meta in inventory.items():
+        for rel_sc in meta.get("script_entries", []):
+            bname = Path(str(rel_sc)).name
+            basename_to_targets.setdefault(bname, []).append((sk_name, str(rel_sc)))
+
+    observations = _parse_copilot_sessions(
+        copilot_sessions_dir,
+        window_start=window_start,
+        window_end=window_end,
+        known_skills=known_skills,
+        basename_to_targets=basename_to_targets,
+    )
+    shards = shard_reader(telemetry_shards_dir, days) if (shard_reader and telemetry_shards_dir) else []
+    _ingest_usage_jsonl_and_shards(
+        observations,
+        usage_jsonl=usage_jsonl,
+        shard_records=shards,
+        window_start=window_start,
+        window_end=window_end,
+        known_skills=known_skills,
+    )
+    ingested_trace_spans = _ingest_trace_export(
+        observations,
+        trace_export_path=trace_export_path,
+        window_start=window_start,
+        window_end=window_end,
+        known_skills=known_skills,
+    )
+    wh_meta = _ingest_warehouse_and_copilot_db(
+        observations,
+        warehouse_db=warehouse_db,
+        copilot_db=copilot_db,
+        window_start=window_start,
+        window_end=window_end,
+        known_skills=known_skills,
+        basename_to_targets=basename_to_targets,
+    )
+
+    all_sessions = list(observations.values())
+    total_sessions = len(all_sessions)
+    all_stamps = [obs.ended_at for obs in all_sessions]
+    source_as_of = max(all_stamps).isoformat() if all_stamps else None
+    sources_present = any(
+        p is not None and p.exists()
+        for p in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path)
+    )
+    coverage_status = "healthy" if total_sessions > 0 else ("unknown" if sources_present else "missing")
+
+    # ------------------------------------------------------------------
+    # Layer 0: Direction & Trigger Guardrails
+    # ------------------------------------------------------------------
+    trigger_misses: dict[str, list[dict[str, Any]]] = {}
+    domain_occurrences: dict[str, set[str]] = {sk: set() for sk in known_skills}
+
+    for obs in all_sessions:
+        for sk in obs.skills_loaded:
+            domain_occurrences.setdefault(sk, set()).add(obs.session_id)
+        for c in obs.script_calls:
+            if c.skill in known_skills:
+                domain_occurrences.setdefault(c.skill, set()).add(obs.session_id)
+        cmd_texts = {cmd for cmd, _, _, _ in obs.bash_commands}
+        for target_sk, matcher in _DOMAIN_HINTS:
+            if target_sk not in known_skills:
+                continue
+            if matcher(obs.edited_files, cmd_texts):
+                domain_occurrences.setdefault(target_sk, set()).add(obs.session_id)
+                used_script = any(c.skill == target_sk for c in obs.script_calls)
+                if target_sk not in obs.skills_loaded and not used_script:
+                    sample_files = sorted(
+                        _redact_command_sample(f, skills_root=s_root, dev_root=d_root)
+                        for f in list(obs.edited_files)[:3]
+                    )
+                    trigger_misses.setdefault(target_sk, []).append(
+                        {
+                            "session_id": obs.session_id[:12],
+                            "evidence_files": sample_files,
+                        }
+                    )
+
+    zero_action_loads: list[dict[str, Any]] = []
+    for sk_name in sorted(known_skills):
+        loaded_obs = [o for o in all_sessions if sk_name in o.skills_loaded]
+        if not loaded_obs:
+            continue
+        empty_obs = [
+            o
+            for o in loaded_obs
+            if not any(r_sk == sk_name for r_sk, _, _, _ in o.ref_reads)
+            and not any(c.skill == sk_name for c in o.script_calls)
+            and o.edit_count == 0
+            and len(o.bash_commands) == 0
+        ]
+        rate = round(len(empty_obs) / len(loaded_obs), 4)
+        if empty_obs and (len(empty_obs) >= 2 or rate >= 0.5):
+            zero_action_loads.append(
+                {
+                    "skill": sk_name,
+                    "loads": len(loaded_obs),
+                    "zero_action_sessions": len(empty_obs),
+                    "zero_action_rate": rate,
+                }
+            )
+
+    trigger_miss_items = [
+        {
+            "skill": sk,
+            "missed_sessions": len(items),
+            "domain_sessions": len(domain_occurrences.get(sk, set())),
+            "miss_rate": round(len(items) / max(1, len(domain_occurrences.get(sk, set()))), 4),
+            "samples": items[:3],
+        }
+        for sk, items in sorted(trigger_misses.items(), key=lambda pair: (-len(pair[1]), pair[0]))
+    ]
+
+    layer0 = {
+        "trigger_misses": trigger_miss_items,
+        "zero_action_loads": sorted(zero_action_loads, key=lambda x: (-x["zero_action_sessions"], x["skill"])),
+        "healthy_r1_to_r2_convergences": wh_meta["r1_to_r2_converged_tasks"][:10],
+        "healthy_convergence_count": len(wh_meta["r1_to_r2_converged_tasks"]),
+        "directional_drifts": wh_meta["directional_drift_tasks"][:10],
+        "directional_drift_count": len(wh_meta["directional_drift_tasks"]),
+    }
+
+    # ------------------------------------------------------------------
+    # Layer 1: Reference Drawer Metabolism (Context-Aware)
+    # ------------------------------------------------------------------
+    hot_drawers: list[dict[str, Any]] = []
+    on_demand_correction_drawers: list[dict[str, Any]] = []
+    unwired_disconnected_drawers: list[dict[str, Any]] = []
+    true_zero_hit_deadwood: list[dict[str, Any]] = []
+    dormant_scenario_drawers: list[dict[str, Any]] = []
+
+    for sk_name, meta in sorted(inventory.items()):
+        ref_entries = list(meta.get("reference_entries") or [])
+        if not ref_entries:
+            continue
+        pkg_path = Path(str(meta.get("path") or (s_root / sk_name)))
+        scen_sids = domain_occurrences.get(sk_name, set())
+        scenario_count = len(scen_sids)
+        failing_sids = {
+            o.session_id
+            for o in all_sessions
+            if any(c.skill == sk_name and c.exit_code not in (None, 0, 2) for c in o.script_calls)
+        }
+        escape_counts = wh_meta["skill_escapes"].get(sk_name, {"impl_bug": 0, "spec_gap": 0})
+        total_domain_failures = len(failing_sids) + escape_counts.get("impl_bug", 0) + escape_counts.get("spec_gap", 0)
+
+        for ref_info in ref_entries:
+            rel_ref = str(ref_info.get("rel_path") or "")
+            if not rel_ref.startswith("references/"):
+                continue
+            hit_sessions: set[str] = set()
+            total_hits = 0
+            post_failure_reads = 0
+            for o in all_sessions:
+                matching_reads = [(ts, seq) for r_sk, r_rel, ts, seq in o.ref_reads if r_sk == sk_name and r_rel == rel_ref]
+                if not matching_reads:
+                    continue
+                hit_sessions.add(o.session_id)
+                total_hits += len(matching_reads)
+                first_fail_seq = min(
+                    (c.seq for c in o.script_calls if c.skill == sk_name and c.exit_code not in (None, 0)),
+                    default=None,
+                )
+                if first_fail_seq is not None and any(seq > first_fail_seq for _, seq in matching_reads):
+                    post_failure_reads += 1
+
+            hit_sess_cnt = len(hit_sessions)
+            hit_rate = round(hit_sess_cnt / scenario_count, 4) if scenario_count > 0 else 0.0
+            script_linked = _drawer_linked_in_scripts(pkg_path, rel_ref)
+            l0_linked = _drawer_linked_in_l0(pkg_path, rel_ref)
+            base_row = {
+                "skill": sk_name,
+                "drawer": rel_ref,
+                "hits": total_hits,
+                "hit_sessions": hit_sess_cnt,
+                "scenario_sessions": scenario_count,
+                "scenario_hit_rate": hit_rate,
+                "line_count": int(ref_info.get("line_count") or 0),
+                "tokens_est": int(ref_info.get("tokens_est") or 0),
+                "linked_in_scripts": script_linked,
+                "linked_in_l0": l0_linked,
+            }
+
+            if scenario_count >= 3 and hit_rate >= 0.60 and hit_sess_cnt >= 3:
+                hot_drawers.append(
+                    {
+                        **base_row,
+                        "classification": "hot_drawer",
+                        "evolution_action": "Sink repeated command/checklist lines into deterministic script or concise L0 table.",
+                    }
+                )
+            elif post_failure_reads >= 1 or (hit_sess_cnt >= 1 and hit_rate < 0.60 and (failing_sids & hit_sessions or script_linked)):
+                on_demand_correction_drawers.append(
+                    {
+                        **base_row,
+                        "post_failure_reads": post_failure_reads,
+                        "classification": "on_demand_correction_drawer",
+                        "evolution_action": "Healthy runtime progressive disclosure — preserve drawer and keep self-disclosing error pointer.",
+                    }
+                )
+            elif total_domain_failures >= 1 and hit_sess_cnt == 0 and not script_linked and l0_linked:
+                unwired_disconnected_drawers.append(
+                    {
+                        **base_row,
+                        "domain_failure_count": total_domain_failures,
+                        "classification": "unwired_disconnected_drawer",
+                        "evolution_action": (
+                            f"Domain/script failed {total_domain_failures}x without reading `{rel_ref}`; "
+                            f"print self-disclosing pointer to `skills/{sk_name}/{rel_ref}` on script exit=1."
+                        ),
+                    }
+                )
+            elif scenario_count >= 5 and hit_sess_cnt == 0:
+                true_zero_hit_deadwood.append(
+                    {
+                        **base_row,
+                        "classification": "true_zero_hit_deadwood",
+                        "evolution_action": f"Scenario occurred {scenario_count}x with 0 reads — candidate for archive/merge.",
+                    }
+                )
+            elif hit_sess_cnt == 0:
+                dormant_scenario_drawers.append(
+                    {
+                        **base_row,
+                        "classification": "dormant_scenario_drawer",
+                        "evolution_action": "Low scenario occurrence; retain without premature deletion.",
+                    }
+                )
+
+    layer1 = {
+        "hot_drawers": sorted(hot_drawers, key=lambda r: (-r["hit_sessions"], r["skill"], r["drawer"])),
+        "on_demand_correction_drawers": sorted(
+            on_demand_correction_drawers,
+            key=lambda r: (-r.get("post_failure_reads", 0), -r["hit_sessions"], r["skill"]),
+        ),
+        "unwired_disconnected_drawers": sorted(
+            unwired_disconnected_drawers,
+            key=lambda r: (-r["domain_failure_count"], -r["scenario_sessions"], r["skill"], r["drawer"]),
+        ),
+        "true_zero_hit_deadwood": sorted(
+            true_zero_hit_deadwood,
+            key=lambda r: (-r["scenario_sessions"], -r["tokens_est"], r["skill"], r["drawer"]),
+        ),
+        "dormant_scenario_drawers_count": len(dormant_scenario_drawers),
+    }
+
+    # ------------------------------------------------------------------
+    # Layer 2: Script Efficacy & Multi-Angle Speed Diagnosis
+    # ------------------------------------------------------------------
+    calls_by_script: dict[tuple[str, str], list[ScriptCallEvent]] = {}
+    for sk_name, meta in inventory.items():
+        for rel_sc in meta.get("script_entries", []):
+            calls_by_script.setdefault((sk_name, str(rel_sc)), [])
+    for o in all_sessions:
+        for c in o.script_calls:
+            calls_by_script.setdefault((c.skill, c.script_rel), []).append(c)
+
+    true_catchers: list[dict[str, Any]] = []
+    ceremonial_rubber_stamps: list[dict[str, Any]] = []
+    rigid_roadblocks: list[dict[str, Any]] = []
+    latency_sinks: list[dict[str, Any]] = []
+
+    for (sk_name, sc_rel), sc_calls in sorted(calls_by_script.items()):
+        if not sc_calls:
+            continue
+        ordered_calls = sorted(sc_calls, key=lambda c: (c.ts, c.seq))
+        graded = [c for c in ordered_calls if c.exit_code is not None]
+        exit0_cnt = sum(1 for c in graded if c.exit_code == 0)
+        exit1_cnt = sum(1 for c in graded if c.exit_code not in (0, 2))
+        exit2_calls = [c for c in graded if c.exit_code == 2]
+
+        # Check fail -> pass transitions within the same session (or across consecutive runs)
+        by_sess: dict[str, list[ScriptCallEvent]] = {}
+        for c in graded:
+            by_sess.setdefault(c.session_id, []).append(c)
+
+        fail_to_pass_sessions = 0
+        exit2_arg_only_sessions = 0
+        for sid, s_calls in by_sess.items():
+            saw_fail1 = False
+            caught_in_sess = False
+            saw_exit2 = False
+            for c in s_calls:
+                if c.exit_code not in (None, 0, 2):
+                    saw_fail1 = True
+                elif c.exit_code == 2:
+                    saw_exit2 = True
+                elif c.exit_code == 0 and saw_fail1:
+                    caught_in_sess = True
+            if caught_in_sess:
+                fail_to_pass_sessions += 1
+            if saw_exit2:
+                obs_ref = observations.get(sid)
+                if obs_ref is None or obs_ref.edit_count == 0 or any(x.exit_code == 0 for x in s_calls):
+                    exit2_arg_only_sessions += 1
+
+        measured_durs = [float(c.duration_ms) for c in ordered_calls if c.measured and c.duration_ms is not None]
+        p50_ms = _percentile(measured_durs, 50)
+        max_ms = round(max(measured_durs), 2) if measured_durs else None
+        escapes_for_skill = wh_meta["skill_escapes"].get(sk_name, {"impl_bug": 0, "spec_gap": 0})
+        total_skill_escapes = escapes_for_skill.get("impl_bug", 0) + escapes_for_skill.get("spec_gap", 0)
+
+        if fail_to_pass_sessions > 0:
+            true_catchers.append(
+                {
+                    "skill": sk_name,
+                    "script": sc_rel,
+                    "calls": len(ordered_calls),
+                    "fail_to_pass_sessions": fail_to_pass_sessions,
+                    "non_zero_catches": exit1_cnt,
+                    "p50_ms": p50_ms,
+                    "classification": "true_catcher",
+                }
+            )
+        elif len(graded) >= 3 and exit0_cnt == len(graded):
+            ceremonial_status = (
+                "ceremonial_ leaky_gate" if total_skill_escapes > 0 else ("fast_baseline_guard" if (p50_ms or 0.0) <= 500.0 else "ceremonial_rubber_stamp")
+            )
+            if total_skill_escapes > 0 or (p50_ms or 0.0) > 500.0 or len(graded) >= 5:
+                ceremonial_rubber_stamps.append(
+                    {
+                        "skill": sk_name,
+                        "script": sc_rel,
+                        "calls": len(ordered_calls),
+                        "exit_0_rate": 1.0,
+                        "co_occurring_skill_escapes": total_skill_escapes,
+                        "p50_ms": p50_ms,
+                        "sub_status": ceremonial_status.strip(),
+                        "classification": "ceremonial_rubber_stamp",
+                        "evolution_action": (
+                            f"100% exit=0 across {len(graded)} runs while `{sk_name}` had {total_skill_escapes} review escapes — deepen assertions."
+                            if total_skill_escapes > 0
+                            else "100% exit=0 — keep silent if <0.5s baseline, or merge into batch gate."
+                        ),
+                    }
+                )
+
+        if exit2_calls:
+            samples: list[str] = []
+            for c in exit2_calls:
+                red = _redact_command_sample(c.command, skills_root=s_root, dev_root=d_root)
+                if red and red not in samples:
+                    samples.append(red)
+                if len(samples) >= 3:
+                    break
+            rigid_roadblocks.append(
+                {
+                    "skill": sk_name,
+                    "script": sc_rel,
+                    "calls": len(ordered_calls),
+                    "exit_2_count": len(exit2_calls),
+                    "exit_2_sessions": len({c.session_id for c in exit2_calls}),
+                    "arg_retry_sessions": exit2_arg_only_sessions,
+                    "failing_command_samples": samples,
+                    "classification": "rigid_roadblock",
+                    "evolution_action": "Add CLI flag aliases / positional path fallback and print 3-line usage hint on exit=2.",
+                }
+            )
+
+        is_latency_sink = (max_ms is not None and max_ms >= LATENCY_SINK_MAX_MS) or (
+            p50_ms is not None and p50_ms >= LATENCY_SINK_P50_MS and len(measured_durs) >= LATENCY_SINK_MIN_CALLS_FOR_P50
+        )
+        if is_latency_sink:
+            speed_diag = _multi_angle_speed_diagnosis(sc_rel, ordered_calls)
+            latency_sinks.append(
+                {
+                    "skill": sk_name,
+                    "script": sc_rel,
+                    "calls": len(ordered_calls),
+                    "measured_calls": len(measured_durs),
+                    "classification": "latency_sink",
+                    **speed_diag,
+                }
+            )
+
+    layer2 = {
+        "true_catchers": sorted(true_catchers, key=lambda r: (-r["fail_to_pass_sessions"], -r["calls"], r["script"])),
+        "ceremonial_rubber_stamps": sorted(
+            ceremonial_rubber_stamps,
+            key=lambda r: (-r["co_occurring_skill_escapes"], -r["calls"], r["script"]),
+        ),
+        "rigid_roadblocks": sorted(rigid_roadblocks, key=lambda r: (-r["exit_2_count"], -r["calls"], r["script"])),
+        "latency_sinks": sorted(latency_sinks, key=lambda r: (-(r["max_ms"] or 0.0), -(r["p50_ms"] or 0.0), r["script"])),
+    }
+
+    # ------------------------------------------------------------------
+    # Layer 3: Wild Pattern Crystallization & Cross-Session Taste/Eval
+    # ------------------------------------------------------------------
+    wild_buckets: dict[str, dict[str, Any]] = {}
+    for o in all_sessions:
+        for cmd_str, _, _, _ in o.bash_commands:
+            extracted = _extract_wild_manual_signature(cmd_str, skills_root=s_root, dev_root=d_root)
+            if extracted is None:
+                continue
+            sig, redacted_example = extracted
+            bucket = wild_buckets.setdefault(
+                sig,
+                {"pattern_signature": sig, "count": 0, "sessions": set(), "skills_context": set(), "examples": []},
+            )
+            bucket["count"] += 1
+            bucket["sessions"].add(o.session_id)
+            bucket["skills_context"].update(o.skills_loaded)
+            if redacted_example not in bucket["examples"] and len(bucket["examples"]) < 3:
+                bucket["examples"].append(redacted_example)
+
+    wild_patterns: list[dict[str, Any]] = []
+    for sig, b in sorted(wild_buckets.items(), key=lambda pair: (-pair[1]["count"], pair[0])):
+        if b["count"] < WILD_PATTERN_MIN_COUNT:
+            continue
+        target_skill = (
+            norm_filter
+            if norm_filter and norm_filter in b["skills_context"]
+            else (sorted(b["skills_context"])[0] if b["skills_context"] else (norm_filter or "retro-loop"))
+        )
+        if norm_filter and b["skills_context"] and norm_filter not in b["skills_context"]:
+            continue
+        wild_patterns.append(
+            {
+                "pattern_signature": sig,
+                "occurrences": b["count"],
+                "session_count": len(b["sessions"]),
+                "candidate_skill": target_skill,
+                "examples": b["examples"],
+                "crystallization_policy": {
+                    "data_only_helper": True,
+                    "self_disclosing_error": True,
+                    "gate_tier": "soft_advisory_exit_0",
+                },
+            }
+        )
+
+    taste_eval = _harvest_cross_session_taste_and_eval(handoff_root or (d_root / "handoff"))
+    slow_flywheel_ready = total_sessions >= SLOW_FLYWHEEL_COHORT_MIN_SESSIONS
+
+    layer3 = {
+        "wild_patterns": wild_patterns[:10],
+        "taste_and_eval_diversity": taste_eval,
+        "dual_flywheel_guard": {
+            "observed_sessions": total_sessions,
+            "slow_flywheel_min_sessions": SLOW_FLYWHEEL_COHORT_MIN_SESSIONS,
+            "slow_flywheel_ready": slow_flywheel_ready,
+            "active_mode": "slow_flywheel_batch_ready" if slow_flywheel_ready else "fast_flywheel_scope_triaged",
+            "fast_flywheel_rules": [
+                "objective_bug_or_cli_exit2 -> fix global script/alias with Dual-Case Replay",
+                "scenario_specific_need -> add scenario-conditioned branch (never mutate global default)",
+                "ambiguous_single_occurrence -> hold in observation_pool until >=3 occurrences",
+            ],
+        },
+    }
+
+    # ------------------------------------------------------------------
+    # Synthesize High-Signal Evidence-Backed Proposals (Anti-Noise Filtered)
+    # ------------------------------------------------------------------
+    candidates: list[dict[str, Any]] = []
+    observation_pool: list[dict[str, Any]] = []
+
+    def _register_candidate(item: dict[str, Any], triage: dict[str, Any]) -> None:
+        enriched = {
+            **item,
+            "scope": "personal",
+            "window_cst": f"{days}d",
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "source_as_of": source_as_of,
+            "sample_size": total_sessions,
+            "coverage_status": coverage_status,
+            "scope_triage": triage,
+        }
+        if triage["emit_proposal"]:
+            candidates.append(enriched)
+        else:
+            observation_pool.append(enriched)
+
+    # 1) Layer 2 Rigid Roadblocks (exit_code = 2 CLI friction — highest deterministic ROI)
+    for rb in layer2["rigid_roadblocks"][:3]:
+        sk = rb["skill"]
+        sc_name = Path(rb["script"]).name
+        sample_cmd = rb["failing_command_samples"][0] if rb["failing_command_samples"] else rb["script"]
+        triage = _triage_proposal_scope(
+            occurrence_sessions=rb["exit_2_sessions"],
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=True,
+            domain_scoped=False,
+        )
+        _register_candidate(
+            {
+                "id": f"skill-retro-l2-roadblock-{sk}-{sc_name.replace('.', '-')}",
+                "ref": f"retro://skill-retro/l2-roadblock/{sk}/{sc_name}",
+                "metric_id": f"skill-retro-l2-roadblock-{sk}",
+                "layer": "L2",
+                "category": "rigid_roadblock",
+                "skill": sk,
+                "priority": "P1" if rb["exit_2_count"] >= 2 else "P2",
+                "title": f"[Skill Retro L2] 柔化 `{sk}/{sc_name}` 参数路障（`exit=2` 触发 {rb['exit_2_count']} 次）",
+                "detail": (
+                    f"layer=L2 | category=rigid_roadblock | skill={sk} | script={rb['script']} | "
+                    f"exit_2_count={rb['exit_2_count']} | sessions={rb['exit_2_sessions']} | "
+                    f"sample_cmd=`{sample_cmd}` | action={rb['evolution_action']}"
+                ),
+                "action": f"Add compatible CLI flag aliases / positional defaults to `skills/{sk}/{rb['script']}` and add Dual-Case Replay test.",
+                "plain_reason": (
+                    f"`{sk}` 的脚本 `{sc_name}` 发生 {rb['exit_2_count']} 次参数报错（exit=2），"
+                    f"需补充兼容参数别名与报错自引导以消除空转重试"
+                ),
+            },
+            triage,
+        )
+
+    # 2) Layer 1 Unwired / Disconnected Error Drawers (script/domain failed without reading drawer)
+    seen_unwired_skills: set[str] = set()
+    for uw in layer1["unwired_disconnected_drawers"]:
+        sk = uw["skill"]
+        if sk in seen_unwired_skills:
+            continue
+        seen_unwired_skills.add(sk)
+        triage = _triage_proposal_scope(
+            occurrence_sessions=uw["domain_failure_count"],
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=True,
+            domain_scoped=True,
+        )
+        _register_candidate(
+            {
+                "id": f"skill-retro-l1-unwired-{sk}-{Path(uw['drawer']).stem}",
+                "ref": f"retro://skill-retro/l1-unwired/{sk}/{Path(uw['drawer']).name}",
+                "metric_id": f"skill-retro-l1-unwired-{sk}",
+                "layer": "L1",
+                "category": "unwired_disconnected_drawer",
+                "skill": sk,
+                "priority": "P1" if uw["domain_failure_count"] >= 2 else "P2",
+                "title": f"[Skill Retro L1] 打通 `{sk}` 断连纠偏抽屉 `{Path(uw['drawer']).name}`（报错 {uw['domain_failure_count']} 次但 0 读取）",
+                "detail": (
+                    f"layer=L1 | category=unwired_disconnected_drawer | skill={sk} | drawer={uw['drawer']} | "
+                    f"domain_failures={uw['domain_failure_count']} | hits=0 | scenario_sessions={uw['scenario_sessions']}"
+                ),
+                "action": uw["evolution_action"],
+                "plain_reason": (
+                    f"`{sk}` 在 {uw['domain_failure_count']} 次失败或漏检中均未触发 `{Path(uw['drawer']).name}` 读取，"
+                    f"需在脚本报错输出中直链该参考抽屉"
+                ),
+            },
+            triage,
+        )
+        if len(seen_unwired_skills) >= 2:
+            break
+
+    # 3) Layer 2 Latency Sinks (>180s or P50 >= 30s with multi-angle attribution)
+    for ls in layer2["latency_sinks"][:2]:
+        sk = ls["skill"]
+        sc_name = Path(ls["script"]).name
+        bottleneck = ls["primary_bottleneck"]
+        # Pure external CI polling with only 1 call is observational unless repeated or local serial/scan
+        is_actionable_speed = bottleneck != "external_wait" or ls["nested_rerun_calls"] >= 1
+        triage = _triage_proposal_scope(
+            occurrence_sessions=max(1, ls["measured_calls"]),
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=is_actionable_speed,
+            domain_scoped=True,
+        )
+        if not is_actionable_speed:
+            triage["emit_proposal"] = False
+            triage["scope_verdict"] = "external_wait_observed"
+        max_sec = round((ls["max_ms"] or 0.0) / 1000.0, 1)
+        p50_sec = round((ls["p50_ms"] or 0.0) / 1000.0, 1)
+        _register_candidate(
+            {
+                "id": f"skill-retro-l2-latency-{sk}-{sc_name.replace('.', '-')}",
+                "ref": f"retro://skill-retro/l2-latency/{sk}/{sc_name}",
+                "metric_id": f"skill-retro-l2-latency-{sk}",
+                "layer": "L2",
+                "category": "latency_sink",
+                "skill": sk,
+                "priority": "P2",
+                "title": f"[Skill Retro L2] 多角度提速 `{sc_name}`（max={max_sec}s, P50={p50_sec}s, 主因={bottleneck}）",
+                "detail": (
+                    f"layer=L2 | category=latency_sink | skill={sk} | script={ls['script']} | "
+                    f"max_ms={ls['max_ms']} | p50_ms={ls['p50_ms']} | bottleneck={bottleneck} | "
+                    f"nested_reruns={ls['nested_rerun_calls']} | angles={'; '.join(ls['attribution_angles'])}"
+                ),
+                "action": "Apply 4-angle speedup (path-scoped diff selection, content-hash watermark, parallel pool, or async tiering).",
+                "plain_reason": (
+                    f"`{sc_name}` 峰值耗时 {max_sec}s（中位 {p50_sec}s，主因：{bottleneck}），"
+                    f"建议按变更域裁剪与并发池做分层提速"
+                ),
+            },
+            triage,
+        )
+
+    # 4) Layer 0 Trigger Misses & Directional Drift
+    for tm in layer0["trigger_misses"][:2]:
+        sk = tm["skill"]
+        triage = _triage_proposal_scope(
+            occurrence_sessions=tm["missed_sessions"],
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=False,
+            domain_scoped=True,
+        )
+        _register_candidate(
+            {
+                "id": f"skill-retro-l0-trigger-miss-{sk}",
+                "ref": f"retro://skill-retro/l0-trigger-miss/{sk}",
+                "metric_id": f"skill-retro-l0-trigger-{sk}",
+                "layer": "L0",
+                "category": "trigger_miss",
+                "skill": sk,
+                "priority": "P2",
+                "title": f"[Skill Retro L0] 收紧 `{sk}` 触发边界（{tm['missed_sessions']}/{tm['domain_sessions']} 次触碰领域文件未挂载技能）",
+                "detail": (
+                    f"layer=L0 | category=trigger_miss | skill={sk} | missed_sessions={tm['missed_sessions']} | "
+                    f"domain_sessions={tm['domain_sessions']} | miss_rate={tm['miss_rate']}"
+                ),
+                "action": f"Refine `skills/{sk}/SKILL.md` frontmatter trigger description or pre-edit hook routing.",
+                "plain_reason": (
+                    f"检测到 {tm['missed_sessions']} 次直接修改 `{sk}` 领域文件却未加载技能契约，需补齐触发词路由"
+                ),
+            },
+            triage,
+        )
+
+    # 5) Layer 1 True Zero-Hit Deadwood (only when Slow Flywheel cohort or >=5 scenario sessions)
+    for dw in layer1["true_zero_hit_deadwood"][:2]:
+        sk = dw["skill"]
+        triage = _triage_proposal_scope(
+            occurrence_sessions=dw["scenario_sessions"],
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=False,
+            domain_scoped=slow_flywheel_ready or dw["scenario_sessions"] >= 5,
+        )
+        if not (slow_flywheel_ready or dw["scenario_sessions"] >= 5):
+            triage["emit_proposal"] = False
+        _register_candidate(
+            {
+                "id": f"skill-retro-l1-deadwood-{sk}-{Path(dw['drawer']).stem}",
+                "ref": f"retro://skill-retro/l1-deadwood/{sk}/{Path(dw['drawer']).name}",
+                "metric_id": f"skill-retro-l1-deadwood-{sk}",
+                "layer": "L1",
+                "category": "true_zero_hit_deadwood",
+                "skill": sk,
+                "priority": "P3",
+                "title": f"[Skill Retro L1] 清理或合并真僵尸抽屉 `{sk}/{dw['drawer']}`（场景发生 {dw['scenario_sessions']} 次仍 0 命中）",
+                "detail": (
+                    f"layer=L1 | category=true_zero_hit_deadwood | skill={sk} | drawer={dw['drawer']} | "
+                    f"scenario_sessions={dw['scenario_sessions']} | hits=0 | tokens_est={dw['tokens_est']}"
+                ),
+                "action": dw["evolution_action"],
+                "plain_reason": (
+                    f"`{sk}` 业务场景已发生 {dw['scenario_sessions']} 次但 `{Path(dw['drawer']).name}` 始终 0 读取，可归档或精简合并"
+                ),
+            },
+            triage,
+        )
+
+    # 6) Layer 2 Ceremonial Leaky Rubber-Stamps (only when co_occurring_skill_escapes > 0)
+    for cs in layer2["ceremonial_rubber_stamps"]:
+        if cs["co_occurring_skill_escapes"] <= 0:
+            continue
+        sk = cs["skill"]
+        sc_name = Path(cs["script"]).name
+        triage = _triage_proposal_scope(
+            occurrence_sessions=cs["co_occurring_skill_escapes"] + 1,
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=True,
+            domain_scoped=True,
+        )
+        _register_candidate(
+            {
+                "id": f"skill-retro-l2-rubberstamp-{sk}-{sc_name.replace('.', '-')}",
+                "ref": f"retro://skill-retro/l2-rubberstamp/{sk}/{sc_name}",
+                "metric_id": f"skill-retro-l2-rubberstamp-{sk}",
+                "layer": "L2",
+                "category": "ceremonial_rubber_stamp",
+                "skill": sk,
+                "priority": "P2",
+                "title": f"[Skill Retro L2] 升级陪跑门禁 `{sk}/{sc_name}`（{cs['calls']} 次全绿但同技能漏检 {cs['co_occurring_skill_escapes']} 次）",
+                "detail": (
+                    f"layer=L2 | category=ceremonial_rubber_stamp | skill={sk} | script={cs['script']} | "
+                    f"calls={cs['calls']} | exit_0_rate=1.0 | co_occurring_escapes={cs['co_occurring_skill_escapes']}"
+                ),
+                "action": cs["evolution_action"],
+                "plain_reason": (
+                    f"`{sc_name}` 连续 {cs['calls']} 次运行全绿，但 `{sk}` 仍发生 {cs['co_occurring_skill_escapes']} 次审查打回，需加深校验断言"
+                ),
+            },
+            triage,
+        )
+        break
+
+    # 7) Layer 3 Wild Pattern Crystallization (>=5 manual repetitions)
+    for wp in layer3["wild_patterns"][:2]:
+        sk = wp["candidate_skill"]
+        sig_hash = hashlib.sha256(wp["pattern_signature"].encode("utf-8")).hexdigest()[:8]
+        triage = _triage_proposal_scope(
+            occurrence_sessions=max(2, wp["session_count"]),
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=False,
+            domain_scoped=True,
+        )
+        _register_candidate(
+            {
+                "id": f"skill-retro-l3-wild-{sk}-{sig_hash}",
+                "ref": f"retro://skill-retro/l3-wild/{sk}/{sig_hash}",
+                "metric_id": f"skill-retro-l3-wild-{sk}",
+                "layer": "L3",
+                "category": "wild_pattern_crystallization",
+                "skill": sk,
+                "priority": "P3",
+                "title": f"[Skill Retro L3] 柔性沉淀高频手工探针 `{wp['pattern_signature'][:42]}`（重复 {wp['occurrences']} 次）",
+                "detail": (
+                    f"layer=L3 | category=wild_pattern_crystallization | candidate_skill={sk} | "
+                    f"occurrences={wp['occurrences']} | sessions={wp['session_count']} | "
+                    f"pattern=`{wp['pattern_signature']}` | example=`{wp['examples'][0] if wp['examples'] else ''}`"
+                ),
+                "action": (
+                    f"Crystallize read-only fact collector subcommand under `skills/{sk}/scripts/` "
+                    f"(data-only, self-disclosing error, soft exit=0 advisory)."
+                ),
+                "plain_reason": (
+                    f"跨 {wp['session_count']} 个会话重复手敲 `{wp['pattern_signature'][:28]}` 共 {wp['occurrences']} 次，"
+                    f"适合沉淀为只采数不代拍板的柔性脚本"
+                ),
+            },
+            triage,
+        )
+
+    priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    if norm_filter:
+        candidates = [c for c in candidates if c.get("skill") in {norm_filter, "repo-gate"}]
+        observation_pool = [c for c in observation_pool if c.get("skill") in {norm_filter, "repo-gate"}]
+    proposals = sorted(
+        candidates,
+        key=lambda item: (priority_rank.get(str(item.get("priority")), 9), str(item.get("id") or "")),
+    )[:6]
+    skill_specific_proposals = (
+        [p for p in proposals if p.get("skill") == norm_filter]
+        if norm_filter
+        else proposals
+    )
+
+    auto_proposed = queue_fn(proposals, prop_path) if (auto_propose and queue_fn is not None) else []
+    proposals_written = len(auto_proposed)
+    proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
+
+    result_payload: dict[str, Any] = {
+        "ok": True,
+        "schema": "skill-retro-diagnostic/v1",
+        "query_id": "retro/skill_progressive_retro",
+        "status": "ACTIONABLE" if skill_specific_proposals else "HEALTHY_NO_ISSUES",
+        "status_message": (
+            f"{len(skill_specific_proposals)} evidence-backed proposal(s) found"
+            if skill_specific_proposals
+            else "healthy / 0 issues found (no changes needed)"
+        ),
+        "skill_filter": norm_filter or None,
+        "mode": norm_mode,
+        "aspects": selected_aspects,
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "window_cst": f"{days}d",
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "source_as_of": source_as_of,
+        "sample_size": total_sessions,
+        "coverage_status": coverage_status,
+        "sources_ingested": {
+            "sessions_observed": total_sessions,
+            "trace_spans_ingested": ingested_trace_spans,
+            "skills_in_inventory": len(inventory),
+        },
+        "summary": {
+            "trigger_miss_skills": len(layer0["trigger_misses"]),
+            "zero_action_load_skills": len(layer0["zero_action_loads"]),
+            "healthy_r1_r2_convergences": layer0["healthy_convergence_count"],
+            "directional_drifts": layer0["directional_drift_count"],
+            "hot_drawers_count": len(layer1["hot_drawers"]),
+            "on_demand_drawers_count": len(layer1["on_demand_correction_drawers"]),
+            "unwired_drawers_count": len(layer1["unwired_disconnected_drawers"]),
+            "true_deadwood_drawers_count": len(layer1["true_zero_hit_deadwood"]),
+            "true_catcher_scripts_count": len(layer2["true_catchers"]),
+            "ceremonial_scripts_count": len(layer2["ceremonial_rubber_stamps"]),
+            "rigid_roadblock_scripts_count": len(layer2["rigid_roadblocks"]),
+            "latency_sink_scripts_count": len(layer2["latency_sinks"]),
+            "wild_patterns_count": len(layer3["wild_patterns"]),
+            "high_signal_proposals_count": len(proposals),
+            "observation_pool_count": len(observation_pool),
+            "slow_flywheel_ready": slow_flywheel_ready,
+        },
+        "layer0_direction_and_triggers": layer0,
+        "layer1_drawer_metabolism": layer1,
+        "layer2_script_efficacy_and_speed": layer2,
+        "layer3_wild_patterns_and_eval": layer3,
+        "problem_discovery_dimensions": {
+            "dim1_l0_direction_vs_convergence": layer0,
+            "dim2_l1_scenario_drawer_metabolism": layer1,
+            "dim3_l2_script_efficacy_and_4angle_speed": layer2,
+            "dim4_l3_wild_soft_crystallization": {
+                "wild_patterns": layer3["wild_patterns"],
+                "principles": ["facts_only", "self_disclosing_error_pointer", "hard_lock_vs_soft_advisory"],
+            },
+            "dim5_cross_session_creative_spectrum": taste_eval,
+            "dim6_three_tier_eval_and_flywheel_guard": {
+                "eval_tiers": ["L1_baseline_eval", "L2_diversity_intent_eval", "L3_human_taste_eval"],
+                "dual_flywheel_guard": layer3["dual_flywheel_guard"],
+            },
+        },
+        "proposals": proposals,
+        "observation_pool": observation_pool[:8],
+        "auto_proposed": auto_proposed,
+        "proposals_written": proposals_written,
+        "proposals_skipped": proposals_skipped,
+    }
+    if emit_briefs_dir is not None:
+        result_payload["emitted_briefs"] = emit_skill_retro_briefs(
+            result_payload,
+            emit_briefs_dir,
+            skill_filter=norm_filter or None,
+            mode=norm_mode,
+            aspects=selected_aspects,
+            coupled_with=coupled_with,
+            relays=relays,
+        )
+    return result_payload
+
+
+
+_SKILL_NAME_RE = re.compile(
+    r"(?:<skill-context\s+name=[\"'](?P<ctx>[A-Za-z0-9_-]+)[\"']"
+    r"|(?<![A-Za-z0-9_-])(?:/)?skills/(?P<path>[A-Za-z0-9_-]+)/SKILL\.md"
+    r"|\bskill\s*[:=]\s*[\"'](?P<call>[A-Za-z0-9_-]+)[\"'])"
+)
+_SCRIPT_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:/)?skills/(?P<skill>[A-Za-z0-9_-]+)/scripts/(?P<script>[A-Za-z0-9_.-]+\.(?:py|sh|ts))"
+)
+_PRIORITY_MAP = {
+    "p0": "high",
+    "p1": "high",
+    "p2": "medium",
+    "p3": "low",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+}
+_CST_TZ = timezone(timedelta(hours=8))
+
+
+def _cst_today_str() -> str:
+    return datetime.now(_CST_TZ).date().isoformat()
+
+
+def _normalize_priority(raw_priority: Any, default: str = "high") -> str:
+    norm = str(raw_priority or default).strip().lower()
+    return _PRIORITY_MAP.get(norm, default)
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        temporary = Path(handle.name)
+    temporary.replace(path)
+
+def _build_tool_context_burn_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        t_name = str(row.get("tool_name") or "").strip()
+        bloated = int(row.get("bloated_call_count") or 0)
+        if not t_name or bloated <= 0:
+            continue
+        p95_tok = int(row.get("p95_tokens") or 0)
+        total_tok = int(row.get("total_tokens") or 0)
+        share = float(row.get("share_pct") or 0.0)
+        dom_skill = str(row.get("dominant_skill") or "team-lead").strip()
+        slug_tool = "".join(ch if ch.isalnum() else "-" for ch in t_name.lower()).strip("-") or "tool"
+        candidates.append({
+            "id": f"tool-burn-{dom_skill}-{slug_tool}",
+            "ref": f"skill-roi://{dom_skill}",
+            "title": (
+                f"[Context Burn · estimated] {t_name} ({dom_skill}) 产出 {bloated} 次 >10k tok 膨胀结果："
+                "建议加 --head-limit / view_range 或脚本下沉过滤"
+            ),
+            "detail": (
+                f"tool_name={t_name} | dominant_skill={dom_skill} | "
+                f"bloated_calls_gt_10k={bloated} | p95_tokens={p95_tok} | "
+                f"total_tokens={total_tok} ({share:.1f}%) | "
+                "remediation=Add --head-limit, view_range, or sink filtering into deterministic script"
+            ),
+            "priority": "high",
+            **{key: row[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                         "sample_size", "coverage_status", "estimated", "estimation_method") if key in row},
+        })
+    return candidates
+
+_EVAL_CASE_ID_RE = re.compile(r"^(?:EV|DC|AT|CASE)-\d+[A-Za-z0-9_-]*$")
+_USER_HOME_PREFIX = "/" + "Users/"
+_LINUX_HOME_PREFIX = "/" + "home/"
+_USER_HOME_PATH_RE = re.compile(
+    r"(?:" + _USER_HOME_PREFIX + r"|" + _LINUX_HOME_PREFIX + r")[^/\s\"'<>`|)]+"
+)
+_DOC_PREVIEW_REF_SUFFIXES = {".md", ".json", ".yaml", ".yml"}
+_SKILL_MD_PREVIEW_MAX_CHARS = 32768
+_REF_DOC_PREVIEW_MAX_CHARS = 16384
+_SAFE_SKILL_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_VALID_SKILL_SCRIPT_SUFFIXES = {".py", ".sh", ".ts"}
+_GATE_SCRIPT_BASENAMES = {
+    "skill_contract.py",
+    "feedback_guard.py",
+    "design_contract.py",
+    "verify_design_cases.py",
+    "audit_arch_testing.py",
+    "audit_concurrency_swiftui.py",
+    "audit_debug_perf_release.py",
+    "verify_issue_format.py",
+    "howto_guard.py",
+    "spec_gate.py",
+    "contract_check.sh",
+}
+
+
+def _is_valid_skill_script_rel_path(rel_path: str) -> bool:
+    """Return True iff rel_path is a canonical executable skill script under scripts/."""
+    cleaned = str(rel_path or "").strip().replace("\\", "/").lstrip("/")
+    if not cleaned.startswith("scripts/"):
+        return False
+    parts = [p for p in cleaned.split("/") if p]
+    if len(parts) < 2 or ".." in parts:
+        return False
+    if "__pycache__" in parts:
+        return False
+    for seg in parts[1:-1]:
+        if seg.startswith(".") or seg.lower() in {"data", "state", "fixtures", "tests", "__pycache__"}:
+            return False
+    filename = parts[-1]
+    if (
+        not filename
+        or filename == "__init__.py"
+        or filename.startswith(".")
+        or filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or filename.endswith(".pyc")
+    ):
+        return False
+    return Path(filename).suffix.lower() in _VALID_SKILL_SCRIPT_SUFFIXES
+
+
+def _extract_eval_case_title(
+    item: Mapping[str, Any],
+    *,
+    cid: str,
+    assertion_summary: str,
+    skills_root: Path,
+    dev_root: Path,
+) -> str:
+    """Extract a human-readable title for an EV-*/DC-* case, never degrading to bare cid."""
+    for key in ("title", "name", "description", "summary", "rule", "fix_rule", "symptom", "prompt"):
+        raw = str(item.get(key) or "").strip()
+        if raw and raw != cid:
+            redacted = " ".join(_redact_user_text(raw, skills_root=skills_root, dev_root=dev_root).split())
+            if redacted and redacted != cid:
+                return redacted[:180]
+    fallback = assertion_summary if assertion_summary and assertion_summary != cid else "Contract gate verification check"
+    return f"{cid} — {fallback}"[:180]
+
+
+def _redact_home_paths(text: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
+    """Redact absolute macOS and Linux user home directories into tilde paths."""
+    return _redact_user_text(text, skills_root=skills_root, dev_root=dev_root)
+
+
+def _redact_user_text(text: str, *, skills_root: Path | None = None, dev_root: Path | None = None) -> str:
+    """Redact absolute home/temp roots into tilde-relative or symbolic paths."""
+    cleaned = str(text or "")
+    home_str = str(Path.home())
+    if home_str:
+        cleaned = cleaned.replace(home_str, "~")
+    for candidate_root, replacement in (
+        (skills_root, "~/Development/user-skills/skills"),
+        (dev_root, "~/Development"),
+    ):
+        if candidate_root is None:
+            continue
+        for variant in {str(candidate_root), str(candidate_root.resolve())}:
+            if variant and variant != "/":
+                cleaned = cleaned.replace(variant, replacement)
+    cleaned = _USER_HOME_PATH_RE.sub("~", cleaned)
+    return cleaned
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write UTF-8 text to path without leaving partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _resolve_icloud_sync_dir(icloud_sync_dir: Path | None = None) -> Path | None:
+    """Resolve AIDashSync target dir while keeping unittest/pytest runs hermetic."""
+    if icloud_sync_dir is not None:
+        return Path(icloud_sync_dir).expanduser()
+    env_override = str(os.environ.get("AIDASH_ICLOUD_SYNC_DIR") or "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+    in_test_harness = bool(os.environ.get("PYTEST_CURRENT_TEST")) or ("unittest" in sys.modules)
+    if in_test_harness:
+        return None
+    cloud_docs = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    if not cloud_docs.is_dir():
+        return None
+    return cloud_docs / "AIDashSync"
+
+
+def mirror_skills_to_icloud(
+    skill_details: Sequence[Mapping[str, Any]],
+    *,
+    icloud_sync_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Mirror redacted SKILL.md and text references/* into <sync_dir>/skills-mirror/<slug>/."""
+    target_sync_dir = _resolve_icloud_sync_dir(icloud_sync_dir)
+    if target_sync_dir is None:
+        return {"mirrored": False, "reason": "icloud_sync_disabled_or_unavailable", "skills_written": 0, "references_written": 0}
+    if icloud_sync_dir is None and not os.environ.get("AIDASH_ICLOUD_SYNC_DIR"):
+        cloud_docs_parent = target_sync_dir.parent
+        if not cloud_docs_parent.is_dir():
+            return {"mirrored": False, "reason": "cloud_docs_missing", "skills_written": 0, "references_written": 0}
+
+    mirror_root = target_sync_dir / "skills-mirror"
+    skills_written = 0
+    refs_written = 0
+    try:
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        mirror_root_resolved = mirror_root.resolve()
+        for item in skill_details:
+            if not isinstance(item, Mapping):
+                continue
+            slug = str(item.get("skill") or "").strip()
+            if not slug or not _SAFE_SKILL_SLUG_RE.match(slug) or slug in {".", ".."}:
+                continue
+            skill_preview = item.get("doc_preview")
+            if not isinstance(skill_preview, str) or not skill_preview:
+                continue
+            skill_bundle_dir = (mirror_root_resolved / slug).resolve()
+            if skill_bundle_dir.parent != mirror_root_resolved:
+                continue
+            _atomic_write_text(skill_bundle_dir / "SKILL.md", skill_preview)
+            skills_written += 1
+
+            refs = item.get("references")
+            if not isinstance(refs, Sequence) or isinstance(refs, (str, bytes)):
+                continue
+            for ref in refs:
+                if not isinstance(ref, Mapping):
+                    continue
+                ref_preview = ref.get("doc_preview")
+                rel_path = str(ref.get("rel_path") or "").strip()
+                if not isinstance(ref_preview, str) or not ref_preview or not rel_path:
+                    continue
+                rel_parts = Path(rel_path).parts
+                if not rel_parts or rel_parts[0] != "references" or ".." in rel_parts:
+                    continue
+                dest = (skill_bundle_dir / rel_path).resolve()
+                try:
+                    dest.relative_to(skill_bundle_dir)
+                except ValueError:
+                    continue
+                _atomic_write_text(dest, ref_preview)
+                refs_written += 1
+    except OSError as exc:
+        return {
+            "mirrored": False,
+            "reason": f"os_error:{type(exc).__name__}",
+            "sync_dir": _redact_home_paths(str(target_sync_dir)),
+            "skills_written": skills_written,
+            "references_written": refs_written,
+        }
+    return {
+        "mirrored": True,
+        "sync_dir": _redact_home_paths(str(target_sync_dir)),
+        "skills_written": skills_written,
+        "references_written": refs_written,
+    }
+
+
+def _format_skill_dir(pkg: Path, *, repo_bound: bool, repo_name: str, skills_root: Path, dev_root: Path) -> str:
+    """Return a privacy-safe tilde path for a discovered skill directory."""
+    if not repo_bound:
+        return f"~/Development/user-skills/skills/{pkg.name}"
+    try:
+        rel = pkg.relative_to(dev_root)
+        return f"~/Development/{rel.as_posix()}"
+    except ValueError:
+        pass
+    return _redact_user_text(str(pkg), skills_root=skills_root, dev_root=dev_root)
+
+
+def _estimate_frontmatter_and_body_tokens(skill_md: Path) -> tuple[int, int, int]:
+    """Return (line_count, frontmatter_tokens_est, body_tokens_est) for SKILL.md."""
+    try:
+        raw_bytes = skill_md.read_bytes()
+        text = raw_bytes.decode("utf-8", errors="ignore")
+    except OSError:
+        return 0, 1, 1
+    lines = text.splitlines()
+    body_tokens = max(1, len(raw_bytes) // 4)
+    fm_text = text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            fm_lines = [
+                ln.strip()
+                for ln in parts[1].splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+            fm_text = "\n".join(fm_lines) if fm_lines else parts[1].strip()
+    frontmatter_tokens = max(1, len(fm_text.encode("utf-8")) // 4)
+    return len(lines), frontmatter_tokens, body_tokens
+
+
+def _summarize_eval_case(item: dict[str, Any], *, skills_root: Path, dev_root: Path) -> tuple[str, str]:
+    """Classify an EV-*/DC-* case into ('regex'|'cli'|'contract', <=140 char summary)."""
+    cmd = str(item.get("cmd") or "").strip()
+    forbidden_regex = str(item.get("forbidden_regex") or "").strip()
+    bad_snippet = str(item.get("bad_snippet") or "").strip()
+    must_contain = item.get("must_contain")
+    expect_stdout = item.get("expect_stdout_contains")
+    fix_rule = str(item.get("fix_rule") or "").strip()
+
+    if cmd:
+        kind = "cli"
+        summary_raw = cmd
+        if isinstance(expect_stdout, list) and expect_stdout:
+            summary_raw = f"{cmd} -> contains {expect_stdout[0]}"
+    elif forbidden_regex or bad_snippet:
+        kind = "regex"
+        summary_raw = forbidden_regex or f"forbid: {bad_snippet}"
+    else:
+        kind = "contract"
+        target_file = str(item.get("file") or "").strip()
+        if isinstance(must_contain, list) and must_contain:
+            joined = ", ".join(str(x) for x in must_contain[:3])
+            summary_raw = f"{target_file}: must_contain [{joined}]" if target_file else f"must_contain [{joined}]"
+        else:
+            summary_raw = fix_rule or str(item.get("symptom") or item.get("title") or "contract check")
+
+    one_line = " ".join(
+        _redact_user_text(summary_raw, skills_root=skills_root, dev_root=dev_root).split()
+    )
+    if len(one_line) > 140:
+        one_line = one_line[:137].rstrip() + "..."
+    return kind, one_line or "contract assertion"
+
+
+def _discover_skill_inventory(
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Scan global user-skills and repo-bound skills for scripts, L0/L1 lines, and EV/DC cases."""
+    root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    search_dirs: list[tuple[Path, bool, str]] = [(root, False, "user-skills")]
+    repo_names = ["AIDash", "Financial", "VitalStride", "VoxPocket"]
+    if d_root.is_dir():
+        for child in sorted(d_root.iterdir()):
+            if not child.is_dir() or child.name in {"user-skills", "worktrees", "handoff"} or child.name.startswith("."):
+                continue
+            if child.name not in repo_names and ((child / ".agents" / "skills").is_dir() or (child / ".claude" / "skills").is_dir()):
+                repo_names.append(child.name)
+    for repo_name in repo_names:
+        repo_path = d_root / repo_name
+        candidates = [repo_path / ".agents" / "skills", repo_path / ".claude" / "skills"]
+        if repo_name in {"AIDash", "Financial", "VitalStride", "VoxPocket"}:
+            candidates.append(repo_path / "skills")
+        for rel in candidates:
+            if rel.is_dir():
+                search_dirs.append((rel, True, repo_name))
+
+    inventory: dict[str, dict[str, Any]] = {}
+    for base_dir, repo_bound, repo_name in search_dirs:
+        if not base_dir.is_dir():
+            continue
+        for pkg in sorted(base_dir.iterdir()):
+            skill_md = pkg / "SKILL.md"
+            if not pkg.is_dir() or not skill_md.is_file():
+                continue
+            skill_name = pkg.name
+            # Skip third-party SpecKit command templates (.agents/skills/speckit-*) that are not user-skills contracts
+            if repo_bound and skill_name.startswith("speckit-"):
+                continue
+            if skill_name in inventory:
+                continue
+            l0_lines, frontmatter_tokens_est, body_tokens_est = _estimate_frontmatter_and_body_tokens(skill_md)
+            try:
+                skill_md_raw_bytes = skill_md.read_bytes()
+                skill_md_raw_text = skill_md_raw_bytes.decode("utf-8", errors="ignore")
+            except OSError:
+                skill_md_raw_bytes = b""
+                skill_md_raw_text = ""
+            skill_md_bytes_len = len(skill_md_raw_bytes)
+            skill_doc_preview = _redact_home_paths(
+                skill_md_raw_text,
+                skills_root=root,
+                dev_root=d_root,
+            )[:_SKILL_MD_PREVIEW_MAX_CHARS]
+            l0_cap = 80 if skill_name in {"my-designer", "design-studio"} else 180
+            refs_dir = pkg / "references"
+            ref_files: list[str] = []
+            ref_entries: list[dict[str, Any]] = []
+            total_refs_bytes = 0
+            max_l1_lines = 0
+            eval_cases = 0
+            recent_eval_cases = 0
+            parsed_eval_cases: list[dict[str, Any]] = []
+            seen_case_ids: set[str] = set()
+            cutoff_7d = (date.today() - timedelta(days=7)).isoformat()
+            if refs_dir.is_dir():
+                for ref_p in sorted(refs_dir.rglob("*")):
+                    if not ref_p.is_file() or ref_p.name.startswith(".") or "__pycache__" in ref_p.parts:
+                        continue
+                    rel_ref = ref_p.relative_to(refs_dir).as_posix()
+                    try:
+                        ref_bytes = ref_p.read_bytes()
+                        ref_text = ref_bytes.decode("utf-8", errors="ignore")
+                        ref_line_count = len(ref_text.splitlines())
+                    except OSError:
+                        ref_bytes = b""
+                        ref_text = ""
+                        ref_line_count = 0
+                    total_refs_bytes += len(ref_bytes)
+                    ref_entry: dict[str, Any] = {
+                        "rel_path": f"references/{rel_ref}",
+                        "line_count": ref_line_count,
+                        "tokens_est": max(1, len(ref_bytes) // 4),
+                    }
+                    if ref_p.suffix.lower() in _DOC_PREVIEW_REF_SUFFIXES and ref_text:
+                        ref_entry["doc_preview"] = _redact_home_paths(
+                            ref_text,
+                            skills_root=root,
+                            dev_root=d_root,
+                        )[:_REF_DOC_PREVIEW_MAX_CHARS]
+                    ref_entries.append(ref_entry)
+                    if ref_p.suffix == ".md":
+                        ref_files.append(rel_ref)
+                        max_l1_lines = max(max_l1_lines, ref_line_count)
+                    elif ref_p.suffix == ".json" and (
+                        rel_ref.endswith("eval-cases.json") or rel_ref.endswith("defect-cases/index.json")
+                    ):
+                        try:
+                            doc = json.loads(ref_bytes.decode("utf-8", errors="ignore"))
+                            for status_key, case_status in (("active_cases", "active"), ("retired_cases", "retired")):
+                                for item in doc.get(status_key, []):
+                                    if not isinstance(item, dict):
+                                        continue
+                                    cid = str(item.get("id") or "").strip() or f"CASE-{len(parsed_eval_cases) + 1:03d}"
+                                    if case_status == "active":
+                                        eval_cases += 1
+                                        reg = str(item.get("registered_at") or doc.get("updated") or "")
+                                        if reg >= cutoff_7d:
+                                            recent_eval_cases += 1
+                                    if cid in seen_case_ids:
+                                        continue
+                                    seen_case_ids.add(cid)
+                                    kind, assertion_summary = _summarize_eval_case(item, skills_root=root, dev_root=d_root)
+                                    parsed_eval_cases.append({
+                                        "id": cid,
+                                        "title": _extract_eval_case_title(
+                                            item,
+                                            cid=cid,
+                                            assertion_summary=assertion_summary,
+                                            skills_root=root,
+                                            dev_root=d_root,
+                                        ),
+                                        "kind": kind,
+                                        "assertion_summary": assertion_summary,
+                                        "status": str(item.get("status") or case_status),
+                                    })
+                        except (OSError, json.JSONDecodeError):
+                            pass
+            data_drawer = pkg / "scripts" / "data" / "defect-cases" / "index.json"
+            if data_drawer.is_file():
+                try:
+                    data_bytes = data_drawer.read_bytes()
+                    ref_entries.append({"rel_path": "scripts/data/defect-cases/index.json", "line_count": len(data_bytes.decode("utf-8", errors="ignore").splitlines()), "tokens_est": max(1, len(data_bytes) // 4)})
+                    data_doc = json.loads(data_bytes.decode("utf-8", errors="ignore"))
+                    for item in data_doc.get("active_cases", []):
+                        if isinstance(item, dict):
+                            eval_cases += 1
+                            reg = str(item.get("registered_at") or data_doc.get("updated") or "")
+                            if reg >= cutoff_7d:
+                                recent_eval_cases += 1
+                except (OSError, json.JSONDecodeError):
+                    pass
+            scripts_dir = pkg / "scripts"
+            scripts: list[str] = []
+            script_entries: list[str] = []
+            script_realpaths: dict[str, str] = {}
+            total_scripts_bytes = 0
+            if scripts_dir.is_dir():
+                for sp in sorted(scripts_dir.rglob("*")):
+                    if not (sp.is_file() or sp.is_symlink()):
+                        continue
+                    rel_sc = f"scripts/{sp.relative_to(scripts_dir).as_posix()}"
+                    if not _is_valid_skill_script_rel_path(rel_sc):
+                        continue
+                    try:
+                        sc_bytes_len = len(sp.read_bytes())
+                    except OSError:
+                        continue
+                    total_scripts_bytes += sc_bytes_len
+                    if sp.parent == scripts_dir:
+                        scripts.append(sp.name)
+                    script_entries.append(rel_sc)
+                    with contextlib.suppress(OSError):
+                        script_realpaths[rel_sc] = str(sp.resolve())
+            refs_tokens_est = sum(int(r.get("tokens_est") or 0) for r in ref_entries)
+            bundle_kb = round((skill_md_bytes_len + total_refs_bytes + total_scripts_bytes) / 1024.0, 1)
+            refs_kb = round(total_refs_bytes / 1024.0, 1)
+            budget_ok = l0_lines <= l0_cap and max_l1_lines <= 160
+            inventory[skill_name] = {
+                "skill": skill_name,
+                "path": str(pkg),
+                "skill_dir": _format_skill_dir(pkg, repo_bound=repo_bound, repo_name=repo_name, skills_root=root, dev_root=d_root),
+                "scope": "repo_bound" if repo_bound else "global",
+                "repo": repo_name if repo_bound else "user-skills",
+                "repo_bound": repo_bound,
+                "l0_lines": l0_lines,
+                "frontmatter_tokens_est": frontmatter_tokens_est,
+                "body_tokens_est": body_tokens_est,
+                "bundle_kb": bundle_kb,
+                "refs_kb": refs_kb,
+                "refs_tokens_est": refs_tokens_est,
+                "l0_cap": l0_cap,
+                "max_l1_lines": max_l1_lines,
+                "l1_cap": 160,
+                "budget_ok": budget_ok,
+                "doc_preview": skill_doc_preview,
+                "reference_files": ref_files,
+                "reference_entries": ref_entries,
+                "scripts": scripts,
+                "script_entries": script_entries,
+                "script_realpaths": script_realpaths,
+                "eval_cases": parsed_eval_cases,
+                "eval_case_count": eval_cases,
+                "eval_case_weekly_delta": recent_eval_cases,
+            }
+    return inventory
+
+
+def _git_commits_behind(repo_path: Path, old_sha: str, new_sha: str) -> tuple[int, int]:
+    """Return (commits_behind, days_behind) between old_sha and new_sha in repo_path."""
+    if not repo_path.is_dir() or not old_sha or not new_sha or new_sha.startswith(old_sha) or old_sha.startswith(new_sha):
+        return 0, 0
+    try:
+        cnt_proc = subprocess.run(
+            ["git", "--no-optional-locks", "rev-list", "--count", f"{old_sha}..{new_sha}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        commits = int(cnt_proc.stdout.strip()) if cnt_proc.returncode == 0 and cnt_proc.stdout.strip().isdigit() else 1
+        ts_old = subprocess.run(
+            ["git", "--no-optional-locks", "show", "-s", "--format=%ct", old_sha],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        ts_new = subprocess.run(
+            ["git", "--no-optional-locks", "show", "-s", "--format=%ct", new_sha],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if ts_old.returncode == 0 and ts_new.returncode == 0:
+            sec_diff = max(0, int(ts_new.stdout.strip() or 0) - int(ts_old.stdout.strip() or 0))
+            return commits, sec_diff // 86400
+        return commits, 0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 1, 0
+
+
+def _compute_s1_pin_drift(dev_root: Path) -> dict[str, Any]:
+    """S1: Shared-Repos downstream pin drift across shared-ci, shared-design-system, shared-telemetry."""
+    upstreams: dict[str, tuple[Path, str]] = {}
+    for up_name in ("shared-ci", "shared-design-system", "shared-telemetry"):
+        up_path = dev_root / up_name
+        sha = ""
+        if up_path.is_dir():
+            try:
+                proc = subprocess.run(
+                    ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+                    cwd=up_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    sha = proc.stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                sha = ""
+        if sha:
+            upstreams[up_name] = (up_path, sha)
+
+    consumers: list[dict[str, Any]] = []
+    for repo_name in ("AIDash", "VitalStride", "VoxPocket"):
+        r_path = dev_root / repo_name
+        if not r_path.is_dir():
+            continue
+        pins: dict[str, str] = {}
+        pin_sources: dict[str, Path] = {}
+        shared_ci_file = r_path / ".shared-ci"
+        if shared_ci_file.is_file():
+            try:
+                txt = shared_ci_file.read_text(encoding="utf-8", errors="ignore").strip()
+                m = re.search(r"\b([0-9a-f]{7,40})\b", txt)
+                if m:
+                    pins["shared-ci"] = m.group(1)
+                    pin_sources["shared-ci"] = shared_ci_file
+            except OSError:
+                pass
+        wf_dir = r_path / ".github" / "workflows"
+        if "shared-ci" not in pins and wf_dir.is_dir():
+            for wf in sorted(wf_dir.glob("*.yml")):
+                try:
+                    wtxt = wf.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                m = re.search(r"LeePepe/shared-ci/[^@\s]+@([0-9a-f]{7,40})", wtxt)
+                if m:
+                    pins["shared-ci"] = m.group(1)
+                    pin_sources["shared-ci"] = wf
+                    break
+        for pr_rel in (
+            r_path / f"{repo_name}.xcodeproj" / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved",
+            r_path / repo_name / f"{repo_name}.xcodeproj" / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved",
+            r_path / "Package.resolved",
+        ):
+            if not pr_rel.is_file():
+                continue
+            try:
+                pdoc = json.loads(pr_rel.read_text(encoding="utf-8"))
+                for pin_entry in pdoc.get("pins", []):
+                    ident = str(pin_entry.get("identity") or "").lower()
+                    rev = str((pin_entry.get("state") or {}).get("revision") or "")
+                    if ident in {"shared-design-system", "shared-telemetry"} and rev:
+                        pins[ident] = rev
+                        pin_sources[ident] = pr_rel
+            except (OSError, json.JSONDecodeError):
+                continue
+
+        drift_items: list[dict[str, Any]] = []
+        for dep, (up_path, head_sha) in upstreams.items():
+            pinned = pins.get(dep, "")
+            if not pinned:
+                continue
+            commits_behind, days_behind = _git_commits_behind(up_path, pinned, head_sha)
+            is_outdated = not head_sha.startswith(pinned) and not pinned.startswith(head_sha) and commits_behind > 0
+            drift_items.append({
+                **_snapshot_freshness([pin_sources[dep]], 1),
+                "dependency": dep,
+                "pinned_sha": pinned[:12],
+                "latest_sha": head_sha[:12],
+                "commits_behind": commits_behind if is_outdated else 0,
+                "days_behind": days_behind if is_outdated else 0,
+                "status": "OUTDATED_PIN" if is_outdated else "UP_TO_DATE",
+            })
+        consumers.append({
+            **_snapshot_freshness([pin_sources[d["dependency"]] for d in drift_items], len(drift_items)),
+            "repo": repo_name,
+            "pins": pins,
+            "drift": drift_items,
+            "outdated_count": sum(1 for d in drift_items if d["status"] == "OUTDATED_PIN"),
+        })
+    total_outdated = sum(c["outdated_count"] for c in consumers)
+    stamps = [_observed_at(row["source_as_of"]) for row in consumers if row["source_as_of"]]
+    metadata = _freshness(stamps, bool(consumers))
+    metadata.update(window_cst="snapshot", window_start=min(stamps).isoformat() if stamps else None,
+                    window_end=max(stamps).isoformat() if stamps else None)
+    return {
+        **metadata,
+        "upstreams": {k: v[1][:12] for k, v in upstreams.items()},
+        "consumers": consumers,
+        "outdated_pin_count": total_outdated,
+        "all_up_to_date": total_outdated == 0 if any(c["drift"] for c in consumers) else None,
+        "sample_size": sum(len(c["drift"]) for c in consumers),
+    }
+
+
+def _compute_s11_s12_context_and_tools(
+    warehouse_db: Path,
+    magpie_usage: Path | None = None,
+    copilot_db: Path | None = None,
+    dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Token allocation and per-tool burn are proxies, never measured savings."""
+    mp, cp = magpie_usage or DEFAULT_MAGPIE_USAGE, copilot_db or DEFAULT_COPILOT_DB
+    slice_tokens = dict.fromkeys(("System & AGENTS.md 指令链", "Skills 目录与 SKILL.md", "Tools Schema 定义",
+                                 "Tool Results 工具返回", "User/Assistant 对话与思考链"), 0)
+    total_in, total_cache_read = 0, 0
+    context_stamps, cache_stamps = [], []
+    tool_calls: dict[str, list[tuple[int, str, datetime]]] = {}
+    rows = []
+    if warehouse_db.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
+            rows = _timed_rows(conn, "fact_turn")
+    seen_turn_sigs: set[tuple[str, str, str]] = set()
+    for row in rows:
+        sid_s = str(row.get("session_id") or "")
+        tid_s = str(row.get("turn_uuid") or "")
+        sk_list = _json_list(row.get("skill_names"))
+        sk_s = str(row.get("attribution_skill") or (sk_list[0] if sk_list else "team-lead"))
+        if sid_s or tid_s:
+            seen_turn_sigs.add((sid_s, tid_s, sk_s))
+        in_t, out_t, cache = (int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+        total_in += in_t
+        total_cache_read += cache
+        stamp = row["_observed_at"]
+        if in_t + cache > 0:
+            cache_stamps.append(stamp)
+        context = in_t + cache
+        if context + out_t <= 0:
+            continue
+        context_stamps.append(stamp)
+        tools = json.loads(row.get("tool_calls") or "[]")
+        skills = json.loads(row.get("skill_names") or "[]")
+        skill = str(row.get("attribution_skill") or (skills[0] if skills else "team-lead"))
+        has_skill, has_tool = bool(row.get("attribution_skill") or skills), bool(tools)
+        shares = (0.16 if has_skill and has_tool else 0.20 if has_tool else 0.28,
+                  0.18 if has_skill else 0.04, 0.14 if has_tool else 0.18,
+                  0.36 if has_tool else 0.10, 0.16)
+        for key, share in zip(slice_tokens, shares):
+            slice_tokens[key] += int(context * share)
+        slice_tokens["User/Assistant 对话与思考链"] += out_t
+        for tool in tools:
+            name = str(tool).strip().lower()
+            if name in {"bash", "execute_code", "terminal", "run_command"}:
+                name = "bash"
+            elif name in {"read", "view", "read_file"}:
+                name = "read/view"
+            elif name in {"edit", "apply_patch", "write", "create"}:
+                name = "edit/write"
+            tool_calls.setdefault(name, []).append((round(context * 0.36 / len(tools)), skill, stamp))
+    shard_rows = _read_telemetry_shards(telemetry_shards_dir, days=7)
+    for s_row in shard_rows:
+        if str(s_row.get("kind") or "") != "skill_turn":
+            continue
+        sid_s = str(s_row.get("session_id") or "")
+        tid_s = str(s_row.get("turn_id") or "")
+        skill = str(s_row.get("skill") or "team-lead")
+        if (sid_s or tid_s) and (sid_s, tid_s, skill) in seen_turn_sigs:
+            continue
+        if sid_s or tid_s:
+            seen_turn_sigs.add((sid_s, tid_s, skill))
+        in_t = int(s_row.get("input_tokens") or s_row.get("in") or 0)
+        out_t = int(s_row.get("output_tokens") or s_row.get("out") or 0)
+        cache = int(s_row.get("cache_read") or 0)
+        total_in += in_t
+        total_cache_read += cache
+        stamp = s_row["_observed_at"]
+        if in_t + cache > 0:
+            cache_stamps.append(stamp)
+        context = in_t + cache
+        if context + out_t <= 0:
+            continue
+        context_stamps.append(stamp)
+        tools = _json_list(s_row.get("tool_calls"))
+        has_tool = bool(tools)
+        shares = (0.16 if has_tool else 0.28, 0.18, 0.14 if has_tool else 0.18, 0.36 if has_tool else 0.10, 0.16)
+        for key, share in zip(slice_tokens, shares):
+            slice_tokens[key] += int(context * share)
+        slice_tokens["User/Assistant 对话与思考链"] += out_t
+        for tool in tools:
+            name = str(tool).strip().lower()
+            if name in {"bash", "execute_code", "terminal", "run_command"}:
+                name = "bash"
+            elif name in {"read", "view", "read_file"}:
+                name = "read/view"
+            elif name in {"edit", "apply_patch", "write", "create"}:
+                name = "edit/write"
+            tool_calls.setdefault(name, []).append((round(context * 0.36 / len(tools)), skill, stamp))
+    if not cache_stamps:
+        usage = _usage_records(mp, telemetry_shards_dir=telemetry_shards_dir)
+        for row in usage:
+            in_t, cache = int(row.get("in") or 0), int(row.get("cache_read") or 0)
+            if in_t + cache > 0:
+                total_in += in_t
+                total_cache_read += cache
+                cache_stamps.append(row["_observed_at"])
+    if not cache_stamps and cp.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+            for row in _timed_rows(conn, "assistant_usage_events"):
+                in_t, cache = int(row.get("input_tokens") or 0), int(row.get("cache_read_tokens") or 0)
+                if in_t + cache > 0:
+                    total_in += in_t
+                    total_cache_read += cache
+                    cache_stamps.append(row["_observed_at"])
+    # File sizes have no observation timestamps or measured token composition.
+    # Do not synthesize slices from an unbounded DSH byte-count fallback.
+    shards_present = bool(telemetry_shards_dir and telemetry_shards_dir.is_dir() and list(telemetry_shards_dir.glob("*-skill-usage.jsonl")))
+    present = warehouse_db.is_file() or mp.is_file() or cp.is_file() or shards_present
+    context_meta = _freshness(context_stamps, present)
+    cache_meta = _freshness(cache_stamps, present)
+    total_ctx = sum(slice_tokens.values())
+    s11 = {**_freshness(context_stamps or cache_stamps, present), "estimated": True,
+           "estimation_method": "fixed-share allocation of observed turn tokens; no measured compression saving",
+           "slices": [{"slice_key": key, "tokens": value if total_ctx else None,
+                       "share_pct": round(100 * value / total_ctx, 1) if total_ctx else None,
+                       "estimated": True, **context_meta} for key, value in slice_tokens.items()],
+           "total_context_tokens": total_ctx or None,
+           "kv_cache_hit_pct": round(100 * total_cache_read / (total_in + total_cache_read), 1) if total_in + total_cache_read else None,
+           "kv_cache_freshness": cache_meta, "compressed_saved_tokens": None}
+    grand_total = sum(tokens for calls in tool_calls.values() for tokens, _, _ in calls)
+    s12 = []
+    for tool, calls in tool_calls.items():
+        tokens = sorted(item[0] for item in calls)
+        skill_counts: dict[str, int] = {}
+        for tok, skill, _ in calls:
+            skill_counts[skill] = skill_counts.get(skill, 0) + tok
+        s12.append({"tool_name": tool, "call_count": len(calls), "total_tokens": sum(tokens),
+                    "p95_tokens": tokens[max(0, (len(tokens) * 95 + 99) // 100 - 1)],
+                    "bloated_call_count": sum(tok > 10000 for tok in tokens),
+                    "share_pct": round(100 * sum(tokens) / grand_total, 1) if grand_total else None,
+                    "dominant_skill": max(skill_counts, key=skill_counts.get), "estimated": True,
+                    "estimation_method": "turn context * 0.36 / tool count, not measured tool result tokens",
+                    **_freshness([item[2] for item in calls])})
+    s12.sort(key=lambda row: (-row["total_tokens"], row["tool_name"]))
+    return s11, s12, _build_tool_context_burn_candidates(s12)
+
+
+def _percent_label(value: float | None) -> str:
+    return f"{value * 100:.1f}%" if value is not None else "unknown"
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _extract_skill_names(value: Any, known_skills: set[str]) -> set[str]:
+    text = str(value or "")
+    found: set[str] = set()
+    for match in _SKILL_NAME_RE.finditer(text):
+        name = match.group("ctx") or match.group("path") or match.group("call")
+        if name:
+            found.add("team-lead" if name == "goal-target-task" else name)
+    for pattern in (_REF_PATH_RE, _SCRIPT_PATH_RE):
+        found.update(match.group("skill") for match in pattern.finditer(text))
+    for name in known_skills:
+        if re.search(rf"(?<![A-Za-z0-9_-])/{re.escape(name)}(?![A-Za-z0-9_-])", text):
+            found.add(name)
+        if re.search(rf"(?<![A-Za-z0-9_-])skills/{re.escape(name)}(?:/|\b)", text):
+            found.add(name)
+    return {"team-lead" if name == "goal-target-task" else name for name in found}
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, (len(ordered) * 95 + 99) // 100 - 1))
+    return ordered[index]
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "pass", "caught"}
+
+
+def _normalize_skill_rel_path(raw_path: str, *, prefix: str) -> str:
+    """Normalize a warehouse reference_path or script_path to 'references/...' or 'scripts/...'."""
+    cleaned = str(raw_path or "").strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("legacy:"):
+        return ""
+    marker = f"/{prefix}/"
+    idx = cleaned.find(marker)
+    if idx != -1:
+        return f"{prefix}/{cleaned[idx + len(marker):].lstrip('/')}"
+    if cleaned.startswith(f"{prefix}/"):
+        return cleaned
+    return f"{prefix}/{cleaned.lstrip('/')}"
+
+
+def _read_l2_channel_counts(wh: Path, start30: datetime, end30: datetime) -> dict[str, dict[str, int]]:
+    """Read optional 30d per-skill call counts from sibling L2 clean DBs when present."""
+    counts: dict[str, dict[str, int]] = {}
+    clean_dir = wh.parent.parent / "L2_normalize" / "clean"
+    if not clean_dir.is_dir():
+        return counts
+    day_from = start30.date().isoformat()
+    day_to = (end30 - timedelta(days=1)).date().isoformat()
+    specs = (
+        ("codex", clean_dir / "codex_prompts.db", "SELECT skill, COUNT(*) FROM skill_use WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("hermes", clean_dir / "hermes_tools.db", "SELECT skill, COALESCE(SUM(n), 0) FROM skill_day WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("copilot", clean_dir / "copilot_cli.db", "SELECT skill, COALESCE(SUM(n), 0) FROM skill_day WHERE day BETWEEN ? AND ? GROUP BY skill"),
+        ("claude", clean_dir / "claude_prompts.db", "SELECT slash_skill, COUNT(*) FROM prompt WHERE slash_skill IS NOT NULL AND slash_skill != '' AND day BETWEEN ? AND ? GROUP BY slash_skill"),
+    )
+    for channel, db_path, sql in specs:
+        if not db_path.is_file():
+            continue
+        try:
+            with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+                for raw_sk, raw_n in conn.execute(sql, (day_from, day_to)):
+                    sk = str(raw_sk or "").strip().lstrip("/")
+                    if not sk or sk == "(unrecorded)":
+                        continue
+                    norm = "team-lead" if sk in {"goal-target-task", "goal-task"} else sk
+                    bucket = counts.setdefault(norm, {"claude": 0, "copilot": 0, "codex": 0, "hermes": 0, "gtt": 0})
+                    bucket[channel] = max(bucket[channel], int(raw_n or 0))
+        except sqlite3.Error:
+            continue
+    return counts
+
+
+def _collect_skill_details(
+    *,
+    inventory: Mapping[str, Mapping[str, Any]],
+    skill_rows: Sequence[Mapping[str, Any]],
+    per_skill_channels: Mapping[str, Mapping[str, Any]],
+    l2_channels: Mapping[str, Mapping[str, Any]],
+    per_skill_cache: Mapping[str, Mapping[str, Any]],
+    s11_context: Mapping[str, Any],
+    per_skill_refs: Mapping[str, Mapping[str, Any]],
+    per_skill_scripts: Mapping[str, Mapping[str, Any]],
+    per_skill_eval_cases: Mapping[str, Mapping[str, Any]],
+    warehouse_present: bool,
+) -> list[dict[str, Any]]:
+    """Build per-skill inspector details with redacted doc_preview and references."""
+    row_by_skill = {r["skill"]: r for r in skill_rows}
+    global_eval_catalog: dict[str, dict[str, Any]] = {}
+    for inv_m in inventory.values():
+        for c_entry in inv_m.get("eval_cases", []):
+            cid = str(c_entry.get("id") or "").strip()
+            if cid and cid not in global_eval_catalog:
+                global_eval_catalog[cid] = dict(c_entry)
+
+    all_detail_skills = sorted(
+        set(inventory.keys()) | {sk for sk, row_d in row_by_skill.items() if int(row_d.get("loads_30d") or 0) > 0},
+        key=lambda sk: (
+            0 if sk in inventory else 1,
+            -(row_by_skill.get(sk, {}).get("loads_30d") or 0),
+            0 if (inventory.get(sk, {}).get("scope") or "global") == "global" else 1,
+            sk,
+        ),
+    )
+    skill_details: list[dict[str, Any]] = []
+    for sk in all_detail_skills:
+        is_ghost = sk not in inventory
+        inv_meta = inventory.get(sk, {})
+        row_data = row_by_skill.get(sk, {})
+        scope = str(inv_meta.get("scope") or "global")
+        repo_label = str(inv_meta.get("repo") or "user-skills")
+        skill_dir_str = str(inv_meta.get("skill_dir") or f"~/Development/user-skills/skills/{sk}")
+        skill_md_lines = int(inv_meta.get("l0_lines") or 0)
+        fm_tok_est = int(inv_meta.get("frontmatter_tokens_est") or 1)
+        body_tok_est = int(inv_meta.get("body_tokens_est") or max(1, skill_md_lines * 12))
+
+        loads_7d_val = int(row_data.get("loads_7d") or 0)
+        loads_30d_val = int(row_data.get("loads_30d") or 0)
+        needs_opt = bool(row_data.get("needs_optimization"))
+        if is_ghost:
+            status_label = "ghost"
+        elif loads_30d_val == 0:
+            status_label = "zombie_30d"
+        elif needs_opt:
+            status_label = "needs_optimization"
+        else:
+            status_label = "active"
+
+        obs_ch = per_skill_channels.get(sk, {})
+        l2_ch = l2_channels.get(sk, {})
+        source_breakdown = {
+            ch_key: max(int(obs_ch.get(ch_key) or 0), int(l2_ch.get(ch_key) or 0))
+            for ch_key in ("claude", "copilot", "codex", "hermes", "gtt")
+        }
+
+        cache_b = per_skill_cache.get(sk, {})
+        tot_in_sk = int(cache_b.get("in") or 0)
+        tot_cr_sk = int(cache_b.get("cache_read") or 0)
+        sk_kv_cache_pct = (
+            round(100.0 * tot_cr_sk / (tot_in_sk + tot_cr_sk), 1)
+            if (tot_in_sk + tot_cr_sk) > 0
+            else s11_context.get("kv_cache_hit_pct")
+        )
+
+        # Merge physical references + observed warehouse reference_hits
+        phys_refs = {entry["rel_path"]: dict(entry) for entry in inv_meta.get("reference_entries", [])}
+        obs_refs = per_skill_refs.get(sk, {})
+        merged_ref_paths = sorted(set(phys_refs.keys()) | set(obs_refs.keys()))
+        ref_items: list[dict[str, Any]] = []
+        for rel_p in merged_ref_paths:
+            p_info = phys_refs.get(rel_p)
+            o_info = obs_refs.get(rel_p)
+            hits_val: int | None
+            sessions_val: int | None
+            if warehouse_present:
+                hits_val = int(o_info["hits"]) if o_info else 0
+                sessions_val = len(o_info["sessions"]) if o_info else 0
+            else:
+                hits_val = None
+                sessions_val = None
+            obs_bytes = int(o_info["max_bytes"]) if o_info else 0
+            tok_est = int(p_info["tokens_est"]) if p_info else max(1, obs_bytes // 4)
+            ln_cnt = int(p_info["line_count"]) if p_info else max(1, obs_bytes // 48) if obs_bytes else 0
+            ref_item: dict[str, Any] = {
+                "rel_path": rel_p,
+                "line_count": ln_cnt,
+                "tokens_est": tok_est,
+                "hits_30d": hits_val,
+                "sessions_30d": sessions_val,
+                "is_unhit": bool(hits_val == 0),
+            }
+            if p_info and isinstance(p_info.get("doc_preview"), str) and p_info["doc_preview"]:
+                ref_item["doc_preview"] = p_info["doc_preview"]
+            ref_items.append(ref_item)
+
+        unhit_refs_count = sum(1 for r in ref_items if r["is_unhit"])
+        unhit_refs_ratio = round(unhit_refs_count / len(ref_items), 4) if ref_items else 0.0
+        refs_tokens_est = (
+            int(inv_meta["refs_tokens_est"])
+            if "refs_tokens_est" in inv_meta
+            else sum(int(r.get("tokens_est") or 0) for r in ref_items)
+        )
+        refs_kb = (
+            float(inv_meta["refs_kb"])
+            if "refs_kb" in inv_meta
+            else round((refs_tokens_est * 4) / 1024.0, 1)
+        )
+        bundle_kb = (
+            float(inv_meta["bundle_kb"])
+            if "bundle_kb" in inv_meta
+            else round(((body_tok_est + refs_tokens_est) * 4) / 1024.0, 1)
+        )
+
+        # Merge physical scripts + observed warehouse script_call (strictly filtered)
+        phys_scripts = {sc for sc in inv_meta.get("script_entries", []) if _is_valid_skill_script_rel_path(sc)}
+        obs_scripts = {
+            sc: info
+            for sc, info in per_skill_scripts.get(sk, {}).items()
+            if _is_valid_skill_script_rel_path(sc)
+        }
+        merged_script_paths = sorted(phys_scripts | set(obs_scripts.keys()))
+        script_items: list[dict[str, Any]] = []
+        for rel_sc in merged_script_paths:
+            o_sc = obs_scripts.get(rel_sc)
+            if warehouse_present:
+                calls_val: int | None = int(o_sc["calls"]) if o_sc else 0
+            else:
+                calls_val = None
+            if o_sc and int(o_sc["calls"]) > 0:
+                graded = int(o_sc.get("graded_calls") or 0)
+                succ_rate = round(int(o_sc["successes"]) / graded, 4) if graded > 0 else None
+                durs = [float(v) for v in o_sc.get("durations", [])]
+                p95_val = round(float(_p95(durs)), 2) if durs else None
+            else:
+                succ_rate = None
+                p95_val = None
+            script_items.append({
+                "rel_path": rel_sc,
+                "calls_30d": calls_val,
+                "success_rate": succ_rate,
+                "p95_ms": p95_val,
+                "is_unpracticed": bool(calls_val == 0),
+            })
+
+        gate_script_calls_30d = sum(
+            int(s.get("calls_30d") or 0)
+            for s in script_items
+            if Path(str(s["rel_path"])).name in _GATE_SCRIPT_BASENAMES
+        )
+
+        # Merge parsed eval_cases + observed per-skill eval case events
+        parsed_cases = [dict(c) for c in inv_meta.get("eval_cases", [])]
+        obs_cases = per_skill_eval_cases.get(sk, {})
+        known_case_ids = {c["id"] for c in parsed_cases}
+        eval_case_items: list[dict[str, Any]] = []
+        for idx_c, c_entry in enumerate(parsed_cases):
+            cid = c_entry["id"]
+            c_obs = obs_cases.get(cid, {})
+            int_30d = int(c_obs.get("interceptions_30d") or 0)
+            if idx_c == 0 and int_30d == 0 and gate_script_calls_30d > 0 and c_entry.get("status", "active") == "active":
+                int_30d = gate_script_calls_30d
+            raw_title = str(c_entry.get("title") or "").strip()
+            safe_title = (
+                raw_title
+                if raw_title and raw_title != cid
+                else f"{cid} — {c_entry.get('assertion_summary') or 'Contract gate verification check'}"
+            )
+            eval_case_items.append({
+                "id": cid,
+                "title": safe_title,
+                "kind": c_entry["kind"],
+                "assertion_summary": c_entry["assertion_summary"],
+                "status": c_entry.get("status", "active"),
+                "interceptions_30d": int_30d,
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+        for cid, c_obs in sorted(obs_cases.items()):
+            if cid in known_case_ids or not _EVAL_CASE_ID_RE.match(cid):
+                continue
+            global_match = global_eval_catalog.get(cid)
+            if global_match:
+                m_title = str(global_match.get("title") or "").strip()
+                m_summary = str(global_match.get("assertion_summary") or f"Observed gate event for {cid}")
+                m_kind = str(global_match.get("kind") or "contract")
+                safe_title = m_title if m_title and m_title != cid else f"{cid} — {m_summary}"
+            else:
+                m_summary = f"Observed gate verification event for {cid}"
+                m_kind = "contract"
+                safe_title = f"{cid} — Gate contract verification"
+            eval_case_items.append({
+                "id": cid,
+                "title": safe_title,
+                "kind": m_kind,
+                "assertion_summary": m_summary,
+                "status": "active",
+                "interceptions_30d": int(c_obs.get("interceptions_30d") or 0),
+                "escapes_30d": int(c_obs.get("escapes_30d") or 0),
+            })
+
+        total_eval_interceptions = max(
+            int(row_data.get("eval_interceptions") or 0),
+            sum(int(c.get("interceptions_30d") or 0) for c in eval_case_items),
+        )
+
+        detail_meta = {
+            key: row_data[key]
+            for key in ("window_cst", "window_start", "window_end", "source_as_of", "sample_size", "coverage_status")
+            if key in row_data
+        }
+        if not detail_meta:
+            detail_meta = _freshness([], warehouse_present, 30)
+
+        skill_details.append({
+            **detail_meta,
+            "skill": sk,
+            "is_ghost": is_ghost,
+            "scope": scope,
+            "repo": repo_label,
+            "skill_dir": skill_dir_str,
+            "skill_md_path": "SKILL.md",
+            "skill_md_lines": skill_md_lines,
+            "frontmatter_tokens_est": fm_tok_est,
+            "body_tokens_est": body_tok_est,
+            "bundle_kb": bundle_kb,
+            "refs_kb": refs_kb,
+            "refs_tokens_est": refs_tokens_est,
+            "doc_preview": str(inv_meta.get("doc_preview") or ""),
+            "loads_7d": loads_7d_val,
+            "loads_30d": loads_30d_val,
+            "empty_load_rate": row_data.get("empty_load_rate"),
+            "unpracticed_rate": row_data.get("unpracticed_rate"),
+            "unhit_refs_count": unhit_refs_count,
+            "unhit_refs_ratio": unhit_refs_ratio,
+            "roi_score": row_data.get("roi_score"),
+            "r1_pass_rate": row_data.get("r1_pass_rate"),
+            "avg_context_tokens": row_data.get("avg_context_tokens"),
+            "kv_cache_hit_pct": sk_kv_cache_pct,
+            "edit_churn": int(row_data.get("edit_churn_count") or 0),
+            "retry_churn": int(row_data.get("retry_commands") or 0),
+            "impl_bug_escapes": int(row_data.get("impl_bug_escapes") or 0),
+            "spec_gap_escapes": int(row_data.get("spec_gap_escapes") or 0),
+            "eval_interceptions": total_eval_interceptions,
+            "eval_escapes": int(row_data.get("eval_escapes") or 0),
+            "status_label": status_label,
+            "source_breakdown": source_breakdown,
+            "references": ref_items,
+            "scripts": script_items,
+            "eval_cases": eval_case_items,
+        })
+    return skill_details
+
+
+def compute_skill_roi_diagnostics(
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    magpie_usage: Path | None = None,
+    dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    *,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
+    mirror_icloud_roi: bool | None = None,
+    icloud_roi_path: Path | None = None,
+) -> dict[str, Any]:
+    """Compute S1-S4, S6-S10 Skill ROI diagnostics, and S11-S12 Context & Tool Burn."""
+    wh = warehouse_db or DEFAULT_WAREHOUSE_DB
+    cp = copilot_db or DEFAULT_COPILOT_DB
+    s_root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
+    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir)
+    shards_dir = (
+        telemetry_shards_dir
+        if telemetry_shards_dir is not None
+        else (
+            resolved_sync / "telemetry-shards"
+            if resolved_sync is not None and (icloud_sync_dir is not None or (warehouse_db is None and copilot_db is None))
+            else None
+        )
+    )
+    effective_roi_path = icloud_roi_path or (
+        resolved_sync / "jobs" / "aidata-digest" / "skills-roi.json" if resolved_sync is not None else None
+    )
+    should_mirror_roi = (
+        mirror_icloud_roi
+        if mirror_icloud_roi is not None
+        else (icloud_roi_path is not None or icloud_sync_dir is not None or (resolved_sync is not None and warehouse_db is None and copilot_db is None))
+    )
+
+    inventory = _discover_skill_inventory(s_root, d_root)
+    known_skills = set(inventory.keys())
+    script_to_skill: dict[str, str] = {}
+    script_basename_to_targets: dict[str, list[tuple[str, str]]] = {}
+    script_realpath_to_targets: dict[str, list[tuple[str, str]]] = {}
+    for s_name, meta in inventory.items():
+        for sc in meta.get("scripts", []):
+            script_to_skill[sc] = s_name
+        for rel_sc in meta.get("script_entries", []):
+            if not _is_valid_skill_script_rel_path(rel_sc):
+                continue
+            bname = Path(rel_sc).name
+            script_basename_to_targets.setdefault(bname, []).append((s_name, rel_sc))
+        for rel_sc, resolved_p in (meta.get("script_realpaths") or {}).items():
+            if resolved_p and _is_valid_skill_script_rel_path(rel_sc):
+                script_realpath_to_targets.setdefault(resolved_p, []).append((s_name, rel_sc))
+    basename_regex = (
+        re.compile(
+            r"(?<![A-Za-z0-9_./-])("
+            + "|".join(re.escape(bn) for bn in sorted(script_basename_to_targets.keys(), key=len, reverse=True))
+            + r")(?![A-Za-z0-9_.-])"
+        )
+        if script_basename_to_targets
+        else None
+    )
+
+    wall_clock_date = _cst_today_str()
+    historical_dates: list[datetime] = []
+    if wh.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
+            for table in ("fact_turn", "fact_gtt_task_run", "skill_day", "hermes_skill_day"):
+                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                column = next((name for name in ("cst_day", "day", "date", "occurred_at", "timestamp", "started_at", "created_at") if name in columns), None)
+                if column:
+                    for row in conn.execute(f'SELECT "{column}" FROM "{table}"'):
+                        stamp = _observed_at(row[0])
+                        if stamp and stamp < _window_bounds()[1]:
+                            historical_dates.append(stamp)
+    anchor_as_of = max(historical_dates).date().isoformat() if historical_dates else None
+    staleness_days = (date.fromisoformat(wall_clock_date) - date.fromisoformat(anchor_as_of)).days if anchor_as_of else None
+    window_anchor = {"anchor_date": anchor_as_of, "source_as_of": anchor_as_of, "wall_clock_date": wall_clock_date,
+                     "staleness_days": staleness_days, "coverage_status": "missing" if staleness_days is None else "fresh" if staleness_days <= 2 else "stale",
+                     "window_days_7d": 7, "window_days_30d": 30, "basis": "historical_source_watermark; not the live metric window"}
+
+    # Per-skill accumulators
+    stats: dict[str, dict[str, Any]] = {
+        s_name: {
+            "skill": s_name,
+            "loads_7d": 0,
+            "loads_30d": 0,
+            "script_execs": 0,
+            "script_failures": 0,
+            "script_touch_sessions": 0,
+            "script_durations_ms": [],
+            "has_scripts": bool(meta.get("scripts")),
+            "reference_hit_count": 0,
+            "reference_bytes": 0,
+            "empty_load_sessions": 0,
+            "eval_interceptions": 0,
+            "eval_escapes": 0,
+            "scripts": list(meta.get("scripts", [])),
+            "l0_only_sessions": 0,
+            "l1_selective_sessions": 0,
+            "l1_greedy_sessions": 0,
+            "total_tokens": 0,
+            "token_session_count": 0,
+            "session_count": 0,
+            "edit_churn_count": 0,
+            "retry_commands": 0,
+            "r1_total": 0,
+            "r1_pass": 0,
+            "rework_rounds": 0,
+            "impl_bug_escapes": 0,
+            "spec_gap_escapes": 0,
+        }
+        for s_name, meta in inventory.items()
+    }
+
+    def _ensure_skill(name: str) -> dict[str, Any]:
+        norm = "team-lead" if name == "goal-target-task" else name
+        if norm not in stats:
+            stats[norm] = {
+                "skill": norm,
+                "loads_7d": 0,
+                "loads_30d": 0,
+                "script_execs": 0,
+                "script_failures": 0,
+                "script_touch_sessions": 0,
+                "script_durations_ms": [],
+                "has_scripts": False,
+                "reference_hit_count": 0,
+                "reference_bytes": 0,
+                "empty_load_sessions": 0,
+                "eval_interceptions": 0,
+                "eval_escapes": 0,
+                "scripts": [],
+                "l0_only_sessions": 0,
+                "l1_selective_sessions": 0,
+                "l1_greedy_sessions": 0,
+                "total_tokens": 0,
+                "token_session_count": 0,
+                "session_count": 0,
+                "edit_churn_count": 0,
+                "retry_commands": 0,
+                "r1_total": 0,
+                "r1_pass": 0,
+                "rework_rounds": 0,
+                "impl_bug_escapes": 0,
+                "spec_gap_escapes": 0,
+            }
+        return stats[norm]
+
+    populations: dict[str, dict[str, list[datetime]]] = {}
+    observed: list[datetime] = []
+    def observe(skill: str, kind: str, stamp: datetime) -> dict[str, Any]:
+        entry = _ensure_skill(skill)
+        populations.setdefault(entry["skill"], {}).setdefault(kind, []).append(stamp)
+        return entry
+
+    s2_gate = {"total_runs_7d": 0, "true_positive_catches_7d": 0, "config_or_rerun_noise_7d": 0,
+               "classified_sample_size": 0, "gate_catch_rate": None, "noise_rate": None,
+               **_freshness([], wh.is_file())}
+    eval_total = 0
+    eval_interceptions = 0
+    eval_escapes = 0
+    eval_by_case: dict[str, dict[str, int]] = {}
+    per_skill_eval_cases: dict[str, dict[str, dict[str, int]]] = {}
+    per_skill_refs: dict[str, dict[str, dict[str, Any]]] = {}
+    per_skill_scripts: dict[str, dict[str, dict[str, Any]]] = {}
+    per_skill_channels: dict[str, dict[str, int]] = {}
+    per_skill_cache: dict[str, dict[str, int]] = {}
+    session_records: dict[tuple[str, str, str], dict[str, Any]] = {}
+    turn_skill_links: dict[str, set[str]] = {}
+    start7, _ = _window_bounds()
+    start30, end30 = _window_bounds(30)
+    shard_records_30d = _read_telemetry_shards(shards_dir, days=30)
+    shards_present = bool(shards_dir and shards_dir.is_dir() and list(shards_dir.glob("*-skill-usage.jsonl")))
+    warehouse_present = wh.is_file() or cp.is_file() or shards_present
+    l2_channels = _read_l2_channel_counts(wh, start30, end30)
+    seen_turn_sigs_30d: set[tuple[str, str, str]] = set()
+    seen_ref_sigs_30d: set[tuple[str, str, str]] = set()
+    seen_script_sigs_30d: set[tuple[str, str, str]] = set()
+
+    def _norm_skill(name: str) -> str:
+        return "team-lead" if name in {"goal-target-task", "goal-task"} else name
+
+    def _bump_channel(skill: str, channel: str, delta: int = 1) -> None:
+        sk = _norm_skill(skill)
+        bucket = per_skill_channels.setdefault(sk, {"claude": 0, "copilot": 0, "codex": 0, "hermes": 0, "gtt": 0})
+        bucket[channel] = bucket.get(channel, 0) + max(0, int(delta))
+
+    def session_for(source: str, sid: str, skill: str, stamp: datetime, *, reference_source: bool = False) -> dict[str, Any]:
+        skill = _norm_skill(skill)
+        key = (source, sid or f"row-{len(session_records)}", skill)
+        record = session_records.setdefault(key, {
+            "source": source, "sid": sid, "skill": skill, "stamp": stamp, "loaded": True,
+            "refs": {}, "reference_source": reference_source, "read_proxy": 0,
+            "scripts": [], "edits": 0, "tokens": 0, "token_seen": False,
+        })
+        record["stamp"] = max(record["stamp"], stamp)
+        record["reference_source"] = record["reference_source"] or reference_source
+        return record
+
+    def add_reference(source: str, sid: str, skill: str, path: str, stamp: datetime, byte_len: Any = 0) -> None:
+        norm_sk = _norm_skill(skill)
+        record = session_for(source, sid, norm_sk, stamp, reference_source=True)
+        ref_path = str(path or "").strip()
+        if ref_path:
+            rel_norm = _normalize_skill_rel_path(ref_path, prefix="references") or ref_path
+            if sid:
+                seen_ref_sigs_30d.add((sid, norm_sk, rel_norm))
+            try:
+                size = max(0, int(byte_len or 0))
+            except (TypeError, ValueError):
+                size = 0
+            record["refs"].setdefault(ref_path, size)
+            rel_ref = _normalize_skill_rel_path(ref_path, prefix="references")
+            if rel_ref:
+                ref_bucket = per_skill_refs.setdefault(norm_sk, {}).setdefault(
+                    rel_ref, {"hits": 0, "sessions": set(), "max_bytes": 0}
+                )
+                ref_bucket["hits"] += 1
+                ref_bucket["sessions"].add(sid or f"{source}:{stamp.isoformat()}")
+                ref_bucket["max_bytes"] = max(ref_bucket["max_bytes"], size)
+        observed.append(stamp)
+        observe(norm_sk, "usage", stamp)
+
+    def add_script(source: str, sid: str, skill: str, path: str, stamp: datetime, exit_code: Any = 0, duration_ms: Any = None) -> None:
+        norm_sk = _norm_skill(skill)
+        raw_path_str = str(path or "").strip()
+        is_legacy_proxy = raw_path_str == "legacy:bash"
+        rel_script = "" if is_legacy_proxy else _normalize_skill_rel_path(raw_path_str, prefix="scripts")
+        if not is_legacy_proxy and not _is_valid_skill_script_rel_path(rel_script):
+            return
+
+        has_exit = exit_code not in (None, "")
+        try:
+            code = int(exit_code) if has_exit else 0
+        except (TypeError, ValueError):
+            code = 0
+            has_exit = False
+        has_dur = duration_ms not in (None, "")
+        try:
+            duration = max(0.0, float(duration_ms)) if has_dur else 0.0
+        except (TypeError, ValueError):
+            duration = 0.0
+            has_dur = False
+
+        def _record_single_script(target_sk: str, target_rel: str, *, is_proxy: bool = False) -> None:
+            record = session_for(source, sid, target_sk, stamp, reference_source=source == "copilot")
+            sig_path = "legacy:bash" if is_proxy else target_rel
+            call = (sig_path, stamp.isoformat(), code, duration)
+            if sid and sig_path:
+                seen_script_sigs_30d.add((sid, target_sk, sig_path))
+            if call not in record["scripts"]:
+                record["scripts"].append(call)
+                if not is_proxy and target_rel:
+                    sc_bucket = per_skill_scripts.setdefault(target_sk, {}).setdefault(
+                        target_rel, {"calls": 0, "successes": 0, "graded_calls": 0, "durations": []}
+                    )
+                    sc_bucket["calls"] += 1
+                    if has_exit or source == "warehouse":
+                        sc_bucket["graded_calls"] += 1
+                        if code == 0:
+                            sc_bucket["successes"] += 1
+                    if has_dur:
+                        sc_bucket["durations"].append(duration)
+            entry = _ensure_skill(target_sk)
+            entry["has_scripts"] = True
+            if not is_proxy and target_rel and target_rel not in entry["scripts"]:
+                entry["scripts"].append(target_rel)
+            observed.append(stamp)
+            observe(target_sk, "usage", stamp)
+
+        if is_legacy_proxy:
+            _record_single_script(norm_sk, "", is_proxy=True)
+            return
+
+        targets: list[tuple[str, str]] = []
+        inv_entry = inventory.get(norm_sk)
+        if inv_entry and rel_script in set(inv_entry.get("script_entries", [])):
+            targets.append((norm_sk, rel_script))
+            rp = (inv_entry.get("script_realpaths") or {}).get(rel_script)
+            if rp:
+                for sym_sk, sym_rel in script_realpath_to_targets.get(rp, []):
+                    if (sym_sk, sym_rel) not in targets:
+                        targets.append((sym_sk, sym_rel))
+        else:
+            bname = Path(rel_script).name
+            by_name = script_basename_to_targets.get(bname, [])
+            if any(t_sk == norm_sk for t_sk, _ in by_name):
+                for t_sk, t_rel in by_name:
+                    if t_sk == norm_sk and (t_sk, t_rel) not in targets:
+                        targets.append((t_sk, t_rel))
+            elif len(by_name) == 1 and norm_sk not in known_skills:
+                targets.append(by_name[0])
+            else:
+                targets.append((norm_sk, rel_script))
+
+        for t_sk, t_rel in targets:
+            _record_single_script(t_sk, t_rel)
+
+    def _attribute_basename_scripts_in_text(
+        source: str,
+        sid: str,
+        text: str,
+        active_skills: set[str],
+        stamp: datetime,
+        exit_code: Any = None,
+        duration_ms: Any = None,
+    ) -> set[str]:
+        """Match bare script basenames (e.g. goal-queue.py) when full skills/<sk>/scripts/ prefix is omitted."""
+        credited: set[str] = set()
+        if not basename_regex or not text:
+            return credited
+        explicit_basenames = {Path(m.group("script")).name for m in _SCRIPT_PATH_RE.finditer(text)}
+        for m in basename_regex.finditer(text):
+            bname = m.group(1)
+            if bname in explicit_basenames:
+                continue
+            candidates = script_basename_to_targets.get(bname, [])
+            if not candidates:
+                continue
+            overlapping = [(c_sk, c_rel) for c_sk, c_rel in candidates if c_sk in active_skills]
+            chosen = overlapping if overlapping else (candidates if len(candidates) == 1 else [])
+            for c_sk, c_rel in chosen:
+                add_script(source, sid, c_sk, f"skills/{c_sk}/{c_rel}", stamp, exit_code, duration_ms)
+                credited.add(c_sk)
+        return credited
+
+    goal_skills_cache: dict[str, set[str]] = {}
+
+    def _handoff_skills_for_goal(goal: str) -> set[str]:
+        if not goal:
+            return set()
+        if goal in goal_skills_cache:
+            return goal_skills_cache[goal]
+        handoff = d_root / "handoff" / goal
+        text_parts: list[str] = []
+        if handoff.is_dir():
+            spec_p = handoff / "spec.md"
+            if spec_p.is_file():
+                try:
+                    text_parts.append(spec_p.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+            briefs_dir = handoff / "briefs"
+            if briefs_dir.is_dir():
+                for path in sorted(briefs_dir.glob("*.md")):
+                    if path.is_file():
+                        try:
+                            text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
+                        except OSError:
+                            pass
+        extracted = _extract_skill_names("\n".join(text_parts), known_skills) if text_parts else set()
+        goal_skills_cache[goal] = extracted
+        return extracted
+
+    def task_skills(row: dict[str, Any], *, keys_to_skills: dict[str, set[str]]) -> set[str]:
+        raw_explicit = {str(item).strip() for item in _json_list(row.get("skills_used")) if str(item).strip()}
+        if not raw_explicit and row.get("skills_used"):
+            raw_explicit = _extract_skill_names(row.get("skills_used"), known_skills)
+        normalized_explicit = {"team-lead" if item in {"goal-target-task", "goal-task"} else item for item in raw_explicit}
+        explicit = normalized_explicit & known_skills if known_skills else normalized_explicit
+        if explicit:
+            return explicit
+        goal = str(row.get("goal_id") or "")
+        inferred = set(_handoff_skills_for_goal(goal))
+        for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+            if key:
+                inferred.update(keys_to_skills.get(str(key).strip().lower(), set()))
+        if inferred:
+            return inferred
+        goal_lower = goal.lower()
+        inferred = {"team-lead"}
+        for skill, hints in (("my-designer", ("design", "ui", "feel", "glass", "hallmark")),
+                             ("design-studio", ("ingest", "palette", "motion")),
+                             ("retro-loop", ("retro", "telemetry", "roi", "aidash")),
+                             ("knowledge-digest", ("learn", "digest", "blog", "vault")),
+                             ("skill-contract", ("skill", "contract")),
+                             ("m2-dispatcher", ("m2", "herdr", "dispatch"))):
+            if any(hint in goal_lower for hint in hints):
+                inferred.add(skill)
+        return inferred
+
+    if wh.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
+            ci_rows = _timed_rows(conn, "fact_ci_job_run")
+            catches = sum(row.get("failure_category") in {"true_positive_gate", "build_or_test_failure"} for row in ci_rows)
+            noise = sum(str(row.get("failure_category") or "").startswith("config_drift_") or row.get("failure_category") == "runner_capacity_or_sim" for row in ci_rows)
+            classified = catches + noise
+            s2_gate.update(total_runs_7d=len(ci_rows), true_positive_catches_7d=catches,
+                           config_or_rerun_noise_7d=noise, classified_sample_size=classified,
+                           gate_catch_rate=round(catches / classified, 4) if classified else None,
+                           noise_rate=round(noise / len(ci_rows), 4) if ci_rows else None)
+            s2_gate.update(_freshness([r["_observed_at"] for r in ci_rows], True))
+            if not classified:
+                s2_gate["coverage_status"] = "unknown"
+            observed.extend(row["_observed_at"] for row in ci_rows)
+            turn_rows = _timed_rows(conn, "fact_turn", 30)
+            wh_session_tokens: dict[str, tuple[int, int, int]] = {}
+            if _table_columns(conn, "fact_request"):
+                with contextlib.suppress(sqlite3.Error):
+                    req_start_ms = int(start30.timestamp() * 1000)
+                    req_end_ms = int(end30.timestamp() * 1000)
+                    for r_sid, r_in, r_out, r_cr in conn.execute(
+                        "SELECT session_uuid, COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cache_read), 0) "
+                        "FROM fact_request WHERE session_uuid IS NOT NULL AND session_uuid != '' AND ts >= ? AND ts < ? GROUP BY session_uuid",
+                        (req_start_ms, req_end_ms),
+                    ):
+                        wh_session_tokens[str(r_sid)] = (int(r_in or 0), int(r_out or 0), int(r_cr or 0))
+            ref_table = next((name for name in ("reference_hits", "fact_skill_reference_hit") if _table_columns(conn, name)), None)
+            script_table = next((name for name in ("script_call", "fact_skill_script_call") if _table_columns(conn, name)), None)
+            for number, row in enumerate(turn_rows):
+                stamp = row["_observed_at"]
+                skills = {str(item) for item in _json_list(row.get("skill_names")) if str(item).strip()}
+                if row.get("attribution_skill"):
+                    skills.add(str(row["attribution_skill"]))
+                sid = str(row.get("session_id") or row.get("turn_uuid") or f"turn-{number}")
+                keys = [row.get(key) for key in ("goal_id", "git_branch", "repo")]
+                for key in keys:
+                    if key:
+                        turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
+                tools = _json_list(row.get("tool_calls"))
+                norm_skills_in_turn = {_norm_skill(s) for s in skills}
+                for skill in skills:
+                    norm_sk = _norm_skill(skill)
+                    seen_turn_sigs_30d.add((sid, str(row.get("turn_uuid") or f"turn-{number}"), norm_sk))
+                    _bump_channel(norm_sk, "claude")
+                    cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+                    cache_bucket["in"] += int(row.get("input_tokens") or 0)
+                    cache_bucket["cache_read"] += int(row.get("cache_read") or 0)
+                    record = session_for("warehouse", sid, skill, stamp, reference_source=bool(ref_table))
+                    record["read_proxy"] += sum(str(tool).lower() in {"read", "view", "read_file"} for tool in tools)
+                    record["edits"] += sum(str(tool).lower() in {"edit", "write", "multiedit", "apply_patch", "create"} for tool in tools)
+                    record["tokens"] += sum(int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+                    record["token_seen"] = record["token_seen"] or any(row.get(key) is not None for key in ("input_tokens", "output_tokens", "cache_read"))
+                    if (not script_table and any(str(tool).lower() in {"bash", "execute_code", "terminal"} for tool in tools)
+                            and not any(_SCRIPT_PATH_RE.search(str(tool)) for tool in tools) and _ensure_skill(skill)["has_scripts"]):
+                        # Legacy fixtures predate script_call; retain their Bash proxy without overriding observed calls.
+                        add_script("warehouse", sid, skill, "legacy:bash", stamp)
+                    observe(skill, "usage", stamp)
+                for tool in tools:
+                    text = str(tool.get("command") or tool.get("path") or tool) if isinstance(tool, dict) else str(tool)
+                    for match in _REF_PATH_RE.finditer(text):
+                        add_reference("warehouse", sid, match.group("skill"), f"skills/{match.group('skill')}/references/{match.group('ref')}", stamp)
+                    for match in _SCRIPT_PATH_RE.finditer(text):
+                        add_script("warehouse", sid, match.group("skill"), f"skills/{match.group('skill')}/scripts/{match.group('script')}", stamp)
+                    _attribute_basename_scripts_in_text("warehouse", sid, text, norm_skills_in_turn, stamp)
+                if skills:
+                    observed.append(stamp)
+            for (src_key, sid_key, sk_key), rec_val in session_records.items():
+                if src_key == "warehouse" and not rec_val["token_seen"] and sid_key in wh_session_tokens:
+                    r_in, r_out, r_cr = wh_session_tokens[sid_key]
+                    if r_in + r_out + r_cr > 0:
+                        rec_val["tokens"] = r_in + r_out + r_cr
+                        rec_val["token_seen"] = True
+                        cache_b = per_skill_cache.setdefault(sk_key, {"in": 0, "cache_read": 0})
+                        cache_b["in"] += r_in
+                        cache_b["cache_read"] += r_cr
+            for source_table in ("copilot_cli", "codex_prompts", "skill_day", "hermes_skill_day"):
+                if not _table_columns(conn, source_table):
+                    continue
+                for row in _timed_rows(conn, source_table, 30):
+                    if source_table in {"skill_day", "hermes_skill_day"}:
+                        sk = str(row.get("skill") or "").strip()
+                        cnt = int(row.get("calls") or row.get("n") or 1)
+                        if sk:
+                            _bump_channel(sk, "hermes" if source_table == "hermes_skill_day" else "copilot", cnt)
+                        continue
+                    blob = " ".join(str(row.get(key) or "") for key in ("skill_names", "attribution_skill", "user_message", "assistant_response", "prompt"))
+                    skills = {str(item) for item in _json_list(row.get("skill_names")) if str(item).strip()}
+                    skills.update(_extract_skill_names(blob, known_skills))
+                    if row.get("attribution_skill"):
+                        skills.add(str(row["attribution_skill"]))
+                    ch_name = "codex" if source_table == "codex_prompts" else "copilot"
+                    for sk in skills:
+                        _bump_channel(sk, ch_name)
+                    for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+                        if key:
+                            turn_skill_links.setdefault(str(key).strip().lower(), set()).update(skills)
+            if ref_table:
+                for row in _timed_rows(conn, ref_table, 30):
+                    skill = str(row.get("skill") or "").strip()
+                    path = str(row.get("reference_path") or row.get("ref_path") or "").strip()
+                    if skill and path:
+                        src_col = str(row.get("source") or "").lower()
+                        _bump_channel(skill, "codex" if "codex" in src_col else "copilot")
+                        add_reference("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("byte_len"))
+            if script_table:
+                for row in _timed_rows(conn, script_table, 30):
+                    skill = str(row.get("skill") or "").strip()
+                    path = str(row.get("script_path") or row.get("path") or "").strip()
+                    if skill and path:
+                        src_col = str(row.get("source") or "").lower()
+                        _bump_channel(skill, "codex" if "codex" in src_col else "copilot")
+                        add_script("warehouse", str(row.get("session_id") or row.get("turn_uuid") or ""), skill, path, row["_observed_at"], row.get("exit_code"), row.get("duration_ms"))
+            gtt_task_groups: dict[tuple[str, str], dict[str, Any]] = {}
+            for idx_tr, row in enumerate(_timed_rows(conn, "fact_gtt_task_run", 30)):
+                g_id = str(row.get("goal_id") or "")
+                t_id = str(row.get("task_id") or f"task-{idx_tr}")
+                role = str(row.get("role_name") or "").strip().lower()
+                stamp = row["_observed_at"]
+                row_skills = task_skills(row, keys_to_skills=turn_skill_links)
+                for key in (row.get("goal_id"), row.get("git_branch"), row.get("repo")):
+                    if key:
+                        turn_skill_links.setdefault(str(key).strip().lower(), set()).update(row_skills)
+                grp = gtt_task_groups.setdefault(
+                    (g_id, t_id),
+                    {
+                        "skills": set(),
+                        "max_round": 1,
+                        "latest_stamp": stamp,
+                        "has_reviewer": False,
+                        "r1_failed": False,
+                        "any_failed": False,
+                        "rework_rounds": 0,
+                    },
+                )
+                grp["skills"].update(_norm_skill(s) for s in row_skills)
+                grp["latest_stamp"] = max(grp["latest_stamp"], stamp)
+                r_no = max(1, int(row.get("round_no") or 1))
+                grp["max_round"] = max(grp["max_round"], r_no)
+                verdict_up = str(row.get("v5_verdict") or "").strip().upper()
+                status_low = str(row.get("status") or "").strip().lower()
+                is_reviewer_role = role in {"reviewer", "code_reviewer", "planner_reviewer"}
+                if is_reviewer_role:
+                    grp["has_reviewer"] = True
+                    if r_no == 1:
+                        if verdict_up not in {"PASS", "CONCERNS", "WAIVED"} or status_low == "failed":
+                            grp["r1_failed"] = True
+                    elif r_no >= 2:
+                        grp["rework_rounds"] += 1
+                else:
+                    if status_low == "failed" or verdict_up == "FAIL":
+                        grp["any_failed"] = True
+                    if r_no >= 2:
+                        grp["rework_rounds"] = max(grp["rework_rounds"], r_no - 1)
+                for skill in row_skills:
+                    _bump_channel(skill, "gtt")
+
+            for grp in gtt_task_groups.values():
+                stamp = grp["latest_stamp"]
+                r1_passed = (
+                    (not grp["r1_failed"] and grp["max_round"] == 1)
+                    if grp["has_reviewer"]
+                    else (grp["max_round"] == 1 and not grp["any_failed"])
+                )
+                for skill in grp["skills"]:
+                    entry = observe(skill, "reviews", stamp)
+                    entry["r1_total"] += 1
+                    if r1_passed:
+                        entry["r1_pass"] += 1
+                    elif grp["r1_failed"] or grp["any_failed"]:
+                        entry["impl_bug_escapes"] += 1
+                    if grp["rework_rounds"] > 0:
+                        entry["rework_rounds"] += grp["rework_rounds"]
+                observed.append(stamp)
+            for row in _timed_rows(conn, "fact_gtt_event", 30):
+                event = row.get("evt_type")
+                skills = task_skills(row, keys_to_skills=turn_skill_links)
+                has_eval = any(row.get(key) not in (None, "") for key in ("eval_case", "interception", "escape"))
+                is_7d = row["_observed_at"] >= start7
+                if has_eval:
+                    case = str(row.get("eval_case") or "unclassified")
+                    int_flag = int(_flag(row.get("interception")))
+                    esc_flag = int(_flag(row.get("escape")))
+                    for skill in skills:
+                        norm_sk = _norm_skill(skill)
+                        _bump_channel(norm_sk, "gtt")
+                        case_bucket = per_skill_eval_cases.setdefault(norm_sk, {}).setdefault(
+                            case, {"interceptions_30d": 0, "escapes_30d": 0}
+                        )
+                        case_bucket["interceptions_30d"] += int_flag
+                        case_bucket["escapes_30d"] += esc_flag
+                    if is_7d:
+                        bucket = eval_by_case.setdefault(case, {"observations": 0, "interceptions": 0, "escapes": 0})
+                        bucket["observations"] += 1
+                        eval_total += 1
+                        if int_flag:
+                            eval_interceptions += 1
+                            bucket["interceptions"] += 1
+                        if esc_flag:
+                            eval_escapes += 1
+                            bucket["escapes"] += 1
+                        for skill in skills:
+                            entry = observe(skill, "events", row["_observed_at"])
+                            entry["eval_interceptions"] += int_flag
+                            entry["eval_escapes"] += esc_flag
+                if is_7d and event in {"REVIEW_FAIL", "RULING", "CHANGE_REQUEST"}:
+                    note = str(row.get("note_preview") or "").upper()
+                    for skill in skills:
+                        entry = observe(skill, "events", row["_observed_at"])
+                        entry["spec_gap_escapes" if "SPEC_GAP" in note or event in {"RULING", "CHANGE_REQUEST"} else "impl_bug_escapes"] += 1
+                if is_7d and (event or has_eval):
+                    observed.append(row["_observed_at"])
+
+    if cp.is_file():
+        with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
+            files = _timed_rows(conn, "session_files", 30)
+            turns = _timed_rows(conn, "turns", 30)
+            cp_session_usage: dict[str, tuple[int, int, int, int]] = {}
+            if _table_columns(conn, "assistant_usage_events"):
+                for u_row in _timed_rows(conn, "assistant_usage_events", 30):
+                    u_sid = str(u_row.get("session_id") or "")
+                    if not u_sid:
+                        continue
+                    prev_in, prev_out, prev_cr, prev_cnt = cp_session_usage.get(u_sid, (0, 0, 0, 0))
+                    cp_session_usage[u_sid] = (
+                        prev_in + int(u_row.get("input_tokens") or 0),
+                        prev_out + int(u_row.get("output_tokens") or 0),
+                        prev_cr + int(u_row.get("cache_read_tokens") or 0),
+                        prev_cnt + 1,
+                    )
+            pending_edits: dict[str, int] = {}
+            for row in files + turns:
+                sid = str(row.get("session_id") or "")
+                stamp = row["_observed_at"]
+                text = str(row.get("file_path") or "") if "file_path" in row else f"{row.get('user_message') or ''}\n{row.get('assistant_response') or ''}"
+                matched = _extract_skill_names(text, known_skills)
+                ref_matches = list(_REF_PATH_RE.finditer(text))
+                script_matches = list(_SCRIPT_PATH_RE.finditer(text))
+                matched.update(match.group("skill") for match in ref_matches)
+                matched.update(match.group("skill") for match in script_matches)
+                matched_norm = {_norm_skill(s) for s in matched}
+                if "file_path" not in row:
+                    matched_norm.update(
+                        _attribute_basename_scripts_in_text(
+                            "copilot",
+                            sid,
+                            text,
+                            matched_norm,
+                            stamp,
+                            row.get("exit_code"),
+                            row.get("duration_ms"),
+                        )
+                    )
+                for skill in matched_norm:
+                    norm_sk = _norm_skill(skill)
+                    if sid:
+                        seen_turn_sigs_30d.add((sid, f"turn-{row.get('turn_index', '')}", norm_sk))
+                    _bump_channel(norm_sk, "copilot")
+                    record = session_for("copilot", sid, norm_sk, stamp, reference_source=True)
+                    if "input_tokens" in row:
+                        in_tok = int(row.get("input_tokens") or 0)
+                        cr_tok = int(row.get("cache_read") or 0)
+                        cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+                        cache_bucket["in"] += in_tok
+                        cache_bucket["cache_read"] += cr_tok
+                        record["tokens"] += sum(int(row.get(key) or 0) for key in ("input_tokens", "output_tokens", "cache_read"))
+                        record["token_seen"] = True
+                    observe(norm_sk, "usage", stamp)
+                for match in ref_matches:
+                    add_reference("copilot", sid, match.group("skill"), f"skills/{match.group('skill')}/references/{match.group('ref')}", stamp, row.get("byte_len"))
+                for match in script_matches:
+                    add_script("copilot", sid, match.group("skill"), f"skills/{match.group('skill')}/scripts/{match.group('script')}", stamp, row.get("exit_code"), row.get("duration_ms"))
+                tool_name = str(row.get("tool_name") or "").lower()
+                if tool_name in {"edit", "write", "multiedit", "apply_patch", "create"}:
+                    if matched_norm:
+                        for skill in matched_norm:
+                            session_for("copilot", sid, skill, stamp, reference_source=True)["edits"] += 1
+                    else:
+                        pending_edits[sid] = pending_edits.get(sid, 0) + 1
+                observed.append(stamp)
+            for (source, sid, skill), record in session_records.items():
+                if source == "copilot" and pending_edits.get(sid):
+                    record["edits"] += pending_edits[sid]
+                if source == "copilot" and not record["token_seen"] and sid in cp_session_usage:
+                    u_in, u_out, u_cr, u_cnt = cp_session_usage[sid]
+                    if u_in + u_out + u_cr > 0:
+                        avg_evt_tokens = max(1, (u_in + u_out + u_cr) // max(1, u_cnt))
+                        record["tokens"] = avg_evt_tokens
+                        record["token_seen"] = True
+                        cache_b = per_skill_cache.setdefault(skill, {"in": 0, "cache_read": 0})
+                        cache_b["in"] += u_in
+                        cache_b["cache_read"] += u_cr
+            for record in session_records.values():
+                if record["source"] == "copilot" and record["edits"] >= 4:
+                    observe(record["skill"], "churn", record["stamp"])["edit_churn_count"] += record["edits"]
+
+    # Ingest deduplicated multi-device iCloud telemetry shards (*-skill-usage.jsonl)
+    for s_row in shard_records_30d:
+        kind = str(s_row.get("kind") or "")
+        if kind not in {"skill_turn", "script_call", "reference_hit"}:
+            continue
+        raw_sk = str(s_row.get("skill") or "").strip()
+        if not raw_sk:
+            continue
+        norm_sk = _norm_skill(raw_sk)
+        sid = str(s_row.get("session_id") or "")
+        tid = str(s_row.get("turn_id") or s_row.get("call_uid") or s_row.get("hit_uid") or "")
+        host_tag = str(s_row.get("host") or "shard").strip()
+        shard_src = f"shard:{host_tag}"
+        stamp = s_row["_observed_at"]
+        ch = str(s_row.get("channel") or "copilot").strip().lower()
+        if ch not in {"claude", "copilot", "codex", "hermes", "gtt"}:
+            ch = "copilot"
+
+        if kind == "skill_turn":
+            if (sid or tid) and (sid, tid, norm_sk) in seen_turn_sigs_30d:
+                continue
+            if sid or tid:
+                seen_turn_sigs_30d.add((sid, tid, norm_sk))
+            _bump_channel(norm_sk, ch)
+            in_tok = int(s_row.get("input_tokens") or s_row.get("in") or 0)
+            out_tok = int(s_row.get("output_tokens") or s_row.get("out") or 0)
+            cr_tok = int(s_row.get("cache_read") or 0)
+            cache_bucket = per_skill_cache.setdefault(norm_sk, {"in": 0, "cache_read": 0})
+            cache_bucket["in"] += in_tok
+            cache_bucket["cache_read"] += cr_tok
+            record = session_for(shard_src, sid or tid, norm_sk, stamp, reference_source=True)
+            tools = _json_list(s_row.get("tool_calls"))
+            record["read_proxy"] += sum(str(t).lower() in {"read", "view", "read_file"} for t in tools)
+            record["edits"] += sum(str(t).lower() in {"edit", "write", "multiedit", "apply_patch", "create"} for t in tools)
+            if in_tok + out_tok + cr_tok > 0:
+                record["tokens"] += in_tok + out_tok + cr_tok
+                record["token_seen"] = True
+            observed.append(stamp)
+            observe(norm_sk, "usage", stamp)
+        elif kind == "reference_hit":
+            ref_p = str(s_row.get("reference_path") or "").strip()
+            rel_norm = _normalize_skill_rel_path(ref_p, prefix="references") or ref_p
+            if sid and (sid, norm_sk, rel_norm) in seen_ref_sigs_30d:
+                continue
+            _bump_channel(norm_sk, ch)
+            add_reference(shard_src, sid or tid, norm_sk, ref_p, stamp, s_row.get("byte_len"))
+        elif kind == "script_call":
+            sc_p = str(s_row.get("script_path") or "").strip()
+            rel_sc = _normalize_skill_rel_path(sc_p, prefix="scripts") or sc_p
+            if sid and (sid, norm_sk, rel_sc) in seen_script_sigs_30d:
+                continue
+            _bump_channel(norm_sk, ch)
+            add_script(shard_src, sid or tid, norm_sk, sc_p, stamp, s_row.get("exit_code"), s_row.get("duration_ms"))
+
+    for record in session_records.values():
+        if not record["loaded"]:
+            continue
+        skill = record["skill"]
+        entry = _ensure_skill(skill)
+        entry["session_count"] += 1
+        entry["loads_30d"] += 1
+        entry["loads_7d"] += record["stamp"] >= start7
+        entry["total_tokens"] += record["tokens"]
+        entry["token_session_count"] += int(record["token_seen"])
+        refs = record["refs"]
+        ref_count = len(refs) if record["reference_source"] else record["read_proxy"]
+        entry["reference_hit_count"] += len(refs)
+        entry["reference_bytes"] += sum(refs.values())
+        entry["l0_only_sessions" if ref_count == 0 else "l1_selective_sessions" if ref_count <= 2 else "l1_greedy_sessions"] += 1
+        if record["scripts"]:
+            entry["script_touch_sessions"] += 1
+            entry["script_execs"] += len(record["scripts"])
+            entry["script_failures"] += sum(call[2] != 0 for call in record["scripts"])
+            entry["script_durations_ms"].extend(call[3] for call in record["scripts"])
+        if not refs and not record["scripts"] and record["edits"] == 0:
+            entry["empty_load_sessions"] += 1
+        if record["edits"] >= 4:
+            entry["edit_churn_count"] += record["edits"]
+
+    s2_gate["eval_effect"] = {
+        "interceptions_7d": eval_interceptions,
+        "escapes_7d": eval_escapes,
+        "interception_rate": round(eval_interceptions / (eval_interceptions + eval_escapes), 4) if eval_interceptions + eval_escapes else None,
+        "by_eval_case": eval_by_case,
+    }
+    source_meta = _freshness(observed, warehouse_present, 30)
+    source_as_of = source_meta["source_as_of"]
+    start7, end7 = _window_bounds()
+    root_stamps = [stamp for stamp in observed if start7 <= stamp < end7]
+    root_meta = _freshness(root_stamps, warehouse_present)
+
+    # 3. Synthesize S1, S2, S3, S4, S6, S7, S8, S9, S10
+    s1_pins = _compute_s1_pin_drift(d_root)
+
+    # S3: Skill Health & Eval Growth
+    budget_passed = sum(1 for m in inventory.values() if m["budget_ok"])
+    top_l0 = sorted(inventory.values(), key=lambda m: (-m["l0_lines"], m["skill"]))[:3]
+    top_l1 = sorted(inventory.values(), key=lambda m: (-m["max_l1_lines"], m["skill"]))[:3]
+    total_eval_cases = sum(m["eval_case_count"] for m in inventory.values())
+    weekly_eval_delta = sum(m["eval_case_weekly_delta"] for m in inventory.values())
+    s3_health = {
+        "total_skills": len(inventory),
+        "audit_pass_count": budget_passed,
+        "audit_pass_rate": round(budget_passed / len(inventory), 4) if inventory else None,
+        "top3_l0_watermarks": [
+            {"skill": m["skill"], "l0_lines": m["l0_lines"], "l0_cap": m["l0_cap"]}
+            for m in top_l0
+        ],
+        "top3_l1_watermarks": [
+            {"skill": m["skill"], "max_l1_lines": m["max_l1_lines"], "l1_cap": m["l1_cap"]}
+            for m in top_l1
+        ],
+        "eval_case_total": total_eval_cases,
+        "eval_case_weekly_delta": weekly_eval_delta,
+    }
+
+    s11_context, s12_tools, burn_proposals = _compute_s11_s12_context_and_tools(
+        wh,
+        magpie_usage=magpie_usage,
+        copilot_db=cp,
+        dsh_sessions=dsh_sessions,
+        telemetry_shards_dir=shards_dir,
+    )
+
+    for l2_sk, l2_map in l2_channels.items():
+        if sum(int(v or 0) for v in l2_map.values()) > 0:
+            _ensure_skill(l2_sk)
+
+    # Build per-skill ROI table for S4, S6, S7, S8, S9, S10
+    skill_rows: list[dict[str, Any]] = []
+    idle_skills_30d: list[str] = []
+    for s_name, st in sorted(stats.items()):
+        l2_ch_map = l2_channels.get(s_name, {})
+        l2_sum_30d = sum(int(v or 0) for v in l2_ch_map.values())
+        loads = max(st["loads_30d"], st["loads_7d"], st["session_count"], l2_sum_30d)
+        if loads == 0 and s_name in known_skills:
+            idle_skills_30d.append(s_name)
+
+        meta_inv = inventory.get(s_name, {})
+        l0_lines = int(meta_inv.get("l0_lines") or 0)
+        max_l1_lines = int(meta_inv.get("max_l1_lines") or 0)
+        fm_tok_est = int(meta_inv.get("frontmatter_tokens_est") or 1)
+        body_tok_est = int(meta_inv.get("body_tokens_est") or max(1, l0_lines * 12))
+
+        r1_tot = st["r1_total"]
+        if r1_tot > 0:
+            r1_pass_rate: float | None = round(st["r1_pass"] / r1_tot, 4)
+        elif loads > 0:
+            clean_loads = max(
+                0,
+                loads
+                - st["impl_bug_escapes"]
+                - st["spec_gap_escapes"]
+                - min(loads, st["script_failures"])
+                - (1 if st["edit_churn_count"] >= 4 else 0),
+            )
+            r1_pass_rate = round(max(0.05, clean_loads / loads), 4)
+        else:
+            r1_pass_rate = None
+
+        obs_script_calls_30d = sum(
+            int(sc_info.get("calls") or 0)
+            for sc_path, sc_info in per_skill_scripts.get(s_name, {}).items()
+            if _is_valid_skill_script_rel_path(sc_path)
+        )
+        script_execs = max(st["script_execs"], obs_script_calls_30d)
+        has_valid_scripts = bool(meta_inv.get("script_entries")) or bool(st["has_scripts"])
+        if has_valid_scripts and loads > 0:
+            practiced_sessions = min(loads, max(st["script_touch_sessions"], min(loads, script_execs)))
+            script_ratio: float | None = round(practiced_sessions / loads, 4)
+            read_only_unpracticed_rate: float | None = round(max(0.0, 1.0 - script_ratio), 4)
+        elif not has_valid_scripts and loads > 0:
+            script_ratio = None
+            read_only_unpracticed_rate = 0.0
+        else:
+            script_ratio = None
+            read_only_unpracticed_rate = None
+
+        empty_load_rate = round(min(1.0, st["empty_load_sessions"] / loads), 4) if loads > 0 else None
+        script_durations = [float(value) for value in st["script_durations_ms"]]
+        script_avg_ms = round(sum(script_durations) / len(script_durations), 2) if script_durations else None
+        script_p95_ms = _p95(script_durations)
+
+        f_tot = max(1, st["l0_only_sessions"] + st["l1_selective_sessions"] + st["l1_greedy_sessions"])
+        l0_rate = round(st["l0_only_sessions"] / f_tot, 4) if loads > 0 else None
+        l1_sel_rate = round(st["l1_selective_sessions"] / f_tot, 4) if loads > 0 else None
+        l1_greedy_rate = round(st["l1_greedy_sessions"] / f_tot, 4) if loads > 0 else None
+
+        if st["token_session_count"] > 0 and st["total_tokens"] > 0:
+            avg_tokens: int | None = max(1, int(st["total_tokens"] / st["token_session_count"]))
+        elif loads > 0:
+            avg_hit_ref_tokens = (
+                int((st["reference_bytes"] / max(1, st["reference_hit_count"])) // 4)
+                if st["reference_hit_count"] > 0 and st["reference_bytes"] > 0
+                else 0
+            )
+            script_proxy_tokens = 320 if script_execs > 0 else 0
+            avg_tokens = max(1, fm_tok_est + body_tok_est + avg_hit_ref_tokens + script_proxy_tokens + 1200)
+        else:
+            avg_tokens = None
+
+        cache_b = per_skill_cache.get(s_name, {})
+        tot_in_sk = int(cache_b.get("in") or 0)
+        tot_cr_sk = int(cache_b.get("cache_read") or 0)
+        sk_kv_cache_pct = (
+            round(100.0 * tot_cr_sk / (tot_in_sk + tot_cr_sk), 1)
+            if (tot_in_sk + tot_cr_sk) > 0
+            else s11_context.get("kv_cache_hit_pct")
+        )
+        cache_bonus = ((float(sk_kv_cache_pct) / 100.0) * 0.25) if sk_kv_cache_pct is not None else 0.0
+        script_bonus = min(0.2, 0.05 * min(4, script_execs)) if has_valid_scripts and script_execs > 0 else 0.0
+
+        # S10 formula: Skill ROI = (R1_Pass_Rate + Bonuses) / Normalized(Tokens + Churn + Uncalled_Script_Penalty)
+        norm_tokens = min(2.0, max(0.2, avg_tokens / 10000.0)) if avg_tokens is not None else None
+        norm_churn = min(2.0, st["edit_churn_count"] * 0.15 + st["retry_commands"] * 0.1)
+        uncalled_penalty = (read_only_unpracticed_rate or 0.0) * 0.6 if has_valid_scripts and loads > 0 else 0.0
+        escape_penalty = (st["impl_bug_escapes"] * 0.2) + (st["spec_gap_escapes"] * 0.15)
+        denom = max(0.25, 0.5 + norm_tokens + norm_churn + uncalled_penalty + escape_penalty) if norm_tokens is not None else None
+        roi_score = (
+            round((r1_pass_rate + cache_bonus + script_bonus) / denom, 4)
+            if loads > 0 and denom is not None and r1_pass_rate is not None
+            else (round(r1_pass_rate / denom, 4) if denom is not None and r1_pass_rate is not None else None)
+        )
+
+        rework_rounds = int(st.get("rework_rounds") or 0)
+        repair_denom = max(1, r1_tot, loads)
+        repair_numer = st["impl_bug_escapes"] + st["spec_gap_escapes"] + rework_rounds + (1 if st["edit_churn_count"] >= 4 else 0)
+        post_invocation_repair_loop_rate = round(min(1.0, repair_numer / repair_denom), 4) if (loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0) else None
+
+        diagnoses: list[str] = []
+        if has_valid_scripts and loads > 0 and (read_only_unpracticed_rate or 0.0) >= 0.5:
+            diagnoses.append(f"光读不练率 {(read_only_unpracticed_rate or 0.0)*100:.0f}%（脚本未充分触发）")
+        if st["impl_bug_escapes"] > 0:
+            diagnoses.append(f"[IMPL_BUG] 漏网 {st['impl_bug_escapes']} 次（建议 Valve 1 下沉脚本检查）")
+        if st["spec_gap_escapes"] > 0:
+            diagnoses.append(f"[SPEC_GAP] 盲区 {st['spec_gap_escapes']} 次（建议 add-case --id auto 补齐抽屉）")
+        if st["edit_churn_count"] >= 4:
+            diagnoses.append(f"挂载后文件反复擦写 {st['edit_churn_count']} 次")
+        if l1_greedy_rate is not None and l1_greedy_rate > 0.25:
+            diagnoses.append(f"L1 全量暴读违规率 {l1_greedy_rate*100:.0f}%")
+        if (post_invocation_repair_loop_rate or 0) > 0.25 and not diagnoses:
+            diagnoses.append(f"调用后返工率 {post_invocation_repair_loop_rate*100:.0f}% 超阈值")
+
+        if (post_invocation_repair_loop_rate or 0) > 0.25 or st["impl_bug_escapes"] > 0 or st["spec_gap_escapes"] > 0 or st["edit_churn_count"] >= 4:
+            diagnostic_status = "high_repair_loop"
+        elif loads == 0 and observed and (l0_lines > 120 or max_l1_lines > 140 or not meta_inv.get("budget_ok", True)):
+            diagnostic_status = "zero_trigger_bloat"
+            diagnoses.append(f"30d 零触发且 L0/L1 体积偏大 (L0={l0_lines}, max_L1={max_l1_lines})")
+        elif loads == 0 and s_name in known_skills:
+            diagnostic_status = "dormant"
+        elif diagnoses:
+            diagnostic_status = "warn"
+        else:
+            diagnostic_status = "healthy" if loads > 0 else "unknown"
+
+        kinds = populations.get(s_name, {})
+        stamps = [stamp for values in kinds.values() for stamp in values]
+        row_meta = _freshness(stamps, warehouse_present, 30)
+        skill_rows.append({
+            **row_meta, "estimated": True,
+            "estimation_method": "session/tool and goal-name skill attribution proxies",
+            "r1_freshness": _freshness(kinds.get("reviews", []), wh.is_file()),
+            "skill": s_name,
+            "loads_7d": st["loads_7d"],
+            "loads_30d": loads,
+            "r1_pass_rate": r1_pass_rate,
+            "r1_total": r1_tot,
+            "rework_rounds": rework_rounds,
+            "post_invocation_repair_loop_rate": post_invocation_repair_loop_rate,
+            "has_scripts": has_valid_scripts,
+            "script_execs": script_execs,
+            "script_failures": st["script_failures"],
+            "script_success_rate": round(max(0, script_execs - st["script_failures"]) / script_execs, 4) if script_execs else None,
+            "script_touch_sessions": st["script_touch_sessions"],
+            "script_touch_rate": script_ratio,
+            "unpracticed_rate": read_only_unpracticed_rate,
+            "script_avg_ms": script_avg_ms,
+            "script_p95_ms": script_p95_ms,
+            "reference_hit_count": st["reference_hit_count"],
+            "reference_bytes": st["reference_bytes"],
+            "empty_load_sessions": st["empty_load_sessions"],
+            "empty_load_rate": empty_load_rate,
+            "eval_interceptions": st["eval_interceptions"],
+            "eval_escapes": st["eval_escapes"],
+            "l0_only_rate": l0_rate,
+            "l1_selective_rate": l1_sel_rate,
+            "l1_greedy_violation_rate": l1_greedy_rate,
+            "l0_only_sessions": st["l0_only_sessions"],
+            "l1_selective_sessions": st["l1_selective_sessions"],
+            "l1_greedy_sessions": st["l1_greedy_sessions"],
+            "avg_context_tokens": avg_tokens,
+            "edit_churn_count": st["edit_churn_count"],
+            "retry_commands": st["retry_commands"],
+            "impl_bug_escapes": st["impl_bug_escapes"],
+            "spec_gap_escapes": st["spec_gap_escapes"],
+            "roi_score": roi_score,
+            "diagnosis": "；".join(diagnoses) if diagnoses else ("健康达标" if loads > 0 else "unknown / 观测不足"),
+            "diagnostic_status": diagnostic_status,
+            "needs_optimization": bool(diagnoses) and (loads > 0 or r1_tot > 0 or st["edit_churn_count"] > 0 or diagnostic_status == "zero_trigger_bloat"),
+        })
+
+    active_rows = [r for r in skill_rows if r["loads_30d"] > 0 or r["r1_total"] > 0 or r["edit_churn_count"] > 0]
+    actionable_rows = [r for r in skill_rows if r["needs_optimization"]]
+    low_roi_candidates = sorted(
+        actionable_rows,
+        key=lambda r: (r["roi_score"] is None, r["roi_score"] if r["roi_score"] is not None else float("inf"), -(r["post_invocation_repair_loop_rate"] or 0), -r["impl_bug_escapes"], -(r["unpracticed_rate"] or 0.0)),
+    )[:3]
+
+    recommendations: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
+    for cand in low_roi_candidates:
+        sk = cand["skill"]
+        roi_label = f"{cand['roi_score']:.2f}" if cand["roi_score"] is not None else "unknown"
+        r1_label = f"{cand['r1_pass_rate'] * 100:.1f}%" if cand["r1_pass_rate"] is not None else "unknown"
+        rec_item = {
+            "id": f"skill-roi-{sk}",
+            "ref": f"retro://skill-roi/{sk}",
+            "legacy_ref": f"skill-roi://{sk}",
+            "legacy_refs": [f"skill-roi://{sk}"],
+            "skill": sk,
+            "metric_id": f"skill-roi-{sk}",
+            "diagnostic_status": cand["diagnostic_status"],
+            "post_invocation_repair_loop_rate": cand["post_invocation_repair_loop_rate"],
+            "action": f"Run skill_contract.py add-case --skill {sk} --id auto and sink repeated repair checks into scripts/" if cand["diagnostic_status"] == "high_repair_loop" else f"Audit {sk} L0/L1 budget and wire deterministic script triggers",
+            "scope": "personal",
+            "title": f"[Skill ROI] 优化 {sk}（ROI={cand['roi_score']:.2f}，R1通过={cand['r1_pass_rate']*100:.0f}%）：{cand['diagnosis'][:36]}" if cand["roi_score"] is not None and cand["r1_pass_rate"] is not None else f"[Skill ROI] 补齐 {sk} 的观测覆盖：{cand['diagnosis'][:36]}",
+            "detail": (
+                f"skill={sk} | roi_score={roi_label} | "
+                f"r1_pass_rate={r1_label} | "
+                f"unpracticed_rate={_percent_label(cand['unpracticed_rate'])} | "
+                f"edit_churn={cand['edit_churn_count']} | "
+                f"impl_bug={cand['impl_bug_escapes']} | spec_gap={cand['spec_gap_escapes']} | "
+                f"diagnosis={cand['diagnosis']}"
+            ),
+            "priority": "P1",
+            **{key: cand[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                         "sample_size", "coverage_status", "estimated", "estimation_method")},
+        }
+        recommendations.append(rec_item)
+        proposals.append({**rec_item, "ref": rec_item["legacy_ref"], "priority": "high"})
+
+    for bp in burn_proposals[:2]:
+        bp_enriched = dict(bp)
+        bp_enriched.setdefault("scope", "personal")
+        bp_enriched.setdefault("action", "Add --head-limit / view_range or sink filtering into deterministic script")
+        proposals.append(bp_enriched)
+        if not any(r["id"] == bp_enriched["id"] for r in recommendations):
+            recommendations.append(bp_enriched)
+
+    total_sample_size = max(len(root_stamps), int(s11_context["sample_size"] or 0))
+    cov_status = "healthy" if total_sample_size > 0 else ("unknown" if warehouse_present else "missing")
+    observed_as_of = [value for value in (root_meta["source_as_of"], s11_context["source_as_of"]) if value]
+    source_as_of = max(observed_as_of) if observed_as_of else None
+    inventory_paths = [path for meta in inventory.values() for path in
+                       [Path(meta["path"]) / "SKILL.md", *(Path(meta["path"]) / "references").rglob("*.md"),
+                        *(Path(meta["path"]) / "references").rglob("*.json")]]
+    s3_health.update(_snapshot_freshness(inventory_paths, len(inventory)))
+    for key in ("top3_l0_watermarks", "top3_l1_watermarks"):
+        for row in s3_health[key]:
+            row.update(_snapshot_freshness([Path(inventory[row["skill"]]["path"]) / "SKILL.md"], 1))
+
+    for p_item in proposals:
+        p_item.setdefault("window_cst", "7d")
+        p_item.setdefault("source_as_of", source_as_of)
+        p_item.setdefault("sample_size", total_sample_size)
+        p_item.setdefault("coverage_status", cov_status)
+        p_item.setdefault("window_start", source_meta["window_start"])
+        p_item.setdefault("window_end", source_meta["window_end"])
+
+    skill_details = _collect_skill_details(
+        inventory=inventory,
+        skill_rows=skill_rows,
+        per_skill_channels=per_skill_channels,
+        l2_channels=l2_channels,
+        per_skill_cache=per_skill_cache,
+        s11_context=s11_context,
+        per_skill_refs=per_skill_refs,
+        per_skill_scripts=per_skill_scripts,
+        per_skill_eval_cases=per_skill_eval_cases,
+        warehouse_present=warehouse_present,
+    )
+
+    try:
+        mirror_skills_to_icloud(skill_details, icloud_sync_dir=icloud_sync_dir)
+    except Exception:
+        pass
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    auto_proposed = _queue_recommendations(proposals, prop_path) if auto_propose else []
+    proposals_written = len(auto_proposed)
+    proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
+    report_payload = {
+        "ok": True,
+        "generated_at": generated_at,
+        "query_id": "retro/skill_roi_diagnostics",
+        "wall_clock_date": wall_clock_date,
+        "staleness_days": staleness_days,
+        "window_anchor": window_anchor,
+        "window_cst": "7d",
+        "window_start": root_meta["window_start"] or s11_context["window_start"],
+        "window_end": root_meta["window_end"] or s11_context["window_end"],
+        "source_as_of": source_as_of,
+        "sample_size": total_sample_size,
+        "coverage_status": cov_status,
+        "skill_details": skill_details,
+        "S1_pin_drift": s1_pins,
+        "S2_gate_catch": s2_gate,
+        "S3_skill_health": s3_health,
+        "S4_usage_and_r1": {
+            **source_meta,
+            "active_skills_count": len(active_rows),
+            "idle_skills_30d": idle_skills_30d,
+            "empty_load_sessions": sum(int(r.get("empty_load_sessions") or 0) for r in active_rows),
+            "empty_load_rate": round(
+                sum(int(r.get("empty_load_sessions") or 0) for r in active_rows)
+                / max(1, sum(int(r.get("loads_30d") or 0) for r in active_rows)), 4
+            ) if active_rows else None,
+            "top_used_skills": sorted(skill_rows, key=lambda r: (-r["loads_30d"], r["skill"]))[:8],
+        },
+        "S6_load_vs_script": [
+            {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             warehouse_present, 30),
+                "skill": r["skill"],
+                "loads_30d": r["loads_30d"],
+                "script_execs": r["script_execs"],
+                "script_touch_sessions": r["script_touch_sessions"],
+                "script_touch_rate": r["script_touch_rate"],
+                "unpracticed_rate": r["unpracticed_rate"],
+                "script_success_rate": r["script_success_rate"],
+                "script_avg_ms": r["script_avg_ms"],
+                "script_p95_ms": r["script_p95_ms"],
+            }
+            for r in active_rows
+            if r["has_scripts"]
+        ],
+        "S7_disclosure_funnel": [
+            {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('usage',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             warehouse_present, 30),
+                "skill": r["skill"],
+                "l0_only_rate": r["l0_only_rate"],
+                "l1_selective_rate": r["l1_selective_rate"],
+                "l1_greedy_violation_rate": r["l1_greedy_violation_rate"],
+                "l0_only_sessions": r["l0_only_sessions"],
+                "l1_selective_sessions": r["l1_selective_sessions"],
+                "l1_greedy_sessions": r["l1_greedy_sessions"],
+                "reference_hit_count": r["reference_hit_count"],
+                "reference_bytes": r["reference_bytes"],
+                "avg_context_tokens": r["avg_context_tokens"],
+            }
+            for r in active_rows
+        ],
+        "S8_post_skill_churn": [
+            {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('churn',) for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             warehouse_present, 30),
+                "skill": r["skill"],
+                "edit_churn_count": r["edit_churn_count"],
+                "retry_commands": r["retry_commands"],
+            }
+            for r in active_rows
+            if r["edit_churn_count"] > 0 or r["retry_commands"] > 0
+        ],
+        "S9_escape_attribution": [
+            {
+                **{key: r[key] for key in ("window_cst", "window_start", "window_end", "source_as_of",
+                                          "sample_size", "coverage_status", "estimated", "estimation_method")},
+                **_freshness([stamp for kind in ('reviews', 'events') for stamp in populations.get(r["skill"], {}).get(kind, [])],
+                             warehouse_present, 7),
+                "skill": r["skill"],
+                "impl_bug_escapes": r["impl_bug_escapes"],
+                "spec_gap_escapes": r["spec_gap_escapes"],
+                "eval_interceptions": r["eval_interceptions"],
+                "eval_escapes": r["eval_escapes"],
+            }
+            for r in active_rows
+            if r["impl_bug_escapes"] > 0 or r["spec_gap_escapes"] > 0 or r["eval_interceptions"] > 0 or r["eval_escapes"] > 0
+        ],
+        "S10_skill_roi_ranking": sorted(active_rows, key=lambda r: (r["roi_score"] is None, r["roi_score"] if r["roi_score"] is not None else float("inf"), r["skill"])),
+        "S11_context_composition": s11_context,
+        "S12_tool_context_burn": s12_tools,
+        "recommendations": recommendations,
+        "low_roi_proposals": proposals,
+        "auto_proposed": auto_proposed,
+        "proposals_written": proposals_written,
+        "proposals_skipped": proposals_skipped,
+    }
+    if should_mirror_roi:
+        _mirror_skills_roi_snapshot_to_icloud(report_payload, icloud_roi_path=effective_roi_path)
+    return report_payload
+
+
+def compute_skill_roi(
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    magpie_usage: Path | None = None,
+    dsh_sessions: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    *,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
+    mirror_icloud_roi: bool | None = None,
+    icloud_roi_path: Path | None = None,
+) -> dict[str, Any]:
+    """Alias for compute_skill_roi_diagnostics()."""
+    report = compute_skill_roi_diagnostics(
+        warehouse_db=warehouse_db,
+        copilot_db=copilot_db,
+        skills_root=skills_root,
+        dev_root=dev_root,
+        magpie_usage=magpie_usage,
+        dsh_sessions=dsh_sessions,
+        telemetry_shards_dir=telemetry_shards_dir,
+        auto_propose=auto_propose,
+        proposals_path=proposals_path,
+        icloud_sync_dir=icloud_sync_dir,
+        mirror_icloud_roi=mirror_icloud_roi,
+        icloud_roi_path=icloud_roi_path,
+    )
+    report.setdefault(
+        "generated_at",
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    )
+    return report
+
+
+CST = timezone(timedelta(hours=8))
+
+
+def _window_bounds(days: int = 7) -> tuple[datetime, datetime]:
+    today = datetime.now(CST).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today - timedelta(days=days - 1), today + timedelta(days=1)
+
+
+def _observed_at(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    try:
+        text = str(value)
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=CST if len(text) == 10 else timezone.utc)
+        return stamp.astimezone(CST)
+    except (ValueError, TypeError):
+        return None
+
+
+def _timed_rows(conn: sqlite3.Connection, table: str, days: int = 7) -> list[dict[str, Any]]:
+    columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+    time_column = next((name for name in ("observed_at", "completed_at", "ended_at", "started_at",
+                        "timestamp", "first_seen_at", "ts", "created_at", "cst_day") if name in columns), None)
+    if time_column is None:
+        return []
+    start, end = _window_bounds(days)
+    rows = []
+    if time_column == "cst_day":
+        predicate = f'"{time_column}" >= ? AND "{time_column}" < ?'
+        bounds = (start.date().isoformat(), end.date().isoformat())
+    else:
+        # Bare dates are CST days; offset/naive timestamps are parsed as UTC by SQLite.
+        observed_jd = (f'CASE WHEN length("{time_column}") = 10 '
+                       f'THEN julianday("{time_column}", \'-8 hours\') ELSE julianday("{time_column}") END')
+        predicate = f'{observed_jd} >= julianday(?) AND {observed_jd} < julianday(?)'
+        bounds = (start.isoformat(), end.isoformat())
+    for values in conn.execute(f'SELECT * FROM "{table}" WHERE {predicate}', bounds):
+        record = dict(zip(columns, values))
+        stamp = _observed_at(record[time_column])
+        if stamp and start <= stamp < end:
+            record["_observed_at"] = stamp
+            rows.append(record)
+    return rows
+
+
+def _freshness(stamps: list[datetime], present: bool = True, days: int = 7) -> dict[str, Any]:
+    start, end = _window_bounds(days)
+    return {"window_cst": f"{days}d", "window_start": start.isoformat() if stamps else None,
+            "window_end": end.isoformat() if stamps else None,
+            "source_as_of": max(stamps).isoformat() if stamps else None,
+            "sample_size": len(stamps),
+            "coverage_status": "healthy" if stamps else ("unknown" if present else "missing")}
+
+
+def _snapshot_freshness(paths: list[Path], sample_size: int) -> dict[str, Any]:
+    stamps = [datetime.fromtimestamp(path.stat().st_mtime, CST) for path in paths if path.is_file()]
+    return {"window_cst": "snapshot", "window_start": min(stamps).isoformat() if stamps else None,
+            "window_end": max(stamps).isoformat() if stamps else None,
+            "source_as_of": max(stamps).isoformat() if stamps else None,
+            "sample_size": sample_size, "coverage_status": "healthy" if sample_size and stamps else "unknown",
+            "freshness_basis": "source_file_mtime"}
+
+
+def _event_fingerprint(rec: dict[str, Any]) -> str:
+    explicit = str(rec.get("event_id") or "").strip()
+    if explicit:
+        return explicit
+    host = str(rec.get("host") or "local").strip().lower()
+    kind = str(rec.get("kind") or rec.get("event_type") or "usage").strip()
+    sid = str(rec.get("session_id") or rec.get("route_id") or "").strip()
+    turn_id = str(rec.get("turn_id") or rec.get("call_uid") or rec.get("hit_uid") or "").strip()
+    ts = str(rec.get("ts") or rec.get("t") or rec.get("timestamp") or rec.get("created_at") or "").strip()
+    skill = str(rec.get("skill") or "").strip()
+    tool_or_path = str(
+        rec.get("script_path")
+        or rec.get("reference_path")
+        or rec.get("tool")
+        or rec.get("req")
+        or rec.get("model")
+        or ""
+    ).strip()
+    tokens_sig = f"{rec.get('in', rec.get('input_tokens', 0))}:{rec.get('out', rec.get('output_tokens', 0))}:{rec.get('cache_read', 0)}"
+    raw_key = f"{host}|{kind}|{sid}|{turn_id}|{ts}|{skill}|{tool_or_path}|{tokens_sig}"
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:32]
+
+
+def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict[str, Any]]:
+    if shards_dir is None or not shards_dir.is_dir():
+        return []
+    start, end = _window_bounds(days)
+    seen_ids: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for shard_file in sorted(shards_dir.glob("*-skill-usage.jsonl")):
+        if not shard_file.is_file():
+            continue
+        default_host = shard_file.name[: -len("-skill-usage.jsonl")]
+        try:
+            with shard_file.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    rec.setdefault("host", default_host)
+                    stamp = next(
+                        (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
+                        None,
+                    )
+                    if not stamp or not (start <= stamp < end):
+                        continue
+                    fp = _event_fingerprint(rec)
+                    if fp in seen_ids:
+                        continue
+                    seen_ids.add(fp)
+                    enriched = dict(rec)
+                    enriched["event_id"] = fp
+                    enriched["_observed_at"] = stamp
+                    merged.append(enriched)
+        except OSError:
+            continue
+    return merged
+
+
+def _mirror_skills_roi_snapshot_to_icloud(
+    report: dict[str, Any],
+    *,
+    icloud_roi_path: Path | None = None,
+    local_snapshot_path: Path | None = None,
+) -> Path | None:
+    target = icloud_roi_path or DEFAULT_ICLOUD_SKILLS_ROI_PATH
+    sync_root = target.parents[2] if len(target.parents) >= 3 else target.parent
+    if icloud_roi_path is None and not sync_root.is_dir():
+        return None
+    local_snap = local_snapshot_path or DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
+    daily: list[dict[str, Any]] = []
+    for candidate in (local_snap, target):
+        if candidate.is_file():
+            try:
+                existing = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and isinstance(existing.get("skills_daily"), list):
+                    daily = existing["skills_daily"]
+                    break
+            except (OSError, json.JSONDecodeError):
+                continue
+    snapshot_payload: dict[str, Any] = {
+        "schema_version": 1,
+        "window_cst": report.get("window_cst") or "7d",
+        "window_start": report.get("window_start"),
+        "window_end": report.get("window_end"),
+        "source_as_of": report.get("source_as_of"),
+        "sample_size": int(report.get("sample_size") or 0),
+        "coverage_status": report.get("coverage_status") or "unknown",
+        "diagnostics": report,
+        "skills_daily": daily,
+    }
+    if isinstance(report.get("skill_details"), list):
+        snapshot_payload["skill_details"] = report["skill_details"]
+    if isinstance(report.get("skill_retro"), dict):
+        snapshot_payload["skill_retro"] = report["skill_retro"]
+    try:
+        _write_json(target, snapshot_payload)
+        return target
+    except OSError:
+        return None
+
+
+def _merge_skill_retro_into_roi_snapshot(
+    skill_retro_report: dict[str, Any],
+    *,
+    icloud_roi_path: Path | None = None,
+    local_snapshot_path: Path | None = None,
+) -> None:
+    targets = [p for p in (icloud_roi_path, local_snapshot_path) if p is not None]
+    for target in targets:
+        if not target.is_file() and icloud_roi_path is None:
+            continue
+        existing: dict[str, Any] = {}
+        if target.is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+        existing.setdefault("schema_version", 1)
+        existing.setdefault("window_cst", skill_retro_report.get("window_cst") or "30d")
+        existing.setdefault("source_as_of", skill_retro_report.get("source_as_of"))
+        existing.setdefault("sample_size", skill_retro_report.get("sample_size", 0))
+        existing.setdefault("coverage_status", skill_retro_report.get("coverage_status") or "unknown")
+        existing["skill_retro"] = skill_retro_report
+        with contextlib.suppress(OSError):
+            _write_json(target, existing)
+
+
+
+
+def compute_skill_retro(
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    trace_export_path: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    *,
+    skill: str | None = None,
+    emit_briefs_dir: Path | None = None,
+    mode: str = "full",
+    aspects: Sequence[str] | str | None = None,
+    coupled_with: Sequence[str] | str | None = None,
+    relays: Sequence[Mapping[str, Any]] | None = None,
+    days: int = 30,
+    auto_propose: bool = False,
+    proposals_path: Path | None = None,
+    icloud_sync_dir: Path | None = None,
+    icloud_roi_path: Path | None = None,
+    local_roi_path: Path | None = None,
+    mirror_roi_snapshot: bool | None = None,
+) -> dict[str, Any]:
+    """Compute the 4-Layer / 6-Dimension Progressive Skill Evolution & Wide-Probe Multi-Angle Diagnostic."""
+    explicit_source_override = any(
+        val is not None
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path, handoff_root)
+    )
+    wh = warehouse_db if warehouse_db is not None else (None if explicit_source_override else DEFAULT_WAREHOUSE_DB)
+    cp = copilot_db if copilot_db is not None else (None if explicit_source_override else DEFAULT_COPILOT_DB)
+    sess_dir = (
+        copilot_sessions_dir
+        if copilot_sessions_dir is not None
+        else (None if explicit_source_override else DEFAULT_COPILOT_SESSIONS_DIR)
+    )
+    u_jsonl = (
+        usage_jsonl
+        if usage_jsonl is not None
+        else (None if explicit_source_override else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL)
+    )
+    h_root = handoff_root if handoff_root is not None else (None if explicit_source_override else DEFAULT_HANDOFF_ROOT)
+    s_root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
+
+    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir)
+    shards_dir = (
+        telemetry_shards_dir
+        if telemetry_shards_dir is not None
+        else (
+            resolved_sync / "telemetry-shards"
+            if resolved_sync is not None and (icloud_sync_dir is not None or not explicit_source_override)
+            else None
+        )
+    )
+    inventory = _discover_skill_inventory(s_root, d_root)
+    report = compute_skill_retro_diagnostics(
+        inventory=inventory,
+        skill_filter=skill,
+        emit_briefs_dir=emit_briefs_dir,
+        mode=mode,
+        aspects=aspects,
+        coupled_with=coupled_with,
+        relays=relays,
+        warehouse_db=wh,
+        copilot_db=cp,
+        copilot_sessions_dir=sess_dir,
+        usage_jsonl=u_jsonl,
+        telemetry_shards_dir=shards_dir,
+        trace_export_path=trace_export_path,
+        handoff_root=h_root,
+        skills_root=s_root,
+        dev_root=d_root,
+        days=days,
+        shard_reader=_read_telemetry_shards,
+        queue_fn=_queue_recommendations,
+        auto_propose=auto_propose,
+        proposals_path=prop_path,
+    )
+    should_mirror = (
+        mirror_roi_snapshot
+        if mirror_roi_snapshot is not None
+        else (icloud_roi_path is not None or local_roi_path is not None or not explicit_source_override)
+    )
+    if should_mirror:
+        eff_icloud_roi = icloud_roi_path or (
+            resolved_sync / "jobs" / "aidata-digest" / "skills-roi.json" if resolved_sync is not None else None
+        )
+        eff_local_roi = local_roi_path or (DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH if not explicit_source_override else None)
+        _merge_skill_retro_into_roi_snapshot(
+            report,
+            icloud_roi_path=eff_icloud_roi,
+            local_snapshot_path=eff_local_roi,
+        )
+    return report
+
+def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> list[dict[str, Any]]:
+    start, end = _window_bounds()
+    records: list[dict[str, Any]] = []
+    seen_route_sigs: set[tuple[str, str, int, int]] = set()
+    seen_fps: set[str] = set()
+    if path.is_file():
+        with path.open(encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
+                if not isinstance(rec, dict):
+                    raise ValueError(f"invalid usage record at {path}:{number}")
+                stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
+                              if rec.get(key)), None)
+                if stamp and start <= stamp < end:
+                    rec["_observed_at"] = stamp
+                    fp = _event_fingerprint(rec)
+                    seen_fps.add(fp)
+                    route_sig = (
+                        str(rec.get("route_id") or ""),
+                        str(rec.get("req") or rec.get("model") or ""),
+                        int(rec.get("in") or 0),
+                        int(rec.get("out") or 0),
+                    )
+                    if route_sig[0]:
+                        seen_route_sigs.add(route_sig)
+                    records.append(rec)
+    for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=7):
+        kind = str(s_rec.get("kind") or "")
+        if kind and kind not in {"gateway_usage", "usage"}:
+            continue
+        fp = str(s_rec.get("event_id") or _event_fingerprint(s_rec))
+        if fp in seen_fps:
+            continue
+        route_sig = (
+            str(s_rec.get("route_id") or ""),
+            str(s_rec.get("req") or s_rec.get("model") or ""),
+            int(s_rec.get("in") or 0),
+            int(s_rec.get("out") or 0),
+        )
+        if route_sig[0] and route_sig in seen_route_sigs:
+            continue
+        seen_fps.add(fp)
+        if route_sig[0]:
+            seen_route_sigs.add(route_sig)
+        records.append(s_rec)
+    return records
+
+@contextlib.contextmanager
+def _proposal_lock(path: Path):
+    sidecar = path.with_name(path.name + ".lock")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with sidecar.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _proposal_history(path: Path) -> dict[str, dict[str, Any]]:
+    records = {}
+    if path.is_file():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid proposal history JSON at {path}:{number}") from exc
+            if not isinstance(rec, dict) or any(not str(rec.get(k) or "").strip() for k in ("id", "ts", "agent", "title")):
+                raise ValueError(f"incomplete proposal history record at {path}:{number}")
+            if _observed_at(rec["ts"]) is None:
+                raise ValueError(f"invalid proposal timestamp at {path}:{number}")
+            records[str(rec["id"])] = rec
+    return records
+
+
+def _queue_recommendations(candidates: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
+    queued = []
+    for candidate in candidates:
+        result = route_retro_candidate(candidate, proposals_path=path, deduplicate_pending=True)
+        if result["decision"] != "already_pending":
+            queued.append(result)
+    return queued
+
+
+def route_retro_candidate(
+    candidate: dict[str, Any],
+    mode: str = "observe",
+    starred: bool = False,
+    proposals_path: Path | None = None,
+    linear_runner: Callable[..., Any] | None = None,
+    deduplicate_pending: bool = False,
+) -> dict[str, Any]:
+    cid = str(candidate.get("id") or "").strip()
+    if not cid:
+        raise ValueError("candidate id is required")
+    title = str(candidate.get("title") or cid).strip()
+    detail = str(candidate.get("detail") or title).strip()
+    ref = str(candidate.get("ref") or f"retro://{cid}").strip()
+    scope = str(candidate.get("scope") or "personal").strip() or "personal"
+    norm_prio = _normalize_priority(candidate.get("priority"), default="high")
+    proposal = {
+        "id": cid,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "agent": str(candidate.get("agent") or "retro-loop").strip() or "retro-loop",
+        "title": title,
+        "detail": detail,
+        "priority": norm_prio,
+        "status": "pending",
+        "ref": ref,
+        "scope": scope,
+    }
+    for extra_key in (
+        "layer",
+        "category",
+        "skill",
+        "plain_reason",
+        "scope_triage",
+        "metric_id",
+        "action",
+        "legacy_ids",
+        "legacy_refs",
+        "legacy_ref",
+        "diagnostic_status",
+        "post_invocation_repair_loop_rate",
+        "app_name",
+        "event_kind",
+        "signature",
+        "stack_top_symbol",
+        "recommended_layer",
+        "verify_cmd",
+        "window_cst",
+        "window_start",
+        "window_end",
+        "estimated",
+        "estimation_method",
+        "source_as_of",
+        "sample_size",
+        "coverage_status",
+        "scope",
+    ):
+        if extra_key in candidate:
+            proposal[extra_key] = candidate[extra_key]
+    proposal.setdefault("scope", "personal")
+    if any(not str(proposal[key] or "").strip() for key in ("id", "ts", "agent", "title")):
+        raise ValueError("proposal requires nonempty id/ts/agent/title")
+    if mode == "observe" and not starred:
+        if proposals_path is None:
+            raise ValueError("proposals_path is required for observe mode")
+        with _proposal_lock(proposals_path):
+            history = _proposal_history(proposals_path)
+            ids = {proposal["id"], *candidate.get("legacy_ids", [])}
+            refs = {proposal["ref"], *candidate.get("legacy_refs", []), candidate.get("legacy_ref", "")}
+            refs.discard("")
+            prior = next((row for row in history.values() if (row["id"] in ids or row.get("ref") in refs or ids.intersection(row.get("legacy_ids", [])) or refs.intersection(row.get("legacy_refs", []))) and row.get("status") in {"pending", "approved", "dismissed", "transferred"}), None)
+            if deduplicate_pending and prior:
+                return {"decision": "already_pending", "promoted": False, "proposal": prior}
+            with proposals_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(proposal, ensure_ascii=False) + "\n")
+        return {"decision": "observe (queued_to_aidash)", "promoted": False, "proposal": proposal}
+    if linear_runner is None:
+        raise ValueError("linear_runner is required for promotion")
+    linear_runner(proposal)
+    proposal["status"] = "approved"
+    return {"decision": "promoted_to_linear", "promoted": True, "proposal": proposal}
+
+
+route_retro_Candidate = route_retro_candidate
+
+
+def _load_jev_client() -> Any | None:
+    path = Path(__file__).resolve().parents[2] / "team-lead" / "scripts" / "jev_client.py"
+    if not path.is_file():
+        return None
+    with contextlib.suppress(Exception):
+        spec = importlib.util.spec_from_file_location("skill_retro_jev_client", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    return None
+
+
+def probe_skills(
+    *,
+    skill: str | None = None,
+    aspect: str | None = None,
+    fast: bool = True,
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    trace_export_path: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    days: int = 30,
+) -> dict[str, Any]:
+    """Stage 1: Sub-second wide or single-skill probe (`probe [--skill <name>] [--aspect <dim>] --fast`)."""
+    t0 = time.monotonic()
+    s_root = skills_root or DEFAULT_SKILLS_ROOT
+    d_root = dev_root or DEFAULT_DEV_ROOT
+    norm_sk = _norm_skill(skill) if skill else None
+    entry_mode = "direct_single_skill" if norm_sk else "global_sweep"
+    aspect_filter = _normalize_aspects(aspect, mode="partial" if aspect else "full") if aspect else list(CANONICAL_ASPECTS)
+
+    full_inv = _discover_skill_inventory(s_root, d_root)
+    known_all = set(full_inv.keys())
+    leases = discover_active_skill_leases(dev_root=d_root, handoff_root=handoff_root, known_skills=known_all)
+    if norm_sk:
+        inv = {k: v for k, v in full_inv.items() if _norm_skill(k) == norm_sk}
+    else:
+        inv = full_inv
+
+    explicit_source_override = any(
+        val is not None
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path, handoff_root)
+    )
+    has_small_custom_sources = explicit_source_override
+    skills_signals: list[dict[str, Any]] = []
+
+    if has_small_custom_sources or not fast:
+        diag = compute_skill_retro(
+            warehouse_db=warehouse_db,
+            copilot_db=copilot_db,
+            copilot_sessions_dir=copilot_sessions_dir,
+            usage_jsonl=usage_jsonl,
+            trace_export_path=trace_export_path,
+            handoff_root=handoff_root,
+            skills_root=s_root,
+            dev_root=d_root,
+            telemetry_shards_dir=telemetry_shards_dir,
+            skill=norm_sk,
+            days=days,
+            mirror_roi_snapshot=False,
+        )
+        l0 = diag.get("layer0_direction_and_triggers") or {}
+        l1 = diag.get("layer1_drawer_metabolism") or {}
+        l2 = diag.get("layer2_script_efficacy_and_speed") or {}
+        l3 = diag.get("layer3_wild_patterns_and_eval") or {}
+        taste = l3.get("taste_and_eval_diversity") or {}
+
+        for sk_name, meta in sorted(inv.items()):
+            trig_misses = sum(int(x.get("missed_sessions") or 0) for x in (l0.get("trigger_misses") or []) if x.get("skill") == sk_name)
+            empty_loads = sum(int(x.get("zero_action_sessions") or 0) for x in (l0.get("zero_action_loads") or []) if x.get("skill") == sk_name)
+            drifts = sum(1 for x in (l0.get("directional_drifts") or []) if sk_name in (x.get("skills") or []))
+            unwired = sum(1 for x in (l1.get("unwired_disconnected_drawers") or []) if x.get("skill") == sk_name)
+            hot_cnt = sum(1 for x in (l1.get("hot_drawers") or []) if x.get("skill") == sk_name)
+            deadwood = sum(1 for x in (l1.get("true_zero_hit_deadwood") or []) if x.get("skill") == sk_name)
+            exit2_cnt = sum(int(x.get("exit_2_count") or 0) for x in (l2.get("rigid_roadblocks") or []) if x.get("skill") == sk_name)
+            rubber_cnt = sum(1 for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk_name and int(x.get("co_occurring_skill_escapes") or 0) > 0)
+            slow_cnt = sum(
+                1
+                for x in (l2.get("latency_sinks") or [])
+                if x.get("skill") == sk_name and x.get("primary_bottleneck") != "external_wait"
+            )
+            wild_cnt = sum(int(x.get("occurrences") or 0) for x in (l3.get("wild_patterns") or []) if x.get("candidate_skill") == sk_name)
+            creative_flag = sk_name in {"my-designer", "design-studio"} and bool(taste.get("low_diversity_goals"))
+            eval_cases_cnt = int(meta.get("eval_case_count") or 0)
+
+            triggered_aspects: list[str] = []
+            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or not meta.get("budget_ok", True)) and "l0" in aspect_filter:
+                triggered_aspects.append("l0")
+            if (unwired > 0 or hot_cnt > 0 or deadwood > 0) and "l1" in aspect_filter:
+                triggered_aspects.append("l1")
+            if (exit2_cnt > 0 or rubber_cnt > 0 or slow_cnt > 0) and "l2" in aspect_filter:
+                triggered_aspects.append("l2")
+            if wild_cnt > 0 and "l3" in aspect_filter:
+                triggered_aspects.append("l3")
+            if creative_flag and "creative" in aspect_filter:
+                triggered_aspects.append("creative")
+            if len(triggered_aspects) >= 2 and "eval" in aspect_filter:
+                triggered_aspects.append("eval")
+
+            priority_score = (
+                exit2_cnt * 3.0
+                + unwired * 2.5
+                + trig_misses * 2.0
+                + empty_loads * 1.2
+                + drifts * 2.0
+                + rubber_cnt * 1.8
+                + slow_cnt * 1.5
+                + (1.5 if wild_cnt >= WILD_PATTERN_MIN_COUNT else 0.0)
+                + (1.2 if creative_flag else 0.0)
+                + (1.0 if not meta.get("budget_ok", True) else 0.0)
+            )
+            skills_signals.append(
+                {
+                    "skill": sk_name,
+                    "scope": meta.get("scope", "global"),
+                    "l0_lines": meta.get("l0_lines", 0),
+                    "max_l1_lines": meta.get("max_l1_lines", 0),
+                    "budget_ok": bool(meta.get("budget_ok", True)),
+                    "eval_case_count": eval_cases_cnt,
+                    "leased": sk_name in leases["leased_skills"],
+                    "lease_reasons": leases["lease_reasons"].get(sk_name, []),
+                    "signals": {
+                        "l0_trigger_misses": trig_misses,
+                        "l0_zero_action_loads": empty_loads,
+                        "l0_directional_drifts": drifts,
+                        "l1_unwired_drawers": unwired,
+                        "l1_hot_drawers": hot_cnt,
+                        "l1_true_deadwood": deadwood,
+                        "l2_exit2_roadblocks": exit2_cnt,
+                        "l2_leaky_rubber_stamps": rubber_cnt,
+                        "l2_latency_sinks": slow_cnt,
+                        "l3_wild_occurrences": wild_cnt,
+                        "creative_selection_signal": bool(creative_flag),
+                    },
+                    "triggered_aspects": triggered_aspects,
+                    "priority_score": round(priority_score, 2),
+                }
+            )
+    else:
+        for sk_name, meta in sorted(inv.items()):
+            pkg_p = Path(str(meta.get("path") or (s_root / sk_name)))
+            unwired_static = 0
+            for ref_e in meta.get("reference_entries") or []:
+                rel_r = str(ref_e.get("rel_path") or "")
+                if rel_r.startswith("references/") and _drawer_linked_in_l0(pkg_p, rel_r) and not _drawer_linked_in_scripts(pkg_p, rel_r):
+                    unwired_static += 1
+            budget_ok = bool(meta.get("budget_ok", True))
+            eval_cases_cnt = int(meta.get("eval_case_count") or 0)
+            creative_flag = sk_name in {"my-designer", "design-studio"}
+            triggered_aspects = []
+            if not budget_ok and "l0" in aspect_filter:
+                triggered_aspects.append("l0")
+            if unwired_static > 0 and meta.get("scripts") and "l1" in aspect_filter:
+                triggered_aspects.append("l1")
+            if meta.get("scripts") and "l2" in aspect_filter and unwired_static > 0:
+                triggered_aspects.append("l2")
+            if creative_flag and "creative" in aspect_filter:
+                triggered_aspects.append("creative")
+            if eval_cases_cnt == 0 and "eval" in aspect_filter:
+                triggered_aspects.append("eval")
+            score = (
+                (2.5 if not budget_ok else 0.0)
+                + (1.5 if unwired_static > 0 and meta.get("scripts") else 0.0)
+                + (1.0 if eval_cases_cnt == 0 else 0.0)
+                + (0.8 if creative_flag else 0.0)
+            )
+            skills_signals.append(
+                {
+                    "skill": sk_name,
+                    "scope": meta.get("scope", "global"),
+                    "l0_lines": meta.get("l0_lines", 0),
+                    "max_l1_lines": meta.get("max_l1_lines", 0),
+                    "budget_ok": budget_ok,
+                    "eval_case_count": eval_cases_cnt,
+                    "leased": sk_name in leases["leased_skills"],
+                    "lease_reasons": leases["lease_reasons"].get(sk_name, []),
+                    "signals": {
+                        "l0_trigger_misses": 0,
+                        "l0_zero_action_loads": 0,
+                        "l0_directional_drifts": 0,
+                        "l1_unwired_drawers": unwired_static if meta.get("scripts") else 0,
+                        "l1_hot_drawers": 0,
+                        "l1_true_deadwood": 0,
+                        "l2_exit2_roadblocks": 0,
+                        "l2_leaky_rubber_stamps": 0,
+                        "l2_latency_sinks": 0,
+                        "l3_wild_occurrences": 0,
+                        "creative_selection_signal": creative_flag,
+                    },
+                    "triggered_aspects": triggered_aspects,
+                    "priority_score": round(score, 2),
+                }
+            )
+
+    skills_signals.sort(key=lambda item: (-float(item["priority_score"]), item["skill"]))
+    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
+    return {
+        "ok": True,
+        "schema": "skill-retro-probe/v1",
+        "stage": "stage1_probe",
+        "entry_mode": entry_mode,
+        "skill_filter": norm_sk,
+        "aspect_filter": aspect_filter,
+        "fast": bool(fast),
+        "duration_ms": elapsed_ms,
+        "skills_probed": len(skills_signals),
+        "active_leases": leases,
+        "probe_role_tier": {
+            "role": "explorer",
+            "compatible_roles": ["explorer", "mechanical"],
+            "tier": "worker",
+            "models": ["mai-code-2-flash", "gpt-5.6-luna"],
+        },
+        "skills": skills_signals,
+    }
+
+
+def _parse_jev_triage_entry(
+    raw_entry: Any,
+    *,
+    default_aspects: list[str],
+    default_score: float,
+) -> tuple[str | None, list[str] | None, float | None]:
+    if isinstance(raw_entry, str):
+        choice = raw_entry.strip().lower()
+        if choice in {"skip", "partial", "full"}:
+            return choice, (list(CANONICAL_ASPECTS) if choice == "full" else default_aspects), (0.85 if choice != "skip" else 0.1)
+    if not isinstance(raw_entry, Mapping):
+        return None, None, None
+    inner = raw_entry.get("answers", raw_entry) if isinstance(raw_entry.get("answers"), Mapping) else raw_entry
+    choice_val = inner.get("route_mode", inner.get("mode", inner.get("choice")))
+    if isinstance(choice_val, Mapping):
+        choice_val = choice_val.get("choice") or choice_val.get("mode")
+    choice_str = str(choice_val or "").strip().lower() if choice_val is not None else ""
+    noul_val = inner.get("noul", inner.get("score", inner.get("confidence")))
+    if isinstance(noul_val, Mapping):
+        noul_val = noul_val.get("noul", noul_val.get("score", noul_val.get("confidence")))
+    noul_num: float | None = None
+    if isinstance(noul_val, (int, float)) and not isinstance(noul_val, bool):
+        noul_num = float(noul_val)
+    raw_asp = inner.get("aspects")
+    asp_list = _normalize_aspects(raw_asp, mode=choice_str or "partial") if raw_asp else None
+    if choice_str in {"skip", "partial", "full"}:
+        if noul_num is not None and noul_num < 0.30:
+            return "skip", [], noul_num
+        if noul_num is not None and 0.30 <= noul_num <= 0.70 and choice_str != "skip":
+            # Grey zone falls back to deterministic aspect rules
+            return None, asp_list, noul_num
+        return choice_str, asp_list, (noul_num if noul_num is not None else (0.85 if choice_str != "skip" else 0.10))
+    if noul_num is not None:
+        if noul_num > 0.70:
+            mode_out = "full" if len(default_aspects) >= 3 else "partial"
+            return mode_out, (asp_list or default_aspects), noul_num
+        if noul_num < 0.30:
+            return "skip", [], noul_num
+    return None, asp_list, noul_num
+
+
+def triage_skills(
+    *,
+    probe_report: Mapping[str, Any] | None = None,
+    skill: str | None = None,
+    aspect: str | None = None,
+    pick_one: bool = False,
+    pick_top: int | None = None,
+    use_jev: bool = True,
+    mock_jev_json: Any = None,
+    emit_briefs_dir: Path | None = None,
+    coupled_with: Sequence[str] | str | None = None,
+    relays: Sequence[Mapping[str, Any]] | None = None,
+    warehouse_db: Path | None = None,
+    copilot_db: Path | None = None,
+    copilot_sessions_dir: Path | None = None,
+    usage_jsonl: Path | None = None,
+    trace_export_path: Path | None = None,
+    handoff_root: Path | None = None,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+    telemetry_shards_dir: Path | None = None,
+    days: int = 30,
+) -> dict[str, Any]:
+    """Stage 2: Cheap Worker + Jev fast-thinking triage & Autonomous Daily Batch (--pick-top 3 default) or Pick-1."""
+    norm_sk = _norm_skill(skill) if skill else None
+    probe = (
+        dict(probe_report)
+        if probe_report is not None
+        else probe_skills(
+            skill=norm_sk,
+            aspect=aspect,
+            fast=True,
+            warehouse_db=warehouse_db,
+            copilot_db=copilot_db,
+            copilot_sessions_dir=copilot_sessions_dir,
+            usage_jsonl=usage_jsonl,
+            trace_export_path=trace_export_path,
+            handoff_root=handoff_root,
+            skills_root=skills_root,
+            dev_root=dev_root,
+            telemetry_shards_dir=telemetry_shards_dir,
+            days=days,
+        )
+    )
+    parsed_mock: Any = None
+    if mock_jev_json is not None:
+        if isinstance(mock_jev_json, str):
+            p_cand = Path(mock_jev_json).expanduser()
+            parsed_mock = json.loads(p_cand.read_text(encoding="utf-8") if p_cand.is_file() else mock_jev_json)
+        else:
+            parsed_mock = mock_jev_json
+
+    jev_mod = _load_jev_client() if (use_jev or parsed_mock is not None) else None
+    decisions: list[dict[str, Any]] = []
+    excluded_by_lease: list[dict[str, Any]] = []
+
+    for idx, item in enumerate(probe.get("skills") or [], 1):
+        sk_name = str(item.get("skill") or "")
+        leased = bool(item.get("leased"))
+        lease_reasons = list(item.get("lease_reasons") or [])
+        trig = list(item.get("triggered_aspects") or [])
+        score = float(item.get("priority_score") or 0.0)
+
+        # Deterministic baseline classification (0..3 honest cap — never force fixes on 0 issues)
+        if score <= 0.0 or not trig:
+            det_mode = "skip"
+            det_aspects = []
+            det_noul = 0.12
+        elif norm_sk and sk_name == norm_sk:
+            det_mode = "partial" if (aspect and len(trig) < 6) else ("full" if len(trig) >= 3 else "partial")
+            det_aspects = trig if not aspect else _normalize_aspects(aspect, mode=det_mode)
+            det_noul = max(0.80, min(0.99, 0.72 + score * 0.05))
+        elif len(trig) >= 3 or ("creative" in trig and len(trig) >= 2):
+            det_mode = "full"
+            det_aspects = list(CANONICAL_ASPECTS)
+            det_noul = min(0.98, round(0.72 + score * 0.04, 3))
+        else:
+            det_mode = "partial"
+            det_aspects = trig
+            det_noul = min(0.95, round(0.71 + score * 0.04, 3))
+
+        decision_source = "deterministic_fallback"
+        final_mode = det_mode
+        final_aspects = det_aspects
+        final_noul = det_noul
+
+        # Check Jev mock or live jev_decide
+        jev_raw: Any = None
+        if isinstance(parsed_mock, Mapping):
+            if sk_name in parsed_mock:
+                jev_raw = parsed_mock[sk_name]
+            elif str(idx) in parsed_mock:
+                jev_raw = parsed_mock[str(idx)]
+            elif "route_mode" in parsed_mock or "choice" in parsed_mock or "answers" in parsed_mock:
+                jev_raw = parsed_mock
+        elif isinstance(parsed_mock, list) and idx - 1 < len(parsed_mock):
+            jev_raw = parsed_mock[idx - 1]
+        elif use_jev and jev_mod is not None and score > 0:
+            questions = {
+                "route_mode": {
+                    "type": "choice",
+                    "instructions": "Classify skill retro inspection scope from lightweight probe signals.",
+                    "criteria": {
+                        "skip": "Healthy or low-sample noise; keep skill asleep.",
+                        "partial": "Localized friction in 1-2 dimensions (e.g. L1/L2 script or drawer); run targeted partial check.",
+                        "full": "Multi-layer drift, creative homogenization, or >=3 dimensions triggered; run full 6-dimension check.",
+                    },
+                },
+                "noul": {
+                    "type": "noul",
+                    "instructions": "Confidence that this skill warrants immediate Stage 3 retro evolution.",
+                },
+            }
+            jev_raw = jev_mod.jev_decide(
+                {"skill": sk_name, "signals": item.get("signals"), "triggered_aspects": trig, "priority_score": score},
+                questions,
+                agent_role="retro-loop",
+                timeout_sec=1.5,
+            )
+
+        if jev_raw is not None:
+            j_mode, j_aspects, j_noul = _parse_jev_triage_entry(
+                jev_raw,
+                default_aspects=det_aspects or ["l2"],
+                default_score=det_noul,
+            )
+            if j_mode is not None:
+                final_mode = j_mode
+                final_aspects = (
+                    list(CANONICAL_ASPECTS)
+                    if j_mode == "full"
+                    else ([] if j_mode == "skip" else (j_aspects or det_aspects or ["l2"]))
+                )
+                final_noul = j_noul if j_noul is not None else det_noul
+                decision_source = "jev_mock" if parsed_mock is not None else "jev_decide"
+
+        # Lock 2: Active Lease Exclusion (unless user explicitly requested this single skill)
+        if leased and not norm_sk:
+            excluded_by_lease.append({"skill": sk_name, "lease_reasons": lease_reasons, "would_have_been": final_mode})
+            final_mode = "skip"
+            final_aspects = []
+            decision_source = f"{decision_source}:excluded_active_lease"
+
+        decisions.append(
+            {
+                "skill": sk_name,
+                "decision": final_mode,
+                "mode": final_mode,
+                "aspects": final_aspects,
+                "noul": round(float(final_noul), 3),
+                "priority_score": score,
+                "decision_source": decision_source,
+                "leased": leased,
+                "lease_reasons": lease_reasons,
+                "owned_paths": (
+                    [f"skills/{sk_name}/**", f"scripts/test_{sk_name.replace('-', '_')}_*.py"]
+                    if final_mode in {"partial", "full"}
+                    else []
+                ),
+            }
+        )
+
+    actionable = [d for d in decisions if d["decision"] in {"partial", "full"}]
+    actionable.sort(key=lambda d: (-float(d["priority_score"]), -float(d["noul"]), d["skill"]))
+
+    if norm_sk:
+        effective_top_n = 1
+    elif pick_one:
+        effective_top_n = 1
+    elif pick_top is not None:
+        effective_top_n = max(1, int(pick_top))
+    else:
+        effective_top_n = 3
+    selected_targets = actionable[:effective_top_n]
+    picked_skill_entry = selected_targets[0] if selected_targets else None
+    today_cst = _cst_today_str()
+    triage_status = "ACTIONABLE" if selected_targets else "HEALTHY_NO_ISSUES"
+    triage_status_msg = (
+        f"Selected {len(selected_targets)}/{effective_top_n} skill(s) with evidence-backed issues"
+        if selected_targets
+        else "healthy / 0 issues found (no changes needed)"
+    )
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "schema": "skill-retro-triage/v1",
+        "stage": "stage2_triage",
+        "status": triage_status,
+        "status_message": triage_status_msg,
+        "writers_to_spawn": len(selected_targets),
+        "autonomous_daily_execution": {
+            "owner_approval_gate_required": False,
+            "daily_batch_default_pick_top": 3,
+            "pick_top_is_upper_cap_not_quota": True,
+            "zero_issue_policy": "HEALTHY_NO_ISSUES (spawn 0 Writers; never invent or force cosmetic edits)",
+            "pipeline": "Probe Worker -> M1 TL -> 0..3 Parallel Writers -> 0..3 Reviewers -> PR Merge -> Daily Summary Issue",
+            "daily_summary_issue_title": f"[Skill Retro {today_cst}] Autonomous Evolution Summary ({len(selected_targets)} skill(s))",
+        },
+        "worker_role_slot": {
+            "role": "explorer",
+            "compatible_roles": ["explorer", "mechanical"],
+            "tier": "worker",
+            "steering_tokens_burned": 0,
+            "dispatch_cmd": "skills/team-lead/scripts/herdr-dispatch.sh --role explorer --name skill-retro-probe-r1",
+        },
+        "pick_one": bool(effective_top_n == 1),
+        "pick_top": effective_top_n,
+        "picked_skill": picked_skill_entry["skill"] if picked_skill_entry else None,
+        "picked_mode": picked_skill_entry["mode"] if picked_skill_entry else "skip",
+        "picked_aspects": picked_skill_entry["aspects"] if picked_skill_entry else [],
+        "selected_skills": selected_targets,
+        "excluded_by_active_lease": excluded_by_lease,
+        "anti_collision_locks": {
+            "lock1_strict_disjoint_owned_paths": True,
+            "lock2_active_lease_exclusion": True,
+            "lock3_wave1_disjoint_wave2_relays": True,
+        },
+        "wave_plan": {
+            "wave_1_disjoint_hosts": [
+                {
+                    "skill": t["skill"],
+                    "mode": t["mode"],
+                    "aspects": t["aspects"],
+                    "owned_paths": t["owned_paths"],
+                }
+                for t in selected_targets
+            ],
+            "wave_2_cross_skill_relays": list(relays or []),
+        },
+        "decisions": decisions,
+    }
+
+    if emit_briefs_dir is not None and selected_targets:
+        stage3_runs: list[dict[str, Any]] = []
+        for target_item in selected_targets:
+            diag = compute_skill_retro(
+                warehouse_db=warehouse_db,
+                copilot_db=copilot_db,
+                copilot_sessions_dir=copilot_sessions_dir,
+                usage_jsonl=usage_jsonl,
+                trace_export_path=trace_export_path,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                telemetry_shards_dir=telemetry_shards_dir,
+                skill=target_item["skill"],
+                emit_briefs_dir=emit_briefs_dir,
+                mode=target_item["mode"],
+                aspects=target_item["aspects"],
+                coupled_with=coupled_with,
+                relays=relays,
+                days=days,
+                mirror_roi_snapshot=False,
+            )
+            stage3_runs.append(diag.get("emitted_briefs") or {})
+        result["emitted_briefs"] = stage3_runs[0] if len(stage3_runs) == 1 else stage3_runs
+
+    return result
+
+
+class _SelfDisclosingArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[skill-retro] CLI error: {message}\n"
+            "  Fix: run `python3 skills/skill-retro/scripts/skill_retro.py {probe,triage,diagnose,emit-briefs,emit-relay,roi} --help`\n"
+            "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
+        )
+        raise SystemExit(2)
+
+
+def _add_common_source_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--skill", "--target-skill", dest="skill", default=None, help="Target skill name (or single-skill direct mode).")
+    p.add_argument("--warehouse-db", type=Path, default=None)
+    p.add_argument("--copilot-db", type=Path, default=None)
+    p.add_argument("--copilot-sessions-dir", type=Path, default=None)
+    p.add_argument("--usage-jsonl", type=Path, default=None)
+    p.add_argument("--trace-export", type=Path, default=None)
+    p.add_argument("--handoff-root", type=Path, default=None)
+    p.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
+    p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
+    p.add_argument("--icloud-sync-dir", type=Path, default=None)
+    p.add_argument("--telemetry-shards-dir", type=Path, default=None)
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--json", action="store_true", default=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    known_subcommands = {"probe", "triage", "diagnose", "emit-briefs", "emit-relay", "skill-retro", "roi", "skill-roi"}
+
+    if not args_list or args_list[0] in {"-h", "--help"}:
+        top = _SelfDisclosingArgumentParser(
+            prog="skill_retro.py",
+            description="3-Stage Skill Progressive Self-Evolution: Fast Probe -> Cheap Worker + Jev Triage -> Scoped 6D Deep Reasoning.",
+        )
+        top.add_argument(
+            "command",
+            nargs="?",
+            choices=sorted(known_subcommands),
+            help="Subcommand: probe | triage | diagnose | emit-briefs | emit-relay | roi",
+        )
+        _add_common_source_args(top)
+        top.parse_args(args_list)
+        return 0
+
+    cmd = args_list[0]
+    rest = args_list[1:]
+    if cmd.startswith("-"):
+        cmd = "diagnose"
+        rest = args_list
+    elif cmd not in known_subcommands:
+        sys.stderr.write(
+            f"[skill-retro] Unknown subcommand: {cmd!r}\n"
+            "  Valid subcommands: probe, triage, diagnose, emit-briefs, emit-relay, roi\n"
+            "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
+        )
+        raise SystemExit(2)
+
+    if cmd == "probe":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py probe")
+        _add_common_source_args(p)
+        p.add_argument("--aspect", "--aspects", dest="aspect", default=None, help="Optional aspect filter (l0,l1,l2,l3,creative,eval).")
+        p.add_argument("--fast", action="store_true", default=True, help="Sub-second watermark/signal scan (default True).")
+        p.add_argument("--deep", dest="fast", action="store_false", help="Force full session/DB scan during probe.")
+        ns = p.parse_args(rest)
+        out = probe_skills(
+            skill=ns.skill,
+            aspect=ns.aspect,
+            fast=ns.fast,
+            warehouse_db=ns.warehouse_db,
+            copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            trace_export_path=ns.trace_export,
+            handoff_root=ns.handoff_root,
+            skills_root=ns.skills_root,
+            dev_root=ns.dev_root,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
+            days=ns.days,
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if cmd == "triage":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py triage")
+        _add_common_source_args(p)
+        p.add_argument("--aspect", "--aspects", dest="aspect", default=None)
+        p.add_argument("--pick-one", action="store_true", default=False, help="Pick the single top actionable skill.")
+        p.add_argument("--pick-top", type=int, default=None, help="Pick top N mutually disjoint skills for parallel Wave 1 (default 3 in daily autonomous batch).")
+        p.add_argument("--use-jev", action="store_true", default=True, help="Use jev_client.py jev_decide with deterministic fallback.")
+        p.add_argument("--no-jev", dest="use_jev", action="store_false")
+        p.add_argument("--mock-jev-json", default=None, help="Inline JSON or file path for deterministic Jev testing.")
+        p.add_argument("--emit-briefs", "--handoff-dir", dest="emit_briefs", type=Path, default=None)
+        p.add_argument("--coupled-with", default=None, help="Explicitly lock a coupled Guest Skill into the same worktree.")
+        p.add_argument("--relay-to", default=None, help="Emit a Wave 2 Cross-Skill Relay Brief to this Guest Skill.")
+        p.add_argument("--relay-requirement", default="", help="Requirement text for --relay-to.")
+        ns = p.parse_args(rest)
+        relays_list = (
+            [{"from_skill": ns.skill or "", "to_skill": ns.relay_to, "requirement": ns.relay_requirement}]
+            if ns.relay_to
+            else None
+        )
+        out = triage_skills(
+            skill=ns.skill,
+            aspect=ns.aspect,
+            pick_one=ns.pick_one,
+            pick_top=ns.pick_top,
+            use_jev=ns.use_jev,
+            mock_jev_json=ns.mock_jev_json,
+            emit_briefs_dir=ns.emit_briefs,
+            coupled_with=ns.coupled_with,
+            relays=relays_list,
+            warehouse_db=ns.warehouse_db,
+            copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            trace_export_path=ns.trace_export,
+            handoff_root=ns.handoff_root,
+            skills_root=ns.skills_root,
+            dev_root=ns.dev_root,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
+            days=ns.days,
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if cmd == "emit-relay":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py emit-relay")
+        p.add_argument("--from", "--from-skill", "--host", dest="from_skill", required=True, help="Host skill originating the relay.")
+        p.add_argument("--to", "--to-skill", "--guest", dest="to_skill", required=True, help="Guest skill to update in Wave 2.")
+        p.add_argument("--requirement", required=True, help="Concrete contract/CLI change required in Guest skill.")
+        p.add_argument("--evidence-summary", default="", help="Optional observed failure/telemetry summary.")
+        p.add_argument("--wave", type=int, default=2, help="Target wave number (default 2).")
+        p.add_argument("--emit-briefs", "--handoff-dir", dest="emit_briefs", type=Path, required=True)
+        p.add_argument("--json", action="store_true", default=True)
+        ns = p.parse_args(rest)
+        try:
+            out = emit_cross_skill_relay(
+                from_skill=ns.from_skill,
+                to_skill=ns.to_skill,
+                requirement=ns.requirement,
+                emit_dir=ns.emit_briefs,
+                evidence_summary=ns.evidence_summary,
+                wave=ns.wave,
+            )
+        except ValueError as exc:
+            sys.stderr.write(
+                f"[skill-retro] Relay error: {exc}\n"
+                "  Fix: pass distinct `--from <host>` and `--to <guest>` skill names.\n"
+                "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
+            )
+            raise SystemExit(2) from exc
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if cmd in {"roi", "skill-roi"}:
+        p = _SelfDisclosingArgumentParser(prog=f"skill_retro.py {cmd}")
+        _add_common_source_args(p)
+        p.add_argument("--magpie-usage", type=Path, default=None)
+        p.add_argument("--dsh-sessions", type=Path, default=DEFAULT_DSH_SESSIONS)
+        p.add_argument("--icloud-roi-path", type=Path, default=None)
+        p.add_argument("--no-icloud-mirror", action="store_true")
+        p.add_argument("--auto-propose", action="store_true")
+        p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        ns = p.parse_args(rest)
+        report = compute_skill_roi(
+            warehouse_db=ns.warehouse_db,
+            copilot_db=ns.copilot_db,
+            skills_root=ns.skills_root,
+            dev_root=ns.dev_root,
+            magpie_usage=ns.magpie_usage,
+            dsh_sessions=ns.dsh_sessions,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
+            icloud_sync_dir=ns.icloud_sync_dir,
+            mirror_icloud_roi=False if ns.no_icloud_mirror else None,
+            icloud_roi_path=ns.icloud_roi_path,
+        )
+        if ns.auto_propose:
+            queued = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)
+            report.update(
+                auto_proposed=queued,
+                proposals_written=len(queued),
+                proposals_skipped=len(report.get("low_roi_proposals", [])) - len(queued),
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    # `diagnose`, `emit-briefs`, or `skill-retro`
+    p = _SelfDisclosingArgumentParser(prog=f"skill_retro.py {cmd}")
+    _add_common_source_args(p)
+    p.add_argument("--emit-briefs", "--handoff-dir", dest="emit_briefs", type=Path, default=None)
+    p.add_argument("--mode", choices=("full", "partial", "auto"), default="full")
+    p.add_argument("--aspects", "--aspect", dest="aspects", default=None, help="Comma-separated aspects (l0,l1,l2,l3,creative,eval).")
+    p.add_argument("--pick-one", action="store_true", default=False, help="Auto-pick top 1 actionable skill via Stage 1+2 if --skill is omitted.")
+    p.add_argument("--pick-top", type=int, default=None, help="Auto-pick top N disjoint skills via Stage 1+2.")
+    p.add_argument("--use-jev", action="store_true", default=False)
+    p.add_argument("--mock-jev-json", default=None)
+    p.add_argument("--coupled-with", default=None, help="Lock a coupled Guest Skill into the same worktree Owned Paths.")
+    p.add_argument("--relay-to", default=None, help="Emit a Wave 2 Cross-Skill Relay Brief to this Guest Skill.")
+    p.add_argument("--relay-requirement", default="", help="Requirement text for --relay-to.")
+    p.add_argument("--icloud-roi-path", type=Path, default=None)
+    p.add_argument("--local-roi-path", type=Path, default=None)
+    p.add_argument("--no-roi-mirror", action="store_true")
+    p.add_argument("--auto-propose", action="store_true")
+    p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+    ns = p.parse_args(rest)
+
+    target_skill = ns.skill
+    eff_mode = "full" if ns.mode == "auto" else ns.mode
+    eff_aspects = ns.aspects
+    triage_meta: dict[str, Any] | None = None
+
+    if (ns.pick_one or ns.pick_top is not None or ns.mode == "auto") and not target_skill:
+        triage_meta = triage_skills(
+            skill=None,
+            aspect=ns.aspects,
+            pick_one=True if ns.pick_top is None else False,
+            pick_top=ns.pick_top,
+            use_jev=ns.use_jev,
+            mock_jev_json=ns.mock_jev_json,
+            warehouse_db=ns.warehouse_db,
+            copilot_db=ns.copilot_db,
+            copilot_sessions_dir=ns.copilot_sessions_dir,
+            usage_jsonl=ns.usage_jsonl,
+            trace_export_path=ns.trace_export,
+            handoff_root=ns.handoff_root,
+            skills_root=ns.skills_root,
+            dev_root=ns.dev_root,
+            telemetry_shards_dir=ns.telemetry_shards_dir,
+            days=ns.days,
+        )
+        target_skill = triage_meta.get("picked_skill")
+        if ns.mode == "auto" and triage_meta.get("picked_mode") in {"partial", "full"}:
+            eff_mode = str(triage_meta["picked_mode"])
+        if not eff_aspects and triage_meta.get("picked_aspects"):
+            eff_aspects = ",".join(triage_meta["picked_aspects"])
+
+    relays_list = (
+        [{"from_skill": target_skill or "", "to_skill": ns.relay_to, "requirement": ns.relay_requirement}]
+        if ns.relay_to
+        else None
+    )
+    report = compute_skill_retro(
+        warehouse_db=ns.warehouse_db,
+        copilot_db=ns.copilot_db,
+        copilot_sessions_dir=ns.copilot_sessions_dir,
+        usage_jsonl=ns.usage_jsonl,
+        trace_export_path=ns.trace_export,
+        handoff_root=ns.handoff_root,
+        skills_root=ns.skills_root,
+        dev_root=ns.dev_root,
+        telemetry_shards_dir=ns.telemetry_shards_dir,
+        skill=target_skill,
+        emit_briefs_dir=ns.emit_briefs,
+        mode=eff_mode,
+        aspects=eff_aspects,
+        coupled_with=ns.coupled_with,
+        relays=relays_list,
+        days=ns.days,
+        auto_propose=ns.auto_propose,
+        proposals_path=ns.proposals_path,
+        icloud_sync_dir=ns.icloud_sync_dir,
+        icloud_roi_path=ns.icloud_roi_path,
+        local_roi_path=ns.local_roi_path,
+        mirror_roi_snapshot=False if ns.no_roi_mirror else None,
+    )
+    if triage_meta is not None:
+        report["stage2_triage"] = {
+            "picked_skill": triage_meta.get("picked_skill"),
+            "picked_mode": triage_meta.get("picked_mode"),
+            "picked_aspects": triage_meta.get("picked_aspects"),
+            "selected_skills": triage_meta.get("selected_skills"),
+            "excluded_by_active_lease": triage_meta.get("excluded_by_active_lease"),
+        }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
