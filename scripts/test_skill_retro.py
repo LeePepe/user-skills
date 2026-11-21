@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 CST = timezone(timedelta(hours=8))
@@ -977,6 +978,141 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             self.assertIn("`skill-retro-my-designer-goal-tl-r1`", rollup_out["markdown_summary"])
             self.assertIn("`skill-retro-team-lead-goal-tl-r1`", rollup_out["markdown_summary"])
             self.assertIn("`HEALTHY_NO_ISSUES`", rollup_out["markdown_summary"])
+
+    def test_eintr_external_volume_guard_preserves_session_telemetry_and_updates_same_day_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            blocked_handoff = root / "blocked-volumes-ssd-handoff"
+            blocked_handoff.mkdir(parents=True, exist_ok=True)
+            empty_fallback_handoff = root / "empty-fallback-handoff"
+            empty_fallback_handoff.mkdir(parents=True, exist_ok=True)
+
+            orig_scandir = SKILL_RETRO.os.scandir
+            orig_iterdir = Path.iterdir
+
+            def guarded_scandir(target_path):
+                if Path(target_path) == blocked_handoff:
+                    raise InterruptedError(4, "Interrupted system call")
+                return orig_scandir(target_path)
+
+            def guarded_iterdir(self_path):
+                if self_path == blocked_handoff:
+                    raise InterruptedError(4, "Interrupted system call")
+                return orig_iterdir(self_path)
+
+            t0 = datetime.now(timezone.utc)
+            with (
+                unittest.mock.patch.object(SKILL_RETRO.os, "scandir", side_effect=guarded_scandir),
+                unittest.mock.patch.object(Path, "iterdir", autospec=True, side_effect=guarded_iterdir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", paths["sessions_dir"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", paths["usage_jsonl"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", paths["warehouse_db"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_DB", paths["copilot_db"]),
+            ):
+                # 1. Passing a TCC-blocked handoff_root raising InterruptedError(4) degrades in <2s without crashing
+                # and NEVER disables default ~/.copilot/session-state & usage.jsonl collection!
+                diag_blocked = SKILL_RETRO.compute_skill_retro(
+                    handoff_root=blocked_handoff,
+                    skills_root=paths["skills_root"],
+                    dev_root=paths["dev_root"],
+                    mirror_roi_snapshot=False,
+                )
+                elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
+                self.assertLess(elapsed_s, 2.0)
+                self.assertTrue(diag_blocked["ok"])
+                self.assertGreater(diag_blocked["sample_size"], 0)
+                self.assertGreater(diag_blocked["sources_ingested"]["sessions_observed"], 0)
+                self.assertEqual(
+                    diag_blocked["layer3_wild_patterns_and_eval"]["taste_and_eval_diversity"]["selection_receipt_count"],
+                    0,
+                )
+
+                # 2. Passing a custom fallback `--handoff-root` (e.g., `/tmp/multica-empty-handoff`) also keeps
+                # real `~/.copilot/session-state` and `usage.jsonl` enabled unless `isolated_fixtures=True`.
+                diag_fallback = SKILL_RETRO.compute_skill_retro(
+                    handoff_root=empty_fallback_handoff,
+                    skills_root=paths["skills_root"],
+                    dev_root=paths["dev_root"],
+                    mirror_roi_snapshot=False,
+                )
+                self.assertGreater(diag_fallback["sample_size"], 0)
+                self.assertEqual(diag_fallback["sample_size"], diag_blocked["sample_size"])
+
+                probe_blocked = SKILL_RETRO.probe_skills(
+                    handoff_root=blocked_handoff,
+                    skills_root=paths["skills_root"],
+                    dev_root=paths["dev_root"],
+                    fast=True,
+                )
+                self.assertTrue(probe_blocked["ok"])
+                self.assertEqual(probe_blocked["active_leases"]["leased_skills"], [])
+
+                rollup_blocked = SKILL_RETRO.rollup_m1_retro_receipts(
+                    handoff_root=blocked_handoff,
+                    target_date="2026-11-21",
+                )
+                self.assertTrue(rollup_blocked["ok"])
+                self.assertEqual(rollup_blocked["m1_tls_spawned"], 0)
+
+            # 3. Verify `multica_skills_autopilot.py file-issue` updates existing same-day issue in-place
+            # via `multica issue update <id>` when refreshed rollup/analysis differs or `--update-existing` is passed.
+            autopilot_mod = _load("test_skill_retro_autopilot_mod", "skills/retro-loop/scripts/multica_skills_autopilot.py")
+            snap = autopilot_mod.collect_skill_retro_snapshot(
+                skill_retro_fn=lambda **_kw: diag_blocked,
+            )
+            existing_issues: list[dict] = []
+            recorded_cmds: list[list[str]] = []
+
+            def fake_multica(args: list[str], *, stdin_text: str | None = None, **_kw) -> subprocess.CompletedProcess[str]:
+                recorded_cmds.append(args)
+                if args[:2] == ["issue", "list"]:
+                    return subprocess.CompletedProcess(args, 0, json.dumps({"issues": existing_issues}), "")
+                if args[:2] == ["issue", "create"]:
+                    created = {
+                        "id": "tia-20-uuid",
+                        "identifier": "TIA-20",
+                        "title": args[args.index("--title") + 1],
+                        "priority": args[args.index("--priority") + 1],
+                        "status": args[args.index("--status") + 1],
+                        "assignee_id": args[args.index("--assignee-id") + 1],
+                        "description": stdin_text or "",
+                    }
+                    existing_issues.append(created)
+                    return subprocess.CompletedProcess(args, 0, json.dumps(created), "")
+                if args[:2] == ["issue", "update"]:
+                    target_id = args[2]
+                    self.assertEqual(target_id, "tia-20-uuid")
+                    existing_issues[0]["title"] = args[args.index("--title") + 1]
+                    existing_issues[0]["description"] = stdin_text or ""
+                    return subprocess.CompletedProcess(args, 0, json.dumps(existing_issues[0]), "")
+                raise AssertionError(f"Unexpected multica command: {args}")
+
+            first_pub = autopilot_mod.file_actionable_issue(
+                snap,
+                analysis_markdown="### Morning Run\n- Stale morning analysis (`sample_size=0`).",
+                runner=fake_multica,
+            )
+            self.assertEqual(first_pub["action"], "created")
+
+            # Same-day re-run with identical content deduplicates without redundant update
+            same_pub = autopilot_mod.file_actionable_issue(
+                snap,
+                analysis_markdown="### Morning Run\n- Stale morning analysis (`sample_size=0`).",
+                runner=fake_multica,
+            )
+            self.assertEqual(same_pub["action"], "deduplicated_existing")
+
+            # Same-day re-run with refreshed rollup/analysis automatically updates existing issue via `multica issue update`
+            refreshed_pub = autopilot_mod.file_actionable_issue(
+                snap,
+                analysis_markdown="### Refreshed Rollup\n- Updated analysis with full 1,843 session telemetry.",
+                runner=fake_multica,
+            )
+            self.assertEqual(refreshed_pub["action"], "updated_existing")
+            self.assertIn("Updated analysis with full 1,843 session telemetry", existing_issues[0]["description"])
+            update_calls = [c for c in recorded_cmds if c[:2] == ["issue", "update"]]
+            self.assertEqual(len(update_calls), 1)
 
 
 if __name__ == "__main__":

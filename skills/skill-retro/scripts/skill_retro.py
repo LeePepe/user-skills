@@ -165,6 +165,77 @@ _SECRET_SCRUB_RE = re.compile(
 )
 
 
+def _safe_is_dir(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_is_file(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _probe_readable_dir(path: Path | None) -> bool:
+    """Fast non-blocking directory probe; returns False immediately on macOS TCC / external volume EINTR/OSError."""
+    if not _safe_is_dir(path) or path is None:
+        return False
+    try:
+        with os.scandir(path) as it:
+            next(it, None)
+        return True
+    except OSError:
+        return False
+
+
+def _safe_iterdir(path: Path | None, *, sort_entries: bool = True) -> list[Path]:
+    """Iterate directory entries with immediate OSError/InterruptedError/PermissionError degradation."""
+    if not _safe_is_dir(path) or path is None:
+        return []
+    entries: list[Path] = []
+    try:
+        with os.scandir(path) as it:
+            while True:
+                try:
+                    entry = next(it)
+                except StopIteration:
+                    break
+                except OSError:
+                    break
+                entries.append(Path(entry.path))
+    except OSError:
+        return []
+    if sort_entries:
+        entries.sort()
+    return entries
+
+
+def _safe_glob(path: Path | None, pattern: str, *, recursive: bool = False) -> list[Path]:
+    """Glob directory entries with immediate OSError/InterruptedError/PermissionError degradation."""
+    if not _probe_readable_dir(path) or path is None:
+        return []
+    out: list[Path] = []
+    try:
+        it = path.rglob(pattern) if recursive else path.glob(pattern)
+        while True:
+            try:
+                out.append(next(it))
+            except StopIteration:
+                break
+            except OSError:
+                break
+    except OSError:
+        return []
+    return sorted(out)
+
+
 def _norm_skill(name: str) -> str:
     cleaned = str(name or "").strip().lstrip("/")
     if cleaned in {"goal-target-task", "goal-task"}:
@@ -396,16 +467,16 @@ def _parse_copilot_sessions(
     max_sessions: int = 250,
 ) -> dict[str, SessionObservation]:
     observations: dict[str, SessionObservation] = {}
-    if sessions_dir is None or not sessions_dir.is_dir():
+    if not _probe_readable_dir(sessions_dir):
         return observations
 
     candidate_files: list[tuple[float, Path]] = []
     with contextlib.suppress(OSError):
-        for child in sessions_dir.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
+        for child in _safe_iterdir(sessions_dir, sort_entries=False):
+            if not _safe_is_dir(child) or child.name.startswith("."):
                 continue
             ev_file = child / "events.jsonl"
-            if not ev_file.is_file():
+            if not _safe_is_file(ev_file):
                 continue
             with contextlib.suppress(OSError):
                 mtime = ev_file.stat().st_mtime
@@ -789,8 +860,8 @@ def _ingest_warehouse_and_copilot_db(
         bucket = meta["skill_escapes"].setdefault(_norm_skill(sk), {"impl_bug": 0, "spec_gap": 0})
         bucket[kind] = bucket.get(kind, 0) + 1
 
-    if warehouse_db is not None and warehouse_db.is_file():
-        with contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
+    if _safe_is_file(warehouse_db) and warehouse_db is not None:
+        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "fact_turn" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_turn")')]
@@ -959,8 +1030,8 @@ def _ingest_warehouse_and_copilot_db(
                         for sk in sk_hits:
                             bump_escape(sk, kind)
 
-    if copilot_db is not None and copilot_db.is_file():
-        with contextlib.closing(sqlite3.connect(f"file:{copilot_db}?mode=ro", uri=True)) as conn:
+    if _safe_is_file(copilot_db) and copilot_db is not None:
+        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{copilot_db}?mode=ro", uri=True)) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "session_files" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("session_files")')]
@@ -1050,18 +1121,18 @@ def _harvest_cross_session_taste_and_eval(handoff_root: Path | None) -> dict[str
         "low_diversity_goals": [],
         "product_persona_notes": [],
     }
-    if handoff_root is None or not handoff_root.is_dir():
+    if not _probe_readable_dir(handoff_root):
         return summary
 
     notes_counter: dict[str, dict[str, Any]] = {}
-    for goal_dir in sorted(handoff_root.iterdir()):
-        if not goal_dir.is_dir() or goal_dir.name.startswith("_"):
+    for goal_dir in _safe_iterdir(handoff_root):
+        if not _safe_is_dir(goal_dir) or goal_dir.name.startswith("_"):
             continue
         receipts_dir = goal_dir / "receipts"
-        if not receipts_dir.is_dir():
+        if not _probe_readable_dir(receipts_dir):
             continue
-        for sel_file in sorted(receipts_dir.iterdir()):
-            if not sel_file.is_file() or not _SELECTION_FILE_RE.match(sel_file.name):
+        for sel_file in _safe_iterdir(receipts_dir):
+            if not _safe_is_file(sel_file) or not _SELECTION_FILE_RE.match(sel_file.name):
                 continue
             try:
                 doc = json.loads(sel_file.read_text(encoding="utf-8"))
@@ -1251,23 +1322,23 @@ def discover_active_skill_leases(
         if reason not in bucket:
             bucket.append(reason)
 
-    if worktrees_dir.is_dir():
+    if _probe_readable_dir(worktrees_dir):
         with contextlib.suppress(OSError):
-            for child in sorted(worktrees_dir.iterdir()):
-                if not child.is_dir() or child.name.startswith("."):
+            for child in _safe_iterdir(worktrees_dir):
+                if not _safe_is_dir(child) or child.name.startswith("."):
                     continue
                 wt_name = child.name.lower()
                 for sk in sorted(known_skills or set()):
                     if re.search(rf"(?<![a-z0-9]){re.escape(sk.lower())}(?![a-z0-9])", wt_name):
                         _mark(sk, f"active_worktree:{child.name}")
 
-    if h_root is not None and h_root.is_dir():
+    if _probe_readable_dir(h_root):
         with contextlib.suppress(OSError):
-            for goal_dir in sorted(h_root.iterdir()):
-                if not goal_dir.is_dir() or goal_dir.name.startswith("_"):
+            for goal_dir in _safe_iterdir(h_root):
+                if not _safe_is_dir(goal_dir) or goal_dir.name.startswith("_"):
                     continue
                 ledger_p = goal_dir / "ledger.md"
-                if ledger_p.is_file():
+                if _safe_is_file(ledger_p):
                     with contextlib.suppress(OSError):
                         l_txt = ledger_p.read_text(encoding="utf-8", errors="ignore")
                         if "in_progress" in l_txt and "EVT=GOAL_DONE" not in l_txt:
@@ -1275,9 +1346,9 @@ def discover_active_skill_leases(
                                 if f"skills/{sk}" in l_txt or f"skill-retro-{sk}" in goal_dir.name:
                                     _mark(sk, f"in_progress_ledger:{goal_dir.name}")
                 briefs_d = goal_dir / "briefs"
-                if briefs_d.is_dir():
+                if _probe_readable_dir(briefs_d):
                     with contextlib.suppress(OSError):
-                        for relay_f in sorted(briefs_d.glob("skill-retro-relay-*.json")):
+                        for relay_f in _safe_glob(briefs_d, "skill-retro-relay-*.json"):
                             with contextlib.suppress(OSError, json.JSONDecodeError):
                                 rdoc = json.loads(relay_f.read_text(encoding="utf-8"))
                                 if isinstance(rdoc, dict) and str(rdoc.get("status") or "pending") == "pending":
@@ -2027,7 +2098,10 @@ def compute_skill_retro_diagnostics(
         known_skills=known_skills,
         basename_to_targets=basename_to_targets,
     )
-    shards = shard_reader(telemetry_shards_dir, days) if (shard_reader and telemetry_shards_dir) else []
+    shards: list[dict[str, Any]] = []
+    if shard_reader and telemetry_shards_dir:
+        with contextlib.suppress(OSError):
+            shards = shard_reader(telemetry_shards_dir, days)
     _ingest_usage_jsonl_and_shards(
         observations,
         usage_jsonl=usage_jsonl,
@@ -2058,7 +2132,7 @@ def compute_skill_retro_diagnostics(
     all_stamps = [obs.ended_at for obs in all_sessions]
     source_as_of = max(all_stamps).isoformat() if all_stamps else None
     sources_present = any(
-        p is not None and p.exists()
+        _safe_is_file(p) or _safe_is_dir(p)
         for p in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path)
     )
     coverage_status = "healthy" if total_sessions > 0 else ("unknown" if sources_present else "missing")
@@ -3189,11 +3263,11 @@ def _discover_skill_inventory(
     d_root = dev_root or DEFAULT_DEV_ROOT
     search_dirs: list[tuple[Path, bool, str]] = [(root, False, "user-skills")]
     repo_names = ["AIDash", "Financial", "VitalStride", "VoxPocket"]
-    if d_root.is_dir():
-        for child in sorted(d_root.iterdir()):
-            if not child.is_dir() or child.name in {"user-skills", "worktrees", "handoff"} or child.name.startswith("."):
+    if _probe_readable_dir(d_root):
+        for child in _safe_iterdir(d_root):
+            if not _safe_is_dir(child) or child.name in {"user-skills", "worktrees", "handoff"} or child.name.startswith("."):
                 continue
-            if child.name not in repo_names and ((child / ".agents" / "skills").is_dir() or (child / ".claude" / "skills").is_dir()):
+            if child.name not in repo_names and (_safe_is_dir(child / ".agents" / "skills") or _safe_is_dir(child / ".claude" / "skills")):
                 repo_names.append(child.name)
     for repo_name in repo_names:
         repo_path = d_root / repo_name
@@ -3201,16 +3275,16 @@ def _discover_skill_inventory(
         if repo_name in {"AIDash", "Financial", "VitalStride", "VoxPocket"}:
             candidates.append(repo_path / "skills")
         for rel in candidates:
-            if rel.is_dir():
+            if _probe_readable_dir(rel):
                 search_dirs.append((rel, True, repo_name))
 
     inventory: dict[str, dict[str, Any]] = {}
     for base_dir, repo_bound, repo_name in search_dirs:
-        if not base_dir.is_dir():
+        if not _probe_readable_dir(base_dir):
             continue
-        for pkg in sorted(base_dir.iterdir()):
+        for pkg in _safe_iterdir(base_dir):
             skill_md = pkg / "SKILL.md"
-            if not pkg.is_dir() or not skill_md.is_file():
+            if not _safe_is_dir(pkg) or not _safe_is_file(skill_md):
                 continue
             skill_name = pkg.name
             # Skip third-party SpecKit command templates (.agents/skills/speckit-*) that are not user-skills contracts
@@ -3632,7 +3706,7 @@ def _compute_s11_s12_context_and_tools(
                     cache_stamps.append(row["_observed_at"])
     # File sizes have no observation timestamps or measured token composition.
     # Do not synthesize slices from an unbounded DSH byte-count fallback.
-    shards_present = bool(telemetry_shards_dir and telemetry_shards_dir.is_dir() and list(telemetry_shards_dir.glob("*-skill-usage.jsonl")))
+    shards_present = bool(telemetry_shards_dir and _safe_glob(telemetry_shards_dir, "*-skill-usage.jsonl"))
     present = warehouse_db.is_file() or mp.is_file() or cp.is_file() or shards_present
     context_meta = _freshness(context_stamps, present)
     cache_meta = _freshness(cache_stamps, present)
@@ -4196,7 +4270,7 @@ def compute_skill_roi_diagnostics(
     start7, _ = _window_bounds()
     start30, end30 = _window_bounds(30)
     shard_records_30d = _read_telemetry_shards(shards_dir, days=30)
-    shards_present = bool(shards_dir and shards_dir.is_dir() and list(shards_dir.glob("*-skill-usage.jsonl")))
+    shards_present = bool(shards_dir and _safe_glob(shards_dir, "*-skill-usage.jsonl"))
     warehouse_present = wh.is_file() or cp.is_file() or shards_present
     l2_channels = _read_l2_channel_counts(wh, start30, end30)
     seen_turn_sigs_30d: set[tuple[str, str, str]] = set()
@@ -4359,17 +4433,17 @@ def compute_skill_roi_diagnostics(
             return goal_skills_cache[goal]
         handoff = d_root / "handoff" / goal
         text_parts: list[str] = []
-        if handoff.is_dir():
+        if _probe_readable_dir(handoff):
             spec_p = handoff / "spec.md"
-            if spec_p.is_file():
+            if _safe_is_file(spec_p):
                 try:
                     text_parts.append(spec_p.read_text(encoding="utf-8", errors="ignore"))
                 except OSError:
                     pass
             briefs_dir = handoff / "briefs"
-            if briefs_dir.is_dir():
-                for path in sorted(briefs_dir.glob("*.md")):
-                    if path.is_file():
+            if _probe_readable_dir(briefs_dir):
+                for path in _safe_glob(briefs_dir, "*.md"):
+                    if _safe_is_file(path):
                         try:
                             text_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
                         except OSError:
@@ -5325,13 +5399,13 @@ def _event_fingerprint(rec: dict[str, Any]) -> str:
 
 
 def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict[str, Any]]:
-    if shards_dir is None or not shards_dir.is_dir():
+    if not _probe_readable_dir(shards_dir) or shards_dir is None:
         return []
     start, end = _window_bounds(days)
     seen_ids: set[str] = set()
     merged: list[dict[str, Any]] = []
-    for shard_file in sorted(shards_dir.glob("*-skill-usage.jsonl")):
-        if not shard_file.is_file():
+    for shard_file in _safe_glob(shards_dir, "*-skill-usage.jsonl"):
+        if not _safe_is_file(shard_file):
             continue
         default_host = shard_file.name[: -len("-skill-usage.jsonl")]
         try:
@@ -5460,11 +5534,12 @@ def compute_skill_retro(
     icloud_roi_path: Path | None = None,
     local_roi_path: Path | None = None,
     mirror_roi_snapshot: bool | None = None,
+    isolated_fixtures: bool = False,
 ) -> dict[str, Any]:
     """Compute the 4-Layer / 6-Dimension Progressive Skill Evolution & Wide-Probe Multi-Angle Diagnostic."""
-    explicit_source_override = any(
+    explicit_source_override = bool(isolated_fixtures) or any(
         val is not None
-        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path, handoff_root)
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path)
     )
     wh = warehouse_db if warehouse_db is not None else (None if explicit_source_override else DEFAULT_WAREHOUSE_DB)
     cp = copilot_db if copilot_db is not None else (None if explicit_source_override else DEFAULT_COPILOT_DB)
@@ -5758,7 +5833,7 @@ def probe_skills(
 
     explicit_source_override = any(
         val is not None
-        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path, handoff_root)
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, trace_export_path)
     )
     has_small_custom_sources = explicit_source_override
     skills_signals: list[dict[str, Any]] = []
@@ -6419,23 +6494,23 @@ def rollup_m1_retro_receipts(
         for sk in filter_skills:
             safe_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sk).strip("-") or "skill"
             candidate_dirs.append(_resolve_per_skill_goal_handoff_dir(resolved_root, safe_slug))
-    elif resolved_root.is_dir():
-        if resolved_root.name.startswith("skill-retro-") and (resolved_root / "spec.md").is_file():
+    elif _probe_readable_dir(resolved_root):
+        if resolved_root.name.startswith("skill-retro-") and _safe_is_file(resolved_root / "spec.md"):
             candidate_dirs.append(resolved_root)
         else:
-            for child in sorted(resolved_root.glob("skill-retro-*")):
-                if child.is_dir() and child.name not in {"skill-retro-m2-3m1-rollup"}:
+            for child in _safe_glob(resolved_root, "skill-retro-*"):
+                if _safe_is_dir(child) and child.name not in {"skill-retro-m2-3m1-rollup"}:
                     candidate_dirs.append(child)
 
     m1_receipts: list[dict[str, Any]] = []
     relays_collected: list[dict[str, Any]] = []
     for gdir in candidate_dirs:
-        if not gdir.is_dir():
+        if not _probe_readable_dir(gdir):
             continue
         sk_guess = gdir.name[len("skill-retro-") :] if gdir.name.startswith("skill-retro-") else gdir.name
         r_file = gdir / "receipts" / "m1-tl-receipt.json"
         loaded_receipt: dict[str, Any] | None = None
-        if r_file.is_file():
+        if _safe_is_file(r_file):
             try:
                 raw_r = json.loads(r_file.read_text(encoding="utf-8"))
                 if isinstance(raw_r, dict):
@@ -6445,8 +6520,11 @@ def rollup_m1_retro_receipts(
         if loaded_receipt is None:
             # Fallback: inspect ledger.md or relay JSONs inside goal handoff dir
             ledger_file = gdir / "ledger.md"
-            ledger_txt = ledger_file.read_text(encoding="utf-8") if ledger_file.is_file() else ""
-            relay_files = sorted((gdir / "briefs").glob("skill-retro-relay-*.json")) if (gdir / "briefs").is_dir() else []
+            try:
+                ledger_txt = ledger_file.read_text(encoding="utf-8") if _safe_is_file(ledger_file) else ""
+            except OSError:
+                ledger_txt = ""
+            relay_files = _safe_glob(gdir / "briefs", "skill-retro-relay-*.json")
             if "HEALTHY_NO_ISSUES" in ledger_txt:
                 loaded_receipt = {
                     "skill": sk_guess,
@@ -6470,27 +6548,28 @@ def rollup_m1_retro_receipts(
                     "summary": f"M1 TL completed Writer -> Reviewer fix and merged PR for `{sk_guess}`.",
                 }
             elif relay_files:
-                rel_data = json.loads(relay_files[0].read_text(encoding="utf-8"))
-                loaded_receipt = {
-                    "skill": sk_guess,
-                    "goal_id": gdir.name,
-                    "m1_tl_agent_name": f"{gdir.name}-goal-tl-r1",
-                    "status": "CROSS_SKILL_RELAY",
-                    "writers_spawned": 0,
-                    "reviewers_spawned": 0,
-                    "relay_to": rel_data.get("to_skill"),
-                    "relay_requirement": rel_data.get("requirement"),
-                    "summary": f"M1 TL scheduled Wave 2 Cross-Skill Relay `{sk_guess}` -> `{rel_data.get('to_skill')}`.",
-                }
+                with contextlib.suppress(OSError, ValueError, TypeError):
+                    rel_data = json.loads(relay_files[0].read_text(encoding="utf-8"))
+                    loaded_receipt = {
+                        "skill": sk_guess,
+                        "goal_id": gdir.name,
+                        "m1_tl_agent_name": f"{gdir.name}-goal-tl-r1",
+                        "status": "CROSS_SKILL_RELAY",
+                        "writers_spawned": 0,
+                        "reviewers_spawned": 0,
+                        "relay_to": rel_data.get("to_skill"),
+                        "relay_requirement": rel_data.get("requirement"),
+                        "summary": f"M1 TL scheduled Wave 2 Cross-Skill Relay `{sk_guess}` -> `{rel_data.get('to_skill')}`.",
+                    }
         if loaded_receipt is not None:
             m1_receipts.append(loaded_receipt)
-        for rf in sorted((gdir / "briefs").glob("skill-retro-relay-*.json")) if (gdir / "briefs").is_dir() else []:
+        for rf in _safe_glob(gdir / "briefs", "skill-retro-relay-*.json"):
             try:
                 relays_collected.append(json.loads(rf.read_text(encoding="utf-8")))
             except (OSError, ValueError, TypeError):
                 pass
 
-    for rf in sorted((resolved_root / "briefs").glob("skill-retro-relay-*.json")) if (resolved_root / "briefs").is_dir() else []:
+    for rf in _safe_glob(resolved_root / "briefs", "skill-retro-relay-*.json"):
         try:
             rel_obj = json.loads(rf.read_text(encoding="utf-8"))
             if not any(r.get("relay_id") == rel_obj.get("relay_id") for r in relays_collected):
@@ -6583,6 +6662,7 @@ def _add_common_source_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dev-root", type=Path, default=DEFAULT_DEV_ROOT)
     p.add_argument("--icloud-sync-dir", type=Path, default=None)
     p.add_argument("--telemetry-shards-dir", type=Path, default=None)
+    p.add_argument("--isolated-fixtures", action="store_true", default=False, help="Treat custom --handoff-root as isolated test fixture mode and disable default home telemetry sources.")
     p.add_argument("--days", type=int, default=30)
     p.add_argument("--json", action="store_true", default=True)
 
@@ -6898,6 +6978,7 @@ def main(argv: list[str] | None = None) -> int:
                     icloud_roi_path=ns.icloud_roi_path,
                     local_roi_path=ns.local_roi_path,
                     mirror_roi_snapshot=False if ns.no_roi_mirror else None,
+                    isolated_fixtures=bool(ns.isolated_fixtures),
                 )
                 last_report = sub_rep
                 eb = sub_rep.get("emitted_briefs") or {}
@@ -6923,6 +7004,7 @@ def main(argv: list[str] | None = None) -> int:
                 aspects=eff_aspects,
                 days=ns.days,
                 mirror_roi_snapshot=False,
+                isolated_fixtures=bool(ns.isolated_fixtures),
             )
             m2_plan = build_m2_dispatch_plan(combined_briefs, handoff_root=ns.emit_briefs, dev_root=ns.dev_root)
             base_report["emitted_briefs"] = {
@@ -6994,6 +7076,7 @@ def main(argv: list[str] | None = None) -> int:
         icloud_roi_path=ns.icloud_roi_path,
         local_roi_path=ns.local_roi_path,
         mirror_roi_snapshot=False if ns.no_roi_mirror else None,
+        isolated_fixtures=bool(ns.isolated_fixtures),
     )
     if triage_meta is not None:
         report["stage2_triage"] = {

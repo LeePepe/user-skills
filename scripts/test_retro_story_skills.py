@@ -268,7 +268,7 @@ class MulticaSkillsAutopilotTests(unittest.TestCase):
 
         second = AUTOPILOT.file_actionable_issue(
             snap,
-            analysis_markdown="### Root Cause\n- Duplicate run on same day.",
+            analysis_markdown="### Root Cause\n- Soften CLI roadblock and wire disconnected drawer.",
             runner=fake_runner,
         )
         self.assertEqual(second["action"], "deduplicated_existing")
