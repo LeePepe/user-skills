@@ -1166,7 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
             report.update(auto_proposed=queued, proposals_written=len(queued), proposals_skipped=len(report.get("low_roi_proposals", [])) - len(queued))
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    if args_list and args_list[0] in {"skill-retro", "probe", "triage", "diagnose", "emit-briefs", "emit-relay"}:
+    if args_list and args_list[0] in {"skill-retro", "probe", "triage", "diagnose", "emit-briefs", "emit-relay", "record-m1-receipt", "rollup"}:
         return _load_skill_retro_module().main(args_list)
     if args_list and args_list[0] == "propose":
         p = argparse.ArgumentParser(prog="retro_story_engine.py propose")

@@ -5,10 +5,11 @@
   "active_cases": [
     {
       "id": "EV-001",
-      "title": "skill_retro.py CLI exposes 3-stage subcommands (probe, triage, diagnose, emit-briefs, emit-relay, roi)",
+      "title": "skill_retro.py CLI exposes 3-stage subcommands + M1/M2 rollup (probe, triage, diagnose, emit-briefs, emit-relay, record-m1-receipt, rollup, roi)",
       "tags": [
         "cli",
-        "three-stage"
+        "three-stage",
+        "rollup"
       ],
       "cmd": "python3 skills/skill-retro/scripts/skill_retro.py --help",
       "expect_exit": 0,
@@ -18,6 +19,8 @@
         "diagnose",
         "emit-briefs",
         "emit-relay",
+        "record-m1-receipt",
+        "rollup",
         "roi"
       ],
       "registered_at": "2026-11-21"
@@ -43,10 +46,11 @@
     },
     {
       "id": "EV-003",
-      "title": "Stage 2 Jev triage supports Pick-1, Cheap Worker role routing, and mock Jev response",
+      "title": "Stage 2 Jev triage supports Pick-1/Pick-Top, Cheap Worker role routing, and M2 -> Parallel M1 dispatch plan",
       "tags": [
         "stage2-triage",
-        "jev"
+        "jev",
+        "m2-dispatch"
       ],
       "cmd": "python3 skills/skill-retro/scripts/skill_retro.py triage --skill my-designer --pick-one --mock-jev-json '{\"my-designer\":{\"route_mode\":\"partial\",\"aspects\":\"l1,l2\",\"noul\":0.91}}' --json",
       "expect_exit": 0,
@@ -57,16 +61,19 @@
         "picked_mode": "partial",
         "worker_role_slot.role": "explorer",
         "worker_role_slot.tier": "worker",
+        "m2_dispatch_plan.schema": "skill-retro-m2-dispatch-plan/v1",
+        "m2_dispatch_plan.m2_coordinator_count": 1,
         "anti_collision_locks.lock1_strict_disjoint_owned_paths": true
       },
       "registered_at": "2026-11-21"
     },
     {
       "id": "EV-004",
-      "title": "SKILL.md L0 and progressive-evolution-playbook.md L1 cover all 6 Problem-Discovery Dimensions, Host/Guest Relay, and Cheap Worker cost split",
+      "title": "SKILL.md L0 and progressive-evolution-playbook.md L1 cover 1 M2 -> K Parallel M1 TLs -> M2 Rollup, all 6 Problem-Discovery Dimensions, and Host/Guest Relay",
       "tags": [
         "contract",
-        "six-dimensions"
+        "six-dimensions",
+        "m2-3m1-rollup"
       ],
       "file": "skills/skill-retro/SKILL.md",
       "must_contain": [
@@ -74,6 +81,7 @@
         "triage",
         "emit-briefs",
         "emit-relay",
+        "rollup",
         "mai-code-2-flash",
         "2+1+1",
         "Counter-Case"
