@@ -55,6 +55,20 @@ DEFAULT_ISSUE_PRIORITY = "medium"
 CST = timezone(timedelta(hours=8))
 
 
+def _probe_readable_dir(path: Path | None) -> bool:
+    """Fast non-blocking directory probe; returns False immediately on macOS TCC / external volume EINTR/OSError."""
+    if path is None:
+        return False
+    try:
+        if not path.is_dir():
+            return False
+        with os.scandir(path) as it:
+            next(it, None)
+        return True
+    except OSError:
+        return False
+
+
 def _default_skill_retro_watermark_path() -> Path:
     override = os.environ.get("MULTICA_SKILL_RETRO_WATERMARK_FILE")
     if override:
@@ -290,9 +304,9 @@ def _invoke_pure_skill_retro_cli(
         ("--copilot-db", copilot_db),
         ("--copilot-sessions-dir", copilot_sessions_dir),
         ("--usage-jsonl", usage_jsonl),
-        ("--handoff-root", handoff_root),
+        ("--handoff-root", handoff_root if (handoff_root is None or _probe_readable_dir(handoff_root)) else None),
         ("--skills-root", skills_root),
-        ("--dev-root", dev_root),
+        ("--dev-root", dev_root if (dev_root is None or _probe_readable_dir(dev_root)) else None),
         ("--proposals-path", proposals_path),
     )
     for flag, val in flag_pairs:
@@ -426,7 +440,7 @@ def collect_skill_retro_snapshot(
     """Collect a pure 4-Layer Progressive Skill Retro (`skill-retro`) snapshot."""
     no_roi_mirror = any(
         val is not None
-        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, handoff_root, proposals_path)
+        for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, proposals_path)
     )
     if skill_retro_fn is not None:
         raw_skill_retro = skill_retro_fn(
@@ -809,6 +823,7 @@ def file_actionable_issue(
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     allow_duplicate: bool = False,
     refresh_existing: bool = False,
+    update_existing: bool = False,
     update_issue_id: str | None = None,
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
@@ -900,7 +915,11 @@ def file_actionable_issue(
             ex_title = str(existing.get("title") or "")
             ex_desc = str(existing.get("description") or "")
             if ex_title == issue_title or (dedup_marker and dedup_marker in ex_desc) or (cursor_marker and cursor_marker in ex_desc):
-                if refresh_existing and (existing.get("id") or existing.get("identifier")):
+                content_differs = bool(ex_desc.strip() and ex_desc.strip() != description.strip()) or (
+                    bool(ex_title.strip()) and ex_title.strip() != issue_title.strip()
+                )
+                should_update_in_place = bool(refresh_existing or update_existing or content_differs)
+                if should_update_in_place and (existing.get("id") or existing.get("identifier")):
                     target_id = str(existing.get("id") or existing.get("identifier"))
                     upd_proc = runner(
                         [
@@ -924,7 +943,7 @@ def file_actionable_issue(
                     updated = _parse_json_stdout(upd_proc, "issue update")
                     return {
                         "ok": True,
-                        "action": "refreshed_existing",
+                        "action": "refreshed_existing" if refresh_existing else "updated_existing",
                         "dedup_key": dedup_key,
                         "issue": updated,
                     }
@@ -1227,6 +1246,7 @@ def run_once_pipeline(
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     allow_duplicate: bool = False,
     refresh_existing: bool = False,
+    update_existing: bool = False,
     update_issue_id: str | None = None,
     dry_run: bool = False,
     warehouse_db: Path | None = None,
@@ -1306,6 +1326,7 @@ def run_once_pipeline(
         workspace_id=workspace_id,
         allow_duplicate=allow_duplicate,
         refresh_existing=refresh_existing,
+        update_existing=update_existing,
         update_issue_id=update_issue_id,
         dry_run=dry_run,
         runner=runner,
@@ -1369,6 +1390,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_issue.add_argument("--multica-bin", default=None)
     p_issue.add_argument("--allow-duplicate", action="store_true")
     p_issue.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
+    p_issue.add_argument("--update-existing", action="store_true", help="Update matching same-day issue in place via multica issue update.")
     p_issue.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
     p_issue.add_argument("--dry-run", action="store_true")
 
@@ -1413,6 +1435,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--skip-if-no-delta", action="store_true", help="Skip filing issue at 0 token cost when cohort watermark is unchanged.")
     p_run.add_argument("--allow-duplicate", action="store_true")
     p_run.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
+    p_run.add_argument("--update-existing", action="store_true", help="Update matching same-day issue in place via multica issue update.")
     p_run.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
     p_run.add_argument("--dry-run", action="store_true")
 
@@ -1473,6 +1496,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace_id=ns.workspace_id,
             allow_duplicate=ns.allow_duplicate,
             refresh_existing=ns.refresh_existing,
+            update_existing=ns.update_existing,
             update_issue_id=ns.update_issue_id,
             dry_run=ns.dry_run,
             multica_bin=ns.multica_bin,
@@ -1512,6 +1536,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace_id=ns.workspace_id,
             allow_duplicate=ns.allow_duplicate,
             refresh_existing=ns.refresh_existing,
+            update_existing=ns.update_existing,
             update_issue_id=ns.update_issue_id,
             dry_run=ns.dry_run,
             warehouse_db=ns.warehouse_db,

@@ -1278,6 +1278,20 @@ def _runner_jev_mock(mock: Any) -> Any:
     return mock
 
 
+def _probe_readable_dir(path: Path | None) -> bool:
+    """Fast non-blocking directory probe; returns False immediately on macOS TCC / external volume EINTR/OSError."""
+    if path is None:
+        return False
+    try:
+        if not path.is_dir():
+            return False
+        with os.scandir(path) as it:
+            next(it, None)
+        return True
+    except OSError:
+        return False
+
+
 def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool = False, mock_jev_json: Any = None) -> dict[str, Any]:
     date_str = target_date.isoformat()
     if spec.loop_id == "local-herdr-worktree-gc":
@@ -1382,12 +1396,14 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         dev_env = os.environ.get("SKILL_RETRO_DEV_ROOT") or os.environ.get("SKILLS_ROI_DEV_ROOT")
         prop_env = os.environ.get("SKILL_RETRO_PROPOSALS_PATH") or os.environ.get("SKILLS_ROI_PROPOSALS_PATH")
         wm_env = os.environ.get("MULTICA_SKILL_RETRO_WATERMARK_FILE")
+        raw_handoff = Path(handoff_env).expanduser() if handoff_env else None
+        safe_handoff = raw_handoff if (raw_handoff is None or _probe_readable_dir(raw_handoff)) else None
         snap = retro_mod.collect_skill_retro_snapshot(
             warehouse_db=Path(wh_env).expanduser() if wh_env else None,
             copilot_db=Path(cp_env).expanduser() if cp_env else None,
             copilot_sessions_dir=Path(sess_env).expanduser() if sess_env else None,
             usage_jsonl=Path(usage_env).expanduser() if usage_env else None,
-            handoff_root=Path(handoff_env).expanduser() if handoff_env else None,
+            handoff_root=safe_handoff,
             skills_root=Path(skills_env).expanduser() if skills_env else None,
             dev_root=Path(dev_env).expanduser() if dev_env else None,
             proposals_path=Path(prop_env).expanduser() if prop_env else None,
