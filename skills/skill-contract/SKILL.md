@@ -22,6 +22,7 @@ python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict
 python3 skills/skill-contract/scripts/skill_contract.py eval --all --strict
 python3 skills/skill-contract/scripts/skill_contract.py eval-target --skills auto --phase all --handoff-dir <dir> --worktree <wt> --strict
 python3 skills/skill-contract/scripts/skill_contract.py description-eval --skill <skill> --strict
+python3 skills/skill-contract/scripts/skill_contract.py uptake-eval --skill <skill> [--target-dir <dir>] [--scenario skills_available_unmentioned] --strict
 python3 skills/skill-contract/scripts/skill_contract.py sync-jev-stars --skill <skill> [--db-path <sqlite>] [--dry-run]
 ```
 

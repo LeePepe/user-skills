@@ -117,6 +117,25 @@
         "progressive-evolution-playbook.md"
       ],
       "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-007",
+      "title": "Decoupled Context Uptake check (uptake_map.json) evaluates Trigger/Uptake/Outcome triad",
+      "tags": [
+        "uptake-check",
+        "triad",
+        "expo-eval"
+      ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py uptake-check --skill skill-retro --strict --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "skill-uptake-eval/v1",
+        "score.trigger_quality.recall": 1.0,
+        "score.context_uptake.uptake_rate": 1.0,
+        "skills.skill-retro.uptake_status": "measured"
+      },
+      "registered_at": "2026-11-21"
     }
   ]
 }

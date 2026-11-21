@@ -142,6 +142,45 @@
         "guidance_drawer"
       ],
       "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-010",
+      "title": "1-Verify-1-Assertion discipline, Hard/Soft assertion scoring, and uptake-eval CLI",
+      "tags": [
+        "assertion-discipline",
+        "uptake-eval",
+        "valve-2"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py uptake-eval --skill skill-contract --baseline-pct 60.0 --skill-pct 92.5 --strict",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "skill-uptake-eval/v1",
+        "score.trigger_quality.recall": 1.0,
+        "score.context_uptake.uptake_rate": 1.0,
+        "score.outcome_delta.outcome_delta": 32.5
+      },
+      "verify_lines": [
+        "The skill-contract SKILL.md frontmatter and eval-cases.json drawer exist and pass hard checks",
+        "(non-fatal) Soft advisory checks record explicit evidence and why_soft justification"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "SKILL.md frontmatter and eval-cases.json verified via uptake_map.json"
+        },
+        {
+          "severity": "soft",
+          "fatal": false,
+          "passed": true,
+          "check": "Python CLI AST entrypoint check recorded",
+          "evidence": "skills/skill-contract/scripts/skill_contract.py defines parser() and main()",
+          "why_soft": "requires reading AST structure across script entrypoints"
+        }
+      ],
+      "registered_at": "2026-11-21"
     }
   ],
   "trigger_evals": [

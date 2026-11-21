@@ -8,6 +8,8 @@ Regex, AST, geometry, pixel, localization, and schema checks are executable arti
 
 `references/eval-cases.json` and defect drawers use auto IDs and zero-token assertions: regex bad/good snippets, CLI exit/output assertions, or contract-file contents. Keep `active_cases <= 15`; use `trigger_evals` for description routing and `negative_cmd` for failure boundaries.
 
+When a case declares `verify_lines` (or `verify_count`) and `assertions`, `score_case_assertions` enforces **1-Verify-1-Assertion** (`len(assertions) == verify_count`, flagging `assertion-count-mismatch`) and **Hard vs Soft Assertion Discipline**: any failed `fatal=true` (`hard`) assertion zeroes `earned_points = 0`; `(non-fatal)` / `soft` assertions require non-empty `evidence` and `why_soft` justification (`soft-assertion-missing-evidence`) and contribute to partial credit. `uptake-eval` scores the `Trigger Quality -> Context Uptake -> Outcome Delta` triad across `skills_unavailable`, `skills_available_unmentioned`, and `skills_available_mentioned`.
+
 ## Valve 3 — budgets
 
 Every `SKILL.md` frontmatter description is non-empty and `<=320` characters. L0 is `<=180` lines and 16KB (design L0 `<=80`); L1 is `<=160` lines and 16KB; fenced code is `<=25` lines.

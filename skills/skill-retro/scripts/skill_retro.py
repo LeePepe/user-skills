@@ -21,10 +21,12 @@ Implements the Progressive Self-Evolution Blueprint across:
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import fcntl
+import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -52,6 +54,7 @@ DEFAULT_SKILL_TELEMETRY_USAGE_JSONL = DEFAULT_USAGE_JSONL
 DEFAULT_DSH_SESSIONS = Path.home() / ".dsh" / "sessions"
 DEFAULT_HANDOFF_ROOT = Path.home() / "Development" / "handoff"
 DEFAULT_SKILLS_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_UPTAKE_MAP_PATH = Path(__file__).resolve().parents[1] / "references" / "uptake_map.json"
 DEFAULT_DEV_ROOT = Path.home() / "Development"
 DEFAULT_ICLOUD_SYNC_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync"
 DEFAULT_ICLOUD_TELEMETRY_SHARDS_DIR = DEFAULT_ICLOUD_SYNC_DIR / "telemetry-shards"
@@ -2892,7 +2895,19 @@ def compute_skill_retro_diagnostics(
                 "eval_tiers": ["L1_baseline_eval", "L2_diversity_intent_eval", "L3_human_taste_eval"],
                 "dual_flywheel_guard": layer3["dual_flywheel_guard"],
             },
+            "triad_trigger_uptake_outcome": evaluate_skill_uptake(
+                skills=[norm_filter] if norm_filter else sorted(inventory.keys()),
+                triggered_skills=[norm_filter] if norm_filter else sorted({sk for o in all_sessions for sk in o.skills_loaded}),
+                target_dir=s_root.parent if (s_root / "skill-retro").is_dir() else s_root,
+                scenario="skills_available_unmentioned",
+            ),
         },
+        "context_uptake_triad": evaluate_skill_uptake(
+            skills=[norm_filter] if norm_filter else sorted(inventory.keys()),
+            triggered_skills=[norm_filter] if norm_filter else sorted({sk for o in all_sessions for sk in o.skills_loaded}),
+            target_dir=s_root.parent if (s_root / "skill-retro").is_dir() else s_root,
+            scenario="skills_available_unmentioned",
+        ),
         "proposals": proposals,
         "observation_pool": observation_pool[:8],
         "auto_proposed": auto_proposed,
@@ -5799,6 +5814,434 @@ def _load_jev_client() -> Any | None:
     return None
 
 
+# ----------------------------------------------------------------------
+# Decoupled Context Uptake Registry (`uptake_map.json`) & Triad Engine
+# (`Trigger Quality -> Context Uptake -> Outcome Delta`)
+# ----------------------------------------------------------------------
+UPTAKE_STATUS_PASSED = "passed"
+UPTAKE_STATUS_FAILED = "failed"
+UPTAKE_STATUS_NOT_APPLICABLE = "not_applicable"
+UPTAKE_STATUS_UNAVAILABLE = "unavailable"
+UPTAKE_SCORED_STATUSES = {UPTAKE_STATUS_PASSED, UPTAKE_STATUS_FAILED}
+VALID_SKILL_SCENARIOS = {
+    "skills_unavailable",
+    "skills_available_unmentioned",
+    "skills_available_mentioned",
+}
+_UPTAKE_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".build", "build", "dist", ".expo"}
+
+
+def _strip_source_comments(text: str, suffix: str = "") -> str:
+    """Strip C/JS/Swift block & line comments or Python/shell `#` comments before lexical regex scans."""
+    ext = suffix.lower()
+    if ext in {".md", ".json", ".html", ".htm"}:
+        return text
+    cleaned = re.sub(r"/\*[\s\S]*?\*/", "", text)
+    if ext in {".py", ".sh", ".yaml", ".yml", ".toml"}:
+        cleaned = re.sub(r"(?m)^\s*#.*$", "", cleaned)
+    else:
+        cleaned = re.sub(r"(?m)//.*$", "", cleaned)
+    return cleaned
+
+
+def load_uptake_registry(
+    uptake_map_path: Path | None = None,
+) -> tuple[dict[str, list[str]], dict[str, dict[str, Any]]]:
+    """Load decoupled `skill_map` (`skill_id -> [check_id, ...]`) and atomic `checks` from `uptake_map.json`."""
+    path = uptake_map_path or DEFAULT_UPTAKE_MAP_PATH
+    if not _safe_is_file(path):
+        return {}, {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+    if not isinstance(raw, Mapping):
+        return {}, {}
+
+    raw_skill_map = raw.get("skill_map") if isinstance(raw.get("skill_map"), Mapping) else raw
+    skill_map: dict[str, list[str]] = {}
+    if isinstance(raw_skill_map, Mapping):
+        for k, v in raw_skill_map.items():
+            if str(k).startswith("_") or str(k) in {"schema", "version", "updated", "checks", "skill_map"}:
+                continue
+            if isinstance(v, list):
+                skill_map[_norm_skill(str(k))] = [str(item) for item in v if str(item).strip()]
+
+    checks_by_id: dict[str, dict[str, Any]] = {}
+    raw_checks = raw.get("checks")
+    if isinstance(raw_checks, list):
+        for entry in raw_checks:
+            if isinstance(entry, Mapping) and entry.get("id"):
+                cid = str(entry["id"]).strip()
+                checks_by_id[cid] = dict(entry)
+    return skill_map, checks_by_id
+
+
+def _discover_target_files(root: Path, globs: Sequence[str] | None) -> list[tuple[str, Path]]:
+    """Return sorted `(rel_posix_path, abs_path)` matching any glob in `globs` under `root`."""
+    if not _probe_readable_dir(root):
+        return []
+    patterns = [str(g).strip() for g in (globs or ["**/*"]) if str(g).strip()]
+    if not patterns:
+        patterns = ["**/*"]
+    matched: dict[str, Path] = {}
+    for pattern in patterns:
+        direct_candidate = root / pattern
+        if "*" not in pattern and "?" not in pattern and "[" not in pattern:
+            if _safe_is_file(direct_candidate) or _safe_is_dir(direct_candidate):
+                rel = direct_candidate.relative_to(root).as_posix()
+                matched[rel] = direct_candidate
+            continue
+        for cand in _safe_glob(root, pattern, recursive=("**" in pattern)):
+            try:
+                rel = cand.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if any(part in _UPTAKE_SKIP_DIRS for part in Path(rel).parts):
+                continue
+            matched[rel] = cand
+    if not matched:
+        for cand in _safe_glob(root, "*", recursive=True):
+            try:
+                rel = cand.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if any(part in _UPTAKE_SKIP_DIRS for part in Path(rel).parts):
+                continue
+            if any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(Path(rel).name, pat) for pat in patterns):
+                matched[rel] = cand
+    return sorted(matched.items(), key=lambda item: item[0])
+
+
+def _run_single_uptake_check(check: Mapping[str, Any], target_dir: Path) -> dict[str, Any]:
+    """Run one atomic check against `target_dir` and return a 4-state CheckResult dict."""
+    cid = str(check.get("id") or "")
+    category = str(check.get("category") or "lexical")
+    kind = str(check.get("kind") or "text_any")
+    severity = str(check.get("severity") or "hard")
+    remediation_drawer = str(check.get("remediation_drawer") or "")
+    description = str(check.get("description") or "")
+    file_globs_raw = check.get("file_glob")
+    file_globs = (
+        [str(x) for x in file_globs_raw]
+        if isinstance(file_globs_raw, list)
+        else ([str(file_globs_raw)] if file_globs_raw else ["**/*"])
+    )
+
+    def _make_res(status: str, passed: bool | None, evidence: str) -> dict[str, Any]:
+        return {
+            "id": cid,
+            "category": category,
+            "kind": kind,
+            "severity": severity,
+            "fatal": severity == "hard",
+            "status": status,
+            "passed": passed,
+            "evidence": evidence,
+            "remediation_drawer": remediation_drawer,
+            "description": description,
+        }
+
+    if not _probe_readable_dir(target_dir):
+        return _make_res(UPTAKE_STATUS_UNAVAILABLE, None, f"target_dir unavailable: {target_dir}")
+
+    if kind == "path_exists":
+        targets = check.get("target") or file_globs
+        pat_list = [str(x) for x in (targets if isinstance(targets, list) else [targets])]
+        hits = _discover_target_files(target_dir, pat_list)
+        if hits:
+            return _make_res(UPTAKE_STATUS_PASSED, True, f"found {hits[0][0]}")
+        return _make_res(UPTAKE_STATUS_FAILED, False, f"no path matched any of {pat_list}")
+
+    if kind == "path_absent":
+        targets = check.get("target") or file_globs
+        pat_list = [str(x) for x in (targets if isinstance(targets, list) else [targets])]
+        hits = _discover_target_files(target_dir, pat_list)
+        if hits:
+            return _make_res(UPTAKE_STATUS_FAILED, False, f"forbidden path exists: {hits[0][0]}")
+        eng_globs = check.get("engagement_glob")
+        if isinstance(eng_globs, list) and eng_globs:
+            if not _discover_target_files(target_dir, [str(x) for x in eng_globs]):
+                return _make_res(UPTAKE_STATUS_NOT_APPLICABLE, None, "engagement_glob precondition did not match any files")
+        return _make_res(UPTAKE_STATUS_PASSED, True, f"no path matched forbidden {pat_list}")
+
+    candidate_files = [(rel, p) for rel, p in _discover_target_files(target_dir, file_globs) if _safe_is_file(p)]
+
+    if kind == "python_ast":
+        if not candidate_files:
+            return _make_res(UPTAKE_STATUS_NOT_APPLICABLE, None, f"no Python files matched {file_globs}")
+        ast_rule = str(check.get("ast_rule") or "has_main_or_argparse")
+        parse_errors: list[str] = []
+        matched_ast_files: list[str] = []
+        for rel, fpath in candidate_files:
+            if fpath.suffix.lower() != ".py":
+                continue
+            try:
+                src = fpath.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                parse_errors.append(f"{rel}: {exc}")
+                continue
+            try:
+                tree = ast.parse(src, filename=rel)
+            except SyntaxError as exc:
+                return _make_res(UPTAKE_STATUS_FAILED, False, f"{rel}: SyntaxError line {exc.lineno}: {exc.msg}")
+            if ast_rule == "has_main_or_argparse":
+                has_main = any(
+                    (isinstance(node, ast.FunctionDef) and node.name in {"main", "parser", "cli"})
+                    or (isinstance(node, ast.Import) and any(alias.name == "argparse" for alias in node.names))
+                    or (isinstance(node, ast.ImportFrom) and node.module == "argparse")
+                    or (isinstance(node, ast.Constant) and isinstance(node.value, str) and "_CANONICAL_PATH" in src)
+                    for node in ast.walk(tree)
+                )
+                if has_main:
+                    matched_ast_files.append(rel)
+            else:
+                matched_ast_files.append(rel)
+        if parse_errors:
+            return _make_res(UPTAKE_STATUS_UNAVAILABLE, None, f"could not read candidate file(s): {parse_errors[0]}")
+        if matched_ast_files:
+            return _make_res(UPTAKE_STATUS_PASSED, True, f"{matched_ast_files[0]}: AST verified ({ast_rule})")
+        return _make_res(UPTAKE_STATUS_FAILED, False, f"no Python file satisfied AST rule {ast_rule!r}")
+
+    # Lexical checks (`text`, `text_any`, `text_absent`, `import`)
+    file_texts: list[tuple[str, str, str]] = []
+    for rel, fpath in candidate_files:
+        try:
+            raw_txt = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        file_texts.append((rel, raw_txt, _strip_source_comments(raw_txt, fpath.suffix)))
+
+    def _engaged() -> bool:
+        eng_any = check.get("engagement_any")
+        if isinstance(eng_any, list) and eng_any:
+            for pat_str in eng_any:
+                rx = re.compile(str(pat_str), re.MULTILINE)
+                if any(rx.search(stripped) for _, _, stripped in file_texts):
+                    return True
+            return False
+        eng_globs = check.get("engagement_glob")
+        if isinstance(eng_globs, list) and eng_globs:
+            return bool(_discover_target_files(target_dir, [str(x) for x in eng_globs]))
+        return bool(file_texts)
+
+    if kind == "text_absent":
+        raw_pat = check.get("must_not_match") or check.get("target") or ""
+        pat_list = [str(x) for x in (raw_pat if isinstance(raw_pat, list) else [raw_pat]) if str(x)]
+        for pat_str in pat_list:
+            rx = re.compile(pat_str, re.MULTILINE)
+            for rel, _, stripped in file_texts:
+                if rx.search(stripped):
+                    return _make_res(UPTAKE_STATUS_FAILED, False, f"{rel}: contains forbidden pattern {pat_str!r}")
+        if not _engaged():
+            return _make_res(
+                UPTAKE_STATUS_NOT_APPLICABLE,
+                None,
+                f"no engagement precondition matched for negative check {cid!r}",
+            )
+        return _make_res(UPTAKE_STATUS_PASSED, True, f"checked {len(file_texts)} file(s); forbidden pattern absent")
+
+    # `text`, `text_any`, `import`
+    if not _engaged():
+        return _make_res(UPTAKE_STATUS_NOT_APPLICABLE, None, f"no target domain files engaged for {cid!r}")
+    raw_pat = check.get("must_match") or check.get("target") or ""
+    pat_list = [str(x) for x in (raw_pat if isinstance(raw_pat, list) else [raw_pat]) if str(x)]
+    for pat_str in pat_list:
+        rx = re.compile(pat_str, re.MULTILINE)
+        for rel, raw_txt, stripped in file_texts:
+            corpus = raw_txt if rel.endswith("SKILL.md") else stripped
+            if rx.search(corpus):
+                return _make_res(UPTAKE_STATUS_PASSED, True, f"{rel}: matches {pat_str!r}")
+    return _make_res(UPTAKE_STATUS_FAILED, False, f"no file matched any of {pat_list!r}")
+
+
+def score_trigger_quality(
+    expected_skills: Sequence[str],
+    triggered_skills: Sequence[str],
+) -> dict[str, Any]:
+    """Compute Trigger Recall, Precision, and Exact Match (`expo/eval-harness` `trigger.ts` parity)."""
+    expected: list[str] = []
+    for s in expected_skills:
+        ns = _norm_skill(s)
+        if ns and ns not in expected:
+            expected.append(ns)
+    triggered: list[str] = []
+    for s in triggered_skills:
+        ns = _norm_skill(s)
+        if ns and ns not in triggered:
+            triggered.append(ns)
+    expected_set = set(expected)
+    triggered_set = set(triggered)
+    matched = [s for s in expected if s in triggered_set]
+    extra = [s for s in triggered if s not in expected_set]
+    missing = [s for s in expected if s not in triggered_set]
+    recall = 1.0 if not expected else round(len(matched) / len(expected), 4)
+    precision = (1.0 if not expected else 0.0) if not triggered else round(len(matched) / len(triggered), 4)
+    return {
+        "expected_skills": expected,
+        "triggered_skills": triggered,
+        "matched_skills": matched,
+        "extra_skills": extra,
+        "missing_skills": missing,
+        "recall": recall,
+        "precision": precision,
+        "exact_match": expected_set == triggered_set,
+        "any_skill_triggered": len(triggered) > 0,
+    }
+
+
+def evaluate_skill_uptake(
+    *,
+    skills: Sequence[str] | str | None = None,
+    triggered_skills: Sequence[str] | str | None = None,
+    target_dir: Path | None = None,
+    scenario: str = "skills_available_unmentioned",
+    uptake_map_path: Path | None = None,
+    baseline_evaluator_pct: float | None = None,
+    skill_evaluator_pct: float | None = None,
+    build_success: bool | None = None,
+) -> dict[str, Any]:
+    """Evaluate decoupled `uptake_map.json` checks and compute the `Trigger -> Context Uptake -> Outcome Delta` triad."""
+    skill_map, checks_by_id = load_uptake_registry(uptake_map_path)
+    norm_scenario = str(scenario or "skills_available_unmentioned").strip()
+    if norm_scenario not in VALID_SKILL_SCENARIOS:
+        norm_scenario = "skills_available_unmentioned"
+
+    raw_expected: list[str] = []
+    if isinstance(skills, str):
+        raw_expected = [_norm_skill(x) for x in re.split(r"[,;\s]+", skills) if _norm_skill(x)]
+    elif isinstance(skills, Sequence):
+        for item in skills:
+            for x in re.split(r"[,;\s]+", str(item)):
+                if _norm_skill(x):
+                    raw_expected.append(_norm_skill(x))
+    else:
+        raw_expected = sorted(skill_map.keys())
+
+    expected_skills = [] if norm_scenario == "skills_unavailable" else list(dict.fromkeys(raw_expected))
+
+    if triggered_skills is None:
+        trig_list = list(expected_skills)
+    elif isinstance(triggered_skills, str):
+        trig_list = [_norm_skill(x) for x in re.split(r"[,;\s]+", triggered_skills) if _norm_skill(x)]
+    else:
+        trig_list = [_norm_skill(str(x)) for x in triggered_skills if _norm_skill(str(x))]
+
+    eff_target_dir = (target_dir or DEFAULT_SKILLS_ROOT.parent).expanduser().resolve()
+    warnings: list[str] = []
+    pooled_check_ids: list[str] = []
+    for sk in expected_skills:
+        cids = skill_map.get(sk)
+        if cids is None:
+            warnings.append(f"no uptake checks mapped for skill '{sk}'")
+            continue
+        for cid in cids:
+            if cid not in checks_by_id:
+                warnings.append(f"uptake_map references unknown check id '{cid}'")
+                continue
+            if cid not in pooled_check_ids:
+                pooled_check_ids.append(cid)
+
+    results_by_id: dict[str, dict[str, Any]] = {}
+    for cid in pooled_check_ids:
+        results_by_id[cid] = _run_single_uptake_check(checks_by_id[cid], eff_target_dir)
+
+    trig_quality = score_trigger_quality(expected_skills, trig_list)
+    triggered_set = set(trig_quality["triggered_skills"])
+    skills_out: dict[str, dict[str, Any]] = {}
+
+    for sk in expected_skills:
+        is_trig = sk in triggered_set
+        cids = skill_map.get(sk)
+        if cids is None:
+            skills_out[sk] = {
+                "expected": True,
+                "triggered": is_trig,
+                "trigger_status": "observed" if is_trig else "not_observed",
+                "uptake_status": "unsupported",
+                "passed": None,
+                "total": None,
+                "uptake_rate": None,
+                "hard_failures": 0,
+                "soft_advisories": 0,
+                "checks": [],
+            }
+            continue
+        sk_checks = [results_by_id[cid] for cid in cids if cid in results_by_id]
+        scored = [c for c in sk_checks if c["status"] in UPTAKE_SCORED_STATUSES]
+        passed_cnt = sum(1 for c in scored if c["passed"] is True)
+        hard_fails = sum(1 for c in scored if c["passed"] is False and c.get("severity") == "hard")
+        soft_fails = sum(1 for c in scored if c["passed"] is False and c.get("severity") != "hard")
+        has_unavail = any(c["status"] == UPTAKE_STATUS_UNAVAILABLE for c in sk_checks)
+        uptake_status = (
+            UPTAKE_STATUS_UNAVAILABLE
+            if has_unavail
+            else ("measured" if scored else (UPTAKE_STATUS_NOT_APPLICABLE if sk_checks else "measured"))
+        )
+        skills_out[sk] = {
+            "expected": True,
+            "triggered": is_trig,
+            "trigger_status": "observed" if is_trig else "not_observed",
+            "uptake_status": uptake_status,
+            "passed": passed_cnt,
+            "total": len(scored),
+            "uptake_rate": None if not scored else round(passed_cnt / len(scored), 4),
+            "hard_failures": hard_fails,
+            "soft_advisories": soft_fails,
+            "checks": sk_checks,
+        }
+
+    all_pooled_results = [results_by_id[cid] for cid in pooled_check_ids]
+    scored_pooled = [c for c in all_pooled_results if c["status"] in UPTAKE_SCORED_STATUSES]
+    static_passed = sum(1 for c in scored_pooled if c["passed"] is True)
+    static_total = len(scored_pooled)
+    relevant_triggered = len(trig_quality["matched_skills"]) > 0
+    if relevant_triggered:
+        context_uptake = {
+            "passed": static_passed,
+            "total": static_total,
+            "uptake_rate": None if static_total == 0 else round(static_passed / static_total, 4),
+            "skipped_reason": None,
+        }
+    else:
+        context_uptake = {
+            "passed": 0,
+            "total": static_total,
+            "uptake_rate": None,
+            "skipped_reason": "relevant skill did not trigger" if expected_skills else "skills_unavailable baseline scenario",
+        }
+
+    outcome_delta_val = (
+        round(float(skill_evaluator_pct) - float(baseline_evaluator_pct), 4)
+        if skill_evaluator_pct is not None and baseline_evaluator_pct is not None
+        else None
+    )
+    hard_failed_checks = [
+        c for c in scored_pooled if c["passed"] is False and c.get("severity") == "hard"
+    ]
+    return {
+        "ok": len(hard_failed_checks) == 0,
+        "schema": "skill-uptake-eval/v1",
+        "scenario": norm_scenario,
+        "target_dir": str(eff_target_dir),
+        "expected_skills": expected_skills,
+        "warnings": warnings,
+        "score": {
+            "trigger_quality": trig_quality,
+            "context_uptake": context_uptake,
+            "outcome_delta": {
+                "baseline_evaluator_pct": baseline_evaluator_pct,
+                "skill_evaluator_pct": skill_evaluator_pct,
+                "outcome_delta": outcome_delta_val,
+                "build_success": build_success,
+            },
+        },
+        "skills": skills_out,
+        "static_checks": all_pooled_results,
+    }
+
+
+
 def probe_skills(
     *,
     skill: str | None = None,
@@ -6673,6 +7116,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe",
         "triage",
         "diagnose",
+        "uptake-check",
         "emit-briefs",
         "emit-relay",
         "record-m1-receipt",
@@ -6691,7 +7135,7 @@ def main(argv: list[str] | None = None) -> int:
             "command",
             nargs="?",
             choices=sorted(known_subcommands),
-            help="Subcommand: probe | triage | diagnose | emit-briefs | emit-relay | record-m1-receipt | rollup | roi",
+            help="Subcommand: probe | triage | diagnose | uptake-check | emit-briefs | emit-relay | record-m1-receipt | rollup | roi",
         )
         _add_common_source_args(top)
         top.parse_args(args_list)
@@ -6705,10 +7149,54 @@ def main(argv: list[str] | None = None) -> int:
     elif cmd not in known_subcommands:
         sys.stderr.write(
             f"[skill-retro] Unknown subcommand: {cmd!r}\n"
-            "  Valid subcommands: probe, triage, diagnose, emit-briefs, emit-relay, record-m1-receipt, rollup, roi\n"
+            "  Valid subcommands: probe, triage, diagnose, uptake-check, emit-briefs, emit-relay, record-m1-receipt, rollup, roi\n"
             "  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n"
         )
         raise SystemExit(2)
+
+    if cmd == "uptake-check":
+        p = _SelfDisclosingArgumentParser(prog="skill_retro.py uptake-check")
+        p.add_argument("--skill", "--skills", "--target-skill", dest="skill", default=None, help="Comma-separated expected skill(s) to evaluate.")
+        p.add_argument("--triggered-skills", default=None, help="Comma-separated triggered skills observed in trace (defaults to expected skills).")
+        p.add_argument("--target-dir", "--worktree", dest="target_dir", type=Path, default=None, help="Target workspace/directory to inspect.")
+        p.add_argument(
+            "--scenario",
+            default="skills_available_unmentioned",
+            choices=sorted(VALID_SKILL_SCENARIOS),
+            help="3-condition scenario: skills_unavailable | skills_available_unmentioned | skills_available_mentioned.",
+        )
+        p.add_argument("--uptake-map", dest="uptake_map_path", type=Path, default=None, help="Custom uptake_map.json path.")
+        p.add_argument("--baseline-pct", type=float, default=None, help="Baseline (skills_unavailable) evaluator score percentage.")
+        p.add_argument("--skill-pct", type=float, default=None, help="Skill-enabled evaluator score percentage.")
+        p.add_argument("--build-success", action="store_true", default=None)
+        p.add_argument("--strict", action="store_true", default=False, help="Exit 1 if any hard uptake check fails.")
+        p.add_argument("--json", action="store_true", default=True)
+        ns = p.parse_args(rest)
+        out = evaluate_skill_uptake(
+            skills=ns.skill,
+            triggered_skills=ns.triggered_skills,
+            target_dir=ns.target_dir,
+            scenario=ns.scenario,
+            uptake_map_path=ns.uptake_map_path,
+            baseline_evaluator_pct=ns.baseline_pct,
+            skill_evaluator_pct=ns.skill_pct,
+            build_success=ns.build_success,
+        )
+        if not out["ok"]:
+            drawers = sorted(
+                {
+                    str(c.get("remediation_drawer"))
+                    for c in (out.get("static_checks") or [])
+                    if c.get("status") == UPTAKE_STATUS_FAILED and c.get("remediation_drawer")
+                }
+            )
+            if drawers:
+                sys.stderr.write(
+                    f"[skill-retro] Hard uptake check failure(s) detected. "
+                    f"Read {', '.join(drawers[:3])} for remediation rules.\n"
+                )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 1 if (ns.strict and not out["ok"]) else 0
 
     if cmd == "probe":
         p = _SelfDisclosingArgumentParser(prog="skill_retro.py probe")

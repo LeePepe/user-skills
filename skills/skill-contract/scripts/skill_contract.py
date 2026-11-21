@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+import importlib.util
 import json
 import math
 import os
@@ -14,7 +15,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[3]
 PRIVATE = re.compile(r"\b(?:progressRail|isUnilateral|DashboardL10n)\b")
@@ -110,6 +111,14 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
     "duplicate-script-fork": (
         f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
         "Consolidate duplicate scripts into one canonical script and delegate via a <=25-line _CANONICAL_PATH wrapper.",
+    ),
+    "assertion-count-mismatch": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Enforce 1-Verify-1-Assertion: len(assertions) must equal len(verify_lines) (or verify_count) without splitting or dropping Verify lines.",
+    ),
+    "soft-assertion-missing-evidence": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Every soft assertion (severity='soft' or fatal=false) must include non-empty evidence and why_soft justification.",
     ),
 }
 
@@ -332,11 +341,99 @@ def _snapshot_failures(case: dict[str, Any]) -> list[str]:
     return failures
 
 
+def score_case_assertions(
+    case: Mapping[str, Any],
+    *,
+    completed: bool = True,
+) -> dict[str, Any]:
+    """Score Hard vs Soft assertions under `1-Verify-1-Assertion` & fatal zeroing discipline (`expo/eval-harness` parity)."""
+    cid = str(case.get("id", "<unidentified>"))
+    verify_lines_raw = case.get("verify_lines")
+    verify_lines = [str(v).strip() for v in verify_lines_raw if str(v).strip()] if isinstance(verify_lines_raw, list) else []
+    verify_count = int(case["verify_count"]) if case.get("verify_count") is not None else len(verify_lines)
+    raw_assertions = case.get("assertions")
+    assertions = [dict(a) for a in raw_assertions if isinstance(a, Mapping)] if isinstance(raw_assertions, list) else []
+
+    max_points = int(case.get("points") if case.get("points") is not None else (verify_count or len(assertions) or 1))
+    discipline_violations: list[str] = []
+
+    if (verify_lines or case.get("verify_count") is not None) and len(assertions) != verify_count:
+        discipline_violations.append(
+            f"{cid}: 1-Verify-1-Assertion violation (assertion-count-mismatch): recorded {len(assertions)} assertion(s) for {verify_count} Verify line(s)"
+        )
+
+    hard_assertions: list[dict[str, Any]] = []
+    soft_assertions: list[dict[str, Any]] = []
+    for idx, item in enumerate(assertions):
+        v_line = verify_lines[idx] if idx < len(verify_lines) else str(item.get("verify") or item.get("check") or f"verify_{idx + 1}")
+        non_fatal_marker = "(non-fatal)" in v_line.lower()
+        sev = str(item.get("severity") or item.get("kind") or ("soft" if "evidence" in item or "why_soft" in item else "hard")).strip().lower()
+        is_soft = sev in {"soft", "soft_advisory"}
+        default_fatal = not (non_fatal_marker or sev == "soft_advisory")
+        fatal = bool(item["fatal"]) if "fatal" in item and item["fatal"] is not None else default_fatal
+        passed_val = bool(item.get("passed", True))
+        if is_soft:
+            ev = str(item.get("evidence") or "").strip()
+            why_soft = str(item.get("why_soft") or "").strip()
+            if not ev or not why_soft:
+                discipline_violations.append(
+                    f"{cid}: soft-assertion-missing-evidence on assertion #{idx + 1} ({v_line!r}): soft assertions require non-empty 'evidence' and 'why_soft'"
+                )
+            soft_assertions.append({
+                "check": str(item.get("check") or v_line),
+                "fatal": fatal,
+                "passed": passed_val,
+                "evidence": ev,
+                "why_soft": why_soft,
+            })
+        else:
+            hard_assertions.append({
+                "check": str(item.get("check") or item.get("id") or v_line),
+                "fatal": fatal,
+                "passed": passed_val,
+            })
+
+    all_checks = hard_assertions + soft_assertions
+    fatal_hard_failed = any(not a["passed"] for a in hard_assertions if a["fatal"])
+    fatal_soft_failed = any(not a["passed"] for a in soft_assertions if a["fatal"])
+    any_fatal_failed = fatal_hard_failed or fatal_soft_failed or bool(discipline_violations)
+
+    if any_fatal_failed or not completed:
+        earned_points = 0
+        passed = False
+    elif not all_checks:
+        earned_points = max_points
+        passed = True
+    else:
+        passed_count = sum(1 for a in all_checks if a["passed"])
+        earned_points = round(max_points * passed_count / len(all_checks))
+        passed = earned_points == max_points
+
+    return {
+        "id": cid,
+        "max_points": max_points,
+        "earned_points": earned_points,
+        "passed": passed,
+        "completed": completed,
+        "verify_count": verify_count,
+        "assertion_count": len(all_checks),
+        "hard_assertions": len(hard_assertions),
+        "soft_assertions": len(soft_assertions),
+        "fatal_failed": any_fatal_failed,
+        "discipline_violations": discipline_violations,
+    }
+
+
 def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT) -> list[str]:
     reasons: list[str] = []
     cid = str(case.get("id", "<unidentified>"))
     if _is_golden(case):
         reasons.extend(f"{cid}: {reason}" for reason in _snapshot_failures(case))
+    if any(k in case for k in ("verify_lines", "verify_count", "assertions")):
+        scored = score_case_assertions(case, completed=bool(case.get("completed", True)))
+        reasons.extend(scored["discipline_violations"])
+        if scored["fatal_failed"] and not scored["discipline_violations"]:
+            reasons.append(f"{cid}: fatal assertion failed (earned_points=0/{scored['max_points']})")
     pattern_raw = case.get("forbidden_regex") or case.get("regex")
     bad_snippet = case.get("bad_snippet")
     good_snippet = case.get("good_snippet")
@@ -807,6 +904,7 @@ def run_eval(args: argparse.Namespace) -> int:
                     or case.get("cmd")
                     or case.get("negative_cmd")
                     or case.get("file")
+                    or case.get("assertions")
                 )
                 if not has_assertion:
                     if rel_drawer.endswith("eval-cases.json"):
@@ -954,6 +1052,11 @@ def _audit_drawer(skill: str, path: Path, findings: list[dict[str, Any]], pkg_di
                 missing = [field for field in required if field not in entry]
                 if missing:
                     findings.append({"skill": skill, "code": "missing-coordinate", "file": rel, "id": entry.get("id"), "fields": missing})
+            if any(k in entry for k in ("verify_lines", "verify_count", "assertions")):
+                scored = score_case_assertions(entry, completed=bool(entry.get("completed", True)))
+                for viol in scored["discipline_violations"]:
+                    code_name = "soft-assertion-missing-evidence" if "soft-assertion-missing-evidence" in viol else "assertion-count-mismatch"
+                    findings.append({"skill": skill, "code": code_name, "file": rel, "id": entry.get("id"), "detail": viol})
 
 
 def _frontmatter_description(md: Path) -> str:
@@ -1384,6 +1487,31 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2)); return 1 if malformed else 0
 
 
+def uptake_eval(args: argparse.Namespace) -> int:
+    retro_script = ROOT / "skills" / "skill-retro" / "scripts" / "skill_retro.py"
+    spec = importlib.util.spec_from_file_location("skill_retro_uptake", retro_script)
+    if spec is None or spec.loader is None:
+        print(json.dumps({"ok": False, "error": f"skill_retro.py not found at {retro_script}"}))
+        return 1
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    target_dir = Path(args.target_dir).expanduser().resolve() if getattr(args, "target_dir", None) else ROOT
+    uptake_map_path = Path(args.uptake_map_path).expanduser().resolve() if getattr(args, "uptake_map_path", None) else None
+    out = mod.evaluate_skill_uptake(
+        skills=args.skill,
+        triggered_skills=args.triggered_skills,
+        target_dir=target_dir,
+        scenario=args.scenario,
+        uptake_map_path=uptake_map_path,
+        baseline_evaluator_pct=args.baseline_pct,
+        skill_evaluator_pct=args.skill_pct,
+        build_success=args.build_success,
+    )
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 1 if (getattr(args, "strict", False) and not out["ok"]) else 0
+
+
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1473,6 +1601,21 @@ def parser() -> argparse.ArgumentParser:
     star_p.add_argument("--cmd-template", default=None)
     star_p.add_argument("--dry-run", action="store_true")
 
+    uptake_p = sub.add_parser("uptake-eval")
+    uptake_p.add_argument("--skill", "--skills", dest="skill", default=None)
+    uptake_p.add_argument("--triggered-skills", default=None)
+    uptake_p.add_argument("--target-dir", "--worktree", dest="target_dir", default=None)
+    uptake_p.add_argument(
+        "--scenario",
+        choices=["skills_unavailable", "skills_available_unmentioned", "skills_available_mentioned"],
+        default="skills_available_unmentioned",
+    )
+    uptake_p.add_argument("--uptake-map", dest="uptake_map_path", default=None)
+    uptake_p.add_argument("--baseline-pct", type=float, default=None)
+    uptake_p.add_argument("--skill-pct", type=float, default=None)
+    uptake_p.add_argument("--build-success", action="store_true", default=None)
+    uptake_p.add_argument("--strict", action="store_true")
+
     audit_parser = sub.add_parser("audit")
     group = audit_parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--all", action="store_true")
@@ -1493,6 +1636,7 @@ def main() -> int:
         "eval-target": run_eval_target,
         "description-eval": description_eval,
         "sync-jev-stars": sync_jev_stars,
+        "uptake-eval": uptake_eval,
         "audit": audit,
     }[args.command](args)
 
