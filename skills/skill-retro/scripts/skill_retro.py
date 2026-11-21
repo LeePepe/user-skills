@@ -6242,6 +6242,188 @@ def evaluate_skill_uptake(
 
 
 
+def _fast_telemetry_signals(
+    *,
+    inv: Mapping[str, Mapping[str, Any]],
+    warehouse_db: Path | None = None,
+    usage_jsonl: Path | None = None,
+    proposals_path: Path | None = None,
+    roi_snapshot_path: Path | None = None,
+    days: int = 30,
+) -> dict[str, dict[str, Any]]:
+    """Collect sub-50ms lightweight telemetry signals from warehouse.db, usage.jsonl, proposals.jsonl, and skills-roi.json."""
+    out: dict[str, dict[str, Any]] = {
+        sk: {
+            "l0_trigger_misses": 0,
+            "l0_zero_action_loads": 0,
+            "l0_directional_drifts": 0,
+            "l1_unwired_drawers": 0,
+            "l1_hot_drawers": 0,
+            "l1_true_deadwood": 0,
+            "l2_exit2_roadblocks": 0,
+            "l2_leaky_rubber_stamps": 0,
+            "l2_latency_sinks": 0,
+            "l3_wild_occurrences": 0,
+            "domain_failures": 0,
+            "p1_proposal_bonus": 0.0,
+            "ref_hit_drawers": set(),
+        }
+        for sk in inv
+    }
+
+    now_cst = datetime.now(CST)
+    window_start = now_cst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=max(1, days) - 1)
+    window_end = now_cst.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+    wh = warehouse_db if warehouse_db is not None else DEFAULT_WAREHOUSE_DB
+    if _safe_is_file(wh) and wh is not None:
+        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            for sc_tbl in ("script_call", "fact_skill_script_call"):
+                if sc_tbl not in tables:
+                    continue
+                for raw_sk, raw_ec, cnt in conn.execute(
+                    f'SELECT skill, exit_code, COUNT(*) FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0 GROUP BY skill, exit_code'
+                ):
+                    sk = _norm_skill(str(raw_sk or ""))
+                    if sk not in out:
+                        continue
+                    ec = int(raw_ec)
+                    if ec == 2:
+                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(cnt or 0))
+                    else:
+                        out[sk]["domain_failures"] += int(cnt or 0)
+            for ref_tbl in ("reference_hits", "fact_skill_reference_hit"):
+                if ref_tbl not in tables:
+                    continue
+                cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{ref_tbl}")')}
+                p_col = "reference_path" if "reference_path" in cols else ("ref_path" if "ref_path" in cols else None)
+                if not p_col:
+                    continue
+                for raw_sk, raw_p in conn.execute(f'SELECT DISTINCT skill, "{p_col}" FROM "{ref_tbl}"'):
+                    sk = _norm_skill(str(raw_sk or ""))
+                    if sk not in out or not raw_p:
+                        continue
+                    norm_pair = _normalize_ref_rel(str(raw_p))
+                    rel_ref = norm_pair[1] if norm_pair else (str(raw_p) if str(raw_p).startswith("references/") else f"references/{Path(str(raw_p)).name}")
+                    out[sk]["ref_hit_drawers"].add(rel_ref)
+
+    u_path = usage_jsonl if usage_jsonl is not None else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL
+    if _safe_is_file(u_path) and u_path is not None:
+        u_exit2: dict[str, int] = {}
+        u_fail: dict[str, int] = {}
+        with contextlib.suppress(OSError):
+            with u_path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if '"script_call"' not in line and '"reference_hit"' not in line:
+                        continue
+                    with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
+                        rec = json.loads(line)
+                        if not isinstance(rec, Mapping):
+                            continue
+                        ts = _parse_ts(rec.get("ts") or rec.get("timestamp") or rec.get("observed_at"))
+                        if ts is not None and not (window_start <= ts < window_end):
+                            continue
+                        sk = _norm_skill(str(rec.get("skill") or ""))
+                        if sk not in out:
+                            continue
+                        kind = str(rec.get("kind") or "")
+                        if kind == "script_call":
+                            ec_raw = rec.get("exit_code")
+                            if ec_raw not in (None, ""):
+                                ec = int(ec_raw)
+                                if ec == 2:
+                                    u_exit2[sk] = u_exit2.get(sk, 0) + 1
+                                elif ec != 0:
+                                    u_fail[sk] = u_fail.get(sk, 0) + 1
+                        elif kind == "reference_hit":
+                            rp = str(rec.get("reference_path") or "")
+                            if rp:
+                                norm_pair = _normalize_ref_rel(rp)
+                                rel_ref = norm_pair[1] if norm_pair else (rp if rp.startswith("references/") else f"references/{Path(rp).name}")
+                                out[sk]["ref_hit_drawers"].add(rel_ref)
+        for sk, cnt in u_exit2.items():
+            out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
+        for sk, cnt in u_fail.items():
+            out[sk]["domain_failures"] = max(out[sk]["domain_failures"], cnt)
+
+    roi_path = roi_snapshot_path if roi_snapshot_path is not None else DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
+    if _safe_is_file(roi_path) and roi_path is not None:
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            roi_doc = json.loads(roi_path.read_text(encoding="utf-8"))
+            sr_doc = (roi_doc.get("skill_retro") if isinstance(roi_doc, Mapping) else None) or {}
+            if isinstance(sr_doc, Mapping):
+                l0 = sr_doc.get("layer0_direction_and_triggers") or {}
+                l1 = sr_doc.get("layer1_drawer_metabolism") or {}
+                l2 = sr_doc.get("layer2_script_efficacy_and_speed") or {}
+                for tm in l0.get("trigger_misses") or []:
+                    sk = _norm_skill(str(tm.get("skill") or ""))
+                    if sk in out:
+                        out[sk]["l0_trigger_misses"] = max(out[sk]["l0_trigger_misses"], int(tm.get("missed_sessions") or 0))
+                for ze in l0.get("zero_action_loads") or []:
+                    sk = _norm_skill(str(ze.get("skill") or ""))
+                    if sk in out:
+                        out[sk]["l0_zero_action_loads"] = max(out[sk]["l0_zero_action_loads"], int(ze.get("zero_action_sessions") or 0))
+                for uw in l1.get("unwired_disconnected_drawers") or []:
+                    sk = _norm_skill(str(uw.get("skill") or ""))
+                    if sk in out:
+                        out[sk]["l1_unwired_drawers"] += 1
+                        out[sk]["domain_failures"] = max(out[sk]["domain_failures"], int(uw.get("domain_failure_count") or 0))
+                for rb in l2.get("rigid_roadblocks") or []:
+                    sk = _norm_skill(str(rb.get("skill") or ""))
+                    if sk in out:
+                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(rb.get("exit_2_count") or 0))
+                for idx_p, prop in enumerate(sr_doc.get("proposals") or []):
+                    if not isinstance(prop, Mapping):
+                        continue
+                    sk = _norm_skill(str(prop.get("skill") or ""))
+                    if sk not in out:
+                        continue
+                    prio = str(prop.get("priority") or "").upper()
+                    if prio in {"P0", "P1", "HIGH"}:
+                        out[sk]["p1_proposal_bonus"] = max(out[sk]["p1_proposal_bonus"], round(8000.0 - idx_p * 1200.0, 2))
+
+    p_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
+    if _safe_is_file(p_path) and p_path is not None:
+        with contextlib.suppress(OSError):
+            pending_idx = 0
+            for line in p_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                with contextlib.suppress(json.JSONDecodeError):
+                    rec = json.loads(line)
+                    if not isinstance(rec, Mapping):
+                        continue
+                    if str(rec.get("status") or "pending").lower() != "pending":
+                        continue
+                    if not str(rec.get("id") or "").startswith("skill-retro-"):
+                        continue
+                    sk = _norm_skill(str(rec.get("skill") or ""))
+                    if sk not in out:
+                        continue
+                    cat = str(rec.get("category") or "")
+                    detail = str(rec.get("detail") or "")
+                    if cat == "unwired_disconnected_drawer":
+                        out[sk]["l1_unwired_drawers"] = max(out[sk]["l1_unwired_drawers"], 1)
+                        m_df = re.search(r"domain_failures=(\d+)", detail)
+                        if m_df:
+                            out[sk]["domain_failures"] = max(out[sk]["domain_failures"], int(m_df.group(1)))
+                    elif cat == "rigid_roadblock":
+                        m_e2 = re.search(r"exit_2_count=(\d+)", detail)
+                        if m_e2:
+                            out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(m_e2.group(1)))
+                    elif cat == "trigger_miss":
+                        m_tm = re.search(r"missed_sessions=(\d+)", detail)
+                        if m_tm:
+                            out[sk]["l0_trigger_misses"] = max(out[sk]["l0_trigger_misses"], int(m_tm.group(1)))
+                    prio = str(rec.get("priority") or "").upper()
+                    if prio in {"P0", "P1", "HIGH"}:
+                        out[sk]["p1_proposal_bonus"] = max(out[sk]["p1_proposal_bonus"], round(8000.0 - pending_idx * 1200.0, 2))
+                        pending_idx += 1
+
+    return out
+
+
 def probe_skills(
     *,
     skill: str | None = None,
@@ -6374,30 +6556,56 @@ def probe_skills(
                 }
             )
     else:
+        fast_telem = _fast_telemetry_signals(
+            inv=inv,
+            warehouse_db=warehouse_db,
+            usage_jsonl=usage_jsonl,
+            days=days,
+        )
         for sk_name, meta in sorted(inv.items()):
             pkg_p = Path(str(meta.get("path") or (s_root / sk_name)))
+            t_sig = fast_telem.get(sk_name) or {}
+            ref_hits_set = t_sig.get("ref_hit_drawers") or set()
             unwired_static = 0
+            unwired_zero_hit = 0
             for ref_e in meta.get("reference_entries") or []:
                 rel_r = str(ref_e.get("rel_path") or "")
                 if rel_r.startswith("references/") and _drawer_linked_in_l0(pkg_p, rel_r) and not _drawer_linked_in_scripts(pkg_p, rel_r):
                     unwired_static += 1
+                    if rel_r not in ref_hits_set:
+                        unwired_zero_hit += 1
+            trig_misses = int(t_sig.get("l0_trigger_misses") or 0)
+            empty_loads = int(t_sig.get("l0_zero_action_loads") or 0)
+            drifts = int(t_sig.get("l0_directional_drifts") or 0)
+            exit2_cnt = int(t_sig.get("l2_exit2_roadblocks") or 0)
+            domain_fails = int(t_sig.get("domain_failures") or 0)
+            p1_bonus = float(t_sig.get("p1_proposal_bonus") or 0.0)
+            unwired_cnt = max(
+                int(t_sig.get("l1_unwired_drawers") or 0),
+                unwired_zero_hit if (domain_fails > 0 and meta.get("scripts")) else (unwired_static if meta.get("scripts") else 0),
+            )
             budget_ok = bool(meta.get("budget_ok", True))
             eval_cases_cnt = int(meta.get("eval_case_count") or 0)
             creative_flag = sk_name in {"my-designer", "design-studio"}
             triggered_aspects = []
-            if not budget_ok and "l0" in aspect_filter:
+            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or not budget_ok) and "l0" in aspect_filter:
                 triggered_aspects.append("l0")
-            if unwired_static > 0 and meta.get("scripts") and "l1" in aspect_filter:
+            if unwired_cnt > 0 and meta.get("scripts") and "l1" in aspect_filter:
                 triggered_aspects.append("l1")
-            if meta.get("scripts") and "l2" in aspect_filter and unwired_static > 0:
+            if (exit2_cnt > 0 or (meta.get("scripts") and unwired_cnt > 0)) and "l2" in aspect_filter:
                 triggered_aspects.append("l2")
             if creative_flag and "creative" in aspect_filter:
                 triggered_aspects.append("creative")
-            if eval_cases_cnt == 0 and "eval" in aspect_filter:
+            if (eval_cases_cnt == 0 or len(triggered_aspects) >= 2) and "eval" in aspect_filter:
                 triggered_aspects.append("eval")
             score = (
-                (2.5 if not budget_ok else 0.0)
-                + (1.5 if unwired_static > 0 and meta.get("scripts") else 0.0)
+                p1_bonus
+                + exit2_cnt * 3.0
+                + (unwired_cnt * 2.5 if domain_fails > 0 or p1_bonus > 0 else (1.5 if unwired_cnt > 0 and meta.get("scripts") else 0.0))
+                + domain_fails * 1.5
+                + trig_misses * 2.0
+                + empty_loads * 1.2
+                + (2.5 if not budget_ok else 0.0)
                 + (1.0 if eval_cases_cnt == 0 else 0.0)
                 + (0.8 if creative_flag else 0.0)
             )
@@ -6412,17 +6620,18 @@ def probe_skills(
                     "leased": sk_name in leases["leased_skills"],
                     "lease_reasons": leases["lease_reasons"].get(sk_name, []),
                     "signals": {
-                        "l0_trigger_misses": 0,
-                        "l0_zero_action_loads": 0,
-                        "l0_directional_drifts": 0,
-                        "l1_unwired_drawers": unwired_static if meta.get("scripts") else 0,
-                        "l1_hot_drawers": 0,
-                        "l1_true_deadwood": 0,
-                        "l2_exit2_roadblocks": 0,
-                        "l2_leaky_rubber_stamps": 0,
-                        "l2_latency_sinks": 0,
-                        "l3_wild_occurrences": 0,
+                        "l0_trigger_misses": trig_misses,
+                        "l0_zero_action_loads": empty_loads,
+                        "l0_directional_drifts": drifts,
+                        "l1_unwired_drawers": unwired_cnt if meta.get("scripts") else 0,
+                        "l1_hot_drawers": int(t_sig.get("l1_hot_drawers") or 0),
+                        "l1_true_deadwood": int(t_sig.get("l1_true_deadwood") or 0),
+                        "l2_exit2_roadblocks": exit2_cnt,
+                        "l2_leaky_rubber_stamps": int(t_sig.get("l2_leaky_rubber_stamps") or 0),
+                        "l2_latency_sinks": int(t_sig.get("l2_latency_sinks") or 0),
+                        "l3_wild_occurrences": int(t_sig.get("l3_wild_occurrences") or 0),
                         "creative_selection_signal": creative_flag,
+                        "domain_failures": domain_fails,
                     },
                     "triggered_aspects": triggered_aspects,
                     "priority_score": round(score, 2),
@@ -6549,6 +6758,17 @@ def triage_skills(
     decisions: list[dict[str, Any]] = []
     excluded_by_lease: list[dict[str, Any]] = []
 
+    if norm_sk:
+        effective_top_n = 1
+    elif pick_one:
+        effective_top_n = 1
+    elif pick_top is not None:
+        effective_top_n = max(1, int(pick_top))
+    else:
+        effective_top_n = 3
+    live_jev_budget = max(6, effective_top_n * 2) if parsed_mock is None else 999
+    live_jev_calls = 0
+
     for idx, item in enumerate(probe.get("skills") or [], 1):
         sk_name = str(item.get("skill") or "")
         leased = bool(item.get("leased"))
@@ -6579,7 +6799,7 @@ def triage_skills(
         final_aspects = det_aspects
         final_noul = det_noul
 
-        # Check Jev mock or live jev_decide
+        # Check Jev mock or live jev_decide (bounded to top candidates for live network calls)
         jev_raw: Any = None
         if isinstance(parsed_mock, Mapping):
             if sk_name in parsed_mock:
@@ -6590,7 +6810,8 @@ def triage_skills(
                 jev_raw = parsed_mock
         elif isinstance(parsed_mock, list) and idx - 1 < len(parsed_mock):
             jev_raw = parsed_mock[idx - 1]
-        elif use_jev and jev_mod is not None and score > 0:
+        elif use_jev and jev_mod is not None and score > 0 and not leased and live_jev_calls < live_jev_budget:
+            live_jev_calls += 1
             questions = {
                 "route_mode": {
                     "type": "choice",
@@ -6619,7 +6840,20 @@ def triage_skills(
                 default_aspects=det_aspects or ["l2"],
                 default_score=det_noul,
             )
-            if j_mode is not None:
+            sig_map = item.get("signals") if isinstance(item.get("signals"), Mapping) else {}
+            has_concrete_measured_telemetry = bool(
+                int(sig_map.get("l2_exit2_roadblocks") or 0) >= 3
+                or (int(sig_map.get("l1_unwired_drawers") or 0) >= 1 and int(sig_map.get("domain_failures") or 0) >= 1)
+                or int(sig_map.get("l0_trigger_misses") or 0) >= 5
+                or score >= 20.0
+            )
+            if j_mode == "skip" and parsed_mock is None and has_concrete_measured_telemetry and det_mode in {"partial", "full"}:
+                # Never let an uncalibrated generic live Jev noul<0.30 wipe out concrete measured P1/P2 telemetry anomalies
+                final_mode = det_mode
+                final_aspects = det_aspects
+                final_noul = max(det_noul, float(j_noul or 0.0))
+                decision_source = "jev_decide:telemetry_floor_preserved"
+            elif j_mode is not None:
                 final_mode = j_mode
                 final_aspects = (
                     list(CANONICAL_ASPECTS)

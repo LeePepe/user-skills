@@ -1114,6 +1114,78 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             update_calls = [c for c in recorded_cmds if c[:2] == ["issue", "update"]]
             self.assertEqual(len(update_calls), 1)
 
+    def test_fast_probe_telemetry_and_jev_low_noul_floor_preservation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            # Write pending P1 proposals for design-studio, m2-dispatcher, code-review
+            proposals_rows = [
+                {
+                    "id": "skill-retro-l1-unwired-design-studio-remotion-video",
+                    "ts": "2026-11-21T01:19:23Z",
+                    "agent": "retro-loop",
+                    "title": "Wire remotion-video.md",
+                    "detail": "layer=L1 | category=unwired_disconnected_drawer | skill=design-studio | domain_failures=11",
+                    "priority": "high",
+                    "status": "pending",
+                    "skill": "design-studio",
+                    "category": "unwired_disconnected_drawer",
+                },
+                {
+                    "id": "skill-retro-l1-unwired-m2-dispatcher-bots-and-agents",
+                    "ts": "2026-11-21T01:19:23Z",
+                    "agent": "retro-loop",
+                    "title": "Wire bots-and-agents.md",
+                    "detail": "layer=L1 | category=unwired_disconnected_drawer | skill=m2-dispatcher | domain_failures=8",
+                    "priority": "high",
+                    "status": "pending",
+                    "skill": "m2-dispatcher",
+                    "category": "unwired_disconnected_drawer",
+                },
+                {
+                    "id": "skill-retro-l2-roadblock-code-review-discover_review_context-py",
+                    "ts": "2026-11-21T01:19:23Z",
+                    "agent": "retro-loop",
+                    "title": "Soften discover_review_context.py",
+                    "detail": "layer=L2 | category=rigid_roadblock | skill=code-review | exit_2_count=173",
+                    "priority": "high",
+                    "status": "pending",
+                    "skill": "code-review",
+                    "category": "rigid_roadblock",
+                },
+            ]
+            paths["proposals_path"].write_text(
+                "\n".join(json.dumps(r) for r in proposals_rows) + "\n",
+                encoding="utf-8",
+            )
+            fake_jev = unittest.mock.Mock(
+                jev_decide=lambda *_a, **_kw: {
+                    "answers": {
+                        "route_mode": {"choice": "partial"},
+                        "noul": {"noul": 0.14},
+                    }
+                }
+            )
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", paths["proposals_path"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", paths["warehouse_db"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", paths["usage_jsonl"]),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "missing-roi.json"),
+                unittest.mock.patch.object(SKILL_RETRO, "_load_jev_client", return_value=fake_jev),
+            ):
+                probe_fast = SKILL_RETRO.probe_skills(fast=True)
+                top3_fast = [s["skill"] for s in probe_fast["skills"][:3]]
+                self.assertEqual(top3_fast, ["design-studio", "m2-dispatcher", "code-review"])
+
+                triage_live = SKILL_RETRO.triage_skills(pick_top=3, use_jev=True)
+                self.assertEqual(triage_live["status"], "ACTIONABLE")
+                self.assertEqual(triage_live["m1_tls_to_spawn"], 3)
+                selected_names = [s["skill"] for s in triage_live["selected_skills"]]
+                self.assertEqual(selected_names, ["design-studio", "m2-dispatcher", "code-review"])
+                self.assertTrue(
+                    all(s["decision_source"] == "jev_decide:telemetry_floor_preserved" for s in triage_live["selected_skills"])
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

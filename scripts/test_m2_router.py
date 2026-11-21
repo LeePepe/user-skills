@@ -3762,6 +3762,39 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(watch_res_2["target_issue_writes"][0]["skipped_reason"], "already_reported")
         self.assertEqual(len(comments_posted), 1)
 
+    def test_positive_and_counter_case_replay_self_disclosing_drawer_pointers(self):
+        # Positive Case Replay: valid --board-fingerprint succeeds cleanly via m2-dispatcher wrapper
+        pos_proc = subprocess.run(
+            ["python3", str(ROUTER_PATH), "--board-fingerprint", "--state-file", str(self.test_root / "state.json"), "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(pos_proc.returncode, 0, pos_proc.stderr)
+        self.assertTrue(json.loads(pos_proc.stdout)["ok"])
+
+        # Counter-Case Replay: missing mode flag or --apply without --plan-file emits self-disclosing pointers to bots-and-agents.md & pr-dag-auto-heal.md
+        neg_mode = subprocess.run(
+            ["python3", str(ROUTER_PATH)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(neg_mode.returncode, 2)
+        self.assertIn("skills/m2-dispatcher/references/bots-and-agents.md", neg_mode.stderr)
+        self.assertIn("skills/m2-dispatcher/references/pr-dag-auto-heal.md", neg_mode.stderr)
+        self.assertIn("skills/m2-dispatcher/references/runtime-profiles.yaml", neg_mode.stderr)
+
+        neg_apply = subprocess.run(
+            ["python3", str(ROUTER_PATH), "--apply"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(neg_apply.returncode, 2)
+        self.assertIn("skills/m2-dispatcher/references/bots-and-agents.md", neg_apply.stderr)
+        self.assertIn("skills/m2-dispatcher/references/pr-dag-auto-heal.md", neg_apply.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

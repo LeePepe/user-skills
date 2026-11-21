@@ -117,8 +117,8 @@ def resolve_base(repo: Path, requested: str | None) -> tuple[str, str]:
     return base_ref, merge_base
 
 
-def changed_files(repo: Path, merge_base: str, committed_only: bool) -> list[dict[str, str]]:
-    diff_range = f"{merge_base}...HEAD" if committed_only else merge_base
+def changed_files(repo: Path, merge_base: str, committed_only: bool, head_ref: str = "HEAD") -> list[dict[str, str]]:
+    diff_range = f"{merge_base}...{head_ref}" if committed_only else merge_base
     output = git(repo, "diff", "--name-status", "--find-renames", diff_range, "--")
     changes = []
     for line in output.splitlines():
@@ -141,12 +141,30 @@ def changed_files(repo: Path, merge_base: str, committed_only: bool) -> list[dic
 def discover_specs(repo: Path, branch: str, changes: list[dict[str, str]], requested: str | None) -> dict:
     candidates = sorted(repo.glob("specs/*/spec.md"))
     if requested:
-        selected = (repo / requested).resolve()
+        raw_req = Path(requested).expanduser()
+        selected = raw_req.resolve() if raw_req.is_absolute() else (repo / raw_req).resolve()
         selected = selected / "spec.md" if selected.is_dir() else selected
+        is_inside_repo = True
         try:
             selected.relative_to(repo)
-        except ValueError as error:
-            raise RuntimeError("--spec must resolve inside the repository") from error
+        except ValueError:
+            is_inside_repo = False
+        if not is_inside_repo:
+            if not selected.is_file():
+                raise RuntimeError(f"invalid external spec file: {requested}")
+            active = selected.parent
+            artifacts = {}
+            for name in ("spec.md", "plan.md", "tasks.md", "design.md"):
+                artifact = active / name
+                if artifact.is_file():
+                    artifacts[name.removesuffix(".md")] = str(artifact)
+            if "spec" not in artifacts:
+                artifacts["spec"] = str(selected)
+            return {
+                "active_feature_dir": str(active),
+                "artifacts": artifacts,
+                "candidates": [relative(repo, path) for path in candidates],
+            }
         if selected.name != "spec.md" or not selected.is_file():
             raise RuntimeError(f"invalid Spec Kit feature: {requested}")
         active = selected.parent
@@ -376,12 +394,25 @@ def register_review_smell(
     return {"ok": True, "registered": new_entry, "active_count": len(active)}
 
 
+class _SelfDisclosingReviewParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"code-review discovery error: {message}\n"
+            "  Fix: run `python3 skills/code-review/scripts/discover_review_context.py [--repo <dir>] [--base <ref>] [--spec <path>] [--flow-map]`.\n"
+            "  Reference: skills/code-review/references/output-contract.md · skills/code-review/references/reviewer-prompts.md\n"
+        )
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", default=".")
-    parser.add_argument("--base")
-    parser.add_argument("--spec")
+    parser = _SelfDisclosingReviewParser()
+    parser.add_argument("positional_repo", nargs="?", default=None, help="Optional positional repository/worktree directory")
+    parser.add_argument("--repo", "--repo-dir", "--worktree", "--cwd", dest="repo", default=".")
+    parser.add_argument("--base", "--base-ref", dest="base")
+    parser.add_argument("--head", "--head-ref", dest="head", default="HEAD")
+    parser.add_argument("--spec", "--spec-file", "--handoff", dest="spec")
     parser.add_argument("--committed-only", action="store_true")
+    parser.add_argument("--json", action="store_true", help="Emit JSON output (default behavior)")
     parser.add_argument("--smells-file", default=str(DEFAULT_SMELLS_FILE))
     parser.add_argument("--flow-map", action="store_true")
     parser.add_argument("--register-smell", action="store_true")
@@ -393,8 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symptom", default="")
     parser.add_argument("--check-rule", default="")
     args = parser.parse_args(argv)
+    if args.positional_repo and args.repo == ".":
+        args.repo = args.positional_repo
 
-    smells_path = Path(args.smells_file).resolve()
+    smells_path = Path(args.smells_file).expanduser().resolve()
     if args.flow_map:
         payload = build_flow_map(smells_path)
         json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
@@ -420,15 +453,18 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
 
-    repo = Path(git(Path(args.repo).resolve(), "rev-parse", "--show-toplevel")).resolve()
+    repo = Path(git(Path(args.repo).expanduser().resolve(), "rev-parse", "--show-toplevel")).resolve()
     base_ref, merge_base = resolve_base(repo, args.base)
-    changes = changed_files(repo, merge_base, args.committed_only)
+    head_ref = args.head or "HEAD"
+    if head_ref != "HEAD":
+        git(repo, "rev-parse", "--verify", f"{head_ref}^{{commit}}")
+    changes = changed_files(repo, merge_base, args.committed_only, head_ref=head_ref)
     if not changes:
         raise RuntimeError("review surface is empty")
-    branch = git(repo, "branch", "--show-current") or "HEAD"
+    branch = git(repo, "branch", "--show-current") or head_ref
     spec_kit = discover_specs(repo, branch, changes, args.spec)
     context, layers, unmapped = discover_context(repo, changes)
-    commits = git(repo, "log", "--oneline", f"{merge_base}..HEAD").splitlines()
+    commits = git(repo, "log", "--oneline", f"{merge_base}..{head_ref}").splitlines()
     gaps = []
     if not context["routing_indexes"]:
         gaps.append("no AGENTS.md/CLAUDE.md routing index")
@@ -448,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         "mode": "committed-only" if args.committed_only else "worktree",
         "commits": commits,
         "diff_command": (
-            f"git diff {merge_base}...HEAD --"
+            f"git diff {merge_base}...{head_ref} --"
             if args.committed_only
             else f"git diff {merge_base} --"
         ),
@@ -469,5 +505,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except RuntimeError as error:
-        print(f"code-review discovery failed: {error}", file=sys.stderr)
+        print(
+            f"code-review discovery failed: {error}\n"
+            "  Reference: skills/code-review/references/output-contract.md · skills/code-review/references/reviewer-prompts.md",
+            file=sys.stderr,
+        )
         raise SystemExit(2)

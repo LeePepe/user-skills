@@ -1699,6 +1699,29 @@ class PreviewSelectionResetTests(unittest.TestCase):
             self.assertEqual(json.loads(next_reset.stdout)["round"], 3)
             self.assertTrue((receipts / "preview-selection-r3.json").is_file())
 
+    def test_positive_and_counter_case_replay_remotion_video_pointer_and_cli_aliases(self):
+        # Positive Case Replay: CLI aliases (-q, -k, --platform ios/macos, --surface video)
+        pos_q = run("-q", "filter", "-k", "2", "--platform", "ios")
+        self.assertEqual(pos_q.returncode, 0, pos_q.stderr)
+        q_data = json.loads(pos_q.stdout)
+        self.assertTrue(q_data["ok"])
+        self.assertEqual(q_data["top"], 2)
+
+        pos_rec = run("recommend", "--platform", "macos", "--surface", "video")
+        self.assertEqual(pos_rec.returncode, 0, pos_rec.stderr)
+        rec_data = json.loads(pos_rec.stdout)
+        self.assertIn("recommendations", rec_data)
+
+        # Counter-Case Replay: runtime error (exit=1) and CLI argument error (exit=2) emit self-disclosing pointer to remotion-video.md
+        err_runtime = run("record-use", "--id", "T-999", "--context", "video-check")
+        self.assertEqual(err_runtime.returncode, 1)
+        self.assertIn("skills/design-studio/references/remotion-video.md", err_runtime.stderr)
+        self.assertIn("skills/design-studio/references/toolchain-20-matrix.md", err_runtime.stderr)
+
+        err_cli = run("--unknown-video-flag")
+        self.assertEqual(err_cli.returncode, 2)
+        self.assertIn("skills/design-studio/references/remotion-video.md", err_cli.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

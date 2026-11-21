@@ -1652,9 +1652,9 @@ def command_scaffold_app_nav(args):
     overrides = _json_or_csv(args.style_overrides, kind='style')
     NAVIGATION.presentation(overrides)
     NAVIGATION.session_contract(anti_patterns, overrides)
-    if args.platform not in {'mobile', 'desktop', 'macos', 'web'}:
+    if args.platform not in {'mobile', 'ios', 'desktop', 'macos', 'web'}:
         raise ValueError('app-nav platform must be mobile, desktop/macos, or web')
-    platform = 'desktop' if args.platform == 'macos' else args.platform
+    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform == 'ios' else args.platform)
     if destination.exists() or destination.is_symlink(): raise ValueError(f'gallery round already exists or is unsafe: {destination}')
     manifest={'schema':'design-gallery/v2','mode':'app-nav','goal':args.goal,'round':args.round,'platform':platform,'frame_mode':('macos' if args.platform in {'desktop','macos'} else args.platform),'category':getattr(args,'category','') or f'r{args.round}','category_title':getattr(args,'category_title','') or '', 'frame':{'width':390,'height':844} if platform == 'mobile' else {'width':1280,'height':800},'app_context':schemes[0]['context'],'session_anti_patterns':anti_patterns,'style_overrides':overrides,'schemes':schemes,'variants':[{'id':x['id'],'title':x['title'],'navigation_model':x['navigation_model'],'screens':[p['id'] for p in x['screens']], **({k: x[k] for k in ('summary', 'one_liner', 'summary_zh') if k in x})} for x in schemes]}
     for variant, scheme in zip(manifest['variants'], schemes):
@@ -1702,7 +1702,7 @@ def command_scaffold_gallery(args):
                  "content": getattr(args, 'screen_content', '') or f'{args.goal} key screen · {focal[p]}',
                  "selected": False, "starred": False, "notes": ""}
                 for i, (p, fold, arch) in enumerate(codebook, 1)]
-    platform = 'desktop' if args.platform == 'macos' else args.platform
+    platform = 'desktop' if args.platform == 'macos' else ('mobile' if args.platform == 'ios' else args.platform)
     manifest = {"schema": "tenfold-gallery/v1", "mode": "screen", "count": count, "goal": args.goal, "round": args.round, "platform": platform, "frame_mode": ('macos' if args.platform in {'desktop','macos'} else args.platform), "category": getattr(args,'category','') or f'r{args.round}', "category_title": getattr(args,'category_title','') or '', "frame": {"width": 390, "height": 844} if platform == "mobile" else {"width": 1280, "height": 800}, "session_anti_patterns": anti_patterns, "style_overrides": overrides, "direction": getattr(args, "direction", "") or "", "screen_content": getattr(args, "screen_content", "") or "", "variants": variants}
     for variant in variants:
         variant['summary'] = CHOOSER._summary_for(manifest, variant)
@@ -1735,6 +1735,8 @@ def command_query(args):
     ranked = []
     for item in all_items(catalog):
         if args.platform and args.platform not in item.get('platforms', []):
+            continue
+        if getattr(args, 'surface_mode', None) and args.surface_mode not in item.get('surface_modes', []):
             continue
         if args.dimension and args.dimension not in str(item.get('category', '')) and args.dimension not in searchable(item):
             continue
@@ -1931,28 +1933,82 @@ def pattern_id(value):
     return value
 
 
+def normalize_platform(value):
+    val = str(value).strip().lower()
+    if val == "macos":
+        return "desktop"
+    if val in {"ios", "ipados"}:
+        return "mobile"
+    if val not in PLATFORMS:
+        raise argparse.ArgumentTypeError(f"expected platform in {sorted(PLATFORMS)} (or macos/ios)")
+    return val
+
+
+def normalize_vault_platform(value):
+    val = str(value).strip().lower()
+    if val == "macos":
+        return "desktop"
+    if val in {"ios", "ipados"}:
+        return "mobile"
+    if val not in VAULT_PLATFORMS:
+        raise argparse.ArgumentTypeError(f"expected vault platform in {sorted(VAULT_PLATFORMS)} (or macos/ios)")
+    return val
+
+
+def normalize_surface_mode(value):
+    val = str(value).strip()
+    if val.lower() in {"video", "remotion", "video/offline"}:
+        return "Video/Offline"
+    for mode in SURFACE_MODES:
+        if mode.lower() == val.lower():
+            return mode
+    raise argparse.ArgumentTypeError(f"expected surface mode in {sorted(SURFACE_MODES)} (or video)")
+
+
 def csv_choices(value, choices):
-    values = csv_values(value)
+    raw_parts = csv_values(value)
+    values = []
+    for part in raw_parts:
+        if choices == PLATFORMS and part.lower() == "macos":
+            values.append("desktop")
+        elif choices == PLATFORMS and part.lower() in {"ios", "ipados"}:
+            values.append("mobile")
+        elif choices == SURFACE_MODES and part.lower() in {"video", "remotion", "video/offline"}:
+            values.append("Video/Offline")
+        else:
+            matched = next((c for c in choices if str(c).lower() == part.lower()), part)
+            values.append(matched)
     if not values or not set(values) <= choices:
         raise argparse.ArgumentTypeError(f"expected comma-separated values from {', '.join(sorted(choices))}")
     return values
 
 
+class _SelfDisclosingDesignParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"design_catalog.py error: {message}\n"
+            "  Fix: run `python3 skills/design-studio/scripts/design_catalog.py --help` (use `--query <kw>` or subcommands `search`, `vault-search`, `classify`, `vault-ingest`, `scaffold-gallery`, `recommend`, `render`).\n"
+            "  References: skills/design-studio/references/toolchain-20-matrix.md · skills/design-studio/references/remotion-video.md\n"
+        )
+        raise SystemExit(2)
+
+
 def parser():
-    common = argparse.ArgumentParser(add_help=False)
+    common = _SelfDisclosingDesignParser(add_help=False)
     common.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     common.add_argument("--markdown", default=str(DEFAULT_MARKDOWN))
-    root = argparse.ArgumentParser()
-    root.add_argument("--query", default=None, help="Top-level query across catalog and vault")
-    root.add_argument("--top", type=int, default=3)
-    root.add_argument("--platform", choices=sorted(PLATFORMS), default=None)
+    root = _SelfDisclosingDesignParser()
+    root.add_argument("--query", "-q", dest="query", default=None, help="Top-level query across catalog and vault")
+    root.add_argument("--top", "-k", dest="top", type=int, default=3)
+    root.add_argument("--platform", type=normalize_platform, default=None)
     root.add_argument("--dimension", choices=sorted(DIMENSIONS), default=None)
+    root.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode, default=None)
     root.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     root.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
-    sub = root.add_subparsers(dest="command", required=False)
+    sub = root.add_subparsers(dest="command", required=False, parser_class=_SelfDisclosingDesignParser)
     intake = sub.add_parser("ingest", parents=[common])
     source = intake.add_mutually_exclusive_group(required=True)
-    source.add_argument("--text")
+    source.add_argument("--text", "--prompt", dest="text")
     source.add_argument("--file")
     source.add_argument("--image")
     intake.add_argument("--id", type=pattern_id)
@@ -1969,10 +2025,10 @@ def parser():
     intake.add_argument("--no-jev", action="store_true")
     intake.add_argument("--compact", action="store_true")
     search = sub.add_parser("search", parents=[common])
-    search.add_argument("--query", required=True)
+    search.add_argument("--query", "-q", dest="query", required=True)
     search.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
-    search.add_argument("--platform", choices=sorted(PLATFORMS))
-    search.add_argument("--surface-mode", choices=sorted(SURFACE_MODES))
+    search.add_argument("--platform", type=normalize_platform)
+    search.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode)
     search.add_argument("--threshold", type=float, default=0.25)
     render_parser = sub.add_parser("render", parents=[common])
     render_parser.add_argument("--check", action="store_true")
@@ -1999,12 +2055,12 @@ def parser():
     use.add_argument("--rating", choices=["liked", "neutral", "disliked"])
     use.add_argument("--notes")
     rec = sub.add_parser("recommend", parents=[common])
-    rec.add_argument("--platform", choices=sorted(PLATFORMS))
-    rec.add_argument("--surface-mode", choices=sorted(SURFACE_MODES))
+    rec.add_argument("--platform", type=normalize_platform)
+    rec.add_argument("--surface-mode", "--surface", dest="surface_mode", type=normalize_surface_mode)
     rec.add_argument("--motion-tier", choices=["M1", "M2", "M3", "M4"])
     rec.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
 
-    v2_common = argparse.ArgumentParser(add_help=False)
+    v2_common = _SelfDisclosingDesignParser(add_help=False)
     v2_common.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
     v2_common.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
     v2_common.add_argument("--jev-url", default="http://127.0.0.1:19823/v1/systemone")
@@ -2016,14 +2072,14 @@ def parser():
 
     cls_parser = sub.add_parser("classify", parents=[v2_common])
     cls_source = cls_parser.add_mutually_exclusive_group(required=True)
-    cls_source.add_argument("--text")
+    cls_source.add_argument("--text", "--prompt", dest="text")
     cls_source.add_argument("--file")
     cls_source.add_argument("--image")
     cls_parser.add_argument("--no-split", action="store_true")
     cls_parser.add_argument("--learn", action="store_true")
 
     vingest = sub.add_parser("vault-ingest", parents=[v2_common])
-    vingest.add_argument("--text")
+    vingest.add_argument("--text", "--prompt", dest="text")
     vingest.add_argument("--file")
     vingest.add_argument("--image")
     vingest.add_argument("--url", action="append", default=[])
@@ -2037,9 +2093,9 @@ def parser():
     vingest.add_argument("--dry-run", action="store_true")
 
     gallery = sub.add_parser("scaffold-gallery")
-    gallery.add_argument("--goal", required=True)
-    gallery.add_argument("--round", type=int, required=True)
-    gallery.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], required=True)
+    gallery.add_argument("--goal", "--goal-id", dest="goal", required=True)
+    gallery.add_argument("--round", "-r", dest="round", type=int, required=True)
+    gallery.add_argument("--platform", choices=["desktop", "macos", "mobile", "ios", "web"], required=True)
     gallery.add_argument("--category", default="")
     gallery.add_argument("--category-title", default="")
     gallery.add_argument("--prompts-dir", help="Directory of exact Designer-authored <variant>-prompt.md files; validated before writes")
@@ -2057,15 +2113,15 @@ def parser():
     gallery.add_argument("--push-blog", action="store_true")
 
     cleanup = sub.add_parser("cleanup-demo")
-    cleanup.add_argument("--goal", required=True)
-    cleanup.add_argument("--handoff-root", default=str(Path.home() / "Development" / "handoff"))
+    cleanup.add_argument("--goal", "--goal-id", dest="goal", required=True)
+    cleanup.add_argument("--handoff-root", "--handoff-dir", dest="handoff_root", default=str(Path.home() / "Development" / "handoff"))
     cleanup.add_argument("--blog-repo", default=None)
     cleanup.add_argument("--push-blog", action="store_true")
     cleanup.add_argument("--dry-run", action="store_true")
 
     reset_sel = sub.add_parser("reset-preview-selection", help="Archive receipts/preview-selection.json to preview-selection-r<N>.json and reset selection/stars/notes.")
     reset_sel.add_argument("--receipts-dir", required=True, help="Path to handoff/<goal>/receipts directory")
-    reset_sel.add_argument("--round", type=int, default=None, help="Round number N for preview-selection-r<N>.json (inferred if omitted)")
+    reset_sel.add_argument("--round", "-r", dest="round", type=int, default=None, help="Round number N for preview-selection-r<N>.json (inferred if omitted)")
     reset_sel.add_argument("--force", action="store_true", help="Overwrite existing preview-selection-r<N>.json archive if present")
     reset_sel.add_argument("--dry-run", action="store_true")
 
@@ -2074,11 +2130,11 @@ def parser():
     check_sel.add_argument("--require-archive", action="store_true", help="Require at least one sibling preview-selection-r<N>.json archive")
 
     vsearch = sub.add_parser("vault-search", parents=[v2_common])
-    vsearch.add_argument("--query", default="")
-    vsearch.add_argument("--platform", choices=sorted(VAULT_PLATFORMS))
+    vsearch.add_argument("--query", "-q", dest="query", default="")
+    vsearch.add_argument("--platform", type=normalize_vault_platform)
     vsearch.add_argument("--dimension", choices=sorted(DIMENSIONS))
     vsearch.add_argument("--threshold", type=float, default=0.15)
-    vsearch.add_argument("--top", type=int, default=5)
+    vsearch.add_argument("--top", "-k", dest="top", type=int, default=5)
     return root
 
 
@@ -2086,5 +2142,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(command(parser().parse_args()))
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        print(
+            f"error: {error}\n"
+            "  Reference: skills/design-studio/references/remotion-video.md · skills/design-studio/references/toolchain-20-matrix.md",
+            file=sys.stderr,
+        )
         raise SystemExit(1)

@@ -7209,8 +7209,18 @@ def supervision_status(
     return out
 
 
+class _SelfDisclosingRouterParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"m2-router: {message}\n"
+            "  Fix: pass one mode flag (`--plan`, `--apply`, `--watch`, `--status`, `--gc`, `--sync-linear`, `--board-fingerprint`, or `--install-hook`).\n"
+            "  Reference: skills/m2-dispatcher/references/bots-and-agents.md · skills/m2-dispatcher/references/pr-dag-auto-heal.md · skills/m2-dispatcher/references/runtime-profiles.yaml\n"
+        )
+        raise SystemExit(2)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Plan and owner-gated dispatch for a unified M2 ingress")
+    parser = _SelfDisclosingRouterParser(description="Plan and owner-gated dispatch for a unified M2 ingress")
     mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--plan", action="store_true", help="build and print a dispatch preview")
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
@@ -7485,10 +7495,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(output, ensure_ascii=False, indent=None if args.json else 2, sort_keys=True) if isinstance(output, dict) else output)
         return 0
     except (OSError, ValueError, RouterError, json.JSONDecodeError) as error:
+        ref_hint = (
+            "skills/m2-dispatcher/references/bots-and-agents.md · "
+            "skills/m2-dispatcher/references/pr-dag-auto-heal.md · "
+            "skills/m2-dispatcher/references/runtime-profiles.yaml"
+        )
         if args.json:
-            print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+            print(json.dumps({"ok": False, "error": str(error), "reference": ref_hint}, ensure_ascii=False))
         else:
-            print(f"m2-router: {error}", file=sys.stderr)
+            print(f"m2-router: {error}\n  Reference: {ref_hint}", file=sys.stderr)
         return 2
 
 

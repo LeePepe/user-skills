@@ -118,6 +118,67 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("RS-002", smell_ids)
         self.assertNotIn("RS-003", smell_ids)
 
+    def test_positive_and_counter_case_replay_cli_aliases_and_external_handoff_spec(self) -> None:
+        root = self.make_repo()
+        write(root, "AGENTS.md", "# Index\n")
+        write(root, "app.py", "value = 1\n")
+        self.commit(root, "base")
+        write(root, "app.py", "value = 2\n")
+
+        # Positive Case Replay: external handoff spec.md + CLI aliases (--repo-dir, --base-ref, --spec-file, --head-ref)
+        handoff_dir = Path(tempfile.mkdtemp(prefix="code-review-handoff-"))
+        ext_spec = handoff_dir / "spec.md"
+        ext_spec.write_text("# External Handoff Spec\n", encoding="utf-8")
+        (handoff_dir / "design.md").write_text("# External Design\n", encoding="utf-8")
+
+        pos_res = run(
+            "python3",
+            str(SCRIPT),
+            "--repo-dir",
+            str(root),
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "HEAD",
+            "--spec-file",
+            str(ext_spec),
+            "--json",
+            cwd=root,
+        )
+        pos_data = json.loads(pos_res.stdout)
+        self.assertEqual(pos_data["base_ref"], "main")
+        self.assertEqual(pos_data["spec_kit"]["active_feature_dir"], str(handoff_dir.resolve()))
+        self.assertEqual(pos_data["spec_kit"]["artifacts"]["spec"], str(ext_spec.resolve()))
+        self.assertEqual(pos_data["spec_kit"]["artifacts"]["design"], str(
+            (handoff_dir / "design.md").resolve()
+        ))
+
+        # Positional repo + auto-detected default branch (omitting --repo and --base)
+        pos_auto = json.loads(run("python3", str(SCRIPT), str(root), cwd=root).stdout)
+        self.assertEqual(pos_auto["base_ref"], "main")
+        self.assertEqual(pos_auto["unmapped_files"], ["app.py"])
+
+        # Counter-Case Replay: missing external spec or invalid base fails closed with self-disclosing reference pointers
+        bad_spec = run(
+            "python3",
+            str(SCRIPT),
+            "--worktree",
+            str(root),
+            "--base",
+            "main",
+            "--spec",
+            str(handoff_dir / "nonexistent-spec.md"),
+            cwd=root,
+            check=False,
+        )
+        self.assertEqual(bad_spec.returncode, 2)
+        self.assertIn("skills/code-review/references/output-contract.md", bad_spec.stderr)
+        self.assertIn("skills/code-review/references/reviewer-prompts.md", bad_spec.stderr)
+
+        bad_flag = run("python3", str(SCRIPT), "--definitely-invalid-flag", cwd=root, check=False)
+        self.assertEqual(bad_flag.returncode, 2)
+        self.assertIn("skills/code-review/references/output-contract.md", bad_flag.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
