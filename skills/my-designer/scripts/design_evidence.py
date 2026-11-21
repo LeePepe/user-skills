@@ -4,6 +4,7 @@ The deterministic gallery gate trusts a versioned, behavior-tested renderer, not
 arbitrary JavaScript tokens. It parses embedded coordinates and then compares each
 page and its executable assets with a fresh rendering of the validated manifest.
 """
+import argparse
 from html.parser import HTMLParser
 import hashlib
 import importlib.util
@@ -13,17 +14,40 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 from urllib.parse import unquote, urlsplit
 import zlib
 
 CATALOG_PATH = Path(__file__).resolve().parents[2] / 'design-studio' / 'scripts' / 'design_catalog.py'
 
 
+_CATALOG_CACHE = {}
+_PORTAL_RUNTIME_CACHE = {}
+
+
+class _UnavailableCatalog:
+    available = False
+
+    def __getattr__(self, name):
+        raise ValueError('canonical gallery renderer unavailable; install design-studio for gallery certification')
+
+
+_FALLBACK_CATALOG = _UnavailableCatalog()
+
+
 def catalog():
-    spec = importlib.util.spec_from_file_location('evidence_catalog', CATALOG_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    try:
+        key = (str(CATALOG_PATH), CATALOG_PATH.stat().st_mtime_ns)
+        if not CATALOG_PATH.with_name('gallery_prompts.py').is_file():
+            return _FALLBACK_CATALOG
+        if key not in _CATALOG_CACHE:
+            spec = importlib.util.spec_from_file_location('evidence_catalog', CATALOG_PATH)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _CATALOG_CACHE[key] = module
+        return _CATALOG_CACHE[key]
+    except (OSError, ImportError):
+        return _FALLBACK_CATALOG
 
 
 class PageParser(HTMLParser):
@@ -423,9 +447,13 @@ def portal_errors(goal_root):
     try:
         if not runtime or len(runtime) > 512_000:
             raise ValueError('missing or oversized embedded runtime')
-        probe = subprocess.run(['node', str(CATALOG_PATH.with_name('gallery_chooser_test.cjs')), '--verify-runtime'],
-                               input=json.dumps({'source': runtime}), text=True, capture_output=True, timeout=5)
-        if probe.returncode:
+        verifier = CATALOG_PATH.with_name('gallery_chooser_test.cjs')
+        key = (verifier.stat().st_mtime_ns, hashlib.sha256(runtime.encode('utf-8')).hexdigest())
+        if key not in _PORTAL_RUNTIME_CACHE:
+            probe = subprocess.run(['node', str(verifier), '--verify-runtime'],
+                                   input=json.dumps({'source': runtime}), text=True, capture_output=True, timeout=5)
+            _PORTAL_RUNTIME_CACHE[key] = probe.returncode
+        if _PORTAL_RUNTIME_CACHE[key]:
             errors.append('index.html: runtime behavior failed active inventory, category notes or control/telemetry verification')
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         errors.append(f'index.html: runtime behavioral verification unavailable: {error}')
@@ -510,11 +538,26 @@ def portal_errors(goal_root):
     return errors
 
 
-_prompts_spec = importlib.util.spec_from_file_location('evidence_prompts', CATALOG_PATH.with_name('gallery_prompts.py'))
-_PROMPTS = importlib.util.module_from_spec(_prompts_spec)
-_prompts_spec.loader.exec_module(_PROMPTS)
-_prompt_paragraphs = _PROMPTS._paragraphs
-_overlap_ratio = _PROMPTS._overlap_ratio
+def _prompt_paragraphs(text):
+    bodies = set()
+    for block in re.split(r'\n\s*\n', text):
+        body = ' '.join(line.strip() for line in block.splitlines() if not re.match(r'^\s*#{1,6}\s', line))
+        body = ' '.join(body.split())
+        if len(body) >= 20:
+            bodies.add(body)
+    return bodies
+
+
+def _overlap_ratio(left, right):
+    return len(left & right) / min(len(left), len(right)) if left and right else 0.0
+
+
+if CATALOG_PATH.with_name('gallery_prompts.py').is_file():
+    _prompts_spec = importlib.util.spec_from_file_location('evidence_prompts', CATALOG_PATH.with_name('gallery_prompts.py'))
+    _PROMPTS = importlib.util.module_from_spec(_prompts_spec)
+    _prompts_spec.loader.exec_module(_PROMPTS)
+    _prompt_paragraphs = _PROMPTS._paragraphs
+    _overlap_ratio = _PROMPTS._overlap_ratio
 
 
 def prompt_errors(root, manifest):
@@ -555,6 +598,8 @@ def prompt_errors(root, manifest):
 def gallery_errors(root, manifest):
     errors, evidence = [], []
     c = catalog()
+    if isinstance(c, _UnavailableCatalog):
+        return ['canonical gallery renderer unavailable; gallery remains UNVALIDATED'], []
     platform = manifest.get('platform')
     anti, overrides = manifest.get('session_anti_patterns', []), manifest.get('style_overrides', {})
     if platform not in {'mobile', 'desktop', 'web'} or not isinstance(anti, list) or not all(isinstance(a, str) for a in anti) or not isinstance(overrides, dict):
@@ -1182,3 +1227,82 @@ def traceback_errors(text, base_dir=None, platform=None):
     except (ValueError, TypeError, AttributeError) as e:
         errors.append(f'traceback: {e}; supply structured evidence, not classification vocabulary')
     return errors, evidence
+
+
+CLI_GUIDANCE = [
+    'Read skills/my-designer/references/design-flow-architecture.md for structured Visual Traceback evidence.',
+    'Read skills/my-designer/references/navigation-evidence-contract.md for geometry and platform constraints.',
+    'Read skills/my-designer/references/breathing-and-clarity.md for PNG whitespace budgets.',
+]
+
+
+class EvidenceArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write(f'{self.prog}: {message}; {CLI_GUIDANCE[0]}\n' + '\n'.join(CLI_GUIDANCE[1:]) + '\n')
+        self.exit(2)
+
+
+def build_parser():
+    parser = EvidenceArgumentParser(description=__doc__)
+    checks = parser.add_mutually_exclusive_group()
+    checks.add_argument('--verify-traceback', metavar='FILE')
+    checks.add_argument('--audit-geometry', metavar='FILE')
+    checks.add_argument('--check-whitespace', '--check-whitespace-ratio', dest='check_whitespace', metavar='PNG_OR_DIR')
+    checks.add_argument('--self-check', action='store_true')
+    parser.add_argument('--platform', '--surface', choices=['desktop', 'macos', 'mobile', 'ios', 'web'], default='desktop')
+    parser.add_argument('--collision-threshold', type=float, default=2.0)
+    parser.add_argument('--max-dead-space', type=float, default=0.40)
+    parser.add_argument('--json', action='store_true', help='Emit JSON output (default)')
+    return parser
+
+
+def self_check():
+    def chunk(kind, body):
+        return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body) & 0xffffffff)
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 2, 1, 8, 6, 0, 0, 0))
+           + chunk(b'IDAT', zlib.compress(b'\x00' + b'\x10\x20\x30\xff' * 2)) + chunk(b'IEND', b''))
+    width, height, rows, channels = _decode_png(png)
+    geometry = {'nodes': [{'role': 'button', 'frame': {'x': 0, 'y': 0, 'width': 44, 'height': 44}}]}
+    clean, _ = audit_geometry(geometry, platform='mobile')
+    geometry['nodes'][0]['frame']['height'] = 20
+    bad, _ = audit_geometry(geometry, platform='mobile')
+    checks = {
+        'png_decoder': (width, height, channels) == (2, 1, 4) and rows[0] == b'\x10\x20\x30\xff' * 2,
+        'geometry_auditor': not clean and 'GEOM_HIT_TARGET_TOO_SMALL' in bad,
+        'clause_polarity': not list(_matches('Never use HTML.', r'html')) and bool(list(_matches('Never use HTML; implement HTML.', r'html'))),
+    }
+    return {'ok': all(checks.values()), 'checks': checks}
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    platform = {'ios': 'mobile', 'macos': 'desktop'}.get(args.platform, args.platform)
+    if not any((args.self_check, args.verify_traceback, args.audit_geometry, args.check_whitespace)):
+        parser.error('choose --self-check, --verify-traceback, --audit-geometry or --check-whitespace')
+    if not 0 <= args.max_dead_space <= 1 or not 0 <= args.collision_threshold < float('inf'):
+        parser.error('whitespace threshold must be in [0,1]; collision threshold must be finite and nonnegative')
+    try:
+        if args.self_check:
+            result = self_check()
+        elif args.verify_traceback:
+            path = Path(args.verify_traceback).expanduser()
+            errors, evidence = traceback_errors(path.read_text(encoding='utf-8'), base_dir=path.resolve().parent, platform=platform)
+            result = {'ok': not errors, 'errors': errors, 'evidence': evidence}
+        elif args.audit_geometry:
+            errors, details = audit_geometry(Path(args.audit_geometry).expanduser(), platform, args.collision_threshold)
+            result = {'ok': not errors, 'platform': platform, 'errors': errors, 'details': details}
+        else:
+            errors, metrics = check_whitespace_ratio(Path(args.check_whitespace).expanduser(), args.max_dead_space)
+            result = {'ok': not errors, 'errors': errors, 'metrics': metrics}
+    except (OSError, ValueError, TypeError, struct.error, zlib.error) as error:
+        result = {'ok': False, 'errors': [str(error)]}
+    if not result['ok']:
+        result['guidance'] = CLI_GUIDANCE
+        sys.stderr.write('\n'.join(CLI_GUIDANCE) + '\n')
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result['ok'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

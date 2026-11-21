@@ -121,7 +121,7 @@
         "layout-navigation",
         "glass-material"
       ],
-      "cmd": "python3 -m unittest scripts.test_verify_skills.JevGateTests",
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.StandaloneGateReplayTests.test_jev_truth_table_and_guard",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "Ran",
@@ -131,7 +131,7 @@
     },
     {
       "id": "EV-005",
-      "title": "Ten-Variant Gallery & Bespoke App Navigation Runtime",
+      "title": "Standalone PNG, Geometry and Clause-Polarity Deterministic Evidence Gate",
       "platforms": [
         "mobile"
       ],
@@ -139,11 +139,13 @@
         "layout-navigation",
         "motion-interaction"
       ],
-      "cmd": "python3 -m unittest skills.design-studio.scripts.test_design_catalog.AppNavigationGraphTests skills.design-studio.scripts.test_design_catalog.AppNavigationBehaviorTests",
+      "cmd": "python3 skills/my-designer/scripts/design_evidence.py --self-check --json",
       "expect_exit": 0,
       "expect_stdout_contains": [
-        "Ran",
-        "OK"
+        "\"ok\": true",
+        "png_decoder",
+        "geometry_auditor",
+        "clause_polarity"
       ],
       "registered_at": "2026-11-14"
     },
@@ -331,7 +333,7 @@
     },
     {
       "id": "EV-017",
-      "title": "PreviewHost preview-selection.json Round-Archive/Reset CLI & macOS vs iOS Navigation Divergence (AT-011)",
+      "title": "PreviewHost Selection Artifact Fact Replay & macOS vs iOS Navigation Contract (AT-011)",
       "platforms": [
         "desktop",
         "mobile"
@@ -343,7 +345,7 @@
         "NavigationSplitView",
         "NavigationStack"
       ],
-      "cmd": "python3 -m unittest skills.design-studio.scripts.test_design_catalog.PreviewSelectionResetTests",
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.InspectJsonReplayTests",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "OK"
@@ -379,7 +381,7 @@
         "NavigationStack",
         "WebViewport"
       ],
-      "cmd": "python3 skills/design-studio/scripts/taste_evolution_loop.py loop-check --handoff-root /tmp/does-not-exist",
+      "cmd": "python3 skills/my-designer/scripts/taste_evolution_loop.py loop-check --handoff-root skills/my-designer/scripts/data/nonexistent-handoff",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "design-taste-evolution",
@@ -409,7 +411,7 @@
         "NavigationStack",
         "WebViewport"
       ],
-      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval",
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.SelfDisclosingGuidanceAndDualCasePersonaTests.test_failures_emit_exact_l1_reference_drawer_pointers_while_clean_runs_stay_quiet",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "OK"

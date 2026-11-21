@@ -109,6 +109,14 @@ PERSONA_WHITESPACE_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 DRAWER_GUIDANCE: dict[str, tuple[str, str]] = {
+    "routing": (
+        "skills/my-designer/references/routing-index.md",
+        "Choose the smallest drawer and use --platform/--surface (ios -> mobile, macos -> desktop).",
+    ),
+    "eval": (
+        "skills/my-designer/references/eval-cases.json",
+        "Replay the positive and counter-cases before changing a gate or remedy route.",
+    ),
     "interaction": (
         "skills/my-designer/references/interaction-layering.md",
         "Keep Content/Functional/Feedback layers separate: isolate outer Button triggers from expanded actions, keep persistent pills stable across expand states, and wrap reveals in clipped layouts.",
@@ -201,11 +209,10 @@ class SelfDisclosingArgumentParser(argparse.ArgumentParser):
     """Emit actionable 2-3 line CLI usage + L1 reference hints on exit_code = 2."""
 
     def error(self, message: str) -> None:
-        self.print_usage(sys.stderr)
         hints = [
             f"{self.prog}: error: {message}",
             "Hint: common patterns -> `audit-code [--platform desktop|mobile|web] <path...>` | `audit-spec <design.md...>` | `check-whitespace-ratio [--persona compact|default|breathing] <png_or_dir...>`.",
-            "On-demand L1 index -> Read `skills/my-designer/references/routing-index.md`.",
+            "Read `skills/my-designer/references/routing-index.md` and replay `skills/my-designer/references/eval-cases.json`.",
         ]
         sys.stderr.write("\n".join(hints) + "\n")
         self.exit(2)
@@ -214,7 +221,32 @@ class SelfDisclosingArgumentParser(argparse.ArgumentParser):
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
-TAXONOMY = _load_json(Path(DEFAULT_TAXONOMY)) if Path(DEFAULT_TAXONOMY).is_file() else {}
+_FALLBACK_TAXONOMY = {
+    "dimensions": [
+        {"id": "layout-navigation", "hig_routes": ["layout.md"], "apple_native_primitives": ["NavigationStack", "NavigationSplitView"]},
+        {"id": "component", "hig_routes": ["accessibility.md"], "apple_native_primitives": ["Button", "Toggle"]},
+        {"id": "glass-material", "hig_routes": ["materials.md"], "apple_native_primitives": ["glassEffect"]},
+        *[{"id": dim, "hig_routes": [], "apple_native_primitives": []} for dim in
+          ("visual-style", "color-palette", "chart-dataviz", "motion-interaction", "typography-copy")],
+    ],
+    "jev_verification_gates": {
+        "mobile": {"q_mobile_native_evidence": "Verify native NavigationStack/TabView, >=44pt targets, solid content and functional-only glass."},
+        "desktop": {"q_desktop_native_evidence": "Verify split/inspector navigation, >=28pt targets, keyboard parity and inactive-window dimming."},
+        "web": {"q_web_viewport_evidence": "Verify semantic viewport, 60–72ch prose, natural CJK wrapping and functional optical refraction."},
+    },
+}
+
+
+def _load_taxonomy(path=None):
+    target = Path(path or DEFAULT_TAXONOMY)
+    return _load_json(target) if target.is_file() else _FALLBACK_TAXONOMY
+
+
+TAXONOMY = _load_taxonomy()
+
+
+def _normalize_platform(value):
+    return {"ios": "mobile", "macos": "desktop"}.get(value, value)
 
 
 def _save_json(path: Path, data: dict[str, Any]) -> None:
@@ -455,13 +487,12 @@ def _collect_audit_paths(args: argparse.Namespace) -> list[Path]:
 
 def command_audit_code(args: argparse.Namespace) -> int:
     plat = getattr(args, 'platform', None) or getattr(args, 'top_platform', None) or 'desktop'
-    if plat == 'macos':
-        plat = 'desktop'
-    args.platform = plat
+    args.platform = _normalize_platform(plat)
     if args.platform not in {'desktop', 'mobile', 'web'}:
         print(json.dumps({'ok': True, 'platform': args.platform, 'findings': [], 'native_only': False}, indent=2))
         return 0
     target_roots = _collect_audit_paths(args)
+    code_errors = [f'code path not found: {root}' for root in target_roots if not args.snippet and not root.exists()]
     if not target_roots and not getattr(args, 'snippet', None):
         drawers, guidance = _build_self_disclosing_guidance(['navigation'])
         sys.stderr.write(
@@ -601,8 +632,13 @@ def command_audit_code(args: argparse.Namespace) -> int:
         geometry_errors.extend(geom_errs)
         if geom_errs:
             drawer_keys.append('navigation')
-    ok = not findings and not spec_errors and not visual_errors and not geometry_errors
+    ok = not code_errors and not findings and not spec_errors and not visual_errors and not geometry_errors
     result: dict[str, Any] = {'ok': ok, 'platform': args.platform, 'native_only': args.platform != 'web', 'files': len(files), 'findings': findings}
+    if code_errors:
+        result['code_errors'] = code_errors
+    if raw_spec_files:
+        result['spec_files'] = [str(Path(sf).expanduser()) for sf in raw_spec_files]
+        result['spec_validated'] = not spec_errors
     if spec_errors:
         result['spec_errors'] = spec_errors
     if visual_errors:
@@ -652,6 +688,7 @@ def command_check_whitespace_ratio(args: argparse.Namespace) -> int:
                 )
     payload: dict[str, Any] = {
         'ok': not errors,
+        'platform': args.platform,
         'persona': persona_name,
         'persona_scope': profile['scope'],
         'max_dead_space_ratio': max_dead,
@@ -673,7 +710,7 @@ def command_check_whitespace_ratio(args: argparse.Namespace) -> int:
 
 def command_audit_geometry(args: argparse.Namespace) -> int:
     plat_raw = getattr(args, 'platform', None) or getattr(args, 'top_platform', None) or 'desktop'
-    platform = 'desktop' if plat_raw == 'macos' else plat_raw
+    platform = _normalize_platform(plat_raw)
     targets: list[str] = []
     for val in (getattr(args, 'path', None), *(getattr(args, 'positional_paths', []) or [])):
         if isinstance(val, list):
@@ -723,11 +760,9 @@ def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: lis
 
 def command_route(args: argparse.Namespace) -> int:
     plat = getattr(args, 'platform', None) or getattr(args, 'top_platform', None) or 'desktop'
-    if plat == 'macos':
-        plat = 'desktop'
-    args.platform = plat
+    args.platform = _normalize_platform(plat)
     cases_doc = _load_json(Path(args.cases_file))
-    taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
+    taxonomy = _load_taxonomy(args.taxonomy)
     dims = _csv(args.dimensions)
     persona_raw = getattr(args, 'persona', None) or getattr(args, 'archetype', None)
     persona_name, max_dead, min_breath, persona_profile = _resolve_persona_whitespace(persona_raw, None)
@@ -1246,12 +1281,12 @@ def command_register_case(args: argparse.Namespace) -> int:
 
 def command_flow_map(args: argparse.Namespace) -> int:
     cases_doc = _load_json(Path(args.cases_file))
-    taxonomy = _load_json(Path(args.taxonomy)) if Path(args.taxonomy).is_file() else {"dimensions": []}
+    taxonomy = _load_taxonomy(args.taxonomy)
     ds_refs = ROOT.parent / "design-studio" / "scripts" / "data"
-    desktop_vault = _load_json(ds_refs / "vault" / "desktop-macos.json")
-    mobile_vault = _load_json(ds_refs / "vault" / "mobile-ios.json")
-    web_vault = _load_json(ds_refs / "vault" / "web.json")
-    catalog = _load_json(ds_refs / "catalog.json")
+    desktop_vault = _read_json(ds_refs / "vault" / "desktop-macos.json") or {}
+    mobile_vault = _read_json(ds_refs / "vault" / "mobile-ios.json") or {}
+    web_vault = _read_json(ds_refs / "vault" / "web.json") or {}
+    catalog = _read_json(ds_refs / "catalog.json") or {}
 
     l1_md_files = sorted(p for p in (ROOT / "references").glob("*.md") if not p.is_symlink())
     l1_line_counts = {
@@ -1265,6 +1300,9 @@ def command_flow_map(args: argparse.Namespace) -> int:
     payload = {
         "ok": all_within_budget,
         "architecture_doc": "skills/my-designer/references/design-flow-architecture.md",
+        "reference_drawers": [path for path, _ in DRAWER_GUIDANCE.values()],
+        "routing_index": DRAWER_GUIDANCE['routing'][0],
+        "eval_cases": DRAWER_GUIDANCE['eval'][0],
         "entry_a_ingest": {
             "A0_raw_digest": "skills/knowledge-digest/SKILL.md -> ~/Development/Personal/knowledge-vault/",
             "A1_classify_learn": "python3 skills/design-studio/scripts/design_catalog.py classify --text '<raw>' --learn",
@@ -1540,9 +1578,7 @@ def _gallery_errors(root, manifest):
 
 def command_jev_gate(args):
     plat = getattr(args, 'platform', None) or getattr(args, 'top_platform', None) or 'desktop'
-    if plat == 'macos':
-        plat = 'desktop'
-    args.platform = plat
+    args.platform = _normalize_platform(plat)
     errors, evidence = [], []
     if args.stage == 'gallery':
         if not args.gallery_dir:
@@ -1577,9 +1613,12 @@ def command_jev_gate(args):
                 errors.extend(found)
         except (OSError, ValueError) as error:
             errors.append(str(error))
-    taxonomy = _read_json(args.taxonomy)
-    if not isinstance(taxonomy, dict):
-        errors.append('missing/invalid taxonomy')
+    try:
+        taxonomy = _load_taxonomy(args.taxonomy)
+        if not isinstance(taxonomy, dict):
+            raise ValueError('taxonomy root must be an object')
+    except (OSError, ValueError) as error:
+        errors.append(f'invalid taxonomy: {error}')
         taxonomy = {}
     payload = {'platform': args.platform, 'stage': args.stage, 'evidence': evidence, 'deterministic_errors': errors}
     jev = JEV.response(args, payload, args.platform, taxonomy)
@@ -1590,11 +1629,40 @@ def command_jev_gate(args):
         stage_drawers = ['architecture', 'appearance'] if args.stage == 'gallery' else (
             ['navigation', 'breathing', 'modernization'] if args.stage == 'spec' else ['architecture', 'navigation']
         )
-        drawers, guidance = _build_self_disclosing_guidance(stage_drawers)
+        drawers, guidance = _build_self_disclosing_guidance(['eval', *stage_drawers])
         result['reference_drawers'] = drawers
         result['guidance'] = guidance
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if ok else 1
+
+
+def command_inspect_json(args):
+    path = Path(args.inspect_path).expanduser()
+    try:
+        data = _load_json(path)
+    except (OSError, ValueError) as error:
+        drawers, guidance = _build_self_disclosing_guidance(['routing', 'eval'])
+        print(json.dumps({'ok': False, 'mode': 'soft_advisory', 'error': f'invalid JSON artifact: {error}',
+                          'reference_drawers': drawers, 'guidance': guidance}, ensure_ascii=False))
+        sys.stderr.write('\n'.join(guidance) + '\n')
+        return 1
+    kind = 'generic-json'
+    if isinstance(data, dict):
+        summary = {'keys': sorted(data), 'key_count': len(data),
+                   'counts': {k: len(v) for k, v in data.items() if isinstance(v, (dict, list))}}
+        if path.name.startswith('preview-selection') or 'selectedVariantID' in data:
+            kind = 'preview-selection'
+            summary.update({k: data.get(k) for k in ('selectedVariantID', 'starredVariantIDs', 'notesByVariant')})
+        elif data.get('schema') == 'visual-traceback/v1':
+            kind = 'visual-traceback/v1'
+            summary.update({'findings': data.get('findings', []), 'rendered_evidence': data.get('rendered_evidence', [])})
+        elif data.get('schema') == 'skill-eval-cases/v1' or 'active_cases' in data:
+            kind = data.get('schema') or 'defect-cases/index'
+            summary['active_cases'] = data.get('active_cases', [])
+    else:
+        summary = {'type': type(data).__name__, 'count': len(data) if isinstance(data, list) else 1}
+    print(json.dumps({'ok': True, 'mode': 'soft_advisory', 'artifact_kind': kind, 'summary': summary}, ensure_ascii=False))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1612,19 +1680,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit-spec", dest="top_audit_spec", nargs="+", action="extend", default=None, metavar="SPEC_MD")
     parser.add_argument("--snippet", dest="top_snippet", default=None)
     parser.add_argument("--lookup-defect", dest="top_lookup_defect", default=None, metavar="KEYWORD")
+    parser.add_argument("--inspect-json", dest="top_inspect_json", default=None, metavar="JSON_PATH")
     parser.add_argument("--collision-threshold", type=float, default=2.0)
-    parser.add_argument("--platform", dest="top_platform", choices=["desktop", "macos", "mobile", "web"], default="desktop")
+    parser.add_argument("--platform", "--surface", dest="top_platform", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     sub = parser.add_subparsers(dest="command", required=False)
 
     sub.add_parser("flow-map", parents=[common])
+    inspect = sub.add_parser("inspect-json", parents=[common], help="Read-only JSON fact collector; never certifies evidence")
+    inspect.add_argument("inspect_path", metavar="JSON_PATH")
 
     route = sub.add_parser("route", parents=[common])
-    route.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default=None)
+    route.add_argument("--platform", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     route.add_argument("--dimensions", "--dimension", default="")
     route.add_argument("--container", "--containers", default=None)
     route.add_argument("--persona", default=None, help="Tier 2 Product Persona scope (compact|default|breathing)")
     route.add_argument("--archetype", default=None, help="Alias for --persona / style archetype hint")
-    route.add_argument("--surface", default=None, help="Optional UI surface hint")
+    route.add_argument("--surface", default=None, help="Platform alias; with --platform, may be a UI surface hint")
     route.add_argument("--path", default=None, help="Optional target source path hint")
 
     audit = sub.add_parser(
@@ -1634,7 +1705,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scan Swift/Web source against active defect cases and instructional clutter",
     )
     audit.add_argument("positional_paths", nargs="*", default=[], metavar="PATH")
-    audit.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default=None)
+    audit.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     audit.add_argument("--path", "--paths", "--files", dest="path", nargs="+", action="extend", default=None)
     audit.add_argument("--root", dest="root_dir", default=None)
     audit.add_argument("--ui-path", dest="ui_path", default=None)
@@ -1652,6 +1723,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ws = sub.add_parser("check-whitespace-ratio", parents=[common], help="Reject full-viewport screenshots with excessive bottom contiguous dead space")
     ws.add_argument("positional_paths", nargs="*", default=[], metavar="PNG_OR_DIR")
+    ws.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     ws.add_argument("--path", "--dir", "--file", "--image", "--png-or-dir", "--check-whitespace-ratio", dest="path", action="append", default=None, metavar="PNG_OR_DIR")
     ws.add_argument("--max-dead-space", "--max-ratio", dest="max_dead_space", type=float, default=None)
     ws.add_argument("--persona", default=None, help="Context-scoped Tier 2 persona: compact (0.25), default (0.40), breathing (0.55 + >=0.12 advisory)")
@@ -1659,7 +1731,7 @@ def build_parser() -> argparse.ArgumentParser:
     geom = sub.add_parser("audit-geometry", parents=[common], help="Audit subtree leaf AABB collisions (>2pt^2 -> GEOM_TEXT_COLLISION) and layout bounds")
     geom.add_argument("positional_paths", nargs="*", default=[], metavar="GEOMETRY_JSON")
     geom.add_argument("--path", "--file", "--audit-geometry", dest="path", action="append", default=None, metavar="GEOMETRY_JSON")
-    geom.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default=None)
+    geom.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     geom.add_argument("--collision-threshold", type=float, default=2.0)
 
     interactivity = sub.add_parser("check-section-interactivity", parents=[common], help="Reject static SwiftUI section/preview placeholders")
@@ -1673,7 +1745,7 @@ def build_parser() -> argparse.ArgumentParser:
     lookup.set_defaults(lookup_defect=None)
 
     gate = sub.add_parser("jev-gate", parents=[common], help="Fail-closed structural and Jev truth-table gate")
-    gate.add_argument("--platform", choices=["desktop", "macos", "mobile", "web"], default=None)
+    gate.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     gate.add_argument("--stage", choices=["gallery", "spec", "traceback"], required=True)
     gate.add_argument("--gallery-dir", "--dir", dest="gallery_dir", default=None)
     gate.add_argument("--spec-file", "--spec", "--file", dest="spec_file", default=None)
@@ -1698,7 +1770,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.platform = getattr(args, "platform", None) or getattr(args, "top_platform", "desktop")
+    platform = getattr(args, 'platform', None) or args.top_platform
+    if args.command == 'route' and args.surface and not platform:
+        if args.surface not in {'ios', 'macos', 'mobile', 'desktop', 'web'}:
+            parser.error('--surface UI hints require --platform; otherwise use ios|macos|mobile|desktop|web')
+        platform = args.surface
+    args.platform = _normalize_platform(platform or 'desktop')
+    if args.command == 'inspect-json' or args.top_inspect_json:
+        if args.top_inspect_json:
+            args.inspect_path = args.top_inspect_json
+        return command_inspect_json(args)
     if args.command == "flow-map":
         return command_flow_map(args)
     if args.command == "route":
@@ -1776,13 +1857,13 @@ def main(argv: list[str] | None = None) -> int:
             if ws_errors or ws_advisories:
                 drawer_keys.extend(['breathing', 'appearance'])
         if args.top_geometry_path:
-            plat = 'desktop' if args.top_platform == 'macos' else args.top_platform
-            geom_errors, geom_details = EVIDENCE.audit_geometry(args.top_geometry_path, platform=plat, collision_threshold_pt2=float(args.collision_threshold))
+            geom_errors, geom_details = EVIDENCE.audit_geometry(args.top_geometry_path, platform=args.platform, collision_threshold_pt2=float(args.collision_threshold))
             if geom_errors:
                 drawer_keys.extend(['navigation', 'interaction'])
         errors = [*ws_errors, *geom_errors]
         out_payload: dict[str, Any] = {
             'ok': not errors,
+            'platform': args.platform,
             'persona': persona_name,
             'max_dead_space_ratio': max_dead,
             'errors': errors,
