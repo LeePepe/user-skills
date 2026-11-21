@@ -21,6 +21,29 @@ except ImportError:  # pragma: no cover - Windows fallback
 
 EXCLUDED_HASH_KEYS = {"spec_sha", "design_sha", "updated_at"}
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\Z", re.DOTALL)
+PHASE0_REF = "skills/codebase-design/references/PHASE0-PROPOSAL-CHECKPOINT.md"
+CONTEXT_REF = "skills/codebase-design/references/CONTEXT-FORMAT.md"
+ADR_REF = "skills/codebase-design/references/ADR-FORMAT.md"
+DEEPENING_REF = "skills/codebase-design/references/DEEPENING.md"
+DESIGN_TWICE_REF = "skills/codebase-design/references/DESIGN-IT-TWICE.md"
+DRAWER_REFS = (PHASE0_REF, CONTEXT_REF, ADR_REF, DEEPENING_REF, DESIGN_TWICE_REF)
+
+
+class _SelfDisclosingParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[codebase-design:spec_gate] CLI error: {message}\n"
+            "  Fix: run `python3 skills/codebase-design/scripts/spec_gate.py {push,checkpoint,pop,status,stamp,verify-lock} --help`.\n"
+            f"  Reference: {PHASE0_REF} · {DEEPENING_REF} · {DESIGN_TWICE_REF} · {CONTEXT_REF} · {ADR_REF}\n"
+        )
+        raise SystemExit(2)
+
+
+def _enrich_failure(code: int, result: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    if code != 0:
+        result.setdefault("reference", PHASE0_REF)
+        result.setdefault("related_references", list(DRAWER_REFS))
+    return code, result
 
 
 def _scalar(value: str) -> Any:
@@ -166,12 +189,12 @@ def command_checkpoint(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         path = handoff / "proposals.json"
         data = _read_json(path, {})
         if not data:
-            return 1, {"ok": False, "status": "no_topic"}
+            return _enrich_failure(1, {"ok": False, "status": "no_topic"})
         proposal = next((p for p in data.get("proposals", [])
                          if p.get("id") == args.proposal_id and
                          p.get("topic_id", data.get("topic_id", handoff.name)) == data.get("topic_id", handoff.name)), None)
         if proposal is None:
-            return 1, {"ok": False, "code": "INVALID_PROPOSAL_TOPIC", "status": 409}
+            return _enrich_failure(1, {"ok": False, "code": "INVALID_PROPOSAL_TOPIC", "status": 409})
         checkpoint = {
             "id": f"chk-{hashlib.sha256((args.proposal_id + args.decided_by).encode()).hexdigest()[:16]}",
             "topic_id": data.get("topic_id", handoff.name),
@@ -194,12 +217,12 @@ def command_pop(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     with locked(handoff):
         data = _read_json(handoff / "proposals.json", {})
         if not data:
-            return 1, {"ok": False, "status": "no_topic"}
+            return _enrich_failure(1, {"ok": False, "status": "no_topic"})
         checkpoint = data.get("latest_checkpoint")
         if not checkpoint:
-            return 1, {"ok": False, "status": "pending"}
+            return _enrich_failure(1, {"ok": False, "status": "pending"})
         if checkpoint.get("proposals_sha") != data.get("proposals_sha"):
-            return 1, {"ok": False, "status": "stale_checkpoint", "checkpoint": checkpoint}
+            return _enrich_failure(1, {"ok": False, "status": "stale_checkpoint", "checkpoint": checkpoint})
         return 0, {"ok": True, "checkpoint": checkpoint}
 
 
@@ -236,11 +259,17 @@ def command_stamp(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         fields, body, current_sha = _file_fields(path)
         actual_version = int(fields.get("version", 1))
         if args.expected_version is not None and actual_version != args.expected_version:
-            return 1, {"ok": False, "code": "SPEC_VERSION_CONFLICT", "status": 409,
-                       "expected_version": args.expected_version, "actual_version": actual_version}
+            return _enrich_failure(
+                1,
+                {"ok": False, "code": "SPEC_VERSION_CONFLICT", "status": 409,
+                 "expected_version": args.expected_version, "actual_version": actual_version},
+            )
         if args.expected_sha is not None and current_sha != args.expected_sha:
-            return 1, {"ok": False, "code": "SPEC_VERSION_CONFLICT", "status": 409,
-                       "expected_sha": args.expected_sha, "actual_sha": current_sha}
+            return _enrich_failure(
+                1,
+                {"ok": False, "code": "SPEC_VERSION_CONFLICT", "status": 409,
+                 "expected_sha": args.expected_sha, "actual_sha": current_sha},
+            )
         if args.bump_version:
             fields["version"] = actual_version + 1
         sha_key = "design_sha" if "design" in path.name else "spec_sha"
@@ -263,7 +292,7 @@ def command_verify_lock(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     handoff = Path(args.handoff_dir)
     spec_path = handoff / "spec.md"
     if not spec_path.exists():
-        return 1, {"ok": False, "status": "NO_SPEC"}
+        return _enrich_failure(1, {"ok": False, "status": "NO_SPEC"})
     spec_fields, _, spec_actual = _file_fields(spec_path)
     issues: list[str] = []
     if spec_fields.get("spec_sha") != spec_actual:
@@ -286,13 +315,15 @@ def command_verify_lock(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             design_fields and mandate.get("design_sha") not in (None, design_fields.get("design_sha"))
         ):
             issues.append("STALE_MANDATE")
-    return (1 if issues else 0), {"ok": not issues, "issues": issues, "spec_sha": spec_fields.get("spec_sha"),
-                                  "version": spec_fields.get("version")}
+    return _enrich_failure(
+        1 if issues else 0,
+        {"ok": not issues, "issues": issues, "spec_sha": spec_fields.get("spec_sha"), "version": spec_fields.get("version")},
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = _SelfDisclosingParser()
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_SelfDisclosingParser)
     push = sub.add_parser("push")
     push.add_argument("--handoff-dir", required=True); push.add_argument("--agent", required=True)
     push.add_argument("--model", required=True); push.add_argument("--proposal-id", required=True)
@@ -320,7 +351,14 @@ def main(argv: list[str] | None = None) -> int:
         "push": command_push, "checkpoint": command_checkpoint, "pop": command_pop,
         "status": command_status, "stamp": command_stamp, "verify-lock": command_verify_lock,
     }[args.command]
-    code, result = handler(args)
+    code, result = _enrich_failure(*handler(args))
+    if code != 0:
+        reason = result.get("code") or result.get("status") or ",".join(result.get("issues") or []) or "gate_failed"
+        sys.stderr.write(
+            f"[codebase-design:spec_gate] Gate check failed ({reason}).\n"
+            "  Fix: refresh `spec_gate.py stamp`/`checkpoint` before releasing downstream work.\n"
+            f"  Reference: {result.get('reference', PHASE0_REF)} · {CONTEXT_REF} · {ADR_REF}\n"
+        )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return code
 

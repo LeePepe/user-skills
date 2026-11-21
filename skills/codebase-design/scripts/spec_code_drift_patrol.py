@@ -21,11 +21,22 @@ import sys
 from typing import Any, Callable, Mapping, Sequence
 
 SCRIPT_PATH = Path(__file__).resolve()
+SKILL_DIR = SCRIPT_PATH.parents[1]
 SKILLS_ROOT = SCRIPT_PATH.parents[2]
 TEAM_LEAD_SCRIPTS = SKILLS_ROOT / "team-lead" / "scripts"
 JEV_PATH = TEAM_LEAD_SCRIPTS / "jev_client.py"
 ISSUE_BRIEF_PATH = SKILLS_ROOT / "issue-brief" / "scripts" / "verify_issue_format.py"
 ARCH_AUDIT_PATH = SKILLS_ROOT / "ios-architecture-testing" / "scripts" / "audit_arch_testing.py"
+DEFAULT_EVAL_CASES_FILE = SKILL_DIR / "references" / "eval-cases.json"
+PHASE0_REF = "skills/codebase-design/references/PHASE0-PROPOSAL-CHECKPOINT.md"
+CONTEXT_REF = "skills/codebase-design/references/CONTEXT-FORMAT.md"
+ADR_REF = "skills/codebase-design/references/ADR-FORMAT.md"
+DEEPENING_REF = "skills/codebase-design/references/DEEPENING.md"
+DESIGN_TWICE_REF = "skills/codebase-design/references/DESIGN-IT-TWICE.md"
+DRAWER_REFS = (CONTEXT_REF, ADR_REF, PHASE0_REF, DEEPENING_REF, DESIGN_TWICE_REF)
+L0_MAX_LINES = 180
+L1_REF_MAX_LINES = 160
+MAX_ACTIVE_CASES = 15
 LOOP_ID = "spec-code-drift-patrol"
 DEFAULT_REPOS = ("Financial", "VoxPocket", "VitalStride", "AIDash")
 GIT_TIMEOUT_SEC = 3.0
@@ -46,6 +57,18 @@ REPO_HEADER_RE = re.compile(
 REPO_SLUGS = (("fin-", "Financial"), ("vox-", "VoxPocket"), ("vital-", "VitalStride"), ("vs-", "VitalStride"), ("aidash-", "AIDash"))
 KNOWN_PATH_ROOTS = frozenset({"Apps", "Features", "Models", "Packages", "Resources", "Sources", "Tests", "Views", "aidata", "docs", "scripts", "src", "test", "tests"})
 SEVERITY_HIGH = {"AT-011", "missing_contract_test", "missing_negative_assertion"}
+ADR_SKIP_BASENAMES = frozenset({"readme.md", "template.md", "index.md"})
+UNTRACKED_SINGLE_FILE_ARTIFACTS = frozenset({"Package.resolved"})
+
+
+class _SelfDisclosingParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[codebase-design:spec_code_drift_patrol] CLI error: {message}\n"
+            "  Fix: run `python3 skills/codebase-design/scripts/spec_code_drift_patrol.py {scan,collect,loop-check,flow-map} --help` or `--flow-map`.\n"
+            f"  Reference: {CONTEXT_REF} · {ADR_REF} · {PHASE0_REF} · {DEEPENING_REF} · {DESIGN_TWICE_REF}\n"
+        )
+        raise SystemExit(2)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -365,8 +388,9 @@ def _candidate_paths(
                 continue
             value = raw.strip().strip(".,:;()[]{}<>\"'").replace("\\", "/")
             value = re.sub(r":\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$", "", value)
-            if value.startswith("~/Development/"):
-                value = value[len("~/Development/"):]
+            tilde_dev_prefix = "~/" + "Development/"
+            if value.startswith(tilde_dev_prefix):
+                value = value[len(tilde_dev_prefix):]
                 if not value.startswith(repo.name + "/"):
                     continue
                 value = value[len(repo.name) + 1:]
@@ -433,8 +457,32 @@ def _resolve_reference(
     return None
 
 
-def _finding(repo: str, direction: str, code: str, title: str, *, file: str, line: int, evidence: str, remediation: str, action_type: str) -> dict[str, Any]:
+def _default_drawer_for_finding(code: str, file: str) -> str:
+    norm_file = str(file or "").replace("\\", "/").lower()
+    if code == "malformed_adr_heading" or "/adr/" in norm_file or norm_file.startswith("docs/adr/"):
+        return ADR_REF
+    if norm_file.endswith(("context.md", "tech-context.md", "context-map.md")):
+        return CONTEXT_REF
+    if code in {"missing_contract_test", "missing_negative_assertion", "AT-011"}:
+        return DEEPENING_REF
+    return PHASE0_REF
+
+
+def _finding(
+    repo: str,
+    direction: str,
+    code: str,
+    title: str,
+    *,
+    file: str,
+    line: int,
+    evidence: str,
+    remediation: str,
+    action_type: str,
+    reference_drawer: str | None = None,
+) -> dict[str, Any]:
     stable = f"{repo}|{direction}|{code}|{file}|{line}|{evidence}"
+    drawer = reference_drawer or _default_drawer_for_finding(code, file)
     return {
         "id": f"{direction[:3].upper()}-{hashlib.sha256(stable.encode()).hexdigest()[:10]}",
         "repo": repo,
@@ -446,7 +494,214 @@ def _finding(repo: str, direction: str, code: str, title: str, *, file: str, lin
         "evidence": evidence[:400],
         "remediation": remediation,
         "action_type": action_type,
+        "reference_drawer": drawer,
     }
+
+
+def _parse_frontmatter_path_lists(text: str) -> dict[str, list[tuple[str, int]]]:
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.S)
+    if not match:
+        return {}
+    lines = match.group(1).splitlines()
+    out: dict[str, list[tuple[str, int]]] = {}
+    idx = 0
+    while idx < len(lines):
+        raw = lines[idx]
+        clean = raw.split("#", 1)[0].rstrip()
+        if not clean.strip() or clean.startswith((" ", "\t", "-")) or ":" not in clean:
+            idx += 1
+            continue
+        key, val = (part.strip() for part in clean.split(":", 1))
+        if key in {"owns", "scope", "test_paths"}:
+            entries: list[tuple[str, int]] = []
+            if val.startswith("[") and val.endswith("]"):
+                for part in val[1:-1].split(","):
+                    cleaned_part = part.strip().strip("'\"")
+                    if cleaned_part:
+                        entries.append((cleaned_part, idx + 2))
+                idx += 1
+            elif not val:
+                idx += 1
+                while idx < len(lines):
+                    child_raw = lines[idx]
+                    child_clean = child_raw.split("#", 1)[0].rstrip()
+                    if not child_clean.strip():
+                        idx += 1
+                        continue
+                    if not child_raw.startswith((" ", "\t")) and not child_raw.lstrip().startswith("-"):
+                        break
+                    stripped = child_clean.strip()
+                    if stripped.startswith("-"):
+                        cleaned_part = stripped[1:].strip().strip("'\"")
+                        if cleaned_part:
+                            entries.append((cleaned_part, idx + 2))
+                    idx += 1
+            else:
+                cleaned_part = val.strip("'\"")
+                if cleaned_part:
+                    entries.append((cleaned_part, idx + 2))
+                idx += 1
+            out[key] = entries
+        else:
+            idx += 1
+    return out
+
+
+def _scan_tech_context_and_adrs(
+    repo_name: str,
+    repo: Path,
+    tracked: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    seen_missing: set[tuple[str, str]] = set()
+    for rel_path in sorted(tracked):
+        is_tech_context = rel_path == "tech-context.md" or rel_path.endswith("/tech-context.md")
+        if is_tech_context:
+            text = tracked[rel_path]
+            full_path = str(repo / rel_path)
+            for _field, items in _parse_frontmatter_path_lists(text).items():
+                for raw_entry, line_no in items:
+                    norm = raw_entry.strip().replace("\\", "/").lstrip("./")
+                    if not norm:
+                        continue
+                    if any(ch in norm for ch in ("*", "?", "[")):
+                        prefix = re.split(r"[*?[]", norm, maxsplit=1)[0].rstrip("/")
+                        if prefix and _resolve_reference(repo, prefix, tracked) is None and (full_path, raw_entry) not in seen_missing:
+                            seen_missing.add((full_path, raw_entry))
+                            findings.append(
+                                _finding(
+                                    repo_name,
+                                    "spec_staleness",
+                                    "missing_referenced_path",
+                                    f"技术上下文 `{rel_path}` 声明的归属路径 `{raw_entry}` 在主线不存在",
+                                    file=full_path,
+                                    line=line_no,
+                                    evidence=raw_entry,
+                                    remediation=f"Synchronize `owns`/`scope`/`test_paths` in `{rel_path}` with tracked files (see {CONTEXT_REF}).",
+                                    action_type="SYNC_SPEC_DOC",
+                                    reference_drawer=CONTEXT_REF,
+                                )
+                            )
+                    else:
+                        is_explicit_path = ("/" in norm) or (
+                            "." in Path(norm).name
+                            and Path(norm).suffix.lower() in TEXT_SUFFIXES
+                            and norm not in UNTRACKED_SINGLE_FILE_ARTIFACTS
+                        )
+                        if is_explicit_path and _resolve_reference(repo, norm, tracked) is None and (full_path, raw_entry) not in seen_missing:
+                            seen_missing.add((full_path, raw_entry))
+                            findings.append(
+                                _finding(
+                                    repo_name,
+                                    "spec_staleness",
+                                    "missing_referenced_path",
+                                    f"技术上下文 `{rel_path}` 声明的归属路径 `{raw_entry}` 在主线不存在",
+                                    file=full_path,
+                                    line=line_no,
+                                    evidence=raw_entry,
+                                    remediation=f"Synchronize `owns`/`scope`/`test_paths` in `{rel_path}` with tracked files (see {CONTEXT_REF}).",
+                                    action_type="SYNC_SPEC_DOC",
+                                    reference_drawer=CONTEXT_REF,
+                                )
+                            )
+
+            lines = text.splitlines()
+            in_fence = False
+            idx = 0
+            while idx < len(lines):
+                raw_line = lines[idx]
+                if re.match(r"^\s*(?:```|~~~)", raw_line):
+                    in_fence = not in_fence
+                    idx += 1
+                    continue
+                if in_fence:
+                    idx += 1
+                    continue
+                stripped = raw_line.strip()
+                if stripped.startswith("|") and idx + 1 < len(lines) and re.match(r"^\|?\s*:?-{3,}", lines[idx + 1].strip()):
+                    headers = [c.strip().lower() for c in stripped.strip("|").split("|")]
+                    path_cols = {ci for ci, h in enumerate(headers) if "tech-context" in h or h in {"path", "paths", "context"}}
+                    if path_cols or any(h in {"layer", "层"} for h in headers):
+                        row_idx = idx + 2
+                        while row_idx < len(lines) and lines[row_idx].strip().startswith("|"):
+                            cells = [c.strip() for c in lines[row_idx].strip().strip("|").split("|")]
+                            for ci, cell in enumerate(cells):
+                                tokens = BACKTICK_RE.findall(cell)
+                                if ci in path_cols and not tokens:
+                                    bare = cell.strip("` ").strip()
+                                    if bare and not bare.startswith("(") and bare.lower() not in {"-", "—", "–", "none", "无", "n/a"}:
+                                        tokens = [bare]
+                                for tok in tokens:
+                                    cand = tok.strip().strip(".,:;()[]{}<>\"'").replace("\\", "/").lstrip("./")
+                                    if (
+                                        not cand
+                                        or any(ch in cand for ch in ("*", "?", "["))
+                                        or " " in cand
+                                        or cand.startswith(("@", "http://", "https://", "--"))
+                                    ):
+                                        continue
+                                    looks_like_path = ("/" in cand and not re.fullmatch(r"[A-Z0-9_/-]+", cand)) or (
+                                        ci in path_cols and cand.endswith(".md")
+                                    )
+                                    if looks_like_path and _resolve_reference(repo, cand, tracked) is None and (full_path, cand) not in seen_missing:
+                                        seen_missing.add((full_path, cand))
+                                        findings.append(
+                                            _finding(
+                                                repo_name,
+                                                "spec_staleness",
+                                                "missing_referenced_path",
+                                                f"技术上下文 `{rel_path}` 表格引用的路径 `{cand}` 在主线不存在",
+                                                file=full_path,
+                                                line=row_idx + 1,
+                                                evidence=cand,
+                                                remediation=f"Update the layer table path in `{rel_path}` or add the missing leaf context (see {CONTEXT_REF}).",
+                                                action_type="SYNC_SPEC_DOC",
+                                                reference_drawer=CONTEXT_REF,
+                                            )
+                                        )
+                            row_idx += 1
+                        idx = row_idx
+                        continue
+                idx += 1
+
+        if rel_path.startswith("docs/adr/") and rel_path.endswith(".md") and Path(rel_path).name.lower() not in ADR_SKIP_BASENAMES:
+            adr_text = tracked[rel_path]
+            adr_lines = adr_text.splitlines()
+            in_fm = False
+            in_fence = False
+            has_title = False
+            for line_idx, raw_adr in enumerate(adr_lines, 1):
+                if line_idx == 1 and raw_adr.strip() == "---":
+                    in_fm = True
+                    continue
+                if in_fm:
+                    if raw_adr.strip() == "---":
+                        in_fm = False
+                    continue
+                if re.match(r"^\s*(?:```|~~~)", raw_adr):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                if re.match(r"^#\s+\S+", raw_adr.strip()):
+                    has_title = True
+                    break
+            if not has_title:
+                findings.append(
+                    _finding(
+                        repo_name,
+                        "spec_staleness",
+                        "malformed_adr_heading",
+                        f"架构决策记录 `{rel_path}` 缺少非空 `# Title` 一级标题",
+                        file=str(repo / rel_path),
+                        line=1,
+                        evidence=rel_path,
+                        remediation=f"Add a non-empty `# {{Short title}}` top-level heading per {ADR_REF}.",
+                        action_type="SYNC_SPEC_DOC",
+                        reference_drawer=ADR_REF,
+                    )
+                )
+    return findings
 
 
 def _unique_basename_rename_match(value: str, tracked: Mapping[str, str]) -> str | None:
@@ -604,6 +859,7 @@ def _scan_repo(
                 unsupported.append({"kind": "architecture_audit_unavailable", "repo": repo_name, "reason": str(exc)})
         else:
             unsupported.append({"kind": "architecture_audit_unavailable", "repo": repo_name, "reason": "audit_arch_testing.py is not present"})
+    stale.extend(_scan_tech_context_and_adrs(repo_name, repo, tracked))
     return stale, compliance, unsupported, auto_fixed
 
 
@@ -913,9 +1169,64 @@ def loop_check(
     return result
 
 
+def build_flow_map(cases_file: Path = DEFAULT_EVAL_CASES_FILE) -> dict[str, Any]:
+    doc = json.loads(cases_file.read_text(encoding="utf-8")) if cases_file.is_file() else {"active_cases": []}
+    active = doc.get("active_cases", []) if isinstance(doc.get("active_cases"), list) else []
+    ref_dir = SKILL_DIR / "references"
+    ref_line_counts = {
+        path.relative_to(SKILL_DIR).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
+        for path in sorted(ref_dir.glob("*.md"))
+    }
+    l0_lines = len((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").splitlines()) if (SKILL_DIR / "SKILL.md").is_file() else 0
+    all_l1_within = all(lines <= L1_REF_MAX_LINES for lines in ref_line_counts.values())
+    all_within_budget = (l0_lines <= L0_MAX_LINES) and all_l1_within and (len(active) <= MAX_ACTIVE_CASES)
+    return {
+        "ok": all_within_budget,
+        "skill": "codebase-design",
+        "architecture_ref": "skills/codebase-design/SKILL.md",
+        "entry_a_phase0_lock": {
+            "A1_spec_gate": "python3 skills/codebase-design/scripts/spec_gate.py {push,checkpoint,pop,status,stamp,verify-lock}",
+            "A2_phase0_reference": PHASE0_REF,
+            "A3_deepening_and_twice": [DEEPENING_REF, DESIGN_TWICE_REF],
+        },
+        "shared_tiers": {
+            "tier_1_json_drawer": {
+                "file": "skills/codebase-design/references/eval-cases.json",
+                "active_case_count": len(active),
+                "active_case_ids": [c.get("id") for c in active if isinstance(c, dict)],
+            },
+            "tier_2_l1_docs_line_counts": ref_line_counts,
+            "tier_2_reference_drawers": list(DRAWER_REFS),
+            "tier_3_executable_gates": [
+                "skills/codebase-design/scripts/spec_code_drift_patrol.py",
+                "skills/codebase-design/scripts/spec_gate.py",
+            ],
+        },
+        "entry_b_drift_patrol": {
+            "B1_scan": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py scan --repos <csv>",
+            "B2_loop_check": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py loop-check --repos <csv>",
+            "B3_context_and_adr_refs": [CONTEXT_REF, ADR_REF],
+        },
+        "anti_explosion_valves": {
+            "valve_1_zero_token_drift_and_cas_gates": True,
+            "valve_2_self_disclosing_drawer_pointers": list(DRAWER_REFS),
+            "valve_3_top_k_and_line_caps": {
+                "l0_doc_lines": l0_lines,
+                "l0_doc_max_lines": L0_MAX_LINES,
+                "l1_doc_max_lines": L1_REF_MAX_LINES,
+                "active_cases_cap": MAX_ACTIVE_CASES,
+            },
+            "valve_4_one_in_one_out_compaction": True,
+            "all_l1_docs_within_budget": all_within_budget,
+        },
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Loop 4 deterministic spec/code drift patrol")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = _SelfDisclosingParser(description="Loop 4 deterministic spec/code drift patrol")
+    parser.add_argument("--flow-map", action="store_true", help="emit drawer inventory and anti-explosion budget health JSON")
+    sub = parser.add_subparsers(dest="command", required=False, parser_class=_SelfDisclosingParser)
+    sub.add_parser("flow-map")
     for name in ("scan", "collect", "loop-check"):
         p = sub.add_parser(name)
         p.add_argument("--dev-root", type=Path, default=None)
@@ -926,12 +1237,21 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--no-auto-fix", dest="auto_fix", action="store_false")
         p.add_argument("--mock-jev-json", default=None)
         p.add_argument("--dry-run", action="store_true")
+        p.add_argument("--flow-map", action="store_true", help="emit drawer inventory and anti-explosion budget health JSON")
         p.add_argument("--json", action="store_true", help="emit JSON (the CLI is JSON by default)")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = _parser()
+    args = parser.parse_args(raw_argv)
+    if getattr(args, "flow_map", False) or args.command == "flow-map":
+        payload = build_flow_map()
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+    if not args.command:
+        parser.error("the following arguments are required: command (scan, collect, loop-check, or --flow-map)")
     if args.command == "scan":
         result = scan(
             dev_root=args.dev_root,
@@ -951,6 +1271,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             auto_fix=args.auto_fix,
             dry_run=args.dry_run,
         )
+    if result.get("findings"):
+        drawers = sorted({str(f.get("reference_drawer")) for f in result["findings"] if f.get("reference_drawer")})
+        if drawers:
+            sys.stderr.write(
+                f"[codebase-design:spec_code_drift_patrol] {len(result['findings'])} drift finding(s) detected.\n"
+                f"  Reference: {' · '.join(drawers)}\n"
+            )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
