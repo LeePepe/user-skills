@@ -17,6 +17,7 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 | Stage 2 Jev triage (`--pick-top 3` / `--pick-one`) | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py triage [--pick-top 3 \| --pick-one] --use-jev --emit-briefs ~/Development/handoff --json` |
 | Stage 3 emit `K` per-skill M1 specs | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py emit-briefs [--skill <name>] [--pick-top 3 \| --pick-one] --mode full --emit-briefs ~/Development/handoff --json` |
 | Cross-skill Host->Guest relay | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py emit-relay --from <host> --to <guest> --requirement "<spec>" --emit-briefs ~/Development/handoff --json` |
+| Decoupled Context Uptake check | `references/uptake_map.json` | `python3 skills/skill-retro/scripts/skill_retro.py uptake-check [--skill <name>] [--target-dir <dir>] --json` |
 | Rollup `K` M1 receipts to single M2 | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py rollup --handoff-root ~/Development/handoff --json` |
 | verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill skill-retro --strict` |
 
@@ -37,7 +38,7 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 3. **`l2` · L2 Script Efficacy & 4-Angle Slow Script Deep-Dive**: Classify **True Catchers (`fail->pass`)**, **Ceremonial Rubber-Stamps (`100% exit=0` with escapes)**, **Rigid Roadblocks (`exit=2` CLI friction with redacted failing samples)**, and **Latency Sinks (`>180s` or `P50>=30s`)** attributed across **4 angles**: (a) external remote wait vs local CPU, (b) redundant nested re-runs, (c) `git diff` path-scoped selection, (d) parallel DAG sharding & watermark cache.
 4. **`l3` · L3 Wild Pattern Soft Crystallization**: Detect manual shell probes (`>=5x`) and crystallize under **3 Soft-Script Principles**: facts-only (no subjective taste lock), self-disclosing error (`<=3` lines + `references/*.md`), and Hard Lock (`exit=1`) vs Soft Advisory (`exit=0`).
 5. **`creative` · Cross-Session Creative & Product Spectrum**: Audit `preview-selection.json` stars/notes/rejections for **Variant Homogenization** and enforce **Tier 1 Universal Invariants** + **Tier 2 Product Persona Intent Weighting** + **Tier 3 `2+1+1` Exploration Quota** (`2` persona-deepening + `1` cross-domain + `1` wildcard).
-6. **`eval` · 3-Tier Eval & Fast/Slow Flywheel Guardrails**: Audit **L1 Baseline / L2 Diversity / L3 Human-Taste Eval** coverage; enforce **Fast Flywheel (`N=1`) 3-Question Scope Triage + Positive & Counter-Case Dual Replay** vs **Slow Flywheel (`N>=50`) Wide-Probe Multi-Angle Diagnosis + Golden Benchmark Replay**.
+6. **`eval` · 3-Tier Eval, Context Uptake Triad & Fast/Slow Flywheel Guardrails**: Audit **L1 Baseline / L2 Diversity / L3 Human-Taste Eval** coverage plus the **Trigger Quality -> Context Uptake (`references/uptake_map.json`) -> Outcome Delta** triad; enforce **Fast Flywheel (`N=1`) 3-Question Scope Triage + Positive & Counter-Case Dual Replay** vs **Slow Flywheel (`N>=50`) Wide-Probe Multi-Angle Diagnosis + Golden Benchmark Replay**.
 
 ## Canonical 3-Stage Prompt Templates & Cross-Skill Anti-Collision Rules
 
@@ -48,4 +49,4 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 - **Stage 3B Prompt (`1 M2 -> K Parallel M1 TLs -> Single M2 Rollup` — Full 6-Dimension Check & Host/Guest Relay `--mode full`)**:
   > Each independent M1 TL (`1 M1 TL per skill`) executes full 6-Dimension (`l0,l1,l2,l3,creative,eval`) deep reasoning for `<sk>`. If healthy, M1 TL writes `HEALTHY_NO_ISSUES` (`0` Writers); if a Guest Skill needs changes without `--coupled-with`, M1 TL emits a Wave 2 Relay (`emit-relay --from <host> --to <guest>`). Once all `K` M1 TLs finish, the single M2 runs `skill_retro.py rollup --handoff-root ~/Development/handoff --json` to aggregate all `K` receipts (`FIXED_AND_MERGED` | `HEALTHY_NO_ISSUES` | `CROSS_SKILL_RELAY`) into the daily `[Skill Retro YYYY-MM-DD]` summary issue.
 
-See [progressive-evolution-playbook.md](references/progressive-evolution-playbook.md) and [eval-cases.json](references/eval-cases.json).
+See [progressive-evolution-playbook.md](references/progressive-evolution-playbook.md), [uptake_map.json](references/uptake_map.json), and [eval-cases.json](references/eval-cases.json).

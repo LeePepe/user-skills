@@ -1,0 +1,429 @@
+{
+  "schema": "skill-uptake-map/v1",
+  "version": 1,
+  "updated": "2026-11-21",
+  "_comment": "Decoupled skill_id -> [check_id, ...] registry inspired by expo/eval-harness@da0eba34bf02b6dc57a6eca611c4bdab73b246c5. skill_map is the ONLY section coupled to skill names; checks are atomic, skill-agnostic facts with 4-state status (passed, failed, not_applicable, unavailable), engagement gating for negative checks, Hard vs Soft severity, and self-disclosing remediation_drawer pointers.",
+  "skill_map": {
+    "my-designer": [
+      "design_spec_or_design_doc_exists",
+      "design_no_numeric_truncation_ellipsis",
+      "design_no_deprecated_navigation_view",
+      "design_has_accessibility_label_or_id"
+    ],
+    "ios-architecture-testing": [
+      "ios_uses_navigation_stack_or_split_view",
+      "ios_no_deprecated_navigation_view",
+      "ios_swiftdata_relationship_has_delete_rule",
+      "ios_no_force_try_model_container",
+      "ios_no_sleep_based_flaky_test_sync",
+      "design_has_accessibility_label_or_id"
+    ],
+    "skill-contract": [
+      "contract_skill_md_frontmatter_valid",
+      "contract_eval_cases_drawer_exists",
+      "contract_no_private_identifiers_in_markdown",
+      "contract_script_has_argparse_or_main"
+    ],
+    "skill-retro": [
+      "retro_uptake_map_exists",
+      "retro_playbook_drawer_exists",
+      "contract_eval_cases_drawer_exists",
+      "contract_script_has_argparse_or_main"
+    ],
+    "team-lead": [
+      "tl_handoff_spec_or_ledger_exists",
+      "tl_ledger_uses_team_lead_contract_tag",
+      "tl_no_gh_run_watch_blocking"
+    ],
+    "aidash-metrics": [
+      "aidash_sql_or_model_layer_exists",
+      "aidash_no_select_star_in_serve_sql"
+    ],
+    "repo-kit": [
+      "repo_agents_md_exists",
+      "repo_verify_entrypoint_exists"
+    ]
+  },
+  "checks": [
+    {
+      "id": "design_spec_or_design_doc_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "design.md",
+        "spec.md",
+        "**/design.md",
+        "**/spec.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/my-designer/references/design-modernization-and-traceback.md",
+      "description": "UI/product design task produces or maintains a design.md or spec.md contract."
+    },
+    {
+      "id": "design_no_numeric_truncation_ellipsis",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*.swift",
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.html"
+      ],
+      "engagement_glob": [
+        "**/*.swift",
+        "**/*.tsx",
+        "**/*.jsx",
+        "**/*.html"
+      ],
+      "target": "\\.lineLimit\\(\\s*1\\s*\\)\\s*\\.truncationMode\\(",
+      "must_not_match": "\\.lineLimit\\(\\s*1\\s*\\)\\s*\\.truncationMode\\(",
+      "severity": "hard",
+      "remediation_drawer": "skills/my-designer/references/design-modernization-and-traceback.md",
+      "description": "Avoids forced single-line truncation on numeric/metric labels that causes '...' clipping."
+    },
+    {
+      "id": "design_no_deprecated_navigation_view",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*.swift"
+      ],
+      "engagement_any": [
+        "\\bNavigationStack\\b",
+        "\\bNavigationSplitView\\b",
+        "\\bTabView\\b",
+        "\\bNavigationView\\b"
+      ],
+      "target": "\\bNavigationView\\s*\\{",
+      "must_not_match": "\\bNavigationView\\s*\\{",
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Uses NavigationStack or NavigationSplitView rather than deprecated NavigationView."
+    },
+    {
+      "id": "design_has_accessibility_label_or_id",
+      "category": "lexical",
+      "kind": "text_any",
+      "file_glob": [
+        "**/*.swift",
+        "**/*.tsx",
+        "**/*.jsx"
+      ],
+      "engagement_glob": [
+        "**/*.swift",
+        "**/*.tsx",
+        "**/*.jsx"
+      ],
+      "target": [
+        "\\.accessibilityIdentifier\\(",
+        "\\.accessibilityLabel\\(",
+        "\\btestID\\s*=",
+        "\\baria-label\\s*="
+      ],
+      "must_match": [
+        "\\.accessibilityIdentifier\\(",
+        "\\.accessibilityLabel\\(",
+        "\\btestID\\s*=",
+        "\\baria-label\\s*="
+      ],
+      "severity": "soft_advisory",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "UI views expose stable accessibilityIdentifier / accessibilityLabel / testID hooks for compressed accessibility-tree evaluation."
+    },
+    {
+      "id": "ios_uses_navigation_stack_or_split_view",
+      "category": "lexical",
+      "kind": "text_any",
+      "file_glob": [
+        "**/*.swift"
+      ],
+      "engagement_any": [
+        "\\bNavigationStack\\b",
+        "\\bNavigationSplitView\\b",
+        "\\bNavigationView\\b",
+        "\\bnavigationDestination\\b"
+      ],
+      "target": [
+        "\\bNavigationStack\\b",
+        "\\bNavigationSplitView\\b"
+      ],
+      "must_match": [
+        "\\bNavigationStack\\b",
+        "\\bNavigationSplitView\\b"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Uses state-driven NavigationStack or NavigationSplitView when SwiftUI navigation is engaged."
+    },
+    {
+      "id": "ios_no_deprecated_navigation_view",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*.swift"
+      ],
+      "engagement_any": [
+        "\\bNavigationStack\\b",
+        "\\bNavigationSplitView\\b",
+        "\\bNavigationView\\b"
+      ],
+      "target": "\\bNavigationView\\s*\\{",
+      "must_not_match": "\\bNavigationView\\s*\\{",
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Forbids deprecated NavigationView in SwiftUI navigation trees (AT-001)."
+    },
+    {
+      "id": "ios_swiftdata_relationship_has_delete_rule",
+      "category": "lexical",
+      "kind": "text_any",
+      "file_glob": [
+        "**/*.swift"
+      ],
+      "engagement_any": [
+        "@Relationship\\b"
+      ],
+      "target": [
+        "@Relationship\\([^)]*deleteRule\\s*:"
+      ],
+      "must_match": [
+        "@Relationship\\([^)]*deleteRule\\s*:"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Every SwiftData @Relationship declares an explicit deleteRule (AT-003)."
+    },
+    {
+      "id": "ios_no_force_try_model_container",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*.swift"
+      ],
+      "engagement_any": [
+        "\\bModelContainer\\b"
+      ],
+      "target": "try!\\s*ModelContainer\\s*\\(",
+      "must_not_match": "try!\\s*ModelContainer\\s*\\(",
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Forbids unrecoverable try! ModelContainer(...) crashes in persistence initialization (AT-004)."
+    },
+    {
+      "id": "ios_no_sleep_based_flaky_test_sync",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*Tests*.swift",
+        "**/*Test*.swift"
+      ],
+      "engagement_glob": [
+        "**/*Tests*.swift",
+        "**/*Test*.swift"
+      ],
+      "target": "\\bThread\\.sleep\\s*\\(|\\bsleep\\s*\\(\\s*\\d+\\s*\\)",
+      "must_not_match": "\\bThread\\.sleep\\s*\\(|\\bsleep\\s*\\(\\s*\\d+\\s*\\)",
+      "severity": "hard",
+      "remediation_drawer": "skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+      "description": "Forbids arbitrary Thread.sleep / sleep(N) synchronization in Swift test suites (AT-006)."
+    },
+    {
+      "id": "contract_skill_md_frontmatter_valid",
+      "category": "lexical",
+      "kind": "text_any",
+      "file_glob": [
+        "SKILL.md",
+        "skills/*/SKILL.md"
+      ],
+      "engagement_glob": [
+        "SKILL.md",
+        "skills/*/SKILL.md"
+      ],
+      "target": [
+        "^---[\\s\\S]*?\\bname:\\s*[A-Za-z0-9_-]+[\\s\\S]*?\\bdescription:\\s*\\S+"
+      ],
+      "must_match": [
+        "^---[\\s\\S]*?\\bname:\\s*[A-Za-z0-9_-]+[\\s\\S]*?\\bdescription:\\s*\\S+"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/skill-contract/references/valves-and-metabolism.md",
+      "description": "SKILL.md starts with YAML frontmatter declaring non-empty name and description."
+    },
+    {
+      "id": "contract_eval_cases_drawer_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/eval-cases.json",
+        "skills/*/references/eval-cases.json"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/skill-contract/references/valves-and-metabolism.md",
+      "description": "Skill package maintains a references/eval-cases.json regression drawer."
+    },
+    {
+      "id": "contract_no_private_identifiers_in_markdown",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "SKILL.md",
+        "references/*.md",
+        "skills/*/SKILL.md",
+        "skills/*/references/*.md"
+      ],
+      "engagement_glob": [
+        "SKILL.md",
+        "skills/*/SKILL.md"
+      ],
+      "target": "\\b(?:progressRail|isUnilateral|DashboardL10n)\\b",
+      "must_not_match": "\\b(?:progressRail|isUnilateral|DashboardL10n)\\b",
+      "severity": "hard",
+      "remediation_drawer": "skills/skill-contract/references/valves-and-metabolism.md",
+      "description": "Global skill Markdown does not leak project-private identifiers (Valve 1)."
+    },
+    {
+      "id": "contract_script_has_argparse_or_main",
+      "category": "syntax_tree",
+      "kind": "python_ast",
+      "file_glob": [
+        "scripts/*.py",
+        "skills/*/scripts/*.py"
+      ],
+      "ast_rule": "has_main_or_argparse",
+      "severity": "soft_advisory",
+      "remediation_drawer": "skills/skill-contract/references/valves-and-metabolism.md",
+      "description": "Python CLI scripts under scripts/ parse cleanly with ast.parse and define a main() entrypoint or CLI parser."
+    },
+    {
+      "id": "retro_uptake_map_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/uptake_map.json",
+        "skills/skill-retro/references/uptake_map.json"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/skill-retro/references/progressive-evolution-playbook.md",
+      "description": "skill-retro maintains the decoupled references/uptake_map.json check registry."
+    },
+    {
+      "id": "retro_playbook_drawer_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/progressive-evolution-playbook.md",
+        "skills/skill-retro/references/progressive-evolution-playbook.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/skill-retro/references/progressive-evolution-playbook.md",
+      "description": "skill-retro maintains references/progressive-evolution-playbook.md."
+    },
+    {
+      "id": "tl_handoff_spec_or_ledger_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "spec.md",
+        "ledger.md",
+        "references/ledger.md",
+        "skills/team-lead/references/ledger.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/team-lead/references/ledger.md",
+      "description": "Goal handoff or team-lead package contains ledger.md / spec.md state source."
+    },
+    {
+      "id": "tl_ledger_uses_team_lead_contract_tag",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "ledger.md",
+        "**/ledger.md"
+      ],
+      "engagement_glob": [
+        "ledger.md",
+        "**/ledger.md"
+      ],
+      "target": "合同版本:\\s*goal-target-task@",
+      "must_not_match": "合同版本:\\s*goal-target-task@",
+      "severity": "hard",
+      "remediation_drawer": "skills/team-lead/references/ledger.md",
+      "description": "Ledger contract tag uses team-lead@<sha> rather than deprecated goal-target-task@."
+    },
+    {
+      "id": "tl_no_gh_run_watch_blocking",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/*.sh",
+        "**/*.py",
+        "briefs/*.md"
+      ],
+      "engagement_glob": [
+        "**/*.sh",
+        "**/*.py",
+        "briefs/*.md"
+      ],
+      "target": "\\bgh\\s+run\\s+watch\\b",
+      "must_not_match": "\\bgh\\s+run\\s+watch\\b",
+      "severity": "hard",
+      "remediation_drawer": "skills/team-lead/references/playbook.md",
+      "description": "Never blocks foreground worker turns with gh run watch; use Layer-0 ci-monitor.py instead."
+    },
+    {
+      "id": "aidash_sql_or_model_layer_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "**/*.sql",
+        "references/*.md",
+        "skills/aidash-metrics/SKILL.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/aidash-metrics/SKILL.md",
+      "description": "AIDash metrics task touches SQL/model definitions or aidash-metrics contract."
+    },
+    {
+      "id": "aidash_no_select_star_in_serve_sql",
+      "category": "lexical",
+      "kind": "text_absent",
+      "file_glob": [
+        "**/L4_serve/**/*.sql",
+        "**/*.sql"
+      ],
+      "engagement_glob": [
+        "**/L4_serve/**/*.sql",
+        "**/*.sql"
+      ],
+      "target": "(?i)\\bSELECT\\s+\\*\\s+FROM\\b",
+      "must_not_match": "(?i)\\bSELECT\\s+\\*\\s+FROM\\b",
+      "severity": "soft_advisory",
+      "remediation_drawer": "skills/aidash-metrics/SKILL.md",
+      "description": "Avoids SELECT * in L4 serve SQL queries."
+    },
+    {
+      "id": "repo_agents_md_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "AGENTS.md",
+        "skills/repo-kit/SKILL.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/repo-kit/SKILL.md",
+      "description": "Repository root maintains a concise AGENTS.md index."
+    },
+    {
+      "id": "repo_verify_entrypoint_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "scripts/verify",
+        "skills/repo-kit/SKILL.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/repo-kit/SKILL.md",
+      "description": "Repository exposes a unified ./scripts/verify entrypoint."
+    }
+  ]
+}
