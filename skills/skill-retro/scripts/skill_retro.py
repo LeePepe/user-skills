@@ -161,6 +161,16 @@ _DOMAIN_HINTS: tuple[tuple[str, Callable[[set[str], set[str]], bool]], ...] = (
         "xcode-cli",
         lambda files, cmds: any("xcodebuild" in c or "xcrun simctl" in c for c in cmds),
     ),
+    (
+        "repo-kit",
+        lambda files, cmds: any(
+            f.endswith(("tech-context.md", "repo-contract.json", ".githooks/pre-push", "scripts/verify"))
+            or "/.githooks/" in f
+            or "/scripts/hooks/" in f
+            for f in files
+        )
+        or any("repo_gate_auditor.py" in c or "shared-ci/scripts/context/" in c for c in cmds),
+    ),
 )
 
 _SECRET_SCRUB_RE = re.compile(
@@ -1575,6 +1585,7 @@ def emit_skill_retro_briefs(
     l1 = report.get("layer1_drawer_metabolism") or {}
     l2 = report.get("layer2_script_efficacy_and_speed") or {}
     l3 = report.get("layer3_wild_patterns_and_eval") or {}
+    cross_repo_health = report.get("cross_repo_gate_health") or l2.get("cross_repo_gate_health") or {}
     proposals = list(report.get("proposals") or [])
     obs_pool = list(report.get("observation_pool") or [])
 
@@ -1611,14 +1622,16 @@ def emit_skill_retro_briefs(
         sk_catchers = [x for x in (l2.get("true_catchers") or []) if x.get("skill") == sk]
         sk_ceremonial = [x for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk]
         sk_roadblocks = [x for x in (l2.get("rigid_roadblocks") or []) if x.get("skill") == sk]
-        sk_sinks = [x for x in (l2.get("latency_sinks") or []) if x.get("skill") in {sk, "repo-gate"}]
+        sk_sinks = [x for x in (l2.get("latency_sinks") or []) if x.get("skill") in {sk, "repo-gate"} or x.get("owner_skill") == sk]
         sk_wild = [x for x in (l3.get("wild_patterns") or []) if x.get("candidate_skill") == sk]
         sk_proposals = [x for x in proposals if x.get("skill") == sk]
         sk_held = [x for x in obs_pool if x.get("skill") == sk]
+        sk_cross_repo_findings = int(cross_repo_health.get("total_findings") or 0) if sk == "repo-kit" else 0
         own_actionable_sinks = [
             x
             for x in sk_sinks
-            if x.get("skill") == sk and (x.get("primary_bottleneck") != "external_wait" or int(x.get("nested_rerun_calls") or 0) >= 1)
+            if (x.get("skill") == sk or (sk == "repo-kit" and x.get("skill") == "repo-gate"))
+            and (x.get("primary_bottleneck") != "external_wait" or int(x.get("nested_rerun_calls") or 0) >= 1)
         ]
         has_actionable_evidence = bool(
             sk_proposals
@@ -1631,6 +1644,7 @@ def emit_skill_retro_briefs(
             or sk_roadblocks
             or [x for x in sk_ceremonial if int(x.get("co_occurring_skill_escapes") or 0) > 0]
             or own_actionable_sinks
+            or sk_cross_repo_findings > 0
             or sk_wild
             or relays
         )
@@ -1809,6 +1823,13 @@ def emit_skill_retro_briefs(
                         f"  - **4-Angle Speedup Options**: (a) `{opts.get('angle_a_path_scoped')}` | (b) `{opts.get('angle_b_watermark_cache')}` | "
                         f"(c) `{opts.get('angle_c_parallel_dag')}` | (d) `{opts.get('angle_d_tiered_fast_fail')}`"
                     )
+            if sk == "repo-kit" and cross_repo_health.get("available"):
+                w_lines.append(
+                    f"- **Cross-Repo Gate Health (`repo_gate_auditor.py`)**: `repos_scanned={cross_repo_health.get('repos_scanned', 0)}`, "
+                    f"`drifted_repos={cross_repo_health.get('drifted_repos_count', 0)}`, "
+                    f"`avg_score={cross_repo_health.get('average_gate_health_score', 100.0)}`, "
+                    f"`total_findings={cross_repo_health.get('total_findings', 0)}`"
+                )
             w_lines.append("")
 
         if "l3" in selected_aspects:
@@ -2350,6 +2371,21 @@ def compute_skill_retro_diagnostics(
         for c in o.script_calls:
             calls_by_script.setdefault((c.skill, c.script_rel), []).append(c)
 
+    cross_repo_gate_health: dict[str, Any] = {
+        "available": False,
+        "repos_scanned": 0,
+        "healthy_repos_count": 0,
+        "drifted_repos_count": 0,
+        "average_gate_health_score": 100.0,
+        "total_findings": 0,
+        "rule_counts": {},
+        "speedup_4_angles": {},
+        "repos": [],
+        "actionable_proposals": [],
+    }
+    if "repo-kit" in inventory or norm_filter == "repo-kit":
+        cross_repo_gate_health = _compute_cross_repo_gate_health(skills_root=s_root, dev_root=d_root)
+
     true_catchers: list[dict[str, Any]] = []
     ceremonial_rubber_stamps: list[dict[str, Any]] = []
     rigid_roadblocks: list[dict[str, Any]] = []
@@ -2457,16 +2493,17 @@ def compute_skill_retro_diagnostics(
         )
         if is_latency_sink:
             speed_diag = _multi_angle_speed_diagnosis(sc_rel, ordered_calls)
-            latency_sinks.append(
-                {
-                    "skill": sk_name,
-                    "script": sc_rel,
-                    "calls": len(ordered_calls),
-                    "measured_calls": len(measured_durs),
-                    "classification": "latency_sink",
-                    **speed_diag,
-                }
-            )
+            sink_entry: dict[str, Any] = {
+                "skill": sk_name,
+                "script": sc_rel,
+                "calls": len(ordered_calls),
+                "measured_calls": len(measured_durs),
+                "classification": "latency_sink",
+                **speed_diag,
+            }
+            if sk_name == "repo-gate" and "repo-kit" in inventory:
+                sink_entry["owner_skill"] = "repo-kit"
+            latency_sinks.append(sink_entry)
 
     layer2 = {
         "true_catchers": sorted(true_catchers, key=lambda r: (-r["fail_to_pass_sessions"], -r["calls"], r["script"])),
@@ -2476,6 +2513,7 @@ def compute_skill_retro_diagnostics(
         ),
         "rigid_roadblocks": sorted(rigid_roadblocks, key=lambda r: (-r["exit_2_count"], -r["calls"], r["script"])),
         "latency_sinks": sorted(latency_sinks, key=lambda r: (-(r["max_ms"] or 0.0), -(r["p50_ms"] or 0.0), r["script"])),
+        "cross_repo_gate_health": cross_repo_gate_health,
     }
 
     # ------------------------------------------------------------------
@@ -2641,7 +2679,8 @@ def compute_skill_retro_diagnostics(
 
     # 3) Layer 2 Latency Sinks (>180s or P50 >= 30s with multi-angle attribution)
     for ls in layer2["latency_sinks"][:2]:
-        sk = ls["skill"]
+        raw_sk = ls["skill"]
+        sk = "repo-kit" if (raw_sk == "repo-gate" and "repo-kit" in inventory) else raw_sk
         sc_name = Path(ls["script"]).name
         bottleneck = ls["primary_bottleneck"]
         # Pure external CI polling with only 1 call is observational unless repeated or local serial/scan
@@ -2680,6 +2719,19 @@ def compute_skill_retro_diagnostics(
             },
             triage,
         )
+
+    # 3b) Layer 2 Cross-Repo Gate Drift & Bottleneck Proposals (`repo-kit`)
+    for cr_prop in (cross_repo_gate_health.get("actionable_proposals") or [])[:3]:
+        if not isinstance(cr_prop, Mapping):
+            continue
+        affected_cnt = max(1, int(cr_prop.get("affected_repos_count") or 1))
+        triage = _triage_proposal_scope(
+            occurrence_sessions=max(2, affected_cnt),
+            total_sessions=total_sessions,
+            is_objective_bug_or_friction=True,
+            domain_scoped=True,
+        )
+        _register_candidate(dict(cr_prop), triage)
 
     # 4) Layer 0 Trigger Misses & Directional Drift
     for tm in layer0["trigger_misses"][:2]:
@@ -2873,11 +2925,13 @@ def compute_skill_retro_diagnostics(
             "ceremonial_scripts_count": len(layer2["ceremonial_rubber_stamps"]),
             "rigid_roadblock_scripts_count": len(layer2["rigid_roadblocks"]),
             "latency_sink_scripts_count": len(layer2["latency_sinks"]),
+            "cross_repo_gate_findings_count": int(cross_repo_gate_health.get("total_findings") or 0),
             "wild_patterns_count": len(layer3["wild_patterns"]),
             "high_signal_proposals_count": len(proposals),
             "observation_pool_count": len(observation_pool),
             "slow_flywheel_ready": slow_flywheel_ready,
         },
+        "cross_repo_gate_health": cross_repo_gate_health,
         "layer0_direction_and_triggers": layer0,
         "layer1_drawer_metabolism": layer1,
         "layer2_script_efficacy_and_speed": layer2,
@@ -3277,6 +3331,10 @@ def _discover_skill_inventory(
     root = skills_root or DEFAULT_SKILLS_ROOT
     d_root = dev_root or DEFAULT_DEV_ROOT
     search_dirs: list[tuple[Path, bool, str]] = [(root, False, "user-skills")]
+    for fallback_cat in ("repo", "meta"):
+        fallback_dir = d_root / "Skills" / "skills" / fallback_cat
+        if _probe_readable_dir(fallback_dir):
+            search_dirs.append((fallback_dir, False, "user-skills"))
     repo_names = ["AIDash", "Financial", "VitalStride", "VoxPocket"]
     if _probe_readable_dir(d_root):
         for child in _safe_iterdir(d_root):
@@ -5814,6 +5872,63 @@ def _load_jev_client() -> Any | None:
     return None
 
 
+def _load_repo_gate_auditor(skills_root: Path | None = None, dev_root: Path | None = None) -> Any | None:
+    candidates: list[Path] = []
+    if skills_root is not None:
+        candidates.append(skills_root / "repo-kit" / "scripts" / "repo_gate_auditor.py")
+    candidates.append(Path(__file__).resolve().parents[2] / "repo-kit" / "scripts" / "repo_gate_auditor.py")
+    if dev_root is not None:
+        candidates.append(dev_root / "Skills" / "skills" / "repo" / "repo-kit" / "scripts" / "repo_gate_auditor.py")
+    for cand in candidates:
+        if _safe_is_file(cand):
+            with contextlib.suppress(Exception):
+                spec = importlib.util.spec_from_file_location("skill_retro_repo_gate_auditor", cand)
+                if spec is None or spec.loader is None:
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+    return None
+
+
+def _compute_cross_repo_gate_health(
+    *,
+    skills_root: Path | None = None,
+    dev_root: Path | None = None,
+) -> dict[str, Any]:
+    mod = _load_repo_gate_auditor(skills_root=skills_root, dev_root=dev_root)
+    eff_dev_root = dev_root or DEFAULT_DEV_ROOT
+    if mod is None or not hasattr(mod, "scan_repositories"):
+        return {
+            "available": False,
+            "repos_scanned": 0,
+            "healthy_repos_count": 0,
+            "drifted_repos_count": 0,
+            "average_gate_health_score": 100.0,
+            "total_findings": 0,
+            "rule_counts": {},
+            "speedup_4_angles": {},
+            "repos": [],
+            "actionable_proposals": [],
+        }
+    with contextlib.suppress(Exception):
+        scan_out = mod.scan_repositories(dev_root=eff_dev_root, flow_map=True)
+        if isinstance(scan_out, Mapping):
+            return {"available": True, **dict(scan_out)}
+    return {
+        "available": False,
+        "repos_scanned": 0,
+        "healthy_repos_count": 0,
+        "drifted_repos_count": 0,
+        "average_gate_health_score": 100.0,
+        "total_findings": 0,
+        "rule_counts": {},
+        "speedup_4_angles": {},
+        "repos": [],
+        "actionable_proposals": [],
+    }
+
+
 # ----------------------------------------------------------------------
 # Decoupled Context Uptake Registry (`uptake_map.json`) & Triad Engine
 # (`Trigger Quality -> Context Uptake -> Outcome Delta`)
@@ -6463,6 +6578,10 @@ def probe_skills(
     has_small_custom_sources = explicit_source_override
     skills_signals: list[dict[str, Any]] = []
 
+    cross_repo_gate_health: dict[str, Any] | None = None
+    if norm_sk == "repo-kit" or (norm_sk is None and "repo-kit" in inv):
+        cross_repo_gate_health = _compute_cross_repo_gate_health(skills_root=s_root, dev_root=d_root)
+
     if has_small_custom_sources or not fast:
         diag = compute_skill_retro(
             warehouse_db=warehouse_db,
@@ -6478,6 +6597,8 @@ def probe_skills(
             days=days,
             mirror_roi_snapshot=False,
         )
+        if diag.get("cross_repo_gate_health"):
+            cross_repo_gate_health = diag["cross_repo_gate_health"]
         l0 = diag.get("layer0_direction_and_triggers") or {}
         l1 = diag.get("layer1_drawer_metabolism") or {}
         l2 = diag.get("layer2_script_efficacy_and_speed") or {}
@@ -6496,8 +6617,10 @@ def probe_skills(
             slow_cnt = sum(
                 1
                 for x in (l2.get("latency_sinks") or [])
-                if x.get("skill") == sk_name and x.get("primary_bottleneck") != "external_wait"
+                if (x.get("skill") == sk_name or (sk_name == "repo-kit" and x.get("skill") == "repo-gate"))
+                and x.get("primary_bottleneck") != "external_wait"
             )
+            cr_findings_cnt = int((cross_repo_gate_health or {}).get("total_findings") or 0) if sk_name == "repo-kit" else 0
             wild_cnt = sum(int(x.get("occurrences") or 0) for x in (l3.get("wild_patterns") or []) if x.get("candidate_skill") == sk_name)
             creative_flag = sk_name in {"my-designer", "design-studio"} and bool(taste.get("low_diversity_goals"))
             eval_cases_cnt = int(meta.get("eval_case_count") or 0)
@@ -6507,7 +6630,7 @@ def probe_skills(
                 triggered_aspects.append("l0")
             if (unwired > 0 or hot_cnt > 0 or deadwood > 0) and "l1" in aspect_filter:
                 triggered_aspects.append("l1")
-            if (exit2_cnt > 0 or rubber_cnt > 0 or slow_cnt > 0) and "l2" in aspect_filter:
+            if (exit2_cnt > 0 or rubber_cnt > 0 or slow_cnt > 0 or cr_findings_cnt > 0) and "l2" in aspect_filter:
                 triggered_aspects.append("l2")
             if wild_cnt > 0 and "l3" in aspect_filter:
                 triggered_aspects.append("l3")
@@ -6524,10 +6647,26 @@ def probe_skills(
                 + drifts * 2.0
                 + rubber_cnt * 1.8
                 + slow_cnt * 1.5
+                + (min(6.0, cr_findings_cnt * 0.5) if cr_findings_cnt > 0 else 0.0)
                 + (1.5 if wild_cnt >= WILD_PATTERN_MIN_COUNT else 0.0)
                 + (1.2 if creative_flag else 0.0)
                 + (1.0 if not meta.get("budget_ok", True) else 0.0)
             )
+            sig_dict: dict[str, Any] = {
+                "l0_trigger_misses": trig_misses,
+                "l0_zero_action_loads": empty_loads,
+                "l0_directional_drifts": drifts,
+                "l1_unwired_drawers": unwired,
+                "l1_hot_drawers": hot_cnt,
+                "l1_true_deadwood": deadwood,
+                "l2_exit2_roadblocks": exit2_cnt,
+                "l2_leaky_rubber_stamps": rubber_cnt,
+                "l2_latency_sinks": slow_cnt,
+                "l3_wild_occurrences": wild_cnt,
+                "creative_selection_signal": bool(creative_flag),
+            }
+            if sk_name == "repo-kit":
+                sig_dict["cross_repo_gate_findings"] = cr_findings_cnt
             skills_signals.append(
                 {
                     "skill": sk_name,
@@ -6538,19 +6677,7 @@ def probe_skills(
                     "eval_case_count": eval_cases_cnt,
                     "leased": sk_name in leases["leased_skills"],
                     "lease_reasons": leases["lease_reasons"].get(sk_name, []),
-                    "signals": {
-                        "l0_trigger_misses": trig_misses,
-                        "l0_zero_action_loads": empty_loads,
-                        "l0_directional_drifts": drifts,
-                        "l1_unwired_drawers": unwired,
-                        "l1_hot_drawers": hot_cnt,
-                        "l1_true_deadwood": deadwood,
-                        "l2_exit2_roadblocks": exit2_cnt,
-                        "l2_leaky_rubber_stamps": rubber_cnt,
-                        "l2_latency_sinks": slow_cnt,
-                        "l3_wild_occurrences": wild_cnt,
-                        "creative_selection_signal": bool(creative_flag),
-                    },
+                    "signals": sig_dict,
                     "triggered_aspects": triggered_aspects,
                     "priority_score": round(priority_score, 2),
                 }
@@ -6584,6 +6711,7 @@ def probe_skills(
                 int(t_sig.get("l1_unwired_drawers") or 0),
                 unwired_zero_hit if (domain_fails > 0 and meta.get("scripts")) else (unwired_static if meta.get("scripts") else 0),
             )
+            cr_findings_cnt = int((cross_repo_gate_health or {}).get("total_findings") or 0) if sk_name == "repo-kit" else 0
             budget_ok = bool(meta.get("budget_ok", True))
             eval_cases_cnt = int(meta.get("eval_case_count") or 0)
             creative_flag = sk_name in {"my-designer", "design-studio"}
@@ -6592,7 +6720,7 @@ def probe_skills(
                 triggered_aspects.append("l0")
             if unwired_cnt > 0 and meta.get("scripts") and "l1" in aspect_filter:
                 triggered_aspects.append("l1")
-            if (exit2_cnt > 0 or (meta.get("scripts") and unwired_cnt > 0)) and "l2" in aspect_filter:
+            if (exit2_cnt > 0 or cr_findings_cnt > 0 or (meta.get("scripts") and unwired_cnt > 0)) and "l2" in aspect_filter:
                 triggered_aspects.append("l2")
             if creative_flag and "creative" in aspect_filter:
                 triggered_aspects.append("creative")
@@ -6605,10 +6733,27 @@ def probe_skills(
                 + domain_fails * 1.5
                 + trig_misses * 2.0
                 + empty_loads * 1.2
+                + (min(6.0, cr_findings_cnt * 0.5) if cr_findings_cnt > 0 else 0.0)
                 + (2.5 if not budget_ok else 0.0)
                 + (1.0 if eval_cases_cnt == 0 else 0.0)
                 + (0.8 if creative_flag else 0.0)
             )
+            sig_dict = {
+                "l0_trigger_misses": trig_misses,
+                "l0_zero_action_loads": empty_loads,
+                "l0_directional_drifts": drifts,
+                "l1_unwired_drawers": unwired_cnt if meta.get("scripts") else 0,
+                "l1_hot_drawers": int(t_sig.get("l1_hot_drawers") or 0),
+                "l1_true_deadwood": int(t_sig.get("l1_true_deadwood") or 0),
+                "l2_exit2_roadblocks": exit2_cnt,
+                "l2_leaky_rubber_stamps": int(t_sig.get("l2_leaky_rubber_stamps") or 0),
+                "l2_latency_sinks": int(t_sig.get("l2_latency_sinks") or 0),
+                "l3_wild_occurrences": int(t_sig.get("l3_wild_occurrences") or 0),
+                "creative_selection_signal": creative_flag,
+                "domain_failures": domain_fails,
+            }
+            if sk_name == "repo-kit":
+                sig_dict["cross_repo_gate_findings"] = cr_findings_cnt
             skills_signals.append(
                 {
                     "skill": sk_name,
@@ -6619,20 +6764,7 @@ def probe_skills(
                     "eval_case_count": eval_cases_cnt,
                     "leased": sk_name in leases["leased_skills"],
                     "lease_reasons": leases["lease_reasons"].get(sk_name, []),
-                    "signals": {
-                        "l0_trigger_misses": trig_misses,
-                        "l0_zero_action_loads": empty_loads,
-                        "l0_directional_drifts": drifts,
-                        "l1_unwired_drawers": unwired_cnt if meta.get("scripts") else 0,
-                        "l1_hot_drawers": int(t_sig.get("l1_hot_drawers") or 0),
-                        "l1_true_deadwood": int(t_sig.get("l1_true_deadwood") or 0),
-                        "l2_exit2_roadblocks": exit2_cnt,
-                        "l2_leaky_rubber_stamps": int(t_sig.get("l2_leaky_rubber_stamps") or 0),
-                        "l2_latency_sinks": int(t_sig.get("l2_latency_sinks") or 0),
-                        "l3_wild_occurrences": int(t_sig.get("l3_wild_occurrences") or 0),
-                        "creative_selection_signal": creative_flag,
-                        "domain_failures": domain_fails,
-                    },
+                    "signals": sig_dict,
                     "triggered_aspects": triggered_aspects,
                     "priority_score": round(score, 2),
                 }
@@ -6640,7 +6772,7 @@ def probe_skills(
 
     skills_signals.sort(key=lambda item: (-float(item["priority_score"]), item["skill"]))
     elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
-    return {
+    probe_out: dict[str, Any] = {
         "ok": True,
         "schema": "skill-retro-probe/v1",
         "stage": "stage1_probe",
@@ -6659,6 +6791,9 @@ def probe_skills(
         },
         "skills": skills_signals,
     }
+    if cross_repo_gate_health is not None:
+        probe_out["cross_repo_gate_health"] = cross_repo_gate_health
+    return probe_out
 
 
 def _parse_jev_triage_entry(
