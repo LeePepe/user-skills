@@ -29,6 +29,7 @@ def _load(name: str, rel_path: str):
 
 
 ENGINE = _load("test_skill_retro_engine_mod", "skills/retro-loop/scripts/retro_story_engine.py")
+SKILL_RETRO = _load("test_standalone_skill_retro_mod", "skills/skill-retro/scripts/skill_retro.py")
 FEEDBACK_GUARD = _load("test_skill_retro_feedback_guard_mod", "skills/team-lead/scripts/feedback_guard.py")
 
 
@@ -588,6 +589,262 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             self.assertIn("Reject Rigid Hardcoding", reviewer_text)
             self.assertIn("Positive + Counter-Case Replay", reviewer_text)
             self.assertIn("feedback_guard.py pre-review-check", reviewer_text)
+
+    def test_three_stage_probe_triage_pick_one_and_partial_vs_full_deep_reasoning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            emit_handoff = root / "handoff-stage3"
+
+            # 1. Stage 1: Global sweep probe vs Direct Single-Skill probe (`--skill my-designer`)
+            global_probe = SKILL_RETRO.probe_skills(
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                fast=True,
+            )
+            self.assertTrue(global_probe["ok"])
+            self.assertEqual(global_probe["entry_mode"], "global_sweep")
+            self.assertEqual(global_probe["skills_probed"], 3)
+            self.assertEqual(global_probe["probe_role_tier"]["role"], "explorer")
+            self.assertEqual(global_probe["probe_role_tier"]["tier"], "worker")
+            self.assertEqual(global_probe["skills"][0]["skill"], "my-designer")
+
+            single_probe = SKILL_RETRO.probe_skills(
+                skill="my-designer",
+                aspect="l1,l2",
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                fast=True,
+            )
+            self.assertEqual(single_probe["entry_mode"], "direct_single_skill")
+            self.assertEqual(single_probe["skills_probed"], 1)
+            self.assertEqual(single_probe["aspect_filter"], ["l1", "l2"])
+
+            # 2. Stage 2: Cheap Worker + Jev Triage (`--pick-one`) auto-picks top skill & chains to Stage 3
+            triage_res = SKILL_RETRO.triage_skills(
+                pick_one=True,
+                use_jev=True,
+                mock_jev_json={
+                    "my-designer": {"route_mode": "partial", "aspects": "l1,l2", "noul": 0.92},
+                    "team-lead": {"route_mode": "skip", "noul": 0.15},
+                },
+                emit_briefs_dir=emit_handoff,
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+            )
+            self.assertTrue(triage_res["ok"])
+            self.assertFalse(triage_res["autonomous_daily_execution"]["owner_approval_gate_required"])
+            self.assertEqual(triage_res["autonomous_daily_execution"]["daily_batch_default_pick_top"], 3)
+            self.assertIn("[Skill Retro ", triage_res["autonomous_daily_execution"]["daily_summary_issue_title"])
+            self.assertEqual(triage_res["worker_role_slot"]["role"], "explorer")
+            self.assertEqual(triage_res["worker_role_slot"]["steering_tokens_burned"], 0)
+            self.assertEqual(triage_res["picked_skill"], "my-designer")
+            self.assertEqual(triage_res["picked_mode"], "partial")
+            self.assertEqual(triage_res["picked_aspects"], ["l1", "l2"])
+            self.assertIn("emitted_briefs", triage_res)
+            emitted_partial = triage_res["emitted_briefs"]
+            self.assertEqual(emitted_partial["mode"], "partial")
+            self.assertEqual(emitted_partial["aspects"], ["l1", "l2"])
+            w_prompt_partial = emitted_partial["briefs"][0]["writer_prompt"]
+            self.assertIn("Dim 2 (`l1`)", w_prompt_partial)
+            self.assertIn("Dim 3 (`l2`)", w_prompt_partial)
+            self.assertNotIn("Dim 5 (`creative`)", w_prompt_partial)
+
+            # 3. Stage 3 Full 6-Dimension Check (`--mode full` + `--pick-one` auto-selection via CLI)
+            full_handoff = root / "handoff-full"
+            proc_full = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "skills/skill-retro/scripts/skill_retro.py"),
+                    "emit-briefs",
+                    "--pick-one",
+                    "--mode",
+                    "full",
+                    "--emit-briefs",
+                    str(full_handoff),
+                    "--warehouse-db",
+                    str(paths["warehouse_db"]),
+                    "--copilot-db",
+                    str(paths["copilot_db"]),
+                    "--copilot-sessions-dir",
+                    str(paths["sessions_dir"]),
+                    "--usage-jsonl",
+                    str(paths["usage_jsonl"]),
+                    "--trace-export",
+                    str(paths["trace_export"]),
+                    "--handoff-root",
+                    str(paths["handoff_root"]),
+                    "--skills-root",
+                    str(paths["skills_root"]),
+                    "--dev-root",
+                    str(paths["dev_root"]),
+                    "--no-roi-mirror",
+                    "--json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_full.returncode, 0, proc_full.stderr)
+            full_payload = json.loads(proc_full.stdout)
+            self.assertEqual(full_payload["skill_filter"], "my-designer")
+            self.assertEqual(full_payload["mode"], "full")
+            self.assertEqual(full_payload["aspects"], ["l0", "l1", "l2", "l3", "creative", "eval"])
+            dims = full_payload["problem_discovery_dimensions"]
+            for dim_key in (
+                "dim1_l0_direction_vs_convergence",
+                "dim2_l1_scenario_drawer_metabolism",
+                "dim3_l2_script_efficacy_and_4angle_speed",
+                "dim4_l3_wild_soft_crystallization",
+                "dim5_cross_session_creative_spectrum",
+                "dim6_three_tier_eval_and_flywheel_guard",
+            ):
+                self.assertIn(dim_key, dims)
+            full_w_prompt = full_payload["emitted_briefs"]["briefs"][0]["writer_prompt"]
+            for marker in ("Dim 1 (`l0`)", "Dim 2 (`l1`)", "Dim 3 (`l2`)", "Dim 4 (`l3`)", "Dim 5 (`creative`)", "Dim 6 (`eval`)"):
+                self.assertIn(marker, full_w_prompt)
+
+    def test_cross_skill_host_guest_relay_and_parallel_anti_collision_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+
+            # Simulate an active worktree locking `my-designer` (Lock 2: Active Lease Exclusion)
+            active_wt = paths["dev_root"] / "worktrees" / "retro-my-designer-active"
+            active_wt.mkdir(parents=True, exist_ok=True)
+
+            triage_locked = SKILL_RETRO.triage_skills(
+                pick_top=2,
+                use_jev=False,
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+            )
+            excluded_skills = [x["skill"] for x in triage_locked["excluded_by_active_lease"]]
+            self.assertIn("my-designer", excluded_skills)
+            selected_names = [x["skill"] for x in triage_locked["selected_skills"]]
+            self.assertNotIn("my-designer", selected_names)
+            self.assertIn("team-lead", selected_names)
+
+            # Host -> Guest Relay (`emit-relay` & `--relay-to`): schedules Guest into Wave 2 without polluting Wave 1 Owned Paths
+            relay_handoff = paths["handoff_root"] / "goal-relay-test"
+            diag_with_relay = SKILL_RETRO.compute_skill_retro(
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                skill="my-designer",
+                emit_briefs_dir=relay_handoff,
+                mode="partial",
+                aspects=["l1", "l2"],
+                relays=[
+                    {
+                        "from_skill": "my-designer",
+                        "to_skill": "design-studio",
+                        "requirement": "Expose --gallery-schema-v2 flag in design_catalog.py",
+                    }
+                ],
+                mirror_roi_snapshot=False,
+            )
+            emitted_info = diag_with_relay["emitted_briefs"]
+            host_brief = emitted_info["briefs"][0]
+            self.assertEqual(host_brief["owned_paths"], ["skills/my-designer/**", "scripts/test_my_designer_*.py", "scripts/test_skill_retro.py"])
+            self.assertNotIn("skills/design-studio/**", host_brief["owned_paths"])
+            self.assertEqual(len(emitted_info["cross_skill_relays"]), 1)
+            relay_doc = emitted_info["cross_skill_relays"][0]
+            self.assertEqual(relay_doc["wave"], 2)
+            self.assertEqual(relay_doc["from_skill"], "my-designer")
+            self.assertEqual(relay_doc["to_skill"], "design-studio")
+            self.assertEqual(relay_doc["owned_paths"], ["skills/design-studio/**", "scripts/test_design_studio_*.py"])
+            self.assertTrue(Path(relay_doc["relay_brief_md"]).is_file())
+
+            # Coupled pair (`--coupled-with`): locks both Host and Guest into Wave 1 Owned Paths
+            coupled_handoff = paths["handoff_root"] / "goal-coupled-test"
+            diag_coupled = SKILL_RETRO.compute_skill_retro(
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                skill="my-designer",
+                emit_briefs_dir=coupled_handoff,
+                coupled_with="design-studio",
+                mirror_roi_snapshot=False,
+            )
+            coupled_owned = diag_coupled["emitted_briefs"]["briefs"][0]["owned_paths"]
+            self.assertIn("skills/my-designer/**", coupled_owned)
+            self.assertIn("skills/design-studio/**", coupled_owned)
+
+            # Honest 0..3 Upper Cap: directly inspecting a healthy skill (`aidash-metrics`) with 0 issues
+            # must NOT force/invent changes -> status=HEALTHY_NO_ISSUES, writers_to_spawn=0, emitted count=0
+            healthy_triage = SKILL_RETRO.triage_skills(
+                skill="aidash-metrics",
+                use_jev=False,
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+            )
+            self.assertEqual(healthy_triage["status"], "HEALTHY_NO_ISSUES")
+            self.assertIn("0 issues found", healthy_triage["status_message"])
+            self.assertEqual(healthy_triage["writers_to_spawn"], 0)
+            self.assertIsNone(healthy_triage["picked_skill"])
+            self.assertEqual(healthy_triage["selected_skills"], [])
+            self.assertTrue(healthy_triage["autonomous_daily_execution"]["pick_top_is_upper_cap_not_quota"])
+
+            healthy_handoff = paths["handoff_root"] / "goal-healthy-no-issues"
+            healthy_diag = SKILL_RETRO.compute_skill_retro(
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                skill="aidash-metrics",
+                emit_briefs_dir=healthy_handoff,
+                mirror_roi_snapshot=False,
+            )
+            self.assertEqual(healthy_diag["status"], "HEALTHY_NO_ISSUES")
+            self.assertEqual(healthy_diag["emitted_briefs"]["status"], "HEALTHY_NO_ISSUES")
+            self.assertEqual(healthy_diag["emitted_briefs"]["writers_spawned"], 0)
+            self.assertEqual(healthy_diag["emitted_briefs"]["count"], 0)
 
 
 if __name__ == "__main__":

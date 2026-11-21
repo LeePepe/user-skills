@@ -134,6 +134,12 @@
       "source": "./skills/skill-contract",
       "category": "meta",
       "description": "Create and audit progressive-disclosure skills with four valves."
+    },
+    {
+      "name": "skill-retro",
+      "source": "./skills/skill-retro",
+      "category": "meta",
+      "description": "3-stage Skill Progressive Self-Evolution: sub-second wide-probe script + Cheap Worker & Jev fast-thinking triage into single-skill Partial (--aspects l0,l1,l2,l3,creative,eval) or Full 6-Dimension deep reasoning via M1 TL -> Writer -> Reviewer."
     }
   ]
 }

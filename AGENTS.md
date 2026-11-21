@@ -22,7 +22,7 @@
 | `design` | `my-designer`、`design-studio` | 双入口设计流（产品设计/现代化改版/视觉回溯 vs. 灵感摄取/色板测量/视频流水线） |
 | `repo` | `code-review`、`xcode-cli`、`repo-kit`、`codebase-design` | 双轴代码审查、Apple 构建测试路由、仓库合同初始化、深模块设计与领域建模（含 `CONTEXT.md` 与 ADR） |
 | `research` | `deep-research`、`knowledge-digest`、`layered-data-warehouse` | 多源交叉核查调研、知识拆解沉淀与分层数仓蓝图设计 |
-| `meta` | `skill-contract`、`save-tool` | 渐进式披露技能包四阀门审计与外部工具归档 |
+| `meta` | `skill-contract`、`skill-retro`、`save-tool` | 渐进式披露技能包四阀门审计、三段式技能渐进式自演进（Fast Probe -> Jev Triage -> 6D Deep Reasoning）与外部工具归档 |
 
 ## 验证门禁
 

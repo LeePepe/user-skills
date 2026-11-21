@@ -19,7 +19,7 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 [`linear-board`](./skills/linear-board/SKILL.md) 负责 TIA Idea Inbox、`1 Goal = 1 Issue`
 全局状态看板、Task checklist 和 Idea promotion；[`issue-brief`](./skills/issue-brief/SKILL.md)
 负责 Multica / Linear Issue 的「上半区给人看 `<=15` 行纯中文结论与勾选项 / 下半区给 AI 看 `<details>` 折叠证据 + `<!-- multica-cursor:... -->` 水位线」双区格式渲染与确定性门禁；[`retro-loop`](./skills/retro-loop/SKILL.md)
-负责双路复盘与三道物理锁；[`story-craft`](./skills/story-craft/SKILL.md) 负责四元素
+负责双路复盘与三道物理锁；[`skill-retro`](./skills/skill-retro/SKILL.md) 负责三段式技能渐进式自演进（Stage 1 毫秒级宽探针 `probe` -> Stage 2 廉价 Worker `--role explorer`/`mechanical` + Jev 快思考分流 `triage` 选单技能 `partial`/`full` -> Stage 3 单技能 6 维深推理与跨技能 Wave 2 `emit-relay`）；[`story-craft`](./skills/story-craft/SKILL.md) 负责四元素
 素材抽取、脱敏、Story Series、Tech Deep-Dive Blog 与 Deck 发布读回。
 
 [`m2-dispatcher`](./skills/m2-dispatcher/SKILL.md)是 `M2-Dispatcher`（常驻域主 Bot、`Cindy` 与交互式 CLI 入口）与 Goal-level TL 之间的共用生命周期合同，覆盖开 TL、热追加、巡检解卡，以及 `PR_MERGED` Task 回收与 `GOAL_DONE` Goal 清理；Task-level 1-Hop 规则继续由 `team-lead` 提供。
@@ -91,6 +91,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install my-designer@user-skills
 /plugin install design-studio@user-skills
 /plugin install retro-loop@user-skills
+/plugin install skill-retro@user-skills
 /plugin install story-craft@user-skills
 ```
 
@@ -115,6 +116,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/my-designer 安装 my-designer。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/design-studio 安装 design-studio。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/retro-loop 安装 retro-loop。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/skill-retro 安装 skill-retro。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/story-craft 安装 story-craft。
 ```
 

@@ -1,0 +1,114 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-21",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "skill_retro.py CLI exposes 3-stage subcommands (probe, triage, diagnose, emit-briefs, emit-relay, roi)",
+      "tags": [
+        "cli",
+        "three-stage"
+      ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "probe",
+        "triage",
+        "diagnose",
+        "emit-briefs",
+        "emit-relay",
+        "roi"
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-002",
+      "title": "Stage 1 direct single-skill fast probe runs in sub-second mode and reports worker role tier",
+      "tags": [
+        "stage1-probe",
+        "fast"
+      ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py probe --skill my-designer --fast --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "skill-retro-probe/v1",
+        "entry_mode": "direct_single_skill",
+        "skill_filter": "my-designer",
+        "probe_role_tier.role": "explorer",
+        "probe_role_tier.tier": "worker"
+      },
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-003",
+      "title": "Stage 2 Jev triage supports Pick-1, Cheap Worker role routing, and mock Jev response",
+      "tags": [
+        "stage2-triage",
+        "jev"
+      ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py triage --skill my-designer --pick-one --mock-jev-json '{\"my-designer\":{\"route_mode\":\"partial\",\"aspects\":\"l1,l2\",\"noul\":0.91}}' --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "skill-retro-triage/v1",
+        "picked_skill": "my-designer",
+        "picked_mode": "partial",
+        "worker_role_slot.role": "explorer",
+        "worker_role_slot.tier": "worker",
+        "anti_collision_locks.lock1_strict_disjoint_owned_paths": true
+      },
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-004",
+      "title": "SKILL.md L0 and progressive-evolution-playbook.md L1 cover all 6 Problem-Discovery Dimensions, Host/Guest Relay, and Cheap Worker cost split",
+      "tags": [
+        "contract",
+        "six-dimensions"
+      ],
+      "file": "skills/skill-retro/SKILL.md",
+      "must_contain": [
+        "probe",
+        "triage",
+        "emit-briefs",
+        "emit-relay",
+        "mai-code-2-flash",
+        "2+1+1",
+        "Counter-Case"
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-005",
+      "title": "Negative command: unknown subcommand exits 2 with self-disclosing reference pointer",
+      "tags": [
+        "cli",
+        "negative",
+        "self-disclosing"
+      ],
+      "negative_cmd": "python3 skills/skill-retro/scripts/skill_retro.py unknown-subcommand-xyz",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "progressive-evolution-playbook.md"
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-006",
+      "title": "Negative command: emit-relay rejects identical Host and Guest skill with self-disclosing error",
+      "tags": [
+        "relay",
+        "negative",
+        "anti-collision"
+      ],
+      "negative_cmd": "python3 skills/skill-retro/scripts/skill_retro.py emit-relay --from my-designer --to my-designer --requirement 'invalid self relay' --emit-briefs /tmp/skill-retro-neg-test",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "progressive-evolution-playbook.md"
+      ],
+      "registered_at": "2026-11-21"
+    }
+  ]
+}
