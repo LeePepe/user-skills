@@ -229,6 +229,33 @@ class RepoKitGateAuditorTests(unittest.TestCase):
             self.assertGreaterEqual(diag["cross_repo_gate_health"]["total_findings"], 2)
             self.assertTrue(any(p["skill"] == "repo-kit" for p in diag["proposals"]))
 
+    def test_external_hooks_path_outside_repo_dir_and_scan_repos_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dev_root = root / "dev"
+            external_hooks_dir = root / "global-git-hooks"
+            _write_exec(
+                external_hooks_dir / "pre-push",
+                "#!/usr/bin/env bash\n"
+                "for layer in $layers; do context run \"$layer\"; done\n"
+                "exec \"$REPO_ROOT/scripts/verify\" --all\n",
+            )
+            repo_ext = _init_git_repo(dev_root / "ext-hooks-repo", hooks_path=str(external_hooks_dir))
+            _write_exec(
+                repo_ext / "scripts" / "verify",
+                "#!/usr/bin/env bash\ngit diff --name-only origin/main HEAD\n",
+            )
+
+            rep = AUDITOR.inspect_single_repo(repo_ext, dev_root=dev_root)
+            self.assertIn("RG-003", rep["triggered_rules"])
+            self.assertIn("RG-004", rep["triggered_rules"])
+            self.assertTrue(any("global-git-hooks/pre-push" in f["evidence"] for f in rep["findings"]))
+
+            scan_out = AUDITOR.scan_repos(dev_root=dev_root)
+            self.assertTrue(scan_out["ok"])
+            self.assertEqual(scan_out["repos_scanned"], 1)
+            self.assertEqual(scan_out["scan_errors_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

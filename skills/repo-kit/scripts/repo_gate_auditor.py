@@ -141,6 +141,20 @@ def _redact_path(raw: str | Path, *, dev_root: Path | None = None) -> str:
     return text
 
 
+def _display_rel_path(path: Path | None, repo_dir: Path, *, dev_root: Path | None = None) -> str:
+    """Safely format a path relative to repo_dir, falling back without raising ValueError when outside repo_dir."""
+    if path is None:
+        return "pre-push"
+    for cand_path, cand_repo in ((path, repo_dir), (path.resolve(), repo_dir.resolve())):
+        try:
+            return cand_path.relative_to(cand_repo).as_posix()
+        except ValueError:
+            continue
+    if path.parent.name:
+        return f"{path.parent.name}/{path.name}"
+    return _redact_path(path.name or str(path), dev_root=dev_root)
+
+
 def _is_git_repo(path: Path) -> bool:
     try:
         return path.is_dir() and ((path / ".git").is_dir() or (path / ".git").is_file())
@@ -413,7 +427,11 @@ def inspect_single_repo(
         re.search(r"ThreadPoolExecutor|ProcessPoolExecutor|concurrent\.futures|xargs\s+-P", verify_code_with_runner)
     )
     if serial_verify_loop or serial_hook_loop or (serial_unittest_calls >= 3 and not has_parallel_pool):
-        where = "scripts/verify" if (serial_verify_loop or serial_unittest_calls >= 3) else str(active_prepush.relative_to(repo_dir) if active_prepush else "pre-push")
+        where = (
+            "scripts/verify"
+            if (serial_verify_loop or serial_unittest_calls >= 3)
+            else _display_rel_path(active_prepush, repo_dir, dev_root=dev_root)
+        )
         add_finding(
             "RG-003",
             f"`{where}` runs layers/suites in a serial loop instead of batch topological wave or parallel worker pool",
@@ -422,36 +440,37 @@ def inspect_single_repo(
 
     # RG-004: prepush_forces_full_or_bypasses_verify
     if active_prepush is not None:
+        prepush_label = _display_rel_path(active_prepush, repo_dir, dev_root=dev_root)
         forces_all = bool(_PREPUSH_FORCE_ALL_RE.search(prepush_code)) and "VERIFY_ALL" not in prepush_code
         calls_verify = bool(_PREPUSH_CALLS_VERIFY_RE.search(prepush_code))
         if forces_all:
             add_finding(
                 "RG-004",
-                f"`{active_prepush.relative_to(repo_dir)}` unconditionally runs `scripts/verify --all` on every push",
+                f"`{prepush_label}` unconditionally runs `scripts/verify --all` on every push",
                 "Run `scripts/verify --all` only when `VERIFY_ALL=1` is set; default to incremental `exec \"$REPO_ROOT/scripts/verify\"`.",
             )
         elif has_verify_exec and not calls_verify:
             add_finding(
                 "RG-004",
-                f"`{active_prepush.relative_to(repo_dir)}` bypasses `scripts/verify` despite `scripts/verify` existing",
+                f"`{prepush_label}` bypasses `scripts/verify` despite `scripts/verify` existing",
                 "Delegate `pre-push` verification to `exec \"$REPO_ROOT/scripts/verify\"` so local and CI gates never drift.",
             )
 
     # RG-005: hook_path_or_ci_drift
     hook_drift_reasons: list[str] = []
     if tracked_prepush_candidates:
-        expected_dirs = {p.parent.relative_to(repo_dir).as_posix() for p in tracked_prepush_candidates}
+        expected_dirs = {_display_rel_path(p.parent, repo_dir, dev_root=dev_root) for p in tracked_prepush_candidates}
         norm_cfg = hooks_path_cfg.rstrip("/")
         if not norm_cfg:
             hook_drift_reasons.append(
-                f"`core.hooksPath` is unset while `{tracked_prepush_candidates[0].relative_to(repo_dir)}` exists"
+                f"`core.hooksPath` is unset while `{_display_rel_path(tracked_prepush_candidates[0], repo_dir, dev_root=dev_root)}` exists"
             )
         else:
             cfg_dir = Path(norm_cfg) if Path(norm_cfg).is_absolute() else (repo_dir / norm_cfg)
             cfg_prepush = cfg_dir / "pre-push"
             if not _is_executable(cfg_prepush):
                 hook_drift_reasons.append(
-                    f"`core.hooksPath={norm_cfg}` has no executable `pre-push` while `{sorted(expected_dirs)[0]}/pre-push` exists"
+                    f"`core.hooksPath={_redact_path(norm_cfg, dev_root=dev_root)}` has no executable `pre-push` while `{sorted(expected_dirs)[0]}/pre-push` exists"
                 )
     if has_ci_yml and has_verify_exec:
         ci_calls_verify_or_shared = bool(
@@ -589,10 +608,44 @@ def scan_repositories(
     """Scan one repository or all repositories under dev_root for RG-001..RG-006."""
     target_repos, eff_dev_root = _discover_target_repos(repo=repo, dev_root=dev_root, repos_csv=repos)
     shared_ci_head = _resolve_shared_ci_head(eff_dev_root)
-    reports = [
-        inspect_single_repo(r, dev_root=eff_dev_root, shared_ci_head=shared_ci_head)
-        for r in target_repos
-    ]
+    reports: list[dict[str, Any]] = []
+    scan_errors: list[dict[str, str]] = []
+    for r in target_repos:
+        try:
+            reports.append(
+                inspect_single_repo(r, dev_root=eff_dev_root, shared_ci_head=shared_ci_head)
+            )
+        except Exception as exc:
+            scan_errors.append(
+                {
+                    "repo": r.name,
+                    "error": f"{type(exc).__name__}: {_redact_path(str(exc), dev_root=eff_dev_root)}",
+                }
+            )
+            reports.append(
+                {
+                    "repo": r.name,
+                    "repo_path": _redact_path(r, dev_root=eff_dev_root),
+                    "gate_health_score": 100,
+                    "status": "scan_error",
+                    "scan_error": f"{type(exc).__name__}: {_redact_path(str(exc), dev_root=eff_dev_root)}",
+                    "has_verify_entrypoint": False,
+                    "has_incremental_verify": False,
+                    "has_parallel_runner": False,
+                    "hooks_path": None,
+                    "shared_ci_pin": None,
+                    "has_repo_contract_json": False,
+                    "triggered_rules": [],
+                    "findings_count": 0,
+                    "findings": [],
+                    "speedup_recommendations": {
+                        "angle_a_path_scoped": "configured",
+                        "angle_b_watermark_cache": "configured",
+                        "angle_c_parallel_dag": "configured",
+                        "angle_d_tiered_fast_fail": "configured",
+                    },
+                }
+            )
     all_findings = [f for r in reports for f in r["findings"]]
     rule_counts: dict[str, int] = {rid: 0 for rid in RULE_METADATA}
     for f in all_findings:
@@ -608,8 +661,10 @@ def scan_repositories(
         "dev_root": _redact_path(eff_dev_root, dev_root=eff_dev_root),
         "shared_ci_head": shared_ci_head[:12] if shared_ci_head else None,
         "repos_scanned": len(reports),
-        "healthy_repos_count": sum(1 for r in reports if r["findings_count"] == 0),
+        "healthy_repos_count": sum(1 for r in reports if r["findings_count"] == 0 and r.get("status") != "scan_error"),
         "drifted_repos_count": sum(1 for r in reports if r["findings_count"] > 0),
+        "scan_errors_count": len(scan_errors),
+        "scan_errors": scan_errors,
         "average_gate_health_score": avg_score,
         "total_findings": len(all_findings),
         "rule_counts": rule_counts,
@@ -632,6 +687,9 @@ def scan_repositories(
             ]
         }
     return payload
+
+
+scan_repos = scan_repositories
 
 
 def build_bottlenecks_report(
