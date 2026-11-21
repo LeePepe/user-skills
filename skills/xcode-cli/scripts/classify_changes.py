@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from datetime import date
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -48,14 +50,206 @@ def nul_paths(output: bytes) -> set[str]:
     }
 
 
-def changed_paths(repo: Path, base: str | None) -> list[str]:
+class _SelfDisclosingXcodeParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        print(f"classify_changes: {' '.join(message.split())}", file=sys.stderr)
+        print("Fix: classify_changes.py --repo <repo> [--base <ref> --head <ref> | --range <a..b>] [--json]", file=sys.stderr)
+        print("Reference: skills/xcode-cli/references/command-routing.md · skills/xcode-cli/references/build-cases.json", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def commit_ref(repo: Path, ref: str) -> str:
+    return git(repo, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}").decode().strip()
+
+
+def default_merge_base(repo: Path, head: str) -> str | None:
+    for ref in ("origin/main", "main"):
+        try:
+            return git(repo, "merge-base", commit_ref(repo, ref), head).decode().strip()
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
+def changed_paths(
+    repo: Path,
+    base: str | None,
+    head: str = "HEAD",
+    diff_range: str | None = None,
+    committed_only: bool = False,
+) -> list[str]:
+    head_commit = commit_ref(repo, head)
     paths: set[str] = set()
-    if base:
-        merge_base = git(repo, "merge-base", base, "HEAD").decode().strip()
-        paths |= nul_paths(git(repo, "diff", "--name-only", "-z", f"{merge_base}..HEAD"))
-    paths |= nul_paths(git(repo, "diff", "--name-only", "-z", "HEAD"))
-    paths |= nul_paths(git(repo, "ls-files", "--others", "--exclude-standard", "-z"))
+    if not committed_only:
+        paths |= nul_paths(git(repo, "diff", "--name-only", "-z", "HEAD"))
+        paths |= nul_paths(git(repo, "ls-files", "--others", "--exclude-standard", "-z"))
+    start: str | None = None
+    if diff_range:
+        match = re.fullmatch(r"(.+?)(\.{2,3})([^.].*)", diff_range)
+        if not match:
+            raise ValueError("--range requires <base>..<head> or <base>...<head>")
+        left, separator, right = match.groups()
+        start, head_commit = commit_ref(repo, left), commit_ref(repo, right)
+        if separator == "...":
+            start = git(repo, "merge-base", start, head_commit).decode().strip()
+    elif base:
+        start = git(repo, "merge-base", commit_ref(repo, base), head_commit).decode().strip()
+    elif not paths or head != "HEAD":
+        start = default_merge_base(repo, head_commit)
+    if start:
+        paths |= nul_paths(git(repo, "diff", "--name-only", "-z", start, head_commit))
     return sorted(paths)
+
+
+def _heavy_condition(tokens: list[str]) -> int:
+    """Return the branch requiring heavy opt-in: then=1, else=-1, unknown=0."""
+    negated = tokens[:1] == ["!"]
+    condition_tokens = tokens[1:] if negated else tokens
+    if condition_tokens[:1] not in (["["], ["[["], ["test"]):
+        return 0
+    text = " ".join(condition_tokens)
+    match = re.search(
+        r"(?:\$\{?(?:RUN_XCODEBUILD|RUN_HEAVY|mode|MODE)\b[^\s]*|mode)\s*"
+        r"(==|=|!=|-eq|-ne)\s*(1|0|true|false|ci)\b", text,
+    )
+    if not match:
+        return 0
+    operator, value = match.groups()
+    positive = (operator in {"==", "=", "-eq"}) == (value in {"1", "true", "ci"})
+    positive ^= negated
+    # OR, or the complement of AND, may admit a different non-opt-in branch.
+    if ("||" in tokens and positive) or ("&&" in tokens and not positive):
+        return 0
+    return 1 if positive else -1
+
+
+def _shell_commands(text: str) -> dict[str, list[tuple[list[str], bool]]]:
+    """Inspect literal shell commands and function calls without executing repo code."""
+    text = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|#[^\n]*",
+                  lambda match: "" if match.group().startswith("#") else match.group(), text)
+    lexer = shlex.shlex(text.replace("\\\n", " "), posix=True, punctuation_chars=";&|()")
+    lexer.whitespace = " \t\r"
+    lexer.wordchars += "!"
+    lexer.commenters = ""
+    statements: list[tuple[list[str], str]] = []
+    current: list[str] = []
+    try:
+        for token in lexer:
+            if token and all(char in ";&|\n" for char in token):
+                in_test = current.count("[[") > current.count("]]") or current.count("[") > current.count("]")
+                if token in {"&&", "||"} and (in_test or current[:1] in (["if"], ["elif"])):
+                    current.append(token)
+                    continue
+                statements.append((current, token.strip()))
+                current = []
+            else:
+                current.append(token)
+    except ValueError:
+        # Keep preceding evidence when a non-shell verify script contains quotes.
+        pass
+    statements.append((current, ""))
+    commands: dict[str, list[tuple[list[str], bool]]] = {"": []}
+    owner = ""
+    branches: list[int] = []
+    short_guard = False
+    for tokens, connector in statements:
+        if not tokens:
+            short_guard = False
+            continue
+        if len(tokens) >= 2 and tokens[1] == "()":
+            owner = tokens[0]
+            commands.setdefault(owner, [])
+            tokens = tokens[2:]
+            if tokens[:1] == ["{"]:
+                tokens = tokens[1:]
+        if tokens[:1] == ["if"]:
+            branches.append(_heavy_condition(tokens[1:]))
+            tokens = []
+        elif tokens[:1] == ["elif"]:
+            if branches:
+                branches[-1] = _heavy_condition(tokens[1:])
+            tokens = []
+        elif tokens[:1] == ["else"]:
+            if branches:
+                branches[-1] *= -1
+            tokens = tokens[1:]
+        elif tokens[:1] == ["fi"]:
+            if branches:
+                branches.pop()
+            tokens = tokens[1:]
+        elif tokens == ["}"]:
+            owner = ""
+            tokens = []
+        if tokens[:1] == ["then"]:
+            tokens = tokens[1:]
+        if tokens:
+            commands[owner].append((tokens, 1 in branches or short_guard))
+        condition = _heavy_condition(tokens)
+        short_guard = (connector == "&&" and condition == 1) or (connector == "||" and condition == -1)
+    return commands
+
+
+def _command_name(tokens: list[str]) -> str:
+    for token in tokens:
+        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", token) or token in {"env", "exec", "command", "time", "bash", "sh", "xcrun"}:
+            continue
+        return token
+    return ""
+
+
+def verify_gate_health(repo: Path) -> dict[str, object]:
+    verify_path = repo / "scripts" / "verify"
+    files = [verify_path, repo / ".githooks" / "pre-push", repo / "scripts" / "hooks" / "pre-push"]
+    parsed = {
+        path: _shell_commands(path.read_text(encoding="utf-8", errors="replace"))
+        for path in files if path.is_file()
+    }
+
+    def blocks(path: Path, owner: str = "", guarded: bool = False, forced: bool = False,
+               seen: frozenset[tuple[Path, str, bool, bool]] = frozenset()) -> bool:
+        key = (path, owner, guarded, forced)
+        if key in seen:
+            return False
+        functions = parsed.get(path, {})
+        for tokens, local_guard in functions.get(owner, []):
+            protected = guarded or (local_guard and not forced)
+            name = _command_name(tokens)
+            opt_in = any(re.fullmatch(r"(?:RUN_(?:XCODEBUILD|HEAVY)=(?:1|true)|(?:mode|MODE)=ci)", token) for token in tokens)
+            opt_in |= "--mode=ci" in tokens or any(tokens[i:i + 2] == ["--mode", "ci"] for i in range(len(tokens)))
+            if name in {"", "export"} and opt_in and not protected:
+                forced = True
+            elif Path(name).name == "xcodebuild" and any(action in tokens for action in ("test", "test-without-building")):
+                if not protected:
+                    return True
+            elif name in functions:
+                if blocks(path, name, protected, forced or opt_in, seen | {key}):
+                    return True
+            elif re.search(r"(?:^|/)scripts/verify$", name):
+                if blocks(verify_path, guarded=protected, forced=forced or opt_in, seen=seen | {key}):
+                    return True
+        return False
+
+    blocking = any(blocks(path) for path in files[1:] if path in parsed)
+    executable = "\n".join(
+        " ".join(tokens) for functions in parsed.values() for commands in functions.values()
+        for tokens, _ in commands if _command_name(tokens) not in {"echo", "printf"}
+    )
+    incremental = bool(re.search(r"--(?:changed|layers?|affected|incremental)\b|classify_changes\.py|"
+                                 r"\b(?:select_layers|changed_layers|detect_layers)\b|git diff[^\n]*--name-only", executable))
+    isolation = bool(re.search(r"-derivedDataPath\b|DerivedData|DERIVED_DATA|\b(?:flock|lockf)\b|"
+                               r"BUILD_LOCK|build[_.-]lock|with_build_lock|acquire_lock", executable))
+    fast_spm = any(
+        Path(_command_name(tokens)).name == "swift" and any(action in tokens for action in ("build", "test"))
+        for commands in parsed.get(verify_path, {}).values() for tokens, _ in commands
+    )
+    return {
+        "has_verify_script": verify_path.is_file(),
+        "prepush_blocks_on_unconditional_xcodebuild": blocking,
+        "uses_incremental_layer_selection": incremental,
+        "has_derived_data_or_build_lock": isolation,
+        "tier": "blocking_prepush_xcodebuild" if blocking else "local_fast_spm" if fast_spm else "not_detected",
+        "note": "Static literal-shell indicators only; external scripts and dynamic commands require manual review.",
+    }
 
 
 def xcode_reason(path: PurePosixPath, package_owned: bool) -> str | None:
@@ -240,15 +434,21 @@ def classify(repo: Path, paths: list[str], cases_file: Path = DEFAULT_CASES_FILE
         "neutralFiles": neutral_files,
         "xcodeInputs": xcode_inputs,
         "matchedBuildCases": match_build_cases(route, cases_file=cases_file),
+        "verifyGateHealth": verify_gate_health(repo),
         "note": "Confirm custom Package.swift target paths before executing commands.",
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", help="Explicit repo-relative paths; otherwise inspect git changes")
-    parser.add_argument("--repo", default=".", help="Git repository root or subdirectory")
-    parser.add_argument("--base", help="Base ref for committed branch changes, for example origin/main")
+    parser = _SelfDisclosingXcodeParser(description=__doc__)
+    parser.add_argument("paths", nargs="*", help="Explicit repo-relative paths, or a single repository directory")
+    parser.add_argument("--repo", "--repo-dir", "--worktree", "--cwd", help="Git repository root or subdirectory")
+    parser.add_argument("--base", "--base-ref", help="Base ref; defaults to origin/main or main on a clean branch")
+    parser.add_argument("--head", "--head-ref", help="Head ref for committed changes (default HEAD)")
+    parser.add_argument("--range", "--diff-range", dest="diff_range", help="Explicit a..b snapshot diff or a...b merge-base diff")
+    parser.add_argument("--committed-only", action="store_true", help="Exclude staged, unstaged, and untracked changes")
+    parser.add_argument("--json", action="store_true", help="Compatibility flag; output is always JSON")
+    parser.add_argument("--check-verify-gate", action="store_true", help="Inspect local/pre-push Apple gate health without running builds")
     parser.add_argument("--cases-file", default=str(DEFAULT_CASES_FILE), help="Path to build-cases.json drawer")
     parser.add_argument("--flow-map", action="store_true", help="Print Dual-Entry flow-map JSON and budget health")
     parser.add_argument("--register-case", action="store_true", help="Register or update a build case in build-cases.json")
@@ -259,6 +459,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fix-command", default="", help="Canonical CLI command for --register-case")
     parser.add_argument("--fix-rule", default="", help="Fix rule for --register-case")
     args = parser.parse_args(argv)
+    if args.diff_range is not None and (args.base is not None or args.head is not None):
+        parser.error("--range cannot be combined with --base or --head")
+    if args.base == "" or args.head == "" or args.diff_range == "":
+        parser.error("git refs and ranges must not be empty")
+    if args.repo is None and len(args.paths) == 1:
+        candidate = Path(args.paths[0])
+        if candidate.is_dir() and (candidate / ".git").exists():
+            args.repo, args.paths = str(candidate), []
 
     cases_path = Path(args.cases_file).resolve()
     if args.flow_map or args.paths == ["flow-map"]:
@@ -268,8 +476,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.register_case:
         if not args.id or not args.title or not args.fix_rule:
-            print("classify_changes: --register-case requires --id, --title, and --fix-rule", file=sys.stderr)
-            return 2
+            parser.error("--register-case requires --id, --title, and --fix-rule")
         routes = [item.strip() for item in args.routes.split(",") if item.strip()]
         result = register_build_case(
             cases_path,
@@ -284,13 +491,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        repo = Path(git(Path(args.repo).resolve(), "rev-parse", "--show-toplevel").decode().strip())
-        paths = sorted(set(args.paths)) if args.paths else changed_paths(repo, args.base)
-        print(json.dumps(classify(repo, paths, cases_file=cases_path), indent=2, sort_keys=True))
+        repo = Path(git(Path(args.repo or ".").resolve(), "rev-parse", "--show-toplevel").decode().strip())
+        if args.check_verify_gate:
+            payload = {"verifyGateHealth": verify_gate_health(repo)}
+        else:
+            paths = sorted(set(args.paths)) if args.paths else changed_paths(
+                repo, args.base, args.head or "HEAD", args.diff_range, args.committed_only,
+            )
+            payload = classify(repo, paths, cases_file=cases_path)
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
-        print(f"classify_changes: {error}", file=sys.stderr)
-        return 2
+        detail = error.stderr.decode(errors="replace") if isinstance(error, subprocess.CalledProcessError) and error.stderr else str(error)
+        parser.error(detail)
+    return 2
 
 
 if __name__ == "__main__":

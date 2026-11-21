@@ -1,11 +1,11 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-21",
   "active_cases": [
     {
       "id": "EV-001",
-      "title": "Discover Review Context CLI Help & Smell Drawer Flags",
+      "title": "Discover Review Context CLI Help, Range, Empty-Surface & Findings Validator Flags",
       "layers": [
         "spec",
         "standards",
@@ -16,7 +16,21 @@
       "expect_stdout_contains": [
         "--flow-map",
         "--register-smell",
-        "--committed-only"
+        "--committed-only",
+        "--range",
+        "--empty-ok",
+        "--validate-findings"
+      ],
+      "verify_lines": [
+        "CLI --help exits 0 and exposes --range, --empty-ok, --validate-findings, --flow-map, and --register-smell"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "discover_review_context.py --help lists range, empty-surface, and findings validation flags"
+        }
       ],
       "registered_at": "2026-11-10"
     },
@@ -33,24 +47,107 @@
         "skill": "code-review",
         "anti_explosion_valves.all_l1_docs_within_budget": true
       },
+      "verify_lines": [
+        "discover_review_context.py --flow-map exits 0 with ok=true and all L1 drawers within 160-line budget"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "flow-map JSON confirms all L1 markdown drawers stay <= 160 lines"
+        }
+      ],
       "registered_at": "2026-11-10"
     },
     {
       "id": "EV-003",
-      "title": "Post-Implementation Visual Traceback & [IMPL_BUG] vs [SPEC_GAP] Attribution Contract",
+      "title": "Post-Implementation Visual Traceback, Routing Tables & Attribution Contract",
       "layers": [
         "spec",
         "standards"
       ],
       "file": "skills/code-review/SKILL.md",
       "must_contain": [
+        "When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表",
+        "Role-Based Routing",
         "Visual Traceback",
         "[IMPL_BUG]",
         "[SPEC_GAP]",
+        "review-rubric.md",
         "review-smells.json",
         "eval-cases.json"
       ],
+      "verify_lines": [
+        "SKILL.md preserves When-to-Read L1 + L2 CLI routing, Role-Based Routing, Visual Traceback, and attribution tags"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "SKILL.md contains routing tables, review-rubric.md link, and Visual Traceback tags"
+        }
+      ],
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "EV-004",
+      "title": "Deterministic Findings Schema Template & Self-Disclosing Parser Error Guidance",
+      "layers": [
+        "spec",
+        "standards"
+      ],
+      "cmd": "python3 skills/code-review/scripts/discover_review_context.py --schema-template",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "schema": "code-review-findings/v1",
+        "verdict_mapping.P0": "FAIL",
+        "verdict_mapping.P1": "CHANGES REQUESTED",
+        "verdict_mapping.P2": "PASS WITH FOLLOW-UP",
+        "verdict_mapping.none": "PASS"
+      },
+      "negative_cmd": "python3 skills/code-review/scripts/discover_review_context.py --unknown-cli-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/code-review/references/review-rubric.md",
+        "skills/code-review/references/output-contract.md"
+      ],
+      "verify_lines": [
+        "--schema-template emits deterministic verdict mapping and invalid CLI flag exits 2 with self-disclosing drawer pointers"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "schema-template JSON and _SelfDisclosingReviewParser stderr pointers verified"
+        }
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-005",
+      "title": "Unit Test Suite Covers JSON/YAML CONTEXT.md Globs, git ls-files, HEAD~1 Fallback, Exit=1 & Findings Validator",
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ],
+      "cmd": "python3 -m unittest discover -s skills/code-review/scripts -p test_discover_review_context.py",
+      "expect_exit": 0,
+      "verify_lines": [
+        "All unit tests in test_discover_review_context.py pass with exit code 0"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "unittest suite exercises JSON/YAML CONTEXT.md, fast git ls-files, exit=1 empty surface, and --validate-findings"
+        }
+      ],
+      "registered_at": "2026-11-21"
     }
   ]
 }

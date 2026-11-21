@@ -39,6 +39,8 @@ Product Delivery/Release，以及 `retro-loop` + `story-craft` 等能力节点�
 
 [`xcode-cli`](./skills/xcode-cli/SKILL.md) 使用 Swift 与 Xcode 命令行工具进行 Apple 平台构建、测试、模拟器运行和结果检查。
 
+[`repo-kit`](./skills/repo-kit/SKILL.md) 用 `shared-ci` 的模板与 `repo_gate_auditor.py` 检查器让仓库满足统一的 repo 合同（薄 `AGENTS.md`、layer 表、增量/并发 `scripts/verify`、Git Hooks 与 `shared-ci` 门禁），并发现跨仓脚本与门禁漂移瓶颈。
+
 [`ios-concurrency-swiftui`](./skills/ios-concurrency-swiftui/SKILL.md) 面向 Swift 6 严格并发（`Sendable`、actor 隔离、任务生命周期与取消重入）、SwiftUI `@Observable` 状态所有权与稳定视图树身份，以及原生弹簧/触觉/Liquid Glass 交互质感审计。
 
 [`ios-debugging-performance`](./skills/ios-debugging-performance/SKILL.md) 覆盖可复现根因证据链与多角色审查协作、Instruments 五维卡顿剖析、无 `.xcodeproj` 纯 SwiftPM macOS MenuBar `.app` 签名公证打包，以及 App Store 提审前隐私与防拒闸门。
@@ -81,6 +83,7 @@ Claude Code 使用 plugin marketplace：
 /plugin install personal-m2-assistant@user-skills
 /plugin install code-review@user-skills
 /plugin install xcode-cli@user-skills
+/plugin install repo-kit@user-skills
 /plugin install ios-concurrency-swiftui@user-skills
 /plugin install ios-debugging-performance@user-skills
 /plugin install ios-architecture-testing@user-skills
@@ -106,6 +109,7 @@ Codex 使用内置 `skill-installer`，在会话中输入：
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/personal-m2-assistant 安装 personal-m2-assistant。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/code-review 安装 code-review。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/xcode-cli 安装 xcode-cli。
+请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/repo-kit 安装 repo-kit。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-concurrency-swiftui 安装 ios-concurrency-swiftui。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-debugging-performance 安装 ios-debugging-performance。
 请用 skill-installer 从 https://github.com/LeePepe/user-skills/tree/main/skills/ios-architecture-testing 安装 ios-architecture-testing。

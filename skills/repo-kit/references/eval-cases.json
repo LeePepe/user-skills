@@ -1,0 +1,147 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-21",
+  "active_cases": [
+    {
+      "id": "EV-RK-001",
+      "title": "repo_gate_auditor.py CLI exposes scan, bottlenecks, and loop-check subcommands",
+      "tags": [
+        "cli",
+        "repo-kit",
+        "gate-auditor"
+      ],
+      "cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "scan",
+        "bottlenecks",
+        "loop-check",
+        "--dev-root",
+        "--flow-map"
+      ],
+      "verify_lines": [
+        "The repo_gate_auditor.py CLI help lists scan, bottlenecks, and loop-check subcommands",
+        "(non-fatal) Soft AST entrypoint check confirms parser and main() exist in repo_gate_auditor.py"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "repo_gate_auditor.py --help exits 0 and prints scan, bottlenecks, and loop-check"
+        },
+        {
+          "severity": "soft",
+          "fatal": false,
+          "passed": true,
+          "check": "_SelfDisclosingRepoKitParser and main() defined in repo_gate_auditor.py",
+          "evidence": "skills/repo-kit/scripts/repo_gate_auditor.py defines _SelfDisclosingRepoKitParser and main()",
+          "why_soft": "verifies internal parser class structure alongside CLI help output"
+        }
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-RK-002",
+      "title": "repo_gate_auditor.py scan --repo . audits current repo gate health and 4-Angle speedup",
+      "tags": [
+        "scan",
+        "gate-health",
+        "four-angle-speedup"
+      ],
+      "cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --repo . --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "repo-gate-audit/v1",
+        "skill": "repo-kit",
+        "repos_scanned": 1,
+        "reference": "skills/repo-kit/references/repo-bound-skills-and-gates.md"
+      },
+      "verify_lines": [
+        "Running repo_gate_auditor.py scan --repo . outputs schema repo-gate-audit/v1 with repos_scanned=1"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "scan --repo . returns ok=true and schema=repo-gate-audit/v1"
+        }
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-RK-003",
+      "title": "Negative command: unknown subcommand exits 2 with self-disclosing pointer to repo-bound-skills-and-gates.md",
+      "tags": [
+        "cli",
+        "negative",
+        "self-disclosing"
+      ],
+      "negative_cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py invalid-subcommand-xyz",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/repo-kit/references/repo-bound-skills-and-gates.md"
+      ],
+      "verify_lines": [
+        "Passing an invalid subcommand exits 2 and prints skills/repo-kit/references/repo-bound-skills-and-gates.md on stderr"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "exit code 2 with self-disclosing reference pointer on stderr"
+        }
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-RK-004",
+      "title": "SKILL.md and repo-bound-skills-and-gates.md document RG-001..RG-006, When-to-Read L1 routing, and Role-Based Routing",
+      "tags": [
+        "contract",
+        "routing",
+        "rg-rules"
+      ],
+      "file": "skills/repo-kit/SKILL.md",
+      "must_contain": [
+        "When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表",
+        "Role-Based Routing",
+        "repo_gate_auditor.py",
+        "repo-bound-skills-and-gates.md",
+        "eval-cases.json",
+        "RG-001"
+      ],
+      "verify_lines": [
+        "skills/repo-kit/SKILL.md contains When-to-Read L1 routing, Role-Based Routing, and RG-001..006 references"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "SKILL.md includes routing tables and RG-001..006 coverage"
+        }
+      ],
+      "registered_at": "2026-11-21"
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "init a repository contract with shared-ci, layer tech-context, and scripts/verify",
+      "should_trigger": true
+    },
+    {
+      "query": "audit cross-repo pre-push hook drift and slow serial scripts/verify bottlenecks",
+      "should_trigger": true
+    },
+    {
+      "query": "rebalance my personal bond and gold ETF portfolio",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    }
+  ]
+}

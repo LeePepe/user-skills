@@ -4,25 +4,111 @@
   "active_cases": [
     {
       "id": "EV-001",
-      "title": "Loop 4 scanner exposes both directions and commands",
+      "title": "Loop 4 scanner exposes both directions, tech-context/ADR checks, and commands",
       "tags": ["drift", "contract"],
       "file": "scripts/spec_code_drift_patrol.py",
-      "must_contain": ["spec_stale_findings", "code_compliance_findings", "loop-check"]
+      "must_contain": ["spec_stale_findings", "code_compliance_findings", "loop-check", "malformed_adr_heading", "reference_drawer"],
+      "verify_lines": [
+        "Verify spec_code_drift_patrol.py exposes bidirectional findings, tech-context/ADR contract checks, and reference_drawer pointers"
+      ],
+      "assertions": [
+        {
+          "check": "spec_code_drift_patrol.py exposes bidirectional findings, tech-context/ADR checks, and reference_drawer",
+          "severity": "hard",
+          "fatal": true,
+          "passed": true
+        }
+      ]
     },
     {
       "id": "EV-002",
-      "title": "Codebase design routes drift checks through the executable drawer",
+      "title": "Codebase design routes drift checks and role-based routing through executable drawers",
       "tags": ["routing"],
       "file": "SKILL.md",
-      "must_contain": ["scripts/spec_code_drift_patrol.py", "loop-check", "Dual-Zone"]
+      "must_contain": ["scripts/spec_code_drift_patrol.py", "loop-check", "Dual-Zone", "Role-Based Routing", "When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表"],
+      "verify_lines": [
+        "Verify SKILL.md contains When-to-Read L1/L2 routing, Role-Based Routing, and Dual-Zone drift patrol entry"
+      ],
+      "assertions": [
+        {
+          "check": "SKILL.md documents When-to-Read L1/L2 routing, Role-Based Routing, and Dual-Zone drift patrol",
+          "severity": "hard",
+          "fatal": true,
+          "passed": true
+        }
+      ]
     },
     {
       "id": "EV-003",
-      "title": "Loop 4 CLI remains discoverable",
+      "title": "Loop 4 CLI and flow-map remain discoverable and self-disclosing",
       "tags": ["cli"],
       "cmd": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --help",
       "expect_exit": 0,
-      "expect_stdout_contains": ["scan", "loop-check"]
+      "expect_stdout_contains": ["scan", "loop-check", "--flow-map"],
+      "negative_cmd": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --unknown-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": ["skills/codebase-design/references/CONTEXT-FORMAT.md", "skills/codebase-design/references/ADR-FORMAT.md"],
+      "verify_lines": [
+        "Verify spec_code_drift_patrol.py --help lists scan/loop-check/--flow-map and exit=2 discloses drawer pointers"
+      ],
+      "assertions": [
+        {
+          "check": "spec_code_drift_patrol.py --help succeeds and invalid flags exit=2 with self-disclosing drawer pointers",
+          "severity": "hard",
+          "fatal": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "EV-004",
+      "title": "Drift patrol flow-map reports all L1 docs within budget and wired drawers",
+      "tags": ["flow-map", "budget"],
+      "cmd": "python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --flow-map",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "skill": "codebase-design",
+        "anti_explosion_valves.all_l1_docs_within_budget": true
+      },
+      "verify_lines": [
+        "Verify spec_code_drift_patrol.py --flow-map exits 0 with ok=true and all_l1_docs_within_budget=true"
+      ],
+      "assertions": [
+        {
+          "check": "spec_code_drift_patrol.py --flow-map reports ok=true and all_l1_docs_within_budget=true",
+          "severity": "hard",
+          "fatal": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "EV-005",
+      "title": "Spec gate CLI discloses PHASE0-PROPOSAL-CHECKPOINT.md on parser error",
+      "tags": ["phase0", "cli"],
+      "file": "scripts/spec_gate.py",
+      "must_contain": [
+        "skills/codebase-design/references/PHASE0-PROPOSAL-CHECKPOINT.md",
+        "skills/codebase-design/references/CONTEXT-FORMAT.md",
+        "skills/codebase-design/references/ADR-FORMAT.md",
+        "skills/codebase-design/references/DEEPENING.md",
+        "skills/codebase-design/references/DESIGN-IT-TWICE.md"
+      ],
+      "negative_cmd": "python3 skills/codebase-design/scripts/spec_gate.py --invalid-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": ["skills/codebase-design/references/PHASE0-PROPOSAL-CHECKPOINT.md"],
+      "verify_lines": [
+        "Verify spec_gate.py wires all five reference drawers and discloses PHASE0-PROPOSAL-CHECKPOINT.md on exit=2"
+      ],
+      "assertions": [
+        {
+          "check": "spec_gate.py links all five drawers and discloses PHASE0-PROPOSAL-CHECKPOINT.md on CLI error",
+          "severity": "hard",
+          "fatal": true,
+          "passed": true
+        }
+      ]
     }
   ]
 }

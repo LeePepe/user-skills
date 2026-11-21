@@ -1173,11 +1173,20 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "missing-roi.json"),
                 unittest.mock.patch.object(SKILL_RETRO, "_load_jev_client", return_value=fake_jev),
             ):
-                probe_fast = SKILL_RETRO.probe_skills(fast=True)
+                probe_fast = SKILL_RETRO.probe_skills(
+                    fast=True,
+                    dev_root=paths["dev_root"],
+                    handoff_root=paths["handoff_root"],
+                )
                 top3_fast = [s["skill"] for s in probe_fast["skills"][:3]]
                 self.assertEqual(top3_fast, ["design-studio", "m2-dispatcher", "code-review"])
 
-                triage_live = SKILL_RETRO.triage_skills(pick_top=3, use_jev=True)
+                triage_live = SKILL_RETRO.triage_skills(
+                    pick_top=3,
+                    use_jev=True,
+                    dev_root=paths["dev_root"],
+                    handoff_root=paths["handoff_root"],
+                )
                 self.assertEqual(triage_live["status"], "ACTIONABLE")
                 self.assertEqual(triage_live["m1_tls_to_spawn"], 3)
                 selected_names = [s["skill"] for s in triage_live["selected_skills"]]
@@ -1185,6 +1194,65 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 self.assertTrue(
                     all(s["decision_source"] == "jev_decide:telemetry_floor_preserved" for s in triage_live["selected_skills"])
                 )
+
+    def test_repo_kit_fallback_discovery_and_self_driven_loop_brief_emission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            # Place a fallback skill under dev_root/Skills/skills/repo/repo-kit to test fallback discovery
+            fallback_repo_skills = paths["dev_root"] / "Skills" / "skills" / "repo"
+            _write_skill_pkg(
+                fallback_repo_skills,
+                "repo-kit",
+                skill_md_extra="See `references/repo-bound-skills-and-gates.md`.",
+                refs={"repo-bound-skills-and-gates.md": "# Repo-Bound Skills & Gates\n"},
+                scripts={
+                    "repo_gate_auditor.py": (ROOT / "skills/repo-kit/scripts/repo_gate_auditor.py").read_text(encoding="utf-8")
+                },
+            )
+            # Create a drifted git repo in dev_root so cross_repo_gate_health reports findings
+            drifted_repo = paths["dev_root"] / "drifted-service"
+            (drifted_repo / ".git").mkdir(parents=True, exist_ok=True)
+            (drifted_repo / ".githooks").mkdir(parents=True, exist_ok=True)
+            (drifted_repo / ".githooks" / "pre-push").write_text(
+                "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\" --all\n",
+                encoding="utf-8",
+            )
+            (drifted_repo / ".githooks" / "pre-push").chmod(0o755)
+
+            inv = SKILL_RETRO._discover_skill_inventory(paths["skills_root"], paths["dev_root"])
+            self.assertIn("repo-kit", inv)
+
+            probe_rk = SKILL_RETRO.probe_skills(
+                skill="repo-kit",
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                fast=True,
+            )
+            self.assertEqual(probe_rk["skills_probed"], 1)
+            self.assertEqual(probe_rk["skills"][0]["skill"], "repo-kit")
+            self.assertGreaterEqual(probe_rk["cross_repo_gate_health"]["total_findings"], 1)
+
+            emit_dir = root / "handoff-repo-kit"
+            diag_rk = SKILL_RETRO.compute_skill_retro(
+                warehouse_db=paths["warehouse_db"],
+                copilot_db=paths["copilot_db"],
+                copilot_sessions_dir=paths["sessions_dir"],
+                usage_jsonl=paths["usage_jsonl"],
+                trace_export_path=paths["trace_export"],
+                handoff_root=paths["handoff_root"],
+                skills_root=paths["skills_root"],
+                dev_root=paths["dev_root"],
+                skill="repo-kit",
+                emit_briefs_dir=emit_dir,
+                mirror_roi_snapshot=False,
+            )
+            self.assertEqual(diag_rk["status"], "ACTIONABLE")
+            self.assertIn("cross_repo_gate_health", diag_rk)
+            self.assertGreaterEqual(diag_rk["cross_repo_gate_health"]["total_findings"], 1)
+            self.assertTrue(any(p["skill"] == "repo-kit" for p in diag_rk["proposals"]))
+            self.assertEqual(diag_rk["emitted_briefs"]["count"], 1)
+            self.assertEqual(diag_rk["emitted_briefs"]["briefs"][0]["skill"], "repo-kit")
 
 
 if __name__ == "__main__":

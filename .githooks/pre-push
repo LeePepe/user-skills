@@ -14,4 +14,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 done
 
-exec "$REPO_ROOT/scripts/verify" --all
+if [ "${VERIFY_ALL:-0}" = "1" ]; then
+  exec "$REPO_ROOT/scripts/verify" --all
+fi
+exec "$REPO_ROOT/scripts/verify"

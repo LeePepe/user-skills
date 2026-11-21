@@ -1,61 +1,118 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-10",
+  "updated": "2026-11-21",
   "active_cases": [
     {
       "id": "EV-001",
-      "title": "Classify Changes CLI Help & Route Option Contract",
-      "routes": [
-        "swiftpm",
-        "xcode",
-        "mixed",
-        "none"
-      ],
+      "routes": ["swiftpm", "xcode", "mixed", "none"],
+      "title": "Classifier help exposes build drawers and verify-gate options",
       "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py --help",
       "expect_exit": 0,
-      "expect_stdout_contains": [
-        "--flow-map",
-        "--register-case",
-        "--cases-file"
-      ],
-      "registered_at": "2026-11-10"
+      "expect_stdout_contains": ["--flow-map", "--register-case", "--cases-file", "--check-verify-gate"],
+      "verify_lines": ["Classifier help returns the supported option contract"],
+      "assertions": [{"check": "Help exits 0 and includes all required options", "severity": "hard"}]
     },
     {
       "id": "EV-002",
-      "title": "Neutral Documentation Path Resolves to Route 'none'",
-      "routes": [
-        "none"
-      ],
+      "routes": ["none"],
+      "title": "Neutral documentation remains route none",
       "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py README.md",
       "expect_exit": 0,
-      "expect_json_subset": {
-        "route": "none",
-        "neutralFiles.0": "README.md"
-      },
-      "registered_at": "2026-11-10"
+      "expect_json_subset": {"route": "none", "neutralFiles.0": "README.md"},
+      "verify_lines": ["Explicit README classification retains neutral routing"],
+      "assertions": [{"check": "README is neutral and route is none", "severity": "hard"}]
     },
     {
       "id": "EV-003",
-      "title": "Xcode Project Metadata Path Resolves to Route 'xcode' & Flow-Map Budget Holds",
-      "routes": [
-        "xcode",
-        "swiftpm"
-      ],
+      "routes": ["xcode"],
+      "title": "Xcode project metadata selects integration routing",
       "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py project.yml",
       "expect_exit": 0,
-      "expect_json_subset": {
-        "route": "xcode",
-        "xcodeInputs.0.path": "project.yml"
-      },
-      "file": "skills/xcode-cli/SKILL.md",
-      "must_contain": [
-        "build-cases.json",
-        "eval-cases.json",
-        "swiftpm",
-        "xcodebuild"
-      ],
-      "registered_at": "2026-11-10"
+      "expect_json_subset": {"route": "xcode", "xcodeInputs.0.path": "project.yml"},
+      "verify_lines": ["Explicit project metadata classification selects Xcode"],
+      "assertions": [{"check": "Project input is classified as xcode", "severity": "hard"}]
+    },
+    {
+      "id": "EV-004",
+      "routes": ["swiftpm", "none"],
+      "title": "Clean committed branch auto-base positive and main counter-case",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_clean_branch_auto_detects_origin_main_and_local_main",
+      "expect_exit": 0,
+      "verify_lines": ["Replay clean-branch auto-base test"],
+      "assertions": [{"check": "Clean feature changes are found; unchanged main stays none", "severity": "hard"}]
+    },
+    {
+      "id": "EV-005",
+      "routes": ["swiftpm", "xcode"],
+      "title": "Repository aliases, positional worktree, and JSON compatibility",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_repository_aliases_json_and_positional_worktree",
+      "expect_exit": 0,
+      "verify_lines": ["Replay CLI repository compatibility test"],
+      "assertions": [{"check": "Aliases and a worktree directory preserve classification", "severity": "hard"}]
+    },
+    {
+      "id": "EV-006",
+      "routes": ["none"],
+      "title": "Parser and git failures return actionable three-line guidance",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_parser_and_git_failures_self_disclose_in_three_lines",
+      "expect_exit": 0,
+      "verify_lines": ["Replay invalid options, repositories, refs, and conflicting ranges"],
+      "assertions": [{"check": "Failures exit 2 with fix syntax and both references", "severity": "hard"}]
+    },
+    {
+      "id": "EV-007",
+      "routes": ["swiftpm", "mixed"],
+      "title": "Fast SwiftPM verify tier and standard JSON health readback",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_positive_fast_spm_tiering_and_standard_output",
+      "expect_exit": 0,
+      "verify_lines": ["Replay local-fast verify gate fixture"],
+      "assertions": [{"check": "Guarded Xcode tests retain local_fast_spm health", "severity": "hard"}]
+    },
+    {
+      "id": "EV-008",
+      "routes": ["xcode", "mixed"],
+      "title": "Guard scope and unused functions cannot conceal blocking hooks",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_guards_scope_branches_and_short_circuit",
+      "expect_exit": 0,
+      "verify_lines": ["Replay guarded and unguarded hook counter-cases"],
+      "assertions": [{"check": "Only reachable tests with opt-in guards avoid the blocking indicator", "severity": "hard"}]
+    },
+    {
+      "id": "EV-009",
+      "routes": ["xcode", "mixed"],
+      "title": "Always-forced CI and heavy flags still block pre-push",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_forced_ci_or_env_opt_in_is_still_blocking",
+      "expect_exit": 0,
+      "verify_lines": ["Replay forced heavy delegation and outer-guard counter-case"],
+      "assertions": [{"check": "Unconditional forced delegation is blocking; guarded delegation is not", "severity": "hard"}]
+    },
+    {
+      "id": "EV-010",
+      "routes": ["swiftpm", "mixed"],
+      "title": "Two-dot snapshot and three-dot merge-base ranges differ correctly",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_two_and_three_dot_ranges_on_diverged_branches",
+      "expect_exit": 0,
+      "verify_lines": ["Replay divergent branch range aliases"],
+      "assertions": [{"check": "Snapshot diffs include base-only changes; merge-base diffs do not", "severity": "hard"}]
+    },
+    {
+      "id": "EV-011",
+      "routes": ["swiftpm", "mixed", "xcode", "none"],
+      "title": "Dirty local scope versus committed-only comparison",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_dirty_scope_and_committed_only_preserve_distinct_modes",
+      "expect_exit": 0,
+      "verify_lines": ["Replay staged/untracked changes with committed-only mode"],
+      "assertions": [{"check": "Committed-only excludes local edits without dropping committed branch changes", "severity": "hard"}]
+    },
+    {
+      "id": "EV-012",
+      "routes": ["none", "xcode"],
+      "title": "Comments, build-only hooks, and absent hooks are not blockers",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_comments_build_only_and_absent_hooks_are_counter_cases",
+      "expect_exit": 0,
+      "verify_lines": ["Replay absent-hook and non-test command counter-cases"],
+      "assertions": [{"check": "Non-executed text and build-only checks do not manufacture gate health", "severity": "hard"}]
     }
   ]
 }

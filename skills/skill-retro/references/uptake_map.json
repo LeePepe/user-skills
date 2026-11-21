@@ -41,7 +41,24 @@
     ],
     "repo-kit": [
       "repo_agents_md_exists",
-      "repo_verify_entrypoint_exists"
+      "repo_verify_entrypoint_exists",
+      "contract_eval_cases_drawer_exists",
+      "contract_script_has_argparse_or_main"
+    ],
+    "code-review": [
+      "code_review_rubric_and_output_contract_exist",
+      "contract_eval_cases_drawer_exists",
+      "contract_script_has_argparse_or_main"
+    ],
+    "xcode-cli": [
+      "xcode_cli_command_routing_drawer_exists",
+      "contract_eval_cases_drawer_exists",
+      "contract_script_has_argparse_or_main"
+    ],
+    "codebase-design": [
+      "codebase_design_context_and_adr_drawers_exist",
+      "contract_eval_cases_drawer_exists",
+      "contract_script_has_argparse_or_main"
     ]
   },
   "checks": [
@@ -424,6 +441,46 @@
       "severity": "hard",
       "remediation_drawer": "skills/repo-kit/SKILL.md",
       "description": "Repository exposes a unified ./scripts/verify entrypoint."
+    },
+    {
+      "id": "code_review_rubric_and_output_contract_exist",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/review-rubric.md",
+        "references/output-contract.md",
+        "skills/code-review/references/review-rubric.md",
+        "skills/code-review/references/output-contract.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/code-review/references/output-contract.md",
+      "description": "code-review maintains review-rubric.md and output-contract.md drawers."
+    },
+    {
+      "id": "xcode_cli_command_routing_drawer_exists",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/command-routing.md",
+        "skills/xcode-cli/references/command-routing.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/xcode-cli/references/command-routing.md",
+      "description": "xcode-cli maintains the command-routing.md drawer."
+    },
+    {
+      "id": "codebase_design_context_and_adr_drawers_exist",
+      "category": "structural",
+      "kind": "path_exists",
+      "file_glob": [
+        "references/CONTEXT-FORMAT.md",
+        "references/ADR-FORMAT.md",
+        "skills/codebase-design/references/CONTEXT-FORMAT.md",
+        "skills/codebase-design/references/ADR-FORMAT.md"
+      ],
+      "severity": "hard",
+      "remediation_drawer": "skills/codebase-design/references/CONTEXT-FORMAT.md",
+      "description": "codebase-design maintains CONTEXT-FORMAT.md and ADR-FORMAT.md drawers."
     }
   ]
 }
