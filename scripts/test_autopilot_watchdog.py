@@ -637,8 +637,14 @@ class AutopilotWatchdogTests(unittest.TestCase):
                 stage_status="warning",
                 stage_detail="33 源成功 · 2 降级",
             )
+            child_pid_file = Path(tmp) / "child_worker.pid"
             slow_script = Path(tmp) / "slow_digest.sh"
-            slow_script.write_text("#!/bin/bash\nsleep 2\nexit 0\n", encoding="utf-8")
+            slow_script.write_text(
+                "#!/bin/bash\n"
+                f'python3 -c "import os, time; open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
+                "wait\n",
+                encoding="utf-8",
+            )
             slow_script.chmod(0o755)
             aidata_paths["aidata_digest_run_script_path"] = slow_script
 
@@ -675,7 +681,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
                     targets=("aidata",),
                     runner=fake_runner,
                     reverify_polls=1,
-                    aidata_digest_run_timeout_sec=0.05,
+                    aidata_digest_run_timeout_sec=0.25,
                     **aidata_paths,
                 )
             self.assertFalse(report["ok"])
@@ -683,7 +689,12 @@ class AutopilotWatchdogTests(unittest.TestCase):
             esc = report["escalations"][0]
             self.assertEqual(esc["remediation_detail"]["aidata_digest_run_exit"], 124)
             self.assertTrue(esc["remediation_detail"]["aidata_digest_run_timed_out"])
+            self.assertTrue(esc["remediation_detail"]["aidata_digest_process_group_terminated"])
             self.assertNotIn("aidata_digest_run_sh_executed", esc["actions_taken"])
+            if child_pid_file.is_file():
+                child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
 
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")

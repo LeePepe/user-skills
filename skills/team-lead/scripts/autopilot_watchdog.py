@@ -43,6 +43,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -282,6 +283,51 @@ def _build_no_popup_subprocess_env(
     env["AIDASH_NO_POPUP"] = "1"
     env["AIDASH_DISABLE_NOTIFICATIONS"] = "1"
     return env
+
+
+def _run_process_group_with_timeout(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float = 90.0,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command in its own process group (`start_new_session=True`) and kill all descendants on timeout."""
+    with subprocess.Popen(
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(env) if env is not None else None,
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(list(cmd), proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            try:
+                stdout, stderr = proc.communicate(timeout=1.0)
+            except Exception:
+                stdout, stderr = "", ""
+            raise subprocess.TimeoutExpired(list(cmd), timeout, output=stdout, stderr=stderr) from exc
 
 
 def _resolve_autopilot_record(
@@ -1122,17 +1168,17 @@ def _default_m2_escalator(
             "--workspace-id",
             workspace_id,
         ]
-        proc = subprocess.run(
-            run_once_cmd,
-            capture_output=True,
-            text=True,
-            env=no_popup_env,
-            check=False,
-            timeout=90.0,
-        )
-        remediation_detail["skill_retro_run_once_exit"] = proc.returncode
-        if proc.returncode == 0:
-            actions_taken.append("skill_retro_deterministic_recollect_and_file_issue")
+        try:
+            proc = _run_process_group_with_timeout(
+                run_once_cmd,
+                env=no_popup_env,
+                timeout=90.0,
+            )
+            remediation_detail["skill_retro_run_once_exit"] = proc.returncode
+            if proc.returncode == 0:
+                actions_taken.append("skill_retro_deterministic_recollect_and_file_issue")
+        except subprocess.TimeoutExpired:
+            remediation_detail["skill_retro_run_once_exit"] = 124
     elif target == AIDATA_TARGET_KEY:
         digest_script = aidata_digest_run_script_path or DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH
         if digest_script.is_file():
@@ -1141,12 +1187,9 @@ def _default_m2_escalator(
             remediation_detail["aidata_digest_run_timeout_sec"] = aidata_digest_run_timeout_sec
             remediation_detail["aidata_per_source_timeout_sec"] = int(env["PER_SOURCE_TIMEOUT"])
             try:
-                proc = subprocess.run(
+                proc = _run_process_group_with_timeout(
                     ["/bin/bash", str(digest_script)],
-                    capture_output=True,
-                    text=True,
                     env=env,
-                    check=False,
                     timeout=aidata_digest_run_timeout_sec,
                 )
                 remediation_detail["aidata_digest_run_exit"] = proc.returncode
@@ -1157,6 +1200,7 @@ def _default_m2_escalator(
             except subprocess.TimeoutExpired:
                 remediation_detail["aidata_digest_run_exit"] = 124
                 remediation_detail["aidata_digest_run_timed_out"] = True
+                remediation_detail["aidata_digest_process_group_terminated"] = True
 
     # 2. Dispatch M2 investigation via m2-router.py --plan (and herdr-dispatch.sh when available)
     if M2_ROUTER_SCRIPT_PATH.is_file():
@@ -1172,12 +1216,9 @@ def _default_m2_escalator(
             "--json",
         ]
         try:
-            r_proc = subprocess.run(
+            r_proc = _run_process_group_with_timeout(
                 router_cmd,
-                capture_output=True,
-                text=True,
                 env=no_popup_env,
-                check=False,
                 timeout=20.0,
             )
             remediation_detail["m2_router_plan_exit"] = r_proc.returncode
