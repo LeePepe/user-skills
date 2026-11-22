@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[3]
 PRIVATE = re.compile(r"\b(?:progressRail|isUnilateral|DashboardL10n)\b")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 BUDGET_EXEMPTIONS: set[str] = set()
 COORDINATE_KEYS = ("platforms", "dimensions", "containers", "tags", "routes", "layers")
 DRAWERS = {
@@ -77,6 +78,10 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Fix .claude-plugin/plugin.json syntax and ensure description <= 320 characters.",
     ),
+    "missing-version": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Declare a valid semantic version (X.Y.Z) in .claude-plugin/plugin.json for every skill package.",
+    ),
     "l0-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep SKILL.md <= 180 lines (<= 80 for design skills); move deep details to references/.",
@@ -122,6 +127,7 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         "Every soft assertion (severity='soft' or fatal=false) must include non-empty evidence and why_soft justification.",
     ),
 }
+FINDING_REMEDIATIONS = VALVE_FINDING_GUIDANCE
 
 
 def _enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
@@ -361,7 +367,10 @@ def init_skill(args: argparse.Namespace) -> int:
         "Read references on demand; keep deterministic checks in scripts.\n",
         encoding="utf-8",
     )
-    manifest = {"name": args.skill, "description": f"{args.skill} skill", "version": "1.0.0", "category": args.category}
+    version = str(getattr(args, "version", None) or "1.0.0").strip()
+    if not SEMVER_RE.fullmatch(version):
+        raise SystemExit(f"invalid semantic version: {version!r} (expected X.Y.Z)")
+    manifest = {"name": args.skill, "description": f"{args.skill} skill", "version": version, "category": args.category}
     (target / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"ok": True, "skill": args.skill, "path": str(target)}))
     return 0
@@ -1238,14 +1247,29 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     if not desc or len(desc) > 320:
         findings.append({"skill": skill, "code": "description-length", "value": len(desc), "cap": 320})
     manifest = path / ".claude-plugin" / "plugin.json"
+    require_manifest = not repo_bound and (
+        path.parent.resolve() == (ROOT / "skills").resolve()
+        or (
+            path.parent.is_dir()
+            and any(
+                sib != path and sib.is_dir() and (sib / ".claude-plugin" / "plugin.json").is_file()
+                for sib in path.parent.iterdir()
+            )
+        )
+    )
     if manifest.is_file():
         try:
             manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
             manifest_desc = manifest_data.get("description") if isinstance(manifest_data, dict) else None
             if not isinstance(manifest_desc, str) or not manifest_desc or len(manifest_desc) > 320:
                 findings.append({"skill": skill, "code": "description-length", "value": len(manifest_desc) if isinstance(manifest_desc, str) else 0, "cap": 320, "file": str(manifest)})
+            manifest_ver = manifest_data.get("version") if isinstance(manifest_data, dict) else None
+            if not isinstance(manifest_ver, str) or not SEMVER_RE.fullmatch(manifest_ver.strip()):
+                findings.append({"skill": skill, "code": "missing-version", "file": str(manifest)})
         except (OSError, UnicodeError, json.JSONDecodeError):
             findings.append({"skill": skill, "code": "invalid-manifest", "file": str(manifest)})
+    elif require_manifest:
+        findings.append({"skill": skill, "code": "missing-version", "file": str(manifest)})
     refs = path / "references"
     ref_docs = [p for p in refs.glob("*.md") if p.is_file() and not p.is_symlink()] if refs.is_dir() else []
     def safe_text(file: Path) -> str:
@@ -1673,6 +1697,7 @@ def parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init")
     init.add_argument("--skill", required=True)
     init.add_argument("--category", required=True)
+    init.add_argument("--version", default="1.0.0", help="Semantic version X.Y.Z for .claude-plugin/plugin.json")
     init.add_argument("--design", action="store_true")
     init.add_argument("--repo", default=None)
 

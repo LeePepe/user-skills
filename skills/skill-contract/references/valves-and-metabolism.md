@@ -12,7 +12,7 @@ When a case declares `verify_lines` (or `verify_count`) and `assertions`, `score
 
 ## Valve 3 — budgets
 
-Every `SKILL.md` frontmatter description is non-empty and `<=320` characters. L0 is `<=180` lines and 16KB (design L0 `<=80`); L1 is `<=160` lines and 16KB; fenced code is `<=25` lines.
+Every `SKILL.md` frontmatter description is non-empty and `<=320` characters. Every skill (including all newly created skills via `init`) must declare a valid semantic `"version"` (`X.Y.Z`) in `.claude-plugin/plugin.json` alongside automatic `v<commit_count>@<subtree_sha>` fingerprinting (`version` / `versions`); missing or invalid manifest versions fail `skill_contract.py audit --strict` with `missing-version`. L0 is `<=180` lines and 16KB (design L0 `<=80`); L1 is `<=160` lines and 16KB; fenced code is `<=25` lines.
 
 ## Valve 4 — sharing and metabolism
 
