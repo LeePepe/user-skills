@@ -1036,8 +1036,11 @@ def cmd_next_wave(args: argparse.Namespace) -> dict[str, Any]:
             )
 
         if args.mark_in_progress and selected_wave:
+            wave_owner = str(getattr(args, "owner", "") or "").strip()
             for task in selected_wave:
                 task["status"] = "in_progress"
+                if wave_owner:
+                    task["owner"] = wave_owner
                 new_events.append(
                     {
                         "evt": "DISPATCHED",
@@ -1209,6 +1212,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict[str, Any]:
             target_task["status"] = args.status
         if args.pr is not None:
             target_task["pr"] = args.pr
+        if getattr(args, "owner", None):
+            target_task["owner"] = args.owner
         if effective_reason is not None:
             target_task["note"] = effective_reason
         if args.status not in TERMINAL_STATUSES:
@@ -1369,7 +1374,8 @@ def cmd_ack_spec(args: argparse.Namespace) -> dict[str, Any]:
                 changed.append(str(task["task_id"]))
         _refresh_ready_statuses(queue_data["tasks"])
         queue_data["tasks"] = queue_data["tasks"]
-        event = {"evt": "RESOLVED", "task": args.task_id or "", "note": "spec mandate acknowledged"}
+        ack_note = str(getattr(args, "note", "") or "spec mandate acknowledged").strip()
+        event = {"evt": "RESOLVED", "task": args.task_id or "", "note": ack_note}
         _save_queue(handoff_dir, queue_data)
         _sync_ledger(handoff_dir, queue_data["tasks"], [event])
         sync_to_sqlite(handoff_dir, queue_data, [event])
@@ -1627,35 +1633,197 @@ def cmd_receive(args: argparse.Namespace) -> dict[str, Any]:
     return disposition
 
 
+SUBCOMMAND_ALIASES: dict[str, str] = {
+    "enqueue": "enqueue",
+    "add": "enqueue",
+    "next-wave": "next-wave",
+    "wave": "next-wave",
+    "status": "next-wave",
+    "list": "next-wave",
+    "set-status": "set-status",
+    "update-status": "set-status",
+    "ack-spec": "ack-spec",
+    "ack": "ack-spec",
+    "ruling": "ruling",
+    "steer": "steer",
+    "init-goal": "init-goal",
+    "init": "init-goal",
+    "budget": "budget",
+    "experiment": "experiment",
+    "receive": "receive",
+}
+
+
+class _SelfDisclosingQueueParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        pointer = (
+            "Fix: run `python3 skills/team-lead/scripts/goal-queue.py --help`; "
+            "see skills/team-lead/references/ledger.md and skills/team-lead/references/playbook.md"
+        )
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"{self.prog}: error: {message}",
+                    "fix": pointer,
+                    "reference": "skills/team-lead/references/ledger.md",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            f"  {pointer}\n"
+        )
+        raise SystemExit(2)
+
+
+def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    cleaned: list[str] = []
+    for tok in tokens:
+        if tok == "--json":
+            continue
+        cleaned.append(tok)
+    if not cleaned:
+        return cleaned
+
+    subcmd_index: int | None = None
+    i = 0
+    value_flags = {
+        "--handoff-dir",
+        "--handoff",
+        "--dir",
+        "--task-id",
+        "--task",
+        "--id",
+        "--title",
+        "--repo",
+        "--paths",
+        "--path",
+        "--depends-on",
+        "--dep",
+        "--deps",
+        "--brief",
+        "--owner",
+        "--owner-agent",
+        "--agent",
+        "--assignee",
+        "--batch-json",
+        "--batch",
+        "--feedback-manifest",
+        "--replacement-of",
+        "--priority",
+        "--max-workers",
+        "--status",
+        "--pr",
+        "--pr-ref",
+        "--note",
+        "--reason",
+        "--evidence-json",
+        "--superseded-by",
+        "--authorization",
+        "--run-metrics-json",
+        "--trigger-id",
+        "--add-paths",
+        "--decision",
+        "--why",
+        "--blast-radius",
+        "--message",
+        "--action",
+        "--intent",
+        "--budget-sec",
+        "--budget-tokens",
+        "--dimensions",
+        "--extend-sec",
+        "--set-total-sec",
+        "--add-tokens",
+        "--consume-tokens",
+        "--elapsed-sec",
+        "--baseline-metric",
+        "--observed-metric",
+        "--evidence-ref",
+        "--file",
+        "--allowed-actors",
+    }
+    while i < len(cleaned):
+        tok = cleaned[i]
+        if tok in {"-h", "--help"}:
+            return cleaned
+        if tok in SUBCOMMAND_ALIASES:
+            subcmd_index = i
+            break
+        if tok.startswith("-"):
+            if "=" not in tok and tok in value_flags and i + 1 < len(cleaned):
+                i += 2
+            else:
+                i += 1
+        else:
+            break
+
+    if subcmd_index is not None:
+        canonical = SUBCOMMAND_ALIASES[cleaned[subcmd_index]]
+        reordered = [canonical, *cleaned[:subcmd_index], *cleaned[subcmd_index + 1 :]]
+        return reordered
+    return cleaned
+
+
+def _add_handoff_dir_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--handoff-dir",
+        "--handoff",
+        "--dir",
+        dest="handoff_dir",
+        required=True,
+        help="Path to handoff/<goal> directory.",
+    )
+    p.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True).")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _SelfDisclosingQueueParser(
         prog="goal-queue.py",
         description="Atomic file-locked Goal queue manager for Batch Mode and Hot-Append Mode.",
     )
+    parser.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True).")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     enqueue_parser = subparsers.add_parser(
         "enqueue",
+        aliases=["add"],
         help="Enqueue single or batch tasks with automatic conflict dependency detection.",
     )
-    enqueue_parser.add_argument("--handoff-dir", required=True, help="Path to handoff/<goal> directory.")
-    enqueue_parser.add_argument("--task-id", default="", help="Unique Task ID (e.g. TK1).")
+    _add_handoff_dir_arg(enqueue_parser)
+    enqueue_parser.add_argument("--task-id", "--task", "--id", dest="task_id", default="", help="Unique Task ID (e.g. TK1).")
     enqueue_parser.add_argument("--title", default="", help="Human-readable task title.")
     enqueue_parser.add_argument("--repo", default="", help="Target repository name or relative slug.")
     enqueue_parser.add_argument(
         "--paths",
+        "--path",
+        dest="paths",
         default="",
         help="Comma-separated owned paths or globs within the target repository.",
     )
     enqueue_parser.add_argument(
         "--depends-on",
+        "--dep",
+        "--deps",
+        dest="depends_on",
         default="",
         help="Comma-separated explicit prerequisite Task IDs.",
     )
     enqueue_parser.add_argument("--brief", default="", help="Relative path to task brief.")
-    enqueue_parser.add_argument("--owner", default="", help="Assigned writer agent name.")
+    enqueue_parser.add_argument(
+        "--owner",
+        "--owner-agent",
+        "--agent",
+        "--assignee",
+        dest="owner",
+        default="",
+        help="Assigned writer agent name.",
+    )
     enqueue_parser.add_argument(
         "--batch-json",
+        "--batch",
+        dest="batch_json",
         default="",
         help="JSON array/object string or path to JSON file for Posture 1 batch intake.",
     )
@@ -1673,37 +1841,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--priority", choices=("normal", "human"), default="normal",
         help="Scheduling priority for the task.",
     )
+    enqueue_parser.add_argument(
+        "--explicit-owner-request",
+        "--Explicit-owner-request",
+        dest="explicit_owner_request",
+        action="store_true",
+        default=False,
+    )
 
     wave_parser = subparsers.add_parser(
         "next-wave",
+        aliases=["wave", "status", "list"],
         help="Compute the next conflict-free parallel wave of ready tasks.",
     )
-    wave_parser.add_argument("--handoff-dir", required=True, help="Path to handoff/<goal> directory.")
+    _add_handoff_dir_arg(wave_parser)
     wave_parser.add_argument(
         "--mark-in-progress",
         action="store_true",
         help="Atomically mark selected wave tasks as in_progress and log EVT=DISPATCHED.",
     )
+    wave_parser.add_argument(
+        "--owner",
+        "--owner-agent",
+        "--agent",
+        "--assignee",
+        dest="owner",
+        default="",
+        help="Optional owner/agent name to record when marking wave tasks in_progress.",
+    )
     wave_parser.add_argument("--max-workers", type=int, default=None)
 
     status_parser = subparsers.add_parser(
         "set-status",
+        aliases=["update-status"],
         help="Atomically update task status in queue.json and ledger.md.",
     )
-    status_parser.add_argument("--handoff-dir", required=True, help="Path to handoff/<goal> directory.")
-    status_parser.add_argument("--task-id", required=True, help="Task ID to update.")
+    _add_handoff_dir_arg(status_parser)
+    status_parser.add_argument("--task-id", "--task", "--id", dest="task_id", required=True, help="Task ID to update.")
     status_parser.add_argument(
         "--status",
         required=True,
         choices=VALID_STATUSES,
         help="New task status.",
     )
-    status_parser.add_argument("--pr", default=None, help="PR URL, number, or head SHA.")
+    status_parser.add_argument("--pr", "--pr-ref", dest="pr", default=None, help="PR URL, number, receipt ref, or head SHA.")
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
     status_parser.add_argument(
         "--reason",
         default=None,
         help="Reason for handback/blocked transition (alias for --note).",
+    )
+    status_parser.add_argument(
+        "--owner",
+        "--owner-agent",
+        "--agent",
+        "--assignee",
+        dest="owner",
+        default=None,
+        help="Optional owner/agent name update.",
     )
     status_parser.add_argument(
         "--evidence-json",
@@ -1733,29 +1928,30 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--trigger-id", default=None)
     status_parser.add_argument("--keep-working", action="store_true")
 
-    ack_parser = subparsers.add_parser("ack-spec", help="Acknowledge current spec and brief hashes.")
-    ack_parser.add_argument("--handoff-dir", required=True)
-    ack_parser.add_argument("--task-id", default="")
+    ack_parser = subparsers.add_parser("ack-spec", aliases=["ack"], help="Acknowledge current spec and brief hashes.")
+    _add_handoff_dir_arg(ack_parser)
+    ack_parser.add_argument("--task-id", "--task", "--id", dest="task_id", default="")
+    ack_parser.add_argument("--note", "--reason", dest="note", default=None)
 
     ruling_parser = subparsers.add_parser("ruling", help="Record a TL ruling and expand owned paths.")
-    ruling_parser.add_argument("--handoff-dir", required=True)
-    ruling_parser.add_argument("--task-id", required=True)
-    ruling_parser.add_argument("--add-paths", default="")
+    _add_handoff_dir_arg(ruling_parser)
+    ruling_parser.add_argument("--task-id", "--task", "--id", dest="task_id", required=True)
+    ruling_parser.add_argument("--add-paths", "--paths", "--path", dest="add_paths", default="")
     ruling_parser.add_argument("--decision", required=True)
     ruling_parser.add_argument("--why", required=True)
     ruling_parser.add_argument("--blast-radius", required=True)
 
     steer_parser = subparsers.add_parser("steer", help="Deliver an in-scope live steering input.")
-    steer_parser.add_argument("--handoff-dir", required=True)
-    steer_parser.add_argument("--message", required=True)
-    steer_parser.add_argument("--task-id", default="")
-    steer_parser.add_argument("--paths", default="")
+    _add_handoff_dir_arg(steer_parser)
+    steer_parser.add_argument("--message", "--note", dest="message", required=True)
+    steer_parser.add_argument("--task-id", "--task", "--id", dest="task_id", default="")
+    steer_parser.add_argument("--paths", "--path", dest="paths", default="")
     steer_parser.add_argument("--trigger-id", default="")
     steer_parser.add_argument("--action", choices=("auto", "steer", "after_run", "restart"), default="auto")
     steer_parser.add_argument("--deliver-herdr", action="store_true")
 
-    init_parser = subparsers.add_parser("init-goal", help="Initialize goal intent and budget.")
-    init_parser.add_argument("--handoff-dir", required=True)
+    init_parser = subparsers.add_parser("init-goal", aliases=["init"], help="Initialize goal intent and budget.")
+    _add_handoff_dir_arg(init_parser)
     init_parser.add_argument("--intent", choices=("deliver", "explore", "evolve", "debate", "implement"), default="deliver")
     init_parser.add_argument("--budget-sec", type=int, default=None)
     init_parser.add_argument("--budget-tokens", type=int, default=None)
@@ -1764,7 +1960,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--readonly", action="store_true")
 
     budget_parser = subparsers.add_parser("budget", help="Adjust an evolve goal budget.")
-    budget_parser.add_argument("--handoff-dir", required=True)
+    _add_handoff_dir_arg(budget_parser)
     budget_parser.add_argument("--extend-sec", type=int, default=None)
     budget_parser.add_argument("--set-total-sec", type=int, default=None)
     budget_parser.add_argument("--add-tokens", type=int, default=None)
@@ -1773,15 +1969,15 @@ def build_parser() -> argparse.ArgumentParser:
     budget_parser.add_argument("--clear", action="store_true")
 
     experiment_parser = subparsers.add_parser("experiment", help="Record keep/discard experiment results.")
-    experiment_parser.add_argument("--handoff-dir", required=True)
-    experiment_parser.add_argument("--task-id", required=True)
+    _add_handoff_dir_arg(experiment_parser)
+    experiment_parser.add_argument("--task-id", "--task", "--id", dest="task_id", required=True)
     experiment_parser.add_argument("--decision", choices=("keep", "discard"), required=True)
     experiment_parser.add_argument("--baseline-metric", required=True)
     experiment_parser.add_argument("--observed-metric", required=True)
     experiment_parser.add_argument("--evidence-ref", default="")
 
     receive_parser = subparsers.add_parser("receive", help="Receive a standard JSON Inbox event.")
-    receive_parser.add_argument("--handoff-dir", required=True)
+    _add_handoff_dir_arg(receive_parser)
     receive_parser.add_argument("--file", required=True)
     receive_parser.add_argument("--allowed-actors", default="")
 
@@ -1791,34 +1987,52 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
-        args = parser.parse_args(argv)
-        if args.subcommand == "enqueue":
+        normalized_argv = _normalize_argv(argv)
+        args = parser.parse_args(normalized_argv)
+        subcmd = SUBCOMMAND_ALIASES.get(args.subcommand, args.subcommand)
+        if subcmd == "enqueue":
             payload = cmd_enqueue(args)
-        elif args.subcommand == "next-wave":
+        elif subcmd == "next-wave":
             payload = cmd_next_wave(args)
-        elif args.subcommand == "set-status":
+        elif subcmd == "set-status":
             payload = cmd_set_status(args)
-        elif args.subcommand == "ack-spec":
+        elif subcmd == "ack-spec":
             payload = cmd_ack_spec(args)
-        elif args.subcommand == "ruling":
+        elif subcmd == "ruling":
             payload = cmd_ruling(args)
-        elif args.subcommand == "steer":
+        elif subcmd == "steer":
             payload = cmd_steer(args)
-        elif args.subcommand == "init-goal":
+        elif subcmd == "init-goal":
             payload = cmd_init_goal(args)
-        elif args.subcommand == "budget":
+        elif subcmd == "budget":
             payload = cmd_budget(args)
-        elif args.subcommand == "experiment":
+        elif subcmd == "experiment":
             payload = cmd_experiment(args)
-        elif args.subcommand == "receive":
+        elif subcmd == "receive":
             payload = cmd_receive(args)
         else:
             raise ValueError(f"Unknown subcommand: {args.subcommand}")
         _maybe_notify(Path(args.handoff_dir))
-        if args.subcommand != "next-wave" or args.mark_in_progress:
+        if subcmd != "next-wave" or args.mark_in_progress:
             _maybe_linear_sync(Path(args.handoff_dir))
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False) + "\n")
+        pointer = (
+            "Fix: run `python3 skills/team-lead/scripts/goal-queue.py --help`; "
+            "see skills/team-lead/references/ledger.md and skills/team-lead/references/playbook.md"
+        )
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "fix": pointer,
+                    "reference": "skills/team-lead/references/ledger.md",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            f"  {pointer}\n"
+        )
         return 2
 
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
