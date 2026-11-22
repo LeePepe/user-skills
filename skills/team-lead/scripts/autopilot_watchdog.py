@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Daily Autopilot Health Watchdog (`autopilot_watchdog.py`).
 
-Checks ONLY the two designated daily scheduled Autopilots on their 3 basic vital metrics:
+Checks ONLY the three designated daily scheduled Autopilots on their 3 basic vital metrics:
 1. `skill-retro` (`4e06bf2a` · `Daily Skill Progressive Retro Autopilot`):
    - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
    - `issue_materialized`: Today's `[Skill Retro]` issue (`skill-retro-autopilot-YYYY-MM-DD`) exists on Multica.
@@ -11,10 +11,19 @@ Checks ONLY the two designated daily scheduled Autopilots on their 3 basic vital
    - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
    - `issue_materialized`: Today's `[Daily Learn YYYY-MM-DD]` issue exists on Multica / Linear.
    - `non_empty_candidates`: Issue contains actual learning topics/articles (`> 0` items, not an empty/fallback shell).
+3. `aidata` (`27cd6086` · `Daily AIDash Digest & Retro Improvements Autopilot`):
+   - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
+   - `issue_and_snapshot_materialized`: Today's `[AIDash 日报 & Retro]` issue exists on Multica, yesterday's local
+     digest archive (`~/Development/AIDash/aidata/L5_apps/digest/archive/daily/<yesterday>.md`) exists and is non-empty,
+     and `~/Library/Application Support/AIDash/jobs/aidata-digest/skills-roi.json` exists with `coverage_status != "missing"`.
+   - `sources_healthy`: No source collection failures, timeouts, permission errors, or degraded state across the daily
+     digest archive, `cron-errors.log`, `state.json`, latest `27cd6086` run output, or `[AIDash 日报 & Retro]` issue.
 
 Behavior:
-- If both `skill-retro` and `daily-learn` pass all 3 basic metrics: exit `0` silently at `$0` token cost (`STATUS=HEALTHY`).
-- If either fails any basic metric:
+- Zero desktop popups: never invokes macOS desktop notification popups; all findings and self-healing results are
+  reported through Daily Brief / Multica issues only.
+- If `skill-retro`, `daily-learn`, and `aidata` pass all 3 basic metrics: exit `0` silently at `$0` token cost (`STATUS=HEALTHY`).
+- If any target fails any basic metric:
   1) Package the exact failure evidence (which autopilot failed, which basic metric failed, latest run ID,
      session ID, and error/degraded snippet);
   2) Escalate directly to M2 (via `m2-router.py` / `herdr-dispatch.sh` or inside the Autopilot's M2-Dispatcher
@@ -46,9 +55,15 @@ M2_ROUTER_SCRIPT_PATH = SKILLS_ROOT / "personal-m2-assistant" / "scripts" / "m2-
 HERDR_DISPATCH_SCRIPT_PATH = TEAM_LEAD_SCRIPTS_DIR / "herdr-dispatch.sh"
 ISSUE_BRIEF_SCRIPT_PATH = SKILLS_ROOT / "issue-brief" / "scripts" / "verify_issue_format.py"
 SKILL_RETRO_AUTOPILOT_SCRIPT_PATH = SKILLS_ROOT / "retro-loop" / "scripts" / "multica_skills_autopilot.py"
+DEFAULT_AIDATA_DIGEST_ARCHIVE_DIR = Path.home() / "Development" / "AIDash" / "aidata" / "L5_apps" / "digest" / "archive" / "daily"
+DEFAULT_AIDATA_JOBS_DIR = Path.home() / "Library" / "Application Support" / "AIDash" / "jobs" / "aidata-digest"
+DEFAULT_AIDATA_SKILLS_ROI_PATH = DEFAULT_AIDATA_JOBS_DIR / "skills-roi.json"
+DEFAULT_AIDATA_STATE_PATH = DEFAULT_AIDATA_JOBS_DIR / "state.json"
+DEFAULT_AIDATA_CRON_ERRORS_PATH = Path.home() / "Development" / "AIDash" / ".aidash-state" / "cron-errors.log"
+DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH = Path.home() / "Development" / "AIDash" / "aidata" / "scripts" / "aidata_digest_run.sh"
 
 LOOP_ID = "autopilot-health-watchdog"
-WATCHDOG_AUTOPILOT_TITLE = "Daily Autopilot Health Watchdog (skill-retro & daily-learn -> M2 Fix & Rerun)"
+WATCHDOG_AUTOPILOT_TITLE = "Daily Autopilot Health Watchdog (skill-retro, daily-learn & aidata -> M2 Fix & Rerun)"
 WATCHDOG_CRON = "10 5 * * *"
 WATCHDOG_TRIGGER_LABEL = "Daily CST 05:10 Autopilot Health Watchdog"
 
@@ -62,7 +77,16 @@ DAILY_LEARN_AUTOPILOT_ID_PREFIX = "8b4d6d04"
 DAILY_LEARN_CANONICAL_ID = "8b4d6d04-cc45-4565-9351-a3e8b07488c1"
 DAILY_LEARN_TITLE = "Daily Knowledge Digest Autopilot"
 
-ALLOWED_TARGETS: tuple[str, ...] = (SKILL_RETRO_TARGET_KEY, DAILY_LEARN_TARGET_KEY)
+AIDATA_TARGET_KEY = "aidata"
+AIDATA_AUTOPILOT_ID_PREFIX = "27cd6086"
+AIDATA_CANONICAL_ID = "27cd6086-16f1-4eaf-b770-aea440a46b13"
+AIDATA_TITLE = "Daily AIDash Digest & Retro Improvements Autopilot"
+
+ALLOWED_TARGETS: tuple[str, ...] = (
+    SKILL_RETRO_TARGET_KEY,
+    DAILY_LEARN_TARGET_KEY,
+    AIDATA_TARGET_KEY,
+)
 
 DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
 DEFAULT_WORKSPACE_ID = "6f6b9a0b-4375-4ebc-a997-ff0c99b2645c"
@@ -84,6 +108,11 @@ EMPTY_CANDIDATE_FALLBACK_RE = re.compile(
     re.IGNORECASE,
 )
 GENERIC_NOOP_RETRO_RE = re.compile(r"保持现有技能四层契约门禁与零成本巡检|维持日常自动观测即可")
+AIDATA_DIGEST_ERROR_RE = re.compile(r"(?:❌|数据不全|采集失败|投递失败)")
+AIDATA_SOURCE_DEGRADED_RE = re.compile(
+    r"(?:权限不足|无权限|超时并回退|超时|数据缺失|采集链路有降级|coverage_status\s*=\s*`?missing`?|collect\s+(?:timed\s+out|failed))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -109,6 +138,13 @@ TARGET_SPECS: dict[str, TargetAutopilotSpec] = {
         canonical_autopilot_id=DAILY_LEARN_CANONICAL_ID,
         display_title=DAILY_LEARN_TITLE,
         metric_names=("ran_today", "issue_materialized", "non_empty_candidates"),
+    ),
+    AIDATA_TARGET_KEY: TargetAutopilotSpec(
+        target_key=AIDATA_TARGET_KEY,
+        autopilot_id_prefix=AIDATA_AUTOPILOT_ID_PREFIX,
+        canonical_autopilot_id=AIDATA_CANONICAL_ID,
+        display_title=AIDATA_TITLE,
+        metric_names=("ran_today", "issue_and_snapshot_materialized", "sources_healthy"),
     ),
 }
 
@@ -287,6 +323,37 @@ def _match_daily_learn_issue(
         title = str(issue.get("title") or "")
         desc = str(issue.get("description") or "")
         if expected_title_prefix in title or any(m in desc for m in expected_markers):
+            candidates.append(dict(issue))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return candidates[0]
+
+
+def _match_aidata_issue(
+    issues: Sequence[Mapping[str, Any]],
+    *,
+    target_date_str: str,
+) -> dict[str, Any] | None:
+    expected_markers = (
+        f"multica-skills-autopilot:{target_date_str}",
+        f"skills-roi-autopilot-{target_date_str}",
+        f"aidash-retro-delta-{target_date_str}",
+    )
+    candidates: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, Mapping):
+            continue
+        status = str(issue.get("status") or "").lower()
+        if status in {"cancelled", "canceled"}:
+            continue
+        title = str(issue.get("title") or "")
+        desc = str(issue.get("description") or "")
+        title_matched = (
+            ("[AIDash 日报 & Retro]" in title or "[AIDash & Retro]" in title)
+            and target_date_str in title
+        )
+        if title_matched or any(m in desc for m in expected_markers):
             candidates.append(dict(issue))
     if not candidates:
         return None
@@ -553,6 +620,211 @@ def evaluate_daily_learn_vitals(
     }
 
 
+def evaluate_aidata_vitals(
+    *,
+    target_date_str: str,
+    autopilot: Mapping[str, Any],
+    runs: Sequence[Mapping[str, Any]],
+    issues: Sequence[Mapping[str, Any]],
+    yesterday_date_str: str | None = None,
+    digest_archive_dir: Path | None = None,
+    digest_archive_path: Path | None = None,
+    skills_roi_path: Path | None = None,
+    state_json_path: Path | None = None,
+    cron_errors_path: Path | None = None,
+) -> dict[str, Any]:
+    spec = TARGET_SPECS[AIDATA_TARGET_KEY]
+    today_runs = _select_today_runs(runs, target_date_str=target_date_str)
+    completed_today_runs = [r for r in today_runs if str(r.get("status") or "").lower() == "completed"]
+    latest_run = today_runs[0] if today_runs else (dict(runs[0]) if runs else None)
+    ran_today_ok = len(completed_today_runs) > 0
+
+    resolved_yesterday = yesterday_date_str
+    if not resolved_yesterday:
+        try:
+            resolved_yesterday = (date.fromisoformat(target_date_str) - timedelta(days=1)).isoformat()
+        except ValueError:
+            resolved_yesterday = target_date_str
+
+    archive_base = digest_archive_dir or DEFAULT_AIDATA_DIGEST_ARCHIVE_DIR
+    resolved_digest_path = digest_archive_path or (archive_base / f"{resolved_yesterday}.md")
+    resolved_skills_roi_path = skills_roi_path or DEFAULT_AIDATA_SKILLS_ROI_PATH
+    resolved_state_path = state_json_path or DEFAULT_AIDATA_STATE_PATH
+    resolved_cron_errors_path = cron_errors_path or DEFAULT_AIDATA_CRON_ERRORS_PATH
+
+    matched_issue = _match_aidata_issue(issues, target_date_str=target_date_str)
+    issue_exists = matched_issue is not None
+    issue_desc = str((matched_issue or {}).get("description") or "")
+
+    digest_text = ""
+    digest_exists = False
+    if resolved_digest_path.is_file():
+        try:
+            digest_text = resolved_digest_path.read_text(encoding="utf-8", errors="replace")
+            digest_exists = len(digest_text.strip()) > 0
+        except OSError:
+            digest_exists = False
+
+    skills_roi_exists = False
+    skills_roi_coverage = "missing"
+    if resolved_skills_roi_path.is_file():
+        try:
+            roi_payload = json.loads(resolved_skills_roi_path.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(roi_payload, Mapping):
+                skills_roi_exists = True
+                raw_cov = roi_payload.get("coverage_status")
+                if raw_cov is None and isinstance(roi_payload.get("summary"), Mapping):
+                    raw_cov = roi_payload["summary"].get("coverage_status")
+                skills_roi_coverage = str(raw_cov or "missing").strip().lower()
+        except (OSError, ValueError):
+            skills_roi_exists = False
+            skills_roi_coverage = "missing"
+
+    issue_reports_missing_coverage = bool(
+        re.search(r"\bcoverage_status\s*=\s*`?missing`?", issue_desc, re.IGNORECASE)
+    )
+    if issue_reports_missing_coverage:
+        skills_roi_coverage = "missing"
+
+    issue_and_snapshot_ok = bool(
+        issue_exists
+        and digest_exists
+        and skills_roi_exists
+        and skills_roi_coverage not in {"", "missing", "none", "null", "unknown"}
+        and not issue_reports_missing_coverage
+    )
+
+    degraded_sources: list[str] = []
+    cron_error_lines: list[str] = []
+
+    if digest_text:
+        for m in AIDATA_DIGEST_ERROR_RE.finditer(digest_text):
+            sig = f"digest:{m.group(0)}"
+            if sig not in degraded_sources:
+                degraded_sources.append(sig)
+
+    if resolved_cron_errors_path.is_file():
+        try:
+            for line in resolved_cron_errors_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if target_date_str in stripped or resolved_yesterday in stripped:
+                    cron_error_lines.append(stripped[:240])
+        except OSError:
+            pass
+    if cron_error_lines:
+        degraded_sources.append(f"cron_errors:{len(cron_error_lines)}")
+
+    if resolved_state_path.is_file():
+        try:
+            state_payload = json.loads(resolved_state_path.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(state_payload, Mapping):
+                top_status = str(state_payload.get("status") or "").strip().lower()
+                last_result = str(state_payload.get("lastResult") or "").strip().lower()
+                if top_status and top_status != "ok":
+                    degraded_sources.append(f"state.status={top_status}")
+                if last_result == "failure":
+                    degraded_sources.append("state.lastResult=failure")
+                stages = state_payload.get("stages")
+                if isinstance(stages, list):
+                    for st in stages:
+                        if not isinstance(st, Mapping):
+                            continue
+                        st_id = str(st.get("id") or "stage")
+                        st_status = str(st.get("status") or "").strip().lower()
+                        st_detail = str(st.get("detail") or "").strip()
+                        if (
+                            (st_status and st_status != "ok")
+                            or "降级" in st_detail
+                            or "missing" in st_detail.lower()
+                        ):
+                            degraded_sources.append(f"stage.{st_id}:{st_status or st_detail}")
+        except (OSError, ValueError):
+            degraded_sources.append("state.json:unreadable")
+
+    res_obj = (latest_run or {}).get("result") if isinstance((latest_run or {}).get("result"), Mapping) else {}
+    run_output = str(res_obj.get("output") or (latest_run or {}).get("failure_reason") or "")
+    for source_label, text_blob in (("run_output", run_output), ("issue_desc", issue_desc)):
+        for m in AIDATA_SOURCE_DEGRADED_RE.finditer(text_blob):
+            token = f"{source_label}:{m.group(0)}"
+            if token not in degraded_sources:
+                degraded_sources.append(token)
+
+    sources_healthy_ok = bool(
+        ran_today_ok
+        and issue_exists
+        and digest_exists
+        and len(degraded_sources) == 0
+        and len(cron_error_lines) == 0
+    )
+
+    metrics = {
+        "ran_today": {
+            "ok": ran_today_ok,
+            "today_runs_count": len(today_runs),
+            "completed_today_count": len(completed_today_runs),
+            "latest_run_id": (latest_run or {}).get("id"),
+            "latest_run_status": (latest_run or {}).get("status"),
+            "latest_triggered_at": (latest_run or {}).get("triggered_at"),
+        },
+        "issue_and_snapshot_materialized": {
+            "ok": issue_and_snapshot_ok,
+            "issue_id": (matched_issue or {}).get("id"),
+            "issue_identifier": (matched_issue or {}).get("identifier"),
+            "issue_title": (matched_issue or {}).get("title"),
+            "digest_archive_path": str(resolved_digest_path),
+            "digest_exists": digest_exists,
+            "skills_roi_path": str(resolved_skills_roi_path),
+            "skills_roi_exists": skills_roi_exists,
+            "skills_roi_coverage": skills_roi_coverage,
+        },
+        "sources_healthy": {
+            "ok": sources_healthy_ok,
+            "degraded_sources": degraded_sources,
+            "cron_error_lines": cron_error_lines[:5],
+            "state_json_path": str(resolved_state_path),
+            "cron_errors_path": str(resolved_cron_errors_path),
+        },
+    }
+    failed_metrics = [name for name in spec.metric_names if not metrics[name]["ok"]]
+    output_snippet = str(
+        run_output
+        or issue_desc
+        or ("; ".join(degraded_sources))
+        or ""
+    ).strip()[:400]
+    session_id = str(res_obj.get("session_id") or "")
+    work_dir = str(res_obj.get("work_dir") or "")
+
+    return {
+        "target": spec.target_key,
+        "autopilot_id": str(autopilot.get("id") or spec.canonical_autopilot_id),
+        "autopilot_title": str(autopilot.get("title") or spec.display_title),
+        "date": target_date_str,
+        "ok": len(failed_metrics) == 0,
+        "failed_metrics": failed_metrics,
+        "metrics": metrics,
+        "evidence": {
+            "autopilot_id": str(autopilot.get("id") or spec.canonical_autopilot_id),
+            "target": spec.target_key,
+            "failed_metrics": failed_metrics,
+            "latest_run_id": (latest_run or {}).get("id"),
+            "latest_run_status": (latest_run or {}).get("status"),
+            "session_id": session_id or None,
+            "work_dir": work_dir or None,
+            "issue_id": (matched_issue or {}).get("id"),
+            "issue_identifier": (matched_issue or {}).get("identifier"),
+            "digest_archive_path": str(resolved_digest_path),
+            "digest_exists": digest_exists,
+            "skills_roi_coverage": skills_roi_coverage,
+            "degraded_sources": degraded_sources,
+            "cron_error_lines": cron_error_lines[:5],
+            "snippet": output_snippet,
+        },
+    }
+
+
 def _fetch_multica_state(
     *,
     server_url: str,
@@ -560,6 +832,7 @@ def _fetch_multica_state(
     runner: Callable[..., subprocess.CompletedProcess[str]],
     multica_bin: str | None = None,
     collect_snapshot_path: Path | None = None,
+    include_aidata: bool = True,
 ) -> dict[str, Any]:
     ap_proc = runner(
         ["autopilot", "list", "--output", "json"],
@@ -572,6 +845,7 @@ def _fetch_multica_state(
 
     skill_retro_ap = _resolve_autopilot_record(TARGET_SPECS[SKILL_RETRO_TARGET_KEY], autopilots)
     daily_learn_ap = _resolve_autopilot_record(TARGET_SPECS[DAILY_LEARN_TARGET_KEY], autopilots)
+    aidata_ap = _resolve_autopilot_record(TARGET_SPECS[AIDATA_TARGET_KEY], autopilots)
 
     sr_runs_proc = runner(
         ["autopilot", "runs", str(skill_retro_ap["id"]), "--output", "json"],
@@ -591,6 +865,17 @@ def _fetch_multica_state(
     dl_runs_payload = _parse_json_stdout(dl_runs_proc, "autopilot runs daily-learn")
     dl_runs = dl_runs_payload.get("runs", []) if isinstance(dl_runs_payload, Mapping) else (dl_runs_payload if isinstance(dl_runs_payload, list) else [])
 
+    ad_runs: list[dict[str, Any]] = []
+    if include_aidata:
+        ad_runs_proc = runner(
+            ["autopilot", "runs", str(aidata_ap["id"]), "--output", "json"],
+            multica_bin=multica_bin,
+            server_url=server_url,
+            workspace_id=workspace_id,
+        )
+        ad_runs_payload = _parse_json_stdout(ad_runs_proc, "autopilot runs aidata")
+        ad_runs = ad_runs_payload.get("runs", []) if isinstance(ad_runs_payload, Mapping) else (ad_runs_payload if isinstance(ad_runs_payload, list) else [])
+
     issues_proc = runner(
         ["issue", "list", "--limit", "100", "--output", "json"],
         multica_bin=multica_bin,
@@ -600,14 +885,18 @@ def _fetch_multica_state(
     issues_payload = _parse_json_stdout(issues_proc, "issue list")
     raw_issues = issues_payload.get("issues", []) if isinstance(issues_payload, Mapping) else (issues_payload if isinstance(issues_payload, list) else [])
 
-    # Hydrate full descriptions for matching Skill Retro / Daily Learn issues when `issue list` omits description
+    # Hydrate full descriptions for matching Skill Retro / Daily Learn / AIDash issues when `issue list` omits description
     hydrated_issues: list[dict[str, Any]] = []
     for item in raw_issues:
         if not isinstance(item, Mapping):
             continue
         item_dict = dict(item)
         title = str(item_dict.get("title") or "")
-        if not item_dict.get("description") and ("[Skill Retro" in title or "[Daily Learn" in title):
+        if not item_dict.get("description") and (
+            "[Skill Retro" in title
+            or "[Daily Learn" in title
+            or "[AIDash" in title
+        ):
             ident_or_id = str(item_dict.get("identifier") or item_dict.get("id") or "")
             if ident_or_id:
                 get_proc = runner(
@@ -638,8 +927,10 @@ def _fetch_multica_state(
         "autopilots": autopilots,
         "skill_retro_autopilot": skill_retro_ap,
         "daily_learn_autopilot": daily_learn_ap,
+        "aidata_autopilot": aidata_ap,
         "skill_retro_runs": sr_runs,
         "daily_learn_runs": dl_runs,
+        "aidata_runs": ad_runs,
         "issues": hydrated_issues,
         "collect_snapshot": collect_snapshot,
     }
@@ -667,6 +958,14 @@ def build_m2_escalation_prompt(
             f"and `coverage != 'missing'`, update/re-file today's `[Skill Retro]` issue (`skill-retro-autopilot-{target_date_str}`), "
             f"and trigger rerun `multica autopilot trigger {ap_id}`."
         )
+    elif target == AIDATA_TARGET_KEY:
+        remediation_hint = (
+            f"Route to `aidash-aidata` M2 to inspect session `{session_id}` / run `{run_id}` for `aidata` (`{ap_id}`), "
+            f"fix source collection failures / permission or timeout errors ({failure_evidence.get('degraded_sources')}) "
+            f"and ensure yesterday's digest archive (`{failure_evidence.get('digest_archive_path')}`) and `skills-roi.json` "
+            f"(`coverage != 'missing'`) are materialized, rerun `/bin/bash {DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH}`, "
+            f"and trigger rerun `multica autopilot trigger {ap_id}` (no desktop popups; report in Daily Brief only)."
+        )
     else:
         remediation_hint = (
             f"Inspect session `{session_id}` / run `{run_id}` for Daily Knowledge Digest (`{ap_id}`). "
@@ -679,7 +978,11 @@ def build_m2_escalation_prompt(
         f"Target `{target}` (`{ap_id}`) failed basic vital metrics {failed_metrics}. "
         f"Evidence: run_id=`{run_id}`, session_id=`{session_id}`, issue=`{issue_ident}`, "
         f"sessions=`{failure_evidence.get('sessions')}`, coverage=`{failure_evidence.get('coverage')}`, "
-        f"candidate_count=`{failure_evidence.get('candidate_count')}`, snippet={snippet!r}. "
+        f"candidate_count=`{failure_evidence.get('candidate_count')}`, "
+        f"digest_exists=`{failure_evidence.get('digest_exists')}`, "
+        f"skills_roi_coverage=`{failure_evidence.get('skills_roi_coverage')}`, "
+        f"degraded_sources=`{failure_evidence.get('degraded_sources')}`, "
+        f"cron_error_lines=`{failure_evidence.get('cron_error_lines')}`, snippet={snippet!r}. "
         f"Action required: {remediation_hint} "
         f"Finally re-verify with `python3 skills/team-lead/scripts/autopilot_watchdog.py check --date {target_date_str} --server-url {server_url} --workspace-id {workspace_id} --json`."
     )
@@ -694,6 +997,7 @@ def _default_m2_escalator(
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     multica_bin: str | None = None,
+    aidata_digest_run_script_path: Path | None = None,
 ) -> dict[str, Any]:
     prompt = build_m2_escalation_prompt(
         failure_evidence,
@@ -716,7 +1020,7 @@ def _default_m2_escalator(
     actions_taken: list[str] = []
     remediation_detail: dict[str, Any] = {}
 
-    # 1. Deterministic self-heal for skill-retro `sessions=0` / `coverage=missing` or missing issue before/with M2 escalation
+    # 1. Deterministic self-heal for skill-retro or aidata before/with M2 escalation
     if target == SKILL_RETRO_TARGET_KEY and SKILL_RETRO_AUTOPILOT_SCRIPT_PATH.is_file():
         collect_out = Path(f"/tmp/multica-skills-autopilot-watchdog-{target_date_str}.json")
         run_once_cmd = [
@@ -734,6 +1038,22 @@ def _default_m2_escalator(
         remediation_detail["skill_retro_run_once_exit"] = proc.returncode
         if proc.returncode == 0:
             actions_taken.append("skill_retro_deterministic_recollect_and_file_issue")
+    elif target == AIDATA_TARGET_KEY:
+        digest_script = aidata_digest_run_script_path or DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH
+        if digest_script.is_file():
+            try:
+                proc = subprocess.run(
+                    ["/bin/bash", str(digest_script)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=180.0,
+                )
+                remediation_detail["aidata_digest_run_exit"] = proc.returncode
+                if proc.returncode == 0:
+                    actions_taken.append("aidata_digest_run_sh_executed")
+            except subprocess.TimeoutExpired:
+                remediation_detail["aidata_digest_run_exit"] = 124
 
     # 2. Dispatch M2 investigation via m2-router.py --plan (and herdr-dispatch.sh when available)
     if M2_ROUTER_SCRIPT_PATH.is_file():
@@ -805,6 +1125,13 @@ def run_watchdog(
     server_url: str = DEFAULT_SERVER_URL,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     collect_snapshot_path: Path | None = None,
+    yesterday_date_str: str | None = None,
+    digest_archive_dir: Path | None = None,
+    digest_archive_path: Path | None = None,
+    skills_roi_path: Path | None = None,
+    state_json_path: Path | None = None,
+    cron_errors_path: Path | None = None,
+    aidata_digest_run_script_path: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     escalator_fn: Callable[..., dict[str, Any]] | None = None,
     multica_bin: str | None = None,
@@ -819,6 +1146,8 @@ def run_watchdog(
             key = SKILL_RETRO_TARGET_KEY
         elif key in {"daily-learn-recommend", "daily_learn", "knowledge-digest"}:
             key = DAILY_LEARN_TARGET_KEY
+        elif key in {"aidata-digest", "aidash-digest", "aidash-retro-delta", "aidata_digest"}:
+            key = AIDATA_TARGET_KEY
         if key not in TARGET_SPECS:
             raise ValueError(f"Unsupported watchdog target '{raw_t}'; only {ALLOWED_TARGETS} are allowed")
         if key not in normalized_targets:
@@ -831,6 +1160,7 @@ def run_watchdog(
             runner=runner,
             multica_bin=multica_bin,
             collect_snapshot_path=collect_snapshot_path,
+            include_aidata=(AIDATA_TARGET_KEY in normalized_targets),
         )
         results: dict[str, dict[str, Any]] = {}
         if SKILL_RETRO_TARGET_KEY in normalized_targets:
@@ -847,6 +1177,19 @@ def run_watchdog(
                 autopilot=state["daily_learn_autopilot"],
                 runs=state["daily_learn_runs"],
                 issues=state["issues"],
+            )
+        if AIDATA_TARGET_KEY in normalized_targets:
+            results[AIDATA_TARGET_KEY] = evaluate_aidata_vitals(
+                target_date_str=date_str,
+                autopilot=state["aidata_autopilot"],
+                runs=state["aidata_runs"],
+                issues=state["issues"],
+                yesterday_date_str=yesterday_date_str,
+                digest_archive_dir=digest_archive_dir,
+                digest_archive_path=digest_archive_path,
+                skills_roi_path=skills_roi_path,
+                state_json_path=state_json_path,
+                cron_errors_path=cron_errors_path,
             )
         return results
 
@@ -881,15 +1224,17 @@ def run_watchdog(
     if auto_escalate:
         escalate = escalator_fn or _default_m2_escalator
         for failure in initial_failures:
-            esc_res = escalate(
-                failure,
-                target_date_str=date_str,
-                server_url=server_url,
-                workspace_id=workspace_id,
-                dry_run=dry_run,
-                runner=runner,
-                multica_bin=multica_bin,
-            )
+            esc_kwargs: dict[str, Any] = {
+                "target_date_str": date_str,
+                "server_url": server_url,
+                "workspace_id": workspace_id,
+                "dry_run": dry_run,
+                "runner": runner,
+                "multica_bin": multica_bin,
+            }
+            if escalate is _default_m2_escalator:
+                esc_kwargs["aidata_digest_run_script_path"] = aidata_digest_run_script_path
+            esc_res = escalate(failure, **esc_kwargs)
             escalations.append(esc_res)
 
         if not dry_run and reverify_polls > 0:
@@ -986,6 +1331,14 @@ def run_loop_check(
                     "why": f"检测到 `sessions={fail.get('sessions')}` / `coverage={fail.get('coverage')}` 或今日单据缺失，需恢复真实遥测覆盖",
                 }
             )
+        elif target == AIDATA_TARGET_KEY:
+            degraded_summary = ", ".join(str(s) for s in (fail.get("degraded_sources") or [])[:3]) or "missing snapshot/issue"
+            items.append(
+                {
+                    "what": f"修复并重跑 `aidata` (`{ap_id}`) 日报与数仓巡检任务（异常指标：`{failed_m}`）",
+                    "why": f"检测到源采集降级或归档/ROI快照缺失（`{degraded_summary}`），需升级 `aidash-aidata` M2 修复并重跑",
+                }
+            )
         else:
             items.append(
                 {
@@ -995,14 +1348,14 @@ def run_loop_check(
             )
 
     if report["status"] == "HEALTHY":
-        summary = "今日 `skill-retro` (`4e06bf2a`) 与 `daily-learn` (`8b4d6d04`) 三项核心生命体征全部健康通过。"
+        summary = "今日 `skill-retro` (`4e06bf2a`)、`daily-learn` (`8b4d6d04`) 与 `aidata` (`27cd6086`) 三项核心生命体征全部健康通过。"
     elif report["status"] == "RECOVERED_AFTER_M2_RERUN":
         summary = (
-            f"检测到 {len(initial_failures)} 项定时任务基本指标异常，已自动升级 M2 修复并重跑复验通过。"
+            f"检测到 {len(initial_failures)} 项定时任务基本指标异常，已自动升级 M2 修复并重跑复验通过（无弹窗，沉淀至每日汇报）。"
         )
     else:
         summary = (
-            f"检测到 {len(remaining_failures)} 项定时任务（`skill-retro` / `daily-learn`）基本生命体征未通过，已升级 M2 排障重跑。"
+            f"检测到 {len(remaining_failures)} 项定时任务（`skill-retro` / `daily-learn` / `aidata`）基本生命体征未通过，已升级 M2 排障重跑。"
         )
 
     return {
@@ -1032,7 +1385,7 @@ def run_loop_check(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autopilot_watchdog.py",
-        description="Daily Autopilot Health Watchdog for skill-retro (4e06bf2a) and daily-learn (8b4d6d04)",
+        description="Daily Autopilot Health Watchdog for skill-retro (4e06bf2a), daily-learn (8b4d6d04), and aidata (27cd6086)",
     )
     sub = parser.add_subparsers(dest="subcommand", required=False)
 
@@ -1043,7 +1396,7 @@ def _build_parser() -> argparse.ArgumentParser:
             dest="targets",
             action="append",
             default=None,
-            help="Target autopilot to check (skill-retro, daily-learn). Defaults to both.",
+            help="Target autopilot to check (skill-retro, daily-learn, aidata). Defaults to all three.",
         )
         p.add_argument("--no-escalate", action="store_true", help="Check only without triggering M2 escalation or rerun")
         p.add_argument("--dry-run", action="store_true", help="Plan M2 escalation without mutating live Multica state")

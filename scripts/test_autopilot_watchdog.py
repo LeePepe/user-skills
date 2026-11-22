@@ -39,6 +39,47 @@ DAILY_LEARN_AP = {
     "title": "Daily Knowledge Digest Autopilot (3 Personal -> Blog + 3 Agent -> Vault & Owner Fusion Gate)",
     "status": "active",
 }
+AIDATA_AP = {
+    "id": "27cd6086-16f1-4eaf-b770-aea440a46b13",
+    "title": "Daily AIDash Digest & Retro Improvements Autopilot (P3 -> Owner)",
+    "status": "active",
+}
+
+
+def _healthy_aidata_issue(
+    date_str: str = "2026-11-22",
+    *,
+    degraded: bool = False,
+) -> dict:
+    if degraded:
+        desc = (
+            f"<!-- multica-skills-autopilot:{date_str} -->\n"
+            f"<!-- multica-cursor:skills-roi-autopilot-{date_str} -->\n\n"
+            "**一句话结论**：今日采集链路有降级，且审核返工、网关首字延迟与 Steering 占比超预算。\n\n"
+            "- [ ] 1. 日报流水线 — `multica_issue` 无权限、`bot_tl`/`release_tf` 超时，补 bounded timeout。\n\n"
+            "<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\n\n"
+            "- Skill ROI 快照明确为 `coverage_status=missing`（producer exit 143）。\n"
+            "</details>"
+        )
+    else:
+        desc = (
+            f"<!-- multica-skills-autopilot:{date_str} -->\n"
+            f"<!-- multica-cursor:skills-roi-autopilot-{date_str} -->\n\n"
+            "**一句话结论**：今日 AIDash 数仓采集、L2/L3 合并与 Skills ROI (S1–S12) 全绿。\n\n"
+            "- [ ] 1. 保持当前数仓采集与每日简报节奏 — 全源健康\n\n"
+            "<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\n\n"
+            f"- **Dedup Marker**: `skills-roi-autopilot-{date_str}` · `coverage_status=healthy`\n"
+            "</details>"
+        )
+    return {
+        "id": "issue-aidata-2026-11-22",
+        "identifier": "TIA-24",
+        "title": f"[P2 / Priority 2][AIDash 日报 & Retro] {date_str} 7d 效能脉搏、数据契约缺口与 Top 3 技能进化处方",
+        "status": "todo",
+        "created_at": "2026-11-21T20:32:30Z",
+        "updated_at": "2026-11-21T20:32:30Z",
+        "description": desc,
+    }
 
 
 def _healthy_skill_retro_issue(date_str: str = "2026-11-22", *, sessions: int = 18, coverage: str = "healthy") -> dict:
@@ -99,14 +140,77 @@ def _healthy_run(autopilot_id: str, *, run_id: str, session_id: str, output: str
 
 
 class AutopilotWatchdogTests(unittest.TestCase):
+    def _create_aidata_fixtures(
+        self,
+        tmp_dir: str,
+        *,
+        yesterday_str: str = "2026-11-21",
+        digest_content: str = "# AI 使用日报 2026-11-21\n\n> 数据源: raven✅ multica✅ ADO✅ state.db✅\n",
+        create_digest: bool = True,
+        skills_roi_coverage: str = "healthy",
+        state_status: str = "ok",
+        state_last_result: str = "success",
+        stage_status: str = "ok",
+        stage_detail: str = "33 源成功",
+        cron_errors_content: str = "",
+    ) -> dict:
+        base = Path(tmp_dir)
+        archive_dir = base / "archive" / "daily"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        digest_path = archive_dir / f"{yesterday_str}.md"
+        if create_digest:
+            digest_path.write_text(digest_content, encoding="utf-8")
+
+        skills_roi_path = base / "skills-roi.json"
+        skills_roi_path.write_text(
+            json.dumps({"schema_version": 2, "coverage_status": skills_roi_coverage, "sample_size": 42}),
+            encoding="utf-8",
+        )
+
+        state_json_path = base / "state.json"
+        state_json_path.write_text(
+            json.dumps(
+                {
+                    "id": "aidata-digest",
+                    "status": state_status,
+                    "lastResult": state_last_result,
+                    "sourceAsOf": yesterday_str,
+                    "stages": [{"id": "collect", "status": stage_status, "detail": stage_detail}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cron_errors_path = base / "cron-errors.log"
+        cron_errors_path.write_text(cron_errors_content, encoding="utf-8")
+
+        digest_run_script = base / "aidata_digest_run.sh"
+        digest_run_script.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        digest_run_script.chmod(0o755)
+
+        return {
+            "yesterday_date_str": yesterday_str,
+            "digest_archive_dir": archive_dir,
+            "digest_archive_path": digest_path,
+            "skills_roi_path": skills_roi_path,
+            "state_json_path": state_json_path,
+            "cron_errors_path": cron_errors_path,
+            "aidata_digest_run_script_path": digest_run_script,
+        }
+
     def test_relative_symlink_points_to_team_lead_canonical_script(self):
         self.assertTrue(M2_SYMLINK_PATH.is_symlink())
         raw_link = os.readlink(M2_SYMLINK_PATH)
         self.assertEqual(raw_link, "../../team-lead/scripts/autopilot_watchdog.py")
         self.assertEqual(M2_SYMLINK_PATH.resolve(), WATCHDOG_PATH.resolve())
 
-    def test_scope_enforces_only_skill_retro_and_daily_learn_targets(self):
-        self.assertEqual(watchdog.ALLOWED_TARGETS, ("skill-retro", "daily-learn"))
+    def test_zero_desktop_popup_rule_enforced_in_watchdog_source(self):
+        source_text = WATCHDOG_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("osascript", source_text)
+        self.assertNotIn("display notification", source_text)
+
+    def test_scope_enforces_skill_retro_daily_learn_and_aidata_targets(self):
+        self.assertEqual(watchdog.ALLOWED_TARGETS, ("skill-retro", "daily-learn", "aidata"))
         with self.assertRaises(ValueError):
             watchdog.run_watchdog(
                 target_date=date(2026, 11, 22),
@@ -117,45 +221,69 @@ class AutopilotWatchdogTests(unittest.TestCase):
     def test_healthy_pass_exits_silently_at_zero_token_cost_without_escalation(self):
         escalations = []
 
-        def fake_runner(args, **kwargs):
-            cmd = list(args)
-            if cmd[:2] == ["autopilot", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"autopilots": [SKILL_RETRO_AP, DAILY_LEARN_AP]}), stderr="")
-            if cmd[:3] == ["autopilot", "runs", SKILL_RETRO_AP["id"]]:
-                return subprocess.CompletedProcess(
-                    cmd,
-                    0,
-                    stdout=json.dumps({"runs": [_healthy_run(SKILL_RETRO_AP["id"], run_id="run-sr-1", session_id="sess-sr-1")]}),
-                    stderr="",
-                )
-            if cmd[:3] == ["autopilot", "runs", DAILY_LEARN_AP["id"]]:
-                return subprocess.CompletedProcess(
-                    cmd,
-                    0,
-                    stdout=json.dumps({"runs": [_healthy_run(DAILY_LEARN_AP["id"], run_id="run-dl-1", session_id="sess-dl-1")]}),
-                    stderr="",
-                )
-            if cmd[:2] == ["issue", "list"]:
-                return subprocess.CompletedProcess(
-                    cmd,
-                    0,
-                    stdout=json.dumps({"issues": [_healthy_skill_retro_issue("2026-11-22", sessions=24, coverage="healthy"), _healthy_daily_learn_issue("2026-11-22")]}),
-                    stderr="",
-                )
-            raise AssertionError(f"Unexpected multica call: {cmd}")
+        with tempfile.TemporaryDirectory() as tmp:
+            aidata_paths = self._create_aidata_fixtures(tmp)
 
-        report = watchdog.run_watchdog(
-            target_date=date(2026, 11, 22),
-            runner=fake_runner,
-            escalator_fn=lambda *a, **kw: escalations.append((a, kw)) or {"ok": True},
-        )
-        self.assertTrue(report["ok"])
-        self.assertEqual(report["status"], "HEALTHY")
-        self.assertEqual(report["token_cost"], 0)
-        self.assertEqual(report["failures"], [])
-        self.assertEqual(escalations, [])
-        for target_key in ("skill-retro", "daily-learn"):
-            self.assertTrue(report["checks"][target_key]["ok"])
+            def fake_runner(args, **kwargs):
+                cmd = list(args)
+                if cmd[:2] == ["autopilot", "list"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"autopilots": [SKILL_RETRO_AP, DAILY_LEARN_AP, AIDATA_AP]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", SKILL_RETRO_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(SKILL_RETRO_AP["id"], run_id="run-sr-1", session_id="sess-sr-1")]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", DAILY_LEARN_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(DAILY_LEARN_AP["id"], run_id="run-dl-1", session_id="sess-dl-1")]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", AIDATA_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(AIDATA_AP["id"], run_id="run-ad-1", session_id="sess-ad-1")]}),
+                        stderr="",
+                    )
+                if cmd[:2] == ["issue", "list"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "issues": [
+                                    _healthy_skill_retro_issue("2026-11-22", sessions=24, coverage="healthy"),
+                                    _healthy_daily_learn_issue("2026-11-22"),
+                                    _healthy_aidata_issue("2026-11-22", degraded=False),
+                                ]
+                            }
+                        ),
+                        stderr="",
+                    )
+                raise AssertionError(f"Unexpected multica call: {cmd}")
+
+            report = watchdog.run_watchdog(
+                target_date=date(2026, 11, 22),
+                runner=fake_runner,
+                escalator_fn=lambda *a, **kw: escalations.append((a, kw)) or {"ok": True},
+                **aidata_paths,
+            )
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["status"], "HEALTHY")
+            self.assertEqual(report["token_cost"], 0)
+            self.assertEqual(report["failures"], [])
+            self.assertEqual(escalations, [])
+            for target_key in ("skill-retro", "daily-learn", "aidata"):
+                self.assertTrue(report["checks"][target_key]["ok"])
 
     def test_skill_retro_sessions_zero_and_coverage_missing_triggers_m2_escalation_rerun_and_reverify(self):
         """Catches the exact TIA-25 silent fallback (`sessions=0`, `coverage=missing`), escalates to M2, reruns 4e06bf2a, and re-verifies."""
@@ -221,6 +349,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
 
         report = watchdog.run_watchdog(
             target_date=date(2026, 11, 22),
+            targets=("skill-retro", "daily-learn"),
             runner=fake_runner,
             escalator_fn=fake_m2_escalator,
             reverify_polls=1,
@@ -305,6 +434,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
         # 1) Check when Daily Learn issue is completely missing (like on 2026-11-22 when 8b4d6d04 only pushed Blog)
         check_missing = watchdog.run_watchdog(
             target_date=date(2026, 11, 22),
+            targets=("skill-retro", "daily-learn"),
             auto_escalate=False,
             runner=fake_runner,
         )
@@ -329,6 +459,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
 
         recovered = watchdog.run_watchdog(
             target_date=date(2026, 11, 22),
+            targets=("skill-retro", "daily-learn"),
             auto_escalate=True,
             runner=fake_runner,
             escalator_fn=fake_escalator,
@@ -342,12 +473,153 @@ class AutopilotWatchdogTests(unittest.TestCase):
         self.assertEqual(recovered["status"], "RECOVERED_AFTER_M2_RERUN")
         self.assertGreater(recovered["checks"]["daily-learn"]["metrics"]["non_empty_candidates"]["candidate_count"], 0)
 
+    def test_aidata_degraded_sources_and_missing_snapshot_triggers_m2_escalation_rerun_and_reverify(self):
+        """Catches TIA-24 style aidata failures (multica_issue permission denied, bot_tl/release_tf timeout, coverage_status=missing, missing digest archive, or cron-errors.log) -> escalates to aidash-aidata M2 -> runs aidata_digest_run.sh + triggers 27cd6086 -> re-verifies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            aidata_paths = self._create_aidata_fixtures(
+                tmp,
+                create_digest=False,
+                skills_roi_coverage="missing",
+                state_status="failed",
+                state_last_result="failure",
+                stage_status="warning",
+                stage_detail="33 源成功 · 2 降级",
+                cron_errors_content="2026-11-22 04:05:12 [ERROR] multica_issue permission denied; bot_tl collect timed out\n",
+            )
+            state = {"healed": False}
+            triggered_autopilots = []
+            escalation_evidence = []
+
+            def fake_runner(args, **kwargs):
+                cmd = list(args)
+                if cmd[:2] == ["autopilot", "list"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"autopilots": [SKILL_RETRO_AP, DAILY_LEARN_AP, AIDATA_AP]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", SKILL_RETRO_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(SKILL_RETRO_AP["id"], run_id="run-sr-ok", session_id="sess-sr-ok")]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", DAILY_LEARN_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(DAILY_LEARN_AP["id"], run_id="run-dl-ok", session_id="sess-dl-ok")]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", AIDATA_AP["id"]]:
+                    out_msg = (
+                        "L1/L2 完成采集与合并：`multica_issue` 权限不足，`bot_tl`/`release_tf` 超时并回退旧数据；coverage_status=missing"
+                        if not state["healed"]
+                        else "aidata-digest 全部阶段与 S1-S12 ROI 快照重跑完成，全源健康"
+                    )
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(AIDATA_AP["id"], run_id="01a1ffb2-12ee", session_id="f16e2c14-0439", output=out_msg)]}),
+                        stderr="",
+                    )
+                if cmd[:2] == ["issue", "list"]:
+                    ad_issue = _healthy_aidata_issue("2026-11-22", degraded=not state["healed"])
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps(
+                            {
+                                "issues": [
+                                    _healthy_skill_retro_issue("2026-11-22", sessions=20, coverage="healthy"),
+                                    _healthy_daily_learn_issue("2026-11-22"),
+                                    ad_issue,
+                                ]
+                            }
+                        ),
+                        stderr="",
+                    )
+                if cmd[:2] == ["autopilot", "trigger"]:
+                    triggered_autopilots.append(cmd[2])
+                    state["healed"] = True
+                    aidata_paths["digest_archive_path"].write_text(
+                        "# AI 使用日报 2026-11-21\n\n> 数据源: raven✅ multica✅ ADO✅ state.db✅\n",
+                        encoding="utf-8",
+                    )
+                    aidata_paths["skills_roi_path"].write_text(
+                        json.dumps({"schema_version": 2, "coverage_status": "healthy", "sample_size": 45}),
+                        encoding="utf-8",
+                    )
+                    aidata_paths["state_json_path"].write_text(
+                        json.dumps(
+                            {
+                                "id": "aidata-digest",
+                                "status": "ok",
+                                "lastResult": "success",
+                                "sourceAsOf": "2026-11-21",
+                                "stages": [{"id": "collect", "status": "ok", "detail": "35 源全部成功"}],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    aidata_paths["cron_errors_path"].write_text("", encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"run_id": "rerun-ad-2", "status": "queued"}), stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+            def fake_aidata_escalator(evidence, *, target_date_str, runner, **kwargs):
+                escalation_evidence.append(dict(evidence))
+                prompt = watchdog.build_m2_escalation_prompt(evidence, target_date_str=target_date_str)
+                self.assertIn("27cd6086", prompt)
+                self.assertIn("aidash-aidata", prompt)
+                self.assertIn("issue_and_snapshot_materialized", prompt)
+                self.assertIn("sources_healthy", prompt)
+                runner(["autopilot", "trigger", evidence["autopilot_id"], "--output", "json"])
+                return {
+                    "ok": True,
+                    "action": "m2_escalated_and_rerun_triggered",
+                    "target": evidence["target"],
+                    "autopilot_id": evidence["autopilot_id"],
+                    "rerun_triggered": True,
+                    "m2_prompt": prompt,
+                }
+
+            report = watchdog.run_watchdog(
+                target_date=date(2026, 11, 22),
+                runner=fake_runner,
+                escalator_fn=fake_aidata_escalator,
+                reverify_polls=1,
+                **aidata_paths,
+            )
+            self.assertEqual(len(escalation_evidence), 1)
+            ev = escalation_evidence[0]
+            self.assertEqual(ev["target"], "aidata")
+            self.assertEqual(ev["failed_metrics"], ["issue_and_snapshot_materialized", "sources_healthy"])
+            self.assertEqual(ev["latest_run_id"], "01a1ffb2-12ee")
+            self.assertEqual(ev["session_id"], "f16e2c14-0439")
+            self.assertFalse(ev["digest_exists"])
+            self.assertEqual(ev["skills_roi_coverage"], "missing")
+            self.assertTrue(len(ev["degraded_sources"]) > 0)
+            self.assertTrue(len(ev["cron_error_lines"]) > 0)
+            self.assertEqual(triggered_autopilots, [AIDATA_AP["id"]])
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["status"], "RECOVERED_AFTER_M2_RERUN")
+            self.assertTrue(report["reverified"])
+            self.assertTrue(report["checks"]["aidata"]["metrics"]["issue_and_snapshot_materialized"]["ok"])
+            self.assertTrue(report["checks"]["aidata"]["metrics"]["sources_healthy"]["ok"])
+
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")
         self.assertEqual(spec.loop_id, "autopilot-health-watchdog")
         self.assertEqual(spec.cron, "10 5 * * *")
         self.assertEqual(spec.delivery_mode, "auto_fix_and_digest_only")
         self.assertIn("Daily Autopilot Health Watchdog", spec.autopilot_title)
+        self.assertIn("aidata", spec.autopilot_title)
+
+        desc = loop_runner.build_loop_autopilot_description(spec)
+        self.assertIn("Target 3 · `aidata` (`27cd6086`)", desc)
+        self.assertIn("Zero desktop popups", desc)
 
         dry = loop_runner.sync_autopilots(loop_id="autopilot-health-watchdog", dry_run=True)
         self.assertTrue(dry["ok"])

@@ -151,12 +151,13 @@
     },
     {
       "id": "EV-009",
-      "title": "autopilot_watchdog.py shared symlink exposes check and loop-check for skill-retro and daily-learn",
+      "title": "autopilot_watchdog.py shared symlink exposes check and loop-check for skill-retro, daily-learn, and aidata",
       "tags": [
         "multica",
         "watchdog",
         "autopilot",
-        "m2-escalation"
+        "m2-escalation",
+        "aidata"
       ],
       "cmd": "python3 skills/m2-dispatcher/scripts/autopilot_watchdog.py --help",
       "expect_exit": 0,
@@ -164,7 +165,8 @@
         "check",
         "loop-check",
         "skill-retro",
-        "daily-learn"
+        "daily-learn",
+        "aidata"
       ],
       "negative_cmd": "python3 skills/m2-dispatcher/scripts/autopilot_watchdog.py check --target invalid-target --no-escalate",
       "registered_at": "2026-11-22"
