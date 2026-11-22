@@ -61,6 +61,8 @@ DEFAULT_AIDATA_SKILLS_ROI_PATH = DEFAULT_AIDATA_JOBS_DIR / "skills-roi.json"
 DEFAULT_AIDATA_STATE_PATH = DEFAULT_AIDATA_JOBS_DIR / "state.json"
 DEFAULT_AIDATA_CRON_ERRORS_PATH = Path.home() / "Development" / "AIDash" / ".aidash-state" / "cron-errors.log"
 DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH = Path.home() / "Development" / "AIDash" / "aidata" / "scripts" / "aidata_digest_run.sh"
+DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC = 2700.0
+DEFAULT_AIDATA_PER_SOURCE_TIMEOUT_SEC = 180
 
 LOOP_ID = "autopilot-health-watchdog"
 WATCHDOG_AUTOPILOT_TITLE = "Daily Autopilot Health Watchdog (skill-retro, daily-learn & aidata -> M2 Fix & Rerun)"
@@ -722,7 +724,7 @@ def evaluate_aidata_vitals(
             if isinstance(state_payload, Mapping):
                 top_status = str(state_payload.get("status") or "").strip().lower()
                 last_result = str(state_payload.get("lastResult") or "").strip().lower()
-                if top_status and top_status != "ok":
+                if top_status and top_status not in {"ok", "idle"}:
                     degraded_sources.append(f"state.status={top_status}")
                 if last_result == "failure":
                     degraded_sources.append("state.lastResult=failure")
@@ -998,6 +1000,7 @@ def _default_m2_escalator(
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     multica_bin: str | None = None,
     aidata_digest_run_script_path: Path | None = None,
+    aidata_digest_run_timeout_sec: float = DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     prompt = build_m2_escalation_prompt(
         failure_evidence,
@@ -1041,19 +1044,27 @@ def _default_m2_escalator(
     elif target == AIDATA_TARGET_KEY:
         digest_script = aidata_digest_run_script_path or DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH
         if digest_script.is_file():
+            env = dict(os.environ)
+            env.setdefault("PER_SOURCE_TIMEOUT", str(DEFAULT_AIDATA_PER_SOURCE_TIMEOUT_SEC))
+            remediation_detail["aidata_digest_run_timeout_sec"] = aidata_digest_run_timeout_sec
+            remediation_detail["aidata_per_source_timeout_sec"] = int(env["PER_SOURCE_TIMEOUT"])
             try:
                 proc = subprocess.run(
                     ["/bin/bash", str(digest_script)],
                     capture_output=True,
                     text=True,
+                    env=env,
                     check=False,
-                    timeout=180.0,
+                    timeout=aidata_digest_run_timeout_sec,
                 )
                 remediation_detail["aidata_digest_run_exit"] = proc.returncode
                 if proc.returncode == 0:
                     actions_taken.append("aidata_digest_run_sh_executed")
+                else:
+                    remediation_detail["aidata_digest_run_stderr"] = (proc.stderr or proc.stdout or "").strip()[:300]
             except subprocess.TimeoutExpired:
                 remediation_detail["aidata_digest_run_exit"] = 124
+                remediation_detail["aidata_digest_run_timed_out"] = True
 
     # 2. Dispatch M2 investigation via m2-router.py --plan (and herdr-dispatch.sh when available)
     if M2_ROUTER_SCRIPT_PATH.is_file():
@@ -1132,6 +1143,7 @@ def run_watchdog(
     state_json_path: Path | None = None,
     cron_errors_path: Path | None = None,
     aidata_digest_run_script_path: Path | None = None,
+    aidata_digest_run_timeout_sec: float = DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC,
     runner: Callable[..., subprocess.CompletedProcess[str]] = _default_multica_runner,
     escalator_fn: Callable[..., dict[str, Any]] | None = None,
     multica_bin: str | None = None,
@@ -1234,6 +1246,7 @@ def run_watchdog(
             }
             if escalate is _default_m2_escalator:
                 esc_kwargs["aidata_digest_run_script_path"] = aidata_digest_run_script_path
+                esc_kwargs["aidata_digest_run_timeout_sec"] = aidata_digest_run_timeout_sec
             esc_res = escalate(failure, **esc_kwargs)
             escalations.append(esc_res)
 

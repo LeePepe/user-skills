@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from datetime import date
 from pathlib import Path
 
@@ -185,7 +186,17 @@ class AutopilotWatchdogTests(unittest.TestCase):
         cron_errors_path.write_text(cron_errors_content, encoding="utf-8")
 
         digest_run_script = base / "aidata_digest_run.sh"
-        digest_run_script.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        digest_run_script.write_text(
+            "#!/bin/bash\n"
+            "set -euo pipefail\n"
+            f'mkdir -p "{archive_dir}"\n'
+            f'printf "# AI 使用日报 {yesterday_str}\\n\\n> 数据源: raven✅ multica✅ ADO✅ state.db✅\\n" > "{digest_path}"\n'
+            f'printf \'{{"schema_version": 2, "coverage_status": "healthy", "sample_size": 45}}\' > "{skills_roi_path}"\n'
+            f'printf \'{{"id": "aidata-digest", "status": "idle", "lastResult": "success", "sourceAsOf": "{yesterday_str}", "stages": [{{"id": "collect", "status": "ok", "detail": "35 源成功"}}]}}\' > "{state_json_path}"\n'
+            f': > "{cron_errors_path}"\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
         digest_run_script.chmod(0o755)
 
         return {
@@ -544,56 +555,18 @@ class AutopilotWatchdogTests(unittest.TestCase):
                 if cmd[:2] == ["autopilot", "trigger"]:
                     triggered_autopilots.append(cmd[2])
                     state["healed"] = True
-                    aidata_paths["digest_archive_path"].write_text(
-                        "# AI 使用日报 2026-11-21\n\n> 数据源: raven✅ multica✅ ADO✅ state.db✅\n",
-                        encoding="utf-8",
-                    )
-                    aidata_paths["skills_roi_path"].write_text(
-                        json.dumps({"schema_version": 2, "coverage_status": "healthy", "sample_size": 45}),
-                        encoding="utf-8",
-                    )
-                    aidata_paths["state_json_path"].write_text(
-                        json.dumps(
-                            {
-                                "id": "aidata-digest",
-                                "status": "ok",
-                                "lastResult": "success",
-                                "sourceAsOf": "2026-11-21",
-                                "stages": [{"id": "collect", "status": "ok", "detail": "35 源全部成功"}],
-                            }
-                        ),
-                        encoding="utf-8",
-                    )
-                    aidata_paths["cron_errors_path"].write_text("", encoding="utf-8")
                     return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"run_id": "rerun-ad-2", "status": "queued"}), stderr="")
                 return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
 
-            def fake_aidata_escalator(evidence, *, target_date_str, runner, **kwargs):
-                escalation_evidence.append(dict(evidence))
-                prompt = watchdog.build_m2_escalation_prompt(evidence, target_date_str=target_date_str)
-                self.assertIn("27cd6086", prompt)
-                self.assertIn("aidash-aidata", prompt)
-                self.assertIn("issue_and_snapshot_materialized", prompt)
-                self.assertIn("sources_healthy", prompt)
-                runner(["autopilot", "trigger", evidence["autopilot_id"], "--output", "json"])
-                return {
-                    "ok": True,
-                    "action": "m2_escalated_and_rerun_triggered",
-                    "target": evidence["target"],
-                    "autopilot_id": evidence["autopilot_id"],
-                    "rerun_triggered": True,
-                    "m2_prompt": prompt,
-                }
-
-            report = watchdog.run_watchdog(
-                target_date=date(2026, 11, 22),
-                runner=fake_runner,
-                escalator_fn=fake_aidata_escalator,
-                reverify_polls=1,
-                **aidata_paths,
-            )
-            self.assertEqual(len(escalation_evidence), 1)
-            ev = escalation_evidence[0]
+            with unittest.mock.patch.object(watchdog, "M2_ROUTER_SCRIPT_PATH", Path(tmp) / "nonexistent-m2-router.py"):
+                report = watchdog.run_watchdog(
+                    target_date=date(2026, 11, 22),
+                    runner=fake_runner,
+                    reverify_polls=1,
+                    **aidata_paths,
+                )
+            self.assertEqual(len(report["initial_failures"]), 1)
+            ev = report["initial_failures"][0]
             self.assertEqual(ev["target"], "aidata")
             self.assertEqual(ev["failed_metrics"], ["issue_and_snapshot_materialized", "sources_healthy"])
             self.assertEqual(ev["latest_run_id"], "01a1ffb2-12ee")
@@ -603,11 +576,79 @@ class AutopilotWatchdogTests(unittest.TestCase):
             self.assertTrue(len(ev["degraded_sources"]) > 0)
             self.assertTrue(len(ev["cron_error_lines"]) > 0)
             self.assertEqual(triggered_autopilots, [AIDATA_AP["id"]])
+            self.assertEqual(len(report["escalations"]), 1)
+            esc = report["escalations"][0]
+            self.assertIn("aidata_digest_run_sh_executed", esc["actions_taken"])
+            self.assertIn("multica_autopilot_triggered", esc["actions_taken"])
+            self.assertEqual(esc["remediation_detail"]["aidata_digest_run_timeout_sec"], watchdog.DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC)
+            self.assertGreaterEqual(watchdog.DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC, 2400.0)
+            self.assertIn("27cd6086", esc["m2_prompt"])
+            self.assertIn("aidash-aidata", esc["m2_prompt"])
             self.assertTrue(report["ok"])
             self.assertEqual(report["status"], "RECOVERED_AFTER_M2_RERUN")
             self.assertTrue(report["reverified"])
             self.assertTrue(report["checks"]["aidata"]["metrics"]["issue_and_snapshot_materialized"]["ok"])
             self.assertTrue(report["checks"]["aidata"]["metrics"]["sources_healthy"]["ok"])
+
+    def test_aidata_default_escalator_timeout_remains_escalated_unhealthy(self):
+        """Verifies that if aidata_digest_run.sh times out and does not repair local snapshots, re-verification honestly reports ESCALATED_UNHEALTHY."""
+        with tempfile.TemporaryDirectory() as tmp:
+            aidata_paths = self._create_aidata_fixtures(
+                tmp,
+                create_digest=False,
+                skills_roi_coverage="missing",
+                state_status="failed",
+                state_last_result="failure",
+                stage_status="warning",
+                stage_detail="33 源成功 · 2 降级",
+            )
+            slow_script = Path(tmp) / "slow_digest.sh"
+            slow_script.write_text("#!/bin/bash\nsleep 2\nexit 0\n", encoding="utf-8")
+            slow_script.chmod(0o755)
+            aidata_paths["aidata_digest_run_script_path"] = slow_script
+
+            def fake_runner(args, **kwargs):
+                cmd = list(args)
+                if cmd[:2] == ["autopilot", "list"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"autopilots": [SKILL_RETRO_AP, DAILY_LEARN_AP, AIDATA_AP]}),
+                        stderr="",
+                    )
+                if cmd[:3] == ["autopilot", "runs", AIDATA_AP["id"]]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"runs": [_healthy_run(AIDATA_AP["id"], run_id="run-ad-timeout", session_id="sess-ad-timeout")]}),
+                        stderr="",
+                    )
+                if cmd[:2] == ["issue", "list"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout=json.dumps({"issues": [_healthy_aidata_issue("2026-11-22", degraded=False)]}),
+                        stderr="",
+                    )
+                if cmd[:2] == ["autopilot", "trigger"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"run_id": "rerun-ad-timeout", "status": "queued"}), stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+            with unittest.mock.patch.object(watchdog, "M2_ROUTER_SCRIPT_PATH", Path(tmp) / "nonexistent-m2-router.py"):
+                report = watchdog.run_watchdog(
+                    target_date=date(2026, 11, 22),
+                    targets=("aidata",),
+                    runner=fake_runner,
+                    reverify_polls=1,
+                    aidata_digest_run_timeout_sec=0.05,
+                    **aidata_paths,
+                )
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["status"], "ESCALATED_UNHEALTHY")
+            esc = report["escalations"][0]
+            self.assertEqual(esc["remediation_detail"]["aidata_digest_run_exit"], 124)
+            self.assertTrue(esc["remediation_detail"]["aidata_digest_run_timed_out"])
+            self.assertNotIn("aidata_digest_run_sh_executed", esc["actions_taken"])
 
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")
