@@ -181,7 +181,7 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
     LoopSpec(
         loop_id="autopilot-health-watchdog",
         aliases=("autopilot_health_watchdog", "autopilot-watchdog", "autopilot_watchdog"),
-        autopilot_title="Daily Autopilot Health Watchdog (skill-retro & daily-learn -> M2 Fix & Rerun)",
+        autopilot_title="Daily Autopilot Health Watchdog (skill-retro, daily-learn & aidata -> M2 Fix & Rerun)",
         cron="10 5 * * *",
         trigger_label="Daily CST 05:10 Autopilot Health Watchdog",
         delivery_mode="auto_fix_and_digest_only",
@@ -999,7 +999,8 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
             f"# {spec.autopilot_title}\n\n"
             f"- **Loop ID**: `{spec.loop_id}`\n"
             f"- **Primary Engine**: `skills/team-lead/scripts/autopilot_watchdog.py` (`{watchdog_rel}`)\n"
-            "- **Focused Scope**: Checks **ONLY** `skill-retro` (`4e06bf2a`) and `daily-learn` (`8b4d6d04`) on their **3 basic vital metrics** (`ran_today`, `issue_materialized`, `non_empty_telemetry` / `non_empty_candidates`).\n"
+            "- **Focused Scope**: Checks **ONLY** `skill-retro` (`4e06bf2a`), `daily-learn` (`8b4d6d04`), and `aidata` (`27cd6086`) on their **3 basic vital metrics** (`ran_today`, `issue_materialized` / `issue_and_snapshot_materialized`, `non_empty_telemetry` / `non_empty_candidates` / `sources_healthy`).\n"
+            "- **Notification Policy**: Zero desktop popups (never call macOS desktop notification popups); all health and self-healing outcomes are reported in the Daily Brief / Multica digest only.\n"
             f"- **Execution Architecture**: `Layer 0 Deterministic Vitals Check ($0 token when healthy) -> M2 Escalation, Root-Cause Fix, Autopilot Rerun & Re-Verification on Failure ({spec.delivery_mode})`\n\n"
             "## Execution Protocol (`05:10` CST Daily Watchdog -> M2 Fix & Rerun)\n\n"
             "1. **Step 1 · Deterministic Vitals Check (`STATUS=HEALTHY` exits 0 at `$0` token cost)**:\n"
@@ -1008,11 +1009,12 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
             f'   python3 "{runner_rel}" run-loop --loop "{spec.loop_id}" --json\n'
             "   ```\n"
             "   - **Target 1 · `skill-retro` (`4e06bf2a`)**: verifies `ran_today` (`status == \"completed\"`), `issue_materialized` (`skill-retro-autopilot-YYYY-MM-DD`), and `non_empty_telemetry` (`sessions > 0` and `coverage != \"missing\"`).\n"
-            "   - **Target 2 · `daily-learn` (`8b4d6d04`)**: verifies `ran_today` (`status == \"completed\"`), `issue_materialized` (`[Daily Learn YYYY-MM-DD]`), and `non_empty_candidates` (`> 0` learning items).\n\n"
+            "   - **Target 2 · `daily-learn` (`8b4d6d04`)**: verifies `ran_today` (`status == \"completed\"`), `issue_materialized` (`[Daily Learn YYYY-MM-DD]`), and `non_empty_candidates` (`> 0` learning items).\n"
+            "   - **Target 3 · `aidata` (`27cd6086`)**: verifies `ran_today` (`status == \"completed\"`), `issue_and_snapshot_materialized` (today's `[AIDash 日报 & Retro]` issue + yesterday's `aidata/L5_apps/digest/archive/daily/<yesterday>.md` + `skills-roi.json` `coverage_status != \"missing\"`), and `sources_healthy` (no permission/timeout/collection errors across digest archive, `cron-errors.log`, `state.json`, or run output).\n\n"
             "2. **Step 2 · Automatic Escalation to M2 -> Investigate -> Fix -> Rerun -> Re-Verify (Only on Failure)**:\n"
-            "   If either target fails any basic vital metric:\n"
-            "   - Inspect the packaged failure evidence (`autopilot_id`, `failed_metrics`, `latest_run_id`, `session_id`, `snippet`) in `/tmp/multica-loop-autopilot-health-watchdog-collect.json`.\n"
-            "   - As M2-Dispatcher, investigate the failing session/script root cause, apply the fix, immediately trigger rerun (`multica autopilot trigger <autopilot_id>`), and re-verify `python3 \"" + watchdog_rel + "\" check --date today --json` until `status == \"HEALTHY\"` / `\"RECOVERED_AFTER_M2_RERUN\"`.\n"
+            "   If any target fails any basic vital metric:\n"
+            "   - Inspect the packaged failure evidence (`autopilot_id`, `failed_metrics`, `latest_run_id`, `session_id`, `degraded_sources`, `snippet`) in `/tmp/multica-loop-autopilot-health-watchdog-collect.json`.\n"
+            "   - As M2-Dispatcher, route to the owning M2 (`m2-skills-hub` or `aidash-aidata`), investigate the failing session/script root cause, apply the fix, rerun `aidata_digest_run.sh` (for `aidata`) and immediately trigger rerun (`multica autopilot trigger <autopilot_id>`), then re-verify `python3 \"" + watchdog_rel + "\" check --date today --json` until `status == \"HEALTHY\"` / `\"RECOVERED_AFTER_M2_RERUN\"` (no desktop popups; digest-only reporting).\n"
         )
     if spec.loop_id == "design-taste-evolution":
         execution_note = (
