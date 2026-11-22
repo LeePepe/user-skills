@@ -7,6 +7,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -1119,10 +1120,11 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             root = Path(tmp)
             paths = self._build_synthetic_workspace(root)
             # Write pending P1 proposals for design-studio, m2-dispatcher, code-review
+            post_fix_ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             proposals_rows = [
                 {
                     "id": "skill-retro-l1-unwired-design-studio-remotion-video",
-                    "ts": "2026-11-21T01:19:23Z",
+                    "ts": post_fix_ts,
                     "agent": "retro-loop",
                     "title": "Wire remotion-video.md",
                     "detail": "layer=L1 | category=unwired_disconnected_drawer | skill=design-studio | domain_failures=11",
@@ -1133,7 +1135,7 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 },
                 {
                     "id": "skill-retro-l1-unwired-m2-dispatcher-bots-and-agents",
-                    "ts": "2026-11-21T01:19:23Z",
+                    "ts": post_fix_ts,
                     "agent": "retro-loop",
                     "title": "Wire bots-and-agents.md",
                     "detail": "layer=L1 | category=unwired_disconnected_drawer | skill=m2-dispatcher | domain_failures=8",
@@ -1144,7 +1146,7 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 },
                 {
                     "id": "skill-retro-l2-roadblock-code-review-discover_review_context-py",
-                    "ts": "2026-11-21T01:19:23Z",
+                    "ts": post_fix_ts,
                     "agent": "retro-loop",
                     "title": "Soften discover_review_context.py",
                     "detail": "layer=L2 | category=rigid_roadblock | skill=code-review | exit_2_count=173",
@@ -1334,6 +1336,233 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 self.assertTrue(diag["ok"])
                 self.assertGreater(diag["sample_size"], 0)
                 self.assertLess(elapsed, 2.5)
+
+    def test_per_skill_version_fingerprint_telemetry_stamping_and_discovery_watermark_filter(self) -> None:
+        sc_mod = _load("test_skill_contract_ver_mod", "skills/skill-contract/scripts/skill_contract.py")
+        # 1. Verify all skills/*/.claude-plugin/plugin.json have valid version and skill_contract.py version/versions CLI works
+        for pkg in sorted((ROOT / "skills").iterdir()):
+            if not pkg.is_dir() or not (pkg / "SKILL.md").is_file():
+                continue
+            manifest_path = pkg / ".claude-plugin" / "plugin.json"
+            self.assertTrue(manifest_path.is_file(), f"Missing plugin.json for {pkg.name}")
+            mdoc = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue(str(mdoc.get("version") or "").strip(), f"Missing version in {manifest_path}")
+
+        ver_info = sc_mod.resolve_skill_version("code-review")
+        self.assertTrue(ver_info["ok"])
+        self.assertEqual(ver_info["skill"], "code-review")
+        self.assertRegex(ver_info["skill_version"], r"^v\d+@[0-9a-f]{7,12}$")
+        self.assertGreaterEqual(ver_info["commit_count"], 1)
+        self.assertEqual(ver_info["plugin_version"], "1.0.0")
+
+        cli_ver = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "skills/skill-contract/scripts/skill_contract.py"),
+                "version",
+                "--skill",
+                "code-review",
+                "--json",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        cli_ver_doc = json.loads(cli_ver.stdout)
+        self.assertEqual(cli_ver_doc["skill_version"], ver_info["skill_version"])
+
+        cli_vers = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "skills/skill-contract/scripts/skill_contract.py"),
+                "versions",
+                "--json",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        cli_vers_doc = json.loads(cli_vers.stdout)
+        self.assertTrue(cli_vers_doc["ok"])
+        self.assertIn("code-review", cli_vers_doc["versions"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Create a real git repo for skills so git rev-list / rev-parse / log -1 work deterministically
+            repo_dir = root / "repo"
+            skills_root = repo_dir / "skills"
+            dev_root = root / "dev"
+            handoff_root = dev_root / "handoff"
+            handoff_root.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main", str(repo_dir)], check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+
+            _write_skill_pkg(
+                skills_root,
+                "code-review",
+                scripts={"discover_review_context.py": "#!/usr/bin/env python3\n# v1\n"},
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+            env_v1 = {
+                **os.environ,
+                "GIT_AUTHOR_DATE": "2026-11-20T10:00:00+08:00",
+                "GIT_COMMITTER_DATE": "2026-11-20T10:00:00+08:00",
+            }
+            subprocess.run(["git", "commit", "-m", "v1 code-review"], cwd=repo_dir, env=env_v1, check=True, capture_output=True)
+            v1_info = sc_mod.resolve_skill_version(skills_root / "code-review", repo=repo_dir)
+            self.assertEqual(v1_info["commit_count"], 1)
+            self.assertTrue(v1_info["skill_version"].startswith("v1@"))
+
+            # Commit v2 fix for discover_review_context.py at 2026-11-21T20:00:00+08:00
+            (skills_root / "code-review" / "scripts" / "discover_review_context.py").write_text(
+                "#!/usr/bin/env python3\n# v2 softened roadblock\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+            fix_dt = datetime(2026, 11, 21, 20, 0, 0, tzinfo=CST)
+            env_v2 = {
+                **os.environ,
+                "GIT_AUTHOR_DATE": fix_dt.isoformat(),
+                "GIT_COMMITTER_DATE": fix_dt.isoformat(),
+            }
+            subprocess.run(["git", "commit", "-m", "v2 fix roadblock"], cwd=repo_dir, env=env_v2, check=True, capture_output=True)
+            v2_info = sc_mod.resolve_skill_version(skills_root / "code-review", repo=repo_dir)
+            self.assertEqual(v2_info["commit_count"], 2)
+            self.assertTrue(v2_info["skill_version"].startswith("v2@"))
+            self.assertNotEqual(v1_info["skill_version"], v2_info["skill_version"])
+            self.assertEqual(v2_info["last_modified_epoch"], int(fix_dt.timestamp()))
+
+            # 2. Telemetry stamping check
+            inv = SKILL_RETRO._discover_skill_inventory(skills_root, dev_root)
+            stamped = SKILL_RETRO.stamp_skill_telemetry_event(
+                {"kind": "script_call", "skill": "code-review", "script_path": "scripts/discover_review_context.py", "exit_code": 0},
+                inventory=inv,
+            )
+            self.assertEqual(stamped["skill_version"], v2_info["skill_version"])
+            self.assertEqual(stamped["subtree_sha"], v2_info["subtree_sha"])
+
+            # 3. Watermark Case A (`pre_fix > 0` and `post_fix == 0`):
+            # 3 pre-fix exit=2 errors before `fix_dt` (or tagged with v1 skill_version) -> watermarked out!
+            usage_pre_only = root / "usage-pre-only.jsonl"
+            pre_ts = (fix_dt - timedelta(hours=5)).isoformat()
+            post_ok_ts = (fix_dt + timedelta(hours=1)).isoformat()
+            usage_pre_rows = [
+                {
+                    "kind": "script_call",
+                    "session_id": f"sess-pre-{i}",
+                    "ts": pre_ts,
+                    "skill": "code-review",
+                    "skill_version": v1_info["skill_version"],
+                    "script_path": "skills/code-review/scripts/discover_review_context.py",
+                    "command": "python3 skills/code-review/scripts/discover_review_context.py --old-bad-flag",
+                    "exit_code": 2,
+                }
+                for i in range(1, 4)
+            ] + [
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-post-ok",
+                    "ts": post_ok_ts,
+                    "skill": "code-review",
+                    "skill_version": v2_info["skill_version"],
+                    "script_path": "skills/code-review/scripts/discover_review_context.py",
+                    "command": "python3 skills/code-review/scripts/discover_review_context.py --repo .",
+                    "exit_code": 0,
+                }
+            ]
+            usage_pre_only.write_text("\n".join(json.dumps(r) for r in usage_pre_rows) + "\n", encoding="utf-8")
+
+            diag_pre = SKILL_RETRO.compute_skill_retro(
+                usage_jsonl=usage_pre_only,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                skill="code-review",
+                mirror_roi_snapshot=False,
+                isolated_fixtures=True,
+            )
+            self.assertEqual(diag_pre["status"], "HEALTHY_NO_ISSUES")
+            self.assertEqual(diag_pre["layer2_script_efficacy_and_speed"]["rigid_roadblocks"], [])
+            resolved_rbs = diag_pre["layer2_script_efficacy_and_speed"]["watermarked_resolved_roadblocks"]
+            self.assertEqual(len(resolved_rbs), 1)
+            self.assertEqual(resolved_rbs[0]["pre_fix"], 3)
+            self.assertEqual(resolved_rbs[0]["post_fix"], 0)
+            self.assertEqual(resolved_rbs[0]["watermark_status"], "resolved_in_current_version")
+            self.assertEqual(diag_pre["proposals"], [])
+
+            probe_pre = SKILL_RETRO.probe_skills(
+                skill="code-review",
+                usage_jsonl=usage_pre_only,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                fast=True,
+            )
+            self.assertEqual(probe_pre["skills"][0]["signals"]["l2_exit2_roadblocks"], 0)
+            self.assertEqual(probe_pre["skills"][0]["signals"]["l2_exit2_pre_fix"], 3)
+            self.assertEqual(probe_pre["skills"][0]["signals"]["l2_exit2_post_fix"], 0)
+
+            triage_pre = SKILL_RETRO.triage_skills(
+                skill="code-review",
+                use_jev=False,
+                usage_jsonl=usage_pre_only,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+            )
+            self.assertEqual(triage_pre["status"], "HEALTHY_NO_ISSUES")
+            self.assertEqual(triage_pre["m1_tls_to_spawn"], 0)
+
+            # 4. Watermark Case B (`post_fix > 0` regression / incomplete fix):
+            # Add 2 post-fix exit=2 errors on v2 after `fix_dt` -> surfaces as active rigid_roadblock & proposal!
+            usage_post_reg = root / "usage-post-reg.jsonl"
+            post_fail_ts = (fix_dt + timedelta(hours=2)).isoformat()
+            usage_reg_rows = usage_pre_rows + [
+                {
+                    "kind": "script_call",
+                    "session_id": f"sess-post-reg-{i}",
+                    "ts": post_fail_ts,
+                    "skill": "code-review",
+                    "skill_version": v2_info["skill_version"],
+                    "script_path": "skills/code-review/scripts/discover_review_context.py",
+                    "command": "python3 skills/code-review/scripts/discover_review_context.py --new-broken-flag",
+                    "exit_code": 2,
+                }
+                for i in (1, 2)
+            ]
+            usage_post_reg.write_text("\n".join(json.dumps(r) for r in usage_reg_rows) + "\n", encoding="utf-8")
+
+            diag_reg = SKILL_RETRO.compute_skill_retro(
+                usage_jsonl=usage_post_reg,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                skill="code-review",
+                mirror_roi_snapshot=False,
+                isolated_fixtures=True,
+            )
+            self.assertEqual(diag_reg["status"], "ACTIONABLE")
+            active_rbs = diag_reg["layer2_script_efficacy_and_speed"]["rigid_roadblocks"]
+            self.assertEqual(len(active_rbs), 1)
+            self.assertEqual(active_rbs[0]["pre_fix"], 3)
+            self.assertEqual(active_rbs[0]["post_fix"], 2)
+            self.assertEqual(active_rbs[0]["exit_2_count"], 2)
+            self.assertEqual(active_rbs[0]["watermark_status"], "active_or_regression")
+            self.assertTrue(any(p["category"] == "rigid_roadblock" and p["skill"] == "code-review" for p in diag_reg["proposals"]))
+
+            triage_reg = SKILL_RETRO.triage_skills(
+                skill="code-review",
+                use_jev=False,
+                usage_jsonl=usage_post_reg,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+            )
+            self.assertEqual(triage_reg["status"], "ACTIONABLE")
+            self.assertEqual(triage_reg["m1_tls_to_spawn"], 1)
 
 
 if __name__ == "__main__":

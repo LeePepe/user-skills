@@ -586,6 +586,7 @@ class VerifySkillsTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest.get("name"), skill_dir_name)
             self.assertTrue(isinstance(manifest.get("description"), str) and manifest["description"])
+            self.assertTrue(isinstance(manifest.get("version"), str) and manifest["version"])
             self.assertTrue(isinstance(manifest.get("category"), str) and manifest["category"])
 
     def test_personal_m2_assistant_is_registered_with_canonical_router(self) -> None:
@@ -597,6 +598,7 @@ class VerifySkillsTests(unittest.TestCase):
         self.assertEqual(manifest, {
             "name": "personal-m2-assistant",
             "description": manifest["description"],
+            "version": manifest.get("version", "1.0.0"),
             "category": "workflow",
         })
         marketplace = json.loads((REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))

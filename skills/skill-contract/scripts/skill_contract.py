@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+import hashlib
 import importlib.util
 import json
 import math
@@ -192,6 +193,160 @@ def _discover_packages(skill: str | None = None, repo: str | Path | None = None)
                     seen.add(resolved)
                     packages.append(p)
     return packages
+
+
+def _find_git_root_and_rel_path(pkg_dir: Path, repo: str | Path | None = None) -> tuple[Path | None, str]:
+    target = pkg_dir.resolve()
+    if repo is not None:
+        cand_repo = Path(repo).expanduser().resolve()
+        if (cand_repo / ".git").exists():
+            try:
+                return cand_repo, target.relative_to(cand_repo).as_posix()
+            except ValueError:
+                pass
+    cur = target
+    while cur != cur.parent:
+        if (cur / ".git").exists():
+            try:
+                return cur, target.relative_to(cur).as_posix()
+            except ValueError:
+                break
+        cur = cur.parent
+    return None, f"skills/{pkg_dir.name}"
+
+
+def _content_hash_subtree(pkg_dir: Path) -> str:
+    h = hashlib.sha256()
+    if pkg_dir.is_dir():
+        for fpath in sorted(pkg_dir.rglob("*")):
+            if not fpath.is_file() or "__pycache__" in fpath.parts or fpath.name.startswith("."):
+                continue
+            try:
+                rel = fpath.relative_to(pkg_dir).as_posix()
+                h.update(rel.encode("utf-8") + b"\0" + fpath.read_bytes() + b"\0")
+            except OSError:
+                continue
+    return h.hexdigest()[:7]
+
+
+def resolve_skill_version(
+    skill_or_dir: str | Path,
+    *,
+    repo: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compute deterministic per-skill version fingerprint `v<commit_count>@<subtree_sha>` + `plugin_version`."""
+    if isinstance(skill_or_dir, Path):
+        pkg_dir = skill_or_dir
+        skill_name = pkg_dir.name
+    else:
+        skill_name = str(skill_or_dir).strip().lstrip("/")
+        if skill_name in {"goal-target-task", "goal-task"}:
+            skill_name = "team-lead"
+        pkg_dir = _resolve_skill_dir(skill_name, repo=repo, create=False)
+
+    plugin_version = "1.0.0"
+    manifest_path = pkg_dir / ".claude-plugin" / "plugin.json"
+    if manifest_path.is_file():
+        try:
+            mdoc = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(mdoc, Mapping):
+                raw_ver = str(mdoc.get("version") or "").strip()
+                if raw_ver:
+                    plugin_version = raw_ver
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    git_root, rel_path = _find_git_root_and_rel_path(pkg_dir, repo=repo)
+    commit_count = 0
+    subtree_sha = ""
+    last_modified_epoch: int | None = None
+    source = "content_hash_fallback"
+
+    if git_root is not None and pkg_dir.is_dir():
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        try:
+            cnt_proc = subprocess.run(
+                ["git", "--no-optional-locks", "rev-list", "--count", "HEAD", "--", rel_path],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+            if cnt_proc.returncode == 0 and cnt_proc.stdout.strip().isdigit():
+                commit_count = int(cnt_proc.stdout.strip())
+            tree_proc = subprocess.run(
+                ["git", "--no-optional-locks", "rev-parse", "--short", f"HEAD:{rel_path}"],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+            if tree_proc.returncode == 0 and tree_proc.stdout.strip():
+                subtree_sha = tree_proc.stdout.strip()
+            ts_proc = subprocess.run(
+                ["git", "--no-optional-locks", "log", "-1", "--format=%ct", "--", rel_path],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+            if ts_proc.returncode == 0 and ts_proc.stdout.strip().isdigit():
+                last_modified_epoch = int(ts_proc.stdout.strip())
+            if commit_count > 0 and subtree_sha:
+                source = "git_subtree"
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    if not subtree_sha:
+        subtree_sha = _content_hash_subtree(pkg_dir)
+    if commit_count <= 0:
+        commit_count = 1 if pkg_dir.is_dir() else 0
+    if last_modified_epoch is None and (pkg_dir / "SKILL.md").is_file():
+        try:
+            last_modified_epoch = int((pkg_dir / "SKILL.md").stat().st_mtime)
+        except OSError:
+            last_modified_epoch = None
+
+    skill_version = f"v{commit_count}@{subtree_sha}"
+    return {
+        "ok": pkg_dir.is_dir() and (pkg_dir / "SKILL.md").is_file(),
+        "skill": skill_name,
+        "skill_version": skill_version,
+        "commit_count": commit_count,
+        "subtree_sha": subtree_sha,
+        "plugin_version": plugin_version,
+        "last_modified_epoch": last_modified_epoch,
+        "source": source,
+    }
+
+
+def resolve_all_skill_versions(repo: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    packages = _discover_packages(skill=None, repo=repo)
+    return {pkg.name: resolve_skill_version(pkg, repo=repo) for pkg in packages}
+
+
+def version_cmd(args: argparse.Namespace) -> int:
+    repo_arg = getattr(args, "repo", None)
+    skill_arg = getattr(args, "skill", None)
+    if skill_arg and not getattr(args, "all", False):
+        info = resolve_skill_version(skill_arg, repo=repo_arg)
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return 0 if info["ok"] else 1
+    versions_map = resolve_all_skill_versions(repo=repo_arg)
+    payload = {
+        "ok": True,
+        "count": len(versions_map),
+        "skills": [versions_map[k] for k in sorted(versions_map)],
+        "versions": {k: v["skill_version"] for k, v in sorted(versions_map.items())},
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def init_skill(args: argparse.Namespace) -> int:
@@ -1623,6 +1778,18 @@ def parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--repo", default=None)
     audit_parser.add_argument("--json", action="store_true")
     audit_parser.add_argument("--strict", action="store_true")
+
+    ver_parser = sub.add_parser("version")
+    ver_parser.add_argument("--skill", default=None)
+    ver_parser.add_argument("--all", action="store_true")
+    ver_parser.add_argument("--repo", default=None)
+    ver_parser.add_argument("--json", action="store_true", default=True)
+
+    vers_parser = sub.add_parser("versions")
+    vers_parser.add_argument("--skill", default=None)
+    vers_parser.add_argument("--all", action="store_true", default=True)
+    vers_parser.add_argument("--repo", default=None)
+    vers_parser.add_argument("--json", action="store_true", default=True)
     return parser
 
 
@@ -1638,6 +1805,8 @@ def main() -> int:
         "sync-jev-stars": sync_jev_stars,
         "uptake-eval": uptake_eval,
         "audit": audit,
+        "version": version_cmd,
+        "versions": version_cmd,
     }[args.command](args)
 
 

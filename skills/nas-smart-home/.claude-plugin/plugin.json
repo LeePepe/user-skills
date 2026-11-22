@@ -1,0 +1,6 @@
+{
+  "name": "nas-smart-home",
+  "description": "Sanitized operational reference for an approved NAS Quark-to-library incremental download service. Not the private household-control skill or a marketplace plugin.",
+  "version": "1.0.0",
+  "category": "workflow"
+}
