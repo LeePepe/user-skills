@@ -337,14 +337,25 @@ def _collect_descendant_pids_and_pgids(root_pid: int) -> tuple[set[int], set[int
     return pids, pgids
 
 
-def _terminate_process_tree(root_pid: int, sig: signal.Signals) -> None:
+def _terminate_process_tree(
+    root_pid: int,
+    sig: signal.Signals,
+    *,
+    known_pids: set[int] | None = None,
+    known_pgids: set[int] | None = None,
+) -> tuple[set[int], set[int]]:
     pids, pgids = _collect_descendant_pids_and_pgids(root_pid)
+    if known_pids is not None:
+        pids |= known_pids
+    if known_pgids is not None:
+        pgids |= known_pgids
     for pgid in pgids:
         with ExceptionContext():
             os.killpg(pgid, sig)
     for pid in pids:
         with ExceptionContext():
             os.kill(pid, sig)
+    return pids, pgids
 
 
 def _run_process_group_with_timeout(
@@ -367,9 +378,9 @@ def _run_process_group_with_timeout(
             stdout, stderr = proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess(list(cmd), proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired as exc:
-            _terminate_process_tree(root_pid, signal.SIGTERM)
+            pids, pgids = _terminate_process_tree(root_pid, signal.SIGTERM)
             time.sleep(0.05)
-            _terminate_process_tree(root_pid, signal.SIGKILL)
+            _terminate_process_tree(root_pid, signal.SIGKILL, known_pids=pids, known_pgids=pgids)
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
