@@ -1,0 +1,6 @@
+{
+  "name": "codebase-design",
+  "description": "Design deep modules and sharpen domain models: interfaces, seams, ubiquitous language, CONTEXT.md, and ADRs. Use when improving architecture or testability. Not for implementation by itself.",
+  "version": "1.0.0",
+  "category": "repo"
+}

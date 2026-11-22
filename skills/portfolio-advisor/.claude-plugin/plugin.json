@@ -1,5 +1,6 @@
 {
   "name": "portfolio-advisor",
   "description": "Diagnose personal investment portfolios and generate rebalancing plans from Financial CLI/JSON ledgers: invokes asset-screener for objective scores, computes All-Weather Barbell weights, FIFO 30/180/365d fee-free redemption windows, top-10 track overlap, and monthly DCA cashflow switches. Not for ledgerless screening.",
+  "version": "1.0.0",
   "category": "workflow"
 }

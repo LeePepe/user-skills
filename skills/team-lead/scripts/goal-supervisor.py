@@ -223,7 +223,7 @@ def choose_goal_name(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
     exact = [
         goal["name"]
         for goal in goals
-        if name == goal["tl_name"] or name in goal["ledger_names"]
+        if name == goal.get("tl_name", "") or name in (goal.get("ledger_names") or goal.get("agent_names") or set())
     ]
     chosen = unique_name(exact)
     if chosen:
@@ -231,7 +231,7 @@ def choose_goal_name(name: str, cwd: str, goals: list[dict[str, Any]]) -> str:
     stem_hits = [
         goal["name"]
         for goal in goals
-        if any(hyphen_prefixed(name, stem) for stem in goal["stems"])
+        if any(hyphen_prefixed(name, stem) for stem in (goal.get("stems") or set()))
     ]
     chosen = unique_name(stem_hits)
     if chosen:
@@ -709,15 +709,22 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
             l_txt = l_path.read_text(encoding="utf-8") if l_path.is_file() else ""
             evs = goal_events(l_path) if l_path.is_file() else []
             latest_ts = max((ts for ts, _ in evs), default=now)
+            tl_name_val = ledger_tl_name(l_txt)
+            stems_val = {target_goal_id}
+            rec_stem = tl_stem(tl_name_val)
+            if rec_stem:
+                stems_val.add(rec_stem)
+            names_val = ledger_agent_names(l_txt)
             goals_meta = [
                 {
                     "name": target_goal_id,
                     "path": g_path,
                     "events": evs,
                     "latest": latest_ts,
-                    "tl_name": ledger_tl_name(l_txt),
-                    "agent_names": ledger_agent_names(l_txt),
-                    "stems": {target_goal_id},
+                    "tl_name": tl_name_val,
+                    "ledger_names": names_val,
+                    "agent_names": names_val,
+                    "stems": stems_val,
                 }
             ]
     if mode == "off":
@@ -1176,20 +1183,28 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
             l_path = g_path / "ledger.md"
             l_txt = l_path.read_text(encoding="utf-8") if l_path.is_file() else ""
             evs = goal_events(l_path) if l_path.is_file() else []
+            tl_name_val = ledger_tl_name(l_txt)
+            stems_val = {target_goal_id}
+            rec_stem = tl_stem(tl_name_val)
+            if rec_stem:
+                stems_val.add(rec_stem)
+            names_val = ledger_agent_names(l_txt)
             goals = [
                 {
                     "name": target_goal_id,
                     "path": g_path,
                     "events": evs,
                     "latest": max((ts for ts, _ in evs), default=now),
-                    "tl_name": ledger_tl_name(l_txt),
-                    "agent_names": ledger_agent_names(l_txt),
-                    "stems": {target_goal_id},
+                    "tl_name": tl_name_val,
+                    "ledger_names": names_val,
+                    "agent_names": names_val,
+                    "stems": stems_val,
                 }
             ]
     for goal in goals:
         tl = goal["tl_name"] or "tl"
-        events = _ledger_attention(goal["path"], now)
+        goal_is_done = any(event == "GOAL_DONE" for _, event in goal.get("events", []))
+        events = [] if goal_is_done else _ledger_attention(goal["path"], now)
         for item in events:
             action = UNRESOLVED_EVENT_TYPES[item["event"]]
             waits_for = "owner" if action == "decision" else (tl if action in {"handback", "review"} else coordinator_bot(goal["path"]))
@@ -1197,7 +1212,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
                 action, goal["path"], item["task_id"], waits_for, item["note"],
                 int((now - item["timestamp"]).total_seconds()),
             ))
-        for task in _queue_tasks(goal["path"]):
+        for task in ([] if goal_is_done else _queue_tasks(goal["path"])):
             task_status = str(task.get("status", ""))
             if task_status not in {"blocked", "handback"}:
                 continue
@@ -1209,7 +1224,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
                 0,
             ))
         queue_tasks = _queue_tasks(goal["path"])
-        if queue_tasks and all(str(task.get("status", "")) == "done" for task in queue_tasks):
+        if not goal_is_done and queue_tasks and all(str(task.get("status", "")) == "done" for task in queue_tasks):
             needs.append(_attention_item(
                 "review", goal["path"], "", tl,
                 "queue drained; review and record GOAL_DONE", 0,

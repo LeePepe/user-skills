@@ -502,6 +502,153 @@ def _percentile(values: Sequence[float], pct: float) -> float | None:
     return round(ordered[idx], 2)
 
 
+def _find_git_root_for_path(target_path: Path) -> tuple[Path | None, str]:
+    cur = target_path.resolve() if target_path.exists() else target_path
+    search_dir = cur if cur.is_dir() else cur.parent
+    while search_dir != search_dir.parent:
+        if (search_dir / ".git").exists():
+            try:
+                return search_dir, cur.relative_to(search_dir).as_posix()
+            except ValueError:
+                break
+        search_dir = search_dir.parent
+    return None, target_path.name
+
+
+def _git_last_modified_epoch(target_path: Path, *, fallback_mtime: bool = False) -> int | None:
+    git_root, rel_path = _find_git_root_for_path(target_path)
+    if git_root is not None:
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            proc = subprocess.run(
+                ["git", "--no-optional-locks", "log", "-1", "--format=%ct", "--", rel_path],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip().isdigit():
+                return int(proc.stdout.strip())
+    if fallback_mtime and target_path.exists():
+        with contextlib.suppress(OSError):
+            return int(target_path.stat().st_mtime)
+    return None
+
+
+def _compute_pkg_version_fingerprint(pkg_dir: Path) -> dict[str, Any]:
+    plugin_version = "1.0.0"
+    manifest_p = pkg_dir / ".claude-plugin" / "plugin.json"
+    if manifest_p.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            mdoc = json.loads(manifest_p.read_text(encoding="utf-8"))
+            if isinstance(mdoc, Mapping) and str(mdoc.get("version") or "").strip():
+                plugin_version = str(mdoc["version"]).strip()
+
+    git_root, rel_path = _find_git_root_for_path(pkg_dir)
+    commit_count = 0
+    subtree_sha = ""
+    last_modified_epoch: int | None = None
+    if git_root is not None and pkg_dir.is_dir():
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            cnt_p = subprocess.run(
+                ["git", "--no-optional-locks", "rev-list", "--count", "HEAD", "--", rel_path],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+                check=False,
+            )
+            if cnt_p.returncode == 0 and cnt_p.stdout.strip().isdigit():
+                commit_count = int(cnt_p.stdout.strip())
+            tree_p = subprocess.run(
+                ["git", "--no-optional-locks", "rev-parse", "--short", f"HEAD:{rel_path}"],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+                check=False,
+            )
+            if tree_p.returncode == 0 and tree_p.stdout.strip():
+                subtree_sha = tree_p.stdout.strip()
+            ts_p = subprocess.run(
+                ["git", "--no-optional-locks", "log", "-1", "--format=%ct", "--", rel_path],
+                cwd=git_root,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+                check=False,
+            )
+            if ts_p.returncode == 0 and ts_p.stdout.strip().isdigit():
+                last_modified_epoch = int(ts_p.stdout.strip())
+
+    if not subtree_sha:
+        h = hashlib.sha256()
+        if pkg_dir.is_dir():
+            for fp in sorted(pkg_dir.rglob("*")):
+                if not fp.is_file() or "__pycache__" in fp.parts or fp.name.startswith("."):
+                    continue
+                with contextlib.suppress(OSError):
+                    h.update(fp.relative_to(pkg_dir).as_posix().encode("utf-8") + b"\0" + fp.read_bytes() + b"\0")
+        subtree_sha = h.hexdigest()[:7]
+    if commit_count <= 0:
+        commit_count = 1
+    return {
+        "skill_version": f"v{commit_count}@{subtree_sha}",
+        "commit_count": commit_count,
+        "subtree_sha": subtree_sha,
+        "plugin_version": plugin_version,
+        "last_modified_epoch": last_modified_epoch,
+    }
+
+
+def stamp_skill_telemetry_event(
+    event: Mapping[str, Any],
+    *,
+    inventory: Mapping[str, Mapping[str, Any]] | None = None,
+    skills_root: Path | None = None,
+) -> dict[str, Any]:
+    """Stamp `skill_version` and `subtree_sha` on a `skill_turn`, `reference_hit`, or `script_call` event."""
+    out = dict(event)
+    kind = str(out.get("kind") or "").strip()
+    sk = _norm_skill(str(out.get("skill") or ""))
+    if kind not in {"skill_turn", "reference_hit", "script_call"} or not sk:
+        return out
+    meta = inventory.get(sk) if inventory is not None else None
+    if meta is None:
+        s_root = skills_root or DEFAULT_SKILLS_ROOT
+        pkg_dir = s_root / sk
+        if pkg_dir.is_dir():
+            meta = _compute_pkg_version_fingerprint(pkg_dir)
+    if isinstance(meta, Mapping):
+        if not out.get("skill_version") and meta.get("skill_version"):
+            out["skill_version"] = str(meta["skill_version"])
+        if not out.get("subtree_sha") and meta.get("subtree_sha"):
+            out["subtree_sha"] = str(meta["subtree_sha"])
+    return out
+
+
+def _is_call_post_fix(
+    call_ts: datetime | None,
+    call_skill_version: str | None,
+    *,
+    current_skill_version: str | None,
+    watermark_epoch: int | None,
+) -> bool:
+    """Return True if an error occurred on the current version or after the last-modified commit watermark."""
+    if call_skill_version and current_skill_version and call_skill_version != current_skill_version:
+        return False
+    if watermark_epoch is not None and call_ts is not None:
+        if call_ts.timestamp() < float(watermark_epoch):
+            return False
+    return True
+
+
 def _parse_ts(raw: Any, fallback: datetime | None = None) -> datetime | None:
     if raw is None or raw == "":
         return fallback
@@ -540,6 +687,8 @@ class ScriptCallEvent:
     duration_ms: float | None
     measured: bool
     seq: int = 0
+    skill_version: str | None = None
+    subtree_sha: str | None = None
 
 
 @dataclass
@@ -922,6 +1071,7 @@ def _ingest_usage_jsonl_and_shards(
     window_start: datetime,
     window_end: datetime,
     known_skills: set[str],
+    inventory: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     rows: list[Mapping[str, Any]] = []
     if usage_jsonl is not None and _is_safe_local_file(usage_jsonl):
@@ -936,7 +1086,8 @@ def _ingest_usage_jsonl_and_shards(
                     rows.append(parsed)
     rows.extend(shard_records)
 
-    for idx, rec in enumerate(rows):
+    for idx, raw_rec in enumerate(rows):
+        rec = stamp_skill_telemetry_event(raw_rec, inventory=inventory)
         kind = str(rec.get("kind") or "").strip()
         if kind not in {"skill_turn", "reference_hit", "script_call"}:
             continue
@@ -977,6 +1128,9 @@ def _ingest_usage_jsonl_and_shards(
             ec = int(raw_ec) if raw_ec not in (None, "") else None
             raw_dur = rec.get("duration_ms")
             dur = max(0.0, float(raw_dur)) if raw_dur not in (None, "") else None
+            # Only stamp default current skill_version when explicit version was provided on the raw record
+            explicit_sv = str(raw_rec.get("skill_version") or "").strip() or None
+            explicit_sub = str(raw_rec.get("subtree_sha") or "").strip() or None
             if not any(c.skill == sk and c.script_rel == sc_rel and c.exit_code == ec for c in obs.script_calls):
                 obs.script_calls.append(
                     ScriptCallEvent(
@@ -989,6 +1143,8 @@ def _ingest_usage_jsonl_and_shards(
                         duration_ms=dur,
                         measured=dur is not None,
                         seq=obs.next_seq(),
+                        skill_version=explicit_sv,
+                        subtree_sha=explicit_sub,
                     )
                 )
 
@@ -1070,6 +1226,8 @@ def _ingest_trace_export(
                 dur = float(raw_dur) if measured and raw_dur is not None else None
                 raw_ec = attrs.get("script.exit_code", out_p.get("exit_code"))
                 ec = int(raw_ec) if raw_ec is not None else None
+                sv_attr = str(attrs.get("skill.version") or attrs.get("skill_version") or "").strip() or None
+                sub_attr = str(attrs.get("skill.subtree_sha") or attrs.get("subtree_sha") or "").strip() or None
                 m_sc = _SKILL_SCRIPT_RE.search(sp_path)
                 if m_sc:
                     sk = _norm_skill(m_sc.group("skill"))
@@ -1088,6 +1246,8 @@ def _ingest_trace_export(
                         duration_ms=dur,
                         measured=measured,
                         seq=obs.next_seq(),
+                        skill_version=sv_attr,
+                        subtree_sha=sub_attr,
                     )
                 )
     return ingested_spans
@@ -1225,6 +1385,8 @@ def _ingest_warehouse_and_copilot_db(
                             duration_ms=dur,
                             measured=dur is not None,
                             seq=seq_no,
+                            skill_version=str(row.get("skill_version") or "").strip() or None,
+                            subtree_sha=str(row.get("subtree_sha") or "").strip() or None,
                         )
                     )
 
@@ -2384,6 +2546,7 @@ def compute_skill_retro_diagnostics(
         window_start=window_start,
         window_end=window_end,
         known_skills=known_skills,
+        inventory=inventory,
     )
     ingested_trace_spans = _ingest_trace_export(
         observations,
@@ -2640,6 +2803,7 @@ def compute_skill_retro_diagnostics(
     true_catchers: list[dict[str, Any]] = []
     ceremonial_rubber_stamps: list[dict[str, Any]] = []
     rigid_roadblocks: list[dict[str, Any]] = []
+    watermarked_resolved_roadblocks: list[dict[str, Any]] = []
     latency_sinks: list[dict[str, Any]] = []
 
     for (sk_name, sc_rel), sc_calls in sorted(calls_by_script.items()):
@@ -2651,6 +2815,28 @@ def compute_skill_retro_diagnostics(
         exit1_cnt = sum(1 for c in graded if c.exit_code not in (0, 2))
         exit2_calls = [c for c in graded if c.exit_code == 2]
 
+        sk_meta = inventory.get(sk_name) or {}
+        current_skill_ver = str(sk_meta.get("skill_version") or "").strip() or None
+        script_wm_map = sk_meta.get("script_watermarks") if isinstance(sk_meta.get("script_watermarks"), Mapping) else {}
+        watermark_epoch: int | None = None
+        if isinstance(script_wm_map, Mapping) and sc_rel in script_wm_map:
+            watermark_epoch = int(script_wm_map[sc_rel])
+        elif sk_meta.get("last_modified_epoch") is not None:
+            watermark_epoch = int(sk_meta["last_modified_epoch"])
+
+        pre_fix_exit2_calls: list[ScriptCallEvent] = []
+        post_fix_exit2_calls: list[ScriptCallEvent] = []
+        for c in exit2_calls:
+            if _is_call_post_fix(
+                c.ts,
+                c.skill_version,
+                current_skill_version=current_skill_ver,
+                watermark_epoch=watermark_epoch,
+            ):
+                post_fix_exit2_calls.append(c)
+            else:
+                pre_fix_exit2_calls.append(c)
+
         # Check fail -> pass transitions within the same session (or across consecutive runs)
         by_sess: dict[str, list[ScriptCallEvent]] = {}
         for c in graded:
@@ -2658,6 +2844,7 @@ def compute_skill_retro_diagnostics(
 
         fail_to_pass_sessions = 0
         exit2_arg_only_sessions = 0
+        post_fix_exit2_sids = {c.session_id for c in post_fix_exit2_calls}
         for sid, s_calls in by_sess.items():
             saw_fail1 = False
             caught_in_sess = False
@@ -2671,7 +2858,7 @@ def compute_skill_retro_diagnostics(
                     caught_in_sess = True
             if caught_in_sess:
                 fail_to_pass_sessions += 1
-            if saw_exit2:
+            if saw_exit2 and sid in post_fix_exit2_sids:
                 obs_ref = observations.get(sid)
                 if obs_ref is None or obs_ref.edit_count == 0 or any(x.exit_code == 0 for x in s_calls):
                     exit2_arg_only_sessions += 1
@@ -2718,26 +2905,51 @@ def compute_skill_retro_diagnostics(
                 )
 
         if exit2_calls:
+            active_e2 = post_fix_exit2_calls
             samples: list[str] = []
-            for c in exit2_calls:
+            for c in (active_e2 if active_e2 else pre_fix_exit2_calls):
                 red = _redact_command_sample(c.command, skills_root=s_root, dev_root=d_root)
                 if red and red not in samples:
                     samples.append(red)
                 if len(samples) >= 3:
                     break
-            rigid_roadblocks.append(
-                {
-                    "skill": sk_name,
-                    "script": sc_rel,
-                    "calls": len(ordered_calls),
-                    "exit_2_count": len(exit2_calls),
-                    "exit_2_sessions": len({c.session_id for c in exit2_calls}),
-                    "arg_retry_sessions": exit2_arg_only_sessions,
-                    "failing_command_samples": samples,
-                    "classification": "rigid_roadblock",
-                    "evolution_action": "Add CLI flag aliases / positional path fallback and print 3-line usage hint on exit=2.",
-                }
-            )
+            wm_base = {
+                "skill": sk_name,
+                "script": sc_rel,
+                "skill_version": current_skill_ver,
+                "last_modified_epoch": watermark_epoch,
+                "calls": len(ordered_calls),
+                "total_exit_2_count": len(exit2_calls),
+                "pre_fix": len(pre_fix_exit2_calls),
+                "post_fix": len(post_fix_exit2_calls),
+                "pre_fix_count": len(pre_fix_exit2_calls),
+                "post_fix_count": len(post_fix_exit2_calls),
+                "failing_command_samples": samples,
+            }
+            if len(post_fix_exit2_calls) > 0:
+                rigid_roadblocks.append(
+                    {
+                        **wm_base,
+                        "exit_2_count": len(post_fix_exit2_calls),
+                        "exit_2_sessions": len(post_fix_exit2_sids),
+                        "arg_retry_sessions": exit2_arg_only_sessions,
+                        "watermark_status": "active_or_regression" if len(pre_fix_exit2_calls) > 0 else "active_post_fix",
+                        "classification": "rigid_roadblock",
+                        "evolution_action": "Add CLI flag aliases / positional path fallback and print 3-line usage hint on exit=2.",
+                    }
+                )
+            else:
+                watermarked_resolved_roadblocks.append(
+                    {
+                        **wm_base,
+                        "exit_2_count": 0,
+                        "exit_2_sessions": 0,
+                        "arg_retry_sessions": 0,
+                        "watermark_status": "resolved_in_current_version",
+                        "classification": "watermarked_resolved_roadblock",
+                        "evolution_action": f"Watermarked out: {len(pre_fix_exit2_calls)} pre-fix exit=2 error(s) resolved in {current_skill_ver or 'current version'} (post_fix=0).",
+                    }
+                )
 
         is_latency_sink = (max_ms is not None and max_ms >= LATENCY_SINK_MAX_MS) or (
             p50_ms is not None and p50_ms >= LATENCY_SINK_P50_MS and len(measured_durs) >= LATENCY_SINK_MIN_CALLS_FOR_P50
@@ -2763,6 +2975,10 @@ def compute_skill_retro_diagnostics(
             key=lambda r: (-r["co_occurring_skill_escapes"], -r["calls"], r["script"]),
         ),
         "rigid_roadblocks": sorted(rigid_roadblocks, key=lambda r: (-r["exit_2_count"], -r["calls"], r["script"])),
+        "watermarked_resolved_roadblocks": sorted(
+            watermarked_resolved_roadblocks,
+            key=lambda r: (-r["pre_fix"], -r["calls"], r["script"]),
+        ),
         "latency_sinks": sorted(latency_sinks, key=lambda r: (-(r["max_ms"] or 0.0), -(r["p50_ms"] or 0.0), r["script"])),
         "cross_repo_gate_health": cross_repo_gate_health,
     }
@@ -2839,8 +3055,11 @@ def compute_skill_retro_diagnostics(
     observation_pool: list[dict[str, Any]] = []
 
     def _register_candidate(item: dict[str, Any], triage: dict[str, Any]) -> None:
+        sk_cand = str(item.get("skill") or "").strip()
+        sk_ver_cand = (inventory.get(sk_cand) or {}).get("skill_version") if sk_cand else None
         enriched = {
             **item,
+            "skill_version": sk_ver_cand,
             "scope": "personal",
             "window_cst": f"{days}d",
             "window_start": window_start.isoformat(),
@@ -3717,6 +3936,7 @@ def _discover_skill_inventory(
             scripts: list[str] = []
             script_entries: list[str] = []
             script_realpaths: dict[str, str] = {}
+            script_watermarks: dict[str, int] = {}
             total_scripts_bytes = 0
             if scripts_dir.is_dir():
                 for sp in sorted(scripts_dir.rglob("*")):
@@ -3735,6 +3955,10 @@ def _discover_skill_inventory(
                     script_entries.append(rel_sc)
                     with contextlib.suppress(OSError):
                         script_realpaths[rel_sc] = str(sp.resolve())
+                    sc_epoch = _git_last_modified_epoch(sp, fallback_mtime=False)
+                    if sc_epoch is not None:
+                        script_watermarks[rel_sc] = sc_epoch
+            ver_info = _compute_pkg_version_fingerprint(pkg)
             refs_tokens_est = sum(int(r.get("tokens_est") or 0) for r in ref_entries)
             bundle_kb = round((skill_md_bytes_len + total_refs_bytes + total_scripts_bytes) / 1024.0, 1)
             refs_kb = round(total_refs_bytes / 1024.0, 1)
@@ -3746,6 +3970,11 @@ def _discover_skill_inventory(
                 "scope": "repo_bound" if repo_bound else "global",
                 "repo": repo_name if repo_bound else "user-skills",
                 "repo_bound": repo_bound,
+                "skill_version": ver_info["skill_version"],
+                "commit_count": ver_info["commit_count"],
+                "subtree_sha": ver_info["subtree_sha"],
+                "plugin_version": ver_info["plugin_version"],
+                "last_modified_epoch": ver_info["last_modified_epoch"],
                 "l0_lines": l0_lines,
                 "frontmatter_tokens_est": frontmatter_tokens_est,
                 "body_tokens_est": body_tokens_est,
@@ -3762,6 +3991,7 @@ def _discover_skill_inventory(
                 "scripts": scripts,
                 "script_entries": script_entries,
                 "script_realpaths": script_realpaths,
+                "script_watermarks": script_watermarks,
                 "eval_cases": parsed_eval_cases,
                 "eval_case_count": eval_cases,
                 "eval_case_weekly_delta": recent_eval_cases,
@@ -6058,6 +6288,7 @@ def route_retro_candidate(
         "layer",
         "category",
         "skill",
+        "skill_version",
         "plain_reason",
         "scope_triage",
         "metric_id",
@@ -6634,6 +6865,8 @@ def _fast_telemetry_signals(
             "l1_hot_drawers": 0,
             "l1_true_deadwood": 0,
             "l2_exit2_roadblocks": 0,
+            "l2_exit2_pre_fix": 0,
+            "l2_exit2_post_fix": 0,
             "l2_leaky_rubber_stamps": 0,
             "l2_latency_sinks": 0,
             "l3_wild_occurrences": 0,
@@ -6648,6 +6881,20 @@ def _fast_telemetry_signals(
     window_start = now_cst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=max(1, days) - 1)
     window_end = now_cst.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
+    def _resolve_script_watermark(sk: str, raw_script_path: str | None) -> tuple[str | None, int | None]:
+        meta = inv.get(sk) or {}
+        cur_ver = str(meta.get("skill_version") or "").strip() or None
+        wm_map = meta.get("script_watermarks") if isinstance(meta.get("script_watermarks"), Mapping) else {}
+        sc_rel = ""
+        if raw_script_path:
+            m_sc = _SKILL_SCRIPT_RE.search(str(raw_script_path))
+            sc_rel = f"scripts/{m_sc.group('script').lstrip('/')}" if m_sc else (str(raw_script_path) if str(raw_script_path).startswith("scripts/") else f"scripts/{Path(str(raw_script_path)).name}")
+        if isinstance(wm_map, Mapping) and sc_rel in wm_map:
+            return cur_ver, int(wm_map[sc_rel])
+        if meta.get("last_modified_epoch") is not None:
+            return cur_ver, int(meta["last_modified_epoch"])
+        return cur_ver, None
+
     wh = warehouse_db if warehouse_db is not None else DEFAULT_WAREHOUSE_DB
     if _safe_is_file(wh) and wh is not None:
         with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(wh) as conn:
@@ -6658,17 +6905,63 @@ def _fast_telemetry_signals(
             for sc_tbl in ("script_call", "fact_skill_script_call"):
                 if sc_tbl not in tables:
                     continue
-                for raw_sk, raw_ec, cnt in conn.execute(
-                    f'SELECT skill, exit_code, COUNT(*) FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0 GROUP BY skill, exit_code'
-                ):
-                    sk = _norm_skill(str(raw_sk or ""))
-                    if sk not in out:
-                        continue
-                    ec = int(raw_ec)
-                    if ec == 2:
-                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(cnt or 0))
-                    else:
-                        out[sk]["domain_failures"] += int(cnt or 0)
+                cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{sc_tbl}")')}
+                ts_col = next((c for c in ("ts", "timestamp", "observed_at", "cst_day") if c in cols), None)
+                p_col = next((c for c in ("script_path", "path") if c in cols), None)
+                ver_col = "skill_version" if "skill_version" in cols else None
+                wh_pre2: dict[str, int] = {}
+                wh_post2: dict[str, int] = {}
+                if ts_col or ver_col:
+                    sel_cols = ["skill", "exit_code"]
+                    if ts_col:
+                        sel_cols.append(f'"{ts_col}"')
+                    if p_col:
+                        sel_cols.append(f'"{p_col}"')
+                    if ver_col:
+                        sel_cols.append(f'"{ver_col}"')
+                    for row_vals in conn.execute(
+                        f'SELECT {", ".join(sel_cols)} FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0'
+                    ):
+                        row_map = dict(zip([c.strip('"') for c in sel_cols], row_vals))
+                        sk = _norm_skill(str(row_map.get("skill") or ""))
+                        if sk not in out:
+                            continue
+                        ec = int(row_map.get("exit_code") or 0)
+                        ts_val = _parse_ts(row_map.get(ts_col)) if ts_col else None
+                        if ts_val is not None and not (window_start <= ts_val < window_end):
+                            continue
+                        cur_ver, wm_epoch = _resolve_script_watermark(sk, row_map.get(p_col) if p_col else None)
+                        is_post = _is_call_post_fix(
+                            ts_val,
+                            str(row_map.get(ver_col) or "").strip() or None if ver_col else None,
+                            current_skill_version=cur_ver,
+                            watermark_epoch=wm_epoch,
+                        )
+                        if ec == 2:
+                            if is_post:
+                                wh_post2[sk] = wh_post2.get(sk, 0) + 1
+                            else:
+                                wh_pre2[sk] = wh_pre2.get(sk, 0) + 1
+                        elif is_post:
+                            out[sk]["domain_failures"] += 1
+                    for sk, cnt in wh_post2.items():
+                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
+                        out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
+                    for sk, cnt in wh_pre2.items():
+                        out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], cnt)
+                else:
+                    for raw_sk, raw_ec, cnt in conn.execute(
+                        f'SELECT skill, exit_code, COUNT(*) FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0 GROUP BY skill, exit_code'
+                    ):
+                        sk = _norm_skill(str(raw_sk or ""))
+                        if sk not in out:
+                            continue
+                        ec = int(raw_ec)
+                        if ec == 2:
+                            out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(cnt or 0))
+                            out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], int(cnt or 0))
+                        else:
+                            out[sk]["domain_failures"] += int(cnt or 0)
             for ref_tbl in ("reference_hits", "fact_skill_reference_hit"):
                 if ref_tbl not in tables:
                     continue
@@ -6686,7 +6979,8 @@ def _fast_telemetry_signals(
 
     u_path = usage_jsonl if usage_jsonl is not None else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL
     if _is_safe_local_file(u_path) and u_path is not None:
-        u_exit2: dict[str, int] = {}
+        u_pre_exit2: dict[str, int] = {}
+        u_post_exit2: dict[str, int] = {}
         u_fail: dict[str, int] = {}
         raw_u = _safe_read_text(u_path)
         for line in raw_u.splitlines():
@@ -6707,9 +7001,19 @@ def _fast_telemetry_signals(
                     ec_raw = rec.get("exit_code")
                     if ec_raw not in (None, ""):
                         ec = int(ec_raw)
+                        cur_ver, wm_epoch = _resolve_script_watermark(sk, str(rec.get("script_path") or ""))
+                        is_post = _is_call_post_fix(
+                            ts,
+                            str(rec.get("skill_version") or "").strip() or None,
+                            current_skill_version=cur_ver,
+                            watermark_epoch=wm_epoch,
+                        )
                         if ec == 2:
-                            u_exit2[sk] = u_exit2.get(sk, 0) + 1
-                        elif ec != 0:
+                            if is_post:
+                                u_post_exit2[sk] = u_post_exit2.get(sk, 0) + 1
+                            else:
+                                u_pre_exit2[sk] = u_pre_exit2.get(sk, 0) + 1
+                        elif ec != 0 and is_post:
                             u_fail[sk] = u_fail.get(sk, 0) + 1
                 elif kind == "reference_hit":
                     rp = str(rec.get("reference_path") or "")
@@ -6717,8 +7021,11 @@ def _fast_telemetry_signals(
                         norm_pair = _normalize_ref_rel(rp)
                         rel_ref = norm_pair[1] if norm_pair else (rp if rp.startswith("references/") else f"references/{Path(rp).name}")
                         out[sk]["ref_hit_drawers"].add(rel_ref)
-        for sk, cnt in u_exit2.items():
+        for sk, cnt in u_post_exit2.items():
             out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
+            out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
+        for sk, cnt in u_pre_exit2.items():
+            out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], cnt)
         for sk, cnt in u_fail.items():
             out[sk]["domain_failures"] = max(out[sk]["domain_failures"], cnt)
 
@@ -6729,6 +7036,7 @@ def _fast_telemetry_signals(
             roi_doc = json.loads(raw_roi) if raw_roi else {}
             sr_doc = (roi_doc.get("skill_retro") if isinstance(roi_doc, Mapping) else None) or {}
             if isinstance(sr_doc, Mapping):
+                snap_ts = _parse_ts(sr_doc.get("generated_at") or roi_doc.get("source_as_of"))
                 l0 = sr_doc.get("layer0_direction_and_triggers") or {}
                 l1 = sr_doc.get("layer1_drawer_metabolism") or {}
                 l2 = sr_doc.get("layer2_script_efficacy_and_speed") or {}
@@ -6743,17 +7051,38 @@ def _fast_telemetry_signals(
                 for uw in l1.get("unwired_disconnected_drawers") or []:
                     sk = _norm_skill(str(uw.get("skill") or ""))
                     if sk in out:
-                        out[sk]["l1_unwired_drawers"] += 1
-                        out[sk]["domain_failures"] = max(out[sk]["domain_failures"], int(uw.get("domain_failure_count") or 0))
+                        cur_ver, wm_epoch = _resolve_script_watermark(sk, None)
+                        if _is_call_post_fix(snap_ts, None, current_skill_version=cur_ver, watermark_epoch=wm_epoch):
+                            out[sk]["l1_unwired_drawers"] += 1
+                            out[sk]["domain_failures"] = max(out[sk]["domain_failures"], int(uw.get("domain_failure_count") or 0))
                 for rb in l2.get("rigid_roadblocks") or []:
                     sk = _norm_skill(str(rb.get("skill") or ""))
                     if sk in out:
-                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(rb.get("exit_2_count") or 0))
+                        cur_ver, wm_epoch = _resolve_script_watermark(sk, str(rb.get("script") or ""))
+                        if _is_call_post_fix(
+                            snap_ts,
+                            str(rb.get("skill_version") or "").strip() or None,
+                            current_skill_version=cur_ver,
+                            watermark_epoch=wm_epoch,
+                        ):
+                            cnt_val = int(rb.get("post_fix") if rb.get("post_fix") is not None else (rb.get("exit_2_count") or 0))
+                            out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt_val)
+                            out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt_val)
+                        else:
+                            out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], int(rb.get("exit_2_count") or 0))
                 for idx_p, prop in enumerate(sr_doc.get("proposals") or []):
                     if not isinstance(prop, Mapping):
                         continue
                     sk = _norm_skill(str(prop.get("skill") or ""))
                     if sk not in out:
+                        continue
+                    cur_ver, wm_epoch = _resolve_script_watermark(sk, None)
+                    if not _is_call_post_fix(
+                        _parse_ts(prop.get("ts") or prop.get("source_as_of")) or snap_ts,
+                        str(prop.get("skill_version") or "").strip() or None,
+                        current_skill_version=cur_ver,
+                        watermark_epoch=wm_epoch,
+                    ):
                         continue
                     prio = str(prop.get("priority") or "").upper()
                     if prio in {"P0", "P1", "HIGH"}:
@@ -6779,6 +7108,20 @@ def _fast_telemetry_signals(
                         continue
                     cat = str(rec.get("category") or "")
                     detail = str(rec.get("detail") or "")
+                    m_sc_detail = re.search(r"script=([^\s|]+)", detail)
+                    cur_ver, wm_epoch = _resolve_script_watermark(sk, m_sc_detail.group(1) if m_sc_detail else None)
+                    rec_ts = _parse_ts(rec.get("ts") or rec.get("source_as_of"))
+                    if not _is_call_post_fix(
+                        rec_ts,
+                        str(rec.get("skill_version") or "").strip() or None,
+                        current_skill_version=cur_ver,
+                        watermark_epoch=wm_epoch,
+                    ):
+                        if cat == "rigid_roadblock":
+                            m_e2_pre = re.search(r"exit_2_count=(\d+)", detail)
+                            if m_e2_pre:
+                                out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], int(m_e2_pre.group(1)))
+                        continue
                     if cat == "unwired_disconnected_drawer":
                         out[sk]["l1_unwired_drawers"] = max(out[sk]["l1_unwired_drawers"], 1)
                         m_df = re.search(r"domain_failures=(\d+)", detail)
@@ -6788,6 +7131,7 @@ def _fast_telemetry_signals(
                         m_e2 = re.search(r"exit_2_count=(\d+)", detail)
                         if m_e2:
                             out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(m_e2.group(1)))
+                            out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], int(m_e2.group(1)))
                     elif cat == "trigger_miss":
                         m_tm = re.search(r"missed_sessions=(\d+)", detail)
                         if m_tm:
@@ -6874,6 +7218,11 @@ def probe_skills(
             hot_cnt = sum(1 for x in (l1.get("hot_drawers") or []) if x.get("skill") == sk_name)
             deadwood = sum(1 for x in (l1.get("true_zero_hit_deadwood") or []) if x.get("skill") == sk_name)
             exit2_cnt = sum(int(x.get("exit_2_count") or 0) for x in (l2.get("rigid_roadblocks") or []) if x.get("skill") == sk_name)
+            exit2_pre_cnt = sum(
+                int(x.get("pre_fix") or 0)
+                for x in ((l2.get("rigid_roadblocks") or []) + (l2.get("watermarked_resolved_roadblocks") or []))
+                if x.get("skill") == sk_name
+            )
             rubber_cnt = sum(1 for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk_name and int(x.get("co_occurring_skill_escapes") or 0) > 0)
             slow_cnt = sum(
                 1
@@ -6921,6 +7270,8 @@ def probe_skills(
                 "l1_hot_drawers": hot_cnt,
                 "l1_true_deadwood": deadwood,
                 "l2_exit2_roadblocks": exit2_cnt,
+                "l2_exit2_pre_fix": exit2_pre_cnt,
+                "l2_exit2_post_fix": exit2_cnt,
                 "l2_leaky_rubber_stamps": rubber_cnt,
                 "l2_latency_sinks": slow_cnt,
                 "l3_wild_occurrences": wild_cnt,
@@ -6931,6 +7282,10 @@ def probe_skills(
             skills_signals.append(
                 {
                     "skill": sk_name,
+                    "skill_version": meta.get("skill_version"),
+                    "subtree_sha": meta.get("subtree_sha"),
+                    "plugin_version": meta.get("plugin_version", "1.0.0"),
+                    "last_modified_epoch": meta.get("last_modified_epoch"),
                     "scope": meta.get("scope", "global"),
                     "l0_lines": meta.get("l0_lines", 0),
                     "max_l1_lines": meta.get("max_l1_lines", 0),
@@ -7007,6 +7362,8 @@ def probe_skills(
                 "l1_hot_drawers": int(t_sig.get("l1_hot_drawers") or 0),
                 "l1_true_deadwood": int(t_sig.get("l1_true_deadwood") or 0),
                 "l2_exit2_roadblocks": exit2_cnt,
+                "l2_exit2_pre_fix": int(t_sig.get("l2_exit2_pre_fix") or 0),
+                "l2_exit2_post_fix": int(t_sig.get("l2_exit2_post_fix") or exit2_cnt),
                 "l2_leaky_rubber_stamps": int(t_sig.get("l2_leaky_rubber_stamps") or 0),
                 "l2_latency_sinks": int(t_sig.get("l2_latency_sinks") or 0),
                 "l3_wild_occurrences": int(t_sig.get("l3_wild_occurrences") or 0),
@@ -7018,6 +7375,10 @@ def probe_skills(
             skills_signals.append(
                 {
                     "skill": sk_name,
+                    "skill_version": meta.get("skill_version"),
+                    "subtree_sha": meta.get("subtree_sha"),
+                    "plugin_version": meta.get("plugin_version", "1.0.0"),
+                    "last_modified_epoch": meta.get("last_modified_epoch"),
                     "scope": meta.get("scope", "global"),
                     "l0_lines": meta.get("l0_lines", 0),
                     "max_l1_lines": meta.get("max_l1_lines", 0),

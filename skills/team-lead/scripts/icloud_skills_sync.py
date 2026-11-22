@@ -30,6 +30,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -655,6 +656,42 @@ def _extract_skills_from_text(text: str, known_skills: set[str]) -> set[str]:
     return found
 
 
+def _build_skill_version_map(
+    skill_sources: Mapping[str, Path],
+    *,
+    repo_root: Path | None = None,
+) -> dict[str, dict[str, str]]:
+    contract_script = (
+        (repo_root / "skills" / "skill-contract" / "scripts" / "skill_contract.py")
+        if repo_root is not None and (repo_root / "skills" / "skill-contract" / "scripts" / "skill_contract.py").is_file()
+        else SCRIPT_PATH.parents[2] / "skill-contract" / "scripts" / "skill_contract.py"
+    )
+    resolve_fn = None
+    if contract_script.is_file():
+        with contextlib.suppress(Exception):
+            spec = importlib.util.spec_from_file_location("icloud_skill_contract_ver", contract_script)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                resolve_fn = getattr(mod, "resolve_skill_version", None)
+
+    version_map: dict[str, dict[str, str]] = {}
+    for sk_name, pkg_dir in skill_sources.items():
+        if callable(resolve_fn):
+            with contextlib.suppress(Exception):
+                vinfo = resolve_fn(pkg_dir)
+                if isinstance(vinfo, Mapping) and vinfo.get("skill_version"):
+                    version_map[sk_name] = {
+                        "skill_version": str(vinfo["skill_version"]),
+                        "subtree_sha": str(vinfo.get("subtree_sha") or ""),
+                    }
+                    continue
+        raw_md = (pkg_dir / "SKILL.md").read_bytes() if (pkg_dir / "SKILL.md").is_file() else b""
+        short_sha = hashlib.sha256(raw_md).hexdigest()[:7]
+        version_map[sk_name] = {"skill_version": f"v1@{short_sha}", "subtree_sha": short_sha}
+    return version_map
+
+
 def _collect_local_telemetry_events(
     *,
     host: str,
@@ -664,6 +701,7 @@ def _collect_local_telemetry_events(
     copilot_db_path: Path,
     warehouse_db_path: Path,
     days: int = 30,
+    skill_versions: Mapping[str, Mapping[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     cutoff = datetime.now(CST) - timedelta(days=max(1, days))
     cutoff_7d = datetime.now(CST) - timedelta(days=7)
@@ -671,6 +709,15 @@ def _collect_local_telemetry_events(
 
     def _add(rec: dict[str, Any]) -> None:
         rec["host"] = normalize_hostname(str(rec.get("host") or host))
+        kind_val = str(rec.get("kind") or "")
+        if kind_val in {"skill_turn", "reference_hit", "script_call"} and skill_versions:
+            sk_key = str(rec.get("skill") or "").strip()
+            v_entry = skill_versions.get(sk_key)
+            if v_entry:
+                if not rec.get("skill_version"):
+                    rec["skill_version"] = v_entry["skill_version"]
+                if not rec.get("subtree_sha") and v_entry.get("subtree_sha"):
+                    rec["subtree_sha"] = v_entry["subtree_sha"]
         eid = compute_telemetry_event_id(rec)
         rec["event_id"] = eid
         by_id.setdefault(eid, rec)
@@ -999,7 +1046,9 @@ def export_telemetry_shards(
     wh_db = (warehouse_db_path or default_warehouse_db_path()).expanduser()
     h_root = (handoff_root or default_handoff_root()).expanduser()
 
-    known_skills = set(enumerate_all_local_skill_sources(repo).keys())
+    skill_sources = enumerate_all_local_skill_sources(repo)
+    known_skills = set(skill_sources.keys())
+    skill_versions = _build_skill_version_map(skill_sources, repo_root=repo)
     collected = _collect_local_telemetry_events(
         host=host,
         known_skills=known_skills,
@@ -1008,6 +1057,7 @@ def export_telemetry_shards(
         copilot_db_path=cp_db,
         warehouse_db_path=wh_db,
         days=days,
+        skill_versions=skill_versions,
     )
 
     # 1. Incrementally update canonical local ~/.local/share/skill-telemetry/usage.jsonl

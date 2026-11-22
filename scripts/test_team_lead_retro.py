@@ -429,6 +429,55 @@ else:
             self.assertEqual(blocked_payload["goal_id"], "other-blocked-goal")
             self.assertEqual(blocked_payload["needs_a_person_count"], 1)
 
+            # Positive 3: `status --check --handoff-dir <done-goal>` on a completed (GOAL_DONE) goal
+            # with live agents in herdr-json exits cleanly with 0 without raising KeyError: 'ledger_names'
+            goal_done = root / "done-goal"
+            goal_done.mkdir(parents=True)
+            (goal_done / "ledger.md").write_text(
+                "# Goal: done-goal\n- TL: done-goal-goal-tl-r1\n"
+                "2026-11-22T01:00:00Z | EVT=DISPATCHED | id=E1 | task=T1 | from=done-goal-goal-tl-r1 | to=done-goal-writer-r1\n"
+                "2026-11-22T01:10:00Z | EVT=GOAL_DONE | id=E2 | from=done-goal-goal-tl-r1 | note=Completed\n",
+                encoding="utf-8",
+            )
+            (goal_done / "queue.json").write_text(
+                json.dumps({"tasks": [{"task_id": "T1", "status": "done"}]}),
+                encoding="utf-8",
+            )
+            agents_with_live = Path(tmp) / "agents-live.json"
+            agents_with_live.write_text(
+                json.dumps(
+                    {
+                        "agents": [
+                            {"name": "unrelated-worker-r1", "status": "working", "cwd": "/tmp/unrelated"},
+                            {"name": "done-goal-writer-r1", "status": "done", "cwd": "/tmp/done-goal"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            done_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_SUPERVISOR),
+                    "status",
+                    "--check",
+                    "--handoff-dir",
+                    str(goal_done),
+                    "--herdr-json",
+                    str(agents_with_live),
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done_res.returncode, 0, done_res.stderr)
+            done_payload = json.loads(done_res.stdout)
+            self.assertEqual(done_payload["goal_id"], "done-goal")
+            self.assertEqual(done_payload["needs_a_person_count"], 0)
+            self.assertTrue(done_payload["healthy"])
+
             # Counter-Case: invalid flag on `goal-supervisor.py` exits 2 with self-disclosing pointer to ledger.md
             bad_sup = subprocess.run(
                 [sys.executable, str(GOAL_SUPERVISOR), "status", "--definitely-invalid-flag"],

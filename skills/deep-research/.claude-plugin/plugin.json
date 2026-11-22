@@ -1,5 +1,6 @@
 {
   "name": "deep-research",
   "description": "Use for deep, multi-source research with citations and adversarial verification. Break questions into subproblems, cross-check sources, grade confidence, and synthesize disagreements. Not for quick factual lookups.",
+  "version": "1.0.0",
   "category": "research"
 }
