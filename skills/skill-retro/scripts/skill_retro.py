@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -34,10 +35,12 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -177,6 +180,219 @@ _SECRET_SCRUB_RE = re.compile(
     r"(?i)(?:bearer\s+[A-Za-z0-9._-]+|gh[pousr]_[A-Za-z0-9_]+|lin_api_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})"
 )
 
+UF_DATALESS = 0x40000000
+SF_DATALESS = 0x40000000
+SAFE_OPEN_TIMEOUT_SEC = 0.5
+DEFAULT_MAX_COPILOT_SESSIONS_SCAN = 30
+DEFAULT_MAX_SESSION_EVENTS_BYTES = 1_000_000
+
+
+def _is_cloud_or_external_path(path: Path | None) -> bool:
+    if path is None:
+        return False
+    raw = str(path)
+    return (
+        "Mobile Documents" in raw
+        or "com~apple~CloudDocs" in raw
+        or raw.startswith("/Volumes/")
+        or "/Volumes/" in raw
+    )
+
+
+def _is_trusted_fast_local_path(path: Path | None) -> bool:
+    if path is None:
+        return False
+    raw = str(path)
+    if _is_cloud_or_external_path(path):
+        return False
+    home_str = str(Path.home())
+    trusted_prefixes = (
+        f"{home_str}/.copilot",
+        f"{home_str}/.local",
+        f"{home_str}/Development/user-skills",
+        str(DEFAULT_SKILLS_ROOT.parent),
+    )
+    return any(raw == pref or raw.startswith(pref + "/") for pref in trusted_prefixes)
+
+
+def _is_dataless_stat(st: os.stat_result) -> bool:
+    flags = int(getattr(st, "st_flags", 0) or 0)
+    if flags & (UF_DATALESS | SF_DATALESS):
+        return True
+    blocks = getattr(st, "st_blocks", None)
+    size = int(getattr(st, "st_size", 0) or 0)
+    if blocks is not None and int(blocks) == 0 and size > 0:
+        return True
+    return False
+
+
+def _run_with_io_timeout(
+    fn: Callable[[], Any],
+    *,
+    timeout_sec: float = SAFE_OPEN_TIMEOUT_SEC,
+    default: Any = None,
+) -> tuple[bool, Any]:
+    """Run a potentially blocking filesystem/SQLite call with a bounded timeout (<0.5s)."""
+    timeout_val = max(0.05, float(timeout_sec))
+    if (
+        threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "setitimer")
+        and hasattr(signal, "ITIMER_REAL")
+    ):
+        prev_handler = signal.getsignal(signal.SIGALRM)
+
+        def _alarm_handler(_signum: int, _frame: Any) -> None:
+            raise TimeoutError("bounded I/O open timed out")
+
+        try:
+            signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.setitimer(signal.ITIMER_REAL, timeout_val)
+            try:
+                return True, fn()
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+        except (TimeoutError, OSError, sqlite3.Error):
+            return False, default
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                signal.signal(signal.SIGALRM, prev_handler)
+
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["val"] = fn()
+            box["ok"] = True
+        except BaseException as exc:
+            box["err"] = exc
+            box["ok"] = False
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    if not done.wait(timeout_val):
+        return False, default
+    if not box.get("ok"):
+        return False, default
+    return True, box.get("val", default)
+
+
+def _is_safe_local_file(path: Path | None, *, timeout_sec: float = SAFE_OPEN_TIMEOUT_SEC) -> bool:
+    """Return True iff `path` is a materialized local regular file that can be opened without kernel hang.
+
+    1) If `path` is under `Mobile Documents` / `com~apple~CloudDocs` or `/Volumes/` (or any file),
+       inspect `os.stat(path, follow_symlinks=False)`: if `st_flags & 0x40000000` (`UF_DATALESS` / `SF_DATALESS`)
+       or (`st_blocks == 0 and st_size > 0` on cloud/external paths), skip immediately without calling `open()`.
+    2) For any file outside `~/.copilot`, `~/.local`, and `~/Development/user-skills`, probe with
+       non-blocking `os.open(path, os.O_RDONLY | os.O_NONBLOCK)` inside a bounded `0.5s` timer/worker.
+    """
+    if path is None:
+        return False
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    import stat as _stat_mod
+
+    if _stat_mod.S_ISLNK(st.st_mode):
+        try:
+            st = os.stat(path, follow_symlinks=True)
+        except OSError:
+            return False
+    if not _stat_mod.S_ISREG(st.st_mode):
+        return False
+    flags = int(getattr(st, "st_flags", 0) or 0)
+    if flags & (UF_DATALESS | SF_DATALESS):
+        return False
+    is_cloud_ext = _is_cloud_or_external_path(path)
+    if is_cloud_ext and _is_dataless_stat(st):
+        return False
+    if _is_trusted_fast_local_path(path):
+        return True
+
+    def _probe_nonblock_open() -> bool:
+        nonblock_flag = getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(str(path), os.O_RDONLY | nonblock_flag)
+        try:
+            os.read(fd, 1)
+            return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    ok, res = _run_with_io_timeout(_probe_nonblock_open, timeout_sec=timeout_sec, default=False)
+    return bool(ok and res)
+
+
+def _safe_read_text(
+    path: Path | None,
+    *,
+    max_bytes: int | None = None,
+    timeout_sec: float = SAFE_OPEN_TIMEOUT_SEC,
+) -> str:
+    """Safely read UTF-8 text from `path` after verifying `_is_safe_local_file` and 0.5s open guard."""
+    if path is None or not _is_safe_local_file(path, timeout_sec=timeout_sec):
+        return ""
+    if _is_trusted_fast_local_path(path):
+        try:
+            nonblock_flag = getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(str(path), os.O_RDONLY | nonblock_flag)
+            try:
+                with os.fdopen(fd, "rb") as handle:
+                    raw = handle.read(max_bytes) if max_bytes is not None else handle.read()
+                return raw.decode("utf-8", errors="replace")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                return ""
+        except OSError:
+            return ""
+
+    def _read_impl() -> str:
+        nonblock_flag = getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(str(path), os.O_RDONLY | nonblock_flag)
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                raw = handle.read(max_bytes) if max_bytes is not None else handle.read()
+            return raw.decode("utf-8", errors="replace")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
+
+    ok, text = _run_with_io_timeout(_read_impl, timeout_sec=timeout_sec, default="")
+    return text if ok and isinstance(text, str) else ""
+
+
+@contextlib.contextmanager
+def _safe_sqlite_connect(db_path: Path | None, *, timeout_sec: float = SAFE_OPEN_TIMEOUT_SEC):
+    """Connect to a read-only SQLite database only if `_is_safe_local_file` passes within `0.5s`."""
+    if db_path is None or not _is_safe_local_file(db_path, timeout_sec=timeout_sec):
+        yield None
+        return
+
+    def _connect() -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=timeout_sec)
+
+    if _is_trusted_fast_local_path(db_path):
+        try:
+            conn = _connect()
+        except (sqlite3.Error, OSError):
+            yield None
+            return
+    else:
+        ok, conn = _run_with_io_timeout(_connect, timeout_sec=timeout_sec, default=None)
+        if not ok or conn is None:
+            yield None
+            return
+    try:
+        yield conn
+    finally:
+        with contextlib.suppress(sqlite3.Error, OSError):
+            conn.close()
+
 
 def _safe_is_dir(path: Path | None) -> bool:
     if path is None:
@@ -191,6 +407,11 @@ def _safe_is_file(path: Path | None) -> bool:
     if path is None:
         return False
     try:
+        if _is_cloud_or_external_path(path):
+            return _is_safe_local_file(path)
+        st = os.stat(path, follow_symlinks=False)
+        if getattr(st, "st_flags", 0) & (UF_DATALESS | SF_DATALESS):
+            return False
         return path.is_file()
     except OSError:
         return False
@@ -477,13 +698,13 @@ def _parse_copilot_sessions(
     window_end: datetime,
     known_skills: set[str],
     basename_to_targets: Mapping[str, list[tuple[str, str]]],
-    max_sessions: int = 250,
+    max_sessions: int = DEFAULT_MAX_COPILOT_SESSIONS_SCAN,
 ) -> dict[str, SessionObservation]:
     observations: dict[str, SessionObservation] = {}
     if not _probe_readable_dir(sessions_dir):
         return observations
 
-    candidate_files: list[tuple[float, Path]] = []
+    candidate_files: list[tuple[float, int, Path]] = []
     with contextlib.suppress(OSError):
         for child in _safe_iterdir(sessions_dir, sort_entries=False):
             if not _safe_is_dir(child) or child.name.startswith("."):
@@ -492,13 +713,23 @@ def _parse_copilot_sessions(
             if not _safe_is_file(ev_file):
                 continue
             with contextlib.suppress(OSError):
-                mtime = ev_file.stat().st_mtime
+                st = ev_file.stat()
+                mtime = st.st_mtime
                 mtime_dt = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(CST)
                 if mtime_dt >= window_start:
-                    candidate_files.append((mtime, ev_file))
+                    candidate_files.append((mtime, int(st.st_size or 0), ev_file))
 
     candidate_files.sort(key=lambda item: -item[0])
-    for mtime, ev_file in candidate_files[:max_sessions]:
+    relevant_tokens = (
+        '"session.start"',
+        '"user.message"',
+        '"skill.invoked"',
+        '"tool.execution_start"',
+        '"tool.execution_complete"',
+    )
+    for mtime, file_size, ev_file in candidate_files[: max(1, min(max_sessions, 250))]:
+        if not _is_safe_local_file(ev_file):
+            continue
         sid = ev_file.parent.name
         fallback_dt = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(CST)
         obs = SessionObservation(
@@ -512,106 +743,149 @@ def _parse_copilot_sessions(
         seen_any = False
 
         try:
-            with ev_file.open("r", encoding="utf-8", errors="replace") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        ev = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(ev, dict):
-                        continue
-                    ev_type = str(ev.get("type") or "")
-                    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-                    raw_ts = ev.get("timestamp") or data.get("startTime")
-                    ts = _parse_ts(raw_ts, fallback_dt) or fallback_dt
-                    if not (window_start <= ts < window_end) and raw_ts is not None:
-                        continue
-                    seen_any = True
-                    obs.started_at = min(obs.started_at, ts)
-                    obs.ended_at = max(obs.ended_at, ts)
+            raw_lines: list[str]
+            if file_size > DEFAULT_MAX_SESSION_EVENTS_BYTES:
+                half = DEFAULT_MAX_SESSION_EVENTS_BYTES // 2
+                with ev_file.open("rb") as bhandle:
+                    head_chunk = bhandle.read(half).decode("utf-8", errors="replace").splitlines()
+                    if head_chunk:
+                        head_chunk = head_chunk[:-1]
+                    bhandle.seek(max(0, file_size - half))
+                    tail_chunk = bhandle.read().decode("utf-8", errors="replace").splitlines()
+                    if tail_chunk:
+                        tail_chunk = tail_chunk[1:]
+                raw_lines = head_chunk + tail_chunk
+            else:
+                raw_lines = _safe_read_text(ev_file).splitlines()
+            for raw_line in raw_lines:
+                line = raw_line.strip()
+                if not line or not any(tok in line for tok in relevant_tokens):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                ev_type = str(ev.get("type") or "")
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                raw_ts = ev.get("timestamp") or data.get("startTime")
+                ts = _parse_ts(raw_ts, fallback_dt) or fallback_dt
+                if not (window_start <= ts < window_end) and raw_ts is not None:
+                    continue
+                seen_any = True
+                obs.started_at = min(obs.started_at, ts)
+                obs.ended_at = max(obs.ended_at, ts)
 
-                    if ev_type == "session.start":
-                        cwd = str((data.get("context") or {}).get("cwd") or "")
-                        for m_goal in _HANDOFF_GOAL_RE.finditer(cwd + "/"):
-                            if not m_goal.group(1).startswith("_"):
-                                obs.referenced_goals.add(m_goal.group(1))
-                    elif ev_type == "user.message":
-                        content = str(data.get("content") or "")
-                        for m_goal in _HANDOFF_GOAL_RE.finditer(content):
-                            if not m_goal.group(1).startswith("_"):
-                                obs.referenced_goals.add(m_goal.group(1))
-                        for m_sk in _SKILL_CONTEXT_RE.finditer(content):
-                            sk_raw = m_sk.group("ctx") or m_sk.group("path") or m_sk.group("call")
-                            if sk_raw:
-                                norm_sk = _norm_skill(sk_raw)
-                                if not known_skills or norm_sk in known_skills:
-                                    obs.skills_loaded.add(norm_sk)
-                    elif ev_type == "skill.invoked":
-                        sk_name = _norm_skill(data.get("name") or "")
-                        if sk_name and (not known_skills or sk_name in known_skills):
+                if ev_type == "session.start":
+                    cwd = str((data.get("context") or {}).get("cwd") or "")
+                    for m_goal in _HANDOFF_GOAL_RE.finditer(cwd + "/"):
+                        if not m_goal.group(1).startswith("_"):
+                            obs.referenced_goals.add(m_goal.group(1))
+                elif ev_type == "user.message":
+                    content = str(data.get("content") or "")
+                    for m_goal in _HANDOFF_GOAL_RE.finditer(content):
+                        if not m_goal.group(1).startswith("_"):
+                            obs.referenced_goals.add(m_goal.group(1))
+                    for m_sk in _SKILL_CONTEXT_RE.finditer(content):
+                        sk_raw = m_sk.group("ctx") or m_sk.group("path") or m_sk.group("call")
+                        if sk_raw:
+                            norm_sk = _norm_skill(sk_raw)
+                            if not known_skills or norm_sk in known_skills:
+                                obs.skills_loaded.add(norm_sk)
+                elif ev_type == "skill.invoked":
+                    sk_name = _norm_skill(data.get("name") or "")
+                    if sk_name and (not known_skills or sk_name in known_skills):
+                        obs.skills_loaded.add(sk_name)
+                elif ev_type == "tool.execution_start":
+                    tc_id = str(data.get("toolCallId") or "")
+                    t_name = str(data.get("toolName") or "")
+                    args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+                    has_ts = bool(ev.get("timestamp"))
+                    if tc_id:
+                        tool_starts[tc_id] = (t_name, args, ts, has_ts)
+                    if t_name == "skill" and args.get("skill"):
+                        sk_name = _norm_skill(args["skill"])
+                        if not known_skills or sk_name in known_skills:
                             obs.skills_loaded.add(sk_name)
-                    elif ev_type == "tool.execution_start":
-                        tc_id = str(data.get("toolCallId") or "")
-                        t_name = str(data.get("toolName") or "")
-                        args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
-                        has_ts = bool(ev.get("timestamp"))
-                        if tc_id:
-                            tool_starts[tc_id] = (t_name, args, ts, has_ts)
-                        if t_name == "skill" and args.get("skill"):
-                            sk_name = _norm_skill(args["skill"])
-                            if not known_skills or sk_name in known_skills:
-                                obs.skills_loaded.add(sk_name)
-                        elif t_name in {"view", "read_file", "read"} and args.get("path"):
-                            vp = str(args.get("path") or "")
-                            for m_goal in _HANDOFF_GOAL_RE.finditer(vp):
-                                if not m_goal.group(1).startswith("_"):
-                                    obs.referenced_goals.add(m_goal.group(1))
-                            norm_ref = _normalize_ref_rel(vp)
-                            if norm_ref:
-                                ref_sk, ref_rel = norm_ref
-                                obs.skills_loaded.add(ref_sk)
-                                obs.ref_reads.append((ref_sk, ref_rel, ts, obs.next_seq()))
-                            else:
-                                for m_sk in _SKILL_CONTEXT_RE.finditer(vp):
-                                    sk_p = m_sk.group("path")
-                                    if sk_p:
-                                        norm_sk = _norm_skill(sk_p)
-                                        if not known_skills or norm_sk in known_skills:
-                                            obs.skills_loaded.add(norm_sk)
-                        elif t_name in {"edit", "create", "apply_patch", "write", "multiedit"}:
-                            fp = str(args.get("path") or args.get("file_path") or "")
-                            if fp:
-                                obs.edited_files.add(fp)
-                            obs.edit_count += 1
-                    elif ev_type == "tool.execution_complete":
-                        tc_id = str(data.get("toolCallId") or "")
-                        res_obj = data.get("result")
-                        res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else ""
-                        if tc_id not in tool_starts:
+                    elif t_name in {"view", "read_file", "read"} and args.get("path"):
+                        vp = str(args.get("path") or "")
+                        for m_goal in _HANDOFF_GOAL_RE.finditer(vp):
+                            if not m_goal.group(1).startswith("_"):
+                                obs.referenced_goals.add(m_goal.group(1))
+                        norm_ref = _normalize_ref_rel(vp)
+                        if norm_ref:
+                            ref_sk, ref_rel = norm_ref
+                            obs.skills_loaded.add(ref_sk)
+                            obs.ref_reads.append((ref_sk, ref_rel, ts, obs.next_seq()))
+                        else:
+                            for m_sk in _SKILL_CONTEXT_RE.finditer(vp):
+                                sk_p = m_sk.group("path")
+                                if sk_p:
+                                    norm_sk = _norm_skill(sk_p)
+                                    if not known_skills or norm_sk in known_skills:
+                                        obs.skills_loaded.add(norm_sk)
+                    elif t_name in {"edit", "create", "apply_patch", "write", "multiedit"}:
+                        fp = str(args.get("path") or args.get("file_path") or "")
+                        if fp:
+                            obs.edited_files.add(fp)
+                        obs.edit_count += 1
+                elif ev_type == "tool.execution_complete":
+                    tc_id = str(data.get("toolCallId") or "")
+                    res_obj = data.get("result")
+                    res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else ""
+                    if tc_id not in tool_starts:
+                        continue
+                    t_name, args, st_ts, st_has_ts = tool_starts[tc_id]
+                    measured = bool(ev.get("timestamp")) and st_has_ts
+                    dur_ms = max(1.0, (ts - st_ts).total_seconds() * 1000.0) if measured else None
+                    if t_name == "bash":
+                        cmd_str = str(args.get("command") or "").strip()
+                        if not cmd_str:
                             continue
-                        t_name, args, st_ts, st_has_ts = tool_starts[tc_id]
-                        measured = bool(ev.get("timestamp")) and st_has_ts
-                        dur_ms = max(1.0, (ts - st_ts).total_seconds() * 1000.0) if measured else None
-                        if t_name == "bash":
-                            cmd_str = str(args.get("command") or "").strip()
-                            if not cmd_str:
-                                continue
-                            for m_goal in _HANDOFF_GOAL_RE.finditer(cmd_str):
-                                if not m_goal.group(1).startswith("_"):
-                                    obs.referenced_goals.add(m_goal.group(1))
-                            for m_ref in _REF_PATH_RE.finditer(cmd_str):
-                                ref_sk = _norm_skill(m_ref.group("skill"))
-                                obs.ref_reads.append((ref_sk, f"references/{m_ref.group('ref').lstrip('/')}", st_ts, obs.next_seq()))
-                            ec = _extract_exit_code_from_tool_complete(data, res_text)
-                            m_bg = _SHELL_START_RE.search(res_text)
-                            if ec is None and m_bg:
-                                pending_shells[m_bg.group(1)] = (cmd_str, st_ts, st_has_ts)
-                                continue
+                        for m_goal in _HANDOFF_GOAL_RE.finditer(cmd_str):
+                            if not m_goal.group(1).startswith("_"):
+                                obs.referenced_goals.add(m_goal.group(1))
+                        for m_ref in _REF_PATH_RE.finditer(cmd_str):
+                            ref_sk = _norm_skill(m_ref.group("skill"))
+                            obs.ref_reads.append((ref_sk, f"references/{m_ref.group('ref').lstrip('/')}", st_ts, obs.next_seq()))
+                        ec = _extract_exit_code_from_tool_complete(data, res_text)
+                        m_bg = _SHELL_START_RE.search(res_text)
+                        if ec is None and m_bg:
+                            pending_shells[m_bg.group(1)] = (cmd_str, st_ts, st_has_ts)
+                            continue
+                        seq_no = obs.next_seq()
+                        obs.bash_commands.append((cmd_str, ec, dur_ms, seq_no))
+                        for sk_t, sc_rel in _extract_script_targets(
+                            cmd_str,
+                            known_skills=known_skills,
+                            basename_to_targets=basename_to_targets,
+                            active_skills=obs.skills_loaded,
+                        ):
+                            obs.script_calls.append(
+                                ScriptCallEvent(
+                                    session_id=sid,
+                                    skill=sk_t,
+                                    script_rel=sc_rel,
+                                    command=cmd_str,
+                                    ts=st_ts,
+                                    exit_code=ec,
+                                    duration_ms=dur_ms,
+                                    measured=measured,
+                                    seq=seq_no,
+                                )
+                            )
+                    elif t_name in {"read_bash", "stop_bash"}:
+                        sh_id = str(args.get("shellId") or "")
+                        m_done = _SHELL_COMPLETE_RE.search(res_text)
+                        target_sh = m_done.group(1) if m_done else sh_id
+                        if target_sh and target_sh in pending_shells and m_done:
+                            cmd_str, bg_st, bg_has_ts = pending_shells.pop(target_sh)
+                            bg_measured = bool(ev.get("timestamp")) and bg_has_ts
+                            bg_dur = max(1.0, (ts - bg_st).total_seconds() * 1000.0) if bg_measured else None
+                            ec_val = int(m_done.group(2))
                             seq_no = obs.next_seq()
-                            obs.bash_commands.append((cmd_str, ec, dur_ms, seq_no))
+                            obs.bash_commands.append((cmd_str, ec_val, bg_dur, seq_no))
                             for sk_t, sc_rel in _extract_script_targets(
                                 cmd_str,
                                 known_skills=known_skills,
@@ -624,43 +898,13 @@ def _parse_copilot_sessions(
                                         skill=sk_t,
                                         script_rel=sc_rel,
                                         command=cmd_str,
-                                        ts=st_ts,
-                                        exit_code=ec,
-                                        duration_ms=dur_ms,
-                                        measured=measured,
+                                        ts=bg_st,
+                                        exit_code=ec_val,
+                                        duration_ms=bg_dur,
+                                        measured=bg_measured,
                                         seq=seq_no,
                                     )
                                 )
-                        elif t_name in {"read_bash", "stop_bash"}:
-                            sh_id = str(args.get("shellId") or "")
-                            m_done = _SHELL_COMPLETE_RE.search(res_text)
-                            target_sh = m_done.group(1) if m_done else sh_id
-                            if target_sh and target_sh in pending_shells and m_done:
-                                cmd_str, bg_st, bg_has_ts = pending_shells.pop(target_sh)
-                                bg_measured = bool(ev.get("timestamp")) and bg_has_ts
-                                bg_dur = max(1.0, (ts - bg_st).total_seconds() * 1000.0) if bg_measured else None
-                                ec_val = int(m_done.group(2))
-                                seq_no = obs.next_seq()
-                                obs.bash_commands.append((cmd_str, ec_val, bg_dur, seq_no))
-                                for sk_t, sc_rel in _extract_script_targets(
-                                    cmd_str,
-                                    known_skills=known_skills,
-                                    basename_to_targets=basename_to_targets,
-                                    active_skills=obs.skills_loaded,
-                                ):
-                                    obs.script_calls.append(
-                                        ScriptCallEvent(
-                                            session_id=sid,
-                                            skill=sk_t,
-                                            script_rel=sc_rel,
-                                            command=cmd_str,
-                                            ts=bg_st,
-                                            exit_code=ec_val,
-                                            duration_ms=bg_dur,
-                                            measured=bg_measured,
-                                            seq=seq_no,
-                                        )
-                                    )
         except OSError:
             continue
 
@@ -680,17 +924,16 @@ def _ingest_usage_jsonl_and_shards(
     known_skills: set[str],
 ) -> None:
     rows: list[Mapping[str, Any]] = []
-    if usage_jsonl is not None and usage_jsonl.is_file():
-        with contextlib.suppress(OSError):
-            with usage_jsonl.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    with contextlib.suppress(json.JSONDecodeError):
-                        parsed = json.loads(line)
-                        if isinstance(parsed, dict):
-                            rows.append(parsed)
+    if usage_jsonl is not None and _is_safe_local_file(usage_jsonl):
+        raw_usage = _safe_read_text(usage_jsonl)
+        for line in raw_usage.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            with contextlib.suppress(json.JSONDecodeError):
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    rows.append(parsed)
     rows.extend(shard_records)
 
     for idx, rec in enumerate(rows):
@@ -758,13 +1001,10 @@ def _ingest_trace_export(
     window_end: datetime,
     known_skills: set[str],
 ) -> int:
-    if trace_export_path is None or not trace_export_path.is_file():
+    if trace_export_path is None or not _is_safe_local_file(trace_export_path):
         return 0
     ingested_spans = 0
-    try:
-        raw_text = trace_export_path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return 0
+    raw_text = _safe_read_text(trace_export_path).strip()
     if not raw_text:
         return 0
 
@@ -874,8 +1114,11 @@ def _ingest_warehouse_and_copilot_db(
         bucket[kind] = bucket.get(kind, 0) + 1
 
     if _safe_is_file(warehouse_db) and warehouse_db is not None:
-        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{warehouse_db}?mode=ro", uri=True)) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(warehouse_db) as conn:
+            if conn is not None:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            else:
+                tables = set()
             if "fact_turn" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_turn")')]
                 for values in conn.execute('SELECT * FROM "fact_turn"'):
@@ -1044,8 +1287,11 @@ def _ingest_warehouse_and_copilot_db(
                             bump_escape(sk, kind)
 
     if _safe_is_file(copilot_db) and copilot_db is not None:
-        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{copilot_db}?mode=ro", uri=True)) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(copilot_db) as conn:
+            if conn is not None:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            else:
+                tables = set()
             if "session_files" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("session_files")')]
                 for values in conn.execute('SELECT * FROM "session_files"'):
@@ -1147,9 +1393,12 @@ def _harvest_cross_session_taste_and_eval(handoff_root: Path | None) -> dict[str
         for sel_file in _safe_iterdir(receipts_dir):
             if not _safe_is_file(sel_file) or not _SELECTION_FILE_RE.match(sel_file.name):
                 continue
+            raw_sel = _safe_read_text(sel_file)
+            if not raw_sel:
+                continue
             try:
-                doc = json.loads(sel_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                doc = json.loads(raw_sel)
+            except json.JSONDecodeError:
                 continue
             if not isinstance(doc, dict):
                 continue
@@ -1352,18 +1601,20 @@ def discover_active_skill_leases(
                     continue
                 ledger_p = goal_dir / "ledger.md"
                 if _safe_is_file(ledger_p):
-                    with contextlib.suppress(OSError):
-                        l_txt = ledger_p.read_text(encoding="utf-8", errors="ignore")
-                        if "in_progress" in l_txt and "EVT=GOAL_DONE" not in l_txt:
-                            for sk in sorted(known_skills or set()):
-                                if f"skills/{sk}" in l_txt or f"skill-retro-{sk}" in goal_dir.name:
-                                    _mark(sk, f"in_progress_ledger:{goal_dir.name}")
+                    l_txt = _safe_read_text(ledger_p)
+                    if "in_progress" in l_txt and "EVT=GOAL_DONE" not in l_txt:
+                        for sk in sorted(known_skills or set()):
+                            if f"skills/{sk}" in l_txt or f"skill-retro-{sk}" in goal_dir.name:
+                                _mark(sk, f"in_progress_ledger:{goal_dir.name}")
                 briefs_d = goal_dir / "briefs"
                 if _probe_readable_dir(briefs_d):
                     with contextlib.suppress(OSError):
                         for relay_f in _safe_glob(briefs_d, "skill-retro-relay-*.json"):
                             with contextlib.suppress(OSError, json.JSONDecodeError):
-                                rdoc = json.loads(relay_f.read_text(encoding="utf-8"))
+                                raw_relay = _safe_read_text(relay_f)
+                                if not raw_relay:
+                                    continue
+                                rdoc = json.loads(raw_relay)
                                 if isinstance(rdoc, dict) and str(rdoc.get("status") or "pending") == "pending":
                                     to_sk = _norm_skill(rdoc.get("to_skill") or "")
                                     if to_sk:
@@ -2887,6 +3138,12 @@ def compute_skill_retro_diagnostics(
     proposals_written = len(auto_proposed)
     proposals_skipped = len(proposals) - proposals_written if auto_propose else 0
 
+    triad_summary = evaluate_skill_uptake(
+        skills=[norm_filter] if norm_filter else sorted(inventory.keys()),
+        triggered_skills=[norm_filter] if norm_filter else sorted({sk for o in all_sessions for sk in o.skills_loaded}),
+        target_dir=s_root.parent if (s_root / "skill-retro").is_dir() else s_root,
+        scenario="skills_available_unmentioned",
+    )
     result_payload: dict[str, Any] = {
         "ok": True,
         "schema": "skill-retro-diagnostic/v1",
@@ -2949,19 +3206,9 @@ def compute_skill_retro_diagnostics(
                 "eval_tiers": ["L1_baseline_eval", "L2_diversity_intent_eval", "L3_human_taste_eval"],
                 "dual_flywheel_guard": layer3["dual_flywheel_guard"],
             },
-            "triad_trigger_uptake_outcome": evaluate_skill_uptake(
-                skills=[norm_filter] if norm_filter else sorted(inventory.keys()),
-                triggered_skills=[norm_filter] if norm_filter else sorted({sk for o in all_sessions for sk in o.skills_loaded}),
-                target_dir=s_root.parent if (s_root / "skill-retro").is_dir() else s_root,
-                scenario="skills_available_unmentioned",
-            ),
+            "triad_trigger_uptake_outcome": triad_summary,
         },
-        "context_uptake_triad": evaluate_skill_uptake(
-            skills=[norm_filter] if norm_filter else sorted(inventory.keys()),
-            triggered_skills=[norm_filter] if norm_filter else sorted({sk for o in all_sessions for sk in o.skills_loaded}),
-            target_dir=s_root.parent if (s_root / "skill-retro").is_dir() else s_root,
-            scenario="skills_available_unmentioned",
-        ),
+        "context_uptake_triad": triad_summary,
         "proposals": proposals,
         "observation_pool": observation_pool[:8],
         "auto_proposed": auto_proposed,
@@ -4235,16 +4482,17 @@ def compute_skill_roi_diagnostics(
 
     wall_clock_date = _cst_today_str()
     historical_dates: list[datetime] = []
-    if wh.is_file():
-        with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
-            for table in ("fact_turn", "fact_gtt_task_run", "skill_day", "hermes_skill_day"):
-                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-                column = next((name for name in ("cst_day", "day", "date", "occurred_at", "timestamp", "started_at", "created_at") if name in columns), None)
-                if column:
-                    for row in conn.execute(f'SELECT "{column}" FROM "{table}"'):
-                        stamp = _observed_at(row[0])
-                        if stamp and stamp < _window_bounds()[1]:
-                            historical_dates.append(stamp)
+    if _safe_is_file(wh):
+        with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(wh) as conn:
+            if conn is not None:
+                for table in ("fact_turn", "fact_gtt_task_run", "skill_day", "hermes_skill_day"):
+                    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    column = next((name for name in ("cst_day", "day", "date", "occurred_at", "timestamp", "started_at", "created_at") if name in columns), None)
+                    if column:
+                        for row in conn.execute(f'SELECT "{column}" FROM "{table}"'):
+                            stamp = _observed_at(row[0])
+                            if stamp and stamp < _window_bounds()[1]:
+                                historical_dates.append(stamp)
     anchor_as_of = max(historical_dates).date().isoformat() if historical_dates else None
     staleness_days = (date.fromisoformat(wall_clock_date) - date.fromisoformat(anchor_as_of)).days if anchor_as_of else None
     window_anchor = {"anchor_date": anchor_as_of, "source_as_of": anchor_as_of, "wall_clock_date": wall_clock_date,
@@ -5478,37 +5726,36 @@ def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict
     seen_ids: set[str] = set()
     merged: list[dict[str, Any]] = []
     for shard_file in _safe_glob(shards_dir, "*-skill-usage.jsonl"):
-        if not _safe_is_file(shard_file):
+        if not _is_safe_local_file(shard_file):
             continue
         default_host = shard_file.name[: -len("-skill-usage.jsonl")]
-        try:
-            with shard_file.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(rec, dict):
-                        continue
-                    rec.setdefault("host", default_host)
-                    stamp = next(
-                        (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
-                        None,
-                    )
-                    if not stamp or not (start <= stamp < end):
-                        continue
-                    fp = _event_fingerprint(rec)
-                    if fp in seen_ids:
-                        continue
-                    seen_ids.add(fp)
-                    enriched = dict(rec)
-                    enriched["event_id"] = fp
-                    enriched["_observed_at"] = stamp
-                    merged.append(enriched)
-        except OSError:
+        raw_shard = _safe_read_text(shard_file)
+        if not raw_shard:
             continue
+        for line in raw_shard.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            rec.setdefault("host", default_host)
+            stamp = next(
+                (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
+                None,
+            )
+            if not stamp or not (start <= stamp < end):
+                continue
+            fp = _event_fingerprint(rec)
+            if fp in seen_ids:
+                continue
+            seen_ids.add(fp)
+            enriched = dict(rec)
+            enriched["event_id"] = fp
+            enriched["_observed_at"] = stamp
+            merged.append(enriched)
     return merged
 
 
@@ -5522,12 +5769,15 @@ def _mirror_skills_roi_snapshot_to_icloud(
     sync_root = target.parents[2] if len(target.parents) >= 3 else target.parent
     if icloud_roi_path is None and not sync_root.is_dir():
         return None
+    if _is_cloud_or_external_path(target) and icloud_roi_path is None and not _is_safe_local_file(target):
+        return None
     local_snap = local_snapshot_path or DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
     daily: list[dict[str, Any]] = []
     for candidate in (local_snap, target):
-        if candidate.is_file():
+        if _is_safe_local_file(candidate):
             try:
-                existing = json.loads(candidate.read_text(encoding="utf-8"))
+                raw_cand = _safe_read_text(candidate)
+                existing = json.loads(raw_cand) if raw_cand else {}
                 if isinstance(existing, dict) and isinstance(existing.get("skills_daily"), list):
                     daily = existing["skills_daily"]
                     break
@@ -5549,8 +5799,8 @@ def _mirror_skills_roi_snapshot_to_icloud(
     if isinstance(report.get("skill_retro"), dict):
         snapshot_payload["skill_retro"] = report["skill_retro"]
     try:
-        _write_json(target, snapshot_payload)
-        return target
+        ok, _ = _run_with_io_timeout(lambda: _write_json(target, snapshot_payload))
+        return target if ok else None
     except OSError:
         return None
 
@@ -5563,12 +5813,16 @@ def _merge_skill_retro_into_roi_snapshot(
 ) -> None:
     targets = [p for p in (icloud_roi_path, local_snapshot_path) if p is not None]
     for target in targets:
-        if not target.is_file() and icloud_roi_path is None:
+        if _is_cloud_or_external_path(target):
+            if icloud_roi_path is None and not _is_safe_local_file(target):
+                continue
+        elif not _safe_is_file(target) and icloud_roi_path is None:
             continue
         existing: dict[str, Any] = {}
-        if target.is_file():
+        if _is_safe_local_file(target):
             with contextlib.suppress(OSError, json.JSONDecodeError):
-                loaded = json.loads(target.read_text(encoding="utf-8"))
+                raw_target = _safe_read_text(target)
+                loaded = json.loads(raw_target) if raw_target else {}
                 if isinstance(loaded, dict):
                     existing = loaded
         existing.setdefault("schema_version", 1)
@@ -5578,7 +5832,7 @@ def _merge_skill_retro_into_roi_snapshot(
         existing.setdefault("coverage_status", skill_retro_report.get("coverage_status") or "unknown")
         existing["skill_retro"] = skill_retro_report
         with contextlib.suppress(OSError):
-            _write_json(target, existing)
+            _run_with_io_timeout(lambda t=target, payload=existing: _write_json(t, payload))
 
 
 
@@ -5631,13 +5885,13 @@ def compute_skill_retro(
     d_root = dev_root or DEFAULT_DEV_ROOT
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
 
-    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir)
+    resolved_sync = _resolve_icloud_sync_dir(icloud_sync_dir) if icloud_sync_dir is not None else None
     shards_dir = (
         telemetry_shards_dir
         if telemetry_shards_dir is not None
         else (
             resolved_sync / "telemetry-shards"
-            if resolved_sync is not None and (icloud_sync_dir is not None or not explicit_source_override)
+            if resolved_sync is not None
             else None
         )
     )
@@ -5687,32 +5941,32 @@ def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> l
     records: list[dict[str, Any]] = []
     seen_route_sigs: set[tuple[str, str, int, int]] = set()
     seen_fps: set[str] = set()
-    if path.is_file():
-        with path.open(encoding="utf-8") as handle:
-            for number, line in enumerate(handle, 1):
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
-                if not isinstance(rec, dict):
-                    raise ValueError(f"invalid usage record at {path}:{number}")
-                stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
-                              if rec.get(key)), None)
-                if stamp and start <= stamp < end:
-                    rec["_observed_at"] = stamp
-                    fp = _event_fingerprint(rec)
-                    seen_fps.add(fp)
-                    route_sig = (
-                        str(rec.get("route_id") or ""),
-                        str(rec.get("req") or rec.get("model") or ""),
-                        int(rec.get("in") or 0),
-                        int(rec.get("out") or 0),
-                    )
-                    if route_sig[0]:
-                        seen_route_sigs.add(route_sig)
-                    records.append(rec)
+    if _is_safe_local_file(path):
+        raw_usage = _safe_read_text(path)
+        for number, line in enumerate(raw_usage.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
+            if not isinstance(rec, dict):
+                raise ValueError(f"invalid usage record at {path}:{number}")
+            stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
+                          if rec.get(key)), None)
+            if stamp and start <= stamp < end:
+                rec["_observed_at"] = stamp
+                fp = _event_fingerprint(rec)
+                seen_fps.add(fp)
+                route_sig = (
+                    str(rec.get("route_id") or ""),
+                    str(rec.get("req") or rec.get("model") or ""),
+                    int(rec.get("in") or 0),
+                    int(rec.get("out") or 0),
+                )
+                if route_sig[0]:
+                    seen_route_sigs.add(route_sig)
+                records.append(rec)
     for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=7):
         kind = str(s_rec.get("kind") or "")
         if kind and kind not in {"gateway_usage", "usage"}:
@@ -6015,7 +6269,7 @@ def _discover_target_files(root: Path, globs: Sequence[str] | None) -> list[tupl
             if any(part in _UPTAKE_SKIP_DIRS for part in Path(rel).parts):
                 continue
             matched[rel] = cand
-    if not matched:
+    if not matched and not all("*" in p or "?" in p or "[" in p for p in patterns):
         for cand in _safe_glob(root, "*", recursive=True):
             try:
                 rel = cand.relative_to(root).as_posix()
@@ -6088,9 +6342,14 @@ def _run_single_uptake_check(check: Mapping[str, Any], target_dir: Path) -> dict
         ast_rule = str(check.get("ast_rule") or "has_main_or_argparse")
         parse_errors: list[str] = []
         matched_ast_files: list[str] = []
-        for rel, fpath in candidate_files:
-            if fpath.suffix.lower() != ".py":
-                continue
+        py_candidates = [(rel, fpath) for rel, fpath in candidate_files if fpath.suffix.lower() == ".py"]
+        non_test_py = [
+            (rel, fpath)
+            for rel, fpath in py_candidates
+            if not fpath.name.startswith("test_") and not fpath.name.endswith("_test.py")
+        ]
+        ordered_py = (non_test_py if non_test_py else py_candidates)[:6]
+        for rel, fpath in ordered_py:
             try:
                 src = fpath.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
@@ -6101,11 +6360,10 @@ def _run_single_uptake_check(check: Mapping[str, Any], target_dir: Path) -> dict
             except SyntaxError as exc:
                 return _make_res(UPTAKE_STATUS_FAILED, False, f"{rel}: SyntaxError line {exc.lineno}: {exc.msg}")
             if ast_rule == "has_main_or_argparse":
-                has_main = any(
+                has_main = "_CANONICAL_PATH" in src or any(
                     (isinstance(node, ast.FunctionDef) and node.name in {"main", "parser", "cli"})
                     or (isinstance(node, ast.Import) and any(alias.name == "argparse" for alias in node.names))
                     or (isinstance(node, ast.ImportFrom) and node.module == "argparse")
-                    or (isinstance(node, ast.Constant) and isinstance(node.value, str) and "_CANONICAL_PATH" in src)
                     for node in ast.walk(tree)
                 )
                 if has_main:
@@ -6392,8 +6650,11 @@ def _fast_telemetry_signals(
 
     wh = warehouse_db if warehouse_db is not None else DEFAULT_WAREHOUSE_DB
     if _safe_is_file(wh) and wh is not None:
-        with contextlib.suppress(sqlite3.Error, OSError), contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(wh) as conn:
+            if conn is not None:
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            else:
+                tables = set()
             for sc_tbl in ("script_call", "fact_skill_script_call"):
                 if sc_tbl not in tables:
                     continue
@@ -6424,48 +6685,48 @@ def _fast_telemetry_signals(
                     out[sk]["ref_hit_drawers"].add(rel_ref)
 
     u_path = usage_jsonl if usage_jsonl is not None else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL
-    if _safe_is_file(u_path) and u_path is not None:
+    if _is_safe_local_file(u_path) and u_path is not None:
         u_exit2: dict[str, int] = {}
         u_fail: dict[str, int] = {}
-        with contextlib.suppress(OSError):
-            with u_path.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if '"script_call"' not in line and '"reference_hit"' not in line:
-                        continue
-                    with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
-                        rec = json.loads(line)
-                        if not isinstance(rec, Mapping):
-                            continue
-                        ts = _parse_ts(rec.get("ts") or rec.get("timestamp") or rec.get("observed_at"))
-                        if ts is not None and not (window_start <= ts < window_end):
-                            continue
-                        sk = _norm_skill(str(rec.get("skill") or ""))
-                        if sk not in out:
-                            continue
-                        kind = str(rec.get("kind") or "")
-                        if kind == "script_call":
-                            ec_raw = rec.get("exit_code")
-                            if ec_raw not in (None, ""):
-                                ec = int(ec_raw)
-                                if ec == 2:
-                                    u_exit2[sk] = u_exit2.get(sk, 0) + 1
-                                elif ec != 0:
-                                    u_fail[sk] = u_fail.get(sk, 0) + 1
-                        elif kind == "reference_hit":
-                            rp = str(rec.get("reference_path") or "")
-                            if rp:
-                                norm_pair = _normalize_ref_rel(rp)
-                                rel_ref = norm_pair[1] if norm_pair else (rp if rp.startswith("references/") else f"references/{Path(rp).name}")
-                                out[sk]["ref_hit_drawers"].add(rel_ref)
+        raw_u = _safe_read_text(u_path)
+        for line in raw_u.splitlines():
+            if '"script_call"' not in line and '"reference_hit"' not in line:
+                continue
+            with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
+                rec = json.loads(line)
+                if not isinstance(rec, Mapping):
+                    continue
+                ts = _parse_ts(rec.get("ts") or rec.get("timestamp") or rec.get("observed_at"))
+                if ts is not None and not (window_start <= ts < window_end):
+                    continue
+                sk = _norm_skill(str(rec.get("skill") or ""))
+                if sk not in out:
+                    continue
+                kind = str(rec.get("kind") or "")
+                if kind == "script_call":
+                    ec_raw = rec.get("exit_code")
+                    if ec_raw not in (None, ""):
+                        ec = int(ec_raw)
+                        if ec == 2:
+                            u_exit2[sk] = u_exit2.get(sk, 0) + 1
+                        elif ec != 0:
+                            u_fail[sk] = u_fail.get(sk, 0) + 1
+                elif kind == "reference_hit":
+                    rp = str(rec.get("reference_path") or "")
+                    if rp:
+                        norm_pair = _normalize_ref_rel(rp)
+                        rel_ref = norm_pair[1] if norm_pair else (rp if rp.startswith("references/") else f"references/{Path(rp).name}")
+                        out[sk]["ref_hit_drawers"].add(rel_ref)
         for sk, cnt in u_exit2.items():
             out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
         for sk, cnt in u_fail.items():
             out[sk]["domain_failures"] = max(out[sk]["domain_failures"], cnt)
 
     roi_path = roi_snapshot_path if roi_snapshot_path is not None else DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
-    if _safe_is_file(roi_path) and roi_path is not None:
+    if _is_safe_local_file(roi_path) and roi_path is not None:
         with contextlib.suppress(OSError, json.JSONDecodeError):
-            roi_doc = json.loads(roi_path.read_text(encoding="utf-8"))
+            raw_roi = _safe_read_text(roi_path)
+            roi_doc = json.loads(raw_roi) if raw_roi else {}
             sr_doc = (roi_doc.get("skill_retro") if isinstance(roi_doc, Mapping) else None) or {}
             if isinstance(sr_doc, Mapping):
                 l0 = sr_doc.get("layer0_direction_and_triggers") or {}
@@ -6499,10 +6760,10 @@ def _fast_telemetry_signals(
                         out[sk]["p1_proposal_bonus"] = max(out[sk]["p1_proposal_bonus"], round(8000.0 - idx_p * 1200.0, 2))
 
     p_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
-    if _safe_is_file(p_path) and p_path is not None:
+    if _is_safe_local_file(p_path) and p_path is not None:
         with contextlib.suppress(OSError):
             pending_idx = 0
-            for line in p_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in _safe_read_text(p_path).splitlines():
                 if not line.strip():
                     continue
                 with contextlib.suppress(json.JSONDecodeError):
@@ -6904,7 +7165,72 @@ def triage_skills(
     live_jev_budget = max(6, effective_top_n * 2) if parsed_mock is None else 999
     live_jev_calls = 0
 
-    for idx, item in enumerate(probe.get("skills") or [], 1):
+    all_probe_skills = list(probe.get("skills") or [])
+    prefetched_live_jev: dict[str, Any] = {}
+    if use_jev and parsed_mock is None and jev_mod is not None:
+        live_candidates: list[dict[str, Any]] = []
+        for cand_item in all_probe_skills:
+            if float(cand_item.get("priority_score") or 0.0) <= 0.0 or bool(cand_item.get("leased")):
+                continue
+            live_candidates.append(cand_item)
+            if len(live_candidates) >= live_jev_budget:
+                break
+        if live_candidates:
+            questions = {
+                "route_mode": {
+                    "type": "choice",
+                    "instructions": "Classify skill retro inspection scope from lightweight probe signals.",
+                    "criteria": {
+                        "skip": "Healthy or low-sample noise; keep skill asleep.",
+                        "partial": "Localized friction in 1-2 dimensions (e.g. L1/L2 script or drawer); run targeted partial check.",
+                        "full": "Multi-layer drift, creative homogenization, or >=3 dimensions triggered; run full 6-dimension check.",
+                    },
+                },
+                "noul": {
+                    "type": "noul",
+                    "instructions": "Confidence that this skill warrants immediate Stage 3 retro evolution.",
+                },
+            }
+
+            def _call_live_jev(c_item: dict[str, Any]) -> tuple[str, Any]:
+                c_sk = str(c_item.get("skill") or "")
+                try:
+                    c_res = jev_mod.jev_decide(
+                        {
+                            "skill": c_sk,
+                            "signals": c_item.get("signals"),
+                            "triggered_aspects": list(c_item.get("triggered_aspects") or []),
+                            "priority_score": float(c_item.get("priority_score") or 0.0),
+                        },
+                        questions,
+                        agent_role="retro-loop",
+                        timeout_sec=0.35,
+                        falcon_only=True,
+                    )
+                except TypeError:
+                    c_res = jev_mod.jev_decide(
+                        {
+                            "skill": c_sk,
+                            "signals": c_item.get("signals"),
+                            "triggered_aspects": list(c_item.get("triggered_aspects") or []),
+                            "priority_score": float(c_item.get("priority_score") or 0.0),
+                        },
+                        questions,
+                        agent_role="retro-loop",
+                        timeout_sec=0.35,
+                    )
+                return c_sk, c_res
+
+            with ThreadPoolExecutor(max_workers=min(6, len(live_candidates))) as pool:
+                futs = {pool.submit(_call_live_jev, c_item): str(c_item.get("skill") or "") for c_item in live_candidates}
+                t_deadline = time.monotonic() + 0.40
+                for fut, c_sk in futs.items():
+                    rem = max(0.01, t_deadline - time.monotonic())
+                    with contextlib.suppress(Exception):
+                        _, c_val = fut.result(timeout=rem)
+                        prefetched_live_jev[c_sk] = c_val
+
+    for idx, item in enumerate(all_probe_skills, 1):
         sk_name = str(item.get("skill") or "")
         leased = bool(item.get("leased"))
         lease_reasons = list(item.get("lease_reasons") or [])
@@ -6947,27 +7273,7 @@ def triage_skills(
             jev_raw = parsed_mock[idx - 1]
         elif use_jev and jev_mod is not None and score > 0 and not leased and live_jev_calls < live_jev_budget:
             live_jev_calls += 1
-            questions = {
-                "route_mode": {
-                    "type": "choice",
-                    "instructions": "Classify skill retro inspection scope from lightweight probe signals.",
-                    "criteria": {
-                        "skip": "Healthy or low-sample noise; keep skill asleep.",
-                        "partial": "Localized friction in 1-2 dimensions (e.g. L1/L2 script or drawer); run targeted partial check.",
-                        "full": "Multi-layer drift, creative homogenization, or >=3 dimensions triggered; run full 6-dimension check.",
-                    },
-                },
-                "noul": {
-                    "type": "noul",
-                    "instructions": "Confidence that this skill warrants immediate Stage 3 retro evolution.",
-                },
-            }
-            jev_raw = jev_mod.jev_decide(
-                {"skill": sk_name, "signals": item.get("signals"), "triggered_aspects": trig, "priority_score": score},
-                questions,
-                agent_role="retro-loop",
-                timeout_sec=1.5,
-            )
+            jev_raw = prefetched_live_jev.get(sk_name)
 
         if jev_raw is not None:
             j_mode, j_aspects, j_noul = _parse_jev_triage_entry(

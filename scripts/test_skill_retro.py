@@ -1254,6 +1254,87 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
             self.assertEqual(diag_rk["emitted_briefs"]["count"], 1)
             self.assertEqual(diag_rk["emitted_briefs"]["briefs"][0]["skill"], "repo-kit")
 
+    def test_icloud_sf_dataless_and_blocking_open_timeout_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._build_synthetic_workspace(root)
+            icloud_shards = root / "Mobile Documents" / "com~apple~CloudDocs" / "AIDashSync" / "telemetry-shards"
+            icloud_shards.mkdir(parents=True, exist_ok=True)
+            dataless_shard = icloud_shards / "dataless-host-skill-usage.jsonl"
+            dataless_shard.write_text('{"kind":"skill_turn","skill":"team-lead","ts":"2026-11-22T01:00:00+08:00"}\n', encoding="utf-8")
+            materialized_shard = icloud_shards / "local-host-skill-usage.jsonl"
+            materialized_shard.write_text('{"kind":"skill_turn","skill":"my-designer","ts":"2026-11-22T01:00:00+08:00"}\n', encoding="utf-8")
+            hanging_shard = icloud_shards / "hanging-host-skill-usage.jsonl"
+            hanging_shard.write_text('{"kind":"skill_turn","skill":"repo-kit","ts":"2026-11-22T01:00:00+08:00"}\n', encoding="utf-8")
+
+            orig_stat = SKILL_RETRO.os.stat
+            orig_os_open = SKILL_RETRO.os.open
+            open_attempts: list[str] = []
+
+            class _FakeStatResult:
+                def __init__(self, base: os.stat_result, *, st_flags: int = 0, st_blocks: int | None = None) -> None:
+                    self._base = base
+                    self.st_mode = base.st_mode
+                    self.st_size = base.st_size
+                    self.st_mtime = base.st_mtime
+                    self.st_flags = st_flags
+                    self.st_blocks = getattr(base, "st_blocks", 8) if st_blocks is None else st_blocks
+
+                def __getattr__(self, item: str):
+                    return getattr(self._base, item)
+
+            def fake_stat(target, *args, **kwargs):
+                base = orig_stat(target, *args, **kwargs)
+                p_str = str(target)
+                if p_str == str(dataless_shard):
+                    return _FakeStatResult(base, st_flags=0x40000000, st_blocks=0)
+                return base
+
+            def fake_os_open(target, flags, *args, **kwargs):
+                p_str = str(target)
+                open_attempts.append(p_str)
+                if p_str == str(dataless_shard):
+                    raise AssertionError("SF_DATALESS file must never reach os.open()")
+                if p_str == str(hanging_shard):
+                    import time as _time_mod
+
+                    _time_mod.sleep(2.0)
+                return orig_os_open(target, flags, *args, **kwargs)
+
+            with (
+                unittest.mock.patch.object(SKILL_RETRO.os, "stat", side_effect=fake_stat),
+                unittest.mock.patch.object(SKILL_RETRO.os, "open", side_effect=fake_os_open),
+            ):
+                # 1) SF_DATALESS file is rejected immediately without calling os.open()
+                self.assertFalse(SKILL_RETRO._is_safe_local_file(dataless_shard, timeout_sec=0.15))
+                self.assertNotIn(str(dataless_shard), open_attempts)
+
+                # 2) Materialized file passes _is_safe_local_file
+                self.assertTrue(SKILL_RETRO._is_safe_local_file(materialized_shard, timeout_sec=0.15))
+
+                # 3) Hanging open() times out within <0.5s and returns False
+                t_hang = datetime.now(timezone.utc)
+                self.assertFalse(SKILL_RETRO._is_safe_local_file(hanging_shard, timeout_sec=0.15))
+                self.assertLess((datetime.now(timezone.utc) - t_hang).total_seconds(), 0.6)
+
+                # 4) _read_telemetry_shards and compute_skill_retro skip dataless/hanging shards and finish in <2.5s
+                t_run = datetime.now(timezone.utc)
+                diag = SKILL_RETRO.compute_skill_retro(
+                    warehouse_db=paths["warehouse_db"],
+                    copilot_db=paths["copilot_db"],
+                    copilot_sessions_dir=paths["sessions_dir"],
+                    usage_jsonl=paths["usage_jsonl"],
+                    trace_export_path=paths["trace_export"],
+                    handoff_root=paths["handoff_root"],
+                    skills_root=paths["skills_root"],
+                    dev_root=paths["dev_root"],
+                     mirror_roi_snapshot=False,
+                )
+                elapsed = (datetime.now(timezone.utc) - t_run).total_seconds()
+                self.assertTrue(diag["ok"])
+                self.assertGreater(diag["sample_size"], 0)
+                self.assertLess(elapsed, 2.5)
+
 
 if __name__ == "__main__":
     unittest.main()
