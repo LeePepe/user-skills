@@ -178,6 +178,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_status="todo",
         default_priority="medium",
     ),
+    LoopSpec(
+        loop_id="autopilot-health-watchdog",
+        aliases=("autopilot_health_watchdog", "autopilot-watchdog", "autopilot_watchdog"),
+        autopilot_title="Daily Autopilot Health Watchdog (skill-retro & daily-learn -> M2 Fix & Rerun)",
+        cron="10 5 * * *",
+        trigger_label="Daily CST 05:10 Autopilot Health Watchdog",
+        delivery_mode="auto_fix_and_digest_only",
+        issue_title_template="[P3 / Priority 3][Autopilot Watchdog] {date} 定时任务健康巡检与 M2 自愈报告",
+        default_status="todo",
+        default_priority="medium",
+    ),
 )
 
 LOOP_SPECS: tuple[LoopSpec, ...] = CANONICAL_LOOP_SPECS
@@ -982,6 +993,27 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
             "3. **Final Rollup to the Single M2 (`skill_retro.py rollup`)**:\n"
             f"   All `K` M1 TLs report back to the **same single M2**, which runs `python3 \"{skill_retro_rel}\" rollup --handoff-root \"$HOME/Development/handoff\" --json` and `python3 \"$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py\" file-issue` to publish the single Dual-Zone (`issue-brief` verified) `[Skill Retro YYYY-MM-DD]` summary issue assigned to Owner (`lee@multica.local`).\n"
         )
+    if spec.loop_id == "autopilot-health-watchdog":
+        watchdog_rel = "$HOME/Development/user-skills/skills/team-lead/scripts/autopilot_watchdog.py"
+        return (
+            f"# {spec.autopilot_title}\n\n"
+            f"- **Loop ID**: `{spec.loop_id}`\n"
+            f"- **Primary Engine**: `skills/team-lead/scripts/autopilot_watchdog.py` (`{watchdog_rel}`)\n"
+            "- **Focused Scope**: Checks **ONLY** `skill-retro` (`4e06bf2a`) and `daily-learn` (`8b4d6d04`) on their **3 basic vital metrics** (`ran_today`, `issue_materialized`, `non_empty_telemetry` / `non_empty_candidates`).\n"
+            f"- **Execution Architecture**: `Layer 0 Deterministic Vitals Check ($0 token when healthy) -> M2 Escalation, Root-Cause Fix, Autopilot Rerun & Re-Verification on Failure ({spec.delivery_mode})`\n\n"
+            "## Execution Protocol (`05:10` CST Daily Watchdog -> M2 Fix & Rerun)\n\n"
+            "1. **Step 1 · Deterministic Vitals Check (`STATUS=HEALTHY` exits 0 at `$0` token cost)**:\n"
+            "   ```bash\n"
+            f'   python3 "{watchdog_rel}" check --date today --json\n'
+            f'   python3 "{runner_rel}" run-loop --loop "{spec.loop_id}" --json\n'
+            "   ```\n"
+            "   - **Target 1 · `skill-retro` (`4e06bf2a`)**: verifies `ran_today` (`status == \"completed\"`), `issue_materialized` (`skill-retro-autopilot-YYYY-MM-DD`), and `non_empty_telemetry` (`sessions > 0` and `coverage != \"missing\"`).\n"
+            "   - **Target 2 · `daily-learn` (`8b4d6d04`)**: verifies `ran_today` (`status == \"completed\"`), `issue_materialized` (`[Daily Learn YYYY-MM-DD]`), and `non_empty_candidates` (`> 0` learning items).\n\n"
+            "2. **Step 2 · Automatic Escalation to M2 -> Investigate -> Fix -> Rerun -> Re-Verify (Only on Failure)**:\n"
+            "   If either target fails any basic vital metric:\n"
+            "   - Inspect the packaged failure evidence (`autopilot_id`, `failed_metrics`, `latest_run_id`, `session_id`, `snippet`) in `/tmp/multica-loop-autopilot-health-watchdog-collect.json`.\n"
+            "   - As M2-Dispatcher, investigate the failing session/script root cause, apply the fix, immediately trigger rerun (`multica autopilot trigger <autopilot_id>`), and re-verify `python3 \"" + watchdog_rel + "\" check --date today --json` until `status == \"HEALTHY\"` / `\"RECOVERED_AFTER_M2_RERUN\"`.\n"
+        )
     if spec.loop_id == "design-taste-evolution":
         execution_note = (
             "   Run this collector on the Mac node with access to the local handoff receipts; "
@@ -1075,6 +1107,7 @@ def sync_autopilots(
                 or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in title_str)
                 or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in title_str)
                 or (spec.loop_id == "design-taste-evolution" and ("UI Design Taste Evolution" in title_str or "Taste Evolution" in title_str))
+                or (spec.loop_id == "autopilot-health-watchdog" and "Autopilot Health Watchdog" in title_str)
             ):
                 matched = ap
                 break
@@ -1353,6 +1386,14 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
         taste_mod = _load_module("loop_design_taste_evolution", SKILLS_ROOT / "design-studio" / "scripts" / "taste_evolution_loop.py")
         handoff_root = Path(os.environ.get("DESIGN_TASTE_HANDOFF_ROOT", "~/Development/handoff")).expanduser()
         return taste_mod.loop_check(handoff_root, target_date=target_date, mock_jev_json=_collector_jev_mock(mock_jev_json))
+
+    if spec.loop_id == "autopilot-health-watchdog":
+        watchdog_mod = _load_module("loop_autopilot_health_watchdog", TEAM_LEAD_SCRIPTS_DIR / "autopilot_watchdog.py")
+        return watchdog_mod.run_loop_check(
+            target_date=target_date,
+            auto_escalate=not dry_run,
+            dry_run=dry_run,
+        )
 
     if spec.loop_id == "daily-brief":
         brief_mod = _load_module("loop_daily_brief", SKILLS_ROOT / "linear-board" / "scripts" / "daily-brief.py")
@@ -1949,6 +1990,7 @@ def _find_autopilot_id(
             or (spec.loop_id == "spec-code-drift-patrol" and "Spec-Code Drift Patrol" in t)
             or (spec.loop_id == "backlog-grooming-and-push" and "Backlog Grooming & Top-3 Push" in t)
             or (spec.loop_id == "design-taste-evolution" and ("UI Design Taste Evolution" in t or "Taste Evolution" in t))
+            or (spec.loop_id == "autopilot-health-watchdog" and "Autopilot Health Watchdog" in t)
         ):
             return ap_id or None
     return None
@@ -2020,7 +2062,7 @@ def run_loop(
     # Step 2: Layer-1 Jev Fast-Thinking Judgment. Loop 4 may already have
     # triaged each finding; preserve that verdict instead of re-triaging noise.
     collector_triaged = (
-        spec.loop_id == "spec-code-drift-patrol"
+        spec.loop_id in {"spec-code-drift-patrol", "autopilot-health-watchdog"}
         and isinstance(collected.get("actionable"), bool)
         and isinstance(collected.get("jev"), Mapping)
     )
@@ -2147,7 +2189,11 @@ def run_loop(
                         else (
                             "[P3 / Priority 3][Backlog Grooming]"
                             if spec.loop_id == "backlog-grooming-and-push"
-                            else ("[P3 / Priority 3][Taste Evolution]" if spec.loop_id == "design-taste-evolution" else None)
+                            else (
+                                "[P3 / Priority 3][Taste Evolution]"
+                                if spec.loop_id == "design-taste-evolution"
+                                else ("[P3 / Priority 3][Autopilot Watchdog]" if spec.loop_id == "autopilot-health-watchdog" else None)
+                            )
                         )
                     )
                 )
@@ -2226,7 +2272,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--loop",
         required=True,
-        help="Loop ID (daily-brief, skill-retro-diagnostic / skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push, design-taste-evolution)",
+        help="Loop ID (daily-brief, skill-retro-diagnostic / skills-roi-diagnostic, daily-learn-recommend, skill-agent-daily-research, aidash-retro-delta, local-herdr-worktree-gc, spec-code-drift-patrol, backlog-grooming-and-push, design-taste-evolution, autopilot-health-watchdog)",
     )
     p_run.add_argument("--date", default="today")
     p_run.add_argument("--state-file", type=Path, default=None)
