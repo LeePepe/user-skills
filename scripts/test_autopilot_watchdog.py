@@ -641,9 +641,14 @@ class AutopilotWatchdogTests(unittest.TestCase):
             slow_script = Path(tmp) / "slow_digest.sh"
             slow_script.write_text(
                 "#!/bin/bash\n"
-                f'python3 -c "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
+                '_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"\n'
+                'if [ -n "$_TIMEOUT_BIN" ]; then\n'
+                f'  "$_TIMEOUT_BIN" 30 python3 -c "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
+                "else\n"
+                f'  python3 -c "import os, signal, time; os.setpgid(0, 0); signal.signal(signal.SIGTERM, signal.SIG_IGN); open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
+                "fi\n"
                 "while [ ! -s " + repr(str(child_pid_file)) + " ]; do sleep 0.01; done\n"
-                "sleep 30\n",
+                "wait\n",
                 encoding="utf-8",
             )
             slow_script.chmod(0o755)
@@ -682,7 +687,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
                     targets=("aidata",),
                     runner=fake_runner,
                     reverify_polls=1,
-                    aidata_digest_run_timeout_sec=0.25,
+                    aidata_digest_run_timeout_sec=0.8,
                     **aidata_paths,
                 )
             self.assertFalse(report["ok"])

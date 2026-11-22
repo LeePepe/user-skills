@@ -260,7 +260,7 @@ def _extract_leading_timestamp_utc(line: str) -> datetime | None:
 
 
 def _ensure_no_popup_shim_dir(shim_dir: Path | None = None) -> Path:
-    """Create a PATH shim directory with a no-op executable that blocks desktop notification popups."""
+    """Create a PATH shim directory that blocks desktop popups and keeps GNU timeout in the foreground process group."""
     target_dir = shim_dir or Path("/tmp/autopilot-watchdog-no-popup-bin")
     target_dir.mkdir(parents=True, exist_ok=True)
     shim_bin = target_dir / ("osa" + "script")
@@ -268,6 +268,22 @@ def _ensure_no_popup_shim_dir(shim_dir: Path | None = None) -> Path:
     if not shim_bin.is_file() or shim_bin.read_text(encoding="utf-8", errors="replace") != shim_content:
         shim_bin.write_text(shim_content, encoding="utf-8")
     shim_bin.chmod(0o755)
+
+    for bin_name in ("timeout", "gtimeout"):
+        real_bin: str | None = None
+        for cand in (f"/opt/homebrew/bin/{bin_name}", f"/usr/local/bin/{bin_name}", f"/usr/bin/{bin_name}"):
+            if Path(cand).is_file():
+                real_bin = cand
+                break
+        if real_bin is not None:
+            t_shim = target_dir / bin_name
+            t_content = (
+                "#!/bin/sh\n"
+                f'exec "{real_bin}" --foreground --kill-after=5s "$@"\n'
+            )
+            if not t_shim.is_file() or t_shim.read_text(encoding="utf-8", errors="replace") != t_content:
+                t_shim.write_text(t_content, encoding="utf-8")
+            t_shim.chmod(0o755)
     return target_dir
 
 
@@ -285,13 +301,59 @@ def _build_no_popup_subprocess_env(
     return env
 
 
+def _collect_descendant_pids_and_pgids(root_pid: int) -> tuple[set[int], set[int]]:
+    pids: set[int] = {root_pid}
+    pgids: set[int] = {root_pid}
+    try:
+        ps_proc = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+        rows: list[tuple[int, int, int]] = []
+        for line in (ps_proc.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            try:
+                rows.append((int(parts[0]), int(parts[1]), int(parts[2])))
+            except ValueError:
+                continue
+        changed = True
+        while changed:
+            changed = False
+            for pid, ppid, pgid in rows:
+                if pid in pids or ppid in pids or pgid in pgids:
+                    if pid not in pids:
+                        pids.add(pid)
+                        changed = True
+                    if pgid > 1 and pgid not in pgids:
+                        pgids.add(pgid)
+                        changed = True
+    except Exception:
+        pass
+    return pids, pgids
+
+
+def _terminate_process_tree(root_pid: int, sig: signal.Signals) -> None:
+    pids, pgids = _collect_descendant_pids_and_pgids(root_pid)
+    for pgid in pgids:
+        with ExceptionContext():
+            os.killpg(pgid, sig)
+    for pid in pids:
+        with ExceptionContext():
+            os.kill(pid, sig)
+
+
 def _run_process_group_with_timeout(
     cmd: Sequence[str],
     *,
     env: Mapping[str, str] | None = None,
     timeout: float = 90.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command in its own process group (`start_new_session=True`) and kill all descendants on timeout."""
+    """Run a command in its own session (`start_new_session=True`) and kill all nested process groups/descendants on timeout."""
     with subprocess.Popen(
         list(cmd),
         stdout=subprocess.PIPE,
@@ -300,24 +362,14 @@ def _run_process_group_with_timeout(
         env=dict(env) if env is not None else None,
         start_new_session=True,
     ) as proc:
-        pgid = proc.pid
+        root_pid = proc.pid
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess(list(cmd), proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired as exc:
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                proc.terminate()
+            _terminate_process_tree(root_pid, signal.SIGTERM)
             time.sleep(0.05)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                proc.kill()
+            _terminate_process_tree(root_pid, signal.SIGKILL)
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
