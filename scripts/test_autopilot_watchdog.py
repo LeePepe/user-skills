@@ -189,11 +189,11 @@ class AutopilotWatchdogTests(unittest.TestCase):
         digest_run_script.write_text(
             "#!/bin/bash\n"
             "set -euo pipefail\n"
+            'osascript -e \'display notification "test popup" with title "AIDash"\'\n'
             f'mkdir -p "{archive_dir}"\n'
             f'printf "# AI 使用日报 {yesterday_str}\\n\\n> 数据源: raven✅ multica✅ ADO✅ state.db✅\\n" > "{digest_path}"\n'
             f'printf \'{{"schema_version": 2, "coverage_status": "healthy", "sample_size": 45}}\' > "{skills_roi_path}"\n'
-            f'printf \'{{"id": "aidata-digest", "status": "idle", "lastResult": "success", "sourceAsOf": "{yesterday_str}", "stages": [{{"id": "collect", "status": "ok", "detail": "35 源成功"}}]}}\' > "{state_json_path}"\n'
-            f': > "{cron_errors_path}"\n'
+            f'printf \'{{"id": "aidata-digest", "status": "idle", "lastResult": "success", "lastRunAt": "2026-11-21T20:35:00Z", "sourceAsOf": "{yesterday_str}", "stages": [{{"id": "collect", "status": "ok", "detail": "35 源成功"}}]}}\' > "{state_json_path}"\n'
             "exit 0\n",
             encoding="utf-8",
         )
@@ -495,7 +495,7 @@ class AutopilotWatchdogTests(unittest.TestCase):
                 state_last_result="failure",
                 stage_status="warning",
                 stage_detail="33 源成功 · 2 降级",
-                cron_errors_content="2026-11-22 04:05:12 [ERROR] multica_issue permission denied; bot_tl collect timed out\n",
+                cron_errors_content="2026-11-21T20:05:12Z — digest 2026-11-22 数据不全: multica_issue permission denied; bot_tl collect timed out\n",
             )
             state = {"healed": False}
             triggered_autopilots = []
@@ -589,6 +589,41 @@ class AutopilotWatchdogTests(unittest.TestCase):
             self.assertTrue(report["reverified"])
             self.assertTrue(report["checks"]["aidata"]["metrics"]["issue_and_snapshot_materialized"]["ok"])
             self.assertTrue(report["checks"]["aidata"]["metrics"]["sources_healthy"]["ok"])
+            # Historical cron-errors.log entry is preserved (not truncated) and classified as historical after recovery
+            self.assertIn(
+                "2026-11-21T20:05:12Z",
+                aidata_paths["cron_errors_path"].read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                len(report["checks"]["aidata"]["metrics"]["sources_healthy"]["historical_cron_error_lines"]),
+                1,
+            )
+
+    def test_no_popup_shim_intercepts_subprocess_desktop_notification_calls(self):
+        """Verifies _build_no_popup_subprocess_env places a shim first in PATH so child processes cannot trigger macOS popups."""
+        with tempfile.TemporaryDirectory() as tmp:
+            shim_dir = Path(tmp) / "shim"
+            env = watchdog._build_no_popup_subprocess_env(
+                {"PATH": f"{tmp}:/usr/bin:/bin"},
+                shim_dir=shim_dir,
+            )
+            marker = Path(tmp) / "popup_fired.txt"
+            fake_system_osascript = Path(tmp) / ("osa" + "script")
+            fake_system_osascript.write_text(
+                f"#!/bin/sh\necho fired > {marker}\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_system_osascript.chmod(0o755)
+
+            proc = subprocess.run(
+                ["/bin/sh", "-c", 'osascript -e \'display notification "hi"\''],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertFalse(marker.exists())
 
     def test_aidata_default_escalator_timeout_remains_escalated_unhealthy(self):
         """Verifies that if aidata_digest_run.sh times out and does not repair local snapshots, re-verification honestly reports ESCALATED_UNHEALTHY."""

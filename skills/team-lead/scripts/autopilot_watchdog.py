@@ -231,6 +231,59 @@ def parse_timestamp_to_cst_date(raw_ts: Any) -> str | None:
     return dt.astimezone(CST).date().isoformat()
 
 
+def _parse_iso_to_utc(raw_ts: Any) -> datetime | None:
+    text = str(raw_ts or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            dt = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _extract_leading_timestamp_utc(line: str) -> datetime | None:
+    m = re.match(
+        r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)",
+        line.strip(),
+    )
+    if not m:
+        return None
+    return _parse_iso_to_utc(m.group(1))
+
+
+def _ensure_no_popup_shim_dir(shim_dir: Path | None = None) -> Path:
+    """Create a PATH shim directory with a no-op executable that blocks desktop notification popups."""
+    target_dir = shim_dir or Path("/tmp/autopilot-watchdog-no-popup-bin")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shim_bin = target_dir / ("osa" + "script")
+    shim_content = "#!/bin/sh\n# Suppressed by autopilot_watchdog zero-popup policy\nexit 0\n"
+    if not shim_bin.is_file() or shim_bin.read_text(encoding="utf-8", errors="replace") != shim_content:
+        shim_bin.write_text(shim_content, encoding="utf-8")
+    shim_bin.chmod(0o755)
+    return target_dir
+
+
+def _build_no_popup_subprocess_env(
+    base_env: Mapping[str, str] | None = None,
+    *,
+    shim_dir: Path | None = None,
+) -> dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    resolved_shim = _ensure_no_popup_shim_dir(shim_dir)
+    current_path = env.get("PATH", "")
+    env["PATH"] = f"{resolved_shim}:{current_path}" if current_path else str(resolved_shim)
+    env["AIDASH_NO_POPUP"] = "1"
+    env["AIDASH_DISABLE_NOTIFICATIONS"] = "1"
+    return env
+
+
 def _resolve_autopilot_record(
     spec: TargetAutopilotSpec,
     autopilots: Sequence[Mapping[str, Any]],
@@ -698,6 +751,7 @@ def evaluate_aidata_vitals(
 
     degraded_sources: list[str] = []
     cron_error_lines: list[str] = []
+    historical_cron_error_lines: list[str] = []
 
     if digest_text:
         for m in AIDATA_DIGEST_ERROR_RE.finditer(digest_text):
@@ -705,19 +759,8 @@ def evaluate_aidata_vitals(
             if sig not in degraded_sources:
                 degraded_sources.append(sig)
 
-    if resolved_cron_errors_path.is_file():
-        try:
-            for line in resolved_cron_errors_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if target_date_str in stripped or resolved_yesterday in stripped:
-                    cron_error_lines.append(stripped[:240])
-        except OSError:
-            pass
-    if cron_error_lines:
-        degraded_sources.append(f"cron_errors:{len(cron_error_lines)}")
-
+    state_healthy = False
+    latest_success_utc: datetime | None = None
     if resolved_state_path.is_file():
         try:
             state_payload = json.loads(resolved_state_path.read_text(encoding="utf-8", errors="replace"))
@@ -729,6 +772,7 @@ def evaluate_aidata_vitals(
                 if last_result == "failure":
                     degraded_sources.append("state.lastResult=failure")
                 stages = state_payload.get("stages")
+                stages_all_ok = True
                 if isinstance(stages, list):
                     for st in stages:
                         if not isinstance(st, Mapping):
@@ -741,17 +785,55 @@ def evaluate_aidata_vitals(
                             or "降级" in st_detail
                             or "missing" in st_detail.lower()
                         ):
+                            stages_all_ok = False
                             degraded_sources.append(f"stage.{st_id}:{st_status or st_detail}")
+                state_healthy = (
+                    top_status in {"ok", "idle"}
+                    and last_result in {"", "ok", "success"}
+                    and stages_all_ok
+                )
+                if state_healthy:
+                    latest_success_utc = _parse_iso_to_utc(state_payload.get("lastRunAt"))
         except (OSError, ValueError):
             degraded_sources.append("state.json:unreadable")
 
     res_obj = (latest_run or {}).get("result") if isinstance((latest_run or {}).get("result"), Mapping) else {}
     run_output = str(res_obj.get("output") or (latest_run or {}).get("failure_reason") or "")
+    run_and_issue_degraded: list[str] = []
     for source_label, text_blob in (("run_output", run_output), ("issue_desc", issue_desc)):
         for m in AIDATA_SOURCE_DEGRADED_RE.finditer(text_blob):
             token = f"{source_label}:{m.group(0)}"
+            if token not in run_and_issue_degraded:
+                run_and_issue_degraded.append(token)
             if token not in degraded_sources:
                 degraded_sources.append(token)
+
+    if ran_today_ok and not run_and_issue_degraded:
+        completed_utc = _parse_iso_to_utc((latest_run or {}).get("completed_at"))
+        if completed_utc is not None and (latest_success_utc is None or completed_utc > latest_success_utc):
+            latest_success_utc = completed_utc
+
+    if resolved_cron_errors_path.is_file():
+        try:
+            for line in resolved_cron_errors_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if target_date_str in stripped or resolved_yesterday in stripped:
+                    line_ts = _extract_leading_timestamp_utc(stripped)
+                    if (
+                        state_healthy
+                        and latest_success_utc is not None
+                        and line_ts is not None
+                        and line_ts <= latest_success_utc
+                    ):
+                        historical_cron_error_lines.append(stripped[:240])
+                    else:
+                        cron_error_lines.append(stripped[:240])
+        except OSError:
+            pass
+    if cron_error_lines:
+        degraded_sources.append(f"cron_errors:{len(cron_error_lines)}")
 
     sources_healthy_ok = bool(
         ran_today_ok
@@ -785,6 +867,7 @@ def evaluate_aidata_vitals(
             "ok": sources_healthy_ok,
             "degraded_sources": degraded_sources,
             "cron_error_lines": cron_error_lines[:5],
+            "historical_cron_error_lines": historical_cron_error_lines[:5],
             "state_json_path": str(resolved_state_path),
             "cron_errors_path": str(resolved_cron_errors_path),
         },
@@ -1024,6 +1107,8 @@ def _default_m2_escalator(
     remediation_detail: dict[str, Any] = {}
 
     # 1. Deterministic self-heal for skill-retro or aidata before/with M2 escalation
+    no_popup_env = _build_no_popup_subprocess_env()
+    remediation_detail["no_popup_shim_active"] = True
     if target == SKILL_RETRO_TARGET_KEY and SKILL_RETRO_AUTOPILOT_SCRIPT_PATH.is_file():
         collect_out = Path(f"/tmp/multica-skills-autopilot-watchdog-{target_date_str}.json")
         run_once_cmd = [
@@ -1037,14 +1122,21 @@ def _default_m2_escalator(
             "--workspace-id",
             workspace_id,
         ]
-        proc = subprocess.run(run_once_cmd, capture_output=True, text=True, check=False, timeout=90.0)
+        proc = subprocess.run(
+            run_once_cmd,
+            capture_output=True,
+            text=True,
+            env=no_popup_env,
+            check=False,
+            timeout=90.0,
+        )
         remediation_detail["skill_retro_run_once_exit"] = proc.returncode
         if proc.returncode == 0:
             actions_taken.append("skill_retro_deterministic_recollect_and_file_issue")
     elif target == AIDATA_TARGET_KEY:
         digest_script = aidata_digest_run_script_path or DEFAULT_AIDATA_DIGEST_RUN_SCRIPT_PATH
         if digest_script.is_file():
-            env = dict(os.environ)
+            env = dict(no_popup_env)
             env.setdefault("PER_SOURCE_TIMEOUT", str(DEFAULT_AIDATA_PER_SOURCE_TIMEOUT_SEC))
             remediation_detail["aidata_digest_run_timeout_sec"] = aidata_digest_run_timeout_sec
             remediation_detail["aidata_per_source_timeout_sec"] = int(env["PER_SOURCE_TIMEOUT"])
@@ -1080,7 +1172,14 @@ def _default_m2_escalator(
             "--json",
         ]
         try:
-            r_proc = subprocess.run(router_cmd, capture_output=True, text=True, check=False, timeout=20.0)
+            r_proc = subprocess.run(
+                router_cmd,
+                capture_output=True,
+                text=True,
+                env=no_popup_env,
+                check=False,
+                timeout=20.0,
+            )
             remediation_detail["m2_router_plan_exit"] = r_proc.returncode
             remediation_detail["m2_router_plan_file"] = str(plan_out)
             if r_proc.returncode == 0:
