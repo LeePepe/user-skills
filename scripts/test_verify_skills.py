@@ -580,13 +580,23 @@ class VerifySkillsTests(unittest.TestCase):
             self.assertTrue((skill_dir / "SKILL.md").is_file(), f"Missing SKILL.md for {name}")
 
         plugin_manifests = sorted(SKILLS_DIR.glob("*/.claude-plugin/plugin.json"))
+        skill_dirs = sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
         self.assertGreaterEqual(len(plugin_manifests), 1)
+        self.assertEqual(
+            [p.parent.parent.name for p in plugin_manifests],
+            [p.name for p in skill_dirs],
+            "Every skill directory under skills/* must have .claude-plugin/plugin.json",
+        )
+        semver_re = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
         for manifest_path in plugin_manifests:
             skill_dir_name = manifest_path.parent.parent.name
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest.get("name"), skill_dir_name)
             self.assertTrue(isinstance(manifest.get("description"), str) and manifest["description"])
-            self.assertTrue(isinstance(manifest.get("version"), str) and manifest["version"])
+            self.assertTrue(
+                isinstance(manifest.get("version"), str) and semver_re.fullmatch(manifest["version"].strip()),
+                f"{manifest_path}: missing or invalid semver 'version'",
+            )
             self.assertTrue(isinstance(manifest.get("category"), str) and manifest["category"])
 
     def test_personal_m2_assistant_is_registered_with_canonical_router(self) -> None:
@@ -3632,8 +3642,20 @@ class SkillContractV2Tests(unittest.TestCase):
             (skill / "SKILL.md").write_text("---\nname: sample\ndescription: >-\n  folded Unicode ✓\n  continuation\nother: ignored\n---\n", encoding="utf-8")
             (skill / ".claude-plugin" / "plugin.json").write_text('{"description": ""}', encoding="utf-8")
             self.assertEqual(module._frontmatter_description(skill / "SKILL.md"), "folded Unicode ✓ continuation")
-            codes = {item["code"] for item in module.audit_package(skill)}
+            findings = module.audit_package(skill)
+            codes = {item["code"] for item in findings}
             self.assertIn("description-length", codes)
+            self.assertIn("missing-version", codes)
+            missing_ver = next(item for item in findings if item["code"] == "missing-version")
+            self.assertIn("valves-and-metabolism.md#valve-3--budgets", missing_ver["reference"])
+            (skill / ".claude-plugin" / "plugin.json").write_text('{"description": "valid", "version": "not-semver"}', encoding="utf-8")
+            self.assertIn("missing-version", {item["code"] for item in module.audit_package(skill)})
+            (skill / ".claude-plugin" / "plugin.json").write_text('{"description": "valid", "version": "1.2.0"}', encoding="utf-8")
+            self.assertNotIn("missing-version", {item["code"] for item in module.audit_package(skill)})
+            sibling = root / "skills" / "sibling-missing-manifest"
+            sibling.mkdir(parents=True)
+            (sibling / "SKILL.md").write_text("---\nname: sibling-missing-manifest\ndescription: valid desc\n---\n", encoding="utf-8")
+            self.assertIn("missing-version", {item["code"] for item in module.audit_package(sibling)})
             launch_fail = {"id": "EV-launch", "negative_cmd": "definitely-missing-binary-jev"}
             self.assertTrue(module.evaluate_case(launch_fail, skill, root))
         routed = subprocess.run([sys.executable, str(script), "description-eval", "--skill", "skill-contract", "--mock-jev-json", '{"1":true,"2":false,"3":true}', "--strict"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)

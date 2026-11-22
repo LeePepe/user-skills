@@ -10,7 +10,7 @@ Use this meta-skill to keep skills small, navigable, and executable. Four valves
 
 1. **Sink rules**: deterministic regex, AST, pixel, localization, and geometry gates belong in executable scripts.
 2. **Eval drawers**: use `references/eval-cases.json`; active cases have zero-token assertions and stay at `<=15`.
-3. **Budgets**: descriptions are `<=320` characters; L0 is `<=180` lines/16KB, L1 `<=160` lines/16KB, and code blocks `<=25` lines.
+3. **Budgets & version**: descriptions are `<=320` characters; every skill (including all newly created skills) must declare semver `"version"` (`X.Y.Z`) in `.claude-plugin/plugin.json` alongside automatic `v<commit_count>@<subtree_sha>` fingerprinting; L0 is `<=180` lines/16KB, L1 `<=160` lines/16KB, and code blocks `<=25` lines.
 4. **Metabolism**: replace the least useful L1 row One-In-One-Out.
 
 ## Commands
@@ -27,7 +27,7 @@ python3 skills/skill-contract/scripts/skill_contract.py version --skill <skill> 
 python3 skills/skill-contract/scripts/skill_contract.py sync-jev-stars --skill <skill> [--db-path <sqlite>] [--dry-run]
 ```
 
-`audit` enforces S1/S2/S3 sharing checks: broken symlinks, explicit cross-skill orphan references, and duplicate script forks. `description-eval` reports precision/recall and per-case decision sources; `--mock-jev-json` accepts inline JSON or a file keyed by case ID, query, or **1-based** dictionary index (lists use positional order). Boolean-only mocks remain supported; canonical `choice` answers require companion `noul`. Applicability `>0.70` permits Yes, `<0.30` rejects it, and inclusive `0.30–0.70` uses a reported deterministic fallback; No is never overridden. Invalid or incomplete mocks fail rather than contacting Jev. Live Jev receives skill/description/query and both questions with a 1.5s timeout, falling back when unavailable/invalid/grey.
+`audit` enforces S1/S2/S3 sharing checks (broken symlinks, explicit cross-skill orphan references, duplicate script forks) and `missing-version` when `.claude-plugin/plugin.json` lacks a valid semver `"version"`. `description-eval` reports precision/recall and per-case decision sources; `--mock-jev-json` accepts inline JSON or a file keyed by case ID, query, or **1-based** dictionary index (lists use positional order). Boolean-only mocks remain supported; canonical `choice` answers require companion `noul`. Applicability `>0.70` permits Yes, `<0.30` rejects it, and inclusive `0.30–0.70` uses a reported deterministic fallback; No is never overridden. Invalid or incomplete mocks fail rather than contacting Jev. Live Jev receives skill/description/query and both questions with a 1.5s timeout, falling back when unavailable/invalid/grey.
 
 `add-case --negative-cmd` is a standalone pre-write self-test; it requires a genuine nonzero exit, optionally exact `--expect-fail-exit` and output checks. Launch errors and empty commands fail. `sync-jev-stars` preserves snapshot data and existing assertions on refresh, validates file or safe `--cmd-template` assertions, and plans the same changes in `--dry-run`. It archives only the oldest ordinary case at the 15-case cap; IDs or `jev-star` tags protect golden cases from eviction.
 

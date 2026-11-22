@@ -181,6 +181,31 @@
         }
       ],
       "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-011",
+      "title": "Mandatory plugin.json semver version gate and automatic v<commit_count>@<subtree_sha> fingerprinting",
+      "tags": [
+        "cli",
+        "valve-3",
+        "version"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py versions --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "expect_stdout_contains": [
+        "\"plugin_version\": \"1.0.0\"",
+        "\"skill_version\": \"v"
+      ],
+      "file": "skills/skill-contract/references/valves-and-metabolism.md",
+      "must_contain": [
+        "missing-version",
+        "v<commit_count>@<subtree_sha>",
+        "plugin.json"
+      ],
+      "registered_at": "2026-11-22"
     }
   ],
   "trigger_evals": [
