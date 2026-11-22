@@ -349,12 +349,16 @@ def _should_enable_auto_merge(args: argparse.Namespace) -> bool:
 def _best_effort_enable_auto_merge(
     args: argparse.Namespace,
     *,
+    head_oid: str | None = None,
     run: Callable[[Sequence[str]], str] = run_command,
 ) -> None:
     if not _should_enable_auto_merge(args):
         return
     method = _resolve_merge_method(args)
     cmd = ["gh", "pr", "merge", str(args.pr), "--repo", str(args.repo), "--auto", f"--{method}"]
+    match_sha = str(getattr(args, "head_sha", "") or head_oid or "").strip()
+    if match_sha:
+        cmd.extend(["--match-head-commit", match_sha])
     if getattr(args, "delete_branch", False):
         cmd.append("--delete-branch")
     try:
@@ -412,8 +416,8 @@ def monitor_pr(
 ) -> tuple[dict[str, Any], int]:
     if not getattr(args, "receipt", None):
         args.receipt = _default_receipt_path(args)
-    _best_effort_enable_auto_merge(args, run=run)
     started = now()
+    auto_merge_attempted = False
     while True:
         view = _json_command(
             run,
@@ -437,6 +441,9 @@ def monitor_pr(
             _receipt(args.receipt, fields)
             _notify(args.notify_agent, fields["status"], str(args.pr), "success", args.receipt)
             return {**fields, "receipt": args.receipt}, 0
+        if not auto_merge_attempted:
+            auto_merge_attempted = True
+            _best_effort_enable_auto_merge(args, head_oid=str(head or ""), run=run)
         if view.get("mergeStateStatus") == "DIRTY":
             fields = {"status": "PR_CONFLICT", "conclusion": "failure", "pr": args.pr, "repo": args.repo,
                       "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
@@ -594,7 +601,7 @@ def _parser() -> argparse.ArgumentParser:
     pr.add_argument("--notify-agent")
     pr.add_argument("--exit-on-green", action="store_true")
     pr.add_argument("--enable-auto", "--enable-auto-merge", "--merge", dest="enable_auto", action="store_true", default=False)
-    pr.add_argument("--auto-merge", dest="auto_merge", nargs="?", const="squash", default=None)
+    pr.add_argument("--auto-merge", dest="auto_merge", nargs="?", const="auto", default=None)
     pr.add_argument("--merge-method", dest="merge_method", choices=("squash", "merge", "rebase"), default="squash")
     pr.add_argument("--squash", action="store_true", default=False)
     pr.add_argument("--delete-branch", action="store_true", default=False)

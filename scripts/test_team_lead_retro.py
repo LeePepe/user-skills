@@ -596,13 +596,21 @@ if args[:2] == ["pr", "merge"]:
     sys.exit(0)
 if args[:2] == ["pr", "view"]:
     pr_arg = args[2]
+    state_val = os.environ.get("FAKE_PR_STATE", "MERGED")
+    if state_val == "OPEN_THEN_MERGED":
+        marker = os.environ["GH_LOG"] + ".seen"
+        if os.path.exists(marker):
+            state_val = "MERGED"
+        else:
+            open(marker, "w").write("1")
+            state_val = "OPEN"
     print(json.dumps({
         "number": int(pr_arg),
-        "state": "MERGED" if os.environ.get("FAKE_PR_STATE") == "MERGED" else "OPEN",
-        "mergedAt": "2026-11-23T00:00:00Z" if os.environ.get("FAKE_PR_STATE") == "MERGED" else None,
+        "state": "MERGED" if state_val == "MERGED" else "OPEN",
+        "mergedAt": "2026-11-23T00:00:00Z" if state_val == "MERGED" else None,
         "mergeCommit": {"oid": "abc1234def5678"},
         "mergeStateStatus": "CLEAN",
-        "headRefOid": "abc1234def5678",
+        "headRefOid": os.environ.get("FAKE_HEAD_OID", "abc1234def5678"),
         "headRefName": "feat/demo",
         "statusCheckRollup": [{"name": "verify", "conclusion": "SUCCESS", "state": "SUCCESS"}],
         "url": f"https://github.com/LeePepe/user-skills/pull/{pr_arg}",
@@ -619,7 +627,7 @@ sys.exit(1)
                 **os.environ,
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",
                 "GH_LOG": str(gh_log),
-                "FAKE_PR_STATE": "MERGED",
+                "FAKE_PR_STATE": "OPEN_THEN_MERGED",
             }
 
             # Positive 1: positional PR number + optional `--receipt` (handoff-dir default) + `--enable-auto-merge`
@@ -635,6 +643,8 @@ sys.exit(1)
                     "--enable-auto-merge",
                     "--merge-method",
                     "squash",
+                    "--interval",
+                    "0",
                     "--max-wait",
                     "600",
                     "--handoff-dir",
@@ -662,12 +672,81 @@ sys.exit(1)
             self.assertTrue(expected_receipt.is_file())
             logged_calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertTrue(
-                any(call[:2] == ["pr", "merge"] and "--auto" in call and "--squash" in call for call in logged_calls),
+                any(
+                    call[:2] == ["pr", "merge"]
+                    and "--auto" in call
+                    and "--squash" in call
+                    and "--match-head-commit" in call
+                    for call in logged_calls
+                ),
                 logged_calls,
             )
 
+            # Positive 1b: bare `--auto-merge` respects `--merge-method rebase`, and `--head-sha` mismatch
+            # aborts with `PR_HEAD_DRIFT` BEFORE invoking `gh pr merge`
+            gh_log.write_text("", encoding="utf-8")
+            seen_marker = Path(str(gh_log) + ".seen")
+            if seen_marker.exists():
+                seen_marker.unlink()
+            rebase_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(CI_MONITOR),
+                    "pr",
+                    "226",
+                    "--repo",
+                    "LeePepe/user-skills",
+                    "--auto-merge",
+                    "--merge-method",
+                    "rebase",
+                    "--interval",
+                    "0",
+                    "--no-cleanup-worktree",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(rebase_res.returncode, 0, rebase_res.stderr)
+            rebase_calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertTrue(
+                any(call[:2] == ["pr", "merge"] and "--rebase" in call for call in rebase_calls),
+                rebase_calls,
+            )
+
+            gh_log.write_text("", encoding="utf-8")
+            if seen_marker.exists():
+                seen_marker.unlink()
+            drift_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(CI_MONITOR),
+                    "pr",
+                    "226",
+                    "--repo",
+                    "LeePepe/user-skills",
+                    "--head-sha",
+                    "deadbeef00000000",
+                    "--enable-auto-merge",
+                    "--no-cleanup-worktree",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(drift_res.returncode, 1)
+            self.assertEqual(json.loads(drift_res.stdout)["status"], "PR_HEAD_DRIFT")
+            drift_calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertFalse(any(call[:2] == ["pr", "merge"] for call in drift_calls), drift_calls)
+
             # Positive 2: positional PR URL auto-extracts PR number + infers `--repo` + `--auto-merge squash` + pre-subcommand `--json`
             gh_log.write_text("", encoding="utf-8")
+            if seen_marker.exists():
+                seen_marker.unlink()
             pr_url_res = subprocess.run(
                 [
                     sys.executable,
@@ -678,6 +757,8 @@ sys.exit(1)
                     "--auto-merge",
                     "squash",
                     "--enable-auto",
+                    "--interval",
+                    "0",
                     "--no-cleanup-worktree",
                     "--out",
                     str(tmp_path / "url-receipt.md"),
