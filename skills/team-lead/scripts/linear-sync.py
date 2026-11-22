@@ -17,7 +17,7 @@ from pathlib import Path
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -2210,7 +2210,7 @@ def cmd_idea(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
-    handoff_dir = Path(args.handoff_dir).expanduser().resolve()
+    handoff_dir = _resolve_handoff_dir_arg(args)
     mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="ensure-goal", handoff_dir=handoff_dir)
     if mode == "off":
         return {"schema_version": 1, "ok": True, "command": "ensure-goal", "mode": "off",
@@ -2315,7 +2315,7 @@ def cmd_ensure_goal(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
-    handoff_dir = Path(args.handoff_dir).expanduser().resolve()
+    handoff_dir = _resolve_handoff_dir_arg(args)
     mode, skipped = resolve_mode(getattr(args, "mode", None), subcommand="sync-ledger", handoff_dir=handoff_dir, quiet=getattr(args, "quiet", False))
     if mode == "off":
         if skipped == "isolated_handoff_dir" and not getattr(args, "mode", None) and not os.environ.get("GTT_LINEAR_MODE"):
@@ -2403,8 +2403,118 @@ def cmd_sync_ledger(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+SUBCOMMAND_ALIASES: dict[str, str] = {
+    "idea": "idea",
+    "ensure-goal": "ensure-goal",
+    "ensure": "ensure-goal",
+    "sync-ledger": "sync-ledger",
+    "sync": "sync-ledger",
+    "list-issues": "list-issues",
+    "issues": "list-issues",
+    "get-issue": "get-issue",
+    "update-issue": "update-issue",
+    "comment": "comment",
+    "archive-completed": "archive-completed",
+    "auth": "auth",
+}
+
+
+class _SelfDisclosingLinearSyncParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[linear-sync] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/linear-sync.py {ensure-goal,sync-ledger,list-issues,idea} --help`\n"
+            "  Reference: skills/team-lead/references/ledger.md\n"
+        )
+        raise SystemExit(2)
+
+
+def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if not tokens:
+        return tokens
+    value_flags = {
+        "--title",
+        "--description",
+        "--team",
+        "--state",
+        "--label",
+        "--project",
+        "--mode",
+        "--source",
+        "--dedup-key",
+        "--repo",
+        "--offline-snapshot",
+        "--handoff-dir",
+        "--handoff",
+        "--dir",
+        "--issue",
+        "--issue-id",
+        "--id",
+        "--event-note",
+        "--query",
+        "--limit",
+        "--priority",
+        "--assignee",
+        "--delegate",
+        "--add-label",
+        "--body",
+        "--retention-days",
+        "--max-active-issues",
+        "--header",
+        "--client-id",
+        "--client-secret",
+        "--port",
+    }
+    subcmd_index: int | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in {"-h", "--help"}:
+            return tokens
+        if tok in SUBCOMMAND_ALIASES:
+            subcmd_index = i
+            break
+        if tok == "--create-as-user":
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("-") and tokens[i + 1] not in SUBCOMMAND_ALIASES:
+                i += 2
+            else:
+                i += 1
+            continue
+        if tok.startswith("-"):
+            if "=" not in tok and tok in value_flags and i + 1 < len(tokens):
+                i += 2
+            else:
+                i += 1
+        else:
+            break
+    if subcmd_index is not None:
+        canonical = SUBCOMMAND_ALIASES[tokens[subcmd_index]]
+        return [canonical, *tokens[:subcmd_index], *tokens[subcmd_index + 1 :]]
+    return tokens
+
+
+def _resolve_handoff_dir_arg(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "handoff_dir", None) or getattr(args, "handoff_dir_pos", None)
+    if not raw:
+        raise LinearSyncError(
+            "Missing required --handoff-dir <dir> (or positional <handoff_dir>)"
+        )
+    args.handoff_dir = str(raw)
+    return Path(str(raw)).expanduser().resolve()
+
+
+def _resolve_issue_id_arg(args: argparse.Namespace) -> str:
+    raw = getattr(args, "id", None)
+    if not raw:
+        raise LinearSyncError("Missing required --id / --issue-id / --issue <identifier>")
+    args.id = str(raw)
+    return str(raw)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="linear-sync.py", description="Sync team-lead ledgers with Linear.")
+    parser = _SelfDisclosingLinearSyncParser(prog="linear-sync.py", description="Sync team-lead ledgers with Linear.")
+    parser.add_argument("--json", action="store_true", default=True)
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     idea = subparsers.add_parser("idea", help="Capture an idea in the Linear team inbox.")
@@ -2419,19 +2529,31 @@ def build_parser() -> argparse.ArgumentParser:
     idea.add_argument("--dedup-key", default="")
     idea.add_argument("--repo", default="")
     idea.add_argument("--offline-snapshot", default="")
+    idea.add_argument("--json", action="store_true", default=True)
 
-    ensure = subparsers.add_parser("ensure-goal", help="Bind or create the Linear issue for a Goal.")
-    ensure.add_argument("--handoff-dir", required=True)
-    ensure.add_argument("--issue", default="")
+    ensure = subparsers.add_parser(
+        "ensure-goal",
+        aliases=["ensure"],
+        help="Bind or create the Linear issue for a Goal.",
+    )
+    ensure.add_argument("handoff_dir_pos", nargs="?", default=None, help="Optional positional handoff directory.")
+    ensure.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    ensure.add_argument("--issue", "--issue-id", "--id", dest="issue", default="")
     ensure.add_argument("--team", default="TIA")
     ensure.add_argument("--project", default="")
     ensure.add_argument("--mode", choices=("off", "observe", "auto"))
     ensure.add_argument("--offline-snapshot", default="")
     ensure.add_argument("--record-observe", action="store_true")
     ensure.add_argument("--create-as-user", action="store_true")
+    ensure.add_argument("--json", action="store_true", default=True)
 
-    sync = subparsers.add_parser("sync-ledger", help="Synchronize a Goal ledger to its Linear issue.")
-    sync.add_argument("--handoff-dir", required=True)
+    sync = subparsers.add_parser(
+        "sync-ledger",
+        aliases=["sync"],
+        help="Synchronize a Goal ledger to its Linear issue.",
+    )
+    sync.add_argument("handoff_dir_pos", nargs="?", default=None, help="Optional positional handoff directory.")
+    sync.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     sync.add_argument("--event-note", default="")
     sync.add_argument("--quiet", action="store_true")
     sync.add_argument("--project", default="")
@@ -2439,19 +2561,26 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--offline-snapshot", default="")
     sync.add_argument("--record-observe", action="store_true")
     sync.add_argument("--create-as-user", action="store_true")
+    sync.add_argument("--json", action="store_true", default=True)
 
-    list_issues = subparsers.add_parser("list-issues", help="List issues on a Linear team.")
+    list_issues = subparsers.add_parser(
+        "list-issues",
+        aliases=["issues"],
+        help="List issues on a Linear team.",
+    )
     list_issues.add_argument("--team", default="TIA")
     list_issues.add_argument("--state", default="")
     list_issues.add_argument("--project", default="")
     list_issues.add_argument("--query", default="")
     list_issues.add_argument("--limit", type=int, default=25)
+    list_issues.add_argument("--json", action="store_true", default=True)
 
     get_issue = subparsers.add_parser("get-issue", help="Show a Linear issue.")
-    get_issue.add_argument("--id", required=True)
+    get_issue.add_argument("--id", "--issue-id", "--issue", dest="id", required=True)
+    get_issue.add_argument("--json", action="store_true", default=True)
 
     update = subparsers.add_parser("update-issue", help="Update a Linear issue.")
-    update.add_argument("--id", required=True)
+    update.add_argument("--id", "--issue-id", "--issue", dest="id", required=True)
     update.add_argument("--title")
     update.add_argument("--description")
     update.add_argument("--state")
@@ -2461,38 +2590,47 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--delegate")
     update.add_argument("--add-label", action="append", default=[])
     update.add_argument("--mode", choices=("off", "observe", "auto"))
+    update.add_argument("--json", action="store_true", default=True)
 
     comment = subparsers.add_parser("comment", help="Comment on a Linear issue.")
-    comment.add_argument("--id", required=True)
+    comment.add_argument("--id", "--issue-id", "--issue", dest="id", required=True)
     comment.add_argument("--body", required=True)
     comment.add_argument("--create-as-user")
     comment.add_argument("--mode", choices=("off", "observe", "auto"))
+    comment.add_argument("--json", action="store_true", default=True)
 
     archive = subparsers.add_parser("archive-completed", help="Archive completed and canceled Linear issues under keep_2_days_and_cap_150 policy.")
     archive.add_argument("--team", default="TIA")
     archive.add_argument("--retention-days", type=int, default=2)
     archive.add_argument("--max-active-issues", type=int, default=150)
     archive.add_argument("--mode", choices=("off", "observe", "auto"))
-    archive.add_argument("--json", action="store_true")
+    archive.add_argument("--json", action="store_true", default=True)
     archive.add_argument("--offline-snapshot", default="")
 
     auth = subparsers.add_parser("auth", help="Manage Linear credentials.")
+    auth.add_argument("--json", action="store_true", default=True)
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_set = auth_sub.add_parser("set")
     auth_set.add_argument("--key-stdin", action="store_true")
     auth_set.add_argument("--header", default="Authorization")
+    auth_set.add_argument("--json", action="store_true", default=True)
     oauth_app = auth_sub.add_parser("oauth-app")
     oauth_app.add_argument("--key-stdin", action="store_true")
     oauth_app.add_argument("--header", default="Authorization")
+    oauth_app.add_argument("--json", action="store_true", default=True)
     oauth_login = auth_sub.add_parser("oauth-login")
     oauth_login.add_argument("--client-id", default="")
     oauth_login.add_argument("--client-secret", default="")
     oauth_login.add_argument("--port", type=int, default=8765)
     oauth_login.add_argument("--agent-scopes", action="store_true", help="Request app:assignable/app:mentionable; requires workspace-admin approval.")
-    auth_sub.add_parser("refresh")
-    auth_sub.add_parser("show")
+    oauth_login.add_argument("--json", action="store_true", default=True)
+    auth_refresh = auth_sub.add_parser("refresh")
+    auth_refresh.add_argument("--json", action="store_true", default=True)
+    auth_show = auth_sub.add_parser("show")
+    auth_show.add_argument("--json", action="store_true", default=True)
     auth_remove = auth_sub.add_parser("remove")
     auth_remove.add_argument("--force", action="store_true")
+    auth_remove.add_argument("--json", action="store_true", default=True)
     return parser
 
 
@@ -2591,25 +2729,31 @@ def _oauth_interactive_login(client_id: str, client_secret: str, port: int = 876
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    normalized_argv = _normalize_argv(argv)
+    args = parser.parse_args(normalized_argv)
+    subcmd = SUBCOMMAND_ALIASES.get(args.subcommand, args.subcommand)
+    args.subcommand = subcmd
     try:
-        if args.subcommand == "idea":
+        if subcmd == "idea":
             payload = cmd_idea(args)
-        elif args.subcommand == "ensure-goal":
+        elif subcmd == "ensure-goal":
             payload = cmd_ensure_goal(args)
-        elif args.subcommand == "sync-ledger":
+        elif subcmd == "sync-ledger":
             payload = cmd_sync_ledger(args)
-        elif args.subcommand == "list-issues":
+        elif subcmd == "list-issues":
             payload = cmd_list_issues(args)
-        elif args.subcommand == "get-issue":
+        elif subcmd == "get-issue":
+            _resolve_issue_id_arg(args)
             payload = cmd_get_issue(args)
-        elif args.subcommand == "update-issue":
+        elif subcmd == "update-issue":
+            _resolve_issue_id_arg(args)
             payload = cmd_update_issue(args)
-        elif args.subcommand == "comment":
+        elif subcmd == "comment":
+            _resolve_issue_id_arg(args)
             payload = cmd_comment(args)
-        elif args.subcommand == "archive-completed":
+        elif subcmd == "archive-completed":
             payload = cmd_archive_completed(args)
-        elif args.subcommand == "auth":
+        elif subcmd == "auth":
             path = _credential_path()
             if args.auth_command in {"set", "oauth-app"}:
                 key = sys.stdin.readline().strip() if args.key_stdin or not sys.stdin.isatty() else getpass.getpass("Linear API key: ")
@@ -2653,9 +2797,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raise LinearSyncError(f"Unknown subcommand: {args.subcommand}")
     except LinearSyncError as exc:
-        if args.subcommand == "sync-ledger" and args.quiet:
+        if subcmd == "sync-ledger" and getattr(args, "quiet", False):
             return 0
-        sys.stderr.write(f"linear-sync: {exc}\n")
+        sys.stderr.write(
+            f"linear-sync: {exc}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/linear-sync.py --help`\n"
+            "  Reference: skills/team-lead/references/ledger.md\n"
+        )
         return 2
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return 0

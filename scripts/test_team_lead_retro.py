@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Positive + Counter-Case Replay tests for `team-lead` L2 script roadblock softening.
+"""Positive + Counter-Case Replay tests for `team-lead` L2 script roadblock softening & L3 crystallization.
 
 Verifies:
 1. `goal-queue.py`:
    - Positive Replay: accepts subcommand aliases (`init` -> `init-goal`, `status`/`list` -> `next-wave`),
      flag aliases (`--handoff`/`--dir` -> `--handoff-dir`, `--task`/`--id` -> `--task-id`,
-     `--dep` -> `--depends-on`, `--path` -> `--paths`, `--owner` on `next-wave`, `--pr-ref` on `set-status`,
-     `--note` on `ack-spec`, `--json` global compatibility), and flags before subcommand.
+     `--dep` -> `--depends-on`, `--path` -> `--paths`, `--owner`/`--actor` on `enqueue`/`next-wave`/`set-status`,
+     `--pr-ref`/`--head`/`--pr-head` on `set-status`, `--note` on `ack-spec`, `--json` global compatibility),
+     and flags before subcommand.
    - Counter-Case Replay: rejects genuinely invalid subcommands or missing required fields with exit=2
      and emits concise `<=3`-line self-disclosing error pointers to `skills/team-lead/references/ledger.md`
      or `playbook.md`.
@@ -19,10 +20,18 @@ Verifies:
      missing required arguments, or V3 Round-1 `writer_escalated` with exit=2 and self-disclosing pointers
      to `skills/team-lead/references/bots-and-agents.md`.
 3. `goal-supervisor.py`:
-   - Positive Replay: `status --check --handoff-dir <dir>` filters to that specific Goal handoff directory
-     gracefully without throwing `unrecognized arguments: --handoff-dir` `exit 2`.
-   - Counter-Case Replay: invalid flags or unknown subcommands exit with code 2 and emit self-disclosing
+   - Positive Replay: `status --check --handoff-dir <dir>` and `--goal`/`--goal-id` on `status`/`scan`/`observe`/`watch`/`telemetry`
+     resolve cleanly against `--handoff-root`.
+   - Counter-Case Replay: invalid flags or missing required goal selectors exit with code 2 and emit self-disclosing
      pointers to `skills/team-lead/references/ledger.md`.
+4. `ci-monitor.py`:
+   - Positive Replay: positional PR number/URL, repo auto-inference, optional `--receipt` default, `--enable-auto` /
+     `--enable-auto-merge` / `--auto-merge` / `--merge-method` / `--max-wait` / `--handoff-dir` / `--goal` / `--task` /
+     `--no-cleanup-worktree` / `--json`, plus Layer-3 `checks` (`pr-checks`) soft-advisory subcommand (`exit=0`).
+   - Counter-Case Replay: invalid flags or missing PR exit 2 with `<=3` lines pointing to `playbook.md` & `eval-cases.json`.
+5. `linear-sync.py`, `feedback_guard.py`, and `git-gc.py`:
+   - Positive Replay: `--json` compatibility, subcommand/flag aliases, positional `handoff_dir`, and `--head-ref`.
+   - Counter-Case Replay: `exit=2` self-disclosing `<=3`-line pointers to `ledger.md`, `playbook.md`, and `eval-cases.json`.
 """
 
 from __future__ import annotations
@@ -42,6 +51,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GOAL_QUEUE = REPO_ROOT / "skills" / "team-lead" / "scripts" / "goal-queue.py"
 HERDR_DISPATCH = REPO_ROOT / "skills" / "team-lead" / "scripts" / "herdr-dispatch.sh"
 GOAL_SUPERVISOR = REPO_ROOT / "skills" / "team-lead" / "scripts" / "goal-supervisor.py"
+CI_MONITOR = REPO_ROOT / "skills" / "team-lead" / "scripts" / "ci-monitor.py"
+LINEAR_SYNC = REPO_ROOT / "skills" / "team-lead" / "scripts" / "linear-sync.py"
+FEEDBACK_GUARD = REPO_ROOT / "skills" / "team-lead" / "scripts" / "feedback_guard.py"
+GIT_GC = REPO_ROOT / "skills" / "team-lead" / "scripts" / "git-gc.py"
 
 
 class TeamLeadRetroReplayTests(unittest.TestCase):
@@ -488,6 +501,621 @@ else:
             )
             self.assertEqual(bad_sup.returncode, 2)
             self.assertIn("skills/team-lead/references/ledger.md", bad_sup.stderr)
+            self.assertLessEqual(len(bad_sup.stderr.strip().splitlines()), 3)
+
+            # Positive 4: `status --check --goal <goal-id>` and `observe/telemetry --goal <goal-id>` resolve via `--handoff-root`
+            goal_flag_status = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_SUPERVISOR),
+                    "status",
+                    "--check",
+                    "--handoff-root",
+                    str(root),
+                    "--goal",
+                    "clean-goal",
+                    "--herdr-json",
+                    str(agents_file),
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(goal_flag_status.returncode, 0, goal_flag_status.stderr)
+            self.assertEqual(json.loads(goal_flag_status.stdout)["goal_id"], "clean-goal")
+
+            goal_flag_observe = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_SUPERVISOR),
+                    "observe",
+                    "--handoff-root",
+                    str(root),
+                    "--goal-id",
+                    "clean-goal",
+                    "--herdr-json",
+                    str(agents_file),
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(goal_flag_observe.returncode, 0, goal_flag_observe.stderr)
+            self.assertEqual(json.loads(goal_flag_observe.stdout)["goal_id"], "clean-goal")
+
+            goal_flag_telemetry = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_SUPERVISOR),
+                    "telemetry",
+                    "--handoff-root",
+                    str(root),
+                    "--goal",
+                    "done-goal",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(goal_flag_telemetry.returncode, 0, goal_flag_telemetry.stderr)
+            self.assertTrue(json.loads(goal_flag_telemetry.stdout)["goal_done"])
+
+            # Counter-Case: `observe` without `--handoff-dir` or `--goal` exits 2 with <=3-line self-disclosing pointer
+            missing_obs_goal = subprocess.run(
+                [sys.executable, str(GOAL_SUPERVISOR), "observe", "--json"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(missing_obs_goal.returncode, 2)
+            self.assertIn("skills/team-lead/references/ledger.md", missing_obs_goal.stderr)
+            self.assertLessEqual(len(missing_obs_goal.stderr.strip().splitlines()), 3)
+
+    def test_ci_monitor_positive_and_counter_case_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            gh_log = tmp_path / "gh_calls.jsonl"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["GH_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(args) + "\\n")
+if args[:2] == ["pr", "merge"]:
+    print("auto-merge enabled")
+    sys.exit(0)
+if args[:2] == ["pr", "view"]:
+    pr_arg = args[2]
+    print(json.dumps({
+        "number": int(pr_arg),
+        "state": "MERGED" if os.environ.get("FAKE_PR_STATE") == "MERGED" else "OPEN",
+        "mergedAt": "2026-11-23T00:00:00Z" if os.environ.get("FAKE_PR_STATE") == "MERGED" else None,
+        "mergeCommit": {"oid": "abc1234def5678"},
+        "mergeStateStatus": "CLEAN",
+        "headRefOid": "abc1234def5678",
+        "headRefName": "feat/demo",
+        "statusCheckRollup": [{"name": "verify", "conclusion": "SUCCESS", "state": "SUCCESS"}],
+        "url": f"https://github.com/LeePepe/user-skills/pull/{pr_arg}",
+    }))
+    sys.exit(0)
+sys.exit(1)
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            handoff_dir = tmp_path / "handoff" / "demo-ci-goal"
+            handoff_dir.mkdir(parents=True)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GH_LOG": str(gh_log),
+                "FAKE_PR_STATE": "MERGED",
+            }
+
+            # Positive 1: positional PR number + optional `--receipt` (handoff-dir default) + `--enable-auto-merge`
+            # + `--merge-method squash` + `--max-wait` + `--goal` + `--task` + `--no-cleanup-worktree` + `--json`
+            pr_pos = subprocess.run(
+                [
+                    sys.executable,
+                    str(CI_MONITOR),
+                    "pr",
+                    "226",
+                    "--repo",
+                    "LeePepe/user-skills",
+                    "--enable-auto-merge",
+                    "--merge-method",
+                    "squash",
+                    "--max-wait",
+                    "600",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--goal",
+                    "demo-ci-goal",
+                    "--task",
+                    "T1",
+                    "--no-cleanup-worktree",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(pr_pos.returncode, 0, pr_pos.stderr)
+            pr_payload = json.loads(pr_pos.stdout)
+            self.assertEqual(pr_payload["status"], "PR_MERGED")
+            self.assertEqual(pr_payload["pr"], 226)
+            self.assertIsNone(pr_payload["gc_result"])
+            expected_receipt = handoff_dir / "receipts" / "ci-monitor-pr-226.md"
+            self.assertEqual(pr_payload["receipt"], str(expected_receipt))
+            self.assertTrue(expected_receipt.is_file())
+            logged_calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertTrue(
+                any(call[:2] == ["pr", "merge"] and "--auto" in call and "--squash" in call for call in logged_calls),
+                logged_calls,
+            )
+
+            # Positive 2: positional PR URL auto-extracts PR number + infers `--repo` + `--auto-merge squash` + pre-subcommand `--json`
+            gh_log.write_text("", encoding="utf-8")
+            pr_url_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(CI_MONITOR),
+                    "--json",
+                    "pr",
+                    "https://github.com/LeePepe/user-skills/pull/226",
+                    "--auto-merge",
+                    "squash",
+                    "--enable-auto",
+                    "--no-cleanup-worktree",
+                    "--out",
+                    str(tmp_path / "url-receipt.md"),
+                ],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(pr_url_res.returncode, 0, pr_url_res.stderr)
+            url_payload = json.loads(pr_url_res.stdout)
+            self.assertEqual(url_payload["repo"], "LeePepe/user-skills")
+            self.assertEqual(url_payload["pr"], 226)
+
+            # Positive 3: Layer-3 soft-crystallized `checks` subcommand (and `pr-checks` alias) exits 0 with facts-only JSON
+            env_open = {**env, "FAKE_PR_STATE": "OPEN"}
+            checks_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(CI_MONITOR),
+                    "checks",
+                    "https://github.com/LeePepe/user-skills/pull/226",
+                    "--json",
+                ],
+                cwd=tmp_path,
+                env=env_open,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(checks_res.returncode, 0, checks_res.stderr)
+            checks_payload = json.loads(checks_res.stdout)
+            self.assertTrue(checks_payload["ok"])
+            self.assertEqual(checks_payload["gate_tier"], "soft_advisory_exit_0")
+            self.assertEqual(checks_payload["pr"], 226)
+            self.assertEqual(checks_payload["repo"], "LeePepe/user-skills")
+            self.assertEqual(len(checks_payload["checks"]), 1)
+
+            alias_checks = subprocess.run(
+                [sys.executable, str(CI_MONITOR), "pr-checks", "226", "--repo", "LeePepe/user-skills"],
+                cwd=tmp_path,
+                env=env_open,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(alias_checks.returncode, 0, alias_checks.stderr)
+            self.assertEqual(json.loads(alias_checks.stdout)["gate_tier"], "soft_advisory_exit_0")
+
+            # Counter-Case 1: invalid flag exits 2 with <=3 stderr lines pointing to playbook.md & eval-cases.json
+            bad_flag = subprocess.run(
+                [sys.executable, str(CI_MONITOR), "pr", "226", "--unknown-flag-xyz"],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_flag.returncode, 2)
+            self.assertIn("skills/team-lead/references/playbook.md", bad_flag.stderr)
+            self.assertIn("skills/team-lead/references/eval-cases.json", bad_flag.stderr)
+            self.assertLessEqual(len(bad_flag.stderr.strip().splitlines()), 3)
+
+            # Counter-Case 2: missing PR number/URL exits 2 with <=3 stderr lines pointing to playbook.md
+            missing_pr = subprocess.run(
+                [sys.executable, str(CI_MONITOR), "pr", "--repo", "LeePepe/user-skills"],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(missing_pr.returncode, 2)
+            self.assertIn("skills/team-lead/references/playbook.md", missing_pr.stderr)
+            self.assertLessEqual(len(missing_pr.stderr.strip().splitlines()), 3)
+
+    def test_linear_sync_positive_and_counter_case_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff_dir = Path(tmp) / "handoff" / "demo-linear-goal"
+            handoff_dir.mkdir(parents=True)
+            (handoff_dir / "ledger.md").write_text(
+                "# Goal: demo-linear-goal\n- Owner: tianpei\n- Status: in_progress\n\n"
+                "## Tasks\n| ID | 依赖 | 标题 | 负责 | 状态 | PR/head |\n"
+                "|---|---|---|---|---|---|\n| T1 | — | Demo | writer | in_progress | — |\n",
+                encoding="utf-8",
+            )
+
+            # Positive 1: `ensure-goal --handoff-dir ... --mode observe --json` + `ensure` alias + positional handoff_dir
+            ens_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(LINEAR_SYNC),
+                    "ensure-goal",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--project",
+                    "user-skills",
+                    "--mode",
+                    "observe",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ens_res.returncode, 0, ens_res.stderr)
+            self.assertTrue(json.loads(ens_res.stdout)["ok"])
+
+            ens_alias = subprocess.run(
+                [
+                    sys.executable,
+                    str(LINEAR_SYNC),
+                    "--json",
+                    "ensure",
+                    str(handoff_dir),
+                    "--issue-id",
+                    "TIA-99",
+                    "--mode",
+                    "observe",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ens_alias.returncode, 0, ens_alias.stderr)
+            self.assertEqual(json.loads(ens_alias.stdout)["identifier"], "TIA-99")
+
+            # Positive 2: `sync-ledger --dir ... --json` and `sync` alias
+            sync_res = subprocess.run(
+                [
+                    sys.executable,
+                    str(LINEAR_SYNC),
+                    "sync-ledger",
+                    "--dir",
+                    str(handoff_dir),
+                    "--mode",
+                    "observe",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(sync_res.returncode, 0, sync_res.stderr)
+            self.assertTrue(json.loads(sync_res.stdout)["ok"])
+
+            sync_alias = subprocess.run(
+                [sys.executable, str(LINEAR_SYNC), "sync", str(handoff_dir), "--mode", "observe", "--json"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(sync_alias.returncode, 0, sync_alias.stderr)
+            self.assertTrue(json.loads(sync_alias.stdout)["ok"])
+
+            # Counter-Case 1: invalid subcommand/flag exits 2 with <=3 lines pointing to ledger.md
+            bad_sub = subprocess.run(
+                [sys.executable, str(LINEAR_SYNC), "nonexistent-cmd", "--json"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_sub.returncode, 2)
+            self.assertIn("skills/team-lead/references/ledger.md", bad_sub.stderr)
+            self.assertLessEqual(len(bad_sub.stderr.strip().splitlines()), 3)
+
+            # Counter-Case 2: `LinearSyncError` (missing handoff directory) exits 2 with Reference: skills/team-lead/references/ledger.md
+            bad_dir = subprocess.run(
+                [
+                    sys.executable,
+                    str(LINEAR_SYNC),
+                    "ensure-goal",
+                    "--handoff-dir",
+                    str(Path(tmp) / "missing-handoff-dir"),
+                    "--mode",
+                    "observe",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_dir.returncode, 2)
+            self.assertIn("Reference: skills/team-lead/references/ledger.md", bad_dir.stderr)
+            self.assertLessEqual(len(bad_dir.stderr.strip().splitlines()), 3)
+
+    def test_goal_queue_actor_and_head_aliases_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff_dir = Path(tmp) / "handoff" / "actor-head-goal"
+            handoff_dir.mkdir(parents=True)
+            (handoff_dir / "spec.md").write_text("# Spec\n", encoding="utf-8")
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "enqueue",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--task-id",
+                    "T1",
+                    "--title",
+                    "First",
+                    "--paths",
+                    "skills/team-lead/scripts/goal-queue.py",
+                    "--actor",
+                    "demo-writer-r1",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "enqueue",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--task-id",
+                    "T2",
+                    "--title",
+                    "Second",
+                    "--paths",
+                    "scripts/test_team_lead_retro.py",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Positive: `next-wave --actor <agent>` + `set-status --head <sha>` and `--pr-head <sha>` (including pre-subcommand)
+            wave = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "next-wave",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--mark-in-progress",
+                    "--actor",
+                    "wave-actor-r1",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(wave.returncode, 0, wave.stderr)
+
+            head_done = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "set-status",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--task-id",
+                    "T1",
+                    "--status",
+                    "done",
+                    "--actor",
+                    "wave-actor-r1",
+                    "--head",
+                    "deadbeef1234",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(head_done.returncode, 0, head_done.stderr)
+
+            pr_head_done = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "--pr-head",
+                    "cafebabe5678",
+                    "--actor",
+                    "wave-actor-r1",
+                    "set-status",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--task-id",
+                    "T2",
+                    "--status",
+                    "done",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(pr_head_done.returncode, 0, pr_head_done.stderr)
+
+            queue_state = json.loads((handoff_dir / "queue.json").read_text(encoding="utf-8"))
+            by_id = {item["task_id"]: item for item in queue_state["tasks"]}
+            self.assertEqual(by_id["T1"]["pr"], "deadbeef1234")
+            self.assertEqual(by_id["T1"]["owner"], "wave-actor-r1")
+            self.assertEqual(by_id["T2"]["pr"], "cafebabe5678")
+
+            # Counter-Case: invalid status value still fails with exit=2 and ledger.md pointer
+            bad_status = subprocess.run(
+                [
+                    sys.executable,
+                    str(GOAL_QUEUE),
+                    "set-status",
+                    "--handoff-dir",
+                    str(handoff_dir),
+                    "--task-id",
+                    "T1",
+                    "--status",
+                    "not-a-valid-status",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_status.returncode, 2)
+            self.assertIn("skills/team-lead/references/ledger.md", bad_status.stderr)
+
+    def test_feedback_guard_and_git_gc_positive_and_counter_case_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt = tmp_path / "wt"
+            wt.mkdir()
+            clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            subprocess.run(["git", "init", "-q", str(wt)], env=clean_env, check=True)
+            subprocess.run(["git", "-C", str(wt), "config", "user.name", "Bot"], env=clean_env, check=True)
+            subprocess.run(["git", "-C", str(wt), "config", "user.email", "bot@example.com"], env=clean_env, check=True)
+            (wt / "skills").mkdir()
+            (wt / "skills" / "demo.py").write_text("X = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(wt), "add", "-A"], env=clean_env, check=True)
+            subprocess.run(["git", "-C", str(wt), "commit", "-qm", "init"], env=clean_env, check=True)
+            subprocess.run(["git", "-C", str(wt), "branch", "-M", "main"], env=clean_env, check=True)
+            subprocess.run(["git", "-C", str(wt), "checkout", "-qb", "feat/demo"], env=clean_env, check=True)
+            (wt / "skills" / "demo.py").write_text("X = 2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(wt), "commit", "-qam", "feat"], env=clean_env, check=True)
+            sha = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                env=clean_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            brief = tmp_path / "brief.md"
+            brief.write_text("# Brief\n- **Owned Paths**:\n  - `skills/**`\n", encoding="utf-8")
+            receipt = tmp_path / "r10.md"
+            receipt.write_text(
+                f"# R10\n- Commit SHA: {sha}\n- Role / Model: writer / gpt-5.6-luna\n- V5 Verdict: PASS\n",
+                encoding="utf-8",
+            )
+
+            # Positive 1: `feedback_guard.py pre-review-check` with `--cwd`, `--brief-file`, `--receipt-file`, `--head-ref HEAD`, `--json`
+            fg_ok = subprocess.run(
+                [
+                    sys.executable,
+                    str(FEEDBACK_GUARD),
+                    "pre-review-check",
+                    "--cwd",
+                    str(wt),
+                    "--brief-file",
+                    str(brief),
+                    "--receipt-file",
+                    str(receipt),
+                    "--head-ref",
+                    "HEAD",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(fg_ok.returncode, 0, fg_ok.stderr + fg_ok.stdout)
+            fg_payload = json.loads(fg_ok.stdout)
+            self.assertTrue(fg_payload["ok"])
+            self.assertEqual(fg_payload["head_ref"], "HEAD")
+
+            # Counter-Case 1: `feedback_guard.py` invalid flag exits 2 with <=3 lines pointing to eval-cases.json & playbook.md
+            fg_bad = subprocess.run(
+                [sys.executable, str(FEEDBACK_GUARD), "pre-review-check", "--unknown-flag"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(fg_bad.returncode, 2)
+            self.assertIn("skills/team-lead/references/eval-cases.json", fg_bad.stderr)
+            self.assertIn("skills/team-lead/references/playbook.md", fg_bad.stderr)
+            self.assertLessEqual(len(fg_bad.stderr.strip().splitlines()), 3)
+
+            # Positive 2: `git-gc.py task-clean --dry-run --json` accepts `--json`
+            gc_ok = subprocess.run(
+                [
+                    sys.executable,
+                    str(GIT_GC),
+                    "task-clean",
+                    "--repo",
+                    str(wt),
+                    "--branch",
+                    "feat/demo",
+                    "--dry-run",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(gc_ok.returncode, 0, gc_ok.stderr)
+            self.assertTrue(json.loads(gc_ok.stdout)["ok"])
+
+            # Counter-Case 2: `git-gc.py` invalid flag exits 2 with <=3 lines pointing to playbook.md
+            gc_bad = subprocess.run(
+                [sys.executable, str(GIT_GC), "task-clean", "--invalid-gc-flag"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(gc_bad.returncode, 2)
+            self.assertIn("skills/team-lead/references/playbook.md", gc_bad.stderr)
+            self.assertLessEqual(len(gc_bad.stderr.strip().splitlines()), 3)
 
 
 if __name__ == "__main__":

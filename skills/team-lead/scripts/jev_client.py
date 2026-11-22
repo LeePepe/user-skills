@@ -163,7 +163,8 @@ def _unittest_active() -> bool:
         )
     except OSError:
         return False
-    return "unittest" in parent.stdout
+    cmd_text = parent.stdout or ""
+    return "unittest" in cmd_text or "test_" in cmd_text
 
 
 def jev_decide(

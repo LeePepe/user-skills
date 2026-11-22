@@ -501,8 +501,19 @@ def daily_cleanup(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+class _SelfDisclosingGitGCParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[git-gc] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/git-gc.py {task-clean,sweep,approve-tier2,daily-cleanup} --help`\n"
+            "  Reference: skills/team-lead/references/playbook.md\n"
+        )
+        raise SystemExit(2)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _SelfDisclosingGitGCParser(prog="git-gc.py", description=__doc__)
+    parser.add_argument("--json", action="store_true", default=True)
     sub = parser.add_subparsers(dest="command", required=True)
     task = sub.add_parser("task-clean")
     task.add_argument("--repo", required=True)
@@ -512,6 +523,7 @@ def _parser() -> argparse.ArgumentParser:
     task.add_argument("--handoff-dir")
     task.add_argument("--task-id")
     task.add_argument("--dry-run", action="store_true")
+    task.add_argument("--json", action="store_true", default=True)
     sweep_parser = sub.add_parser("sweep")
     sweep_parser.add_argument("--dev-root", default="~/Development")
     sweep_parser.add_argument("--worktrees-root", default="~/Development/worktrees")
@@ -520,12 +532,14 @@ def _parser() -> argparse.ArgumentParser:
     sweep_parser.add_argument("--apply-tier1", action="store_true")
     sweep_parser.add_argument("--report-dir", default="~/Development/handoff/_watch/gc")
     sweep_parser.add_argument("--min-age-hours", type=int, default=24)
+    sweep_parser.add_argument("--json", action="store_true", default=True)
     approve = sub.add_parser("approve-tier2")
     approve.add_argument("--report-file", required=True)
     approve.add_argument("--include-closed-pr", action="store_true")
     approve.add_argument("--include-no-pr", action="store_true")
     approve.add_argument("--include-companion-data", action="store_true")
     approve.add_argument("--dry-run", action="store_true")
+    approve.add_argument("--json", action="store_true", default=True)
     daily = sub.add_parser("daily-cleanup")
     daily.add_argument("--dev-root", default="~/Development")
     daily.add_argument("--worktrees-root", default="~/Development/worktrees")
@@ -534,6 +548,7 @@ def _parser() -> argparse.ArgumentParser:
     daily.add_argument("--repos", default="")
     daily.add_argument("--log-prune-days", type=int, default=14)
     daily.add_argument("--dry-run", action="store_true")
+    daily.add_argument("--json", action="store_true", default=True)
     return parser
 
 
@@ -552,6 +567,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, sort_keys=True))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        sys.stderr.write(
+            f"[git-gc] error: {error}\n"
+            "  Fix: verify repository path/slug and run `python3 skills/team-lead/scripts/git-gc.py --help`\n"
+            "  Reference: skills/team-lead/references/playbook.md\n"
+        )
         print(json.dumps({"ok": False, "error": str(error)}, sort_keys=True))
         return 2
 

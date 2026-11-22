@@ -1707,6 +1707,7 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
         "--owner-agent",
         "--agent",
         "--assignee",
+        "--actor",
         "--batch-json",
         "--batch",
         "--feedback-manifest",
@@ -1716,6 +1717,11 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
         "--status",
         "--pr",
         "--pr-ref",
+        "--head",
+        "--pr-head",
+        "--head-sha",
+        "--commit",
+        "--sha",
         "--note",
         "--reason",
         "--evidence-json",
@@ -1816,6 +1822,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-agent",
         "--agent",
         "--assignee",
+        "--actor",
         dest="owner",
         default="",
         help="Assigned writer agent name.",
@@ -1865,6 +1872,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-agent",
         "--agent",
         "--assignee",
+        "--actor",
         dest="owner",
         default="",
         help="Optional owner/agent name to record when marking wave tasks in_progress.",
@@ -1884,7 +1892,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=VALID_STATUSES,
         help="New task status.",
     )
-    status_parser.add_argument("--pr", "--pr-ref", dest="pr", default=None, help="PR URL, number, receipt ref, or head SHA.")
+    status_parser.add_argument(
+        "--pr",
+        "--pr-ref",
+        "--head",
+        "--pr-head",
+        "--head-sha",
+        "--commit",
+        "--sha",
+        dest="pr",
+        default=None,
+        help="PR URL, number, receipt ref, or head SHA.",
+    )
     status_parser.add_argument("--note", default=None, help="Short status transition note.")
     status_parser.add_argument(
         "--reason",
@@ -1896,6 +1915,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-agent",
         "--agent",
         "--assignee",
+        "--actor",
         dest="owner",
         default=None,
         help="Optional owner/agent name update.",
