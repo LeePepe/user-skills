@@ -55,6 +55,27 @@ DEFAULT_ISSUE_PRIORITY = "medium"
 CST = timezone(timedelta(hours=8))
 
 
+def _is_safe_local_file(path: Path | None, *, timeout_sec: float = 0.5) -> bool:
+    """Delegate non-blocking `SF_DATALESS` / `Mobile Documents` / 0.5s open check to `skill_retro.py`."""
+    if path is None:
+        return False
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    if int(getattr(st, "st_flags", 0) or 0) & 0x40000000:
+        return False
+    raw = str(path)
+    if (
+        ("Mobile Documents" in raw or "com~apple~CloudDocs" in raw or "/Volumes/" in raw)
+        and getattr(st, "st_blocks", None) is not None
+        and int(st.st_blocks) == 0
+        and int(getattr(st, "st_size", 0) or 0) > 0
+    ):
+        return False
+    return path.is_file()
+
+
 def _probe_readable_dir(path: Path | None) -> bool:
     """Fast non-blocking directory probe; returns False immediately on macOS TCC / external volume EINTR/OSError."""
     if path is None:
@@ -290,6 +311,40 @@ def _invoke_pure_skill_retro_cli(
     auto_propose: bool = False,
     no_roi_mirror: bool = True,
 ) -> dict[str, Any]:
+    if SKILL_RETRO_SCRIPT_PATH.is_file():
+        spec = importlib.util.spec_from_file_location("autopilot_skill_retro_mod", SKILL_RETRO_SCRIPT_PATH)
+        if spec is not None and spec.loader is not None:
+            mod = sys.modules.get("autopilot_skill_retro_mod")
+            if mod is None or getattr(mod, "__file__", None) != str(SKILL_RETRO_SCRIPT_PATH):
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules["autopilot_skill_retro_mod"] = mod
+                spec.loader.exec_module(mod)
+            safe_wh = warehouse_db if (warehouse_db is None or _is_safe_local_file(warehouse_db)) else None
+            safe_cp = copilot_db if (copilot_db is None or _is_safe_local_file(copilot_db)) else None
+            safe_sess = (
+                copilot_sessions_dir
+                if (copilot_sessions_dir is None or _probe_readable_dir(copilot_sessions_dir))
+                else None
+            )
+            safe_usage = usage_jsonl if (usage_jsonl is None or _is_safe_local_file(usage_jsonl)) else None
+            safe_handoff = handoff_root if (handoff_root is None or _probe_readable_dir(handoff_root)) else None
+            safe_dev = dev_root if (dev_root is None or _probe_readable_dir(dev_root)) else None
+            res = mod.compute_skill_retro(
+                warehouse_db=safe_wh,
+                copilot_db=safe_cp,
+                copilot_sessions_dir=safe_sess,
+                usage_jsonl=safe_usage,
+                handoff_root=safe_handoff,
+                skills_root=skills_root,
+                dev_root=safe_dev,
+                proposals_path=proposals_path,
+                skill=skill,
+                days=days,
+                auto_propose=auto_propose,
+                mirror_roi_snapshot=False if no_roi_mirror else None,
+            )
+            return res if isinstance(res, dict) else {}
+
     cli_path = SKILL_RETRO_SCRIPT_PATH if SKILL_RETRO_SCRIPT_PATH.is_file() else ENGINE_PATH
     subcmd = "diagnose" if cli_path == SKILL_RETRO_SCRIPT_PATH else "skill-retro"
     cmd = [sys.executable, str(cli_path), subcmd, "--days", str(days), "--json"]
@@ -300,10 +355,10 @@ def _invoke_pure_skill_retro_cli(
     if auto_propose:
         cmd.append("--auto-propose")
     flag_pairs: tuple[tuple[str, Path | None], ...] = (
-        ("--warehouse-db", warehouse_db),
-        ("--copilot-db", copilot_db),
-        ("--copilot-sessions-dir", copilot_sessions_dir),
-        ("--usage-jsonl", usage_jsonl),
+        ("--warehouse-db", warehouse_db if (warehouse_db is None or _is_safe_local_file(warehouse_db)) else None),
+        ("--copilot-db", copilot_db if (copilot_db is None or _is_safe_local_file(copilot_db)) else None),
+        ("--copilot-sessions-dir", copilot_sessions_dir if (copilot_sessions_dir is None or _probe_readable_dir(copilot_sessions_dir)) else None),
+        ("--usage-jsonl", usage_jsonl if (usage_jsonl is None or _is_safe_local_file(usage_jsonl)) else None),
         ("--handoff-root", handoff_root if (handoff_root is None or _probe_readable_dir(handoff_root)) else None),
         ("--skills-root", skills_root),
         ("--dev-root", dev_root if (dev_root is None or _probe_readable_dir(dev_root)) else None),

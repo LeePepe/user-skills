@@ -557,6 +557,14 @@ def _event_fingerprint(rec: dict[str, Any]) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:32]
 
 
+def _is_safe_local_file(path: Path | None, *, timeout_sec: float = 0.5) -> bool:
+    return bool(_load_skill_retro_module()._is_safe_local_file(path, timeout_sec=timeout_sec))
+
+
+def _safe_read_text(path: Path | None, *, max_bytes: int | None = None, timeout_sec: float = 0.5) -> str:
+    return str(_load_skill_retro_module()._safe_read_text(path, max_bytes=max_bytes, timeout_sec=timeout_sec))
+
+
 def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict[str, Any]]:
     if shards_dir is None or not shards_dir.is_dir():
         return []
@@ -564,37 +572,36 @@ def _read_telemetry_shards(shards_dir: Path | None, days: int = 30) -> list[dict
     seen_ids: set[str] = set()
     merged: list[dict[str, Any]] = []
     for shard_file in sorted(shards_dir.glob("*-skill-usage.jsonl")):
-        if not shard_file.is_file():
+        if not _is_safe_local_file(shard_file):
             continue
         default_host = shard_file.name[: -len("-skill-usage.jsonl")]
-        try:
-            with shard_file.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(rec, dict):
-                        continue
-                    rec.setdefault("host", default_host)
-                    stamp = next(
-                        (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
-                        None,
-                    )
-                    if not stamp or not (start <= stamp < end):
-                        continue
-                    fp = _event_fingerprint(rec)
-                    if fp in seen_ids:
-                        continue
-                    seen_ids.add(fp)
-                    enriched = dict(rec)
-                    enriched["event_id"] = fp
-                    enriched["_observed_at"] = stamp
-                    merged.append(enriched)
-        except OSError:
+        raw_shard = _safe_read_text(shard_file)
+        if not raw_shard:
             continue
+        for line in raw_shard.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            rec.setdefault("host", default_host)
+            stamp = next(
+                (_observed_at(rec[key]) for key in ("ts", "t", "timestamp", "created_at", "observed_at") if rec.get(key)),
+                None,
+            )
+            if not stamp or not (start <= stamp < end):
+                continue
+            fp = _event_fingerprint(rec)
+            if fp in seen_ids:
+                continue
+            seen_ids.add(fp)
+            enriched = dict(rec)
+            enriched["event_id"] = fp
+            enriched["_observed_at"] = stamp
+            merged.append(enriched)
     return merged
 
 
@@ -673,32 +680,32 @@ def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> l
     records: list[dict[str, Any]] = []
     seen_route_sigs: set[tuple[str, str, int, int]] = set()
     seen_fps: set[str] = set()
-    if path.is_file():
-        with path.open(encoding="utf-8") as handle:
-            for number, line in enumerate(handle, 1):
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
-                if not isinstance(rec, dict):
-                    raise ValueError(f"invalid usage record at {path}:{number}")
-                stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
-                              if rec.get(key)), None)
-                if stamp and start <= stamp < end:
-                    rec["_observed_at"] = stamp
-                    fp = _event_fingerprint(rec)
-                    seen_fps.add(fp)
-                    route_sig = (
-                        str(rec.get("route_id") or ""),
-                        str(rec.get("req") or rec.get("model") or ""),
-                        int(rec.get("in") or 0),
-                        int(rec.get("out") or 0),
-                    )
-                    if route_sig[0]:
-                        seen_route_sigs.add(route_sig)
-                    records.append(rec)
+    if _is_safe_local_file(path):
+        raw_usage = _safe_read_text(path)
+        for number, line in enumerate(raw_usage.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid usage JSON at {path}:{number}") from exc
+            if not isinstance(rec, dict):
+                raise ValueError(f"invalid usage record at {path}:{number}")
+            stamp = next((_observed_at(rec[key]) for key in ("t", "ts", "timestamp", "created_at", "observed_at")
+                          if rec.get(key)), None)
+            if stamp and start <= stamp < end:
+                rec["_observed_at"] = stamp
+                fp = _event_fingerprint(rec)
+                seen_fps.add(fp)
+                route_sig = (
+                    str(rec.get("route_id") or ""),
+                    str(rec.get("req") or rec.get("model") or ""),
+                    int(rec.get("in") or 0),
+                    int(rec.get("out") or 0),
+                )
+                if route_sig[0]:
+                    seen_route_sigs.add(route_sig)
+                records.append(rec)
     for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=7):
         kind = str(s_rec.get("kind") or "")
         if kind and kind not in {"gateway_usage", "usage"}:
@@ -734,18 +741,10 @@ def compute_agent_efficiency(
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     mp = magpie_usage or DEFAULT_MAGPIE_USAGE
     cp = copilot_db or DEFAULT_COPILOT_DB
-    shards_dir = (
-        telemetry_shards_dir
-        if telemetry_shards_dir is not None
-        else (
-            DEFAULT_ICLOUD_TELEMETRY_SHARDS_DIR
-            if warehouse_db is None and magpie_usage is None and copilot_db is None
-            else None
-        )
-    )
+    shards_dir = telemetry_shards_dir
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
     review_rows, event_rows, edit_rows, ci_rows = [], [], [], []
-    if wh.is_file():
+    if _is_safe_local_file(wh):
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
             review_rows = [r for r in _timed_rows(conn, "fact_gtt_task_run")
                            if r.get("role_name") in {"reviewer", "code_reviewer", "planner_reviewer"}]
@@ -766,9 +765,9 @@ def compute_agent_efficiency(
           "multi_round_review_tasks": [{k: r[k] for k in ("goal_id", "task_id", "max_round")} for r in reviews if r["max_round"] >= 2][:10],
           "round_3_plus_tasks": [{k: r[k] for k in ("goal_id", "task_id", "max_round")} for r in reviews if r["max_round"] >= 3],
           "breached": bool(rate is not None and (rate > 0.15 or any(r["max_round"] >= 3 for r in reviews))),
-          **_freshness([r["_observed_at"] for r in reviews], wh.is_file())}
+          **_freshness([r["_observed_at"] for r in reviews], _is_safe_local_file(wh))}
 
-    if cp.is_file():
+    if _is_safe_local_file(cp):
         with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
             edit_rows = [r for r in _timed_rows(conn, "session_files")
                          if r.get("tool_name") in {"edit", "apply_patch", "create"}]
@@ -782,9 +781,9 @@ def compute_agent_efficiency(
              for (sid, path), count in sorted(edits.items(), key=lambda pair: (-pair[1], pair[0])) if count >= 5]
     m2 = {"high_churn_files": churn[:8], "max_edits_single_file": max(edits.values(), default=0),
           "floor_max_edits_per_session": 5, "breached": bool(churn),
-          **_freshness([r["_observed_at"] for r in edit_rows], cp.is_file())}
+          **_freshness([r["_observed_at"] for r in edit_rows], _is_safe_local_file(cp))}
 
-    shards_eff_present = bool(shards_dir and shards_dir.is_dir() and list(shards_dir.glob("*-skill-usage.jsonl")))
+    shards_eff_present = bool(shards_dir and shards_dir.is_dir() and any(_is_safe_local_file(p) for p in shards_dir.glob("*-skill-usage.jsonl")))
     records = _usage_records(mp, telemetry_shards_dir=shards_dir)
     ttfts, retries, gateway_4xx = [], 0, 0
     group_tokens: dict[str, dict[str, int]] = {}
