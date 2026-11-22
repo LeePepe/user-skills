@@ -641,8 +641,9 @@ class AutopilotWatchdogTests(unittest.TestCase):
             slow_script = Path(tmp) / "slow_digest.sh"
             slow_script.write_text(
                 "#!/bin/bash\n"
-                f'python3 -c "import os, time; open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
-                "wait\n",
+                f'python3 -c "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open({str(child_pid_file)!r}, \'w\').write(str(os.getpid())); time.sleep(30)" &\n'
+                "while [ ! -s " + repr(str(child_pid_file)) + " ]; do sleep 0.01; done\n"
+                "sleep 30\n",
                 encoding="utf-8",
             )
             slow_script.chmod(0o755)
@@ -691,10 +692,10 @@ class AutopilotWatchdogTests(unittest.TestCase):
             self.assertTrue(esc["remediation_detail"]["aidata_digest_run_timed_out"])
             self.assertTrue(esc["remediation_detail"]["aidata_digest_process_group_terminated"])
             self.assertNotIn("aidata_digest_run_sh_executed", esc["actions_taken"])
-            if child_pid_file.is_file():
-                child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+            self.assertTrue(child_pid_file.is_file())
+            child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
 
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")

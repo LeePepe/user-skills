@@ -300,29 +300,28 @@ def _run_process_group_with_timeout(
         env=dict(env) if env is not None else None,
         start_new_session=True,
     ) as proc:
+        pgid = proc.pid
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             return subprocess.CompletedProcess(list(cmd), proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired as exc:
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             except OSError:
                 proc.terminate()
+            time.sleep(0.05)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                proc.kill()
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    proc.kill()
-                try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    pass
+                pass
             try:
                 stdout, stderr = proc.communicate(timeout=1.0)
             except Exception:
