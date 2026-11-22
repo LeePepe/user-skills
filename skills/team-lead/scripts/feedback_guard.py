@@ -765,11 +765,13 @@ def run_pre_review_check(
     brief_path: Path,
     receipt_path: Path | None = None,
     base_ref: str | None = None,
+    head_ref: str = "HEAD",
     allow_dirty: bool = False,
 ) -> dict[str, Any]:
     """Deterministic pre-review gate catching recurring R1 Writer failures before Reviewer dispatch."""
     wt = worktree.expanduser().resolve()
     brief = brief_path.expanduser().resolve()
+    target_head = (head_ref or "HEAD").strip() or "HEAD"
     violations: list[dict[str, Any]] = []
 
     if not wt.is_dir():
@@ -808,7 +810,7 @@ def run_pre_review_check(
         })
 
     head_probe = subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"],
+        ["git", "-C", str(wt), "rev-parse", "--verify", f"{target_head}^{{commit}}"],
         capture_output=True,
         text=True,
         check=False,
@@ -816,7 +818,7 @@ def run_pre_review_check(
     if head_probe.returncode != 0:
         violations.append({
             "code": "unverified_head_commit",
-            "detail": head_probe.stderr.strip() or "Worktree has no verifiable HEAD commit",
+            "detail": head_probe.stderr.strip() or f"Worktree has no verifiable commit for head_ref '{target_head}'",
         })
 
     resolved_base: str | None = None
@@ -835,7 +837,7 @@ def run_pre_review_check(
             })
         else:
             mb = subprocess.run(
-                ["git", "-C", str(wt), "merge-base", base_ref, "HEAD"],
+                ["git", "-C", str(wt), "merge-base", base_ref, target_head],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -844,13 +846,13 @@ def run_pre_review_check(
                 violations.append({
                     "code": "invalid_base_ref",
                     "base_ref": base_ref,
-                    "detail": mb.stderr.strip() or f"Cannot compute merge-base between '{base_ref}' and HEAD",
+                    "detail": mb.stderr.strip() or f"Cannot compute merge-base between '{base_ref}' and {target_head}",
                 })
             else:
                 resolved_base = mb.stdout.strip()
     else:
         head_sha = head_probe.stdout.strip() if head_probe.returncode == 0 else ""
-        for candidate in ("origin/main", "main", "HEAD~1"):
+        for candidate in ("origin/main", "main", f"{target_head}~1"):
             probe = subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "--verify", f"{candidate}^{{commit}}"],
                 capture_output=True,
@@ -863,7 +865,7 @@ def run_pre_review_check(
             if candidate in {"origin/main", "main"} and cand_sha == head_sha:
                 continue
             mb = subprocess.run(
-                ["git", "-C", str(wt), "merge-base", candidate, "HEAD"],
+                ["git", "-C", str(wt), "merge-base", candidate, target_head],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -874,14 +876,14 @@ def run_pre_review_check(
         if not resolved_base:
             violations.append({
                 "code": "unresolvable_base_ref",
-                "detail": "Could not resolve any valid git comparison base (origin/main, main, or HEAD~1)",
+                "detail": f"Could not resolve any valid git comparison base (origin/main, main, or {target_head}~1)",
             })
 
     changed_files: list[str] = []
     combined_diff_parts: list[str] = []
     if resolved_base and head_probe.returncode == 0:
         diff_names = subprocess.run(
-            ["git", "-C", str(wt), "--no-pager", "diff", "--name-only", f"{resolved_base}..HEAD"],
+            ["git", "-C", str(wt), "--no-pager", "diff", "--name-only", f"{resolved_base}..{target_head}"],
             capture_output=True,
             text=True,
             check=False,
@@ -889,7 +891,7 @@ def run_pre_review_check(
         if diff_names.returncode != 0:
             violations.append({
                 "code": "git_diff_failed",
-                "detail": diff_names.stderr.strip() or f"git diff --name-only {resolved_base}..HEAD failed",
+                "detail": diff_names.stderr.strip() or f"git diff --name-only {resolved_base}..{target_head} failed",
             })
         else:
             changed_files.extend(
@@ -897,7 +899,7 @@ def run_pre_review_check(
             )
 
         diff_proc = subprocess.run(
-            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", f"{resolved_base}..HEAD"],
+            ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", f"{resolved_base}..{target_head}"],
             capture_output=True,
             text=True,
             check=False,
@@ -905,7 +907,7 @@ def run_pre_review_check(
         if diff_proc.returncode != 0:
             violations.append({
                 "code": "git_diff_failed",
-                "detail": diff_proc.stderr.strip() or f"git diff --unified=0 {resolved_base}..HEAD failed",
+                "detail": diff_proc.stderr.strip() or f"git diff --unified=0 {resolved_base}..{target_head} failed",
             })
         else:
             combined_diff_parts.append(diff_proc.stdout or "")
@@ -924,7 +926,7 @@ def run_pre_review_check(
                 "detail": "Modified tracked files fall outside brief Owned Paths",
             })
 
-    if head_probe.returncode == 0:
+    if head_probe.returncode == 0 and target_head == "HEAD":
         working_diff_proc = subprocess.run(
             ["git", "-C", str(wt), "--no-pager", "diff", "--unified=0", "HEAD"],
             capture_output=True,
@@ -987,25 +989,42 @@ def run_pre_review_check(
         "brief": str(brief),
         "receipt": str(receipt_path.expanduser().resolve()) if receipt_path is not None else None,
         "base_ref": resolved_base,
+        "head_ref": target_head,
         "owned_paths": owned_paths,
         "changed_files": changed_files,
         "violations": violations,
     }
 
 
+class _SelfDisclosingFeedbackGuardParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[feedback_guard] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --help`\n"
+            "  Reference: skills/team-lead/references/eval-cases.json | skills/team-lead/references/playbook.md\n"
+        )
+        raise SystemExit(2)
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Feedback manifest & pre-review deterministic guardrails")
+    parser = _SelfDisclosingFeedbackGuardParser(
+        prog="feedback_guard.py",
+        description="Feedback manifest & pre-review deterministic guardrails",
+    )
+    parser.add_argument("--json", action="store_true", default=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_pre = sub.add_parser(
         "pre-review-check",
         help="Validate Owned Paths, clean git status, personal path/token leaks, and R10 receipt headers",
     )
-    p_pre.add_argument("--worktree", required=True, type=Path, help="Target git worktree directory")
-    p_pre.add_argument("--brief", required=True, type=Path, help="Task brief markdown declaring Owned Paths")
-    p_pre.add_argument("--receipt", type=Path, default=None, help="Optional R10 receipt markdown file")
+    p_pre.add_argument("--worktree", "--cwd", "--dir", dest="worktree", required=True, type=Path, help="Target git worktree directory")
+    p_pre.add_argument("--brief", "--brief-file", dest="brief", required=True, type=Path, help="Task brief markdown declaring Owned Paths")
+    p_pre.add_argument("--receipt", "--receipt-file", dest="receipt", type=Path, default=None, help="Optional R10 receipt markdown file")
     p_pre.add_argument("--base-ref", default=None, help="Optional git base ref (defaults to merge-base with origin/main)")
+    p_pre.add_argument("--head-ref", "--head", dest="head_ref", default="HEAD", help="Optional git head ref (defaults to HEAD)")
     p_pre.add_argument("--allow-dirty", action="store_true", help="Allow uncommitted tracked changes during local self-check")
+    p_pre.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True)")
     return parser
 
 
@@ -1017,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             brief_path=args.brief,
             receipt_path=args.receipt,
             base_ref=args.base_ref,
+            head_ref=args.head_ref,
             allow_dirty=args.allow_dirty,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))

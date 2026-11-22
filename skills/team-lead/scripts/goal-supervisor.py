@@ -672,6 +672,27 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
     return {"written": False, "mode": mode, "alert_path": "", "status": "", "goal": "", "agent": ""}
 
 
+def _resolve_handoff_dir(args: argparse.Namespace) -> Path:
+    handoff_dir_raw = getattr(args, "handoff_dir", None)
+    if handoff_dir_raw:
+        return Path(str(handoff_dir_raw)).expanduser()
+    goal_raw = getattr(args, "goal", None)
+    if goal_raw:
+        goal_str = str(goal_raw).strip()
+        if "/" in goal_str or goal_str.startswith("~"):
+            candidate = Path(goal_str).expanduser()
+            if candidate.exists():
+                return candidate
+        root_raw = getattr(args, "handoff_root", None) or "~/Development/handoff"
+        return Path(root_raw).expanduser() / goal_str
+    sys.stderr.write(
+        "[goal-supervisor] CLI error: one of `--handoff-dir <dir>` or `--goal <goal-id>` is required\n"
+        "  Fix: pass `--handoff-dir ~/Development/handoff/<goal>` or `--goal <goal-id>`\n"
+        "  Reference: skills/team-lead/references/ledger.md\n"
+    )
+    raise SystemExit(2)
+
+
 def _resolve_root_and_goal_filter(args: argparse.Namespace) -> tuple[Path, str | None]:
     handoff_dir_raw = getattr(args, "handoff_dir", None)
     if handoff_dir_raw:
@@ -682,7 +703,15 @@ def _resolve_root_and_goal_filter(args: argparse.Namespace) -> tuple[Path, str |
             return target, None
         return target.parent, target.name
     root_raw = getattr(args, "handoff_root", None) or "~/Development/handoff"
-    return Path(root_raw).expanduser(), None
+    root = Path(root_raw).expanduser()
+    goal_raw = getattr(args, "goal", None)
+    if goal_raw:
+        goal_str = str(goal_raw).strip()
+        if "/" in goal_str or goal_str.startswith("~"):
+            candidate = Path(goal_str).expanduser()
+            return candidate.parent, candidate.name
+        return root, goal_str
+    return root, None
 
 
 def scan(args: argparse.Namespace) -> dict[str, Any]:
@@ -1082,7 +1111,7 @@ def _run_telemetry_skill_eval(handoff: Path, worktree_arg: str | None = None) ->
 
 
 def telemetry(args: argparse.Namespace) -> dict[str, Any]:
-    handoff = Path(args.handoff_dir)
+    handoff = _resolve_handoff_dir(args)
     events = goal_events(handoff / "ledger.md")
     names = [event for _, event in events]
     duration = int((events[-1][0] - events[0][0]).total_seconds()) if len(events) > 1 else 0
@@ -1171,6 +1200,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
     agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
     scan_result = scan(argparse.Namespace(
         handoff_root=str(root), handoff_dir=getattr(args, "handoff_dir", None),
+        goal=target_goal_id,
         herdr_json=args.herdr_json, now=args.now, write_alerts=False,
         mode=mode, transcripts_json=None, jev_response_json=None,
     ))
@@ -1275,7 +1305,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def observe(args: argparse.Namespace) -> dict[str, Any]:
-    goal = Path(args.handoff_dir).expanduser()
+    goal = _resolve_handoff_dir(args)
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
     agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
     result = scan(argparse.Namespace(
@@ -1318,7 +1348,7 @@ def observe(args: argparse.Namespace) -> dict[str, Any]:
 def watch(args: argparse.Namespace) -> dict[str, Any]:
     import time
 
-    handoff = Path(args.handoff_dir).expanduser()
+    handoff = _resolve_handoff_dir(args)
     interval = max(1, int(args.interval))
     max_wait = max(interval, int(args.max_wait))
     started = time.monotonic()
@@ -1454,6 +1484,7 @@ def main(argv: list[str] | None = None) -> None:
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--handoff-root", default="~/Development/handoff")
     scan_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    scan_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     scan_parser.add_argument("--herdr-json")
     scan_parser.add_argument("--now")
     scan_parser.add_argument("--write-alerts", action="store_true")
@@ -1482,12 +1513,16 @@ def main(argv: list[str] | None = None) -> None:
     policy_parser.add_argument("--template-file", default="")
     policy_parser.add_argument("--json", action="store_true")
     telemetry_parser = subparsers.add_parser("telemetry")
-    telemetry_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
+    telemetry_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    telemetry_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    telemetry_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     telemetry_parser.add_argument("--worktree", default=None)
     telemetry_parser.add_argument("--write", action="store_true")
     telemetry_parser.add_argument("--json", action="store_true")
     watch_parser = subparsers.add_parser("watch")
-    watch_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
+    watch_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    watch_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    watch_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     watch_parser.add_argument("--interval", type=int, default=30)
     watch_parser.add_argument("--max-wait", type=int, default=2400)
     watch_parser.add_argument("--herdr-json")
@@ -1497,6 +1532,7 @@ def main(argv: list[str] | None = None) -> None:
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--handoff-root", default="~/Development/handoff")
     status_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    status_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     status_parser.add_argument("--herdr-json")
     status_parser.add_argument("--now")
     status_parser.add_argument("--mode", choices=sorted(VALID_MODES))
@@ -1504,7 +1540,9 @@ def main(argv: list[str] | None = None) -> None:
     status_parser.add_argument("--check", action="store_true")
     status_parser.add_argument("--json", action="store_true")
     observe_parser = subparsers.add_parser("observe")
-    observe_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
+    observe_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    observe_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    observe_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     observe_parser.add_argument("--herdr-json")
     observe_parser.add_argument("--now")
     observe_parser.add_argument("--json", action="store_true")

@@ -18,6 +18,35 @@ from typing import Any, Callable, Sequence
 FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required", "cancelled"}
 GREEN_CHECKS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECKS = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED", "ERROR"}
+PR_URL_RE = re.compile(r"https?://github\.com/([^/\s]+/[^/\s]+?)/pull/(\d+)(?:[/?#].*)?$", re.IGNORECASE)
+GITHUB_REMOTE_RE = re.compile(r"github\.com[/:]([^/:\s]+/[^/\s]+?)(?:\.git)?$", re.IGNORECASE)
+SUBCOMMAND_ALIASES: dict[str, str] = {
+    "workflow": "workflow",
+    "pr": "pr",
+    "checks": "checks",
+    "pr-checks": "checks",
+    "inspect-pr": "checks",
+}
+
+
+class _SelfDisclosingCIMonitorParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[ci-monitor] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/ci-monitor.py {pr,workflow,checks} --help`\n"
+            "  Reference: skills/team-lead/references/playbook.md | skills/team-lead/references/eval-cases.json\n"
+        )
+        raise SystemExit(2)
+
+
+def _fail_self_disclosing(message: str) -> int:
+    sys.stderr.write(
+        f"[ci-monitor] error: {message}\n"
+        "  Fix: supply `--pr <num|url> --repo <owner/repo>` or run inside a git worktree with a GitHub `origin`\n"
+        "  Reference: skills/team-lead/references/playbook.md | skills/team-lead/references/eval-cases.json\n"
+    )
+    print(json.dumps({"status": "ERROR", "error": message}))
+    return 2
 
 
 def run_command(command: Sequence[str]) -> str:
@@ -142,6 +171,8 @@ def monitor_workflow(
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], int]:
+    if not getattr(args, "receipt", None):
+        args.receipt = _default_receipt_path(args)
     run_id = args.run_id
     if args.trigger and not run_id:
         trigger = ["gh", "workflow", "run", args.workflow, "--repo", args.repo, "--ref", args.ref]
@@ -221,6 +252,161 @@ def _check_state(check: dict[str, Any]) -> str:
     return str(check.get("conclusion") or check.get("state") or "").upper()
 
 
+def _parse_pr_spec(raw: str | int | None) -> tuple[int | None, str | None]:
+    if raw is None:
+        return None, None
+    if isinstance(raw, int):
+        return raw, None
+    text = str(raw).strip()
+    if not text:
+        return None, None
+    match = PR_URL_RE.match(text)
+    if match:
+        return int(match.group(2)), match.group(1)
+    cleaned = text.lstrip("#")
+    if re.fullmatch(r"\d+", cleaned):
+        return int(cleaned), None
+    raise ValueError(f"invalid pull request identifier: {raw!r} (expected PR number or GitHub pull URL)")
+
+
+def _infer_repo_from_git(worktree: str | None, *, run: Callable[[Sequence[str]], str] = run_command) -> str | None:
+    target = str(Path(worktree).expanduser()) if worktree else os.getcwd()
+    try:
+        remote = run(["git", "-C", target, "remote", "get-url", "origin"]).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = GITHUB_REMOTE_RE.search(remote)
+    return match.group(1) if match else None
+
+
+def _default_receipt_path(args: argparse.Namespace) -> str:
+    explicit = getattr(args, "receipt", None)
+    if explicit:
+        return str(explicit)
+    handoff_dir = getattr(args, "handoff_dir", None)
+    tmp_root = Path(tempfile.gettempdir())
+    if args.command == "workflow":
+        wf_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(getattr(args, "workflow", "workflow") or "workflow")).strip("-") or "workflow"
+        if handoff_dir:
+            return str(Path(handoff_dir).expanduser() / "receipts" / f"ci-monitor-workflow-{wf_slug}.md")
+        return str(tmp_root / f"ci-monitor-workflow-{wf_slug}.md")
+    pr_num = getattr(args, "pr", "unknown")
+    if handoff_dir:
+        return str(Path(handoff_dir).expanduser() / "receipts" / f"ci-monitor-pr-{pr_num}.md")
+    return str(tmp_root / f"ci-monitor-pr-{pr_num}.md")
+
+
+def _resolve_pr_and_repo(
+    args: argparse.Namespace,
+    *,
+    run: Callable[[Sequence[str]], str] = run_command,
+    require_pr: bool = True,
+) -> None:
+    pr_opt = getattr(args, "pr", None)
+    pr_pos = getattr(args, "pr_positional", None)
+    chosen_raw = pr_opt if pr_opt not in (None, "") else pr_pos
+    pr_num: int | None = None
+    url_repo: str | None = None
+    if chosen_raw not in (None, ""):
+        pr_num, url_repo = _parse_pr_spec(chosen_raw)
+        if pr_opt not in (None, "") and pr_pos not in (None, ""):
+            pos_num, pos_repo = _parse_pr_spec(pr_pos)
+            if pos_num != pr_num:
+                raise ValueError(f"conflicting PR numbers supplied: positional {pos_num} vs --pr {pr_num}")
+            url_repo = url_repo or pos_repo
+    if require_pr and pr_num is None:
+        raise ValueError("pull request number or URL is required (positional <pr> or --pr <pr>)")
+    if pr_num is not None:
+        args.pr = pr_num
+
+    repo = str(getattr(args, "repo", "") or "").strip()
+    if not repo and url_repo:
+        repo = url_repo
+    if not repo:
+        repo = _infer_repo_from_git(getattr(args, "worktree", None), run=run) or ""
+    if not repo:
+        raise ValueError("--repo <owner>/<repo> is required when repository cannot be inferred from PR URL or git origin")
+    args.repo = repo
+
+
+def _resolve_merge_method(args: argparse.Namespace) -> str:
+    auto_merge_val = getattr(args, "auto_merge", None)
+    if isinstance(auto_merge_val, str) and auto_merge_val in {"squash", "merge", "rebase"}:
+        return auto_merge_val
+    if getattr(args, "squash", False):
+        return "squash"
+    method = str(getattr(args, "merge_method", None) or "squash").lower()
+    return method if method in {"squash", "merge", "rebase"} else "squash"
+
+
+def _should_enable_auto_merge(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "enable_auto", False)
+        or getattr(args, "auto_merge", None) is not None
+    )
+
+
+def _best_effort_enable_auto_merge(
+    args: argparse.Namespace,
+    *,
+    head_oid: str | None = None,
+    run: Callable[[Sequence[str]], str] = run_command,
+) -> None:
+    if not _should_enable_auto_merge(args):
+        return
+    method = _resolve_merge_method(args)
+    cmd = ["gh", "pr", "merge", str(args.pr), "--repo", str(args.repo), "--auto", f"--{method}"]
+    match_sha = str(getattr(args, "head_sha", "") or head_oid or "").strip()
+    if match_sha:
+        cmd.extend(["--match-head-commit", match_sha])
+    if getattr(args, "delete_branch", False):
+        cmd.append("--delete-branch")
+    try:
+        if run is run_command:
+            subprocess.run(cmd, check=False, capture_output=True, text=True)
+        else:
+            run(cmd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def inspect_pr_checks(
+    args: argparse.Namespace,
+    *,
+    run: Callable[[Sequence[str]], str] = run_command,
+) -> tuple[dict[str, Any], int]:
+    _resolve_pr_and_repo(args, run=run, require_pr=True)
+    view = _json_command(
+        run,
+        [
+            "gh",
+            "pr",
+            "view",
+            str(args.pr),
+            "--repo",
+            str(args.repo),
+            "--json",
+            "number,state,mergeStateStatus,statusCheckRollup,url",
+        ],
+    )
+    if not isinstance(view, dict):
+        view = {}
+    checks = view.get("statusCheckRollup")
+    if not isinstance(checks, list):
+        checks = []
+    payload = {
+        "ok": True,
+        "gate_tier": "soft_advisory_exit_0",
+        "pr": view.get("number", args.pr),
+        "repo": args.repo,
+        "state": view.get("state"),
+        "merge_state_status": view.get("mergeStateStatus"),
+        "url": view.get("url"),
+        "checks": checks,
+    }
+    return payload, 0
+
+
 def monitor_pr(
     args: argparse.Namespace,
     *,
@@ -228,7 +414,10 @@ def monitor_pr(
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], int]:
+    if not getattr(args, "receipt", None):
+        args.receipt = _default_receipt_path(args)
     started = now()
+    auto_merge_attempted = False
     while True:
         view = _json_command(
             run,
@@ -252,6 +441,9 @@ def monitor_pr(
             _receipt(args.receipt, fields)
             _notify(args.notify_agent, fields["status"], str(args.pr), "success", args.receipt)
             return {**fields, "receipt": args.receipt}, 0
+        if not auto_merge_attempted:
+            auto_merge_attempted = True
+            _best_effort_enable_auto_merge(args, head_oid=str(head or ""), run=run)
         if view.get("mergeStateStatus") == "DIRTY":
             fields = {"status": "PR_CONFLICT", "conclusion": "failure", "pr": args.pr, "repo": args.repo,
                       "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
@@ -283,7 +475,7 @@ def monitor_pr(
 
 
 def _maybe_gc(args: argparse.Namespace, view: dict[str, Any]) -> dict[str, Any] | None:
-    if os.environ.get("GTT_WORKTREE_GC") == "0":
+    if getattr(args, "no_cleanup_worktree", False) or os.environ.get("GTT_WORKTREE_GC") == "0":
         return None
     worktree_arg = getattr(args, "worktree", None)
     branch_arg = getattr(args, "branch", None)
@@ -310,11 +502,81 @@ def _maybe_gc(args: argparse.Namespace, view: dict[str, Any]) -> dict[str, Any] 
         return {"ok": False, "error": str(error)}
 
 
+def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if not tokens:
+        return tokens
+    value_flags = {
+        "--repo",
+        "--workflow",
+        "--run-id",
+        "--ref",
+        "--marker-tag",
+        "--interval",
+        "--timeout",
+        "--max-wait",
+        "--receipt",
+        "--receipt-out",
+        "--out",
+        "--notify-agent",
+        "--pr",
+        "--head-sha",
+        "--worktree",
+        "--branch",
+        "--handoff-dir",
+        "--handoff",
+        "--dir",
+        "--goal",
+        "--goal-id",
+        "--task",
+        "--task-id",
+        "--merge-method",
+    }
+    subcmd_index: int | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in {"-h", "--help"}:
+            return tokens
+        if tok in SUBCOMMAND_ALIASES:
+            subcmd_index = i
+            break
+        if tok == "--auto-merge":
+            if i + 1 < len(tokens) and tokens[i + 1] in {"squash", "merge", "rebase"}:
+                i += 2
+            else:
+                i += 1
+            continue
+        if tok.startswith("-"):
+            if "=" not in tok and tok in value_flags and i + 1 < len(tokens):
+                i += 2
+            else:
+                i += 1
+        else:
+            break
+    if subcmd_index is not None:
+        canonical = SUBCOMMAND_ALIASES[tokens[subcmd_index]]
+        return [canonical, *tokens[:subcmd_index], *tokens[subcmd_index + 1 :]]
+    return tokens
+
+
+def _add_common_compat_args(sub: argparse.ArgumentParser, *, default_timeout: float | None = None) -> None:
+    sub.add_argument("--json", action="store_true", default=True)
+    sub.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    sub.add_argument("--goal", "--goal-id", dest="goal", default=None)
+    sub.add_argument("--task", "--task-id", dest="task", default=None)
+    sub.add_argument("--no-cleanup-worktree", action="store_true", default=False)
+    if default_timeout is not None:
+        sub.add_argument("--timeout", "--max-wait", dest="timeout", type=float, default=default_timeout)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _SelfDisclosingCIMonitorParser(prog="ci-monitor.py", description=__doc__)
+    parser.add_argument("--json", action="store_true", default=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
     workflow = subparsers.add_parser("workflow", help="monitor a GitHub Actions workflow")
-    workflow.add_argument("--repo", required=True)
+    workflow.add_argument("--repo", default="")
     workflow.add_argument("--workflow", default="testflight.yml")
     workflow.add_argument("--run-id")
     workflow.add_argument("--trigger", action="store_true")
@@ -322,28 +584,74 @@ def _parser() -> argparse.ArgumentParser:
     workflow.add_argument("--ref", default="main")
     workflow.add_argument("--marker-tag", default="testflight/last-released")
     workflow.add_argument("--interval", type=float, default=30)
-    workflow.add_argument("--timeout", type=float, default=2400)
-    workflow.add_argument("--receipt", required=True)
+    workflow.add_argument("--receipt", "--receipt-out", "--out", dest="receipt", default=None)
     workflow.add_argument("--notify-agent")
+    workflow.add_argument("--worktree", default=None)
+    _add_common_compat_args(workflow, default_timeout=2400)
+
     pr = subparsers.add_parser("pr", help="monitor a pull request")
-    pr.add_argument("--repo", required=True)
-    pr.add_argument("--pr", required=True, type=int)
+    pr.add_argument("pr_positional", nargs="?", default=None, help="PR number or GitHub PR URL")
+    pr.add_argument("--repo", default="")
+    pr.add_argument("--pr", dest="pr", default=None)
     pr.add_argument("--head-sha")
     pr.add_argument("--worktree")
     pr.add_argument("--branch")
     pr.add_argument("--interval", type=float, default=20)
-    pr.add_argument("--timeout", type=float, default=1800)
-    pr.add_argument("--receipt", required=True)
+    pr.add_argument("--receipt", "--receipt-out", "--out", dest="receipt", default=None)
     pr.add_argument("--notify-agent")
     pr.add_argument("--exit-on-green", action="store_true")
+    pr.add_argument("--enable-auto", "--enable-auto-merge", "--merge", dest="enable_auto", action="store_true", default=False)
+    pr.add_argument("--auto-merge", dest="auto_merge", nargs="?", const="auto", default=None)
+    pr.add_argument("--merge-method", dest="merge_method", choices=("squash", "merge", "rebase"), default="squash")
+    pr.add_argument("--squash", action="store_true", default=False)
+    pr.add_argument("--delete-branch", action="store_true", default=False)
+    _add_common_compat_args(pr, default_timeout=1800)
+
+    checks = subparsers.add_parser(
+        "checks",
+        aliases=["pr-checks", "inspect-pr"],
+        help="collect objective PR check status facts (Layer-3 soft advisory exit 0)",
+    )
+    checks.add_argument("pr_positional", nargs="?", default=None, help="PR number or GitHub PR URL")
+    checks.add_argument("--pr", dest="pr", default=None)
+    checks.add_argument("--repo", default="")
+    checks.add_argument("--worktree", default=None)
+    _add_common_compat_args(checks, default_timeout=60)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    normalized = _normalize_argv(argv)
+    args = _parser().parse_args(normalized)
+    canonical_cmd = SUBCOMMAND_ALIASES.get(args.command, args.command)
+    args.command = canonical_cmd
     try:
-        result, code = monitor_workflow(args) if args.command == "workflow" else monitor_pr(args)
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        if canonical_cmd == "checks":
+            result, code = inspect_pr_checks(args)
+        elif canonical_cmd == "workflow":
+            if not str(getattr(args, "repo", "") or "").strip():
+                inferred = _infer_repo_from_git(getattr(args, "worktree", None))
+                if not inferred:
+                    return _fail_self_disclosing(
+                        "--repo <owner>/<repo> is required when repository cannot be inferred from git origin"
+                    )
+                args.repo = inferred
+            if not getattr(args, "receipt", None):
+                args.receipt = _default_receipt_path(args)
+            result, code = monitor_workflow(args)
+        else:
+            _resolve_pr_and_repo(args, require_pr=True)
+            if not getattr(args, "receipt", None):
+                args.receipt = _default_receipt_path(args)
+            result, code = monitor_pr(args)
+    except ValueError as error:
+        return _fail_self_disclosing(str(error))
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        sys.stderr.write(
+            f"[ci-monitor] runtime error: {error}\n"
+            "  Fix: verify `gh auth status`, repository slug, and PR/run existence\n"
+            "  Reference: skills/team-lead/references/playbook.md | skills/team-lead/references/eval-cases.json\n"
+        )
         print(json.dumps({"status": "ERROR", "error": str(error)}))
         return 2
     print(json.dumps(result, sort_keys=True))
