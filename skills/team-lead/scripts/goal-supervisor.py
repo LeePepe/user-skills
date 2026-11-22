@@ -672,8 +672,21 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
     return {"written": False, "mode": mode, "alert_path": "", "status": "", "goal": "", "agent": ""}
 
 
+def _resolve_root_and_goal_filter(args: argparse.Namespace) -> tuple[Path, str | None]:
+    handoff_dir_raw = getattr(args, "handoff_dir", None)
+    if handoff_dir_raw:
+        target = Path(handoff_dir_raw).expanduser()
+        if (target / "ledger.md").is_file() or (target / "spec.md").is_file() or (target / "queue.json").is_file() or target.parent.name == "handoff":
+            return target.parent, target.name
+        if target.name == "handoff" and target.is_dir():
+            return target, None
+        return target.parent, target.name
+    root_raw = getattr(args, "handoff_root", None) or "~/Development/handoff"
+    return Path(root_raw).expanduser(), None
+
+
 def scan(args: argparse.Namespace) -> dict[str, Any]:
-    root = Path(args.handoff_root).expanduser()
+    root, target_goal_id = _resolve_root_and_goal_filter(args)
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
     mode = resolve_supervisor_mode(
         getattr(args, "mode", None), getattr(args, "write_alerts", False)
@@ -688,6 +701,25 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
         jev_response = payload if isinstance(payload, dict) else {}
     agents = load_agents(Path(args.herdr_json) if args.herdr_json else None)
     goals_meta = goal_metadata(root)
+    if target_goal_id:
+        goals_meta = [g for g in goals_meta if g["name"] == target_goal_id]
+        if not goals_meta and (root / target_goal_id).is_dir():
+            g_path = root / target_goal_id
+            l_path = g_path / "ledger.md"
+            l_txt = l_path.read_text(encoding="utf-8") if l_path.is_file() else ""
+            evs = goal_events(l_path) if l_path.is_file() else []
+            latest_ts = max((ts for ts, _ in evs), default=now)
+            goals_meta = [
+                {
+                    "name": target_goal_id,
+                    "path": g_path,
+                    "events": evs,
+                    "latest": latest_ts,
+                    "tl_name": ledger_tl_name(l_txt),
+                    "agent_names": ledger_agent_names(l_txt),
+                    "stems": {target_goal_id},
+                }
+            ]
     if mode == "off":
         return {
             "mode": mode,
@@ -1126,16 +1158,35 @@ def _attention_item(
 
 
 def status(args: argparse.Namespace) -> dict[str, Any]:
-    root = Path(args.handoff_root).expanduser()
+    root, target_goal_id = _resolve_root_and_goal_filter(args)
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
     mode = resolve_supervisor_mode(getattr(args, "mode", None), default="observe")
     agents = load_agents(Path(args.herdr_json).expanduser() if args.herdr_json else None)
     scan_result = scan(argparse.Namespace(
-        handoff_root=str(root), herdr_json=args.herdr_json, now=args.now, write_alerts=False,
+        handoff_root=str(root), handoff_dir=getattr(args, "handoff_dir", None),
+        herdr_json=args.herdr_json, now=args.now, write_alerts=False,
         mode=mode, transcripts_json=None, jev_response_json=None,
     ))
     needs: list[dict[str, Any]] = []
     goals = goal_metadata(root)
+    if target_goal_id:
+        goals = [g for g in goals if g["name"] == target_goal_id]
+        if not goals and (root / target_goal_id).is_dir():
+            g_path = root / target_goal_id
+            l_path = g_path / "ledger.md"
+            l_txt = l_path.read_text(encoding="utf-8") if l_path.is_file() else ""
+            evs = goal_events(l_path) if l_path.is_file() else []
+            goals = [
+                {
+                    "name": target_goal_id,
+                    "path": g_path,
+                    "events": evs,
+                    "latest": max((ts for ts, _ in evs), default=now),
+                    "tl_name": ledger_tl_name(l_txt),
+                    "agent_names": ledger_agent_names(l_txt),
+                    "stems": {target_goal_id},
+                }
+            ]
     for goal in goals:
         tl = goal["tl_name"] or "tl"
         events = _ledger_attention(goal["path"], now)
@@ -1199,10 +1250,13 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
         "orphan_tl_waits": sum(item.get("type") == "ORPHAN_TL_WAIT" for item in scan_result["anomalies"]),
         "operator_policy_compatible": check_operator_policy_compatibility()["compatible"],
     }
-    return {
+    result: dict[str, Any] = {
         "command": "status", "mode": mode, "needs_a_person_count": len(needs),
         "needs_a_person": needs, "system": system, "healthy": not needs,
     }
+    if target_goal_id:
+        result["goal_id"] = target_goal_id
+    return result
 
 
 def observe(args: argparse.Namespace) -> dict[str, Any]:
@@ -1369,11 +1423,22 @@ def print_status_human(result: dict[str, Any]) -> None:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
+class _SelfDisclosingSupervisorParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[goal-supervisor] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/goal-supervisor.py {status,scan,observe,watch,telemetry} --help`\n"
+            "  Reference: skills/team-lead/references/ledger.md\n"
+        )
+        raise SystemExit(2)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _SelfDisclosingSupervisorParser(prog="goal-supervisor.py")
     subparsers = parser.add_subparsers(dest="command", required=True)
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    scan_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     scan_parser.add_argument("--herdr-json")
     scan_parser.add_argument("--now")
     scan_parser.add_argument("--write-alerts", action="store_true")
@@ -1383,7 +1448,7 @@ def main() -> None:
     scan_parser.add_argument("--json", action="store_true")
     bridge_parser = subparsers.add_parser("notify-bridge")
     bridge_parser.add_argument("--handoff-root")
-    bridge_parser.add_argument("--handoff-dir")
+    bridge_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir")
     bridge_parser.add_argument("--herdr-json")
     bridge_parser.add_argument("--event-json")
     bridge_parser.add_argument("--events-jsonl")
@@ -1402,12 +1467,12 @@ def main() -> None:
     policy_parser.add_argument("--template-file", default="")
     policy_parser.add_argument("--json", action="store_true")
     telemetry_parser = subparsers.add_parser("telemetry")
-    telemetry_parser.add_argument("--handoff-dir", required=True)
+    telemetry_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
     telemetry_parser.add_argument("--worktree", default=None)
     telemetry_parser.add_argument("--write", action="store_true")
     telemetry_parser.add_argument("--json", action="store_true")
     watch_parser = subparsers.add_parser("watch")
-    watch_parser.add_argument("--handoff-dir", required=True)
+    watch_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
     watch_parser.add_argument("--interval", type=int, default=30)
     watch_parser.add_argument("--max-wait", type=int, default=2400)
     watch_parser.add_argument("--herdr-json")
@@ -1416,6 +1481,7 @@ def main() -> None:
     watch_parser.add_argument("--json", action="store_true")
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    status_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     status_parser.add_argument("--herdr-json")
     status_parser.add_argument("--now")
     status_parser.add_argument("--mode", choices=sorted(VALID_MODES))
@@ -1423,11 +1489,11 @@ def main() -> None:
     status_parser.add_argument("--check", action="store_true")
     status_parser.add_argument("--json", action="store_true")
     observe_parser = subparsers.add_parser("observe")
-    observe_parser.add_argument("--handoff-dir", required=True)
+    observe_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", required=True)
     observe_parser.add_argument("--herdr-json")
     observe_parser.add_argument("--now")
     observe_parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "scan":
         result = scan(args)
     elif args.command == "notify-bridge":

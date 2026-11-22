@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+die_usage() {
+  local msg="$1"
+  printf 'Error: %s\n  Fix: run `skills/team-lead/scripts/herdr-dispatch.sh --help` for required flags and role mappings.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' "$msg" >&2
+  exit 2
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -32,78 +38,142 @@ AGENT_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name)
-      [[ $# -ge 2 ]] || { echo "Error: --name requires a value" >&2; exit 2; }
+    --name|--agent-name|--agent)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       NAME="$2"
       shift 2
       ;;
+    --name=*|--agent-name=*|--agent=*)
+      NAME="${1#*=}"
+      shift
+      ;;
     --kind)
-      [[ $# -ge 2 ]] || { echo "Error: --kind requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--kind requires a value"
       KIND="$2"
       shift 2
       ;;
-    --cwd)
-      [[ $# -ge 2 ]] || { echo "Error: --cwd requires a value" >&2; exit 2; }
+    --kind=*)
+      KIND="${1#*=}"
+      shift
+      ;;
+    --cwd|--dir|--worktree|--workdir)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       CWD="$2"
       shift 2
       ;;
-    --prompt)
-      [[ $# -ge 2 ]] || { echo "Error: --prompt requires a value" >&2; exit 2; }
+    --cwd=*|--dir=*|--worktree=*|--workdir=*)
+      CWD="${1#*=}"
+      shift
+      ;;
+    --prompt|--prompt-text|--message)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       PROMPT="$2"
       shift 2
       ;;
-    --pane)
-      [[ $# -ge 2 ]] || { echo "Error: --pane requires a value" >&2; exit 2; }
+    --prompt=*|--prompt-text=*|--message=*)
+      PROMPT="${1#*=}"
+      shift
+      ;;
+    --pane|--source-pane)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       SRC_PANE="$2"
       shift 2
       ;;
+    --pane=*|--source-pane=*)
+      SRC_PANE="${1#*=}"
+      shift
+      ;;
     --direction)
-      [[ $# -ge 2 ]] || { echo "Error: --direction requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--direction requires a value"
       DIRECTION="$2"
       shift 2
+      ;;
+    --direction=*)
+      DIRECTION="${1#*=}"
+      shift
       ;;
     --new-workspace)
       NEW_WORKSPACE=1
       shift
       ;;
     --workspace)
-      [[ $# -ge 2 ]] || { echo "Error: --workspace requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--workspace requires a value"
       TARGET_WORKSPACE_ID="$2"
       shift 2
       ;;
+    --workspace=*)
+      TARGET_WORKSPACE_ID="${1#*=}"
+      shift
+      ;;
     --tab-label)
-      [[ $# -ge 2 ]] || { echo "Error: --tab-label requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--tab-label requires a value"
       TAB_LABEL="$2"
       shift 2
       ;;
-    --workspace-label)
-      [[ $# -ge 2 ]] || { echo "Error: --workspace-label requires a value" >&2; exit 2; }
+    --tab-label=*)
+      TAB_LABEL="${1#*=}"
+      shift
+      ;;
+    --workspace-label|--label)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
       WORKSPACE_LABEL="$2"
       shift 2
+      ;;
+    --workspace-label=*|--label=*)
+      WORKSPACE_LABEL="${1#*=}"
+      shift
       ;;
     --wait)
       WAIT_FLAG=1
       shift
       ;;
     --timeout)
-      [[ $# -ge 2 ]] || { echo "Error: --timeout requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--timeout requires a value"
       TIMEOUT_MS="$2"
       shift 2
       ;;
+    --timeout=*)
+      TIMEOUT_MS="${1#*=}"
+      shift
+      ;;
     --role)
-      [[ $# -ge 2 ]] || { echo "Error: --role requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--role requires a value"
       ROLE="$2"
       shift 2
       ;;
+    --role=*)
+      ROLE="${1#*=}"
+      shift
+      ;;
     --exclude-vendor)
-      [[ $# -ge 2 ]] || { echo "Error: --exclude-vendor requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--exclude-vendor requires a value"
       EXCLUDE_VENDOR="$2"
       shift 2
       ;;
+    --exclude-vendor=*)
+      EXCLUDE_VENDOR="${1#*=}"
+      shift
+      ;;
     --gateway-mode)
-      [[ $# -ge 2 ]] || { echo "Error: --gateway-mode requires a value" >&2; exit 2; }
+      [[ $# -ge 2 ]] || die_usage "--gateway-mode requires a value"
       GATEWAY_MODE="$2"
       shift 2
+      ;;
+    --gateway-mode=*)
+      GATEWAY_MODE="${1#*=}"
+      shift
+      ;;
+    --add-dir|--extra-add-dir|--extra-add-dirs)
+      [[ $# -ge 2 ]] || die_usage "$1 requires a value"
+      AGENT_ARGS+=(--add-dir "$2")
+      shift 2
+      ;;
+    --add-dir=*|--extra-add-dir=*|--extra-add-dirs=*)
+      AGENT_ARGS+=(--add-dir "${1#*=}")
+      shift
+      ;;
+    --json)
+      shift
       ;;
     --help|-h)
       usage
@@ -111,26 +181,29 @@ while [[ $# -gt 0 ]]; do
       ;;
     --)
       shift
-      AGENT_ARGS=("$@")
+      AGENT_ARGS=("${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}" "$@")
       break
       ;;
     *)
-      echo "Error: unknown option '$1'" >&2
-      usage
-      exit 2
+      die_usage "unknown option '$1'"
       ;;
   esac
 done
 
 if [[ "$NEW_WORKSPACE" -eq 1 && -n "$TARGET_WORKSPACE_ID" ]]; then
-  echo "Error: --workspace cannot be combined with --new-workspace" >&2
-  exit 2
+  die_usage "--workspace cannot be combined with --new-workspace"
 fi
 
 if [[ "$GATEWAY_MODE" != "auto" && "$GATEWAY_MODE" != "magpie" && "$GATEWAY_MODE" != "direct" ]]; then
-  echo "Error: --gateway-mode must be 'auto', 'magpie', or 'direct' (got '$GATEWAY_MODE')" >&2
-  exit 2
+  die_usage "--gateway-mode must be 'auto', 'magpie', or 'direct' (got '$GATEWAY_MODE')"
 fi
+
+case "$ROLE" in
+  reviewer|code-reviewer|rev) ROLE="code_reviewer" ;;
+  tl|team-lead|steering|m1_tl|m1-tl|m2|m2-dispatcher|m2_dispatcher) ROLE="team_lead" ;;
+  pr-monitor|prmon) ROLE="pr_monitor" ;;
+  writer-escalated|coding-escalated) ROLE="writer_escalated" ;;
+esac
 
 # Entry coordinators (normal CLI, Grok Bot local-exec-daemon, Cindy) launching a Goal Steering TL
 # outside a Herdr pane automatically bootstrap a background Herdr workspace.
@@ -140,31 +213,35 @@ fi
 
 if [[ "$NEW_WORKSPACE" -eq 0 && -z "$TARGET_WORKSPACE_ID" ]]; then
   if [[ "${HERDR_ENV:-}" != "1" ]]; then
-    echo "Error: HERDR_ENV=1 is required to run herdr-dispatch.sh (or pass --new-workspace / --role team_lead)" >&2
+    printf 'Error: HERDR_ENV=1 is required to run herdr-dispatch.sh (or pass --new-workspace / --role team_lead)\n  Fix: pass --new-workspace or --role team_lead when dispatching outside a Herdr pane.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' >&2
     exit 1
   fi
 
   if [[ -z "$SRC_PANE" ]]; then
-    echo "Error: source pane ID is required (--pane, HERDR_PANE_ID, or --new-workspace)" >&2
+    printf 'Error: source pane ID is required (--pane, HERDR_PANE_ID, or --new-workspace)\n  Fix: pass --pane <pane-id> or --new-workspace.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' >&2
     exit 1
   fi
 fi
 
 if [[ -z "$NAME" || -z "$KIND" || -z "$CWD" || -z "$PROMPT" ]]; then
-  echo "Error: --name, --kind, --cwd, and --prompt are required" >&2
-  usage
-  exit 2
+  die_usage "--name, --kind, --cwd, and --prompt are required"
 fi
 
-# Reject over-long names before pane split so a failed start cannot leave an orphan pane.
+ORIGINAL_NAME="$NAME"
+if [[ "${#NAME}" -gt 32 && "$NAME" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+  NAME_HASH="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()[:6])' "$ORIGINAL_NAME")"
+  NAME_PREFIX="${ORIGINAL_NAME:0:25}"
+  NAME="${NAME_PREFIX}-${NAME_HASH}"
+  printf "[herdr-dispatch] Advisory: --name '%s' (%d chars > 32) auto-truncated to '%s'. See skills/team-lead/references/bots-and-agents.md\n" "$ORIGINAL_NAME" "${#ORIGINAL_NAME}" "$NAME" >&2
+fi
+
+# Reject invalid names before pane split so a failed start cannot leave an orphan pane.
 if [[ ! "$NAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
-  echo "Error: --name '$NAME' must match ^[a-z][a-z0-9_-]{0,31}$ (<=32 chars) before splitting pane" >&2
-  exit 2
+  die_usage "--name '$NAME' must match ^[a-z][a-z0-9_-]{0,31}$ (<=32 chars) before splitting pane"
 fi
 
 if [[ "$DIRECTION" != "right" && "$DIRECTION" != "down" ]]; then
-  echo "Error: --direction must be 'right' or 'down' (got '$DIRECTION')" >&2
-  exit 2
+  die_usage "--direction must be 'right' or 'down' (got '$DIRECTION')"
 fi
 
 if [[ "$KIND" == "cursor-agent" ]]; then
@@ -211,13 +288,12 @@ case "$ROLE" in
   writer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
   writer_escalated) LOGICAL_GROUP="group/coding-escalated" ;;
   designer) LOGICAL_GROUP="group/designer" ;;
-  *) echo "Error: unsupported --role '$ROLE'" >&2; exit 2 ;;
+  *) die_usage "unsupported --role '$ROLE'" ;;
 esac
 
 if [[ "$ROLE" == "writer_escalated" || "$REQUESTED_MODEL" == "group/coding-escalated" || "$REQUESTED_MODEL" == "magpie/group/coding-escalated" ]]; then
-  if [[ "$NAME" =~ -r1$ ]]; then
-    echo "Error: writer_escalated is strictly reserved for V3 Round 2+ fix escalation and cannot be dispatched on Round 1 ($NAME)" >&2
-    exit 2
+  if [[ "$NAME" =~ -r1$ || "$ORIGINAL_NAME" =~ -r1$ ]]; then
+    die_usage "writer_escalated is strictly reserved for V3 Round 2+ fix escalation and cannot be dispatched on Round 1 ($ORIGINAL_NAME)"
   fi
 fi
 
@@ -865,10 +941,10 @@ else:
         fi
       fi
     fi
-    WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
+    WATCHDOG_GOAL="${WORKSPACE_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}"
     [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
     WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
-    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$KIND" <<'PY'
+    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$KIND" "$ORIGINAL_NAME" <<'PY'
 import json, sys
 payload = {
     "ok": True,
@@ -886,6 +962,9 @@ payload = {
         "command": f"python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/{sys.argv[10]} --interval 15 --max-wait 2400 --json",
     },
 }
+if sys.argv[12] != sys.argv[2]:
+    payload["original_name"] = sys.argv[12]
+    payload["name_truncated"] = True
 if sys.argv[3] == "1":
     gw_mode = "magpie" if sys.argv[6] == "1" else ("claude_direct" if sys.argv[11] == "claude" else "direct_fallback")
     payload.update({
@@ -908,7 +987,7 @@ PY
       WS_CWD="$HOME/Development"
     fi
   fi
-  WS_LABEL="${WORKSPACE_LABEL:-${TAB_LABEL:-${NAME%-goal-tl-r*}}}"
+  WS_LABEL="${WORKSPACE_LABEL:-${TAB_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}}"
   WS_JSON="$(
     herdr workspace create \
       --cwd "$WS_CWD" \
@@ -1085,14 +1164,17 @@ fi
 WATCHDOG_CMD=""
 WATCHDOG_GOAL=""
 if [[ "$ROLE" == "team_lead" || "$NEW_WORKSPACE" -eq 1 ]]; then
-  WATCHDOG_GOAL="${WORKSPACE_LABEL:-${NAME%-goal-tl-r*}}"
+  WATCHDOG_GOAL="${WORKSPACE_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}"
   [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
   WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$NEW_TAB_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$NEW_TAB_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$ORIGINAL_NAME" <<'PY'
 import json, sys
 payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
+if sys.argv[15] != sys.argv[2]:
+    payload["original_name"] = sys.argv[15]
+    payload["name_truncated"] = True
 if sys.argv[8]:
     payload["workspace_id"] = sys.argv[8]
 if sys.argv[9]:
