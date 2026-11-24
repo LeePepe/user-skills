@@ -127,6 +127,62 @@
         }
       ],
       "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-RK-005",
+      "title": "Positive compatibility case: summary output and check alias preserve the repo-gate contract",
+      "tags": [
+        "cli",
+        "positive",
+        "compact",
+        "alias"
+      ],
+      "cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py check --target-dir . --summary --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "repo-gate-audit/v1"
+      },
+      "verify_lines": [
+        "The check alias accepts --target-dir and --summary and returns the repo-gate-audit/v1 contract"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "check --target-dir . --summary exits 0 with ok=true and schema=repo-gate-audit/v1"
+        }
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-RK-006",
+      "title": "Counter-case: invalid flag exits 2 with a bounded self-disclosing reference",
+      "tags": [
+        "cli",
+        "negative",
+        "counter-case",
+        "self-disclosing"
+      ],
+      "negative_cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py --unknown-flag-xyz",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/repo-kit/references/repo-bound-skills-and-gates.md"
+      ],
+      "negative_stderr_max_lines": 3,
+      "verify_lines": [
+        "An invalid flag exits 2, emits no more than three self-disclosing stderr lines, and points to repo-bound-skills-and-gates.md"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "unknown flag exits 2 with a bounded self-disclosing reference pointer"
+        }
+      ],
+      "registered_at": "2026-11-25"
     }
   ],
   "trigger_evals": [

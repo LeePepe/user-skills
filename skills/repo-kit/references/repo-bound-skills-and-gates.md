@@ -6,8 +6,10 @@
 
 ```bash
 python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --dev-root ~/Development --json
-python3 skills/repo-kit/scripts/repo_gate_auditor.py bottlenecks --dev-root ~/Development --json
-python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json
+python3 skills/repo-kit/scripts/repo_gate_auditor.py check --root ~/Development --summary --json
+python3 skills/repo-kit/scripts/repo_gate_auditor.py bottlenecks --dir ~/Development --json
+python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json --no-cache
+# `audit` aliases `scan`; `--target-dir` aliases `--repo`; `--full` disables compaction.
 ```
 
 | 规则 ID | 类别 (`category`) | 触发条件 | 标准修复动作与四维提速映射 |
@@ -18,6 +20,8 @@ python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Dev
 | `RG-004` | `prepush_forces_full_or_bypasses_verify` | 生效 `pre-push` 硬编码 `scripts/verify --all`，或存在 `scripts/verify` 却未调用 | `pre-push` 默认 `exec "$REPO_ROOT/scripts/verify"`，仅在 `VERIFY_ALL=1` 时传 `--all`（`angle_a_path_scoped`） |
 | `RG-005` | `hook_path_or_ci_drift` | `core.hooksPath` 未配置/指向缺失或不可执行的 `pre-push`，或 `ci.yml` 未调 `scripts/verify` / `shared-ci/quality.yml` | 执行 `git config core.hooksPath .githooks`（或 `scripts/hooks`）并确保 `ci.yml` 同入口调用（`angle_d_tiered_fast_fail`） |
 | `RG-006` | `shared_ci_pin_drift` | 仓库固定 `shared-ci` SHA 落后于本机 `shared-ci` HEAD，或仍用旧版 `AGENTS.md` 行内 pin 而缺 `.github/repo-contract.json` | 升级 `.github/repo-contract.json` 与 workflow caller 至最新 `shared-ci` SHA（`angle_b_watermark_cache`） |
+
+`scan`/`check`/`audit` 会在缩进 JSON 超过 20 KB 时自动保留契约顶层键并压缩仓库明细；`--summary` 或 `--compact` 强制摘要，`--full` 保留完整输出。默认审计使用临时目录中的 60 秒文件 stat/SHA watermark，`--no-cache` 可绕过。
 
 ---
 

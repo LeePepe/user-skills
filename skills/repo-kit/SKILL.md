@@ -1,6 +1,6 @@
 ---
 name: repo-kit
-description: 用 shared-ci 的模板与检查器让一个 repo 满足统一的 repo 合同（薄 AGENTS、layer 表、UI design_contract 门禁、Repo-Bound Skills 治理、同入口 verify、shared-ci caller、release_sync 发布读回、PR 模板、CODEOWNERS），或接入共享库新版本，或从现有 repo 拆出共享库。三种模式：init（新建或补齐）、adopt（接入/升级共享库）、split（拆出 SDK/共享库，保留历史）。取代 layered-agent-context。
+description: 用 shared-ci 模板与检查器治理 repo 合同；当任务涉及 tech-context.md、.github/repo-contract.json、scripts/verify、.githooks/pre-push、core.hooksPath、RG-001..RG-006 或 repo_gate_auditor.py 时触发。支持 init、adopt、split。
 ---
 
 # repo-kit
@@ -13,8 +13,8 @@ description: 用 shared-ci 的模板与检查器让一个 repo 满足统一的 r
 | 如何定义本仓 layer 与 PR | 同版本 `ai/repo-contract.md` 的 Repository development contract；格式见 `docs/context-cli-contract.md` |
 | 执行 agent 在 repo 内怎么工作 | `ai/agent-protocol.md` |
 | 模板 | `templates/`（目录入口、root/leaf `tech-context`、`design-contract.md`、`development.md`、`ci.yml`、`release-{testflight,sdk}.yml`、`scripts/verify`） |
-| 架构与 UI 门禁检查 | `scripts/context/audit`、`scripts/context/resolve <path>`、`scripts/context/design_contract.py` |
-| 发布与线上读回（Ring 6） | `scripts/quality/release_sync.py` + `docs/automated-release.md` + `templates/release-{testflight,sdk}.yml` |
+| 架构与 UI 门禁检查 | `shared-ci/scripts/context/audit`、`shared-ci/scripts/context/resolve <path>`、`shared-ci/scripts/context/design_contract.py` |
+| 发布与线上读回（Ring 6） | `shared-ci/scripts/quality/release_sync.py` + `docs/automated-release.md` + `templates/release-{testflight,sdk}.yml` |
 | 跨仓门禁与慢脚本检测 | `python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --dev-root ~/Development --json` |
 | 随仓业务技能（Repo-Bound Skills） | `python3 skills/skill-contract/scripts/skill_contract.py audit --repo . --strict`（细则见 [repo-bound-skills-and-gates.md](references/repo-bound-skills-and-gates.md)） |
 
@@ -26,7 +26,7 @@ description: 用 shared-ci 的模板与检查器让一个 repo 满足统一的 r
 |---|---|---|
 | init / adopt / split repo contract | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --repo . --json` |
 | cross-repo gate drift (`RG-001..006`) or slow `verify` | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py bottlenecks --dev-root ~/Development --json` |
-| `skill-retro` self-driven loop check | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json` |
+| `skill-retro` self-driven loop check | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json` (supports `--summary`, `--full`, `--no-cache`) |
 | Repo-Bound Skills & UI `design_contract.py` gate | `references/repo-bound-skills-and-gates.md` | `python3 skills/skill-contract/scripts/skill_contract.py audit --repo . --strict` |
 | verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill repo-kit --strict` |
 

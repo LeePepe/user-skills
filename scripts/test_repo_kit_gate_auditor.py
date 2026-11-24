@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDITOR_PATH = ROOT / "skills" / "repo-kit" / "scripts" / "repo_gate_auditor.py"
@@ -179,6 +180,37 @@ class RepoKitGateAuditorTests(unittest.TestCase):
             self.assertEqual(proc_default.returncode, 0, proc_default.stderr)
             self.assertEqual(json.loads(proc_default.stdout)["schema"], "repo-gate-audit/v1")
 
+            proc_summary = subprocess.run(
+                [
+                    sys.executable,
+                    str(AUDITOR_PATH),
+                    "check",
+                    "--target-dir",
+                    str(repo_dir),
+                    "--summary",
+                    "--json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_summary.returncode, 0, proc_summary.stderr)
+            summary_payload = json.loads(proc_summary.stdout)
+            self.assertTrue(summary_payload["ok"])
+            self.assertEqual(summary_payload["schema"], "repo-gate-audit/v1")
+
+            proc_bad_flag = subprocess.run(
+                [sys.executable, str(AUDITOR_PATH), "--unknown-flag-xyz"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_bad_flag.returncode, 2)
+            self.assertLessEqual(len(proc_bad_flag.stderr.splitlines()), 3)
+            self.assertIn("skills/repo-kit/references/repo-bound-skills-and-gates.md", proc_bad_flag.stderr)
+
             # Negative case: invalid subcommand exits 2 with pointer to repo-bound-skills-and-gates.md
             proc_bad = subprocess.run(
                 [sys.executable, str(AUDITOR_PATH), "bad-subcmd"],
@@ -213,6 +245,8 @@ class RepoKitGateAuditorTests(unittest.TestCase):
             self.assertTrue(probe["ok"])
             self.assertEqual(probe["skills_probed"], 1)
             self.assertEqual(probe["skills"][0]["skill"], "repo-kit")
+            self.assertEqual(probe["skills"][0]["signals"]["internal_doc_cli_drift_count"], 0)
+            self.assertGreaterEqual(probe["skills"][0]["signals"]["eval_counter_case_ratio"], 0.25)
             self.assertIn("cross_repo_gate_health", probe)
             self.assertGreaterEqual(probe["cross_repo_gate_health"]["total_findings"], 2)
 
@@ -228,6 +262,113 @@ class RepoKitGateAuditorTests(unittest.TestCase):
             self.assertEqual(diag["status"], "ACTIONABLE")
             self.assertGreaterEqual(diag["cross_repo_gate_health"]["total_findings"], 2)
             self.assertTrue(any(p["skill"] == "repo-kit" for p in diag["proposals"]))
+
+    def test_delegating_hook_replays_counter_case_without_rg004(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dev_root = root / "dev"
+            repo = _init_git_repo(dev_root / "delegating", hooks_path=".git/hooks-local")
+            _write_exec(
+                repo / "scripts" / "verify",
+                "#!/usr/bin/env bash\n"
+                "git diff --name-only origin/main HEAD\n",
+            )
+            _write_exec(
+                repo / ".githooks" / "pre-push",
+                "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\"\n",
+            )
+            _write_exec(
+                repo / ".git" / "hooks-local" / "pre-push",
+                "#!/usr/bin/env bash\n"
+                "for delegate in \"$REPO_ROOT/scripts/hooks/pre-push\" \"$REPO_ROOT/.githooks/pre-push\"; do\n"
+                "  if [[ -x \"$delegate\" ]]; then exec \"$delegate\" \"$@\"; fi\n"
+                "done\n",
+            )
+
+            delegated = AUDITOR.inspect_single_repo(repo, dev_root=dev_root)
+            self.assertNotIn("RG-004", delegated["triggered_rules"])
+
+            _write_exec(
+                repo / ".githooks" / "pre-push",
+                "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\" --all\n",
+            )
+            forcing = AUDITOR.inspect_single_repo(repo, dev_root=dev_root)
+            self.assertIn("RG-004", forcing["triggered_rules"])
+
+            _write_exec(
+                repo / ".githooks" / "pre-push",
+                "#!/usr/bin/env bash\n"
+                "for layer in $layers; do context run \"$layer\"; done\n"
+                "exec \"$REPO_ROOT/scripts/verify\"\n",
+            )
+            serial = AUDITOR.inspect_single_repo(repo, dev_root=dev_root)
+            self.assertIn("RG-003", serial["triggered_rules"])
+
+    def test_summary_compaction_and_full_output_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dev_root = root / "dev"
+            for index in range(25):
+                repo = _init_git_repo(dev_root / f"repo-{index:02d}", hooks_path=".githooks")
+                _write_exec(
+                    repo / "scripts" / "verify",
+                    "#!/usr/bin/env bash\n"
+                    "for layer in $layers; do context run \"$layer\"; done\n",
+                )
+                _write_exec(
+                    repo / ".githooks" / "pre-push",
+                    "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\" --all\n",
+                )
+
+            compact = AUDITOR.scan_repositories(dev_root=dev_root, no_cache=True)
+            compact_json = json.dumps(compact, ensure_ascii=False, indent=2)
+            self.assertTrue(compact["summary_compacted"])
+            self.assertLess(len(compact_json.encode("utf-8")), 18_000)
+            self.assertEqual(compact["repos_scanned"], 25)
+
+            full = AUDITOR.scan_repositories(dev_root=dev_root, full=True, no_cache=True)
+            full_json = json.dumps(full, ensure_ascii=False, indent=2)
+            self.assertNotIn("summary_compacted", full)
+            self.assertGreater(len(full_json.encode("utf-8")), 20_000)
+
+            single = AUDITOR.scan_repositories(repo=dev_root / "repo-00", no_cache=True)
+            self.assertNotIn("summary_compacted", single)
+
+    def test_watermark_cache_hit_and_gate_file_invalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dev_root = root / "dev"
+            repo = _init_git_repo(dev_root / "cached", hooks_path=".githooks")
+            _write_exec(
+                repo / "scripts" / "verify",
+                "#!/usr/bin/env bash\ngit diff --name-only origin/main HEAD\n",
+            )
+            _write_exec(
+                repo / ".githooks" / "pre-push",
+                "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\"\n",
+            )
+
+            original = AUDITOR.inspect_single_repo
+            with mock.patch.object(AUDITOR, "inspect_single_repo", wraps=original) as inspected:
+                AUDITOR.scan_repositories(dev_root=dev_root)
+                AUDITOR.scan_repositories(dev_root=dev_root)
+                self.assertEqual(inspected.call_count, 1)
+
+                _write_exec(
+                    repo / "scripts" / "verify",
+                    "#!/usr/bin/env bash\n"
+                    "git diff --name-only origin/main HEAD\n"
+                    "echo changed\n",
+                )
+                AUDITOR.scan_repositories(dev_root=dev_root)
+                self.assertEqual(inspected.call_count, 2)
+
+                _write_exec(
+                    repo / ".githooks" / "pre-push",
+                    "#!/usr/bin/env bash\nexec \"$REPO_ROOT/scripts/verify\" --all\n",
+                )
+                AUDITOR.scan_repositories(dev_root=dev_root)
+                self.assertEqual(inspected.call_count, 3)
 
     def test_external_hooks_path_outside_repo_dir_and_scan_repos_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,16 +24,24 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from typing import Any, Mapping, Sequence
 
 DEFAULT_DEV_ROOT = Path.home() / "Development"
 REFERENCE_DOC = "skills/repo-kit/references/repo-bound-skills-and-gates.md"
+CACHE_DIR = Path(tempfile.gettempdir()) / "repo-kit-gate-audit-cache"
+CACHE_TTL_SECONDS = 60.0
+MAX_JSON_BYTES = 20_000
+COMPACT_JSON_BYTES = 18_000
+UF_DATALESS = 0x40000000
 
 RULE_METADATA: dict[str, dict[str, str]] = {
     "RG-001": {
@@ -116,13 +124,23 @@ _PREPUSH_CALLS_VERIFY_RE = re.compile(r"(?:^|[\s\"'/])scripts/verify\b", re.MULT
 _SHARED_CI_PIN_RE = re.compile(r"shared-ci(?:@|/blob/|/[^@\s]+@)([0-9a-f]{7,40})")
 
 
+def _prepush_forces_all(code: str) -> bool:
+    lines = code.splitlines()
+    for index, line in enumerate(lines):
+        if _PREPUSH_FORCE_ALL_RE.search(line):
+            context = "\n".join(lines[max(0, index - 3) : index + 1])
+            if "VERIFY_ALL" not in context:
+                return True
+    return False
+
+
 class _SelfDisclosingRepoKitParser(argparse.ArgumentParser):
     """ArgumentParser that prints a <=3 line fix + pointer to repo-bound-skills-and-gates.md on exit=2."""
 
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[repo-kit] CLI error: {message}\n"
-            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
+            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
             f"  Reference: {REFERENCE_DOC} | skills/repo-kit/references/eval-cases.json\n"
         )
         raise SystemExit(2)
@@ -174,6 +192,101 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _is_dataless_or_external(path: Path) -> bool:
+    """Avoid probing cloud-only or separately mounted entries during root scans."""
+    try:
+        stat_result = path.stat()
+        if getattr(stat_result, "st_flags", 0) & UF_DATALESS:
+            return True
+        return path.is_mount()
+    except OSError:
+        return True
+
+
+def _gate_file_paths(repo_dir: Path) -> list[Path]:
+    paths = [
+        repo_dir / "scripts" / "verify",
+        repo_dir / "scripts" / "verify_runner.py",
+        repo_dir / ".githooks" / "pre-push",
+        repo_dir / "scripts" / "hooks" / "pre-push",
+        repo_dir / ".git" / "config",
+        repo_dir / ".git" / "hooks-local" / "pre-push",
+        repo_dir / ".github" / "repo-contract.json",
+        repo_dir / "AGENTS.md",
+    ]
+    workflow_dir = repo_dir / ".github" / "workflows"
+    with contextlib.suppress(OSError):
+        paths.extend(sorted(workflow_dir.glob("*.yml")))
+        paths.extend(sorted(workflow_dir.glob("*.yaml")))
+    return list(dict.fromkeys(paths))
+
+
+def _gate_fingerprint(repo_dir: Path, shared_ci_head: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(shared_ci_head.encode("utf-8"))
+    for path in _gate_file_paths(repo_dir):
+        try:
+            stat_result = path.stat()
+        except OSError:
+            digest.update(f"{path}:missing".encode("utf-8"))
+            continue
+        digest.update(
+            f"{path}:{stat_result.st_mtime_ns}:{stat_result.st_size}:"
+            f"{stat_result.st_mode & 0o7777}".encode("utf-8")
+        )
+        if path.is_file():
+            try:
+                with path.open("rb") as handle:
+                    while chunk := handle.read(64 * 1024):
+                        digest.update(chunk)
+            except OSError:
+                digest.update(b"unreadable")
+    return digest.hexdigest()
+
+
+def _cache_path(repo_dir: Path) -> Path:
+    key = hashlib.sha256(str(repo_dir.resolve()).encode("utf-8")).hexdigest()
+    return CACHE_DIR / f"{key}.json"
+
+
+def _load_cached_report(
+    repo_dir: Path,
+    *,
+    dev_root: Path | None,
+    shared_ci_head: str,
+) -> dict[str, Any] | None:
+    path = _cache_path(repo_dir)
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        created_at = float(cached.get("created_at", 0.0))
+        if time.time() - created_at > CACHE_TTL_SECONDS:
+            return None
+        if cached.get("fingerprint") != _gate_fingerprint(repo_dir, shared_ci_head):
+            return None
+        report = cached.get("report")
+        if not isinstance(report, dict):
+            return None
+        report["repo_path"] = _redact_path(repo_dir, dev_root=dev_root)
+        return report
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _store_cached_report(repo_dir: Path, report: Mapping[str, Any], shared_ci_head: str) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "created_at": time.time(),
+            "fingerprint": _gate_fingerprint(repo_dir, shared_ci_head),
+            "report": dict(report),
+        }
+        tmp_path = CACHE_DIR / f".{_cache_path(repo_dir).name}.{os.getpid()}.tmp"
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, _cache_path(repo_dir))
+    except OSError:
+        pass
 
 
 def _git_config_hooks_path(repo_dir: Path) -> str:
@@ -265,7 +378,7 @@ def _discover_target_repos(
     for entry in entries:
         if entry.name.startswith(".") or entry.name in _SKIP_DEV_DIRS:
             continue
-        if entry.is_symlink():
+        if entry.is_symlink() or _is_dataless_or_external(entry):
             continue
         if _is_git_repo(entry):
             repos.append(entry)
@@ -327,6 +440,52 @@ def _extract_shared_ci_pin_info(repo_dir: Path) -> dict[str, Any]:
     }
 
 
+def _delegated_hook_paths(repo_dir: Path, active_hook: Path, hook_code: str) -> list[Path]:
+    """Resolve tracked pre-push wrappers without treating a plain path mention as delegation."""
+    delegated: list[Path] = []
+    invocation = re.compile(
+        r"(?:\b(?:exec|source|bash|sh)\b[^\n]*|(?:exec\s+)?[\"']?\$(?:\{)?(?:delegate|hook|prepush))",
+        re.IGNORECASE,
+    )
+    for candidate in (
+        repo_dir / ".githooks" / "pre-push",
+        repo_dir / "scripts" / "hooks" / "pre-push",
+    ):
+        if candidate == active_hook or not candidate.is_file():
+            continue
+        rel = candidate.relative_to(repo_dir).as_posix()
+        aliases = (
+            rel,
+            f"$REPO_ROOT/{rel}",
+            f"${{REPO_ROOT}}/{rel}",
+            f"$(git rev-parse --show-toplevel)/{rel}",
+            str(candidate),
+        )
+        if not any(alias in hook_code for alias in aliases):
+            continue
+        if invocation.search(hook_code):
+            delegated.append(candidate)
+    return delegated
+
+
+def _effective_prepush_code(repo_dir: Path, active_hook: Path | None, prepush_code: str) -> str:
+    if active_hook is None:
+        return prepush_code
+    effective = [prepush_code]
+    visited = {active_hook.resolve()}
+    pending = _delegated_hook_paths(repo_dir, active_hook, prepush_code)
+    while pending:
+        delegated = pending.pop(0)
+        resolved = delegated.resolve()
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        delegated_code = _strip_shell_comments(_read_text(delegated))
+        effective.append(delegated_code)
+        pending.extend(_delegated_hook_paths(repo_dir, delegated, delegated_code))
+    return "\n".join(effective)
+
+
 def inspect_single_repo(
     repo_dir: Path,
     *,
@@ -367,6 +526,7 @@ def inspect_single_repo(
 
     prepush_raw = _read_text(active_prepush) if active_prepush is not None else ""
     prepush_code = _strip_shell_comments(prepush_raw)
+    effective_prepush_code = _effective_prepush_code(repo_dir, active_prepush, prepush_code)
 
     has_product_or_gate_surface = bool(
         has_ci_yml
@@ -421,7 +581,7 @@ def inspect_single_repo(
 
     # RG-003: serial_layer_or_suite_runner
     serial_verify_loop = bool(has_verify_file and _SERIAL_CONTEXT_LOOP_RE.search(verify_code))
-    serial_hook_loop = bool(active_prepush is not None and _SERIAL_CONTEXT_LOOP_RE.search(prepush_code))
+    serial_hook_loop = bool(active_prepush is not None and _SERIAL_CONTEXT_LOOP_RE.search(effective_prepush_code))
     serial_unittest_calls = len(re.findall(r"(?m)^\s*(?:python3|python|\$python)\b[^\n]*\bunittest\b", verify_code))
     has_parallel_pool = bool(
         re.search(r"ThreadPoolExecutor|ProcessPoolExecutor|concurrent\.futures|xargs\s+-P", verify_code_with_runner)
@@ -441,8 +601,8 @@ def inspect_single_repo(
     # RG-004: prepush_forces_full_or_bypasses_verify
     if active_prepush is not None:
         prepush_label = _display_rel_path(active_prepush, repo_dir, dev_root=dev_root)
-        forces_all = bool(_PREPUSH_FORCE_ALL_RE.search(prepush_code)) and "VERIFY_ALL" not in prepush_code
-        calls_verify = bool(_PREPUSH_CALLS_VERIFY_RE.search(prepush_code))
+        forces_all = _prepush_forces_all(effective_prepush_code)
+        calls_verify = bool(_PREPUSH_CALLS_VERIFY_RE.search(effective_prepush_code))
         if forces_all:
             add_finding(
                 "RG-004",
@@ -598,12 +758,114 @@ def _synthesize_actionable_proposals(
     return proposals
 
 
+def _json_size(payload: Mapping[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+
+
+def _compact_repo_report(report: Mapping[str, Any], *, minimal: bool = False) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        key: report.get(key)
+        for key in (
+            "repo",
+            "repo_path",
+            "gate_health_score",
+            "status",
+            "has_verify_entrypoint",
+            "has_incremental_verify",
+            "has_parallel_runner",
+            "hooks_path",
+            "shared_ci_pin",
+            "has_repo_contract_json",
+            "triggered_rules",
+            "findings_count",
+        )
+        if key in report
+    }
+    findings = []
+    for finding in report.get("findings") or []:
+        if not isinstance(finding, Mapping):
+            continue
+        item = {"rule_id": finding.get("rule_id"), "severity": finding.get("severity")}
+        if not minimal:
+            item["category"] = finding.get("category")
+            item["evidence"] = str(finding.get("evidence") or "")[:180]
+        findings.append(item)
+    compact["findings"] = findings
+    return compact
+
+
+def _compact_proposal(proposal: Mapping[str, Any], *, minimal: bool = False) -> dict[str, Any]:
+    keys = ("id", "rule_id", "category", "priority", "speedup_angle", "affected_repos_count")
+    compact = {key: proposal.get(key) for key in keys if key in proposal}
+    compact["affected_repos"] = list(proposal.get("affected_repos") or [])[:8]
+    if not minimal:
+        compact["title"] = str(proposal.get("title") or "")[:180]
+        compact["action"] = str(proposal.get("action") or "")[:180]
+    return compact
+
+
+def _maybe_compact_report(
+    payload: dict[str, Any],
+    *,
+    force: bool = False,
+    full: bool = False,
+) -> dict[str, Any]:
+    if full or (not force and _json_size(payload) <= MAX_JSON_BYTES):
+        return payload
+
+    compacted = dict(payload)
+    compacted["repos"] = [_compact_repo_report(repo) for repo in payload.get("repos") or []]
+    compacted["actionable_proposals"] = [
+        _compact_proposal(proposal) for proposal in payload.get("actionable_proposals") or []
+    ]
+    compacted["healthy_repo_names"] = [
+        str(repo.get("repo"))
+        for repo in payload.get("repos") or []
+        if repo.get("findings_count") == 0 and repo.get("status") != "scan_error"
+    ]
+    compacted["summary_compacted"] = True
+    if "bottleneck_repos" in payload:
+        compacted["bottleneck_repos"] = [
+            {
+                "repo": repo.get("repo"),
+                "gate_health_score": repo.get("gate_health_score"),
+                "status": repo.get("status"),
+                "triggered_rules": repo.get("triggered_rules", []),
+                "findings_count": repo.get("findings_count", 0),
+            }
+            for repo in payload.get("bottleneck_repos") or []
+        ]
+
+    if _json_size(compacted) > COMPACT_JSON_BYTES:
+        compacted["repos"] = [_compact_repo_report(repo, minimal=True) for repo in payload.get("repos") or []]
+        compacted["actionable_proposals"] = [
+            _compact_proposal(proposal, minimal=True)
+            for proposal in payload.get("actionable_proposals") or []
+        ]
+    if _json_size(compacted) > COMPACT_JSON_BYTES:
+        compacted["repos"] = [
+            {
+                "repo": repo.get("repo"),
+                "gate_health_score": repo.get("gate_health_score"),
+                "status": repo.get("status"),
+                "triggered_rules": repo.get("triggered_rules", []),
+                "findings_count": repo.get("findings_count", 0),
+            }
+            for repo in payload.get("repos") or []
+        ]
+    return compacted
+
+
 def scan_repositories(
     *,
     repo: Path | None = None,
     dev_root: Path | None = None,
     repos: str | Sequence[str] | None = None,
     flow_map: bool = False,
+    summary: bool = False,
+    compact: bool = False,
+    full: bool = False,
+    no_cache: bool = False,
 ) -> dict[str, Any]:
     """Scan one repository or all repositories under dev_root for RG-001..RG-006."""
     target_repos, eff_dev_root = _discover_target_repos(repo=repo, dev_root=dev_root, repos_csv=repos)
@@ -612,9 +874,16 @@ def scan_repositories(
     scan_errors: list[dict[str, str]] = []
     for r in target_repos:
         try:
-            reports.append(
-                inspect_single_repo(r, dev_root=eff_dev_root, shared_ci_head=shared_ci_head)
+            cached_report = None if no_cache else _load_cached_report(
+                r, dev_root=eff_dev_root, shared_ci_head=shared_ci_head
             )
+            if cached_report is not None:
+                reports.append(cached_report)
+                continue
+            report = inspect_single_repo(r, dev_root=eff_dev_root, shared_ci_head=shared_ci_head)
+            reports.append(report)
+            if not no_cache:
+                _store_cached_report(r, report, shared_ci_head)
         except Exception as exc:
             scan_errors.append(
                 {
@@ -686,7 +955,7 @@ def scan_repositories(
                 "3. M1-TL -> Writer -> Reviewer -> apply repo-kit templates (.githooks/pre-push, scripts/verify, .github/repo-contract.json)",
             ]
         }
-    return payload
+    return _maybe_compact_report(payload, force=summary or compact, full=full)
 
 
 scan_repos = scan_repositories
@@ -698,17 +967,31 @@ def build_bottlenecks_report(
     dev_root: Path | None = None,
     repos: str | Sequence[str] | None = None,
     flow_map: bool = False,
+    summary: bool = False,
+    compact: bool = False,
+    full: bool = False,
+    no_cache: bool = False,
 ) -> dict[str, Any]:
-    base = scan_repositories(repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map)
+    base = scan_repositories(
+        repo=repo,
+        dev_root=dev_root,
+        repos=repos,
+        flow_map=flow_map,
+        summary=summary,
+        compact=compact,
+        full=full,
+        no_cache=no_cache,
+    )
     bottleneck_repos = [
         r for r in base["repos"] if any(rid in r["triggered_rules"] for rid in ("RG-002", "RG-003", "RG-004"))
     ]
-    return {
+    report = {
         **base,
         "subcommand": "bottlenecks",
         "bottleneck_repos_count": len(bottleneck_repos),
         "bottleneck_repos": bottleneck_repos,
     }
+    return _maybe_compact_report(report, force=summary or compact, full=full)
 
 
 def build_loop_check_report(
@@ -717,9 +1000,22 @@ def build_loop_check_report(
     dev_root: Path | None = None,
     repos: str | Sequence[str] | None = None,
     flow_map: bool = True,
+    summary: bool = False,
+    compact: bool = False,
+    full: bool = False,
+    no_cache: bool = False,
 ) -> dict[str, Any]:
-    base = scan_repositories(repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map)
-    return {
+    base = scan_repositories(
+        repo=repo,
+        dev_root=dev_root,
+        repos=repos,
+        flow_map=flow_map,
+        summary=summary,
+        compact=compact,
+        full=full,
+        no_cache=no_cache,
+    )
+    report = {
         **base,
         "subcommand": "loop-check",
         "self_driven_loop_ready": True,
@@ -729,6 +1025,7 @@ def build_loop_check_report(
             "python3 skills/skill-retro/scripts/skill_retro.py diagnose --skill repo-kit --mode full --json",
         ],
     }
+    return _maybe_compact_report(report, force=summary or compact, full=full)
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -736,6 +1033,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--repo",
         "--repo-dir",
         "--worktree",
+        "--target-dir",
         dest="repo",
         type=Path,
         default=None,
@@ -743,6 +1041,8 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--dev-root",
+        "--root",
+        "--dir",
         dest="dev_root",
         type=Path,
         default=None,
@@ -773,11 +1073,28 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default=True,
         help="Output structured JSON report (default True).",
     )
+    parser.add_argument(
+        "--summary",
+        "--compact",
+        dest="compact",
+        action="store_true",
+        help="Compact the report, including when it is below the automatic size threshold.",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Always emit the full, uncompacted report.",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the 60-second file-stat/SHA watermark cache.",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
-    valid_subcommands = {"scan", "bottlenecks", "loop-check"}
+    valid_subcommands = {"scan", "check", "audit", "bottlenecks", "loop-check"}
 
     if not args_list or args_list[0] in {"-h", "--help"}:
         top = _SelfDisclosingRepoKitParser(
@@ -788,7 +1105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "command",
             nargs="?",
             choices=sorted(valid_subcommands),
-            help="Subcommand: scan | bottlenecks | loop-check (defaults to scan when flags are passed directly).",
+            help="Subcommand: scan | check | audit | bottlenecks | loop-check (defaults to scan when flags are passed directly).",
         )
         _add_common_args(top)
         top.parse_args(args_list)
@@ -805,8 +1122,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         rest = args_list[1:]
     else:
         sys.stderr.write(
-            f"[repo-kit] Unknown subcommand: {first!r} (choose from: scan, bottlenecks, loop-check)\n"
-            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
+            f"[repo-kit] Unknown subcommand: {first!r} (choose from: scan, check, audit, bottlenecks, loop-check)\n"
+            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
             f"  Reference: {REFERENCE_DOC}\n"
         )
         raise SystemExit(2)
@@ -821,6 +1138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dev_root=ns.dev_root,
             repos=ns.repos,
             flow_map=ns.flow_map,
+            compact=ns.compact,
+            full=ns.full,
+            no_cache=ns.no_cache,
         )
     elif subcmd == "loop-check":
         report = build_loop_check_report(
@@ -828,6 +1148,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dev_root=ns.dev_root,
             repos=ns.repos,
             flow_map=True if not ns.flow_map else ns.flow_map,
+            compact=ns.compact,
+            full=ns.full,
+            no_cache=ns.no_cache,
         )
     else:
         report = scan_repositories(
@@ -835,6 +1158,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dev_root=ns.dev_root,
             repos=ns.repos,
             flow_map=ns.flow_map,
+            compact=ns.compact,
+            full=ns.full,
+            no_cache=ns.no_cache,
         )
 
     if report["total_findings"] > 0 and ns.strict:
