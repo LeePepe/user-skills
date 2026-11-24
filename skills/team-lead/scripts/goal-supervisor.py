@@ -42,6 +42,14 @@ UNRESOLVED_EVENT_TYPES = {
     "REVIEW_FAIL": "review",
     "HANDBACK": "handback",
 }
+VISIBLE_ACTIVITY_RE = re.compile(
+    r"(?:[○◎●⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:Working|Thinking|Running(?:\s+tests)?)\b"
+    r"|(?m:^\s*(?:Working|Thinking|Running\s+tests)(?:…|\.{3})?(?=\s|$|[.…]))"
+    r"|\b\d+\s+background\s+/?tasks?\b"
+    r"|\bWaiting\s+for\s+[A-Za-z0-9_.-]+"
+    r"|\b(?:esc|ctrl\+c)(?:\s*/\s*(?:esc|ctrl\+c))?\s+(?:to\s+)?interrupt\b)",
+    re.IGNORECASE,
+)
 
 
 def parse_time(value: str) -> dt.datetime:
@@ -1413,12 +1421,12 @@ def watch(args: argparse.Namespace) -> dict[str, Any]:
                 tl_seen_working = True
             elif tl_status in {"idle", "done"} and (tl_seen_working or polls >= 1):
                 visible_working = False
-                if not getattr(args, "herdr_json", None):
-                    visible_working = bool(re.search(
-                        r"(?:[○◎●]\s*Working\b|ctrl\+c\s+interrupt|esc\s+to\s+interrupt)",
-                        read_visible_from_herdr(resolved_tl_name),
-                        re.IGNORECASE,
-                    ))
+                if getattr(args, "herdr_json", None):
+                    visible_text = str(tl_agent.get("visible") or tl_agent.get("visible_text") or "")
+                else:
+                    visible_text = read_visible_from_herdr(resolved_tl_name)
+                if visible_text:
+                    visible_working = bool(VISIBLE_ACTIVITY_RE.search(visible_text))
                 if visible_working:
                     tl_seen_working = True
                     tl_status = "working"

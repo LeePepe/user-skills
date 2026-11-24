@@ -775,9 +775,19 @@ if [[ "$KIND" == "copilot" ]]; then
   prev_was_add_dir=0
   for arg in "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"; do
     if [[ "$prev_was_add_dir" -eq 1 ]]; then
+      [[ "$arg" == -* ]] && die_usage "--add-dir requires a directory path"
       if [[ -n "${MOCK_HERDR_LOG:-}" || -d "$arg" ]]; then
-        EXISTING_ADD_DIRS+=("$arg")
-        SANITIZED_AGENT_ARGS+=("$arg")
+        already_present=0
+        for ex_dir in "${EXISTING_ADD_DIRS[@]+"${EXISTING_ADD_DIRS[@]}"}"; do
+          if [[ "$ex_dir" == "$arg" ]]; then
+            already_present=1
+            break
+          fi
+        done
+        if [[ "$already_present" -eq 0 ]]; then
+          EXISTING_ADD_DIRS+=("$arg")
+          SANITIZED_AGENT_ARGS+=(--add-dir "$arg")
+        fi
       fi
       prev_was_add_dir=0
       continue
@@ -804,6 +814,7 @@ if [[ "$KIND" == "copilot" ]]; then
       *) SANITIZED_AGENT_ARGS+=("$arg") ;;
     esac
   done
+  [[ "$prev_was_add_dir" -eq 1 ]] && die_usage "--add-dir requires a directory path"
   AGENT_ARGS=("${SANITIZED_AGENT_ARGS[@]+"${SANITIZED_AGENT_ARGS[@]}"}")
   if [[ "$HAS_ALLOW_OR_DENY" -eq 0 ]]; then
     AGENT_ARGS+=(
