@@ -839,6 +839,121 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 self.assertEqual(neg_s["signals"]["wasted_preread_rate"], 1.0)
                 self.assertGreater(neg_s["priority_score"], 0.0)
 
+    def test_subsecond_fail_read_pass_fail_preserves_terminal_failure(self) -> None:
+        """Verify R5-F1: sub-second fail(t+0.0s) -> read(t+0.1s) -> pass(t+0.3s) -> fail(t+0.7s) retains BOTH catch=1 and domain_failures=1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            handoff_root = dev_root / "handoff"
+            sessions_dir = root / "sessions"
+            handoff_root.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+
+            eval_doc = json.dumps(
+                {
+                    "schema": "skill-eval-cases/v1",
+                    "version": 1,
+                    "updated": datetime.now(CST).date().isoformat(),
+                    "active_cases": [
+                        {"id": "EV-1", "title": "p", "cmd": "true", "expect_exit": 0},
+                        {"id": "EV-2", "title": "n", "negative_cmd": "false", "expect_fail_exit": 1},
+                    ],
+                }
+            )
+            _write_skill_pkg(
+                skills_root,
+                "rapid-retry-skill",
+                skill_md_extra="See `references/fix.md` and `references/unwired.md`.",
+                refs={"fix.md": "# Fix\n", "unwired.md": "# Unwired\n", "eval-cases.json": eval_doc},
+                scripts={"check.py": "#!/usr/bin/env python3\n# see references/fix.md\n"},
+            )
+
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
+            s_dir = sessions_dir / "sess-rapid-fail-pass-fail"
+            s_dir.mkdir(parents=True, exist_ok=True)
+            evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": now.isoformat(), "data": {"name": "rapid-retry-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(milliseconds=0)).isoformat(),
+                    "data": {"toolCallId": "r-c1", "toolName": "bash", "arguments": {"command": "python3 skills/rapid-retry-skill/scripts/check.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(milliseconds=50)).isoformat(),
+                    "data": {"toolCallId": "r-c1", "shellExecution": {"exitCode": 1}, "result": {"content": "fail 1"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(milliseconds=100)).isoformat(),
+                    "data": {"toolCallId": "r-v1", "toolName": "view", "arguments": {"path": "skills/rapid-retry-skill/references/fix.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(milliseconds=150)).isoformat(),
+                    "data": {"toolCallId": "r-v1", "result": {"content": "doc"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(milliseconds=300)).isoformat(),
+                    "data": {"toolCallId": "r-c2", "toolName": "bash", "arguments": {"command": "python3 skills/rapid-retry-skill/scripts/check.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(milliseconds=350)).isoformat(),
+                    "data": {"toolCallId": "r-c2", "shellExecution": {"exitCode": 0}, "result": {"content": "pass"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(milliseconds=700)).isoformat(),
+                    "data": {"toolCallId": "r-c3", "toolName": "bash", "arguments": {"command": "python3 skills/rapid-retry-skill/scripts/check.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(milliseconds=750)).isoformat(),
+                    "data": {"toolCallId": "r-c3", "shellExecution": {"exitCode": 1}, "result": {"content": "terminal fail"}},
+                },
+            ]
+            (s_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in evs) + "\n", encoding="utf-8")
+
+            # 1) Deep mode
+            deep_out = SKILL_RETRO.probe_skills(
+                skill="rapid-retry-skill",
+                copilot_sessions_dir=sessions_dir,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                fast=False,
+            )
+            d_sig = deep_out["skills"][0]["signals"]
+            self.assertEqual(d_sig["progressive_catch_count"], 1)
+            self.assertEqual(d_sig["domain_failures"], 1)
+            self.assertEqual(d_sig["l1_unwired_drawers"], 1)
+            self.assertGreater(deep_out["skills"][0]["priority_score"], 0.0)
+
+            # 2) Canonical sampled-fast mode
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", root / "none.db"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", root / "none.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
+            ):
+                fast_out = SKILL_RETRO.probe_skills(
+                    skill="rapid-retry-skill",
+                    handoff_root=handoff_root,
+                    skills_root=skills_root,
+                    dev_root=dev_root,
+                    fast=True,
+                )
+                f_sig = fast_out["skills"][0]["signals"]
+                self.assertEqual(f_sig["progressive_catch_count"], 1)
+                self.assertEqual(f_sig["domain_failures"], 1)
+                self.assertEqual(f_sig["l1_unwired_drawers"], 1)
+                self.assertGreater(fast_out["skills"][0]["priority_score"], 0.0)
+
     def test_direct_warehouse_db_fast_probe_and_domain_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

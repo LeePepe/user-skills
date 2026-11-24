@@ -772,6 +772,7 @@ class ScriptCallEvent:
     subtree_sha: str | None = None
     output_chars: int = 0
     aci_output_bloat: bool = False
+    origin_source: str = "copilot_events"
 
 
 @dataclass
@@ -1231,7 +1232,14 @@ def _ingest_usage_jsonl_and_shards(
             # Only stamp default current skill_version when explicit version was provided on the raw record
             explicit_sv = str(raw_rec.get("skill_version") or "").strip() or None
             explicit_sub = str(raw_rec.get("subtree_sha") or "").strip() or None
-            if not any(c.skill == sk and c.script_rel == sc_rel and c.exit_code == ec for c in obs.script_calls):
+            if not any(
+                c.origin_source != "usage_jsonl"
+                and c.skill == sk
+                and c.script_rel == sc_rel
+                and c.exit_code == ec
+                and abs((c.ts - ts).total_seconds()) < 1.0
+                for c in obs.script_calls
+            ):
                 obs.script_calls.append(
                     ScriptCallEvent(
                         session_id=sid,
@@ -1245,6 +1253,7 @@ def _ingest_usage_jsonl_and_shards(
                         seq=obs.next_seq(),
                         skill_version=explicit_sv,
                         subtree_sha=explicit_sub,
+                        origin_source="usage_jsonl",
                     )
                 )
 
@@ -1348,6 +1357,7 @@ def _ingest_trace_export(
                         seq=obs.next_seq(),
                         skill_version=sv_attr,
                         subtree_sha=sub_attr,
+                        origin_source="trace_export",
                     )
                 )
     return ingested_spans
@@ -1482,7 +1492,8 @@ def _ingest_warehouse_and_copilot_db(
                         SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
                     )
                     if any(
-                        c.skill == sk
+                        c.origin_source != "warehouse"
+                        and c.skill == sk
                         and c.script_rel == sc_rel
                         and c.exit_code == ec
                         and abs((c.ts - ts).total_seconds()) < 1.0
@@ -1503,6 +1514,7 @@ def _ingest_warehouse_and_copilot_db(
                             seq=seq_no,
                             skill_version=str(row.get("skill_version") or "").strip() or None,
                             subtree_sha=str(row.get("subtree_sha") or "").strip() or None,
+                            origin_source="warehouse",
                         )
                     )
 
@@ -2908,17 +2920,19 @@ def _evaluate_session_progressive_and_preread(
         for e_ts, e_seq in edit_ev_list:
             raw_timeline.append((e_ts, e_seq, "edit", None))
 
-        dedup_calls: list[ScriptCallEvent] = []
+        dedup_by_validator: dict[tuple[str, str], list[ScriptCallEvent]] = {}
         for c_ev in sorted(o.script_calls, key=lambda c: (c.ts, c.seq)):
-            if any(
-                prev.skill == c_ev.skill
-                and prev.script_rel == c_ev.script_rel
-                and prev.exit_code == c_ev.exit_code
-                and abs((c_ev.ts - prev.ts).total_seconds()) < 1.0
-                for prev in dedup_calls
-            ):
-                continue
-            dedup_calls.append(c_ev)
+            v_key = (c_ev.skill, c_ev.script_rel)
+            v_hist = dedup_by_validator.setdefault(v_key, [])
+            if v_hist:
+                last_v = v_hist[-1]
+                if (
+                    last_v.origin_source != c_ev.origin_source
+                    and last_v.exit_code == c_ev.exit_code
+                    and abs((c_ev.ts - last_v.ts).total_seconds()) < 1.0
+                ):
+                    continue
+            v_hist.append(c_ev)
             raw_timeline.append((c_ev.ts, c_ev.seq, "script", c_ev))
 
         call_seqs = {c.seq for c in o.script_calls}
@@ -7875,10 +7889,12 @@ def _fast_telemetry_signals(
         if sid_v in sampled_obs:
             obs_s = sampled_obs[sid_v]
             obs_s.skills_loaded.add(sk)
-            for ts_num, _, ec_v, _ in sorted(ev_items, key=lambda item: (item[0], item[1])):
+            for ts_num, _, ec_v, ev_src in sorted(ev_items, key=lambda item: (item[0], item[1])):
                 ev_dt = datetime.fromtimestamp(ts_num, tz=timezone.utc).astimezone(CST)
+                src_label = "warehouse" if ev_src == "wh" else "usage_jsonl"
                 if any(
-                    c.skill == sk
+                    c.origin_source != src_label
+                    and c.skill == sk
                     and c.script_rel == sc_rel_v
                     and c.exit_code == ec_v
                     and abs((c.ts - ev_dt).total_seconds()) < 1.0
@@ -7896,6 +7912,7 @@ def _fast_telemetry_signals(
                         duration_ms=None,
                         measured=False,
                         seq=obs_s.next_seq(),
+                        origin_source=src_label,
                     )
                 )
         else:
@@ -7941,15 +7958,18 @@ def _fast_telemetry_signals(
     # Reconcile non-sampled warehouse/usage.jsonl validator sequences chronologically by (ts_epoch, row_seq)
     for (sk, _, _), ev_items in non_sampled_validator_events.items():
         ordered_evs = sorted(ev_items, key=lambda item: (item[0], item[1]))
-        # Deduplicate overlapping wh + usage records with identical timestamp & exit_code
-        dedup_ecs: list[int] = []
-        prev_key: tuple[float, int] | None = None
-        for ts_num, _, ec_v, _ in ordered_evs:
-            cur_k = (round(ts_num, 3), ec_v)
-            if cur_k == prev_key:
+        # Deduplicate only adjacent cross-source mirrored records (wh vs usage) without coalescing same-source retries
+        dedup_evs: list[tuple[float, int, str]] = []
+        for ts_num, _, ec_v, ev_src in ordered_evs:
+            if (
+                dedup_evs
+                and dedup_evs[-1][2] != ev_src
+                and dedup_evs[-1][1] == ec_v
+                and abs(ts_num - dedup_evs[-1][0]) < 1.0
+            ):
                 continue
-            prev_key = cur_k
-            dedup_ecs.append(ec_v)
+            dedup_evs.append((ts_num, ec_v, ev_src))
+        dedup_ecs = [ec_v for _, ec_v, _ in dedup_evs]
         fail_indices = [i for i, ec_v in enumerate(dedup_ecs) if ec_v != 0]
         if not fail_indices:
             continue
