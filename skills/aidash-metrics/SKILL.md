@@ -13,6 +13,7 @@ Use this skill for any AIDash AI-metric or telemetry-card change. It is an evide
 |---|---|
 | Physical lineage, grains, coverage | [`references/aidata-l1-l5-lineage.md`](references/aidata-l1-l5-lineage.md) |
 | Deterministic discovery | `python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --aidata-root <root> --metrics <csv> --json` |
+| Compact discovery aliases | `--root`, `--dir`, and `--aidata-dir` alias `--aidata-root`; default/`--summary` bounds oversized JSON, while `--full` restores raw lists |
 | Metric acceptance cases | [`references/eval-cases.json`](references/eval-cases.json) |
 | Layered model design | `/layered-data-warehouse` and its `SKILL.md` |
 | Product/UI flow | UI handoff contract (consume `design.md`, no skill hop) |
@@ -29,6 +30,11 @@ Use this skill for any AIDash AI-metric or telemetry-card change. It is an evide
 Treat `fact_turn.tool_calls` as a JSON tool-name column, not a per-call table. Keep `fact_gtt_task_run` and `fact_gtt_event` at their distinct grains. The ROI SQL is an extension surface; the canonical producer and Snapshot remain the source of truth. If L1 strips tool inputs or paths, classify the metric as collection work rather than inventing evidence.
 
 No UI gallery, AIDash pipeline, private Session-log, credential, or live-database change belongs in this skill task. Use hermetic fixtures for regressions and keep all source reads read-only.
+
+## Inspector output contract
+
+The inspector is read-only and fail-closed. Invalid flags, missing roots, and unknown metrics exit 2 with no more than three stderr lines, including a pointer to `references/aidata-l1-l5-lineage.md`. JSON summaries stay below 15,000 bytes when oversized by truncating representative layer, sampling, and evidence lists while retaining `l1_total_count` and `l1_total_files`. Small fixture payloads are emitted unchanged; `--full` restores unlimited lists.
+
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
