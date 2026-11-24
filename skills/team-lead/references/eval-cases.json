@@ -170,6 +170,26 @@
       ],
       "negative_cmd": "python3 skills/m2-dispatcher/scripts/autopilot_watchdog.py check --target invalid-target --no-escalate",
       "registered_at": "2026-11-22"
+    },
+    {
+      "id": "EV-010",
+      "title": "feedback_guard.py diff-check reports whitespace as a soft advisory",
+      "tags": ["feedback-guard", "diff-check", "soft-advisory"],
+      "cmd": "python3 skills/team-lead/scripts/feedback_guard.py diff-check --worktree .",
+      "expect_exit": 0,
+      "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py diff-check --unknown-flag",
+      "expect_fail_exit": 2,
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-011",
+      "title": "feedback_guard.py list-receipts summarizes top-level R10 receipts",
+      "tags": ["feedback-guard", "list-receipts", "r10"],
+      "cmd": "python3 skills/team-lead/scripts/feedback_guard.py list-receipts --handoff-dir .",
+      "expect_exit": 0,
+      "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py list-receipts /nonexistent-r10-receipts",
+      "expect_fail_exit": 2,
+      "registered_at": "2026-11-25"
     }
   ]
 }

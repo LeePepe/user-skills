@@ -24,6 +24,7 @@ Implements the 3-stage hygiene patrol pipeline:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import importlib.util
@@ -34,6 +35,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -87,7 +90,68 @@ M1_ROLE_MARKERS: tuple[str, ...] = (
     "-designer-",
 )
 
+HYGIENE_CACHE_DIR = Path(tempfile.gettempdir()) / "team-lead-hygiene-patrol-cache"
+HYGIENE_CACHE_TTL_SECONDS = 30.0
+
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _cache_watermark(dev_root: Path, handoff_root: Path, repos: Sequence[str]) -> str:
+    entries: list[tuple[str, int, int]] = []
+    candidates: list[Path] = []
+    for repo_name in repos:
+        repo_dir = (dev_root / repo_name).expanduser()
+        candidates.extend((repo_dir / ".git" / name for name in ("HEAD", "index")))
+        worktree_meta = repo_dir / ".git" / "worktrees"
+        if worktree_meta.is_dir():
+            candidates.extend(sorted(worktree_meta.rglob("*") ))
+    if handoff_root.is_dir():
+        candidates.extend(sorted(handoff_root.glob("*/ledger.md")))
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return _compute_signature({"dev_root": str(dev_root), "handoff_root": str(handoff_root), "repos": list(repos), "stats": entries})
+
+
+def _cache_read(name: str, signature: str) -> dict[str, Any] | None:
+    path = HYGIENE_CACHE_DIR / f"{name}.json"
+    try:
+        if time.time() - path.stat().st_mtime > HYGIENE_CACHE_TTL_SECONDS:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("signature") == signature and isinstance(payload.get("data"), dict):
+            return payload["data"]
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _cache_write(name: str, signature: str, data: Mapping[str, Any]) -> None:
+    try:
+        HYGIENE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = HYGIENE_CACHE_DIR / f"{name}.json"
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps({"signature": signature, "data": data}, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        pass
+
+
+def _cache_enabled(runner: Runner, use_cache: bool) -> bool:
+    return use_cache and runner is _default_runner
+
+
+class _SelfDisclosingHygieneParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[local_hygiene_patrol] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/local_hygiene_patrol.py --help` and check the subcommand flags.\n"
+            "  Reference: skills/team-lead/references/bots-and-agents.md\n"
+        )
+        raise SystemExit(2)
 
 
 def _default_runner(
@@ -625,7 +689,13 @@ def scan_worktrees(
     herdr_json: Path | Mapping[str, Any] | None = None,
     runner: Runner = _default_runner,
     merge_checker: Callable[[Path, str | None], bool] | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
+    signature = _cache_watermark(Path(dev_root).expanduser(), Path(handoff_root).expanduser(), repos)
+    if _cache_enabled(runner, use_cache) and merge_checker is None:
+        cached = _cache_read("worktrees", signature)
+        if cached is not None:
+            return cached
     git_gc = _load_git_gc()
     _, agents = _load_herdr_snapshot(herdr_json=herdr_json, runner=runner)
     active_cwds = _active_pane_cwds(agents, dev_root=dev_root)
@@ -635,14 +705,16 @@ def scan_worktrees(
     clean_merged: list[dict[str, Any]] = []
     preserved: list[dict[str, Any]] = []
 
-    for repo_name in repos:
+    def inspect_repo(repo_name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        repo_clean: list[dict[str, Any]] = []
+        repo_preserved: list[dict[str, Any]] = []
         repo_dir = (dev_root / repo_name).expanduser()
         if not (repo_dir / ".git").exists():
-            continue
+            return repo_clean, repo_preserved
         try:
             wt_records = git_gc._worktrees(repo_dir, runner=lambda cmd, **kw: runner(cmd, **kw))
         except (OSError, subprocess.SubprocessError):
-            continue
+            return repo_clean, repo_preserved
         for item in wt_records:
             wt_str = item.get("worktree")
             if not wt_str:
@@ -667,20 +739,13 @@ def scan_worktrees(
                 )
             has_active_pane = int(active_detected)
             is_held = int(_is_worktree_held(wt_path, held_goals))
-
             if merge_checker is not None:
                 merged_bool = merge_checker(repo_dir, branch)
             else:
                 merged_bool = _is_positively_merged(
-                    repo_dir,
-                    wt_path,
-                    branch,
-                    ledgers=ledgers,
-                    git_gc=git_gc,
-                    runner=runner,
+                    repo_dir, wt_path, branch, ledgers=ledgers, git_gc=git_gc, runner=runner
                 )
             is_merged_to_default = int(bool(merged_bool))
-
             record = {
                 "repo": repo_name,
                 "repo_path": str(repo_dir),
@@ -692,7 +757,7 @@ def scan_worktrees(
                 "is_held": is_held,
             }
             if is_dirty == 0 and is_merged_to_default == 1 and has_active_pane == 0 and is_held == 0:
-                clean_merged.append(record)
+                repo_clean.append(record)
             else:
                 reasons: list[str] = []
                 if is_dirty:
@@ -704,12 +769,26 @@ def scan_worktrees(
                 if is_held:
                     reasons.append("held")
                 record["preserve_reasons"] = reasons
-                preserved.append(record)
+                repo_preserved.append(record)
+        return repo_clean, repo_preserved
 
-    return {
+    existing_repos = [repo for repo in repos if ((dev_root / repo).expanduser() / ".git").exists()]
+    if len(existing_repos) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(existing_repos))) as pool:
+            reports = list(pool.map(inspect_repo, existing_repos))
+    else:
+        reports = [inspect_repo(repo) for repo in existing_repos]
+    for repo_clean, repo_preserved in reports:
+        clean_merged.extend(repo_clean)
+        preserved.extend(repo_preserved)
+
+    result = {
         "clean_merged_worktrees": clean_merged,
         "preserved_worktrees": preserved,
     }
+    if _cache_enabled(runner, use_cache) and merge_checker is None:
+        _cache_write("worktrees", signature, result)
+    return result
 
 
 def _resolve_git_info_exclude_path(repo_or_wt: Path) -> Path | None:
@@ -922,42 +1001,37 @@ def scan_main_checkouts(
     repos: Sequence[str] = DEFAULT_CORE_REPOS,
     fetch_remote: bool = False,
     runner: Runner = _default_runner,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
+    cache_root = Path(dev_root).expanduser()
+    signature = _cache_watermark(cache_root, cache_root / "handoff", repos)
+    if _cache_enabled(runner, use_cache) and not fetch_remote:
+        cached = _cache_read("main-checkouts", signature)
+        if cached is not None:
+            return cached
     repo_reports: list[dict[str, Any]] = []
     dirty_repos: list[dict[str, Any]] = []
     behind_repos: list[dict[str, Any]] = []
 
-    for repo_name in repos:
+    def inspect_repo(repo_name: str) -> dict[str, Any] | None:
         repo_dir = (dev_root / repo_name).expanduser()
         if not (repo_dir / ".git").exists():
-            continue
+            return None
         if fetch_remote:
             runner(["git", "-C", str(repo_dir), "fetch", "--quiet", "origin"], check=False)
-
         branch_proc = runner(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"], check=False)
         branch = (branch_proc.stdout or "").strip() or "HEAD"
-
         status_proc = runner(["git", "-C", str(repo_dir), "status", "--porcelain"], check=False)
-        dirty_files = [
-            line.strip()
-            for line in (status_proc.stdout or "").splitlines()
-            if line.strip() and not line.strip().endswith(".DS_Store")
-        ]
-
+        dirty_files = [line.strip() for line in (status_proc.stdout or "").splitlines() if line.strip() and not line.strip().endswith(".DS_Store")]
         behind_count = 0
         ahead_count = 0
         origin_probe = runner(["git", "-C", str(repo_dir), "rev-parse", "--verify", "origin/main"], check=False)
         if origin_probe.returncode == 0:
-            rev_proc = runner(
-                ["git", "-C", str(repo_dir), "rev-list", "--left-right", "--count", "HEAD...origin/main"],
-                check=False,
-            )
+            rev_proc = runner(["git", "-C", str(repo_dir), "rev-list", "--left-right", "--count", "HEAD...origin/main"], check=False)
             parts = (rev_proc.stdout or "").strip().split()
             if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                ahead_count = int(parts[0])
-                behind_count = int(parts[1])
-
-        entry = {
+                ahead_count, behind_count = int(parts[0]), int(parts[1])
+        return {
             "repo": repo_name,
             "branch": branch,
             "dirty_count": len(dirty_files),
@@ -966,18 +1040,28 @@ def scan_main_checkouts(
             "behind_origin_main": behind_count,
             "non_default_checkout": branch not in {"main", "master"},
         }
-        repo_reports.append(entry)
+
+    existing_repos = [repo for repo in repos if ((dev_root / repo).expanduser() / ".git").exists()]
+    if len(existing_repos) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(existing_repos))) as pool:
+            repo_reports = [entry for entry in pool.map(inspect_repo, existing_repos) if entry is not None]
+    else:
+        repo_reports = [entry for entry in (inspect_repo(repo) for repo in existing_repos) if entry is not None]
+    for entry in repo_reports:
         if entry["dirty_count"] > 0 or entry["non_default_checkout"]:
             dirty_repos.append(entry)
-        if behind_count > 0:
+        if entry["behind_origin_main"] > 0:
             behind_repos.append(entry)
 
-    return {
+    result = {
         "repos_scanned": len(repo_reports),
         "repos": repo_reports,
         "dirty_main_repos": dirty_repos,
         "behind_origin_repos": behind_repos,
     }
+    if _cache_enabled(runner, use_cache) and not fetch_remote:
+        _cache_write("main-checkouts", signature, result)
+    return result
 
 
 def scan_environment(
@@ -989,6 +1073,7 @@ def scan_environment(
     fetch_remote: bool = False,
     runner: Runner = _default_runner,
     merge_checker: Callable[[Path, str | None], bool] | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     resolved_dev = Path(dev_root).expanduser()
     resolved_handoff = Path(handoff_root).expanduser() if handoff_root is not None else (resolved_dev / "handoff")
@@ -1005,12 +1090,14 @@ def scan_environment(
         herdr_json=herdr_json,
         runner=runner,
         merge_checker=merge_checker,
+        use_cache=use_cache,
     )
     main_report = scan_main_checkouts(
         dev_root=resolved_dev,
         repos=repos,
         fetch_remote=fetch_remote,
         runner=runner,
+        use_cache=use_cache,
     )
 
     anomalies: list[dict[str, Any]] = []
@@ -1484,6 +1571,7 @@ def run_loop_check(
     runner: Runner = _default_runner,
     merge_checker: Callable[[Path, str | None], bool] | None = None,
     jev_fn: Callable[..., dict[str, Any] | None] | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     resolved_date = target_date or datetime.now(CST).date()
     date_str = resolved_date.isoformat()
@@ -1496,6 +1584,7 @@ def run_loop_check(
         fetch_remote=fetch_remote,
         runner=runner,
         merge_checker=merge_checker,
+        use_cache=use_cache,
     )
 
     if auto_gc:
@@ -1524,6 +1613,7 @@ def run_loop_check(
                 fetch_remote=False,
                 runner=runner,
                 merge_checker=merge_checker,
+                use_cache=use_cache,
             )
     else:
         gc_report = {
@@ -1647,7 +1737,7 @@ def _parse_repos_arg(raw: str) -> tuple[str, ...]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _SelfDisclosingHygieneParser(
         prog="local_hygiene_patrol.py",
         description="Loop 3A: 0-Agent Herdr & Worktree Hygiene Patrol + Safe Auto-GC + Jev Alerting",
     )
@@ -1669,6 +1759,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--repos", default=",".join(DEFAULT_CORE_REPOS))
         p.add_argument("--herdr-json", type=Path, default=None)
         p.add_argument("--json", action="store_true", default=True)
+        p.add_argument("--no-cache", action="store_true", help="Bypass the 30-second stat-watermarked scan cache")
         if name in {"scan", "collect", "loop-check"}:
             p.add_argument("--fetch-remote", action="store_true")
         if name in {"run-gc", "collect", "loop-check"}:
@@ -1694,6 +1785,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repos=repos,
             herdr_json=ns.herdr_json,
             fetch_remote=ns.fetch_remote,
+            use_cache=not ns.no_cache,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
@@ -1723,6 +1815,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             auto_gc=not ns.no_gc,
             dry_run=ns.dry_run,
             mock_jev_json=ns.mock_jev_json,
+            use_cache=not ns.no_cache,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if payload["ok"] else 1
