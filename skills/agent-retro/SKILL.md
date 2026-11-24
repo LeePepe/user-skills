@@ -4,12 +4,13 @@ description: 5-layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attri
 ---
 # Agent Retro（五层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
 
-`agent-retro` inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **5-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
+`agent-retro` collects bounded multi-agent execution telemetry and inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **5-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
+| Stage 0 bounded collection | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py collect [--output /tmp/multica-agent-retro-collect.json] --days 3 --json` |
 | Stage 1 wide or role/layer probe | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py probe [--role <role>] [--layer <layers>] --fast --json` |
 | Stage 2 Cheap Worker + Jev triage (`--pick-top 3` / `--pick-one`) | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py triage [--role <role>] [--pick-top 3 \| --pick-one] --use-jev --emit-briefs ~/Development/handoff --json` |
 | Stage 3 deep skill attribution diagnosis | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py diagnose --skill <name> [--days 30] --json` |

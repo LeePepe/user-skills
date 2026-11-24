@@ -16,9 +16,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[3]
 SKILL_DIR = ROOT / "skills" / "agent-retro"
@@ -27,6 +28,24 @@ MAX_EVENTS = 150_000
 MAX_EVENTS_PER_SESSION = 4_000
 MAX_BYTES = 2_000_000
 MAX_OUTPUT = 16_000
+DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
+DEFAULT_WORKSPACE_ID = "6f6b9a0b-4375-4ebc-a997-ff0c99b2645c"
+DEFAULT_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
+DEFAULT_AGENT_ID = "d550a00a-1173-4bed-8bf3-621384cdfb10"
+DEFAULT_AUTOPILOT_TITLE = "Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)"
+DEFAULT_TRIGGER_LABEL = "Daily CST 04:40 Agent Trajectory Retro Diagnostic"
+DEFAULT_CRON = "40 4 * * *"
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+DEFAULT_COLLECT_OUTPUT = Path("/tmp/multica-agent-retro-collect.json")
+
+
+def _default_agent_retro_watermark_path() -> Path:
+    override = os.environ.get("AGENT_RETRO_WATERMARK_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cache" / "multica-agent-retro-autopilot" / "agent-retro-watermark.json"
+
+
 HOOK_NOISE = ("hook.start", "hook.end", "session.usage_checkpoint", "skill.context_delivered_ref")
 METRIC_ORDER = (
     ("role", "R1_m3_prompt_prelock"), ("role", "R2_m2_direct_code_edit"),
@@ -1089,6 +1108,81 @@ def command_probe(args: argparse.Namespace) -> dict[str, Any]:
     return _scan(args)
 
 
+def _agent_retro_coverage(scan: Mapping[str, Any]) -> str:
+    source = scan.get("source") if isinstance(scan.get("source"), Mapping) else scan
+    event_source = source.get("events") if isinstance(source.get("events"), Mapping) else {}
+    handoff_source = source.get("handoff") if isinstance(source.get("handoff"), Mapping) else {}
+    if not event_source.get("available") and not handoff_source.get("available"):
+        return "missing"
+    coverage = scan.get("coverage") if isinstance(scan.get("coverage"), Mapping) else {}
+    sessions = int(coverage.get("sessions", 0) or 0)
+    return "healthy" if sessions > 0 and not coverage.get("incomplete") else "degraded"
+
+
+def collect_agent_retro_snapshot(
+    *,
+    days: int = 3,
+    handoff_root: Path | None = None,
+    output_path: Path | None = None,
+    watermark_path: Path | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Collect a deterministic three-day snapshot without network or Multica side effects."""
+    args = argparse.Namespace(
+        days=max(1, int(days)), role=None, layer=None, fast=True,
+        handoff_root=str(handoff_root) if handoff_root else None, handoff_dir=None,
+    )
+    scan = _scan(args)
+    date_str = datetime.now(timezone.utc).date().isoformat()
+    coverage = _agent_retro_coverage(scan)
+    sessions = int((scan.get("coverage") or {}).get("sessions", 0) or 0)
+    cohort = hashlib.sha256(json.dumps(
+        {"observations": scan.get("observations", []), "sessions": sessions, "coverage": coverage},
+        ensure_ascii=False, sort_keys=True, default=str,
+    ).encode("utf-8")).hexdigest()[:16]
+    snapshot = {
+        "schema": "agent-retro-collect/v1",
+        "ok": True,
+        "date": date_str,
+        "window_days": max(1, int(days)),
+        "dedup_key": f"agent-retro-autopilot-{date_str}",
+        "cursor": f"agent-retro-autopilot-{date_str}",
+        "summary": {
+            "sample_size": sessions,
+            "sessions": sessions,
+            "coverage_status": coverage,
+            "coverage": coverage,
+            "observation_count": len(scan.get("observations", [])),
+        },
+        "coverage": {"sessions": sessions, "status": coverage},
+        "scan": scan,
+        "watermark": cohort,
+    }
+    if persist:
+        target = output_path or DEFAULT_COLLECT_OUTPUT
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        watermark = watermark_path or _default_agent_retro_watermark_path()
+        watermark.parent.mkdir(parents=True, exist_ok=True)
+        watermark.write_text(json.dumps({
+            "schema": "agent-retro-watermark/v1", "cohort_watermark": cohort,
+            "date": date_str, "sessions": sessions, "coverage": coverage,
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        snapshot["output"] = str(target)
+        snapshot["watermark_path"] = str(watermark)
+    return snapshot
+
+
+def command_collect(args: argparse.Namespace) -> dict[str, Any]:
+    return collect_agent_retro_snapshot(
+        days=int(getattr(args, "days", 3) or 3),
+        handoff_root=Path(args.handoff_root).expanduser() if getattr(args, "handoff_root", None) else None,
+        output_path=Path(args.output).expanduser() if getattr(args, "output", None) else DEFAULT_COLLECT_OUTPUT,
+        watermark_path=Path(args.watermark_file).expanduser() if getattr(args, "watermark_file", None) else None,
+        persist=True,
+    )
+
+
 def _mock_jev(value: str | None) -> dict[str, Any] | None:
     if not value:
         return None
@@ -1173,25 +1267,201 @@ def command_rollup(args: argparse.Namespace) -> dict[str, Any]:
     return {"schema": "agent-retro-rollup/v1", "ok": True, "date": day, "receipts": len(receipts), "k": scan["k_cap"], "payload": payload, "issue_markdown": markdown, "issue_verified": verified}
 
 
+def _default_multica_runner(
+    command: list[str], *, stdin_text: str | None = None,
+    multica_bin: str | None = None, server_url: str | None = None,
+    workspace_id: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    binary = multica_bin or os.environ.get("MULTICA_BIN") or shutil.which("multica") or "/opt/homebrew/bin/multica"
+    cmd = [binary]
+    if server_url:
+        cmd += ["--server-url", server_url]
+    if workspace_id:
+        cmd += ["--workspace-id", workspace_id]
+    cmd += command
+    env = dict(os.environ)
+    if server_url:
+        env["MULTICA_SERVER_URL"] = server_url
+    if workspace_id:
+        env["MULTICA_WORKSPACE_ID"] = workspace_id
+    return subprocess.run(cmd, input=stdin_text, capture_output=True, text=True, env=env, check=False)
+
+
+def _parse_multica_json(proc: subprocess.CompletedProcess[str], context: str) -> Any:
+    if proc.returncode != 0:
+        raise RuntimeError(f"multica {context} failed (exit {proc.returncode}): {(proc.stderr or proc.stdout or '').strip()[:300]}")
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"multica {context} returned invalid JSON: {raw[:300]}") from exc
+
+
+def _telemetry_issue_markdown(markdown: str, *, day: str, sessions: int, coverage: str) -> str:
+    marker = f"agent-retro-autopilot-{day}"
+    result = markdown.replace(f"<!-- multica-cursor:agent-retro-{day} -->", f"<!-- multica-cursor:{marker} -->")
+    telemetry = f"- **Telemetry**: `sessions={sessions}` · `coverage={coverage}`"
+    if "</details>" in result and telemetry not in result:
+        result = result.replace("</details>", telemetry + "\n</details>", 1)
+    return result
+
+
+def _apply_agent_retro_issue(
+    *, title: str, description: str, assignee_id: str, priority: str, status: str,
+    server_url: str, workspace_id: str, runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> dict[str, Any]:
+    listed_proc = runner(["issue", "list", "--assignee-id", assignee_id, "--limit", "50", "--output", "json"],
+                         server_url=server_url, workspace_id=workspace_id)
+    listed = _parse_multica_json(listed_proc, "issue list")
+    issues = listed.get("issues", []) if isinstance(listed, Mapping) else (listed if isinstance(listed, list) else [])
+    marker = re.search(r"agent-retro-autopilot-\d{4}-\d{2}-\d{2}", description)
+    cursor = marker.group(0) if marker else ""
+    existing = next((item for item in issues if isinstance(item, Mapping) and str(item.get("status") or "").lower() not in {"done", "cancelled", "canceled"}
+                     and (str(item.get("title") or "") == title or (cursor and cursor in str(item.get("description") or "")))), None)
+    if existing is not None and (existing.get("id") or existing.get("identifier")):
+        target = str(existing.get("id") or existing.get("identifier"))
+        proc = runner(["issue", "update", target, "--title", title, "--description-stdin", "--priority", priority,
+                       "--status", status, "--assignee-id", assignee_id, "--no-start", "--output", "json"],
+                      stdin_text=description, server_url=server_url, workspace_id=workspace_id)
+        return {"action": "updated_existing", "issue": _parse_multica_json(proc, "issue update"), "dedup_key": cursor}
+    proc = runner(["issue", "create", "--title", title, "--priority", priority, "--status", status,
+                   "--assignee-id", assignee_id, "--description-stdin", "--output", "json"],
+                  stdin_text=description, server_url=server_url, workspace_id=workspace_id)
+    return {"action": "created", "issue": _parse_multica_json(proc, "issue create"), "dedup_key": cursor}
+
+
+def _sync_linear_agent_retro(*, title: str, description: str, day: str) -> dict[str, Any]:
+    """Use the existing Linear client only when explicitly requested by --sync-linear."""
+    path = ROOT / "skills" / "linear-board" / "scripts" / "daily-brief.py"
+    spec = importlib.util.spec_from_file_location("agent_retro_linear_bridge", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Linear client bridge unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    client = module._load_linear_client(dry_run=False)
+    if client is None:
+        raise RuntimeError("Linear credentials unavailable for --sync-linear")
+    team = client.team_metadata("TIA")
+    marker = f"<!-- multica-cursor:agent-retro-autopilot-{day} -->"
+    issues = client.list_issues("TIA", limit=None)
+    existing = next((item for item in issues if marker in str(item.get("description") or "") or item.get("title") == title), None)
+    kwargs = {"title": title, "description": description, "assignee_id": DEFAULT_OWNER_ID}
+    if existing:
+        return client.update_issue(existing["id"], **kwargs)
+    states = team.get("states", {}).get("nodes", [])
+    todo = next((state for state in states if str(state.get("name", "")).casefold() == "todo"), None)
+    kwargs.update({"team_id": team["id"], "state_id": todo["id"] if todo else None, "parent_id": None})
+    return client.create_issue(**kwargs)
+
+
 def command_file_issue(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
     roll = command_rollup(argparse.Namespace(handoff_root=str(root), date=args.date, issue_brief=True))
-    dry_run = not args.apply
-    return {"schema": "agent-retro-file-issue/v1", "ok": True, "dry_run": dry_run, "published": False if dry_run else False,
-            "server": args.server, "workspace": args.workspace, "owner": args.owner, "agent": args.agent,
-            "dedup_key": f"[Agent Retro {roll['date']}]", "issue_markdown": roll.get("issue_markdown"),
-            "action": "would publish after explicit integration approval" if dry_run else "apply requested; network publisher intentionally not bundled"}
+    day = str(roll["date"])
+    payload = roll.get("payload", {}) if isinstance(roll.get("payload"), Mapping) else {}
+    scan = payload.get("coverage", {}) if isinstance(payload.get("coverage"), Mapping) else {}
+    sessions = int(scan.get("sessions", 0) or 0)
+    coverage = _agent_retro_coverage(payload)
+    markdown = _telemetry_issue_markdown(str(roll.get("issue_markdown") or ""), day=day, sessions=sessions, coverage=coverage)
+    verification = _load_issue_renderer().verify_dual_zone_issue(markdown) if _load_issue_renderer() else {"ok": False, "violations": ["renderer unavailable"]}
+    if not verification.get("ok"):
+        raise ValueError(f"Dual-Zone issue verification failed before Multica publish: {verification.get('violations')}")
+    dry_run = bool(getattr(args, "dry_run", False) or not getattr(args, "apply", False))
+    server_url = getattr(args, "server", "") or DEFAULT_SERVER_URL
+    workspace = getattr(args, "workspace", "") or DEFAULT_WORKSPACE_ID
+    owner = getattr(args, "owner", "") or DEFAULT_OWNER_ID
+    title = f"[Agent Retro {day}]"
+    result: dict[str, Any] = {"schema": "agent-retro-file-issue/v1", "ok": True, "dry_run": dry_run,
+                              "published": False, "server": server_url, "workspace": workspace,
+                              "owner": owner, "agent": getattr(args, "agent", "agent-retro"),
+                              "dedup_key": f"agent-retro-autopilot-{day}", "issue_markdown": markdown,
+                              "dual_zone_verification": verification, "action": "dry_run"}
+    if not dry_run:
+        applied = _apply_agent_retro_issue(title=title, description=markdown, assignee_id=owner,
+                                           priority="medium", status="backlog", server_url=server_url,
+                                           workspace_id=workspace, runner=getattr(args, "runner", _default_multica_runner))
+        result.update(applied, published=True, action=applied["action"])
+        if getattr(args, "sync_linear", False):
+            result["linear"] = _sync_linear_agent_retro(title=title, description=markdown, day=day)
+    return result
+
+
+def _agent_retro_prompt() -> str:
+    return ("# Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)\n\n"
+            "1 M2 -> 1 Cheap Probe Worker -> K (0..3) Independent Per-Skill M1 TLs -> "
+            "Rollup to Single M2 -> M3 [Agent Retro YYYY-MM-DD] Multica & Linear Issue\n\n"
+            "Run `python3 skills/agent-retro/scripts/agent_retro.py collect --days 3 --json`, "
+            "then file the verified Dual-Zone issue with the `agent-retro-autopilot-YYYY-MM-DD` cursor.")
+
+
+def _apply_agent_retro_autopilot(*, runner: Callable[..., subprocess.CompletedProcess[str]], server_url: str,
+                                  workspace: str, receipt: Path | None = None) -> dict[str, Any]:
+    prompt = _agent_retro_prompt()
+    listed = _parse_multica_json(runner(["autopilot", "list", "--output", "json"], server_url=server_url, workspace_id=workspace), "autopilot list")
+    autopilots = listed.get("autopilots", []) if isinstance(listed, Mapping) else (listed if isinstance(listed, list) else [])
+    existing = next((ap for ap in autopilots if isinstance(ap, Mapping) and
+                     ("Daily Agent Trajectory Retro" in str(ap.get("title") or "") or "agent-retro-diagnostic" in str(ap.get("description") or ""))), None)
+    if existing:
+        ap_id = str(existing.get("id"))
+        ap_action = "updated"
+        ap_obj = _parse_multica_json(runner(["autopilot", "update", ap_id, "--title", DEFAULT_AUTOPILOT_TITLE,
+                                             "--agent", DEFAULT_AGENT_ID, "--mode", "run_only", "--status", "active",
+                                             "--subscriber", DEFAULT_OWNER_ID, "--description", prompt, "--output", "json"],
+                                            server_url=server_url, workspace_id=workspace), "autopilot update")
+    else:
+        ap_action = "created"
+        ap_obj = _parse_multica_json(runner(["autopilot", "create", "--title", DEFAULT_AUTOPILOT_TITLE,
+                                             "--agent", DEFAULT_AGENT_ID, "--mode", "run_only", "--subscriber", DEFAULT_OWNER_ID,
+                                             "--description", prompt, "--output", "json"], server_url=server_url, workspace_id=workspace), "autopilot create")
+        ap_id = str(ap_obj.get("id") or (ap_obj.get("autopilot") or {}).get("id") or "")
+        if not ap_id:
+            raise RuntimeError(f"Could not extract agent-retro autopilot id: {ap_obj}")
+    trig_data = _parse_multica_json(runner(["autopilot", "trigger-list", ap_id, "--output", "json"], server_url=server_url, workspace_id=workspace), "autopilot trigger-list")
+    triggers = trig_data.get("triggers", []) if isinstance(trig_data, Mapping) else (trig_data if isinstance(trig_data, list) else [])
+    sched = next((t for t in triggers if isinstance(t, Mapping) and str(t.get("kind") or "schedule") == "schedule"), None)
+    if sched:
+        trig_id = str(sched.get("id"))
+        trigger_action = "unchanged" if (str(sched.get("cron") or sched.get("cron_expression") or "") == DEFAULT_CRON and
+                                          str(sched.get("timezone") or "") == DEFAULT_TIMEZONE and
+                                          str(sched.get("label") or DEFAULT_TRIGGER_LABEL) == DEFAULT_TRIGGER_LABEL) else "updated"
+        if trigger_action == "updated":
+            trigger = _parse_multica_json(runner(["autopilot", "trigger-update", ap_id, trig_id, "--cron", DEFAULT_CRON,
+                                                   "--timezone", DEFAULT_TIMEZONE, "--label", DEFAULT_TRIGGER_LABEL, "--output", "json"],
+                                                  server_url=server_url, workspace_id=workspace), "autopilot trigger-update")
+        else:
+            trigger = sched
+    else:
+        trigger_action = "created"
+        trigger = _parse_multica_json(runner(["autopilot", "trigger-add", ap_id, "--kind", "schedule", "--cron", DEFAULT_CRON,
+                                               "--timezone", DEFAULT_TIMEZONE, "--label", DEFAULT_TRIGGER_LABEL, "--output", "json"],
+                                              server_url=server_url, workspace_id=workspace), "autopilot trigger-add")
+    result = {"ok": True, "autopilot_action": ap_action, "autopilot_id": ap_id, "autopilot": ap_obj,
+              "trigger_action": trigger_action, "trigger": trigger, "prompt": prompt}
+    if receipt:
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        result["receipt"] = str(receipt)
+    return result
 
 
 def command_autopilot(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
-    config = {"name": "Daily Agent Trajectory Retro Autopilot", "schedule": {"cron": "40 4 * * *", "timezone": "Asia/Shanghai", "mode": "run_only"},
-              "command": "python3 skills/agent-retro/scripts/agent_retro.py rollup --issue-brief --json", "skill": "agent-retro"}
+    config = {"name": DEFAULT_AUTOPILOT_TITLE, "schedule": {"cron": DEFAULT_CRON, "timezone": DEFAULT_TIMEZONE, "mode": "run_only"},
+              "command": "python3 skills/agent-retro/scripts/agent_retro.py collect --days 3 --json", "skill": "agent-retro",
+              "prompt": _agent_retro_prompt()}
     path = root / "agent-retro-autopilot.json"
-    written = False
-    if args.apply:
-        written = _safe_write(path, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
-    return {"schema": "agent-retro-autopilot/v1", "ok": True, "dry_run": not args.apply, "config": config, "path": str(path), "written": written, "skill_retro_schedule_untouched": True}
+    dry_run = bool(getattr(args, "dry_run", False) or not getattr(args, "apply", False))
+    result = {"schema": "agent-retro-autopilot/v1", "ok": True, "dry_run": dry_run, "config": config,
+              "path": str(path), "written": False, "skill_retro_schedule_untouched": True}
+    if not dry_run:
+        result.update(_apply_agent_retro_autopilot(runner=getattr(args, "runner", _default_multica_runner),
+                                                   server_url=getattr(args, "server", "") or DEFAULT_SERVER_URL,
+                                                   workspace=getattr(args, "workspace", "") or DEFAULT_WORKSPACE_ID,
+                                                   receipt=Path(args.receipt).expanduser() if getattr(args, "receipt", None) else None))
+        result["written"] = _safe_write(path, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+    return result
 
 
 class _Parser(argparse.ArgumentParser):
@@ -1215,20 +1485,22 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="agent_retro.py", description="Bounded offline multi-agent trajectory retro")
     sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("collect", help="collect a bounded telemetry snapshot"); _common(p); p.set_defaults(days=3); p.add_argument("--output", type=Path, default=DEFAULT_COLLECT_OUTPUT); p.add_argument("--watermark-file", type=Path, default=None)
     p = sub.add_parser("probe", help="fast bounded five-layer probe"); _common(p)
     p = sub.add_parser("triage", help="cheap worker triage"); _common(p); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--use-jev", action="store_true"); p.add_argument("--mock-jev-json"); p.add_argument("--emit-briefs")
     p = sub.add_parser("diagnose", help="deep attribution for one skill"); _common(p); p.add_argument("--skill", required=True)
     p = sub.add_parser("emit-briefs", help="write non-clobbering specs and briefs"); _common(p); p.add_argument("--skill"); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--emit-briefs")
     p = sub.add_parser("rollup", help="aggregate receipts into a Dual-Zone issue"); _common(p); p.add_argument("--date"); p.add_argument("--issue-brief", action="store_true")
-    p = sub.add_parser("file-issue", help="prepare or explicitly apply an issue publication"); _common(p); p.add_argument("--date"); p.add_argument("--server", default=""); p.add_argument("--workspace", default=""); p.add_argument("--owner", default=""); p.add_argument("--agent", default="agent-retro"); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true")
-    p = sub.add_parser("setup-autopilot", help="prepare the independent run_only schedule"); _common(p); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true")
+    p = sub.add_parser("file-issue", help="prepare or explicitly apply an issue publication"); _common(p); p.add_argument("--date"); p.add_argument("--server", "--server-url", dest="server", default=""); p.add_argument("--workspace", "--workspace-id", dest="workspace", default=""); p.add_argument("--owner", "--assignee-id", dest="owner", default=""); p.add_argument("--agent", default="agent-retro"); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true"); p.add_argument("--sync-linear", action="store_true")
+    p = sub.add_parser("setup-autopilot", help="prepare the independent run_only schedule"); _common(p); p.add_argument("--server", "--server-url", dest="server", default=""); p.add_argument("--workspace", "--workspace-id", dest="workspace", default=""); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true"); p.add_argument("--receipt", type=Path, default=None)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "probe": result = command_probe(args)
+        if args.command == "collect": result = command_collect(args)
+        elif args.command == "probe": result = command_probe(args)
         elif args.command == "triage": result = command_triage(args)
         elif args.command == "diagnose": result = command_diagnose(args)
         elif args.command == "emit-briefs": result = command_emit(args)

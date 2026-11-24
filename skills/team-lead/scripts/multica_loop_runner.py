@@ -102,6 +102,17 @@ CANONICAL_LOOP_SPECS: tuple[LoopSpec, ...] = (
         default_priority="medium",
     ),
     LoopSpec(
+        loop_id="agent-retro-diagnostic",
+        aliases=("agent-retro", "agent_retro", "agent-retro-autopilot"),
+        autopilot_title="Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)",
+        cron="40 4 * * *",
+        trigger_label="Daily CST 04:40 Agent Trajectory Retro Diagnostic",
+        delivery_mode="auto_fix_and_digest_only",
+        issue_title_template="[Agent Retro {date}]",
+        default_status="backlog",
+        default_priority="medium",
+    ),
+    LoopSpec(
         loop_id="daily-learn-recommend",
         aliases=("daily-learn", "daily_learn", "knowledge-digest"),
         autopilot_title="Daily Knowledge Digest Autopilot (Workflow + Personal Two Tracks -> Owner)",
@@ -993,6 +1004,16 @@ def build_loop_autopilot_description(spec: LoopSpec) -> str:
             "3. **Final Rollup to the Single M2 (`skill_retro.py rollup`)**:\n"
             f"   All `K` M1 TLs report back to the **same single M2**, which runs `python3 \"{skill_retro_rel}\" rollup --handoff-root \"$HOME/Development/handoff\" --json` and `python3 \"$HOME/Development/user-skills/skills/retro-loop/scripts/multica_skills_autopilot.py\" file-issue` to publish the single Dual-Zone (`issue-brief` verified) `[Skill Retro YYYY-MM-DD]` summary issue assigned to Owner (`lee@multica.local`).\n"
         )
+    if spec.loop_id == "agent-retro-diagnostic":
+        agent_retro_rel = "$HOME/Development/user-skills/skills/agent-retro/scripts/agent_retro.py"
+        return (
+            f"# {spec.autopilot_title}\n\n"
+            f"- **Loop ID**: `{spec.loop_id}`\n"
+            "- **Orchestration Topology**: `1 M2 -> 1 Cheap Probe Worker -> K (0..3) Independent Per-Skill M1 TLs -> Rollup to Single M2 -> M3 [Agent Retro YYYY-MM-DD] Multica & Linear Issue`\n"
+            f"- **Execution Architecture**: `Layer 0 deterministic collect -> Layer 1 bounded triage -> Layer 2 Dual-Zone issue ({spec.delivery_mode})`\n\n"
+            "Run only the bounded local collector first; publish or sync Linear only on explicit apply flags.\n\n"
+            f'```bash\npython3 "{agent_retro_rel}" collect --days 3 --json\npython3 "{agent_retro_rel}" file-issue --apply --json\n```\n'
+        )
     if spec.loop_id == "autopilot-health-watchdog":
         watchdog_rel = "$HOME/Development/user-skills/skills/team-lead/scripts/autopilot_watchdog.py"
         return (
@@ -1429,6 +1450,39 @@ def _default_loop_collector(spec: LoopSpec, *, target_date: date, dry_run: bool 
                 for t in todos[:6]
             ] or [{"what": "查看今日简报概览", "why": "保持日常研发节奏"}],
             "raw": {"rollup_counts": rollup, "todo_count": len(todos)},
+        }
+
+    if spec.loop_id == "agent-retro-diagnostic":
+        agent_retro_mod = _load_module("loop_agent_retro", SKILLS_ROOT / "agent-retro" / "scripts" / "agent_retro.py")
+        handoff_env = os.environ.get("AGENT_RETRO_HANDOFF_ROOT")
+        handoff_root = Path(handoff_env).expanduser() if handoff_env else None
+        watermark_env = os.environ.get("AGENT_RETRO_WATERMARK_FILE")
+        snapshot = agent_retro_mod.collect_agent_retro_snapshot(
+            days=3,
+            handoff_root=handoff_root,
+            output_path=Path("/tmp/multica-agent-retro-collect.json"),
+            watermark_path=Path(watermark_env).expanduser() if watermark_env else None,
+            persist=not dry_run,
+        )
+        summary = dict(snapshot.get("summary") or {})
+        scan = snapshot.get("scan") if isinstance(snapshot.get("scan"), Mapping) else {}
+        observations = list(scan.get("observations") or [])
+        items = [
+            {"what": f"修复 `{item.get('metric')}` 首错归因（`{item.get('upstream_skill') or item.get('skill')}`）",
+             "why": f"观测到 {item.get('count', 0)} 次轨迹信号"}
+            for item in observations[:6]
+        ]
+        return {
+            "loop_id": spec.loop_id, "date": date_str,
+            "has_delta": bool(observations), "delta_count": len(observations),
+            "severity": "medium" if observations else "low",
+            "watermark": snapshot.get("watermark"), "cursor": snapshot.get("cursor"),
+            "title": f"[Agent Retro {date_str}]",
+            "summary": f"多智能体轨迹复盘覆盖 sessions={summary.get('sessions', 0)}，coverage={summary.get('coverage', 'missing')}。",
+            "items": items or [{"what": "保持轨迹复盘观测", "why": "当前没有达到派发阈值的异常"}],
+            "agent_retro": {"sessions": summary.get("sessions", 0), "coverage": summary.get("coverage", "missing"),
+                            "observation_count": len(observations)},
+            "raw": snapshot,
         }
 
     if spec.loop_id == "skills-roi-diagnostic":

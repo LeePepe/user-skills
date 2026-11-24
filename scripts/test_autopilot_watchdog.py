@@ -35,6 +35,11 @@ SKILL_RETRO_AP = {
     "title": "Daily Skill Progressive Retro Autopilot (Auto-Fix + Daily Brief Digest)",
     "status": "active",
 }
+AGENT_RETRO_AP = {
+    "id": "agent-retro-2026",
+    "title": "Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)",
+    "status": "active",
+}
 DAILY_LEARN_AP = {
     "id": "8b4d6d04-cc45-4565-9351-a3e8b07488c1",
     "title": "Daily Knowledge Digest Autopilot (3 Personal -> Blog + 3 Agent -> Vault & Owner Fusion Gate)",
@@ -221,13 +226,35 @@ class AutopilotWatchdogTests(unittest.TestCase):
         self.assertNotIn("display notification", source_text)
 
     def test_scope_enforces_skill_retro_daily_learn_and_aidata_targets(self):
-        self.assertEqual(watchdog.ALLOWED_TARGETS, ("skill-retro", "daily-learn", "aidata"))
+        self.assertEqual(watchdog.ALLOWED_TARGETS, ("skill-retro", "agent-retro", "daily-learn", "aidata"))
         with self.assertRaises(ValueError):
             watchdog.run_watchdog(
                 target_date=date(2026, 11, 22),
                 targets=("some-other-autopilot",),
                 auto_escalate=False,
             )
+
+    def test_agent_retro_target_checks_cursor_and_non_empty_telemetry(self):
+        def fake_runner(args, **kwargs):
+            cmd = list(args)
+            if cmd[:2] == ["autopilot", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"autopilots": [AGENT_RETRO_AP, SKILL_RETRO_AP, DAILY_LEARN_AP]}), stderr="")
+            if cmd[:3] == ["autopilot", "runs", AGENT_RETRO_AP["id"]]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"runs": [_healthy_run(AGENT_RETRO_AP["id"], run_id="run-ar-1", session_id="sess-ar-1")]}), stderr="")
+            if cmd[:2] == ["autopilot", "runs"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"runs": []}), stderr="")
+            if cmd[:2] == ["issue", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"issues": [{
+                    "id": "issue-ar-1", "identifier": "TIA-99", "title": "[Agent Retro 2026-11-22]",
+                    "status": "backlog", "description": "<!-- multica-cursor:agent-retro-autopilot-2026-11-22 -->\n<details>sessions=7 coverage=healthy</details>",
+                }]}), stderr="")
+            raise AssertionError(f"Unexpected multica call: {cmd}")
+
+        report = watchdog.run_watchdog(target_date=date(2026, 11, 22), targets=("agent-retro",),
+                                       auto_escalate=False, runner=fake_runner)
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["agent-retro"]["metrics"]["non_empty_telemetry"]["ok"])
+        self.assertEqual(report["checks"]["agent-retro"]["metrics"]["non_empty_telemetry"]["sessions"], 7)
 
     def test_healthy_pass_exits_silently_at_zero_token_cost_without_escalation(self):
         escalations = []
