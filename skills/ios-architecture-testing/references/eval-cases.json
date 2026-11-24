@@ -144,7 +144,35 @@
         "macos_ios_navigation_not_diverged"
       ],
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-007",
+      "title": "Positive replay accepts bare, flag-first, alias, positional, and JSON-compatible CLI forms",
+      "tags": [
+        "positive-replay",
+        "cli-compatibility"
+      ],
+      "cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      }
+    },
+    {
+      "id": "EV-008",
+      "title": "Counter-case replay keeps invalid flags, missing paths, and strict violations self-disclosing",
+      "tags": [
+        "counter-case",
+        "strict-gate",
+        "self-disclosing-errors"
+      ],
+      "negative_cmd": "python3 skills/ios-architecture-testing/scripts/audit_arch_testing.py --unknown-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "Reference: skills/ios-architecture-testing/references/architecture-data-testing-cards.md",
+        "remediation"
+      ]
     }
   ],
-  "updated": "2026-11-19"
+  "updated": "2026-11-25"
 }

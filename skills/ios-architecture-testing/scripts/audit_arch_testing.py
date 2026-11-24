@@ -537,48 +537,140 @@ def check_card_coverage() -> dict[str, Any]:
     }
 
 
+REFERENCE_PATH = "skills/ios-architecture-testing/references/architecture-data-testing-cards.md"
+
+
+class _SelfDisclosingArchTestingParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        print(
+            f"error: {message}\n"
+            "remediation: choose a supported subcommand or provide a valid source/matrix target.\n"
+            f"Reference: {REFERENCE_PATH}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _with_default_command(argv: list[str]) -> list[str]:
+    if not argv:
+        return ["check-card-coverage"]
+
+    commands = {
+        "list-cards",
+        "cards",
+        "check-card-coverage",
+        "coverage",
+        "check-coverage",
+        "audit-source",
+        "audit",
+        "scan",
+        "check-source",
+        "check-capability-matrix",
+        "check-matrix",
+        "matrix",
+        "audit-matrix",
+    }
+    if argv[0] in commands:
+        return argv
+
+    matrix_flags = ("--matrix-json", "--matrix", "--spec-json", "--json-file")
+    source_flags = ("--path", "--root", "--dir", "--source", "--file", "--snippet")
+    if any(arg == flag or arg.startswith(f"{flag}=") for arg in argv for flag in matrix_flags):
+        return ["check-capability-matrix", *argv]
+    if any(arg == flag or arg.startswith(f"{flag}=") for arg in argv for flag in source_flags):
+        return ["audit-source", *argv]
+    if argv == ["--json"]:
+        return ["check-card-coverage", *argv]
+    if not argv[0].startswith("-"):
+        return ["audit-source", *argv]
+    return argv
+
+
+def _runtime_error(error: str, remediation: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "skill": "ios-architecture-testing",
+        **fields,
+        "error": error,
+        "remediation": remediation,
+        "reference": REFERENCE_PATH,
+    }
+
+
+def _print_runtime_error(error: str, remediation: str, **fields: Any) -> int:
+    print(json.dumps(_runtime_error(error, remediation, **fields)), file=sys.stderr)
+    return 2
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Audit iOS architecture, SwiftData migrations, test contracts, batch refactors, and platform capabilities.")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = _SelfDisclosingArchTestingParser(
+        description="Audit iOS architecture, SwiftData migrations, test contracts, batch refactors, and platform capabilities."
+    )
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_SelfDisclosingArchTestingParser)
 
-    sub.add_parser("list-cards", help="List the 6 mapped TIA-3 cards and deterministic rule IDs.")
-    sub.add_parser("check-card-coverage", help="Verify 100%% 6-card coverage across SKILL.md, references/, and script rules.")
+    sub.add_parser("list-cards", aliases=["cards"], help="List the 6 mapped TIA-3 cards and deterministic rule IDs.").add_argument("--json", action="store_true")
+    sub.add_parser("check-card-coverage", aliases=["coverage", "check-coverage"], help="Verify 100%% 6-card coverage across SKILL.md, references/, and script rules.").add_argument("--json", action="store_true")
 
-    audit_p = sub.add_parser("audit-source", help="Scan Swift source/tests for navigation, SwiftData, test-contract, seam, and fallback defects.")
-    audit_p.add_argument("--path", action="append", default=[], help="Swift file or directory to scan.")
+    audit_p = sub.add_parser("audit-source", aliases=["audit", "scan", "check-source"], help="Scan Swift source/tests for navigation, SwiftData, test-contract, seam, and fallback defects.")
+    audit_p.add_argument("--path", "--root", "--dir", "--source", "--file", dest="option_paths", action="append", default=[], help="Swift file or directory to scan.")
+    audit_p.add_argument("paths", nargs="*", help="Swift files or directories to scan.")
     audit_p.add_argument("--snippet", default=None, help="Inline Swift snippet to scan.")
     audit_p.add_argument("--strict", action="store_true", help="Exit with code 2 when findings are non-empty.")
+    audit_p.add_argument("--json", action="store_true", help="Keep JSON output (the default).")
 
-    mat_p = sub.add_parser("check-capability-matrix", help="Validate Apple Intelligence/platform fallback matrices and batch-refactor work packages.")
-    mat_p.add_argument("--matrix-json", required=True, help="Inline JSON string or path to a JSON file.")
+    mat_p = sub.add_parser("check-capability-matrix", aliases=["check-matrix", "matrix", "audit-matrix"], help="Validate Apple Intelligence/platform fallback matrices and batch-refactor work packages.")
+    mat_p.add_argument("--matrix-json", "--matrix", "--spec-json", "--json-file", dest="matrix_json", help="Inline JSON string or path to a JSON file.")
+    mat_p.add_argument("matrix_arg", nargs="?", help="Inline JSON string or path to a JSON file.")
     mat_p.add_argument("--strict", action="store_true", help="Exit with code 2 when violations are non-empty.")
+    mat_p.add_argument("--json", action="store_true", help="Keep JSON output (the default).")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    if args.command == "list-cards":
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = _build_parser().parse_args(_with_default_command(raw_argv))
+    if args.command in {"list-cards", "cards"}:
         print(json.dumps({"ok": True, "skill": "ios-architecture-testing", "count": len(CARDS), "cards": list(CARDS)}, indent=2))
         return 0
 
-    if args.command == "check-card-coverage":
+    if args.command in {"check-card-coverage", "coverage", "check-coverage"}:
         report = check_card_coverage()
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 2
 
-    if args.command == "check-capability-matrix":
-        candidate = Path(args.matrix_json)
+    if args.command in {"check-capability-matrix", "check-matrix", "matrix", "audit-matrix"}:
+        matrix_arg = args.matrix_json or args.matrix_arg
+        if not matrix_arg:
+            return _print_runtime_error(
+                "invalid_matrix_json:no matrix supplied",
+                "provide JSON with --matrix-json (or --matrix) or as the matrix positional argument.",
+                violation_count=0,
+                violations=[],
+            )
+        candidate = Path(matrix_arg)
         try:
-            raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else args.matrix_json
+            raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else matrix_arg
             matrix_data = json.loads(raw)
         except (OSError, json.JSONDecodeError) as exc:
-            print(json.dumps({"ok": False, "error": f"invalid_matrix_json:{exc}"}), file=sys.stderr)
-            return 2
+            return _print_runtime_error(
+                f"invalid_matrix_json:{exc}",
+                "provide valid inline JSON or a readable JSON file path.",
+                violation_count=0,
+                violations=[],
+            )
         if not isinstance(matrix_data, dict):
-            print(json.dumps({"ok": False, "error": "matrix_must_be_object"}), file=sys.stderr)
-            return 2
+            return _print_runtime_error(
+                "matrix_must_be_object",
+                "provide a JSON object containing capabilities and/or work_packages.",
+                violation_count=0,
+                violations=[],
+            )
         report = check_capability_matrix(matrix_data)
         if args.strict and not report["ok"]:
+            report.update(
+                reference=REFERENCE_PATH,
+                remediation="fix the reported rule violations, then rerun without --strict to inspect the JSON report.",
+            )
             print(json.dumps(report, indent=2), file=sys.stderr)
             return 2
         print(json.dumps(report, indent=2))
@@ -587,11 +679,15 @@ def main(argv: list[str] | None = None) -> int:
     targets: list[tuple[str, str]] = []
     if args.snippet is not None:
         targets.append(("<snippet>", args.snippet))
-    for raw in args.path:
+    for raw in [*args.option_paths, *args.paths]:
         p = Path(raw)
         if not p.exists():
-            print(json.dumps({"ok": False, "error": f"path_not_found:{raw}"}), file=sys.stderr)
-            return 2
+            return _print_runtime_error(
+                f"path_not_found:{raw}",
+                "provide an existing Swift file/directory, or use --snippet for inline source.",
+                finding_count=0,
+                findings=[],
+            )
         if p.is_file():
             targets.append((str(p), p.read_text(encoding="utf-8", errors="replace")))
         else:
@@ -599,8 +695,12 @@ def main(argv: list[str] | None = None) -> int:
                 targets.append((str(swift_file), swift_file.read_text(encoding="utf-8", errors="replace")))
 
     if not targets:
-        print(json.dumps({"ok": False, "error": "no_source_supplied"}), file=sys.stderr)
-        return 2
+        return _print_runtime_error(
+            "no_source_supplied",
+            "provide a Swift path/positional target or use --snippet with inline source.",
+            finding_count=0,
+            findings=[],
+        )
 
     findings: list[dict[str, Any]] = []
     for label, content in targets:
@@ -614,6 +714,10 @@ def main(argv: list[str] | None = None) -> int:
         "findings": findings,
     }
     if args.strict and findings:
+        payload.update(
+            reference=REFERENCE_PATH,
+            remediation="fix the reported findings, then rerun the source audit to confirm a clean contract.",
+        )
         print(json.dumps(payload, indent=2), file=sys.stderr)
         return 2
     print(json.dumps(payload, indent=2))
