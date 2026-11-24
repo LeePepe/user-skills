@@ -793,8 +793,18 @@ def _load_linear_client(*, dry_run: bool = False) -> Any:
     return module.GraphQLClient(token, allow_refresh=not dry_run)
 
 
+class _SelfDisclosingEmailPipelineParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[email-action-pipeline] CLI error: {message}\n"
+            "  Fix: run `python3 skills/linear-board/scripts/email-action-pipeline.py ingest-workiq --input-json PATH`\n"
+            "  Reference: skills/linear-board/references/daily-brief-and-bot.md\n"
+        )
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Extract actionable emails, pre-stage M2 plans, and create Linear issues.")
+    parser = _SelfDisclosingEmailPipelineParser(description="Extract actionable emails, pre-stage M2 plans, and create Linear issues.")
     sub = parser.add_subparsers(dest="command")
 
     ingest = sub.add_parser("ingest-workiq", help="Ingest a WorkIQ JSON response file or stdin")

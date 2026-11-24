@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-16",
+  "updated": "2026-11-25",
   "active_cases": [
     {
       "id": "EV-001",
@@ -257,6 +257,140 @@
       "routes": [
         "backlog-groomer",
         "daily-brief"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-009",
+      "title": "Positive replay: linear-sync wrapper softens historical --milestone/--parent-issue/--project Agent Workflow flags",
+      "cmd": "python3 skills/linear-board/scripts/linear-sync.py idea --title 'Replay Idea' --project 'Agent Workflow' --milestone 'Skills Workflow' --parent-issue TIA-478 --mode observe --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "mode": "observe"
+      },
+      "registered_at": "2026-11-25",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "replay"
+      ],
+      "routes": [
+        "linear-sync"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-010",
+      "title": "Counter-case: linear-sync wrapper rejects unknown subcommands with exit=2 and self-disclosing drawer pointer",
+      "negative_cmd": "python3 skills/linear-board/scripts/linear-sync.py definitely-invalid-subcommand",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/linear-board/references/daily-brief-and-bot.md"
+      ],
+      "registered_at": "2026-11-25",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "negative",
+        "counter-case"
+      ],
+      "routes": [
+        "linear-sync"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-011",
+      "title": "Counter-case: daily-brief Markdown sink rejects missing dedup marker with exit=1",
+      "negative_cmd": "python3 -c \"import subprocess, sys; p = subprocess.run([sys.executable, 'skills/linear-board/scripts/daily-brief.py', '--verify-markdown', '-'], input='# Malformed Brief\\n', text=True, capture_output=True); sys.stderr.write(p.stderr); raise SystemExit(p.returncode)\"",
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": [
+        "Markdown verification failed"
+      ],
+      "registered_at": "2026-11-25",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "daily-brief",
+        "negative",
+        "counter-case"
+      ],
+      "routes": [
+        "daily-brief"
+      ],
+      "layers": [
+        "spec",
+        "standards",
+        "cross-layer"
+      ]
+    },
+    {
+      "id": "EV-012",
+      "title": "Counter-case: linear-bot-bridge CLI rejects unknown flags with exit=2 and self-disclosing drawer pointer",
+      "negative_cmd": "python3 skills/linear-board/scripts/linear-bot-bridge.py --unknown-roadblock-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "[linear-bot-bridge] CLI error:",
+        "skills/linear-board/references/daily-brief-and-bot.md"
+      ],
+      "registered_at": "2026-11-25",
+      "platforms": [
+        "cli"
+      ],
+      "dimensions": [
+        "routing",
+        "standards"
+      ],
+      "containers": [
+        "linear-board"
+      ],
+      "tags": [
+        "linear-board",
+        "negative",
+        "counter-case"
+      ],
+      "routes": [
+        "linear-bot-bridge"
       ],
       "layers": [
         "spec",

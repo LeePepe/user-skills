@@ -1087,8 +1087,18 @@ def serve_webhook(port: int, client: Any, state: State) -> None:
     finally: server.server_close()
 
 
+class _SelfDisclosingBridgeParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[linear-bot-bridge] CLI error: {message}\n"
+            "  Fix: run `python3 skills/linear-board/scripts/linear-bot-bridge.py --once --dry-run --json`\n"
+            "  Reference: skills/linear-board/references/daily-brief-and-bot.md\n"
+        )
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--once", action="store_true"); parser.add_argument("--daemon", action="store_true"); parser.add_argument("--interval", type=float, default=20); parser.add_argument("--json", action="store_true"); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE); parser.add_argument("--webhook-port", type=int)
+    parser = _SelfDisclosingBridgeParser(); parser.add_argument("--once", action="store_true"); parser.add_argument("--daemon", action="store_true"); parser.add_argument("--interval", type=float, default=20); parser.add_argument("--json", action="store_true"); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE); parser.add_argument("--webhook-port", type=int)
     args = parser.parse_args(argv); sync = _sync_module(); token = sync.load_api_key()
     if not token: print(json.dumps({"ok": False, "error": "Linear credentials unavailable"})); return 2
     client = sync.GraphQLClient(token, allow_refresh=not args.dry_run); state = State(args.state_file, args.dry_run)
