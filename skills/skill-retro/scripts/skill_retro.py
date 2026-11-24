@@ -786,7 +786,9 @@ class SessionObservation:
     edited_files: set[str] = field(default_factory=set)
     edit_count: int = 0
     edit_seqs: list[int] = field(default_factory=list)
+    edit_events: list[tuple[datetime, int]] = field(default_factory=list)
     bash_commands: list[tuple[str, int | None, float | None, int]] = field(default_factory=list)
+    bash_events: list[tuple[str, int | None, float | None, datetime, int]] = field(default_factory=list)
     referenced_goals: set[str] = field(default_factory=set)
     seq_counter: int = 0
 
@@ -1063,7 +1065,9 @@ def _parse_copilot_sessions(
                         if fp:
                             obs.edited_files.add(fp)
                         obs.edit_count += 1
-                        obs.edit_seqs.append(obs.next_seq())
+                        e_seq = obs.next_seq()
+                        obs.edit_seqs.append(e_seq)
+                        obs.edit_events.append((ts, e_seq))
                 elif ev_type == "tool.execution_complete":
                     tc_id = str(data.get("toolCallId") or "")
                     res_obj = data.get("result")
@@ -1092,6 +1096,7 @@ def _parse_copilot_sessions(
                             continue
                         seq_no = obs.next_seq()
                         obs.bash_commands.append((cmd_str, ec, dur_ms, seq_no))
+                        obs.bash_events.append((cmd_str, ec, dur_ms, st_ts, seq_no))
                         for sk_t, sc_rel in _extract_script_targets(
                             cmd_str,
                             known_skills=known_skills,
@@ -1124,6 +1129,7 @@ def _parse_copilot_sessions(
                             ec_val = int(m_done.group(2))
                             seq_no = obs.next_seq()
                             obs.bash_commands.append((cmd_str, ec_val, bg_dur, seq_no))
+                            obs.bash_events.append((cmd_str, ec_val, bg_dur, bg_st, seq_no))
                             for sk_t, sc_rel in _extract_script_targets(
                                 cmd_str,
                                 known_skills=known_skills,
@@ -1204,6 +1210,9 @@ def _ingest_usage_jsonl_and_shards(
                 tc_low = str(tc).lower()
                 if tc_low in {"edit", "write", "multiedit", "apply_patch", "create"} and is_new_obs:
                     obs.edit_count += 1
+                    e_seq = obs.next_seq()
+                    obs.edit_seqs.append(e_seq)
+                    obs.edit_events.append((ts, e_seq))
         elif kind == "reference_hit":
             raw_ref = str(rec.get("reference_path") or "").strip()
             norm_pair = _normalize_ref_rel(raw_ref)
@@ -1410,10 +1419,18 @@ def _ingest_warehouse_and_copilot_db(
                             if cmd_or_p and str(t.get("name") or "").lower() in {"edit", "write", "create", "apply_patch"}:
                                 obs.edited_files.add(cmd_or_p)
                                 obs.edit_count += 1
+                                e_seq = obs.next_seq()
+                                obs.edit_seqs.append(e_seq)
+                                obs.edit_events.append((ts, e_seq))
                             elif cmd_or_p:
-                                obs.bash_commands.append((cmd_or_p, t.get("exit_code"), t.get("duration_ms"), obs.next_seq()))
+                                b_seq = obs.next_seq()
+                                obs.bash_commands.append((cmd_or_p, t.get("exit_code"), t.get("duration_ms"), b_seq))
+                                obs.bash_events.append((cmd_or_p, t.get("exit_code"), t.get("duration_ms"), ts, b_seq))
                         elif str(t).lower() in {"edit", "write", "create", "apply_patch"}:
                             obs.edit_count += 1
+                            e_seq = obs.next_seq()
+                            obs.edit_seqs.append(e_seq)
+                            obs.edit_events.append((ts, e_seq))
 
             for ref_tbl in ("reference_hits", "fact_skill_reference_hit"):
                 if ref_tbl not in tables:
@@ -1583,6 +1600,9 @@ def _ingest_warehouse_and_copilot_db(
                     if str(row.get("tool_name") or "").lower() in {"edit", "create", "apply_patch"}:
                         obs.edited_files.add(fp)
                         obs.edit_count += 1
+                        e_seq = obs.next_seq()
+                        obs.edit_seqs.append(e_seq)
+                        obs.edit_events.append((ts, e_seq))
             if "turns" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("turns")')]
                 for values in conn.execute('SELECT * FROM "turns"'):
@@ -2862,89 +2882,130 @@ def _evaluate_session_progressive_and_preread(
 ) -> tuple[int, list[str], int]:
     """Compute (progressive_catch_count, wasted_preread_sids, unresolved_failure_count) for a skill across sessions.
 
-    - Wasted pre-read: reading >=3 distinct drawers cold-start before any script/edit, OR reading drawer(s)
-      after which zero downstream actions (script call, edit, or bash command with seq > last_read_seq) occur.
-    - Progressive catch: exit=1 on `script_rel` followed within 1-2 turns (<=6 sequence steps, <=2 intervening
-      calls) by reading a drawer or editing code and passing `exit=0` on the SAME `script_rel`.
-    - Unresolved failure count: count of distinct `(session_id, script_rel)` validators that had an `exit=1`
-      failure not recovered by a subsequent `exit=0` on the same `script_rel`.
+    Establishes a unified chronological global timeline (`timeline_idx`) across all reads, edits, script calls,
+    and bash commands in the session (sorting by `(ts, seq)` and deduplicating mirrored cross-source calls):
+      - Wasted pre-read: reading >=3 distinct drawers cold-start before the first script call or edit on the
+        unified timeline, OR reading drawer(s) after which zero downstream actions occur (`action_idx > last_read_idx`).
+      - Progressive catch: `exit=1` on `script_rel` followed within 1-2 turns (`<=6` unified global timeline steps,
+        `<=2` intervening calls of the same `script_rel`) by reading a drawer or editing code and passing `exit=0`
+        on the SAME `script_rel`.
+      - Unresolved failure count: count of distinct `(session_id, script_rel)` validators whose chronologically
+        last failure is not followed by a subsequent `exit=0` on the same `script_rel`.
     """
     wasted_sids: list[str] = []
     prog_catches = 0
     unresolved_failures = 0
 
     for o in loaded_for_sk:
-        sk_reads = [(r_rel, seq) for r_sk, r_rel, _, seq in o.ref_reads if r_sk == sk_name]
-        sk_calls = sorted([c for c in o.script_calls if c.skill == sk_name], key=lambda c: (c.ts, c.seq))
-        all_action_seqs = (
-            [c.seq for c in o.script_calls]
-            + list(o.edit_seqs)
-            + [b_seq for _, _, _, b_seq in o.bash_commands]
-        )
-        first_call_or_edit_seq = min(
-            [c.seq for c in sk_calls] + list(o.edit_seqs),
+        # Build unified chronological session timeline across all sources
+        raw_timeline: list[tuple[datetime, int, str, Any]] = []
+        for r_sk, r_rel, r_ts, r_seq in o.ref_reads:
+            raw_timeline.append((r_ts, r_seq, "read", (r_sk, r_rel)))
+
+        edit_ev_list = list(o.edit_events)
+        if not edit_ev_list and o.edit_seqs:
+            edit_ev_list = [(o.started_at, e_seq) for e_seq in o.edit_seqs]
+        for e_ts, e_seq in edit_ev_list:
+            raw_timeline.append((e_ts, e_seq, "edit", None))
+
+        dedup_calls: list[ScriptCallEvent] = []
+        for c_ev in sorted(o.script_calls, key=lambda c: (c.ts, c.seq)):
+            if any(
+                prev.skill == c_ev.skill
+                and prev.script_rel == c_ev.script_rel
+                and prev.exit_code == c_ev.exit_code
+                and abs((c_ev.ts - prev.ts).total_seconds()) < 1.0
+                for prev in dedup_calls
+            ):
+                continue
+            dedup_calls.append(c_ev)
+            raw_timeline.append((c_ev.ts, c_ev.seq, "script", c_ev))
+
+        call_seqs = {c.seq for c in o.script_calls}
+        bash_ev_list = list(o.bash_events)
+        if not bash_ev_list and o.bash_commands:
+            bash_ev_list = [(cmd, ec, dur, o.started_at, b_seq) for cmd, ec, dur, b_seq in o.bash_commands]
+        for _, _, _, b_ts, b_seq in bash_ev_list:
+            if b_seq in call_seqs:
+                continue
+            raw_timeline.append((b_ts, b_seq, "bash", None))
+
+        raw_timeline.sort(key=lambda item: (item[0], item[1]))
+
+        sk_reads_tl: list[tuple[str, int]] = []
+        sk_edits_tl: list[int] = []
+        all_actions_tl: list[int] = []
+        sk_calls_tl: list[tuple[int, ScriptCallEvent]] = []
+
+        for tl_idx, (_, _, kind, payload) in enumerate(raw_timeline, 1):
+            if kind == "read":
+                r_sk, r_rel = payload
+                if r_sk == sk_name:
+                    sk_reads_tl.append((r_rel, tl_idx))
+            elif kind == "edit":
+                sk_edits_tl.append(tl_idx)
+                all_actions_tl.append(tl_idx)
+            elif kind == "script":
+                c_obj: ScriptCallEvent = payload
+                all_actions_tl.append(tl_idx)
+                if c_obj.skill == sk_name:
+                    sk_calls_tl.append((tl_idx, c_obj))
+            elif kind == "bash":
+                all_actions_tl.append(tl_idx)
+
+        first_call_or_edit_idx = min(
+            [idx for idx, _ in sk_calls_tl] + sk_edits_tl,
             default=None,
         )
         cold_start_distinct_drawers = {
             r_rel
-            for r_rel, r_seq in sk_reads
-            if first_call_or_edit_seq is None or r_seq < first_call_or_edit_seq
+            for r_rel, r_idx in sk_reads_tl
+            if first_call_or_edit_idx is None or r_idx < first_call_or_edit_idx
         }
-        last_read_seq = max((r_seq for _, r_seq in sk_reads), default=None)
+        last_read_idx = max((r_idx for _, r_idx in sk_reads_tl), default=None)
         has_action_after_reads = (
-            any(a_seq > last_read_seq for a_seq in all_action_seqs)
-            if last_read_seq is not None
-            else bool(all_action_seqs or o.edit_count > 0)
+            any(a_idx > last_read_idx for a_idx in all_actions_tl)
+            if last_read_idx is not None
+            else bool(all_actions_tl or o.edit_count > 0)
         )
-        if len(cold_start_distinct_drawers) >= 3 or (sk_reads and not has_action_after_reads):
+        if len(cold_start_distinct_drawers) >= 3 or (sk_reads_tl and not has_action_after_reads):
             wasted_sids.append(o.session_id)
 
-        # Evaluate per-validator (script_rel) failure and recovery within the session using chronological order
-        by_validator: dict[str, list[ScriptCallEvent]] = {}
-        for c in sk_calls:
-            by_validator.setdefault(c.script_rel, []).append(c)
+        # Evaluate per-validator (script_rel) failure and recovery on the unified global timeline
+        by_validator: dict[str, list[tuple[int, ScriptCallEvent]]] = {}
+        for tl_idx, c_obj in sk_calls_tl:
+            by_validator.setdefault(c_obj.script_rel, []).append((tl_idx, c_obj))
 
-        for _, raw_v_calls in by_validator.items():
-            # Deduplicate identical (timestamp, exit_code) calls across overlapping sources
-            v_calls: list[ScriptCallEvent] = []
-            for c_ev in sorted(raw_v_calls, key=lambda c: (c.ts, c.seq)):
-                if v_calls and v_calls[-1].exit_code == c_ev.exit_code and abs((c_ev.ts - v_calls[-1].ts).total_seconds()) < 1.0:
-                    continue
-                v_calls.append(c_ev)
-
-            failed_indices = [i for i, c in enumerate(v_calls) if c.exit_code not in (None, 0, 2)]
-            if not failed_indices:
+        for _, v_items in by_validator.items():
+            failed_positions = [pos for pos, (_, c_obj) in enumerate(v_items) if c_obj.exit_code not in (None, 0, 2)]
+            if not failed_positions:
                 continue
             validator_recovered = False
-            last_recovered_pass_idx = -1
-            for idx_c, call_ev in enumerate(v_calls):
+            last_recovered_pos = -1
+            for pos, (fail_tl_idx, call_ev) in enumerate(v_items):
                 if call_ev.exit_code in (None, 0, 2):
                     continue
-                if idx_c < last_recovered_pass_idx:
+                if pos < last_recovered_pos:
                     continue
                 later_same_script = [
-                    (idx_c + offset, later)
-                    for offset, later in enumerate(v_calls[idx_c + 1 : idx_c + 3], 1)
-                    if later.exit_code == 0 and later.ts >= call_ev.ts
+                    (pos + offset, pass_tl_idx, later)
+                    for offset, (pass_tl_idx, later) in enumerate(v_items[pos + 1 : pos + 3], 1)
+                    if later.exit_code == 0 and 0 < (pass_tl_idx - fail_tl_idx) <= 6
                 ]
-                for pass_idx, later_pass in later_same_script:
+                for pass_pos, pass_tl_idx, _ in later_same_script:
                     intervening_read_or_edit = any(
-                        (0 < call_ev.seq < r_seq < later_pass.seq and (later_pass.seq - call_ev.seq) <= 6)
-                        or (call_ev.ts <= r_ts <= later_pass.ts and (later_pass.ts > call_ev.ts or r_seq > call_ev.seq))
-                        for r_sk, _, r_ts, r_seq in o.ref_reads
-                        if r_sk == sk_name
+                        fail_tl_idx < r_idx < pass_tl_idx for _, r_idx in sk_reads_tl
                     ) or any(
-                        0 < call_ev.seq < e_seq < later_pass.seq and (later_pass.seq - call_ev.seq) <= 6
-                        for e_seq in o.edit_seqs
+                        fail_tl_idx < e_idx < pass_tl_idx for e_idx in sk_edits_tl
                     )
                     if intervening_read_or_edit:
                         validator_recovered = True
-                        last_recovered_pass_idx = max(last_recovered_pass_idx, pass_idx)
+                        last_recovered_pos = max(last_recovered_pos, pass_pos)
                         break
             if validator_recovered:
                 prog_catches += 1
-            last_fail_idx = max(failed_indices)
-            has_pass_after_last_fail = any(c.exit_code == 0 for c in v_calls[last_fail_idx + 1 :])
+            last_fail_pos = max(failed_positions)
+            has_pass_after_last_fail = any(c_obj.exit_code == 0 for _, c_obj in v_items[last_fail_pos + 1 :])
             if not has_pass_after_last_fail:
                 unresolved_failures += 1
 

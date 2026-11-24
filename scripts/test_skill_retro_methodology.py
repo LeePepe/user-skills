@@ -619,6 +619,65 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 )
             (sc_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sc_evs) + "\n", encoding="utf-8")
 
+            # Session D (Counter-Case R4-F2): distant pass after 8 unrelated turns (>6 global timeline steps).
+            # Eventual pass clears terminal `domain_failures`, MUST NOT count as bounded 1-2 turn `progressive_catch_count`!
+            sd_dir = sessions_dir / "sess-distant-pass"
+            sd_dir.mkdir(parents=True, exist_ok=True)
+            sd_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "validator-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=2)).isoformat(),
+                    "data": {"toolCallId": "d-fail", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=3)).isoformat(),
+                    "data": {"toolCallId": "d-fail", "shellExecution": {"exitCode": 1}, "result": {"content": "fail"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=4)).isoformat(),
+                    "data": {"toolCallId": "d-read", "toolName": "view", "arguments": {"path": "skills/validator-skill/references/fix-lint.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "data": {"toolCallId": "d-read", "result": {"content": "doc"}},
+                },
+            ]
+            for gap_i in range(1, 9):
+                sd_evs.extend(
+                    [
+                        {
+                            "type": "tool.execution_start",
+                            "timestamp": (now + timedelta(seconds=6 + gap_i * 2)).isoformat(),
+                            "data": {"toolCallId": f"d-gap-{gap_i}", "toolName": "edit", "arguments": {"path": f"src/f{gap_i}.py"}},
+                        },
+                        {
+                            "type": "tool.execution_complete",
+                            "timestamp": (now + timedelta(seconds=7 + gap_i * 2)).isoformat(),
+                            "data": {"toolCallId": f"d-gap-{gap_i}", "result": {"content": "ok"}},
+                        },
+                    ]
+                )
+            sd_evs.extend(
+                [
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now + timedelta(seconds=50)).isoformat(),
+                        "data": {"toolCallId": "d-pass", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now + timedelta(seconds=51)).isoformat(),
+                        "data": {"toolCallId": "d-pass", "shellExecution": {"exitCode": 0}, "result": {"content": "eventual pass"}},
+                    },
+                ]
+            )
+            (sd_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sd_evs) + "\n", encoding="utf-8")
+
             probe_v = SKILL_RETRO.probe_skills(
                 skill="validator-skill",
                 copilot_sessions_dir=sessions_dir,
@@ -628,15 +687,157 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 fast=False,
             )
             vsig = probe_v["skills"][0]["signals"]
-            # Session B's lint.py recovery + Session C's early lint.py recovery = 2 progressive catches
+            # Session B's lint.py recovery + Session C's early lint.py recovery = 2 progressive catches (Session D's distant pass is excluded!)
             self.assertEqual(vsig["progressive_catch_count"], 2)
-            # Session A's lint.py + Session B's sec_check.py + Session C's terminal lint.py failure = 3 unresolved domain_failures
+            # Session A's lint.py + Session B's sec_check.py + Session C's terminal lint.py failure = 3 unresolved domain_failures (Session D's eventual pass cleared terminal failure!)
             self.assertEqual(vsig["domain_failures"], 3)
             # `unwired-sec.md` is flagged as unwired because unresolved domain_failures > 0
             self.assertEqual(vsig["l1_unwired_drawers"], 1)
-            # Session B's trailing read after all actions is caught as wasted_preread_sessions=1 across 3 sessions
+            # Session B's trailing read after all actions is caught as wasted_preread_sessions=1 across 4 sessions
             self.assertEqual(vsig["wasted_preread_sessions"], 1)
-            self.assertAlmostEqual(vsig["wasted_preread_rate"], 0.3333, places=3)
+            self.assertEqual(vsig["wasted_preread_rate"], 0.25)
+
+    def test_merged_partial_trace_unified_chronological_timeline(self) -> None:
+        """Verify R4-F1 positive & counter cases on canonical fast path when calls come from usage.jsonl/warehouse.db."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            handoff_root = dev_root / "handoff"
+            sessions_dir = root / "sessions"
+            usage_jsonl = root / "usage.jsonl"
+            handoff_root.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+
+            eval_doc = json.dumps(
+                {
+                    "schema": "skill-eval-cases/v1",
+                    "version": 1,
+                    "updated": datetime.now(CST).date().isoformat(),
+                    "active_cases": [
+                        {"id": "EV-1", "title": "p", "cmd": "true", "expect_exit": 0},
+                        {"id": "EV-2", "title": "n", "negative_cmd": "false", "expect_fail_exit": 1},
+                    ],
+                }
+            )
+            _write_skill_pkg(
+                skills_root,
+                "post-fail-3drawer-skill",
+                skill_md_extra="See `references/r1.md`, `references/r2.md`, `references/r3.md`.",
+                refs={"r1.md": "# R1\n", "r2.md": "# R2\n", "r3.md": "# R3\n", "eval-cases.json": eval_doc},
+                scripts={"check.py": "#!/usr/bin/env python3\n# see references/r1.md references/r2.md references/r3.md\n"},
+            )
+            _write_skill_pkg(
+                skills_root,
+                "trailing-read-skill",
+                skill_md_extra="See `references/r1.md`.",
+                refs={"r1.md": "# R1\n", "eval-cases.json": eval_doc},
+                scripts={"check.py": "#!/usr/bin/env python3\n# see references/r1.md\n"},
+            )
+
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
+
+            # 1) Positive Case R4-F1a: Partial trace has 3 on-demand drawer reads at t+4s, t+5s, t+6s,
+            #    while `usage.jsonl` has `check.py exit=1` at t+2s and `check.py exit=0` at t+8s.
+            #    Chronologically: fail(t+2) -> read r1,r2,r3(t+4..6) -> pass(t+8).
+            #    Must record progressive_catch_count=1, wasted_preread_sessions=0, priority_score=0.0!
+            s_pos = sessions_dir / "sess-post-fail-3reads"
+            s_pos.mkdir(parents=True, exist_ok=True)
+            pos_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "post-fail-3drawer-skill"}},
+            ]
+            for idx_r, r_name in enumerate(("r1.md", "r2.md", "r3.md"), 4):
+                pos_evs.extend(
+                    [
+                        {
+                            "type": "tool.execution_start",
+                            "timestamp": (now + timedelta(seconds=idx_r)).isoformat(),
+                            "data": {"toolCallId": f"pr-{idx_r}", "toolName": "view", "arguments": {"path": f"skills/post-fail-3drawer-skill/references/{r_name}"}},
+                        },
+                        {
+                            "type": "tool.execution_complete",
+                            "timestamp": (now + timedelta(seconds=idx_r)).isoformat(),
+                            "data": {"toolCallId": f"pr-{idx_r}", "result": {"content": "doc"}},
+                        },
+                    ]
+                )
+            (s_pos / "events.jsonl").write_text("\n".join(json.dumps(e) for e in pos_evs) + "\n", encoding="utf-8")
+
+            # 2) Counter-Case R4-F1b: Sampled trace ends with a drawer read at t+20s; its only real action
+            #    is a usage-only `check.py exit=0` call EARLIER at t+5s.
+            #    Chronologically: pass(t+5) -> read r1(t+20) -> END (0 downstream actions after read).
+            #    Must record wasted_preread_sessions=1, wasted_preread_rate=1.0!
+            s_neg = sessions_dir / "sess-trailing-read-after-usage-call"
+            s_neg.mkdir(parents=True, exist_ok=True)
+            neg_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "trailing-read-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=20)).isoformat(),
+                    "data": {"toolCallId": "nr-1", "toolName": "view", "arguments": {"path": "skills/trailing-read-skill/references/r1.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=21)).isoformat(),
+                    "data": {"toolCallId": "nr-1", "result": {"content": "doc"}},
+                },
+            ]
+            (s_neg / "events.jsonl").write_text("\n".join(json.dumps(e) for e in neg_evs) + "\n", encoding="utf-8")
+
+            usage_rows = [
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-post-fail-3reads",
+                    "ts": (now + timedelta(seconds=2)).isoformat(),
+                    "skill": "post-fail-3drawer-skill",
+                    "script_path": "skills/post-fail-3drawer-skill/scripts/check.py",
+                    "exit_code": 1,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-post-fail-3reads",
+                    "ts": (now + timedelta(seconds=8)).isoformat(),
+                    "skill": "post-fail-3drawer-skill",
+                    "script_path": "skills/post-fail-3drawer-skill/scripts/check.py",
+                    "exit_code": 0,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-trailing-read-after-usage-call",
+                    "ts": (now + timedelta(seconds=5)).isoformat(),
+                    "skill": "trailing-read-skill",
+                    "script_path": "skills/trailing-read-skill/scripts/check.py",
+                    "exit_code": 0,
+                },
+            ]
+            usage_jsonl.write_text("\n".join(json.dumps(r) for r in usage_rows) + "\n", encoding="utf-8")
+
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", usage_jsonl),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", root / "none.db"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
+            ):
+                fast_out = SKILL_RETRO.probe_skills(
+                    handoff_root=handoff_root,
+                    skills_root=skills_root,
+                    dev_root=dev_root,
+                    fast=True,
+                )
+                by_sk = {s["skill"]: s for s in fast_out["skills"]}
+                pos_s = by_sk["post-fail-3drawer-skill"]
+                self.assertEqual(pos_s["signals"]["progressive_catch_count"], 1)
+                self.assertEqual(pos_s["signals"]["wasted_preread_sessions"], 0)
+                self.assertEqual(pos_s["signals"]["wasted_preread_rate"], 0.0)
+                self.assertEqual(pos_s["priority_score"], 0.0)
+
+                neg_s = by_sk["trailing-read-skill"]
+                self.assertEqual(neg_s["signals"]["wasted_preread_sessions"], 1)
+                self.assertEqual(neg_s["signals"]["wasted_preread_rate"], 1.0)
+                self.assertGreater(neg_s["priority_score"], 0.0)
 
     def test_direct_warehouse_db_fast_probe_and_domain_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
