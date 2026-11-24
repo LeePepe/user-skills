@@ -954,6 +954,125 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 self.assertEqual(f_sig["l1_unwired_drawers"], 1)
                 self.assertGreater(fast_out["skills"][0]["priority_score"], 0.0)
 
+            # 3) Mixed-source R6-F1a (`usage_jsonl` terminal failure across intervening pass) &
+            #    R6-F1b (`warehouse.db` terminal failure across intervening pass):
+            #    `events.jsonl` has fail(t+0.0s) -> read(t+0.1s) -> pass(t+0.3s), while the final
+            #    fail(t+0.7s) exists ONLY in `usage.jsonl` (for `usage-terminal-skill`) or ONLY in
+            #    `warehouse.db` (for `wh-terminal-skill`).
+            for mix_sk in ("usage-terminal-skill", "wh-terminal-skill"):
+                _write_skill_pkg(
+                    skills_root,
+                    mix_sk,
+                    skill_md_extra="See `references/fix.md` and `references/unwired.md`.",
+                    refs={"fix.md": "# Fix\n", "unwired.md": "# Unwired\n", "eval-cases.json": eval_doc},
+                    scripts={"check.py": "#!/usr/bin/env python3\n# see references/fix.md\n"},
+                )
+                ms_dir = sessions_dir / f"sess-{mix_sk}"
+                ms_dir.mkdir(parents=True, exist_ok=True)
+                ms_evs = [
+                    {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                    {"type": "skill.invoked", "timestamp": now.isoformat(), "data": {"name": mix_sk}},
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now + timedelta(milliseconds=0)).isoformat(),
+                        "data": {"toolCallId": "mc1", "toolName": "bash", "arguments": {"command": f"python3 skills/{mix_sk}/scripts/check.py"}},
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now + timedelta(milliseconds=50)).isoformat(),
+                        "data": {"toolCallId": "mc1", "shellExecution": {"exitCode": 1}, "result": {"content": "fail 1"}},
+                    },
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now + timedelta(milliseconds=100)).isoformat(),
+                        "data": {"toolCallId": "mv1", "toolName": "view", "arguments": {"path": f"skills/{mix_sk}/references/fix.md"}},
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now + timedelta(milliseconds=150)).isoformat(),
+                        "data": {"toolCallId": "mv1", "result": {"content": "doc"}},
+                    },
+                    {
+                        "type": "tool.execution_start",
+                        "timestamp": (now + timedelta(milliseconds=300)).isoformat(),
+                        "data": {"toolCallId": "mc2", "toolName": "bash", "arguments": {"command": f"python3 skills/{mix_sk}/scripts/check.py"}},
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "timestamp": (now + timedelta(milliseconds=350)).isoformat(),
+                        "data": {"toolCallId": "mc2", "shellExecution": {"exitCode": 0}, "result": {"content": "pass"}},
+                    },
+                ]
+                (ms_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in ms_evs) + "\n", encoding="utf-8")
+
+            mix_usage = root / "mix-usage.jsonl"
+            mix_usage.write_text(
+                json.dumps(
+                    {
+                        "kind": "script_call",
+                        "session_id": "sess-usage-terminal-skill",
+                        "ts": (now + timedelta(milliseconds=700)).isoformat(),
+                        "skill": "usage-terminal-skill",
+                        "script_path": "skills/usage-terminal-skill/scripts/check.py",
+                        "exit_code": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            mix_wh = root / "mix-warehouse.db"
+            with contextlib.closing(sqlite3.connect(mix_wh)) as conn:
+                conn.execute(
+                    "CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, ts TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "sess-wh-terminal-skill",
+                        "wh-terminal-skill",
+                        "skills/wh-terminal-skill/scripts/check.py",
+                        1,
+                        25.0,
+                        (now + timedelta(milliseconds=700)).isoformat(),
+                    ),
+                )
+                conn.commit()
+
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", mix_wh),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", mix_usage),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_DB", root / "none-cp.db"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
+            ):
+                for mix_sk in ("usage-terminal-skill", "wh-terminal-skill"):
+                    deep_mix = SKILL_RETRO.probe_skills(
+                        skill=mix_sk,
+                        handoff_root=handoff_root,
+                        skills_root=skills_root,
+                        dev_root=dev_root,
+                        fast=False,
+                    )
+                    dm_sig = deep_mix["skills"][0]["signals"]
+                    self.assertEqual(dm_sig["progressive_catch_count"], 1, mix_sk)
+                    self.assertEqual(dm_sig["domain_failures"], 1, mix_sk)
+                    self.assertEqual(dm_sig["l1_unwired_drawers"], 1, mix_sk)
+                    self.assertGreater(deep_mix["skills"][0]["priority_score"], 0.0, mix_sk)
+
+                    fast_mix = SKILL_RETRO.probe_skills(
+                        skill=mix_sk,
+                        handoff_root=handoff_root,
+                        skills_root=skills_root,
+                        dev_root=dev_root,
+                        fast=True,
+                    )
+                    fm_sig = fast_mix["skills"][0]["signals"]
+                    self.assertEqual(fm_sig["progressive_catch_count"], 1, mix_sk)
+                    self.assertEqual(fm_sig["domain_failures"], 1, mix_sk)
+                    self.assertEqual(fm_sig["l1_unwired_drawers"], 1, mix_sk)
+                    self.assertGreater(fast_mix["skills"][0]["priority_score"], 0.0, mix_sk)
+
     def test_direct_warehouse_db_fast_probe_and_domain_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1232,30 +1232,22 @@ def _ingest_usage_jsonl_and_shards(
             # Only stamp default current skill_version when explicit version was provided on the raw record
             explicit_sv = str(raw_rec.get("skill_version") or "").strip() or None
             explicit_sub = str(raw_rec.get("subtree_sha") or "").strip() or None
-            if not any(
-                c.origin_source != "usage_jsonl"
-                and c.skill == sk
-                and c.script_rel == sc_rel
-                and c.exit_code == ec
-                and abs((c.ts - ts).total_seconds()) < 1.0
-                for c in obs.script_calls
-            ):
-                obs.script_calls.append(
-                    ScriptCallEvent(
-                        session_id=sid,
-                        skill=sk,
-                        script_rel=sc_rel,
-                        command=str(rec.get("command") or raw_sc),
-                        ts=ts,
-                        exit_code=ec,
-                        duration_ms=dur,
-                        measured=dur is not None,
-                        seq=obs.next_seq(),
-                        skill_version=explicit_sv,
-                        subtree_sha=explicit_sub,
-                        origin_source="usage_jsonl",
-                    )
+            obs.script_calls.append(
+                ScriptCallEvent(
+                    session_id=sid,
+                    skill=sk,
+                    script_rel=sc_rel,
+                    command=str(rec.get("command") or raw_sc),
+                    ts=ts,
+                    exit_code=ec,
+                    duration_ms=dur,
+                    measured=dur is not None,
+                    seq=obs.next_seq(),
+                    skill_version=explicit_sv,
+                    subtree_sha=explicit_sub,
+                    origin_source="usage_jsonl",
                 )
+            )
 
 
 def _ingest_trace_export(
@@ -1491,15 +1483,6 @@ def _ingest_warehouse_and_copilot_db(
                         sid,
                         SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
                     )
-                    if any(
-                        c.origin_source != "warehouse"
-                        and c.skill == sk
-                        and c.script_rel == sc_rel
-                        and c.exit_code == ec
-                        and abs((c.ts - ts).total_seconds()) < 1.0
-                        for c in obs.script_calls
-                    ):
-                        continue
                     seq_no = obs.next_seq()
                     obs.script_calls.append(
                         ScriptCallEvent(
@@ -2888,6 +2871,29 @@ def emit_skill_retro_briefs(
     }
 
 
+def _deduplicate_session_script_calls(obs: SessionObservation) -> list[ScriptCallEvent]:
+    """Chronologically sort and deduplicate adjacent cross-source mirrored calls per `(skill, script_rel)` without crossing an intervening pass."""
+    if not obs.script_calls:
+        return []
+    dedup_by_validator: dict[tuple[str, str], list[ScriptCallEvent]] = {}
+    retained: list[ScriptCallEvent] = []
+    for c_ev in sorted(obs.script_calls, key=lambda c: (c.ts, c.seq)):
+        v_key = (c_ev.skill, c_ev.script_rel)
+        v_hist = dedup_by_validator.setdefault(v_key, [])
+        if v_hist:
+            last_v = v_hist[-1]
+            if (
+                last_v.origin_source != c_ev.origin_source
+                and last_v.exit_code == c_ev.exit_code
+                and abs((c_ev.ts - last_v.ts).total_seconds()) < 1.0
+            ):
+                continue
+        v_hist.append(c_ev)
+        retained.append(c_ev)
+    obs.script_calls = retained
+    return retained
+
+
 def _evaluate_session_progressive_and_preread(
     loaded_for_sk: Sequence[SessionObservation],
     sk_name: str,
@@ -2920,27 +2926,15 @@ def _evaluate_session_progressive_and_preread(
         for e_ts, e_seq in edit_ev_list:
             raw_timeline.append((e_ts, e_seq, "edit", None))
 
-        dedup_by_validator: dict[tuple[str, str], list[ScriptCallEvent]] = {}
-        for c_ev in sorted(o.script_calls, key=lambda c: (c.ts, c.seq)):
-            v_key = (c_ev.skill, c_ev.script_rel)
-            v_hist = dedup_by_validator.setdefault(v_key, [])
-            if v_hist:
-                last_v = v_hist[-1]
-                if (
-                    last_v.origin_source != c_ev.origin_source
-                    and last_v.exit_code == c_ev.exit_code
-                    and abs((c_ev.ts - last_v.ts).total_seconds()) < 1.0
-                ):
-                    continue
-            v_hist.append(c_ev)
+        all_call_seqs = {c.seq for c in o.script_calls}
+        for c_ev in _deduplicate_session_script_calls(o):
             raw_timeline.append((c_ev.ts, c_ev.seq, "script", c_ev))
 
-        call_seqs = {c.seq for c in o.script_calls}
         bash_ev_list = list(o.bash_events)
         if not bash_ev_list and o.bash_commands:
             bash_ev_list = [(cmd, ec, dur, o.started_at, b_seq) for cmd, ec, dur, b_seq in o.bash_commands]
         for _, _, _, b_ts, b_seq in bash_ev_list:
-            if b_seq in call_seqs:
+            if b_seq in all_call_seqs:
                 continue
             raw_timeline.append((b_ts, b_seq, "bash", None))
 
@@ -3112,6 +3106,8 @@ def compute_skill_retro_diagnostics(
     )
 
     all_sessions = list(observations.values())
+    for obs_item in all_sessions:
+        _deduplicate_session_script_calls(obs_item)
     total_sessions = len(all_sessions)
     all_stamps = [obs.ended_at for obs in all_sessions]
     source_as_of = max(all_stamps).isoformat() if all_stamps else None
@@ -7883,7 +7879,7 @@ def _fast_telemetry_signals(
         )
 
     # Merge any warehouse/usage.jsonl validator calls into sampled_obs (if session was sampled)
-    # so omitted middle ranges in oversized logs or usage-only validators are preserved and deduplicated!
+    # without pre-dropping against non-adjacent calls; `_deduplicate_session_script_calls` reconciles chronologically!
     non_sampled_validator_events: dict[tuple[str, str, str], list[tuple[float, int, int, str]]] = {}
     for (sk, sid_v, sc_rel_v), ev_items in post_validator_events.items():
         if sid_v in sampled_obs:
@@ -7892,15 +7888,6 @@ def _fast_telemetry_signals(
             for ts_num, _, ec_v, ev_src in sorted(ev_items, key=lambda item: (item[0], item[1])):
                 ev_dt = datetime.fromtimestamp(ts_num, tz=timezone.utc).astimezone(CST)
                 src_label = "warehouse" if ev_src == "wh" else "usage_jsonl"
-                if any(
-                    c.origin_source != src_label
-                    and c.skill == sk
-                    and c.script_rel == sc_rel_v
-                    and c.exit_code == ec_v
-                    and abs((c.ts - ev_dt).total_seconds()) < 1.0
-                    for c in obs_s.script_calls
-                ):
-                    continue
                 obs_s.script_calls.append(
                     ScriptCallEvent(
                         session_id=sid_v,
@@ -7920,6 +7907,8 @@ def _fast_telemetry_signals(
 
     if sampled_obs:
         all_sampled = list(sampled_obs.values())
+        for obs_s in all_sampled:
+            _deduplicate_session_script_calls(obs_s)
         for sk_n in inv:
             loaded_for_sk = [
                 o
