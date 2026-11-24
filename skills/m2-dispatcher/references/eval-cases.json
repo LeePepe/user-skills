@@ -1,0 +1,56 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "m2-dispatcher",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "M2 router exposes plan, apply, watch, and status modes",
+      "tags": ["cli", "routing"],
+      "cmd": "python3 -B skills/m2-dispatcher/scripts/m2-router.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["--plan", "--apply", "--watch", "--status"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 30000
+    },
+    {
+      "id": "EV-002",
+      "title": "M2 dispatcher keeps worktree and Owner Gate boundaries visible",
+      "tags": ["contract", "worktree"],
+      "file": "skills/m2-dispatcher/SKILL.md",
+      "must_contain": ["Owner Gate", "spec.md", "skill-slash-expander.ts", "cross-M2"]
+    },
+    {
+      "id": "EV-003",
+      "title": "M2 router retains quota-protection and issue-cache seams",
+      "tags": ["contract", "quota"],
+      "file": "skills/m2-dispatcher/scripts/m2-router.py",
+      "must_contain": ["_CANONICAL_PATH", "personal-m2-assistant", "_REFS"]
+    },
+    {
+      "id": "EV-004",
+      "title": "Unknown M2 router options fail closed",
+      "tags": ["negative", "cli"],
+      "negative_cmd": "python3 -B skills/m2-dispatcher/scripts/m2-router.py --definitely-unknown-option",
+      "expect_fail_exit": 2,
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stderr_bytes": 30000
+    },
+    {
+      "id": "EV-005",
+      "title": "Pi harness remains a separate M2-specific seam",
+      "tags": ["contract", "pi"],
+      "file": "skills/m2-dispatcher/scripts/skill-slash-expander.ts",
+      "must_contain": ["/status", "/dash", "/retro"]
+    }
+  ],
+  "trigger_evals": [
+    {"query": "use /m2 to dispatch this goal to AIDash and Sapphire windows", "should_trigger": true},
+    {"query": "watch all active M2 tasks and route a blocked one to the Owner Gate", "should_trigger": true},
+    {"query": "run xcodebuild tests on the iOS simulator", "should_trigger": false, "near_miss_skill": "xcode-cli"},
+    {"query": "create a Daily Brief in Linear", "should_trigger": false, "near_miss_skill": "linear-board"},
+    {"query": "build a SwiftUI Liquid Glass screen", "should_trigger": false, "near_miss_skill": "my-designer"}
+  ]
+}

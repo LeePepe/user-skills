@@ -1,0 +1,61 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "retro-loop",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Retro discovery CLI discloses read-only controls",
+      "tags": ["cli", "read-only"],
+      "cmd": "python3 -B skills/retro-loop/scripts/retro_story_engine.py discover --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["discover", "--warehouse-db", "--no-auto-propose"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 20000
+    },
+    {
+      "id": "EV-002",
+      "title": "Skill ROI CLI discloses freshness and mirror controls",
+      "tags": ["cli", "roi"],
+      "cmd": "python3 -B skills/retro-loop/scripts/retro_story_engine.py skill-roi --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["skill-roi", "--warehouse-db", "--no-icloud-mirror"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 30000
+    },
+    {
+      "id": "EV-003",
+      "title": "Multica ROI collector remains discoverable without writes",
+      "tags": ["cli", "autopilot", "read-only"],
+      "cmd": "python3 -B skills/retro-loop/scripts/multica_skills_autopilot.py collect --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["collect", "--output", "--markdown-output"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 20000
+    },
+    {
+      "id": "EV-004",
+      "title": "Retro loop documents no-auto-propose and evidence windows",
+      "tags": ["contract", "evidence"],
+      "file": "skills/retro-loop/SKILL.md",
+      "must_contain": ["agent-efficiency", "skill-roi", "Physical Locks", "Project Loop A"]
+    },
+    {
+      "id": "EV-005",
+      "title": "Retro story engine exposes L4 query and proposal seams",
+      "tags": ["contract", "l4"],
+      "file": "skills/retro-loop/scripts/retro_story_engine.py",
+      "must_contain": ["DEFAULT_RETRO_QUERIES_DIR", "discover_aidata_signals", "_queue_recommendations"]
+    }
+  ],
+  "trigger_evals": [
+    {"query": "discover workflow and CI anomalies then propose a physical lock", "should_trigger": true},
+    {"query": "compute skill ROI from aidata and preserve source_as_of freshness", "should_trigger": true},
+    {"query": "run a SwiftUI Instruments performance profile", "should_trigger": false, "near_miss_skill": "ios-debugging-performance"},
+    {"query": "screen objective ETFs and gold funds", "should_trigger": false, "near_miss_skill": "asset-screener"},
+    {"query": "design a macOS Liquid Glass toolbar", "should_trigger": false, "near_miss_skill": "my-designer"}
+  ]
+}

@@ -110,5 +110,12 @@
         }
       ]
     }
+  ],
+  "trigger_evals": [
+    {"query": "model a bounded domain with CONTEXT.md, ADRs, deep modules, and explicit seams", "should_trigger": true},
+    {"query": "run spec-code drift patrol and classify stale spec versus code contract bug", "should_trigger": true},
+    {"query": "review a pull request for security bugs", "should_trigger": false, "near_miss_skill": "code-review"},
+    {"query": "research a niche topic with adversarial citations", "should_trigger": false, "near_miss_skill": "deep-research"},
+    {"query": "format a Dual-Zone Linear issue body", "should_trigger": false, "near_miss_skill": "issue-brief"}
   ]
 }

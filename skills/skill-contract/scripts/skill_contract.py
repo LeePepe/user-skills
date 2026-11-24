@@ -15,6 +15,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -128,6 +129,11 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
     ),
 }
 FINDING_REMEDIATIONS = VALVE_FINDING_GUIDANCE
+
+# Fast deterministic defaults. Individual cases/replay steps may tighten these limits.
+DEFAULT_TIMEOUT_SEC = 30.0
+DEFAULT_MAX_DURATION_MS = 30_000
+DEFAULT_MAX_OUTPUT_BYTES = 1_000_000
 
 
 def _enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
@@ -407,19 +413,76 @@ def _lookup_dot_path(data: Any, dot_path: str) -> tuple[bool, Any]:
     return True, cur
 
 
-def _run_command(command: Any, repo_root: Path) -> subprocess.CompletedProcess[str]:
+def _run_command(
+    command: Any,
+    repo_root: Path,
+    *,
+    timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+) -> subprocess.CompletedProcess[str]:
     argv: list[str] = []
+    started = time.monotonic()
     try:
         argv = list(command) if isinstance(command, list) else shlex.split(str(command))
         if not argv:
             raise ValueError("empty command")
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
-        return subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, check=False)
-    except (OSError, TypeError, ValueError) as exc:
+        result = subprocess.run(
+            argv,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(0.01, float(timeout_sec)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        result = subprocess.CompletedProcess(argv, 124, stdout, stderr)
+        result.timed_out = True
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
         result = subprocess.CompletedProcess(argv, 127, "", str(exc))
         result.launch_error = str(exc)
-        return result
+    result.duration_ms = round((time.monotonic() - started) * 1000, 3)
+    result.stdout_bytes = len((result.stdout or "").encode("utf-8", errors="replace"))
+    result.stderr_bytes = len((result.stderr or "").encode("utf-8", errors="replace"))
+    return result
+
+
+def _case_budget(case: Mapping[str, Any]) -> dict[str, float | int]:
+    def numeric(name: str, default: float | int, minimum: float | int) -> float | int:
+        raw = case.get(name, default)
+        try:
+            value = float(raw) if isinstance(default, float) else int(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    return {
+        "timeout_sec": numeric("timeout_sec", DEFAULT_TIMEOUT_SEC, 0.01),
+        "max_duration_ms": numeric("max_duration_ms", DEFAULT_MAX_DURATION_MS, 1),
+        "max_stdout_bytes": numeric("max_stdout_bytes", DEFAULT_MAX_OUTPUT_BYTES, 0),
+        "max_stderr_bytes": numeric("max_stderr_bytes", DEFAULT_MAX_OUTPUT_BYTES, 0),
+    }
+
+
+def _budget_reasons(
+    cid: str,
+    proc: subprocess.CompletedProcess[str],
+    budget: Mapping[str, Any],
+    *,
+    allow_timeout: bool = False,
+) -> list[str]:
+    reasons: list[str] = []
+    if getattr(proc, "timed_out", False) and not allow_timeout:
+        reasons.append(f"{cid}: command timed out after {budget['timeout_sec']}s")
+    if float(getattr(proc, "duration_ms", 0)) > float(budget["max_duration_ms"]):
+        reasons.append(f"{cid}: duration {proc.duration_ms}ms exceeds max_duration_ms {budget['max_duration_ms']}")
+    if int(getattr(proc, "stdout_bytes", 0)) > int(budget["max_stdout_bytes"]):
+        reasons.append(f"{cid}: stdout {proc.stdout_bytes} bytes exceeds max_stdout_bytes {budget['max_stdout_bytes']}")
+    if int(getattr(proc, "stderr_bytes", 0)) > int(budget["max_stderr_bytes"]):
+        reasons.append(f"{cid}: stderr {proc.stderr_bytes} bytes exceeds max_stderr_bytes {budget['max_stderr_bytes']}")
+    return reasons
 
 
 def _frontmatter_fields(md: Path) -> dict[str, Any]:
@@ -614,9 +677,11 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
             if good_snippet is not None and compiled.search(str(good_snippet)) is not None:
                 reasons.append(f"{cid}: good_snippet falsely matched forbidden_regex/regex")
 
+    budget = _case_budget(case)
     cmd_raw = case.get("cmd")
     if cmd_raw:
-        proc = _run_command(cmd_raw, repo_root)
+        proc = _run_command(cmd_raw, repo_root, timeout_sec=float(budget["timeout_sec"]))
+        reasons.extend(_budget_reasons(cid, proc, budget))
         expect_exit = int(case.get("expect_exit", 0))
         if proc.returncode != expect_exit:
             reasons.append(f"{cid}: cmd exit {proc.returncode} != expect_exit {expect_exit} ({proc.stderr.strip()})")
@@ -638,10 +703,13 @@ def evaluate_case(case: dict[str, Any], skill_dir: Path, repo_root: Path = ROOT)
 
     negative_cmd = case.get("negative_cmd")
     if "negative_cmd" in case:
-        proc = _run_command(negative_cmd if negative_cmd is not None else "", repo_root)
+        proc = _run_command(negative_cmd if negative_cmd is not None else "", repo_root, timeout_sec=float(budget["timeout_sec"]))
+        reasons.extend(_budget_reasons(cid, proc, budget, allow_timeout=bool(case.get("expect_timeout", False))))
         expected = case.get("expect_fail_exit")
         if getattr(proc, "launch_error", None):
             reasons.append(f"{cid}: negative_cmd launch failed: {proc.stderr.strip()}")
+        elif getattr(proc, "timed_out", False) and not case.get("expect_timeout", False):
+            reasons.append(f"{cid}: negative_cmd timed out without expect_timeout=true")
         elif proc.returncode == 0:
             reasons.append(f"{cid}: negative_cmd unexpectedly succeeded")
         elif expected is not None:
@@ -758,6 +826,14 @@ def add_case(args: argparse.Namespace) -> int:
     if args.cmd:
         entry["cmd"] = args.cmd
         entry["expect_exit"] = args.expect_exit
+    for key, value in (
+        ("timeout_sec", args.timeout_sec),
+        ("max_duration_ms", args.max_duration_ms),
+        ("max_stdout_bytes", args.max_stdout_bytes),
+        ("max_stderr_bytes", args.max_stderr_bytes),
+    ):
+        if value is not None:
+            entry[key] = value
     if args.expect_contains:
         entry["expect_stdout_contains"] = _csv(args.expect_contains)
     if args.expect_json_subset:
@@ -967,8 +1043,10 @@ def run_eval_target(args: argparse.Namespace) -> int:
             last_exit = 0
             case_phase = expanded_runs[0][0]
             for spec_phase, argv, spec in expanded_runs:
-                proc = _run_command(argv, repo_root)
+                budget = _case_budget({**case, **spec})
+                proc = _run_command(argv, repo_root, timeout_sec=float(budget["timeout_sec"]))
                 last_exit = proc.returncode
+                reasons.extend(_budget_reasons(case_id, proc, budget))
                 expect_exit = int(spec.get("expect_exit", case.get("target_expect_exit", 0)))
                 if proc.returncode != expect_exit:
                     snippet = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}")[:2400]
@@ -1115,6 +1193,179 @@ def run_eval(args: argparse.Namespace) -> int:
         payload["guidance_drawer"] = f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers"
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if failures else 0
+
+
+def _relative_path(path: Path, base: Path) -> str:
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return os.path.relpath(str(path), str(base))
+
+
+def _read_drawer_counts(path: Path) -> tuple[int, int]:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return 0, 0
+    return len(doc.get("active_cases", [])) if isinstance(doc.get("active_cases"), list) else 0, len(doc.get("trigger_evals", [])) if isinstance(doc.get("trigger_evals"), list) else 0
+
+
+def inventory_cmd(args: argparse.Namespace) -> int:
+    repo_arg = getattr(args, "repo", None)
+    repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
+    packages = _discover_packages(repo=repo_arg)
+    records: list[dict[str, Any]] = []
+    drawer_groups: dict[str, list[dict[str, Any]]] = {}
+    path_active = path_trigger = 0
+    for package in packages:
+        drawer = package / "references" / "eval-cases.json"
+        record: dict[str, Any] = {
+            "skill": package.name,
+            "package_path": _relative_path(package.resolve(), repo_root),
+            "has_eval_drawer": drawer.is_file(),
+        }
+        if drawer.is_file():
+            resolved = drawer.resolve()
+            active, trigger = _read_drawer_counts(resolved)
+            path_active += active
+            path_trigger += trigger
+            record.update({
+                "drawer_path": _relative_path(drawer, repo_root),
+                "canonical_drawer": _relative_path(resolved, repo_root),
+                "drawer_is_symlink": drawer.is_symlink(),
+                "active_cases": active,
+                "trigger_evals": trigger,
+            })
+            drawer_groups.setdefault(str(resolved), []).append(record)
+        records.append(record)
+
+    canonical_drawers = []
+    canonical_active = canonical_trigger = 0
+    duplicate_drawers = []
+    for canonical, aliases in sorted(drawer_groups.items()):
+        active, trigger = _read_drawer_counts(Path(canonical))
+        canonical_active += active
+        canonical_trigger += trigger
+        item = {
+            "canonical_drawer": _relative_path(Path(canonical), repo_root),
+            "skills": [item["skill"] for item in aliases],
+            "active_cases": active,
+            "trigger_evals": trigger,
+        }
+        canonical_drawers.append(item)
+        if len(aliases) > 1:
+            duplicate_drawers.append(item)
+
+    uncovered = sorted(record["skill"] for record in records if not record["has_eval_drawer"])
+    payload = {
+        "schema": "skill-eval-inventory/v1",
+        "repo": str(repo_root),
+        "packages": len(records),
+        "packages_with_eval_drawer": sum(record["has_eval_drawer"] for record in records),
+        "uncovered_skills": uncovered,
+        "path_totals": {"active_cases": path_active, "trigger_evals": path_trigger},
+        "canonical_totals": {"drawers": len(canonical_drawers), "active_cases": canonical_active, "trigger_evals": canonical_trigger},
+        "duplicate_drawers": duplicate_drawers,
+        "drawers": canonical_drawers,
+        "packages_detail": records,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _replay_command_result(case_id: str, step: Mapping[str, Any], repo_root: Path) -> list[str]:
+    if not step.get("cmd"):
+        return [f"{case_id}: replay step missing cmd"]
+    budget = _case_budget(step)
+    proc = _run_command(step["cmd"], repo_root, timeout_sec=float(budget["timeout_sec"]))
+    reasons = _budget_reasons(case_id, proc, budget)
+    expected_exit = int(step.get("expect_exit", 0))
+    if proc.returncode != expected_exit:
+        reasons.append(f"{case_id}: replay exit {proc.returncode} != expect_exit {expected_exit}")
+    combined = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
+    for token in step.get("expect_stdout_contains") or []:
+        if str(token) not in combined:
+            reasons.append(f"{case_id}: replay output missing {token!r}")
+    subset = step.get("expect_json_subset")
+    if isinstance(subset, dict) and subset:
+        try:
+            parsed = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            reasons.append(f"{case_id}: replay stdout is not valid JSON: {exc}")
+        else:
+            for key, expected in subset.items():
+                found, actual = _lookup_dot_path(parsed, str(key))
+                if not found or actual != expected:
+                    reasons.append(f"{case_id}: replay JSON {key!r} expected {expected!r}, got {actual!r}")
+    return reasons
+
+
+def _path_fingerprint(target: Path) -> str | None:
+    if not target.exists():
+        return None
+    if target.is_file():
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    if target.is_dir():
+        entries = []
+        for child in sorted(target.rglob("*")):
+            entries.append(str(child.relative_to(target)) + ("/" if child.is_dir() else ""))
+        return hashlib.sha256("\n".join(entries).encode()).hexdigest()
+    return str(target.stat().st_mtime_ns)
+
+
+def run_replay(args: argparse.Namespace) -> int:
+    repo_arg = getattr(args, "repo", None)
+    repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
+    path = Path(args.file).expanduser()
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = {"ok": False, "error": f"replay fixture unavailable: {exc}"}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1 if args.strict else 0
+    cases = doc.get("cases") if isinstance(doc, dict) else None
+    failures: list[dict[str, Any]] = []
+    if not isinstance(doc, dict) or doc.get("schema") != "skill-replay-cases/v1" or not isinstance(cases, list):
+        failures.append({"id": "<fixture>", "reasons": ["expected schema skill-replay-cases/v1 with cases list"]})
+        cases = []
+    results: list[dict[str, Any]] = []
+    selected = [case for case in cases if isinstance(case, dict) and (not args.skill or case.get("skill") == args.skill)]
+    for case in selected:
+        case_id = str(case.get("id", "<unidentified>"))
+        reasons: list[str] = []
+        if case.get("mode", "read-only") != "read-only":
+            reasons.append(f"{case_id}: only mode=read-only is supported")
+        if case.get("expected_writes"):
+            reasons.append(f"{case_id}: read-only replay cannot declare expected_writes")
+        forbidden_before = {
+            str(relative): _path_fingerprint(repo_root / str(relative))
+            for relative in case.get("forbidden_paths") or []
+        }
+        before_status = None
+        if case.get("assert_git_clean", False):
+            before_status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo_root, capture_output=True, text=True, check=False).stdout
+        for index, step in enumerate(case.get("steps") or [], 1):
+            if not isinstance(step, dict):
+                reasons.append(f"{case_id}: step {index} is not an object")
+                continue
+            reasons.extend(_replay_command_result(f"{case_id}/step-{index}", step, repo_root))
+        if before_status is not None:
+            after_status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo_root, capture_output=True, text=True, check=False).stdout
+            if before_status != after_status:
+                reasons.append(f"{case_id}: read-only replay changed git-visible files")
+        for relative, before_fingerprint in forbidden_before.items():
+            after_fingerprint = _path_fingerprint(repo_root / relative)
+            if before_fingerprint != after_fingerprint:
+                reasons.append(f"{case_id}: forbidden path changed: {relative}")
+        result = {"id": case_id, "skill": case.get("skill"), "ok": not reasons, "reasons": reasons}
+        results.append(result)
+        if reasons:
+            failures.append(result)
+    payload = {"ok": not failures, "schema": "skill-replay-cases/v1", "fixture": str(path), "cases_run": len(selected), "passed": len(selected) - len(failures), "failures": failures, "results": results}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if args.strict and failures else 0
 
 
 def sink_rule(args: argparse.Namespace) -> int:
@@ -1320,7 +1571,8 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
         _audit_drawer(skill, ref, findings, pkg_dir=path)
         local_link = re.search(rf"(?<![A-Za-z0-9_-])(?:references/)?{re.escape(ref.name)}(?![A-Za-z0-9_.-])", all_md)
         canonical_link = re.search(rf"(?:\.\./)?{re.escape(skill)}/references/{re.escape(ref.name)}", sibling_corpus)
-        if not local_link and not canonical_link:
+        canonical_drawer = ref.name == "eval-cases.json"
+        if not local_link and not canonical_link and not canonical_drawer:
             findings.append({"skill": skill, "code": "orphan-reference", "file": str(ref)})
     data_defect = path / "scripts" / "data" / "defect-cases" / "index.json"
     if data_defect.is_file():
@@ -1497,13 +1749,40 @@ def _jev_trigger(skill: str, description: str, query: str) -> tuple[bool | None,
         return None, f"Jev unavailable: {type(exc).__name__}"
 
 
+def _load_trigger_cases(path_value: str | Path) -> list[dict[str, Any]]:
+    raw = _load_json_argument(path_value)
+    cases = raw.get("trigger_evals", raw.get("cases")) if isinstance(raw, dict) else raw
+    if not isinstance(cases, list):
+        raise ValueError("held-out trigger JSON must be a list or an object with trigger_evals/cases")
+    return cases
+
+
+def _classification_metrics(predicted: list[bool], expected: list[bool]) -> dict[str, float | int]:
+    tp = sum(p and e for p, e in zip(predicted, expected))
+    fp = sum(p and not e for p, e in zip(predicted, expected))
+    fn = sum((not p) and e for p, e in zip(predicted, expected))
+    tn = sum((not p) and (not e) for p, e in zip(predicted, expected))
+    precision = tp / (tp + fp) if tp + fp else 1.0
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {"total": len(expected), "tp": tp, "fp": fp, "fn": fn, "tn": tn, "precision": precision, "recall": recall, "f1": f1}
+
+
 def description_eval(args: argparse.Namespace) -> int:
     target = _resolve_skill_dir(args.skill, repo=getattr(args, "repo", None), create=False)
     desc = _frontmatter_description(target / "SKILL.md")
     drawer = target / "references" / "eval-cases.json"
     doc = json.loads(drawer.read_text(encoding="utf-8")) if drawer.is_file() else {}
-    cases = doc.get("trigger_evals", [])
+    drawer_cases = doc.get("trigger_evals", [])
+    heldout_cases: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    if getattr(args, "heldout", None):
+        try:
+            heldout_cases = _load_trigger_cases(args.heldout)
+        except ValueError as exc:
+            failures.append({"error": str(exc)})
+    labeled_cases = [(case, "drawer") for case in drawer_cases] + [(case, "heldout") for case in heldout_cases]
+    cases = [case for case, _ in labeled_cases]
     mock = None
     supplied_mock = args.mock_jev_json is not None
     if supplied_mock:
@@ -1522,11 +1801,13 @@ def description_eval(args: argparse.Namespace) -> int:
         failures.append({"error": "extra mock truth-table entries"})
     predicted: list[bool] = []
     expected_values: list[bool] = []
+    corpus_predictions: dict[str, list[bool]] = {"drawer": [], "heldout": []}
+    corpus_expected: dict[str, list[bool]] = {"drawer": [], "heldout": []}
     decisions: list[dict[str, Any]] = []
     passed = 0
-    for index, case in enumerate(cases, 1):
+    for index, (case, corpus) in enumerate(labeled_cases, 1):
         if not isinstance(case, dict) or not isinstance(case.get("query"), str) or not isinstance(case.get("should_trigger"), bool):
-            failures.append({"index": index, "error": "malformed trigger_eval"})
+            failures.append({"index": index, "corpus": corpus, "error": "malformed trigger_eval"})
             continue
         query = case["query"]
         source = "mock" if supplied_mock else "jev"
@@ -1535,7 +1816,7 @@ def description_eval(args: argparse.Namespace) -> int:
         if supplied_mock:
             matched, error = _mock_trigger(mock, index, case)
             if error:
-                failures.append({"index": index, "query": query, "error": error})
+                failures.append({"index": index, "corpus": corpus, "query": query, "error": error})
             elif matched is None:
                 fallback_reason = "grey applicability"
         else:
@@ -1543,7 +1824,7 @@ def description_eval(args: argparse.Namespace) -> int:
         if matched is None:
             matched = _fallback_trigger(desc, query)
             source = "deterministic-fallback"
-        decision = {"index": index, "query": query, "matched": matched, "source": source}
+        decision = {"index": index, "corpus": corpus, "query": query, "matched": matched, "source": source}
         if fallback_reason:
             decision["fallback_reason"] = fallback_reason
         if error:
@@ -1551,14 +1832,28 @@ def description_eval(args: argparse.Namespace) -> int:
         decisions.append(decision)
         predicted.append(matched)
         expected_values.append(case["should_trigger"])
+        corpus_predictions[corpus].append(matched)
+        corpus_expected[corpus].append(case["should_trigger"])
         if matched != case["should_trigger"]:
-            failures.append({"index": index, "query": query, "expected": case["should_trigger"], "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
+            failures.append({"index": index, "corpus": corpus, "query": query, "expected": case["should_trigger"], "matched": matched, "near_miss_skill": case.get("near_miss_skill")})
         elif not error:
             passed += 1
-    tp = sum(p and e for p, e in zip(predicted, expected_values)); fp = sum(p and not e for p, e in zip(predicted, expected_values)); fn = sum((not p) and e for p, e in zip(predicted, expected_values))
-    precision = tp / (tp + fp) if tp + fp else 1.0
-    recall = tp / (tp + fn) if tp + fn else 1.0
-    payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(cases), "passed": passed, "precision": precision, "recall": recall, "failures": failures, "decisions": decisions}
+    metrics = _classification_metrics(predicted, expected_values)
+    corpus_metrics = {name: _classification_metrics(corpus_predictions[name], corpus_expected[name]) for name in ("drawer", "heldout") if corpus_expected[name]}
+    payload = {
+        "ok": not failures and 0 < len(desc) <= 320,
+        "skill": args.skill,
+        "description_length": len(desc),
+        "total": len(cases),
+        "drawer_total": len(drawer_cases),
+        "heldout_total": len(heldout_cases),
+        "passed": passed,
+        **{key: metrics[key] for key in ("precision", "recall", "f1")},
+        "metrics": metrics,
+        "corpus_metrics": corpus_metrics,
+        "failures": failures,
+        "decisions": decisions,
+    }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if args.strict and not payload["ok"] else 0
 
@@ -1738,6 +2033,10 @@ def parser() -> argparse.ArgumentParser:
     add_p.add_argument("--good-snippet", default=None)
     add_p.add_argument("--cmd", default="")
     add_p.add_argument("--expect-exit", type=int, default=0)
+    add_p.add_argument("--timeout-sec", type=float, default=None)
+    add_p.add_argument("--max-duration-ms", type=int, default=None)
+    add_p.add_argument("--max-stdout-bytes", type=int, default=None)
+    add_p.add_argument("--max-stderr-bytes", type=int, default=None)
     add_p.add_argument("--expect-contains", default="")
     add_p.add_argument("--expect-json-subset", default="")
     add_p.add_argument("--file", default="")
@@ -1771,7 +2070,17 @@ def parser() -> argparse.ArgumentParser:
     desc_p.add_argument("--skill", required=True)
     desc_p.add_argument("--repo", default=None)
     desc_p.add_argument("--mock-jev-json", default=None)
+    desc_p.add_argument("--heldout", default=None, help="JSON file/list of held-out trigger cases")
     desc_p.add_argument("--strict", action="store_true")
+
+    replay_p = sub.add_parser("replay")
+    replay_p.add_argument("--file", default="skills/skill-contract/references/replay-cases.json")
+    replay_p.add_argument("--skill", default=None)
+    replay_p.add_argument("--repo", default=None)
+    replay_p.add_argument("--strict", action="store_true")
+
+    inventory_p = sub.add_parser("inventory")
+    inventory_p.add_argument("--repo", default=None)
 
     star_p = sub.add_parser("sync-jev-stars")
     star_p.add_argument("--skill", required=True)
@@ -1827,6 +2136,8 @@ def main() -> int:
         "eval": run_eval,
         "eval-target": run_eval_target,
         "description-eval": description_eval,
+        "replay": run_replay,
+        "inventory": inventory_cmd,
         "sync-jev-stars": sync_jev_stars,
         "uptake-eval": uptake_eval,
         "audit": audit,

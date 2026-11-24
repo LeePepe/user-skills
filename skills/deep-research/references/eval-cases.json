@@ -1,0 +1,46 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "deep-research",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Research helper exposes route and flow-map commands",
+      "tags": ["cli", "routing"],
+      "cmd": "python3 -B skills/deep-research/scripts/jev_research_helper.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["--topic-type", "--depth", "route", "flow-map"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 20000
+    },
+    {
+      "id": "EV-002",
+      "title": "Deep research L0 preserves adversarial verification phases",
+      "tags": ["contract", "verification"],
+      "file": "skills/deep-research/SKILL.md",
+      "must_contain": ["adversarially checked", "cross-model", "verification-protocol.md", "R06 quote failures"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Verification protocol keeps claim and verdict schemas",
+      "tags": ["drawer", "evidence"],
+      "file": "skills/deep-research/references/verification-protocol.md",
+      "must_contain": ["finding", "verdict", "confidence"]
+    },
+    {
+      "id": "EV-004",
+      "title": "Source-tier drawer remains machine-readable",
+      "tags": ["drawer", "source-tiers"],
+      "file": "skills/deep-research/references/source-tiers.json",
+      "must_contain": ["high_signal_tiers", "topics"]
+    }
+  ],
+  "trigger_evals": [
+    {"query": "research the latest topic using multiple sources and adversarial cross-model verification", "should_trigger": true},
+    {"query": "compare source tiers and produce a cited confidence table for a niche question", "should_trigger": true},
+    {"query": "explain a knowledge concept and save it into knowledge-vault", "should_trigger": false, "near_miss_skill": "knowledge-digest"},
+    {"query": "screen objective ETFs using Morningstar and Graham ERP", "should_trigger": false, "near_miss_skill": "asset-screener"},
+    {"query": "make a SwiftUI design modernization handoff", "should_trigger": false, "near_miss_skill": "my-designer"}
+  ]
+}

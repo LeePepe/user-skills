@@ -1,0 +1,35 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "story-craft",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Story craft L0 exposes extraction and narrative templates",
+      "tags": ["contract", "routing"],
+      "file": "skills/story-craft/SKILL.md",
+      "must_contain": ["4-Element Extraction Sheet", "Desensitization pipeline", "3 Narrative Templates"]
+    },
+    {
+      "id": "EV-002",
+      "title": "Prompt slots remain a bounded JSON drawer",
+      "tags": ["drawer", "schema"],
+      "file": "skills/story-craft/references/prompt-slots.json",
+      "must_contain": ["intent_required_keys", "evidence_ids", "quantitative_delta"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Story craft points to prompt-slot configuration",
+      "tags": ["contract", "disclosure"],
+      "file": "skills/story-craft/SKILL.md",
+      "must_contain": ["prompt-slots.json", "提示槽配置"]
+    }
+  ],
+  "trigger_evals": [
+    {"query": "extract a story into four elements and choose a narrative template", "should_trigger": true},
+    {"query": "desensitize this material and fill the configured prompt slots", "should_trigger": true},
+    {"query": "write a deep research report with citations", "should_trigger": false, "near_miss_skill": "deep-research"},
+    {"query": "summarize this video into knowledge digest cards", "should_trigger": false, "near_miss_skill": "knowledge-digest"},
+    {"query": "design a desktop app screen", "should_trigger": false, "near_miss_skill": "my-designer"}
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schema": "skill-replay-cases/v1",
+  "version": 1,
+  "cases": [
+    {
+      "id": "RP-001",
+      "skill": "retro-loop",
+      "title": "Read-only retro discovery and ROI command disclosure",
+      "mode": "read-only",
+      "steps": [
+        {
+          "cmd": "python3 -B skills/retro-loop/scripts/retro_story_engine.py discover --help",
+          "expect_exit": 0,
+          "expect_stdout_contains": ["discover", "--warehouse-db", "--no-auto-propose"],
+          "max_duration_ms": 5000,
+          "max_stdout_bytes": 20000
+        },
+        {
+          "cmd": "python3 -B skills/retro-loop/scripts/retro_story_engine.py skill-roi --help",
+          "expect_exit": 0,
+          "expect_stdout_contains": ["skill-roi", "--warehouse-db", "--no-icloud-mirror"],
+          "max_duration_ms": 5000,
+          "max_stdout_bytes": 20000
+        }
+      ],
+      "expected_writes": [],
+      "forbidden_paths": ["skills/retro-loop/scripts/__pycache__"]
+    },
+    {
+      "id": "RP-002",
+      "skill": "m2-dispatcher",
+      "title": "Read-only M2 router contract disclosure",
+      "mode": "read-only",
+      "steps": [
+        {
+          "cmd": "python3 -B skills/m2-dispatcher/scripts/m2-router.py --help",
+          "expect_exit": 0,
+          "expect_stdout_contains": ["--plan", "--watch", "--status"],
+          "max_duration_ms": 5000,
+          "max_stdout_bytes": 30000
+        }
+      ],
+      "expected_writes": [],
+      "forbidden_paths": ["skills/m2-dispatcher/scripts/__pycache__"]
+    },
+    {
+      "id": "RP-003",
+      "skill": "workflow-hub",
+      "title": "Read-only workflow drift checker contract disclosure",
+      "mode": "read-only",
+      "steps": [
+        {
+          "cmd": "python3 -B skills/workflow-hub/scripts/skills-drift-check.py --help",
+          "expect_exit": 0,
+          "expect_stdout_contains": ["--source", "--target", "--out"],
+          "max_duration_ms": 5000,
+          "max_stdout_bytes": 12000
+        }
+      ],
+      "expected_writes": [],
+      "forbidden_paths": ["skills/workflow-hub/scripts/__pycache__"]
+    }
+  ]
+}

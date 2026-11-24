@@ -17,7 +17,9 @@
         "sink-rule",
         "add-case",
         "eval",
-        "audit"
+        "audit",
+        "replay",
+        "inventory"
       ],
       "registered_at": "2026-11-10"
     },
@@ -48,7 +50,9 @@
         "eval --all --strict",
         "audit --all --strict",
         "eval-cases.json",
-        "One-In-One-Out"
+        "One-In-One-Out",
+        "--heldout",
+        "timeout"
       ],
       "registered_at": "2026-11-10"
     },
@@ -206,6 +210,48 @@
         "plugin.json"
       ],
       "registered_at": "2026-11-22"
+    },
+    {
+      "id": "EV-012",
+      "title": "Canonical symlink-aware inventory reports uncovered skills and drawer aliases",
+      "tags": ["inventory", "symlink", "wave-0"],
+      "cmd": "python3 -B skills/skill-contract/scripts/skill_contract.py inventory --repo .",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "schema": "skill-eval-inventory/v1",
+        "uncovered_skills": []
+      },
+      "expect_stdout_contains": ["canonical_totals", "packages_detail"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 200000
+    },
+    {
+      "id": "EV-013",
+      "title": "Read-only replay runner executes initial retro, M2, and workflow fixtures",
+      "tags": ["replay", "read-only", "wave-3"],
+      "cmd": "python3 -B skills/skill-contract/scripts/skill_contract.py replay --repo . --strict",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "cases_run": 3,
+        "passed": 3
+      },
+      "timeout_sec": 10,
+      "max_duration_ms": 10000,
+      "max_stdout_bytes": 50000
+    },
+    {
+      "id": "EV-014",
+      "title": "Timeout mutation trap is classified as an expected negative",
+      "tags": ["negative", "mutation", "wave-4"],
+      "negative_cmd": "python3 -c 'import time; time.sleep(0.2)'",
+      "expect_fail_exit": 124,
+      "expect_timeout": true,
+      "timeout_sec": 0.05,
+      "max_duration_ms": 1000,
+      "max_stdout_bytes": 1000,
+      "max_stderr_bytes": 1000
     }
   ],
   "trigger_evals": [

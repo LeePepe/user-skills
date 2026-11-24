@@ -1,0 +1,49 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "workflow-hub",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Workflow drift checker exposes source, target, diff, and output controls",
+      "tags": ["cli", "drift"],
+      "cmd": "python3 -B skills/workflow-hub/scripts/skills-drift-check.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["--source", "--target", "--diff-manifests", "--out"],
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stdout_bytes": 12000
+    },
+    {
+      "id": "EV-002",
+      "title": "Workflow hub preserves on-demand invocation and progressive ladder",
+      "tags": ["contract", "routing"],
+      "file": "skills/workflow-hub/SKILL.md",
+      "must_contain": ["On-Demand Invocation", "Progressive 6DQ Discovery Ladder", "Handoff rules"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Workflow sub-spec drawer remains structured JSON",
+      "tags": ["drawer", "schema"],
+      "file": "skills/workflow-hub/references/sub-workflow-specs.json",
+      "must_contain": ["active_specs", "bootstrap_prompt", "interfaces"]
+    },
+    {
+      "id": "EV-004",
+      "title": "Unknown workflow drift option fails closed",
+      "tags": ["negative", "cli"],
+      "negative_cmd": "python3 -B skills/workflow-hub/scripts/skills-drift-check.py --definitely-unknown-option",
+      "expect_fail_exit": 2,
+      "timeout_sec": 5,
+      "max_duration_ms": 5000,
+      "max_stderr_bytes": 12000
+    }
+  ],
+  "trigger_evals": [
+    {"query": "find the canonical workflow node and invoke its on-demand sub-workflow", "should_trigger": true},
+    {"query": "audit workflow hub drift and progressive 6DQ handoff rules", "should_trigger": true},
+    {"query": "add an AI metrics card and extend aidata L1 through L5", "should_trigger": false, "near_miss_skill": "aidash-metrics"},
+    {"query": "write a deep research report with cross-model verification", "should_trigger": false, "near_miss_skill": "deep-research"},
+    {"query": "fix a Swift concurrency actor-isolation bug", "should_trigger": false, "near_miss_skill": "ios-concurrency-swiftui"}
+  ]
+}
