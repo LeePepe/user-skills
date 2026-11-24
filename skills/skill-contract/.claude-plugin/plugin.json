@@ -1,7 +1,7 @@
 {
   "name": "skill-contract",
-  "description": "Create and audit progressive-disclosure skills with four valves.",
-  "version": "1.0.0",
+  "description": "Audit and evolve skills through SKILL.md, eval-cases.json, plugin.json, references/*.md, skill_contract.py, hygiene-facts, and Valve 1–4 budgets.",
+  "version": "1.1.0",
   "skills": [
     "SKILL.md"
   ],

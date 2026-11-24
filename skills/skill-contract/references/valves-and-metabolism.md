@@ -22,7 +22,9 @@ When adding an L1 mental-model row, replace the least useful row in the same tab
 
 ## Self-disclosing audit findings
 
-`valves-and-metabolism.md` is an on-demand remediation drawer (silent when checks pass, consulted when a valve trips). When `audit` or `eval` reports findings, the JSON output includes `guidance_drawer`, and each item includes `reference` (`skills/skill-contract/references/valves-and-metabolism.md#<section>`) and a concise `hint`, plus a stderr pointer so callers jump straight to the failing valve rule without bloating L0.
+`valves-and-metabolism.md` is an on-demand remediation drawer (silent when checks pass, consulted when a valve trips). When `audit` or `eval` reports findings, the JSON output includes `guidance_drawer`, and each item includes `reference` (`skills/skill-contract/references/valves-and-metabolism.md#<section>`) and a concise `hint`, plus a stderr pointer so callers jump straight to the failing valve rule without bloating L0. Parser failures use at most three stderr lines and end with the same `Reference:` pointer.
+
+`hygiene-facts` is a facts-only soft gate: it reports `git diff --check` and bounded JSON inspection with exit 0 by default; `--strict` converts unreadable JSON or diff issues to exit 1. Repeated `audit` and `versions` calls use a 60-second stat watermark cache; `--no-cache` forces a cold read.
 
 ## Repo-bound skills
 

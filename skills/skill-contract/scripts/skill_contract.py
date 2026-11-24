@@ -15,6 +15,8 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -128,6 +130,128 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
     ),
 }
 FINDING_REMEDIATIONS = VALVE_FINDING_GUIDANCE
+CACHE_TTL_SECONDS = 60.0
+CACHE_DIR = Path(tempfile.gettempdir()) / "skill-contract-watermark-cache"
+
+
+class _SelfDisclosingContractParser(argparse.ArgumentParser):
+    """Keep parser failures actionable without dumping argparse's long usage text."""
+
+    def error(self, message: str) -> None:
+        sys.stderr.write(f"skill-contract: {message}\n")
+        sys.stderr.write("Try --help or an unscoped command (audit/eval default to --all).\n")
+        sys.stderr.write(f"Reference: {VALVE_REFERENCE_BASE}\n")
+        raise SystemExit(2)
+
+
+def _normalize_repo_path(value: str | Path | None) -> str | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser().resolve()
+    if path.name == "skills" and not (path / "SKILL.md").exists():
+        return str(path.parent)
+    return str(path)
+
+
+def _emit_json(payload: Mapping[str, Any], args: argparse.Namespace | None = None) -> None:
+    compact = bool(args and (getattr(args, "summary", False) or getattr(args, "compact", False)))
+    text = json.dumps(payload, ensure_ascii=False, indent=None if compact else 2)
+    if len(text.encode("utf-8")) > 20 * 1024:
+        summary: dict[str, Any] = {
+            "ok": payload.get("ok"),
+            "summary": True,
+            "schema": payload.get("schema"),
+            "count": payload.get("count"),
+            "skills": payload.get("skills"),
+            "drawers_evaluated": payload.get("drawers_evaluated"),
+            "cases_run": payload.get("cases_run"),
+            "passed": payload.get("passed"),
+            "skill_eval_summary": payload.get("skill_eval_summary"),
+            "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else payload.get("failures"),
+            "findings": len(payload.get("findings", [])) if isinstance(payload.get("findings"), list) else payload.get("findings"),
+        }
+        text = json.dumps({key: value for key, value in summary.items() if value is not None}, ensure_ascii=False, separators=(",", ":"))
+    print(text)
+
+
+def _git_head_sha(path: Path) -> str:
+    cur = path.resolve()
+    while cur != cur.parent:
+        git_dir = cur / ".git"
+        if git_dir.is_dir():
+            head = git_dir / "HEAD"
+            try:
+                value = head.read_text(encoding="utf-8").strip()
+                if value.startswith("ref: "):
+                    ref = git_dir / value[5:]
+                    if ref.is_file():
+                        return ref.read_text(encoding="utf-8").strip()
+                    packed = git_dir / "packed-refs"
+                    if packed.is_file():
+                        for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+                            if line and not line.startswith("#") and not line.startswith("^") and " " in line:
+                                sha, name = line.split(" ", 1)
+                                if name == value[5:]:
+                                    return sha
+                elif value:
+                    return value
+            except OSError:
+                pass
+            return ""
+        cur = cur.parent
+    return ""
+
+
+def _watermark_fingerprint(repo: str | Path | None, mode: str, args_key: Mapping[str, Any]) -> str:
+    roots = package_roots(repo=repo)
+    base = Path(repo).expanduser().resolve() if repo else ROOT
+    records: list[tuple[str, int, int, str]] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() and not path.is_symlink():
+                continue
+            if path.name != "SKILL.md" and path.name != "plugin.json" and not (path.parent.name == "references" and path.is_file()) and not (path.parent.name == "scripts" and path.suffix == ".py"):
+                continue
+            try:
+                stat = path.stat()
+                target = os.readlink(path) if path.is_symlink() else ""
+                rel = str(path.relative_to(base)) if path.is_relative_to(base) else str(path)
+                records.append((rel, stat.st_mtime_ns, stat.st_size, target))
+            except OSError:
+                records.append((str(path), -1, -1, "unreadable"))
+    script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    payload = {"script_sha256": script_sha, "mode": mode, "args": dict(args_key), "records": records, "git_head": _git_head_sha(base)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _cache_path(mode: str, repo: str | Path | None, args_key: Mapping[str, Any]) -> Path:
+    identity = {"mode": mode, "repo": str(Path(repo).expanduser().resolve()) if repo else str(ROOT), "args": dict(args_key)}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return CACHE_DIR / f"{mode}-{digest}.json"
+
+
+def _cache_read(mode: str, repo: str | Path | None, args_key: Mapping[str, Any], *, no_cache: bool = False) -> Any:
+    if no_cache:
+        return None
+    path = _cache_path(mode, repo, args_key)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() - float(doc.get("created", 0)) <= CACHE_TTL_SECONDS and doc.get("fingerprint") == _watermark_fingerprint(repo, mode, args_key):
+            return doc.get("payload")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _cache_write(mode: str, repo: str | Path | None, args_key: Mapping[str, Any], payload: Any) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _cache_path(mode, repo, args_key)
+        path.write_text(json.dumps({"created": time.time(), "fingerprint": _watermark_fingerprint(repo, mode, args_key), "payload": payload}, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def _enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
@@ -144,6 +268,8 @@ def _enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
 def package_roots(repo: str | Path | None = None) -> list[Path]:
     if repo is not None:
         repo_path = Path(repo).expanduser().resolve()
+        if repo_path.name == "skills" and not (repo_path / "SKILL.md").exists():
+            repo_path = repo_path.parent
         return [
             candidate
             for candidate in (repo_path / "skills", repo_path / ".agents" / "skills")
@@ -332,26 +458,38 @@ def resolve_skill_version(
     }
 
 
-def resolve_all_skill_versions(repo: str | Path | None = None) -> dict[str, dict[str, Any]]:
+def resolve_all_skill_versions(repo: str | Path | None = None, *, no_cache: bool = False) -> dict[str, dict[str, Any]]:
+    repo = _normalize_repo_path(repo)
+    args_key = {"repo": str(repo or ""), "all": True}
+    cached = _cache_read("versions", repo, args_key, no_cache=no_cache)
+    if isinstance(cached, dict):
+        return cached
     packages = _discover_packages(skill=None, repo=repo)
-    return {pkg.name: resolve_skill_version(pkg, repo=repo) for pkg in packages}
+    if len(packages) <= 1:
+        values = [resolve_skill_version(pkg, repo=repo) for pkg in packages]
+    else:
+        with ThreadPoolExecutor(max_workers=min(8, len(packages))) as pool:
+            values = list(pool.map(lambda pkg: resolve_skill_version(pkg, repo=repo), packages))
+    result = {pkg.name: info for pkg, info in zip(packages, values)}
+    _cache_write("versions", repo, args_key, result)
+    return result
 
 
 def version_cmd(args: argparse.Namespace) -> int:
-    repo_arg = getattr(args, "repo", None)
+    repo_arg = _normalize_repo_path(getattr(args, "repo", None))
     skill_arg = getattr(args, "skill", None)
     if skill_arg and not getattr(args, "all", False):
         info = resolve_skill_version(skill_arg, repo=repo_arg)
-        print(json.dumps(info, ensure_ascii=False, indent=2))
+        _emit_json(info, args)
         return 0 if info["ok"] else 1
-    versions_map = resolve_all_skill_versions(repo=repo_arg)
+    versions_map = resolve_all_skill_versions(repo=repo_arg, no_cache=bool(getattr(args, "no_cache", False)))
     payload = {
         "ok": True,
         "count": len(versions_map),
         "skills": [versions_map[k] for k in sorted(versions_map)],
         "versions": {k: v["skill_version"] for k, v in sorted(versions_map.items())},
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    _emit_json(payload, args)
     return 0
 
 
@@ -372,7 +510,7 @@ def init_skill(args: argparse.Namespace) -> int:
         raise SystemExit(f"invalid semantic version: {version!r} (expected X.Y.Z)")
     manifest = {"name": args.skill, "description": f"{args.skill} skill", "version": version, "category": args.category}
     (target / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "skill": args.skill, "path": str(target)}))
+    _emit_json({"ok": True, "skill": args.skill, "path": str(target)}, args)
     return 0
 
 
@@ -713,15 +851,15 @@ def add_case(args: argparse.Namespace) -> int:
         args.negative_stderr_contains,
     ]
     if not repo_arg and any(PRIVATE.search(val or "") for val in text_fields):
-        print(json.dumps({"ok": False, "error": "project-private identifiers are forbidden in cases"}))
+        _emit_json({"ok": False, "error": "project-private identifiers are forbidden in cases"}, args)
         return 1
 
     if args.forbidden_regex and (not args.bad_snippet or not args.good_snippet):
-        print(json.dumps({"ok": False, "error": "forbidden_regex requires both --bad-snippet and --good-snippet"}))
+        _emit_json({"ok": False, "error": "forbidden_regex requires both --bad-snippet and --good-snippet"}, args)
         return 1
 
     if not args.forbidden_regex and not args.cmd and not args.file and not args.negative_cmd:
-        print(json.dumps({"ok": False, "error": "add-case requires at least one executable assertion (--forbidden-regex, --cmd, --negative-cmd, or --file)"}))
+        _emit_json({"ok": False, "error": "add-case requires at least one executable assertion (--forbidden-regex, --cmd, --negative-cmd, or --file)"}, args)
         return 1
 
     default_schema = "apple-design-defect-cases/v1" if is_defect_drawer else "skill-eval-cases/v1"
@@ -780,7 +918,7 @@ def add_case(args: argparse.Namespace) -> int:
 
     failures = evaluate_case(entry, target, repo_root)
     if failures:
-        print(json.dumps({"ok": False, "id": ident, "failures": failures}, ensure_ascii=False, indent=2))
+        _emit_json({"ok": False, "id": ident, "failures": failures}, args)
         return 1
 
     entries = [item for item in entries if not (isinstance(item, dict) and item.get("id") == ident)]
@@ -789,7 +927,7 @@ def add_case(args: argparse.Namespace) -> int:
     doc["updated"] = date.today().isoformat()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "skill": args.skill, "drawer": drawer_rel, "id": ident, "entry": entry}, ensure_ascii=False))
+    _emit_json({"ok": True, "skill": args.skill, "drawer": drawer_rel, "id": ident, "entry": entry}, args)
     return 0
 
 
@@ -1022,45 +1160,67 @@ def run_eval_target(args: argparse.Namespace) -> int:
         out_path = Path(receipt_out).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    _emit_json(payload, args)
     return 1 if failures and getattr(args, "strict", False) else 0
 
 
 def run_eval(args: argparse.Namespace) -> int:
-    if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
-        raise SystemExit("eval requires one of --all, --skill, or --repo")
-    repo_arg = getattr(args, "repo", None)
+    repo_arg = _normalize_repo_path(getattr(args, "repo", None))
+    skill_names = _csv(getattr(args, "skills", None))
+    if getattr(args, "skill", None):
+        skill_names = _csv(getattr(args, "skill", None))
+    if not skill_names and not getattr(args, "all", False) and not repo_arg:
+        args.all = True
     repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT
-    packages = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
+    packages = []
+    if skill_names:
+        for skill_name in skill_names:
+            packages.extend(_discover_packages(skill=skill_name, repo=repo_arg))
+    else:
+        packages = _discover_packages(skill=None, repo=repo_arg)
     seen_drawers: set[Path] = set()
     drawers_evaluated = 0
     cases_run = 0
     passed = 0
     failures: list[dict[str, Any]] = []
 
+    drawer_arg = getattr(args, "drawer", None)
+    drawer_specs: list[tuple[str, Path, Path]] = []
+    if drawer_arg:
+        resolved = Path(drawer_arg).expanduser().resolve()
+        inferred_skill = ROOT / "skills" / "skill-contract"
+        if len(resolved.parents) > 1 and resolved.parent.name == "references":
+            inferred_skill = resolved.parent.parent
+        elif len(resolved.parents) > 2 and resolved.parent.name == "data" and resolved.parent.parent.name == "scripts":
+            inferred_skill = resolved.parent.parent.parent
+        drawer_specs.append((inferred_skill.name, resolved, inferred_skill))
+    else:
+        for pkg in packages:
+            for rel_drawer in EVAL_DRAWERS:
+                drawer_specs.append((pkg.name, pkg / rel_drawer, pkg))
+
     pending_evals: list[tuple[str, str, dict[str, Any], Path]] = []
-    for pkg in packages:
-        for rel_drawer in EVAL_DRAWERS:
-            drawer_path = pkg / rel_drawer
-            if not drawer_path.is_file():
-                continue
-            resolved = drawer_path.resolve()
-            if resolved in seen_drawers:
-                continue
-            seen_drawers.add(resolved)
-            drawers_evaluated += 1
-            try:
-                doc = json.loads(resolved.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                failures.append({
-                    "skill": pkg.name,
-                    "drawer": rel_drawer,
-                    "id": "<drawer>",
-                    "reasons": [str(exc)],
-                    "reference": f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
-                })
-                continue
-            for case in doc.get("active_cases", []):
+    for skill_name, drawer_path, pkg in drawer_specs:
+        if not drawer_path.is_file():
+            continue
+        resolved = drawer_path.resolve()
+        if resolved in seen_drawers:
+            continue
+        seen_drawers.add(resolved)
+        drawers_evaluated += 1
+        rel_drawer = str(drawer_path.relative_to(pkg)) if drawer_path.is_relative_to(pkg) else drawer_path.name
+        try:
+            doc = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append({
+                "skill": skill_name,
+                "drawer": rel_drawer,
+                "id": "<drawer>",
+                "reasons": [str(exc)],
+                "reference": f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+            })
+            continue
+        for case in doc.get("active_cases", []):
                 if not isinstance(case, dict):
                     continue
                 has_assertion = bool(
@@ -1113,8 +1273,86 @@ def run_eval(args: argparse.Namespace) -> int:
     }
     if failures:
         payload["guidance_drawer"] = f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers"
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    _emit_json(payload, args)
     return 1 if failures else 0
+
+
+def _diff_facts(repo_root: Path) -> list[str]:
+    issues: list[str] = []
+    for label, command in (("working", ["git", "diff", "--check"]), ("cached", ["git", "diff", "--cached", "--check"])):
+        try:
+            proc = subprocess.run(command, cwd=repo_root, capture_output=True, text=True, check=False, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            issues.append(f"{label}: {exc}")
+            continue
+        for line in (proc.stdout + "\n" + proc.stderr).splitlines():
+            if line.strip():
+                issues.append(f"{label}: {line.strip()}")
+    try:
+        diff = subprocess.run(["git", "diff", "--no-ext-diff", "--unified=0"], cwd=repo_root, capture_output=True, text=True, check=False, timeout=5)
+        for line in diff.stdout.splitlines():
+            if re.match(r"^[+ -]?(?:<<<<<<<|=======|>>>>>>>)", line):
+                issues.append(f"conflict-marker: {line.strip()}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        issues.append(f"working: {exc}")
+    return issues
+
+
+def _json_inspection(value: Any, source: str) -> dict[str, Any]:
+    top = value.keys() if isinstance(value, dict) else range(len(value)) if isinstance(value, list) else []
+    counts = {"dicts": 0, "lists": 0}
+    def walk(item: Any) -> None:
+        if isinstance(item, dict):
+            counts["dicts"] += 1
+            for child in item.values():
+                walk(child)
+        elif isinstance(item, list):
+            counts["lists"] += 1
+            for child in item:
+                walk(child)
+    walk(value)
+    preview = json.dumps(value, ensure_ascii=False, indent=2)
+    if len(preview) > 4096:
+        preview = preview[:4093] + "..."
+    return {
+        "source": source,
+        "top_level_type": type(value).__name__,
+        "top_level_keys": [str(key) for key in top],
+        "counts": counts,
+        "preview": preview,
+    }
+
+
+def hygiene_facts(args: argparse.Namespace) -> int:
+    repo_root = Path(getattr(args, "repo", None) or ROOT).expanduser().resolve()
+    diff_issues = _diff_facts(repo_root) if getattr(args, "check_diff", True) else []
+    json_summary: dict[str, Any] | None = None
+    json_error: str | None = None
+    json_file = getattr(args, "json_file", None)
+    if json_file:
+        try:
+            raw = sys.stdin.read() if json_file == "-" else Path(json_file).expanduser().read_text(encoding="utf-8")
+            json_summary = _json_inspection(json.loads(raw), "stdin" if json_file == "-" else str(Path(json_file).expanduser().resolve()))
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+            json_error = f"json-file: {exc}"
+    problems = list(diff_issues)
+    if json_error:
+        problems.append(json_error)
+    payload = {
+        "ok": not problems,
+        "schema": "skill-hygiene-facts/v1",
+        "gate_tier": "soft_advisory_exit_0",
+        "diff_clean": not diff_issues,
+        "diff_issues": diff_issues,
+        "json_summary": json_summary,
+        "reference": VALVE_REFERENCE_BASE,
+    }
+    _emit_json(payload, args)
+    if problems and getattr(args, "strict", False):
+        sys.stderr.write("skill-contract: hygiene facts found an issue; inspect the reported facts.\n")
+        sys.stderr.write(f"Reference: {VALVE_REFERENCE_BASE}\n")
+        return 1
+    return 0
 
 
 def sink_rule(args: argparse.Namespace) -> int:
@@ -1177,7 +1415,7 @@ def sink_rule(args: argparse.Namespace) -> int:
         doc.setdefault("rules", []).append(rule)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "skill": args.skill, "kind": args.kind}))
+    _emit_json({"ok": True, "skill": args.skill, "kind": args.kind}, args)
     return 0
 
 
@@ -1329,10 +1567,23 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
 
 
 def audit(args: argparse.Namespace) -> int:
-    if not getattr(args, "all", False) and not getattr(args, "skill", None) and not getattr(args, "repo", None):
-        raise SystemExit("audit requires one of --all, --skill, or --repo")
-    repo_arg = getattr(args, "repo", None)
-    selected = _discover_packages(skill=getattr(args, "skill", None), repo=repo_arg)
+    repo_arg = _normalize_repo_path(getattr(args, "repo", None))
+    skill_names = _csv(getattr(args, "skills", None))
+    if getattr(args, "skill", None):
+        skill_names = _csv(getattr(args, "skill", None))
+    if not skill_names and not getattr(args, "all", False) and not repo_arg:
+        args.all = True
+    args_key = {"skills": skill_names, "all": bool(getattr(args, "all", False)), "repo": str(repo_arg or "")}
+    cached = _cache_read("audit", repo_arg, args_key, no_cache=bool(getattr(args, "no_cache", False)))
+    if isinstance(cached, dict):
+        _emit_json(cached, args)
+        return 1 if not cached.get("ok") and getattr(args, "strict", False) else 0
+    if skill_names:
+        selected = []
+        for skill_name in skill_names:
+            selected.extend(_discover_packages(skill=skill_name, repo=repo_arg))
+    else:
+        selected = _discover_packages(skill=None, repo=repo_arg)
     all_packages = _discover_packages(repo=repo_arg)
     selected_set = {p.resolve() for p in selected}
     findings: list[dict[str, Any]] = []
@@ -1370,7 +1621,8 @@ def audit(args: argparse.Namespace) -> int:
             f"[skill-contract] {len(findings)} valve finding(s) detected. "
             f"Read {', '.join(refs[:3])} for remediation rules.\n"
         )
-    print(json.dumps(result, indent=2))
+    _cache_write("audit", repo_arg, args_key, result)
+    _emit_json(result, args)
     return 1 if findings and args.strict else 0
 
 
@@ -1559,7 +1811,7 @@ def description_eval(args: argparse.Namespace) -> int:
     precision = tp / (tp + fp) if tp + fp else 1.0
     recall = tp / (tp + fn) if tp + fn else 1.0
     payload = {"ok": not failures and 0 < len(desc) <= 320, "skill": args.skill, "description_length": len(desc), "total": len(cases), "passed": passed, "precision": precision, "recall": recall, "failures": failures, "decisions": decisions}
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    _emit_json(payload, args)
     return 1 if args.strict and not payload["ok"] else 0
 
 
@@ -1582,7 +1834,7 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
     entries = [item for item in doc.get("active_cases", []) if isinstance(item, dict)]
     db_path = Path(args.db_path).expanduser() if args.db_path else Path.home() / "Library/Application Support/Falcon/falcon.sqlite"
     if not db_path.is_file():
-        print(json.dumps({"ok": False, "error": f"database not found: {db_path}"})); return 1
+        _emit_json({"ok": False, "error": f"database not found: {db_path}"}, args); return 1
     try:
         con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True); con.row_factory = sqlite3.Row
         try:
@@ -1590,7 +1842,7 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
         finally:
             con.close()
     except sqlite3.Error as exc:
-        print(json.dumps({"ok": False, "error": f"database query failed: {exc}"})); return 1
+        _emit_json({"ok": False, "error": f"database query failed: {exc}"}, args); return 1
     fallbacks = {"team-lead": {"goal-task"}, "personal-m2-assistant": {"team-lead", "goal-task"}, "m2-dispatcher": {"team-lead", "goal-task"}, "writer": {"team-lead", "goal-task"}, "reviewer": {"team-lead", "goal-task"}, "explorer": {"team-lead", "goal-task"}, "knowledge-digest": {"deep-research"}, "design-studio": {"my-designer"}, "retro-loop": {"shared-ci", "team-lead", "goal-task"}, "howto": {"goal-task", "team-lead"}}
     requested = args.source_name
     allowed = {requested} if requested else {args.skill} | fallbacks.get(args.skill, set())
@@ -1663,14 +1915,14 @@ def sync_jev_stars(args: argparse.Namespace) -> int:
     payload = {"ok": not malformed, "dry_run": bool(args.dry_run), "skill": args.skill, "planned": len(planned), "added": added, "evicted": evicted, "skipped": skips, "malformed": malformed, "active": len(entries)}
     if not args.dry_run and not malformed:
         doc["active_cases"] = entries; doc["archived_cases"] = archived; doc["updated"] = date.today().isoformat(); drawer.parent.mkdir(parents=True, exist_ok=True); drawer.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(payload, ensure_ascii=False, indent=2)); return 1 if malformed else 0
+    _emit_json(payload, args); return 1 if malformed else 0
 
 
 def uptake_eval(args: argparse.Namespace) -> int:
     retro_script = ROOT / "skills" / "skill-retro" / "scripts" / "skill_retro.py"
     spec = importlib.util.spec_from_file_location("skill_retro_uptake", retro_script)
     if spec is None or spec.loader is None:
-        print(json.dumps({"ok": False, "error": f"skill_retro.py not found at {retro_script}"}))
+        _emit_json({"ok": False, "error": f"skill_retro.py not found at {retro_script}"}, args)
         return 1
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -1687,139 +1939,108 @@ def uptake_eval(args: argparse.Namespace) -> int:
         skill_evaluator_pct=args.skill_pct,
         build_success=args.build_success,
     )
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    _emit_json(out, args)
     return 1 if (getattr(args, "strict", False) and not out["ok"]) else 0
 
 
+def _add_output_flags(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--json", action="store_true", help="Emit machine-readable JSON (the default output format).")
+    command.add_argument("--summary", "--compact", dest="compact", action="store_true", help="Bound output to a compact summary.")
+
+
+def _add_repo_aliases(command: argparse.ArgumentParser, *, default: str | None = None) -> None:
+    command.add_argument("--repo", "--root", "--dir", "--target-dir", dest="repo", default=default)
+
+
 def parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
+    root_parser = _SelfDisclosingContractParser()
+    sub = root_parser.add_subparsers(dest="command", parser_class=_SelfDisclosingContractParser)
+
     init = sub.add_parser("init")
-    init.add_argument("--skill", required=True)
-    init.add_argument("--category", required=True)
+    init.add_argument("--skill", required=True); init.add_argument("--category", required=True)
     init.add_argument("--version", default="1.0.0", help="Semantic version X.Y.Z for .claude-plugin/plugin.json")
-    init.add_argument("--design", action="store_true")
-    init.add_argument("--repo", default=None)
+    init.add_argument("--design", action="store_true"); init.add_argument("--repo", default=None); _add_output_flags(init)
 
     sink = sub.add_parser("sink-rule")
-    sink.add_argument("--skill", required=True)
-    sink.add_argument("--kind", choices=["regex-gate", "case-card", "mental-model"], required=True)
-    sink.add_argument("--id")
-    sink.add_argument("--target-file")
-    sink.add_argument("--replace-row")
-    sink.add_argument("--section")
-    sink.add_argument("--value", default="")
-    sink.add_argument("--platforms", default="desktop,mobile,web")
-    sink.add_argument("--dimensions", default="")
-    sink.add_argument("--containers", default="")
-    sink.add_argument("--title", default="")
-    sink.add_argument("--severity", default="Medium")
-    sink.add_argument("--regex", default="")
-    sink.add_argument("--remediation", default="")
-    sink.add_argument("--bad-snippet", default=None)
-    sink.add_argument("--good-snippet", default=None)
+    sink.add_argument("--skill", required=True); sink.add_argument("--kind", choices=["regex-gate", "case-card", "mental-model"], required=True)
+    sink.add_argument("--id"); sink.add_argument("--target-file"); sink.add_argument("--replace-row"); sink.add_argument("--section"); sink.add_argument("--value", default="")
+    sink.add_argument("--platforms", default="desktop,mobile,web"); sink.add_argument("--dimensions", default=""); sink.add_argument("--containers", default="")
+    sink.add_argument("--title", default=""); sink.add_argument("--severity", default="Medium"); sink.add_argument("--regex", default=""); sink.add_argument("--remediation", default="")
+    sink.add_argument("--bad-snippet", default=None); sink.add_argument("--good-snippet", default=None); _add_output_flags(sink)
 
     add_p = sub.add_parser("add-case")
-    add_p.add_argument("--skill", required=True)
-    add_p.add_argument("--repo", default=None)
-    add_p.add_argument("--drawer", default="references/eval-cases.json")
-    add_p.add_argument("--id", default="auto")
-    add_p.add_argument("--title", required=True)
-    add_p.add_argument("--tags", default="")
-    add_p.add_argument("--routes", default="")
-    add_p.add_argument("--layers", default="")
-    add_p.add_argument("--platforms", default="")
-    add_p.add_argument("--dimensions", default="")
-    add_p.add_argument("--containers", default="")
-    add_p.add_argument("--symptom", default="")
-    add_p.add_argument("--fix-rule", default="")
-    add_p.add_argument("--forbidden-regex", default="")
-    add_p.add_argument("--bad-snippet", default=None)
-    add_p.add_argument("--good-snippet", default=None)
-    add_p.add_argument("--cmd", default="")
-    add_p.add_argument("--expect-exit", type=int, default=0)
-    add_p.add_argument("--expect-contains", default="")
-    add_p.add_argument("--expect-json-subset", default="")
-    add_p.add_argument("--file", default="")
-    add_p.add_argument("--must-contain", default="")
-    add_p.add_argument("--must-not-contain", default="")
-    add_p.add_argument("--negative-cmd", default="", help="Standalone command self-test requiring a genuine nonzero exit")
-    add_p.add_argument("--expect-fail-exit", type=int, default=None, help="Require this exact nonzero exit; otherwise any nonzero exit passes")
-    add_p.add_argument("--negative-stdout-contains", default="")
-    add_p.add_argument("--negative-stderr-contains", default="")
+    add_p.add_argument("--skill", required=True); add_p.add_argument("--repo", default=None); add_p.add_argument("--drawer", default="references/eval-cases.json")
+    add_p.add_argument("--id", default="auto"); add_p.add_argument("--title", required=True); add_p.add_argument("--tags", default=""); add_p.add_argument("--routes", default=""); add_p.add_argument("--layers", default="")
+    add_p.add_argument("--platforms", default=""); add_p.add_argument("--dimensions", default=""); add_p.add_argument("--containers", default=""); add_p.add_argument("--symptom", default=""); add_p.add_argument("--fix-rule", default="")
+    add_p.add_argument("--forbidden-regex", default=""); add_p.add_argument("--bad-snippet", default=None); add_p.add_argument("--good-snippet", default=None); add_p.add_argument("--cmd", default=""); add_p.add_argument("--expect-exit", type=int, default=0)
+    add_p.add_argument("--expect-contains", default=""); add_p.add_argument("--expect-json-subset", default=""); add_p.add_argument("--file", default=""); add_p.add_argument("--must-contain", default=""); add_p.add_argument("--must-not-contain", default="")
+    add_p.add_argument("--negative-cmd", default="", help="Standalone command self-test requiring a genuine nonzero exit"); add_p.add_argument("--expect-fail-exit", type=int, default=None)
+    add_p.add_argument("--negative-stdout-contains", default=""); add_p.add_argument("--negative-stderr-contains", default=""); _add_output_flags(add_p)
 
     eval_p = sub.add_parser("eval")
-    eval_group = eval_p.add_mutually_exclusive_group(required=False)
-    eval_group.add_argument("--all", action="store_true")
-    eval_group.add_argument("--skill")
-    eval_p.add_argument("--repo", default=None)
-    eval_p.add_argument("--jobs", type=int, default=None, help="Max worker threads for case execution")
-    eval_p.add_argument("--json", action="store_true")
-    eval_p.add_argument("--strict", action="store_true")
+    eval_group = eval_p.add_mutually_exclusive_group(required=False); eval_group.add_argument("--all", action="store_true"); eval_group.add_argument("--skill")
+    eval_p.add_argument("--skills", default=None); eval_p.add_argument("target_arg", nargs="?"); _add_repo_aliases(eval_p); eval_p.add_argument("--drawer", default=None)
+    eval_p.add_argument("--jobs", type=int, default=None); eval_p.add_argument("--strict", action="store_true"); eval_p.add_argument("--no-cache", action="store_true"); _add_output_flags(eval_p)
 
     target_p = sub.add_parser("eval-target")
-    target_p.add_argument("--skills", default="auto", help="Comma-separated skill names or 'auto'")
-    target_p.add_argument("--skill", default=None, help="Single skill name alias for --skills")
-    target_p.add_argument("--worktree", default=None, help="Path to active task worktree")
-    target_p.add_argument("--handoff-dir", default=None, help="Path to handoff/<goal> directory")
-    target_p.add_argument("--phase", choices=["spec", "code", "all"], default="all")
-    target_p.add_argument("--receipt-out", default=None, help="Optional JSON receipt output path")
-    target_p.add_argument("--repo", default=None)
-    target_p.add_argument("--strict", action="store_true")
+    target_p.add_argument("--skills", default="auto", help="Comma-separated skill names or 'auto'"); target_p.add_argument("--skill", default=None)
+    target_p.add_argument("--worktree", default=None); target_p.add_argument("--handoff-dir", default=None); target_p.add_argument("--phase", choices=["spec", "code", "all"], default="all")
+    target_p.add_argument("--receipt-out", default=None); _add_repo_aliases(target_p); target_p.add_argument("--strict", action="store_true"); _add_output_flags(target_p)
 
     desc_p = sub.add_parser("description-eval")
-    desc_p.add_argument("--skill", required=True)
-    desc_p.add_argument("--repo", default=None)
-    desc_p.add_argument("--mock-jev-json", default=None)
-    desc_p.add_argument("--strict", action="store_true")
+    desc_p.add_argument("--skill", required=True); _add_repo_aliases(desc_p); desc_p.add_argument("--mock-jev-json", default=None); desc_p.add_argument("--strict", action="store_true"); _add_output_flags(desc_p)
 
     star_p = sub.add_parser("sync-jev-stars")
-    star_p.add_argument("--skill", required=True)
-    star_p.add_argument("--repo", default=None)
-    star_p.add_argument("--db-path", default=None)
-    star_p.add_argument("--source-name", default=None)
-    star_p.add_argument("--cmd-template", default=None)
-    star_p.add_argument("--dry-run", action="store_true")
+    star_p.add_argument("--skill", required=True); _add_repo_aliases(star_p); star_p.add_argument("--db-path", default=None); star_p.add_argument("--source-name", default=None); star_p.add_argument("--cmd-template", default=None); star_p.add_argument("--dry-run", action="store_true"); _add_output_flags(star_p)
 
     uptake_p = sub.add_parser("uptake-eval")
-    uptake_p.add_argument("--skill", "--skills", dest="skill", default=None)
-    uptake_p.add_argument("--triggered-skills", default=None)
-    uptake_p.add_argument("--target-dir", "--worktree", dest="target_dir", default=None)
-    uptake_p.add_argument(
-        "--scenario",
-        choices=["skills_unavailable", "skills_available_unmentioned", "skills_available_mentioned"],
-        default="skills_available_unmentioned",
-    )
-    uptake_p.add_argument("--uptake-map", dest="uptake_map_path", default=None)
-    uptake_p.add_argument("--baseline-pct", type=float, default=None)
-    uptake_p.add_argument("--skill-pct", type=float, default=None)
-    uptake_p.add_argument("--build-success", action="store_true", default=None)
-    uptake_p.add_argument("--strict", action="store_true")
+    uptake_p.add_argument("--skill", "--skills", dest="skill", default=None); uptake_p.add_argument("--triggered-skills", default=None); uptake_p.add_argument("--target-dir", "--worktree", dest="target_dir", default=None)
+    uptake_p.add_argument("--scenario", choices=["skills_unavailable", "skills_available_unmentioned", "skills_available_mentioned"], default="skills_available_unmentioned"); uptake_p.add_argument("--uptake-map", dest="uptake_map_path", default=None)
+    uptake_p.add_argument("--baseline-pct", type=float, default=None); uptake_p.add_argument("--skill-pct", type=float, default=None); uptake_p.add_argument("--build-success", action="store_true", default=None); uptake_p.add_argument("--strict", action="store_true"); _add_output_flags(uptake_p)
 
     audit_parser = sub.add_parser("audit")
-    group = audit_parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("--all", action="store_true")
-    group.add_argument("--skill")
-    audit_parser.add_argument("--repo", default=None)
-    audit_parser.add_argument("--json", action="store_true")
-    audit_parser.add_argument("--strict", action="store_true")
+    group = audit_parser.add_mutually_exclusive_group(required=False); group.add_argument("--all", action="store_true"); group.add_argument("--skill")
+    audit_parser.add_argument("--skills", default=None); audit_parser.add_argument("target_arg", nargs="?"); _add_repo_aliases(audit_parser); audit_parser.add_argument("--no-cache", action="store_true"); audit_parser.add_argument("--strict", action="store_true"); _add_output_flags(audit_parser)
 
     ver_parser = sub.add_parser("version")
-    ver_parser.add_argument("--skill", default=None)
-    ver_parser.add_argument("--all", action="store_true")
-    ver_parser.add_argument("--repo", default=None)
-    ver_parser.add_argument("--json", action="store_true", default=True)
+    ver_parser.add_argument("--skill", default=None); ver_parser.add_argument("--all", action="store_true"); _add_repo_aliases(ver_parser); ver_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(ver_parser)
 
     vers_parser = sub.add_parser("versions")
-    vers_parser.add_argument("--skill", default=None)
-    vers_parser.add_argument("--all", action="store_true", default=True)
-    vers_parser.add_argument("--repo", default=None)
-    vers_parser.add_argument("--json", action="store_true", default=True)
-    return parser
+    vers_parser.add_argument("--skill", default=None); vers_parser.add_argument("--all", action="store_true", default=True); _add_repo_aliases(vers_parser); vers_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(vers_parser)
+
+    hygiene = sub.add_parser("hygiene-facts", aliases=["facts", "inspect-json"])
+    _add_repo_aliases(hygiene); hygiene.add_argument("--json-file", "--inspect-json", dest="json_file", default=None); hygiene.add_argument("--check-diff", action=argparse.BooleanOptionalAction, default=True); hygiene.add_argument("--strict", action="store_true"); _add_output_flags(hygiene)
+    return root_parser
+
+
+def _normalize_argv(argv: list[str] | None = None) -> list[str]:
+    values = list(sys.argv[1:] if argv is None else argv)
+    if not values:
+        return ["audit", "--all"]
+    if values[0] in {"-h", "--help"}:
+        return values
+    if values[0].startswith("-"):
+        return ["audit", "--all", *values]
+    return values
+
+
+def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
+    if hasattr(args, "repo"):
+        args.repo = _normalize_repo_path(getattr(args, "repo", None))
+    target_arg = getattr(args, "target_arg", None)
+    if target_arg:
+        known = (ROOT / "skills" / target_arg / "SKILL.md").is_file()
+        if known:
+            args.skill = target_arg
+        elif Path(target_arg).expanduser().exists():
+            args.repo = _normalize_repo_path(target_arg)
+        else:
+            raise SystemExit(f"unknown target: {target_arg}")
+    return args
 
 
 def main() -> int:
-    args = parser().parse_args()
+    args = _normalize_args(parser().parse_args(_normalize_argv()))
     return {
         "init": init_skill,
         "sink-rule": sink_rule,
@@ -1832,6 +2053,9 @@ def main() -> int:
         "audit": audit,
         "version": version_cmd,
         "versions": version_cmd,
+        "hygiene-facts": hygiene_facts,
+        "facts": hygiene_facts,
+        "inspect-json": hygiene_facts,
     }[args.command](args)
 
 

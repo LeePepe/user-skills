@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-20",
+  "updated": "2026-11-25",
   "active_cases": [
     {
       "id": "EV-001",
@@ -196,7 +196,7 @@
         "ok": true
       },
       "expect_stdout_contains": [
-        "\"plugin_version\": \"1.0.0\"",
+        "\"plugin_version\": \"1.1.0\"",
         "\"skill_version\": \"v"
       ],
       "file": "skills/skill-contract/references/valves-and-metabolism.md",
@@ -206,6 +206,50 @@
         "plugin.json"
       ],
       "registered_at": "2026-11-22"
+    },
+    {
+      "id": "EV-012",
+      "title": "Positive Replay: unscoped audit emits healthy JSON",
+      "tags": [
+        "cli",
+        "positive-replay"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py audit --strict --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-013",
+      "title": "Counter-Case Replay: invalid flag discloses remediation drawer",
+      "tags": [
+        "cli",
+        "negative",
+        "counter-case"
+      ],
+      "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py audit --definitely-invalid-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/skill-contract/references/valves-and-metabolism.md"
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-014",
+      "title": "Counter-Case Replay: strict missing JSON target fails visibly",
+      "tags": [
+        "cli",
+        "negative",
+        "counter-case"
+      ],
+      "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py hygiene-facts --json-file /tmp/nonexistent-skill-retro-missing.json --strict",
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": [
+        "skills/skill-contract/references/valves-and-metabolism.md"
+      ],
+      "registered_at": "2026-11-25"
     }
   ],
   "trigger_evals": [
