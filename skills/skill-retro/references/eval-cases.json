@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-21",
+  "updated": "2026-11-24",
   "active_cases": [
     {
       "id": "EV-001",
@@ -27,22 +27,22 @@
     },
     {
       "id": "EV-002",
-      "title": "Stage 1 direct single-skill fast probe runs in sub-second mode and reports worker role tier",
+      "title": "Stage 1 direct single-skill fast probe runs in sub-second mode and reports worker role tier + S2/S4 signals",
       "tags": [
         "stage1-probe",
         "fast"
       ],
-      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py probe --skill my-designer --fast --json",
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py probe --skill skill-retro --fast --summary --json",
       "expect_exit": 0,
       "expect_json_subset": {
         "ok": true,
         "schema": "skill-retro-probe/v1",
         "entry_mode": "direct_single_skill",
-        "skill_filter": "my-designer",
+        "skill_filter": "skill-retro",
         "probe_role_tier.role": "explorer",
         "probe_role_tier.tier": "worker"
       },
-      "registered_at": "2026-11-21"
+      "registered_at": "2026-11-24"
     },
     {
       "id": "EV-003",
@@ -69,7 +69,7 @@
     },
     {
       "id": "EV-004",
-      "title": "SKILL.md L0 and progressive-evolution-playbook.md L1 cover 1 M2 -> K Parallel M1 TLs -> M2 Rollup, all 6 Problem-Discovery Dimensions, and Host/Guest Relay",
+      "title": "SKILL.md L0 and progressive-evolution-playbook.md L1 cover Progressive Disclosure Exemption, S2 Reality, ACI Bloat, and Receipt Grounding",
       "tags": [
         "contract",
         "six-dimensions",
@@ -82,11 +82,13 @@
         "emit-briefs",
         "emit-relay",
         "rollup",
-        "mai-code-2-flash",
-        "2+1+1",
-        "Counter-Case"
+        "progressive_catch_count",
+        "wasted_preread_rate",
+        "internal_doc_cli_drift",
+        "aci_output_bloat_count",
+        "receipt_grounded"
       ],
-      "registered_at": "2026-11-21"
+      "registered_at": "2026-11-24"
     },
     {
       "id": "EV-005",
@@ -136,6 +138,30 @@
         "skills.skill-retro.uptake_status": "measured"
       },
       "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-008",
+      "title": "Methodology v2 regression suite verifies Progressive Disclosure Exemption, S2 AST Reality, ACI Bloat, and Receipt Grounding",
+      "tags": [
+        "methodology-v2",
+        "regression"
+      ],
+      "cmd": "python3 -m unittest scripts/test_skill_retro_methodology.py",
+      "expect_exit": 0,
+      "registered_at": "2026-11-24"
+    },
+    {
+      "id": "EV-009",
+      "title": "Counter-case guard: forbid malformed model IDs with spaces or colons in skill docs",
+      "tags": [
+        "negative",
+        "counter-case",
+        "s2-reality"
+      ],
+      "forbidden_regex": "\\bgemini:4-\\s+argon\\b",
+      "bad_snippet": "model: gemini:4- argon",
+      "good_snippet": "model: gemini-4-argon",
+      "registered_at": "2026-11-24"
     }
   ]
 }
