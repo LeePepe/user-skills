@@ -148,6 +148,57 @@
         }
       ],
       "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-006",
+      "title": "Positive Replay Accepts Inline Findings JSON and Compatibility Alias",
+      "layers": [
+        "spec",
+        "standards"
+      ],
+      "cmd": "python3 skills/code-review/scripts/discover_review_context.py --findings '[]'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "verdict": "PASS"
+      },
+      "verify_lines": [
+        "Inline findings input is parsed without treating JSON as a filesystem path"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "Compatibility alias accepts an inline empty findings array"
+        }
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-007",
+      "title": "Counter-Case Replay Rejects Missing Findings Files",
+      "layers": [
+        "spec",
+        "standards"
+      ],
+      "negative_cmd": "python3 skills/code-review/scripts/discover_review_context.py --validate-findings /nonexistent/findings.json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/code-review/references/output-contract.md"
+      ],
+      "verify_lines": [
+        "Missing findings files fail closed with a self-disclosing output-contract reference"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "Missing findings path returns exit 2 and points to output-contract.md"
+        }
+      ],
+      "registered_at": "2026-11-25"
     }
   ]
 }
