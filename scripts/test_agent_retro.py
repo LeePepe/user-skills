@@ -53,6 +53,9 @@ class AgentRetroTests(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("AGENT_RETRO_SESSIONS", None)
         os.environ.pop("AGENT_RETRO_HANDOFF_ROOT", None)
+        os.environ.pop("AGENT_RETRO_WORKTREES", None)
+        os.environ.pop("SF_DATALESS", None)
+        os.environ.pop("AGENT_RETRO_WAREHOUSE", None)
         shutil.rmtree(FIXTURE, ignore_errors=True)
 
     def ns(self, **kwargs):
@@ -122,11 +125,87 @@ class AgentRetroTests(unittest.TestCase):
         env = os.environ.copy()
         env["AGENT_RETRO_SESSIONS"] = str(FIXTURE / "sessions")
         env["AGENT_RETRO_HANDOFF_ROOT"] = str(FIXTURE / "handoff")
-        proc = subprocess.run([sys.executable, str(SCRIPT), "setup-autopilot", "--dir", str(FIXTURE / "handoff"), "--json"], cwd=ROOT, env=env, text=True, capture_output=True)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        payload = json.loads(proc.stdout)
-        self.assertTrue(payload["dry_run"])
+        for command in ("file-issue", "setup-autopilot"):
+            proc = subprocess.run([sys.executable, str(SCRIPT), command, "--dry-run", "--dir", str(FIXTURE / "handoff"), "--json"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(json.loads(proc.stdout)["dry_run"])
         self.assertFalse((FIXTURE / "handoff" / "agent-retro-autopilot.json").exists())
+
+    def test_target_skill_is_preserved_and_first_fault_is_attributed(self):
+        direct = AR._observation("I3_l2_exit2_and_output_bloat", "invoke", 1, ["s: noisy"], skill="target-skill")
+        self.assertEqual(direct["skill"], "target-skill")
+        self.assertEqual(direct["upstream_skill"], "target-skill")
+        events = [
+            {"type": "session.start", "timestamp": datetime.now(timezone.utc).isoformat(), "data": {"sessionId": "faults", "role": "m1"}},
+            {"type": "assistant.message", "timestamp": datetime.now(timezone.utc).isoformat(), "data": {"content": "[SPEC_GAP] design.md caused review fail R1 FAIL R2 FAIL R3 FAIL"}},
+            {"type": "tool.execution_complete", "timestamp": datetime.now(timezone.utc).isoformat(), "data": {"toolName": "bash", "arguments": {"command": "python3 verify.py"}, "shellExecution": {"exitCode": 1}, "result": {"content": "PR_CHECK_FAILED"}}},
+        ]
+        rows = AR._metric_scan(events, [], {})
+        e2 = next(row for row in rows if row["metric"] == "E2_r3_plus_divergence")
+        self.assertEqual(e2["upstream_skill"], "my-designer")
+        events[1]["data"]["content"] = "verification passed locally; remote CI PR_CHECK_FAILED"
+        rows = AR._metric_scan(events, [], {})
+        e3 = next(row for row in rows if row["metric"] == "E3_gate_escape_and_uncrystallized_spec_gap")
+        self.assertEqual(e3["upstream_skill"], "repo-kit")
+
+    def test_outcome_gate_ignores_healthy_intermediate_trajectory_and_r3_counts_mutations_only(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [{"type": "session.start", "timestamp": now, "data": {"sessionId": "healthy", "role": "m1", "selectedModel": "google/gemini"}},
+                  {"type": "user.message", "timestamp": now, "data": {"content": "start"}}]
+        for index in range(4):
+            events.append({"type": "tool.execution_complete", "timestamp": now, "data": {"toolName": "view", "arguments": {"path": f"src/{index}.py"}, "result": {"content": "ok"}}})
+        events.append({"type": "goal.completed", "timestamp": now, "data": {"content": "DONE"}})
+        gate, eligible = AR._outcome_gate(AR._session_groups(events))
+        self.assertEqual(gate["healthy"]["status"], "OUTCOME_HEALTHY")
+        self.assertNotIn("healthy", eligible)
+        rows = AR._metric_scan(events, [], {}, eligible)
+        self.assertNotIn("R3_m1_inline_overwork", {row["metric"] for row in rows})
+
+    def test_reviewer_vendor_comparison_and_h4_evidence(self):
+        now = datetime.now(timezone.utc).isoformat()
+        reviewer = [{"type": "session.start", "timestamp": now, "data": {"sessionId": "goal-review", "goalId": "goal-x", "role": "reviewer", "selectedModel": "google/gemini", "writerModel": "google/gemini-writer"}}]
+        rows = AR._metric_scan(reviewer, [], {})
+        self.assertIn("R5_reviewer_same_vendor", {row["metric"] for row in rows})
+        handoff = {"name": "goal-x", "ledger": "status: in_progress", "spec": "Owner constraint alpha beta gamma delta epsilon", "briefs": [("brief.md", "Owner constraint")], "receipts": [], "active_lease": True}
+        related = [{"type": "assistant.message", "timestamp": now, "data": {"sessionId": "goal-x", "goalId": "goal-x", "content": "I will delegate and verify"}},
+                   {"type": "tool.execution_complete", "timestamp": now, "data": {"sessionId": "goal-x", "goalId": "goal-x", "toolName": "view", "arguments": {"path": "src/x.py"}, "result": {"content": "x"}}}]
+        related += [dict(related[1], data=dict(related[1]["data"])) for _ in range(2)]
+        related[-1]["data"]["toolName"] = "edit"
+        rows = AR._metric_scan(related, [handoff], {})
+        self.assertIn("H4_compaction_and_handoff_loss", {row["metric"] for row in rows})
+
+    def test_e4_scope_version_cohorts_and_active_lease_exclusion(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [{"type": "tool.execution_complete", "timestamp": now, "data": {"sessionId": "goal-a", "goalId": "goal-a", "toolName": "bash", "arguments": {"command": "pytest tests/a.py"}, "shellExecution": {"exitCode": 0}, "result": {"content": "ok"}}}]
+        record = {"name": "goal-a", "ledger": "goalId: goal-a", "spec": "", "briefs": [], "receipts": [("r10.md", "pytest tests/a.py\nPR_MERGED")], "active_lease": False}
+        rows = AR._metric_scan(events, [record], {})
+        self.assertIn("E4_unfaithful_receipt_and_cancelled_noise", {row["metric"] for row in rows})
+        observations = [AR._observation("R2_m2_direct_code_edit", "role", 2, ["goal-a: edit"], skill="m2-dispatcher")]
+        watermark = AR._version_watermark(events, observations)
+        self.assertIn("scenario_sessions", watermark["post_fix"])
+        self.assertTrue(watermark["post_fix"]["anomalies"] >= 0)
+        os.environ["AGENT_RETRO_WORKTREES"] = str(FIXTURE / "worktrees")
+        (FIXTURE / "worktrees" / "agent-retro-m2-dispatcher").mkdir(parents=True)
+        lease = FIXTURE / "handoff" / "agent-retro-m2-dispatcher"
+        lease.mkdir(parents=True)
+        (lease / "ledger.md").write_text("status: in_progress\n", encoding="utf-8")
+        scan = AR._scan(self.ns())
+        triage = AR.command_triage(self.ns())
+        self.assertIn("m2-dispatcher", scan["active_leases"])
+        self.assertIn("m2-dispatcher", triage["excluded_by_active_lease"])
+
+    def test_dataless_guard_and_output_redaction(self):
+        os.environ["SF_DATALESS"] = "1"
+        args = self.ns()
+        os.environ["AGENT_RETRO_WAREHOUSE"] = os.sep + "Volumes" + os.sep + "Unavailable/warehouse.db"
+        self.assertIsNone(AR._roots(args)[2])
+        user_path = os.sep + "Users" + os.sep + "alice/project"
+        redacted = AR._redact(user_path + " " + "ghp" + "_secret " + "lin_api" + "_secret " + "sk" + "-secret " + "Bearer" + " abc123")
+        self.assertNotIn(user_path, redacted)
+        self.assertNotIn("ghp" + "_secret", redacted)
+        self.assertNotIn("lin_api" + "_secret", redacted)
+        self.assertNotIn("sk-secret", redacted)
+        self.assertIn("[REDACTED_TOKEN]", redacted)
 
 
 if __name__ == "__main__":
