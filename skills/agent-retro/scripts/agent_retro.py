@@ -37,6 +37,7 @@ DEFAULT_TRIGGER_LABEL = "Daily CST 04:40 Agent Trajectory Retro Diagnostic"
 DEFAULT_CRON = "40 4 * * *"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_COLLECT_OUTPUT = Path("/tmp/multica-agent-retro-collect.json")
+CST = timezone(timedelta(hours=8))
 
 
 def _default_agent_retro_watermark_path() -> Path:
@@ -1133,7 +1134,7 @@ def collect_agent_retro_snapshot(
         handoff_root=str(handoff_root) if handoff_root else None, handoff_dir=None,
     )
     scan = _scan(args)
-    date_str = datetime.now(timezone.utc).date().isoformat()
+    date_str = datetime.now(timezone.utc).astimezone(CST).date().isoformat()
     coverage = _agent_retro_coverage(scan)
     sessions = int((scan.get("coverage") or {}).get("sessions", 0) or 0)
     cohort = hashlib.sha256(json.dumps(
@@ -1389,11 +1390,37 @@ def command_file_issue(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _agent_retro_prompt() -> str:
-    return ("# Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)\n\n"
-            "1 M2 -> 1 Cheap Probe Worker -> K (0..3) Independent Per-Skill M1 TLs -> "
-            "Rollup to Single M2 -> M3 [Agent Retro YYYY-MM-DD] Multica & Linear Issue\n\n"
-            "Run `python3 skills/agent-retro/scripts/agent_retro.py collect --days 3 --json`, "
-            "then file the verified Dual-Zone issue with the `agent-retro-autopilot-YYYY-MM-DD` cursor.")
+    """Return the structured runbook mirrored by the canonical skill-retro autopilot."""
+    return (
+        f"# {DEFAULT_AUTOPILOT_TITLE}\n\n"
+        "- **Loop ID**: `agent-retro-diagnostic`\n"
+        "- **Primary Engine**: `skills/agent-retro/scripts/agent_retro.py`\n"
+        "- **Orchestration Topology**: `1 M2 -> 1 Cheap Probe Worker -> K (0..3) Independent Per-Skill M1 TLs -> Rollup to Single M2 -> M3 [Agent Retro YYYY-MM-DD] Multica & Linear Issue`\n"
+        "- **Execution Mode**: `run_only`; collect and triage remain deterministic and side-effect-free until explicit apply.\n\n"
+        "## Stage 1+2 · Scheduled Tick and Cheap Probe Worker (04:40 CST)\n\n"
+        "Run the Layer 0 loop collector followed by the single bounded worker/Jev triage. "
+        "The honest cap is K=0..3; K=0 is `HEALTHY_NO_ISSUES` and never forces an M1.\n\n"
+        "```bash\n"
+        "python3 skills/team-lead/scripts/multica_loop_runner.py run-loop --loop agent-retro-diagnostic --json\n"
+        "python3 skills/agent-retro/scripts/agent_retro.py triage --pick-top 3 --use-jev --emit-briefs ~/Development/handoff --json\n"
+        "```\n\n"
+        "## Stage 3 · K (0..3) Independent Per-Skill M1 TLs\n\n"
+        "For each selected skill, dispatch one independent M1 TL as "
+        "`agent-retro-<skill>-goal-tl-r1` in `~/Development/worktrees/agent-retro-<skill>`. "
+        "If deep reasoning confirms a benign signal, record `HEALTHY_NO_ISSUES` and spawn zero Writers/Reviewers. "
+        "If confirmed actionable, run Writer -> Reviewer, positive and counter-case replay, `./scripts/verify`, and merge; "
+        "each M1 returns an R10 receipt to the single M2.\n\n"
+        "## Final Rollup · Single M2\n\n"
+        "After all K M1 results return, collect the three-day cohort, render and verify the Dual-Zone issue, "
+        "then explicitly publish Multica and sync the standalone Linear Team TIA M3 issue:\n\n"
+        "```bash\n"
+        "python3 skills/agent-retro/scripts/agent_retro.py collect --days 3 --json\n"
+        "python3 skills/agent-retro/scripts/agent_retro.py rollup --issue-brief --json\n"
+        "python3 skills/agent-retro/scripts/agent_retro.py file-issue --apply --sync-linear --json\n"
+        "```\n\n"
+        "The issue must retain `<!-- multica-cursor:agent-retro-autopilot-YYYY-MM-DD -->`, "
+        "`sessions=<N>`, and `coverage=<healthy|degraded>` in its AI evidence block."
+    )
 
 
 def _apply_agent_retro_autopilot(*, runner: Callable[..., subprocess.CompletedProcess[str]], server_url: str,

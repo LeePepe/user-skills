@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -339,6 +340,37 @@ class MulticaVpnBridgeTests(unittest.TestCase):
 
 
 class MulticaLoopRunnerPipelineTests(unittest.TestCase):
+    def test_agent_retro_diagnostic_loop_spec_and_hermetic_collector(self):
+        spec = loop_runner.resolve_loop_spec("agent-retro-diagnostic")
+        self.assertEqual(spec.loop_id, "agent-retro-diagnostic")
+        self.assertEqual(spec.cron, "40 4 * * *")
+        self.assertEqual(spec.delivery_mode, "auto_fix_and_digest_only")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sessions = root / "sessions" / "session-1"
+            sessions.mkdir(parents=True)
+            handoff = root / "handoff"
+            handoff.mkdir()
+            now = "2026-11-25T00:00:00+00:00"
+            (sessions / "events.jsonl").write_text(json.dumps({
+                "type": "session.start", "timestamp": now,
+                "data": {"sessionId": "session-1", "role": "m2-dispatcher"},
+            }) + "\n", encoding="utf-8")
+            previous = {key: os.environ.get(key) for key in ("AGENT_RETRO_SESSIONS", "AGENT_RETRO_HANDOFF_ROOT")}
+            os.environ["AGENT_RETRO_SESSIONS"] = str(root / "sessions")
+            os.environ["AGENT_RETRO_HANDOFF_ROOT"] = str(handoff)
+            try:
+                collected = loop_runner._default_loop_collector(spec, target_date=date(2026, 11, 25), dry_run=True)
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            self.assertEqual(collected["loop_id"], "agent-retro-diagnostic")
+            self.assertEqual(collected["agent_retro"]["sessions"], 1)
+            self.assertIn("agent-retro-autopilot-2026-11-25", collected["cursor"])
+
     def _sample_collected(self, *, watermark: str = "wm-1", has_delta: bool = True, severity: str = "medium"):
         return {
             "loop_id": "daily-learn-recommend",
