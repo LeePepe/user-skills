@@ -759,6 +759,135 @@ def check_swiftui_and_error_retry_guards(
     return violations
 
 
+M1_STEERING_ROLES = {
+    "m1",
+    "m1_tl",
+    "m1-tl",
+    "tl",
+    "team-lead",
+    "team_lead",
+    "steering",
+    "group/steering",
+    "magpie/group/steering",
+}
+
+
+def _receipt_role(receipt_text: str) -> str | None:
+    match = re.search(
+        r"(?im)^\s*[>*-]*\s*(?:\*\*)?role\s*/\s*model(?:\*\*)?\s*[:|=-]\s*([^/\n]+)",
+        receipt_text,
+    )
+    if match:
+        return match.group(1).strip().lower()
+    match = re.search(r"(?im)^\s*[>*-]*\s*(?:\*\*)?role(?:\*\*)?\s*[:|=-]\s*([^\n]+)", receipt_text)
+    return match.group(1).strip().lower() if match else None
+
+
+def _normalize_shell_command(command: str) -> str:
+    normalized = re.sub(r"\s+", " ", command.strip())
+    normalized = re.sub(r"\s*(?:—|--|:)\s*PASS\s*$", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+(?:\(\s*)?exit\s*=\s*0\s*(?:\))?\s*$", "", normalized, flags=re.IGNORECASE)
+    return normalized.strip().rstrip("`")
+
+
+def _receipt_verification_commands(receipt_text: str) -> list[str]:
+    commands: list[str] = []
+    pattern = re.compile(
+        r"(?im)^\s*(?:(?:[-*]|\d+[.)])\s*)?`?((?:python3|pytest|unittest|swiftlint)\b[^\n]*|(?:\./)?scripts/verify\b[^\n]*)"
+    )
+    for match in pattern.finditer(receipt_text):
+        command = _normalize_shell_command(match.group(1))
+        if command and command not in commands:
+            commands.append(command)
+    return commands
+
+
+def _event_values(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        values = [value]
+        for nested in value.values():
+            values.extend(_event_values(nested))
+        return values
+    if isinstance(value, list):
+        values: list[Any] = []
+        for item in value:
+            values.extend(_event_values(item))
+        return values
+    return [value]
+
+
+def _event_command(event: Any) -> str:
+    candidates: list[str] = []
+    for item in _event_values(event):
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if isinstance(value, str) and ("command" in key.lower() or key.lower() in {"cmd", "shell"}):
+                candidates.append(value)
+    return max(candidates, key=len, default="").strip()
+
+
+def _event_exit_code(event: Any) -> int | None:
+    for item in _event_values(event):
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if key.lower() in {"exitcode", "exit_code"} and isinstance(value, (int, float, str)):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+            if key.lower() == "success" and value is True:
+                return 0
+        text = json.dumps(item, ensure_ascii=False)
+        match = re.search(r"completed with exit code\s+(\d+)", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _successful_event_commands(events_path: Path) -> list[str]:
+    records: dict[str, dict[str, Any]] = {}
+    standalone: list[dict[str, Any]] = []
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        call_id = ""
+        for item in _event_values(event):
+            if isinstance(item, dict):
+                call_id = str(item.get("toolCallId") or item.get("tool_call_id") or item.get("toolCallID") or "")
+                if call_id:
+                    break
+        if call_id:
+            record = records.setdefault(call_id, {})
+            record["command"] = record.get("command") or _event_command(event)
+            if _event_command(event):
+                record["command"] = _event_command(event)
+            exit_code = _event_exit_code(event)
+            if exit_code is not None:
+                record["exit_code"] = exit_code
+        else:
+            standalone.append({"command": _event_command(event), "exit_code": _event_exit_code(event)})
+    successful = [str(record["command"]) for record in [*records.values(), *standalone] if record.get("command") and record.get("exit_code") == 0]
+    return successful
+
+
+def _command_was_successful(claim: str, executed: list[str]) -> bool:
+    normalized_claim = _normalize_shell_command(claim)
+    for command in executed:
+        normalized_command = _normalize_shell_command(command)
+        if normalized_command == normalized_claim or normalized_claim in normalized_command:
+            return True
+        for part in re.split(r"&&|;", normalized_command):
+            if normalized_claim == part.strip() or normalized_claim in part.strip():
+                return True
+    return False
+
+
 def run_pre_review_check(
     *,
     worktree: Path,
@@ -767,6 +896,9 @@ def run_pre_review_check(
     base_ref: str | None = None,
     head_ref: str = "HEAD",
     allow_dirty: bool = False,
+    actor_role: str | None = None,
+    max_inline_files: int = 3,
+    events_jsonl: Path | None = None,
 ) -> dict[str, Any]:
     """Deterministic pre-review gate catching recurring R1 Writer failures before Reviewer dispatch."""
     wt = worktree.expanduser().resolve()
@@ -971,6 +1103,7 @@ def run_pre_review_check(
             "detail": "Secret/token pattern detected in added lines",
         })
 
+    receipt_text = ""
     if receipt_path is not None:
         rcpt = receipt_path.expanduser().resolve()
         if not rcpt.is_file():
@@ -979,9 +1112,38 @@ def run_pre_review_check(
                 "detail": f"R10 receipt file does not exist: {rcpt}",
             })
         else:
-            for msg in validate_r10_receipt(rcpt.read_text(encoding="utf-8")):
+            receipt_text = rcpt.read_text(encoding="utf-8")
+            for msg in validate_r10_receipt(receipt_text):
                 code, _, detail = msg.partition(": ")
                 violations.append({"code": code, "detail": detail or msg})
+
+    effective_role = (actor_role or _receipt_role(receipt_text) or "").strip().lower()
+    if effective_role in M1_STEERING_ROLES and len(changed_files) > max_inline_files:
+        violations.append({
+            "code": "m1_inline_file_budget_exceeded",
+            "changed_file_count": len(changed_files),
+            "max_inline_files": max_inline_files,
+            "files": changed_files,
+            "detail": f"M1/Steering inline edit touched {len(changed_files)} files (max {max_inline_files}); dispatch a leaf Writer instead",
+        })
+
+    if receipt_path is not None and events_jsonl is not None:
+        events_file = events_jsonl.expanduser().resolve()
+        if not events_file.is_file():
+            violations.append({
+                "code": "missing_events_jsonl",
+                "detail": f"Trace events JSONL file does not exist: {events_file}",
+            })
+        else:
+            claims = _receipt_verification_commands(receipt_text)
+            executed = _successful_event_commands(events_file)
+            missing = [claim for claim in claims if not _command_was_successful(claim, executed)]
+            if missing:
+                violations.append({
+                    "code": "ungrounded_receipt_verification",
+                    "missing_commands": missing,
+                    "detail": "R10 receipt claims verification commands with zero matching exit=0 executions in events.jsonl",
+                })
 
     return {
         "ok": len(violations) == 0,
@@ -1024,6 +1186,9 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--base-ref", default=None, help="Optional git base ref (defaults to merge-base with origin/main)")
     p_pre.add_argument("--head-ref", "--head", dest="head_ref", default="HEAD", help="Optional git head ref (defaults to HEAD)")
     p_pre.add_argument("--allow-dirty", action="store_true", help="Allow uncommitted tracked changes during local self-check")
+    p_pre.add_argument("--actor-role", default=None, help="Effective actor role for inline edit budget checks")
+    p_pre.add_argument("--max-inline-files", type=int, default=3, help="Maximum files an M1/Steering actor may edit inline")
+    p_pre.add_argument("--events-jsonl", "--trace-jsonl", dest="events_jsonl", type=Path, default=None, help="Optional events.jsonl trace for R10 verification grounding")
     p_pre.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True)")
     return parser
 
@@ -1038,6 +1203,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_ref=args.base_ref,
             head_ref=args.head_ref,
             allow_dirty=args.allow_dirty,
+            actor_role=args.actor_role,
+            max_inline_files=args.max_inline_files,
+            events_jsonl=args.events_jsonl,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 1

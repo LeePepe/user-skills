@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 
-FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required", "cancelled"}
+FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required"}
 GREEN_CHECKS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-FAILED_CHECKS = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED", "ERROR"}
+FAILED_CHECKS = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "ERROR"}
+CANCELLED_CHECKS = {"CANCELLED"}
+PENDING_CHECKS = {"PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING", "EXPECTED", "PROGRESS"}
 PR_URL_RE = re.compile(r"https?://github\.com/([^/\s]+/[^/\s]+?)/pull/(\d+)(?:[/?#].*)?$", re.IGNORECASE)
 GITHUB_REMOTE_RE = re.compile(r"github\.com[/:]([^/:\s]+/[^/\s]+?)(?:\.git)?$", re.IGNORECASE)
 SUBCOMMAND_ALIASES: dict[str, str] = {
@@ -139,6 +141,7 @@ def _receipt(
         "url",
         "gc_result",
         "execution_layer",
+        "cancelled_checks",
     ):
         if key in fields:
             lines.append(f"- `{key}`: {fields[key]}")
@@ -218,7 +221,12 @@ def monitor_workflow(
             return result, 1
         if last_view.get("status") == "completed":
             conclusion = str(last_view.get("conclusion") or "skipped")
-            status = "WORKFLOW_SUCCESS" if conclusion == "success" else "WORKFLOW_SKIPPED"
+            if conclusion == "success":
+                status = "WORKFLOW_SUCCESS"
+            elif conclusion == "cancelled":
+                status = "WORKFLOW_CANCELLED"
+            else:
+                status = "WORKFLOW_SKIPPED"
             logs = "\n".join(_job_log(args.repo, job, run, 100) for job in jobs if _job_id(job))
             fields = {
                 "status": status, "conclusion": conclusion, "run_id": run_id, "repo": args.repo,
@@ -232,7 +240,7 @@ def monitor_workflow(
                       "candidate_sha": fields["candidate_sha"], "last_released_tag_sha": fields["last_released_tag_sha"],
                       "receipt": args.receipt}
             _notify(args.notify_agent, status, str(run_id), conclusion, args.receipt)
-            return result, 0 if status == "WORKFLOW_SUCCESS" else 1
+            return result, 0 if status in {"WORKFLOW_SUCCESS", "WORKFLOW_CANCELLED"} else 1
         if now() - started >= args.timeout:
             fields = {
                 "status": "WORKFLOW_TIMEOUT", "conclusion": last_view.get("conclusion") or "pending",
@@ -250,6 +258,34 @@ def monitor_workflow(
 
 def _check_state(check: dict[str, Any]) -> str:
     return str(check.get("conclusion") or check.get("state") or "").upper()
+
+
+def _check_timestamp(check: dict[str, Any]) -> str:
+    return str(
+        check.get("completedAt")
+        or check.get("updatedAt")
+        or check.get("startedAt")
+        or check.get("createdAt")
+        or ""
+    )
+
+
+def _effective_check_rollup(checks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the latest named check while preserving unnamed rollup entries."""
+    named: dict[str, tuple[int, str, dict[str, Any]]] = {}
+    unnamed: list[dict[str, Any]] = []
+    for index, check in enumerate(checks):
+        name = str(check.get("name") or check.get("context") or "").strip()
+        if not name:
+            unnamed.append(check)
+            continue
+        timestamp = _check_timestamp(check)
+        previous = named.get(name)
+        if previous is None or (timestamp and timestamp >= previous[1]) or (not timestamp and index >= previous[0]):
+            named[name] = (index, timestamp, check)
+    selected = [(index, check) for index, _, check in named.values()]
+    selected.extend((len(checks) + index, check) for index, check in enumerate(unnamed))
+    return [check for _, check in sorted(selected, key=lambda item: item[0])]
 
 
 def _parse_pr_spec(raw: str | int | None) -> tuple[int | None, str | None]:
@@ -449,7 +485,8 @@ def monitor_pr(
                       "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
             _receipt(args.receipt, fields)
             return {**fields, "receipt": args.receipt}, 1
-        checks = view.get("statusCheckRollup") or []
+        raw_checks = view.get("statusCheckRollup") or []
+        checks = _effective_check_rollup([check for check in raw_checks if isinstance(check, dict)])
         failed = next((check for check in checks if _check_state(check) in FAILED_CHECKS), None)
         if failed:
             details = str(failed.get("detailsUrl") or "")
@@ -461,12 +498,23 @@ def monitor_pr(
             _receipt(args.receipt, fields, failed_log=log)
             return {**fields, "receipt": args.receipt}, 1
         states = [_check_state(check) for check in checks]
+        pending = [check for check in checks if _check_state(check) in PENDING_CHECKS]
+        cancelled = [check for check in checks if _check_state(check) in CANCELLED_CHECKS]
         if args.exit_on_green and checks and all(state in GREEN_CHECKS for state in states):
             fields = {"status": "PR_CHECKS_GREEN", "conclusion": "success", "pr": args.pr, "repo": args.repo,
                       "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
             _receipt(args.receipt, fields, checks=states)
             return {**fields, "receipt": args.receipt}, 0
-        if now() - started >= args.timeout:
+        elapsed = now() - started
+        if cancelled and not pending and (args.exit_on_green or elapsed >= args.timeout):
+            cancelled_names = [str(check.get("name") or check.get("context") or "unnamed") for check in cancelled]
+            required = any(bool(check.get("isRequired")) for check in cancelled)
+            fields = {"status": "PR_CHECK_CANCELLED", "conclusion": "cancelled", "pr": args.pr, "repo": args.repo,
+                      "url": view.get("url", "n/a"), "cancelled_checks": cancelled_names,
+                      "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
+            _receipt(args.receipt, fields, checks=states)
+            return {**fields, "receipt": args.receipt}, 1 if required else 0
+        if elapsed >= args.timeout:
             fields = {"status": "WORKFLOW_TIMEOUT", "conclusion": "pending", "pr": args.pr, "repo": args.repo,
                       "url": view.get("url", "n/a"), "execution_layer": "Layer-0 deterministic script (0 LLM tokens)"}
             _receipt(args.receipt, fields, checks=states)
