@@ -114,5 +114,12 @@
       "verify_lines": ["Replay absent-hook and non-test command counter-cases"],
       "assertions": [{"check": "Non-executed text and build-only checks do not manufacture gate health", "severity": "hard"}]
     }
+  ],
+  "trigger_evals": [
+    {"query": "classify an Xcode project change and choose the correct build or test route", "should_trigger": true},
+    {"query": "run the SwiftPM verify gate and inspect simulator or CI blockers", "should_trigger": true},
+    {"query": "audit Swift 6 actor isolation and Task cancellation", "should_trigger": false, "near_miss_skill": "ios-concurrency-swiftui"},
+    {"query": "package and notarize a macOS MenuBar app", "should_trigger": false, "near_miss_skill": "ios-debugging-performance"},
+    {"query": "diagnose personal portfolio FIFO windows and DCA switches", "should_trigger": false, "near_miss_skill": "portfolio-advisor"}
   ]
 }

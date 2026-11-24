@@ -1,0 +1,35 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "nas-smart-home",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "NAS skill points to the canonical topology drawer",
+      "tags": ["contract", "topology"],
+      "file": "skills/nas-smart-home/SKILL.md",
+      "must_contain": ["topology-and-backlog.md", "NAS media-sync reference entry"]
+    },
+    {
+      "id": "EV-002",
+      "title": "Topology drawer documents Home Assistant and NAS boundaries",
+      "tags": ["drawer", "boundary"],
+      "file": "skills/nas-smart-home/references/topology-and-backlog.md",
+      "must_contain": ["Home Assistant", "Node-RED", "host networking"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Topology drawer retains smart-home ownership vocabulary",
+      "tags": ["drawer", "routing"],
+      "file": "skills/nas-smart-home/references/topology-and-backlog.md",
+      "must_contain": ["HomeKit", "lighting", "SSH"]
+    }
+  ],
+  "trigger_evals": [
+    {"query": "inspect the NAS backup and Home Assistant smart-home topology", "should_trigger": true},
+    {"query": "debug Node-RED, Adaptive Lighting, and HomeKit ownership boundaries", "should_trigger": true},
+    {"query": "design a SwiftUI home dashboard", "should_trigger": false, "near_miss_skill": "my-designer"},
+    {"query": "run an AIDash skill ROI query", "should_trigger": false, "near_miss_skill": "aidash-metrics"},
+    {"query": "configure a generic Azure NAS storage account", "should_trigger": false, "near_miss_skill": "azure-cost-optimization"}
+  ]
+}
