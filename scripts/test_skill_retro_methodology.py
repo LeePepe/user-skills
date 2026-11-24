@@ -1248,7 +1248,10 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertIn("references/ghost.md", broken_targets)
             self.assertIn("gemini:4- argon", broken_targets)
 
-            # 3) ACI Output Bloat (>20KB or "Output too large to read at once")
+            # 3) ACI Output Bloat (>20KB or "Output too large to read at once") + R7-F1 earlier telemetry mirror
+            #    Use fractional timestamps (`+2.2s`, `+4.2s`) in `events.jsonl` while `usage.jsonl` / `warehouse.db`
+            #    have whole-second earlier mirrors (`+2.0s`, `+4.0s`) with no output_chars, proving coalescing
+            #    preserves `output_chars` & `aci_output_bloat` and counts each logical bloated call once!
             now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
             s_dir = sessions_dir / "sess-bloat-1"
             s_dir.mkdir(parents=True, exist_ok=True)
@@ -1258,7 +1261,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "drifted-cli-skill"}},
                 {
                     "type": "tool.execution_start",
-                    "timestamp": (now + timedelta(seconds=2)).isoformat(),
+                    "timestamp": (now + timedelta(seconds=2, milliseconds=200)).isoformat(),
                     "data": {
                         "toolCallId": "b-bloat",
                         "toolName": "bash",
@@ -1272,7 +1275,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 },
                 {
                     "type": "tool.execution_start",
-                    "timestamp": (now + timedelta(seconds=4)).isoformat(),
+                    "timestamp": (now + timedelta(seconds=4, milliseconds=200)).isoformat(),
                     "data": {
                         "toolCallId": "b-spill",
                         "toolName": "bash",
@@ -1305,7 +1308,42 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             ]
             (s_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in evs) + "\n", encoding="utf-8")
 
+            bloat_usage = root / "bloat-usage.jsonl"
+            bloat_usage.write_text(
+                json.dumps(
+                    {
+                        "kind": "script_call",
+                        "session_id": "sess-bloat-1",
+                        "ts": (now + timedelta(seconds=2)).isoformat(),
+                        "skill": "drifted-cli-skill",
+                        "script_path": "skills/drifted-cli-skill/scripts/tool.py",
+                        "exit_code": 0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bloat_wh = root / "bloat-warehouse.db"
+            with contextlib.closing(sqlite3.connect(bloat_wh)) as conn:
+                conn.execute(
+                    "CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, ts TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "sess-bloat-1",
+                        "drifted-cli-skill",
+                        "skills/drifted-cli-skill/scripts/tool.py",
+                        0,
+                        150.0,
+                        (now + timedelta(seconds=4)).isoformat(),
+                    ),
+                )
+                conn.commit()
+
             probe_out = SKILL_RETRO.probe_skills(
+                warehouse_db=bloat_wh,
+                usage_jsonl=bloat_usage,
                 copilot_sessions_dir=sessions_dir,
                 handoff_root=handoff_root,
                 skills_root=skills_root,
@@ -1319,11 +1357,11 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertGreaterEqual(by_sk["drifted-cli-skill"]["signals"]["internal_broken_refs_count"], 2)
             self.assertEqual(by_sk["clean-cli-skill"]["signals"]["aci_output_bloat_count"], 0)
 
-            # Verify canonical fast-path (`fast=True` without explicit source overrides) also detects ACI output bloat
+            # Verify canonical fast-path (`fast=True` without explicit source overrides) also preserves ACI output bloat across earlier mirrors
             with (
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
-                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", root / "none.db"),
-                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", root / "none.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", bloat_wh),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", bloat_usage),
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
             ):

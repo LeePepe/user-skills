@@ -2872,7 +2872,7 @@ def emit_skill_retro_briefs(
 
 
 def _deduplicate_session_script_calls(obs: SessionObservation) -> list[ScriptCallEvent]:
-    """Chronologically sort and deduplicate adjacent cross-source mirrored calls per `(skill, script_rel)` without crossing an intervening pass."""
+    """Chronologically sort and deduplicate adjacent cross-source mirrored calls per `(skill, script_rel)` without crossing an intervening pass, preserving rich completion/duration/version evidence."""
     if not obs.script_calls:
         return []
     dedup_by_validator: dict[tuple[str, str], list[ScriptCallEvent]] = {}
@@ -2887,6 +2887,17 @@ def _deduplicate_session_script_calls(obs: SessionObservation) -> list[ScriptCal
                 and last_v.exit_code == c_ev.exit_code
                 and abs((c_ev.ts - last_v.ts).total_seconds()) < 1.0
             ):
+                last_v.output_chars = max(int(last_v.output_chars or 0), int(c_ev.output_chars or 0))
+                last_v.aci_output_bloat = bool(last_v.aci_output_bloat or c_ev.aci_output_bloat)
+                if not last_v.measured and c_ev.measured and c_ev.duration_ms is not None:
+                    last_v.measured = True
+                    last_v.duration_ms = c_ev.duration_ms
+                if not last_v.skill_version and c_ev.skill_version:
+                    last_v.skill_version = c_ev.skill_version
+                if not last_v.subtree_sha and c_ev.subtree_sha:
+                    last_v.subtree_sha = c_ev.subtree_sha
+                if last_v.command == last_v.script_rel and c_ev.command and c_ev.command != c_ev.script_rel:
+                    last_v.command = c_ev.command
                 continue
         v_hist.append(c_ev)
         retained.append(c_ev)
