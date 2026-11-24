@@ -150,6 +150,11 @@ _DOMAIN_HINTS: tuple[tuple[str, Callable[[set[str], set[str]], bool]], ...] = (
         or any("design.md" in f.lower() for f in files),
     ),
     (
+        "design-studio",
+        lambda files, cmds: any("design_catalog.py" in c or "--measure-palette" in c or "remotion" in c.lower() for c in cmds)
+        or any("taxonomy-v2" in f.lower() or "design-vault" in f.lower() for f in files),
+    ),
+    (
         "aidash-metrics",
         lambda files, cmds: any("aidata/" in f and f.endswith((".sql", ".py")) for f in files),
     ),
@@ -161,8 +166,28 @@ _DOMAIN_HINTS: tuple[tuple[str, Callable[[set[str], set[str]], bool]], ...] = (
         ),
     ),
     (
+        "skill-retro",
+        lambda files, cmds: any("skills/skill-retro/" in f or "test_skill_retro" in f for f in files)
+        or any("skill_retro.py" in c for c in cmds),
+    ),
+    (
         "xcode-cli",
         lambda files, cmds: any("xcodebuild" in c or "xcrun simctl" in c for c in cmds),
+    ),
+    (
+        "ios-architecture-testing",
+        lambda files, cmds: any(
+            f.endswith(".swift") and any(tok in f.lower() for tok in ("schema", "migration", "router", "coordinator", "modelcontainer"))
+            for f in files
+        ),
+    ),
+    (
+        "ios-concurrency-swiftui",
+        lambda files, cmds: any("audit_concurrency_swiftui.py" in c for c in cmds),
+    ),
+    (
+        "ios-debugging-performance",
+        lambda files, cmds: any("audit_debug_perf_release.py" in c or "xctrace" in c for c in cmds),
     ),
     (
         "repo-kit",
@@ -174,6 +199,62 @@ _DOMAIN_HINTS: tuple[tuple[str, Callable[[set[str], set[str]], bool]], ...] = (
         )
         or any("repo_gate_auditor.py" in c or "shared-ci/scripts/context/" in c for c in cmds),
     ),
+    (
+        "codebase-design",
+        lambda files, cmds: any(f.endswith(("CONTEXT.md", "ADR.md")) or "/adr/" in f.lower() for f in files),
+    ),
+    (
+        "code-review",
+        lambda files, cmds: any("discover_review_context.py" in c for c in cmds),
+    ),
+    (
+        "team-lead",
+        lambda files, cmds: any(
+            tok in c for c in cmds for tok in ("goal-supervisor.py", "goal-queue.py", "ci-monitor.py", "feedback_guard.py", "herdr-dispatch.sh")
+        )
+        or any("handoff/" in f and f.endswith("ledger.md") for f in files),
+    ),
+    (
+        "m2-dispatcher",
+        lambda files, cmds: any("m2_lifecycle.py" in c for c in cmds),
+    ),
+    (
+        "personal-m2-assistant",
+        lambda files, cmds: any("m2-router.py" in c for c in cmds),
+    ),
+    (
+        "linear-board",
+        lambda files, cmds: any("daily-brief.py" in c or "linear_board" in c for c in cmds),
+    ),
+    (
+        "issue-brief",
+        lambda files, cmds: any("verify_issue_format.py" in c or "multica-cursor:" in c for c in cmds),
+    ),
+    (
+        "retro-loop",
+        lambda files, cmds: any("retro_story_engine.py" in c for c in cmds)
+        or any("proposals.jsonl" in f for f in files),
+    ),
+    (
+        "story-craft",
+        lambda files, cmds: any("story-craft" in f or "narrative" in f.lower() for f in files),
+    ),
+    (
+        "layered-data-warehouse",
+        lambda files, cmds: any(any(layer in f for layer in ("L1_raw", "L2_clean", "L3_model", "L4_serve")) for f in files),
+    ),
+    (
+        "howto",
+        lambda files, cmds: any("howto_guard.py" in c for c in cmds) or any("how-to-nodes.md" in f for f in files),
+    ),
+)
+
+ACI_OUTPUT_BLOAT_CHARS = 20_480
+_BLOAT_MARKERS = (
+    "Output too large to read at once",
+    "File too large to read at once",
+    "saved to temporary file",
+    "output exceeded maximum length",
 )
 
 _SECRET_SCRUB_RE = re.compile(
@@ -689,6 +770,8 @@ class ScriptCallEvent:
     seq: int = 0
     skill_version: str | None = None
     subtree_sha: str | None = None
+    output_chars: int = 0
+    aci_output_bloat: bool = False
 
 
 @dataclass
@@ -702,6 +785,7 @@ class SessionObservation:
     script_calls: list[ScriptCallEvent] = field(default_factory=list)
     edited_files: set[str] = field(default_factory=set)
     edit_count: int = 0
+    edit_seqs: list[int] = field(default_factory=list)
     bash_commands: list[tuple[str, int | None, float | None, int]] = field(default_factory=list)
     referenced_goals: set[str] = field(default_factory=set)
     seq_counter: int = 0
@@ -979,10 +1063,13 @@ def _parse_copilot_sessions(
                         if fp:
                             obs.edited_files.add(fp)
                         obs.edit_count += 1
+                        obs.edit_seqs.append(obs.next_seq())
                 elif ev_type == "tool.execution_complete":
                     tc_id = str(data.get("toolCallId") or "")
                     res_obj = data.get("result")
-                    res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else ""
+                    res_text = str(res_obj.get("content") or "") if isinstance(res_obj, dict) else (str(res_obj) if res_obj is not None else "")
+                    out_chars = max(len(res_text), int(data.get("outputChars") or data.get("byteLen") or 0))
+                    is_bloat = out_chars > ACI_OUTPUT_BLOAT_CHARS or any(marker in res_text for marker in _BLOAT_MARKERS)
                     if tc_id not in tool_starts:
                         continue
                     t_name, args, st_ts, st_has_ts = tool_starts[tc_id]
@@ -1022,6 +1109,8 @@ def _parse_copilot_sessions(
                                     duration_ms=dur_ms,
                                     measured=measured,
                                     seq=seq_no,
+                                    output_chars=out_chars,
+                                    aci_output_bloat=is_bloat,
                                 )
                             )
                     elif t_name in {"read_bash", "stop_bash"}:
@@ -1052,6 +1141,8 @@ def _parse_copilot_sessions(
                                         duration_ms=bg_dur,
                                         measured=bg_measured,
                                         seq=seq_no,
+                                        output_chars=out_chars,
+                                        aci_output_bloat=is_bloat,
                                     )
                                 )
         except OSError:
@@ -1530,6 +1621,275 @@ def _drawer_linked_in_l0(pkg_path: Path, ref_rel: str) -> bool:
             if ref_rel in txt or ref_name in txt:
                 return True
     return False
+
+
+_MALFORMED_MODEL_ID_RE = re.compile(
+    r"\b(?:gemini|gpt|claude|grok|mai-code)(?::[0-9A-Za-z._-]+(?:\s+[0-9A-Za-z._-]+)?|\s*[-:]\s+[0-9A-Za-z._-]+|[0-9A-Za-z._-]*-\s+[0-9A-Za-z._-]+)"
+)
+_GENERIC_FLAG_PLACEHOLDERS = {
+    "--help",
+    "-h",
+    "--flag",
+    "--flags",
+    "--opt",
+    "--options",
+    "--arg",
+    "--args",
+}
+
+
+def _extract_script_ast_cli_contract(script_path: Path) -> dict[str, Any] | None:
+    """Parse Python script AST to extract `argparse` flags and subcommands (`add_argument`, `add_parser`)."""
+    if not _safe_is_file(script_path) or script_path.suffix.lower() != ".py":
+        return None
+    try:
+        src = script_path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(src, filename=str(script_path))
+    except (OSError, SyntaxError):
+        return None
+
+    uses_argparse = "argparse" in src
+    uses_parse_known = "parse_known_args" in src or "REMAINDER" in src or ("sys.argv" in src and not uses_argparse)
+    flags: set[str] = set(_GENERIC_FLAG_PLACEHOLDERS)
+    subcommands: set[str] = set()
+    has_subparsers = False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            attr = node.func.attr
+            if attr == "add_argument":
+                is_pos = True
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        val = arg.value.strip()
+                        if val.startswith("-"):
+                            is_pos = False
+                            flags.add(val.split("=")[0])
+                for kw in node.keywords:
+                    if kw.arg == "choices" and isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+                        c_vals = [
+                            e.value
+                            for e in kw.value.elts
+                            if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                        ]
+                        if is_pos and c_vals:
+                            subcommands.update(c_vals)
+                            has_subparsers = True
+            elif attr == "add_parser":
+                has_subparsers = True
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    subcommands.add(node.args[0].value.strip())
+                for kw in node.keywords:
+                    if kw.arg == "aliases" and isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+                        for elt in kw.value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                subcommands.add(elt.value.strip())
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and "subcommand" in target.id.lower():
+                    if isinstance(node.value, (ast.Set, ast.List, ast.Tuple, ast.Dict)):
+                        elts = node.value.keys if isinstance(node.value, ast.Dict) else node.value.elts
+                        for elt in elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                subcommands.add(elt.value.strip())
+                                has_subparsers = True
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            s_val = node.value.strip()
+            if re.fullmatch(r"--[A-Za-z0-9][A-Za-z0-9_-]*", s_val):
+                flags.add(s_val)
+
+    return {
+        "uses_argparse": uses_argparse,
+        "uses_parse_known": uses_parse_known,
+        "flags": flags,
+        "subcommands": subcommands,
+        "has_subparsers": has_subparsers,
+    }
+
+
+def internal_reality_check(skill_dir: Path | str) -> dict[str, Any]:
+    """S2 Internal Reality Check: verify SKILL.md and references/*.md against local scripts AST and reference files.
+
+    Detects:
+      - `internal_doc_cli_drift`: documented `skills/<sk>/scripts/<script>.py` missing on disk, or concrete
+        `--flag` / subcommand documented in `SKILL.md` / `references/*.md` missing from the script's AST
+        (when the script uses `argparse` without `parse_known_args`). Ignores generic placeholders like `[--flag]`
+        and pass-through `--` arguments.
+      - `internal_broken_refs`: local `references/<file>` links missing on disk, or malformed model strings
+        such as `gemini:4- argon`.
+    """
+    pkg = Path(skill_dir)
+    sk_name = pkg.name
+    doc_files: list[Path] = []
+    skill_md = pkg / "SKILL.md"
+    if _safe_is_file(skill_md):
+        doc_files.append(skill_md)
+    refs_dir = pkg / "references"
+    if _probe_readable_dir(refs_dir):
+        for rp in _safe_glob(refs_dir, "*.md", recursive=True):
+            if _safe_is_file(rp):
+                doc_files.append(rp)
+
+    ast_cache: dict[str, dict[str, Any] | None] = {}
+    cli_drift: list[dict[str, Any]] = []
+    broken_refs: list[dict[str, Any]] = []
+    seen_drift: set[tuple[str, str, str, str]] = set()
+    seen_broken: set[tuple[str, str, str]] = set()
+
+    script_inv_re = re.compile(
+        rf"(?<![A-Za-z0-9_./-])(?:skills/{re.escape(sk_name)}/)?scripts/([A-Za-z0-9_./-]+\.py)(?![A-Za-z0-9_.-])([^\n`\"|;]*)"
+    )
+    local_ref_re = re.compile(
+        rf"(?:(?<![A-Za-z0-9_./-])|skills/{re.escape(sk_name)}/)(references/[A-Za-z0-9_./-]+\.(?:md|json|yaml|yml))"
+    )
+
+    for doc_p in doc_files:
+        rel_doc = doc_p.relative_to(pkg).as_posix() if doc_p != skill_md else "SKILL.md"
+        try:
+            text = doc_p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        # 1) Check local references/<file> existence
+        for m_ref in local_ref_re.finditer(text):
+            ref_rel = m_ref.group(1)
+            if any(ch in ref_rel for ch in ("<", ">", "*", "{", "}")):
+                continue
+            if not (pkg / ref_rel).exists():
+                key = (rel_doc, "missing_reference", ref_rel)
+                if key not in seen_broken:
+                    seen_broken.add(key)
+                    broken_refs.append(
+                        {
+                            "doc": rel_doc,
+                            "kind": "missing_reference",
+                            "target": ref_rel,
+                            "detail": f"{rel_doc} references missing local file `{ref_rel}`",
+                        }
+                    )
+
+        # 2) Check malformed model IDs (e.g. `gemini:4- argon`)
+        for m_mod in _MALFORMED_MODEL_ID_RE.finditer(text):
+            bad_model = m_mod.group(0).strip()
+            key = (rel_doc, "malformed_model_id", bad_model)
+            if key not in seen_broken:
+                seen_broken.add(key)
+                broken_refs.append(
+                    {
+                        "doc": rel_doc,
+                        "kind": "malformed_model_id",
+                        "target": bad_model,
+                        "detail": f"{rel_doc} contains malformed model identifier `{bad_model}`",
+                    }
+                )
+
+        # 3) Check documented script invocations against filesystem & Python AST
+        for raw_line in text.splitlines():
+            for m_sc in script_inv_re.finditer(raw_line):
+                sc_sub = m_sc.group(1)
+                tail = m_sc.group(2) or ""
+                if sc_sub.startswith("test_") or sc_sub.endswith("_test.py"):
+                    continue
+                prefix_slice = raw_line[max(0, m_sc.start() - 36) : m_sc.start()]
+                if re.search(r"(?:skills/[A-Za-z0-9_-]+/|shared-ci/|\$[A-Za-z0-9_]+/)$", prefix_slice) and not prefix_slice.endswith(
+                    f"skills/{sk_name}/"
+                ):
+                    continue
+                sc_rel = f"scripts/{sc_sub.lstrip('/')}"
+                sc_path = pkg / sc_rel
+                if not sc_path.is_file():
+                    d_key = (rel_doc, sc_rel, "missing_script", sc_rel)
+                    if d_key not in seen_drift:
+                        seen_drift.add(d_key)
+                        cli_drift.append(
+                            {
+                                "doc": rel_doc,
+                                "script": sc_rel,
+                                "kind": "missing_script",
+                                "token": sc_rel,
+                                "detail": f"{rel_doc} invokes missing script `skills/{sk_name}/{sc_rel}`",
+                            }
+                        )
+                    continue
+
+                if sc_rel not in ast_cache:
+                    ast_cache[sc_rel] = _extract_script_ast_cli_contract(sc_path)
+                contract = ast_cache[sc_rel]
+                if not contract or not contract["uses_argparse"] or contract["uses_parse_known"]:
+                    continue
+
+                cleaned_tail = tail
+                if " -- " in cleaned_tail:
+                    cleaned_tail = cleaned_tail.split(" -- ", 1)[0]
+                # Remove generic placeholder brackets like [--flag] or [--options]
+                cleaned_tail = re.sub(r"\[\s*--(?:flag|flags|opt|options|arg|args)(?:\s+[^\]]*)?\]", " ", cleaned_tail)
+                cleaned_tail_no_angle = re.sub(r"<[^>]*>", " ", cleaned_tail)
+
+                # Check documented subcommand if first token after script is a bare subcommand word
+                stripped_tail = cleaned_tail.strip()
+                if stripped_tail and contract["has_subparsers"] and contract["subcommands"]:
+                    first_tok = stripped_tail.split()[0]
+                    if (
+                        re.fullmatch(r"[a-z][a-z0-9_-]*", first_tok)
+                        and not first_tok.startswith("-")
+                        and "|" not in first_tok
+                        and first_tok not in {"python", "python3", "and", "or", "in", "to", "for", "with", "via"}
+                    ):
+                        if first_tok not in contract["subcommands"]:
+                            d_key = (rel_doc, sc_rel, "unknown_subcommand", first_tok)
+                            if d_key not in seen_drift:
+                                seen_drift.add(d_key)
+                                cli_drift.append(
+                                    {
+                                        "doc": rel_doc,
+                                        "script": sc_rel,
+                                        "kind": "unknown_subcommand",
+                                        "token": first_tok,
+                                        "detail": f"{rel_doc} documents subcommand `{first_tok}` not found in `{sc_rel}` AST",
+                                    }
+                                )
+
+                # Check documented --flags
+                for m_flag in re.finditer(r"(?<![A-Za-z0-9_-])(--[A-Za-z0-9][A-Za-z0-9_-]*)", cleaned_tail_no_angle):
+                    flag_tok = m_flag.group(1)
+                    if flag_tok in _GENERIC_FLAG_PLACEHOLDERS or flag_tok.endswith("-"):
+                        continue
+                    if flag_tok not in contract["flags"]:
+                        d_key = (rel_doc, sc_rel, "unknown_flag", flag_tok)
+                        if d_key not in seen_drift:
+                            seen_drift.add(d_key)
+                            cli_drift.append(
+                                {
+                                    "doc": rel_doc,
+                                    "script": sc_rel,
+                                    "kind": "unknown_flag",
+                                    "token": flag_tok,
+                                    "detail": f"{rel_doc} documents flag `{flag_tok}` not found in `{sc_rel}` argparse AST",
+                                }
+                            )
+
+    return {
+        "skill": sk_name,
+        "ok": len(cli_drift) == 0 and len(broken_refs) == 0,
+        "internal_doc_cli_drift_count": len(cli_drift),
+        "internal_broken_refs_count": len(broken_refs),
+        "internal_doc_cli_drift": cli_drift,
+        "internal_broken_refs": broken_refs,
+    }
+
+
+def _is_eval_counter_case(item: Mapping[str, Any]) -> bool:
+    """Return True if an eval case is a negative/counter case (`bad_snippet`, `forbidden_regex`, `negative_cmd`, `expect_exit != 0`, `should_trigger == False`)."""
+    if any(str(item.get(k) or "").strip() for k in ("bad_snippet", "forbidden_regex", "negative_cmd")):
+        return True
+    if item.get("expect_fail_exit") is not None:
+        return True
+    if item.get("expect_exit") not in (None, 0):
+        return True
+    if item.get("should_trigger") is False:
+        return True
+    tags = [str(t).strip().lower() for t in (item.get("tags") or []) if str(t).strip()]
+    return any(t in {"negative", "counter", "counter-case"} for t in tags)
 
 
 def _harvest_cross_session_taste_and_eval(handoff_root: Path | None) -> dict[str, Any]:
@@ -2658,8 +3018,64 @@ def compute_skill_retro_diagnostics(
     unwired_disconnected_drawers: list[dict[str, Any]] = []
     true_zero_hit_deadwood: list[dict[str, Any]] = []
     dormant_scenario_drawers: list[dict[str, Any]] = []
+    progressive_catch_by_skill: dict[str, int] = {sk: 0 for sk in known_skills}
+    wasted_preread_by_skill: dict[str, dict[str, Any]] = {}
 
     for sk_name, meta in sorted(inventory.items()):
+        loaded_for_sk = [
+            o
+            for o in all_sessions
+            if sk_name in o.skills_loaded
+            or any(r_sk == sk_name for r_sk, _, _, _ in o.ref_reads)
+            or any(c.skill == sk_name for c in o.script_calls)
+        ]
+        wasted_sids: list[str] = []
+        prog_catches = 0
+        progressive_catch_sids: set[str] = set()
+        for o in loaded_for_sk:
+            sk_reads = [(r_rel, seq) for r_sk, r_rel, _, seq in o.ref_reads if r_sk == sk_name]
+            sk_calls = sorted([c for c in o.script_calls if c.skill == sk_name], key=lambda c: (c.ts, c.seq))
+            first_call_or_edit_seq = min(
+                [c.seq for c in sk_calls] + list(o.edit_seqs),
+                default=None,
+            )
+            cold_start_distinct_drawers = {
+                r_rel
+                for r_rel, r_seq in sk_reads
+                if first_call_or_edit_seq is None or r_seq < first_call_or_edit_seq
+            }
+            has_downstream_action = bool(sk_calls or o.edit_count > 0 or o.bash_commands)
+            if len(cold_start_distinct_drawers) >= 3 or (sk_reads and not has_downstream_action):
+                wasted_sids.append(o.session_id)
+
+            # Progressive catch: exit=1 on a skill script followed by reading a drawer or editing code and passing exit=0
+            for idx_c, call_ev in enumerate(sk_calls):
+                if call_ev.exit_code in (None, 0, 2):
+                    continue
+                later_pass = next(
+                    (later for later in sk_calls[idx_c + 1 : idx_c + 4] if later.exit_code == 0 and later.seq > call_ev.seq),
+                    None,
+                )
+                if later_pass is not None:
+                    intervening_read_or_edit = any(call_ev.seq < r_seq < later_pass.seq for _, r_seq in sk_reads) or any(
+                        call_ev.seq < e_seq < later_pass.seq for e_seq in o.edit_seqs
+                    )
+                    if intervening_read_or_edit:
+                        prog_catches += 1
+                        progressive_catch_sids.add(o.session_id)
+                        break
+
+        progressive_catch_by_skill[sk_name] = prog_catches
+        loaded_cnt = len(loaded_for_sk)
+        wasted_rate = round(len(wasted_sids) / loaded_cnt, 4) if loaded_cnt > 0 else 0.0
+        wasted_preread_by_skill[sk_name] = {
+            "skill": sk_name,
+            "loaded_sessions": loaded_cnt,
+            "wasted_preread_sessions": len(wasted_sids),
+            "wasted_preread_rate": wasted_rate,
+            "progressive_catch_count": prog_catches,
+        }
+
         ref_entries = list(meta.get("reference_entries") or [])
         if not ref_entries:
             continue
@@ -2671,8 +3087,9 @@ def compute_skill_retro_diagnostics(
             for o in all_sessions
             if any(c.skill == sk_name and c.exit_code not in (None, 0, 2) for c in o.script_calls)
         }
+        unresolved_failing_sids = failing_sids - progressive_catch_sids
         escape_counts = wh_meta["skill_escapes"].get(sk_name, {"impl_bug": 0, "spec_gap": 0})
-        total_domain_failures = len(failing_sids) + escape_counts.get("impl_bug", 0) + escape_counts.get("spec_gap", 0)
+        total_domain_failures = len(unresolved_failing_sids) + escape_counts.get("impl_bug", 0) + escape_counts.get("spec_gap", 0)
 
         for ref_info in ref_entries:
             rel_ref = str(ref_info.get("rel_path") or "")
@@ -2772,6 +3189,9 @@ def compute_skill_retro_diagnostics(
             key=lambda r: (-r["scenario_sessions"], -r["tokens_est"], r["skill"], r["drawer"]),
         ),
         "dormant_scenario_drawers_count": len(dormant_scenario_drawers),
+        "progressive_catch_count": sum(progressive_catch_by_skill.values()),
+        "progressive_catch_by_skill": progressive_catch_by_skill,
+        "wasted_preread_by_skill": wasted_preread_by_skill,
     }
 
     # ------------------------------------------------------------------
@@ -2805,11 +3225,26 @@ def compute_skill_retro_diagnostics(
     rigid_roadblocks: list[dict[str, Any]] = []
     watermarked_resolved_roadblocks: list[dict[str, Any]] = []
     latency_sinks: list[dict[str, Any]] = []
+    aci_output_bloat: list[dict[str, Any]] = []
+    aci_output_bloat_by_skill: dict[str, int] = {sk: 0 for sk in known_skills}
 
     for (sk_name, sc_rel), sc_calls in sorted(calls_by_script.items()):
         if not sc_calls:
             continue
         ordered_calls = sorted(sc_calls, key=lambda c: (c.ts, c.seq))
+        bloated_calls = [c for c in ordered_calls if c.aci_output_bloat or c.output_chars > ACI_OUTPUT_BLOAT_CHARS]
+        if bloated_calls:
+            aci_output_bloat_by_skill[sk_name] = aci_output_bloat_by_skill.get(sk_name, 0) + len(bloated_calls)
+            aci_output_bloat.append(
+                {
+                    "skill": sk_name,
+                    "script": sc_rel,
+                    "bloat_call_count": len(bloated_calls),
+                    "max_output_chars": max((c.output_chars for c in bloated_calls), default=ACI_OUTPUT_BLOAT_CHARS + 1),
+                    "classification": "aci_output_bloat",
+                    "evolution_action": "Add `--summary` / bounded output cap (`<=20KB`) so L2 CLI output does not overflow agent context.",
+                }
+            )
         graded = [c for c in ordered_calls if c.exit_code is not None]
         exit0_cnt = sum(1 for c in graded if c.exit_code == 0)
         exit1_cnt = sum(1 for c in graded if c.exit_code not in (0, 2))
@@ -2968,6 +3403,36 @@ def compute_skill_retro_diagnostics(
                 sink_entry["owner_skill"] = "repo-kit"
             latency_sinks.append(sink_entry)
 
+    internal_reality_by_skill: dict[str, dict[str, Any]] = {}
+    eval_quality_by_skill: dict[str, dict[str, Any]] = {}
+    for sk_name, meta in sorted(inventory.items()):
+        pkg_p = Path(str(meta.get("path") or (s_root / sk_name)))
+        ir = meta.get("internal_reality") if isinstance(meta.get("internal_reality"), Mapping) else internal_reality_check(pkg_p)
+        internal_reality_by_skill[sk_name] = dict(ir)
+        esc_map = wh_meta["skill_escapes"].get(sk_name, {"impl_bug": 0, "spec_gap": 0})
+        sk_escapes = int(esc_map.get("impl_bug") or 0) + int(esc_map.get("spec_gap") or 0)
+        sk_fail_sids = {
+            o.session_id
+            for o in all_sessions
+            if any(c.skill == sk_name and c.exit_code not in (None, 0, 2) for c in o.script_calls)
+        }
+        sk_dom_fails = len(sk_fail_sids) + sk_escapes
+        ev_cnt = int(meta.get("eval_case_count") or 0)
+        ev_counter_cnt = int(meta.get("eval_counter_case_count") or 0)
+        ev_counter_ratio = float(meta.get("eval_counter_case_ratio") or (round(ev_counter_cnt / ev_cnt, 4) if ev_cnt > 0 else 0.0))
+        ev_weekly_delta = int(meta.get("eval_case_weekly_delta") or 0)
+        ev_escape_gap = bool((sk_dom_fails + sk_escapes) >= 3 and ev_weekly_delta == 0)
+        eval_quality_by_skill[sk_name] = {
+            "skill": sk_name,
+            "eval_case_count": ev_cnt,
+            "eval_counter_case_count": ev_counter_cnt,
+            "eval_counter_case_ratio": ev_counter_ratio,
+            "eval_case_weekly_delta": ev_weekly_delta,
+            "domain_failures": sk_dom_fails,
+            "skill_escapes": sk_escapes,
+            "eval_escape_gap": ev_escape_gap,
+        }
+
     layer2 = {
         "true_catchers": sorted(true_catchers, key=lambda r: (-r["fail_to_pass_sessions"], -r["calls"], r["script"])),
         "ceremonial_rubber_stamps": sorted(
@@ -2980,6 +3445,10 @@ def compute_skill_retro_diagnostics(
             key=lambda r: (-r["pre_fix"], -r["calls"], r["script"]),
         ),
         "latency_sinks": sorted(latency_sinks, key=lambda r: (-(r["max_ms"] or 0.0), -(r["p50_ms"] or 0.0), r["script"])),
+        "aci_output_bloat": sorted(aci_output_bloat, key=lambda r: (-r["bloat_call_count"], r["script"])),
+        "aci_output_bloat_count": sum(aci_output_bloat_by_skill.values()),
+        "aci_output_bloat_by_skill": aci_output_bloat_by_skill,
+        "internal_reality_by_skill": internal_reality_by_skill,
         "cross_repo_gate_health": cross_repo_gate_health,
     }
 
@@ -3035,6 +3504,7 @@ def compute_skill_retro_diagnostics(
     layer3 = {
         "wild_patterns": wild_patterns[:10],
         "taste_and_eval_diversity": taste_eval,
+        "eval_quality_by_skill": eval_quality_by_skill,
         "dual_flywheel_guard": {
             "observed_sessions": total_sessions,
             "slow_flywheel_min_sessions": SLOW_FLYWHEEL_COHORT_MIN_SESSIONS,
@@ -3851,6 +4321,7 @@ def _discover_skill_inventory(
             total_refs_bytes = 0
             max_l1_lines = 0
             eval_cases = 0
+            eval_counter_cases = 0
             recent_eval_cases = 0
             parsed_eval_cases: list[dict[str, Any]] = []
             seen_case_ids: set[str] = set()
@@ -3896,6 +4367,8 @@ def _discover_skill_inventory(
                                     cid = str(item.get("id") or "").strip() or f"CASE-{len(parsed_eval_cases) + 1:03d}"
                                     if case_status == "active":
                                         eval_cases += 1
+                                        if _is_eval_counter_case(item):
+                                            eval_counter_cases += 1
                                         reg = str(item.get("registered_at") or doc.get("updated") or "")
                                         if reg >= cutoff_7d:
                                             recent_eval_cases += 1
@@ -3915,6 +4388,7 @@ def _discover_skill_inventory(
                                         "kind": kind,
                                         "assertion_summary": assertion_summary,
                                         "status": str(item.get("status") or case_status),
+                                        "is_counter_case": _is_eval_counter_case(item),
                                     })
                         except (OSError, json.JSONDecodeError):
                             pass
@@ -3927,6 +4401,8 @@ def _discover_skill_inventory(
                     for item in data_doc.get("active_cases", []):
                         if isinstance(item, dict):
                             eval_cases += 1
+                            if _is_eval_counter_case(item):
+                                eval_counter_cases += 1
                             reg = str(item.get("registered_at") or data_doc.get("updated") or "")
                             if reg >= cutoff_7d:
                                 recent_eval_cases += 1
@@ -3959,6 +4435,8 @@ def _discover_skill_inventory(
                     if sc_epoch is not None:
                         script_watermarks[rel_sc] = sc_epoch
             ver_info = _compute_pkg_version_fingerprint(pkg)
+            reality_info = internal_reality_check(pkg)
+            eval_counter_ratio = round(eval_counter_cases / eval_cases, 4) if eval_cases > 0 else 0.0
             refs_tokens_est = sum(int(r.get("tokens_est") or 0) for r in ref_entries)
             bundle_kb = round((skill_md_bytes_len + total_refs_bytes + total_scripts_bytes) / 1024.0, 1)
             refs_kb = round(total_refs_bytes / 1024.0, 1)
@@ -3994,7 +4472,14 @@ def _discover_skill_inventory(
                 "script_watermarks": script_watermarks,
                 "eval_cases": parsed_eval_cases,
                 "eval_case_count": eval_cases,
+                "eval_counter_case_count": eval_counter_cases,
+                "eval_counter_case_ratio": eval_counter_ratio,
                 "eval_case_weekly_delta": recent_eval_cases,
+                "internal_reality": reality_info,
+                "internal_doc_cli_drift_count": reality_info["internal_doc_cli_drift_count"],
+                "internal_broken_refs_count": reality_info["internal_broken_refs_count"],
+                "internal_doc_cli_drift": reality_info["internal_doc_cli_drift"],
+                "internal_broken_refs": reality_info["internal_broken_refs"],
             }
     return inventory
 
@@ -6861,6 +7346,7 @@ def _fast_telemetry_signals(
             "l0_trigger_misses": 0,
             "l0_zero_action_loads": 0,
             "l0_directional_drifts": 0,
+            "r1_to_r2_converged_count": 0,
             "l1_unwired_drawers": 0,
             "l1_hot_drawers": 0,
             "l1_true_deadwood": 0,
@@ -6871,8 +7357,14 @@ def _fast_telemetry_signals(
             "l2_latency_sinks": 0,
             "l3_wild_occurrences": 0,
             "domain_failures": 0,
+            "skill_escapes": 0,
+            "rubber_stamp_escapes": 0,
+            "p50_ms": None,
+            "p90_ms": None,
             "p1_proposal_bonus": 0.0,
             "ref_hit_drawers": set(),
+            "_script_durations": [],
+            "_script_exit_codes": {},
         }
         for sk in inv
     }
@@ -6909,59 +7401,60 @@ def _fast_telemetry_signals(
                 ts_col = next((c for c in ("ts", "timestamp", "observed_at", "cst_day") if c in cols), None)
                 p_col = next((c for c in ("script_path", "path") if c in cols), None)
                 ver_col = "skill_version" if "skill_version" in cols else None
+                dur_col = "duration_ms" if "duration_ms" in cols else None
                 wh_pre2: dict[str, int] = {}
                 wh_post2: dict[str, int] = {}
-                if ts_col or ver_col:
-                    sel_cols = ["skill", "exit_code"]
-                    if ts_col:
-                        sel_cols.append(f'"{ts_col}"')
-                    if p_col:
-                        sel_cols.append(f'"{p_col}"')
-                    if ver_col:
-                        sel_cols.append(f'"{ver_col}"')
-                    for row_vals in conn.execute(
-                        f'SELECT {", ".join(sel_cols)} FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0'
-                    ):
-                        row_map = dict(zip([c.strip('"') for c in sel_cols], row_vals))
-                        sk = _norm_skill(str(row_map.get("skill") or ""))
-                        if sk not in out:
-                            continue
-                        ec = int(row_map.get("exit_code") or 0)
-                        ts_val = _parse_ts(row_map.get(ts_col)) if ts_col else None
-                        if ts_val is not None and not (window_start <= ts_val < window_end):
-                            continue
-                        cur_ver, wm_epoch = _resolve_script_watermark(sk, row_map.get(p_col) if p_col else None)
-                        is_post = _is_call_post_fix(
-                            ts_val,
-                            str(row_map.get(ver_col) or "").strip() or None if ver_col else None,
-                            current_skill_version=cur_ver,
-                            watermark_epoch=wm_epoch,
-                        )
-                        if ec == 2:
-                            if is_post:
-                                wh_post2[sk] = wh_post2.get(sk, 0) + 1
-                            else:
-                                wh_pre2[sk] = wh_pre2.get(sk, 0) + 1
-                        elif is_post:
-                            out[sk]["domain_failures"] += 1
-                    for sk, cnt in wh_post2.items():
-                        out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
-                        out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
-                    for sk, cnt in wh_pre2.items():
-                        out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], cnt)
-                else:
-                    for raw_sk, raw_ec, cnt in conn.execute(
-                        f'SELECT skill, exit_code, COUNT(*) FROM "{sc_tbl}" WHERE exit_code IS NOT NULL AND exit_code != 0 GROUP BY skill, exit_code'
-                    ):
-                        sk = _norm_skill(str(raw_sk or ""))
-                        if sk not in out:
-                            continue
-                        ec = int(raw_ec)
-                        if ec == 2:
-                            out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], int(cnt or 0))
-                            out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], int(cnt or 0))
+                sel_cols = ["skill", "exit_code"]
+                if ts_col:
+                    sel_cols.append(f'"{ts_col}"')
+                if p_col:
+                    sel_cols.append(f'"{p_col}"')
+                if ver_col:
+                    sel_cols.append(f'"{ver_col}"')
+                if dur_col:
+                    sel_cols.append(f'"{dur_col}"')
+                for row_vals in conn.execute(f'SELECT {", ".join(sel_cols)} FROM "{sc_tbl}"'):
+                    row_map = dict(zip([c.strip('"') for c in sel_cols], row_vals))
+                    sk = _norm_skill(str(row_map.get("skill") or ""))
+                    if sk not in out:
+                        continue
+                    ts_val = _parse_ts(row_map.get(ts_col)) if ts_col else None
+                    if ts_val is not None and not (window_start <= ts_val < window_end):
+                        continue
+                    raw_p = str(row_map.get(p_col) or "scripts/unknown.py") if p_col else "scripts/unknown.py"
+                    m_sc_p = _SKILL_SCRIPT_RE.search(raw_p)
+                    sc_rel_key = f"scripts/{m_sc_p.group('script').lstrip('/')}" if m_sc_p else (raw_p if raw_p.startswith("scripts/") else f"scripts/{Path(raw_p).name}")
+                    if dur_col and row_map.get(dur_col) not in (None, ""):
+                        with contextlib.suppress(TypeError, ValueError):
+                            d_val = float(row_map[dur_col])
+                            if d_val >= 0:
+                                out[sk]["_script_durations"].append(d_val)
+                    raw_ec = row_map.get("exit_code")
+                    if raw_ec in (None, ""):
+                        continue
+                    ec = int(raw_ec)
+                    out[sk]["_script_exit_codes"].setdefault(sc_rel_key, []).append(ec)
+                    if ec == 0:
+                        continue
+                    cur_ver, wm_epoch = _resolve_script_watermark(sk, raw_p if p_col else None)
+                    is_post = _is_call_post_fix(
+                        ts_val,
+                        str(row_map.get(ver_col) or "").strip() or None if ver_col else None,
+                        current_skill_version=cur_ver,
+                        watermark_epoch=wm_epoch,
+                    )
+                    if ec == 2:
+                        if is_post:
+                            wh_post2[sk] = wh_post2.get(sk, 0) + 1
                         else:
-                            out[sk]["domain_failures"] += int(cnt or 0)
+                            wh_pre2[sk] = wh_pre2.get(sk, 0) + 1
+                    elif is_post:
+                        out[sk]["domain_failures"] += 1
+                for sk, cnt in wh_post2.items():
+                    out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
+                    out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
+                for sk, cnt in wh_pre2.items():
+                    out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], cnt)
             for ref_tbl in ("reference_hits", "fact_skill_reference_hit"):
                 if ref_tbl not in tables:
                     continue
@@ -6976,6 +7469,74 @@ def _fast_telemetry_signals(
                     norm_pair = _normalize_ref_rel(str(raw_p))
                     rel_ref = norm_pair[1] if norm_pair else (str(raw_p) if str(raw_p).startswith("references/") else f"references/{Path(str(raw_p)).name}")
                     out[sk]["ref_hit_drawers"].add(rel_ref)
+            if "fact_gtt_task_run" in tables:
+                t_cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_task_run")')]
+                grouped_runs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+                for vals in conn.execute('SELECT * FROM "fact_gtt_task_run"'):
+                    r_map = dict(zip(t_cols, vals))
+                    ts_r = _parse_ts(r_map.get("ended_at") or r_map.get("started_at") or r_map.get("cst_day"))
+                    if ts_r is not None and not (window_start <= ts_r < window_end):
+                        continue
+                    g_id = str(r_map.get("goal_id") or "")
+                    t_id = str(r_map.get("task_id") or "")
+                    if g_id and t_id:
+                        grouped_runs.setdefault((g_id, t_id), []).append(r_map)
+                for (_, _), runs in grouped_runs.items():
+                    max_r = max(int(r.get("round_no") or 1) for r in runs)
+                    passed_later = any(
+                        str(r.get("v5_verdict") or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and int(r.get("round_no") or 1) >= 2
+                        for r in runs
+                    )
+                    still_failed_r3 = max_r >= 3 or (
+                        max_r >= 2 and not passed_later and any(str(r.get("v5_verdict") or "").upper() == "FAIL" for r in runs)
+                    )
+                    sk_set: set[str] = set()
+                    for r in runs:
+                        raw_su = r.get("skills_used")
+                        if isinstance(raw_su, str) and raw_su.strip().startswith("["):
+                            with contextlib.suppress(json.JSONDecodeError):
+                                sk_set.update(_norm_skill(x) for x in json.loads(raw_su) if str(x).strip())
+                        elif raw_su:
+                            for m_sk in _SKILL_CONTEXT_RE.finditer(str(raw_su)):
+                                tok = m_sk.group("ctx") or m_sk.group("path") or m_sk.group("call")
+                                if tok:
+                                    sk_set.add(_norm_skill(tok))
+                    for sk in sk_set:
+                        if sk not in out:
+                            continue
+                        if max_r == 2 and passed_later:
+                            out[sk]["r1_to_r2_converged_count"] += 1
+                        elif still_failed_r3:
+                            out[sk]["l0_directional_drifts"] += 1
+                            out[sk]["skill_escapes"] += 1
+                            out[sk]["domain_failures"] += 1
+            if "fact_gtt_event" in tables:
+                e_cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_event")')]
+                for vals in conn.execute('SELECT * FROM "fact_gtt_event"'):
+                    r_map = dict(zip(e_cols, vals))
+                    ts_e = _parse_ts(r_map.get("ts") or r_map.get("observed_at") or r_map.get("cst_day"))
+                    if ts_e is not None and not (window_start <= ts_e < window_end):
+                        continue
+                    evt = str(r_map.get("evt_type") or "").upper()
+                    note = str(r_map.get("note_preview") or r_map.get("note") or "")
+                    g_id = str(r_map.get("goal_id") or "")
+                    sk_hits = {
+                        _norm_skill(m.group("ctx") or m.group("path") or m.group("call") or "")
+                        for m in _SKILL_CONTEXT_RE.finditer(note)
+                    }
+                    sk_hits.discard("")
+                    if not sk_hits and "design" in g_id.lower():
+                        sk_hits.add("my-designer")
+                    for sk in sk_hits:
+                        if sk not in out:
+                            continue
+                        if evt in {"CHANGE_REQUEST", "NEED_OWNER_DECISION"}:
+                            out[sk]["l0_directional_drifts"] += 1
+                            out[sk]["skill_escapes"] += 1
+                            out[sk]["domain_failures"] += 1
+                        elif evt == "REVIEW_FAIL":
+                            out[sk]["skill_escapes"] += 1
+                            out[sk]["domain_failures"] += 1
 
     u_path = usage_jsonl if usage_jsonl is not None else DEFAULT_SKILL_TELEMETRY_USAGE_JSONL
     if _is_safe_local_file(u_path) and u_path is not None:
@@ -7141,6 +7702,25 @@ def _fast_telemetry_signals(
                         out[sk]["p1_proposal_bonus"] = max(out[sk]["p1_proposal_bonus"], round(8000.0 - pending_idx * 1200.0, 2))
                         pending_idx += 1
 
+    for sk, s_data in out.items():
+        durs = s_data.pop("_script_durations", [])
+        sc_exits = s_data.pop("_script_exit_codes", {})
+        if durs:
+            s_data["p50_ms"] = _percentile(durs, 50)
+            s_data["p90_ms"] = _percentile(durs, 90)
+            if (max(durs) >= LATENCY_SINK_MAX_MS) or (
+                (s_data["p50_ms"] or 0.0) >= LATENCY_SINK_P50_MS and len(durs) >= LATENCY_SINK_MIN_CALLS_FOR_P50
+            ):
+                s_data["l2_latency_sinks"] = max(int(s_data.get("l2_latency_sinks") or 0), 1)
+        sk_escapes = int(s_data.get("skill_escapes") or 0)
+        leaky_cnt = 0
+        for _, ec_list in sc_exits.items():
+            if len(ec_list) >= 3 and all(c == 0 for c in ec_list) and sk_escapes > 0:
+                leaky_cnt += 1
+        if leaky_cnt > 0:
+            s_data["l2_leaky_rubber_stamps"] = max(int(s_data.get("l2_leaky_rubber_stamps") or 0), leaky_cnt)
+            s_data["rubber_stamp_escapes"] = sk_escapes
+
     return out
 
 
@@ -7149,6 +7729,7 @@ def probe_skills(
     skill: str | None = None,
     aspect: str | None = None,
     fast: bool = True,
+    summary: bool = False,
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
     copilot_sessions_dir: Path | None = None,
@@ -7209,54 +7790,91 @@ def probe_skills(
         l2 = diag.get("layer2_script_efficacy_and_speed") or {}
         l3 = diag.get("layer3_wild_patterns_and_eval") or {}
         taste = l3.get("taste_and_eval_diversity") or {}
+        prog_by_sk = l1.get("progressive_catch_by_skill") or {}
+        wasted_by_sk = l1.get("wasted_preread_by_skill") or {}
+        bloat_by_sk = l2.get("aci_output_bloat_by_skill") or {}
+        ir_by_sk = l2.get("internal_reality_by_skill") or {}
+        ev_qual_by_sk = l3.get("eval_quality_by_skill") or {}
+        fast_wh = _fast_telemetry_signals(
+            inv=inv,
+            warehouse_db=warehouse_db,
+            usage_jsonl=usage_jsonl,
+            days=days,
+        )
 
         for sk_name, meta in sorted(inv.items()):
+            t_wh = fast_wh.get(sk_name) or {}
             trig_misses = sum(int(x.get("missed_sessions") or 0) for x in (l0.get("trigger_misses") or []) if x.get("skill") == sk_name)
             empty_loads = sum(int(x.get("zero_action_sessions") or 0) for x in (l0.get("zero_action_loads") or []) if x.get("skill") == sk_name)
             drifts = sum(1 for x in (l0.get("directional_drifts") or []) if sk_name in (x.get("skills") or []))
+            r1_r2_conv = sum(1 for x in (l0.get("healthy_r1_to_r2_convergences") or []) if sk_name in (x.get("skills") or []))
             unwired = sum(1 for x in (l1.get("unwired_disconnected_drawers") or []) if x.get("skill") == sk_name)
             hot_cnt = sum(1 for x in (l1.get("hot_drawers") or []) if x.get("skill") == sk_name)
             deadwood = sum(1 for x in (l1.get("true_zero_hit_deadwood") or []) if x.get("skill") == sk_name)
+            prog_catches = int(prog_by_sk.get(sk_name) or 0)
+            wasted_info = wasted_by_sk.get(sk_name) or {}
+            wasted_rate = float(wasted_info.get("wasted_preread_rate") or 0.0)
+            wasted_sessions = int(wasted_info.get("wasted_preread_sessions") or 0)
             exit2_cnt = sum(int(x.get("exit_2_count") or 0) for x in (l2.get("rigid_roadblocks") or []) if x.get("skill") == sk_name)
             exit2_pre_cnt = sum(
                 int(x.get("pre_fix") or 0)
                 for x in ((l2.get("rigid_roadblocks") or []) + (l2.get("watermarked_resolved_roadblocks") or []))
                 if x.get("skill") == sk_name
             )
-            rubber_cnt = sum(1 for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk_name and int(x.get("co_occurring_skill_escapes") or 0) > 0)
+            rubber_items = [x for x in (l2.get("ceremonial_rubber_stamps") or []) if x.get("skill") == sk_name and int(x.get("co_occurring_skill_escapes") or 0) > 0]
+            rubber_cnt = len(rubber_items)
+            rubber_escapes = max([int(x.get("co_occurring_skill_escapes") or 0) for x in rubber_items], default=int(t_wh.get("rubber_stamp_escapes") or 0))
             slow_cnt = sum(
                 1
                 for x in (l2.get("latency_sinks") or [])
                 if (x.get("skill") == sk_name or (sk_name == "repo-kit" and x.get("skill") == "repo-gate"))
                 and x.get("primary_bottleneck") != "external_wait"
             )
+            bloat_cnt = int(bloat_by_sk.get(sk_name) or 0)
+            ir_info = ir_by_sk.get(sk_name) or meta.get("internal_reality") or {}
+            cli_drift_list = list(ir_info.get("internal_doc_cli_drift") or [])
+            broken_refs_list = list(ir_info.get("internal_broken_refs") or [])
+            cli_drift_cnt = len(cli_drift_list)
+            broken_refs_cnt = len(broken_refs_list)
+            ev_q = ev_qual_by_sk.get(sk_name) or {}
+            ev_counter_cnt = int(ev_q.get("eval_counter_case_count") if "eval_counter_case_count" in ev_q else (meta.get("eval_counter_case_count") or 0))
+            ev_counter_ratio = float(ev_q.get("eval_counter_case_ratio") if "eval_counter_case_ratio" in ev_q else (meta.get("eval_counter_case_ratio") or 0.0))
+            ev_escape_gap = bool(ev_q.get("eval_escape_gap", False))
+            sk_escapes = int(ev_q.get("skill_escapes") or t_wh.get("skill_escapes") or 0)
+            dom_fails = int(ev_q.get("domain_failures") or t_wh.get("domain_failures") or 0)
             cr_findings_cnt = int((cross_repo_gate_health or {}).get("total_findings") or 0) if sk_name == "repo-kit" else 0
             wild_cnt = sum(int(x.get("occurrences") or 0) for x in (l3.get("wild_patterns") or []) if x.get("candidate_skill") == sk_name)
             creative_flag = sk_name in {"my-designer", "design-studio"} and bool(taste.get("low_diversity_goals"))
             eval_cases_cnt = int(meta.get("eval_case_count") or 0)
 
             triggered_aspects: list[str] = []
-            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or not meta.get("budget_ok", True)) and "l0" in aspect_filter:
+            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or broken_refs_cnt > 0 or not meta.get("budget_ok", True)) and "l0" in aspect_filter:
                 triggered_aspects.append("l0")
-            if (unwired > 0 or hot_cnt > 0 or deadwood > 0) and "l1" in aspect_filter:
+            if (unwired > 0 or hot_cnt > 0 or deadwood > 0 or wasted_sessions > 0) and "l1" in aspect_filter:
                 triggered_aspects.append("l1")
-            if (exit2_cnt > 0 or rubber_cnt > 0 or slow_cnt > 0 or cr_findings_cnt > 0) and "l2" in aspect_filter:
+            if (exit2_cnt > 0 or rubber_cnt > 0 or slow_cnt > 0 or cr_findings_cnt > 0 or cli_drift_cnt > 0 or bloat_cnt > 0) and "l2" in aspect_filter:
                 triggered_aspects.append("l2")
             if wild_cnt > 0 and "l3" in aspect_filter:
                 triggered_aspects.append("l3")
             if creative_flag and "creative" in aspect_filter:
                 triggered_aspects.append("creative")
-            if len(triggered_aspects) >= 2 and "eval" in aspect_filter:
+            if (len(triggered_aspects) >= 2 or ev_escape_gap) and "eval" in aspect_filter:
                 triggered_aspects.append("eval")
 
+            # Outcome-First Scoring: progressive_catch_count and r1_to_r2_converged_count are NEVER penalized!
             priority_score = (
                 exit2_cnt * 3.0
                 + unwired * 2.5
                 + trig_misses * 2.0
                 + empty_loads * 1.2
                 + drifts * 2.0
+                + wasted_sessions * 1.5
                 + rubber_cnt * 1.8
                 + slow_cnt * 1.5
+                + cli_drift_cnt * 2.5
+                + broken_refs_cnt * 2.0
+                + bloat_cnt * 1.8
+                + (2.0 if ev_escape_gap else 0.0)
                 + (min(6.0, cr_findings_cnt * 0.5) if cr_findings_cnt > 0 else 0.0)
                 + (1.5 if wild_cnt >= WILD_PATTERN_MIN_COUNT else 0.0)
                 + (1.2 if creative_flag else 0.0)
@@ -7266,6 +7884,10 @@ def probe_skills(
                 "l0_trigger_misses": trig_misses,
                 "l0_zero_action_loads": empty_loads,
                 "l0_directional_drifts": drifts,
+                "healthy_r1_to_r2_convergences": r1_r2_conv,
+                "progressive_catch_count": prog_catches,
+                "wasted_preread_sessions": wasted_sessions,
+                "wasted_preread_rate": wasted_rate,
                 "l1_unwired_drawers": unwired,
                 "l1_hot_drawers": hot_cnt,
                 "l1_true_deadwood": deadwood,
@@ -7273,9 +7895,22 @@ def probe_skills(
                 "l2_exit2_pre_fix": exit2_pre_cnt,
                 "l2_exit2_post_fix": exit2_cnt,
                 "l2_leaky_rubber_stamps": rubber_cnt,
+                "rubber_stamp_escapes": rubber_escapes,
                 "l2_latency_sinks": slow_cnt,
+                "p50_ms": t_wh.get("p50_ms"),
+                "p90_ms": t_wh.get("p90_ms"),
+                "aci_output_bloat_count": bloat_cnt,
+                "internal_doc_cli_drift_count": cli_drift_cnt,
+                "internal_broken_refs_count": broken_refs_cnt,
+                "internal_doc_cli_drift": cli_drift_list[:3] if summary else cli_drift_list,
+                "internal_broken_refs": broken_refs_list[:3] if summary else broken_refs_list,
                 "l3_wild_occurrences": wild_cnt,
                 "creative_selection_signal": bool(creative_flag),
+                "domain_failures": dom_fails,
+                "skill_escapes": sk_escapes,
+                "eval_counter_case_count": ev_counter_cnt,
+                "eval_counter_case_ratio": ev_counter_ratio,
+                "eval_escape_gap": ev_escape_gap,
             }
             if sk_name == "repo-kit":
                 sig_dict["cross_repo_gate_findings"] = cr_findings_cnt
@@ -7291,6 +7926,9 @@ def probe_skills(
                     "max_l1_lines": meta.get("max_l1_lines", 0),
                     "budget_ok": bool(meta.get("budget_ok", True)),
                     "eval_case_count": eval_cases_cnt,
+                    "eval_counter_case_count": ev_counter_cnt,
+                    "eval_counter_case_ratio": ev_counter_ratio,
+                    "eval_escape_gap": ev_escape_gap,
                     "leased": sk_name in leases["leased_skills"],
                     "lease_reasons": leases["lease_reasons"].get(sk_name, []),
                     "signals": sig_dict,
@@ -7309,66 +7947,107 @@ def probe_skills(
             pkg_p = Path(str(meta.get("path") or (s_root / sk_name)))
             t_sig = fast_telem.get(sk_name) or {}
             ref_hits_set = t_sig.get("ref_hit_drawers") or set()
-            unwired_static = 0
             unwired_zero_hit = 0
             for ref_e in meta.get("reference_entries") or []:
                 rel_r = str(ref_e.get("rel_path") or "")
                 if rel_r.startswith("references/") and _drawer_linked_in_l0(pkg_p, rel_r) and not _drawer_linked_in_scripts(pkg_p, rel_r):
-                    unwired_static += 1
                     if rel_r not in ref_hits_set:
                         unwired_zero_hit += 1
             trig_misses = int(t_sig.get("l0_trigger_misses") or 0)
             empty_loads = int(t_sig.get("l0_zero_action_loads") or 0)
             drifts = int(t_sig.get("l0_directional_drifts") or 0)
+            r1_r2_conv = int(t_sig.get("r1_to_r2_converged_count") or 0)
             exit2_cnt = int(t_sig.get("l2_exit2_roadblocks") or 0)
             domain_fails = int(t_sig.get("domain_failures") or 0)
+            sk_escapes = int(t_sig.get("skill_escapes") or 0)
+            rubber_cnt = int(t_sig.get("l2_leaky_rubber_stamps") or 0)
+            rubber_escapes = int(t_sig.get("rubber_stamp_escapes") or 0)
+            slow_cnt = int(t_sig.get("l2_latency_sinks") or 0)
             p1_bonus = float(t_sig.get("p1_proposal_bonus") or 0.0)
+            # Fix l1_unwired_drawers false positive: only mark unwired when domain_failures > 0 and hits == 0 and not script-linked
             unwired_cnt = max(
                 int(t_sig.get("l1_unwired_drawers") or 0),
-                unwired_zero_hit if (domain_fails > 0 and meta.get("scripts")) else (unwired_static if meta.get("scripts") else 0),
+                unwired_zero_hit if (domain_fails > 0 and meta.get("scripts")) else 0,
             )
+            ir_info = meta.get("internal_reality") or internal_reality_check(pkg_p)
+            cli_drift_list = list(ir_info.get("internal_doc_cli_drift") or [])
+            broken_refs_list = list(ir_info.get("internal_broken_refs") or [])
+            cli_drift_cnt = len(cli_drift_list)
+            broken_refs_cnt = len(broken_refs_list)
             cr_findings_cnt = int((cross_repo_gate_health or {}).get("total_findings") or 0) if sk_name == "repo-kit" else 0
             budget_ok = bool(meta.get("budget_ok", True))
             eval_cases_cnt = int(meta.get("eval_case_count") or 0)
-            creative_flag = sk_name in {"my-designer", "design-studio"}
+            ev_counter_cnt = int(meta.get("eval_counter_case_count") or 0)
+            ev_counter_ratio = float(meta.get("eval_counter_case_ratio") or 0.0)
+            ev_weekly_delta = int(meta.get("eval_case_weekly_delta") or 0)
+            ev_escape_gap = bool((domain_fails + sk_escapes) >= 3 and ev_weekly_delta == 0)
+            creative_flag = False
             triggered_aspects = []
-            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or not budget_ok) and "l0" in aspect_filter:
+            if (trig_misses > 0 or empty_loads > 0 or drifts > 0 or broken_refs_cnt > 0 or not budget_ok) and "l0" in aspect_filter:
                 triggered_aspects.append("l0")
             if unwired_cnt > 0 and meta.get("scripts") and "l1" in aspect_filter:
                 triggered_aspects.append("l1")
-            if (exit2_cnt > 0 or cr_findings_cnt > 0 or (meta.get("scripts") and unwired_cnt > 0)) and "l2" in aspect_filter:
+            if (
+                exit2_cnt > 0
+                or rubber_cnt > 0
+                or slow_cnt > 0
+                or cli_drift_cnt > 0
+                or cr_findings_cnt > 0
+                or (meta.get("scripts") and unwired_cnt > 0)
+            ) and "l2" in aspect_filter:
                 triggered_aspects.append("l2")
             if creative_flag and "creative" in aspect_filter:
                 triggered_aspects.append("creative")
-            if (eval_cases_cnt == 0 or len(triggered_aspects) >= 2) and "eval" in aspect_filter:
+            if (eval_cases_cnt == 0 or ev_escape_gap or len(triggered_aspects) >= 2) and "eval" in aspect_filter:
                 triggered_aspects.append("eval")
             score = (
                 p1_bonus
                 + exit2_cnt * 3.0
-                + (unwired_cnt * 2.5 if domain_fails > 0 or p1_bonus > 0 else (1.5 if unwired_cnt > 0 and meta.get("scripts") else 0.0))
+                + (unwired_cnt * 2.5 if domain_fails > 0 or p1_bonus > 0 else 0.0)
                 + domain_fails * 1.5
+                + drifts * 2.0
+                + rubber_cnt * 1.8
+                + slow_cnt * 1.5
+                + cli_drift_cnt * 2.5
+                + broken_refs_cnt * 2.0
+                + (2.0 if ev_escape_gap else 0.0)
                 + trig_misses * 2.0
                 + empty_loads * 1.2
                 + (min(6.0, cr_findings_cnt * 0.5) if cr_findings_cnt > 0 else 0.0)
                 + (2.5 if not budget_ok else 0.0)
                 + (1.0 if eval_cases_cnt == 0 else 0.0)
-                + (0.8 if creative_flag else 0.0)
             )
             sig_dict = {
                 "l0_trigger_misses": trig_misses,
                 "l0_zero_action_loads": empty_loads,
                 "l0_directional_drifts": drifts,
+                "healthy_r1_to_r2_convergences": r1_r2_conv,
+                "progressive_catch_count": 0,
+                "wasted_preread_sessions": 0,
+                "wasted_preread_rate": 0.0,
                 "l1_unwired_drawers": unwired_cnt if meta.get("scripts") else 0,
                 "l1_hot_drawers": int(t_sig.get("l1_hot_drawers") or 0),
                 "l1_true_deadwood": int(t_sig.get("l1_true_deadwood") or 0),
                 "l2_exit2_roadblocks": exit2_cnt,
                 "l2_exit2_pre_fix": int(t_sig.get("l2_exit2_pre_fix") or 0),
                 "l2_exit2_post_fix": int(t_sig.get("l2_exit2_post_fix") or exit2_cnt),
-                "l2_leaky_rubber_stamps": int(t_sig.get("l2_leaky_rubber_stamps") or 0),
-                "l2_latency_sinks": int(t_sig.get("l2_latency_sinks") or 0),
+                "l2_leaky_rubber_stamps": rubber_cnt,
+                "rubber_stamp_escapes": rubber_escapes,
+                "l2_latency_sinks": slow_cnt,
+                "p50_ms": t_sig.get("p50_ms"),
+                "p90_ms": t_sig.get("p90_ms"),
+                "aci_output_bloat_count": 0,
+                "internal_doc_cli_drift_count": cli_drift_cnt,
+                "internal_broken_refs_count": broken_refs_cnt,
+                "internal_doc_cli_drift": cli_drift_list[:3] if summary else cli_drift_list,
+                "internal_broken_refs": broken_refs_list[:3] if summary else broken_refs_list,
                 "l3_wild_occurrences": int(t_sig.get("l3_wild_occurrences") or 0),
                 "creative_selection_signal": creative_flag,
                 "domain_failures": domain_fails,
+                "skill_escapes": sk_escapes,
+                "eval_counter_case_count": ev_counter_cnt,
+                "eval_counter_case_ratio": ev_counter_ratio,
+                "eval_escape_gap": ev_escape_gap,
             }
             if sk_name == "repo-kit":
                 sig_dict["cross_repo_gate_findings"] = cr_findings_cnt
@@ -7384,6 +8063,9 @@ def probe_skills(
                     "max_l1_lines": meta.get("max_l1_lines", 0),
                     "budget_ok": budget_ok,
                     "eval_case_count": eval_cases_cnt,
+                    "eval_counter_case_count": ev_counter_cnt,
+                    "eval_counter_case_ratio": ev_counter_ratio,
+                    "eval_escape_gap": ev_escape_gap,
                     "leased": sk_name in leases["leased_skills"],
                     "lease_reasons": leases["lease_reasons"].get(sk_name, []),
                     "signals": sig_dict,
@@ -7471,6 +8153,7 @@ def triage_skills(
     emit_briefs_dir: Path | None = None,
     coupled_with: Sequence[str] | str | None = None,
     relays: Sequence[Mapping[str, Any]] | None = None,
+    summary: bool = False,
     warehouse_db: Path | None = None,
     copilot_db: Path | None = None,
     copilot_sessions_dir: Path | None = None,
@@ -7491,6 +8174,7 @@ def triage_skills(
             skill=norm_sk,
             aspect=aspect,
             fast=True,
+            summary=summary,
             warehouse_db=warehouse_db,
             copilot_db=copilot_db,
             copilot_sessions_dir=copilot_sessions_dir,
@@ -7804,7 +8488,7 @@ def triage_skills(
             ],
             "wave_2_cross_skill_relays": list(relays or []),
         },
-        "decisions": decisions,
+        "decisions": decisions[:5] if summary else decisions,
     }
 
     if emit_briefs_dir is not None and selected_targets:
@@ -7875,6 +8559,58 @@ def triage_skills(
     return result
 
 
+_VALID_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_VALID_PR_REF_RE = re.compile(r"^(?:https://github\.com/[^/\s]+/[^/\s]+/pull/\d+|#?\d+)$")
+
+
+def _verify_m1_receipt_grounding(
+    receipt: Mapping[str, Any],
+    *,
+    repo_root: Path | None = None,
+    verify_grounding: bool = False,
+) -> tuple[bool, list[str]]:
+    """Verify M1 receipt-to-trace faithfulness (`receipt_grounded`, `grounding_issues` / `grounding_errors`)."""
+    status = str(receipt.get("status") or "").strip().upper()
+    issues: list[str] = []
+    if status != "FIXED_AND_MERGED":
+        return True, issues
+
+    sha_val = str(receipt.get("merge_sha") or receipt.get("commit_sha") or "").strip()
+    pr_val = str(receipt.get("pr_url") or receipt.get("pr") or (f"#{receipt['pr_number']}" if receipt.get("pr_number") else "")).strip()
+
+    if not sha_val:
+        issues.append("missing_commit_or_merge_sha")
+    elif not _VALID_GIT_SHA_RE.fullmatch(sha_val):
+        issues.append(f"invalid_sha_format:{sha_val}")
+
+    if not pr_val:
+        issues.append("missing_pr_reference")
+    elif not _VALID_PR_REF_RE.fullmatch(pr_val):
+        issues.append(f"invalid_pr_reference:{pr_val}")
+
+    eff_repo = repo_root
+    if eff_repo is not None and _safe_is_dir(eff_repo) and sha_val and _VALID_GIT_SHA_RE.fullmatch(sha_val):
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        try:
+            proc = subprocess.run(
+                ["git", "--no-optional-locks", "cat-file", "-t", sha_val],
+                cwd=eff_repo,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+                check=False,
+            )
+            obj_type = proc.stdout.strip()
+            if proc.returncode != 0 or obj_type not in {"commit", "tag"}:
+                issues.append(f"commit_not_found_in_git:{sha_val}")
+        except (OSError, subprocess.SubprocessError):
+            if verify_grounding:
+                issues.append(f"git_verification_error:{sha_val}")
+
+    return len(issues) == 0, issues
+
+
 def record_m1_retro_receipt(
     *,
     skill: str,
@@ -7884,6 +8620,7 @@ def record_m1_retro_receipt(
     pr_url: str | None = None,
     pr_number: int | None = None,
     commit_sha: str | None = None,
+    merge_sha: str | None = None,
     writers_spawned: int | None = None,
     reviewers_spawned: int | None = None,
     relay_to: str | None = None,
@@ -7923,6 +8660,7 @@ def record_m1_retro_receipt(
         eff_reviewers = 1 if reviewers_spawned is None else int(reviewers_spawned)
         default_summary = f"M1 TL fixed `{norm_sk}` via Writer -> Reviewer, passed Positive + Counter-Case Replay, and merged PR."
 
+    eff_sha = commit_sha or merge_sha
     payload: dict[str, Any] = {
         "ok": True,
         "schema": "skill-retro-m1-receipt/v1",
@@ -7936,7 +8674,8 @@ def record_m1_retro_receipt(
         "reviewers_spawned": eff_reviewers,
         "pr_url": pr_url,
         "pr_number": pr_number,
-        "commit_sha": commit_sha,
+        "commit_sha": eff_sha,
+        "merge_sha": merge_sha or eff_sha,
         "relay_to": _norm_skill(relay_to) if relay_to else None,
         "relay_requirement": relay_requirement,
         "summary": summary.strip() or default_summary,
@@ -7955,6 +8694,8 @@ def rollup_m1_retro_receipts(
     observation_pool: Sequence[Mapping[str, Any]] | None = None,
     target_date: str | None = None,
     output_path: Path | None = None,
+    repo_root: Path | None = None,
+    verify_grounding: bool = False,
 ) -> dict[str, Any]:
     """Aggregate K (0..3) independent M1 TL receipts (`FIXED_AND_MERGED` | `HEALTHY_NO_ISSUES` | `CROSS_SKILL_RELAY`) back to the single M2."""
     resolved_root = (handoff_root or DEFAULT_HANDOFF_ROOT).expanduser()
@@ -8016,6 +8757,7 @@ def rollup_m1_retro_receipts(
                 }
             elif "PR_MERGED" in ledger_txt or "GOAL_DONE" in ledger_txt or "FIXED_AND_MERGED" in ledger_txt:
                 pr_match = re.search(r"(https://github\.com/\S+/pull/\d+|#\d+)", ledger_txt)
+                sha_match = re.search(r"\b([0-9a-f]{7,40})\b", ledger_txt)
                 loaded_receipt = {
                     "skill": sk_guess,
                     "goal_id": gdir.name,
@@ -8024,6 +8766,7 @@ def rollup_m1_retro_receipts(
                     "writers_spawned": 1,
                     "reviewers_spawned": 1,
                     "pr_url": pr_match.group(1) if pr_match else None,
+                    "commit_sha": sha_match.group(1) if sha_match else None,
                     "summary": f"M1 TL completed Writer -> Reviewer fix and merged PR for `{sk_guess}`.",
                 }
             elif relay_files:
@@ -8041,6 +8784,19 @@ def rollup_m1_retro_receipts(
                         "summary": f"M1 TL scheduled Wave 2 Cross-Skill Relay `{sk_guess}` -> `{rel_data.get('to_skill')}`.",
                     }
         if loaded_receipt is not None:
+            is_grounded, g_issues = _verify_m1_receipt_grounding(
+                loaded_receipt,
+                repo_root=repo_root,
+                verify_grounding=verify_grounding,
+            )
+            loaded_receipt["receipt_grounded"] = is_grounded
+            loaded_receipt["grounding_issues"] = g_issues
+            loaded_receipt["grounding_errors"] = g_issues
+            if loaded_receipt.get("status") == "FIXED_AND_MERGED" and not is_grounded:
+                loaded_receipt["claimed_status"] = "FIXED_AND_MERGED"
+                loaded_receipt["effective_status"] = "UNGROUNDED_RECEIPT"
+            else:
+                loaded_receipt["effective_status"] = loaded_receipt.get("status")
             m1_receipts.append(loaded_receipt)
         for rf in _safe_glob(gdir / "briefs", "skill-retro-relay-*.json"):
             try:
@@ -8056,33 +8812,44 @@ def rollup_m1_retro_receipts(
         except (OSError, ValueError, TypeError):
             pass
 
-    fixed_items = [r for r in m1_receipts if r.get("status") == "FIXED_AND_MERGED"]
+    fixed_items = [r for r in m1_receipts if r.get("status") == "FIXED_AND_MERGED" and r.get("receipt_grounded", True)]
+    ungrounded_items = [r for r in m1_receipts if r.get("status") == "FIXED_AND_MERGED" and not r.get("receipt_grounded", True)]
     healthy_items = [r for r in m1_receipts if r.get("status") == "HEALTHY_NO_ISSUES"]
     relay_items = [r for r in m1_receipts if r.get("status") == "CROSS_SKILL_RELAY"]
     overall_status = (
         "FIXED_AND_MERGED"
         if fixed_items
-        else ("CROSS_SKILL_RELAY" if (relay_items or relays_collected) else "HEALTHY_NO_ISSUES")
+        else (
+            "UNGROUNDED_RECEIPT"
+            if ungrounded_items
+            else ("CROSS_SKILL_RELAY" if (relay_items or relays_collected) else "HEALTHY_NO_ISSUES")
+        )
     )
+    all_grounding_errors = [
+        f"{r.get('skill')}:{err}"
+        for r in m1_receipts
+        for err in (r.get("grounding_issues") or [])
+    ]
 
     md_lines = [
         f"## `[Skill Retro {date_str}]` `1 M2 -> K ({len(m1_receipts)}) M1 TLs -> Single M2 Rollup` Summary",
         "",
         "- **Topology**: `1 M2 Coordinator -> 1 Cheap Probe Worker -> K (0..3) Independent M1 TLs -> Single M2 Rollup`",
         f"- **M1 TLs Spawned (`K`)**: `{len(m1_receipts)}` (max cap `3`, never a forced quota)",
-        f"- **Rollup Breakdown**: `FIXED_AND_MERGED={len(fixed_items)}` · `HEALTHY_NO_ISSUES={len(healthy_items)}` · `CROSS_SKILL_RELAY={len(relay_items) or len(relays_collected)}`",
+        f"- **Rollup Breakdown**: `FIXED_AND_MERGED={len(fixed_items)}` · `HEALTHY_NO_ISSUES={len(healthy_items)}` · `CROSS_SKILL_RELAY={len(relay_items) or len(relays_collected)}` · `UNGROUNDED={len(ungrounded_items)}`",
         "",
-        "| Skill | Independent M1 TL | Outcome | Writers Spawned | PR / Relay / Evidence |",
-        "|---|---|---|---|---|",
+        "| Skill | Independent M1 TL | Outcome | Grounded | Writers Spawned | PR / Relay / Evidence |",
+        "|---|---|---|---|---|---|",
     ]
     if m1_receipts:
         for rec in m1_receipts:
             ev_cell = str(rec.get("pr_url") or (f"relay->{rec.get('relay_to')}" if rec.get("relay_to") else rec.get("summary") or "—")).replace("|", "\\|")
+            grounded_cell = "yes" if rec.get("receipt_grounded", True) else f"NO ({','.join(rec.get('grounding_issues') or [])})"
             md_lines.append(
-                f"| `{rec.get('skill')}` | `{rec.get('m1_tl_agent_name')}` | `{rec.get('status')}` | `{rec.get('writers_spawned', 0)}` | {ev_cell} |"
+                f"| `{rec.get('skill')}` | `{rec.get('m1_tl_agent_name')}` | `{rec.get('effective_status') or rec.get('status')}` | `{grounded_cell}` | `{rec.get('writers_spawned', 0)}` | {ev_cell} |"
             )
     else:
-        md_lines.append("| — | `0 M1 TLs spawned` | `HEALTHY_NO_ISSUES` | `0` | Probe Worker found 0 issues; no M1 TL or Writer spawned |")
+        md_lines.append("| — | `0 M1 TLs spawned` | `HEALTHY_NO_ISSUES` | `yes` | `0` | Probe Worker found 0 issues; no M1 TL or Writer spawned |")
 
     obs_list = list(observation_pool or [])
     if obs_list:
@@ -8098,11 +8865,15 @@ def rollup_m1_retro_receipts(
         "date": date_str,
         "topology": "1_m2 -> 1_cheap_probe_worker -> 0..3_parallel_m1_tls -> 1_m2_rollup",
         "status": overall_status,
+        "receipt_grounded": len(ungrounded_items) == 0,
+        "grounding_issues": all_grounding_errors,
+        "grounding_errors": all_grounding_errors,
         "handoff_root": str(resolved_root),
         "m1_tls_spawned": len(m1_receipts),
         "writers_spawned_total": sum(int(r.get("writers_spawned") or 0) for r in m1_receipts),
         "counts": {
             "fixed_and_merged": len(fixed_items),
+            "ungrounded_receipts": len(ungrounded_items),
             "healthy_no_issues": len(healthy_items),
             "cross_skill_relay": max(len(relay_items), len(relays_collected)),
             "observation_pool": len(obs_list),
@@ -8143,6 +8914,7 @@ def _add_common_source_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--telemetry-shards-dir", type=Path, default=None)
     p.add_argument("--isolated-fixtures", action="store_true", default=False, help="Treat custom --handoff-root as isolated test fixture mode and disable default home telemetry sources.")
     p.add_argument("--days", type=int, default=30)
+    p.add_argument("--summary", action="store_true", default=False, help="Bound output arrays for compact ACI consumption.")
     p.add_argument("--json", action="store_true", default=True)
 
 
@@ -8245,6 +9017,7 @@ def main(argv: list[str] | None = None) -> int:
             skill=ns.skill,
             aspect=ns.aspect,
             fast=ns.fast,
+            summary=ns.summary,
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
             copilot_sessions_dir=ns.copilot_sessions_dir,
@@ -8288,6 +9061,7 @@ def main(argv: list[str] | None = None) -> int:
             emit_briefs_dir=ns.emit_briefs,
             coupled_with=ns.coupled_with,
             relays=relays_list,
+            summary=ns.summary,
             warehouse_db=ns.warehouse_db,
             copilot_db=ns.copilot_db,
             copilot_sessions_dir=ns.copilot_sessions_dir,
@@ -8376,6 +9150,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--handoff-root", "--emit-briefs", "--handoff-dir", dest="handoff_root", type=Path, default=DEFAULT_HANDOFF_ROOT)
         p.add_argument("--skills", "--skill", dest="skills", default=None, help="Optional comma-separated skill list to roll up.")
         p.add_argument("--date", dest="target_date", default=None, help="Target date YYYY-MM-DD (default CST today).")
+        p.add_argument("--repo-root", type=Path, default=None, help="Optional git repository root to verify claimed commit SHAs.")
+        p.add_argument("--verify-grounding", action="store_true", default=False, help="Verify claimed FIXED_AND_MERGED SHAs against git history.")
         p.add_argument("--output", type=Path, default=None, help="Optional output JSON path.")
         p.add_argument("--markdown-output", type=Path, default=None, help="Optional markdown summary output path.")
         p.add_argument("--json", action="store_true", default=True)
@@ -8385,6 +9161,8 @@ def main(argv: list[str] | None = None) -> int:
             skills=ns.skills,
             target_date=ns.target_date,
             output_path=ns.output,
+            repo_root=ns.repo_root,
+            verify_grounding=ns.verify_grounding,
         )
         if ns.markdown_output is not None:
             ns.markdown_output.parent.mkdir(parents=True, exist_ok=True)
