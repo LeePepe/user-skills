@@ -149,6 +149,45 @@ class LinearBoardRetroLocksTests(unittest.TestCase):
         self.assertEqual(inp["title"], "Kept Title")
         self.assertEqual(inp["description"], "Kept Body")
 
+    def test_counter_case_token_pair_parsing_guards_subcommand_names_and_dash_values(self) -> None:
+        # 1) Pre-subcommand --title "sync" on `idea` must NOT be misidentified as `sync` subcommand
+        pre_sub = self._run_cli(
+            LINEAR_SYNC_WRAPPER,
+            ["--title", "sync", "idea", "--description", "ensure-goal", "--mode", "observe"],
+        )
+        self.assertEqual(pre_sub.returncode, 0, msg=pre_sub.stderr)
+        p1 = json.loads(pre_sub.stdout)
+        self.assertEqual(p1["planned_mutations"][0]["variables"]["input"]["title"], "sync")
+        self.assertEqual(p1["planned_mutations"][0]["variables"]["input"]["description"], "ensure-goal")
+
+        # 2) Bare dropped flag immediately before another `--flag` must NOT swallow `--mode`
+        bare_drop = self._run_cli(
+            LINEAR_SYNC_WRAPPER,
+            ["idea", "--title", "Test", "--milestone", "--mode", "observe"],
+        )
+        self.assertEqual(bare_drop.returncode, 0, msg=bare_drop.stderr)
+        p2 = json.loads(bare_drop.stdout)
+        self.assertEqual(p2["mode"], "observe")
+
+        # 3a) Flag value equal to `--milestone` or `---` (non-canonical dash text) is preserved verbatim and never drops `--mode observe`
+        dash_val = self._run_cli(
+            LINEAR_SYNC_WRAPPER,
+            ["update-issue", "--id", "TIA-463", "--description", "--milestone", "--title", "---", "--mode", "observe"],
+        )
+        self.assertEqual(dash_val.returncode, 0, msg=dash_val.stderr)
+        p3 = json.loads(dash_val.stdout)
+        self.assertEqual(p3["mode"], "observe")
+        inp3 = p3["planned_mutations"][0]["variables"]["input"]
+        self.assertEqual(inp3["description"], "--milestone")
+        self.assertEqual(inp3["title"], "---")
+
+        # 3b) Missing value before another known CLI flag (e.g. `idea --title --mode observe`) must STILL fail with exit=2
+        missing_val = self._run_cli(
+            LINEAR_SYNC_WRAPPER,
+            ["idea", "--title", "--mode", "observe"],
+        )
+        self.assertEqual(missing_val.returncode, 2)
+
     def test_counter_case_all_linear_board_clis_emit_self_disclosing_drawer_pointer_on_exit_2(self) -> None:
         for script in (LINEAR_SYNC_WRAPPER, DAILY_BRIEF, BOT_BRIDGE, BACKLOG_GROOMER, EMAIL_PIPELINE, ROOT_TRACKER):
             proc = self._run_cli(script, ["--definitely-invalid-flag-xyz"])
