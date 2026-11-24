@@ -1,0 +1,164 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-24",
+  "active_cases": [
+    {
+      "id": "AR-001",
+      "title": "Agent retro CLI exposes bounded five-layer commands",
+      "tags": [
+        "cli",
+        "contract"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "probe",
+        "triage",
+        "diagnose",
+        "emit-briefs",
+        "rollup",
+        "file-issue",
+        "setup-autopilot"
+      ]
+    },
+    {
+      "id": "AR-002",
+      "title": "Probe safely reports missing sources without synthetic health",
+      "tags": [
+        "probe",
+        "negative",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py probe --fast --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "agent-retro-probe/v1"
+      }
+    },
+    {
+      "id": "AR-003",
+      "title": "Unknown command emits a short self-disclosing pointer",
+      "tags": [
+        "cli",
+        "negative"
+      ],
+      "negative_cmd": "python3 skills/agent-retro/scripts/agent_retro.py unknown-command",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "agent-retro-playbook.md"
+      ]
+    },
+    {
+      "id": "AR-004",
+      "title": "Triage keeps an honest zero to three dispatch cap",
+      "tags": [
+        "triage",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py triage --pick-top 3 --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "m2_dispatch_plan.m2_coordinator_count": 1,
+        "m2_dispatch_plan.honest_cap": 3
+      }
+    },
+    {
+      "id": "AR-005",
+      "title": "Diagnosis reports no issue when the skill has no evidence",
+      "tags": [
+        "diagnose",
+        "negative",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py diagnose --skill definitely-not-observed --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "status": "HEALTHY_NO_ISSUES"
+      }
+    },
+    {
+      "id": "AR-006",
+      "title": "Rollup emits a verified Dual-Zone issue",
+      "tags": [
+        "rollup",
+        "issue-brief"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py rollup --issue-brief --date 2026-11-24 --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "issue_verified.ok": true
+      }
+    },
+    {
+      "id": "AR-007",
+      "title": "Autopilot is independent and dry-run by default",
+      "tags": [
+        "autopilot",
+        "negative",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py setup-autopilot --handoff-root skills/agent-retro --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "dry_run": true,
+        "skill_retro_schedule_untouched": true
+      }
+    },
+    {
+      "id": "AR-008",
+      "title": "Progressive disclosure is documented as healthy",
+      "tags": [
+        "progressive-disclosure",
+        "counter-case"
+      ],
+      "file": "skills/agent-retro/references/agent-retro-playbook.md",
+      "must_contain": [
+        "exit=1",
+        "exit=0",
+        "healthy",
+        "blind_spin_loop",
+        "Upstream"
+      ]
+    },
+    {
+      "id": "EV-001",
+      "title": "Self-tested agent-retro CLI help",
+      "tags": [
+        "cli",
+        "regression"
+      ],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "probe"
+      ],
+      "registered_at": "2026-11-24"
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "inspect multi-agent trajectory anomalies and attribute the first responsible skill",
+      "should_trigger": true
+    },
+    {
+      "query": "run a quick Xcode simulator build",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "review one skill contract drawer",
+      "should_trigger": false,
+      "near_miss_skill": "skill-contract"
+    },
+    {
+      "query": "check R10 receipts and handoff loss across agent sessions",
+      "should_trigger": true
+    }
+  ]
+}
