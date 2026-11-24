@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -17,6 +20,9 @@ DEFAULT_SMELLS_FILE = SKILL_DIR / "references" / "review-smells.json"
 TOP_K_SMELLS = 3
 MAX_ACTIVE_SMELLS = 15
 L1_REF_MAX_LINES = 160
+DISCOVERY_CACHE_DIR = Path(tempfile.gettempdir()) / "code-review-discovery-cache"
+DISCOVERY_CACHE_MAX_BYTES = 20 * 1024
+DISCOVERY_PREVIEW_LIMIT = 20
 EXCLUDED_DIRS = {
     ".git",
     ".build",
@@ -974,11 +980,97 @@ def resolve_pull_request_surface(
     return resolved_base, resolved_head
 
 
+def _script_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _status_porcelain_sha256(repo: Path) -> str:
+    status = git(repo, "status", "--porcelain=v1", "--untracked-files=all", strip=False)
+    diff = git(repo, "diff", "--binary", "HEAD", "--", strip=False)
+    untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z", strip=False)
+    digest = hashlib.sha256()
+    digest.update(status.encode("utf-8", errors="replace"))
+    digest.update(diff.encode("utf-8", errors="replace"))
+    for raw_path in untracked.split("\0"):
+        if not raw_path:
+            continue
+        path = repo / raw_path
+        digest.update(raw_path.encode("utf-8", errors="replace"))
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+    return digest.hexdigest()
+
+
+def _smells_mtime_ns(smells_path: Path) -> int:
+    try:
+        return smells_path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _discovery_cache_path(
+    repo: Path,
+    args_key: str,
+    head_sha: str,
+    base_sha: str,
+    status_sha: str,
+    smells_mtime_ns: int,
+) -> Path:
+    material = "\0".join(
+        (
+            _script_sha256(),
+            str(repo),
+            args_key,
+            head_sha,
+            base_sha,
+            status_sha,
+            str(smells_mtime_ns),
+        )
+    ).encode("utf-8")
+    return DISCOVERY_CACHE_DIR / f"{hashlib.sha256(material).hexdigest()}.json"
+
+
+def _read_discovery_cache(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _write_discovery_cache(path: Path, rendered: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(rendered, encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        return
+
+
+def _compact_discovery_result(result: dict[str, object]) -> dict[str, object]:
+    compacted = dict(result)
+    for key in ("changed_files", "unmapped_files", "commits"):
+        values = compacted.get(key)
+        if isinstance(values, list):
+            compacted[f"{key}_total"] = len(values)
+            compacted[key] = values[:DISCOVERY_PREVIEW_LIMIT]
+    return compacted
+
+
+def _render_discovery_result(result: dict[str, object], summary: bool = False) -> str:
+    rendered = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+    if summary or len(rendered.encode("utf-8")) > DISCOVERY_CACHE_MAX_BYTES:
+        rendered = json.dumps(_compact_discovery_result(result), indent=2, ensure_ascii=False) + "\n"
+    return rendered
+
+
 class _SelfDisclosingReviewParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"code-review discovery error: {message}\n"
-            "  Fix: run `python3 skills/code-review/scripts/discover_review_context.py [--repo <dir>] [--base <ref> | --range <base>..<head>] [--empty-ok] [--validate-findings <json|->] [--flow-map]`.\n"
+            "  Fix: run `python3 skills/code-review/scripts/discover_review_context.py [--repo <dir>] [--base <ref> | --range <base>..<head>] [--empty-ok] [--validate-findings <json|->] [--summary] [--flow-map]`.\n"
             "  Reference: skills/code-review/references/review-rubric.md · skills/code-review/references/output-contract.md · skills/code-review/references/reviewer-prompts.md\n"
         )
         raise SystemExit(2)
@@ -996,7 +1088,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--committed-only", action="store_true")
     parser.add_argument("--empty-ok", "--allow-empty", dest="empty_ok", action="store_true", help="Exit 0 with empty_surface=true when no changed files exist")
     parser.add_argument("--strict-non-empty", action="store_true", help="Disable HEAD~1 auto-fallback when HEAD == base_ref and fail on empty surface")
-    parser.add_argument("--validate-findings", dest="validate_findings", help="Validate review findings JSON file (or '-' for stdin) against output-contract.md")
+    parser.add_argument(
+        "--validate-findings",
+        "--findings",
+        "--findings-json",
+        dest="validate_findings",
+        help="Validate review findings JSON file, inline JSON, or '-' for stdin against output-contract.md",
+    )
+    parser.add_argument("--summary", "--compact", dest="summary", action="store_true", help="Bound discovery preview arrays and include totals")
+    parser.add_argument("--no-cache", action="store_true", help="Disable deterministic discovery result caching")
     parser.add_argument("--inconclusive", action="store_true", help="Mark findings validation verdict INCONCLUSIVE due to unpinned revision or missing authority")
     parser.add_argument("--schema-template", action="store_true", help="Emit output-contract.md finding schema and verdict mapping JSON")
     parser.add_argument("--json", action="store_true", help="Emit JSON output (default behavior)")
@@ -1022,8 +1122,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_findings is not None:
         raw_src = args.validate_findings.strip()
         try:
-            raw_text = sys.stdin.read() if raw_src == "-" else Path(raw_src).expanduser().read_text(encoding="utf-8")
-            parsed_findings = json.loads(raw_text)
+            if raw_src.startswith(("[", "{")):
+                parsed_findings = json.loads(raw_src)
+            else:
+                raw_text = sys.stdin.read() if raw_src == "-" else Path(raw_src).expanduser().read_text(encoding="utf-8")
+                parsed_findings = json.loads(raw_text)
         except OSError as exc:
             raise RuntimeError(f"cannot read findings file {raw_src}: {exc}") from exc
         except json.JSONDecodeError as exc:
@@ -1095,6 +1198,37 @@ def main(argv: list[str] | None = None) -> int:
             committed_only = True
 
     base_ref, merge_base = resolve_base(repo, requested_base, head_ref=head_ref, three_dot=three_dot)
+    cache_args = {
+        "base_ref": base_ref,
+        "base_arg": args.base,
+        "head_ref": head_ref,
+        "diff_range": args.diff_range,
+        "pr": args.pr,
+        "spec": args.spec,
+        "committed_only": committed_only,
+        "three_dot": three_dot,
+        "empty_ok": args.empty_ok,
+        "strict_non_empty": args.strict_non_empty,
+        "smells_file": str(smells_path),
+        "summary": args.summary,
+    }
+    cache_path: Path | None = None
+    if not args.no_cache:
+        head_sha = git(repo, "rev-parse", "--verify", f"{head_ref}^{{commit}}")
+        base_sha = git(repo, "rev-parse", "--verify", f"{base_ref}^{{commit}}")
+        cache_path = _discovery_cache_path(
+            repo,
+            json.dumps(cache_args, sort_keys=True, separators=(",", ":")),
+            head_sha,
+            base_sha,
+            _status_porcelain_sha256(repo),
+            _smells_mtime_ns(smells_path),
+        )
+        cached = _read_discovery_cache(cache_path)
+        if cached is not None:
+            sys.stdout.write(cached)
+            return 0
+
     changes = changed_files(repo, merge_base, committed_only, head_ref=head_ref, three_dot=three_dot)
     fallback_base: str | None = None
 
@@ -1153,8 +1287,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     if fallback_base is not None:
         result["fallback_base"] = fallback_base
-    json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
-    sys.stdout.write("\n")
+    rendered = _render_discovery_result(result, summary=args.summary)
+    sys.stdout.write(rendered)
+    if cache_path is not None:
+        _write_discovery_cache(cache_path, rendered)
     return 0
 
 

@@ -392,6 +392,61 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(bad_payload["verdict"], "INCONCLUSIVE")
         self.assertTrue(bad_payload["errors"])
 
+    def test_inline_findings_aliases_and_counter_cases(self) -> None:
+        root = self.make_repo()
+
+        for flag in ("--validate-findings", "--findings", "--findings-json"):
+            result = run("python3", str(SCRIPT), flag, "[]", cwd=root)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["verdict"], "PASS")
+
+        object_result = run("python3", str(SCRIPT), "--validate-findings", '{"findings": []}', cwd=root)
+        self.assertEqual(json.loads(object_result.stdout)["verdict"], "PASS")
+
+        for raw in ('[{"bad": 1}]', "{bad"):
+            malformed = run("python3", str(SCRIPT), "--validate-findings", raw, cwd=root, check=False)
+            self.assertEqual(malformed.returncode, 1)
+            malformed_payload = json.loads(malformed.stdout)
+            self.assertFalse(malformed_payload["ok"])
+            self.assertEqual(malformed_payload["verdict"], "INCONCLUSIVE")
+
+        missing = run(
+            "python3",
+            str(SCRIPT),
+            "--validate-findings",
+            "/nonexistent/path.json",
+            cwd=root,
+            check=False,
+        )
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("skills/code-review/references/output-contract.md", missing.stderr)
+        self.assertLessEqual(len(missing.stderr.splitlines()), 3)
+
+    def test_discovery_cache_hit_invalidation_and_summary_contract(self) -> None:
+        root = self.make_repo()
+        write(root, "AGENTS.md", "# Index\\n")
+        write(root, "app.py", "value = 1\\n")
+        self.commit(root, "base")
+        write(root, "app.py", "value = 2\\n")
+
+        first = run("python3", str(SCRIPT), "--base", "main", cwd=root)
+        second = run("python3", str(SCRIPT), "--base", "main", cwd=root)
+        self.assertEqual(first.stdout, second.stdout)
+        uncached = run("python3", str(SCRIPT), "--base", "main", "--no-cache", cwd=root)
+        self.assertEqual(first.stdout, uncached.stdout)
+
+        cache_dir = Path(tempfile.gettempdir()) / "code-review-discovery-cache"
+        cached_before_edit = set(cache_dir.glob("*.json"))
+        write(root, "app.py", "value = 3\\n")
+        run("python3", str(SCRIPT), "--base", "main", cwd=root)
+        cached_after_edit = set(cache_dir.glob("*.json"))
+        self.assertGreater(len(cached_after_edit), len(cached_before_edit))
+
+        summary = json.loads(run("python3", str(SCRIPT), "--base", "main", "--summary", cwd=root).stdout)
+        self.assertEqual(summary["changed_files_total"], 1)
+        self.assertEqual([item["path"] for item in summary["changed_files"]], ["app.py"])
+
     def test_pr_flag_resolves_pull_ref_and_fails_closed_when_unresolvable(self) -> None:
         root = self.make_repo()
         write(root, "AGENTS.md", "# Index\n")
