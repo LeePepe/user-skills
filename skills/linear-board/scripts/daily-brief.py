@@ -1344,8 +1344,18 @@ def _read_verification_input(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
+class _SelfDisclosingDailyBriefParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[daily-brief] CLI error: {message}\n"
+            "  Fix: run `python3 skills/linear-board/scripts/daily-brief.py --date today --dry-run`\n"
+            "  Reference: skills/linear-board/references/daily-brief-and-bot.md\n"
+        )
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = _SelfDisclosingDailyBriefParser()
     parser.add_argument("--date", default="today")
     parser.add_argument("--propose-linear", action="store_true")
     parser.add_argument("--publish-multica", action="store_true", help="Publish Dual-Zone Daily Brief to NAS Multica")

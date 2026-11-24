@@ -1,6 +1,6 @@
 {
   "name": "linear-board",
   "description": "TIA Idea Inbox、Global Goal Status Board、每日 05:00 Daily Brief（四桶与 Jev 顺推）、Linear @bot 双向桥接与 Project Root Tracker。",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "category": "workflow"
 }

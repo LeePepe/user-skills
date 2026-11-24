@@ -2559,8 +2559,18 @@ def _timeline_preview(timeline: Mapping[str, Any], root: Mapping[str, Any] | Non
     }
 
 
+class _SelfDisclosingRootTrackerParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[root_tracker] CLI error: {message}\n"
+            "  Fix: run `python3 skills/linear-board/scripts/root_tracker.py {collect,refresh,sync-teams-timeline} --help`\n"
+            "  Reference: skills/linear-board/references/daily-brief-and-bot.md\n"
+        )
+        raise SystemExit(2)
+
+
 def _cli() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _SelfDisclosingRootTrackerParser(description=__doc__)
     subs = parser.add_subparsers(dest="command", required=True)
 
     def add_timeline_args(command_parser: argparse.ArgumentParser) -> None:

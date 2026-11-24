@@ -1392,8 +1392,18 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", default=True)
 
 
+class _SelfDisclosingBacklogGroomerParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[backlog_groomer] CLI error: {message}\n"
+            "  Fix: run `python3 skills/linear-board/scripts/backlog_groomer.py {scan,groom,top3,loop-check} --help`\n"
+            "  Reference: skills/linear-board/references/daily-brief-and-bot.md\n"
+        )
+        raise SystemExit(2)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _SelfDisclosingBacklogGroomerParser(
         prog="backlog_groomer.py",
         description="Loop 3B: Backlog Grooming, Fingerprint Deduplication & Daily Top-3 Push Loop",
     )
