@@ -1353,7 +1353,13 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
         self.assertEqual(ver_info["skill"], "code-review")
         self.assertRegex(ver_info["skill_version"], r"^v\d+@[0-9a-f]{7,12}$")
         self.assertGreaterEqual(ver_info["commit_count"], 1)
-        self.assertEqual(ver_info["plugin_version"], "1.0.0")
+        plugin_manifest = ROOT / "skills/code-review/.claude-plugin/plugin.json"
+        plugin_version = str(json.loads(plugin_manifest.read_text(encoding="utf-8"))["version"])
+        self.assertRegex(
+            plugin_version,
+            r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
+        )
+        self.assertEqual(ver_info["plugin_version"], plugin_version)
 
         cli_ver = subprocess.run(
             [
