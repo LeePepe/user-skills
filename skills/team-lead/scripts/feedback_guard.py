@@ -656,12 +656,16 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
     )
     if combined_rm:
         raw_rm = combined_rm.group(1).strip()
-        if "/" in raw_rm:
-            role_part, model_part = raw_rm.split("/", 1)
-            if _is_populated_token(role_part):
-                has_role = True
-            if _is_populated_token(model_part):
-                has_model = True
+        if " / " in raw_rm:
+            role_part, model_part = re.split(r"\s+/\s+", raw_rm, maxsplit=1)
+        elif "/" in raw_rm:
+            role_part, model_part = raw_rm.rsplit("/", 1)
+        else:
+            role_part, model_part = "", ""
+        if _is_populated_token(role_part):
+            has_role = True
+        if _is_populated_token(model_part):
+            has_model = True
     if not has_role:
         role_only = re.search(
             r"(?im)^[\s>*-]*(?:\*\*)?(?:role|agent)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
@@ -774,20 +778,31 @@ M1_STEERING_ROLES = {
 
 def _receipt_role(receipt_text: str) -> str | None:
     match = re.search(
-        r"(?im)^\s*[>*-]*\s*(?:\*\*)?role\s*/\s*model(?:\*\*)?\s*[:|=-]\s*([^/\n]+)",
+        r"(?im)^\s*[>*-]*\s*(?:\*\*)?role\s*/\s*model(?:\*\*)?\s*[:|=-]\s*([^\n]+)",
         receipt_text,
     )
     if match:
-        return match.group(1).strip().lower()
+        raw_rm = match.group(1).strip()
+        if re.search(r"\s+/\s+", raw_rm):
+            role_part, _ = re.split(r"\s+/\s+", raw_rm, maxsplit=1)
+        elif "/" in raw_rm:
+            role_part, _ = raw_rm.rsplit("/", 1)
+        else:
+            role_part = raw_rm
+        return _clean_receipt_value(role_part).lower()
     match = re.search(r"(?im)^\s*[>*-]*\s*(?:\*\*)?role(?:\*\*)?\s*[:|=-]\s*([^\n]+)", receipt_text)
-    return match.group(1).strip().lower() if match else None
+    return _clean_receipt_value(match.group(1)).lower() if match else None
 
 
 def _normalize_shell_command(command: str) -> str:
     normalized = re.sub(r"\s+", " ", command.strip())
-    normalized = re.sub(r"\s*(?:—|--|:)\s*PASS\s*$", "", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\s+(?:\(\s*)?exit\s*=\s*0\s*(?:\))?\s*$", "", normalized, flags=re.IGNORECASE)
-    return normalized.strip().rstrip("`")
+    while True:
+        previous = normalized
+        normalized = re.sub(r"\s*(?:\(\s*)?exit\s*=\s*0\s*\)?\s*$", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s*(?:—|--|:)\s*(?:PASS|OK)\b\s*$", "", normalized, flags=re.IGNORECASE)
+        normalized = normalized.strip().strip("`").strip()
+        if normalized == previous:
+            return normalized
 
 
 def _receipt_verification_commands(receipt_text: str) -> list[str]:
@@ -828,21 +843,31 @@ def _event_command(event: Any) -> str:
 
 
 def _event_exit_code(event: Any) -> int | None:
-    for item in _event_values(event):
+    nested_values = _event_values(event)
+    for item in nested_values:
         if not isinstance(item, dict):
             continue
         for key, value in item.items():
-            if key.lower() in {"exitcode", "exit_code"} and isinstance(value, (int, float, str)):
+            if key.lower() in {"exitcode", "exit_code"} and not isinstance(value, bool):
                 try:
                     return int(value)
                 except (TypeError, ValueError):
                     pass
+
+    for item in nested_values:
+        if isinstance(item, str):
+            match = re.search(r"completed with exit code\s+(\d+)", item, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+    for item in nested_values:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
             if key.lower() == "success" and value is True:
                 return 0
-        text = json.dumps(item, ensure_ascii=False)
-        match = re.search(r"completed with exit code\s+(\d+)", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
+            if key.lower() == "success" and value is False:
+                return 1
     return None
 
 

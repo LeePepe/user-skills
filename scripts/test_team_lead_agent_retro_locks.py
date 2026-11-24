@@ -78,10 +78,12 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
         return json.loads(result.stdout), result
 
     def test_feedback_guard_budget_and_trace_positive_and_counter_cases(self) -> None:
-        root, brief, receipt, _ = self.fixture_repo(4, role="m1_tl")
-        report, result = self.run_guard(root, brief, receipt, "--actor-role", "m1_tl")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("m1_inline_file_budget_exceeded", {item["code"] for item in report["violations"]})
+        for role in ("m1_tl", "magpie/group/steering", "`group/steering`"):
+            root, brief, receipt, _ = self.fixture_repo(4, role=role)
+            actor_role = "m1_tl" if role == "m1_tl" else None
+            report, result = self.run_guard(root, brief, receipt, *(('--actor-role', actor_role) if actor_role else ()))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("m1_inline_file_budget_exceeded", {item["code"] for item in report["violations"]})
 
         root, brief, receipt, _ = self.fixture_repo(3, role="steering")
         report, result = self.run_guard(root, brief, receipt)
@@ -97,13 +99,14 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
         events = root / "events.jsonl"
         receipt.write_text(
             receipt.read_text(encoding="utf-8")
-            + "- python3 -m unittest scripts.test_case\n- ./scripts/verify\n",
+            + "- `python3 -I -B scripts/test_demo.py` — PASS (exit=0)\n"
+            + "- ./scripts/verify — PASS (exit=0)\n",
             encoding="utf-8",
         )
         events.write_text(
-            json.dumps({"data": {"type": "tool.execution_start", "toolCallId": "tool-call", "input": {"command": "python3 -m unittest scripts.test_case && ./scripts/verify"}}})
+            json.dumps({"data": {"type": "tool.execution_start", "toolCallId": "tool-call", "input": {"command": "python3 -I -B scripts/test_demo.py && ./scripts/verify"}}})
             + "\n"
-            + json.dumps({"data": {"type": "tool.execution_complete", "toolCallId": "tool-call", "result": {"exitCode": 1}}})
+            + json.dumps({"data": {"type": "tool.execution_complete", "toolCallId": "tool-call", "success": True, "result": {"exitCode": 1, "content": "<shellId: 1 completed with exit code 1>"}}})
             + "\n",
             encoding="utf-8",
         )
@@ -112,9 +115,9 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
         self.assertIn("ungrounded_receipt_verification", {item["code"] for item in report["violations"]})
 
         events.write_text(
-            json.dumps({"data": {"type": "tool.execution_start", "toolCallId": "tool-call", "input": {"command": "python3 -m unittest scripts.test_case && ./scripts/verify"}}})
+            json.dumps({"data": {"type": "tool.execution_start", "toolCallId": "tool-call", "input": {"command": "python3 -I -B scripts/test_demo.py && ./scripts/verify"}}})
             + "\n"
-            + json.dumps({"data": {"type": "tool.execution_complete", "toolCallId": "tool-call", "result": {"exitCode": 0}}})
+            + json.dumps({"data": {"type": "tool.execution_complete", "toolCallId": "tool-call", "success": True, "result": {"exitCode": 0, "content": "<shellId: 1 completed with exit code 0>"}}})
             + "\n",
             encoding="utf-8",
         )
