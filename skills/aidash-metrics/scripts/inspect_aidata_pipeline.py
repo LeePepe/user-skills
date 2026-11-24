@@ -300,15 +300,54 @@ def l1_counts(layers: dict[str, list[str]]) -> tuple[int, int]:
 
 
 def _truncate_lists(value: object, limit: int) -> object:
-    if isinstance(value, dict):
-        return {key: _truncate_lists(item, limit) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_truncate_lists(item, limit) for item in value[:limit]]
-    return value
+    """Bound only source-pointer arrays, never semantic contract arrays."""
+    if not isinstance(value, dict):
+        return value
+
+    compact = dict(value)
+    layers = value.get("layers")
+    if isinstance(layers, dict):
+        compact["layers"] = {
+            layer: list(paths[:limit]) if isinstance(paths, list) else paths
+            for layer, paths in layers.items()
+        }
+
+    sampling = value.get("sampling")
+    if isinstance(sampling, dict):
+        compact["sampling"] = dict(sampling)
+        pointers = sampling.get("limit_reached_shards")
+        if isinstance(pointers, list):
+            compact["sampling"]["limit_reached_shards"] = pointers[:limit]
+
+    metrics = value.get("metrics")
+    if isinstance(metrics, dict):
+        compact["metrics"] = {}
+        for metric_name, metric in metrics.items():
+            metric_copy = dict(metric)
+            coverage = metric.get("coverage")
+            if isinstance(coverage, dict):
+                metric_copy["coverage"] = {}
+                for layer, layer_coverage in coverage.items():
+                    coverage_copy = dict(layer_coverage)
+                    evidence = layer_coverage.get("evidence")
+                    if isinstance(evidence, list):
+                        ordered = sorted(
+                            evidence,
+                            key=lambda entry: (
+                                not entry.get("complete", False),
+                                entry.get("kind") != "observed",
+                                entry.get("path", ""),
+                                entry.get("table") or "",
+                            ),
+                        )
+                        coverage_copy["evidence"] = ordered[:limit]
+                    metric_copy["coverage"][layer] = coverage_copy
+            compact["metrics"][metric_name] = metric_copy
+    return compact
 
 
 def compact_result(result: dict, l1_total_count: int, l1_total_files: int) -> dict:
-    """Keep representative evidence while making the JSON summary bounded."""
+    """Keep representative source evidence while preserving metric contracts."""
     for limit in (16, 8, 4, 2, 1):
         compact = _truncate_lists(result, limit)
         assert isinstance(compact, dict)
@@ -317,16 +356,10 @@ def compact_result(result: dict, l1_total_count: int, l1_total_files: int) -> di
         encoded = json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
         if len(encoded) < MAX_JSON_BYTES:
             return compact
-    compact = _truncate_lists(result, 0)
+    compact = _truncate_lists(result, 1)
     assert isinstance(compact, dict)
     compact["l1_total_count"] = l1_total_count
     compact["l1_total_files"] = l1_total_files
-    compact["sampling"] = {"limit_reached_shards": [], "truncated": True}
-    compact["layers"] = {layer: [] for layer in ("l1", "l2", "l3", "l4", "l5")}
-    for metric in compact.get("metrics", {}).values():
-        metric["matches"] = []
-        for coverage in metric.get("coverage", {}).values():
-            coverage["evidence"] = []
     return compact
 
 
@@ -402,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
               "layers": layers, "metrics": evidence}
     if args.as_json:
         encoded = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        compact_json = False
         if len(encoded) > MAX_JSON_BYTES:
             l1_total_count, l1_total_files = l1_counts(layers)
             if args.full:
@@ -410,7 +444,11 @@ def main(argv: list[str] | None = None) -> int:
                 result["l1_total_files"] = l1_total_files
             else:
                 result = compact_result(result, l1_total_count, l1_total_files)
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+                compact_json = len(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")) >= MAX_JSON_BYTES
+        if compact_json:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(f"{status}: {result['reason']}")
         for metric, item in evidence.items():
