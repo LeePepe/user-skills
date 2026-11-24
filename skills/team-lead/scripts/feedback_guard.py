@@ -1183,12 +1183,122 @@ def run_pre_review_check(
     }
 
 
+def _feedback_cli_error(message: str, reference: str) -> int:
+    sys.stderr.write(
+        f"[feedback_guard] CLI error: {message}\n"
+        "  Fix: check the command arguments and rerun the subcommand with --help.\n"
+        f"  Reference: {reference}\n"
+    )
+    return 2
+
+
+def _run_diff_check(worktree: Path, base_ref: str | None, head_ref: str | None) -> tuple[dict[str, Any] | None, int]:
+    wt = worktree.expanduser()
+    if not wt.is_dir() or not (wt / ".git").exists():
+        return None, _feedback_cli_error(f"invalid git worktree: {wt}", "skills/team-lead/references/playbook.md")
+    command = ["git", "-C", str(wt), "--no-pager", "diff", "--check"]
+    if base_ref:
+        command.append(f"{base_ref}..{head_ref or 'HEAD'}")
+    elif head_ref and head_ref != "HEAD":
+        command.append(head_ref)
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0 and (
+        not output or any(line.lower().startswith(("fatal:", "error:", "usage:")) for line in output.splitlines())
+    ):
+        return None, _feedback_cli_error(output or "git diff --check failed", "skills/team-lead/references/playbook.md")
+    issues = [line for line in output.splitlines() if line.strip()]
+    payload = {
+        "ok": True,
+        "gate_tier": "soft_advisory_exit_0",
+        "clean": proc.returncode == 0,
+        "issue_count": len(issues),
+        "issues": issues,
+        "reference": "skills/team-lead/references/playbook.md",
+    }
+    return payload, 0
+
+
+def _receipt_summary(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    data: dict[str, Any] = {}
+    if path.suffix.lower() == ".json":
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = {}
+    sha_value = data.get("commit_sha") or data.get("head_sha") or data.get("sha")
+    role_value = data.get("role") or data.get("agent_role")
+    model_value = data.get("model") or data.get("resolved_model")
+    status_value = data.get("status")
+    sha_match = re.search(
+        r"(?im)^\s*[>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?\s*[:|=-]\s*([0-9a-f]{7,40})\b",
+        text,
+    )
+    status_match = re.search(r"(?im)^\s*[>*-]*(?:\*\*)?status(?:\*\*)?\s*[:|=-]\s*([^\n]+)", text)
+    model_match = re.search(r"(?im)^\s*[>*-]*(?:\*\*)?(?:resolved_model|model)(?:\*\*)?\s*[:|=-]\s*([^\n]+)", text)
+    sha = _clean_receipt_value(str(sha_value)) if sha_value else (sha_match.group(1) if sha_match else None)
+    role = _clean_receipt_value(str(role_value)).lower() if role_value else _receipt_role(text)
+    model = _clean_receipt_value(str(model_value)) if model_value else (_clean_receipt_value(model_match.group(1)) if model_match else None)
+    status = _clean_receipt_value(str(status_value)) if status_value else (_clean_receipt_value(status_match.group(1)) if status_match else None)
+    violations = validate_r10_receipt(text) if not data else []
+    if data:
+        if not sha or not re.fullmatch(r"[0-9a-f]{7,40}", sha, re.IGNORECASE):
+            violations.append("missing_receipt_commit_sha")
+        if not _is_populated_token(role or "") or not _is_populated_token(model or ""):
+            violations.append("missing_receipt_role_or_model")
+        if not _is_populated_token(status or ""):
+            violations.append("missing_receipt_status")
+    return {
+        "name": path.name,
+        "path": str(path),
+        "status": status,
+        "commit_sha": sha,
+        "role": role,
+        "model": model,
+        "valid": not violations,
+        "violations": violations,
+    }
+
+
+def _list_receipts(target: Path) -> tuple[dict[str, Any] | None, int]:
+    directory = target.expanduser()
+    if directory.is_dir() and directory.name != "receipts" and (directory / "receipts").is_dir():
+        directory = directory / "receipts"
+    if not directory.is_dir():
+        return None, _feedback_cli_error(f"receipt directory does not exist: {directory}", "skills/team-lead/references/ledger.md")
+    files = sorted(
+        path for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".md", ".json"}
+    )
+    receipts: list[dict[str, Any]] = []
+    for path in files:
+        try:
+            receipts.append(_receipt_summary(path))
+        except OSError as exc:
+            receipts.append({"name": path.name, "path": str(path), "valid": False, "violations": [str(exc)]})
+    return {
+        "ok": True,
+        "gate_tier": "soft_advisory_exit_0",
+        "receipt_count": len(receipts),
+        "receipts": receipts,
+        "reference": "skills/team-lead/references/ledger.md",
+    }, 0
+
+
 class _SelfDisclosingFeedbackGuardParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
+        reference = getattr(self, "feedback_reference", "skills/team-lead/references/eval-cases.json | skills/team-lead/references/playbook.md")
+        if "list-receipts" in self.prog or "inspect-receipts" in self.prog or "list-receipts" in sys.argv or "inspect-receipts" in sys.argv:
+            reference = "skills/team-lead/references/ledger.md"
+        elif "diff-check" in self.prog or "whitespace-check" in self.prog or "diff-check" in sys.argv or "whitespace-check" in sys.argv:
+            reference = "skills/team-lead/references/playbook.md"
         sys.stderr.write(
             f"[feedback_guard] CLI error: {message}\n"
-            "  Fix: run `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --help`\n"
-            "  Reference: skills/team-lead/references/eval-cases.json | skills/team-lead/references/playbook.md\n"
+            "  Fix: check the command arguments and rerun the subcommand with --help.\n"
+            f"  Reference: {reference}\n"
         )
         raise SystemExit(2)
 
@@ -1215,6 +1325,20 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--max-inline-files", type=int, default=3, help="Maximum files an M1/Steering actor may edit inline")
     p_pre.add_argument("--events-jsonl", "--trace-jsonl", dest="events_jsonl", type=Path, default=None, help="Optional events.jsonl trace for R10 verification grounding")
     p_pre.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True)")
+
+    p_diff = sub.add_parser("diff-check", aliases=["whitespace-check"], help="Report git whitespace/conflict issues as a soft advisory")
+    p_diff.feedback_reference = "skills/team-lead/references/playbook.md"
+    p_diff.add_argument("--worktree", "--cwd", "--dir", dest="worktree", type=Path, default=Path("."))
+    p_diff.add_argument("--base-ref", default=None)
+    p_diff.add_argument("--head-ref", "--head", dest="head_ref", default="HEAD")
+    p_diff.add_argument("--strict", action="store_true", help="Treat reported issues as exit 1")
+    p_diff.add_argument("--json", action="store_true", default=True)
+
+    p_receipts = sub.add_parser("list-receipts", aliases=["inspect-receipts"], help="List top-level R10 receipts as soft facts")
+    p_receipts.feedback_reference = "skills/team-lead/references/ledger.md"
+    p_receipts.add_argument("target", nargs="?", type=Path, default=None)
+    p_receipts.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", type=Path, default=None)
+    p_receipts.add_argument("--json", action="store_true", default=True)
     return parser
 
 
@@ -1234,6 +1358,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 1
+    if args.command in {"diff-check", "whitespace-check"}:
+        payload, code = _run_diff_check(args.worktree, args.base_ref, args.head_ref)
+        if payload is None:
+            return code
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1 if args.strict and not payload["clean"] else 0
+    if args.command in {"list-receipts", "inspect-receipts"}:
+        target = args.handoff_dir or args.target
+        if target is None:
+            return _feedback_cli_error("a receipt directory or --handoff-dir is required", "skills/team-lead/references/ledger.md")
+        payload, code = _list_receipts(target)
+        if payload is None:
+            return code
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
     return 2
 
 

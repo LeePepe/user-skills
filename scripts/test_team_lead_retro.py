@@ -1198,6 +1198,151 @@ sys.exit(1)
             self.assertIn("skills/team-lead/references/playbook.md", gc_bad.stderr)
             self.assertLessEqual(len(gc_bad.stderr.strip().splitlines()), 3)
 
+    def test_team_lead_role_defaults_and_goal_tl_inference_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handoff = root / "handoff" / "demo"
+            handoff.mkdir(parents=True)
+            (handoff / "spec.md").write_text("# Demo\n", encoding="utf-8")
+            (handoff / "ledger.md").write_text("# Ledger\n", encoding="utf-8")
+            worktrees = root / "worktrees"
+            worktrees.mkdir()
+            mock = root / "herdr"
+            mock.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "import sys\n"
+                "a = sys.argv[1:]\n"
+                "if a[:2] == ['workspace', 'create']:\n"
+                " print(json.dumps({'result': {'workspace': {'workspace_id': 'w9'}, 'root_pane': {'pane_id': 'w9:p'}}}))\n"
+                "elif a[:2] == ['pane', 'split']:\n"
+                " print(json.dumps({'result': {'pane': {'pane_id': 'w9:p'}}}))\n"
+                "elif a[:2] == ['agent', 'get']:\n"
+                " print(json.dumps({'interactive_ready': True, 'agent_status': 'working'}))\n"
+                "else:\n"
+                " print(json.dumps({'ok': True}))\n",
+                encoding="utf-8",
+            )
+            mock.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": "p0",
+                "HERDR_HANDOFF_ROOT": str(root / "handoff"),
+                "HERDR_WORKTREES_ROOT": str(worktrees),
+                "HERDR_MOCK_MAGPIE_ONLINE": "1",
+                "HERDR_PROMPT_IDLE_GRACE": "0",
+            }
+
+            inferred = subprocess.run(
+                [str(HERDR_DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "demo-goal-tl-r1"],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(inferred.returncode, 0, inferred.stderr)
+            inferred_payload = json.loads(inferred.stdout)
+            self.assertEqual(inferred_payload["resolved_kind"], "claude")
+            self.assertIn("inferred --cwd/--prompt", inferred.stderr)
+
+            for role, expected_kind, name in (("writer", "copilot", "demo-writer"), ("writer_escalated", "codex", "demo-writer-r2")):
+                result = subprocess.run(
+                    [str(HERDR_DISPATCH), "--new-workspace", "--role", role, "--name", name, "--cwd", str(root), "--prompt", "run"],
+                    cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["resolved_kind"], expected_kind)
+
+            missing_spec = subprocess.run(
+                [str(HERDR_DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "other-goal-goal-tl-r1"],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(missing_spec.returncode, 2)
+            self.assertLessEqual(len(missing_spec.stderr.strip().splitlines()), 3)
+            self.assertIn("skills/team-lead/references/bots-and-agents.md", missing_spec.stderr)
+
+            missing_both = subprocess.run(
+                [str(HERDR_DISPATCH), "--new-workspace", "--name", "demo"],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(missing_both.returncode, 2)
+            self.assertIn("--kind", missing_both.stderr)
+            self.assertLessEqual(len(missing_both.stderr.strip().splitlines()), 3)
+
+    def test_feedback_guard_soft_advisories_and_receipts_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wt = root / "repo"
+            wt.mkdir()
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            subprocess.run(["git", "init", "-q", str(wt)], env=env, check=True)
+            subprocess.run(["git", "-C", str(wt), "config", "user.name", "Bot"], env=env, check=True)
+            subprocess.run(["git", "-C", str(wt), "config", "user.email", "bot@example.com"], env=env, check=True)
+            (wt / "file.txt").write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(wt), "add", "file.txt"], env=env, check=True)
+            subprocess.run(["git", "-C", str(wt), "commit", "-qm", "init"], env=env, check=True)
+            (wt / "file.txt").write_text("dirty  \n", encoding="utf-8")
+            soft = subprocess.run(
+                [sys.executable, str(FEEDBACK_GUARD), "diff-check", "--worktree", str(wt)],
+                cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(soft.returncode, 0, soft.stderr)
+            self.assertFalse(json.loads(soft.stdout)["clean"])
+            strict = subprocess.run(
+                [sys.executable, str(FEEDBACK_GUARD), "diff-check", "--worktree", str(wt), "--strict"],
+                cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(strict.returncode, 1)
+            receipt_dir = root / "receipts"
+            receipt_dir.mkdir()
+            (receipt_dir / "writer.md").write_text(
+                "# R10\n- Commit SHA: abcdef1234567\n- Role: writer\n- Model: gpt-5.6-luna\n- V5 Verdict: PASS\n",
+                encoding="utf-8",
+            )
+            listed = subprocess.run(
+                [sys.executable, str(FEEDBACK_GUARD), "list-receipts", str(receipt_dir)],
+                cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(json.loads(listed.stdout)["receipt_count"], 1)
+            bad = subprocess.run(
+                [sys.executable, str(FEEDBACK_GUARD), "list-receipts", str(root / "missing")],
+                cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(bad.returncode, 2)
+            self.assertIn("skills/team-lead/references/ledger.md", bad.stderr)
+            self.assertLessEqual(len(bad.stderr.strip().splitlines()), 3)
+
+    def test_local_hygiene_cache_and_counter_case_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handoff = root / "handoff" / "demo"
+            handoff.mkdir(parents=True)
+            ledger = handoff / "ledger.md"
+            ledger.write_text("# Goal\n", encoding="utf-8")
+            for name in ("one", "two"):
+                repo = root / name
+                repo.mkdir()
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "-C", str(repo), "config", "user.name", "Bot"], check=True)
+                subprocess.run(["git", "-C", str(repo), "config", "user.email", "bot@example.com"], check=True)
+                (repo / "file.txt").write_text("ok\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
+                subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+            args = [sys.executable, str(REPO_ROOT / "skills/team-lead/scripts/local_hygiene_patrol.py"), "scan", "--dev-root", str(root), "--handoff-root", str(root / "handoff"), "--repos", "one,two"]
+            uncached = subprocess.run(args + ["--no-cache"], capture_output=True, text=True, check=False)
+            self.assertEqual(uncached.returncode, 0, uncached.stderr)
+            cached = subprocess.run(args, capture_output=True, text=True, check=False)
+            self.assertEqual(cached.returncode, 0, cached.stderr)
+            cached_repeat = subprocess.run(args, capture_output=True, text=True, check=False)
+            self.assertEqual(cached_repeat.returncode, 0, cached_repeat.stderr)
+            ledger.write_text("# Goal\nchanged\n", encoding="utf-8")
+            invalidated = subprocess.run(args, capture_output=True, text=True, check=False)
+            self.assertEqual(invalidated.returncode, 0, invalidated.stderr)
+            bad = subprocess.run(args + ["--unknown"], capture_output=True, text=True, check=False)
+            self.assertEqual(bad.returncode, 2)
+            self.assertIn("skills/team-lead/references/bots-and-agents.md", bad.stderr)
+            self.assertLessEqual(len(bad.stderr.strip().splitlines()), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -205,6 +205,38 @@ case "$ROLE" in
   writer-escalated|coding-escalated) ROLE="writer_escalated" ;;
 esac
 
+ORIGINAL_NAME="$NAME"
+case "$ROLE" in
+  team_lead|arbitration) [[ -n "$KIND" ]] || KIND="claude" ;;
+  writer_escalated|planner) [[ -n "$KIND" ]] || KIND="codex" ;;
+  writer|explorer|pr_monitor|mechanical|code_reviewer|planner_reviewer|designer|research_primary) [[ -n "$KIND" ]] || KIND="copilot" ;;
+  research_co) [[ -n "$KIND" ]] || KIND="cursor" ;;
+esac
+
+INFERRED_GOAL_CONTEXT=0
+if [[ "$ROLE" == "team_lead" && "$ORIGINAL_NAME" =~ ^([a-z0-9][a-z0-9_-]*)-goal-tl-r[0-9]+$ ]]; then
+  GOAL_NAME="${BASH_REMATCH[1]}"
+  HANDOFF_ROOT="${HERDR_HANDOFF_ROOT:-$HOME/Development/handoff}"
+  WORKTREES_ROOT="${HERDR_WORKTREES_ROOT:-$HOME/Development/worktrees}"
+  GOAL_HANDOFF_DIR="$HANDOFF_ROOT/$GOAL_NAME"
+  if [[ -f "$GOAL_HANDOFF_DIR/spec.md" ]]; then
+    if [[ -z "$CWD" ]]; then
+      if [[ -d "$WORKTREES_ROOT/$GOAL_NAME" ]]; then
+        CWD="$WORKTREES_ROOT/$GOAL_NAME"
+      else
+        CWD="$GOAL_HANDOFF_DIR"
+      fi
+    fi
+    if [[ -z "$PROMPT" ]]; then
+      PROMPT="Read $GOAL_HANDOFF_DIR/spec.md and $GOAL_HANDOFF_DIR/ledger.md; execute Goal $GOAL_NAME in $WORKTREES_ROOT/$GOAL_NAME per team-lead contract and write R10 receipts under $GOAL_HANDOFF_DIR/receipts/."
+    fi
+    INFERRED_GOAL_CONTEXT=1
+  fi
+fi
+if [[ "$INFERRED_GOAL_CONTEXT" -eq 1 ]]; then
+  printf '[herdr-dispatch] Advisory: inferred --cwd/--prompt from %s/spec.md. See skills/team-lead/references/bots-and-agents.md\n' "$GOAL_HANDOFF_DIR" >&2
+fi
+
 # Entry coordinators (normal CLI, Grok Bot local-exec-daemon, Cindy) launching a Goal Steering TL
 # outside a Herdr pane automatically bootstrap a background Herdr workspace.
 if [[ "$ROLE" == "team_lead" && -z "$TARGET_WORKSPACE_ID" && ( "${HERDR_ENV:-}" != "1" || -z "$SRC_PANE" ) ]]; then
@@ -223,11 +255,15 @@ if [[ "$NEW_WORKSPACE" -eq 0 && -z "$TARGET_WORKSPACE_ID" ]]; then
   fi
 fi
 
-if [[ -z "$NAME" || -z "$KIND" || -z "$CWD" || -z "$PROMPT" ]]; then
-  die_usage "--name, --kind, --cwd, and --prompt are required"
+missing_flags=()
+[[ -z "$NAME" ]] && missing_flags+=("--name")
+[[ -z "$KIND" ]] && missing_flags+=("--kind (or a known --role)")
+[[ -z "$CWD" ]] && missing_flags+=("--cwd")
+[[ -z "$PROMPT" ]] && missing_flags+=("--prompt")
+if [[ ${#missing_flags[@]} -gt 0 ]]; then
+  die_usage "missing required flag(s): ${missing_flags[*]}"
 fi
 
-ORIGINAL_NAME="$NAME"
 if [[ "${#NAME}" -gt 32 && "$NAME" =~ ^[a-z][a-z0-9_-]*$ ]]; then
   NAME_HASH="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()[:6])' "$ORIGINAL_NAME")"
   NAME_PREFIX="${ORIGINAL_NAME:0:25}"
@@ -516,6 +552,24 @@ PY
   fi
 fi
 
+magpie_health_online() {
+  local cache="/tmp/herdr-magpie-health.cache"
+  local ttl="${HERDR_MAGPIE_HEALTH_TTL_SEC:-10}"
+  local now mtime
+  now="$(date +%s)"
+  if [[ -f "$cache" ]]; then
+    mtime="$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null || printf '0')"
+    if [[ "$mtime" =~ ^[0-9]+$ ]] && (( now - mtime < ttl )); then
+      return 0
+    fi
+  fi
+  if curl -fsS --max-time 0.2 "${HERDR_MAGPIE_HEALTH_URL:-http://127.0.0.1:3425/api/hello}" >/dev/null 2>&1; then
+    : > "$cache"
+    return 0
+  fi
+  return 1
+}
+
 if [[ -n "$LOGICAL_GROUP" ]]; then
   ROLE_ROUTE=1
   if [[ "$KIND" == "claude" && "$GATEWAY_MODE" != "magpie" ]]; then
@@ -528,7 +582,7 @@ if [[ -n "$LOGICAL_GROUP" ]]; then
   else
     GATEWAY_ONLINE=0
     for _probe_attempt in 1 2 3 4; do
-      if curl -fsS --max-time 0.2 "${HERDR_MAGPIE_HEALTH_URL:-http://127.0.0.1:3425/api/hello}" >/dev/null 2>&1; then
+      if magpie_health_online; then
         GATEWAY_ONLINE=1
         break
       fi
