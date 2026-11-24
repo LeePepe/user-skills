@@ -1494,8 +1494,8 @@ def _ingest_warehouse_and_copilot_db(
                     if g_id and t_id:
                         grouped_tasks.setdefault((g_id, t_id), []).append(row)
 
-                converged_goal_tasks: set[tuple[str, str]] = set()
-                converged_goals: set[str] = set()
+                converged_goal_task_skills: set[tuple[str, str, str]] = set()
+                converged_goal_skills: set[tuple[str, str]] = set()
                 for (g_id, t_id), runs in grouped_tasks.items():
                     max_r = max(int(r.get("round_no") or 1) for r in runs)
                     passed_later = any(str(r.get("v5_verdict") or "").upper() in {"PASS", "CONCERNS", "WAIVED"} and int(r.get("round_no") or 1) >= 2 for r in runs)
@@ -1512,17 +1512,18 @@ def _ingest_warehouse_and_copilot_db(
                                 if tok:
                                     sk_set.add(_norm_skill(tok))
                     if max_r == 2 and passed_later:
-                        converged_goal_tasks.add((g_id, t_id))
-                        if g_id:
-                            converged_goals.add(g_id)
+                        for sk in sk_set:
+                            converged_goal_task_skills.add((g_id, t_id, sk))
+                            if g_id:
+                                converged_goal_skills.add((g_id, sk))
                         meta["r1_to_r2_converged_tasks"].append({"goal_id": g_id, "task_id": t_id, "skills": sorted(sk_set)})
                     elif still_failed_r3:
                         meta["directional_drift_tasks"].append({"goal_id": g_id, "task_id": t_id, "max_round": max_r, "skills": sorted(sk_set)})
                         for sk in sk_set:
                             bump_escape(sk, "impl_bug")
             else:
-                converged_goal_tasks = set()
-                converged_goals = set()
+                converged_goal_task_skills = set()
+                converged_goal_skills = set()
 
             if "fact_gtt_event" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_event")')]
@@ -1544,10 +1545,10 @@ def _ingest_warehouse_and_copilot_db(
                         for sk in sk_hits:
                             bump_escape(sk, "spec_gap")
                     elif evt == "REVIEW_FAIL":
-                        if (g_id, t_id) in converged_goal_tasks or (not t_id and g_id in converged_goals):
-                            continue
                         kind = "spec_gap" if "SPEC_GAP" in note.upper() else "impl_bug"
                         for sk in sk_hits:
+                            if (g_id, t_id, sk) in converged_goal_task_skills or (not t_id and (g_id, sk) in converged_goal_skills):
+                                continue
                             bump_escape(sk, kind)
 
     if _safe_is_file(copilot_db) and copilot_db is not None:
@@ -2900,8 +2901,11 @@ def _evaluate_session_progressive_and_preread(
             if not failed_calls:
                 continue
             validator_recovered = False
+            last_recovered_pass_seq = -1
             for idx_c, call_ev in enumerate(v_calls):
                 if call_ev.exit_code in (None, 0, 2):
+                    continue
+                if call_ev.seq < last_recovered_pass_seq:
                     continue
                 later_same_script = [
                     later
@@ -2914,12 +2918,13 @@ def _evaluate_session_progressive_and_preread(
                     )
                     if intervening_read_or_edit:
                         validator_recovered = True
+                        last_recovered_pass_seq = max(last_recovered_pass_seq, later_pass.seq)
                         break
-                if validator_recovered:
-                    break
             if validator_recovered:
                 prog_catches += 1
-            else:
+            last_fail_seq = max(c.seq for c in failed_calls)
+            has_pass_after_last_fail = any(c.exit_code == 0 and c.seq > last_fail_seq for c in v_calls)
+            if not has_pass_after_last_fail:
                 unresolved_failures += 1
 
     return prog_catches, wasted_sids, unresolved_failures
@@ -7440,6 +7445,8 @@ def _fast_telemetry_signals(
             return cur_ver, int(meta["last_modified_epoch"])
         return cur_ver, None
 
+    post_validator_events: dict[tuple[str, str, str], list[tuple[float, int, int, str]]] = {}
+    wh_row_seq = 0
     wh = warehouse_db if warehouse_db is not None else DEFAULT_WAREHOUSE_DB
     if _safe_is_file(wh) and wh is not None:
         with contextlib.suppress(sqlite3.Error, OSError), _safe_sqlite_connect(wh) as conn:
@@ -7458,12 +7465,12 @@ def _fast_telemetry_signals(
                 sid_col = next((c for c in ("session_id", "turn_uuid") if c in cols), None)
                 wh_pre2: dict[str, int] = {}
                 wh_post2: dict[str, int] = {}
-                wh_post_seq: dict[tuple[str, str, str], list[int]] = {}
                 sel_cols = ["skill", "exit_code"]
                 for opt_c in (ts_col, p_col, ver_col, dur_col, sid_col):
                     if opt_c:
                         sel_cols.append(f'"{opt_c}"')
                 for row_vals in conn.execute(f'SELECT {", ".join(sel_cols)} FROM "{sc_tbl}"'):
+                    wh_row_seq += 1
                     row_map = dict(zip([c.strip('"') for c in sel_cols], row_vals))
                     sk = _norm_skill(str(row_map.get("skill") or ""))
                     if sk not in out:
@@ -7493,22 +7500,13 @@ def _fast_telemetry_signals(
                     )
                     sid_val = str(row_map.get(sid_col) or "wh-default") if sid_col else "wh-default"
                     if is_post and ec != 2:
-                        wh_post_seq.setdefault((sk, sid_val, sc_rel_key), []).append(ec)
+                        ts_num = ts_val.timestamp() if ts_val is not None else float(wh_row_seq)
+                        post_validator_events.setdefault((sk, sid_val, sc_rel_key), []).append((ts_num, wh_row_seq, ec, "wh"))
                     if ec == 2:
                         if is_post:
                             wh_post2[sk] = wh_post2.get(sk, 0) + 1
                         else:
                             wh_pre2[sk] = wh_pre2.get(sk, 0) + 1
-                for (sk, _, _), seq_ecs in wh_post_seq.items():
-                    has_fail = any(c != 0 for c in seq_ecs)
-                    if not has_fail:
-                        continue
-                    last_fail_idx = max(i for i, c in enumerate(seq_ecs) if c != 0)
-                    recovered = any(c == 0 for c in seq_ecs[last_fail_idx + 1 :])
-                    if recovered:
-                        out[sk]["progressive_catch_count"] += 1
-                    else:
-                        out[sk]["domain_failures"] += 1
                 for sk, cnt in wh_post2.items():
                     out[sk]["l2_exit2_roadblocks"] = max(out[sk]["l2_exit2_roadblocks"], cnt)
                     out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
@@ -7528,8 +7526,8 @@ def _fast_telemetry_signals(
                     norm_pair = _normalize_ref_rel(str(raw_p))
                     rel_ref = norm_pair[1] if norm_pair else (str(raw_p) if str(raw_p).startswith("references/") else f"references/{Path(str(raw_p)).name}")
                     out[sk]["ref_hit_drawers"].add(rel_ref)
-            converged_goal_tasks: set[tuple[str, str]] = set()
-            converged_goals: set[str] = set()
+            converged_goal_task_skills: set[tuple[str, str, str]] = set()
+            converged_goal_skills: set[tuple[str, str]] = set()
             if "fact_gtt_task_run" in tables:
                 t_cols = [r[1] for r in conn.execute('PRAGMA table_info("fact_gtt_task_run")')]
                 grouped_runs: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -7564,9 +7562,9 @@ def _fast_telemetry_signals(
                         if sk not in out:
                             continue
                         if max_r == 2 and passed_later:
-                            converged_goal_tasks.add((g_id, t_id))
+                            converged_goal_task_skills.add((g_id, t_id, sk))
                             if g_id:
-                                converged_goals.add(g_id)
+                                converged_goal_skills.add((g_id, sk))
                             out[sk]["r1_to_r2_converged_count"] += 1
                         elif still_failed_r3:
                             out[sk]["l0_directional_drifts"] += 1
@@ -7598,7 +7596,7 @@ def _fast_telemetry_signals(
                             out[sk]["skill_escapes"] += 1
                             out[sk]["domain_failures"] += 1
                         elif evt == "REVIEW_FAIL":
-                            if (g_id, t_id) in converged_goal_tasks or (not t_id and g_id in converged_goals):
+                            if (g_id, t_id, sk) in converged_goal_task_skills or (not t_id and (g_id, sk) in converged_goal_skills):
                                 continue
                             out[sk]["skill_escapes"] += 1
                             out[sk]["domain_failures"] += 1
@@ -7607,9 +7605,8 @@ def _fast_telemetry_signals(
     if _is_safe_local_file(u_path) and u_path is not None:
         u_pre_exit2: dict[str, int] = {}
         u_post_exit2: dict[str, int] = {}
-        u_fail: dict[str, int] = {}
         raw_u = _safe_read_text(u_path)
-        for line in raw_u.splitlines():
+        for idx_u, line in enumerate(raw_u.splitlines(), 1):
             if '"script_call"' not in line and '"reference_hit"' not in line:
                 continue
             with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
@@ -7627,20 +7624,27 @@ def _fast_telemetry_signals(
                     ec_raw = rec.get("exit_code")
                     if ec_raw not in (None, ""):
                         ec = int(ec_raw)
-                        cur_ver, wm_epoch = _resolve_script_watermark(sk, str(rec.get("script_path") or ""))
+                        raw_sc = str(rec.get("script_path") or "scripts/unknown.py")
+                        m_sc_u = _SKILL_SCRIPT_RE.search(raw_sc)
+                        sc_rel_u = f"scripts/{m_sc_u.group('script').lstrip('/')}" if m_sc_u else (raw_sc if raw_sc.startswith("scripts/") else f"scripts/{Path(raw_sc).name}")
+                        cur_ver, wm_epoch = _resolve_script_watermark(sk, raw_sc)
                         is_post = _is_call_post_fix(
                             ts,
                             str(rec.get("skill_version") or "").strip() or None,
                             current_skill_version=cur_ver,
                             watermark_epoch=wm_epoch,
                         )
+                        sid_u = str(rec.get("session_id") or "usage-default").strip() or "usage-default"
+                        if is_post and ec != 2:
+                            ts_num_u = ts.timestamp() if ts is not None else float(1_000_000 + idx_u)
+                            post_validator_events.setdefault((sk, sid_u, sc_rel_u), []).append(
+                                (ts_num_u, 1_000_000 + idx_u, ec, "usage")
+                            )
                         if ec == 2:
                             if is_post:
                                 u_post_exit2[sk] = u_post_exit2.get(sk, 0) + 1
                             else:
                                 u_pre_exit2[sk] = u_pre_exit2.get(sk, 0) + 1
-                        elif ec != 0 and is_post:
-                            u_fail[sk] = u_fail.get(sk, 0) + 1
                 elif kind == "reference_hit":
                     rp = str(rec.get("reference_path") or "")
                     if rp:
@@ -7652,8 +7656,6 @@ def _fast_telemetry_signals(
             out[sk]["l2_exit2_post_fix"] = max(out[sk]["l2_exit2_post_fix"], cnt)
         for sk, cnt in u_pre_exit2.items():
             out[sk]["l2_exit2_pre_fix"] = max(out[sk]["l2_exit2_pre_fix"], cnt)
-        for sk, cnt in u_fail.items():
-            out[sk]["domain_failures"] = max(out[sk]["domain_failures"], cnt)
 
     roi_path = roi_snapshot_path if roi_snapshot_path is not None else DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH
     if _is_safe_local_file(roi_path) and roi_path is not None:
@@ -7768,6 +7770,7 @@ def _fast_telemetry_signals(
                         pending_idx += 1
 
     # Sample bounded recent copilot sessions (<=12 most recent events.jsonl) on the fast path
+    sampled_sids: set[str] = set()
     sess_dir = copilot_sessions_dir if copilot_sessions_dir is not None else DEFAULT_COPILOT_SESSIONS_DIR
     if _probe_readable_dir(sess_dir) and sess_dir is not None:
         basename_to_targets: dict[str, list[tuple[str, str]]] = {}
@@ -7782,6 +7785,7 @@ def _fast_telemetry_signals(
             basename_to_targets=basename_to_targets,
             max_sessions=12,
         )
+        sampled_sids = set(sampled_obs.keys())
         all_sampled = list(sampled_obs.values())
         for sk_n in inv:
             loaded_for_sk = [
@@ -7817,6 +7821,34 @@ def _fast_telemetry_signals(
                             if _is_call_post_fix(c.ts, c.skill_version, current_skill_version=cur_ver, watermark_epoch=wm_epoch):
                                 out[sk_n]["l2_exit2_roadblocks"] = max(out[sk_n]["l2_exit2_roadblocks"], 1)
                                 out[sk_n]["l2_exit2_post_fix"] = max(out[sk_n]["l2_exit2_post_fix"], 1)
+
+    # Reconcile non-sampled warehouse/usage.jsonl validator sequences chronologically by (ts_epoch, row_seq)
+    for (sk, sid_v, _), ev_items in post_validator_events.items():
+        if sid_v in sampled_sids:
+            continue
+        ordered_evs = sorted(ev_items, key=lambda item: (item[0], item[1]))
+        # Deduplicate overlapping wh + usage records with identical timestamp & exit_code
+        dedup_ecs: list[int] = []
+        prev_key: tuple[float, int] | None = None
+        for ts_num, _, ec_v, _ in ordered_evs:
+            cur_k = (round(ts_num, 3), ec_v)
+            if cur_k == prev_key:
+                continue
+            prev_key = cur_k
+            dedup_ecs.append(ec_v)
+        fail_indices = [i for i, ec_v in enumerate(dedup_ecs) if ec_v != 0]
+        if not fail_indices:
+            continue
+        recovered_any = any(
+            any(ec_later == 0 for ec_later in dedup_ecs[f_idx + 1 :])
+            for f_idx in fail_indices
+        )
+        last_fail_idx = max(fail_indices)
+        terminal_unresolved = not any(ec_later == 0 for ec_later in dedup_ecs[last_fail_idx + 1 :])
+        if recovered_any:
+            out[sk]["progressive_catch_count"] += 1
+        if terminal_unresolved:
+            out[sk]["domain_failures"] += 1
 
     for sk, s_data in out.items():
         durs = s_data.pop("_script_durations", [])

@@ -278,16 +278,46 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     ],
                 )
                 # Matching R1 REVIEW_FAIL event on a converged task (g-conv, T1) must NOT be penalized as an escape!
-                conn.execute(
+                # Goal-level REVIEW_FAIL with empty task_id on `g-conv`:
+                # - for `healthy-skill` (which converged in g-conv/T1): exempted
+                # - for `noisy-skill` (which did NOT converge in g-conv): MUST NOT be exempted! (Counter-Case R2-F4)
+                conn.executemany(
                     "INSERT INTO fact_gtt_event VALUES (?, ?, ?, ?, ?)",
-                    ("g-conv", "T1", "REVIEW_FAIL", "[IMPL_BUG] skills/healthy-skill/SKILL.md R1 finding resolved in R2", day_str),
+                    [
+                        ("g-conv", "T1", "REVIEW_FAIL", "[IMPL_BUG] skills/healthy-skill/SKILL.md R1 finding resolved in R2", day_str),
+                        ("g-conv", "", "REVIEW_FAIL", "[IMPL_BUG] skills/healthy-skill/SKILL.md goal-level R1 note", day_str),
+                        ("g-conv", "", "REVIEW_FAIL", "[SPEC_GAP] skills/noisy-skill/SKILL.md unresolved goal-level escape", day_str),
+                    ],
                 )
                 conn.commit()
 
-            # Deep probe with custom sources
+            # Overlapping usage.jsonl with the same `sess-healthy-1` exit=1 -> exit=0 sequence (Counter-Case R2-F1)
+            usage_jsonl = root / "usage.jsonl"
+            usage_rows = [
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-healthy-1",
+                    "ts": (now + timedelta(seconds=2)).isoformat(),
+                    "skill": "healthy-skill",
+                    "script_path": "skills/healthy-skill/scripts/check_tool.py",
+                    "exit_code": 1,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-healthy-1",
+                    "ts": (now + timedelta(seconds=8)).isoformat(),
+                    "skill": "healthy-skill",
+                    "script_path": "skills/healthy-skill/scripts/check_tool.py",
+                    "exit_code": 0,
+                },
+            ]
+            usage_jsonl.write_text("\n".join(json.dumps(r) for r in usage_rows) + "\n", encoding="utf-8")
+
+            # Deep probe with custom sources (including overlapping usage.jsonl)
             probe_res = SKILL_RETRO.probe_skills(
                 warehouse_db=warehouse_db,
                 copilot_sessions_dir=sessions_dir,
+                usage_jsonl=usage_jsonl,
                 handoff_root=handoff_root,
                 skills_root=skills_root,
                 dev_root=dev_root,
@@ -296,7 +326,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             by_sk = {s["skill"]: s for s in probe_res["skills"]}
 
             # Positive Case: `healthy-skill` has progressive_catch_count=1 and healthy_r1_to_r2_convergences=1,
-            # 0 directional drifts (even with R2-only failure and R1 REVIEW_FAIL on converged task), and 0 penalty!
+            # 0 directional drifts, 0 escapes, 0 domain_failures, and 0 penalty!
             h_sig = by_sk["healthy-skill"]["signals"]
             self.assertEqual(h_sig["progressive_catch_count"], 1)
             self.assertEqual(h_sig["healthy_r1_to_r2_convergences"], 1)
@@ -306,19 +336,21 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertEqual(h_sig["wasted_preread_rate"], 0.0)
             self.assertEqual(by_sk["healthy-skill"]["priority_score"], 0.0)
 
-            # Counter-Case: `noisy-skill` has r3+ drift, wasted_preread_rate=1.0, and unwired drawer (`unwired-rules.md`)
+            # Counter-Case: `noisy-skill` has r3+ drift, wasted_preread_rate=1.0, unwired drawer (`unwired-rules.md`),
+            # and its goal-level REVIEW_FAIL on `g-conv` was NOT suppressed by `healthy-skill`'s convergence (skill_escapes=2)!
             n_sig = by_sk["noisy-skill"]["signals"]
             self.assertEqual(n_sig["l0_directional_drifts"], 1)
+            self.assertEqual(n_sig["skill_escapes"], 2)
             self.assertEqual(n_sig["wasted_preread_sessions"], 1)
             self.assertEqual(n_sig["wasted_preread_rate"], 1.0)
             self.assertGreaterEqual(n_sig["l1_unwired_drawers"], 1)
             self.assertGreater(by_sk["noisy-skill"]["priority_score"], 0.0)
 
-            # Canonical Fast-Path (`fast=True` without explicit source overrides) must also compute runtime signals
+            # Canonical Fast-Path (`fast=True` without explicit source overrides, with real overlapping usage_jsonl)
             with (
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", warehouse_db),
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
-                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", root / "none.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", usage_jsonl),
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
                 unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
             ):
@@ -330,12 +362,14 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 )
                 fast_by_sk = {s["skill"]: s for s in fast_canonical["skills"]}
                 self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["progressive_catch_count"], 1)
+                self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["domain_failures"], 0)
                 self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["l1_unwired_drawers"], 0)
                 self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["l0_directional_drifts"], 0)
                 self.assertEqual(fast_by_sk["healthy-skill"]["priority_score"], 0.0)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_sessions"], 1)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_rate"], 1.0)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["l0_directional_drifts"], 1)
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["skill_escapes"], 2)
 
     def test_validator_specific_recovery_and_sequence_ordered_downstream_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -464,6 +498,62 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             ]
             (sb_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sb_evs) + "\n", encoding="utf-8")
 
+            # Session C (Counter-Case R2-F3): same validator (`lint.py`) recovers once (`exit=1 -> read -> exit=0`),
+            # then fails 3 times in a terminal blind spin loop (`exit=1, exit=1, exit=1`).
+            # Must record BOTH the earlier positive catch AND the terminal unresolved failure!
+            sc_dir = sessions_dir / "sess-same-validator-terminal-fail"
+            sc_dir.mkdir(parents=True, exist_ok=True)
+            sc_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "validator-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=2)).isoformat(),
+                    "data": {"toolCallId": "c1", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=3)).isoformat(),
+                    "data": {"toolCallId": "c1", "shellExecution": {"exitCode": 1}, "result": {"content": "fail 1"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=4)).isoformat(),
+                    "data": {"toolCallId": "c2", "toolName": "view", "arguments": {"path": "skills/validator-skill/references/fix-lint.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "data": {"toolCallId": "c2", "result": {"content": "doc"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=6)).isoformat(),
+                    "data": {"toolCallId": "c3", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=7)).isoformat(),
+                    "data": {"toolCallId": "c3", "shellExecution": {"exitCode": 0}, "result": {"content": "pass"}},
+                },
+            ]
+            for spin_i in range(1, 4):
+                sc_evs.extend(
+                    [
+                        {
+                            "type": "tool.execution_start",
+                            "timestamp": (now + timedelta(seconds=10 + spin_i * 2)).isoformat(),
+                            "data": {"toolCallId": f"cs-{spin_i}", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                        },
+                        {
+                            "type": "tool.execution_complete",
+                            "timestamp": (now + timedelta(seconds=11 + spin_i * 2)).isoformat(),
+                            "data": {"toolCallId": f"cs-{spin_i}", "shellExecution": {"exitCode": 1}, "result": {"content": "terminal fail"}},
+                        },
+                    ]
+                )
+            (sc_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sc_evs) + "\n", encoding="utf-8")
+
             probe_v = SKILL_RETRO.probe_skills(
                 skill="validator-skill",
                 copilot_sessions_dir=sessions_dir,
@@ -473,15 +563,15 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 fast=False,
             )
             vsig = probe_v["skills"][0]["signals"]
-            # Only Session B's lint.py recovery counts as progressive_catch_count (1, not 2)
-            self.assertEqual(vsig["progressive_catch_count"], 1)
-            # Both Session A's lint.py and Session B's sec_check.py remain unresolved domain_failures (2)
-            self.assertEqual(vsig["domain_failures"], 2)
+            # Session B's lint.py recovery + Session C's early lint.py recovery = 2 progressive catches
+            self.assertEqual(vsig["progressive_catch_count"], 2)
+            # Session A's lint.py + Session B's sec_check.py + Session C's terminal lint.py failure = 3 unresolved domain_failures
+            self.assertEqual(vsig["domain_failures"], 3)
             # `unwired-sec.md` is flagged as unwired because unresolved domain_failures > 0
             self.assertEqual(vsig["l1_unwired_drawers"], 1)
-            # Session B's trailing read after all actions is caught as wasted_preread_sessions=1
+            # Session B's trailing read after all actions is caught as wasted_preread_sessions=1 across 3 sessions
             self.assertEqual(vsig["wasted_preread_sessions"], 1)
-            self.assertEqual(vsig["wasted_preread_rate"], 0.5)
+            self.assertAlmostEqual(vsig["wasted_preread_rate"], 0.3333, places=3)
 
     def test_direct_warehouse_db_fast_probe_and_domain_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -504,7 +594,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             day_str = now.date().isoformat()
             with contextlib.closing(sqlite3.connect(warehouse_db)) as conn:
                 conn.execute(
-                    "CREATE TABLE script_call (skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, ts TEXT)"
+                    "CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, ts TEXT)"
                 )
                 conn.execute(
                     "CREATE TABLE reference_hits (skill TEXT, reference_path TEXT, ts TEXT)"
@@ -516,11 +606,11 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     "CREATE TABLE fact_gtt_event (goal_id TEXT, task_id TEXT, evt_type TEXT, note_preview TEXT, cst_day TEXT)"
                 )
                 conn.executemany(
-                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?, ?)",
                     [
-                        ("codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 120.0, now.isoformat()),
-                        ("codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 240.0, now.isoformat()),
-                        ("codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 480.0, now.isoformat()),
+                        ("s-1", "codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 120.0, now.isoformat()),
+                        ("s-2", "codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 240.0, now.isoformat()),
+                        ("s-3", "codebase-design", "skills/codebase-design/scripts/audit_design.py", 0, 480.0, now.isoformat()),
                     ],
                 )
                 conn.execute(
@@ -529,10 +619,31 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 )
                 conn.commit()
 
+            _write_skill_pkg(
+                skills_root,
+                "out-of-order-wh-skill",
+                scripts={"check.py": "#!/usr/bin/env python3\n"},
+            )
+            with contextlib.closing(sqlite3.connect(warehouse_db)) as conn:
+                # Counter-Case R2-F2: Insert LATER pass row first and EARLIER fail row second (out-of-order ingestion).
+                # Chronologically (by ts): t+2s fail (exit=1) -> t+10s pass (exit=0) -> recovered!
+                # And for `s-unres`: insert EARLIER pass row second and LATER fail row first -> chronologically terminal fail!
+                conn.executemany(
+                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        ("s-rec", "out-of-order-wh-skill", "skills/out-of-order-wh-skill/scripts/check.py", 0, 50.0, (now + timedelta(seconds=10)).isoformat()),
+                        ("s-rec", "out-of-order-wh-skill", "skills/out-of-order-wh-skill/scripts/check.py", 1, 50.0, (now + timedelta(seconds=2)).isoformat()),
+                        ("s-unres", "out-of-order-wh-skill", "skills/out-of-order-wh-skill/scripts/check.py", 1, 50.0, (now + timedelta(seconds=20)).isoformat()),
+                        ("s-unres", "out-of-order-wh-skill", "skills/out-of-order-wh-skill/scripts/check.py", 0, 50.0, (now + timedelta(seconds=5)).isoformat()),
+                    ],
+                )
+                conn.commit()
+
             inv = SKILL_RETRO._discover_skill_inventory(skills_root, dev_root)
             fast_sig = SKILL_RETRO._fast_telemetry_signals(
                 inv=inv,
                 warehouse_db=warehouse_db,
+                copilot_sessions_dir=root / "nonexistent-sessions",
                 usage_jsonl=root / "nonexistent-usage.jsonl",
                 proposals_path=root / "nonexistent-proposals.jsonl",
                 roi_snapshot_path=root / "nonexistent-roi.json",
@@ -544,6 +655,10 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertEqual(cd_sig["l2_leaky_rubber_stamps"], 1)
             self.assertEqual(cd_sig["rubber_stamp_escapes"], 1)
             self.assertGreaterEqual(cd_sig["domain_failures"], 1)
+
+            ooo_sig = fast_sig["out-of-order-wh-skill"]
+            self.assertEqual(ooo_sig["progressive_catch_count"], 1)
+            self.assertEqual(ooo_sig["domain_failures"], 1)
 
             # Verify expanded _DOMAIN_HINTS covers newly added repo skills
             hint_skills = {sk for sk, _ in SKILL_RETRO._DOMAIN_HINTS}
@@ -659,6 +774,24 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     "type": "tool.execution_start",
                     "timestamp": (now + timedelta(seconds=4)).isoformat(),
                     "data": {
+                        "toolCallId": "b-spill",
+                        "toolName": "bash",
+                        "arguments": {"command": "python3 skills/drifted-cli-skill/scripts/tool.py check --strict"},
+                    },
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "data": {
+                        "toolCallId": "b-spill",
+                        "shellExecution": {"exitCode": 0},
+                        "result": {"content": "Output too large to read at once (48 KB). Saved to temp file."},
+                    },
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=6)).isoformat(),
+                    "data": {
                         "toolCallId": "b-compact",
                         "toolName": "bash",
                         "arguments": {"command": "python3 skills/clean-cli-skill/scripts/tool.py check --strict"},
@@ -666,7 +799,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 },
                 {
                     "type": "tool.execution_complete",
-                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "timestamp": (now + timedelta(seconds=7)).isoformat(),
                     "data": {"toolCallId": "b-compact", "shellExecution": {"exitCode": 0}, "result": {"content": "ok"}},
                 },
             ]
@@ -681,10 +814,28 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 summary=True,
             )
             by_sk = {s["skill"]: s for s in probe_out["skills"]}
-            self.assertEqual(by_sk["drifted-cli-skill"]["signals"]["aci_output_bloat_count"], 1)
+            self.assertEqual(by_sk["drifted-cli-skill"]["signals"]["aci_output_bloat_count"], 2)
             self.assertGreaterEqual(by_sk["drifted-cli-skill"]["signals"]["internal_doc_cli_drift_count"], 3)
             self.assertGreaterEqual(by_sk["drifted-cli-skill"]["signals"]["internal_broken_refs_count"], 2)
             self.assertEqual(by_sk["clean-cli-skill"]["signals"]["aci_output_bloat_count"], 0)
+
+            # Verify canonical fast-path (`fast=True` without explicit source overrides) also detects ACI output bloat
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", root / "none.db"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", root / "none.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
+            ):
+                fast_bloat = SKILL_RETRO.probe_skills(
+                    handoff_root=handoff_root,
+                    skills_root=skills_root,
+                    dev_root=dev_root,
+                    fast=True,
+                    summary=True,
+                )
+                fast_bloat_by_sk = {s["skill"]: s for s in fast_bloat["skills"]}
+                self.assertEqual(fast_bloat_by_sk["drifted-cli-skill"]["signals"]["aci_output_bloat_count"], 2)
 
     def test_s4_eval_counter_case_ratio_escape_gap_and_rollup_receipt_grounding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -805,13 +956,14 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertIn("missing_commit_or_merge_sha", by_rec["missing-sha-skill"]["grounding_issues"])
             self.assertIn("missing_pr_reference", by_rec["missing-sha-skill"]["grounding_issues"])
 
-            # Counter-Case F6: `verify_grounding=True` without `--repo-root` (or with invalid repo_root)
-            # must fail closed on a fabricated SHA rather than silently skipping git verification!
-            rollup_no_repo_arg = SKILL_RETRO.rollup_m1_retro_receipts(
-                handoff_root=handoff_root,
-                skills=["fabricated-skill"],
-                verify_grounding=True,
-            )
+            # Counter-Case F6: `verify_grounding=True` without `--repo-root` (hermetically patched to `skills_root`),
+            # with invalid repo_root, or when `git cat-file` raises SubprocessError/TimeoutError must fail closed!
+            with unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILLS_ROOT", skills_root):
+                rollup_no_repo_arg = SKILL_RETRO.rollup_m1_retro_receipts(
+                    handoff_root=handoff_root,
+                    skills=["fabricated-skill"],
+                    verify_grounding=True,
+                )
             self.assertFalse(rollup_no_repo_arg["receipt_grounded"])
             self.assertEqual(rollup_no_repo_arg["counts"]["fixed_and_merged"], 0)
             self.assertEqual(rollup_no_repo_arg["counts"]["ungrounded_receipts"], 1)
@@ -825,6 +977,22 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertFalse(rollup_bad_repo["receipt_grounded"])
             self.assertTrue(
                 any("invalid_or_missing_repo_root" in err for err in rollup_bad_repo["grounding_issues"])
+            )
+
+            with unittest.mock.patch.object(
+                SKILL_RETRO.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "cat-file"], timeout=2.5),
+            ):
+                rollup_git_err = SKILL_RETRO.rollup_m1_retro_receipts(
+                    handoff_root=handoff_root,
+                    skills=["gap-skill"],
+                    repo_root=repo_dir,
+                    verify_grounding=False,
+                )
+            self.assertFalse(rollup_git_err["receipt_grounded"])
+            self.assertTrue(
+                any("git_verification_error" in err for err in rollup_git_err["grounding_issues"])
             )
 
 
