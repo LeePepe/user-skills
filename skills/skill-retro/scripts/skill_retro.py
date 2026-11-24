@@ -1464,6 +1464,14 @@ def _ingest_warehouse_and_copilot_db(
                         sid,
                         SessionObservation(session_id=sid, source="warehouse", started_at=ts, ended_at=ts),
                     )
+                    if any(
+                        c.skill == sk
+                        and c.script_rel == sc_rel
+                        and c.exit_code == ec
+                        and abs((c.ts - ts).total_seconds()) < 1.0
+                        for c in obs.script_calls
+                    ):
+                        continue
                     seq_no = obs.next_seq()
                     obs.script_calls.append(
                         ScriptCallEvent(
@@ -2891,39 +2899,52 @@ def _evaluate_session_progressive_and_preread(
         if len(cold_start_distinct_drawers) >= 3 or (sk_reads and not has_action_after_reads):
             wasted_sids.append(o.session_id)
 
-        # Evaluate per-validator (script_rel) failure and recovery within the session
+        # Evaluate per-validator (script_rel) failure and recovery within the session using chronological order
         by_validator: dict[str, list[ScriptCallEvent]] = {}
         for c in sk_calls:
             by_validator.setdefault(c.script_rel, []).append(c)
 
-        for _, v_calls in by_validator.items():
-            failed_calls = [c for c in v_calls if c.exit_code not in (None, 0, 2)]
-            if not failed_calls:
+        for _, raw_v_calls in by_validator.items():
+            # Deduplicate identical (timestamp, exit_code) calls across overlapping sources
+            v_calls: list[ScriptCallEvent] = []
+            for c_ev in sorted(raw_v_calls, key=lambda c: (c.ts, c.seq)):
+                if v_calls and v_calls[-1].exit_code == c_ev.exit_code and abs((c_ev.ts - v_calls[-1].ts).total_seconds()) < 1.0:
+                    continue
+                v_calls.append(c_ev)
+
+            failed_indices = [i for i, c in enumerate(v_calls) if c.exit_code not in (None, 0, 2)]
+            if not failed_indices:
                 continue
             validator_recovered = False
-            last_recovered_pass_seq = -1
+            last_recovered_pass_idx = -1
             for idx_c, call_ev in enumerate(v_calls):
                 if call_ev.exit_code in (None, 0, 2):
                     continue
-                if call_ev.seq < last_recovered_pass_seq:
+                if idx_c < last_recovered_pass_idx:
                     continue
                 later_same_script = [
-                    later
-                    for later in v_calls[idx_c + 1 : idx_c + 3]
-                    if later.exit_code == 0 and 0 < (later.seq - call_ev.seq) <= 6
+                    (idx_c + offset, later)
+                    for offset, later in enumerate(v_calls[idx_c + 1 : idx_c + 3], 1)
+                    if later.exit_code == 0 and later.ts >= call_ev.ts
                 ]
-                for later_pass in later_same_script:
-                    intervening_read_or_edit = any(call_ev.seq < r_seq < later_pass.seq for _, r_seq in sk_reads) or any(
-                        call_ev.seq < e_seq < later_pass.seq for e_seq in o.edit_seqs
+                for pass_idx, later_pass in later_same_script:
+                    intervening_read_or_edit = any(
+                        (0 < call_ev.seq < r_seq < later_pass.seq and (later_pass.seq - call_ev.seq) <= 6)
+                        or (call_ev.ts <= r_ts <= later_pass.ts and (later_pass.ts > call_ev.ts or r_seq > call_ev.seq))
+                        for r_sk, _, r_ts, r_seq in o.ref_reads
+                        if r_sk == sk_name
+                    ) or any(
+                        0 < call_ev.seq < e_seq < later_pass.seq and (later_pass.seq - call_ev.seq) <= 6
+                        for e_seq in o.edit_seqs
                     )
                     if intervening_read_or_edit:
                         validator_recovered = True
-                        last_recovered_pass_seq = max(last_recovered_pass_seq, later_pass.seq)
+                        last_recovered_pass_idx = max(last_recovered_pass_idx, pass_idx)
                         break
             if validator_recovered:
                 prog_catches += 1
-            last_fail_seq = max(c.seq for c in failed_calls)
-            has_pass_after_last_fail = any(c.exit_code == 0 and c.seq > last_fail_seq for c in v_calls)
+            last_fail_idx = max(failed_indices)
+            has_pass_after_last_fail = any(c.exit_code == 0 for c in v_calls[last_fail_idx + 1 :])
             if not has_pass_after_last_fail:
                 unresolved_failures += 1
 
@@ -7770,7 +7791,7 @@ def _fast_telemetry_signals(
                         pending_idx += 1
 
     # Sample bounded recent copilot sessions (<=12 most recent events.jsonl) on the fast path
-    sampled_sids: set[str] = set()
+    sampled_obs: dict[str, SessionObservation] = {}
     sess_dir = copilot_sessions_dir if copilot_sessions_dir is not None else DEFAULT_COPILOT_SESSIONS_DIR
     if _probe_readable_dir(sess_dir) and sess_dir is not None:
         basename_to_targets: dict[str, list[tuple[str, str]]] = {}
@@ -7785,7 +7806,41 @@ def _fast_telemetry_signals(
             basename_to_targets=basename_to_targets,
             max_sessions=12,
         )
-        sampled_sids = set(sampled_obs.keys())
+
+    # Merge any warehouse/usage.jsonl validator calls into sampled_obs (if session was sampled)
+    # so omitted middle ranges in oversized logs or usage-only validators are preserved and deduplicated!
+    non_sampled_validator_events: dict[tuple[str, str, str], list[tuple[float, int, int, str]]] = {}
+    for (sk, sid_v, sc_rel_v), ev_items in post_validator_events.items():
+        if sid_v in sampled_obs:
+            obs_s = sampled_obs[sid_v]
+            obs_s.skills_loaded.add(sk)
+            for ts_num, _, ec_v, _ in sorted(ev_items, key=lambda item: (item[0], item[1])):
+                ev_dt = datetime.fromtimestamp(ts_num, tz=timezone.utc).astimezone(CST)
+                if any(
+                    c.skill == sk
+                    and c.script_rel == sc_rel_v
+                    and c.exit_code == ec_v
+                    and abs((c.ts - ev_dt).total_seconds()) < 1.0
+                    for c in obs_s.script_calls
+                ):
+                    continue
+                obs_s.script_calls.append(
+                    ScriptCallEvent(
+                        session_id=sid_v,
+                        skill=sk,
+                        script_rel=sc_rel_v,
+                        command=sc_rel_v,
+                        ts=ev_dt,
+                        exit_code=ec_v,
+                        duration_ms=None,
+                        measured=False,
+                        seq=obs_s.next_seq(),
+                    )
+                )
+        else:
+            non_sampled_validator_events[(sk, sid_v, sc_rel_v)] = ev_items
+
+    if sampled_obs:
         all_sampled = list(sampled_obs.values())
         for sk_n in inv:
             loaded_for_sk = [
@@ -7823,9 +7878,7 @@ def _fast_telemetry_signals(
                                 out[sk_n]["l2_exit2_post_fix"] = max(out[sk_n]["l2_exit2_post_fix"], 1)
 
     # Reconcile non-sampled warehouse/usage.jsonl validator sequences chronologically by (ts_epoch, row_seq)
-    for (sk, sid_v, _), ev_items in post_validator_events.items():
-        if sid_v in sampled_sids:
-            continue
+    for (sk, _, _), ev_items in non_sampled_validator_events.items():
         ordered_evs = sorted(ev_items, key=lambda item: (item[0], item[1]))
         # Deduplicate overlapping wh + usage records with identical timestamp & exit_code
         dedup_ecs: list[int] = []

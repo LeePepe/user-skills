@@ -148,7 +148,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 },
             )
 
-            now = datetime.now(CST).replace(microsecond=0)
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
 
             # Session 1 for `healthy-skill`: exit=1 -> read `on-demand-guide.md` -> edit -> exit=0
             s1_dir = sessions_dir / "sess-healthy-1"
@@ -265,6 +265,19 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 conn.execute(
                     "CREATE TABLE fact_gtt_event (goal_id TEXT, task_id TEXT, evt_type TEXT, note_preview TEXT, cst_day TEXT)"
                 )
+                conn.execute(
+                    "CREATE TABLE script_call (session_id TEXT, skill TEXT, script_path TEXT, exit_code INTEGER, duration_ms REAL, ts TEXT)"
+                )
+                # Counter-Case R3-F2: Insert duplicate out-of-order warehouse rows for `sess-healthy-1`
+                # (later pass row at t+8s inserted BEFORE earlier fail row at t+2s).
+                # Deep-mode chronological deduplication must NOT treat the out-of-order fail row as a new terminal failure!
+                conn.executemany(
+                    "INSERT INTO script_call VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        ("sess-healthy-1", "healthy-skill", "skills/healthy-skill/scripts/check_tool.py", 0, 50.0, (now + timedelta(seconds=8)).isoformat()),
+                        ("sess-healthy-1", "healthy-skill", "skills/healthy-skill/scripts/check_tool.py", 1, 50.0, (now + timedelta(seconds=2)).isoformat()),
+                    ],
+                )
                 conn.executemany(
                     "INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, ?, ?)",
                     [
@@ -291,7 +304,31 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 )
                 conn.commit()
 
+            # Session 3 (Counter-Case R3-F1): partial/truncated sampled session `sess-partial-log`
+            # where `events.jsonl` only has `skill.invoked` + `edit` (omitting script calls), while `usage.jsonl`
+            # has 3 terminal `lint_noisy.py exit=1` calls for `sess-partial-log`.
+            # Canonical `probe --fast` must merge those usage/warehouse calls into `sampled_obs["sess-partial-log"]`
+            # rather than dropping them!
+            s3_dir = sessions_dir / "sess-partial-log"
+            s3_dir.mkdir(parents=True, exist_ok=True)
+            s3_events = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "noisy-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=20)).isoformat(),
+                    "data": {"toolCallId": "ep-1", "toolName": "edit", "arguments": {"path": "src/other.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=21)).isoformat(),
+                    "data": {"toolCallId": "ep-1", "result": {"content": "ok"}},
+                },
+            ]
+            (s3_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in s3_events) + "\n", encoding="utf-8")
+
             # Overlapping usage.jsonl with the same `sess-healthy-1` exit=1 -> exit=0 sequence (Counter-Case R2-F1)
+            # PLUS 3 terminal `exit=1` calls for `sess-partial-log` (Counter-Case R3-F1)
             usage_jsonl = root / "usage.jsonl"
             usage_rows = [
                 {
@@ -309,6 +346,30 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     "skill": "healthy-skill",
                     "script_path": "skills/healthy-skill/scripts/check_tool.py",
                     "exit_code": 0,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-partial-log",
+                    "ts": (now + timedelta(seconds=5)).isoformat(),
+                    "skill": "noisy-skill",
+                    "script_path": "skills/noisy-skill/scripts/lint_noisy.py",
+                    "exit_code": 1,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-partial-log",
+                    "ts": (now + timedelta(seconds=7)).isoformat(),
+                    "skill": "noisy-skill",
+                    "script_path": "skills/noisy-skill/scripts/lint_noisy.py",
+                    "exit_code": 1,
+                },
+                {
+                    "kind": "script_call",
+                    "session_id": "sess-partial-log",
+                    "ts": (now + timedelta(seconds=9)).isoformat(),
+                    "skill": "noisy-skill",
+                    "script_path": "skills/noisy-skill/scripts/lint_noisy.py",
+                    "exit_code": 1,
                 },
             ]
             usage_jsonl.write_text("\n".join(json.dumps(r) for r in usage_rows) + "\n", encoding="utf-8")
@@ -336,13 +397,15 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertEqual(h_sig["wasted_preread_rate"], 0.0)
             self.assertEqual(by_sk["healthy-skill"]["priority_score"], 0.0)
 
-            # Counter-Case: `noisy-skill` has r3+ drift, wasted_preread_rate=1.0, unwired drawer (`unwired-rules.md`),
-            # and its goal-level REVIEW_FAIL on `g-conv` was NOT suppressed by `healthy-skill`'s convergence (skill_escapes=2)!
+            # Counter-Case: `noisy-skill` has r3+ drift, wasted_preread_sessions=1 (out of 2 sessions -> 0.5),
+            # unwired drawer (`unwired-rules.md`), and its goal-level REVIEW_FAIL on `g-conv` was NOT suppressed
+            # by `healthy-skill`'s convergence (skill_escapes=2, domain_failures=4 including `sess-partial-log`)!
             n_sig = by_sk["noisy-skill"]["signals"]
             self.assertEqual(n_sig["l0_directional_drifts"], 1)
             self.assertEqual(n_sig["skill_escapes"], 2)
+            self.assertEqual(n_sig["domain_failures"], 4)
             self.assertEqual(n_sig["wasted_preread_sessions"], 1)
-            self.assertEqual(n_sig["wasted_preread_rate"], 1.0)
+            self.assertEqual(n_sig["wasted_preread_rate"], 0.5)
             self.assertGreaterEqual(n_sig["l1_unwired_drawers"], 1)
             self.assertGreater(by_sk["noisy-skill"]["priority_score"], 0.0)
 
@@ -367,9 +430,11 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["l0_directional_drifts"], 0)
                 self.assertEqual(fast_by_sk["healthy-skill"]["priority_score"], 0.0)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_sessions"], 1)
-                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_rate"], 1.0)
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_rate"], 0.5)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["l0_directional_drifts"], 1)
                 self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["skill_escapes"], 2)
+                # `sess-noisy-1` + `sess-partial-log` (merged from usage_jsonl!) + 2 escapes = 4 domain_failures
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["domain_failures"], 4)
 
     def test_validator_specific_recovery_and_sequence_ordered_downstream_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,7 +460,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     "sec_check.py": "#!/usr/bin/env python3\n",
                 },
             )
-            now = datetime.now(CST).replace(microsecond=0)
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
 
             # Session A (Counter-Case F3): `lint.py` fails (exit=1), reads drawer, then UNRELATED `helper.py` exits 0
             # while `lint.py` is never re-run -> MUST NOT count as progressive_catch_count, and failure remains unresolved!
@@ -590,7 +655,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 scripts={"audit_design.py": "#!/usr/bin/env python3\nimport argparse\np = argparse.ArgumentParser()\n"},
             )
 
-            now = datetime.now(CST).replace(microsecond=0)
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
             day_str = now.date().isoformat()
             with contextlib.closing(sqlite3.connect(warehouse_db)) as conn:
                 conn.execute(
@@ -749,7 +814,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertIn("gemini:4- argon", broken_targets)
 
             # 3) ACI Output Bloat (>20KB or "Output too large to read at once")
-            now = datetime.now(CST).replace(microsecond=0)
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
             s_dir = sessions_dir / "sess-bloat-1"
             s_dir.mkdir(parents=True, exist_ok=True)
             huge_output = "X" * 25_000
@@ -880,7 +945,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 text=True,
             ).stdout.strip()
 
-            now = datetime.now(CST).replace(microsecond=0)
+            now = datetime.now(CST).replace(microsecond=0) - timedelta(minutes=10)
             day_str = now.date().isoformat()
             with contextlib.closing(sqlite3.connect(warehouse_db)) as conn:
                 conn.execute(
