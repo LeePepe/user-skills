@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 CST = timezone(timedelta(hours=8))
@@ -261,15 +262,25 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                 conn.execute(
                     "CREATE TABLE fact_gtt_task_run (goal_id TEXT, task_id TEXT, role_name TEXT, round_no INTEGER, v5_verdict TEXT, skills_used TEXT, cst_day TEXT)"
                 )
+                conn.execute(
+                    "CREATE TABLE fact_gtt_event (goal_id TEXT, task_id TEXT, evt_type TEXT, note_preview TEXT, cst_day TEXT)"
+                )
                 conn.executemany(
                     "INSERT INTO fact_gtt_task_run VALUES (?, ?, ?, ?, ?, ?, ?)",
                     [
                         ("g-conv", "T1", "code_reviewer", 1, "FAIL", '["healthy-skill"]', day_str),
                         ("g-conv", "T1", "code_reviewer", 2, "PASS", '["healthy-skill"]', day_str),
+                        ("g-r2only", "T_R2", "code_reviewer", 1, "FAIL", '["healthy-skill"]', day_str),
+                        ("g-r2only", "T_R2", "code_reviewer", 2, "FAIL", '["healthy-skill"]', day_str),
                         ("g-drift", "T2", "code_reviewer", 1, "FAIL", '["noisy-skill"]', day_str),
                         ("g-drift", "T2", "code_reviewer", 2, "FAIL", '["noisy-skill"]', day_str),
                         ("g-drift", "T2", "code_reviewer", 3, "FAIL", '["noisy-skill"]', day_str),
                     ],
+                )
+                # Matching R1 REVIEW_FAIL event on a converged task (g-conv, T1) must NOT be penalized as an escape!
+                conn.execute(
+                    "INSERT INTO fact_gtt_event VALUES (?, ?, ?, ?, ?)",
+                    ("g-conv", "T1", "REVIEW_FAIL", "[IMPL_BUG] skills/healthy-skill/SKILL.md R1 finding resolved in R2", day_str),
                 )
                 conn.commit()
 
@@ -285,11 +296,13 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             by_sk = {s["skill"]: s for s in probe_res["skills"]}
 
             # Positive Case: `healthy-skill` has progressive_catch_count=1 and healthy_r1_to_r2_convergences=1,
-            # 0 directional drifts, and 0 penalty!
+            # 0 directional drifts (even with R2-only failure and R1 REVIEW_FAIL on converged task), and 0 penalty!
             h_sig = by_sk["healthy-skill"]["signals"]
             self.assertEqual(h_sig["progressive_catch_count"], 1)
             self.assertEqual(h_sig["healthy_r1_to_r2_convergences"], 1)
             self.assertEqual(h_sig["l0_directional_drifts"], 0)
+            self.assertEqual(h_sig["skill_escapes"], 0)
+            self.assertEqual(h_sig["domain_failures"], 0)
             self.assertEqual(h_sig["wasted_preread_rate"], 0.0)
             self.assertEqual(by_sk["healthy-skill"]["priority_score"], 0.0)
 
@@ -301,16 +314,174 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertGreaterEqual(n_sig["l1_unwired_drawers"], 1)
             self.assertGreater(by_sk["noisy-skill"]["priority_score"], 0.0)
 
-            # Fast-mode unwired drawer false-positive check: when domain_failures == 0 (`healthy-skill`),
-            # `extra-notes.md` (0 hits, not linked in script) MUST NOT be flagged as unwired!
-            fast_only = SKILL_RETRO.probe_skills(
-                skill="healthy-skill",
+            # Canonical Fast-Path (`fast=True` without explicit source overrides) must also compute runtime signals
+            with (
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_WAREHOUSE_DB", warehouse_db),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_COPILOT_SESSIONS_DIR", sessions_dir),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_SKILL_TELEMETRY_USAGE_JSONL", root / "none.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_PROPOSALS_PATH", root / "none-prop.jsonl"),
+                unittest.mock.patch.object(SKILL_RETRO, "DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH", root / "none-roi.json"),
+            ):
+                fast_canonical = SKILL_RETRO.probe_skills(
+                    handoff_root=handoff_root,
+                    skills_root=skills_root,
+                    dev_root=dev_root,
+                    fast=True,
+                )
+                fast_by_sk = {s["skill"]: s for s in fast_canonical["skills"]}
+                self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["progressive_catch_count"], 1)
+                self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["l1_unwired_drawers"], 0)
+                self.assertEqual(fast_by_sk["healthy-skill"]["signals"]["l0_directional_drifts"], 0)
+                self.assertEqual(fast_by_sk["healthy-skill"]["priority_score"], 0.0)
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_sessions"], 1)
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["wasted_preread_rate"], 1.0)
+                self.assertEqual(fast_by_sk["noisy-skill"]["signals"]["l0_directional_drifts"], 1)
+
+    def test_validator_specific_recovery_and_sequence_ordered_downstream_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            handoff_root = dev_root / "handoff"
+            sessions_dir = root / "sessions"
+            handoff_root.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+
+            _write_skill_pkg(
+                skills_root,
+                "validator-skill",
+                skill_md_extra="See `references/fix-lint.md` and `references/unwired-sec.md`.",
+                refs={
+                    "fix-lint.md": "# Fix Lint\n",
+                    "unwired-sec.md": "# Unwired Security\n",
+                },
+                scripts={
+                    "lint.py": "#!/usr/bin/env python3\n# see references/fix-lint.md\n",
+                    "helper.py": "#!/usr/bin/env python3\n",
+                    "sec_check.py": "#!/usr/bin/env python3\n",
+                },
+            )
+            now = datetime.now(CST).replace(microsecond=0)
+
+            # Session A (Counter-Case F3): `lint.py` fails (exit=1), reads drawer, then UNRELATED `helper.py` exits 0
+            # while `lint.py` is never re-run -> MUST NOT count as progressive_catch_count, and failure remains unresolved!
+            sa_dir = sessions_dir / "sess-unrelated-pass"
+            sa_dir.mkdir(parents=True, exist_ok=True)
+            sa_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "validator-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=2)).isoformat(),
+                    "data": {"toolCallId": "a1", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=3)).isoformat(),
+                    "data": {"toolCallId": "a1", "shellExecution": {"exitCode": 1}, "result": {"content": "lint err"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=4)).isoformat(),
+                    "data": {"toolCallId": "a2", "toolName": "view", "arguments": {"path": "skills/validator-skill/references/fix-lint.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "data": {"toolCallId": "a2", "result": {"content": "doc"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=6)).isoformat(),
+                    "data": {"toolCallId": "a3", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/helper.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=7)).isoformat(),
+                    "data": {"toolCallId": "a3", "shellExecution": {"exitCode": 0}, "result": {"content": "helper ok"}},
+                },
+            ]
+            (sa_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sa_evs) + "\n", encoding="utf-8")
+
+            # Session B (Mixed recovery + unresolved validator + script->drawer->end zero downstream action F4):
+            # First runs `lint.py` (exit=1) -> reads `fix-lint.md` -> re-runs `lint.py` (exit=0) [recovered],
+            # then runs `sec_check.py` (exit=1) [unresolved], then reads `fix-lint.md` at the end of session with 0 actions after it!
+            sb_dir = sessions_dir / "sess-mixed-and-trailing-read"
+            sb_dir.mkdir(parents=True, exist_ok=True)
+            sb_evs = [
+                {"type": "session.start", "timestamp": now.isoformat(), "data": {}},
+                {"type": "skill.invoked", "timestamp": (now + timedelta(seconds=1)).isoformat(), "data": {"name": "validator-skill"}},
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=2)).isoformat(),
+                    "data": {"toolCallId": "b1", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=3)).isoformat(),
+                    "data": {"toolCallId": "b1", "shellExecution": {"exitCode": 1}, "result": {"content": "fail"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=4)).isoformat(),
+                    "data": {"toolCallId": "b2", "toolName": "view", "arguments": {"path": "skills/validator-skill/references/fix-lint.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=5)).isoformat(),
+                    "data": {"toolCallId": "b2", "result": {"content": "doc"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=6)).isoformat(),
+                    "data": {"toolCallId": "b3", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/lint.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=7)).isoformat(),
+                    "data": {"toolCallId": "b3", "shellExecution": {"exitCode": 0}, "result": {"content": "pass"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=8)).isoformat(),
+                    "data": {"toolCallId": "b4", "toolName": "bash", "arguments": {"command": "python3 skills/validator-skill/scripts/sec_check.py"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=9)).isoformat(),
+                    "data": {"toolCallId": "b4", "shellExecution": {"exitCode": 1}, "result": {"content": "sec fail"}},
+                },
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": (now + timedelta(seconds=10)).isoformat(),
+                    "data": {"toolCallId": "b5", "toolName": "view", "arguments": {"path": "skills/validator-skill/references/fix-lint.md"}},
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": (now + timedelta(seconds=11)).isoformat(),
+                    "data": {"toolCallId": "b5", "result": {"content": "trailing read with 0 actions after"}},
+                },
+            ]
+            (sb_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in sb_evs) + "\n", encoding="utf-8")
+
+            probe_v = SKILL_RETRO.probe_skills(
+                skill="validator-skill",
+                copilot_sessions_dir=sessions_dir,
                 handoff_root=handoff_root,
                 skills_root=skills_root,
                 dev_root=dev_root,
-                fast=True,
+                fast=False,
             )
-            self.assertEqual(fast_only["skills"][0]["signals"]["l1_unwired_drawers"], 0)
+            vsig = probe_v["skills"][0]["signals"]
+            # Only Session B's lint.py recovery counts as progressive_catch_count (1, not 2)
+            self.assertEqual(vsig["progressive_catch_count"], 1)
+            # Both Session A's lint.py and Session B's sec_check.py remain unresolved domain_failures (2)
+            self.assertEqual(vsig["domain_failures"], 2)
+            # `unwired-sec.md` is flagged as unwired because unresolved domain_failures > 0
+            self.assertEqual(vsig["l1_unwired_drawers"], 1)
+            # Session B's trailing read after all actions is caught as wasted_preread_sessions=1
+            self.assertEqual(vsig["wasted_preread_sessions"], 1)
+            self.assertEqual(vsig["wasted_preread_rate"], 0.5)
 
     def test_direct_warehouse_db_fast_probe_and_domain_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -430,6 +601,7 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
                     "tool.py": (
                         "#!/usr/bin/env python3\n"
                         "import argparse\n"
+                        "EXAMPLE = '--ghost-constant-flag'\n"
                         "p = argparse.ArgumentParser()\n"
                         "sub = p.add_subparsers(dest='cmd')\n"
                         "c = sub.add_parser('check')\n"
@@ -443,6 +615,19 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertIn("--nonexistent-flag", drift_tokens)
             self.assertIn("bogus-sub", drift_tokens)
             self.assertIn("scripts/missing_script.py", drift_tokens)
+
+            # Counter-Case F5: an arbitrary string constant `EXAMPLE = '--ghost-constant-flag'` inside `tool.py`
+            # must NOT mask `--ghost-constant-flag` when documented in SKILL.md!
+            (drifted_pkg / "SKILL.md").write_text(
+                (drifted_pkg / "SKILL.md").read_text(encoding="utf-8")
+                + "\nRun `python3 skills/drifted-cli-skill/scripts/tool.py check --ghost-constant-flag`.\n",
+                encoding="utf-8",
+            )
+            drifted_ir_const = SKILL_RETRO.internal_reality_check(drifted_pkg)
+            self.assertIn(
+                "--ghost-constant-flag",
+                {d["token"] for d in drifted_ir_const["internal_doc_cli_drift"]},
+            )
 
             broken_targets = {b["target"] for b in drifted_ir["internal_broken_refs"]}
             self.assertIn("references/ghost.md", broken_targets)
@@ -619,6 +804,28 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertFalse(by_rec["missing-sha-skill"]["receipt_grounded"])
             self.assertIn("missing_commit_or_merge_sha", by_rec["missing-sha-skill"]["grounding_issues"])
             self.assertIn("missing_pr_reference", by_rec["missing-sha-skill"]["grounding_issues"])
+
+            # Counter-Case F6: `verify_grounding=True` without `--repo-root` (or with invalid repo_root)
+            # must fail closed on a fabricated SHA rather than silently skipping git verification!
+            rollup_no_repo_arg = SKILL_RETRO.rollup_m1_retro_receipts(
+                handoff_root=handoff_root,
+                skills=["fabricated-skill"],
+                verify_grounding=True,
+            )
+            self.assertFalse(rollup_no_repo_arg["receipt_grounded"])
+            self.assertEqual(rollup_no_repo_arg["counts"]["fixed_and_merged"], 0)
+            self.assertEqual(rollup_no_repo_arg["counts"]["ungrounded_receipts"], 1)
+
+            rollup_bad_repo = SKILL_RETRO.rollup_m1_retro_receipts(
+                handoff_root=handoff_root,
+                skills=["gap-skill"],
+                repo_root=root / "nonexistent-repo-dir",
+                verify_grounding=True,
+            )
+            self.assertFalse(rollup_bad_repo["receipt_grounded"])
+            self.assertTrue(
+                any("invalid_or_missing_repo_root" in err for err in rollup_bad_repo["grounding_issues"])
+            )
 
 
 if __name__ == "__main__":
