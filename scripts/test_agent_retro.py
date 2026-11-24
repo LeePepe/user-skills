@@ -174,6 +174,75 @@ class AgentRetroTests(unittest.TestCase):
         rows = AR._metric_scan(related, [handoff], {})
         self.assertIn("H4_compaction_and_handoff_loss", {row["metric"] for row in rows})
 
+    def test_real_split_tool_events_pair_exit_marker_and_output_bloat(self):
+        now = datetime.now(timezone.utc).isoformat()
+        split_path = FIXTURE / "sessions" / "session-split" / "events.jsonl"
+        split_path.parent.mkdir(parents=True)
+        events = [
+            {"type": "hook.start", "timestamp": now, "data": {"name": "noise"}},
+            {"type": "tool.execution_start", "timestamp": now, "data": {
+                "toolCallId": "split-1", "toolName": "bash",
+                "arguments": {"command": "python3 check.py"},
+            }},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "toolCallId": "split-1", "success": False,
+                "result": {"content": "<shellId: split-1 completed with exit code 2>\nOutput too large to read at once (...)"},
+            }},
+        ]
+        split_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+        parsed, source = AR._read_events(FIXTURE / "sessions", 30, fast=True)
+        tools = [event for event in parsed if AR._tool_call_id(event) == "split-1"]
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(AR._tool_name(tools[0]), "bash")
+        self.assertEqual(AR._command(tools[0]), "python3 check.py")
+        self.assertEqual(AR._exit_code(tools[0]), 2)
+        self.assertIn("Output too large to read at once", AR._result_content(tools[0]))
+        self.assertEqual(source["events_read"], len(parsed))
+        self.assertNotIn("hook.start", {AR._event_type(event) for event in parsed})
+
+    def test_subagent_completed_same_group_reviewer_is_r5(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [
+            {"type": "session.start", "timestamp": now, "data": {
+                "sessionId": "parent", "selectedModel": "magpie/group/steering",
+                "context": {"cwd": "/tmp/worktrees/example"},
+            }},
+            {"type": "skill.invoked_ref", "timestamp": now, "data": {"name": "team-lead"}},
+            {"type": "subagent.completed", "timestamp": now, "data": {
+                "agentName": "code-review", "agentDisplayName": "Reviewer",
+                "model": "magpie/group/steering", "totalTokens": 12, "durationMs": 4,
+            }},
+        ]
+        rows = AR._metric_scan(events, [], {})
+        self.assertIn("R5_reviewer_same_vendor", {row["metric"] for row in rows})
+
+    def test_active_lease_requires_recent_owned_path_or_matching_worktree(self):
+        old = FIXTURE / "handoff" / "old-goal"
+        old.mkdir(parents=True)
+        old_ledger = old / "ledger.md"
+        old_ledger.write_text("status: in_progress\n", encoding="utf-8")
+        stale = datetime.now().timestamp() - 3 * 60 * 60
+        os.utime(old_ledger, (stale, stale))
+
+        recent = FIXTURE / "handoff" / "agent-retro-real-trace-fix"
+        recent.mkdir(parents=True)
+        (recent / "ledger.md").write_text(
+            "status: in_progress\n\n## Owned Paths\n- skills/m2-dispatcher/**\n\n"
+            "Run python3 skills/team-lead/scripts/ci-monitor.py workflow\n",
+            encoding="utf-8",
+        )
+        done = FIXTURE / "handoff" / "done-goal"
+        done.mkdir(parents=True)
+        (done / "ledger.md").write_text("EVT=GOAL_DONE\nstatus: completed\n", encoding="utf-8")
+
+        os.environ["AGENT_RETRO_WORKTREES"] = str(FIXTURE / "worktrees")
+        records, _ = AR._handoffs(FIXTURE / "handoff")
+        by_name = {record["name"]: record for record in records}
+        self.assertFalse(by_name["old-goal"]["active_lease"])
+        self.assertTrue(by_name["agent-retro-real-trace-fix"]["active_lease"])
+        self.assertFalse(by_name["done-goal"]["active_lease"])
+        self.assertEqual(AR._active_leases(records), {"m2-dispatcher"})
+
     def test_e4_scope_version_cohorts_and_active_lease_exclusion(self):
         now = datetime.now(timezone.utc).isoformat()
         events = [{"type": "tool.execution_complete", "timestamp": now, "data": {"sessionId": "goal-a", "goalId": "goal-a", "toolName": "bash", "arguments": {"command": "pytest tests/a.py"}, "shellExecution": {"exitCode": 0}, "result": {"content": "ok"}}}]

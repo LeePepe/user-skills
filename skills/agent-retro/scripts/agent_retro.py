@@ -23,9 +23,11 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[3]
 SKILL_DIR = ROOT / "skills" / "agent-retro"
 SF_DATALESS = 0x40000000
-MAX_EVENTS = 200
+MAX_EVENTS = 150_000
+MAX_EVENTS_PER_SESSION = 4_000
 MAX_BYTES = 2_000_000
 MAX_OUTPUT = 16_000
+HOOK_NOISE = ("hook.start", "hook.end", "session.usage_checkpoint", "skill.context_delivered_ref")
 METRIC_ORDER = (
     ("role", "R1_m3_prompt_prelock"), ("role", "R2_m2_direct_code_edit"),
     ("role", "R3_m1_inline_overwork"), ("role", "R4_session_skill_pollution"),
@@ -115,6 +117,27 @@ def _text(value: Any) -> str:
         return str(value)
 
 
+def _value_text(value: Any) -> str:
+    return value if isinstance(value, str) else _text(value)
+
+
+def _event_blob(event: dict[str, Any]) -> str:
+    parts = [_event_type(event)]
+    for name in ("content", "message", "assistantContent", "userContent", "role",
+                 "agentName", "agentDisplayName", "agentDescription", "status"):
+        value = _field(event, name)
+        if value:
+            parts.append(_value_text(value))
+    if _event_type(event).startswith("tool."):
+        command = _command(event)
+        if command:
+            parts.append(command)
+        path = str(_arguments(event).get("path") or _field(event, "path") or "")
+        if path:
+            parts.append(path)
+    return " ".join(parts).lower()
+
+
 def _data(event: dict[str, Any]) -> dict[str, Any]:
     nested = event.get("data")
     return nested if isinstance(nested, dict) else event
@@ -135,45 +158,90 @@ def _field(event: dict[str, Any], *names: str) -> Any:
 
 
 def _arguments(event: dict[str, Any]) -> dict[str, Any]:
+    cached = event.get("_retro_arguments")
+    if isinstance(cached, dict):
+        return cached
     value = _field(event, "arguments", "args", "toolArguments")
     if isinstance(value, dict):
+        event["_retro_arguments"] = value
         return value
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
             if isinstance(parsed, dict):
+                event["_retro_arguments"] = parsed
                 return parsed
         except json.JSONDecodeError:
-            return {"command": value}
-    return {}
+            parsed = {"command": value}
+            event["_retro_arguments"] = parsed
+            return parsed
+    event["_retro_arguments"] = {}
+    return event["_retro_arguments"]
 
 
 def _tool_name(event: dict[str, Any]) -> str:
-    return str(_field(event, "toolName", "tool_name", "name") or "").lower()
+    if "_retro_tool_name" not in event:
+        event["_retro_tool_name"] = str(_field(event, "toolName", "tool_name", "name") or "").lower()
+    return event["_retro_tool_name"]
 
 
 def _command(event: dict[str, Any]) -> str:
-    args = _arguments(event)
-    return str(args.get("command") or args.get("cmd") or _field(event, "command") or "")
+    if "_retro_command" not in event:
+        args = _arguments(event)
+        event["_retro_command"] = str(args.get("command") or args.get("cmd") or _field(event, "command") or "")
+    return event["_retro_command"]
 
 
 def _exit_code(event: dict[str, Any]) -> int | None:
+    if "_retro_exit_code" in event:
+        return event["_retro_exit_code"]
     shell = _field(event, "shellExecution")
     if isinstance(shell, dict):
         value = shell.get("exitCode")
     else:
         value = _field(event, "exitCode", "exit_code")
     try:
-        return int(value) if value is not None else None
+        if value is not None:
+            code = int(value)
+            event["_retro_exit_code"] = code
+            return code
     except (TypeError, ValueError):
-        return None
+        pass
+    content = _result_content(event)
+    match = re.search(r"(?:<shellId:\s*[^>\n]*\s+)?completed with exit code\s+(\d+)", content, re.I)
+    if match:
+        code = int(match.group(1))
+        event["_retro_exit_code"] = code
+        return code
+    success = _field(event, "success")
+    if success is True:
+        event["_retro_exit_code"] = 0
+        return 0
+    if success is False:
+        event["_retro_exit_code"] = 1
+        return 1
+    event["_retro_exit_code"] = None
+    return None
 
 
 def _result_content(event: dict[str, Any]) -> str:
+    if "_retro_result_content" in event:
+        return event["_retro_result_content"]
     result = _field(event, "result", "toolResult")
     if isinstance(result, dict):
-        return _text(result.get("content") or result.get("output") or result.get("stdout") or "")
-    return _text(_field(event, "resultContent", "content", "output") or result or "")
+        content = _text(result.get("content") or result.get("output") or result.get("stdout") or "")
+    else:
+        content = _text(_field(event, "resultContent", "content", "output") or result or "")
+    event["_retro_result_content"] = content
+    return content
+
+
+def _tool_call_id(event: dict[str, Any]) -> str:
+    return str(_field(event, "toolCallId", "tool_call_id", "callId", "call_id") or "")
+
+
+def _is_hook_noise(event: dict[str, Any]) -> bool:
+    return _event_type(event) in HOOK_NOISE
 
 
 def _session_id(event: dict[str, Any], fallback: str) -> str:
@@ -191,25 +259,83 @@ def _roots(args: argparse.Namespace) -> tuple[Path, Path, Path | None]:
     return session_root, handoff_root, warehouse if _external_path_safe(warehouse) and warehouse.exists() else None
 
 
-def _read_events(root: Path, days: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _merge_tool_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge Copilot's split tool start/complete records without double-counting."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        grouped[str(event.get("_retro_session", "unknown"))].append(event)
+    merged: list[dict[str, Any]] = []
+    for sequence in grouped.values():
+        output: list[dict[str, Any]] = []
+        pending: dict[str, int] = {}
+        for event in sequence:
+            event_type = _event_type(event)
+            call_id = _tool_call_id(event)
+            if event_type == "tool.execution_start" and call_id:
+                pending[call_id] = len(output)
+                output.append(event)
+                continue
+            if event_type == "tool.execution_complete" and call_id in pending:
+                start_index = pending.pop(call_id)
+                start = output[start_index]
+                start_data = _data(start)
+                complete_data = _data(event)
+                combined = dict(event)
+                combined_data = dict(start_data)
+                combined_data.update(complete_data)
+                for key in ("toolName", "tool_name", "arguments", "args", "toolArguments"):
+                    if key not in combined_data and key in start_data:
+                        combined_data[key] = start_data[key]
+                combined["data"] = combined_data
+                combined["_retro_session"] = event.get("_retro_session", start.get("_retro_session"))
+                output[start_index] = combined
+                continue
+            output.append(event)
+        merged.extend(output)
+    return merged
+
+
+def _read_events(root: Path, days: int, *, fast: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not _external_path_safe(root):
         return [], {"files_seen": 0, "events_read": 0, "truncated": False, "available": False, "blocked_dataless": True}
     cutoff = _now() - timedelta(days=max(0, days))
     events: list[dict[str, Any]] = []
-    files = sorted(root.glob("*/events.jsonl")) if root.is_dir() else []
+    candidates: list[tuple[float, Path]] = []
+    if root.is_dir():
+        for path in root.glob("*/events.jsonl"):
+            if not _external_path_safe(path):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((mtime, path))
+    in_window = [item for item in candidates if item[0] >= cutoff.timestamp()]
+    source_files = in_window if len(in_window) >= 10 else candidates
+    max_sessions = 50 if fast else 80
+    source_files.sort(key=lambda item: item[0], reverse=True)
+    files = [path for _, path in source_files[:max_sessions]]
     truncated = False
-    for path in files[:128]:
+    bounded_sessions = 0
+    oversized_lines = 0
+    for path in files:
         if len(events) >= MAX_EVENTS:
             truncated = True
             break
+        session_events = 0
         try:
             with path.open(encoding="utf-8", errors="replace") as handle:
-                for index, line in enumerate(handle):
-                    if index >= MAX_EVENTS or len(events) >= MAX_EVENTS:
+                for line in handle:
+                    if len(events) >= MAX_EVENTS:
                         truncated = True
                         break
+                    if session_events >= MAX_EVENTS_PER_SESSION:
+                        bounded_sessions += 1
+                        break
+                    if any(f'"type":"{noise}"' in line.replace(" ", "") or f'"type": "{noise}"' in line for noise in HOOK_NOISE):
+                        continue
                     if len(line) > MAX_BYTES:
-                        truncated = True
+                        oversized_lines += 1
                         continue
                     try:
                         event = json.loads(line)
@@ -217,15 +343,21 @@ def _read_events(root: Path, days: int) -> tuple[list[dict[str, Any]], dict[str,
                         continue
                     if not isinstance(event, dict):
                         continue
+                    if _is_hook_noise(event):
+                        continue
                     timestamp = _parse_time(event.get("timestamp") or _field(event, "timestamp", "createdAt"))
                     if timestamp and timestamp < cutoff:
                         continue
                     event["_retro_session"] = path.parent.name
                     events.append(event)
+                    session_events += 1
         except OSError:
             continue
+    events = _merge_tool_events(events)
     events.sort(key=lambda e: _parse_time(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc))
-    return events, {"files_seen": len(files), "events_read": len(events), "truncated": truncated, "available": bool(files)}
+    return events, {"files_seen": len(candidates), "sessions_scanned": len(files), "events_read": len(events),
+                    "bounded_sessions": bounded_sessions, "oversized_lines": oversized_lines,
+                    "truncated": truncated, "available": bool(candidates)}
 
 
 def _safe_text(path: Path, limit: int = 200_000) -> str:
@@ -243,22 +375,69 @@ def _handoffs(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         return records, {"directories": 0, "available": False, "blocked_dataless": True}
     if not root.is_dir():
         return records, {"directories": 0, "available": False}
-    dirs = [p for p in sorted(root.iterdir()) if p.is_dir()][:128]
+    worktrees = Path(os.environ.get("AGENT_RETRO_WORKTREES", "~/Development/worktrees")).expanduser()
+    ranked: list[tuple[float, Path]] = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or not _external_path_safe(directory):
+            continue
+        ledger_path = directory / "ledger.md"
+        try:
+            mtime = ledger_path.stat().st_mtime if ledger_path.exists() else directory.stat().st_mtime
+        except OSError:
+            continue
+        ranked.append((mtime, directory))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    dirs = [directory for _, directory in ranked[:128]]
     for directory in dirs:
-        ledger = _safe_text(directory / "ledger.md")
+        ledger_path = directory / "ledger.md"
+        ledger = _safe_text(ledger_path)
         spec = _safe_text(directory / "spec.md")
         briefs = [p for p in (directory / "briefs").glob("*.md")][:32] if (directory / "briefs").is_dir() else []
         receipts = [p for p in (directory / "receipts").glob("*.md")][:64] if (directory / "receipts").is_dir() else []
+        try:
+            ledger_mtime = ledger_path.stat().st_mtime if ledger_path.exists() else directory.stat().st_mtime
+        except OSError:
+            ledger_mtime = 0.0
+        recent = _now().timestamp() - ledger_mtime <= 7200
+        matching_worktree = _external_path_safe(worktrees / directory.name) and (worktrees / directory.name).is_dir()
+        active = (
+            bool(re.search(r"\b(?:in_progress|active)\b", ledger, re.I))
+            and not re.search(r"EVT=GOAL_DONE|\bstatus:\s*(?:done|completed)\b", ledger, re.I)
+            and (recent or matching_worktree)
+        )
         records.append({"path": directory, "name": directory.name, "ledger": ledger, "spec": spec,
-                        "active_lease": bool(re.search(r"\b(?:in_progress|active)\b", ledger, re.I)),
+                        "ledger_mtime": ledger_mtime, "active_lease": active,
                         "briefs": [(p.name, _safe_text(p)) for p in briefs],
                         "receipts": [(p.name, _safe_text(p)) for p in receipts]})
     return records, {"directories": len(dirs), "available": True}
 
 
 def _role_for(events: list[dict[str, Any]]) -> str:
-    text = " ".join(_text(_data(e).get(k, "")) for e in events for k in ("role", "agentName", "agentDescription", "selectedModel"))
+    explicit = next((str(_field(event, "role")).lower() for event in events if _field(event, "role")), "")
+    explicit_map = {
+        "team-lead": "m1", "m1": "m1", "steering": "m1",
+        "m2-dispatcher": "m2", "m2": "m2", "dispatcher": "m2",
+        "personal-m2-assistant": "m3", "m3": "m3",
+        "code-review": "reviewer", "reviewer": "reviewer",
+        "writer": "writer",
+    }
+    if explicit in explicit_map:
+        return explicit_map[explicit]
+    text = " ".join(_text(_data(e).get(k, "")) for e in events for k in
+                    ("role", "agentName", "agentDisplayName", "agentDescription", "selectedModel", "model"))
     low = text.lower()
+    if "code-review" in low or "reviewer" in low:
+        return "reviewer"
+    skills = {_event_skill(event) for event in events}
+    skills.discard(None)
+    if "personal-m2-assistant" in skills:
+        return "m3"
+    if "m2-dispatcher" in skills and "team-lead" not in skills:
+        return "m2"
+    cwd = next((str(_data(event).get("context", {}).get("cwd", ""))
+                for event in events if isinstance(_data(event).get("context"), dict)), "")
+    if "/worktrees/" in cwd and "team-lead" in skills:
+        return "m1"
     for role, words in ROLE_WORDS.items():
         if any(word in low for word in words):
             return role
@@ -280,12 +459,16 @@ def _tool_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _event_skill(event: dict[str, Any]) -> str | None:
+    if "_retro_skill" in event:
+        return event["_retro_skill"]
     value = _field(event, "skill", "skillName", "name")
-    if _event_type(event) == "skill.invoked" and value:
-        return str(value)
+    if _event_type(event) in {"skill.invoked", "skill.invoked_ref"} and value:
+        event["_retro_skill"] = str(value)
+        return event["_retro_skill"]
     path = str(_arguments(event).get("path") or _field(event, "path") or "")
     match = re.search(r"skills/([^/]+)/SKILL\.md", path)
-    return match.group(1) if match else None
+    event["_retro_skill"] = match.group(1) if match else None
+    return event["_retro_skill"]
 
 
 def _skill_names(events: list[dict[str, Any]]) -> set[str]:
@@ -334,12 +517,16 @@ def _first_fault_skill(text: str, role: str = "unknown", *, ci: bool = False) ->
 
 
 def _goal_key(event: dict[str, Any]) -> str | None:
+    if "_retro_goal" in event:
+        return event["_retro_goal"]
     value = _field(event, "goalId", "goal_id", "taskId", "task_id", "goal", "task")
     if value:
-        return str(value)
+        event["_retro_goal"] = str(value)
+        return event["_retro_goal"]
     text = _text(_field(event, "content", "message", "assistantContent", "userContent"))
     match = re.search(r"(?:goal|task)[_ -]?(?:id)?\s*[:=]\s*([A-Za-z0-9._-]+)", text, re.I)
-    return match.group(1) if match else None
+    event["_retro_goal"] = match.group(1) if match else None
+    return event["_retro_goal"]
 
 
 def _vendor(model: str) -> str:
@@ -351,11 +538,27 @@ def _vendor(model: str) -> str:
     return "unknown"
 
 
+def _routing_group(model: str) -> str:
+    low = model.lower().strip()
+    match = re.search(r"(?:^|/)(group/[^/@\s]+)", low)
+    return match.group(1) if match else ""
+
+
+def _same_model_route(first: str, second: str) -> bool:
+    if not first or not second:
+        return False
+    first_group, second_group = _routing_group(first), _routing_group(second)
+    if first_group and second_group and first_group == second_group:
+        return True
+    first_vendor, second_vendor = _vendor(first), _vendor(second)
+    return first_vendor != "unknown" and first_vendor == second_vendor
+
+
 def _outcome_gate(groups: dict[str, list[dict[str, Any]]]) -> tuple[dict[str, Any], set[str]]:
     gate: dict[str, Any] = {}
     eligible: set[str] = set()
     for sid, seq in groups.items():
-        blob = " ".join(_text(_data(e)) for e in seq).lower()
+        blob = " ".join(_event_blob(e) for e in seq)
         rounds = len(re.findall(r"(?:change request|changes requested|review fail|r[0-9]+\s+fail)", blob))
         turns = sum(1 for e in seq if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"})
         first_tool = next((index for index, event in enumerate(seq) if _tool_name(event)), len(seq))
@@ -372,15 +575,26 @@ def _outcome_gate(groups: dict[str, list[dict[str, Any]]]) -> tuple[dict[str, An
     return gate, eligible
 
 
-def _scoped_events(record: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _scoped_events(record: dict[str, Any], events: list[dict[str, Any]],
+                   indexed: list[tuple[dict[str, Any], str, str | None]] | None = None,
+                   scope_lookup: dict[str, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
     tokens = {record["name"].lower()}
     for source in (record.get("ledger", ""), record.get("spec", "")):
         tokens.update(x.lower() for x in re.findall(r"(?:goal|task)[_ -]?(?:id)?\s*[:=]\s*([A-Za-z0-9._-]+)", source, re.I))
     tokens.discard("")
+    if scope_lookup is not None:
+        selected: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for token in tokens:
+            for event in scope_lookup.get(token, []) + scope_lookup.get(f"goal:{token}", []):
+                marker = id(event)
+                if marker not in seen:
+                    selected.append(event)
+                    seen.add(marker)
+        return selected
     scoped = []
-    for event in events:
-        goal = _goal_key(event)
-        blob = _text(event).lower()
+    candidates = indexed or [(event, _text(event).lower(), _goal_key(event)) for event in events]
+    for event, blob, goal in candidates:
         if (goal and goal.lower() in tokens) or any(token in blob for token in tokens if len(token) >= 4):
             scoped.append(event)
     return scoped
@@ -395,6 +609,16 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
     def allowed(metric: str, sid: str) -> bool:
         return profile_sessions is None or sid in profile_sessions or metric in boundary_metrics
     groups = _session_groups(events)
+    indexed_events = [(event, _event_blob(event), _goal_key(event)) for event in events]
+    event_blobs = {id(event): blob for event, blob, _ in indexed_events}
+    handoff_names = {record["name"].lower() for record in handoffs}
+    scope_lookup: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event, blob, goal in indexed_events:
+        if goal:
+            scope_lookup[f"goal:{goal.lower()}"].append(event)
+        for name in handoff_names:
+            if name in blob:
+                scope_lookup[name].append(event)
     goal_models: dict[str, set[str]] = defaultdict(set)
     for grouped in groups.values():
         goal_ids = {_goal_key(event) for event in grouped if _goal_key(event)}
@@ -419,14 +643,20 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
             if path and _is_code_path(path):
                 files.add(path)
         assistant_turns = sum(1 for e in seq if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"})
-        text = " ".join(_text(_field(e, "content", "message", "assistantContent", "userContent")) for e in seq).lower()
+        text = " ".join(_value_text(_field(e, "content", "message", "assistantContent", "userContent")) for e in seq).lower()
         if any(token in text for token in ("prompt lock-in", "hot-append", "pre-baked", "prebaked")) and role in ("m3", "unknown"):
             observations.append(_observation("R1_m3_prompt_prelock", "role", 1, [f"{sid}: prompt/pre-lock wording"], sessions=1))
         if role == "m2":
             direct = [e for e in tools if _tool_name(e) in {"edit", "create", "apply_patch", "write"} and _is_code_path(str(_arguments(e).get("path") or _field(e, "path") or ""))]
             if direct:
                 observations.append(_observation("R2_m2_direct_code_edit", "role", len(direct), [f"{sid}: {_tool_name(e)} {_arguments(e).get('path', '')}" for e in direct], sessions=1))
-        writer_spawned = any("writer" in _text(_data(e)).lower() or _role_for([e]) == "writer" for e in seq)
+        subagent_events = [e for e in seq if _event_type(e) in {"subagent.started", "subagent.completed"}]
+        writer_spawned = any(
+            "writer" in _text(_data(e)).lower()
+            or "group/coding" in str(_field(e, "model", "selectedModel") or "").lower()
+            or ("herdr-dispatch.sh" in _command(e) and "--role writer" in _command(e))
+            for e in subagent_events + seq
+        )
         if role == "m1" and (len(files) > 3 or (assistant_turns > 60 and not writer_spawned)):
             evidence = [f"{sid}: {len(files)} mutating source files"] if len(files) > 3 else [f"{sid}: {assistant_turns} assistant turns without Writer"]
             observations.append(_observation("R3_m1_inline_overwork", "role", max(len(files), assistant_turns), evidence, skill="team-lead", sessions=1))
@@ -437,10 +667,28 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
         peer_models.extend(str(_data(e).get("selectedModel") or "") for e in seq if str(_data(e).get("role", "")).lower() in {"writer", "m1", "team-lead", "tl"})
         reviewer_vendor = next((_vendor(m) for m in reviewer_models if _vendor(m) != "unknown"), "unknown")
         peer_vendors = {_vendor(m) for m in peer_models if _vendor(m) != "unknown"}
+        parent_models = [str(_field(e, "selectedModel", "model", "usageModel") or "") for e in seq
+                         if _event_type(e) == "session.start" or _field(e, "selectedModel", "model", "usageModel")]
+        parent_models.extend(peer_models)
         for goal_id in {_goal_key(event) for event in seq if _goal_key(event)}:
             peer_vendors.update(vendor for vendor in goal_models.get(goal_id, set()) if vendor != "unknown")
         if role == "reviewer" and reviewer_vendor != "unknown" and reviewer_vendor in peer_vendors:
             observations.append(_observation("R5_reviewer_same_vendor", "role", 1, [f"{sid}: reviewer and Writer/TL share {reviewer_vendor}"], skill="code-review", sessions=1))
+        reviewer_subagents = [
+            e for e in subagent_events
+            if str(_field(e, "agentName") or "").lower() in {"code-review", "reviewer"}
+            or "reviewer" in _text(_field(e, "agentDisplayName", "agentDescription")).lower()
+            or "code-review" in _text(_field(e, "agentDisplayName", "agentDescription")).lower()
+        ]
+        for reviewer in reviewer_subagents:
+            reviewer_model = str(_field(reviewer, "model", "selectedModel", "usageModel") or "")
+            same_route = any(_same_model_route(reviewer_model, peer) for peer in parent_models if peer)
+            if same_route:
+                observations.append(_observation(
+                    "R5_reviewer_same_vendor", "role", 1,
+                    [f"{sid}: reviewer subagent shares model route/vendor"],
+                    skill="code-review", sessions=1,
+                ))
         # I1: first two turns/events read three drawers before a script invocation.
         first = seq[:20]
         drawer_reads = [e for e in first if _tool_name(e) in {"view", "read", "cat"} and "references/" in _text(_arguments(e))]
@@ -456,7 +704,8 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
                 observations.append(_observation("I2_mandatory_l2_cli_skip", "invoke", 1, [f"{sid}: {skill} invoked without its script"], skill=skill, sessions=1))
         # I3, I4 and F signals.
         exit2 = [e for e in tools if _exit_code(e) == 2]
-        bloat = [e for e in tools if len(_result_content(e).encode("utf-8")) > 20_000]
+        bloat = [e for e in tools if len(_result_content(e).encode("utf-8")) > 20_000
+                 or "Output too large to read at once" in _result_content(e)]
         if (exit2 or bloat) and allowed("I3_l2_exit2_and_output_bloat", sid):
             evidence = [f"{sid}: exit=2" for _ in exit2[:2]] + [f"{sid}: tool output >20KB" for _ in bloat[:2]]
             target_skill = next((re.search(r"skills/([^/]+)/scripts/", _command(e)).group(1) for e in exit2 + bloat if re.search(r"skills/([^/]+)/scripts/", _command(e))), None)
@@ -523,19 +772,22 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
             observations.append(_observation("H3_r10_receipt_gap_or_dirty_schema", "handoff", 1, [f"{record['name']}: completed ledger has no receipt"], sessions=1))
         spec_words = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{5,}", record["spec"].lower()))
         brief_text = " ".join(text for _, text in record["briefs"]).lower()
-        related = [e for e in events if record["name"].lower() in _text(e).lower() or _goal_key(e) == record["name"]]
+        record_name = record["name"].lower()
+        related = [event for event, blob, goal in indexed_events if record_name in blob or goal == record["name"]]
+        related_sample = related[:200]
         h4_evidence: list[str] = []
-        if any("compaction" in _event_type(e) or "context.compacted" in _event_type(e) or "context compaction" in _text(e).lower() for e in related):
+        if any("compaction" in _event_type(e) or "context.compacted" in _event_type(e)
+               or "context compaction" in event_blobs.get(id(e), "") for e in related_sample):
             h4_evidence.append(f"{record['name']}: context compaction")
         rereads: Counter[str] = Counter()
-        for event in related:
+        for event in related_sample:
             if _tool_name(event) in {"view", "read", "cat"}:
                 args = _arguments(event)
                 path = str(args.get("path") or _field(event, "path") or "")
                 if path and not any(args.get(key) for key in ("view_range", "viewRange", "range", "startLine", "lineRange")):
                     rereads[path] += 1
         h4_evidence.extend(f"{record['name']}: full-file reread {path}" for path, count in rereads.items() if count >= 3)
-        related_text = " ".join(_text(_data(e)) for e in related).lower()
+        related_text = " ".join(event_blobs.get(id(e), "") for e in related_sample)
         promises = bool(re.search(r"delegate|spawn a writer|run (?:the )?verification|verify", related_text))
         mutated = any(_tool_name(e) in {"edit", "create", "apply_patch", "write", "patch"} for e in related)
         verified = any(_exit_code(e) == 0 and re.search(r"verify|pytest|unittest|swiftlint", _command(e), re.I) for e in related)
@@ -544,9 +796,9 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
         if spec_words and len(spec_words - set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{5,}", brief_text))) > 8:
             h4_evidence.append(f"{record['name']}: spec constraints absent from brief")
         if h4_evidence:
-            observations.append(_observation("H4_compaction_and_handoff_loss", "handoff", len(h4_evidence), h4_evidence, skill=_first_fault_skill(related_text or record["spec"], _role_for(related)), sessions=1))
-        scoped_events = _scoped_events(record, events)
+            observations.append(_observation("H4_compaction_and_handoff_loss", "handoff", len(h4_evidence), h4_evidence, skill=_first_fault_skill(related_text or record["spec"], _role_for(related_sample)), sessions=1))
         for name, receipt in record["receipts"]:
+            scoped_events = _scoped_events(record, events, indexed_events, scope_lookup)
             if re.search(r"(?:pytest|unittest|swiftlint|scripts/verify|PR_MERGED|merge)", receipt, re.I):
                 verified_commands = {_command(e).strip() for e in scoped_events if _exit_code(e) == 0 and _command(e).strip()}
                 claims: list[str] = []
@@ -607,15 +859,74 @@ def _version_watermark(events: list[dict[str, Any]] | None = None, observations:
             "transition": f"v{max(0, count - 1)}@previous -> {current}"}
 
 
+def _aggregate_observations(rows: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("metric", "")), str(row.get("upstream_skill", row.get("skill", "unknown"))),
+               str(row.get("status", "actionable")))
+        current = grouped.get(key)
+        if current is None:
+            current = dict(row)
+            current["evidence"] = []
+            grouped[key] = current
+        current["count"] = int(current.get("count", 0)) + int(row.get("count", 0) or 0)
+        current["scenario_sessions"] = int(current.get("scenario_sessions", 0)) + int(row.get("scenario_sessions", 0) or 0)
+        for evidence in row.get("evidence", []):
+            if evidence not in current["evidence"] and len(current["evidence"]) < 3:
+                current["evidence"].append(evidence)
+    return sorted(grouped.values(), key=lambda row: (-int(row.get("count", 0)), str(row.get("metric", ""))))[:limit]
+
+
+def _outcome_summary(gate: dict[str, Any]) -> dict[str, Any]:
+    healthy = sum(value.get("status") == "OUTCOME_HEALTHY" for value in gate.values())
+    at_risk = sum(value.get("status") == "OUTCOME_AT_RISK" for value in gate.values())
+    unknown = sum(value.get("status") == "OUTCOME_UNKNOWN" for value in gate.values())
+    entries = dict(list(sorted(gate.items()))[:15])
+    return {"healthy_count": healthy, "at_risk_count": at_risk, "unknown_count": unknown, "entries": entries}
+
+
+def _skill_attribution(observations: list[dict[str, Any]], watermark: dict[str, Any]) -> list[dict[str, Any]]:
+    by_skill: dict[str, dict[str, Any]] = {}
+    post = watermark.get("post_fix", {}).get("by_skill", {})
+    pre = watermark.get("pre_fix", {}).get("by_skill", {})
+    physical_locks = {
+        "agent-retro": "bounded trace reader and compact output gate",
+        "team-lead": "feedback and lease gate",
+        "m2-dispatcher": "owned-path and lease gate",
+        "code-review": "cross-vendor reviewer routing gate",
+        "personal-m2-assistant": "prompt boundary gate",
+        "repo-kit": "CI contract gate",
+        "my-designer": "spec/design contract gate",
+    }
+    for row in observations:
+        skill = str(row.get("upstream_skill") or row.get("skill") or "unknown")
+        entry = by_skill.setdefault(skill, {"skill": skill, "total_anomalies": 0, "metrics": [],
+                                             "physical_lock": physical_locks.get(skill, "upstream skill lock"),
+                                             "pre_fix_anomalies": int(pre.get(skill, {}).get("anomalies", 0)),
+                                             "post_fix_anomalies": int(post.get(skill, {}).get("anomalies", 0))})
+        entry["total_anomalies"] += int(row.get("count", 0) or 0)
+        if row.get("metric") not in entry["metrics"]:
+            entry["metrics"].append(row["metric"])
+    return sorted(by_skill.values(), key=lambda row: (-row["total_anomalies"], row["skill"]))[:15]
+
+
 def _scan(args: argparse.Namespace) -> dict[str, Any]:
     sessions, handoff_root, warehouse = _roots(args)
-    events, event_source = _read_events(sessions, int(getattr(args, "days", 30) or 30))
+    events, event_source = _read_events(
+        sessions, int(getattr(args, "days", 30) or 30),
+        fast=bool(getattr(args, "fast", False) or getattr(args, "_probe_budget", False)),
+    )
     handoffs, handoff_source = _handoffs(handoff_root)
     outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
     for record in handoffs:
         if re.search(r"\b(?:done|completed|pr_merged)\b", record["ledger"], re.I):
             outcome_gate[f"handoff:{record['name']}"] = {"status": "OUTCOME_HEALTHY" if record["receipts"] else "OUTCOME_AT_RISK", "faithful_receipts": bool(record["receipts"]), "goal": record["name"]}
-    observations = _metric_scan(events, handoffs, event_source, profile_sessions)
+    analysis_events = events
+    all_session_groups = _session_groups(events)
+    if len(all_session_groups) > 45:
+        recent_session_ids = set(list(all_session_groups)[-45:])
+        analysis_events = [event for event in events if _session_id(event, str(event.get("_retro_session", ""))) in recent_session_ids]
+    observations = _metric_scan(analysis_events, handoffs, event_source, profile_sessions)
     active_leases = _active_leases(handoffs)
     layers = set(filter(None, str(getattr(args, "layer", "") or "").split(",")))
     role_filter = str(getattr(args, "role", "") or "").lower()
@@ -636,34 +947,48 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         missing_coverage = (not event_source["available"] and not handoff_source["available"]) or event_source["truncated"]
         metrics.append({"metric": metric, "layer": layer, "count": counts.get(metric, 0), "status": "healthy_progressive_disclosure" if healthy and not counts.get(metric) else ("unknown" if missing_coverage and not counts.get(metric) else "observed")})
     actionable = [x for x in observations if x["status"] != "healthy_progressive_disclosure"]
+    watermark = _version_watermark(events, observations)
+    compact_actionable = _aggregate_observations(actionable)
+    compact_healthy = _aggregate_observations(
+        [x for x in observations if x["status"] == "healthy_progressive_disclosure"], limit=20
+    )
+    compact_pool = [x for x in compact_actionable if x["count"] < 3][:20]
+    outcome = _outcome_summary(outcome_gate) if getattr(args, "summary", False) or len(outcome_gate) > 15 else outcome_gate
     return {"schema": "agent-retro-probe/v1", "ok": True, "entry_mode": "fast" if getattr(args, "fast", False) else "bounded", "role_filter": role_filter or None,
             "source": {"events": event_source, "handoff": handoff_source, "warehouse": "available" if warehouse else "missing_safe_degradation"},
             "coverage": {"events": len(events), "sessions": len(_session_groups(events)), "observations": len(observations), "incomplete": bool(event_source["truncated"])},
-            "outcome_gate": outcome_gate, "active_leases": sorted(active_leases), "excluded_by_active_lease": [],
-            "version_watermark": _version_watermark(events, observations), "metrics": metrics, "observations": actionable[:100],
-            "healthy_exemptions": [x for x in observations if x["status"] == "healthy_progressive_disclosure"],
-            "observation_pool": [x for x in actionable if x["count"] < 3], "k_cap": min(3, len({x['upstream_skill'] for x in actionable if x['upstream_skill'] not in active_leases}))}
+            "outcome_gate": outcome, "active_leases": sorted(active_leases), "excluded_by_active_lease": [],
+            "version_watermark": watermark, "skill_attribution": _skill_attribution(actionable, watermark),
+            "metrics": metrics, "observations": compact_actionable,
+            "healthy_exemptions": compact_healthy, "observation_pool": compact_pool,
+            "k_cap": min(3, len({x['upstream_skill'] for x in actionable if x['upstream_skill'] not in active_leases}))}
 
 
 def _compact_print(payload: Any, as_json: bool, summary: bool = False) -> None:
     payload = _redact_obj(payload)
     if as_json:
-        text = json.dumps(payload, ensure_ascii=False, indent=None if summary else 2)
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     else:
         if isinstance(payload, dict):
             text = "\n".join([f"agent-retro: {payload.get('schema', 'ok')}", f"observations={len(payload.get('observations', []))} k={payload.get('k_cap', 0)}", "unknown sources remain unknown; no issue was published."])
         else:
             text = _text(payload)
     if len(text) > MAX_OUTPUT and isinstance(payload, dict):
-        reduced = {"schema": payload.get("schema", "agent-retro/v1"), "ok": payload.get("ok", True),
-                   "truncated_output": True, "coverage": payload.get("coverage"), "metrics": payload.get("metrics", []),
-                   "observations": payload.get("observations", [])[:5], "k_cap": payload.get("k_cap", 0)}
+        reduced = {key: payload[key] for key in (
+            "schema", "ok", "entry_mode", "role_filter", "source", "coverage", "outcome_gate",
+            "active_leases", "excluded_by_active_lease", "version_watermark", "skill_attribution",
+            "metrics", "observations", "healthy_exemptions", "observation_pool", "k_cap",
+        ) if key in payload}
         for key in ("issue_verified", "dry_run", "published", "written", "config", "path", "action"):
             if key in payload:
                 reduced[key] = payload[key]
-        text = json.dumps(reduced, ensure_ascii=False, separators=(",", ":")) if as_json else text[:MAX_OUTPUT - 40] + "\n... output truncated"
-        if len(text) > MAX_OUTPUT and as_json:
-            text = json.dumps({"schema": reduced["schema"], "ok": reduced["ok"], "truncated_output": True}, ensure_ascii=False, separators=(",", ":"))
+        for size in (10, 5, 2, 0):
+            reduced["observations"] = reduced.get("observations", [])[:size]
+            reduced["healthy_exemptions"] = reduced.get("healthy_exemptions", [])[:size]
+            reduced["observation_pool"] = reduced.get("observation_pool", [])[:size]
+            text = json.dumps(reduced, ensure_ascii=False, separators=(",", ":")) if as_json else text[:MAX_OUTPUT - 40] + "\n... output compacted"
+            if len(text) <= MAX_OUTPUT:
+                break
     print(_redact(text))
 
 
@@ -690,23 +1015,35 @@ def _safe_write(path: Path, text: str) -> bool:
     return True
 
 
+def _owned_path_skills(source: str) -> set[str]:
+    match = re.search(r"(?ims)^#{0,6}\s*owned paths\b(?P<body>.*?)(?=^#{1,6}\s|\Z)", source)
+    if not match:
+        return set()
+    skills: set[str] = set()
+    for line in match.group("body").splitlines():
+        if not re.match(r"^\s*(?:[-*]|\d+\.)\s+", line):
+            continue
+        skills.update(re.findall(r"\bskills/([A-Za-z0-9_-]+)(?:/|\b)", line))
+    return {skill for skill in skills if (ROOT / "skills" / skill).is_dir()}
+
+
+def _lease_name_skill(name: str) -> str | None:
+    match = re.fullmatch(r"(?:agent|skill)-retro-([A-Za-z0-9_-]+)", name)
+    if not match:
+        return None
+    candidate = match.group(1)
+    return candidate if (ROOT / "skills" / candidate).is_dir() else None
+
+
 def _active_leases(handoffs: list[dict[str, Any]]) -> set[str]:
     leases: set[str] = set()
     for record in handoffs:
         if not record.get("active_lease"):
             continue
-        match = re.search(r"agent-retro-([A-Za-z0-9_-]+)", record["name"])
-        if match:
-            leases.add(match.group(1))
+        if skill := _lease_name_skill(record["name"]):
+            leases.add(skill)
         for source in (record.get("spec", ""), record.get("ledger", "")):
-            for skill in re.findall(r"skills/([A-Za-z0-9_-]+)/", source):
-                leases.add(skill)
-    worktrees = Path(os.environ.get("AGENT_RETRO_WORKTREES", "~/Development/worktrees")).expanduser()
-    if _external_path_safe(worktrees) and worktrees.is_dir():
-        for directory in worktrees.iterdir():
-            match = re.match(r"agent-retro-([A-Za-z0-9_-]+)", directory.name)
-            if match and directory.is_dir():
-                leases.add(match.group(1))
+            leases.update(_owned_path_skills(source))
     return leases
 
 
@@ -747,6 +1084,8 @@ def _brief_text(skill: str, item: dict[str, Any], root: Path) -> tuple[str, str,
 
 
 def command_probe(args: argparse.Namespace) -> dict[str, Any]:
+    if int(getattr(args, "days", 30) or 30) <= 3 and not getattr(args, "fast", False):
+        args._probe_budget = True
     return _scan(args)
 
 
