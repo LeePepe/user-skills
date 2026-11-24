@@ -98,6 +98,7 @@ Thin Internal stays in this graph; thick domain knowledge, CLI/API, or determini
 - `P9/P2 → P1 → E7 → E4`: aidata snapshot → AIDash card → UI evidence → Goal task.
 - `I1 → I3 → I4 → I5 → I6` (`TK-08`): Teams ingest → classify → summarize → Owner notify → grounded reply; no blind resend.
 - `G1/E2/E10/I3/I5/P7`: Root Tracker deduplicates Goal/Task/PR evidence; Linear is the only writable tracker.
+- `TK5`: `E1/E6/E4/E9/I5` + `cindy_buddy_scaffold plan|scaffold|register-db|verify-isolation` for isolated script/state/wake/notify Cindy Buddy pipelines.
 - `aidash-metrics` handles 厚领域流程; `howto` remains the thin workflow entry.
 
 Validation: `python3 -m unittest scripts/test_m2_router.py`, `python3 skills/howto/scripts/howto_guard.py check-nodes`, and `./scripts/verify --all`.
