@@ -66,10 +66,51 @@
       "negative_cmd": "python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --aidata-root /definitely/missing --json",
       "expect_fail_exit": 2,
       "negative_stderr_contains": [
-        "missing"
+        "missing",
+        "aidata-l1-l5-lineage.md"
       ],
       "registered_at": "2026-11-15"
+    },
+    {
+      "id": "EV-005",
+      "title": "Invalid flag self-discloses lineage pointer",
+      "tags": [
+        "counter-case",
+        "contract"
+      ],
+      "negative_cmd": "python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --not-a-real-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "aidata-l1-l5-lineage.md"
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-006",
+      "title": "Root alias still fails closed at the root boundary",
+      "tags": [
+        "counter-case",
+        "aliases"
+      ],
+      "negative_cmd": "python3 skills/aidash-metrics/scripts/inspect_aidata_pipeline.py --root /definitely/missing --json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "missing",
+        "aidata-l1-l5-lineage.md"
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-007",
+      "title": "Compact inspector regression suite",
+      "tags": [
+        "compact",
+        "aliases"
+      ],
+      "cmd": "python3 -I -B scripts/test_aidash_metrics_compact.py",
+      "expect_exit": 0,
+      "registered_at": "2026-11-25"
     }
   ],
-  "updated": "2026-11-15"
+  "updated": "2026-11-25"
 }

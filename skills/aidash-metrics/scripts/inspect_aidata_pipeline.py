@@ -12,8 +12,10 @@ import sys
 from pathlib import Path
 
 DESCRIPTION = "Inspect bounded aidata layers and classify metric-specific evidence without executing source files."
+LINEAGE_POINTER = "skills/aidash-metrics/references/aidata-l1-l5-lineage.md"
 MAX_TEXT = 2_000_000
 MAX_RECORDS = 128
+MAX_JSON_BYTES = 15_000
 SESSION_SOURCES = {"claude_jsonl", "copilot_cli", "claude_job", "state_db", "hermes_messages", "hermes_tools", "raven", "gecko"}
 EVENT_SOURCES = SESSION_SOURCES | {"gtt_ledger", "gtt_receipt", "bot_tl", "aidash_events"}
 # Each tuple is one required dimension; its members are alternatives, not extra obligations.
@@ -57,11 +59,20 @@ CANONICAL = {
 }
 
 
+class LineageArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        one_line = " ".join(str(message).splitlines())
+        self._print_message(f"argument error: {one_line}\nSee {LINEAGE_POINTER}\n", sys.stderr)
+        raise SystemExit(2)
+
+
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=DESCRIPTION)
-    p.add_argument("--aidata-root", required=True, type=Path)
-    p.add_argument("--metric", action="append", dest="metrics", choices=sorted(METRICS))
+    p = LineageArgumentParser(description=DESCRIPTION)
+    p.add_argument("--aidata-root", "--root", "--dir", "--aidata-dir", dest="aidata_root", required=True, type=Path)
+    p.add_argument("--metric", action="append", dest="metrics", help="Metric name (repeatable)")
     p.add_argument("--metrics", dest="metrics_csv", help="Comma-separated metric names")
+    p.add_argument("--summary", action="store_true", help="Use the bounded JSON summary (the default)")
+    p.add_argument("--full", action="store_true", help="Include unlimited raw lists in JSON output")
     p.add_argument("--check-contract", action="store_true", help="Validate required collector/clean DDL/schema/SQL/Snapshot sources; generated data is optional")
     p.add_argument("--json", action="store_true", dest="as_json")
     return p
@@ -282,6 +293,76 @@ def inspect(root: Path) -> tuple[dict, dict, list[str]]:
     return {layer: sorted(set(paths)) for layer, paths in layers.items()}, entries, limited_shards
 
 
+def l1_counts(layers: dict[str, list[str]]) -> tuple[int, int]:
+    paths = layers.get("l1", [])
+    raw_files = [path for path in paths if path.startswith("L1_collect/raw/")]
+    return len(paths), len(raw_files)
+
+
+def _truncate_lists(value: object, limit: int) -> object:
+    """Bound only source-pointer arrays, never semantic contract arrays."""
+    if not isinstance(value, dict):
+        return value
+
+    compact = dict(value)
+    layers = value.get("layers")
+    if isinstance(layers, dict):
+        compact["layers"] = {
+            layer: list(paths[:limit]) if isinstance(paths, list) else paths
+            for layer, paths in layers.items()
+        }
+
+    sampling = value.get("sampling")
+    if isinstance(sampling, dict):
+        compact["sampling"] = dict(sampling)
+        pointers = sampling.get("limit_reached_shards")
+        if isinstance(pointers, list):
+            compact["sampling"]["limit_reached_shards"] = pointers[:limit]
+
+    metrics = value.get("metrics")
+    if isinstance(metrics, dict):
+        compact["metrics"] = {}
+        for metric_name, metric in metrics.items():
+            metric_copy = dict(metric)
+            coverage = metric.get("coverage")
+            if isinstance(coverage, dict):
+                metric_copy["coverage"] = {}
+                for layer, layer_coverage in coverage.items():
+                    coverage_copy = dict(layer_coverage)
+                    evidence = layer_coverage.get("evidence")
+                    if isinstance(evidence, list):
+                        ordered = sorted(
+                            evidence,
+                            key=lambda entry: (
+                                not entry.get("complete", False),
+                                entry.get("kind") != "observed",
+                                entry.get("path", ""),
+                                entry.get("table") or "",
+                            ),
+                        )
+                        coverage_copy["evidence"] = ordered[:limit]
+                    metric_copy["coverage"][layer] = coverage_copy
+            compact["metrics"][metric_name] = metric_copy
+    return compact
+
+
+def compact_result(result: dict, l1_total_count: int, l1_total_files: int) -> dict:
+    """Keep representative source evidence while preserving metric contracts."""
+    for limit in (16, 8, 4, 2, 1):
+        compact = _truncate_lists(result, limit)
+        assert isinstance(compact, dict)
+        compact["l1_total_count"] = l1_total_count
+        compact["l1_total_files"] = l1_total_files
+        encoded = json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        if len(encoded) < MAX_JSON_BYTES:
+            return compact
+    compact = _truncate_lists(result, 1)
+    assert isinstance(compact, dict)
+    compact["l1_total_count"] = l1_total_count
+    compact["l1_total_files"] = l1_total_files
+    return compact
+
+
 def metric_coverage(metric: str, layer: str, entries: list[dict]) -> dict:
     dimensions = METRICS[metric][layer]
     allowed = EVENT_SOURCES if metric == "eval_effect" else SESSION_SOURCES
@@ -304,20 +385,24 @@ def metric_coverage(metric: str, layer: str, entries: list[dict]) -> dict:
             "sample_present": any(entry["kind"] == "observed" for entry in eligible)}
 
 
+def lineage_error(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    print(f"See {LINEAGE_POINTER}", file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = args.aidata_root.expanduser().resolve()
     if not root.is_dir():
-        print(f"aidata root is missing or not a directory: {root}", file=sys.stderr)
-        return 2
+        return lineage_error(f"aidata root is missing or not a directory: {root}")
     requested = list(args.metrics or [])
     if args.metrics_csv:
         requested.extend(x.strip() for x in args.metrics_csv.split(",") if x.strip())
     requested = list(dict.fromkeys(requested or METRICS))
     unknown = sorted(set(requested) - set(METRICS))
     if unknown:
-        print(f"unknown metric(s): {', '.join(unknown)}", file=sys.stderr)
-        return 2
+        return lineage_error(f"unknown metric(s): {', '.join(unknown)}")
     try:
         layers, entries, limited_shards = inspect(root)
         if args.check_contract:
@@ -349,7 +434,21 @@ def main(argv: list[str] | None = None) -> int:
               "sampling": {"max_records_per_shard": MAX_RECORDS, "max_bytes_per_shard": MAX_TEXT, "values_used_as_evidence": False, "limit_reached_shards": limited_shards},
               "layers": layers, "metrics": evidence}
     if args.as_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        encoded = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        compact_json = False
+        if len(encoded) > MAX_JSON_BYTES:
+            l1_total_count, l1_total_files = l1_counts(layers)
+            if args.full:
+                result = dict(result)
+                result["l1_total_count"] = l1_total_count
+                result["l1_total_files"] = l1_total_files
+            else:
+                result = compact_result(result, l1_total_count, l1_total_files)
+                compact_json = len(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")) >= MAX_JSON_BYTES
+        if compact_json:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(f"{status}: {result['reason']}")
         for metric, item in evidence.items():
