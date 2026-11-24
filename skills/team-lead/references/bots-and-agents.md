@@ -68,7 +68,7 @@ UI/UX design ownership remains with `Steering` during Phase 0 co-design: it load
 | Steering / Team lead (`team_lead`) | `group/steering` (`strong`: `gemini-4-carbon`/`gemini-4-argon`/`gpt-6.1-sol`) | Owner / 协调者 bot | 整个 Goal（探查、规划、Spec/Design、`≤3` 文件直改、调度与 `EVT=RULING`） |
 | Designer (`designer`) | `group/designer` (`mid`; `gemini-4-argon` + `grok-4.7`) | Steering | 仅 UI Demo 阶段独立产出 10 个原型 Prompt；不改 Spec/Design 或生产代码 |
 | 写者（`writer`） / 升档写者（`writer_escalated`） | `group/coding` (`worker`: `gpt-5.6-luna`/`mai-code-2`/`mai-code-2-flash`) / `group/coding-escalated` (`mid`: `gpt-6.1-sol`) | Steering | 按 Designer Prompt 实现 HTML 原型与生产代码（`writer_escalated` 仅限 V3 第 2 轮） |
-| 代码 Reviewer (`code_reviewer`) | `group/reviewing` (`mid`: `gemini-4-argon`/`gpt-6.1-sol`，**与写者不同家**） | Steering | Goal 收口单次审查（若仓库 CI 已有 `codex-review-target` 则直接复用） |
+| 代码 Reviewer (`code_reviewer`) | `group/reviewing` (`gemini-4-argon`/`gpt-6.1-sol`；strict vendor exclusion） | Steering | 4 lane clean-room：Spec-Fidelity、Adversarial/Security/Performance、Design-Traceback、Layer/Cross-layer |
 | Explorer（可选） | `group/coding` (`worker`) | Steering | 仅 `>8` 文件高噪声跨仓搜索时按需启动 |
 | CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认由 Layer 0 `ci-monitor.py`（0 Token）处理；失败诊断回退 `worker.pr_monitor` | Steering | 异步监控 PR CI、auto-merge 与发布流水线（Job 级 Fail-Fast） |
 

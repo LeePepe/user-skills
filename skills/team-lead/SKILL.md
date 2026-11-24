@@ -69,7 +69,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 | Designer（`designer` / `group/designer`） | 仅 UI Demo 探索阶段独立产出 10 个原型 Prompt（`v01..v10` 或 `app01..app04`）；不接管 Steering 的 Spec/Design ownership，也不实现生产代码 |
 | 探查者（Explorer，可选） | 仅在 `>8` 文件高噪声跨仓搜索时派发，只读核实事实（附 `file:line`）并写 handoff R10 回执（R11） |
 | Task 写者（Writer / `writer_escalated`） | 多文件或耗时编译任务实现、本地验证与 commit（同分支连续推进或子 Worktree 本地 `keep` 合回后退出关窗）；遵守 **5s Foreground-to-Background Rule**（耗时 `>5s` 的编译/全量测试如 `xcodebuild` 必走后台/异步或短时间片，严禁阻塞 Worker 实时接收 `steer`/停止信号，严禁 `gh run watch` 或 `sleep >= 30`）；超 `Owned Paths` 追问执行 `goal-queue.py set-status --status handback --reason "..."` 退回 TL；首轮 `group/coding` 按 Designer Prompt 实现 HTML 原型/生产代码，V3 第 2 轮启用 `writer_escalated` |
-| 独立验收（Reviewer） | Goal 收口执行 **1 次** V1–V5 双轴跨厂商独立审查（若目标仓 PR CI 已运行 `codex-review-target` 则直接复用） |
+| 独立验收（Reviewer） | Goal 收口执行 **1 次**四 lane（Spec-Fidelity、Adversarial/Security/Performance、Design-Traceback、Layer/Cross-layer）跨厂商独立审查；严格模式使用 `review-manifest.json` 的哈希锁定 lane packet 与 clean-room `cwd`（若目标仓 PR CI 已运行 `codex-review-target` 则直接复用） |
 | CI / 发布监控（`ci-monitor.py` / `pr_monitor`） | 默认后台运行 `skills/team-lead/scripts/ci-monitor.py`（Layer 0、0 Token），不为纯状态轮询启动 LLM；仅失败需 LLM 诊断时回退 `worker.pr_monitor`。Job 级 Fail-Fast 看 `failure`／`timed_out`／`action_required`，Run `in_progress` 时读 `actions/jobs/<id>/logs` |
 
 参考索引：[`bots-and-agents.md`](references/bots-and-agents.md)、[`ledger.md`](references/ledger.md)、[`playbook.md`](references/playbook.md)、[`playbook-herdr-sop.md`](references/playbook-herdr-sop.md)、[`playbook-narrative-extract.md`](references/playbook-narrative-extract.md)、[`playbook-retro-loop.md`](references/playbook-retro-loop.md)、[`workflow-refine-roadmap.md`](references/workflow-refine-roadmap.md)、[`runtime-profiles.yaml`](references/runtime-profiles.yaml)、[`operator-policy.json`](references/operator-policy.json)、[`dispatch-recipes.json`](references/dispatch-recipes.json)、[`eval-cases.json`](references/eval-cases.json)。
@@ -81,7 +81,7 @@ description: 进行任何开发、架构或规格规划、UI/UX 设计或界面�
 - **R7 执行前一致性**：确认 `Owned Paths`、接口与验证命令真实可运行。
 - **R8 状态机与租约**：Task `planned → ready → in_progress → done`（或 `in_review → changes_requested → in_progress`，可转 `blocked`／`cancelled`）；Goal `planning → in_progress → accepting → done`。租约超时按 git 状态＋R10 回执对账后接手。
 - **R9 本地 `keep / drop` 与单出口交付**：串行 Tasks 同分支连续 commit；并发子 Worktree 验证后本地 `keep` 合回并清理（失败分支 `drop`），整个 Goal 统一提 1 个 PR。
-- **R10 回执对账、Pre-Review 防呆门禁 & R11 只读探查**：R10 记录 commit SHA、验证结果与实际模型；派 `Reviewer` 前须跑 `python3 skills/team-lead/scripts/feedback_guard.py pre-review-check --worktree <wt> --brief <brief.md> [--receipt <r10.md>]`（拦截越界文件、个人路径／密钥泄漏、未提交改动与残缺 R10，评测集见 [`eval-cases.json`](references/eval-cases.json)）；`>8` 文件高噪声搜索派只读 `Explorer` 附 `file:line` 回报。
+- **R10 回执对账、Pre-Review 防呆门禁 & R11 只读探查**：R10 记录 commit SHA、验证结果与实际模型；派 `Reviewer` 前须跑 `feedback_guard.py pre-review-check` 与 `skills/code-review/scripts/review_manifest.py build|verify`，固化 `head_sha`、`diff_sha256`、`spec_sha256` 与 lane packet，拦截越界／泄漏／dirty／残缺 R10／Writer R10 prose／hash drift；严格 Reviewer 通过 `herdr-dispatch.sh --review-manifest --review-lane --writer-model --writer-vendor`，实际 vendor 未知、同厂商或非只读能力时 fail closed（评测集见 [`eval-cases.json`](references/eval-cases.json)）。
 - **角色绑定与交接**：每次只沟通一层 Agent；Bot 只管 Goal TL 唤醒、解卡与 `GOAL_DONE` 关窗（保留 Worktree 不阻断关窗），TL 独占下属派发与回收；新 `Steering` 接手先按 R10、台账与 git 状态对账。
 
 ## 限定审查

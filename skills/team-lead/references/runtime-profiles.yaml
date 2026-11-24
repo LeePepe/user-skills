@@ -24,7 +24,7 @@ gateway:
       routing: order
       stays: turn
       default_vendor_family: [google, openai]
-      alt_by_excluded_vendor: {google: "group/reviewing-openai", openai: "group/reviewing", microsoft: "group/reviewing"}
+      alt_by_excluded_vendor: {google: "group/reviewing-openai", openai: "group/reviewing", microsoft: "group/reviewing", anthropic: "group/reviewing", xai: "group/reviewing", moonshot: "group/reviewing"}
       fallback_models: {copilot: "gemini-4-argon", codex: "gpt-6.1-sol", cursor: "kimi"}
     coding:
       id: "group/coding"

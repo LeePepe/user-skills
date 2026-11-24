@@ -12,10 +12,14 @@ usage() {
 Usage:
   herdr-dispatch.sh --name <agent-name> --kind <kind> --cwd <worktree-or-dir> --prompt <text> \
     [--pane <source-pane-id>] [--direction right|down] [--new-workspace] [--workspace-label <label>] \
-    [--role <role>] [--exclude-vendor <vendor>] [--gateway-mode auto|magpie|direct] \
-    [--wait] [--timeout <ms>] [-- <agent-args>...]
+    [--role <role>] [--exclude-vendor <vendor>] [--review-manifest <path>] \
+    [--review-lane <lane>] [--writer-model <model>] [--writer-vendor <vendor>] \
+    [--gateway-mode auto|magpie|direct] [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
 }
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST_HELPER="$SCRIPT_DIR/../../code-review/scripts/review_manifest.py"
 
 NAME=""
 KIND=""
@@ -33,6 +37,10 @@ WAIT_FLAG=0
 TIMEOUT_MS=""
 ROLE=""
 EXCLUDE_VENDOR=""
+REVIEW_MANIFEST=""
+REVIEW_LANE=""
+WRITER_MODEL=""
+WRITER_VENDOR=""
 GATEWAY_MODE="${HERDR_GATEWAY_MODE:-auto}"
 AGENT_ARGS=()
 
@@ -152,6 +160,42 @@ while [[ $# -gt 0 ]]; do
       ;;
     --exclude-vendor=*)
       EXCLUDE_VENDOR="${1#*=}"
+      shift
+      ;;
+    --review-manifest)
+      [[ $# -ge 2 ]] || die_usage "--review-manifest requires a value"
+      REVIEW_MANIFEST="$2"
+      shift 2
+      ;;
+    --review-manifest=*)
+      REVIEW_MANIFEST="${1#*=}"
+      shift
+      ;;
+    --review-lane)
+      [[ $# -ge 2 ]] || die_usage "--review-lane requires a value"
+      REVIEW_LANE="$2"
+      shift 2
+      ;;
+    --review-lane=*)
+      REVIEW_LANE="${1#*=}"
+      shift
+      ;;
+    --writer-model)
+      [[ $# -ge 2 ]] || die_usage "--writer-model requires a value"
+      WRITER_MODEL="$2"
+      shift 2
+      ;;
+    --writer-model=*)
+      WRITER_MODEL="${1#*=}"
+      shift
+      ;;
+    --writer-vendor)
+      [[ $# -ge 2 ]] || die_usage "--writer-vendor requires a value"
+      WRITER_VENDOR="$2"
+      shift 2
+      ;;
+    --writer-vendor=*)
+      WRITER_VENDOR="${1#*=}"
       shift
       ;;
     --gateway-mode)
@@ -278,18 +322,54 @@ for ((i = 0; i < ${#AGENT_ARGS[@]}; i++)); do
   esac
 done
 
+REVIEWER_ROLE=0
+STRICT_REVIEW=0
 case "$ROLE" in
   "") ;;
   team_lead|arbitration|planner|research_arbiter) LOGICAL_GROUP="group/steering" ;;
   planner_reviewer|code_reviewer|research_primary|research_co)
+    REVIEWER_ROLE=1
     LOGICAL_GROUP="group/reviewing"
-    [[ "$EXCLUDE_VENDOR" == "google" ]] && LOGICAL_GROUP="group/reviewing-openai"
+    case "$EXCLUDE_VENDOR" in
+      ""|openai|microsoft|anthropic|xai|moonshot) ;;
+      google) LOGICAL_GROUP="group/reviewing-openai" ;;
+      *) echo "Error: unsupported excluded vendor '$EXCLUDE_VENDOR'" >&2; exit 2 ;;
+    esac
     ;;
   writer|explorer|pr_monitor|mechanical) LOGICAL_GROUP="group/coding" ;;
   writer_escalated) LOGICAL_GROUP="group/coding-escalated" ;;
   designer) LOGICAL_GROUP="group/designer" ;;
   *) die_usage "unsupported --role '$ROLE'" ;;
 esac
+
+if [[ -n "$REVIEW_MANIFEST$REVIEW_LANE$WRITER_MODEL$WRITER_VENDOR" ]]; then
+  STRICT_REVIEW=1
+fi
+if [[ "$STRICT_REVIEW" -eq 1 ]]; then
+  if [[ "$REVIEWER_ROLE" -ne 1 ]]; then
+    echo "Error: review manifest options require a reviewer role" >&2
+    exit 2
+  fi
+  if [[ -z "$REVIEW_MANIFEST" || -z "$REVIEW_LANE" || -z "$WRITER_MODEL" || -z "$WRITER_VENDOR" ]]; then
+    echo "Error: strict reviewer dispatch requires --review-manifest, --review-lane, --writer-model, and --writer-vendor" >&2
+    exit 2
+  fi
+  if [[ -z "$EXCLUDE_VENDOR" ]]; then
+    EXCLUDE_VENDOR="$WRITER_VENDOR"
+    [[ "$WRITER_VENDOR" == "google" ]] && LOGICAL_GROUP="group/reviewing-openai"
+  elif [[ "$EXCLUDE_VENDOR" != "$WRITER_VENDOR" ]]; then
+    echo "Error: --exclude-vendor must equal the manifest Writer vendor ($WRITER_VENDOR)" >&2
+    exit 2
+  fi
+  [[ -f "$REVIEW_MANIFEST" ]] || { echo "Error: review manifest does not exist: $REVIEW_MANIFEST" >&2; exit 2; }
+  [[ -x "$MANIFEST_HELPER" || -f "$MANIFEST_HELPER" ]] || { echo "Error: review manifest helper is missing: $MANIFEST_HELPER" >&2; exit 2; }
+  python3 "$MANIFEST_HELPER" verify --manifest "$REVIEW_MANIFEST" --lane "$REVIEW_LANE" --cwd "$CWD" \
+    --writer-model "$WRITER_MODEL" --writer-vendor "$WRITER_VENDOR" >/dev/null
+  if [[ ! "$PROMPT" =~ [Cc]lean-room ]]; then
+    echo "Error: strict reviewer prompt must declare clean-room review" >&2
+    exit 2
+  fi
+fi
 
 if [[ "$ROLE" == "writer_escalated" || "$REQUESTED_MODEL" == "group/coding-escalated" || "$REQUESTED_MODEL" == "magpie/group/coding-escalated" ]]; then
   if [[ "$NAME" =~ -r1$ || "$ORIGINAL_NAME" =~ -r1$ ]]; then
@@ -632,6 +712,28 @@ if [[ -d "$CWD" ]] && git -C "$CWD" rev-parse --is-inside-work-tree >/dev/null 2
   fi
 fi
 
+ACTUAL_REVIEWER_VENDOR=""
+if [[ "$REVIEWER_ROLE" -eq 1 && -n "$EXCLUDE_VENDOR" ]]; then
+  ACTUAL_REVIEWER_VENDOR="$(python3 "$MANIFEST_HELPER" model-vendor --model "$RESOLVED_MODEL")"
+  if [[ "$ACTUAL_REVIEWER_VENDOR" == "unknown" || "$RESOLVED_MODEL" == group/* || "$RESOLVED_MODEL" == magpie/group/* ]]; then
+    echo "Error: reviewer vendor cannot be verified for --exclude-vendor (resolved '$RESOLVED_MODEL')" >&2
+    exit 2
+  fi
+  if [[ "$ACTUAL_REVIEWER_VENDOR" == "$EXCLUDE_VENDOR" ]]; then
+    echo "Error: resolved reviewer vendor '$ACTUAL_REVIEWER_VENDOR' violates --exclude-vendor '$EXCLUDE_VENDOR'" >&2
+    exit 2
+  fi
+fi
+if [[ "$STRICT_REVIEW" -eq 1 ]]; then
+  if [[ -z "$ACTUAL_REVIEWER_VENDOR" ]]; then
+    ACTUAL_REVIEWER_VENDOR="$(python3 "$MANIFEST_HELPER" model-vendor --model "$RESOLVED_MODEL")"
+  fi
+  if [[ "$ACTUAL_REVIEWER_VENDOR" == "$WRITER_VENDOR" ]]; then
+    echo "Error: reviewer vendor '$ACTUAL_REVIEWER_VENDOR' matches Writer vendor '$WRITER_VENDOR'" >&2
+    exit 2
+  fi
+fi
+
 # Pre-register folder trust for CWD & shared roots so headless panes never block on startup folder-trust dialogs.
 if [[ -d "$CWD" && "${HERDR_SKIP_GIT_AUTHOR:-0}" != "1" ]]; then
   if git -C "$CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -768,6 +870,15 @@ fi
 
 # For copilot subagents, auto-inject safe path & tool allowlists (additively merging baseline + extra dirs) so background panes do not block.
 if [[ "$KIND" == "copilot" ]]; then
+  if [[ "$REVIEWER_ROLE" -eq 1 ]]; then
+    for ((review_arg_idx = 0; review_arg_idx < ${#AGENT_ARGS[@]}; review_arg_idx++)); do
+      review_arg="${AGENT_ARGS[$review_arg_idx]}"
+      if [[ "$review_arg" == "--allow-tool=write" || ( "$review_arg" == "--allow-tool" && "${AGENT_ARGS[$((review_arg_idx + 1))]:-}" == "write" ) ]]; then
+        echo "Error: reviewer capability is read-only; --allow-tool write is forbidden" >&2
+        exit 2
+      fi
+    done
+  fi
   HAS_ALLOW_OR_DENY=0
   HAS_NO_ASK=0
   EXISTING_ADD_DIRS=()
@@ -806,13 +917,30 @@ if [[ "$KIND" == "copilot" ]]; then
   done
   AGENT_ARGS=("${SANITIZED_AGENT_ARGS[@]+"${SANITIZED_AGENT_ARGS[@]}"}")
   if [[ "$HAS_ALLOW_OR_DENY" -eq 0 ]]; then
-    AGENT_ARGS+=(
-      --allow-tool write
-      --allow-tool shell
-      --allow-tool url
-      --deny-tool "shell(rm -rf /:*)"
-      --deny-tool "shell(herdr server stop:*)"
-    )
+    if [[ "$REVIEWER_ROLE" -eq 1 ]]; then
+      AGENT_ARGS+=(
+        --allow-tool url
+        --allow-tool "shell(git:*)"
+        --allow-tool "shell(gh:*)"
+        --allow-tool "shell(python3:*)"
+        --allow-tool "shell(shasum:*)"
+        --deny-tool "shell(git commit:*)"
+        --deny-tool "shell(git push:*)"
+        --deny-tool "shell(git merge:*)"
+        --deny-tool "shell(git rebase:*)"
+        --deny-tool "shell(git reset:*)"
+        --deny-tool "shell(git checkout:*)"
+        --deny-tool "shell(herdr server stop:*)"
+      )
+    else
+      AGENT_ARGS+=(
+        --allow-tool write
+        --allow-tool shell
+        --allow-tool url
+        --deny-tool "shell(rm -rf /:*)"
+        --deny-tool "shell(herdr server stop:*)"
+      )
+    fi
   fi
   # Always keep the static baseline, then append caller --add-dir values and
   # colon-separated HERDR_EXTRA_ADD_DIRS. Exact-string dedupe preserves both
@@ -841,7 +969,10 @@ if [[ "$KIND" == "copilot" ]]; then
     "/var/folders"
     "/private/var/folders"
   )
-  if [[ -n "${HERDR_EXTRA_ADD_DIRS:-}" ]]; then
+  if [[ "$STRICT_REVIEW" -eq 1 ]]; then
+    # A strict reviewer can only see its immutable lane packet, never the Goal handoff or source worktree.
+    BASELINE_ADD_DIRS=("$CWD")
+  elif [[ -n "${HERDR_EXTRA_ADD_DIRS:-}" ]]; then
     IFS=':' read -r -a EXTRA_DIRS_ARR <<< "$HERDR_EXTRA_ADD_DIRS"
     for extra_d in "${EXTRA_DIRS_ARR[@]+"${EXTRA_DIRS_ARR[@]}"}"; do
       [[ -n "$extra_d" ]] && BASELINE_ADD_DIRS+=("$extra_d")
