@@ -1,8 +1,8 @@
 ---
 name: agent-retro
-description: v2.0.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke, exec, friction, horizon) with zero-token probe, Cheap Worker/Jev triage, post-fix watermarks, and bounded M2-to-M1 rollup. Not for product crash telemetry or blog extraction.
+description: v2.1.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke, exec, friction, horizon) with zero-token probe, Cheap Worker/Jev triage, post-fix watermarks, and bounded M2-to-M1 rollup. Not for product crash telemetry or blog extraction.
 ---
-# Agent Retro v2.0.0（六层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
+# Agent Retro v2.1.0（六层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
 
 `agent-retro` collects bounded multi-agent execution telemetry and inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **6-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`, `horizon`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
 
@@ -63,7 +63,7 @@ description: v2.0.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke,
 - **Stage 1+2 (`1 M2 -> 1 Cheap Probe Worker`)**: Dispatch `--role explorer` (`mai-code-2-flash` / `gpt-5.6-luna`, `0` steering tokens) to run `agent_retro.py probe --fast --json` and `agent_retro.py triage --pick-top 3 --use-jev --emit-briefs ~/Development/handoff --json`. With **zero Owner approval gate before fixing**, select `K` (`0..3` honest cap, never a forced quota) disjoint upstream skills (`K=0` -> `HEALTHY_NO_ISSUES`).
 - **Stage 3 (`1 M2 -> K Parallel M1 TLs -> M2 Rollup`)**: For each picked skill (`K=1..3`), spawn `agent-retro-<sk>-goal-tl-r1` in `~/Development/worktrees/agent-retro-<sk>`. If deep reasoning finds the signal is benign (e.g. `R1->R2` convergence), record `HEALTHY_NO_ISSUES` (`0` Writers/Reviewers); if confirmed, run `Writer -> Reviewer` with 1 of the **3 Physical Locks** + **Positive & Counter-Case Dual Replay**, merge PR, and roll up via `agent_retro.py rollup --handoff-root ~/Development/handoff --issue-brief --json` into **`[Agent Retro YYYY-MM-DD]`**.
 
-## v2.0.0 Parity + Long-Horizon Layer
+## v2.1.0 Parity + Long-Horizon Layer
 
 - **Parity**: `probe` resolves per-target `vN@sha` watermarks and post-fix cohorts; `triage` ranks recurring post-fix anomalies by default (`--include-pre-fix` is historical replay). It performs the zero-token H5 AST contract/warehouse read, detects I5 cross-agent shell glue, and supports `--use-jev` with deterministic fallback.
 - **M1 contracts**: `record-m1-receipt --skill <sk> --goal-id <gid> --status <FIXED_AND_MERGED|HEALTHY_NO_ISSUES|CROSS_SKILL_RELAY>` and `emit-relay --from <host> --to <guest> --requirement "..."` are local, bounded, and rollup grounds merge SHAs.
