@@ -307,8 +307,10 @@ def uptake_eval(args: argparse.Namespace) -> int:
     spec.loader.exec_module(mod)
     target_dir = Path(args.target_dir).expanduser().resolve() if getattr(args, "target_dir", None) else ROOT
     uptake_map_path = Path(args.uptake_map_path).expanduser().resolve() if getattr(args, "uptake_map_path", None) else None
+    merged_skills = _merge_skill_names(getattr(args, "skill", None), getattr(args, "skills", None))
+    skills_arg = ",".join(merged_skills) if merged_skills else None
     out = mod.evaluate_skill_uptake(
-        skills=args.skill,
+        skills=skills_arg,
         triggered_skills=args.triggered_skills,
         target_dir=target_dir,
         scenario=args.scenario,

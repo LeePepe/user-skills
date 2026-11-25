@@ -120,6 +120,10 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Advisory: keep executable drawers at or below 800 lines when practical; extract deep modules before 1,000.",
     ),
+    "stale-legacy-cap": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: legacy script is now <= 800 lines; graduate it out of LEGACY_SCRIPT_LINE_CAPS so script-lines (<=1,000) protects it permanently.",
+    ),
     "fenced-code-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep fenced code blocks in Markdown <= 25 lines; move longer code to scripts/.",
@@ -255,7 +259,9 @@ def _watermark_fingerprint(repo: str | Path | None, mode: str, args_key: Mapping
                 records.append((rel, stat.st_mtime_ns, stat.st_size, target))
             except OSError:
                 records.append((str(path), -1, -1, "unreadable"))
-    script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    script_sha = hashlib.sha256(
+        b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.glob("*.py")) if p.is_file())
+    ).hexdigest()
     payload = {"script_sha256": script_sha, "mode": mode, "args": dict(args_key), "records": records, "git_head": _git_head_sha(base)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -511,11 +517,33 @@ def resolve_all_skill_versions(repo: str | Path | None = None, *, no_cache: bool
 
 def version_cmd(args: argparse.Namespace) -> int:
     repo_arg = _normalize_repo_path(getattr(args, "repo", None))
-    skill_arg = getattr(args, "skill", None)
-    if skill_arg and not getattr(args, "all", False):
-        info = resolve_skill_version(skill_arg, repo=repo_arg)
+    raw_skill = getattr(args, "skill", None)
+    raw_skills = getattr(args, "skills", None)
+    selected_names: list[str] = []
+    for item in (raw_skills, raw_skill):
+        if item is None:
+            continue
+        chunks = item if isinstance(item, (list, tuple)) else [item]
+        for chunk in chunks:
+            for part in str(chunk or "").split(","):
+                tok = part.strip()
+                if tok and tok not in selected_names:
+                    selected_names.append(tok)
+    if len(selected_names) == 1 and not getattr(args, "all", False):
+        info = resolve_skill_version(selected_names[0], repo=repo_arg)
         _emit_json(info, args)
         return 0 if info["ok"] else 1
+    if len(selected_names) > 1 and not getattr(args, "all", False):
+        infos = {name: resolve_skill_version(name, repo=repo_arg) for name in selected_names}
+        ok = all(item["ok"] for item in infos.values())
+        payload = {
+            "ok": ok,
+            "count": len(infos),
+            "skills": [infos[k] for k in sorted(infos)],
+            "versions": {k: v["skill_version"] for k, v in sorted(infos.items())},
+        }
+        _emit_json(payload, args)
+        return 0 if ok else 1
     versions_map = resolve_all_skill_versions(repo=repo_arg, no_cache=bool(getattr(args, "no_cache", False)))
     payload = {
         "ok": True,
