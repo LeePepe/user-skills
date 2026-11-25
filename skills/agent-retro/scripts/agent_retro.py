@@ -8,6 +8,8 @@ missing sources as unknown rather than healthy.
 from __future__ import annotations
 
 import argparse
+import ast
+from contextlib import closing
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from typing import Any, Callable, Iterable, Mapping
@@ -28,6 +31,8 @@ MAX_EVENTS = 150_000
 MAX_EVENTS_PER_SESSION = 4_000
 MAX_BYTES = 2_000_000
 MAX_OUTPUT = 16_000
+_TARGET_WATERMARK_CACHE: dict[str, dict[str, Any]] | None = None
+_CROSS_SKILL_CACHE: dict[str, Any] | None = None
 DEFAULT_SERVER_URL = "http://192.168.31.17:18080"
 DEFAULT_WORKSPACE_ID = "6f6b9a0b-4375-4ebc-a997-ff0c99b2645c"
 DEFAULT_OWNER_ID = "1a895cfa-3ed5-45f5-aaf1-a24b10b502fc"
@@ -53,24 +58,34 @@ METRIC_ORDER = (
     ("role", "R3_m1_inline_overwork"), ("role", "R4_session_skill_pollution"),
     ("role", "R5_reviewer_same_vendor"), ("handoff", "H1_zombie_drifted_goals"),
     ("handoff", "H2_initial_sha_false_lock"), ("handoff", "H3_r10_receipt_gap_or_dirty_schema"),
-    ("handoff", "H4_compaction_and_handoff_loss"), ("invoke", "I1_cold_start_greedy_drawer_read"),
+    ("handoff", "H4_compaction_and_handoff_loss"), ("handoff", "H5_cross_skill_contract_drift"),
+    ("invoke", "I1_cold_start_greedy_drawer_read"),
     ("invoke", "I2_mandatory_l2_cli_skip"), ("invoke", "I3_l2_exit2_and_output_bloat"),
-    ("invoke", "I4_manual_poll_loop"), ("exec", "E1_blind_spin_loop_vs_progressive_catch"),
+    ("invoke", "I4_manual_poll_loop"), ("invoke", "I5_cross_agent_wild_glue"),
+    ("exec", "E1_blind_spin_loop_vs_progressive_catch"),
     ("exec", "E2_r3_plus_divergence"), ("exec", "E3_gate_escape_and_uncrystallized_spec_gap"),
     ("exec", "E4_unfaithful_receipt_and_cancelled_noise"), ("friction", "F1_permission_stall_count"),
     ("friction", "F2_owner_abort_rate"), ("friction", "F3_mid_flight_owner_correction"),
+    ("horizon", "HZN1_context_carry_tax"), ("horizon", "HZN2_wakeup_lag_and_missed_parallelism"),
+    ("horizon", "HZN3_rework_detour_and_premature_full_verify"),
+    ("horizon", "HZN4_context_fatigue_inflection"), ("horizon", "HZN5_steering_overkill_mechanical_span"),
 )
 UPSTREAM = {
     "R1_m3_prompt_prelock": "personal-m2-assistant", "R2_m2_direct_code_edit": "m2-dispatcher",
     "R3_m1_inline_overwork": "team-lead", "R4_session_skill_pollution": "m2-dispatcher",
     "R5_reviewer_same_vendor": "code-review", "H1_zombie_drifted_goals": "m2-dispatcher",
     "H2_initial_sha_false_lock": "team-lead", "H3_r10_receipt_gap_or_dirty_schema": "team-lead",
-    "H4_compaction_and_handoff_loss": "m2-dispatcher", "I1_cold_start_greedy_drawer_read": "agent-retro",
+    "H4_compaction_and_handoff_loss": "m2-dispatcher", "H5_cross_skill_contract_drift": "agent-retro",
+    "I1_cold_start_greedy_drawer_read": "agent-retro",
     "I2_mandatory_l2_cli_skip": "agent-retro", "I3_l2_exit2_and_output_bloat": "agent-retro",
-    "I4_manual_poll_loop": "team-lead", "E1_blind_spin_loop_vs_progressive_catch": "agent-retro",
+    "I4_manual_poll_loop": "team-lead", "I5_cross_agent_wild_glue": "m2-dispatcher",
+    "E1_blind_spin_loop_vs_progressive_catch": "agent-retro",
     "E2_r3_plus_divergence": "team-lead", "E3_gate_escape_and_uncrystallized_spec_gap": "repo-kit",
     "E4_unfaithful_receipt_and_cancelled_noise": "team-lead", "F1_permission_stall_count": "team-lead",
     "F2_owner_abort_rate": "m2-dispatcher", "F3_mid_flight_owner_correction": "personal-m2-assistant",
+    "HZN1_context_carry_tax": "agent-retro", "HZN2_wakeup_lag_and_missed_parallelism": "m2-dispatcher",
+    "HZN3_rework_detour_and_premature_full_verify": "agent-retro", "HZN4_context_fatigue_inflection": "team-lead",
+    "HZN5_steering_overkill_mechanical_span": "team-lead",
 }
 ROLE_WORDS = {"m2": ("m2", "dispatcher", "personal-m2"), "m1": ("m1", "steering", "team-lead"),
               "writer": ("writer", "coding"), "reviewer": ("reviewer", "code-review"), "m3": ("m3", "personal-m2-assistant")}
@@ -780,6 +795,24 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
         ci_failure = any("PR_CHECK_FAILED" in _text(e) or ("ci" in _event_type(e) and "fail" in _text(e).lower()) for e in seq)
         if re.search(r"verif(?:y|ication)|pytest|swiftlint|scripts/verify", text) and ci_failure and allowed("E3_gate_escape_and_uncrystallized_spec_gap", sid):
             observations.append(_observation("E3_gate_escape_and_uncrystallized_spec_gap", "exec", 1, [f"{sid}: local verification followed by CI failure"], skill=_first_fault_skill(text, role, ci=True), sessions=1))
+    # Cross-agent glue is actionable only when it recurs across sessions.
+    glue: dict[str, set[str]] = defaultdict(set)
+    for sid, seq in groups.items():
+        for event in _tool_events(seq):
+            command = _command(event)
+            if re.search(r"herdr\s+agent\s+list|herdr\s+pane\s+read|python3\s+-c.*(?:receipt|ledger)|gh\s+pr\s+view", command, re.I):
+                normalized = re.sub(r"\s+", " ", command).strip()
+                glue[normalized].add(sid)
+    repeated_glue = [(command, ids) for command, ids in glue.items() if len(ids) >= 5]
+    if repeated_glue:
+        total = sum(len(ids) for _, ids in repeated_glue)
+        owner = "m2-dispatcher" if any("herdr" in command.lower() for command, _ in repeated_glue) else "team-lead"
+        observations.append(_observation("I5_cross_agent_wild_glue", "invoke", total,
+                                         [f"{len(ids)} sessions repeat manual glue: {command[:120]}" for command, ids in repeated_glue[:3]],
+                                         skill=owner, sessions=len(set().union(*(ids for _, ids in repeated_glue)))))
+    contract = _cross_skill_contract_check()
+    if contract["findings"]:
+        observations.append(_observation("H5_cross_skill_contract_drift", "handoff", len(contract["findings"]), contract["findings"], skill="agent-retro", sessions=1))
     # Cross-session / handoff signals.
     active = {sid for sid, seq in groups.items() if _role_for(seq) != "unknown"}
     for record in handoffs:
@@ -842,7 +875,444 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
     return observations
 
 
-def _version_watermark(events: list[dict[str, Any]] | None = None, observations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _git_output(command: list[str]) -> str:
+    try:
+        return subprocess.check_output(command, cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def _git_exists(object_name: str) -> bool:
+    try:
+        return subprocess.run(["git", "cat-file", "-e", object_name], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+    except OSError:
+        return False
+
+
+def resolve_target_skill_watermarks(skill_names: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Resolve per-skill commit/tree watermarks without inventing fixture history."""
+    global _TARGET_WATERMARK_CACHE
+    if skill_names is None and _TARGET_WATERMARK_CACHE is not None:
+        return _TARGET_WATERMARK_CACHE
+    names = sorted(set(skill_names or [p.name for p in (ROOT / "skills").iterdir() if p.is_dir()]))
+    result: dict[str, dict[str, Any]] = {}
+    for skill in names:
+        path = ROOT / "skills" / skill
+        if not path.is_dir():
+            continue
+        commits = _git_output(["git", "rev-list", "--count", "HEAD", "--", f"skills/{skill}"])
+        tree_sha = _git_output(["git", "rev-parse", "--short", f"HEAD:skills/{skill}"])
+        modified = _git_output(["git", "log", "-1", "--format=%ct", "--", f"skills/{skill}"])
+        result[skill] = {"version": f"v{int(commits or 0)}@{tree_sha or 'unknown'}",
+                         "commits": int(commits or 0), "tree_sha": tree_sha or "unknown",
+                         "last_modified_epoch": int(modified or 0)}
+    if skill_names is None:
+        _TARGET_WATERMARK_CACHE = result
+    return result
+
+
+def _literal_strings(node: ast.AST | None) -> set[str]:
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return {str(item.value).strip() for item in node.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.strip()}
+    if isinstance(node, ast.Dict):
+        return {str(item.value).strip() for item in node.keys
+                if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.strip()}
+    return set()
+
+
+def _placeholder_token(token: str) -> bool:
+    value = token.strip("'\\\"`.,;:()[]{}")
+    return not value or value in {"*", "...", "etc", "and", "or"} or bool(
+        re.fullmatch(r"(?:<[^>]*>|\{[^}]*\}|\[[^]]*\]|\*+|\.{2,})", value)
+    )
+
+
+def _argparse_contract(script: Path) -> tuple[set[str], set[str], bool]:
+    try:
+        source = script.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(script))
+    except (OSError, SyntaxError):
+        return {"-h", "--help"}, set(), True
+    if "parse_known_args" in source or "_CANONICAL" in source or re.search(r"\bexec\s*\(", source):
+        return {"-h", "--help"}, set(), True
+    flags: set[str] = {"-h", "--help"}
+    subcommands: set[str] = set()
+    top_constants: dict[str, set[str]] = {}
+    for statement in tree.body:
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id.upper() in {"SUBCOMMANDS", "CHOICES"}:
+                    top_constants[target.id] = _literal_strings(statement.value)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "add_argument":
+                option_args = [str(arg.value).strip() for arg in node.args
+                               if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+                for value in option_args:
+                    if value.startswith("-"):
+                        flags.add(value.split("=", 1)[0])
+                if not any(value.startswith("-") for value in option_args):
+                    for keyword in node.keywords:
+                        if keyword.arg == "choices":
+                            subcommands.update(_literal_strings(keyword.value))
+                            if isinstance(keyword.value, ast.Name):
+                                subcommands.update(top_constants.get(keyword.value.id, set()))
+            elif node.func.attr == "add_parser" and node.args:
+                if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    subcommands.add(node.args[0].value.strip())
+                for keyword in node.keywords:
+                    if keyword.arg == "aliases":
+                        subcommands.update(_literal_strings(keyword.value))
+        elif isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            values = _literal_strings(node.iter)
+            if values:
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr == "add_parser":
+                        if child.args and isinstance(child.args[0], ast.Name) and child.args[0].id == node.target.id:
+                            subcommands.update(values)
+    subcommands.update(top_constants.get("SUBCOMMANDS", set()))
+    subcommands = {value for value in subcommands if not _placeholder_token(value)}
+    return flags, subcommands, False
+
+
+def _runtime_model_ids() -> set[str]:
+    profile = ROOT / "skills" / "team-lead" / "references" / "runtime-profiles.yaml"
+    text = _safe_text(profile, 200_000)
+    ids = set(re.findall(r"(?m)^\s{2}([A-Za-z0-9][A-Za-z0-9._/-]*):", text[text.find("vendors:"):]))
+    ids.update(re.findall(r"[\"'](group/[A-Za-z0-9_-]+)[\"']", text))
+    return ids
+
+
+def _explicit_model_ids(text: str) -> set[str]:
+    candidates = set(re.findall(
+        r"(?<![A-Za-z0-9_])(?:group/[A-Za-z0-9_-]+|opus|kimi|gpt-[A-Za-z0-9._-]+|gemini-[A-Za-z0-9._-]+|mai-code-[A-Za-z0-9._-]+|grok-[A-Za-z0-9._-]+|claude-[A-Za-z0-9._-]+)(?![A-Za-z0-9_])",
+        text, re.I,
+    ))
+    candidates.update(re.findall(
+        r"(?:--model(?:=|\s+)|(?:selected_)?model(?:_canon)?\s*[:=]\s*)([^\s`'\",;()\[\]{}]+)",
+        text, re.I,
+    ))
+    ignored = {"str", "string", "model", "name", "id", "value", "none", "null", "for", "or", "and"}
+    return {candidate.strip("'\\\".,") for candidate in candidates
+            if candidate.strip("'\\\".,").lower() not in ignored
+            and not _placeholder_token(candidate) and "\\\\" not in candidate and not re.search(r"[\\[\\]{}*]", candidate)}
+
+
+def _cross_skill_contract_check(skills_root: Path | None = None) -> dict[str, Any]:
+    """Static zero-token check of cross-skill calls, CLI contracts, and model IDs."""
+    global _CROSS_SKILL_CACHE
+    root = Path(skills_root).expanduser() if skills_root is not None else ROOT / "skills"
+    cacheable = skills_root is None
+    cache_key = str(root.resolve())
+    if cacheable and isinstance(_CROSS_SKILL_CACHE, dict) and _CROSS_SKILL_CACHE.get("root") == cache_key:
+        return _CROSS_SKILL_CACHE
+    findings: list[str] = []
+    checked = 0
+    allowed_models = _runtime_model_ids()
+    invocation = re.compile(r"skills/([A-Za-z0-9_-]+)/scripts/([A-Za-z0-9_.-]+\.py)(?P<args>[^\n`]*)")
+    callers = sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/references/*.md")) + sorted(root.glob("*/scripts/*.py"))
+    for caller in callers:
+        caller_skill = caller.relative_to(root).parts[0]
+        text = _safe_text(caller, 100_000)
+        for match in invocation.finditer(text):
+            callee, script_name, tail = match.group(1), match.group(2), match.group("args")
+            if caller_skill == callee:
+                continue
+            line = text[match.start():text.find("\n", match.start()) if text.find("\n", match.start()) >= 0 else len(text)]
+            if caller.suffix == ".py" and not re.search(r"(?:subprocess|os\.system|check_call|check_output|Popen|run\s*\()", line):
+                continue
+            tail = re.split(r"[`\"']", tail, maxsplit=1)[0]
+            callee_root = root / callee
+            if not callee_root.is_dir():
+                continue
+            script = callee_root / "scripts" / script_name
+            checked += 1
+            if not script.is_file():
+                findings.append(f"{caller.relative_to(root)}: missing {callee}/{script_name}")
+                continue
+            flags, subcommands, skipped = _argparse_contract(script)
+            if not skipped:
+                raw_tokens = re.findall(r"(?:--[^\s`]*|-[A-Za-z][^\s`]*|[A-Za-z][A-Za-z0-9_.:/@+{}\[\]<>*-]*)", tail)
+                tokens: list[str] = []
+                for raw in raw_tokens:
+                    token = raw.strip("'\\\"`.,;:()")
+                    if token == "--":
+                        break
+                    tokens.append(token)
+                for token in tokens:
+                    if token.startswith("-") and token.split("=", 1)[0] not in flags:
+                        findings.append(f"{caller.relative_to(root)}: {callee}/{script_name} unknown flag {token.split('=', 1)[0]}")
+                if subcommands:
+                    first = next((token for token in tokens if not token.startswith("-") and not _placeholder_token(token)), "")
+                    if first and first not in subcommands and first not in {"python", "python3"}:
+                        findings.append(f"{caller.relative_to(root)}: {callee}/{script_name} unknown subcommand {first}")
+            for model in _explicit_model_ids(tail):
+                if model not in allowed_models:
+                    findings.append(f"{caller.relative_to(root)}: unknown model ID {model}")
+        for model in _explicit_model_ids(text) if caller_skill == "agent-retro" else ():
+            if model not in allowed_models:
+                findings.append(f"{caller.relative_to(root)}: unknown model ID {model}")
+    result = {"root": cache_key, "checked": checked, "findings": list(dict.fromkeys(findings))[:40], "ok": not findings}
+    if cacheable:
+        _CROSS_SKILL_CACHE = result
+    return result
+
+
+def _warehouse_signals(warehouse: Path | None) -> dict[str, Any]:
+    if warehouse is None or not _external_path_safe(warehouse):
+        return {"available": False, "signals": {}}
+    signals: dict[str, int | float] = {}
+    try:
+        with closing(sqlite3.connect(f"file:{warehouse}?mode=ro", uri=True, timeout=0.2)) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            columns = {table: {row[1] for row in db.execute(f"PRAGMA table_info({table})")} for table in tables}
+            if "dim_goal" in tables and "is_status_drifted" in columns["dim_goal"]:
+                signals["status_drifted_goals"] = int(db.execute("SELECT COUNT(*) FROM dim_goal WHERE is_status_drifted = 1").fetchone()[0])
+            if "fact_gtt_event" in tables and "evt_type" in columns["fact_gtt_event"]:
+                for name, evt_type in (("review_fail_events", "REVIEW_FAIL"), ("input_blocked", "INPUT_BLOCKED"), ("unblock", "UNBLOCK")):
+                    signals[name] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_event WHERE evt_type = ?", (evt_type,)).fetchone()[0])
+            if "fact_gtt_task_run" in tables and {"round_no", "v5_verdict"}.issubset(columns["fact_gtt_task_run"]):
+                signals["task_runs_total"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run").fetchone()[0])
+                signals["task_runs_round3_plus"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run WHERE round_no >= 3").fetchone()[0])
+                signals["review_fail_r3_plus"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run WHERE round_no >= 3 AND UPPER(v5_verdict) = 'FAIL'").fetchone()[0])
+            if "fact_request" in tables and {"model", "model_canon", "total_tokens"}.issubset(columns["fact_request"]):
+                steering, total = db.execute(
+                    "SELECT COALESCE(SUM(CASE WHEN lower(COALESCE(model, '')) LIKE '%group/steering%' OR lower(COALESCE(model_canon, '')) LIKE '%group/steering%' OR lower(COALESCE(model_canon, '')) IN ('opus', 'gemini-4-carbon') THEN COALESCE(total_tokens, 0) ELSE 0 END), 0), COALESCE(SUM(COALESCE(total_tokens, 0)), 0) FROM fact_request"
+                ).fetchone()
+                signals["steering_tokens"] = int(steering or 0)
+                signals["request_tokens_total"] = int(total or 0)
+                signals["steering_token_share"] = (float(steering) / float(total)) if total else 0.0
+    except (OSError, sqlite3.Error):
+        return {"available": False, "signals": {}}
+    return {"available": True, "signals": signals}
+
+
+def _turn_number(event: dict[str, Any], fallback: int) -> int:
+    value = _field(event, "turn", "turnIndex", "turn_index", "turnNumber")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _duration_seconds(seq: list[dict[str, Any]]) -> float:
+    times = [_parse_time(e.get("timestamp") or _field(e, "timestamp", "createdAt")) for e in seq]
+    valid = [x for x in times if x]
+    return (max(valid) - min(valid)).total_seconds() if len(valid) > 1 else 0.0
+
+
+def _event_stamp(event: Mapping[str, Any]) -> datetime | None:
+    for key in ("timestamp", "ts", "started_at", "startedAt", "completed_at", "completedAt"):
+        value = event.get(key) if isinstance(event, dict) else None
+        parsed = _parse_time(value)
+        if parsed:
+            return parsed
+    for key in ("timestamp", "ts", "started_at", "startedAt", "completed_at", "completedAt"):
+        parsed = _parse_time(_field(dict(event), key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _queue_tasks(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read explicit queue tasks, with a small ledger fallback for old handoffs."""
+    path = record.get("path")
+    queue_path = Path(path) / "queue.json" if path else None
+    payload: Any = None
+    if queue_path and queue_path.is_file() and _external_path_safe(queue_path):
+        try:
+            payload = json.loads(queue_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+    raw_tasks = payload.get("tasks", payload.get("queue", payload)) if isinstance(payload, dict) else payload
+    if isinstance(raw_tasks, dict):
+        raw_tasks = list(raw_tasks.values())
+    if not isinstance(raw_tasks, list):
+        raw_tasks = []
+    tasks: list[dict[str, Any]] = []
+    for item in raw_tasks:
+        if not isinstance(item, dict):
+            continue
+        deps = item.get("depends_on", item.get("dependsOn", item.get("dependencies", [])))
+        paths = item.get("paths", item.get("owned_paths", item.get("ownedPaths", item.get("path", []))))
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list):
+            paths = []
+        tasks.append({"depends_on": deps, "paths": [str(x) for x in paths if str(x).strip()], "raw": item})
+    if len(tasks) >= 2:
+        return tasks
+    ledger = str(record.get("ledger", ""))
+    blocks = re.split(r"(?m)(?=^\s*(?:[-*]\s*)?(?:task|item)\b)", ledger)
+    for block in blocks:
+        dep = re.search(r"depends[_ ]on\s*:\s*(\[\s*\]|null|none)", block, re.I)
+        path_match = re.search(r"(?:owned[_ ]paths?|paths?|path)\s*:\s*([^\n]+)", block, re.I)
+        if dep and path_match:
+            raw = {key: value for key, value in re.findall(
+                r"(started_at|startedAt|completed_at|completedAt|timestamp)\s*:\s*([^\n]+)", block, re.I
+            )}
+            paths = [part.strip(" `[]'\"") for part in path_match.group(1).split(",") if part.strip(" `[]'\"")]
+            tasks.append({"depends_on": [], "paths": paths, "raw": raw})
+    return tasks
+
+
+def _serial_independent_tasks(record: Mapping[str, Any], seq: list[dict[str, Any]],
+                              tasks: list[dict[str, Any]] | None = None,
+                              event_blobs: list[tuple[dict[str, Any], str]] | None = None) -> int:
+    tasks = [task for task in (tasks if tasks is not None else _queue_tasks(record)) if not task["depends_on"] and task["paths"]]
+    if len(tasks) < 2:
+        return 0
+    spans: list[tuple[datetime, datetime, set[str]]] = []
+    needs_events = any(not any(_parse_time(task["raw"].get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")) for task in tasks)
+    if needs_events and event_blobs is None:
+        event_blobs = [(event, _event_blob(event)) for event in seq]
+    for task in tasks:
+        raw = task["raw"]
+        stamps = [_parse_time(raw.get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")]
+        stamps = [stamp for stamp in stamps if stamp]
+        path_tokens = {path.lower() for path in task["paths"]}
+        path_tokens.update(Path(path).name.lower() for path in task["paths"])
+        if not stamps and event_blobs is not None:
+            matched = [event for event, blob in event_blobs if any(token and token in blob for token in path_tokens)]
+            stamps.extend(stamp for stamp in (_event_stamp(event) for event in matched) if stamp)
+        if not stamps:
+            return 0
+        spans.append((min(stamps), max(stamps), path_tokens))
+    spans.sort(key=lambda span: span[0])
+    chain = 1
+    best = 1
+    for previous, current in zip(spans, spans[1:]):
+        disjoint = previous[2].isdisjoint(current[2])
+        if disjoint and previous[1] < current[0]:
+            chain += 1
+            best = max(best, chain)
+        else:
+            chain = 1
+    return best if best >= 2 else 0
+
+
+def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], *, min_turns: int = 40,
+                     min_duration_min: float = 15.0) -> list[dict[str, Any]]:
+    """Profile successful and at-risk long sessions with deterministic heuristics."""
+    rows: list[dict[str, Any]] = []
+    handoff_tasks = [(record, _queue_tasks(record)) for record in handoffs]
+    for sid, seq in _session_groups(events).items():
+        turns = max([_turn_number(e, i + 1) for i, e in enumerate(seq)] or [0])
+        duration = _duration_seconds(seq)
+        if turns < min_turns and duration < min_duration_min * 60:
+            continue
+        tools = _tool_events(seq)
+        assistant = [(i, e) for i, e in enumerate(seq) if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"}]
+        event_texts: list[str] | None = None
+        # HZN1 counts heavy unreferenced outputs, while retaining byte-turns as evidence.
+        heavy_hits = 0
+        carry_byte_turns = 0
+        for event_index, event in enumerate(seq):
+            if event not in tools:
+                continue
+            size = len(_result_content(event).encode("utf-8"))
+            event_turn = _turn_number(event, event_index + 1)
+            remaining = max(0, turns - event_turn)
+            if size < 8192 or remaining < 10 or size * remaining < 250_000:
+                continue
+            if event_texts is None:
+                event_texts = [_text(item).lower() for item in seq]
+            call_id = _tool_call_id(event).lower()
+            raw_path = str(_arguments(event).get("path") or _field(event, "path") or "")
+            basename = Path(raw_path).name.lower() if raw_path else ""
+            referenced_later = any(
+                (call_id and call_id in later) or (basename and basename in later)
+                for later in event_texts[event_index + 1:]
+            )
+            if referenced_later:
+                continue
+            heavy_hits += 1
+            carry_byte_turns += size * remaining
+        if heavy_hits:
+            rows.append(_observation("HZN1_context_carry_tax", "horizon", heavy_hits,
+                                     [f"{sid}: carry_byte_turns={carry_byte_turns}; heavy_outputs={heavy_hits}; offload to Explorer or --summary"], skill="agent-retro"))
+        # HZN2 wakeup lag and explicit queue/ledger parallelism evidence.
+        lags = []
+        for index, event in enumerate(seq):
+            if _event_type(event) not in {"subagent.completed", "evt=done", "receipt.written"} and "EVT=DONE" not in _text(event):
+                continue
+            stamp = _event_stamp(event)
+            nxt = next((e for e in seq[index + 1:] if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response", "user.message"}), None)
+            next_stamp = _event_stamp(nxt) if nxt else None
+            if stamp and next_stamp and (next_stamp - stamp).total_seconds() > 180:
+                lags.append(int((next_stamp - stamp).total_seconds()))
+        event_blobs = None
+        serial = 0
+        for record, tasks in handoff_tasks:
+            if len(tasks) < 2:
+                continue
+            serial = max(serial, _serial_independent_tasks(record, seq, tasks, event_blobs))
+            if event_blobs is None and any(not any(_parse_time(task["raw"].get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")) for task in tasks):
+                event_blobs = [(event, _event_blob(event)) for event in seq]
+        if lags or serial >= 2:
+            rows.append(_observation("HZN2_wakeup_lag_and_missed_parallelism", "horizon", len(lags) + serial,
+                                     [f"{sid}: wakeup_lag_sec={max(lags, default=0)}, missed_parallel_tasks={serial}"], skill="m2-dispatcher"))
+        # HZN3: edit churn and expensive verification before the end.
+        paths = Counter(str(_arguments(e).get("path") or _field(e, "path") or "") for e in tools if _tool_name(e) in {"edit", "create", "apply_patch", "write", "patch"})
+        churn = max(paths.values(), default=0)
+        heavy = 0
+        for event in tools:
+            command = _command(event).lower()
+            raw_duration = _field(event, "durationMs", "duration_ms", "elapsedMs")
+            try:
+                seconds = float(raw_duration or 0) / 1000
+            except (TypeError, ValueError):
+                seconds = 0
+            if seconds >= 15 and ("scripts/verify" in command or "xcodebuild" in command):
+                heavy += 1
+        if churn >= 4 or heavy >= 3:
+            rows.append(_observation("HZN3_rework_detour_and_premature_full_verify", "horizon", churn + heavy,
+                                     [f"{sid}: edit_churn={churn}, premature_full_verify={heavy}"], skill="agent-retro"))
+        # HZN4 compares late failures and empty turns with no tool calls to early turns.
+        early = [e for e in seq if _turn_number(e, 0) <= 25]
+        late = [e for e in seq if _turn_number(e, 0) > 40]
+        def failure_rate(items: list[dict[str, Any]]) -> float:
+            calls = [e for e in items if _event_type(e).startswith("tool.") or _tool_name(e)]
+            return sum(_exit_code(e) not in (None, 0) for e in calls) / max(1, len(calls))
+        def empty_rate(items: list[dict[str, Any]]) -> float:
+            turns_here = [e for e in items if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"}]
+            empty = 0
+            for event in turns_here:
+                calls = _field(event, "toolCalls", "tool_calls", "tools")
+                has_calls = isinstance(calls, (list, dict)) and bool(calls)
+                empty += int(not _text(_field(event, "content", "assistantContent")) and not has_calls)
+            return empty / max(1, len(turns_here))
+        early_rate = failure_rate(early) + empty_rate(early)
+        late_rate = failure_rate(late) + empty_rate(late)
+        if late and late_rate >= max(0.01, early_rate * 2):
+            inflection = min((_turn_number(e, 0) for e in late), default=41)
+            rows.append(_observation("HZN4_context_fatigue_inflection", "horizon", 1,
+                                     [f"{sid}: early_rate={early_rate:.2f}, late_rate={late_rate:.2f}, inflection_turn={inflection}"], skill="team-lead"))
+        # HZN5 contiguous low-output steering turns without mutation commands.
+        span = best = 0
+        for event_index, event in assistant:
+            model = str(_field(event, "selectedModel", "model", "usageModel") or "").lower()
+            tokens = _field(event, "outputTokens", "output_tokens", "totalTokens")
+            try:
+                low_tokens = int(tokens) < 80 if tokens is not None else len(_text(_field(event, "content", "assistantContent"))) < 300
+            except (TypeError, ValueError):
+                low_tokens = len(_text(_field(event, "content", "assistantContent"))) < 300
+            next_assistant = next((idx for idx, _ in assistant if idx > event_index), len(seq))
+            associated = seq[event_index + 1:next_assistant]
+            read_only = not any(_tool_name(item) in {"edit", "create", "apply_patch", "write", "patch"} or re.search(r"\b(?:rm|mv|cp|git\s+(?:commit|push|reset))\b", _command(item), re.I) for item in associated)
+            if "group/steering" in model and low_tokens and read_only:
+                span += 1; best = max(best, span)
+            else:
+                span = 0
+        if best >= 5:
+            rows.append(_observation("HZN5_steering_overkill_mechanical_span", "horizon", best,
+                                     [f"{sid}: steering read-only span={best}; route mechanical or crystallize L0"], skill="team-lead"))
+    return rows
+
+
+def _version_watermark(events: list[dict[str, Any]] | None = None, observations: list[dict[str, Any]] | None = None, *, include_targets: bool = True) -> dict[str, Any]:
     try:
         count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip())
         sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD:skills/agent-retro"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
@@ -876,7 +1346,36 @@ def _version_watermark(events: list[dict[str, Any]] | None = None, observations:
         row = totals[bucket]["by_skill"].setdefault(skill, {"anomalies": 0, "scenario_sessions": 0})
         row["anomalies"] += int(item.get("count", 0) or 0)
     return {"current": current, "last_modified_epoch": modified, "pre_fix": totals["pre_fix"], "post_fix": totals["post_fix"],
+            "target_skill_watermarks": resolve_target_skill_watermarks() if include_targets else {},
             "transition": f"v{max(0, count - 1)}@previous -> {current}"}
+
+
+def _classify_observations(observations: list[dict[str, Any]], events: list[dict[str, Any]], watermark: dict[str, Any]) -> dict[str, Any]:
+    groups = _session_groups(events)
+    target = watermark.get("target_skill_watermarks", {})
+    for item in observations:
+        skill = str(item.get("upstream_skill") or item.get("skill") or "")
+        cutoff = int(target.get(skill, {}).get("last_modified_epoch", 0) or 0)
+        evidence = item.get("evidence", [])
+        session_ids = {str(e).split(":", 1)[0] for e in evidence if ":" in str(e)}
+        buckets: dict[str, str] = {}
+        for sid in session_ids:
+            timestamps = [_parse_time(e.get("timestamp") or _field(e, "timestamp", "createdAt")) for e in groups.get(sid, [])]
+            timestamps = [timestamp for timestamp in timestamps if timestamp]
+            buckets[sid] = "pre_fix" if cutoff and timestamps and min(timestamps).timestamp() < cutoff else "post_fix"
+        count = int(item.get("count", 0) or 0)
+        if buckets:
+            post_sessions = sum(value == "post_fix" for value in buckets.values())
+            pre_sessions = sum(value == "pre_fix" for value in buckets.values())
+            total_sessions = len(buckets)
+            post_count = round(count * post_sessions / total_sessions)
+            pre_count = count - post_count
+        else:
+            post_count, pre_count = (count, 0) if not cutoff else (count, 0)
+        item["fix_bucket"] = "mixed" if post_count and pre_count else ("pre_fix" if pre_count else "post_fix")
+        item["post_fix_count"] = post_count
+        item["pre_fix_count"] = pre_count
+    return watermark
 
 
 def _aggregate_observations(rows: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]]:
@@ -937,16 +1436,26 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         fast=bool(getattr(args, "fast", False) or getattr(args, "_probe_budget", False)),
     )
     handoffs, handoff_source = _handoffs(handoff_root)
-    outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
+    if getattr(args, "_horizon_only", False):
+        outcome_gate, profile_sessions = {}, set()
+    else:
+        outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
     for record in handoffs:
         if re.search(r"\b(?:done|completed|pr_merged)\b", record["ledger"], re.I):
             outcome_gate[f"handoff:{record['name']}"] = {"status": "OUTCOME_HEALTHY" if record["receipts"] else "OUTCOME_AT_RISK", "faithful_receipts": bool(record["receipts"]), "goal": record["name"]}
     analysis_events = events
     all_session_groups = _session_groups(events)
-    if len(all_session_groups) > 45:
+    if getattr(args, "_horizon_only", False):
+        analysis_events = events
+    elif len(all_session_groups) > 45:
         recent_session_ids = set(list(all_session_groups)[-45:])
         analysis_events = [event for event in events if _session_id(event, str(event.get("_retro_session", ""))) in recent_session_ids]
-    observations = _metric_scan(analysis_events, handoffs, event_source, profile_sessions)
+    observations = [] if getattr(args, "_horizon_only", False) else _metric_scan(analysis_events, handoffs, event_source, profile_sessions)
+    include_horizon = bool(getattr(args, "_include_horizon", False) or "horizon" in str(getattr(args, "layer", "") or "").split(","))
+    if include_horizon:
+        observations.extend(_horizon_profile(analysis_events, handoffs,
+                                             min_turns=int(getattr(args, "min_turns", 40) or 40),
+                                             min_duration_min=float(getattr(args, "min_duration_min", 15) or 15)))
     active_leases = _active_leases(handoffs)
     layers = set(filter(None, str(getattr(args, "layer", "") or "").split(",")))
     role_filter = str(getattr(args, "role", "") or "").lower()
@@ -967,7 +1476,9 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         missing_coverage = (not event_source["available"] and not handoff_source["available"]) or event_source["truncated"]
         metrics.append({"metric": metric, "layer": layer, "count": counts.get(metric, 0), "status": "healthy_progressive_disclosure" if healthy and not counts.get(metric) else ("unknown" if missing_coverage and not counts.get(metric) else "observed")})
     actionable = [x for x in observations if x["status"] != "healthy_progressive_disclosure"]
-    watermark = _version_watermark(events, observations)
+    watermark = _version_watermark(events, observations, include_targets=not getattr(args, "_horizon_only", False))
+    watermark = _classify_observations(observations, events, watermark)
+    warehouse_signals = _warehouse_signals(warehouse)
     compact_actionable = _aggregate_observations(actionable)
     compact_healthy = _aggregate_observations(
         [x for x in observations if x["status"] == "healthy_progressive_disclosure"], limit=20
@@ -975,7 +1486,7 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
     compact_pool = [x for x in compact_actionable if x["count"] < 3][:20]
     outcome = _outcome_summary(outcome_gate) if getattr(args, "summary", False) or len(outcome_gate) > 15 else outcome_gate
     return {"schema": "agent-retro-probe/v1", "ok": True, "entry_mode": "fast" if getattr(args, "fast", False) else "bounded", "role_filter": role_filter or None,
-            "source": {"events": event_source, "handoff": handoff_source, "warehouse": "available" if warehouse else "missing_safe_degradation"},
+            "source": {"events": event_source, "handoff": handoff_source, "warehouse": warehouse_signals},
             "coverage": {"events": len(events), "sessions": len(_session_groups(events)), "observations": len(observations), "incomplete": bool(event_source["truncated"])},
             "outcome_gate": outcome, "active_leases": sorted(active_leases), "excluded_by_active_lease": [],
             "version_watermark": watermark, "skill_attribution": _skill_attribution(actionable, watermark),
@@ -997,7 +1508,7 @@ def _compact_print(payload: Any, as_json: bool, summary: bool = False) -> None:
         reduced = {key: payload[key] for key in (
             "schema", "ok", "entry_mode", "role_filter", "source", "coverage", "outcome_gate",
             "active_leases", "excluded_by_active_lease", "version_watermark", "skill_attribution",
-            "metrics", "observations", "healthy_exemptions", "observation_pool", "k_cap",
+            "metrics", "observations", "horizon", "healthy_exemptions", "observation_pool", "k_cap",
         ) if key in payload}
         for key in ("issue_verified", "dry_run", "published", "written", "config", "path", "action"):
             if key in payload:
@@ -1067,12 +1578,14 @@ def _active_leases(handoffs: list[dict[str, Any]]) -> set[str]:
     return leases
 
 
-def _selected(scan: dict[str, Any], pick_top: int = 3, skill: str | None = None) -> list[dict[str, Any]]:
+def _selected(scan: dict[str, Any], pick_top: int = 3, skill: str | None = None, *, include_pre_fix: bool = False) -> list[dict[str, Any]]:
     by_skill: dict[str, dict[str, Any]] = {}
     priority = {"E4_unfaithful_receipt_and_cancelled_noise": 100, "R2_m2_direct_code_edit": 95, "I3_l2_exit2_and_output_bloat": 90, "E1_blind_spin_loop_vs_progressive_catch": 80}
     active_leases = set(scan.get("active_leases", []))
     excluded = set(scan.get("excluded_by_active_lease", []))
     for item in scan.get("observations", []):
+        if not include_pre_fix and item.get("fix_bucket") == "pre_fix" and int(item.get("post_fix_count", 0) or 0) == 0:
+            continue
         if skill and item.get("upstream_skill") != skill and item.get("skill") != skill:
             continue
         candidate_skill = item.get("upstream_skill") or item.get("skill") or "unknown"
@@ -1082,7 +1595,8 @@ def _selected(scan: dict[str, Any], pick_top: int = 3, skill: str | None = None)
         if item.get("count", 0) < 3 and item["metric"] not in priority:
             continue
         key = item.get("upstream_skill") or item.get("skill") or "unknown"
-        score = item.get("count", 0) + priority.get(item["metric"], 0)
+        base_count = int(item.get("post_fix_count", item.get("count", 0)) or 0) if not include_pre_fix else int(item.get("count", 0) or 0)
+        score = base_count + priority.get(item["metric"], 0)
         if key not in by_skill or score > by_skill[key].get("_score", -1):
             copy = dict(item); copy["_score"] = score; by_skill[key] = copy
     chosen = sorted(by_skill.values(), key=lambda x: (-x["_score"], x["upstream_skill"]))[:pick_top]
@@ -1107,6 +1621,17 @@ def command_probe(args: argparse.Namespace) -> dict[str, Any]:
     if int(getattr(args, "days", 30) or 30) <= 3 and not getattr(args, "fast", False):
         args._probe_budget = True
     return _scan(args)
+
+
+def command_horizon(args: argparse.Namespace) -> dict[str, Any]:
+    args._include_horizon = True
+    args._horizon_only = True
+    result = _scan(args)
+    result["schema"] = "agent-retro-horizon/v1"
+    result["horizon"] = [row for row in result.get("observations", []) if row.get("layer") == "horizon"]
+    result["min_turns"] = args.min_turns
+    result["min_duration_min"] = args.min_duration_min
+    return result
 
 
 def _agent_retro_coverage(scan: Mapping[str, Any]) -> str:
@@ -1193,10 +1718,53 @@ def _mock_jev(value: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else {"value": parsed}
 
 
+def _load_jev_client() -> Any | None:
+    path = ROOT / "skills" / "team-lead" / "scripts" / "jev_client.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("agent_retro_jev_client", path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (OSError, ImportError, AttributeError):
+        return None
+
+
+def _run_jev(selected: list[dict[str, Any]], *, enabled: bool, mock: dict[str, Any] | None) -> dict[str, Any]:
+    fallback = {"choice": "deterministic_fallback", "noul": 0.0, "confidence": 0.0}
+    if not enabled:
+        return {"used": False, "bounded_seconds": 1.5, "decision": fallback}
+    module = _load_jev_client()
+    if module is None or not hasattr(module, "jev_decide"):
+        return {"used": False, "bounded_seconds": 1.5, "decision": fallback, "fallback": "client_unavailable"}
+    questions = {"choice": {"type": "choice", "options": [str(x.get("upstream_skill", "unknown")) for x in selected]},
+                 "noul": {"type": "number", "instructions": "Probability this is novel and actionable, 0 to 1."}}
+    try:
+        decision = module.jev_decide({"candidates": selected[:3]}, questions, agent_role="explorer",
+                                     timeout_sec=1.5, mock_response=mock)
+    except (OSError, ValueError, TypeError):
+        decision = None
+    if not isinstance(decision, dict):
+        return {"used": False, "bounded_seconds": 1.5, "decision": fallback, "fallback": "timeout_or_invalid"}
+    try:
+        noul = float(decision.get("noul", decision.get("novelty", 0.0)))
+    except (TypeError, ValueError):
+        noul = 0.0
+    choice = decision.get("choice") if noul > 0.70 else "deterministic_fallback"
+    if noul < 0.30:
+        choice = "deterministic_fallback"
+    return {"used": True, "bounded_seconds": 1.5, "decision": {"choice": choice, "noul": noul}, "raw": decision}
+
+
 def command_triage(args: argparse.Namespace) -> dict[str, Any]:
+    args._include_horizon = True
     scan = _scan(args)
-    selected = _selected(scan, 1 if args.pick_one else 3)
+    selected = _selected(scan, 1 if args.pick_one else min(3, args.pick_top), include_pre_fix=bool(getattr(args, "include_pre_fix", False)))
     mock = _mock_jev(args.mock_jev_json)
+    jev = _run_jev(selected, enabled=bool(args.use_jev), mock=mock)
     root = Path(args.emit_briefs).expanduser() if args.emit_briefs else None
     emitted = []
     if root:
@@ -1208,9 +1776,35 @@ def command_triage(args: argparse.Namespace) -> dict[str, Any]:
     return {"schema": "agent-retro-triage/v1", "ok": True, "picked": selected, "picked_count": len(selected), "healthy_no_issues": not selected,
             "excluded_by_active_lease": sorted(scan.get("excluded_by_active_lease", [])),
             "worker_role_slot": {"role": "explorer", "tier": "worker", "tokens": 0},
-            "jev": {"used": bool(args.use_jev), "bounded_seconds": 1.5, "mock": bool(mock), "mock_payload": mock},
+            "jev": {**jev, "mock": bool(mock), "mock_payload": mock},
             "emitted": emitted, "m2_dispatch_plan": {"schema": "agent-retro-m2-dispatch-plan/v1", "m2_coordinator_count": 1,
                 "k": len(selected), "skills": [x.get("upstream_skill") for x in selected], "honest_cap": 3}}
+
+
+def command_record_receipt(args: argparse.Namespace) -> dict[str, Any]:
+    root = Path(args.handoff_root or "~/Development/handoff").expanduser()
+    target = root / f"agent-retro-{args.skill}" / "receipts" / "m1-r10.md"
+    lines = [f"# R10 Receipt — agent-retro-{args.skill}", "", f"- Skill: `{args.skill}`", f"- Goal ID: `{args.goal_id}`", f"- Status: `{args.status}`"]
+    if args.merge_sha:
+        lines.append(f"- Merge SHA: `{args.merge_sha}`")
+    if args.pr:
+        lines.append(f"- PR: {args.pr}")
+    lines.extend(["", args.summary or "Recorded by agent-retro."])
+    written = _safe_write(target, "\n".join(lines) + "\n")
+    return {"schema": "agent-retro-m1-receipt/v1", "ok": True, "path": str(target), "written": written,
+            "skill": args.skill, "goal_id": args.goal_id, "status": args.status, "merge_sha": args.merge_sha, "pr": args.pr}
+
+
+def command_emit_relay(args: argparse.Namespace) -> dict[str, Any]:
+    if args.from_skill == args.to_skill:
+        raise ValueError("Host and Guest skill must be distinct")
+    root = Path(args.handoff_root or "~/Development/handoff").expanduser()
+    target = root / f"agent-retro-relay-{args.from_skill}-to-{args.to_skill}" / "relay.md"
+    text = (f"# Cross-Skill Relay\n\n- From: `{args.from_skill}`\n- To: `{args.to_skill}`\n- Requirement: {args.requirement}\n\n"
+            "Wave 2 only; the host must not edit Guest-owned paths.\n")
+    written = _safe_write(target, text)
+    return {"schema": "agent-retro-relay/v1", "ok": True, "from_skill": args.from_skill, "to_skill": args.to_skill,
+            "path": str(target), "written": written}
 
 
 def command_diagnose(args: argparse.Namespace) -> dict[str, Any]:
@@ -1252,10 +1846,17 @@ def _receipts(root: Path) -> list[dict[str, Any]]:
 def command_rollup(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
     days = max(1, int(getattr(args, "days", 30) or 30))
-    scan = _scan(argparse.Namespace(days=days, role=None, layer=None, fast=True, handoff_root=str(root), handoff_dir=None))
+    scan = _scan(argparse.Namespace(days=days, role=None, layer=None, fast=True, handoff_root=str(root), handoff_dir=None, _include_horizon=True, min_turns=40, min_duration_min=15))
     receipts = _receipts(root)
+    grounding: list[dict[str, Any]] = []
+    for receipt in receipts:
+        match = re.search(r"Merge SHA:\s*`?([0-9a-f]{7,40})", receipt.get("text", ""), re.I)
+        if match:
+            sha = match.group(1)
+            grounded = _git_exists(f"{sha}^{{commit}}")
+            grounding.append({"path": receipt["path"], "merge_sha": sha, "grounded": grounded})
     day = args.date or datetime.now().date().isoformat()
-    payload = {"schema": "agent-retro-rollup/v1", "date": day, "source": scan.get("source"), "coverage": scan.get("coverage"), "observations": scan["observations"][:30], "metrics": scan["metrics"], "receipts": receipts[:10], "observation_pool": scan["observation_pool"][:20], "version_watermark": scan["version_watermark"]}
+    payload = {"schema": "agent-retro-rollup/v1", "date": day, "source": scan.get("source"), "coverage": scan.get("coverage"), "observations": scan["observations"][:30], "metrics": scan["metrics"], "receipts": receipts[:10], "receipt_grounding": grounding, "observation_pool": scan["observation_pool"][:20], "version_watermark": scan["version_watermark"]}
     markdown = None
     verified = None
     if args.issue_brief:
@@ -1420,6 +2021,10 @@ def _agent_retro_prompt() -> str:
         "python3 skills/agent-retro/scripts/agent_retro.py rollup --issue-brief --json\n"
         "python3 skills/agent-retro/scripts/agent_retro.py file-issue --apply --sync-linear --json\n"
         "```\n\n"
+        "## v2 Parity + Horizon Pass\n\n"
+        "Before triage, resolve per-skill `vN@sha` watermarks and rank recurring post-fix anomalies; run H5 cross-skill AST/warehouse drift and I5 wild-glue discovery. "
+        "Use `record-m1-receipt` or `emit-relay` for every M1 outcome and ground merge SHAs during rollup. "
+        "Run `python3 skills/agent-retro/scripts/agent_retro.py horizon --days 7 --min-turns 40 --json` so successful long runs receive HZN1..HZN5 optimization profiling.\n\n"
         "The issue must retain `<!-- multica-cursor:agent-retro-autopilot-YYYY-MM-DD -->`, "
         "`sessions=<N>`, and `coverage=<healthy|degraded>` in its AI evidence block."
     )
@@ -1516,12 +2121,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("collect", help="collect a bounded telemetry snapshot"); _common(p); p.set_defaults(days=3); p.add_argument("--output", type=Path, default=DEFAULT_COLLECT_OUTPUT); p.add_argument("--watermark-file", type=Path, default=None)
     p = sub.add_parser("probe", help="fast bounded five-layer probe"); _common(p)
-    p = sub.add_parser("triage", help="cheap worker triage"); _common(p); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--use-jev", action="store_true"); p.add_argument("--mock-jev-json"); p.add_argument("--emit-briefs")
+    p = sub.add_parser("horizon", help="profile successful long-horizon sessions"); _common(p); p.add_argument("--min-turns", type=int, default=40); p.add_argument("--min-duration-min", type=float, default=15)
+    p = sub.add_parser("triage", help="cheap worker triage"); _common(p); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--use-jev", action="store_true"); p.add_argument("--mock-jev-json"); p.add_argument("--emit-briefs"); p.add_argument("--include-pre-fix", action="store_true")
     p = sub.add_parser("diagnose", help="deep attribution for one skill"); _common(p); p.add_argument("--skill", required=True)
     p = sub.add_parser("emit-briefs", help="write non-clobbering specs and briefs"); _common(p); p.add_argument("--skill"); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--emit-briefs")
     p = sub.add_parser("rollup", help="aggregate receipts into a Dual-Zone issue"); _common(p); p.add_argument("--date"); p.add_argument("--issue-brief", action="store_true")
     p = sub.add_parser("file-issue", help="prepare or explicitly apply an issue publication"); _common(p); p.add_argument("--date"); p.add_argument("--server", "--server-url", dest="server", default=""); p.add_argument("--workspace", "--workspace-id", dest="workspace", default=""); p.add_argument("--owner", "--assignee-id", dest="owner", default=""); p.add_argument("--agent", default="agent-retro"); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true"); p.add_argument("--sync-linear", action="store_true")
     p = sub.add_parser("setup-autopilot", help="prepare the independent run_only schedule"); _common(p); p.add_argument("--server", "--server-url", dest="server", default=""); p.add_argument("--workspace", "--workspace-id", dest="workspace", default=""); p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False); p.add_argument("--apply", action="store_true"); p.add_argument("--receipt", type=Path, default=None)
+    p = sub.add_parser("record-m1-receipt", help="write an R10 M1 outcome receipt"); p.add_argument("--skill", required=True); p.add_argument("--goal-id", required=True); p.add_argument("--status", required=True, choices=("FIXED_AND_MERGED", "HEALTHY_NO_ISSUES", "CROSS_SKILL_RELAY")); p.add_argument("--merge-sha", "--commit-sha", dest="merge_sha"); p.add_argument("--pr", "--pr-url", dest="pr"); p.add_argument("--summary", default=""); p.add_argument("--handoff-root", "--emit-briefs", dest="handoff_root", default="~/Development/handoff"); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("emit-relay", help="emit a host-to-guest Wave 2 relay"); p.add_argument("--from", dest="from_skill", required=True); p.add_argument("--to", dest="to_skill", required=True); p.add_argument("--requirement", required=True); p.add_argument("--handoff-root", "--emit-briefs", dest="handoff_root", default="~/Development/handoff"); p.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1530,9 +2138,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "collect": result = command_collect(args)
         elif args.command == "probe": result = command_probe(args)
+        elif args.command == "horizon": result = command_horizon(args)
         elif args.command == "triage": result = command_triage(args)
         elif args.command == "diagnose": result = command_diagnose(args)
         elif args.command == "emit-briefs": result = command_emit(args)
+        elif args.command == "record-m1-receipt": result = command_record_receipt(args)
+        elif args.command == "emit-relay": result = command_emit_relay(args)
         elif args.command == "rollup": result = command_rollup(args)
         elif args.command == "file-issue": result = command_file_issue(args)
         else: result = command_autopilot(args)

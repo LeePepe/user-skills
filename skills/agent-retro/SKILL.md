@@ -1,10 +1,10 @@
 ---
 name: agent-retro
-description: 5-layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution: sub-second probe + Cheap Worker & Jev triage under 1 M2 into K (0..3) parallel per-skill M1 TLs -> M2 Rollup into [Agent Retro YYYY-MM-DD] Dual-Zone issue. Not for product crash telemetry or blog extraction.
+description: v2.0.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke, exec, friction, horizon) with zero-token probe, Cheap Worker/Jev triage, post-fix watermarks, and bounded M2-to-M1 rollup. Not for product crash telemetry or blog extraction.
 ---
-# Agent Retro（五层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
+# Agent Retro v2.0.0（六层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
 
-`agent-retro` collects bounded multi-agent execution telemetry and inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **5-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
+`agent-retro` collects bounded multi-agent execution telemetry and inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **6-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`, `horizon`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
@@ -44,7 +44,7 @@ description: 5-layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attri
 11. **Version Watermark Delta (`vN-1@sha -> vN@sha`)**: Split pre-fix vs post-fix anomalies across skill versions so resolved issues do not re-trigger.
 12. **Independent M3 Rollup Issue (`[Agent Retro YYYY-MM-DD]`) & Multica Autopilot Compatibility**: Emit Dual-Zone Issue Format (`<=45` human lines + `<details>` JSON passing `verify_issue_format.py`) and support Multica scheduled `run_only` execution (`setup-autopilot`).
 
-## 5-Layer Multi-Agent Trajectory Metrics (`role,handoff,invoke,exec,friction`)
+## 6-Layer Multi-Agent Trajectory Metrics（`role,handoff,invoke,exec,friction,horizon`）
 
 - **`role` (`L-Role` · Role Purity & Boundary)**:
   - `R1_m3_prompt_prelock` -> `personal-m2-assistant` | `R2_m2_direct_code_edit` -> `m2-dispatcher` | `R3_m1_inline_overwork` (`>3` files or `>60` turns without Writer) -> `team-lead` | `R4_session_skill_pollution` (`>3` domain skills) -> `m2-dispatcher` | `R5_reviewer_same_vendor` -> `code-review` / `team-lead`.
@@ -56,10 +56,17 @@ description: 5-layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attri
   - `E1_blind_spin_loop_vs_progressive_catch` (preserve `exit=1 -> disclose -> exit=0` as `progressive_catch_rate`; flag `>=3x` consecutive identical-error `blind_spin_loop`) | `E2_r3_plus_divergence` (exempt `R1->R2`; flag `R3+`) | `E3_gate_escape_and_uncrystallized_spec_gap` (`[SPEC_GAP]` -> `my-designer`, CI gate escape -> `repo-kit`) | `E4_unfaithful_receipt_and_cancelled_noise` (ungrounded R10 receipt or `CANCELLED` false `PR_CHECK_FAILED` -> `team-lead`).
 - **`friction` (`L-Friction` · Human-Agent Interrupt & Friction)**:
   - `F1_permission_stall_count` (`permission.requested` stalls on safe paths / unanswered shutdowns) | `F2_owner_abort_rate` (`abort` / `session.error`) | `F3_mid_flight_owner_correction` (mid-flight Owner steering corrections).
+- **`horizon` (`L-Horizon` · Long-Horizon Optimization)**: `HZN1` context carry, `HZN2` wakeup/parallelism, `HZN3` rework/verify tax, `HZN4` fatigue inflection, and `HZN5` steering overkill; profile successful long runs without LLM tokens.
 
 ## Canonical 3-Stage Prompts & M3 Rollup Contract
 
 - **Stage 1+2 (`1 M2 -> 1 Cheap Probe Worker`)**: Dispatch `--role explorer` (`mai-code-2-flash` / `gpt-5.6-luna`, `0` steering tokens) to run `agent_retro.py probe --fast --json` and `agent_retro.py triage --pick-top 3 --use-jev --emit-briefs ~/Development/handoff --json`. With **zero Owner approval gate before fixing**, select `K` (`0..3` honest cap, never a forced quota) disjoint upstream skills (`K=0` -> `HEALTHY_NO_ISSUES`).
 - **Stage 3 (`1 M2 -> K Parallel M1 TLs -> M2 Rollup`)**: For each picked skill (`K=1..3`), spawn `agent-retro-<sk>-goal-tl-r1` in `~/Development/worktrees/agent-retro-<sk>`. If deep reasoning finds the signal is benign (e.g. `R1->R2` convergence), record `HEALTHY_NO_ISSUES` (`0` Writers/Reviewers); if confirmed, run `Writer -> Reviewer` with 1 of the **3 Physical Locks** + **Positive & Counter-Case Dual Replay**, merge PR, and roll up via `agent_retro.py rollup --handoff-root ~/Development/handoff --issue-brief --json` into **`[Agent Retro YYYY-MM-DD]`**.
+
+## v2.0.0 Parity + Long-Horizon Layer
+
+- **Parity**: `probe` resolves per-target `vN@sha` watermarks and post-fix cohorts; `triage` ranks recurring post-fix anomalies by default (`--include-pre-fix` is historical replay). It performs the zero-token H5 AST contract/warehouse read, detects I5 cross-agent shell glue, and supports `--use-jev` with deterministic fallback.
+- **M1 contracts**: `record-m1-receipt --skill <sk> --goal-id <gid> --status <FIXED_AND_MERGED|HEALTHY_NO_ISSUES|CROSS_SKILL_RELAY>` and `emit-relay --from <host> --to <guest> --requirement "..."` are local, bounded, and rollup grounds merge SHAs.
+- **Horizon**: `horizon --days 7 --min-turns 40 --json` profiles successful long sessions with HZN1 context carry, HZN2 wakeup/parallelism, HZN3 rework/verify tax, HZN4 fatigue inflection, and HZN5 steering overkill. `--layer horizon` is accepted by probe/triage/rollup.
 
 See [agent-retro-playbook.md](references/agent-retro-playbook.md) and [eval-cases.json](references/eval-cases.json).

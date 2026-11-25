@@ -1,4 +1,4 @@
-# Agent Retro Playbook (`5-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
+# Agent Retro v2.0.0 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
 
 > Core Philosophy: **Symptom in Agent, Cure in Skill.** Grade final outcomes first (**Outcome-First Gate**), treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy runtime progressive disclosure, and trace downstream rework back to the **first upstream role and skill** that introduced the defect.
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 3. Five-Layer Metric Formulas & Upstream First-Fault Credit Assignment
+## 3. Six-Layer Metric Formulas & Upstream First-Fault Credit Assignment
 
 | Layer | Metric ID | Detection Formula & Threshold | Upstream Responsible Skill (`Cure in Skill`) | Physical Lock Remediation |
 |---|---|---|---|---|
@@ -47,6 +47,11 @@
 | **`friction` (`L-Friction`)** | `F1_permission_stall_count` | `permission.requested` stalls on safe paths or unanswered shutdowns | `team-lead` / `m2-dispatcher` | `operator-policy.json` / `runtime-profiles.yaml` allowlist |
 | **`friction` (`L-Friction`)** | `F2_owner_abort_rate` | Sessions ending in `abort` or `session.error` | Active role skill (`m2-dispatcher` / `team-lead`) | Watchdog timeout & fail-fast recovery |
 | **`friction` (`L-Friction`)** | `F3_mid_flight_owner_correction` | Mid-flight Owner user messages correcting an active autonomous execution | `personal-m2-assistant` / `m2-dispatcher` / `team-lead` | Phase 0 spec alignment checklist |
+| **`horizon` (`L-Horizon`)** | `HZN1_context_carry_tax` | Unreferenced `>=8192`-byte output with `carry_byte_turns >=250000` | `agent-retro` | Explorer offload / `--summary` |
+| **`horizon` (`L-Horizon`)** | `HZN2_wakeup_lag_and_missed_parallelism` | `>180s` wakeup lag or `>=2` disjoint no-dependency queue tasks run sequentially | `m2-dispatcher` | Queue parallelism and wakeup watcher |
+| **`horizon` (`L-Horizon`)** | `HZN3_rework_detour_and_premature_full_verify` | `>=4` same-file edits or `>=3` heavy mid-flight full verifies | `agent-retro` | Targeted test loop |
+| **`horizon` (`L-Horizon`)** | `HZN4_context_fatigue_inflection` | Late failure/empty-turn rate is `>=2x` early rate | `team-lead` | Handoff checkpoint split |
+| **`horizon` (`L-Horizon`)** | `HZN5_steering_overkill_mechanical_span` | `>=5` low-output read-only `group/steering` turns | `team-lead` | Mechanical worker / L0 script |
 
 ---
 
@@ -65,3 +70,11 @@
 
 - **`rollup --issue-brief` & `file-issue`**: Aggregates all `K` M1 receipts (`FIXED_AND_MERGED`, `HEALTHY_NO_ISSUES`, `CROSS_SKILL_RELAY`), 5-layer anomaly counts, and `observation_pool` into a Dual-Zone Markdown issue (`<=45` human lines, plain-Chinese `**一句话结论**：...`, concrete non-boilerplate `- [ ]` items, zero forbidden internal codes/UUIDs/SHAs/CLI commands in Human Zone, and full JSON/CLI evidence inside `<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>`) verified by `verify_issue_format.py`.
 - **`setup-autopilot`**: Configures or updates the Multica scheduled `run_only` autopilot (`Daily Agent Trajectory Retro Autopilot`, cron `40 4 * * *` `Asia/Shanghai`) without touching `skill-retro`'s `04:20` schedule.
+
+## 6. v2 Parity Discovery and L-Horizon
+
+- **Target watermarks**: Resolve each target skill as `v<path-commit-count>@<subtree-sha>` plus `last_modified_epoch`. Triage uses only recurring `post_fix` evidence unless `--include-pre-fix` is explicitly requested; a hermetic skill with no Git history is post-fix.
+- **H5 contract drift**: The probe scans literal `skills/<callee>/scripts/<script>.py` calls, AST-extracts argparse flags/subcommands, skips `parse_known_args`/canonical wrappers/placeholders, and reads available `warehouse.db` through a read-only guarded URI for drifted goals, review failures, blocked/unblocked events, and steering requests.
+- **I5 wild glue**: Five or more sessions repeating `herdr` pane/agent reads, receipt/ledger polling, or `gh pr view` loops become an upstream `m2-dispatcher`/`team-lead` crystallization candidate.
+- **Jev and M1**: `triage --use-jev` calls `team-lead/scripts/jev_client.py` with a 1.5-second bound; `--mock-jev-json` never contacts live Jev. Use `record-m1-receipt` and `emit-relay`; rollup checks merge SHA grounding.
+- **Horizon entry**: `agent_retro.py horizon --days 7 --min-turns 40 --min-duration-min 15 --json` profiles healthy or at-risk long sessions. HZN1 flags unreferenced carry-byte turns; HZN2 wakeup gaps and serial disjoint work; HZN3 edit churn/full-verify detours; HZN4 early/late failure or empty-turn inflection; HZN5 long low-output `group/steering` read-only spans. `probe`, `triage`, and `rollup` accept `--layer horizon`.
