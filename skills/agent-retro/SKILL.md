@@ -17,7 +17,7 @@ description: v2.1.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke,
 | Stage 3 emit `K (0..3)` per-skill M1 specs & briefs | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py emit-briefs [--skill <name>] [--pick-top 3 \| --pick-one] --emit-briefs ~/Development/handoff --json` |
 | Rollup `K` M1 receipts to `[Agent Retro YYYY-MM-DD]` | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py rollup --handoff-root ~/Development/handoff [--issue-brief] --json` |
 | Publish or schedule Multica `[Agent Retro YYYY-MM-DD]` issue | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py file-issue [--dry-run] --json` |
-| verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill agent-retro --strict` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill agent-retro --strict` |
 
 ## Role-Based Routing (Role-to-Stage Cost Split)
 
@@ -27,7 +27,7 @@ description: v2.1.0 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke,
 | Role: M2-Dispatcher (`1 M2` Coordinator: spawns Probe -> `0..3` M1 TLs -> Rollup) | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py rollup --handoff-root ~/Development/handoff --issue-brief --json` |
 | Role: M1-TL (`1 M1 TL per skill`: Stage 3 Deep Reasoning in `worktrees/agent-retro-<skill>`) | `references/agent-retro-playbook.md` | `python3 skills/agent-retro/scripts/agent_retro.py diagnose --skill <name> --json` |
 | Role: Writer | `references/agent-retro-playbook.md` | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill <name> --strict` |
-| Role: Reviewer | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill <name> --strict` |
+| Role: Reviewer | `references/agent-retro-playbook.md` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill <name> --strict` |
 
 ## 12 Core Methodologies & Guardrails
 

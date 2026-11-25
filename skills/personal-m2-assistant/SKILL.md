@@ -12,7 +12,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 - 简短触发：`/m2 <跨 M2 指令>`，由 [`skill-slash-expander.ts`](../m2-dispatcher/scripts/skill-slash-expander.ts) 展开到本技能。
 - 单仓 M2 开 TL、热追加、巡检、解卡与 Goal 回收仍走 [`m2-dispatcher`](../m2-dispatcher/SKILL.md)。
 - **M3 只管按业务话题直接转发，绝不预设 `Hot-Append` 或越权替 M2 拆 Goal**：收到后续指令时，M3 只按业务话题原意直达对应 M2，绝不在 M3 层预设包装为「热追加（`Hot-Append`）合并进当前任务」或自行拆 Goal；是同页面微调走 `Hot-Append` 还是独立新 Feature 拆分为第二个 Goal（新建 `handoff/<goal-2>/spec.md` + 独立 TL/Task/PR）完全由接收方 `M2-Dispatcher` 判定。
-- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
+- 业务话题与仓库映射的唯一事实源是 [`m2-domain-map.json`](references/m2-domain-map.json)（Script-Only Data Drawer — query via L2 CLI, never full-file view）；每个 topic 的 `space`/`space_aliases` 是 Herdr Space 路由的唯一事实源。
 - **派发前准备阶段（`--plan`）默认从 Issue 缓存读取 `spaces` 与 `agents`**：`--plan` 默认直接从 Linear 同步总账本 `TIA-463` 及其持久化快照（`/tmp/m2-cross-device-sync-cache.json`、`m2-supervision-state.json`）读取已存好的 `spaces`（`workspaces`）和 `agents`（`sessions`，`discovery.source="issue_cache"`），不每次实时扫描 `herdr`，极大加快派发前准备速度（仅显式传入 `--live-herdr` 时才实时探测 Herdr）。交互式 Herdr 的 `agent_status=done` 仍可作为 `EXISTING_M2` 复用（仅真正 exited/stopped 等状态终止）。
 
 ## 默认配置与强制 Owner Gate
@@ -76,10 +76,10 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 
 - How-To 节点：[`I7 Unified M2 Ingress`](../workflow-hub/references/how-to-nodes.md)。
 - 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../m2-dispatcher/scripts/m2-router.py) 仅作 wrapper，权威实现位于本技能 `scripts/m2-router.py`。
-- 验证与回归用例：[`eval-cases.json`](references/eval-cases.json)、`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
+- 验证与回归用例：[`eval-cases.json`](references/eval-cases.json)（Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view）、`python3 -m unittest scripts/test_m2_router.py scripts/test_verify_skills.py`、`python3 skills/skill-contract/scripts/skill_contract.py audit --all --strict`、`./scripts/verify`。
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
-| primary task | `references/eval-cases.json` | `sh skills/personal-m2-assistant/scripts/install-m2-board-hook.sh --help` |
-| verification | `references/eval-cases.json` | `skill_contract.py eval --skill personal-m2-assistant --strict` |
+| primary task | `SKILL.md` | `sh skills/personal-m2-assistant/scripts/install-m2-board-hook.sh --help` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill personal-m2-assistant --strict` |

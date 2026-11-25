@@ -18,9 +18,9 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 | Cross-repo gate & slow `verify` self-driven loop (`repo-kit`) | `references/progressive-evolution-playbook.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json` |
 | Stage 3 emit `K` per-skill M1 specs | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py emit-briefs [--skill <name>] [--pick-top 3 \| --pick-one] --mode full --limit-sessions 60 --emit-briefs ~/Development/handoff --json` |
 | Cross-skill Host->Guest relay | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py emit-relay --from <host> --to <guest> --requirement "<spec>" --emit-briefs ~/Development/handoff --json` |
-| Decoupled Context Uptake check | `references/uptake_map.json` | `python3 skills/skill-retro/scripts/skill_retro.py uptake-check [--skill <name>] [--target-dir <dir>] --json` |
+| Decoupled Context Uptake check | `references/uptake_map.json` (Script-Only Data Drawer — query via L2 CLI, never full-file view) | `python3 skills/skill-retro/scripts/skill_retro.py uptake-check [--skill <name>] [--target-dir <dir>] --json` |
 | Rollup `K` M1 receipts to single M2 | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py rollup --handoff-root ~/Development/handoff --json` |
-| verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill skill-retro --strict` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill skill-retro --strict` |
 
 ## Role-Based Routing (Role-to-Stage Cost Split)
 
@@ -30,7 +30,7 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 | Role: M2-Dispatcher (`1 M2` Coordinator: spawns Probe -> `0..3` M1 TLs -> Rollup) | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py rollup --handoff-root ~/Development/handoff --json` |
 | Role: M1-TL (`1 M1 TL per skill`: Stage 3 Deep Reasoning in `worktrees/skill-retro-<name>`) | `references/progressive-evolution-playbook.md` | `python3 skills/skill-retro/scripts/skill_retro.py diagnose --skill <name> --mode full --json` |
 | Role: Writer | `references/progressive-evolution-playbook.md` | `python3 skills/skill-contract/scripts/skill_contract.py audit --skill <name> --strict` |
-| Role: Reviewer | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill <name> --strict` |
+| Role: Reviewer | `references/progressive-evolution-playbook.md` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill <name> --strict` |
 
 ## The 6 Problem-Discovery Dimensions (`l0,l1,l2,l3,creative,eval`)
 
@@ -54,4 +54,4 @@ description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe scr
 
 `diagnose` defaults to the bounded recent-session scan `--limit-sessions 60`; use `--deep-all` only for an explicitly requested historical scan. Generated `spec.md` and `briefs/*.md` contain redacted failing command samples, exact `SKILL.md` ↔ argparse drift, and exact script paths so M1 does not need to reverse-engineer the scorer. M1 TL must not read `skills/skill-retro/scripts/**` or pre-read full target scripts before dispatching Writer; dispatch with `herdr-dispatch.sh --role writer` and an explicit coding model, never inherited `group/steering`, using expanded absolute paths rather than volatile `/tmp` relative paths.
 
-See [progressive-evolution-playbook.md](references/progressive-evolution-playbook.md), [uptake_map.json](references/uptake_map.json), and [eval-cases.json](references/eval-cases.json).
+See [progressive-evolution-playbook.md](references/progressive-evolution-playbook.md), [uptake_map.json](references/uptake_map.json) (Script-Only Data Drawer — query via L2 CLI, never full-file view), and [eval-cases.json](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view).

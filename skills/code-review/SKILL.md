@@ -23,7 +23,7 @@ Read-only two-axis review of one exact change surface. Pin the diff, gather repo
 | Designer | `references/reviewer-prompts.md` | `discover_review_context.py --flow-map` |
 | Writer | `references/output-contract.md` | `discover_review_context.py --repo <repo> --committed-only` |
 | Reviewer | `references/review-rubric.md` | `discover_review_context.py --repo <repo> --base <ref>` |
-| M1-TL | `references/eval-cases.md` and `references/eval-cases.json` | `skill_contract.py eval --skill code-review --strict` |
+| M1-TL | `references/eval-cases.md` | `skill_contract.py eval --skill code-review --strict` |
 
 ## Review contract
 
@@ -34,3 +34,5 @@ Read-only two-axis review of one exact change surface. Pin the diff, gather repo
 5. For UI diffs, run `shared-ci` design checks against `design.md` and load `my-designer` only for Visual Traceback. Classify findings `[IMPL_BUG]` or `[SPEC_GAP]`.
 
 Review is content-only: do not edit, commit, test, lint, build, or merge. Every changed file belongs to exactly one packet.
+
+Regression coverage lives in [eval-cases.json](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view).

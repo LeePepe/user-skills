@@ -14,7 +14,7 @@ This is a handoff-only design capability. Author the implementation-ready `desig
 |---|---|---|
 | Role: Designer | `references/routing-index.md` | `verify_design_cases.py route --platform <platform> --dimensions <d> [--persona <p>]` |
 | Role: Writer | `references/navigation-evidence-contract.md` | `verify_design_cases.py audit-code --platform <platform> <path...>` |
-| Role: Reviewer | `references/eval-cases.json` | `verify_design_cases.py flow-map` |
+| Role: Reviewer | `references/routing-index.md` | `verify_design_cases.py flow-map` |
 | Role: M1-TL | `references/design-flow-architecture.md` | `skill_contract.py eval --skill my-designer --strict` |
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
@@ -27,7 +27,7 @@ This is a handoff-only design capability. Author the implementation-ready `desig
 | persona/appearance tokens | `references/appearance-ledger.md` | `verify_design_cases.py route --platform <platform> --persona <compact\|default\|breathing>` |
 | breathing/density/clutter | `references/breathing-and-clarity.md` | `verify_design_cases.py check-whitespace-ratio --persona <p> <png_or_dir>` |
 | subtractive modernization | `references/modernization-dimensions.md` | `verify_design_cases.py audit-spec <design.md...>` |
-| Visual Traceback/eval | `references/eval-cases.json` | `verify_design_cases.py flow-map` |
+| Visual Traceback/eval | `references/navigation-evidence-contract.md` | `verify_design_cases.py flow-map` |
 
 ## Three-Tier Design Spectrum & `2+1+1` Exploration Quota
 

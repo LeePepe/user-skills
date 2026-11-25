@@ -28,7 +28,7 @@ Canonical skill: `m2-dispatcher`; role **M2-Dispatcher**. Task-level 1-Hop execu
 
 M2 owns Owner Gate, simple `spec.md`/`design.md`, hot append, monitoring, blocked alerts, and `blocked-<agent>-<ts>.md` alerts; Goal recovery is fail-closed. It may edit only Spec/Handoff files; code, tests, and config go through `herdr-dispatch.sh` into an isolated `worktrees/` workspace. Every route is fail-closed and every event is recorded in `ledger.md`.
 
-Shared references: [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml), [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md), [`ledger.md`](../team-lead/references/ledger.md), and [`m2-domain-map.json`](references/m2-domain-map.json). Shared scripts: [`goal-queue.py`](../team-lead/scripts/goal-queue.py), [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh), plus `goal-supervisor.py`, `state_store.py`, and `jev_client.py`.
+Shared references: [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) (Script-Only Data Drawer — query via L2 CLI, never full-file view), [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md), [`ledger.md`](../team-lead/references/ledger.md), and [`m2-domain-map.json`](references/m2-domain-map.json) (Script-Only Data Drawer — query via L2 CLI, never full-file view). Shared scripts: [`goal-queue.py`](../team-lead/scripts/goal-queue.py), [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh), plus `goal-supervisor.py`, `state_store.py`, and `jev_client.py`.
 
 ## Flows
 

@@ -21,7 +21,7 @@ Personal portfolio diagnosis, FIFO fee-window calculation, track-overlap detecti
 
 - **Layer 0 (Default Execution)**: Run `scripts/portfolio_rebalancer.py` (`diagnose`, `rebalance`, `fifo-window`, `overlap`) to produce exact numbers before drafting recommendations.
 - **Layer 1 (Allocation, FIFO & Action Rules)**: Read [`references/rebalance-and-fifo-rules.md`](references/rebalance-and-fifo-rules.md) when customizing Barbell target sleeves, redemption fee schedules, overlap thresholds, or conservative vs. active rebalancing modes.
-- **Layer 2 (Contract & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when adding regression assertions.
+- **Layer 2 (Contract & Trigger Drawer)**: Read [`references/rebalance-and-fifo-rules.md`](references/rebalance-and-fifo-rules.md) for domain context; run regression assertions through `skill_contract.py eval` without viewing the JSON drawer.
 - **Upstream Objective Scoring**: For pure, ledgerless asset screening or model explanations, route to `asset-screener`.
 
 ## Four Core Engines
@@ -71,5 +71,5 @@ python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py overlap --portf
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
-| primary task | `references/eval-cases.json` | `python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py --help` |
-| verification | `references/eval-cases.json` | `skill_contract.py eval --skill portfolio-advisor --strict` |
+| primary task | `references/rebalance-and-fifo-rules.md` | `python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py --help` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill portfolio-advisor --strict` |

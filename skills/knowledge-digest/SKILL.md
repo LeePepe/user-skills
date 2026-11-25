@@ -14,7 +14,7 @@ user-invocable: true
 |---|---|---|
 | card shape | `references/templates.md` | `digest_vault.py precheck-card --file <md>` |
 | topic discovery | `references/card-templates.json` | `digest_vault.py discover-topics --top 3 --no-materialize` |
-| evaluation | `[eval-cases.json](references/eval-cases.json)` | `skill_contract.py eval --skill knowledge-digest --strict` |
+| evaluation | `[eval-cases.json](references/eval-cases.json)` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill knowledge-digest --strict` |
 
 ## Role-Based Routing
 
@@ -22,7 +22,7 @@ user-invocable: true
 |---|---|---|
 | Designer | `references/templates.md` | `digest_vault.py precheck-card --file <md>` |
 | Writer | `references/card-templates.json` | `digest_vault.py archive --slug <slug> --category <cat> --title <title> --file <md>` |
-| Reviewer | `references/eval-cases.json` | `skill_contract.py eval --skill knowledge-digest --strict` |
+| Reviewer | `references/templates.md` | `skill_contract.py eval --skill knowledge-digest --strict` |
 | M1-TL | `references/templates.md` | `digest_vault.py reconcile-state` |
 
 ## Two channels

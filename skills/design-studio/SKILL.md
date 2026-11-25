@@ -12,7 +12,7 @@ Entry A ingests and stockpiles inspiration, palettes, interaction patterns, defe
 
 | Trigger | Read exactly one L1 drawer | Run exactly one L2 CLI |
 |---|---|---|
-| classify or query inspiration | `references/eval-cases.json` | `python3 skills/design-studio/scripts/design_catalog.py --query <keyword> --top 3` |
+| classify or query inspiration | `references/toolchain-20-matrix.md` | `python3 skills/design-studio/scripts/design_catalog.py --query <keyword> --top 3` |
 | video/offline export | `references/remotion-video.md` | `python3 skills/design-studio/scripts/design_catalog.py scaffold-gallery --platform web --goal <goal> --round 1` |
 | toolchain matrix/render | `references/toolchain-20-matrix.md` | `python3 skills/design-studio/scripts/design_catalog.py render --check` |
 
@@ -20,17 +20,17 @@ Entry A ingests and stockpiles inspiration, palettes, interaction patterns, defe
 
 | Role | Single mandatory L1 drawer | Single mandatory L2 CLI |
 |---|---|---|
-| Designer | `references/eval-cases.json` | `design_catalog.py --query <keyword> --top 3` |
+| Designer | `references/toolchain-20-matrix.md` | `design_catalog.py --query <keyword> --top 3` |
 | Writer | `references/toolchain-20-matrix.md` | `design_catalog.py render --check` |
-| Reviewer | `references/eval-cases.json` | `skill_contract.py eval --skill design-studio --strict` |
-| M1-TL | `references/eval-cases.json` | `design_catalog.py classify --text <text> --no-jev` |
+| Reviewer | `references/toolchain-20-matrix.md` | `skill_contract.py eval --skill design-studio --strict` |
+| M1-TL | `references/toolchain-20-matrix.md` | `design_catalog.py classify --text <text> --no-jev` |
 
 ## Workflow
 
 1. Classify `desktop|mobile|web` across `CL,VS,CP,DV,GM,MI,LN,TC` with `scripts/data/taxonomy-v2.json`.
 2. Ingest cards into `scripts/data/vault/`; update reusable patterns/tools in `scripts/data/catalog.json`. Query these dictionaries through the CLI; do not load raw JSON as an agent shortcut.
 3. For native Apple previews use `PreviewHostKit`, Xcode `#Preview`, and 120Hz; Web HTML is only for Web platform work. The default gallery root is `leepepe.github.io/demos/<goal>`.
-4. Register generic cases through `my-designer/scripts/verify_design_cases.py register-case` and evaluate this entry through `references/eval-cases.json`.
+4. Register generic cases through `my-designer/scripts/verify_design_cases.py register-case`; evaluate the Script-Only Regression Drawer with `skill_contract.py eval` without viewing `references/eval-cases.json`.
 5. Load [`remotion-video.md`](references/remotion-video.md) only for `Video/Offline`; use [`toolchain-20-matrix.md`](references/toolchain-20-matrix.md) for matrix/render work.
 
 ```bash

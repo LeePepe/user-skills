@@ -57,8 +57,8 @@ def _legacy_monolith_facts(repo_root: Path) -> list[dict[str, Any]]:
                 facts.append({key: finding[key] for key in ("script", "lines", "cap")})
         scripts = package / "scripts"
         if scripts.is_dir():
-            for script in scripts.rglob("*.py"):
-                if script.is_symlink():
+            for script in scripts.rglob("*"):
+                if script.is_symlink() or not script.is_file() or script.suffix not in SCRIPT_SUFFIXES:
                     continue
                 relative = f"skills/{package.name}/scripts/{script.relative_to(scripts).as_posix()}"
                 if relative in LEGACY_SCRIPT_LINE_CAPS and not any(item["script"] == relative for item in facts):
@@ -89,6 +89,7 @@ def hygiene_facts(args: argparse.Namespace) -> int:
         "diff_issues": diff_issues,
         "json_summary": json_summary,
         "legacy_monoliths": _legacy_monolith_facts(repo_root),
+        "advisories": _repo_advisories(repo_root),
         "reference": VALVE_REFERENCE_BASE,
     }
     _emit_json(payload, args)
@@ -219,7 +220,8 @@ def _thin_wrapper(path: Path) -> bool:
 
 
 LEGACY_SCRIPT_LINE_CAPS: dict[str, int] = {
-    "skills/agent-retro/scripts/agent_retro.py": 2173,
+    "skills/team-lead/scripts/herdr-dispatch.sh": 1269,
+    "skills/m2-dispatcher/scripts/skill-slash-expander.ts": 1058,
     "skills/asset-screener/scripts/asset_evaluator.py": 1850,
     "skills/code-review/scripts/discover_review_context.py": 1335,
     "skills/codebase-design/scripts/spec_code_drift_patrol.py": 1342,
@@ -237,7 +239,6 @@ LEGACY_SCRIPT_LINE_CAPS: dict[str, int] = {
     "skills/retro-loop/scripts/multica_skills_autopilot.py": 1634,
     "skills/retro-loop/scripts/retro_story_engine.py": 1225,
     "skills/retro-loop/scripts/trace_backfill_exporter.py": 2094,
-    "skills/skill-retro/scripts/skill_retro.py": 9707,
     "skills/team-lead/scripts/autopilot_watchdog.py": 1795,
     "skills/team-lead/scripts/feedback_guard.py": 1395,
     "skills/team-lead/scripts/goal-queue.py": 2078,
@@ -249,20 +250,27 @@ LEGACY_SCRIPT_LINE_CAPS: dict[str, int] = {
     "skills/team-lead/scripts/multica_vpn_bridge.py": 1171,
 }
 
-def _script_budget_findings(path: Path) -> list[dict[str, Any]]:
+def _script_records(path: Path) -> list[tuple[Path, str, int]]:
     scripts = path / "scripts"
     if not scripts.is_dir():
         return []
-    findings: list[dict[str, Any]] = []
     root_kind = "skills" if path.parent.name == "skills" else ".agents/skills"
-    for script in scripts.rglob("*.py"):
-        if script.is_symlink() or "__pycache__" in script.parts:
+    records: list[tuple[Path, str, int]] = []
+    for script in scripts.rglob("*"):
+        if script.is_symlink() or not script.is_file() or "__pycache__" in script.parts or script.suffix not in SCRIPT_SUFFIXES:
             continue
         try:
             lines = len(script.read_text(encoding="utf-8", errors="replace").splitlines())
             relative = f"{root_kind}/{path.name}/scripts/{script.relative_to(scripts).as_posix()}"
         except (OSError, ValueError):
             continue
+        records.append((script, relative, lines))
+    return records
+
+
+def _script_budget_findings(path: Path) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for _script, relative, lines in _script_records(path):
         cap = LEGACY_SCRIPT_LINE_CAPS.get(relative)
         if cap is not None:
             if lines > cap:
@@ -270,6 +278,50 @@ def _script_budget_findings(path: Path) -> list[dict[str, Any]]:
         elif lines > 1000:
             findings.append({"skill": path.name, "code": "script-lines", "script": relative, "lines": lines, "cap": 1000})
     return findings
+
+
+def _advisory(skill: str, code: str, file: str, **values: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {"skill": skill, "code": code, "file": file, "tier": "soft_advisory_exit_0"}
+    item.update(values)
+    return _enrich_finding(item)
+
+
+def _package_advisories(path: Path) -> list[dict[str, Any]]:
+    skill = path.name
+    advisories: list[dict[str, Any]] = []
+    md = path / "SKILL.md"
+    md_rel = f"{skill}/SKILL.md"
+    if md.is_file():
+        size = md.stat().st_size
+        if 12 * 1024 < size <= 16 * 1024 and md_rel not in BUDGET_EXEMPTIONS:
+            advisories.append(_advisory(skill, "l0-bytes-soft", md_rel, bytes=size, threshold=12 * 1024, cap=16 * 1024))
+    refs = path / "references"
+    if refs.is_dir():
+        for ref in sorted(refs.iterdir()):
+            if not ref.is_file() or ref.is_symlink():
+                continue
+            size = ref.stat().st_size
+            ref_rel = f"{skill}/references/{ref.name}"
+            if ref.suffix == ".md" and 12 * 1024 < size <= 16 * 1024 and ref_rel not in BUDGET_EXEMPTIONS:
+                advisories.append(_advisory(skill, "l1-bytes-soft", ref_rel, bytes=size, threshold=12 * 1024, cap=16 * 1024))
+            elif ref.suffix in {".json", ".yaml", ".yml"} and size > 16 * 1024:
+                advisories.append(_advisory(skill, "data-drawer-bytes-soft", ref_rel, bytes=size, threshold=16 * 1024, hint="Script-Only Data Drawer: query via L2 CLI, never full-file view."))
+    for _script, relative, lines in _script_records(path):
+        if relative not in LEGACY_SCRIPT_LINE_CAPS and 800 < lines <= 1000:
+            advisories.append(_advisory(skill, "script-lines-soft", relative, lines=lines, threshold=800, cap=1000))
+    return advisories
+
+
+def audit_package_advisories(path: Path, design: bool = False, repo_bound: bool = False, sibling_corpus: str = "") -> list[dict[str, Any]]:
+    return _package_advisories(path)
+
+
+def _repo_advisories(repo_root: Path) -> list[dict[str, Any]]:
+    advisories: list[dict[str, Any]] = []
+    for package in _discover_packages(repo=repo_root):
+        advisories.extend(_package_advisories(package))
+    return advisories
+
 
 def audit_package(path: Path, design: bool = False, repo_bound: bool = False, sibling_corpus: str = "") -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = _script_budget_findings(path)
@@ -339,7 +391,7 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     for ref in (refs.glob("*") if refs.is_dir() else []):
         if ref.is_symlink() and not ref.exists():
             continue
-        if ref.is_dir() or not ref.is_file() or ref.suffix not in {".md", ".json"}:
+        if ref.is_dir() or not ref.is_file() or ref.suffix not in REFERENCE_SUFFIXES:
             continue
         ref_rel = f"{skill}/references/{ref.name}"
         ref_text = safe_text(ref)
@@ -352,7 +404,8 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
                 if len(block.splitlines()) > 25:
                     findings.append({"skill": skill, "code": "fenced-code-lines", "file": str(ref)})
                     break
-        _audit_drawer(skill, ref, findings, pkg_dir=path)
+        if ref.suffix == ".json":
+            _audit_drawer(skill, ref, findings, pkg_dir=path)
         local_link = re.search(rf"(?<![A-Za-z0-9_-])(?:references/)?{re.escape(ref.name)}(?![A-Za-z0-9_.-])", all_md)
         canonical_link = re.search(rf"(?:\.\./)?{re.escape(skill)}/references/{re.escape(ref.name)}", sibling_corpus)
         if not local_link and not canonical_link:
@@ -385,6 +438,7 @@ def audit(args: argparse.Namespace, discover_packages=None) -> int:
     all_packages = discover(repo=repo_arg)
     selected_set = {p.resolve() for p in selected}
     findings: list[dict[str, Any]] = []
+    advisories: list[dict[str, Any]] = []
     groups: dict[Path, list[Path]] = {}
     for package in all_packages:
         groups.setdefault(package.parent.resolve(), []).append(package)
@@ -397,6 +451,7 @@ def audit(args: argparse.Namespace, discover_packages=None) -> int:
         for package in group:
             if package.resolve() in selected_set:
                 findings.extend(audit_package(package, repo_bound=bool(repo_arg), sibling_corpus=group_corpus))
+                advisories.extend(audit_package_advisories(package, sibling_corpus=group_corpus))
         names: dict[str, list[str]] = {}
         for package in group:
             names.setdefault(package.name, []).append(str(package))
@@ -411,7 +466,7 @@ def audit(args: argparse.Namespace, discover_packages=None) -> int:
             if len(real) >= 2:
                 findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in real]})
     findings = [_enrich_finding(item) for item in findings]
-    result: dict[str, Any] = {"ok": not findings, "skills": len(selected), "findings": findings}
+    result: dict[str, Any] = {"ok": not findings, "skills": len(selected), "findings": findings, "advisories": advisories}
     if findings:
         result["guidance_drawer"] = VALVE_REFERENCE_BASE
         refs = sorted({str(item["reference"]) for item in findings if item.get("reference")})
