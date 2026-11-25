@@ -13,8 +13,8 @@ SCRIPT = ROOT / "skills/m2-dispatcher/scripts/m2_preflight.py"
 REFERENCE = "skills/m2-dispatcher/references/pr-dag-auto-heal.md"
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=ROOT, capture_output=True, text=True)
+def run_cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd, capture_output=True, text=True)
 
 
 class M2DispatcherRetroTests(unittest.TestCase):
@@ -57,6 +57,85 @@ class M2DispatcherRetroTests(unittest.TestCase):
             bounded = run_cli("ledger-delta", "--handoff-dir", str(handoff), "--no-save", "--tail", "20", "--json")
             self.assertLess(len(bounded.stdout.encode()), 4096)
             self.assertTrue(huge.parent.is_dir())
+
+    def test_text_delta_redacts_tasks_and_utf8_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = Path(tmp) / "goal"
+            handoff.mkdir()
+            personal_path, token = "/" + "Users/alice/secret", "ghp_" + "SyntheticToken1234567890ABCD"
+            (handoff / "ledger.md").write_text("## Tasks\n| ID | Status | Owner | PR |\n|---|---|---|---|\n| T1 | ready | writer | — |\n\n## Events\n- 2026-01-01 | EVT=NOTE | id=E1 | note=" + personal_path + " " + token + " 中文" + "很长" * 1400 + "\n", encoding="utf-8")
+            result = run_cli("ledger-delta", "--handoff-dir", str(handoff))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("tasks=", result.stdout)
+            self.assertNotIn(personal_path, result.stdout)
+            self.assertNotIn("ghp_", result.stdout)
+            self.assertIn("~", result.stdout)
+            self.assertIn("<redacted>", result.stdout)
+            self.assertLess(len(result.stdout.encode("utf-8")), 4096)
+
+    def test_supersede_repairs_queue_and_rejects_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = Path(tmp) / "old-goal"
+            handoff.mkdir()
+            ledger = handoff / "ledger.md"
+            ledger.write_text("# Goal\n- status: active\n\n## Tasks\n| ID | Status | Owner | PR |\n|---|---|---|---|\n| T1 | in_progress | writer | — |\n\n## Events\n", encoding="utf-8")
+            queue = handoff / "queue.json"
+            queue.write_text(json.dumps({"tasks": [{"task_id": "T1", "status": "in_progress"}]}), encoding="utf-8")
+            applied = run_cli("supersede-goal", "--old-handoff", str(handoff), "--new-goal", "new-goal", "--apply", "--json")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            next_wave = subprocess.run([sys.executable, str(ROOT / "skills/team-lead/scripts/goal-queue.py"), "next-wave", "--handoff-dir", str(handoff), "--json"], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(next_wave.returncode, 0, next_wave.stderr)
+            self.assertTrue(json.loads(next_wave.stdout)["drained"])
+            queue.write_text(json.dumps({"status": "in_progress", "tasks": [{"task_id": "T1", "status": "in_progress"}]}), encoding="utf-8")
+            retry = run_cli("supersede-goal", "--old-handoff", str(handoff), "--new-goal", "new-goal", "--apply", "--json")
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            self.assertEqual(json.loads(queue.read_text())["status"], "cancelled")
+            self.assertEqual(ledger.read_text().count("EVT=GOAL_SUPERSEDED"), 1)
+            before = ledger.read_text()
+            queue.write_text("{broken", encoding="utf-8")
+            corrupt = run_cli("supersede-goal", "--old-handoff", str(handoff), "--new-goal", "newer", "--apply")
+            self.assertEqual(corrupt.returncode, 1)
+            self.assertEqual(ledger.read_text(), before)
+
+    def test_supersede_preserves_titles_and_historical_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = Path(tmp) / "old-goal"
+            handoff.mkdir()
+            event = "- 2026-01-01T00:00:00+08:00 | EVT=RULING | id=E0 | note=status: active"
+            ledger = handoff / "ledger.md"
+            ledger.write_text("## Tasks\n| ID | Status | Title | Owner | PR |\n|---|---|---|---|---|\n| T1 | active | Build active planning view | writer | — |\n\n## Events\n" + event + "\n", encoding="utf-8")
+            result = run_cli("supersede-goal", "--old-handoff", str(handoff), "--new-goal", "new-goal", "--apply")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = ledger.read_text()
+            self.assertIn("Build active planning view", after)
+            self.assertIn(event, after)
+
+    def test_symlinked_handoff_root_cannot_authorize_repo_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "handoff").symlink_to(ROOT, target_is_directory=True)
+            for path in ("skills/m2-dispatcher/SKILL.md", "handoff/skills/m2-dispatcher/SKILL.md"):
+                result = run_cli("check-write-path", "--path", path, "--json", cwd=cwd)
+                self.assertEqual(result.returncode, 1, (path, result.stdout, result.stderr))
+                self.assertFalse(json.loads(result.stdout)["allowed"])
+
+    def test_exact_event_ids_and_overflow_continue_from_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = Path(tmp) / "goal"
+            handoff.mkdir()
+            ledger = handoff / "ledger.md"
+            ledger.write_text("## Tasks\n| ID | Status | Owner | PR |\n|---|---|---|---|\n| T1 | ready | writer | — |\n\n## Events\n" + "\n".join(f"- 2026-01-01 | EVT=E | id=E{i}" for i in range(2)) + "\n", encoding="utf-8")
+            self.assertEqual(run_cli("ledger-delta", "--handoff-dir", str(handoff), "--json").returncode, 0)
+            ledger.write_text(ledger.read_text() + "\n".join(f"- 2026-01-01 | EVT=E | id=E{i}" for i in range(2, 11)) + "\n", encoding="utf-8")
+            delta = json.loads(run_cli("ledger-delta", "--handoff-dir", str(handoff), "--json").stdout)
+            self.assertEqual([event.split("id=")[1] for event in delta["new_events"]], [f"E{i}" for i in range(2, 11)])
+            ledger.write_text(ledger.read_text() + "\n".join(f"- 2026-01-01 | EVT=E | id=E{i} | note={'中文' * 100}" for i in range(11, 36)) + "\n", encoding="utf-8")
+            first = run_cli("ledger-delta", "--handoff-dir", str(handoff), "--tail", "25", "--json")
+            first_doc = json.loads(first.stdout)
+            self.assertLess(len(first.stdout.encode("utf-8")), 4096)
+            self.assertTrue(first_doc["tasks"] and first_doc["new_events"] and first_doc["truncated"])
+            second = json.loads(run_cli("ledger-delta", "--handoff-dir", str(handoff), "--tail", "25", "--json").stdout)
+            self.assertTrue(second["new_events"])
 
     def test_supersede_goal_dry_run_apply_and_idempotence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
