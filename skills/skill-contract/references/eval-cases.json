@@ -196,7 +196,7 @@
         "ok": true
       },
       "expect_stdout_contains": [
-        "\"plugin_version\": \"1.1.0\"",
+        "\"plugin_version\": \"1.2.0\"",
         "\"skill_version\": \"v"
       ],
       "file": "skills/skill-contract/references/valves-and-metabolism.md",
