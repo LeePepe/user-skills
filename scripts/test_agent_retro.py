@@ -73,7 +73,7 @@ class AgentRetroTests(unittest.TestCase):
     def test_nested_and_flat_event_fields_are_parsed_and_all_metrics_exist(self):
         result = AR._scan(self.ns())
         metrics = {row["metric"] for row in result["metrics"]}
-        self.assertEqual(len(metrics), 20)
+        self.assertEqual(len(metrics), 27)
         observations = {row["metric"] for row in result["observations"]}
         self.assertIn("R2_m2_direct_code_edit", observations)
         self.assertIn("I3_l2_exit2_and_output_bloat", observations)

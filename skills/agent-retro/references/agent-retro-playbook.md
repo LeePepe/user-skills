@@ -65,3 +65,11 @@
 
 - **`rollup --issue-brief` & `file-issue`**: Aggregates all `K` M1 receipts (`FIXED_AND_MERGED`, `HEALTHY_NO_ISSUES`, `CROSS_SKILL_RELAY`), 5-layer anomaly counts, and `observation_pool` into a Dual-Zone Markdown issue (`<=45` human lines, plain-Chinese `**一句话结论**：...`, concrete non-boilerplate `- [ ]` items, zero forbidden internal codes/UUIDs/SHAs/CLI commands in Human Zone, and full JSON/CLI evidence inside `<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>`) verified by `verify_issue_format.py`.
 - **`setup-autopilot`**: Configures or updates the Multica scheduled `run_only` autopilot (`Daily Agent Trajectory Retro Autopilot`, cron `40 4 * * *` `Asia/Shanghai`) without touching `skill-retro`'s `04:20` schedule.
+
+## 6. v2 Parity Discovery and L-Horizon
+
+- **Target watermarks**: Resolve each target skill as `v<path-commit-count>@<subtree-sha>` plus `last_modified_epoch`. Triage uses only recurring `post_fix` evidence unless `--include-pre-fix` is explicitly requested; a hermetic skill with no Git history is post-fix.
+- **H5 contract drift**: The probe scans literal `skills/<callee>/scripts/<script>.py` calls, AST-extracts argparse flags/subcommands, skips `parse_known_args`/canonical wrappers/placeholders, and reads available `warehouse.db` through a read-only guarded URI for drifted goals, review failures, blocked/unblocked events, and steering requests.
+- **I5 wild glue**: Five or more sessions repeating `herdr` pane/agent reads, receipt/ledger polling, or `gh pr view` loops become an upstream `m2-dispatcher`/`team-lead` crystallization candidate.
+- **Jev and M1**: `triage --use-jev` calls `team-lead/scripts/jev_client.py` with a 1.5-second bound; `--mock-jev-json` never contacts live Jev. Use `record-m1-receipt` and `emit-relay`; rollup checks merge SHA grounding.
+- **Horizon entry**: `agent_retro.py horizon --days 7 --min-turns 40 --min-duration-min 15 --json` profiles healthy or at-risk long sessions. HZN1 flags unreferenced carry-byte turns; HZN2 wakeup gaps and serial disjoint work; HZN3 edit churn/full-verify detours; HZN4 early/late failure or empty-turn inflection; HZN5 long low-output `group/steering` read-only spans. `probe`, `triage`, and `rollup` accept `--layer horizon`.

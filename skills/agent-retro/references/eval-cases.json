@@ -140,6 +140,36 @@
         "probe"
       ],
       "registered_at": "2026-11-24"
+    },
+    {
+      "id": "AR-009",
+      "title": "v2 CLI exposes parity, receipt, relay, and horizon entry points",
+      "tags": ["cli", "contract"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["horizon", "record-m1-receipt", "emit-relay"]
+    },
+    {
+      "id": "AR-010",
+      "title": "Horizon counter-case safely reports no synthetic findings",
+      "tags": ["horizon", "negative", "counter-case"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py horizon --days 1 --json",
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "schema": "agent-retro-horizon/v1"}
+    },
+    {
+      "id": "AR-011",
+      "title": "v2 skill contract declares horizon and post-fix watermark rules",
+      "tags": ["docs", "counter-case"],
+      "file": "skills/agent-retro/SKILL.md",
+      "must_contain": ["post-fix", "HZN1", "HZN5", "record-m1-receipt"]
+    },
+    {
+      "id": "AR-012",
+      "title": "Playbook documents zero-token AST and Jev fallback boundaries",
+      "tags": ["docs", "counter-case"],
+      "file": "skills/agent-retro/references/agent-retro-playbook.md",
+      "must_contain": ["AST", "warehouse.db", "1.5-second", "--mock-jev-json"]
     }
   ],
   "trigger_evals": [
