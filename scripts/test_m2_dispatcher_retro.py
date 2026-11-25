@@ -17,6 +17,12 @@ def run_cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd, capture_output=True, text=True)
 
 
+def delta_output(result: subprocess.CompletedProcess[str], as_json: bool) -> dict:
+    if as_json:
+        return json.loads(result.stdout)
+    return {key: json.loads(value) for key, value in (line.split("=", 1) for line in result.stdout.splitlines())}
+
+
 class M2DispatcherRetroTests(unittest.TestCase):
     def test_skill_runtime_symlink_and_line_budget(self) -> None:
         runtime = ROOT / "skills/m2-dispatcher/scripts/skill_runtime"
@@ -144,6 +150,118 @@ class M2DispatcherRetroTests(unittest.TestCase):
             self.assertTrue(first_doc["tasks"] and first_doc["new_events"] and first_doc["truncated"])
             second = json.loads(run_cli("ledger-delta", "--handoff-dir", str(handoff), "--tail", "25", "--json").stdout)
             self.assertTrue(second["new_events"])
+
+    def test_many_tasks_prioritize_active_and_page_without_consuming_events(self) -> None:
+        for busy in (False, True):
+            with self.subTest(busy=busy), tempfile.TemporaryDirectory() as tmp:
+                handoff = Path(tmp) / "goal"
+                handoff.mkdir()
+                rows = "".join(f"| T{i} | {'BLOCKED' if i == 45 else 'done'} | writer | — |\n" for i in range(1, 46))
+                events = "".join(f"- now | EVT=NOTE | id=E{i} | note={'load' * 550}\n" for i in range(8)) if busy else ""
+                (handoff / "ledger.md").write_text("## Tasks\n| ID | Status | Owner | PR |\n|---|---|---|---|\n" + rows + "\n## Events\n" + events, encoding="utf-8")
+                first = run_cli("ledger-delta", "--handoff-dir", str(handoff), "--json")
+                self.assertEqual(first.returncode, 0, first.stderr)
+                doc = json.loads(first.stdout)
+                self.assertEqual(doc["tasks"][0]["task_id"], "T45")
+                self.assertGreaterEqual(len(doc["tasks"]), 8)
+                watermark = handoff / ".m2-ledger-watermark.json"
+                before = watermark.read_bytes() if watermark.exists() else None
+                seen = []
+                for _ in range(10):
+                    self.assertLessEqual(len(first.stdout.encode("utf-8")), 3851)
+                    self.assertEqual(doc["total_tasks"], 45)
+                    self.assertEqual(doc["task_counts"], {"done": 44, "blocked": 1})
+                    self.assertEqual(doc["omitted_tasks"], 45 - len(doc["tasks"]))
+                    self.assertEqual(doc["tasks_truncated"], len(doc["tasks"]) < 45)
+                    if doc["tasks_truncated"]:
+                        self.assertTrue(doc["truncated"])
+                    seen.extend(task["task_id"] for task in doc["tasks"])
+                    if doc["next_task_offset"] is None:
+                        break
+                    first = run_cli("ledger-delta", "--handoff-dir", str(handoff), "--task-offset", str(doc["next_task_offset"]), "--no-save", "--json")
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                    doc = json.loads(first.stdout)
+                else:
+                    self.fail("task paging did not terminate")
+                self.assertEqual(len(seen), 45)
+                self.assertEqual(set(seen), {f"T{i}" for i in range(1, 46)})
+                self.assertEqual(watermark.read_bytes() if watermark.exists() else None, before)
+
+    def test_long_event_continuation_is_lossless_in_both_formats(self) -> None:
+        for as_json in (False, True):
+            with self.subTest(as_json=as_json), tempfile.TemporaryDirectory() as tmp:
+                handoff = Path(tmp) / "goal"
+                handoff.mkdir()
+                token = "ghp_" + "SyntheticToken1234567890ABCD"
+                events = ["- now | EVT=NOTE | id=E0 | note=" + "中文" * 1250 + " " + token + " TAIL_0",
+                          "- now | EVT=NOTE | id=E1 | note=" + "'\"" * 2200 + "TAIL_1"]
+                (handoff / "ledger.md").write_text("## Tasks\n| ID | Status | Owner | PR |\n|---|---|---|---|\n| T1 | ready | writer | — |\n\n## Events\n" + "\n".join(events) + "\n", encoding="utf-8")
+                delivered, saw_clip, expected_replay = [], False, None
+                for _ in range(20):
+                    flags = ("--json",) if as_json else ()
+                    result = run_cli("ledger-delta", "--handoff-dir", str(handoff), *flags)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertLessEqual(len(result.stdout.encode("utf-8")), 3851)
+                    self.assertNotIn("ghp_", result.stdout)
+                    doc = delta_output(result, as_json)
+                    if expected_replay is not None:
+                        self.assertEqual(doc, expected_replay)
+                    if not doc["has_delta"]:
+                        self.assertEqual(doc["remaining_events"], 0)
+                        self.assertFalse(doc["truncated"])
+                        break
+                    self.assertTrue(doc["tasks"])
+                    delivered.extend(doc["new_events"])
+                    if doc["event_clipped"]:
+                        saw_clip = True
+                        self.assertTrue(doc["truncated"])
+                        self.assertGreater(doc["remaining_events"], 0)
+                        watermark = handoff / ".m2-ledger-watermark.json"
+                        saved = watermark.read_bytes()
+                        cursor = json.loads(saved)
+                        self.assertGreater(cursor["event_char_offset"], 0)
+                        self.assertEqual(cursor["current_event_id"], doc["current_event_id"])
+                        expected_index = int(cursor["current_event_id"][1:])
+                        self.assertEqual(cursor["last_event_idx"], expected_index)
+                        self.assertEqual(cursor["last_event_id"], "E0" if expected_index else "")
+                        replay = run_cli("ledger-delta", "--handoff-dir", str(handoff), "--no-save", *flags)
+                        replay_doc = delta_output(replay, as_json)
+                        self.assertEqual(watermark.read_bytes(), saved)
+                    else:
+                        replay_doc = None
+                    expected_replay = replay_doc
+                else:
+                    self.fail("event continuation did not drain")
+                self.assertTrue(saw_clip)
+                self.assertEqual("".join(delivered), "".join(events).replace(token, "<redacted>"))
+                cursor = json.loads((handoff / ".m2-ledger-watermark.json").read_text())
+                self.assertEqual(cursor["last_event_id"], "E1")
+                self.assertEqual(cursor["last_event_idx"], 2)
+                self.assertEqual(cursor["event_char_offset"], 0)
+
+    def test_quote_heavy_text_batches_deliver_every_tail_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = Path(tmp) / "goal"
+            handoff.mkdir()
+            events = [f"- now | EVT=NOTE | id=E{i} | note=" + "'" * 500 + '"' + f"TAIL_MARKER_{i}" for i in range(8)]
+            (handoff / "ledger.md").write_text("## Events\n" + "\n".join(events) + "\n", encoding="utf-8")
+            delivered = []
+            for _ in range(10):
+                result = run_cli("ledger-delta", "--handoff-dir", str(handoff))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(len(result.stdout.encode("utf-8")), 4096)
+                doc = delta_output(result, False)
+                if not doc["has_delta"]:
+                    self.assertIn("has_delta=false", result.stdout)
+                    break
+                self.assertFalse(doc["event_clipped"])
+                for event in doc["new_events"]:
+                    self.assertIn(event, events)
+                delivered.extend(doc["new_events"])
+            else:
+                self.fail("quote-heavy text continuation did not drain")
+            self.assertEqual(delivered, events)
+            self.assertEqual(sum(f"TAIL_MARKER_{i}" in event for i in range(8) for event in delivered), 8)
 
     def test_supersede_goal_dry_run_apply_and_idempotence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

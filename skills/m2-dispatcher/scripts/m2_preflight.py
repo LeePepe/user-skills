@@ -5,7 +5,8 @@ import argparse, datetime as dt, fcntl, hashlib, json, os, re, sys, tempfile
 from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from skill_runtime import (SelfDisclosingArgumentParser, atomic_write_json, compact_json_dumps, is_safe_local_dir, redact_payload, is_safe_local_file, is_valid_skill_slug, redact_text, safe_read_text)  # noqa: E402
+from skill_runtime import (SelfDisclosingArgumentParser, atomic_write_json, compact_json_dumps, is_safe_local_dir, is_safe_local_file, is_valid_skill_slug, redact_text, safe_read_text)  # noqa: E402
+from m2_ledger_delta import _event_id, _render_output, build_delta  # noqa: E402
 REFERENCE = "skills/m2-dispatcher/references/pr-dag-auto-heal.md"
 _TERMINAL = {"done", "cancelled"}
 _EVENT_RE = re.compile(r"\|\s*EVT=([^|\s]+)")
@@ -19,20 +20,12 @@ class _M2PreflightArgumentParser(SelfDisclosingArgumentParser):
 def _fail(message: str) -> int:
     sys.stderr.write(f"m2_preflight: {redact_text(message)}\nReference: {REFERENCE}\n")
     return 1
-def _event_id(line: str) -> str:
-    match = re.search(r"\|\s*id=([A-Za-z]+\d+)\b", line); return match.group(1) if match else ""
-def _byte_prefix(text: str, limit: int = 3900) -> str: return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 def _emit(payload: dict, as_json: bool) -> None:
-    safe_payload = redact_payload(payload)
-    if as_json:
-        text = json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":"))
-        print(text if len(text.encode("utf-8")) <= 3900 else compact_json_dumps(safe_payload, max_bytes=3900, preserve_keys=("ok", "goal", "old_goal", "new_goal", "has_delta", "truncated", "remaining_events", "tasks", "new_events", "cancelled_tasks", "reference")))
-        return
-    lines = [f"ok={safe_payload.get('ok', False)}"]
-    for key in ("goal", "old_goal", "new_goal", "has_delta", "truncated", "tasks", "cancelled_tasks", "new_events"):
-        if key in safe_payload:
-            lines.append(f"{key}={safe_payload[key]}")
-    print(_byte_prefix("\n".join(lines)))
+    text = _render_output(payload, as_json)
+    if len(text.encode("utf-8")) > 3900:
+        safe = json.loads(compact_json_dumps(payload, max_bytes=3700, preserve_keys=("ok", "goal", "old_goal", "new_goal", "cancelled_tasks", "reference")))
+        text = _render_output(safe, as_json)
+    print(text)
 def _split_row(line: str) -> list[str] | None:
     if not line.lstrip().startswith("|"):
         return None
@@ -93,62 +86,47 @@ def _ledger_delta(args: argparse.Namespace) -> int:
     text = safe_read_text(ledger_path)
     if text is None:
         return _fail(f"cannot read ledger.md: {ledger_path}")
-    lines, total_lines = text.splitlines(), len(text.splitlines())
-    event_rows = [(i, n, line) for i, line in enumerate(lines) if (n := len([x for x in lines[:i] if _EVENT_RE.search(x)])) >= 0 and _EVENT_RE.search(line)]
-    events = [row[2] for row in event_rows]
+    lines = text.splitlines()
+    total_lines = len(lines)
+    event_rows = []
+    for index, line in enumerate(lines):
+        if _EVENT_RE.search(line):
+            event_rows.append((index, len(event_rows), line))
     watermark_path = handoff / ".m2-ledger-watermark.json"
     watermark = _load_watermark(watermark_path)
-    explicit = args.since_line is not None
-    if explicit:
+    tail, char_offset, previous_id = max(1, args.tail), 0, ""
+    if args.since_line is not None:
         start_line = min(max(0, args.since_line), total_lines)
-        candidates = [row for row in event_rows if row[0] >= start_line]
-        ordered = candidates[-max(1, int(args.tail)) :]
+        candidates = [row for row in event_rows if row[0] >= start_line][-tail:]
+        if candidates and candidates[0][1] > 0:
+            previous_id = _event_id(event_rows[candidates[0][1] - 1][2])
     else:
         start_line = min(max(0, int(watermark.get("last_line", 0) or 0)), total_lines)
         event_start = int(watermark.get("last_event_idx", 0) or 0)
         previous_id = str(watermark.get("last_event_id", "") or "")
-        if previous_id:
-            matches = [i for i, line in enumerate(events) if _event_id(line) == previous_id]
+        current_id = str(watermark.get("current_event_id", "") or "")
+        char_offset = max(0, int(watermark.get("event_char_offset", 0) or 0))
+        current_matches = [i for i, row in enumerate(event_rows) if current_id and _event_id(row[2]) == current_id]
+        if char_offset and current_matches:
+            event_start = current_matches[-1]
+        elif previous_id:
+            matches = [i for i, row in enumerate(event_rows) if _event_id(row[2]) == previous_id]
             event_start = matches[-1] + 1 if matches else 0
-        event_start = min(max(0, event_start), len(events))
-        ordered = event_rows[event_start : event_start + max(1, int(args.tail))]
+        event_start = min(max(0, event_start), len(event_rows))
+        if event_start == len(event_rows) or _event_id(event_rows[event_start][2]) != current_id:
+            char_offset = 0
+        candidates = event_rows[event_start:]
     tasks = [{key: record[key] for key in ("task_id", "status", "owner", "pr")} for record in _task_records(lines)]
-    candidates = ordered if explicit else event_rows[event_start:]
-    tail = max(1, int(args.tail))
-    chosen: list[tuple[int, int, str]] = []
-    for count in range(min(tail, len(candidates)), 0, -1):
-        batch = candidates[-count:] if explicit else candidates[:count]
-        for task_count in range(min(len(tasks), 40), -1, -1):
-            for char_limit in ((600,) if count > 1 else (600, 300, 150, 80, 40, 20)):
-                batch_events = [row[2][:char_limit] for row in batch]
-                payload = {"ok": True, "goal": handoff.name, "since_line": start_line,
-                           "next_since_line": batch[-1][0] + 1, "total_lines": total_lines,
-                           "has_delta": True, "truncated": len(batch) < len(candidates),
-                           "remaining_events": len(candidates) - len(batch), "tasks": tasks[:task_count],
-                           "new_events": batch_events, "watermark_file": redact_text(str(watermark_path))}
-                if len(json.dumps(redact_payload(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 3800:
-                    chosen = batch
-                    break
-            if chosen:
-                break
-        if chosen:
-            break
-    if chosen:
-        payload["new_events"] = [row[2][:char_limit] for row in chosen]
-        payload["has_delta"] = True
-        payload["truncated"] = len(chosen) < len(candidates)
-        payload["remaining_events"] = len(candidates) - len(chosen)
-    else:
-        last_line = start_line
-        payload = {"ok": True, "goal": handoff.name, "since_line": start_line, "next_since_line": last_line,
-                   "total_lines": total_lines, "has_delta": False, "truncated": False,
-                   "remaining_events": 0, "tasks": tasks[:40], "new_events": [],
-                   "watermark_file": redact_text(str(watermark_path))}
-    if not args.no_save and chosen:
-        last_event = chosen[-1]
-        next_watermark = {"last_line": last_event[0] + 1, "last_event_idx": last_event[1] + 1,
-                          "last_event_id": _event_id(last_event[2]),
-                          "sha256_prefix": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]}
+    base = {"ok": True, "goal": handoff.name, "since_line": start_line,
+            "total_lines": total_lines, "watermark_file": redact_text(str(watermark_path))}
+    try:
+        payload, next_watermark = build_delta(base, tasks, candidates, task_offset=args.task_offset,
+                                             char_offset=char_offset, tail=tail, as_json=args.json,
+                                             previous_id=previous_id)
+    except ValueError as exc:
+        return _fail(str(exc))
+    if not args.no_save and next_watermark is not None:
+        next_watermark["sha256_prefix"] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         try:
             atomic_write_json(watermark_path, next_watermark)
         except OSError as exc:
@@ -312,6 +290,7 @@ def _parser() -> argparse.ArgumentParser:
     ledger.add_argument("--handoff-dir", required=True)
     ledger.add_argument("--since-line", type=int)
     ledger.add_argument("--tail", type=int, default=20)
+    ledger.add_argument("--task-offset", type=int, default=0, help="offset into the non-terminal-first task snapshot")
     ledger.add_argument("--no-save", action="store_true")
     ledger.add_argument("--json", action="store_true")
     supersede = sub.add_parser("supersede-goal")
