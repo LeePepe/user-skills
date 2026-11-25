@@ -16,6 +16,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import quote
 from urllib.request import urlopen
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+
 
 NOISE_NAMES = {".DS_Store", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", ".build"}
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
@@ -501,7 +506,7 @@ def daily_cleanup(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-class _SelfDisclosingGitGCParser(argparse.ArgumentParser):
+class _SelfDisclosingGitGCParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[git-gc] CLI error: {message}\n"
@@ -517,10 +522,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     task = sub.add_parser("task-clean")
     task.add_argument("--repo", required=True)
-    task.add_argument("--worktree")
+    task.add_argument("--worktree", "--cwd")
     task.add_argument("--branch")
     task.add_argument("--pr")
-    task.add_argument("--handoff-dir")
+    task.add_argument("--handoff-dir", "--handoff", "--dir", "--root")
     task.add_argument("--task-id")
     task.add_argument("--dry-run", action="store_true")
     task.add_argument("--json", action="store_true", default=True)

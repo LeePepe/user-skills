@@ -14,6 +14,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+
 
 FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required"}
 GREEN_CHECKS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
@@ -31,7 +36,7 @@ SUBCOMMAND_ALIASES: dict[str, str] = {
 }
 
 
-class _SelfDisclosingCIMonitorParser(argparse.ArgumentParser):
+class _SelfDisclosingCIMonitorParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[ci-monitor] CLI error: {message}\n"
@@ -570,10 +575,12 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
         "--pr",
         "--head-sha",
         "--worktree",
+        "--cwd",
         "--branch",
         "--handoff-dir",
         "--handoff",
         "--dir",
+        "--root",
         "--goal",
         "--goal-id",
         "--task",
@@ -610,7 +617,7 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
 
 def _add_common_compat_args(sub: argparse.ArgumentParser, *, default_timeout: float | None = None) -> None:
     sub.add_argument("--json", action="store_true", default=True)
-    sub.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
+    sub.add_argument("--handoff-dir", "--handoff", "--dir", "--root", dest="handoff_dir", default=None)
     sub.add_argument("--goal", "--goal-id", dest="goal", default=None)
     sub.add_argument("--task", "--task-id", dest="task", default=None)
     sub.add_argument("--no-cleanup-worktree", action="store_true", default=False)
@@ -634,7 +641,7 @@ def _parser() -> argparse.ArgumentParser:
     workflow.add_argument("--interval", type=float, default=30)
     workflow.add_argument("--receipt", "--receipt-out", "--out", dest="receipt", default=None)
     workflow.add_argument("--notify-agent")
-    workflow.add_argument("--worktree", default=None)
+    workflow.add_argument("--worktree", "--cwd", default=None)
     _add_common_compat_args(workflow, default_timeout=2400)
 
     pr = subparsers.add_parser("pr", help="monitor a pull request")
@@ -642,7 +649,7 @@ def _parser() -> argparse.ArgumentParser:
     pr.add_argument("--repo", default="")
     pr.add_argument("--pr", dest="pr", default=None)
     pr.add_argument("--head-sha")
-    pr.add_argument("--worktree")
+    pr.add_argument("--worktree", "--cwd")
     pr.add_argument("--branch")
     pr.add_argument("--interval", type=float, default=20)
     pr.add_argument("--receipt", "--receipt-out", "--out", dest="receipt", default=None)
@@ -663,7 +670,7 @@ def _parser() -> argparse.ArgumentParser:
     checks.add_argument("pr_positional", nargs="?", default=None, help="PR number or GitHub PR URL")
     checks.add_argument("--pr", dest="pr", default=None)
     checks.add_argument("--repo", default="")
-    checks.add_argument("--worktree", default=None)
+    checks.add_argument("--worktree", "--cwd", default=None)
     _add_common_compat_args(checks, default_timeout=60)
     return parser
 

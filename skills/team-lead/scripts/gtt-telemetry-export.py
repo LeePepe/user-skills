@@ -19,6 +19,11 @@ import uuid
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+
 HOME_PATH_RE = re.compile(r"(?:/" + "Users|/home)/[^/\\s]+")
 SECRET_RE = re.compile(
     r"(?i)(?:ghp_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|"
@@ -606,9 +611,19 @@ def notify(sync_state_dir: Path, roots: list[Path] | None = None, machine_id: st
         return 0
 
 
+class _SelfDisclosingTelemetryExportParser(SelfDisclosingArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(
+            f"[gtt-telemetry-export] CLI error: {message}\n"
+            "  Fix: run `python3 skills/team-lead/scripts/gtt-telemetry-export.py --help`\n"
+            "  Reference: skills/team-lead/references/ledger.md\n"
+        )
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--handoff-dir", action="append")
+    parser = _SelfDisclosingTelemetryExportParser(prog="gtt-telemetry-export.py", description=__doc__)
+    parser.add_argument("--handoff-dir", "--handoff", "--dir", "--root", dest="handoff_dir", action="append")
     parser.add_argument("--machine-id", default=normalized_machine_id(socket.gethostname().split(".", 1)[0]))
     parser.add_argument("--out")
     parser.add_argument("--state-file")
