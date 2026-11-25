@@ -17,8 +17,10 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 import sys
-sys.path.insert(0, str(SCRIPT_DIR))
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 from jev_client import jev_decide  # noqa: E402
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
 
 
 ROLE_TTL_SECONDS = {
@@ -680,6 +682,10 @@ def notify_bridge(args: argparse.Namespace) -> dict[str, Any]:
     return {"written": False, "mode": mode, "alert_path": "", "status": "", "goal": "", "agent": ""}
 
 
+def _is_goal_handoff_dir(path: Path) -> bool:
+    return any((path / name).is_file() for name in ("ledger.md", "spec.md", "queue.json")) or path.parent.name == "handoff"
+
+
 def _resolve_handoff_dir(args: argparse.Namespace) -> Path:
     handoff_dir_raw = getattr(args, "handoff_dir", None)
     if handoff_dir_raw:
@@ -687,12 +693,12 @@ def _resolve_handoff_dir(args: argparse.Namespace) -> Path:
     goal_raw = getattr(args, "goal", None)
     if goal_raw:
         goal_str = str(goal_raw).strip()
-        if "/" in goal_str or goal_str.startswith("~"):
-            candidate = Path(goal_str).expanduser()
-            if candidate.exists():
-                return candidate
-        root_raw = getattr(args, "handoff_root", None) or "~/Development/handoff"
-        return Path(root_raw).expanduser() / goal_str
+        if ("/" in goal_str or goal_str.startswith("~")) and Path(goal_str).expanduser().exists():
+            return Path(goal_str).expanduser()
+        return Path(getattr(args, "handoff_root", None) or "~/Development/handoff").expanduser() / goal_str
+    root_raw = getattr(args, "handoff_root", None)
+    if root_raw and _is_goal_handoff_dir(Path(str(root_raw)).expanduser()):
+        return Path(str(root_raw)).expanduser()
     sys.stderr.write(
         "[goal-supervisor] CLI error: one of `--handoff-dir <dir>` or `--goal <goal-id>` is required\n"
         "  Fix: pass `--handoff-dir ~/Development/handoff/<goal>` or `--goal <goal-id>`\n"
@@ -705,13 +711,10 @@ def _resolve_root_and_goal_filter(args: argparse.Namespace) -> tuple[Path, str |
     handoff_dir_raw = getattr(args, "handoff_dir", None)
     if handoff_dir_raw:
         target = Path(handoff_dir_raw).expanduser()
-        if (target / "ledger.md").is_file() or (target / "spec.md").is_file() or (target / "queue.json").is_file() or target.parent.name == "handoff":
+        if _is_goal_handoff_dir(target):
             return target.parent, target.name
-        if target.name == "handoff" and target.is_dir():
-            return target, None
-        return target.parent, target.name
-    root_raw = getattr(args, "handoff_root", None) or "~/Development/handoff"
-    root = Path(root_raw).expanduser()
+        return (target, None) if target.name == "handoff" and target.is_dir() else (target.parent, target.name)
+    root = Path(getattr(args, "handoff_root", None) or "~/Development/handoff").expanduser()
     goal_raw = getattr(args, "goal", None)
     if goal_raw:
         goal_str = str(goal_raw).strip()
@@ -719,7 +722,7 @@ def _resolve_root_and_goal_filter(args: argparse.Namespace) -> tuple[Path, str |
             candidate = Path(goal_str).expanduser()
             return candidate.parent, candidate.name
         return root, goal_str
-    return root, None
+    return (root.parent, root.name) if _is_goal_handoff_dir(root) else (root, None)
 
 
 def scan(args: argparse.Namespace) -> dict[str, Any]:
@@ -1476,7 +1479,7 @@ def print_status_human(result: dict[str, Any]) -> None:
     )
 
 
-class _SelfDisclosingSupervisorParser(argparse.ArgumentParser):
+class _SelfDisclosingSupervisorParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[goal-supervisor] CLI error: {message}\n"
@@ -1490,7 +1493,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = _SelfDisclosingSupervisorParser(prog="goal-supervisor.py")
     subparsers = parser.add_subparsers(dest="command", required=True)
     scan_parser = subparsers.add_parser("scan")
-    scan_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    scan_parser.add_argument("--handoff-root", "--root", default="~/Development/handoff")
     scan_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     scan_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     scan_parser.add_argument("--herdr-json")
@@ -1501,7 +1504,7 @@ def main(argv: list[str] | None = None) -> None:
     scan_parser.add_argument("--jev-response-json")
     scan_parser.add_argument("--json", action="store_true")
     bridge_parser = subparsers.add_parser("notify-bridge")
-    bridge_parser.add_argument("--handoff-root")
+    bridge_parser.add_argument("--handoff-root", "--root")
     bridge_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir")
     bridge_parser.add_argument("--herdr-json")
     bridge_parser.add_argument("--event-json")
@@ -1521,14 +1524,14 @@ def main(argv: list[str] | None = None) -> None:
     policy_parser.add_argument("--template-file", default="")
     policy_parser.add_argument("--json", action="store_true")
     telemetry_parser = subparsers.add_parser("telemetry")
-    telemetry_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    telemetry_parser.add_argument("--handoff-root", "--root", default="~/Development/handoff")
     telemetry_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     telemetry_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     telemetry_parser.add_argument("--worktree", default=None)
     telemetry_parser.add_argument("--write", action="store_true")
     telemetry_parser.add_argument("--json", action="store_true")
     watch_parser = subparsers.add_parser("watch")
-    watch_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    watch_parser.add_argument("--handoff-root", "--root", default="~/Development/handoff")
     watch_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     watch_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     watch_parser.add_argument("--interval", type=int, default=30)
@@ -1538,7 +1541,7 @@ def main(argv: list[str] | None = None) -> None:
     watch_parser.add_argument("--mode", choices=sorted(VALID_MODES))
     watch_parser.add_argument("--json", action="store_true")
     status_parser = subparsers.add_parser("status")
-    status_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    status_parser.add_argument("--handoff-root", "--root", default="~/Development/handoff")
     status_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     status_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     status_parser.add_argument("--herdr-json")
@@ -1548,7 +1551,7 @@ def main(argv: list[str] | None = None) -> None:
     status_parser.add_argument("--check", action="store_true")
     status_parser.add_argument("--json", action="store_true")
     observe_parser = subparsers.add_parser("observe")
-    observe_parser.add_argument("--handoff-root", default="~/Development/handoff")
+    observe_parser.add_argument("--handoff-root", "--root", default="~/Development/handoff")
     observe_parser.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", default=None)
     observe_parser.add_argument("--goal", "--goal-id", dest="goal", default=None)
     observe_parser.add_argument("--herdr-json")

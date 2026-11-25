@@ -12,6 +12,11 @@ import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+
 
 FEEDBACK_SCHEMA_VERSION = 1
 FEEDBACK_VALIDATION_VERIFIED = "verified"
@@ -1288,7 +1293,7 @@ def _list_receipts(target: Path) -> tuple[dict[str, Any] | None, int]:
     }, 0
 
 
-class _SelfDisclosingFeedbackGuardParser(argparse.ArgumentParser):
+class _SelfDisclosingFeedbackGuardParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         reference = getattr(self, "feedback_reference", "skills/team-lead/references/eval-cases.json | skills/team-lead/references/playbook.md")
         if "list-receipts" in self.prog or "inspect-receipts" in self.prog or "list-receipts" in sys.argv or "inspect-receipts" in sys.argv:
@@ -1315,7 +1320,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "pre-review-check",
         help="Validate Owned Paths, clean git status, personal path/token leaks, and R10 receipt headers",
     )
-    p_pre.add_argument("--worktree", "--cwd", "--dir", dest="worktree", required=True, type=Path, help="Target git worktree directory")
+    p_pre.add_argument("--worktree", "--cwd", "--dir", "--root", dest="worktree", required=True, type=Path, help="Target git worktree directory")
     p_pre.add_argument("--brief", "--brief-file", dest="brief", required=True, type=Path, help="Task brief markdown declaring Owned Paths")
     p_pre.add_argument("--receipt", "--receipt-file", dest="receipt", type=Path, default=None, help="Optional R10 receipt markdown file")
     p_pre.add_argument("--base-ref", default=None, help="Optional git base ref (defaults to merge-base with origin/main)")
@@ -1328,7 +1333,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 
     p_diff = sub.add_parser("diff-check", aliases=["whitespace-check"], help="Report git whitespace/conflict issues as a soft advisory")
     p_diff.feedback_reference = "skills/team-lead/references/playbook.md"
-    p_diff.add_argument("--worktree", "--cwd", "--dir", dest="worktree", type=Path, default=Path("."))
+    p_diff.add_argument("--worktree", "--cwd", "--dir", "--root", dest="worktree", type=Path, default=Path("."))
     p_diff.add_argument("--base-ref", default=None)
     p_diff.add_argument("--head-ref", "--head", dest="head_ref", default="HEAD")
     p_diff.add_argument("--strict", action="store_true", help="Treat reported issues as exit 1")
@@ -1337,7 +1342,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_receipts = sub.add_parser("list-receipts", aliases=["inspect-receipts"], help="List top-level R10 receipts as soft facts")
     p_receipts.feedback_reference = "skills/team-lead/references/ledger.md"
     p_receipts.add_argument("target", nargs="?", type=Path, default=None)
-    p_receipts.add_argument("--handoff-dir", "--handoff", "--dir", dest="handoff_dir", type=Path, default=None)
+    p_receipts.add_argument("--handoff-dir", "--handoff", "--dir", "--root", dest="handoff_dir", type=Path, default=None)
     p_receipts.add_argument("--json", action="store_true", default=True)
     return parser
 

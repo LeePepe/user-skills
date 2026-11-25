@@ -26,6 +26,11 @@ import subprocess
 import time
 from typing import Any, Iterator, Mapping, Sequence
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+
 try:
     from feedback_guard import (
         FEEDBACK_VALIDATION_LEGACY,
@@ -1654,7 +1659,7 @@ SUBCOMMAND_ALIASES: dict[str, str] = {
 }
 
 
-class _SelfDisclosingQueueParser(argparse.ArgumentParser):
+class _SelfDisclosingQueueParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         pointer = (
             "Fix: run `python3 skills/team-lead/scripts/goal-queue.py --help`; "
@@ -1692,6 +1697,7 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
         "--handoff-dir",
         "--handoff",
         "--dir",
+        "--root",
         "--task-id",
         "--task",
         "--id",
@@ -1777,6 +1783,7 @@ def _add_handoff_dir_arg(p: argparse.ArgumentParser) -> None:
         "--handoff-dir",
         "--handoff",
         "--dir",
+        "--root",
         dest="handoff_dir",
         required=True,
         help="Path to handoff/<goal> directory.",
