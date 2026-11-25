@@ -70,7 +70,7 @@ Single-context repo:                  Multi-context repo (CONTEXT-MAP.md):
 
 ## Spec-Code Drift Patrol
 
-- Run `scripts/spec_code_drift_patrol.py scan` for deterministic, read-only comparison of associated handoffs, `CONTEXT.md`, `tech-context.md` layer tables/`owns`, and `docs/adr/` headings against tracked `main` snapshots; regression cases live in [`references/eval-cases.json`](references/eval-cases.json).
+- Run `scripts/spec_code_drift_patrol.py scan` for deterministic, read-only comparison of associated handoffs, `CONTEXT.md`, `tech-context.md` layer tables/`owns`, and `docs/adr/` headings against tracked `main` snapshots; regression cases live in [`references/eval-cases.json`](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view).
 - Run `scripts/spec_code_drift_patrol.py loop-check` to triage actionable stale specs versus code-contract bugs and emit a verified Dual-Zone payload; run `scripts/spec_code_drift_patrol.py --flow-map` to inspect drawer inventory and budget health.
 
 ## Going Deeper
@@ -88,7 +88,7 @@ Single-context repo:                  Multi-context repo (CONTEXT-MAP.md):
 | ADR trade-off / `docs/adr/` | `references/ADR-FORMAT.md` | `python3 skills/codebase-design/scripts/spec_code_drift_patrol.py loop-check --repos <csv>` |
 | module deepening / interface options | `references/DEEPENING.md` · `references/DESIGN-IT-TWICE.md` | `python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --flow-map` |
 | Phase 0 proposals / CAS lock | `references/PHASE0-PROPOSAL-CHECKPOINT.md` | `python3 skills/codebase-design/scripts/spec_gate.py verify-lock --handoff-dir <dir>` |
-| verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill codebase-design --strict` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill codebase-design --strict` |
 
 ## Role-Based Routing
 
@@ -98,4 +98,4 @@ Single-context repo:                  Multi-context repo (CONTEXT-MAP.md):
 | Designer | `references/DESIGN-IT-TWICE.md` | `python3 skills/codebase-design/scripts/spec_gate.py status --handoff-dir <dir>` |
 | Writer | `references/DEEPENING.md` | `python3 skills/codebase-design/scripts/spec_gate.py verify-lock --handoff-dir <dir>` |
 | Reviewer | `references/ADR-FORMAT.md` | `python3 skills/codebase-design/scripts/spec_code_drift_patrol.py --flow-map` |
-| M1-TL | `references/PHASE0-PROPOSAL-CHECKPOINT.md` and `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill codebase-design --strict` |
+| M1-TL | `references/PHASE0-PROPOSAL-CHECKPOINT.md` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill codebase-design --strict` |

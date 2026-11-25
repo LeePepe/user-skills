@@ -40,6 +40,8 @@ EVAL_DRAWERS = (
     "scripts/data/defect-cases/index.json",
     "references/defect-cases/index.json",
 )
+SCRIPT_SUFFIXES = {".py", ".sh", ".ts"}
+REFERENCE_SUFFIXES = {".md", ".json", ".yaml", ".yml"}
 VALVE_REFERENCE_BASE = "skills/skill-contract/references/valves-and-metabolism.md"
 VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
     "private-identifier": (
@@ -94,6 +96,10 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep SKILL.md <= 16KB; move detailed procedures into references/ or scripts/.",
     ),
+    "l0-bytes-soft": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: keep SKILL.md at or below 12KB when practical; move deep procedures to L1/L2.",
+    ),
     "l1-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep each references/*.md drawer <= 160 lines; split or sink deterministic checks into scripts/.",
@@ -101,6 +107,18 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
     "l1-bytes": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep each references/*.md drawer <= 16KB.",
+    ),
+    "l1-bytes-soft": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: keep each references/*.md drawer at or below 12KB when practical.",
+    ),
+    "data-drawer-bytes-soft": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Script-Only Data Drawer: query via the L2 CLI; never full-file view the machine/config drawer.",
+    ),
+    "script-lines-soft": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: keep executable drawers at or below 800 lines when practical; extract deep modules before 1,000.",
     ),
     "fenced-code-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
@@ -179,6 +197,7 @@ def _emit_json(payload: Mapping[str, Any], args: argparse.Namespace | None = Non
             "skill_eval_summary": payload.get("skill_eval_summary"),
             "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else payload.get("failures"),
             "findings": len(payload.get("findings", [])) if isinstance(payload.get("findings"), list) else payload.get("findings"),
+            "advisories": len(payload.get("advisories", [])) if isinstance(payload.get("advisories"), list) else payload.get("advisories"),
         }
         text = json.dumps({key: value for key, value in summary.items() if value is not None}, ensure_ascii=False, separators=(",", ":"))
     print(text)
@@ -222,7 +241,12 @@ def _watermark_fingerprint(repo: str | Path | None, mode: str, args_key: Mapping
         for path in sorted(root.rglob("*")):
             if not path.is_file() and not path.is_symlink():
                 continue
-            if path.name != "SKILL.md" and path.name != "plugin.json" and not (path.parent.name == "references" and path.is_file()) and not (path.parent.name == "scripts" and path.suffix == ".py"):
+            if (
+                path.name != "SKILL.md"
+                and path.name != "plugin.json"
+                and not (path.parent.name == "references" and path.suffix in REFERENCE_SUFFIXES)
+                and not ("scripts" in path.parts and path.suffix in SCRIPT_SUFFIXES)
+            ):
                 continue
             try:
                 stat = path.stat()

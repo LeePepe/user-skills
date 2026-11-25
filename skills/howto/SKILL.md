@@ -83,5 +83,5 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
-| primary task | `references/eval-cases.json` | `python3 skills/howto/scripts/howto_flow.py --help` |
-| verification | `references/eval-cases.json` | `skill_contract.py eval --skill howto --strict` |
+| primary task | `references/jev-systemone-guide.md` | `python3 skills/howto/scripts/howto_flow.py --help` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill howto --strict` |

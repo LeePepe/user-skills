@@ -28,7 +28,7 @@ description: 用 shared-ci 模板与检查器治理 repo 合同；当任务涉�
 | cross-repo gate drift (`RG-001..006`) or slow `verify` | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py bottlenecks --dev-root ~/Development --json` |
 | `skill-retro` self-driven loop check | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json` (supports `--summary`, `--full`, `--no-cache`) |
 | Repo-Bound Skills & UI `design_contract.py` gate | `references/repo-bound-skills-and-gates.md` | `python3 skills/skill-contract/scripts/skill_contract.py audit --repo . --strict` |
-| verification | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill repo-kit --strict` |
+| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill repo-kit --strict` |
 
 ## Role-Based Routing
 
@@ -37,7 +37,7 @@ description: 用 shared-ci 模板与检查器治理 repo 合同；当任务涉�
 | Role: Explorer / Mechanical | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --dev-root ~/Development --json` |
 | Role: M1-TL | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Development --json` |
 | Role: Writer | `references/repo-bound-skills-and-gates.md` | `python3 skills/repo-kit/scripts/repo_gate_auditor.py scan --repo . --strict --json` |
-| Role: Reviewer | `references/eval-cases.json` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill repo-kit --strict` |
+| Role: Reviewer | `references/repo-bound-skills-and-gates.md` | `python3 skills/skill-contract/scripts/skill_contract.py eval --skill repo-kit --strict` |
 
 ## 共同前置与 Worktree 根
 

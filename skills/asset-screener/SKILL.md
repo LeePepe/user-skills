@@ -21,7 +21,7 @@ Pure, stateless investment asset evaluation and screening skill with **zero pers
 
 - **Layer 0 (Default Execution)**: Run `scripts/asset_evaluator.py` first to compute deterministic scores, tiers, style-drift alerts, and multi-source consensus/divergence before writing prose analysis.
 - **Layer 1 (Model Formulas & Citations)**: Read [`references/multi-source-models.md`](references/multi-source-models.md) when explaining factor weights, institutional citation rules (Morningstar MRAR, WGC, Graham ERP, AkShare `f-fund-screener`, Fuli Time), or calibrating category thresholds.
-- **Layer 2 (Contract & Trigger Drawer)**: Inspect [`references/eval-cases.json`](references/eval-cases.json) when adding regression gates or boundary tests via `skill_contract.py`.
+- **Layer 2 (Contract & Trigger Drawer)**: Inspect [`references/multi-source-models.md`](references/multi-source-models.md) for model and boundary context; run regression gates through `skill_contract.py eval` without viewing the JSON drawer.
 - **Sibling Boundary**: If the user asks about personal holdings, unrealized PnL, FIFO 30/180/365-day fee-free windows, holding overlap in their account, or monthly DCA switches, route to `portfolio-advisor`.
 
 ## Architecture: 1 Universal Base + 4 Category Plugins
@@ -74,5 +74,5 @@ python3 skills/asset-screener/scripts/asset_evaluator.py backtest --snapshots pa
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
-| primary task | `references/eval-cases.json` | `python3 skills/asset-screener/scripts/asset_evaluator.py --help` |
-| verification | `references/eval-cases.json` | `skill_contract.py eval --skill asset-screener --strict` |
+| primary task | `references/multi-source-models.md` | `python3 skills/asset-screener/scripts/asset_evaluator.py --help` |
+| verification | [`references/eval-cases.json`](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill asset-screener --strict` |

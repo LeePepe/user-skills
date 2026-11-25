@@ -6,13 +6,13 @@ Regex, AST, geometry, pixel, localization, and schema checks are executable arti
 
 ## Valve 2 — coordinate and eval drawers
 
-`references/eval-cases.json` and defect drawers use auto IDs and zero-token assertions. Keep `active_cases <= 15`; use `trigger_evals` for routing and `negative_cmd` for failure boundaries. `score_case_assertions` enforces 1-Verify-1-Assertion and requires evidence plus `why_soft` for soft assertions.
+`references/eval-cases.json` is a Script-Only Regression Drawer: run it with `skill_contract.py eval` and do not view the full JSON into LLM context. Defect drawers use auto IDs and zero-token assertions. Keep `active_cases <= 15`; use `trigger_evals` for routing and `negative_cmd` for failure boundaries. `score_case_assertions` enforces 1-Verify-1-Assertion and requires evidence plus `why_soft` for soft assertions.
 
 ## Valve 3 — budgets
 
-Every `SKILL.md` description is non-empty and `<=320` characters. Every skill declares semantic `X.Y.Z` in `.claude-plugin/plugin.json`; missing or invalid manifests emit `missing-version`; fingerprints use `v<commit_count>@<subtree_sha>`. L0 is `<=180` lines/16KB, L1 is `<=160` lines/16KB, and fenced code is `<=25` lines.
+Every `SKILL.md` description is non-empty and `<=320` characters. Every skill declares semantic `X.Y.Z` in `.claude-plugin/plugin.json`; missing or invalid manifests emit `missing-version`; fingerprints use `v<commit_count>@<subtree_sha>`. Markdown prose line width is not penalized. L0 is `<=180` lines/16KB, L1 is `<=160` lines/16KB, and fenced code is `<=25` lines. L0 and L1 Markdown above 12KB receive soft byte advisories; machine/config drawers over 16KB receive `data-drawer-bytes-soft` with a Script-Only Data Drawer hint.
 
-`script-lines` rejects new or refactored `.py` files under `skills/*/scripts/**` above 1,000 lines. `LEGACY_SCRIPT_LINE_CAPS` ratchets existing monoliths; exceeding a cap emits `script-monolith-growth`. `skill_contract.py` is a facade and is not legacy-exempt.
+Executable `.py`, `.sh`, and `.ts` files under `skills/*/scripts/**` above 800 lines receive `script-lines-soft` when they are not legacy-ratcheted. `script-lines` rejects new or refactored scripts above 1,000 lines. `LEGACY_SCRIPT_LINE_CAPS` ratchets existing monoliths, including `herdr-dispatch.sh` and `skill-slash-expander.ts`; exceeding a cap emits `script-monolith-growth`. `skill_contract.py`, `skill_retro.py`, and `agent_retro.py` are not legacy-exempt: they must remain under the hard cap.
 
 ## Valve 4 — sharing and metabolism
 
