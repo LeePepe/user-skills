@@ -161,7 +161,7 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
         drawer_reads = [e for e in first if _tool_name(e) in {"view", "read", "cat"} and "references/" in _text(_arguments(e))]
         script_at = next((i for i, e in enumerate(first) if "scripts/" in _command(e)), 999)
         if len(drawer_reads) >= 3 and all(first.index(e) < script_at for e in drawer_reads[:3]) and allowed("I1_cold_start_greedy_drawer_read", sid):
-            drawer_skill = next((re.search(r"skills/([^/]+)/", _text(_arguments(e))).group(1) for e in drawer_reads if re.search(r"skills/([^/]+)/", _text(_arguments(e)))), None)
+            drawer_skill = next((m.group(1) for e in drawer_reads if (m := re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/", _text(_arguments(e)))) and is_valid_skill_slug(m.group(1))), None)
             observations.append(_observation("I1_cold_start_greedy_drawer_read", "invoke", len(drawer_reads), [f"{sid}: {len(drawer_reads)} reference reads before L2"], skill=drawer_skill, sessions=1))
         # I2: explicit skill invocation without any script call for its package.
         invoked = {s for e in seq if (s := _event_skill(e))}
@@ -175,7 +175,7 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
                  or "Output too large to read at once" in _result_content(e)]
         if (exit2 or bloat) and allowed("I3_l2_exit2_and_output_bloat", sid):
             evidence = [f"{sid}: exit=2" for _ in exit2[:2]] + [f"{sid}: tool output >20KB" for _ in bloat[:2]]
-            target_skill = next((re.search(r"skills/([^/]+)/scripts/", _command(e)).group(1) for e in exit2 + bloat if re.search(r"skills/([^/]+)/scripts/", _command(e))), None)
+            target_skill = next((m.group(1) for e in exit2 + bloat if (m := re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/scripts/", _command(e))) and is_valid_skill_slug(m.group(1))), None)
             observations.append(_observation("I3_l2_exit2_and_output_bloat", "invoke", len(exit2) + len(bloat), evidence, skill=target_skill, sessions=1))
         polls = [e for e in tools if re.search(r"(?:herdr\s+pane\s+read|\bsleep\b|gh\s+pr\s+view)", _command(e))]
         if len(polls) >= 3 and allowed("I4_manual_poll_loop", sid):
@@ -216,10 +216,10 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
             elif code not in (None, 1):
                 previous = None
         if progressive:
-            drawer_skill = next((re.search(r"skills/([^/]+)/", _text(_arguments(e))).group(1) for e in tools if _tool_name(e) in {"view", "read", "cat"} and "references/" in _text(_arguments(e))), None)
+            drawer_skill = next((m.group(1) for e in tools if _tool_name(e) in {"view", "read", "cat"} and "references/" in _text(_arguments(e)) and (m := re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/", _text(_arguments(e)))) and is_valid_skill_slug(m.group(1))), None)
             observations.append(_observation("E1_blind_spin_loop_vs_progressive_catch", "exec", progressive, [f"{sid}: exit=1 -> drawer -> exit=0"], skill=drawer_skill, sessions=1, healthy=True))
         if spin >= 3 and allowed("E1_blind_spin_loop_vs_progressive_catch", sid):
-            target_skill = next((re.search(r"skills/([^/]+)/scripts/", _command(e)).group(1) for e in tools if re.search(r"skills/([^/]+)/scripts/", _command(e))), None)
+            target_skill = next((m.group(1) for e in tools if (m := re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/scripts/", _command(e))) and is_valid_skill_slug(m.group(1))), None)
             observations.append(_observation("E1_blind_spin_loop_vs_progressive_catch", "exec", spin, [f"{sid}: {spin} identical failed retries"], skill=target_skill, sessions=1))
         rounds = len(re.findall(r"(?:change request|changes requested|review fail|r[0-9]+\s+fail)", text))
         if rounds >= 3 and allowed("E2_r3_plus_divergence", sid):

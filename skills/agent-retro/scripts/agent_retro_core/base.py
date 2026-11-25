@@ -534,7 +534,7 @@ def _skill_requires_l2(skill: str) -> bool:
 
 def _observation(metric: str, layer: str, count: int, evidence: list[str], *, skill: str | None = None,
                  sessions: int = 1, healthy: bool = False, status: str = "actionable") -> dict[str, Any]:
-    resolved_skill = skill or UPSTREAM.get(metric, "unknown")
+    resolved_skill = skill if (skill and is_valid_skill_slug(skill)) else UPSTREAM.get(metric, "unknown")
     return {"metric": metric, "layer": layer, "count": count, "skill": resolved_skill,
             "upstream_skill": resolved_skill, "scenario_sessions": sessions,
             "status": "healthy_progressive_disclosure" if healthy else status,
