@@ -36,11 +36,14 @@ def command_lookup_defect(args: argparse.Namespace) -> int:
 
 def command_check_section_interactivity(args: argparse.Namespace) -> int:
     raw_targets: list[str] = []
-    if getattr(args, 'interactivity_path', None) and args.interactivity_path != '__SNIPPET_ONLY__':
-        raw_targets.append(args.interactivity_path)
+    path_values = getattr(args, 'interactivity_path', None)
+    if isinstance(path_values, list):
+        raw_targets.extend(str(value) for value in path_values if value and value != '__SNIPPET_ONLY__')
+    elif path_values and path_values != '__SNIPPET_ONLY__':
+        raw_targets.append(str(path_values))
     for extra in getattr(args, 'positional_paths', []) or []:
-        if extra and extra not in raw_targets:
-            raw_targets.append(extra)
+        if extra:
+            raw_targets.append(str(extra))
     files: list[Path] = []
     for raw in raw_targets:
         candidate = Path(raw).expanduser()
@@ -428,7 +431,14 @@ def command_audit_geometry(args: argparse.Namespace) -> int:
         errors.extend(g_errs)
         details.extend(g_details)
     errors = list(dict.fromkeys(errors))
-    payload: dict[str, Any] = {'ok': not errors, 'platform': platform, 'collision_threshold_pt2': float(args.collision_threshold), 'errors': errors, 'details': details}
+    payload: dict[str, Any] = {
+        'ok': not errors,
+        'platform': platform,
+        'collision_threshold_pt2': float(args.collision_threshold),
+        'errors': errors,
+        'details': details,
+        'geometry_details': details,
+    }
     if errors:
         drawers, guidance = _build_self_disclosing_guidance(['navigation', 'interaction'])
         payload['reference_drawers'] = drawers
@@ -514,33 +524,57 @@ def _spec_gap_warning(code: str, category: str, source: str, message: str) -> di
 def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[str, Any]]:
     """Return soft pre-implementation handoff warnings without changing legacy hard rules."""
     warnings: list[dict[str, Any]] = []
+    lower = content.casefold()
     has_split = bool(re.search(r"\bNavigationSplitView\b", content))
     has_stack = bool(re.search(r"\bNavigationStack\b", content))
-    navigation_context = bool(re.search(
-        r"(?i)navigation|swiftui|apple|macos|ios|ipad|mobile|desktop|platform|container",
+    desktop_native = has_split or bool(re.search(r"\b(?:TopBar|Inspector)\b", content))
+    mobile_native = has_stack or bool(re.search(r"\b(?:TabView|BottomDock)\b", content))
+    web_declared = bool(re.search(r"(?i)(?:platform\s*[:：]\s*web|\bPlaywright\b|\bsemantic\s+viewport\b)", content))
+    desktop_declared = bool(re.search(r"(?i)(?:platforms?\s*[:：][^\n]*\b(?:macos|desktop)\b|\bmacos\b|\bdesktop\b)", content))
+    mobile_declared = bool(re.search(r"(?i)(?:platforms?\s*[:：][^\n]*\b(?:ios|mobile|iphone|ipad)\b|\bios\b|\bmobile\b|\biphone\b|\bipad\b)", content))
+    scoped_na = bool(re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:Navigation|Platform\s+Navigation\s+Divergence|Container)\s*[:：-]\s*N/?A\b",
         content,
     ))
-    if navigation_context and not (has_split and has_stack):
-        warnings.append(_spec_gap_warning(
-            "SPEC_GAP_PLATFORM_NAVIGATION_DIVERGENCE",
-            "platform_navigation",
-            source,
-            "design handoff must declare desktop NavigationSplitView and mobile NavigationStack semantics (or an explicit platform-container N/A clause)",
-        ))
+    if not scoped_na:
+        if web_declared and not (desktop_declared or mobile_declared):
+            navigation_ok = bool(re.search(r"(?i)semantic\s+viewport|playwright|web\s+(?:container|navigation)", content))
+            required = "semantic viewport/Web container"
+        elif desktop_declared and not mobile_declared:
+            navigation_ok = desktop_native
+            required = "NavigationSplitView, TopBar, or Inspector"
+        elif mobile_declared and not desktop_declared:
+            navigation_ok = mobile_native
+            required = "NavigationStack, TabView, or BottomDock"
+        else:
+            navigation_ok = desktop_native and mobile_native
+            required = "desktop NavigationSplitView/TopBar/Inspector and mobile NavigationStack/TabView/BottomDock"
+        if not navigation_ok:
+            warnings.append(_spec_gap_warning(
+                "SPEC_GAP_PLATFORM_NAVIGATION_DIVERGENCE",
+                "platform_navigation",
+                source,
+                f"design handoff must declare {required}, or an explicit scoped platform-navigation/container N/A clause",
+            ))
+
     missing_states = [state for state in ("empty", "loading", "error") if not re.search(rf"\b{state}\b", content, re.IGNORECASE)]
     if missing_states:
         warnings.append(_spec_gap_warning(
-            "SPEC_GAP_STATE_COVERAGE",
-            "state_matrix",
-            source,
+            "SPEC_GAP_STATE_COVERAGE", "state_matrix", source,
             "state matrix is missing: " + ", ".join(missing_states) + " (include recovery/retry evidence where applicable)",
         ))
-    if not re.search(r"(?i)deprecated\s+test\s+clauses?|obsolete\s+test\s+manifest|obsolete\s+tests?|\bN/?A\b", content):
+
+    clause = re.search(r"(?im)^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:Deprecated\s+Test\s+Clauses|Obsolete\s+Test\s+Manifest|Obsolete\s+Tests?)\s*(?::|：|-)?\s*(.*)$", content)
+    deprecated_ok = False
+    if clause:
+        tail = content[clause.end():]
+        next_heading = re.search(r"(?m)^#{1,6}\s+\S", tail)
+        body = clause.group(1) + (tail[:next_heading.start()] if next_heading else tail)
+        deprecated_ok = bool(re.search(r"(?i)\bN/?A\b", body) or CONCRETE_TEST_REF_RE.search(body) or re.search(r"\btest[_A-Za-z0-9]+\b|\b[A-Za-z0-9_]+Tests?\b", body))
+    if not deprecated_ok:
         warnings.append(_spec_gap_warning(
-            "SPEC_GAP_DEPRECATED_TEST_CLAUSES",
-            "deprecated_tests",
-            source,
-            "handoff must include Deprecated Test Clauses, an Obsolete Test Manifest, or an explicit N/A clause",
+            "SPEC_GAP_DEPRECATED_TEST_CLAUSES", "deprecated_tests", source,
+            "handoff must include Deprecated Test Clauses, an Obsolete Test Manifest, or a scoped N/A clause",
         ))
     return warnings
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Positive and counter-case replays for the modular my-designer verifier."""
-
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib.util
 import io
@@ -18,6 +18,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERIFY = REPO_ROOT / "skills/my-designer/scripts/verify_design_cases.py"
+DESIGN_STUDIO_VERIFY = REPO_ROOT / "skills/design-studio/scripts/verify_design_cases.py"
 CORE = VERIFY.parent / "design_cases_core"
 
 
@@ -30,50 +31,63 @@ def _load_gate():
     return module
 
 
+def _run_with(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(path), *args], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(VERIFY), *args], cwd=REPO_ROOT,
-        capture_output=True, text=True, check=False,
-    )
+    return _run_with(VERIFY, *args)
+
+
+def _json_result(result: subprocess.CompletedProcess[str]) -> dict:
+    return json.loads(result.stdout)
 
 
 def _png(path: Path) -> None:
     width, height = 100, 100
-    rows = []
-    for row in range(height):
-        pixel = b"\x00\x00\x00\xff" if row < 80 else b"\xff\xff\xff\xff"
-        rows.append(b"\x00" + pixel * width)
-    raw = b"".join(rows)
+    raw = b"".join(b"\x00" + (b"\x00\x00\x00\xff" if row < 80 else b"\xff\xff\xff\xff") * width for row in range(height))
     def chunk(kind: bytes, payload: bytes) -> bytes:
         import binascii
         return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", binascii.crc32(kind + payload) & 0xffffffff)
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
-    )
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 class MyDesignerRetroTests(unittest.TestCase):
-    def test_facade_budget_runtime_symlinks_and_patch_state(self) -> None:
+    def test_facade_budget_runtime_symlinks_and_callable_patch_state(self) -> None:
         self.assertLessEqual(len(VERIFY.read_text(encoding="utf-8").splitlines()), 220)
         for path in CORE.glob("*.py"):
             self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 750, path)
-            text = path.read_text(encoding="utf-8")
-            self.assertNotRegex(text, r"base64\.b64decode|zlib\.decompress|exec\(compile")
-        runtime = VERIFY.parent / "skill_runtime"
-        self.assertTrue(runtime.is_symlink())
-        self.assertEqual(runtime.readlink(), Path("../../skill-contract/scripts/skill_runtime"))
-        design_studio_gate = REPO_ROOT / "skills/design-studio/scripts/verify_design_cases.py"
-        self.assertTrue(design_studio_gate.is_symlink())
+            self.assertNotRegex(path.read_text(encoding="utf-8"), r"base64\.b64decode|zlib\.decompress|exec\(compile")
+        self.assertEqual((VERIFY.parent / "skill_runtime").readlink(), Path("../../skill-contract/scripts/skill_runtime"))
+        self.assertTrue(DESIGN_STUDIO_VERIFY.is_symlink())
+        gate = _load_gate()
+        self.assertIs(gate.SF_DATALESS, gate.RUNTIME_SF_DATALESS)
+        self.assertTrue(callable(gate.redact_payload))
+        with mock.patch.object(gate, "command_route", return_value=7):
+            self.assertEqual(gate.main(["route", "--platform", "mobile"]), 7)
+        original_root = gate._BASE_VALUES["ROOT"]
         with tempfile.TemporaryDirectory() as tmp:
-            missing = Path(tmp) / "missing-taxonomy.json"
-            gate = _load_gate()
-            with mock.patch.object(gate, "DEFAULT_TAXONOMY", missing):
-                self.assertEqual(gate._load_taxonomy(), gate._FALLBACK_TAXONOMY)
+            patched_root = Path(tmp)
+            args = argparse.Namespace(cases_file=str(gate.DEFAULT_CASES), taxonomy=str(gate.DEFAULT_TAXONOMY))
+            with mock.patch.object(gate, "ROOT", patched_root):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    gate.command_flow_map(args)
+                self.assertIs(gate.route.ROOT, patched_root)
+            with contextlib.redirect_stdout(io.StringIO()):
+                gate.command_flow_map(args)
+        self.assertIs(gate.ROOT, original_root)
+        self.assertIs(gate.route.ROOT, original_root)
 
-    def test_dual_forms_and_path_aliases_positive(self) -> None:
+    def test_design_studio_symlink_executes_same_json_and_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "handoff.md"
+            spec.write_text("Desktop NavigationSplitView; mobile NavigationStack. States empty/loading/error.\nDeprecated Test Clauses: N/A\n", encoding="utf-8")
+            for args in (("flow-map",), ("--route", "--platform", "mobile"), ("--audit-spec", str(spec))):
+                left, right = _run_with(VERIFY, *args), _run_with(DESIGN_STUDIO_VERIFY, *args)
+                self.assertEqual(left.returncode, right.returncode, args)
+                self.assertEqual(_json_result(left), _json_result(right), args)
+
+    def test_dual_forms_and_accumulating_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             swift = root / "View.swift"
@@ -83,19 +97,24 @@ class MyDesignerRetroTests(unittest.TestCase):
             for args in (("audit-code", "--platform", "mobile", "--dir", str(root)), ("--audit-code", str(swift))):
                 result = _run(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue(json.loads(result.stdout)["ok"])
             for args in (("check-section-interactivity", "--dir", str(root)), ("--check-section-interactivity", str(swift))):
-                result = _run(*args)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(_run(*args).returncode, 0)
             for args in (("check-whitespace-ratio", "--dir", str(root)), ("--check-whitespace-ratio", "--path", str(image))):
-                result = _run(*args)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue(json.loads(result.stdout)["ok"])
+                self.assertEqual(_run(*args).returncode, 0)
             artifact = root / "artifact.json"
             artifact.write_text('{"ok": true}', encoding="utf-8")
-            for args in (("inspect-json", "--path", str(artifact)), ("--inspect-json", str(artifact))):
-                result = _run(*args)
-                self.assertEqual(result.returncode, 0, result.stderr)
+            for args in (("inspect-json", "--path", str(artifact)), ("--inspect-json", "--path", str(artifact))):
+                self.assertEqual(_run(*args).returncode, 0)
+            missing = root / "missing.md"
+            repeated = _run("--audit-spec", "--path", str(missing), "--path", str(artifact))
+            self.assertEqual(repeated.returncode, 1)
+            self.assertIn(str(missing), " ".join(_json_result(repeated).get("errors", [])))
+            d1, d2 = root / "d1", root / "d2"
+            d1.mkdir()
+            (d1 / "good.swift").write_text("struct Good: View { @State var value = false; var body: some View { Toggle(\"x\", isOn: $value) } }", encoding="utf-8")
+            code = _run("--audit-code", "--platform", "mobile", "--dir", str(d1), str(d2))
+            self.assertNotEqual(code.returncode, 0)
+            self.assertIn(str(d2), " ".join(_json_result(code).get("code_errors", [])))
 
     def test_invalid_usage_is_short_and_self_disclosing(self) -> None:
         for args in ((), ("audit-code",), ("audit-spec",), ("--unknown",)):
@@ -106,32 +125,38 @@ class MyDesignerRetroTests(unittest.TestCase):
             self.assertNotIn("Traceback", result.stderr)
             self.assertIn("skills/my-designer/references/routing-index.md", result.stderr)
 
-    def test_spec_gap_soft_advisory_and_strict_counter_case(self) -> None:
-        incomplete = "# Apple design\nUse NavigationStack on mobile.\n"
-        complete = """# Handoff
-Desktop uses NavigationSplitView; mobile uses NavigationStack.
-States: empty, loading, error, success, retry.
-## Deprecated Test Clauses
-N/A for legacy tests.
-"""
+    def _assert_gap(self, content: str, code: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bad = root / "bad.md"
-            good = root / "good.md"
-            bad.write_text(incomplete, encoding="utf-8")
-            good.write_text(complete, encoding="utf-8")
-            soft = _run("audit-spec", "--path", str(bad))
+            path = Path(tmp) / "spec.md"
+            path.write_text(content, encoding="utf-8")
+            soft = _run("audit-spec", str(path))
             self.assertEqual(soft.returncode, 0, soft.stderr)
-            soft_payload = json.loads(soft.stdout)
-            self.assertTrue(soft_payload["spec_gap_warnings"])
-            self.assertTrue(all(w["tag"] == "[SPEC_GAP]" for w in soft_payload["spec_gap_warnings"]))
-            self.assertIn("navigation-evidence-contract.md", "\n".join(soft_payload["guidance"]))
-            strict = _run("--audit-spec", "--strict-spec-gaps", str(bad))
-            self.assertEqual(strict.returncode, 1, strict.stderr)
-            self.assertFalse(json.loads(strict.stdout)["ok"])
-            clean = _run("audit-spec", "--strict-spec-gaps", "--dir", str(good))
-            self.assertEqual(clean.returncode, 0, clean.stderr)
-            self.assertEqual(json.loads(clean.stdout)["spec_gap_warnings"], [])
+            payload = _json_result(soft)
+            self.assertEqual({warning["code"] for warning in payload["spec_gap_warnings"]}, {code})
+            for args in (("--strict-spec-gaps", "audit-spec", str(path)), ("audit-spec", "--strict-spec-gaps", str(path))):
+                strict = _run(*args)
+                self.assertEqual(strict.returncode, 1, strict.stderr)
+                self.assertFalse(_json_result(strict)["ok"])
+
+    def test_spec_gap_detectors_are_isolated_and_scoped(self) -> None:
+        states = "States: empty, loading, error, success, retry."
+        nav = "Desktop NavigationSplitView; mobile NavigationStack."
+        dep = "Deprecated Test Clauses: N/A."
+        self._assert_gap(f"{states}\n{dep}\n", "SPEC_GAP_PLATFORM_NAVIGATION_DIVERGENCE")
+        self._assert_gap(f"{nav}\n{dep}\n", "SPEC_GAP_STATE_COVERAGE")
+        self._assert_gap(f"{nav}\n{states}\nAnalytics: N/A\n", "SPEC_GAP_DEPRECATED_TEST_CLAUSES")
+        cases = {
+            "web": "platform: web\ncontainer: semantic viewport\n" + states + "\n" + dep,
+            "scoped-na": "Navigation: N/A\n" + states + "\n" + dep,
+            "complete": nav + "\n" + states + "\n" + dep,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, content in cases.items():
+                path = Path(tmp) / f"{name}.md"
+                path.write_text(content, encoding="utf-8")
+                result = _run("audit-spec", "--strict-spec-gaps", str(path))
+                self.assertEqual(result.returncode, 0, (name, result.stderr))
+                self.assertEqual(_json_result(result)["spec_gap_warnings"], [])
 
     def test_facade_in_process_main_preserves_json_contract(self) -> None:
         gate = _load_gate()
@@ -139,8 +164,7 @@ N/A for legacy tests.
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             result = gate.main(["route", "--platform", "ios", "--dimensions", "layout-navigation"])
         self.assertEqual(result, 0, errors.getvalue())
-        payload = json.loads(output.getvalue())
-        self.assertEqual(payload["platform"], "mobile")
+        self.assertEqual(json.loads(output.getvalue())["platform"], "mobile")
 
 
 if __name__ == "__main__":

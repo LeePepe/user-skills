@@ -4,10 +4,16 @@ import argparse
 import datetime as dt
 import json
 import importlib.util
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from skill_runtime import compact_json_dumps, redact_payload, safe_read_text
+from skill_runtime.fs_guard import _SF_DATALESS as RUNTIME_SF_DATALESS
+
+SF_DATALESS = RUNTIME_SF_DATALESS
 
 _SCRIPT_DIR = Path(__file__).resolve().parents[1]
 ROOT = _SCRIPT_DIR.parent
@@ -227,7 +233,11 @@ class SelfDisclosingArgumentParser(argparse.ArgumentParser):
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    target = Path(path)
+    text = safe_read_text(target)
+    if text is None:
+        text = target.read_text(encoding="utf-8")
+    return json.loads(text)
 
 _FALLBACK_TAXONOMY = {
     "dimensions": [
@@ -259,7 +269,8 @@ def _normalize_platform(value):
 
 def _save_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    safe_data = redact_payload(data)
+    path.write_text(json.dumps(safe_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _csv(value: str | None) -> list[str]:

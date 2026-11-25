@@ -24,7 +24,10 @@ def _jev_response(args, payload, platform):
 
 def _read_json(path):
     try:
-        return json.loads(Path(path).read_text(encoding='utf-8'))
+        text = safe_read_text(Path(path))
+        if text is None:
+            text = Path(path).read_text(encoding='utf-8')
+        return json.loads(text)
     except (OSError, ValueError):
         return None
 
@@ -133,9 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--json", action="store_true", help="Emit JSON output (default)")
     parser = SelfDisclosingArgumentParser(description=__doc__, parents=[common])
     parser.add_argument("--check-whitespace-ratio", dest="top_whitespace_path", nargs="?", const="__PATH_REQUIRED__", default=None, metavar="PNG_OR_DIR")
-    parser.add_argument("--path", "--dir", dest="top_path_alias", default=None, metavar="PATH")
+    parser.add_argument("--path", "--dir", dest="top_path_alias", nargs="+", action="extend", default=None, metavar="PATH")
     parser.add_argument("--max-dead-space", "--max-ratio", dest="top_max_dead_space", type=float, default=None)
     parser.add_argument("--persona", dest="top_persona", default=None, help="Tier 2 Product Persona scope (compact|default|breathing)")
+    parser.add_argument("--dimensions", "--dimension", dest="top_dimensions", default="")
+    parser.add_argument("--container", "--containers", dest="top_container", default=None)
     parser.add_argument("--audit-geometry", dest="top_geometry_path", default=None, metavar="GEOMETRY_JSON")
     parser.add_argument("--check-section-interactivity", dest="top_interactivity_path", nargs="?", const="__SNIPPET_ONLY__", default=None, metavar="SWIFT_OR_DIR")
     parser.add_argument("--audit-code", dest="top_audit_code", nargs="*", action="extend", default=None, metavar="PATH")
@@ -143,15 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict-spec-gaps", dest="top_strict_spec_gaps", action="store_true")
     parser.add_argument("--snippet", dest="top_snippet", default=None)
     parser.add_argument("--lookup-defect", dest="top_lookup_defect", default=None, metavar="KEYWORD")
-    parser.add_argument("--inspect-json", dest="top_inspect_json", default=None, metavar="JSON_PATH")
+    parser.add_argument("--inspect-json", dest="top_inspect_json", nargs="?", const="__PATH_REQUIRED__", default=None, metavar="JSON_PATH")
+    parser.add_argument("--route", dest="top_route", action="store_true")
+    parser.add_argument("--flow-map", dest="top_flow_map", action="store_true")
     parser.add_argument("--collision-threshold", type=float, default=2.0)
     parser.add_argument("--platform", "--surface", dest="top_platform", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
     sub = parser.add_subparsers(dest="command", required=False)
 
     sub.add_parser("flow-map", parents=[common])
     inspect = sub.add_parser("inspect-json", parents=[common], help="Read-only JSON fact collector; never certifies evidence")
-    inspect.add_argument("inspect_path", nargs="?", metavar="JSON_PATH")
-    inspect.add_argument("--path", "--dir", dest="inspect_path_flag", default=None, metavar="JSON_PATH")
+    inspect.add_argument("inspect_path", nargs="*", metavar="JSON_PATH")
+    inspect.add_argument("--path", "--dir", dest="inspect_path_flag", nargs="+", action="extend", default=None, metavar="JSON_PATH")
 
     route = sub.add_parser("route", parents=[common])
     route.add_argument("--platform", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
@@ -183,13 +190,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     spec_audit = sub.add_parser("audit-spec", parents=[common], help="Audit design.md/spec.md for subtractive Negative DOM/View Assertions and concrete Obsolete Test Manifest")
     spec_audit.add_argument("positional_specs", nargs="*", default=[], metavar="SPEC_MD")
-    spec_audit.add_argument("--spec-file", "--spec", "--file", "--path", "--dir", dest="spec_files_list", action="append", default=None, metavar="SPEC_MD")
+    spec_audit.add_argument("--spec-file", "--spec", "--file", "--path", "--dir", dest="spec_files_list", nargs="+", action="extend", default=None, metavar="SPEC_MD")
     spec_audit.add_argument("--strict-spec-gaps", action="store_true", help="Fail when pre-implementation [SPEC_GAP] warnings are present")
 
     ws = sub.add_parser("check-whitespace-ratio", parents=[common], help="Reject full-viewport screenshots with excessive bottom contiguous dead space")
     ws.add_argument("positional_paths", nargs="*", default=[], metavar="PNG_OR_DIR")
     ws.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
-    ws.add_argument("--path", "--dir", "--file", "--image", "--png-or-dir", "--check-whitespace-ratio", dest="path", action="append", default=None, metavar="PNG_OR_DIR")
+    ws.add_argument("--path", "--dir", "--file", "--image", "--png-or-dir", "--check-whitespace-ratio", dest="path", nargs="+", action="extend", default=None, metavar="PNG_OR_DIR")
     ws.add_argument("--max-dead-space", "--max-ratio", dest="max_dead_space", type=float, default=None)
     ws.add_argument("--persona", default=None, help="Context-scoped Tier 2 persona: compact (0.25), default (0.40), breathing (0.55 + >=0.12 advisory)")
 
@@ -201,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     interactivity = sub.add_parser("check-section-interactivity", parents=[common], help="Reject static SwiftUI section/preview placeholders")
     interactivity.add_argument("positional_paths", nargs="*", default=[], metavar="SWIFT_OR_DIR")
-    interactivity.add_argument("--path", "--file", "--dir", dest="interactivity_path", default=None, metavar="SWIFT_OR_DIR")
+    interactivity.add_argument("--path", "--file", "--dir", dest="interactivity_path", nargs="+", action="extend", default=None, metavar="SWIFT_OR_DIR")
     interactivity.add_argument("--snippet", default=None)
 
     lookup = sub.add_parser("lookup-defect", parents=[common], help="Query the deterministic defect-case index")
@@ -232,55 +239,79 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _merge_targets(*values) -> list[str]:
+    targets: list[str] = []
+    for value in values:
+        if isinstance(value, list):
+            targets.extend(str(item) for item in value if item)
+        elif value:
+            targets.append(str(value))
+    return targets
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
-    # argparse's nargs=+ otherwise treats an immediately following strict flag as a missing path.
-    if raw_argv is not None and "--audit-spec" in raw_argv and "--strict-spec-gaps" in raw_argv:
+    if "--audit-spec" in raw_argv and "--strict-spec-gaps" in raw_argv:
         audit_index = raw_argv.index("--audit-spec")
         strict_index = raw_argv.index("--strict-spec-gaps")
         if strict_index == audit_index + 1:
-            raw_argv[audit_index:audit_index + 2] = ["--strict-spec-gaps", "--audit-spec"]
+            raw_argv[strict_index], raw_argv[audit_index] = raw_argv[audit_index], raw_argv[strict_index]
     args = parser.parse_args(raw_argv)
-    platform = getattr(args, 'platform', None) or args.top_platform
-    if args.command == 'route' and args.surface and not platform:
-        if args.surface not in {'ios', 'macos', 'mobile', 'desktop', 'web'}:
-            parser.error('--surface UI hints require --platform; otherwise use ios|macos|mobile|desktop|web')
+    platform = getattr(args, "platform", None) or getattr(args, "top_platform", None)
+    if args.command == "route" and getattr(args, "surface", None) and not platform:
+        if args.surface not in {"ios", "macos", "mobile", "desktop", "web"}:
+            parser.error("--surface UI hints require --platform; otherwise use ios|macos|mobile|desktop|web")
         platform = args.surface
-    args.platform = _normalize_platform(platform or 'desktop')
-    if args.command == 'inspect-json' or args.top_inspect_json:
-        if args.top_inspect_json:
-            args.inspect_path = args.top_inspect_json
-        elif getattr(args, 'inspect_path_flag', None):
-            args.inspect_path = args.inspect_path_flag
-        if not getattr(args, 'inspect_path', None):
-            parser.error('inspect-json requires a JSON_PATH or --path/--dir JSON_PATH')
+    args.platform = _normalize_platform(platform or "desktop")
+
+    if args.command == "inspect-json" or args.top_inspect_json is not None:
+        targets = _merge_targets(
+            getattr(args, "inspect_path", None), getattr(args, "inspect_path_flag", None),
+            None if args.top_inspect_json == "__PATH_REQUIRED__" else args.top_inspect_json,
+            getattr(args, "top_path_alias", None),
+        )
+        if not targets:
+            parser.error("inspect-json requires a JSON_PATH or --path/--dir JSON_PATH")
+        if len(targets) > 1:
+            parser.error("inspect-json accepts exactly one JSON_PATH")
+        args.inspect_path = targets[0]
         return command_inspect_json(args)
-    if args.command == "flow-map":
+    if args.command == "flow-map" or args.top_flow_map:
         return command_flow_map(args)
-    if args.command == "route":
+    if args.command == "route" or args.top_route:
+        if args.command != "route":
+            args.dimensions = getattr(args, "top_dimensions", "")
+            args.container = getattr(args, "top_container", None)
+            args.persona = getattr(args, "top_persona", None)
         return command_route(args)
+
     if args.command in {"audit-code", "audit-swift", "check-code", "audit"}:
-        if args.snippet is None and getattr(args, "top_snippet", None) is not None:
-            args.snippet = args.top_snippet
-        if args.max_dead_space is None and getattr(args, "top_max_dead_space", None) is not None:
-            args.max_dead_space = args.top_max_dead_space
-        if args.persona is None and getattr(args, "top_persona", None) is not None:
-            args.persona = args.top_persona
+        args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None))
+        args.positional_paths = _merge_targets(getattr(args, "positional_paths", None))
+        args.snippet = getattr(args, "snippet", None) or getattr(args, "top_snippet", None)
+        args.max_dead_space = getattr(args, "max_dead_space", None) or getattr(args, "top_max_dead_space", None)
+        args.persona = getattr(args, "persona", None) or getattr(args, "top_persona", None)
         return command_audit_code(args)
     if args.command == "audit-spec":
+        args.spec_files_list = _merge_targets(getattr(args, "spec_files_list", None), getattr(args, "top_path_alias", None))
+        args.positional_specs = _merge_targets(getattr(args, "positional_specs", None))
+        args.strict_spec_gaps = bool(getattr(args, "strict_spec_gaps", False) or getattr(args, "top_strict_spec_gaps", False))
         return command_audit_spec(args)
     if args.command == "check-whitespace-ratio":
-        if args.max_dead_space is None and getattr(args, "top_max_dead_space", None) is not None:
-            args.max_dead_space = args.top_max_dead_space
-        if args.persona is None and getattr(args, "top_persona", None) is not None:
-            args.persona = args.top_persona
+        args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None))
+        args.positional_paths = _merge_targets(getattr(args, "positional_paths", None))
+        args.max_dead_space = getattr(args, "max_dead_space", None) or getattr(args, "top_max_dead_space", None)
+        args.persona = getattr(args, "persona", None) or getattr(args, "top_persona", None)
         return command_check_whitespace_ratio(args)
     if args.command == "audit-geometry":
+        args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None))
+        args.positional_paths = _merge_targets(getattr(args, "positional_paths", None))
         return command_audit_geometry(args)
     if args.command == "check-section-interactivity":
-        if args.snippet is None and getattr(args, "top_snippet", None) is not None:
-            args.snippet = args.top_snippet
+        args.interactivity_path = _merge_targets(getattr(args, "interactivity_path", None), getattr(args, "top_path_alias", None))
+        args.positional_paths = _merge_targets(getattr(args, "positional_paths", None))
+        args.snippet = getattr(args, "snippet", None) or getattr(args, "top_snippet", None)
         return command_check_section_interactivity(args)
     if args.command == "lookup-defect":
         return command_lookup_defect(args)
@@ -288,32 +319,22 @@ def main(argv: list[str] | None = None) -> int:
         return command_register_case(args)
     if args.command == "jev-gate":
         return command_jev_gate(args)
+
     if args.top_audit_code is not None:
-        args.path = list(args.top_audit_code or [])
-        if getattr(args, 'top_path_alias', None):
-            args.path.append(args.top_path_alias)
+        args.path = _merge_targets(args.top_audit_code, getattr(args, "top_path_alias", None))
         args.positional_paths = []
-        args.root_dir = None
-        args.ui_path = None
+        args.root_dir = args.ui_path = None
         args.snippet = args.top_snippet
-        args.spec_files_list = args.top_audit_spec
-        args.check_whitespace_ratio = args.top_whitespace_path
-        args.max_dead_space = args.top_max_dead_space
-        args.persona = args.top_persona
-        args.audit_geometry = args.top_geometry_path
+        args.platform = _normalize_platform(getattr(args, "top_platform", None) or "desktop")
         return command_audit_code(args)
     if args.top_audit_spec is not None:
-        args.spec_files_list = list(args.top_audit_spec or [])
-        if getattr(args, 'top_path_alias', None):
-            args.spec_files_list.append(args.top_path_alias)
-        args.spec_file = None
+        args.spec_files_list = _merge_targets(args.top_audit_spec, getattr(args, "top_path_alias", None))
         args.positional_specs = []
-        args.strict_spec_gaps = bool(getattr(args, 'top_strict_spec_gaps', False))
+        args.strict_spec_gaps = bool(getattr(args, "top_strict_spec_gaps", False))
         return command_audit_spec(args)
     if args.top_interactivity_path is not None:
-        args.interactivity_path = None if args.top_interactivity_path == "__SNIPPET_ONLY__" else args.top_interactivity_path
-        if getattr(args, 'top_path_alias', None):
-            args.interactivity_path = args.top_path_alias
+        args.interactivity_path = [] if args.top_interactivity_path == "__SNIPPET_ONLY__" else [args.top_interactivity_path]
+        args.interactivity_path.extend(_merge_targets(getattr(args, "top_path_alias", None)))
         args.positional_paths = []
         args.snippet = args.top_snippet
         return command_check_section_interactivity(args)
@@ -323,49 +344,21 @@ def main(argv: list[str] | None = None) -> int:
         args.positional_query = []
         return command_lookup_defect(args)
     if args.top_whitespace_path or args.top_geometry_path:
-        if args.top_whitespace_path == "__PATH_REQUIRED__":
-            args.top_whitespace_path = args.top_path_alias
-            if not args.top_whitespace_path:
-                parser.error("--check-whitespace-ratio requires a PNG_OR_DIR or --path/--dir PNG_OR_DIR")
-        ws_errors, ws_metrics, ws_advisories = ([], [], [])
-        geom_errors, geom_details = ([], [])
-        drawer_keys: list[str] = []
-        persona_name, max_dead, min_breath, profile = _resolve_persona_whitespace(args.top_persona, args.top_max_dead_space)
         if args.top_whitespace_path:
-            ws_errors, ws_metrics = EVIDENCE.check_whitespace_ratio(args.top_whitespace_path, max_dead_space_ratio=max_dead)
-            if min_breath > 0.0:
-                for m in ws_metrics:
-                    ratio = float(m.get('dead_space_ratio', 0.0))
-                    if ratio < min_breath:
-                        ws_advisories.append(
-                            f"{Path(str(m.get('file', 'image'))).name}: SOFT_ADVISORY_CRAMPED_BREATHING "
-                            f"(whitespace ratio {ratio:.1%} < {min_breath:.0%} floor for --persona breathing)"
-                        )
-            if ws_errors or ws_advisories:
-                drawer_keys.extend(['breathing', 'appearance'])
-        if args.top_geometry_path:
-            geom_errors, geom_details = EVIDENCE.audit_geometry(args.top_geometry_path, platform=args.platform, collision_threshold_pt2=float(args.collision_threshold))
-            if geom_errors:
-                drawer_keys.extend(['navigation', 'interaction'])
-        errors = [*ws_errors, *geom_errors]
-        out_payload: dict[str, Any] = {
-            'ok': not errors,
-            'platform': args.platform,
-            'persona': persona_name,
-            'max_dead_space_ratio': max_dead,
-            'errors': errors,
-            'whitespace_metrics': ws_metrics,
-            'geometry_details': geom_details,
-        }
-        if ws_advisories:
-            out_payload['advisories'] = ws_advisories
-        if errors or ws_advisories:
-            drawers, guidance = _build_self_disclosing_guidance(drawer_keys or ['breathing'])
-            out_payload['reference_drawers'] = drawers
-            out_payload['guidance'] = guidance
-        print(json.dumps(out_payload, ensure_ascii=False, indent=2))
-        return 0 if not errors else 1
-    parser.error("a subcommand or --audit-code / --audit-spec / --check-whitespace-ratio / --audit-geometry / --check-section-interactivity / --lookup-defect is required")
+            args.path = _merge_targets(
+                None if args.top_whitespace_path == "__PATH_REQUIRED__" else args.top_whitespace_path,
+                getattr(args, "top_path_alias", None),
+            )
+            if not args.path:
+                parser.error("--check-whitespace-ratio requires a PNG_OR_DIR or --path/--dir PNG_OR_DIR")
+            args.positional_paths = []
+            args.persona = args.top_persona
+            args.max_dead_space = args.top_max_dead_space
+            return command_check_whitespace_ratio(args)
+        args.path = _merge_targets(args.top_geometry_path, getattr(args, "top_path_alias", None))
+        args.positional_paths = []
+        return command_audit_geometry(args)
+    parser.error("a subcommand or --route / --flow-map / --audit-code / --audit-spec / --check-whitespace-ratio / --audit-geometry / --check-section-interactivity / --lookup-defect is required")
     return 2
 
 
