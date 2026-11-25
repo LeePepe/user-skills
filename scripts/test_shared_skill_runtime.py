@@ -4,10 +4,12 @@ import contextlib
 from io import StringIO
 import json
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills/skill-contract/scripts"
@@ -31,6 +33,19 @@ class SharedSkillRuntimeTests(unittest.TestCase):
             self.assertTrue(is_safe_local_file(target))
             self.assertEqual(json.loads(safe_read_text(target) or "{}"), {"ok": True})
             self.assertIsNone(safe_read_text(root / "missing"))
+            mobile = root / "Mobile Documents" / "cloud.txt"
+            mobile.parent.mkdir()
+            mobile.write_text("cloud", encoding="utf-8")
+            self.assertFalse(is_safe_local_file(mobile))
+            target_link = root / "facts-link.json"
+            target_link.symlink_to(target)
+            self.assertFalse(is_safe_local_file(target_link))
+            dir_link = root / "dir-link"
+            dir_link.symlink_to(root, target_is_directory=True)
+            self.assertFalse(is_safe_local_dir(dir_link))
+            dataless = mock.Mock(st_flags=0x40000000, st_mode=stat.S_IFREG)
+            with mock.patch("skill_runtime.fs_guard.os.lstat", return_value=dataless):
+                self.assertFalse(is_safe_local_file(target))
             put_cached(target, {"cached": 1}, "facts")
             self.assertEqual(get_cached(target, "facts"), {"cached": 1})
             target.write_text('{"ok": false}\n', encoding="utf-8")
@@ -68,7 +83,12 @@ class SharedSkillRuntimeTests(unittest.TestCase):
                 {"type": "session.start", "data": {"cwd": "/tmp/work", "selectedModel": "test-model"}},
                 {"type": "tool.execution_start", "data": {"toolCallId": "call-1", "toolName": "bash", "arguments": {"command": "echo"}}},
                 {"type": "tool.execution_complete", "data": {"toolCallId": "call-1", "content": "<shellId: x completed with exit code 7>"}},
+                {"type": "tool.execution_start", "data": {"toolCallId": "call-2", "toolName": "read", "arguments": {}}},
+                {"type": "tool.execution_complete", "data": {"toolCallId": "call-2", "content": "z" * 20_001}},
+                {"type": "tool.execution_start", "data": {"toolCallId": "call-3", "toolName": "read", "arguments": {}}},
+                {"type": "tool.execution_complete", "data": {"toolCallId": "call-3", "content": "Output too large to read at once"}},
                 {"type": "assistant.message", "content": "visible", "reasoningText": "think", "output_tokens": 4},
+                {"type": "assistant.message", "content": "", "reasoningText": "tool-only reasoning"},
                 {"type": "session.usage_record", "usage": {"output_tokens": 3}},
                 {"type": "skill.invoked", "skillName": "skill-contract"},
                 {"type": "subagent.completed", "agentName": "writer", "model": "m", "totalTokens": 9, "durationMs": 2},
@@ -80,10 +100,44 @@ class SharedSkillRuntimeTests(unittest.TestCase):
             self.assertEqual(session["selectedModel"], "test-model")
             self.assertEqual(session["tool_calls"][0]["exitCode"], 7)
             self.assertEqual(session["tool_calls"][0]["arguments"], {"command": "echo"})
-            self.assertEqual(session["reasoning_chars"], 5)
+            self.assertTrue(session["tool_calls"][1]["aci_output_bloat"])
+            self.assertTrue(session["tool_calls"][2]["aci_output_bloat"])
+            self.assertEqual(session["assistant_turns"][1]["content"], "")
+            self.assertEqual(session["assistant_turns"][1]["reasoning_chars"], len("tool-only reasoning"))
+            self.assertEqual(session["reasoning_chars"], 5 + len("tool-only reasoning"))
             self.assertEqual(session["output_tokens"], 7)
             self.assertEqual(session["skills"][0]["skillName"], "skill-contract")
             self.assertTrue(session["subagents"])
+
+    def test_hygiene_facts_reports_legacy_monoliths_as_soft_advisory(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "skills/skill-contract/scripts/skill_contract.py"), "hygiene-facts", "--no-check-diff", "--json"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        facts = json.loads(result.stdout)
+        self.assertEqual(facts["gate_tier"], "soft_advisory_exit_0")
+        self.assertTrue(facts["legacy_monoliths"])
+        self.assertTrue(all(item["lines"] <= item["cap"] for item in facts["legacy_monoliths"]))
+
+    def test_duplicate_fork_ignores_init_and_relative_directory_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            one = repo / "skills" / "one"
+            two = repo / "skills" / "two"
+            for package in (one, two):
+                (package / "scripts").mkdir(parents=True)
+                (package / "SKILL.md").write_text("---\ndescription: test\n---\n", encoding="utf-8")
+                (package / "scripts" / "__init__.py").write_text(f"name = {package.name!r}\n", encoding="utf-8")
+            (one / "scripts" / "skill_runtime").mkdir()
+            (one / "scripts" / "skill_runtime" / "runtime.py").write_text("value = 1\n", encoding="utf-8")
+            (two / "scripts" / "skill_runtime").symlink_to("../../one/scripts/skill_runtime", target_is_directory=True)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "skills/skill-contract/scripts/skill_contract.py"), "audit", "--repo", str(repo), "--all", "--strict", "--no-cache"],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn("duplicate-script-fork", result.stdout)
 
     def test_git_version_and_commit_grounding(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
