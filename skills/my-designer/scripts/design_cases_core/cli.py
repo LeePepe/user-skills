@@ -144,6 +144,10 @@ def build_parser(*, flag_targets: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--audit-geometry", dest="top_geometry_path", default=None, metavar="GEOMETRY_JSON")
     parser.add_argument("--check-section-interactivity", dest="top_interactivity_path", nargs="*", action="extend", default=None, metavar="SWIFT_OR_DIR")
     parser.add_argument("--audit-code", dest="top_audit_code", nargs="*", action="extend", default=None, metavar="PATH")
+    parser.add_argument("--paths", "--files", dest="top_extra_paths", nargs="+", action="extend", default=None, metavar="PATH")
+    parser.add_argument("--root", dest="top_root_dir", default=None)
+    parser.add_argument("--ui-path", dest="top_ui_path", default=None)
+    parser.add_argument("--spec-file", "--spec", dest="top_spec_files_list", nargs="+", action="extend", default=None, metavar="SPEC_MD")
     parser.add_argument("--audit-spec", dest="top_audit_spec", nargs="*", action="extend", default=None, metavar="SPEC_MD")
     parser.add_argument("--strict-spec-gaps", dest="top_strict_spec_gaps", action="store_true")
     parser.add_argument("--snippet", dest="top_snippet", default=None)
@@ -256,7 +260,7 @@ def _merge_targets(*values) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     # Flag-mode targets may straddle options; argparse cannot intermix subparsers.
-    selectors = {'--check-section-interactivity', '--check-whitespace-ratio'}
+    selectors = {'--audit-code', '--audit-spec', '--check-section-interactivity', '--check-whitespace-ratio'}
     flag_index = next((i for i, arg in enumerate(raw_argv) if arg.split('=', 1)[0] in selectors), None)
     subcommands = {'flow-map', 'inspect-json', 'route', 'audit-code', 'audit-swift', 'check-code', 'audit',
                    'audit-spec', 'check-whitespace-ratio', 'audit-geometry', 'check-section-interactivity',
@@ -298,14 +302,17 @@ def main(argv: list[str] | None = None) -> int:
         return command_route(args)
 
     if args.command in {"audit-code", "audit-swift", "check-code", "audit"}:
-        args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None))
+        args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None), getattr(args, "top_extra_paths", None))
         args.positional_paths = _merge_targets(getattr(args, "positional_paths", None))
+        args.root_dir = getattr(args, "root_dir", None) or getattr(args, "top_root_dir", None)
+        args.ui_path = getattr(args, "ui_path", None) or getattr(args, "top_ui_path", None)
+        args.spec_files_list = _merge_targets(getattr(args, "spec_files_list", None), getattr(args, "top_spec_files_list", None))
         args.snippet = getattr(args, "snippet", None) or getattr(args, "top_snippet", None)
         args.max_dead_space = getattr(args, "max_dead_space", None) or getattr(args, "top_max_dead_space", None)
         args.persona = getattr(args, "persona", None) or getattr(args, "top_persona", None)
         return command_audit_code(args)
     if args.command == "audit-spec":
-        args.spec_files_list = _merge_targets(getattr(args, "spec_files_list", None), getattr(args, "top_path_alias", None))
+        args.spec_files_list = _merge_targets(getattr(args, "spec_files_list", None), getattr(args, "top_path_alias", None), getattr(args, "top_spec_files_list", None))
         args.positional_specs = _merge_targets(getattr(args, "positional_specs", None))
         args.strict_spec_gaps = bool(getattr(args, "strict_spec_gaps", False) or getattr(args, "top_strict_spec_gaps", False))
         return command_audit_spec(args)
@@ -332,14 +339,21 @@ def main(argv: list[str] | None = None) -> int:
         return command_jev_gate(args)
 
     if args.top_audit_code is not None:
-        args.path = _merge_targets(args.top_audit_code, getattr(args, "top_path_alias", None))
+        args.path = _merge_targets(args.top_audit_code, getattr(args, "top_path_alias", None), getattr(args, "top_extra_paths", None), getattr(args, "top_positional_paths", None))
         args.positional_paths = []
-        args.root_dir = args.ui_path = None
+        args.root_dir = getattr(args, "top_root_dir", None)
+        args.ui_path = getattr(args, "top_ui_path", None)
+        args.spec_files_list = _merge_targets(getattr(args, "top_spec_files_list", None))
         args.snippet = args.top_snippet
+        ws_targets = _merge_targets(getattr(args, "top_whitespace_path", None))
+        args.check_whitespace_ratio = ws_targets[0] if ws_targets else None
+        args.max_dead_space = getattr(args, "top_max_dead_space", None)
+        args.persona = getattr(args, "top_persona", None)
+        args.audit_geometry = getattr(args, "top_geometry_path", None)
         args.platform = _normalize_platform(getattr(args, "top_platform", None) or "desktop")
         return command_audit_code(args)
     if args.top_audit_spec is not None:
-        args.spec_files_list = _merge_targets(args.top_audit_spec, getattr(args, "top_path_alias", None))
+        args.spec_files_list = _merge_targets(args.top_audit_spec, getattr(args, "top_path_alias", None), getattr(args, "top_spec_files_list", None), getattr(args, "top_positional_paths", None))
         args.positional_specs = []
         args.strict_spec_gaps = bool(getattr(args, "top_strict_spec_gaps", False))
         return command_audit_spec(args)

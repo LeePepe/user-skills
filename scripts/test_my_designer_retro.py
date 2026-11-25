@@ -235,7 +235,21 @@ class MyDesignerRetroTests(unittest.TestCase):
             self.assertIn(str(missing), " ".join(_json_result(repeated).get("errors", [])))
             d1, d2 = root / "d1", root / "d2"
             d1.mkdir()
-            (d1 / "good.swift").write_text("struct Good: View { @State var value = false; var body: some View { Toggle(\"x\", isOn: $value) } }", encoding="utf-8")
+            s1 = d1 / "good.swift"
+            s2 = root / "good2.swift"
+            s1.write_text("struct Good: View { @State var value = false; var body: some View { Toggle(\"x\", isOn: $value) } }", encoding="utf-8")
+            s2.write_text("struct Good2: View { @State var value = true; var body: some View { Toggle(\"y\", isOn: $value) } }", encoding="utf-8")
+            sub_two = _run("audit-code", "--platform", "mobile", str(s1), str(s2))
+            flag_two = _run("--audit-code", "--platform", "mobile", str(s1), str(s2))
+            straddle_two = _run("--audit-code", str(s1), "--platform", "mobile", str(s2))
+            self.assertEqual(sub_two.returncode, 0, sub_two.stderr)
+            self.assertEqual(flag_two.returncode, 0, flag_two.stderr)
+            self.assertEqual(straddle_two.returncode, 0, straddle_two.stderr)
+            self.assertEqual(_json_result(flag_two), _json_result(sub_two))
+            self.assertEqual(_json_result(straddle_two), _json_result(sub_two))
+            bad_first = _run("--audit-code", "--platform", "mobile", str(root / "missing.swift"), str(s2))
+            self.assertNotEqual(bad_first.returncode, 0)
+            self.assertIn("missing.swift", " ".join(_json_result(bad_first).get("code_errors", [])))
             code = _run("--audit-code", "--platform", "mobile", "--dir", str(d1), str(d2))
             self.assertNotEqual(code.returncode, 0)
             self.assertIn(str(d2), " ".join(_json_result(code).get("code_errors", [])))
