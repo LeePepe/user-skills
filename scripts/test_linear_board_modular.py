@@ -132,6 +132,70 @@ class LinearBoardModularTests(unittest.TestCase):
             self.assertEqual(client._team(), "team-patched")
             patched_query.assert_called_once()
 
+        # Verify monkeypatching methods on `tracker.LinearClient` reaches core-created CLI `LinearClient` instances with zero network calls.
+        with tempfile.TemporaryDirectory() as tmp:
+            roots_file = Path(tmp) / "roots.json"
+            roots_file.write_text(json.dumps({"roots": [{"root_id": "demo-root", "name": "Demo Root"}]}), encoding="utf-8")
+            snap_file = Path(tmp) / "snap.json"
+            snap_file.write_text(json.dumps({"roots": []}), encoding="utf-8")
+            cache_file = Path(tmp) / "cache.json"
+            timeline_file = Path(tmp) / "timeline.json"
+            timeline_file.write_text(json.dumps({"confirmed": False, "milestones": []}), encoding="utf-8")
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=AssertionError("unexpected network access")),
+                mock.patch.object(tracker.LinearClient, "_project_and_milestone", return_value=(None, None)),
+                mock.patch.object(tracker.LinearClient, "_find_issue", return_value={"id": "existing-id", "description": ""}),
+                mock.patch.object(tracker.LinearClient, "deduplicate_root_children", return_value={}),
+                mock.patch.object(tracker.LinearClient, "active_tia83_for_root", return_value=[]),
+                mock.patch.object(tracker.LinearClient, "enforce_tia83", return_value=[]),
+                mock.patch.object(tracker.LinearClient, "ensure_related", return_value=[]),
+                mock.patch.object(
+                    tracker.LinearClient,
+                    "_mutate",
+                    return_value={"issueUpdate": {"issue": {"id": "existing-id", "identifier": "TIA-900", "url": "https://linear.app/TIA-900"}}},
+                ) as patched_mutate,
+                mock.patch("sys.stdout"),
+            ):
+                rc = tracker.main(
+                    [
+                        "sync-linear",
+                        "--roots",
+                        str(roots_file),
+                        "--snapshot",
+                        str(snap_file),
+                        "--cache",
+                        str(cache_file),
+                        "--teams-timeline",
+                        str(timeline_file),
+                        "--token",
+                        "fake-cli-token",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertGreaterEqual(patched_mutate.call_count, 4)
+
+        # Verify relocated `_load_jev_function` preserves `SCRIPT_DIR.parents[1] / "job skills/team-lead/scripts/jev_client.py"` fallback when home candidate is absent.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "empty-home"
+            fake_home.mkdir()
+            fake_skills_root = Path(tmp) / "skills"
+            fake_script_dir = fake_skills_root / "linear-board" / "scripts"
+            fake_script_dir.mkdir(parents=True)
+            fallback_jev = fake_skills_root / "job skills" / "team-lead" / "scripts" / "jev_client.py"
+            fallback_jev.parent.mkdir(parents=True)
+            fallback_jev.write_text(
+                "def jev_decide(item, questions, goal_id='test'):\n"
+                "    return {'root_id': 'fallback-jev-ok', 'score': 0.91}\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(tracker.Path, "home", return_value=fake_home),
+                mock.patch.object(tracker, "SCRIPT_DIR", fake_script_dir),
+            ):
+                loaded_fn = tracker._load_jev_function()
+                self.assertTrue(callable(loaded_fn))
+                self.assertEqual(loaded_fn({}, {})["root_id"], "fallback-jev-ok")
+
         # Verify monkeypatching a top-level function (`collect`) on the facade propagates into `main()` / `_cli()`.
         with tempfile.TemporaryDirectory() as tmp:
             out_snap = Path(tmp) / "snap.json"

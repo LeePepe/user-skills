@@ -307,7 +307,7 @@ def deterministic_root_match(
 def _load_jev_function():
     candidates = [
         Path.home() / "Development/user-skills/skills/team-lead/scripts/jev_client.py",
-        Path(__file__).resolve().parents[2] / "job skills/team-lead/scripts/jev_client.py",
+        SCRIPT_DIR.parents[1] / "job skills/team-lead/scripts/jev_client.py",
     ]
     for path in candidates:
         if not path.is_file():
