@@ -75,4 +75,4 @@ python3 skills/asset-screener/scripts/asset_evaluator.py backtest --snapshots pa
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | primary task | `references/multi-source-models.md` | `python3 skills/asset-screener/scripts/asset_evaluator.py --help` |
-| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill asset-screener --strict` |
+| verification | [`references/eval-cases.json`](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill asset-screener --strict` |

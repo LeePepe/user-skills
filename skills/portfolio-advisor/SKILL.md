@@ -72,4 +72,4 @@ python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py overlap --portf
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | primary task | `references/rebalance-and-fifo-rules.md` | `python3 skills/portfolio-advisor/scripts/portfolio_rebalancer.py --help` |
-| verification | `references/eval-cases.json` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill portfolio-advisor --strict` |
+| verification | [`references/eval-cases.json`](references/eval-cases.json) (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill portfolio-advisor --strict` |

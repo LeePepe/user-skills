@@ -170,6 +170,15 @@ class DualTierValvesAndRoutingTests(unittest.TestCase):
             self.assertIn(drawer, text)
             self.assertIn(marker, text)
 
+        for package in sorted(SKILLS.iterdir()):
+            if (package / "references" / "eval-cases.json").is_file() and (package / "SKILL.md").is_file():
+                text = (package / "SKILL.md").read_text(encoding="utf-8")
+                self.assertRegex(
+                    text,
+                    r"\[[^\]]*eval-cases\.json[^\]]*\]\((?:references/)?eval-cases\.json\)",
+                    f"missing Markdown link to eval-cases.json in {package.name}/SKILL.md",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
