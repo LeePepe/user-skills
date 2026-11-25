@@ -113,11 +113,19 @@ class M2DispatcherRetroTests(unittest.TestCase):
     def test_symlinked_handoff_root_cannot_authorize_repo_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
+            other_repo = Path(tmp) / "other-repo"
+            (other_repo / ".git").mkdir(parents=True)
+            (other_repo / "src.py").write_text("x = 1\n", encoding="utf-8")
             (cwd / "handoff").symlink_to(ROOT, target_is_directory=True)
             for path in ("skills/m2-dispatcher/SKILL.md", "handoff/skills/m2-dispatcher/SKILL.md"):
                 result = run_cli("check-write-path", "--path", path, "--json", cwd=cwd)
                 self.assertEqual(result.returncode, 1, (path, result.stdout, result.stderr))
                 self.assertFalse(json.loads(result.stdout)["allowed"])
+            (cwd / "handoff").unlink()
+            (cwd / "handoff").symlink_to(other_repo, target_is_directory=True)
+            ext = run_cli("check-write-path", "--path", "handoff/src.py", "--json", cwd=cwd)
+            self.assertEqual(ext.returncode, 1, (ext.stdout, ext.stderr))
+            self.assertFalse(json.loads(ext.stdout)["allowed"])
 
     def test_exact_event_ids_and_overflow_continue_from_watermark(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

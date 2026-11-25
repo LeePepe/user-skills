@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic M2 lifecycle, ledger, and write-boundary preflight locks."""
 from __future__ import annotations
-import argparse
-import datetime as dt
-import fcntl
-import hashlib
-import json
-import os
-import re
-import sys
-import tempfile
+import argparse, datetime as dt, fcntl, hashlib, json, os, re, sys, tempfile
 from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -270,13 +262,16 @@ def _supersede_goal(args: argparse.Namespace) -> int:
 def _inside(path: Path, root: Path) -> bool:
     try: return path != root and root in path.parents
     except (OSError, ValueError): return False
+def _has_git_root(path: Path) -> bool:
+    return any((node / ".git").exists() for node in (path, *path.parents))
 def _safe_allowlist_root(root: Path, zone: str) -> bool:
     if zone == "tmp": return True
     try:
-        parents = [root.parent] if zone == "handoff" else [root.parent, root.parent.parent]
-        if root.is_symlink(): target = root.resolve(strict=False)
-        if root.is_symlink() and (target == SCRIPT_REPO_ROOT or SCRIPT_REPO_ROOT in target.parents): return False
-        return not any(parent.is_symlink() for parent in parents)
+        if root.is_symlink():
+            target = root.resolve(strict=False)
+            if _has_git_root(target) or target == SCRIPT_REPO_ROOT or SCRIPT_REPO_ROOT in target.parents: return False
+        check_parents = [root.parent] if zone == "handoff" else [root.parent]
+        return not any(parent.is_symlink() for parent in check_parents)
     except OSError: return False
 def _write_zone(raw: str) -> str | None:
     if ".." in Path(raw.replace("\\", "/")).parts:
