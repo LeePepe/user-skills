@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '1.0.0', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.0', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
