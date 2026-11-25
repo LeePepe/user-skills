@@ -2,9 +2,11 @@
 """Backward-compatible CLI facade for the modular digest_vault implementation."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import inspect
 from pathlib import Path
 import sys
+import threading
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,27 +35,41 @@ _CORE_FUNCTIONS = {
     if inspect.isfunction(fn) and fn.__module__.startswith("digest_vault_core")
 }
 _FACADE_WRAPPERS: dict[str, object] = {}
+_BRIDGE_LOCK = getattr(_core, "_FACADE_BRIDGE_LOCK", None) or threading.RLock()
+setattr(_core, "_FACADE_BRIDGE_LOCK", _BRIDGE_LOCK)
 
 
-def _sync_facade_state() -> None:
-    for name, base_val in _CANONICAL.items():
-        if name not in globals():
-            continue
-        current = globals()[name]
-        desired = base_val if _FACADE_WRAPPERS.get(name) is current else current
-        for module in _CORE_MODULES:
-            if module.__dict__.get(name) is not desired:
-                module.__dict__[name] = desired
-        if _core.__dict__.get(name) is not desired:
-            _core.__dict__[name] = desired
+@contextmanager
+def _scoped_facade_state():
+    with _BRIDGE_LOCK:
+        targets = (*_CORE_MODULES, _core)
+        saved: list[tuple[dict[str, object], str, bool, object]] = []
+        for name, base_val in _CANONICAL.items():
+            if name not in globals():
+                continue
+            current = globals()[name]
+            desired = base_val if _FACADE_WRAPPERS.get(name) is current else current
+            for mod in targets:
+                ns = mod.__dict__
+                if ns.get(name) is not desired:
+                    saved.append((ns, name, name in ns, ns.get(name)))
+                    ns[name] = desired
+        try:
+            yield
+        finally:
+            for ns, name, had_key, prior_val in reversed(saved):
+                if had_key:
+                    ns[name] = prior_val
+                else:
+                    ns.pop(name, None)
 
 
 def _wrap_core_function(name: str):
     target = _CORE_FUNCTIONS[name]
 
     def _wrapped(*args, **kwargs):
-        _sync_facade_state()
-        return target(*args, **kwargs)
+        with _scoped_facade_state():
+            return target(*args, **kwargs)
 
     _wrapped.__name__ = name
     _wrapped.__qualname__ = name

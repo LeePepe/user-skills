@@ -18,8 +18,8 @@ EVAL_DRAWER_PATH = ROOT / "skills" / "knowledge-digest" / "references" / "eval-c
 PLUGIN_PATH = ROOT / "skills" / "knowledge-digest" / ".claude-plugin" / "plugin.json"
 
 
-def load_facade():
-    spec = importlib.util.spec_from_file_location("test_knowledge_digest_modular_facade", FACADE_PATH)
+def load_facade(module_name: str = "test_knowledge_digest_modular_facade"):
+    spec = importlib.util.spec_from_file_location(module_name, FACADE_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -110,37 +110,83 @@ class KnowledgeDigestModularTests(unittest.TestCase):
         for symbol in expected_symbols:
             self.assertTrue(hasattr(self.mod, symbol), f"missing re-exported symbol: {symbol}")
 
+        core = self.mod._core
+        canonical_discover = self.mod._CANONICAL["discover_topics"]
+        canonical_corpus = self.mod._CANONICAL["_existing_vault_corpus"]
+
         with mock.patch.object(self.mod, "discover_topics", return_value={"ok": False, "error": "patched"}):
             self.assertEqual(self.mod.main(["discover-topics", "--no-git"]), 1)
-        # Verify unpatching restores canonical implementation cleanly
-        self.assertIs(self.mod.discover_topics, self.mod._FACADE_WRAPPERS["discover_topics"])
+            # Even inside the patch block, after main() returns, core bindings must already be restored!
+            self.assertIs(core.discover_topics, canonical_discover)
+            self.assertIs(core._cli.discover_topics, canonical_discover)
 
+        # Direct core.main() after patch exit must run the real implementation, not a stale mock
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp) / "vault"
             tools = Path(tmp) / "tools"
             vault.mkdir()
             tools.mkdir()
-            with mock.patch.object(self.mod, "_existing_vault_corpus", side_effect=ValueError("corpus_boom")):
-                res = self.mod.discover_topics(
+            self.assertEqual(
+                core.main([
+                    "discover-topics",
+                    "--no-git",
+                    "--vault-dir",
+                    str(vault),
+                    "--collected-tools-dir",
+                    str(tools),
+                    "--proposals-path",
+                    str(Path(tmp) / "proposals.jsonl"),
+                ]),
+                0,
+            )
+
+            # Exception path must also restore core/package bindings in finally
+            with mock.patch.object(self.mod, "_existing_vault_corpus", side_effect=RuntimeError("unhandled_boom")):
+                with self.assertRaisesRegex(RuntimeError, "unhandled_boom"):
+                    self.mod.discover_topics(
+                        top=1,
+                        vault_dir=vault,
+                        collected_tools_dir=tools,
+                        git_roots=(),
+                        proposals_path=Path(tmp) / "proposals.jsonl",
+                    )
+                self.assertIs(core._existing_vault_corpus, canonical_corpus)
+                self.assertIs(core._discovery._existing_vault_corpus, canonical_corpus)
+            self.assertIs(core._existing_vault_corpus, canonical_corpus)
+
+            # Reentrant nested calls across two independently loaded spec_from_file_location facades
+            facade_b = load_facade("test_knowledge_digest_modular_facade_b")
+            observed: list[str] = []
+
+            def outer_corpus(_vault_dir: Path) -> str:
+                observed.append(f"before_inner:{core._existing_vault_corpus is active_mock}")
+                # Unpatched facade_b re-enters core; it sees canonical corpus during its own call
+                inner_res = facade_b.discover_topics(
                     top=1,
                     vault_dir=vault,
                     collected_tools_dir=tools,
                     git_roots=(),
-                    proposals_path=Path(tmp) / "proposals.jsonl",
+                    proposals_path=Path(tmp) / "inner.jsonl",
                 )
-            self.assertFalse(res["ok"])
-            self.assertEqual(res["status"], "health_error")
-            self.assertIn("corpus_boom", res["error"])
+                observed.append(f"inner_status:{inner_res['status']}")
+                # Once facade_b returns, outer facade's active patch binding must be restored!
+                observed.append(f"after_inner:{core._existing_vault_corpus is active_mock}")
+                return ""
 
-            ok_after = self.mod.discover_topics(
-                top=1,
-                vault_dir=vault,
-                collected_tools_dir=tools,
-                git_roots=(),
-                proposals_path=Path(tmp) / "proposals.jsonl",
+            with mock.patch.object(self.mod, "_existing_vault_corpus", side_effect=outer_corpus) as active_mock:
+                outer_res = self.mod.discover_topics(
+                    top=1,
+                    vault_dir=vault,
+                    collected_tools_dir=tools,
+                    git_roots=(),
+                    proposals_path=Path(tmp) / "outer.jsonl",
+                )
+            self.assertTrue(outer_res["ok"])
+            self.assertEqual(
+                observed,
+                ["before_inner:True", "inner_status:no_new_topic", "after_inner:True"],
             )
-            self.assertTrue(ok_after["ok"])
-            self.assertEqual(ok_after["status"], "no_new_topic")
+            self.assertIs(core._existing_vault_corpus, canonical_corpus)
 
     def test_cli_positive_and_counter_case_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
