@@ -11,7 +11,7 @@ Use this meta-skill to keep skill packages small, navigable, executable, and sel
 ## Four valves
 
 1. **Sink rules:** deterministic regex, AST, pixel, localization, and geometry gates belong in executable scripts.
-2. **Eval drawers:** use `references/eval-cases.json`; active cases have zero-token assertions and stay at `<=15`. This is a **Script-Only Regression Drawer**: run it through `skill_contract.py eval`; do not view the full JSON into LLM context.
+2. **Eval drawers:** use [eval-cases.json](references/eval-cases.json); active cases have zero-token assertions and stay at `<=15`. This is a **Script-Only Regression Drawer**: run it through `skill_contract.py eval`; do not view the full JSON into LLM context.
 3. **Budgets & version:** descriptions are `<=320` characters; every skill declares semver in `plugin.json`; L0/L1/code budgets are enforced. Markdown prose line width is not penalized; byte and structural line budgets are the gates.
 4. **Metabolism:** replace the least useful L1 row One-In-One-Out.
 

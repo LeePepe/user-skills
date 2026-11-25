@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,35 +67,77 @@ class DualTierValvesAndRoutingTests(unittest.TestCase):
             self.assertTrue(facts["advisories"])
             self.assertEqual({item["code"] for item in facts["advisories"]}, codes)
 
-    def test_script_hard_caps_and_legacy_ratcheting_cover_py_sh_ts(self) -> None:
+    def test_non_exempt_script_caps_are_cli_gated_per_suffix(self) -> None:
+        for suffix in ("py", "sh", "ts"):
+            relative = f"skills/demo/scripts/fixture.{suffix}"
+            with self.subTest(suffix=suffix, lines=1000), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                package = self._package(root)
+                script = package / "scripts" / f"fixture.{suffix}"
+                script.write_text("x\n" * 1000, encoding="utf-8")
+                result, payload = self._run("audit", "--repo", str(root), "--all", "--strict", "--no-cache")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(payload["findings"], [])
+                advisories = [
+                    item for item in payload["advisories"]
+                    if item["code"] == "script-lines-soft" and item["file"] == relative
+                ]
+                self.assertEqual(len(advisories), 1)
+
+            with self.subTest(suffix=suffix, lines=1001), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                package = self._package(root)
+                script = package / "scripts" / f"fixture.{suffix}"
+                script.write_text("x\n" * 1001, encoding="utf-8")
+                result, payload = self._run("audit", "--repo", str(root), "--all", "--strict", "--no-cache")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(len(payload["findings"]), 1)
+                finding = payload["findings"][0]
+                self.assertEqual(finding["code"], "script-lines")
+                self.assertEqual(finding["script"], relative)
+
+    def test_real_legacy_monolith_caps_are_cli_ratcheted(self) -> None:
         spec = importlib.util.spec_from_file_location("dual_tier_contract", CONTRACT)
         self.assertIsNotNone(spec)
         assert spec is not None and spec.loader is not None
         core_facts = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(core_facts)
 
-        self.assertNotIn("skills/skill-retro/scripts/skill_retro.py", core_facts.LEGACY_SCRIPT_LINE_CAPS)
-        self.assertNotIn("skills/agent-retro/scripts/agent_retro.py", core_facts.LEGACY_SCRIPT_LINE_CAPS)
-        self.assertIn("skills/team-lead/scripts/herdr-dispatch.sh", core_facts.LEGACY_SCRIPT_LINE_CAPS)
-        self.assertIn("skills/m2-dispatcher/scripts/skill-slash-expander.ts", core_facts.LEGACY_SCRIPT_LINE_CAPS)
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            package = self._package(root)
-            (package / "SKILL.md").write_text("---\ndescription: demo\n---\n", encoding="utf-8")
-            (package / "scripts" / "too-many.py").write_text("pass\n" * 1001, encoding="utf-8")
-            result, payload = self._run("audit", "--repo", str(root), "--all", "--strict", "--no-cache")
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("script-lines", {item["code"] for item in payload["findings"]})
+        for relative in (
+            "skills/skill-contract/scripts/skill_contract.py",
+            "skills/skill-retro/scripts/skill_retro.py",
+            "skills/agent-retro/scripts/agent_retro.py",
+        ):
+            self.assertNotIn(relative, core_facts.LEGACY_SCRIPT_LINE_CAPS)
 
-            for suffix in ("sh", "ts"):
-                key = f"skills/demo/scripts/legacy.{suffix}"
-                core_facts.LEGACY_SCRIPT_LINE_CAPS[key] = 2
-                try:
-                    (package / "scripts" / f"legacy.{suffix}").write_text("x\n" * 3, encoding="utf-8")
-                    codes = {item["code"] for item in core_facts.audit_package(package)}
-                    self.assertIn("script-monolith-growth", codes)
-                finally:
-                    core_facts.LEGACY_SCRIPT_LINE_CAPS.pop(key, None)
+        legacy_caps = {
+            "skills/team-lead/scripts/herdr-dispatch.sh": 1269,
+            "skills/m2-dispatcher/scripts/skill-slash-expander.ts": 1058,
+        }
+        for relative, cap in legacy_caps.items():
+            source = ROOT / relative
+            self.assertEqual(len(source.read_text(encoding="utf-8").splitlines()), cap)
+            with self.subTest(script=relative, lines=cap), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                package = root / Path(relative).parents[1]
+                (package / "references").mkdir(parents=True)
+                (package / "scripts").mkdir()
+                (package / "SKILL.md").write_text("---\ndescription: demo\n---\n", encoding="utf-8")
+                target = root / relative
+                shutil.copyfile(source, target)
+
+                result, payload = self._run("audit", "--repo", str(root), "--all", "--strict", "--no-cache")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(payload["findings"], [])
+
+                target.write_text(target.read_text(encoding="utf-8") + "growth\n", encoding="utf-8")
+                result, payload = self._run("audit", "--repo", str(root), "--all", "--strict", "--no-cache")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(len(payload["findings"]), 1)
+                finding = payload["findings"][0]
+                self.assertEqual(finding["code"], "script-monolith-growth")
+                self.assertEqual(finding["script"], relative)
+                self.assertEqual(finding["cap"], cap)
 
     def test_long_single_line_prose_is_not_a_finding(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

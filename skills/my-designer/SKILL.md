@@ -53,3 +53,5 @@ python3 skills/my-designer/scripts/verify_design_cases.py --check-section-intera
 python3 skills/my-designer/scripts/verify_design_cases.py --lookup-defect <keyword>
 python3 skills/my-designer/scripts/verify_design_cases.py inspect-json <artifact.json>
 ```
+
+Regression footer: [eval-cases.json](references/eval-cases.json) — Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view.

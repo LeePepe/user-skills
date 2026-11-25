@@ -30,7 +30,7 @@ Entry A ingests and stockpiles inspiration, palettes, interaction patterns, defe
 1. Classify `desktop|mobile|web` across `CL,VS,CP,DV,GM,MI,LN,TC` with `scripts/data/taxonomy-v2.json`.
 2. Ingest cards into `scripts/data/vault/`; update reusable patterns/tools in `scripts/data/catalog.json`. Query these dictionaries through the CLI; do not load raw JSON as an agent shortcut.
 3. For native Apple previews use `PreviewHostKit`, Xcode `#Preview`, and 120Hz; Web HTML is only for Web platform work. The default gallery root is `leepepe.github.io/demos/<goal>`.
-4. Register generic cases through `my-designer/scripts/verify_design_cases.py register-case`; evaluate the Script-Only Regression Drawer with `skill_contract.py eval` without viewing `references/eval-cases.json`.
+4. Register generic cases through `my-designer/scripts/verify_design_cases.py register-case`; evaluate the Script-Only Regression Drawer with `skill_contract.py eval` without viewing [eval-cases.json](references/eval-cases.json).
 5. Load [`remotion-video.md`](references/remotion-video.md) only for `Video/Offline`; use [`toolchain-20-matrix.md`](references/toolchain-20-matrix.md) for matrix/render work.
 
 ```bash
