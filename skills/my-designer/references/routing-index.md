@@ -19,6 +19,8 @@ Native evidence uses `PreviewHostKit`, `#Preview`, 120Hz and ImageRenderer; Web 
 
 Plan A and Plan C are complementary: route first, let L2 runtime checks self-disclose the exact L1 drawer on failure, then record the receipt.
 
+`check-section-interactivity`/`--check-section-interactivity` and `check-whitespace-ratio`/`--check-whitespace-ratio` accept multiple positional targets mixed with repeatable/multi-argument `--path`/`--dir`. Every explicit target is checked: a missing path or directory with no relevant Swift/PNG files fails even when a later target passes. Interactivity also supports `--snippet` without paths (or with the historical `<snippet>` label). `lookup-defect`/`--lookup-defect` requires a non-empty keyword; usage errors exit 2 with bounded guidance here.
+
 Platform-aware commands accept `--surface` as `--platform` (`ios -> mobile`, `macos -> desktop`). `route --platform <p> --surface <hint>` also retains UI surface hints. `audit-code --path <code> --spec-file <design.md>` validates both inputs and reports `spec_files` / `spec_validated`. Standalone Jev accepts `--gallery-dir` for gallery evidence, `--mock-jev-json` for offline replays, and only bounded loopback `--jev-url` endpoints for live checks.
 
 Missing optional design-studio taxonomy/vaults use local routing defaults; missing canonical gallery renderers remain UNVALIDATED, never a fabricated PASS. `inspect-json` reports facts, not evidence certification. Repeated catalog imports and identical chooser-runtime checks are cached until their source mtime/runtime digest changes.

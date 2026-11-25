@@ -1,6 +1,6 @@
 {
   "name": "my-designer",
   "description": "Entry B of the Dual-Entry Design Flow: SwiftUI View; UI redesign; layout/density/whitespace; PreviewHostKit/#Preview; Liquid Glass; design.md/spec.md; Visual Traceback [IMPL_BUG]/[SPEC_GAP]. Not for external inspiration vault ingestion (use design-studio), backend telemetry readers, entitlements, or non-UI unit tests.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "category": "design"
 }
