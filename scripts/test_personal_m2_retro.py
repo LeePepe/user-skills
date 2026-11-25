@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import json
@@ -45,7 +46,18 @@ class PersonalM2RetroTests(unittest.TestCase):
         self.assertTrue(expected.issubset(imported))
         for module in self.router._CORE_MODULES:
             self.assertIs(importlib.import_module(module.__name__), module)
-            self.assertLessEqual(len(Path(module.__file__).read_text(encoding="utf-8").splitlines()), 950, module)
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            self.assertLessEqual(len(source.splitlines()), 950, module)
+            tree = ast.parse(source)
+            self.assertFalse(
+                any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in {"exec", "compile"}
+                    for node in ast.walk(tree)
+                ),
+                module.__name__,
+            )
         runtime = ROUTER_PATH.parent / "skill_runtime"
         self.assertTrue(runtime.is_symlink())
         self.assertEqual(runtime.readlink().as_posix(), "../../skill-contract/scripts/skill_runtime")
