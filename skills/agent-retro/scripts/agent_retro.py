@@ -1158,20 +1158,25 @@ def _queue_tasks(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     return tasks
 
 
-def _serial_independent_tasks(record: Mapping[str, Any], seq: list[dict[str, Any]]) -> int:
-    tasks = [task for task in _queue_tasks(record) if not task["depends_on"] and task["paths"]]
+def _serial_independent_tasks(record: Mapping[str, Any], seq: list[dict[str, Any]],
+                              tasks: list[dict[str, Any]] | None = None,
+                              event_blobs: list[tuple[dict[str, Any], str]] | None = None) -> int:
+    tasks = [task for task in (tasks if tasks is not None else _queue_tasks(record)) if not task["depends_on"] and task["paths"]]
     if len(tasks) < 2:
         return 0
     spans: list[tuple[datetime, datetime, set[str]]] = []
+    needs_events = any(not any(_parse_time(task["raw"].get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")) for task in tasks)
+    if needs_events and event_blobs is None:
+        event_blobs = [(event, _event_blob(event)) for event in seq]
     for task in tasks:
         raw = task["raw"]
         stamps = [_parse_time(raw.get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")]
         stamps = [stamp for stamp in stamps if stamp]
         path_tokens = {path.lower() for path in task["paths"]}
         path_tokens.update(Path(path).name.lower() for path in task["paths"])
-        matched = [event for event in seq if any(token and token in _event_blob(event) for token in path_tokens)]
-        event_stamps = [_event_stamp(event) for event in matched]
-        stamps.extend(stamp for stamp in event_stamps if stamp)
+        if not stamps and event_blobs is not None:
+            matched = [event for event, blob in event_blobs if any(token and token in blob for token in path_tokens)]
+            stamps.extend(stamp for stamp in (_event_stamp(event) for event in matched) if stamp)
         if not stamps:
             return 0
         spans.append((min(stamps), max(stamps), path_tokens))
@@ -1192,6 +1197,7 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
                      min_duration_min: float = 15.0) -> list[dict[str, Any]]:
     """Profile successful and at-risk long sessions with deterministic heuristics."""
     rows: list[dict[str, Any]] = []
+    handoff_tasks = [(record, _queue_tasks(record)) for record in handoffs]
     for sid, seq in _session_groups(events).items():
         turns = max([_turn_number(e, i + 1) for i, e in enumerate(seq)] or [0])
         duration = _duration_seconds(seq)
@@ -1199,6 +1205,7 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             continue
         tools = _tool_events(seq)
         assistant = [(i, e) for i, e in enumerate(seq) if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"}]
+        event_texts: list[str] | None = None
         # HZN1 counts heavy unreferenced outputs, while retaining byte-turns as evidence.
         heavy_hits = 0
         carry_byte_turns = 0
@@ -1210,11 +1217,16 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             remaining = max(0, turns - event_turn)
             if size < 8192 or remaining < 10 or size * remaining < 250_000:
                 continue
-            later_text = " ".join(_text(item) for item in seq[event_index + 1:]).lower()
+            if event_texts is None:
+                event_texts = [_text(item).lower() for item in seq]
             call_id = _tool_call_id(event).lower()
             raw_path = str(_arguments(event).get("path") or _field(event, "path") or "")
             basename = Path(raw_path).name.lower() if raw_path else ""
-            if (call_id and call_id in later_text) or (basename and basename in later_text):
+            referenced_later = any(
+                (call_id and call_id in later) or (basename and basename in later)
+                for later in event_texts[event_index + 1:]
+            )
+            if referenced_later:
                 continue
             heavy_hits += 1
             carry_byte_turns += size * remaining
@@ -1231,7 +1243,14 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             next_stamp = _event_stamp(nxt) if nxt else None
             if stamp and next_stamp and (next_stamp - stamp).total_seconds() > 180:
                 lags.append(int((next_stamp - stamp).total_seconds()))
-        serial = max((_serial_independent_tasks(record, seq) for record in handoffs), default=0)
+        event_blobs = None
+        serial = 0
+        for record, tasks in handoff_tasks:
+            if len(tasks) < 2:
+                continue
+            serial = max(serial, _serial_independent_tasks(record, seq, tasks, event_blobs))
+            if event_blobs is None and any(not any(_parse_time(task["raw"].get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")) for task in tasks):
+                event_blobs = [(event, _event_blob(event)) for event in seq]
         if lags or serial >= 2:
             rows.append(_observation("HZN2_wakeup_lag_and_missed_parallelism", "horizon", len(lags) + serial,
                                      [f"{sid}: wakeup_lag_sec={max(lags, default=0)}, missed_parallel_tasks={serial}"], skill="m2-dispatcher"))
@@ -1417,7 +1436,10 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         fast=bool(getattr(args, "fast", False) or getattr(args, "_probe_budget", False)),
     )
     handoffs, handoff_source = _handoffs(handoff_root)
-    outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
+    if getattr(args, "_horizon_only", False):
+        outcome_gate, profile_sessions = {}, set()
+    else:
+        outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
     for record in handoffs:
         if re.search(r"\b(?:done|completed|pr_merged)\b", record["ledger"], re.I):
             outcome_gate[f"handoff:{record['name']}"] = {"status": "OUTCOME_HEALTHY" if record["receipts"] else "OUTCOME_AT_RISK", "faithful_receipts": bool(record["receipts"]), "goal": record["name"]}
