@@ -140,6 +140,8 @@ class AgentRetroTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"issues": []}), stderr="")
             if command[:2] == ["issue", "create"]:
                 self.assertEqual(kwargs["stdin_text"].count("agent-retro-autopilot-2026-11-25"), 1)
+                self.assertIn("`sessions=1`", kwargs["stdin_text"])
+                self.assertIn("`coverage=healthy`", kwargs["stdin_text"])
                 return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "created-1"}), stderr="")
             raise AssertionError(command)
 

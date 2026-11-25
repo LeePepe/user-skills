@@ -1251,10 +1251,11 @@ def _receipts(root: Path) -> list[dict[str, Any]]:
 
 def command_rollup(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
-    scan = _scan(argparse.Namespace(days=30, role=None, layer=None, fast=True, handoff_root=str(root), handoff_dir=None))
+    days = max(1, int(getattr(args, "days", 30) or 30))
+    scan = _scan(argparse.Namespace(days=days, role=None, layer=None, fast=True, handoff_root=str(root), handoff_dir=None))
     receipts = _receipts(root)
     day = args.date or datetime.now().date().isoformat()
-    payload = {"schema": "agent-retro-rollup/v1", "date": day, "observations": scan["observations"][:30], "metrics": scan["metrics"], "receipts": receipts[:10], "observation_pool": scan["observation_pool"][:20], "version_watermark": scan["version_watermark"]}
+    payload = {"schema": "agent-retro-rollup/v1", "date": day, "source": scan.get("source"), "coverage": scan.get("coverage"), "observations": scan["observations"][:30], "metrics": scan["metrics"], "receipts": receipts[:10], "observation_pool": scan["observation_pool"][:20], "version_watermark": scan["version_watermark"]}
     markdown = None
     verified = None
     if args.issue_brief:
@@ -1359,7 +1360,8 @@ def _sync_linear_agent_retro(*, title: str, description: str, day: str) -> dict[
 
 def command_file_issue(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
-    roll = command_rollup(argparse.Namespace(handoff_root=str(root), date=args.date, issue_brief=True))
+    days = max(1, int(getattr(args, "days", 30) or 30))
+    roll = command_rollup(argparse.Namespace(handoff_root=str(root), date=args.date, days=days, issue_brief=True))
     day = str(roll["date"])
     payload = roll.get("payload", {}) if isinstance(roll.get("payload"), Mapping) else {}
     scan = payload.get("coverage", {}) if isinstance(payload.get("coverage"), Mapping) else {}
