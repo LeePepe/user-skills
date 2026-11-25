@@ -95,7 +95,8 @@ class SkillContractRetroLocksTests(unittest.TestCase):
             first = run_cli("versions", "--root", str(workspace / "skills"), "--json")
             self.assertEqual(first.returncode, 0, first.stderr)
             first_skill = next(item for item in json.loads(first.stdout)["skills"] if item["skill"] == "skill-contract")
-            self.assertEqual(first_skill["plugin_version"], "1.2.0")
+            expected_ver = json.loads((workspace / "skills/skill-contract/.claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
+            self.assertEqual(first_skill["plugin_version"], expected_ver)
             manifest = workspace / "skills/skill-contract/.claude-plugin/plugin.json"
             document = json.loads(manifest.read_text(encoding="utf-8"))
             document["version"] = "1.2.3"

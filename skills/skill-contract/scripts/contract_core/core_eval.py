@@ -2,8 +2,26 @@ from __future__ import annotations
 
 from .core_common import *
 
-def _csv(value: str | None) -> list[str]:
-    return [part.strip() for part in (value or "").split(",") if part.strip()]
+def _csv(value: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if value is None:
+        return []
+    raw_items = value if isinstance(value, (list, tuple)) else [value]
+    seen: list[str] = []
+    for raw in raw_items:
+        for part in str(raw or "").split(","):
+            token = part.strip()
+            if token and token not in seen:
+                seen.append(token)
+    return seen
+
+
+def _merge_skill_names(*values: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    merged: list[str] = []
+    for item in values:
+        for token in _csv(item):
+            if token not in merged:
+                merged.append(token)
+    return merged
 
 
 def _target_path(target: Path, value: str | None, default: str) -> Path:
@@ -512,11 +530,11 @@ def run_eval_target(args: argparse.Namespace) -> int:
     phase = getattr(args, "phase", "all") or "all"
     allowed_phases = {"spec", "code"} if phase == "all" else {phase}
 
-    raw_skills = getattr(args, "skill", None) or getattr(args, "skills", "auto") or "auto"
-    if raw_skills.strip().lower() == "auto":
+    skill_names = _merge_skill_names(getattr(args, "skills", None), getattr(args, "skill", None))
+    if not skill_names or skill_names == ["auto"]:
         skill_names = _detect_target_skills(handoff_dir, worktree, repo_root=repo_root)
     else:
-        skill_names = _csv(raw_skills)
+        skill_names = [name for name in skill_names if name.lower() != "auto"]
 
     triggered_skills: list[str] = []
     executed_cases: list[str] = []
@@ -654,9 +672,7 @@ def run_eval_target(args: argparse.Namespace) -> int:
 
 def run_eval(args: argparse.Namespace) -> int:
     repo_arg = _normalize_repo_path(getattr(args, "repo", None))
-    skill_names = _csv(getattr(args, "skills", None))
-    if getattr(args, "skill", None):
-        skill_names = _csv(getattr(args, "skill", None))
+    skill_names = _merge_skill_names(getattr(args, "skills", None), getattr(args, "skill", None))
     if not skill_names and not getattr(args, "all", False) and not repo_arg:
         args.all = True
     repo_root = Path(repo_arg).expanduser().resolve() if repo_arg else ROOT

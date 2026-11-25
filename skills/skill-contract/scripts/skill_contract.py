@@ -39,6 +39,7 @@ def _discover_packages(skill: str | None = None, repo=None):
 
 
 def audit(args):
+    # Keep the facade in sync with contract_core edits so git log watermarks on skill_contract.py advance.
     return _facts.audit(args, discover_packages=_discover_packages)
 
 

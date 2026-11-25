@@ -10,8 +10,9 @@ def _add_output_flags(command: argparse.ArgumentParser) -> None:
     command.add_argument("--summary", "--compact", dest="compact", action="store_true", help="Bound output to a compact summary.")
 
 
-def _add_repo_aliases(command: argparse.ArgumentParser, *, default: str | None = None) -> None:
-    command.add_argument("--repo", "--root", "--dir", "--target-dir", dest="repo", default=default)
+def _add_repo_aliases(command: argparse.ArgumentParser, *, default: str | None = None, include_path: bool = True) -> None:
+    flags = ("--repo", "--root", "--dir", "--target-dir", "--path") if include_path else ("--repo", "--root", "--dir", "--target-dir")
+    command.add_argument(*flags, dest="repo", default=default)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -21,7 +22,7 @@ def parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init")
     init.add_argument("--skill", required=True); init.add_argument("--category", required=True)
     init.add_argument("--version", default="1.0.0", help="Semantic version X.Y.Z for .claude-plugin/plugin.json")
-    init.add_argument("--design", action="store_true"); init.add_argument("--repo", default=None); _add_output_flags(init)
+    init.add_argument("--design", action="store_true"); _add_repo_aliases(init, default=None); _add_output_flags(init)
 
     sink = sub.add_parser("sink-rule")
     sink.add_argument("--skill", required=True); sink.add_argument("--kind", choices=["regex-gate", "case-card", "mental-model"], required=True)
@@ -31,7 +32,7 @@ def parser() -> argparse.ArgumentParser:
     sink.add_argument("--bad-snippet", default=None); sink.add_argument("--good-snippet", default=None); _add_output_flags(sink)
 
     add_p = sub.add_parser("add-case")
-    add_p.add_argument("--skill", required=True); add_p.add_argument("--repo", default=None); add_p.add_argument("--drawer", default="references/eval-cases.json")
+    add_p.add_argument("--skill", required=True); _add_repo_aliases(add_p, default=None); add_p.add_argument("--drawer", default="references/eval-cases.json")
     add_p.add_argument("--id", default="auto"); add_p.add_argument("--title", required=True); add_p.add_argument("--tags", default=""); add_p.add_argument("--routes", default=""); add_p.add_argument("--layers", default="")
     add_p.add_argument("--platforms", default=""); add_p.add_argument("--dimensions", default=""); add_p.add_argument("--containers", default=""); add_p.add_argument("--symptom", default=""); add_p.add_argument("--fix-rule", default="")
     add_p.add_argument("--forbidden-regex", default=""); add_p.add_argument("--bad-snippet", default=None); add_p.add_argument("--good-snippet", default=None); add_p.add_argument("--cmd", default=""); add_p.add_argument("--expect-exit", type=int, default=0)
@@ -40,12 +41,12 @@ def parser() -> argparse.ArgumentParser:
     add_p.add_argument("--negative-stdout-contains", default=""); add_p.add_argument("--negative-stderr-contains", default=""); _add_output_flags(add_p)
 
     eval_p = sub.add_parser("eval")
-    eval_group = eval_p.add_mutually_exclusive_group(required=False); eval_group.add_argument("--all", action="store_true"); eval_group.add_argument("--skill")
-    eval_p.add_argument("--skills", default=None); eval_p.add_argument("target_arg", nargs="?"); _add_repo_aliases(eval_p); eval_p.add_argument("--drawer", default=None)
+    eval_group = eval_p.add_mutually_exclusive_group(required=False); eval_group.add_argument("--all", action="store_true"); eval_group.add_argument("--skill", action="append", default=None)
+    eval_p.add_argument("--skills", action="append", default=None); eval_p.add_argument("target_arg", nargs="?"); _add_repo_aliases(eval_p); eval_p.add_argument("--drawer", default=None)
     eval_p.add_argument("--jobs", type=int, default=None); eval_p.add_argument("--strict", action="store_true"); eval_p.add_argument("--no-cache", action="store_true"); _add_output_flags(eval_p)
 
     target_p = sub.add_parser("eval-target")
-    target_p.add_argument("--skills", default="auto", help="Comma-separated skill names or 'auto'"); target_p.add_argument("--skill", default=None)
+    target_p.add_argument("--skills", action="append", default=None, help="Comma-separated or repeatable skill names, or 'auto'"); target_p.add_argument("--skill", action="append", default=None)
     target_p.add_argument("--worktree", default=None); target_p.add_argument("--handoff-dir", default=None); target_p.add_argument("--phase", choices=["spec", "code", "all"], default="all")
     target_p.add_argument("--receipt-out", default=None); _add_repo_aliases(target_p); target_p.add_argument("--strict", action="store_true"); _add_output_flags(target_p)
 
@@ -56,23 +57,40 @@ def parser() -> argparse.ArgumentParser:
     star_p.add_argument("--skill", required=True); _add_repo_aliases(star_p); star_p.add_argument("--db-path", default=None); star_p.add_argument("--source-name", default=None); star_p.add_argument("--cmd-template", default=None); star_p.add_argument("--dry-run", action="store_true"); _add_output_flags(star_p)
 
     uptake_p = sub.add_parser("uptake-eval")
-    uptake_p.add_argument("--skill", "--skills", dest="skill", default=None); uptake_p.add_argument("--triggered-skills", default=None); uptake_p.add_argument("--target-dir", "--worktree", dest="target_dir", default=None)
+    uptake_p.add_argument("--skill", "--skills", dest="skill", action="append", default=None); uptake_p.add_argument("--triggered-skills", default=None); uptake_p.add_argument("--target-dir", "--worktree", "--repo", "--root", "--dir", "--path", dest="target_dir", default=None)
     uptake_p.add_argument("--scenario", choices=["skills_unavailable", "skills_available_unmentioned", "skills_available_mentioned"], default="skills_available_unmentioned"); uptake_p.add_argument("--uptake-map", dest="uptake_map_path", default=None)
     uptake_p.add_argument("--baseline-pct", type=float, default=None); uptake_p.add_argument("--skill-pct", type=float, default=None); uptake_p.add_argument("--build-success", action="store_true", default=None); uptake_p.add_argument("--strict", action="store_true"); _add_output_flags(uptake_p)
 
     audit_parser = sub.add_parser("audit")
-    group = audit_parser.add_mutually_exclusive_group(required=False); group.add_argument("--all", action="store_true"); group.add_argument("--skill")
-    audit_parser.add_argument("--skills", default=None); audit_parser.add_argument("target_arg", nargs="?"); _add_repo_aliases(audit_parser); audit_parser.add_argument("--no-cache", action="store_true"); audit_parser.add_argument("--strict", action="store_true"); _add_output_flags(audit_parser)
+    group = audit_parser.add_mutually_exclusive_group(required=False); group.add_argument("--all", action="store_true"); group.add_argument("--skill", action="append", default=None)
+    audit_parser.add_argument("--skills", action="append", default=None); audit_parser.add_argument("target_arg", nargs="?"); _add_repo_aliases(audit_parser); audit_parser.add_argument("--no-cache", action="store_true"); audit_parser.add_argument("--strict", action="store_true"); _add_output_flags(audit_parser)
 
     ver_parser = sub.add_parser("version")
-    ver_parser.add_argument("--skill", default=None); ver_parser.add_argument("--all", action="store_true"); _add_repo_aliases(ver_parser); ver_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(ver_parser)
+    ver_parser.add_argument("--skill", action="append", default=None); ver_parser.add_argument("--skills", action="append", default=None); ver_parser.add_argument("--all", action="store_true"); _add_repo_aliases(ver_parser); ver_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(ver_parser)
 
     vers_parser = sub.add_parser("versions")
-    vers_parser.add_argument("--skill", default=None); vers_parser.add_argument("--all", action="store_true", default=True); _add_repo_aliases(vers_parser); vers_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(vers_parser)
+    vers_parser.add_argument("--skill", action="append", default=None); vers_parser.add_argument("--skills", action="append", default=None); vers_parser.add_argument("--all", action="store_true", default=False); _add_repo_aliases(vers_parser); vers_parser.add_argument("--no-cache", action="store_true"); _add_output_flags(vers_parser)
 
     hygiene = sub.add_parser("hygiene-facts", aliases=["facts", "inspect-json"])
-    _add_repo_aliases(hygiene); hygiene.add_argument("--json-file", "--inspect-json", dest="json_file", default=None); hygiene.add_argument("--check-diff", action=argparse.BooleanOptionalAction, default=True); hygiene.add_argument("--strict", action="store_true"); _add_output_flags(hygiene)
+    _add_repo_aliases(hygiene, include_path=False); hygiene.add_argument("--path", dest="path_alias", default=None); hygiene.add_argument("--json-file", "--inspect-json", "--file", dest="json_file", default=None); hygiene.add_argument("target_arg", nargs="?"); hygiene.add_argument("--check-diff", action=argparse.BooleanOptionalAction, default=True); hygiene.add_argument("--strict", action="store_true"); _add_output_flags(hygiene)
     return root_parser
+
+
+def _resolve_repo_or_skill_path(raw: str | Path) -> tuple[str | None, str | None, str | None]:
+    """Classify an existing path into (repo_path, skill_name, drawer_path)."""
+    candidate = Path(raw).expanduser().resolve()
+    if candidate.is_file():
+        if candidate.name == "SKILL.md":
+            pkg = candidate.parent
+            return _normalize_repo_path(pkg.parent), pkg.name, None
+        if candidate.suffix == ".json":
+            return None, None, str(candidate)
+        return _normalize_repo_path(candidate.parent), None, None
+    if candidate.is_dir():
+        if (candidate / "SKILL.md").is_file():
+            return _normalize_repo_path(candidate.parent), candidate.name, None
+        return _normalize_repo_path(candidate), None, None
+    return None, None, None
 
 
 def _normalize_argv(argv: list[str] | None = None) -> list[str]:
@@ -82,22 +100,70 @@ def _normalize_argv(argv: list[str] | None = None) -> list[str]:
     if values[0] in {"-h", "--help"}:
         return values
     if values[0].startswith("-"):
-        return ["audit", "--all", *values]
+        has_selector = any(
+            tok in {"--skill", "--skills", "--all", "--repo", "--root", "--dir", "--target-dir", "--path"}
+            or tok.startswith(("--skill=", "--skills=", "--repo=", "--root=", "--dir=", "--target-dir=", "--path="))
+            for tok in values
+        )
+        return ["audit", *values] if has_selector else ["audit", "--all", *values]
     return values
 
 
 def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
-    if hasattr(args, "repo"):
-        args.repo = _normalize_repo_path(getattr(args, "repo", None))
+    cmd = getattr(args, "command", None)
+    if cmd in {"hygiene-facts", "facts", "inspect-json"}:
+        for attr in ("path_alias", "target_arg"):
+            raw_val = getattr(args, attr, None)
+            if not raw_val:
+                continue
+            if raw_val == "-":
+                if not getattr(args, "json_file", None):
+                    args.json_file = "-"
+                continue
+            cand = Path(raw_val).expanduser()
+            if cand.is_dir() and not getattr(args, "repo", None):
+                args.repo = _normalize_repo_path(cand)
+            elif not getattr(args, "json_file", None):
+                args.json_file = raw_val
+        if hasattr(args, "repo"):
+            args.repo = _normalize_repo_path(getattr(args, "repo", None))
+        return args
+
+    raw_repo = getattr(args, "repo", None)
+    if raw_repo:
+        repo_resolved, skill_from_repo, drawer_from_repo = _resolve_repo_or_skill_path(raw_repo)
+        if drawer_from_repo and hasattr(args, "drawer") and not getattr(args, "drawer", None):
+            args.drawer = drawer_from_repo
+            args.repo = None
+        else:
+            args.repo = repo_resolved or _normalize_repo_path(raw_repo)
+            if skill_from_repo and hasattr(args, "skill") and not getattr(args, "skill", None) and not getattr(args, "skills", None):
+                cur = getattr(args, "skill", None)
+                args.skill = [skill_from_repo] if cur is None else [*cur, skill_from_repo]
+    elif hasattr(args, "repo"):
+        args.repo = _normalize_repo_path(None)
+
     target_arg = getattr(args, "target_arg", None)
     if target_arg:
         known = (ROOT / "skills" / target_arg / "SKILL.md").is_file()
         if known:
-            args.skill = target_arg
+            cur = getattr(args, "skill", None)
+            args.skill = [target_arg] if not cur else ([*cur, target_arg] if isinstance(cur, list) else [cur, target_arg])
         elif Path(target_arg).expanduser().exists():
-            args.repo = _normalize_repo_path(target_arg)
+            repo_resolved, skill_from_pos, drawer_from_pos = _resolve_repo_or_skill_path(target_arg)
+            if drawer_from_pos and hasattr(args, "drawer") and not getattr(args, "drawer", None):
+                args.drawer = drawer_from_pos
+            else:
+                if repo_resolved:
+                    args.repo = repo_resolved
+                if skill_from_pos and hasattr(args, "skill"):
+                    cur = getattr(args, "skill", None)
+                    args.skill = [skill_from_pos] if not cur else ([*cur, skill_from_pos] if isinstance(cur, list) else [cur, skill_from_pos])
         else:
-            raise SystemExit(f"unknown target: {target_arg}")
+            sys.stderr.write(f"skill-contract: unknown target: {target_arg}\n")
+            sys.stderr.write("Pass a known skill name, repository/skill directory, or --help.\n")
+            sys.stderr.write(f"Reference: {VALVE_REFERENCE_BASE}\n")
+            raise SystemExit(2)
     return args
 
 

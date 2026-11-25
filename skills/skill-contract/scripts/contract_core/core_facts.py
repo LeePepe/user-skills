@@ -55,14 +55,9 @@ def _legacy_monolith_facts(repo_root: Path) -> list[dict[str, Any]]:
         for finding in _script_budget_findings(package):
             if finding["code"] == "script-monolith-growth":
                 facts.append({key: finding[key] for key in ("script", "lines", "cap")})
-        scripts = package / "scripts"
-        if scripts.is_dir():
-            for script in scripts.rglob("*"):
-                if script.is_symlink() or not script.is_file() or script.suffix not in SCRIPT_SUFFIXES:
-                    continue
-                relative = f"skills/{package.name}/scripts/{script.relative_to(scripts).as_posix()}"
-                if relative in LEGACY_SCRIPT_LINE_CAPS and not any(item["script"] == relative for item in facts):
-                    facts.append({"script": relative, "lines": len(script.read_text(encoding="utf-8", errors="replace").splitlines()), "cap": LEGACY_SCRIPT_LINE_CAPS[relative]})
+        for _script, relative, lines in _script_records(package):
+            if relative in LEGACY_SCRIPT_LINE_CAPS and not any(item["script"] == relative for item in facts):
+                facts.append({"script": relative, "lines": lines, "cap": LEGACY_SCRIPT_LINE_CAPS[relative]})
     return sorted(facts, key=lambda item: item["script"])
 
 
@@ -227,24 +222,18 @@ LEGACY_SCRIPT_LINE_CAPS: dict[str, int] = {
     "skills/codebase-design/scripts/spec_code_drift_patrol.py": 1342,
     "skills/design-studio/scripts/design_catalog.py": 2330,
     "skills/design-studio/scripts/test_design_catalog.py": 1815,
-    "skills/knowledge-digest/scripts/digest_vault.py": 3247,
     "skills/linear-board/scripts/backlog_groomer.py": 1521,
     "skills/linear-board/scripts/daily-brief.py": 1430,
     "skills/linear-board/scripts/linear-bot-bridge.py": 1130,
-    "skills/linear-board/scripts/root_tracker.py": 2724,
     "skills/my-designer/scripts/design_evidence.py": 1323,
-    "skills/my-designer/scripts/verify_design_cases.py": 1901,
-    "skills/personal-m2-assistant/scripts/m2-router.py": 7526,
     "skills/repo-kit/scripts/repo_gate_auditor.py": 1192,
     "skills/retro-loop/scripts/multica_skills_autopilot.py": 1634,
     "skills/retro-loop/scripts/retro_story_engine.py": 1225,
-    "skills/retro-loop/scripts/trace_backfill_exporter.py": 2094,
     "skills/team-lead/scripts/autopilot_watchdog.py": 1795,
     "skills/team-lead/scripts/feedback_guard.py": 1395,
     "skills/team-lead/scripts/goal-queue.py": 2078,
     "skills/team-lead/scripts/goal-supervisor.py": 1604,
     "skills/team-lead/scripts/icloud_skills_sync.py": 1586,
-    "skills/team-lead/scripts/linear-sync.py": 2828,
     "skills/team-lead/scripts/local_hygiene_patrol.py": 1842,
     "skills/team-lead/scripts/multica_loop_runner.py": 2422,
     "skills/team-lead/scripts/multica_vpn_bridge.py": 1171,
@@ -307,7 +296,11 @@ def _package_advisories(path: Path) -> list[dict[str, Any]]:
             elif ref.suffix in {".json", ".yaml", ".yml"} and size > 16 * 1024:
                 advisories.append(_advisory(skill, "data-drawer-bytes-soft", ref_rel, bytes=size, threshold=16 * 1024, hint="Script-Only Data Drawer: query via L2 CLI, never full-file view."))
     for _script, relative, lines in _script_records(path):
-        if relative not in LEGACY_SCRIPT_LINE_CAPS and 800 < lines <= 1000:
+        cap = LEGACY_SCRIPT_LINE_CAPS.get(relative)
+        if cap is not None:
+            if lines <= 800:
+                advisories.append(_advisory(skill, "stale-legacy-cap", relative, lines=lines, threshold=800, cap=cap))
+        elif 800 < lines <= 1000:
             advisories.append(_advisory(skill, "script-lines-soft", relative, lines=lines, threshold=800, cap=1000))
     return advisories
 
@@ -418,9 +411,7 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
 
 def audit(args: argparse.Namespace, discover_packages=None) -> int:
     repo_arg = _normalize_repo_path(getattr(args, "repo", None))
-    skill_names = _csv(getattr(args, "skills", None))
-    if getattr(args, "skill", None):
-        skill_names = _csv(getattr(args, "skill", None))
+    skill_names = _merge_skill_names(getattr(args, "skills", None), getattr(args, "skill", None))
     if not skill_names and not getattr(args, "all", False) and not repo_arg:
         args.all = True
     args_key = {"skills": skill_names, "all": bool(getattr(args, "all", False)), "repo": str(repo_arg or "")}
