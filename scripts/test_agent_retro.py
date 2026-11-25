@@ -9,7 +9,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / ".agent-retro-test-fixtures"
@@ -114,6 +116,115 @@ class AgentRetroTests(unittest.TestCase):
         result = AR.command_rollup(args)
         self.assertTrue(result["issue_verified"]["ok"], result["issue_verified"])
         self.assertIn("[Agent Retro 2026-11-24]", result["issue_markdown"])
+
+    def test_collect_writes_snapshot_and_cohort_watermark(self):
+        output = FIXTURE / "collect.json"
+        watermark = FIXTURE / "agent-retro-watermark.json"
+        args = self.ns(days=3, handoff_root=str(FIXTURE / "handoff"))
+        args.output = output
+        args.watermark_file = watermark
+        result = AR.command_collect(args)
+        self.assertEqual(result["schema"], "agent-retro-collect/v1")
+        self.assertEqual(result["summary"]["sessions"], 1)
+        self.assertTrue(output.is_file())
+        self.assertTrue(watermark.is_file())
+        self.assertEqual(json.loads(watermark.read_text())["cohort_watermark"], result["watermark"])
+
+    def test_file_issue_apply_creates_deduplicates_updates_and_surfaces_runner_failure(self):
+        args = self.ns(date="2026-11-25", apply=True, dry_run=False, server="http://mock", workspace="mock", owner="owner")
+        calls = []
+
+        def create_runner(command, **kwargs):
+            calls.append((list(command), kwargs))
+            if command[:2] == ["issue", "list"]:
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"issues": []}), stderr="")
+            if command[:2] == ["issue", "create"]:
+                self.assertEqual(kwargs["stdin_text"].count("agent-retro-autopilot-2026-11-25"), 1)
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "created-1"}), stderr="")
+            raise AssertionError(command)
+
+        args.runner = create_runner
+        created = AR.command_file_issue(args)
+        self.assertEqual(created["action"], "created")
+        self.assertTrue(created["published"])
+        create_call = next(command for command, _ in calls if command[:2] == ["issue", "create"])
+        self.assertIn("--priority", create_call)
+        self.assertIn("--status", create_call)
+        self.assertIn("--assignee-id", create_call)
+
+        calls.clear()
+        def update_runner(command, **kwargs):
+            calls.append((list(command), kwargs))
+            if command[:2] == ["issue", "list"]:
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"issues": [{
+                    "id": "existing-1", "title": "[Agent Retro 2026-11-25]", "status": "backlog",
+                    "description": "agent-retro-autopilot-2026-11-25",
+                }]}), stderr="")
+            if command[:2] == ["issue", "update"]:
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "existing-1"}), stderr="")
+            raise AssertionError(command)
+
+        args.runner = update_runner
+        updated = AR.command_file_issue(args)
+        self.assertEqual(updated["action"], "updated_existing")
+        update_call = next(command for command, _ in calls if command[:2] == ["issue", "update"])
+        self.assertIn("--no-start", update_call)
+
+        def failing_runner(command, **kwargs):
+            if command[:2] == ["issue", "list"]:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="mock failure")
+            raise AssertionError(command)
+
+        args.runner = failing_runner
+        with self.assertRaisesRegex(RuntimeError, "issue list failed"):
+            AR.command_file_issue(args)
+
+    def test_setup_autopilot_apply_is_idempotent_for_update_and_create(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            update_calls = []
+            stale_trigger = {"id": "trigger-1", "kind": "schedule", "cron": "0 4 * * *", "timezone": "UTC", "label": "old"}
+
+            def update_runner(command, **kwargs):
+                update_calls.append(list(command))
+                if command[:2] == ["autopilot", "list"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"autopilots": [{"id": "ap-existing", "title": AR.DEFAULT_AUTOPILOT_TITLE}]}), stderr="")
+                if command[:2] == ["autopilot", "update"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "ap-existing"}), stderr="")
+                if command[:2] == ["autopilot", "trigger-list"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"triggers": [stale_trigger]}), stderr="")
+                if command[:2] == ["autopilot", "trigger-update"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "trigger-1"}), stderr="")
+                raise AssertionError(command)
+
+            args = SimpleNamespace(handoff_root=tmp, dry_run=False, apply=True, server="http://mock", workspace="mock",
+                                   receipt=Path(tmp) / "update-receipt.json", runner=update_runner)
+            result = AR.command_autopilot(args)
+            self.assertEqual(result["autopilot_action"], "updated")
+            self.assertEqual(result["trigger_action"], "updated")
+            self.assertTrue(any(command[:2] == ["autopilot", "trigger-update"] for command in update_calls))
+            self.assertIn("Stage 1+2", result["prompt"])
+            self.assertIn("agent-retro-diagnostic", result["prompt"])
+            self.assertTrue(args.receipt.is_file())
+
+            create_calls = []
+            def create_runner(command, **kwargs):
+                create_calls.append(list(command))
+                if command[:2] == ["autopilot", "list"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"autopilots": []}), stderr="")
+                if command[:2] == ["autopilot", "create"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "ap-new"}), stderr="")
+                if command[:2] == ["autopilot", "trigger-list"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"triggers": []}), stderr="")
+                if command[:2] == ["autopilot", "trigger-add"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"id": "trigger-new"}), stderr="")
+                raise AssertionError(command)
+
+            create_args = SimpleNamespace(handoff_root=tmp, dry_run=False, apply=True, server="http://mock", workspace="mock",
+                                          receipt=None, runner=create_runner)
+            created = AR.command_autopilot(create_args)
+            self.assertEqual(created["autopilot_action"], "created")
+            self.assertEqual(created["trigger_action"], "created")
+            self.assertTrue(any(command[:2] == ["autopilot", "trigger-add"] for command in create_calls))
 
     def test_cli_errors_are_two_and_point_to_playbook(self):
         proc = subprocess.run([sys.executable, str(SCRIPT), "not-a-command"], cwd=ROOT, text=True, capture_output=True)

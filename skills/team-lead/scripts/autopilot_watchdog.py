@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Daily Autopilot Health Watchdog (`autopilot_watchdog.py`).
 
-Checks ONLY the three designated daily scheduled Autopilots on their 3 basic vital metrics:
+Checks ONLY the four designated daily scheduled Autopilots on their 3 basic vital metrics:
 1. `skill-retro` (`4e06bf2a` · `Daily Skill Progressive Retro Autopilot`):
    - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
    - `issue_materialized`: Today's `[Skill Retro]` issue (`skill-retro-autopilot-YYYY-MM-DD`) exists on Multica.
    - `non_empty_telemetry`: Issue body / collect snapshot reports `sessions > 0` and `coverage != "missing"`
      (catching the exact `sessions=0` / `coverage=missing` silent-fallback failure from `TIA-25`).
-2. `daily-learn` (`8b4d6d04` · `Daily Knowledge Digest Autopilot`):
+2. `agent-retro` (`agent-retro` · `Daily Agent Trajectory Retro Autopilot`):
+   - `ran_today`: Scheduled run completed today, except a newly-created autopilot after 04:40 CST is marked `not_due`.
+   - `issue_materialized`: Today's `agent-retro-autopilot-YYYY-MM-DD` cursor / `[Agent Retro YYYY-MM-DD]` issue exists.
+   - `non_empty_telemetry`: Issue reports `sessions > 0` and `coverage != "missing"`.
+3. `daily-learn` (`8b4d6d04` · `Daily Knowledge Digest Autopilot`):
    - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
    - `issue_materialized`: Today's `[Daily Learn YYYY-MM-DD]` issue exists on Multica / Linear.
    - `non_empty_candidates`: Issue contains actual learning topics/articles (`> 0` items, not an empty/fallback shell).
-3. `aidata` (`27cd6086` · `Daily AIDash Digest & Retro Improvements Autopilot`):
+4. `aidata` (`27cd6086` · `Daily AIDash Digest & Retro Improvements Autopilot`):
    - `ran_today`: Triggered and completed today (`CST` date match, `status == "completed"`).
    - `issue_and_snapshot_materialized`: Today's `[AIDash 日报 & Retro]` issue exists on Multica, yesterday's local
      digest archive (`~/Development/AIDash/aidata/L5_apps/digest/archive/daily/<yesterday>.md`) exists and is non-empty,
@@ -22,7 +26,7 @@ Checks ONLY the three designated daily scheduled Autopilots on their 3 basic vit
 Behavior:
 - Zero desktop popups: never invokes macOS desktop notification popups; all findings and self-healing results are
   reported through Daily Brief / Multica issues only.
-- If `skill-retro`, `daily-learn`, and `aidata` pass all 3 basic metrics: exit `0` silently at `$0` token cost (`STATUS=HEALTHY`).
+- If `skill-retro`, `agent-retro`, `daily-learn`, and `aidata` pass all 3 basic metrics: exit `0` silently at `$0` token cost (`STATUS=HEALTHY`).
 - If any target fails any basic metric:
   1) Package the exact failure evidence (which autopilot failed, which basic metric failed, latest run ID,
      session ID, and error/degraded snippet);
@@ -66,7 +70,7 @@ DEFAULT_AIDATA_DIGEST_RUN_TIMEOUT_SEC = 2700.0
 DEFAULT_AIDATA_PER_SOURCE_TIMEOUT_SEC = 180
 
 LOOP_ID = "autopilot-health-watchdog"
-WATCHDOG_AUTOPILOT_TITLE = "Daily Autopilot Health Watchdog (skill-retro, daily-learn & aidata -> M2 Fix & Rerun)"
+WATCHDOG_AUTOPILOT_TITLE = "Daily Autopilot Health Watchdog (skill-retro, agent-retro, daily-learn & aidata -> M2 Fix & Rerun)"
 WATCHDOG_CRON = "10 5 * * *"
 WATCHDOG_TRIGGER_LABEL = "Daily CST 05:10 Autopilot Health Watchdog"
 
@@ -85,8 +89,14 @@ AIDATA_AUTOPILOT_ID_PREFIX = "27cd6086"
 AIDATA_CANONICAL_ID = "27cd6086-16f1-4eaf-b770-aea440a46b13"
 AIDATA_TITLE = "Daily AIDash Digest & Retro Improvements Autopilot"
 
+AGENT_RETRO_TARGET_KEY = "agent-retro"
+AGENT_RETRO_AUTOPILOT_ID_PREFIX = "agent-retro"
+AGENT_RETRO_CANONICAL_ID = "agent-retro-diagnostic"
+AGENT_RETRO_TITLE = "Daily Agent Trajectory Retro Autopilot (Auto-Fix + M3 Issue)"
+
 ALLOWED_TARGETS: tuple[str, ...] = (
     SKILL_RETRO_TARGET_KEY,
+    AGENT_RETRO_TARGET_KEY,
     DAILY_LEARN_TARGET_KEY,
     AIDATA_TARGET_KEY,
 )
@@ -128,6 +138,13 @@ class TargetAutopilotSpec:
 
 
 TARGET_SPECS: dict[str, TargetAutopilotSpec] = {
+    AGENT_RETRO_TARGET_KEY: TargetAutopilotSpec(
+        target_key=AGENT_RETRO_TARGET_KEY,
+        autopilot_id_prefix=AGENT_RETRO_AUTOPILOT_ID_PREFIX,
+        canonical_autopilot_id=AGENT_RETRO_CANONICAL_ID,
+        display_title=AGENT_RETRO_TITLE,
+        metric_names=("ran_today", "issue_materialized", "non_empty_telemetry"),
+    ),
     SKILL_RETRO_TARGET_KEY: TargetAutopilotSpec(
         target_key=SKILL_RETRO_TARGET_KEY,
         autopilot_id_prefix=SKILL_RETRO_AUTOPILOT_ID_PREFIX,
@@ -622,6 +639,65 @@ def _extract_daily_learn_candidates(issue: Mapping[str, Any] | None) -> dict[str
     }
 
 
+def _match_agent_retro_issue(
+    issues: Sequence[Mapping[str, Any]], *, target_date_str: str,
+) -> dict[str, Any] | None:
+    marker = f"agent-retro-autopilot-{target_date_str}"
+    title_marker = f"[Agent Retro {target_date_str}]"
+    candidates = []
+    for issue in issues:
+        if not isinstance(issue, Mapping):
+            continue
+        if str(issue.get("status") or "").lower() in {"cancelled", "canceled"}:
+            continue
+        if marker in str(issue.get("description") or "") or title_marker in str(issue.get("title") or ""):
+            candidates.append(dict(issue))
+    candidates.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def evaluate_agent_retro_vitals(
+    *, target_date_str: str, autopilot: Mapping[str, Any], runs: Sequence[Mapping[str, Any]],
+    issues: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    spec = TARGET_SPECS[AGENT_RETRO_TARGET_KEY]
+    today_runs = _select_today_runs(runs, target_date_str=target_date_str)
+    completed = [run for run in today_runs if str(run.get("status") or "").lower() == "completed"]
+    latest = today_runs[0] if today_runs else (dict(runs[0]) if runs else None)
+    issue = _match_agent_retro_issue(issues, target_date_str=target_date_str)
+    telemetry = _extract_skill_retro_telemetry(issue, latest_run=latest)
+    created = _parse_iso_to_utc(autopilot.get("created_at") or autopilot.get("createdAt"))
+    not_due = False
+    if created is not None and parse_timestamp_to_cst_date(created.isoformat()) == target_date_str:
+        local_created = created.astimezone(CST)
+        not_due = (local_created.hour, local_created.minute) >= (4, 40) and not completed
+    ran_ok = bool(completed) or not_due
+    issue_ok = issue is not None or not_due
+    telemetry_ok = bool(telemetry.get("ok")) or not_due
+    metrics = {
+        "ran_today": {"ok": ran_ok, "today_runs_count": len(today_runs), "completed_today_count": len(completed),
+                       "latest_run_id": (latest or {}).get("id"), "not_due": not_due},
+        "issue_materialized": {"ok": issue_ok, "expected_dedup_key": f"agent-retro-autopilot-{target_date_str}",
+                                "issue_id": (issue or {}).get("id"), "issue_identifier": (issue or {}).get("identifier"),
+                                "not_due": not_due},
+        "non_empty_telemetry": {"ok": telemetry_ok, "sessions": telemetry.get("sessions", 0),
+                                 "coverage": telemetry.get("coverage", "missing"), "not_due": not_due},
+    }
+    failed = [name for name in spec.metric_names if not metrics[name]["ok"]]
+    result_obj = (latest or {}).get("result") if isinstance((latest or {}).get("result"), Mapping) else {}
+    return {
+        "target": AGENT_RETRO_TARGET_KEY, "autopilot_id": str(autopilot.get("id") or AGENT_RETRO_CANONICAL_ID),
+        "autopilot_title": str(autopilot.get("title") or AGENT_RETRO_TITLE), "date": target_date_str,
+        "ok": not failed, "failed_metrics": failed, "metrics": metrics,
+        "evidence": {"autopilot_id": str(autopilot.get("id") or AGENT_RETRO_CANONICAL_ID), "target": AGENT_RETRO_TARGET_KEY,
+                     "failed_metrics": failed, "latest_run_id": (latest or {}).get("id"),
+                     "latest_run_status": (latest or {}).get("status"), "session_id": result_obj.get("session_id"),
+                     "issue_id": (issue or {}).get("id"), "issue_identifier": (issue or {}).get("identifier"),
+                     "sessions": telemetry.get("sessions", 0), "coverage": telemetry.get("coverage", "missing"),
+                     "not_due": not_due, "snippet": str(result_obj.get("output") or (issue or {}).get("description") or "")[:400]},
+    }
+
+
 def evaluate_skill_retro_vitals(
     *,
     target_date_str: str,
@@ -1037,8 +1113,24 @@ def _fetch_multica_state(
     autopilots = ap_payload.get("autopilots", []) if isinstance(ap_payload, Mapping) else (ap_payload if isinstance(ap_payload, list) else [])
 
     skill_retro_ap = _resolve_autopilot_record(TARGET_SPECS[SKILL_RETRO_TARGET_KEY], autopilots)
+    agent_retro_ap = _resolve_autopilot_record(TARGET_SPECS[AGENT_RETRO_TARGET_KEY], autopilots)
+    agent_retro_configured = any(
+        isinstance(ap, Mapping) and (str(ap.get("id") or "").startswith(AGENT_RETRO_AUTOPILOT_ID_PREFIX)
+        or AGENT_RETRO_TITLE in str(ap.get("title") or "")) for ap in autopilots
+    )
     daily_learn_ap = _resolve_autopilot_record(TARGET_SPECS[DAILY_LEARN_TARGET_KEY], autopilots)
     aidata_ap = _resolve_autopilot_record(TARGET_SPECS[AIDATA_TARGET_KEY], autopilots)
+
+    ar_runs: list[dict[str, Any]] = []
+    if agent_retro_configured:
+        ar_runs_proc = runner(
+            ["autopilot", "runs", str(agent_retro_ap["id"]), "--output", "json"],
+            multica_bin=multica_bin,
+            server_url=server_url,
+            workspace_id=workspace_id,
+        )
+        ar_runs_payload = _parse_json_stdout(ar_runs_proc, "autopilot runs agent-retro")
+        ar_runs = ar_runs_payload.get("runs", []) if isinstance(ar_runs_payload, Mapping) else (ar_runs_payload if isinstance(ar_runs_payload, list) else [])
 
     sr_runs_proc = runner(
         ["autopilot", "runs", str(skill_retro_ap["id"]), "--output", "json"],
@@ -1089,6 +1181,7 @@ def _fetch_multica_state(
             "[Skill Retro" in title
             or "[Daily Learn" in title
             or "[AIDash" in title
+            or "[Agent Retro" in title
         ):
             ident_or_id = str(item_dict.get("identifier") or item_dict.get("id") or "")
             if ident_or_id:
@@ -1119,6 +1212,9 @@ def _fetch_multica_state(
     return {
         "autopilots": autopilots,
         "skill_retro_autopilot": skill_retro_ap,
+        "agent_retro_autopilot": agent_retro_ap,
+        "agent_retro_configured": agent_retro_configured,
+        "agent_retro_runs": ar_runs,
         "daily_learn_autopilot": daily_learn_ap,
         "aidata_autopilot": aidata_ap,
         "skill_retro_runs": sr_runs,
@@ -1144,7 +1240,13 @@ def build_m2_escalation_prompt(
     issue_ident = failure_evidence.get("issue_identifier")
     snippet = str(failure_evidence.get("snippet") or "")
 
-    if target == SKILL_RETRO_TARGET_KEY:
+    if target == AGENT_RETRO_TARGET_KEY:
+        remediation_hint = (
+            f"Inspect session `{session_id}` / run `{run_id}` and `skills/agent-retro/scripts/agent_retro.py`. "
+            f"Ensure today's `agent-retro-autopilot-{target_date_str}` issue contains real telemetry (`sessions > 0`, `coverage != 'missing'`), "
+            f"then trigger rerun `multica autopilot trigger {ap_id}`."
+        )
+    elif target == SKILL_RETRO_TARGET_KEY:
         remediation_hint = (
             f"Inspect session `{session_id}` / run `{run_id}` and `{SKILL_RETRO_AUTOPILOT_SCRIPT_PATH}`. "
             f"Ensure real telemetry (`warehouse.db` / `session-store.db` / `~/.copilot/session-state`) is read so `sessions > 0` "
@@ -1358,6 +1460,8 @@ def run_watchdog(
         key = str(raw_t or "").strip().lower()
         if key in {"skills-roi-diagnostic", "skill-retro-diagnostic", "skill_retro"}:
             key = SKILL_RETRO_TARGET_KEY
+        elif key in {"agent-retro-diagnostic", "agent_retro", "agent-retro-autopilot"}:
+            key = AGENT_RETRO_TARGET_KEY
         elif key in {"daily-learn-recommend", "daily_learn", "knowledge-digest"}:
             key = DAILY_LEARN_TARGET_KEY
         elif key in {"aidata-digest", "aidash-digest", "aidash-retro-delta", "aidata_digest"}:
@@ -1377,6 +1481,13 @@ def run_watchdog(
             include_aidata=(AIDATA_TARGET_KEY in normalized_targets),
         )
         results: dict[str, dict[str, Any]] = {}
+        if AGENT_RETRO_TARGET_KEY in normalized_targets and state.get("agent_retro_configured", True):
+            results[AGENT_RETRO_TARGET_KEY] = evaluate_agent_retro_vitals(
+                target_date_str=date_str,
+                autopilot=state["agent_retro_autopilot"],
+                runs=state["agent_retro_runs"],
+                issues=state["issues"],
+            )
         if SKILL_RETRO_TARGET_KEY in normalized_targets:
             results[SKILL_RETRO_TARGET_KEY] = evaluate_skill_retro_vitals(
                 target_date_str=date_str,
@@ -1563,14 +1674,14 @@ def run_loop_check(
             )
 
     if report["status"] == "HEALTHY":
-        summary = "今日 `skill-retro` (`4e06bf2a`)、`daily-learn` (`8b4d6d04`) 与 `aidata` (`27cd6086`) 三项核心生命体征全部健康通过。"
+        summary = "今日 `skill-retro` (`4e06bf2a`)、`agent-retro`、`daily-learn` (`8b4d6d04`) 与 `aidata` (`27cd6086`) 四项核心生命体征全部健康通过。"
     elif report["status"] == "RECOVERED_AFTER_M2_RERUN":
         summary = (
             f"检测到 {len(initial_failures)} 项定时任务基本指标异常，已自动升级 M2 修复并重跑复验通过（无弹窗，沉淀至每日汇报）。"
         )
     else:
         summary = (
-            f"检测到 {len(remaining_failures)} 项定时任务（`skill-retro` / `daily-learn` / `aidata`）基本生命体征未通过，已升级 M2 排障重跑。"
+            f"检测到 {len(remaining_failures)} 项定时任务（`skill-retro` / `agent-retro` / `daily-learn` / `aidata`）基本生命体征未通过，已升级 M2 排障重跑。"
         )
 
     return {
@@ -1600,7 +1711,7 @@ def run_loop_check(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autopilot_watchdog.py",
-        description="Daily Autopilot Health Watchdog for skill-retro (4e06bf2a), daily-learn (8b4d6d04), and aidata (27cd6086)",
+        description="Daily Autopilot Health Watchdog for skill-retro (4e06bf2a), agent-retro, daily-learn (8b4d6d04), and aidata (27cd6086)",
     )
     sub = parser.add_subparsers(dest="subcommand", required=False)
 
@@ -1611,7 +1722,7 @@ def _build_parser() -> argparse.ArgumentParser:
             dest="targets",
             action="append",
             default=None,
-            help="Target autopilot to check (skill-retro, daily-learn, aidata). Defaults to all three.",
+            help="Target autopilot to check (skill-retro, agent-retro, daily-learn, aidata). Defaults to all four.",
         )
         p.add_argument("--no-escalate", action="store_true", help="Check only without triggering M2 escalation or rerun")
         p.add_argument("--dry-run", action="store_true", help="Plan M2 escalation without mutating live Multica state")

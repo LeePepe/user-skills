@@ -13,6 +13,7 @@
       "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
       "expect_exit": 0,
       "expect_stdout_contains": [
+        "collect",
         "probe",
         "triage",
         "diagnose",
