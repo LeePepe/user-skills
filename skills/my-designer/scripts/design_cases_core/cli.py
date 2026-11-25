@@ -129,20 +129,20 @@ def command_inspect_json(args):
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, flag_targets: bool = False) -> argparse.ArgumentParser:
     common = SelfDisclosingArgumentParser(add_help=False)
     common.add_argument("--cases-file", default=str(DEFAULT_CASES))
     common.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
     common.add_argument("--json", action="store_true", help="Emit JSON output (default)")
     parser = SelfDisclosingArgumentParser(description=__doc__, parents=[common])
-    parser.add_argument("--check-whitespace-ratio", dest="top_whitespace_path", nargs="?", const="__PATH_REQUIRED__", default=None, metavar="PNG_OR_DIR")
+    parser.add_argument("--check-whitespace-ratio", dest="top_whitespace_path", nargs="*", action="extend", default=None, metavar="PNG_OR_DIR")
     parser.add_argument("--path", "--dir", dest="top_path_alias", nargs="+", action="extend", default=None, metavar="PATH")
     parser.add_argument("--max-dead-space", "--max-ratio", dest="top_max_dead_space", type=float, default=None)
     parser.add_argument("--persona", dest="top_persona", default=None, help="Tier 2 Product Persona scope (compact|default|breathing)")
     parser.add_argument("--dimensions", "--dimension", dest="top_dimensions", default="")
     parser.add_argument("--container", "--containers", dest="top_container", default=None)
     parser.add_argument("--audit-geometry", dest="top_geometry_path", default=None, metavar="GEOMETRY_JSON")
-    parser.add_argument("--check-section-interactivity", dest="top_interactivity_path", nargs="?", const="__SNIPPET_ONLY__", default=None, metavar="SWIFT_OR_DIR")
+    parser.add_argument("--check-section-interactivity", dest="top_interactivity_path", nargs="*", action="extend", default=None, metavar="SWIFT_OR_DIR")
     parser.add_argument("--audit-code", dest="top_audit_code", nargs="*", action="extend", default=None, metavar="PATH")
     parser.add_argument("--audit-spec", dest="top_audit_spec", nargs="*", action="extend", default=None, metavar="SPEC_MD")
     parser.add_argument("--strict-spec-gaps", dest="top_strict_spec_gaps", action="store_true")
@@ -153,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--flow-map", dest="top_flow_map", action="store_true")
     parser.add_argument("--collision-threshold", type=float, default=2.0)
     parser.add_argument("--platform", "--surface", dest="top_platform", choices=["desktop", "macos", "mobile", "ios", "web"], default=None)
+    if flag_targets:
+        parser.add_argument("top_positional_paths", nargs="*", metavar="PATH")
+        parser.set_defaults(command=None)
+        return parser
     sub = parser.add_subparsers(dest="command", required=False)
 
     sub.add_parser("flow-map", parents=[common])
@@ -250,14 +254,21 @@ def _merge_targets(*values) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    # Flag-mode targets may straddle options; argparse cannot intermix subparsers.
+    selectors = {'--check-section-interactivity', '--check-whitespace-ratio'}
+    flag_index = next((i for i, arg in enumerate(raw_argv) if arg.split('=', 1)[0] in selectors), None)
+    subcommands = {'flow-map', 'inspect-json', 'route', 'audit-code', 'audit-swift', 'check-code', 'audit',
+                   'audit-spec', 'check-whitespace-ratio', 'audit-geometry', 'check-section-interactivity',
+                   'lookup-defect', 'jev-gate', 'register-case'}
+    flag_targets = flag_index is not None and not any(arg in subcommands for arg in raw_argv[:flag_index])
+    parser = build_parser(flag_targets=flag_targets)
     if "--audit-spec" in raw_argv and "--strict-spec-gaps" in raw_argv:
         audit_index = raw_argv.index("--audit-spec")
         strict_index = raw_argv.index("--strict-spec-gaps")
         if strict_index == audit_index + 1:
             raw_argv[strict_index], raw_argv[audit_index] = raw_argv[audit_index], raw_argv[strict_index]
-    args = parser.parse_args(raw_argv)
+    args = parser.parse_intermixed_args(raw_argv) if flag_targets else parser.parse_args(raw_argv)
     platform = getattr(args, "platform", None) or getattr(args, "top_platform", None)
     if args.command == "route" and getattr(args, "surface", None) and not platform:
         if args.surface not in {"ios", "macos", "mobile", "desktop", "web"}:
@@ -333,22 +344,18 @@ def main(argv: list[str] | None = None) -> int:
         args.strict_spec_gaps = bool(getattr(args, "top_strict_spec_gaps", False))
         return command_audit_spec(args)
     if args.top_interactivity_path is not None:
-        args.interactivity_path = [] if args.top_interactivity_path == "__SNIPPET_ONLY__" else [args.top_interactivity_path]
-        args.interactivity_path.extend(_merge_targets(getattr(args, "top_path_alias", None)))
+        args.interactivity_path = _merge_targets(args.top_interactivity_path, args.top_path_alias, getattr(args, "top_positional_paths", None))
         args.positional_paths = []
         args.snippet = args.top_snippet
         return command_check_section_interactivity(args)
-    if args.top_lookup_defect:
+    if args.top_lookup_defect is not None:
         args.lookup_defect = args.top_lookup_defect
         args.query = None
         args.positional_query = []
         return command_lookup_defect(args)
-    if args.top_whitespace_path or args.top_geometry_path:
-        if args.top_whitespace_path:
-            args.path = _merge_targets(
-                None if args.top_whitespace_path == "__PATH_REQUIRED__" else args.top_whitespace_path,
-                getattr(args, "top_path_alias", None),
-            )
+    if args.top_whitespace_path is not None or args.top_geometry_path:
+        if args.top_whitespace_path is not None:
+            args.path = _merge_targets(args.top_whitespace_path, args.top_path_alias, getattr(args, "top_positional_paths", None))
             if not args.path:
                 parser.error("--check-whitespace-ratio requires a PNG_OR_DIR or --path/--dir PNG_OR_DIR")
             args.positional_paths = []

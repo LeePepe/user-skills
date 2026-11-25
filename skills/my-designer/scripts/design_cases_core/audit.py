@@ -21,8 +21,13 @@ def command_lookup_defect(args: argparse.Namespace) -> int:
     positional_q = ' '.join(getattr(args, 'positional_query', []) or []).strip()
     keyword = str(getattr(args, 'lookup_defect', None) or getattr(args, 'query', None) or positional_q or '').strip()
     if not keyword:
-        _, guidance = _build_self_disclosing_guidance(['architecture'])
+        _, guidance = _build_self_disclosing_guidance(['architecture', 'routing'])
         print(json.dumps({'ok': False, 'error': 'lookup-defect requires a keyword', 'guidance': guidance}, ensure_ascii=False))
+        sys.stderr.write(
+            "verify_design_cases.py lookup-defect: error: provide a non-empty keyword.\n"
+            "Hint: lookup-defect <keyword> or --lookup-defect <keyword>.\n"
+            "Read `skills/my-designer/references/routing-index.md` for accepted subcommand/--flag forms.\n"
+        )
         return 2
     terms = [term.casefold() for term in re.findall(r'[\w-]+', keyword, re.UNICODE)] or [keyword.casefold()]
     matches: list[dict[str, Any]] = []
@@ -32,6 +37,16 @@ def command_lookup_defect(args: argparse.Namespace) -> int:
             matches.append(entry)
     print(json.dumps({'ok': True, 'query': keyword, 'count': len(matches), 'matches': matches}, ensure_ascii=False, indent=2))
     return 0
+
+
+def _explicit_target_files(target: Path, pattern: str, *, recursive: bool = False) -> tuple[list[Path], list[str]]:
+    if target.is_file():
+        return [target], []
+    if target.is_dir():
+        matches = target.rglob(pattern) if recursive else target.glob(pattern)
+        files = sorted(path for path in matches if path.is_file())
+        return (files, []) if files else ([], [f'no {pattern} files found in target directory: {target}'])
+    return [], [f'target path not found: {target}']
 
 
 def command_check_section_interactivity(args: argparse.Namespace) -> int:
@@ -45,35 +60,21 @@ def command_check_section_interactivity(args: argparse.Namespace) -> int:
         if extra:
             raw_targets.append(str(extra))
     files: list[Path] = []
-    for raw in raw_targets:
-        candidate = Path(raw).expanduser()
-        if candidate.is_file():
-            files.append(candidate)
-        elif candidate.is_dir():
-            files.extend(sorted(candidate.rglob('*.swift')))
-    target_label = ', '.join(raw_targets) if raw_targets else '<snippet>'
-    if args.snippet is not None:
-        files = []
-        sources = [('<snippet>', args.snippet)]
-    else:
-        sources = []
-        for file in files:
-            try:
-                sources.append((str(file), file.read_text(encoding='utf-8', errors='ignore')))
-            except OSError as error:
-                drawers, guidance = _build_self_disclosing_guidance(['interaction'])
-                print(json.dumps({
-                    'ok': False,
-                    'status': 'REJECT_STATIC_PLACEHOLDER',
-                    'path': target_label,
-                    'errors': [str(error)],
-                    'views': [],
-                    'reference_drawers': drawers,
-                    'guidance': guidance,
-                }, ensure_ascii=False))
-                return 1
-    all_views: list[dict[str, Any]] = []
     errors: list[str] = []
+    for raw in raw_targets:
+        if raw == '<snippet>' and args.snippet is not None:
+            continue  # Historical snippet label, not a filesystem target.
+        found_files, target_errors = _explicit_target_files(Path(raw).expanduser(), '*.swift', recursive=True)
+        files.extend(found_files)
+        errors.extend(target_errors)
+    target_label = ', '.join(raw_targets) if raw_targets else '<snippet>'
+    sources = [('<snippet>', args.snippet)] if args.snippet is not None else []
+    for file in files:
+        try:
+            sources.append((str(file), file.read_text(encoding='utf-8', errors='ignore')))
+        except OSError as error:
+            errors.append(f'{file}: {error}')
+    all_views: list[dict[str, Any]] = []
     for name, source in sources:
         ok, views, found = _interactivity_result(source, name)
         all_views.extend([{'file': name, **view} for view in views])
@@ -375,9 +376,12 @@ def command_check_whitespace_ratio(args: argparse.Namespace) -> int:
     metrics: list[dict[str, Any]] = []
     advisories: list[str] = []
     for target in targets:
-        t_errors, t_metrics = EVIDENCE.check_whitespace_ratio(Path(target).expanduser(), max_dead_space_ratio=max_dead)
-        errors.extend(t_errors)
-        metrics.extend(t_metrics)
+        files, target_errors = _explicit_target_files(Path(target).expanduser(), '*.png')
+        errors.extend(target_errors)
+        for file in files:
+            t_errors, t_metrics = EVIDENCE.check_whitespace_ratio(file, max_dead_space_ratio=max_dead)
+            errors.extend(t_errors)
+            metrics.extend(t_metrics)
     if min_breath > 0.0:
         for m in metrics:
             ratio = float(m.get('dead_space_ratio', 0.0))
@@ -521,6 +525,32 @@ def _spec_gap_warning(code: str, category: str, source: str, message: str) -> di
     }
 
 
+def _has_deprecated_test_evidence(content: str) -> bool:
+    clause_re = re.compile(
+        r"^[ \t]*(?P<heading>#{1,6}[ \t]+)?(?:[-*][ \t]+)?"
+        r"(?:Deprecated[ \t]+Test[ \t]+Clauses|Obsolete[ \t]+Test[ \t]+Manifest|Obsolete[ \t]+Tests?)\b"
+        r"[ \t]*(?:[:：-][ \t]*)?(?P<inline>[^\r\n]*)\r?$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    for clause in clause_re.finditer(content):
+        body = clause.group('inline')
+        if clause.group('heading'):
+            tail = content[clause.end():]
+            next_heading = re.search(r'(?m)^[ \t]*#{1,6}[ \t]+\S', tail)
+            body += '\n' + (tail[:next_heading.start()] if next_heading else tail)
+        if re.search(r'(?i)\b(?:N/?A|none|greenfield)\b|\bno (?:obsolete|deprecated) tests\b', body):
+            return True
+        if re.search(
+            r'[A-Za-z0-9_./-]+\.(?:swift|py|tsx?|jsx?|mjs)(?::\d+)?\b'
+            r'|[A-Za-z0-9_./-]+:\d+\b'
+            r'|\btest_[A-Za-z0-9_]+\b|\btest[A-Z][A-Za-z0-9_]*\b'
+            r'|`[A-Za-z_][A-Za-z0-9_.:()\[\]-]*`',
+            body,
+        ):
+            return True
+    return False
+
+
 def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[str, Any]]:
     """Return soft pre-implementation handoff warnings without changing legacy hard rules."""
     warnings: list[dict[str, Any]] = []
@@ -564,14 +594,7 @@ def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[
             "state matrix is missing: " + ", ".join(missing_states) + " (include recovery/retry evidence where applicable)",
         ))
 
-    clause = re.search(r"(?im)^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:Deprecated\s+Test\s+Clauses|Obsolete\s+Test\s+Manifest|Obsolete\s+Tests?)\s*(?::|：|-)?\s*(.*)$", content)
-    deprecated_ok = False
-    if clause:
-        tail = content[clause.end():]
-        next_heading = re.search(r"(?m)^#{1,6}\s+\S", tail)
-        body = clause.group(1) + (tail[:next_heading.start()] if next_heading else tail)
-        deprecated_ok = bool(re.search(r"(?i)\bN/?A\b", body) or CONCRETE_TEST_REF_RE.search(body) or re.search(r"\btest[_A-Za-z0-9]+\b|\b[A-Za-z0-9_]+Tests?\b", body))
-    if not deprecated_ok:
+    if not _has_deprecated_test_evidence(content):
         warnings.append(_spec_gap_warning(
             "SPEC_GAP_DEPRECATED_TEST_CLAUSES", "deprecated_tests", source,
             "handoff must include Deprecated Test Clauses, an Obsolete Test Manifest, or a scoped N/A clause",

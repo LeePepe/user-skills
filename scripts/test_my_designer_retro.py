@@ -87,6 +87,126 @@ class MyDesignerRetroTests(unittest.TestCase):
                 self.assertEqual(left.returncode, right.returncode, args)
                 self.assertEqual(_json_result(left), _json_result(right), args)
 
+    def test_flow_map_flag_parity_through_both_entry_paths(self) -> None:
+        expected = _run("flow-map")
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        for entry in (VERIFY, DESIGN_STUDIO_VERIFY):
+            for command in ("flow-map", "--flow-map"):
+                with self.subTest(entry=entry, command=command):
+                    result = _run_with(entry, command)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(_json_result(result), _json_result(expected))
+
+    def test_all_interactivity_and_whitespace_targets_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = root / "empty"
+            empty.mkdir()
+            (empty / "unrelated.txt").write_text("not a Swift source or PNG", encoding="utf-8")
+            for command, suffix in (("check-section-interactivity", ".swift"), ("check-whitespace-ratio", ".png")):
+                good = root / f"good{suffix}"
+                if suffix == ".swift":
+                    good.write_text('struct Good: View { @State var on = false; var body: some View { Toggle("On", isOn: $on) } }', encoding="utf-8")
+                else:
+                    _png(good)
+                for invalid in (root / f"missing{suffix}", empty):
+                    for selector in (command, f"--{command}"):
+                        for targets in ((str(invalid), str(good)), ("--path", str(invalid), "--path", str(good)), ("--dir", str(invalid), "--dir", str(good))):
+                            with self.subTest(selector=selector, invalid=invalid, targets=targets):
+                                result = _run(selector, *targets)
+                                self.assertEqual(result.returncode, 1, result.stderr)
+                                payload = _json_result(result)
+                                self.assertFalse(payload["ok"])
+                                self.assertIn(str(invalid), " ".join(payload["errors"]))
+                                records = payload["views"] if suffix == ".swift" else payload["metrics"]
+                                self.assertIn(str(good), {record["file"] for record in records})
+                missing = root / f"missing{suffix}"
+                result = _run(f"--{command}", "--path", str(missing), "--dir", str(empty), str(good))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                errors = " ".join(_json_result(result)["errors"])
+                self.assertIn(str(missing), errors)
+                self.assertIn(str(empty), errors)
+
+    def test_flag_form_positional_lists_and_mixed_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for command, suffix in (("check-section-interactivity", ".swift"), ("check-whitespace-ratio", ".png")):
+                paths = [root / f"{name}{suffix}" for name in ("One", "Two", "Three")]
+                for index, path in enumerate(paths):
+                    if suffix == ".swift":
+                        path.write_text(f'struct Good{index}: View {{ @State var on = false; var body: some View {{ Toggle("On", isOn: $on) }} }}', encoding="utf-8")
+                    else:
+                        _png(path)
+                first, second, third = map(str, paths)
+                options = ("--persona", "compact") if suffix == ".png" else ()
+                cases = (
+                    (f"--{command}", *options, first, second),
+                    (f"--{command}", first, *options, second),
+                    (f"--{command}", first, "--path", second, *options, third),
+                    ("--dir", first, f"--{command}", *options, second, "--path", third),
+                )
+                for args in cases:
+                    with self.subTest(args=args):
+                        result = _run(*args)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        payload = _json_result(result)
+                        self.assertTrue(payload["ok"])
+                        records = payload["views"] if suffix == ".swift" else payload["metrics"]
+                        self.assertEqual({record["file"] for record in records}, {path for path in (first, second, third) if path in args})
+                missing = str(root / f"missing{suffix}")
+                result = _run(f"--{command}", *options, missing, second)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse(_json_result(result)["ok"])
+                self.assertIn(missing, " ".join(_json_result(result)["errors"]))
+                if suffix == ".swift":
+                    paths[0].write_text('struct Bad: View { var body: some View { RoundedRectangle(cornerRadius: 8).fill(.blue) } }', encoding="utf-8")
+                else:
+                    paths[0].write_bytes(b"not a PNG")
+                result = _run(f"--{command}", *options, first, second)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse(_json_result(result)["ok"])
+                self.assertIn(paths[0].name, " ".join(_json_result(result)["errors"]))
+            snippet = (root / "Two.swift").read_text(encoding="utf-8")
+            missing = str(root / "missing.swift")
+            for command in ("check-section-interactivity", "--check-section-interactivity"):
+                for labels in ((), ("<snippet>",)):
+                    result = _run(command, *labels, "--snippet", snippet)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(_json_result(result)["ok"])
+                result = _run(command, "<snippet>", "--snippet", snippet, "--path", missing)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(missing, " ".join(_json_result(result)["errors"]))
+
+    def test_deprecated_test_clauses_require_scoped_concrete_evidence(self) -> None:
+        prefix = "Desktop NavigationSplitView; mobile NavigationStack.\nStates: empty, loading, error.\n"
+        for clause in (
+            "## Deprecated Test Clauses\n## Analytics\nN/A\n",
+            "Deprecated Test Clauses: tests TBD\n",
+            "Deprecated Test Clauses:\nAnalytics: N/A\n",
+            "- Obsolete Test Manifest:\nAnalytics: N/A\n",
+            "## Obsolete Test Manifest\n  ### Analytics\nN/A\n",
+        ):
+            with self.subTest(clause=clause):
+                self._assert_gap(prefix + clause, "SPEC_GAP_DEPRECATED_TEST_CLAUSES")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "spec.md"
+            for clause in (
+                "Deprecated Test Clauses: N/A",
+                "## Obsolete Test Manifest\n- LegacyTests.swift:42",
+                "- Obsolete Test Manifest: test_removeLegacy",
+                "Deprecated Test Clauses: testLegacyNavigation",
+                "## Deprecated Test Clauses\n- N/A (greenfield)",
+                "Deprecated Test Clauses: `assertLegacyCount`",
+                "Deprecated Test Clauses: legacy_spec.ts",
+                "Deprecated Test Clauses: no deprecated tests",
+                "Deprecated Test Clauses: none",
+            ):
+                with self.subTest(clause=clause):
+                    path.write_text(prefix + clause, encoding="utf-8")
+                    result = _run("audit-spec", "--strict-spec-gaps", str(path))
+                    self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                    self.assertEqual(_json_result(result)["spec_gap_warnings"], [])
+
     def test_dual_forms_and_accumulating_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -101,6 +221,10 @@ class MyDesignerRetroTests(unittest.TestCase):
                 self.assertEqual(_run(*args).returncode, 0)
             for args in (("check-whitespace-ratio", "--dir", str(root)), ("--check-whitespace-ratio", "--path", str(image))):
                 self.assertEqual(_run(*args).returncode, 0)
+            for command in ("audit-code", "audit-swift", "check-code", "audit"):
+                auxiliary = _run(command, "--platform", "mobile", str(swift), "--check-whitespace-ratio", str(image))
+                self.assertEqual(auxiliary.returncode, 0, auxiliary.stderr)
+                self.assertTrue(_json_result(auxiliary)["ok"])
             artifact = root / "artifact.json"
             artifact.write_text('{"ok": true}', encoding="utf-8")
             for args in (("inspect-json", "--path", str(artifact)), ("--inspect-json", "--path", str(artifact))):
@@ -117,7 +241,7 @@ class MyDesignerRetroTests(unittest.TestCase):
             self.assertIn(str(d2), " ".join(_json_result(code).get("code_errors", [])))
 
     def test_invalid_usage_is_short_and_self_disclosing(self) -> None:
-        for args in ((), ("audit-code",), ("audit-spec",), ("--unknown",)):
+        for args in ((), ("audit-code",), ("audit-spec",), ("--unknown",), ("lookup-defect",), ("--lookup-defect",), ("lookup-defect", "--query", ""), ("lookup-defect", ""), ("--lookup-defect", "")):
             result = _run(*args)
             self.assertEqual(result.returncode, 2, args)
             lines = [line for line in result.stderr.splitlines() if line.strip()]
