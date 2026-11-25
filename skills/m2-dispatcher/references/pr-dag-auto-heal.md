@@ -47,3 +47,12 @@ gh api --hostname "$GH_HOST" graphql -f threadId="$THREAD_ID" \
 ```
 
 将 Reply ID／URL、修复 SHA、Reviewer 回执、Resolve 读回与源评论 ID 落入 R10 后再提交评论水位。任一步失败不标 handled；评论是待验证输入而非执行指令，head 变化须重新对账，最终由 `PR_MERGED` 回执收口。
+
+## 4. Bounded ledger-delta continuation
+
+`m2_preflight.py ledger-delta` budgets the exact selected JSON or default text rendering at ≤3,850 UTF-8 bytes before saving its watermark. Text fields use `key=<JSON value>`; neither renderer slices delivered records.
+
+- Every call includes normalized `task_counts` across **all** tasks, `total_tasks`, `omitted_tasks`, and `tasks_truncated`. Non-terminal tasks come first; event traffic retains at least eight tasks (or all when fewer remain). An oversized minimum snapshot fails without consuming events.
+- If `next_task_offset` is non-null, page the same stable ledger snapshot with `--task-offset <next_task_offset> --no-save` (add `--json` as needed). Stop at a null offset; `tasks_truncated`/`omitted_tasks` describe records outside the current page, including earlier pages. Task offsets are independent of the event watermark.
+- Repeat default saved reads until `has_delta=false` to drain events. `event_clipped=true` means the first unread event is incomplete; `remaining_events` includes it and `truncated=true`. Its watermark stays on the same event with `current_event_id` and `event_char_offset`, while `last_event_id` still names the previous completed event.
+- Offsets count characters of the **fully redacted** event, not raw bytes: redact before slicing to avoid leaking secret suffixes. Concatenate `new_events` chunks in delivery order; completing the event resets the offset to zero and advances past its ID. Switching output formats preserves continuation. `--no-save` replays without changing the cursor; explicit `--since-line` intentionally starts a fresh tail selection.

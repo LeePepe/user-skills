@@ -1,0 +1,96 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "skill": "m2-dispatcher",
+  "trigger_evals": [
+    {"query": "use M2 dispatcher ledger delta and supersede a pivoted goal", "should_trigger": true, "near_miss_skill": ""},
+    {"query": "check an M2 write boundary before editing a handoff", "should_trigger": true, "near_miss_skill": ""},
+    {"query": "run M2 lifecycle preflight locks and counter-case evaluation", "should_trigger": true, "near_miss_skill": ""},
+    {"query": "implement unrelated application business logic", "should_trigger": false, "near_miss_skill": "team-lead"},
+    {"query": "design a Liquid Glass SwiftUI screen", "should_trigger": false, "near_miss_skill": "my-designer"},
+    {"query": "screen an ETF without a personal ledger", "should_trigger": false, "near_miss_skill": "asset-screener"}
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Write-boundary blocks a skill document edit",
+      "negative_cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "check-write-path", "--path", "skills/m2-dispatcher/SKILL.md", "--json"],
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": ["\"allowed\":false", "skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "negative_stderr_contains": ["skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "tags": ["counter-case", "r2-write-boundary"]
+    },
+    {
+      "id": "EV-002",
+      "title": "Write-boundary blocks a repository test edit",
+      "negative_cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "check-write-path", "--path", "scripts/test_verify_skills.py"],
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": ["M2 write-boundary violation", "skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "tags": ["counter-case", "r2-write-boundary"]
+    },
+    {
+      "id": "EV-003",
+      "title": "Write-boundary blocks parent traversal",
+      "negative_cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "check-write-path", "--path", "handoff/demo/../../skills/team-lead/SKILL.md"],
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": ["skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "tags": ["counter-case", "r2-write-boundary"]
+    },
+    {
+      "id": "EV-004",
+      "title": "CLI errors are self-disclosing",
+      "negative_cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "--unknown-flag"],
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": ["Try `python3 skills/m2-dispatcher/scripts/m2_preflight.py --help`.", "Reference: skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "tags": ["counter-case", "cli-exit2"]
+    },
+    {
+      "id": "EV-005",
+      "title": "Supersede rejects a missing handoff",
+      "negative_cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "supersede-goal", "--old-handoff", "/tmp/nonexistent-m2-retro-handoff-check", "--new-goal", "valid-goal"],
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": ["skills/m2-dispatcher/references/pr-dag-auto-heal.md"],
+      "tags": ["counter-case", "h1-supersede"]
+    },
+    {
+      "id": "EV-006",
+      "title": "Write-boundary allows handoff files",
+      "cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "check-write-path", "--path", "handoff/demo-goal/spec.md", "--json"],
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "allowed": true, "matched_zone": "handoff"},
+      "tags": ["positive", "r2-write-boundary"]
+    },
+    {
+      "id": "EV-007",
+      "title": "Write-boundary allows session state",
+      "cmd": ["python3", "skills/m2-dispatcher/scripts/m2_preflight.py", "check-write-path", "--path", ".copilot/session-state/abc/plan.md", "--json"],
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "allowed": true, "matched_zone": "session-state"},
+      "tags": ["positive", "r2-write-boundary"]
+    },
+    {
+      "id": "EV-008",
+      "title": "Ledger delta watermark is incremental",
+      "cmd": ["python3", "-c", "import json,pathlib,subprocess,tempfile; p=pathlib.Path('skills/m2-dispatcher/scripts/m2_preflight.py');\nwith tempfile.TemporaryDirectory() as d:\n h=pathlib.Path(d)/'goal'; h.mkdir(); l=h/'ledger.md'; l.write_text('## Events\\n- 2026-01-01T00:00:00+08:00 | EVT=READY | id=E0\\n'); subprocess.run(['python3',str(p),'ledger-delta','--handoff-dir',str(h),'--json'],check=True,capture_output=True,text=True); l.open('a').write('- 2026-01-01T00:00:01+08:00 | EVT=DONE | id=E1\\n'); r=subprocess.run(['python3',str(p),'ledger-delta','--handoff-dir',str(h),'--json'],capture_output=True,text=True); x=json.loads(r.stdout); print(json.dumps({'ok':r.returncode==0 and len(x['new_events'])==1,'delta_events':len(x['new_events'])}))"],
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "delta_events": 1},
+      "tags": ["positive", "ledger-delta"]
+    },
+    {
+      "id": "EV-009",
+      "title": "Supersede clears a zombie goal",
+      "cmd": ["python3", "-c", "import json,pathlib,subprocess,tempfile; p=pathlib.Path('skills/m2-dispatcher/scripts/m2_preflight.py');\nwith tempfile.TemporaryDirectory() as d:\n h=pathlib.Path(d)/'old-goal'; h.mkdir(); (h/'ledger.md').write_text('# Goal\\n- status: in_progress\\n\\n## Tasks\\n| ID | Status | Owner | PR |\\n|---|---|---|---|\\n| T1 | in_progress | writer | — |\\n| T2 | done | writer | — |\\n\\n## Events\\n'); (h/'queue.json').write_text(json.dumps({'tasks':[{'task_id':'T1','status':'in_progress'},{'task_id':'T2','status':'done'}]})); r=subprocess.run(['python3',str(p),'supersede-goal','--old-handoff',str(h),'--new-goal','new-goal','--apply','--json'],capture_output=True,text=True); ledger=(h/'ledger.md').read_text(); q=json.loads((h/'queue.json').read_text()); x=json.loads(r.stdout); print(json.dumps({'ok':r.returncode==0 and x['cancelled_tasks']==['T1'] and 'EVT=GOAL_SUPERSEDED' in ledger and 'EVT=GOAL_DONE' in ledger and q['tasks'][0]['status']=='cancelled','zombie_cleared':not any(s in ledger for s in ('in_progress','active','planning'))}))"],
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "zombie_cleared": true},
+      "tags": ["positive", "supersede-goal"]
+    },
+    {
+      "id": "EV-010",
+      "title": "L0 contract wires the regression drawer",
+      "file": "skills/m2-dispatcher/SKILL.md",
+      "must_contain": ["m2_preflight.py", "ledger-delta", "supersede-goal", "check-write-path", "eval-cases.json", "Script-Only Regression Drawer"],
+      "must_not_contain": ["../goal-target-task/"],
+      "tags": ["positive", "l0-contract"]
+    }
+  ]
+}
