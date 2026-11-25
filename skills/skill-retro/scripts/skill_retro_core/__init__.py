@@ -1,18 +1,19 @@
-"""Cohesive AST partitions for the skill-retro compatibility facade."""
+"""Domain modules for the skill-retro compatibility facade."""
 from __future__ import annotations
-from . import core_00 as _core_00
-from . import core_01 as _core_01
-from . import core_02 as _core_02
-from . import core_03 as _core_03
-from . import core_04 as _core_04
-from . import core_05 as _core_05
-from . import core_06 as _core_06
-from . import core_07 as _core_07
-from . import core_08 as _core_08
-from . import core_09 as _core_09
-from . import core_10 as _core_10
-from . import core_11 as _core_11
-_MODULES = [_core_00, _core_01, _core_02, _core_03, _core_04, _core_05, _core_06, _core_07, _core_08, _core_09, _core_10, _core_11]
+from . import brief_emitter as _brief_emitter
+from . import cli as _cli
+from . import diagnose_engine as _diagnose_engine
+from . import fs_guard as _fs_guard
+from . import inventory_scan as _inventory_scan
+from . import reality_check as _reality_check
+from . import receipts as _receipts
+from . import retro_engine as _retro_engine
+from . import roi_diagnostics as _roi_diagnostics
+from . import roi_support as _roi_support
+from . import trace_ingest as _trace_ingest
+from . import triage_jev as _triage_jev
+from . import uptake_eval as _uptake_eval
+_MODULES = [_brief_emitter, _cli, _diagnose_engine, _fs_guard, _inventory_scan, _reality_check, _receipts, _retro_engine, _roi_diagnostics, _roi_support, _trace_ingest, _triage_jev, _uptake_eval]
 _SYMBOLS = {}
 for _module in _MODULES:
     for _name, _value in vars(_module).items():

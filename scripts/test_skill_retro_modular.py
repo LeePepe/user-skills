@@ -30,8 +30,11 @@ class SkillRetroModularTests(unittest.TestCase):
     def test_facade_and_core_budgets_and_runtime_symlink(self):
         self.assertLessEqual(len(FACADE_PATH.read_text(encoding="utf-8").splitlines()), 280)
         core_dir = FACADE_PATH.parent / "skill_retro_core"
+        forbidden = ("base64.b64decode", "zlib.decompress", "exec(compile")
         for path in core_dir.glob("*.py"):
-            self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 980, path)
+            source = path.read_text(encoding="utf-8")
+            self.assertLessEqual(len(source.splitlines()), 980, path)
+            self.assertFalse(any(token in source for token in forbidden), path)
         runtime = FACADE_PATH.parent / "skill_runtime"
         self.assertTrue(runtime.is_symlink())
         self.assertEqual(runtime.readlink().as_posix(), "../../skill-contract/scripts/skill_runtime")
