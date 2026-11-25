@@ -1,4 +1,4 @@
-# Agent Retro v2.0.0 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
+# Agent Retro v2.1.0 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
 
 > Core Philosophy: **Symptom in Agent, Cure in Skill.** Grade final outcomes first (**Outcome-First Gate**), treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy runtime progressive disclosure, and trace downstream rework back to the **first upstream role and skill** that introduced the defect.
 
