@@ -1,7 +1,7 @@
 {
   "name": "skill-contract",
-  "description": "Audit and evolve skills through SKILL.md, eval-cases.json, plugin.json, references/*.md, skill_contract.py, hygiene-facts, and Valve 1–4 budgets.",
-  "version": "1.1.0",
+  "description": "Audit and evolve skills with bounded contracts, shared runtime modules, eval drawers, and script modularity valves.",
+  "version": "1.2.0",
   "skills": [
     "SKILL.md"
   ],

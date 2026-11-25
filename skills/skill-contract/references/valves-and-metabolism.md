@@ -6,36 +6,28 @@ Regex, AST, geometry, pixel, localization, and schema checks are executable arti
 
 ## Valve 2 — coordinate and eval drawers
 
-`references/eval-cases.json` and defect drawers use auto IDs and zero-token assertions: regex bad/good snippets, CLI exit/output assertions, or contract-file contents. Keep `active_cases <= 15`; use `trigger_evals` for description routing and `negative_cmd` for failure boundaries.
-
-When a case declares `verify_lines` (or `verify_count`) and `assertions`, `score_case_assertions` enforces **1-Verify-1-Assertion** (`len(assertions) == verify_count`, flagging `assertion-count-mismatch`) and **Hard vs Soft Assertion Discipline**: any failed `fatal=true` (`hard`) assertion zeroes `earned_points = 0`; `(non-fatal)` / `soft` assertions require non-empty `evidence` and `why_soft` justification (`soft-assertion-missing-evidence`) and contribute to partial credit. `uptake-eval` scores the `Trigger Quality -> Context Uptake -> Outcome Delta` triad across `skills_unavailable`, `skills_available_unmentioned`, and `skills_available_mentioned`.
+`references/eval-cases.json` and defect drawers use auto IDs and zero-token assertions. Keep `active_cases <= 15`; use `trigger_evals` for routing and `negative_cmd` for failure boundaries. `score_case_assertions` enforces 1-Verify-1-Assertion and requires evidence plus `why_soft` for soft assertions.
 
 ## Valve 3 — budgets
 
-Every `SKILL.md` frontmatter description is non-empty and `<=320` characters. Every skill (including all newly created skills via `init`) must declare a valid semantic `"version"` (`X.Y.Z`) in `.claude-plugin/plugin.json` alongside automatic `v<commit_count>@<subtree_sha>` fingerprinting (`version` / `versions`); missing or invalid manifest versions fail `skill_contract.py audit --strict` with `missing-version`. L0 is `<=180` lines and 16KB (design L0 `<=80`); L1 is `<=160` lines and 16KB; fenced code is `<=25` lines.
+Every `SKILL.md` description is non-empty and `<=320` characters. Every skill declares semantic `X.Y.Z` in `.claude-plugin/plugin.json`; missing or invalid manifests emit `missing-version`; fingerprints use `v<commit_count>@<subtree_sha>`. L0 is `<=180` lines/16KB, L1 is `<=160` lines/16KB, and fenced code is `<=25` lines.
+
+`script-lines` rejects new or refactored `.py` files under `skills/*/scripts/**` above 1,000 lines. `LEGACY_SCRIPT_LINE_CAPS` ratchets existing monoliths; exceeding a cap emits `script-monolith-growth`. `skill_contract.py` is a facade and is not legacy-exempt.
 
 ## Valve 4 — sharing and metabolism
 
-S1 checks package-local links and reports absolute or missing `broken-symlink` targets. S2 includes sibling skill documents when deciding `orphan-reference`, so shared canonical drawers are valid. S3 reports `duplicate-script-fork` when same-named non-wrapper Python scripts diverge; thin wrappers delegate through `_CANONICAL_PATH`.
-
-When adding an L1 mental-model row, replace the least useful row in the same table (One-In-One-Out), preserving a stable heading and recording the replacement.
+S1 reports absolute or missing `broken-symlink` targets. S2 includes sibling documents for `orphan-reference`. S3 reports divergent same-named non-wrapper scripts; ignore `__init__.py` and relative directory symlinks. Replace the least useful L1 row One-In-One-Out.
 
 ## Self-disclosing audit findings
 
-`valves-and-metabolism.md` is an on-demand remediation drawer (silent when checks pass, consulted when a valve trips). When `audit` or `eval` reports findings, the JSON output includes `guidance_drawer`, and each item includes `reference` (`skills/skill-contract/references/valves-and-metabolism.md#<section>`) and a concise `hint`, plus a stderr pointer so callers jump straight to the failing valve rule without bloating L0. Parser failures use at most three stderr lines and end with the same `Reference:` pointer.
-
-`hygiene-facts` is a facts-only soft gate: it reports `git diff --check` and bounded JSON inspection with exit 0 by default; `--strict` converts unreadable JSON or diff issues to exit 1. Repeated `audit` and `versions` calls use a 60-second stat watermark cache; `--no-cache` forces a cold read.
+Audit/eval JSON includes `guidance_drawer`, `reference`, and `hint`; stderr points to this drawer. Parser failures use at most three lines and end with `Reference:`. `hygiene-facts` is `soft_advisory_exit_0` unless `--strict`; repeated audit/version reads use a 60-second watermark cache.
 
 ## Repo-bound skills
 
-Business repositories may colocate skills under `<repo>/skills/*` or `<repo>/.agents/skills/*`. `audit --repo <path> --strict` and `eval --repo <path> --strict` discover them; `repo_bound=True` waives cross-project private identifiers while budgets, drawers, and sharing checks remain enforced.
+Business repositories may colocate skills under `<repo>/skills/*` or `<repo>/.agents/skills/*`. `audit --repo <path> --strict` and `eval --repo <path> --strict` discover them; `repo_bound=True` waives private identifiers while budgets, drawers, and sharing remain enforced.
 
 ## Falcon Star backflow
 
-`sync-jev-stars` reads an injected SQLite database read-only (default Falcon path), applies the canonical source fallback map, and deduplicates all three Star markers across joined reviews. It stores `jev_starred_id`, JSON-compatible `jev_state`, nonempty dict/list `jev_questions`, and nonempty dict `mock_jev_response`; question IDs must have corresponding answers when available. `eval` revalidates stored snapshots as well as file/command assertions.
+`sync-jev-stars` reads SQLite read-only, applies source fallbacks, deduplicates markers, validates JSON snapshots, and preserves IDs/order. `--dry-run` preserves drawer bytes and mtimes. `description-eval --mock-jev-json` is deterministic and fails closed for missing, unknown, malformed, or out-of-range answers; live Jev failures use deterministic fallback.
 
-`--cmd-template` parses CLI quoting first, then substitutes `{mock_json}` within one argument (bare or quoted placeholder, never shell execution) and runs the assertion before writing. Without a new template, refresh preserves existing `cmd`, `file`, content checks and expectations. Only cases without assertions get a default actual repo-relative `SKILL.md` content check (including `.agents/skills` and relative symlink packages). This checks snapshot integrity, not downstream decision correctness: supply a regression command for that stronger guarantee. Updates retain IDs, order, dates and metadata; at 15, only the oldest ordinary case is archived. A `jev_starred_id` or `jev-star` tag protects a golden case; golden saturation skips new Stars. `--dry-run` preserves drawer/DB bytes and mtimes.
-
-`description-eval --mock-jev-json` accepts inline JSON or a file. Dictionaries use case ID, query, or **1-based** indices (`"1"`, `"2"`); lists use positional order. Missing entries, unknown keys, malformed answers and nonfinite/out-of-range scores fail closed. Boolean-only per-case mocks (also `should_trigger`/`trigger` boolean objects) remain compatible. Numeric `noul`/`score`/`confidence` answers use the same thresholds. Canonical `choice` answers require companion `noul`, including nested `{"answers":{"choice":{"choice":"yes"},"noul":{"noul":0.9}}}` responses. Yes triggers only for `noul >0.70`; `<0.30` rejects and inclusive `0.30–0.70` uses deterministic token matching, reported as fallback. A No in that grey zone uses fallback when its choice confidence is missing or `<0.40`; a decisive No (`>=0.40`) remains No. Outside the grey zone, a No is never overridden by a high applicability score.
-
-Regression CLI fixtures must supply fixed per-case `--mock-jev-json` answers or fixture-local offline injection, independent of ambient Jev settings; this does not change live routing behavior. Live canonical Jev receives skill name, actual description and query (never expected labels), with a closed-world Yes/No criteria question and companion applicability noul, `timeout_sec=1.5`. Missing/unavailable/invalid/grey live answers fall back deterministically; supplied mocks never invoke live Jev. Negative-only `add-case --negative-cmd` self-tests before writing: any genuine nonzero exit passes by default; exact `--expect-fail-exit` and stdout/stderr checks are opt-in. Zero exits, empty commands and launch errors always fail.
+Regression fixtures must supply fixed mock answers or offline injection, never ambient Jev settings. Live requests receive skill name, actual description, and query only.
