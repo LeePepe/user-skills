@@ -44,10 +44,12 @@ This is a handoff-only design capability. Author the implementation-ready `desig
 
 ## L2 commands
 
+`route`/`--route`, `flow-map`/`--flow-map`, `lookup-defect`/`--lookup-defect`, `audit-code`, `audit-spec`, `check-section-interactivity`, and `check-whitespace-ratio` accept subcommand or `--flag` forms; path inputs (including `inspect-json`) accept positional, repeatable/multi-arg `--path`, or `--dir`. Use `--strict-spec-gaps` before or after `audit-spec` to fail pre-implementation `[SPEC_GAP]` advisories.
+
 ```bash
 python3 skills/my-designer/scripts/verify_design_cases.py flow-map
 python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile <path...>
-python3 skills/my-designer/scripts/verify_design_cases.py audit-spec <design.md...>
+python3 skills/my-designer/scripts/verify_design_cases.py --audit-spec --strict-spec-gaps <design.md...>
 python3 skills/my-designer/scripts/verify_design_cases.py check-whitespace-ratio --persona compact <png_or_dir>
 python3 skills/my-designer/scripts/verify_design_cases.py --check-section-interactivity <path>
 python3 skills/my-designer/scripts/verify_design_cases.py --lookup-defect <keyword>
