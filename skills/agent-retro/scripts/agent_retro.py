@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import closing
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -910,81 +911,179 @@ def resolve_target_skill_watermarks(skill_names: Iterable[str] | None = None) ->
     return result
 
 
+def _literal_strings(node: ast.AST | None) -> set[str]:
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return {str(item.value).strip() for item in node.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.strip()}
+    if isinstance(node, ast.Dict):
+        return {str(item.value).strip() for item in node.keys
+                if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.strip()}
+    return set()
+
+
+def _placeholder_token(token: str) -> bool:
+    value = token.strip("'\\\"`.,;:()[]{}")
+    return not value or value in {"*", "...", "etc", "and", "or"} or bool(
+        re.fullmatch(r"(?:<[^>]*>|\{[^}]*\}|\[[^]]*\]|\*+|\.{2,})", value)
+    )
+
+
 def _argparse_contract(script: Path) -> tuple[set[str], set[str], bool]:
     try:
-        tree = ast.parse(script.read_text(encoding="utf-8", errors="replace"))
+        source = script.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(script))
     except (OSError, SyntaxError):
-        return set(), set(), True
-    source = script.read_text(encoding="utf-8", errors="replace")
+        return {"-h", "--help"}, set(), True
     if "parse_known_args" in source or "_CANONICAL" in source or re.search(r"\bexec\s*\(", source):
-        return set(), set(), True
-    flags: set[str] = set()
+        return {"-h", "--help"}, set(), True
+    flags: set[str] = {"-h", "--help"}
     subcommands: set[str] = set()
+    top_constants: dict[str, set[str]] = {}
+    for statement in tree.body:
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id.upper() in {"SUBCOMMANDS", "CHOICES"}:
+                    top_constants[target.id] = _literal_strings(statement.value)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr == "add_argument":
-                for arg in node.args:
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("-"):
-                        flags.add(arg.value.split("=", 1)[0])
-            elif node.func.attr == "add_parser" and node.args and isinstance(node.args[0], ast.Constant):
-                if isinstance(node.args[0].value, str):
-                    subcommands.add(node.args[0].value)
+                option_args = [str(arg.value).strip() for arg in node.args
+                               if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+                for value in option_args:
+                    if value.startswith("-"):
+                        flags.add(value.split("=", 1)[0])
+                if not any(value.startswith("-") for value in option_args):
+                    for keyword in node.keywords:
+                        if keyword.arg == "choices":
+                            subcommands.update(_literal_strings(keyword.value))
+                            if isinstance(keyword.value, ast.Name):
+                                subcommands.update(top_constants.get(keyword.value.id, set()))
+            elif node.func.attr == "add_parser" and node.args:
+                if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    subcommands.add(node.args[0].value.strip())
+                for keyword in node.keywords:
+                    if keyword.arg == "aliases":
+                        subcommands.update(_literal_strings(keyword.value))
+        elif isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            values = _literal_strings(node.iter)
+            if values:
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr == "add_parser":
+                        if child.args and isinstance(child.args[0], ast.Name) and child.args[0].id == node.target.id:
+                            subcommands.update(values)
+    subcommands.update(top_constants.get("SUBCOMMANDS", set()))
+    subcommands = {value for value in subcommands if not _placeholder_token(value)}
     return flags, subcommands, False
 
 
-def _cross_skill_contract_check() -> dict[str, Any]:
-    """Static zero-token scan of literal cross-skill Python invocations."""
+def _runtime_model_ids() -> set[str]:
+    profile = ROOT / "skills" / "team-lead" / "references" / "runtime-profiles.yaml"
+    text = _safe_text(profile, 200_000)
+    ids = set(re.findall(r"(?m)^\s{2}([A-Za-z0-9][A-Za-z0-9._/-]*):", text[text.find("vendors:"):]))
+    ids.update(re.findall(r"[\"'](group/[A-Za-z0-9_-]+)[\"']", text))
+    return ids
+
+
+def _explicit_model_ids(text: str) -> set[str]:
+    candidates = set(re.findall(
+        r"(?<![A-Za-z0-9_])(?:group/[A-Za-z0-9_-]+|opus|kimi|gpt-[A-Za-z0-9._-]+|gemini-[A-Za-z0-9._-]+|mai-code-[A-Za-z0-9._-]+|grok-[A-Za-z0-9._-]+|claude-[A-Za-z0-9._-]+)(?![A-Za-z0-9_])",
+        text, re.I,
+    ))
+    candidates.update(re.findall(
+        r"(?:--model(?:=|\s+)|(?:selected_)?model(?:_canon)?\s*[:=]\s*)([^\s`'\",;()\[\]{}]+)",
+        text, re.I,
+    ))
+    ignored = {"str", "string", "model", "name", "id", "value", "none", "null", "for", "or", "and"}
+    return {candidate.strip("'\\\".,") for candidate in candidates
+            if candidate.strip("'\\\".,").lower() not in ignored
+            and not _placeholder_token(candidate) and "\\\\" not in candidate and not re.search(r"[\\[\\]{}*]", candidate)}
+
+
+def _cross_skill_contract_check(skills_root: Path | None = None) -> dict[str, Any]:
+    """Static zero-token check of cross-skill calls, CLI contracts, and model IDs."""
     global _CROSS_SKILL_CACHE
-    if _CROSS_SKILL_CACHE is not None:
+    root = Path(skills_root).expanduser() if skills_root is not None else ROOT / "skills"
+    cacheable = skills_root is None
+    cache_key = str(root.resolve())
+    if cacheable and isinstance(_CROSS_SKILL_CACHE, dict) and _CROSS_SKILL_CACHE.get("root") == cache_key:
         return _CROSS_SKILL_CACHE
     findings: list[str] = []
     checked = 0
+    allowed_models = _runtime_model_ids()
     invocation = re.compile(r"skills/([A-Za-z0-9_-]+)/scripts/([A-Za-z0-9_.-]+\.py)(?P<args>[^\n`]*)")
-    for caller in sorted((ROOT / "skills").glob("*/SKILL.md")) + sorted((ROOT / "skills").glob("*/references/*.md")) + sorted((ROOT / "skills").glob("*/scripts/*.py")):
+    callers = sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/references/*.md")) + sorted(root.glob("*/scripts/*.py"))
+    for caller in callers:
+        caller_skill = caller.relative_to(root).parts[0]
         text = _safe_text(caller, 100_000)
         for match in invocation.finditer(text):
             callee, script_name, tail = match.group(1), match.group(2), match.group("args")
-            script = ROOT / "skills" / callee / "scripts" / script_name
+            if caller_skill == callee:
+                continue
+            line = text[match.start():text.find("\n", match.start()) if text.find("\n", match.start()) >= 0 else len(text)]
+            if caller.suffix == ".py" and not re.search(r"(?:subprocess|os\.system|check_call|check_output|Popen|run\s*\()", line):
+                continue
+            tail = re.split(r"[`\"']", tail, maxsplit=1)[0]
+            callee_root = root / callee
+            if not callee_root.is_dir():
+                continue
+            script = callee_root / "scripts" / script_name
             checked += 1
             if not script.is_file():
-                findings.append(f"{caller.relative_to(ROOT)}: missing {callee}/{script_name}")
+                findings.append(f"{caller.relative_to(root)}: missing {callee}/{script_name}")
                 continue
             flags, subcommands, skipped = _argparse_contract(script)
-            if skipped:
-                continue
-            tokens = re.findall(r"(?<!\w)(--[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*)", tail)
-            for token in tokens:
-                if token.startswith("--") and token.split("=", 1)[0] not in flags:
-                    findings.append(f"{caller.relative_to(ROOT)}: {callee}/{script_name} unknown flag {token}")
-            if subcommands:
-                first = next((token for token in tokens if not token.startswith("-")), "")
-                if first and first not in subcommands and first not in {"python3", "python"} and "<" not in first:
-                    findings.append(f"{caller.relative_to(ROOT)}: {callee}/{script_name} unknown subcommand {first}")
-    _CROSS_SKILL_CACHE = {"checked": checked, "findings": findings[:20], "ok": not findings}
-    return _CROSS_SKILL_CACHE
+            if not skipped:
+                raw_tokens = re.findall(r"(?:--[^\s`]*|-[A-Za-z][^\s`]*|[A-Za-z][A-Za-z0-9_.:/@+{}\[\]<>*-]*)", tail)
+                tokens: list[str] = []
+                for raw in raw_tokens:
+                    token = raw.strip("'\\\"`.,;:()")
+                    if token == "--":
+                        break
+                    tokens.append(token)
+                for token in tokens:
+                    if token.startswith("-") and token.split("=", 1)[0] not in flags:
+                        findings.append(f"{caller.relative_to(root)}: {callee}/{script_name} unknown flag {token.split('=', 1)[0]}")
+                if subcommands:
+                    first = next((token for token in tokens if not token.startswith("-") and not _placeholder_token(token)), "")
+                    if first and first not in subcommands and first not in {"python", "python3"}:
+                        findings.append(f"{caller.relative_to(root)}: {callee}/{script_name} unknown subcommand {first}")
+            for model in _explicit_model_ids(tail):
+                if model not in allowed_models:
+                    findings.append(f"{caller.relative_to(root)}: unknown model ID {model}")
+        for model in _explicit_model_ids(text) if caller_skill == "agent-retro" else ():
+            if model not in allowed_models:
+                findings.append(f"{caller.relative_to(root)}: unknown model ID {model}")
+    result = {"root": cache_key, "checked": checked, "findings": list(dict.fromkeys(findings))[:40], "ok": not findings}
+    if cacheable:
+        _CROSS_SKILL_CACHE = result
+    return result
 
 
 def _warehouse_signals(warehouse: Path | None) -> dict[str, Any]:
     if warehouse is None or not _external_path_safe(warehouse):
         return {"available": False, "signals": {}}
-    signals: dict[str, int] = {}
+    signals: dict[str, int | float] = {}
     try:
-        with sqlite3.connect(f"file:{warehouse}?mode=ro", uri=True, timeout=0.2) as db:
+        with closing(sqlite3.connect(f"file:{warehouse}?mode=ro", uri=True, timeout=0.2)) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            queries = {
-                "status_drifted_goals": ("dim_goal", "SELECT COUNT(*) FROM dim_goal WHERE is_status_drifted = 1"),
-                "review_fail_r3_plus": ("fact_gtt_event", "SELECT COUNT(*) FROM fact_gtt_event WHERE event_type = 'REVIEW_FAIL' AND COALESCE(review_round, 0) >= 3"),
-                "input_blocked": ("fact_gtt_event", "SELECT COUNT(*) FROM fact_gtt_event WHERE event_type = 'INPUT_BLOCKED'"),
-                "unblock": ("fact_gtt_event", "SELECT COUNT(*) FROM fact_gtt_event WHERE event_type = 'UNBLOCK'"),
-                "steering_requests": ("fact_request", "SELECT COUNT(*) FROM fact_request WHERE routing_group = 'group/steering'"),
-            }
-            for name, (table, query) in queries.items():
-                if table not in tables:
-                    continue
-                try:
-                    signals[name] = int(db.execute(query).fetchone()[0])
-                except sqlite3.Error:
-                    continue
+            columns = {table: {row[1] for row in db.execute(f"PRAGMA table_info({table})")} for table in tables}
+            if "dim_goal" in tables and "is_status_drifted" in columns["dim_goal"]:
+                signals["status_drifted_goals"] = int(db.execute("SELECT COUNT(*) FROM dim_goal WHERE is_status_drifted = 1").fetchone()[0])
+            if "fact_gtt_event" in tables and "evt_type" in columns["fact_gtt_event"]:
+                for name, evt_type in (("review_fail_events", "REVIEW_FAIL"), ("input_blocked", "INPUT_BLOCKED"), ("unblock", "UNBLOCK")):
+                    signals[name] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_event WHERE evt_type = ?", (evt_type,)).fetchone()[0])
+            if "fact_gtt_task_run" in tables and {"round_no", "v5_verdict"}.issubset(columns["fact_gtt_task_run"]):
+                signals["task_runs_total"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run").fetchone()[0])
+                signals["task_runs_round3_plus"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run WHERE round_no >= 3").fetchone()[0])
+                signals["review_fail_r3_plus"] = int(db.execute("SELECT COUNT(*) FROM fact_gtt_task_run WHERE round_no >= 3 AND UPPER(v5_verdict) = 'FAIL'").fetchone()[0])
+            if "fact_request" in tables and {"model", "model_canon", "total_tokens"}.issubset(columns["fact_request"]):
+                steering, total = db.execute(
+                    "SELECT COALESCE(SUM(CASE WHEN lower(COALESCE(model, '')) LIKE '%group/steering%' OR lower(COALESCE(model_canon, '')) LIKE '%group/steering%' OR lower(COALESCE(model_canon, '')) IN ('opus', 'gemini-4-carbon') THEN COALESCE(total_tokens, 0) ELSE 0 END), 0), COALESCE(SUM(COALESCE(total_tokens, 0)), 0) FROM fact_request"
+                ).fetchone()
+                signals["steering_tokens"] = int(steering or 0)
+                signals["request_tokens_total"] = int(total or 0)
+                signals["steering_token_share"] = (float(steering) / float(total)) if total else 0.0
     except (OSError, sqlite3.Error):
         return {"available": False, "signals": {}}
     return {"available": True, "signals": signals}
@@ -1004,6 +1103,91 @@ def _duration_seconds(seq: list[dict[str, Any]]) -> float:
     return (max(valid) - min(valid)).total_seconds() if len(valid) > 1 else 0.0
 
 
+def _event_stamp(event: Mapping[str, Any]) -> datetime | None:
+    for key in ("timestamp", "ts", "started_at", "startedAt", "completed_at", "completedAt"):
+        value = event.get(key) if isinstance(event, dict) else None
+        parsed = _parse_time(value)
+        if parsed:
+            return parsed
+    for key in ("timestamp", "ts", "started_at", "startedAt", "completed_at", "completedAt"):
+        parsed = _parse_time(_field(dict(event), key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _queue_tasks(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read explicit queue tasks, with a small ledger fallback for old handoffs."""
+    path = record.get("path")
+    queue_path = Path(path) / "queue.json" if path else None
+    payload: Any = None
+    if queue_path and queue_path.is_file() and _external_path_safe(queue_path):
+        try:
+            payload = json.loads(queue_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+    raw_tasks = payload.get("tasks", payload.get("queue", payload)) if isinstance(payload, dict) else payload
+    if isinstance(raw_tasks, dict):
+        raw_tasks = list(raw_tasks.values())
+    if not isinstance(raw_tasks, list):
+        raw_tasks = []
+    tasks: list[dict[str, Any]] = []
+    for item in raw_tasks:
+        if not isinstance(item, dict):
+            continue
+        deps = item.get("depends_on", item.get("dependsOn", item.get("dependencies", [])))
+        paths = item.get("paths", item.get("owned_paths", item.get("ownedPaths", item.get("path", []))))
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list):
+            paths = []
+        tasks.append({"depends_on": deps, "paths": [str(x) for x in paths if str(x).strip()], "raw": item})
+    if len(tasks) >= 2:
+        return tasks
+    ledger = str(record.get("ledger", ""))
+    blocks = re.split(r"(?m)(?=^\s*(?:[-*]\s*)?(?:task|item)\b)", ledger)
+    for block in blocks:
+        dep = re.search(r"depends[_ ]on\s*:\s*(\[\s*\]|null|none)", block, re.I)
+        path_match = re.search(r"(?:owned[_ ]paths?|paths?|path)\s*:\s*([^\n]+)", block, re.I)
+        if dep and path_match:
+            raw = {key: value for key, value in re.findall(
+                r"(started_at|startedAt|completed_at|completedAt|timestamp)\s*:\s*([^\n]+)", block, re.I
+            )}
+            paths = [part.strip(" `[]'\"") for part in path_match.group(1).split(",") if part.strip(" `[]'\"")]
+            tasks.append({"depends_on": [], "paths": paths, "raw": raw})
+    return tasks
+
+
+def _serial_independent_tasks(record: Mapping[str, Any], seq: list[dict[str, Any]]) -> int:
+    tasks = [task for task in _queue_tasks(record) if not task["depends_on"] and task["paths"]]
+    if len(tasks) < 2:
+        return 0
+    spans: list[tuple[datetime, datetime, set[str]]] = []
+    for task in tasks:
+        raw = task["raw"]
+        stamps = [_parse_time(raw.get(key)) for key in ("timestamp", "started_at", "startedAt", "completed_at", "completedAt")]
+        stamps = [stamp for stamp in stamps if stamp]
+        path_tokens = {path.lower() for path in task["paths"]}
+        path_tokens.update(Path(path).name.lower() for path in task["paths"])
+        matched = [event for event in seq if any(token and token in _event_blob(event) for token in path_tokens)]
+        event_stamps = [_event_stamp(event) for event in matched]
+        stamps.extend(stamp for stamp in event_stamps if stamp)
+        if not stamps:
+            return 0
+        spans.append((min(stamps), max(stamps), path_tokens))
+    spans.sort(key=lambda span: span[0])
+    chain = 1
+    best = 1
+    for previous, current in zip(spans, spans[1:]):
+        disjoint = previous[2].isdisjoint(current[2])
+        if disjoint and previous[1] < current[0]:
+            chain += 1
+            best = max(best, chain)
+        else:
+            chain = 1
+    return best if best >= 2 else 0
+
+
 def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], *, min_turns: int = 40,
                      min_duration_min: float = 15.0) -> list[dict[str, Any]]:
     """Profile successful and at-risk long sessions with deterministic heuristics."""
@@ -1015,33 +1199,42 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             continue
         tools = _tool_events(seq)
         assistant = [(i, e) for i, e in enumerate(seq) if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"}]
-        sequence_text = " ".join(_event_blob(e) for e in seq)
-        # HZN1: carry byte-turns with no later reference to the output/call.
-        carry = 0
-        for index, event in enumerate(tools):
+        # HZN1 counts heavy unreferenced outputs, while retaining byte-turns as evidence.
+        heavy_hits = 0
+        carry_byte_turns = 0
+        for event_index, event in enumerate(seq):
+            if event not in tools:
+                continue
             size = len(_result_content(event).encode("utf-8"))
-            remaining = max(0, turns - _turn_number(event, index + 1))
-            later = sequence_text
-            call_id = _tool_call_id(event)
-            if size >= 8192 and remaining >= 10 and (size * remaining >= 250_000) and (not call_id or call_id.lower() not in later):
-                carry += size * remaining
-        if carry:
-            rows.append(_observation("HZN1_context_carry_tax", "horizon", carry, [f"{sid}: carry_byte_turns={carry}; offload to Explorer or --summary"], skill="agent-retro"))
-        # HZN2: wake-up lag and serial independent work.
+            event_turn = _turn_number(event, event_index + 1)
+            remaining = max(0, turns - event_turn)
+            if size < 8192 or remaining < 10 or size * remaining < 250_000:
+                continue
+            later_text = " ".join(_text(item) for item in seq[event_index + 1:]).lower()
+            call_id = _tool_call_id(event).lower()
+            raw_path = str(_arguments(event).get("path") or _field(event, "path") or "")
+            basename = Path(raw_path).name.lower() if raw_path else ""
+            if (call_id and call_id in later_text) or (basename and basename in later_text):
+                continue
+            heavy_hits += 1
+            carry_byte_turns += size * remaining
+        if heavy_hits:
+            rows.append(_observation("HZN1_context_carry_tax", "horizon", heavy_hits,
+                                     [f"{sid}: carry_byte_turns={carry_byte_turns}; heavy_outputs={heavy_hits}; offload to Explorer or --summary"], skill="agent-retro"))
+        # HZN2 wakeup lag and explicit queue/ledger parallelism evidence.
         lags = []
         for index, event in enumerate(seq):
             if _event_type(event) not in {"subagent.completed", "evt=done", "receipt.written"} and "EVT=DONE" not in _text(event):
                 continue
-            stamp = _parse_time(event.get("timestamp") or _field(event, "timestamp", "createdAt"))
-            if not stamp:
-                continue
+            stamp = _event_stamp(event)
             nxt = next((e for e in seq[index + 1:] if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response", "user.message"}), None)
-            next_stamp = _parse_time(nxt.get("timestamp") if nxt else None)
-            if next_stamp and (next_stamp - stamp).total_seconds() > 180:
+            next_stamp = _event_stamp(nxt) if nxt else None
+            if stamp and next_stamp and (next_stamp - stamp).total_seconds() > 180:
                 lags.append(int((next_stamp - stamp).total_seconds()))
-        serial = sum(1 for record in handoffs if re.search(r"queue\.json|ledger\.md", record.get("ledger", ""), re.I) and re.search(r"\b(?:serial|one[- ]at[- ]a[- ]time|independent).*(?:task|path)", record.get("ledger", ""), re.I))
+        serial = max((_serial_independent_tasks(record, seq) for record in handoffs), default=0)
         if lags or serial >= 2:
-            rows.append(_observation("HZN2_wakeup_lag_and_missed_parallelism", "horizon", len(lags) + serial, [f"{sid}: wakeup_lag_sec={max(lags, default=0)}, missed_parallel_tasks={serial}"], skill="m2-dispatcher"))
+            rows.append(_observation("HZN2_wakeup_lag_and_missed_parallelism", "horizon", len(lags) + serial,
+                                     [f"{sid}: wakeup_lag_sec={max(lags, default=0)}, missed_parallel_tasks={serial}"], skill="m2-dispatcher"))
         # HZN3: edit churn and expensive verification before the end.
         paths = Counter(str(_arguments(e).get("path") or _field(e, "path") or "") for e in tools if _tool_name(e) in {"edit", "create", "apply_patch", "write", "patch"})
         churn = max(paths.values(), default=0)
@@ -1056,8 +1249,9 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             if seconds >= 15 and ("scripts/verify" in command or "xcodebuild" in command):
                 heavy += 1
         if churn >= 4 or heavy >= 3:
-            rows.append(_observation("HZN3_rework_detour_and_premature_full_verify", "horizon", churn + heavy, [f"{sid}: edit_churn={churn}, premature_full_verify={heavy}"], skill="agent-retro"))
-        # HZN4: compare early/late failure and empty assistant rates.
+            rows.append(_observation("HZN3_rework_detour_and_premature_full_verify", "horizon", churn + heavy,
+                                     [f"{sid}: edit_churn={churn}, premature_full_verify={heavy}"], skill="agent-retro"))
+        # HZN4 compares late failures and empty turns with no tool calls to early turns.
         early = [e for e in seq if _turn_number(e, 0) <= 25]
         late = [e for e in seq if _turn_number(e, 0) > 40]
         def failure_rate(items: list[dict[str, Any]]) -> float:
@@ -1065,13 +1259,19 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
             return sum(_exit_code(e) not in (None, 0) for e in calls) / max(1, len(calls))
         def empty_rate(items: list[dict[str, Any]]) -> float:
             turns_here = [e for e in items if _event_type(e) in {"assistant.message", "assistant.turn", "assistant.response"}]
-            return sum(not _text(_field(e, "content", "assistantContent")) for e in turns_here) / max(1, len(turns_here))
+            empty = 0
+            for event in turns_here:
+                calls = _field(event, "toolCalls", "tool_calls", "tools")
+                has_calls = isinstance(calls, (list, dict)) and bool(calls)
+                empty += int(not _text(_field(event, "content", "assistantContent")) and not has_calls)
+            return empty / max(1, len(turns_here))
         early_rate = failure_rate(early) + empty_rate(early)
         late_rate = failure_rate(late) + empty_rate(late)
         if late and late_rate >= max(0.01, early_rate * 2):
             inflection = min((_turn_number(e, 0) for e in late), default=41)
-            rows.append(_observation("HZN4_context_fatigue_inflection", "horizon", 1, [f"{sid}: early_rate={early_rate:.2f}, late_rate={late_rate:.2f}, inflection_turn={inflection}"], skill="team-lead"))
-        # HZN5: contiguous low-output steering-only spans.
+            rows.append(_observation("HZN4_context_fatigue_inflection", "horizon", 1,
+                                     [f"{sid}: early_rate={early_rate:.2f}, late_rate={late_rate:.2f}, inflection_turn={inflection}"], skill="team-lead"))
+        # HZN5 contiguous low-output steering turns without mutation commands.
         span = best = 0
         for event_index, event in assistant:
             model = str(_field(event, "selectedModel", "model", "usageModel") or "").lower()
@@ -1080,13 +1280,16 @@ def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]
                 low_tokens = int(tokens) < 80 if tokens is not None else len(_text(_field(event, "content", "assistantContent"))) < 300
             except (TypeError, ValueError):
                 low_tokens = len(_text(_field(event, "content", "assistantContent"))) < 300
-            read_only = not any(_tool_name(e) in {"edit", "create", "apply_patch", "write", "patch"} for e in seq[max(0, event_index - 2):event_index + 3])
+            next_assistant = next((idx for idx, _ in assistant if idx > event_index), len(seq))
+            associated = seq[event_index + 1:next_assistant]
+            read_only = not any(_tool_name(item) in {"edit", "create", "apply_patch", "write", "patch"} or re.search(r"\b(?:rm|mv|cp|git\s+(?:commit|push|reset))\b", _command(item), re.I) for item in associated)
             if "group/steering" in model and low_tokens and read_only:
                 span += 1; best = max(best, span)
             else:
                 span = 0
         if best >= 5:
-            rows.append(_observation("HZN5_steering_overkill_mechanical_span", "horizon", best, [f"{sid}: steering read-only span={best}; route mechanical or crystallize L0"], skill="team-lead"))
+            rows.append(_observation("HZN5_steering_overkill_mechanical_span", "horizon", best,
+                                     [f"{sid}: steering read-only span={best}; route mechanical or crystallize L0"], skill="team-lead"))
     return rows
 
 
@@ -1136,14 +1339,23 @@ def _classify_observations(observations: list[dict[str, Any]], events: list[dict
         cutoff = int(target.get(skill, {}).get("last_modified_epoch", 0) or 0)
         evidence = item.get("evidence", [])
         session_ids = {str(e).split(":", 1)[0] for e in evidence if ":" in str(e)}
-        timestamps = [_parse_time(e.get("timestamp") or _field(e, "timestamp", "createdAt"))
-                      for sid in session_ids for e in groups.get(sid, [])]
-        timestamps = [t for t in timestamps if t]
-        is_pre = bool(cutoff and timestamps and min(timestamps).timestamp() < cutoff)
-        bucket = "pre_fix" if is_pre else "post_fix"
-        item["fix_bucket"] = bucket
-        item["post_fix_count"] = int(item.get("count", 0) or 0) if bucket == "post_fix" else 0
-        item["pre_fix_count"] = int(item.get("count", 0) or 0) if bucket == "pre_fix" else 0
+        buckets: dict[str, str] = {}
+        for sid in session_ids:
+            timestamps = [_parse_time(e.get("timestamp") or _field(e, "timestamp", "createdAt")) for e in groups.get(sid, [])]
+            timestamps = [timestamp for timestamp in timestamps if timestamp]
+            buckets[sid] = "pre_fix" if cutoff and timestamps and min(timestamps).timestamp() < cutoff else "post_fix"
+        count = int(item.get("count", 0) or 0)
+        if buckets:
+            post_sessions = sum(value == "post_fix" for value in buckets.values())
+            pre_sessions = sum(value == "pre_fix" for value in buckets.values())
+            total_sessions = len(buckets)
+            post_count = round(count * post_sessions / total_sessions)
+            pre_count = count - post_count
+        else:
+            post_count, pre_count = (count, 0) if not cutoff else (count, 0)
+        item["fix_bucket"] = "mixed" if post_count and pre_count else ("pre_fix" if pre_count else "post_fix")
+        item["post_fix_count"] = post_count
+        item["pre_fix_count"] = pre_count
     return watermark
 
 
@@ -1619,7 +1831,7 @@ def command_rollup(args: argparse.Namespace) -> dict[str, Any]:
         match = re.search(r"Merge SHA:\s*`?([0-9a-f]{7,40})", receipt.get("text", ""), re.I)
         if match:
             sha = match.group(1)
-            grounded = _git_exists(f"{sha}^{{commit}}") or _git_exists(f"{sha}^{{tree}}")
+            grounded = _git_exists(f"{sha}^{{commit}}")
             grounding.append({"path": receipt["path"], "merge_sha": sha, "grounded": grounded})
     day = args.date or datetime.now().date().isoformat()
     payload = {"schema": "agent-retro-rollup/v1", "date": day, "source": scan.get("source"), "coverage": scan.get("coverage"), "observations": scan["observations"][:30], "metrics": scan["metrics"], "receipts": receipts[:10], "receipt_grounding": grounding, "observation_pool": scan["observation_pool"][:20], "version_watermark": scan["version_watermark"]}

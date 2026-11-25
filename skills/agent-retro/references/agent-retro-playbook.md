@@ -1,4 +1,4 @@
-# Agent Retro Playbook (`5-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
+# Agent Retro v2.0.0 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
 
 > Core Philosophy: **Symptom in Agent, Cure in Skill.** Grade final outcomes first (**Outcome-First Gate**), treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy runtime progressive disclosure, and trace downstream rework back to the **first upstream role and skill** that introduced the defect.
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 3. Five-Layer Metric Formulas & Upstream First-Fault Credit Assignment
+## 3. Six-Layer Metric Formulas & Upstream First-Fault Credit Assignment
 
 | Layer | Metric ID | Detection Formula & Threshold | Upstream Responsible Skill (`Cure in Skill`) | Physical Lock Remediation |
 |---|---|---|---|---|
@@ -47,6 +47,11 @@
 | **`friction` (`L-Friction`)** | `F1_permission_stall_count` | `permission.requested` stalls on safe paths or unanswered shutdowns | `team-lead` / `m2-dispatcher` | `operator-policy.json` / `runtime-profiles.yaml` allowlist |
 | **`friction` (`L-Friction`)** | `F2_owner_abort_rate` | Sessions ending in `abort` or `session.error` | Active role skill (`m2-dispatcher` / `team-lead`) | Watchdog timeout & fail-fast recovery |
 | **`friction` (`L-Friction`)** | `F3_mid_flight_owner_correction` | Mid-flight Owner user messages correcting an active autonomous execution | `personal-m2-assistant` / `m2-dispatcher` / `team-lead` | Phase 0 spec alignment checklist |
+| **`horizon` (`L-Horizon`)** | `HZN1_context_carry_tax` | Unreferenced `>=8192`-byte output with `carry_byte_turns >=250000` | `agent-retro` | Explorer offload / `--summary` |
+| **`horizon` (`L-Horizon`)** | `HZN2_wakeup_lag_and_missed_parallelism` | `>180s` wakeup lag or `>=2` disjoint no-dependency queue tasks run sequentially | `m2-dispatcher` | Queue parallelism and wakeup watcher |
+| **`horizon` (`L-Horizon`)** | `HZN3_rework_detour_and_premature_full_verify` | `>=4` same-file edits or `>=3` heavy mid-flight full verifies | `agent-retro` | Targeted test loop |
+| **`horizon` (`L-Horizon`)** | `HZN4_context_fatigue_inflection` | Late failure/empty-turn rate is `>=2x` early rate | `team-lead` | Handoff checkpoint split |
+| **`horizon` (`L-Horizon`)** | `HZN5_steering_overkill_mechanical_span` | `>=5` low-output read-only `group/steering` turns | `team-lead` | Mechanical worker / L0 script |
 
 ---
 

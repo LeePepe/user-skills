@@ -1,6 +1,6 @@
 {
   "name": "agent-retro",
-  "description": "5-layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution: sub-second probe + Cheap Worker & Jev triage under 1 M2 into K (0..3) parallel per-skill M1 TLs -> M2 Rollup into [Agent Retro YYYY-MM-DD] Dual-Zone issue. Not for product crash telemetry or blog extraction.",
+  "description": "v2.0.0 6-layer agent trajectory retro (role, handoff, invoke, exec, friction, horizon): bounded zero-token probe, post-fix watermark triage, Jev fallback, and M2-to-M1 rollup. Not for product crash telemetry or blog extraction.",
   "version": "2.0.0",
   "skills": [
     "SKILL.md"
