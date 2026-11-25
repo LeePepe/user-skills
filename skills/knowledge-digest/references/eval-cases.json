@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v2",
   "skill": "knowledge-digest",
-  "updated": "2026-11-19",
+  "updated": "2026-11-25",
   "trigger_evals": [
     {
       "query": "帮我讲懂零知识证明并沉淀这个知识点到 knowledge-vault",
@@ -85,6 +85,55 @@
         "loop-check"
       ],
       "registered_at": "2026-11-19"
+    },
+    {
+      "id": "EV-005",
+      "title": "digest_vault.py rejects non-positive --top quota with invalid_quota status",
+      "tags": [
+        "counter-case",
+        "negative",
+        "discover-topics"
+      ],
+      "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py discover-topics --top 0 --no-git",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "invalid_quota",
+        "--top must be a positive integer"
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-006",
+      "title": "digest_vault.py self-disclosing parser rejects unknown CLI flags with exit 2",
+      "tags": [
+        "counter-case",
+        "negative",
+        "cli"
+      ],
+      "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py --definitely-invalid-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/knowledge-digest/references/templates.md"
+      ],
+      "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-007",
+      "title": "digest_vault.py facade stays modular with skill_runtime symlink",
+      "tags": [
+        "modular",
+        "contract"
+      ],
+      "file": "skills/knowledge-digest/scripts/digest_vault.py",
+      "must_contain": [
+        "digest_vault_core",
+        "Path(__file__).resolve().parent"
+      ],
+      "must_not_contain": [
+        "zlib.decompress",
+        "base64.b64decode"
+      ],
+      "registered_at": "2026-11-25"
     }
   ]
 }
