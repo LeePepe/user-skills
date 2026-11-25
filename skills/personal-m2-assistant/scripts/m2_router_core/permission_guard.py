@@ -1,3 +1,314 @@
+from __future__ import annotations
+
+from ._imports import *
+
+from .constants_and_paths import _run_command
+
+def _extract_command_block_from_frame(frame_text: str) -> str | None:
+    """Extract the full command block from an active command confirmation frame, or None if multiline/ambiguous."""
+    lines = [ln.strip() for ln in frame_text.splitlines() if ln.strip()]
+    cmd_lines: list[str] = []
+    collecting = False
+    for line in lines:
+        if re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", line):
+            collecting = False
+            continue
+        if re.match(
+            r"^(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command|"
+            r"Do\s+you\s+want\s+to\s+run|Allow\s+running|Run\s+shell\s+command)\b",
+            line,
+            re.I,
+        ):
+            m_inline = re.match(
+                r"^(?:CMD_CONFIRM|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)\s*:\s*(.+)$",
+                line,
+                re.I,
+            )
+            if m_inline:
+                rest = m_inline.group(1).strip()
+                if not re.match(r"^(?:Do\s+you|Allow|Confirm|Run\s+command|Execute\s+command)\b", rest, re.I):
+                    cmd_lines.append(rest.strip("`"))
+                    collecting = True
+            continue
+        m_cmd = re.match(r"^(?:Command|Run|Execute|Shell|bash|sh)\s*:\s*(.+)$", line, re.I)
+        if m_cmd:
+            cmd_lines.append(m_cmd.group(1).strip().strip("`"))
+            collecting = True
+            continue
+        if line.startswith("$ "):
+            cmd_lines.append(line[2:].strip().strip("`"))
+            collecting = True
+            continue
+        if collecting:
+            # Any extra non-choice line after Command: makes it a multiline command block -> reject
+            cmd_lines.append(line)
+    if len(cmd_lines) != 1:
+        return None
+    return cmd_lines[0]
+
+def _is_whitelisted_command(cmd_text: str) -> bool:
+    stripped = cmd_text.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped or "\\" in stripped:
+        return False
+    # Reject shell chaining, pipes, redirections, command/process substitutions, subshells, backgrounding, or globs
+    if re.search(r"[`<>()$*{}\[\];|&]", stripped):
+        return False
+    try:
+        return _is_whitelisted_command_segment(stripped)
+    except ValueError:
+        return False
+
+def _normalize_mcp_server_and_tool(raw_server: str, raw_tool: str) -> tuple[str, str]:
+    server = _strip_matching_quotes(_text(raw_server)).lower()
+    tool = _strip_matching_quotes(_text(raw_tool))
+    if not server and tool:
+        lower_tool = tool.lower()
+        for prefix in ("github-mcp-server-", "ado-edge-", "linear-", "github-", "ado-"):
+            if lower_tool.startswith(prefix):
+                server = prefix[:-1]
+                tool = tool[len(prefix) :]
+                break
+        if not server:
+            for sep in ("/", ":"):
+                if sep in tool:
+                    head, tail = tool.split(sep, 1)
+                    if head.strip() and tail.strip():
+                        server = head.strip().lower()
+                        tool = tail.strip()
+                        break
+    if server in {"linear-mcp", "linear_mcp"}:
+        server = "linear"
+    tool_norm = re.sub(r"[\s_-]+", "_", tool.strip().lower()).strip("_")
+    for prefix in ("github_mcp_server_", "ado_edge_", "linear_", "github_", "ado_"):
+        if tool_norm.startswith(prefix) and not server:
+            server = prefix[:-1].replace("_", "-")
+            tool_norm = tool_norm[len(prefix) :]
+            break
+    if server in {"linear-mcp", "linear_mcp"}:
+        server = "linear"
+    return server, tool_norm
+
+def _is_whitelisted_mcp_tool(server: str, tool: str) -> bool:
+    server_norm, tool_norm = _normalize_mcp_server_and_tool(server, tool)
+    if not server_norm or not tool_norm:
+        return False
+    if _FORBIDDEN_MCP_TOOL_KEYWORDS_RE.search(tool_norm):
+        return False
+    if server_norm == "linear":
+        if tool_norm in WHITELISTED_LINEAR_MCP_TOOLS:
+            return True
+        if tool_norm.startswith(("get_", "list_", "search_")):
+            return True
+        return False
+    if server_norm in WHITELISTED_READONLY_MCP_SERVERS:
+        if _FORBIDDEN_READONLY_MCP_KEYWORDS_RE.search(tool_norm):
+            return False
+        if tool_norm in WHITELISTED_ADO_READONLY_MCP_TOOLS:
+            return True
+        if tool_norm.startswith(("get_", "list_", "search_", "show_", "read_", "find_")):
+            return True
+        return False
+    return False
+
+def _is_double_boxed_or_json_payload_line(raw_line: str, unboxed_line: str) -> bool:
+    """Return True when a line inside an MCP tool confirmation dialog is part of the inner JSON argument preview box."""
+    if re.match(r"^\s*[│┃]\s*[│┃╭╰]", raw_line):
+        return True
+    stripped = unboxed_line.strip()
+    if not stripped:
+        return True
+    if stripped[0] in {'{', '}', '[', ']', '"'}:
+        return True
+    if re.match(r'^"[A-Za-z0-9_.-]+"\s*:', stripped):
+        return True
+    return False
+
+def _extract_mcp_tool_prompt(visible_text: str, raw_active_frame: str) -> dict[str, Any] | None:
+    """Extract active MCP tool confirmation details from a 'Do you want to use this tool?' bottom frame."""
+    raw_lines = [ln for ln in _text(raw_active_frame).splitlines() if ln.strip()]
+    if not raw_lines:
+        return None
+    unboxed_lines = [_strip_tui_box_chrome(ln) for ln in raw_lines]
+    q_idx = -1
+    for idx, uline in enumerate(unboxed_lines):
+        if re.match(r"^Do\s+you\s+want\s+to\s+use\s+this\s+tool\s*\?\s*$", uline.strip(), re.I):
+            q_idx = idx
+    if q_idx < 0:
+        return None
+
+    post_lines = [ln.strip() for ln in unboxed_lines[q_idx + 1 :] if ln.strip()]
+    # If any completion boundary, business decision, or another non-option question appears AFTER the tool question, it is stale/ambiguous.
+    for pline in post_lines:
+        if _COMPLETION_BOUNDARY_RE.search(pline) or _BUSINESS_DECISION_RE.search(pline):
+            return None
+        if pline.endswith("?") and not re.match(r"^(?:[>❯●◉▶]?\s*)?\d+[.)]\s+", pline):
+            return None
+
+    # Check non-JSON lines before 'Do you want to use this tool?' for conflicting dialog headers
+    ambiguous = False
+    header_candidates: list[str] = []
+    for idx in range(q_idx):
+        raw_ln = raw_lines[idx]
+        unboxed_ln = unboxed_lines[idx].strip()
+        if not unboxed_ln or _is_double_boxed_or_json_payload_line(raw_ln, unboxed_ln):
+            continue
+        header_candidates.append(unboxed_ln)
+        if _BUSINESS_DECISION_RE.search(unboxed_ln):
+            ambiguous = True
+        elif re.search(
+            r"(?:Allow\s+(?:path|directory)\s+access|Read\s+access\s+covers\s+this\s+directory|"
+            r"Confirm\s+folder\s+trust|Do\s+you\s+trust\s+the\s+files\s+in\s+this\s+folder|"
+            r"\bCurate\s+Memory\b|curate\s+this\s+memory|\bstore_memory\b|\bvote_memory\b|"
+            r"\bCMD_CONFIRM\b|Do\s+you\s+want\s+to\s+run|Run\s+command|Execute\s+command|Allow\s+command|Confirm\s+command)",
+            unboxed_ln,
+            re.I,
+        ):
+            ambiguous = True
+        elif unboxed_ln.endswith("?"):
+            ambiguous = True
+
+    post_joined = " ".join(post_lines)
+    post_multiline = "\n".join(post_lines)
+    server = ""
+    tool = ""
+
+    # 1. Authoritative extraction from Copilot CLI's Option 2:
+    #    '2. Yes, and don't ask again for tool "Save issue" from "linear" in this repo (...)'
+    m_opt2 = re.search(
+        r"for\s+tool\s+(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_:/ -]+?))\s+from\s+(?:MCP\s+server\s+)?(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_.-]+))",
+        post_joined,
+        re.I,
+    )
+    if m_opt2:
+        tool = (m_opt2.group(1) or m_opt2.group(2) or "").strip()
+        server = (m_opt2.group(3) or m_opt2.group(4) or "").strip()
+    else:
+        m_opt2_tool_only = re.search(
+            r"for\s+tool\s+(?:[\"']([^\"']+)[\"']|([A-Za-z0-9_:/ -]+?))(?:\s+in\s+this\s+repo|\s+for\s+this\s+session|\s*\(|\s+3[.)]|\s*$)",
+            post_joined,
+            re.I,
+        )
+        if m_opt2_tool_only:
+            tool = (m_opt2_tool_only.group(1) or m_opt2_tool_only.group(2) or "").strip()
+
+    # 2. Fallback / supplement from header lines above the JSON box (in frame and visible scrollback)
+    if not server or not tool:
+        all_raw_lines = [ln for ln in _text(visible_text).splitlines() if ln.strip()][-80:]
+        extra_headers: list[str] = []
+        for rln in reversed(all_raw_lines):
+            uln = _strip_tui_box_chrome(rln).strip()
+            if not uln or _is_double_boxed_or_json_payload_line(rln, uln):
+                continue
+            extra_headers.append(uln)
+        for hline in [*header_candidates, *extra_headers]:
+            m_mcp_paren = re.search(
+                r"(?:^|[○●❯>\s]|Tool\s*:\s*)([A-Za-z0-9_ -]+?)\s*\(\s*MCP\s*:\s*([A-Za-z0-9_.-]+)\s*\)",
+                hline,
+                re.I,
+            )
+            if m_mcp_paren:
+                tool = tool or m_mcp_paren.group(1).strip()
+                server = server or m_mcp_paren.group(2).strip()
+                break
+            m_server_kv = re.match(r"^(?:MCP\s+)?Server\s*[:=]\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*$", hline, re.I)
+            if m_server_kv and not server:
+                server = m_server_kv.group(1).strip()
+                continue
+            m_tool_kv = re.match(
+                r"^Tool(?:\s+name)?\s*[:=]\s*[\"']?([A-Za-z0-9_:/ -]+?)[\"']?(?:\s*\(\s*(?:MCP\s*:\s*)?([A-Za-z0-9_.-]+)\s*\))?\s*$",
+                hline,
+                re.I,
+            )
+            if m_tool_kv:
+                tool = tool or m_tool_kv.group(1).strip()
+                if m_tool_kv.group(2) and not server:
+                    server = m_tool_kv.group(2).strip()
+                continue
+            m_pair = re.match(
+                r"^(linear|ado-edge|ado|github-mcp-server|github)\s*(?:/|:|\s+-\s+)\s*([A-Za-z0-9_ -]+?)(?:\s*\(MCP\))?\s*$",
+                hline,
+                re.I,
+            )
+            if m_pair:
+                server = server or m_pair.group(1).strip()
+                tool = tool or m_pair.group(2).strip()
+                break
+
+    server_norm, tool_norm = _normalize_mcp_server_and_tool(server, tool)
+    has_remember_option = bool(
+        re.search(
+            r"(?m)^\s*(?:[>❯●◉▶]\s*)?2[.)]\s*(?:Yes,\s*and\s+(?:don't\s+ask\s+again|remember)|Always\s+allow)\b",
+            post_multiline,
+            re.I,
+        )
+    )
+    return {
+        "ambiguous": ambiguous,
+        "mcp_server": server_norm or server,
+        "mcp_tool": tool or tool_norm,
+        "mcp_tool_norm": tool_norm,
+        "has_remember_option": has_remember_option,
+        "signature_text": f"mcp:{server_norm}:{tool_norm}:{post_joined}",
+    }
+
+def _extract_active_bottom_frame(visible_text: str) -> str:
+    """Slice only the bottom-most active interactive frame after the last output/completion boundary."""
+    lines = [ln.rstrip() for ln in _text(visible_text).splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = lines[-20:]
+    last_boundary_idx = -1
+    for idx, raw in enumerate(tail):
+        stripped = raw.strip()
+        if _COMPLETION_BOUNDARY_RE.search(stripped):
+            last_boundary_idx = idx
+    if last_boundary_idx >= 0 and last_boundary_idx + 1 < len(tail):
+        tail = tail[last_boundary_idx + 1 :]
+    # Also if there are multiple prompt headers separated by non-choice output, slice from the last header/question
+    header_indices = [
+        idx for idx, raw in enumerate(tail)
+        if _PROMPT_HEADER_RE.search(raw) or (raw.strip().endswith("?") and not re.match(r"^(?:[>❯●◉▶]|\d+[.)])\s+", raw.strip()))
+    ]
+    if len(header_indices) > 1:
+        # Check if there are multiple distinct prompt headers -> if separated or conflicting, return full tail so ambiguity check rejects it
+        pass
+    return "\n".join(tail)
+
+def _validate_apply_receipt_for_target(
+    plan: dict[str, Any],
+    apply_receipt: dict[str, Any] | None,
+    *,
+    target_ref: str = "",
+    pane_id: str = "",
+) -> bool:
+    if not isinstance(apply_receipt, dict):
+        return False
+    if apply_receipt.get("ok") is not True or apply_receipt.get("approved") is not True:
+        return False
+    plan_id = _text(plan.get("plan_id"))
+    receipt_plan_id = _text(apply_receipt.get("plan_id"))
+    if not plan_id or receipt_plan_id != plan_id:
+        return False
+    receipts = apply_receipt.get("receipts")
+    if not isinstance(receipts, list) or not receipts:
+        return False
+    for rec in receipts:
+        if not isinstance(rec, dict) or rec.get("ok") is not True:
+            continue
+        method = _text(rec.get("method"))
+        if method == "stdout":
+            continue
+        rec_target = _text(rec.get("target"))
+        rec_pane = _text(
+            rec.get("pane_id")
+            or ((rec.get("receipt") or {}).get("pane_id") if isinstance(rec.get("receipt"), dict) else "")
+        )
+        if target_ref and rec_target and target_ref == rec_target:
+            return True
+        if pane_id and rec_pane and pane_id == rec_pane:
+            return True
+    return False
+
 def _classify_permission_prompt(
     visible_text: str,
     target_cwd: str = "",
@@ -304,14 +615,6 @@ def _classify_and_unblock_dialog(
         already_unblocked_signatures=already_unblocked_signatures,
     )
 
-_VOLATILE_TUI_CHROME_RE = re.compile(
-    r"(?:Session:\s*[\d.]+\s*AIC\s+used"
-    r"|←\s*open\s+sidebar"
-    r"|Interactive\s*·\s*Manual\s+Approval"
-    r"|(?:Working|Thinking)\s*·\s*[\d.]+\s*[KMG]?i?B\b.*context\s*\(\d+%\))",
-    re.I,
-)
-
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
     raw_lines = [re.sub(r"\s+", " ", line).strip(" ┃│╻╹▄▀") for line in _text(text).splitlines()]
     word_lines = [line for line in raw_lines if re.search(r"\w", line)]
@@ -342,154 +645,3 @@ def _read_herdr_visible(binary: str, target_ref: str, *, runner: CommandRunner =
                 if isinstance(val, str) and val.strip():
                     return val
     return stdout
-
-def write_watch_results_to_issues(
-    plan: dict[str, Any],
-    target_reports: list[dict[str, Any]],
-    *,
-    state_path: Path | None = None,
-    hub_issue: str | None = None,
-    target_issue: str | None = None,
-    linear_runner: CommandRunner | None = None,
-    linear_sync_result: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Directly write each settled/blocked M2 watchdog report to its corresponding Linear Issue."""
-    effective_hub = _text(hub_issue or os.environ.get("M2_SYNC_HUB_ISSUE"), DEFAULT_M2_SYNC_HUB_ISSUE)
-    exec_runner = linear_runner or _run_command
-    linear_script = _text(os.environ.get("M2_LINEAR_SYNC_SCRIPT"), str(LINEAR_SYNC_SCRIPT_PATH))
-    plan_id = _text(plan.get("plan_id"), "m2p-plan")
-    reported_markers: set[str] = set()
-    if state_path and state_path.is_file():
-        try:
-            loaded_state = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(loaded_state, dict) and isinstance(loaded_state.get("reported_issue_markers"), list):
-                reported_markers = {str(m) for m in loaded_state["reported_issue_markers"] if _text(m)}
-        except (OSError, ValueError):
-            reported_markers = set()
-
-    new_markers: list[str] = []
-    receipts: list[dict[str, Any]] = []
-    for rep in target_reports:
-        if rep.get("superseded_by_run_seq"):
-            continue
-        slot_id = _text(rep.get("slot_id") or rep.get("run_label"), "m2")
-        run_seq = int(rep.get("run_seq") or 1)
-        run_label = _text(rep.get("run_label"), slot_id)
-        status = _text(rep.get("status"), "done")
-        marker = f"<!-- M2-WATCH-REPORT:{plan_id}:{slot_id}:r{run_seq}:{status} -->"
-
-        issue_id = _text(target_issue or rep.get("linear_issue") or plan.get("linear_issue"))
-        if not issue_id:
-            text_blob = "\n".join(_text(rep.get(k)) for k in ("sub_prompt", "visible_summary", "terminal_title", "m1_progress"))
-            found_issues = re.findall(r"\bTIA-\d+\b", text_blob, re.I)
-            parent_issue = _text(rep.get("parent_linear_issue")).upper()
-            issue_id = next((i.upper() for i in found_issues if i.upper() != parent_issue), "") or (found_issues[0].upper() if found_issues else "")
-
-        topic_id = _text(rep.get("topic_id") or slot_id)
-        target_name = _text(rep.get("target") or rep.get("session_id") or slot_id)
-        pane_id = _text(rep.get("pane_id"))
-        target_repo = _text(rep.get("target_repo"), "unspecified")
-        m1_prog = _text(rep.get("m1_progress"), "—")
-        vis_summary = _text(rep.get("visible_summary"), "—")
-        attn_line = (
-            f"\n- **阻塞原因 (`Needs Owner Decision`)**: `{_text(rep.get('blocked_reason'), 'owner_decision_required')}`"
-            if rep.get("needs_owner_attention")
-            else ""
-        )
-        report_body = (
-            f"{marker}\n"
-            f"### 🤖 M2 Watchdog 任务回报 · `{run_label}` (`{topic_id}`)\n"
-            f"- **状态 (`Status`)**: `{status}` (`quiescent={bool(rep.get('quiescent'))}`){attn_line}\n"
-            f"- **会话 / 窗格 (`Session / Pane`)**: `{target_name}`"
-            + (f" (`{pane_id}`)" if pane_id else "")
-            + f" · Wave `{rep.get('wave_order', 1)}`\n"
-            f"- **关联仓库 (`Target Repo`)**: `{target_repo}`\n"
-            f"- **M1 推进进度 (`M1 Progress`)**: {m1_prog}\n"
-            f"- **最新结果摘要 (`Result Summary`)**:\n"
-            f"```text\n{vis_summary}\n```"
-        )
-
-        # If target is bound to a specific issue (distinct from Hub Issue TIA-463, or explicitly requested via --target-issue)
-        if issue_id and (issue_id.upper() != effective_hub.upper() or bool(_text(target_issue))):
-            if marker in reported_markers:
-                receipts.append({
-                    "slot_id": slot_id,
-                    "issue": issue_id,
-                    "ok": True,
-                    "updated": False,
-                    "skipped_reason": "already_reported",
-                    "method": "linear_comment",
-                    "marker": marker,
-                })
-                continue
-            handoff_dir = _text(rep.get("handoff_dir"))
-            ledger_synced = False
-            if handoff_dir and (Path(handoff_dir).expanduser() / "ledger.md").is_file():
-                try:
-                    sl_res = exec_runner(
-                        [sys.executable, linear_script, "sync-ledger", "--handoff-dir", str(Path(handoff_dir).expanduser()), "--quiet"],
-                        timeout=15.0,
-                    )
-                    ledger_synced = getattr(sl_res, "returncode", 1) == 0
-                except (OSError, subprocess.SubprocessError):
-                    ledger_synced = False
-            try:
-                c_res = exec_runner(
-                    [sys.executable, linear_script, "comment", "--id", issue_id, "--body", report_body],
-                    timeout=15.0,
-                )
-            except (OSError, subprocess.SubprocessError) as error:
-                receipts.append({
-                    "slot_id": slot_id,
-                    "issue": issue_id,
-                    "ok": False,
-                    "updated": False,
-                    "method": "linear_comment",
-                    "marker": marker,
-                    "error": str(error),
-                })
-                continue
-            if getattr(c_res, "returncode", 1) != 0:
-                receipts.append({
-                    "slot_id": slot_id,
-                    "issue": issue_id,
-                    "ok": False,
-                    "updated": False,
-                    "method": "linear_comment",
-                    "marker": marker,
-                    "error": _text(getattr(c_res, "stderr", "") or getattr(c_res, "stdout", ""), "comment failed"),
-                })
-                continue
-            reported_markers.add(marker)
-            new_markers.append(marker)
-            receipts.append({
-                "slot_id": slot_id,
-                "issue": issue_id,
-                "ok": True,
-                "updated": True,
-                "method": "linear_comment",
-                "ledger_synced": ledger_synced,
-                "marker": marker,
-                "body": report_body,
-            })
-        else:
-            receipts.append({
-                "slot_id": slot_id,
-                "issue": effective_hub,
-                "ok": bool((linear_sync_result or {}).get("ok")),
-                "updated": bool((linear_sync_result or {}).get("updated")),
-                "method": "hub_issue_sync",
-                "marker": marker,
-            })
-
-    if new_markers and state_path is not None:
-        def _record_markers(st: dict[str, Any]) -> dict[str, Any]:
-            existing_m = [str(m) for m in (st.get("reported_issue_markers") or []) if _text(m)]
-            for m in new_markers:
-                if m not in existing_m:
-                    existing_m.append(m)
-            st["reported_issue_markers"] = existing_m[-200:]
-            return st
-        _with_locked_supervision_state(state_path, _record_markers)
-
-    return receipts

@@ -1,3 +1,11 @@
+from __future__ import annotations
+
+from ._imports import *
+
+from .constants_and_paths import _run_command
+
+from .herdr_discovery import _fetch_json
+
 def watch_dispatched_m2(
     plan: dict[str, Any],
     *,
@@ -614,132 +622,4 @@ def watch_dispatched_m2(
         "board_rollup": board_rollup,
         "targets": target_reports,
         "summary_markdown": "\n".join(summary_lines),
-    }
-
-def compute_board_fingerprint(state_or_path: dict[str, Any] | str | Path | None = None) -> str:
-    """Compute a deterministic SHA-256 fingerprint of local supervision slot statuses and summaries."""
-    if isinstance(state_or_path, dict):
-        state = state_or_path
-    else:
-        state_path = _resolve_supervision_state_path(state_or_path, persist_by_default=True)
-        state = {}
-        if state_path and state_path.is_file():
-            try:
-                loaded = json.loads(state_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    state = loaded
-            except (OSError, ValueError):
-                state = {}
-    slots_payload: list[dict[str, Any]] = []
-    for raw_slot in (state.get("slots") or []):
-        if not isinstance(raw_slot, dict):
-            continue
-        summary = _text(raw_slot.get("m1_progress") or raw_slot.get("visible_summary") or raw_slot.get("sub_prompt"))
-        slots_payload.append({
-            "slot_id": _text(raw_slot.get("slot_id")),
-            "run_label": _text(raw_slot.get("run_label")),
-            "topic_id": _text(raw_slot.get("topic_id")),
-            "target_repo": _text(raw_slot.get("target_repo")),
-            "target": _text(raw_slot.get("target")),
-            "pane_id": _text(raw_slot.get("pane_id")),
-            "linear_issue": _text(raw_slot.get("linear_issue")),
-            "status": _text(raw_slot.get("status")),
-            "raw_status": _text(raw_slot.get("raw_status")),
-            "retained": bool(raw_slot.get("retained")),
-            "needs_owner_attention": bool(raw_slot.get("needs_owner_attention")),
-            "blocked_reason": _text(raw_slot.get("blocked_reason")),
-            "summary": summary,
-            "active_summary_source": _text(raw_slot.get("active_summary_source")),
-        })
-    slots_payload.sort(key=lambda item: (item["slot_id"], item["pane_id"], item["target"]))
-    backlog_payload = [
-        {
-            "topic_id": _text(b.get("topic_id") or b.get("id")),
-            "issue": _text(b.get("issue")),
-            "summary": _text(b.get("summary") or b.get("title")),
-        }
-        for b in (state.get("backlog") or [])
-        if isinstance(b, dict)
-    ]
-    backlog_payload.sort(key=lambda item: (item["topic_id"], item["issue"], item["summary"]))
-    canonical = {"slots": slots_payload, "backlog": backlog_payload}
-    return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-
-def install_m2_board_hook(
-    *,
-    hooks_dir: str | Path | None = None,
-    hook_script_source: str | Path | None = None,
-) -> dict[str, Any]:
-    """Idempotently install m2-board.json and m2-board-hook.sh into ~/.copilot/hooks without touching sibling hooks."""
-    target_dir = Path(hooks_dir or os.environ.get("COPILOT_HOOKS_DIR") or (Path.home() / ".copilot" / "hooks")).expanduser()
-    source_script = Path(hook_script_source or DEFAULT_HOOK_SCRIPT_PATH).expanduser()
-    if not source_script.is_file():
-        raise RouterError(f"hook script source not found: {source_script}")
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    installed_script = target_dir / "m2-board-hook.sh"
-    installed_json = target_dir / "m2-board.json"
-    source_text = source_script.read_text(encoding="utf-8")
-
-    updated_script = False
-    existing_script_text = None
-    if installed_script.is_file():
-        try:
-            existing_script_text = installed_script.read_text(encoding="utf-8")
-        except OSError:
-            existing_script_text = None
-    if existing_script_text != source_text or not os.access(installed_script, os.X_OK):
-        tmp_script = installed_script.with_suffix(f".{os.getpid()}.tmp")
-        tmp_script.write_text(source_text, encoding="utf-8")
-        tmp_script.chmod(0o755)
-        tmp_script.replace(installed_script)
-        installed_script.chmod(0o755)
-        updated_script = True
-
-    hook_cmd = f"sh '{installed_script}'"
-    hook_config = {
-        "version": 1,
-        "hooks": {
-            "agentStop": [
-                {
-                    "type": "command",
-                    "bash": hook_cmd,
-                    "timeoutSec": 5,
-                }
-            ],
-            "sessionEnd": [
-                {
-                    "type": "command",
-                    "bash": hook_cmd,
-                    "timeoutSec": 5,
-                }
-            ],
-        },
-    }
-    desired_json_text = json.dumps(hook_config, ensure_ascii=False, indent=2) + "\n"
-    updated_json = False
-    existing_json_text = None
-    if installed_json.is_file():
-        try:
-            existing_json_text = installed_json.read_text(encoding="utf-8")
-        except OSError:
-            existing_json_text = None
-    if existing_json_text != desired_json_text:
-        tmp_json = installed_json.with_suffix(f".{os.getpid()}.tmp")
-        tmp_json.write_text(desired_json_text, encoding="utf-8")
-        tmp_json.replace(installed_json)
-        updated_json = True
-
-    preserved = sorted(
-        p.name for p in target_dir.iterdir()
-        if p.name not in {"m2-board.json", "m2-board-hook.sh"}
-    )
-    return {
-        "ok": True,
-        "hooks_dir": str(target_dir),
-        "hook_json_path": str(installed_json),
-        "hook_script_path": str(installed_script),
-        "updated_json": updated_json,
-        "updated_script": updated_script,
-        "preserved_files": preserved,
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import subprocess
@@ -32,8 +33,19 @@ class PersonalM2RetroTests(unittest.TestCase):
         self.assertLessEqual(len(ROUTER_PATH.read_text(encoding="utf-8").splitlines()), 250)
         modules = sorted(CORE_DIR.glob("*.py"))
         self.assertTrue(modules)
-        for path in modules:
-            self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 950, path)
+        self.assertFalse(list(CORE_DIR.glob("part_*.py")))
+        self.assertNotRegex(ROUTER_PATH.read_text(encoding="utf-8"), r"\b(?:exec|compile)\s*\(")
+        self.assertNotRegex((CORE_DIR / "__init__.py").read_text(encoding="utf-8"), r"\b(?:exec|compile)\s*\(")
+        expected = {
+            "constants_and_paths", "domain_map", "jev_and_intent", "herdr_discovery",
+            "linear_sync", "plan_builder", "dispatch_apply", "permission_guard",
+            "watchdog", "cli",
+        }
+        imported = {module.__name__.rsplit(".", 1)[-1] for module in self.router._CORE_MODULES}
+        self.assertTrue(expected.issubset(imported))
+        for module in self.router._CORE_MODULES:
+            self.assertIs(importlib.import_module(module.__name__), module)
+            self.assertLessEqual(len(Path(module.__file__).read_text(encoding="utf-8").splitlines()), 950, module)
         runtime = ROUTER_PATH.parent / "skill_runtime"
         self.assertTrue(runtime.is_symlink())
         self.assertEqual(runtime.readlink().as_posix(), "../../skill-contract/scripts/skill_runtime")

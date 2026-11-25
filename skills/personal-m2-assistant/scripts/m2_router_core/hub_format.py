@@ -1,3 +1,70 @@
+from __future__ import annotations
+
+from ._imports import *
+
+def _normalize_hub_scope(value: Any) -> str:
+    raw = _text(value).strip().casefold().replace("_", "-")
+    if raw == "work":
+        return "work"
+    if raw in {"non-work", "nonwork", "personal"}:
+        return "non-work"
+    return ""
+
+def _classify_hub_scope(
+    item: Any = None,
+    *,
+    rich_line: str = "",
+    domain_map: dict[str, Any] | None = None,
+    hint_scope: str = "",
+) -> str:
+    explicit = _normalize_hub_scope(hint_scope)
+    if explicit:
+        return explicit
+    if isinstance(item, dict):
+        item_scope = _normalize_hub_scope(item.get("scope") or item.get("area"))
+        if item_scope:
+            return item_scope
+    topics_by_id: dict[str, dict[str, Any]] = {}
+    active_map = domain_map
+    if active_map is None:
+        try:
+            active_map = load_domain_map()
+        except RouterError:
+            active_map = {}
+    if isinstance(active_map, dict):
+        topics_by_id = _topic_by_id(active_map)
+    candidates: list[str] = []
+    if isinstance(item, dict):
+        for key in ("topic_id", "slot_id", "target_repo"):
+            val = _text(item.get(key)).strip()
+            if val:
+                candidates.append(val)
+    elif item is not None:
+        val = _text(item).strip()
+        if val:
+            candidates.append(val)
+    if rich_line:
+        cells = [c.strip("` ").strip() for c in rich_line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and rich_line.lstrip().startswith("|"):
+            candidates.append(cells[1])
+    for cand in candidates:
+        low = cand.casefold()
+        topic = topics_by_id.get(low)
+        if topic:
+            return "work" if _text(topic.get("group")) == "work-business" else "non-work"
+        if low in _NON_WORK_EXACT_TOKENS or low.startswith("new-topic-vox"):
+            return "non-work"
+        if _WORK_SIGNAL_RE.search(cand):
+            return "work"
+    probe_parts = [rich_line]
+    if isinstance(item, dict):
+        probe_parts.extend(_text(item.get(k)) for k in ("title", "summary"))
+    elif item is not None:
+        probe_parts.append(_text(item))
+    if _WORK_SIGNAL_RE.search(" ".join(p for p in probe_parts if p)):
+        return "work"
+    return "non-work"
+
 def parse_cross_device_hub_description(description: str) -> dict[str, Any]:
     text = str(description or "")
     state_obj: dict[str, Any] = {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
@@ -619,127 +686,3 @@ def render_cross_device_hub_markdown(
     if gtt_suffix:
         lines.extend(["", gtt_suffix])
     return "\n".join(lines).rstrip() + "\n"
-
-def _substantive_hub_signature(description: str) -> tuple[dict[str, Any], str]:
-    parsed = parse_cross_device_hub_description(description)
-    state = copy.deepcopy(parsed.get("state") or {})
-    state.pop("updated_at", None)
-    devices = state.get("devices")
-    if isinstance(devices, dict):
-        for host_shard in devices.values():
-            if isinstance(host_shard, dict):
-                host_shard.pop("updated_at", None)
-                for item in (host_shard.get("in_flight") or []):
-                    if isinstance(item, dict):
-                        item.pop("updated_at", None)
-                for ag in (host_shard.get("agents") or []):
-                    if isinstance(ag, dict):
-                        ag.pop("updated_at", None)
-                        ag.pop("last_session_activity_at", None)
-    body = str(description or "").split("<details>", 1)[0]
-    body_norm = re.sub(r"\|\s*`\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}`\s*\|", "| `<CST>` |", body).strip()
-    return state, body_norm
-
-def _load_cross_device_cache(cache_path: Path | None) -> dict[str, Any]:
-    if cache_path is None or not cache_path.is_file():
-        return {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
-    try:
-        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict) and isinstance(loaded.get("devices"), dict):
-            return loaded
-    except (OSError, ValueError):
-        pass
-    return {"schema": M2_SYNC_SCHEMA, "updated_at": "", "devices": {}}
-
-def _save_cross_device_cache(cache_path: Path | None, state: dict[str, Any]) -> None:
-    if cache_path is None:
-        return
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
-        temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temp_path.replace(cache_path)
-    except OSError:
-        pass
-
-def _extract_remote_devices_summary(
-    cross_device_state: dict[str, Any] | None,
-    *,
-    local_hostname: str | None = None,
-) -> dict[str, Any]:
-    host = _resolve_local_hostname(local_hostname)
-    devices = (cross_device_state or {}).get("devices") if isinstance(cross_device_state, dict) else {}
-    if not isinstance(devices, dict):
-        devices = {}
-    remote_devices: dict[str, dict[str, Any]] = {}
-    remote_in_flight: list[dict[str, Any]] = []
-    remote_pending: list[dict[str, Any]] = []
-    for other_host, shard in devices.items():
-        if not isinstance(shard, dict) or str(other_host).casefold() == host.casefold():
-            continue
-        in_flight = [dict(x) for x in (shard.get("in_flight") or []) if isinstance(x, dict)]
-        pending = list(shard.get("pending_decisions") or [])
-        completed = list(shard.get("recent_completed") or [])
-        if in_flight or pending or completed:
-            remote_devices[str(other_host)] = {
-                "updated_at": _text(shard.get("updated_at")),
-                "in_flight": in_flight,
-                "pending_decisions": pending,
-                "recent_completed": completed,
-            }
-        for item in in_flight:
-            remote_in_flight.append({"host": str(other_host), **item})
-        if pending:
-            remote_pending.append({"host": str(other_host), "decisions": pending})
-    return {
-        "local_hostname": host,
-        "remote_devices": remote_devices,
-        "cross_device_in_flight": remote_in_flight,
-        "cross_device_pending_decisions": remote_pending,
-    }
-
-def _render_cross_device_rollup_lines(
-    cross_device_summary: dict[str, Any],
-) -> list[str]:
-    remote_in_flight = cross_device_summary.get("cross_device_in_flight") or []
-    remote_pending = cross_device_summary.get("cross_device_pending_decisions") or []
-    if not remote_in_flight and not remote_pending:
-        return []
-    lines = ["#### 🌐 4. 跨设备在途与待拍板（Cross-Device M2 Sync Hub · `TIA-463`）"]
-    for group in remote_pending:
-        host = _text(group.get("host"))
-        decisions = ", ".join(_text(d.get("issue") if isinstance(d, dict) else d) for d in (group.get("decisions") or []) if _text(d.get("issue") if isinstance(d, dict) else d))
-        if decisions:
-            lines.append(f"- 🚨 `[Host: {host}]` 待拍板 / 待选型: {decisions}")
-    for item in remote_in_flight:
-        host = _text(item.get("host"))
-        topic = _text(item.get("topic_id") or item.get("slot_id"), "—")
-        session_id = _text(item.get("session_id") or item.get("target"), "—")
-        pane_id = _text(item.get("pane_id"))
-        pane_str = f" (`{pane_id}`)" if pane_id else ""
-        issue = _text(item.get("issue"), "Linear 未绑定")
-        summary = _text(item.get("summary"), "—")
-        lines.append(f"- ⏳ `[Host: {host}]` `{topic}` · `{session_id}`{pane_str} · {issue} · {summary}")
-    return lines
-
-def _attach_cross_device_to_rollup(
-    board_rollup: dict[str, Any],
-    cross_device_state: dict[str, Any] | None = None,
-    *,
-    local_hostname: str | None = None,
-    cache_path: Path | None = None,
-) -> dict[str, Any]:
-    state = cross_device_state if isinstance(cross_device_state, dict) else _load_cross_device_cache(cache_path)
-    summary = _extract_remote_devices_summary(state, local_hostname=local_hostname)
-    board_rollup["local_hostname"] = summary["local_hostname"]
-    board_rollup["remote_devices"] = summary["remote_devices"]
-    board_rollup["cross_device_in_flight"] = summary["cross_device_in_flight"]
-    board_rollup["cross_device_pending_decisions"] = summary["cross_device_pending_decisions"]
-    extra_lines = _render_cross_device_rollup_lines(summary)
-    if extra_lines:
-        base_md = _text(board_rollup.get("unified_rollup_markdown"))
-        marker_header = "#### 🌐 4. 跨设备在途与待拍板"
-        if marker_header in base_md:
-            base_md = base_md.split(marker_header, 1)[0].rstrip()
-        board_rollup["unified_rollup_markdown"] = base_md + "\n" + "\n".join(extra_lines)
-    return board_rollup
