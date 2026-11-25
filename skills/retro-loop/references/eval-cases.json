@@ -1,0 +1,141 @@
+{
+  "schema": "skill-eval-cases/v1",
+  "version": 1,
+  "updated": "2026-11-25",
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "Discover accepts the documented seven-day window",
+      "cmd": "python3 skills/retro-loop/scripts/retro_story_engine.py discover --days 7 --no-auto-propose --warehouse-db /tmp/retro-loop-missing.db --queries-dir /tmp/retro-loop-missing-queries",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "\"window_days\": 7"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-002",
+      "title": "Agent efficiency accepts the documented window alias",
+      "cmd": "python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --window-days 7 --no-auto-propose --warehouse-db /tmp/retro-loop-missing.db --magpie-usage /tmp/retro-loop-missing.jsonl --copilot-db /tmp/retro-loop-missing.sqlite",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "\"window_days\": 7"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-003",
+      "title": "Skill ROI accepts an explicit no-auto-propose run",
+      "cmd": "python3 skills/retro-loop/scripts/retro_story_engine.py skill-roi --days 7 --no-auto-propose --skills-root /tmp/retro-loop-no-skills --dev-root /tmp/retro-loop-no-dev --dsh-sessions /tmp/retro-loop-no-sessions --warehouse-db /tmp/retro-loop-missing.db --copilot-db /tmp/retro-loop-missing.sqlite --magpie-usage /tmp/retro-loop-missing.jsonl --telemetry-shards-dir /tmp/retro-loop-no-shards --no-icloud-mirror",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "\"window_days\": 7"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-004",
+      "title": "Trace backfill summary is bounded and deterministic",
+      "cmd": "python3 skills/retro-loop/scripts/trace_backfill_exporter.py --target both --limit-goals 0 --limit-sessions 0 --dry-run --json --summary",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\":true",
+        "\"summary\""
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-005",
+      "title": "Discover rejects unknown flags with the skill reference",
+      "cmd": "python3 skills/retro-loop/scripts/retro_story_engine.py discover --unknown-flag",
+      "expect_exit": 2,
+      "expect_stdout_contains": [
+        "Reference: skills/retro-loop/SKILL.md"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-006",
+      "title": "Trace exporter rejects unknown flags with the skill reference",
+      "cmd": "python3 skills/retro-loop/scripts/trace_backfill_exporter.py --unknown-flag",
+      "expect_exit": 2,
+      "expect_stdout_contains": [
+        "Reference: skills/retro-loop/SKILL.md"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-007",
+      "title": "Self-disclosing parser output stays short",
+      "cmd": "python3 skills/retro-loop/scripts/retro_story_engine.py agent-efficiency --bad-flag",
+      "expect_exit": 2,
+      "expect_stdout_contains": [
+        "Reference: skills/retro-loop/SKILL.md"
+      ],
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-008",
+      "title": "CLI facade does not encode unsupported trace syntax",
+      "forbidden_regex": "base64\\.b64decode|zlib\\.decompress|exec\\(compile",
+      "bad_snippet": "exec(compile(payload, '<trace>', 'exec'))",
+      "good_snippet": "from trace_backfill_core import collection",
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ]
+    },
+    {
+      "id": "EV-009",
+      "title": "Retro loop trigger is not a portfolio rebalance request",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor",
+      "query": "rebalance my personal ETF holdings and calculate FIFO redemption windows",
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ],
+      "forbidden_regex": "\\bportfolio\\b",
+      "bad_snippet": "portfolio rebalance request",
+      "good_snippet": "retro workflow anomaly"
+    },
+    {
+      "id": "EV-010",
+      "title": "Retro loop trigger is not a UI inspiration request",
+      "should_trigger": false,
+      "near_miss_skill": "design-studio",
+      "query": "catalog mobile UI inspiration and measure a visual palette",
+      "tags": [
+        "retro-loop",
+        "cli-contract"
+      ],
+      "forbidden_regex": "\\bUI\\s+inspiration\\b",
+      "bad_snippet": "UI inspiration catalog",
+      "good_snippet": "workflow anomaly discovery"
+    }
+  ]
+}
