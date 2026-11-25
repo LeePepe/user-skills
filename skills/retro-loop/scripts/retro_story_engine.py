@@ -20,7 +20,16 @@ import sys
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
 from urllib.request import Request, urlopen
-
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from skill_runtime import SelfDisclosingArgumentParser as _RuntimeArgumentParser, compact_json_dumps
+class SelfDisclosingArgumentParser(_RuntimeArgumentParser):
+    def error(self, message: str) -> None:
+        sys.stderr.write(f"{self.prog}: {message}\n")
+        sys.stderr.write("Try --help for supported retro-loop commands.\n")
+        sys.stderr.write("Reference: skills/retro-loop/SKILL.md\n")
+        raise SystemExit(2)
 STATES = ("draft", "brief_review", "scripting", "script_review", "production", "final_review", "ready")
 _RANK = {state: index for index, state in enumerate(STATES)}
 DEFAULT_AIDATA_DIR = Path.home() / "Development" / "AIDash" / "aidata"
@@ -52,8 +61,6 @@ _REF_PATH_RE = re.compile(
 _SCRIPT_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?:/)?skills/(?P<skill>[A-Za-z0-9_-]+)/scripts/(?P<script>[A-Za-z0-9_.-]+\.(?:py|sh|ts))"
 )
-
-
 _PRIORITY_MAP = {
     "p0": "high",
     "p1": "high",
@@ -64,16 +71,11 @@ _PRIORITY_MAP = {
     "low": "low",
 }
 _CST_TZ = timezone(timedelta(hours=8))
-
-
 def _cst_today_str() -> str:
     return datetime.now(_CST_TZ).date().isoformat()
-
-
 def _normalize_priority(raw_priority: Any, default: str = "high") -> str:
     norm = str(raw_priority or default).strip().lower()
     return _PRIORITY_MAP.get(norm, default)
-
 
 class OptimisticLockError(RuntimeError):
 
@@ -410,6 +412,8 @@ def discover_aidata_signals(
     queries_dir: Path | None = None,
     proposals_path: Path | None = None,
     auto_propose: bool = True,
+    *,
+    days: int | None = None,
 ) -> dict[str, Any]:
     """Run aidata L4 retro queries against warehouse.db to discover anomalies."""
     db_path = warehouse_db or DEFAULT_WAREHOUSE_DB
@@ -423,6 +427,7 @@ def discover_aidata_signals(
             "degraded": True,
             "findings": findings,
             "project_loop_a_proposals": project_loop_a_proposals,
+            "window_days": days,
         }
 
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
@@ -465,6 +470,7 @@ def discover_aidata_signals(
         "degraded": False,
         "findings": findings,
         "project_loop_a_proposals": project_loop_a_proposals,
+        "window_days": days,
     }
 
 
@@ -646,6 +652,7 @@ def compute_skill_roi(
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
+    days: int | None = None,
     icloud_sync_dir: Path | None = None,
     mirror_icloud_roi: bool | None = None,
     icloud_roi_path: Path | None = None,
@@ -668,6 +675,7 @@ def compute_skill_roi(
         "generated_at",
         datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     )
+    report.setdefault("window_days", days)
     return report
 
 
@@ -675,8 +683,8 @@ def compute_skill_retro(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _load_skill_retro_module().compute_skill_retro(*args, **kwargs)
 
 
-def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> list[dict[str, Any]]:
-    start, end = _window_bounds()
+def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None, days: int = 7) -> list[dict[str, Any]]:
+    start, end = _window_bounds(days)
     records: list[dict[str, Any]] = []
     seen_route_sigs: set[tuple[str, str, int, int]] = set()
     seen_fps: set[str] = set()
@@ -706,7 +714,7 @@ def _usage_records(path: Path, *, telemetry_shards_dir: Path | None = None) -> l
                 if route_sig[0]:
                     seen_route_sigs.add(route_sig)
                 records.append(rec)
-    for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=7):
+    for s_rec in _read_telemetry_shards(telemetry_shards_dir, days=days):
         kind = str(s_rec.get("kind") or "")
         if kind and kind not in {"gateway_usage", "usage"}:
             continue
@@ -736,20 +744,22 @@ def compute_agent_efficiency(
     *,
     auto_propose: bool = False,
     proposals_path: Path | None = None,
+    days: int | None = None,
 ) -> dict[str, Any]:
     """Compute M1-M5 from timestamped observations in seven natural CST days."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
     mp = magpie_usage or DEFAULT_MAGPIE_USAGE
     cp = copilot_db or DEFAULT_COPILOT_DB
     shards_dir = telemetry_shards_dir
+    window_days = days if days is not None else 7
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
     review_rows, event_rows, edit_rows, ci_rows = [], [], [], []
     if _is_safe_local_file(wh):
         with contextlib.closing(sqlite3.connect(f"file:{wh}?mode=ro", uri=True)) as conn:
-            review_rows = [r for r in _timed_rows(conn, "fact_gtt_task_run")
+            review_rows = [r for r in _timed_rows(conn, "fact_gtt_task_run", days=window_days)
                            if r.get("role_name") in {"reviewer", "code_reviewer", "planner_reviewer"}]
-            event_rows = [r for r in _timed_rows(conn, "fact_gtt_event") if r.get("evt_type") == "TASK_BLOCKED"]
-            ci_rows = _timed_rows(conn, "fact_ci_job_run")
+            event_rows = [r for r in _timed_rows(conn, "fact_gtt_event", days=window_days) if r.get("evt_type") == "TASK_BLOCKED"]
+            ci_rows = _timed_rows(conn, "fact_ci_job_run", days=window_days)
     grouped_reviews: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in review_rows:
         grouped_reviews.setdefault((row["goal_id"], row["task_id"]), []).append(row)
@@ -769,7 +779,7 @@ def compute_agent_efficiency(
 
     if _is_safe_local_file(cp):
         with contextlib.closing(sqlite3.connect(f"file:{cp}?mode=ro", uri=True)) as conn:
-            edit_rows = [r for r in _timed_rows(conn, "session_files")
+            edit_rows = [r for r in _timed_rows(conn, "session_files", days=window_days)
                          if r.get("tool_name") in {"edit", "apply_patch", "create"}]
     edits: dict[tuple[str, str], int] = {}
     edit_stamps: dict[tuple[str, str], list[datetime]] = {}
@@ -784,7 +794,7 @@ def compute_agent_efficiency(
           **_freshness([r["_observed_at"] for r in edit_rows], _is_safe_local_file(cp))}
 
     shards_eff_present = bool(shards_dir and shards_dir.is_dir() and any(_is_safe_local_file(p) for p in shards_dir.glob("*-skill-usage.jsonl")))
-    records = _usage_records(mp, telemetry_shards_dir=shards_dir)
+    records = _usage_records(mp, telemetry_shards_dir=shards_dir, days=window_days)
     ttfts, retries, gateway_4xx = [], 0, 0
     group_tokens: dict[str, dict[str, int]] = {}
     cache_stamps, token_stamps = [], []
@@ -963,6 +973,7 @@ def compute_agent_efficiency(
         "auto_proposed": auto_proposed,
         "proposals_written": proposals_written,
         "proposals_skipped": proposals_skipped,
+        "window_days": window_days,
     }
 
 
@@ -1090,51 +1101,62 @@ def route_retro_candidate(
 route_retro_Candidate = route_retro_candidate
 
 
+def _emit_cli_report(report: dict[str, Any], summary: bool, preserve_keys: tuple[str, ...]) -> None:
+    if summary:
+        print(compact_json_dumps(report, summary=True, preserve_keys=preserve_keys))
+    else:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+def _add_window_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--days", "--window-days", dest="window_days", type=int, default=None)
+def _add_auto_propose_args(parser: argparse.ArgumentParser, *, default: bool) -> None:
+    parser.set_defaults(auto_propose=default)
+    parser.add_argument("--auto-propose", dest="auto_propose", action="store_true")
+    parser.add_argument("--no-auto-propose", dest="auto_propose", action="store_false")
 def main(argv: list[str] | None = None) -> int:
-    import sys
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "discover":
-        p = argparse.ArgumentParser(prog="retro_story_engine.py discover")
+        p = SelfDisclosingArgumentParser(prog="retro_story_engine.py discover")
         p.add_argument("--warehouse-db", type=Path, default=DEFAULT_WAREHOUSE_DB)
         p.add_argument("--queries-dir", type=Path, default=DEFAULT_RETRO_QUERIES_DIR)
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
-        p.add_argument("--no-auto-propose", action="store_true")
+        _add_window_args(p)
+        _add_auto_propose_args(p, default=True)
+        p.add_argument("--summary", action="store_true")
         ns = p.parse_args(args_list[1:])
-        print(
-            json.dumps(
-                discover_aidata_signals(
-                    ns.warehouse_db,
-                    ns.queries_dir,
-                    proposals_path=ns.proposals_path,
-                    auto_propose=not ns.no_auto_propose,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
+        report = discover_aidata_signals(
+            ns.warehouse_db,
+            ns.queries_dir,
+            proposals_path=ns.proposals_path,
+            auto_propose=ns.auto_propose,
+            days=ns.window_days,
         )
+        _emit_cli_report(report, ns.summary, ("ok", "degraded", "window_days", "findings", "project_loop_a_proposals"))
         return 0
     if args_list and args_list[0] == "agent-efficiency":
-        p = argparse.ArgumentParser(prog="retro_story_engine.py agent-efficiency")
+        p = SelfDisclosingArgumentParser(prog="retro_story_engine.py agent-efficiency")
         p.add_argument("--warehouse-db", type=Path, default=None)
         p.add_argument("--magpie-usage", type=Path, default=None)
         p.add_argument("--copilot-db", type=Path, default=None)
         p.add_argument("--telemetry-shards-dir", type=Path, default=None)
-        p.add_argument("--auto-propose", action="store_true")
+        _add_window_args(p)
+        _add_auto_propose_args(p, default=False)
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p.add_argument("--summary", action="store_true")
         ns = p.parse_args(args_list[1:])
         report = compute_agent_efficiency(
             ns.warehouse_db,
             ns.magpie_usage,
             ns.copilot_db,
             telemetry_shards_dir=ns.telemetry_shards_dir,
+            days=ns.window_days,
         )
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("recommendations", []), ns.proposals_path)
             report.update(auto_proposed=queued, proposals_written=len(queued), proposals_skipped=len(report.get("recommendations", [])) - len(queued))
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        _emit_cli_report(report, ns.summary, ("ok", "window_days", "metrics", "recommendations", "proposals_written", "proposals_skipped"))
         return 0
     if args_list and args_list[0] == "skill-roi":
-        p = argparse.ArgumentParser(prog="retro_story_engine.py skill-roi")
+        p = SelfDisclosingArgumentParser(prog="retro_story_engine.py skill-roi")
         p.add_argument("--warehouse-db", type=Path, default=None)
         p.add_argument("--copilot-db", type=Path, default=None)
         p.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
@@ -1145,8 +1167,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--telemetry-shards-dir", type=Path, default=None)
         p.add_argument("--icloud-roi-path", type=Path, default=None)
         p.add_argument("--no-icloud-mirror", action="store_true")
-        p.add_argument("--auto-propose", action="store_true")
+        _add_window_args(p)
+        _add_auto_propose_args(p, default=False)
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p.add_argument("--summary", action="store_true")
         ns = p.parse_args(args_list[1:])
         report = compute_skill_roi(
             warehouse_db=ns.warehouse_db,
@@ -1156,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
             magpie_usage=ns.magpie_usage,
             dsh_sessions=ns.dsh_sessions,
             telemetry_shards_dir=ns.telemetry_shards_dir,
+            days=ns.window_days,
             icloud_sync_dir=ns.icloud_sync_dir,
             mirror_icloud_roi=False if ns.no_icloud_mirror else None,
             icloud_roi_path=ns.icloud_roi_path,
@@ -1163,12 +1188,12 @@ def main(argv: list[str] | None = None) -> int:
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("low_roi_proposals", []), ns.proposals_path)
             report.update(auto_proposed=queued, proposals_written=len(queued), proposals_skipped=len(report.get("low_roi_proposals", [])) - len(queued))
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        _emit_cli_report(report, ns.summary, ("ok", "window_days", "low_roi_proposals", "proposals_written", "proposals_skipped"))
         return 0
     if args_list and args_list[0] in {"skill-retro", "probe", "triage", "diagnose", "emit-briefs", "emit-relay", "record-m1-receipt", "rollup"}:
         return _load_skill_retro_module().main(args_list)
     if args_list and args_list[0] == "propose":
-        p = argparse.ArgumentParser(prog="retro_story_engine.py propose")
+        p = SelfDisclosingArgumentParser(prog="retro_story_engine.py propose")
         p.add_argument("--id", required=True)
         p.add_argument("--title", required=True)
         p.add_argument("--detail", default="")
@@ -1179,21 +1204,13 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
         ns = p.parse_args(args_list[1:])
         res = route_retro_candidate(
-            {
-                "id": ns.id,
-                "title": ns.title,
-                "detail": ns.detail,
-                "priority": ns.priority,
-                "ref": ns.ref,
-                "scope": ns.scope,
-            },
+            {"id": ns.id, "title": ns.title, "detail": ns.detail, "priority": ns.priority, "ref": ns.ref, "scope": ns.scope},
             mode=ns.mode,
             proposals_path=ns.proposals_path,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
-
-    parser = argparse.ArgumentParser()
+    parser = SelfDisclosingArgumentParser(prog="retro_story_engine.py")
     parser.add_argument("state_path", type=Path)
     parser.add_argument("target_state", choices=STATES)
     parser.add_argument("expected_version", type=int)
@@ -1204,7 +1221,5 @@ def main(argv: list[str] | None = None) -> int:
     except OptimisticLockError as exc:
         print(json.dumps({"code": exc.code, "error": str(exc)}))
         raise SystemExit(2)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
-  "version": 1,
-  "updated": "2026-11-16",
+  "version": 2,
+  "updated": "2026-11-25",
   "active_cases": [
     {
       "id": "EV-001",
@@ -105,6 +105,46 @@
         "\"m2_status\": \"EXISTING_M2\""
       ],
       "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-006",
+      "title": "Phase-0 discussion does not pre-lock Hot-Append",
+      "tags": [
+        "phase0",
+        "r1",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message '先讨论一下通知开关方案，不改代码' --no-herdr --no-dsh --mock-jev-json '{}' --transport stdout --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "phase0_discussion_only": true
+      },
+      "expect_stdout_contains": [
+        "先讨论一下通知开关方案，不改代码"
+      ],
+      "registered_at": "2026-11-25",
+      "negative_cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --message '请直接修改代码'",
+      "expect_fail_exit": 2,
+      "negative_expect_stderr_contains": [
+        "Fix:",
+        "Reference:"
+      ]
+    },
+    {
+      "id": "EV-007",
+      "title": "Router rejects a planless invocation with actionable guidance",
+      "tags": [
+        "cli",
+        "counter-case",
+        "self-disclosing"
+      ],
+      "negative_cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --message '请直接修改代码'",
+      "expect_fail_exit": 2,
+      "expect_stderr_contains": [
+        "Fix:",
+        "Reference:"
+      ],
+      "registered_at": "2026-11-25"
     }
   ],
   "trigger_evals": [
