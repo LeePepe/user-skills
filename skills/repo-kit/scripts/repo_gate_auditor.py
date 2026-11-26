@@ -763,24 +763,12 @@ def _json_size(payload: Mapping[str, Any]) -> int:
 
 
 def _compact_repo_report(report: Mapping[str, Any], *, minimal: bool = False) -> dict[str, Any]:
-    compact: dict[str, Any] = {
-        key: report.get(key)
-        for key in (
-            "repo",
-            "repo_path",
-            "gate_health_score",
-            "status",
-            "has_verify_entrypoint",
-            "has_incremental_verify",
-            "has_parallel_runner",
-            "hooks_path",
-            "shared_ci_pin",
-            "has_repo_contract_json",
-            "triggered_rules",
-            "findings_count",
-        )
-        if key in report
-    }
+    keep = (
+        "repo", "repo_path", "gate_health_score", "status", "has_verify_entrypoint",
+        "has_incremental_verify", "has_parallel_runner", "hooks_path", "shared_ci_pin",
+        "has_repo_contract_json", "triggered_rules", "findings_count",
+    )
+    compact: dict[str, Any] = {k: report.get(k) for k in keep if k in report}
     findings = []
     for finding in report.get("findings") or []:
         if not isinstance(finding, Mapping):
@@ -794,21 +782,58 @@ def _compact_repo_report(report: Mapping[str, Any], *, minimal: bool = False) ->
     return compact
 
 
-def _compact_proposal(proposal: Mapping[str, Any], *, minimal: bool = False) -> dict[str, Any]:
-    keys = ("id", "ref", "metric_id", "rule_id", "category", "priority", "speedup_angle", "affected_repos_count")
-    compact = {key: proposal.get(key) for key in keys if key in proposal}
-    compact["skill"] = str(proposal.get("skill") or "repo-kit")
-    compact["layer"] = str(proposal.get("layer") or "L2")
-    compact["affected_repos"] = [str(r)[:60] for r in (proposal.get("affected_repos") or [])[: (4 if minimal else 8)]]
-    cap = 120 if minimal else 140
+def _json_str_cap(value: Any, max_json_bytes: int, fallback: str = "") -> str:
+    text = str(value or "") or fallback
+    budget = max(16, max_json_bytes)
+    lo, hi = 0, len(text)
+    if len(json.dumps(text, ensure_ascii=False).encode("utf-8")) <= budget:
+        return text
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(text[:mid], ensure_ascii=False).encode("utf-8")) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    out = text[:lo]
+    if not out and fallback:
+        return fallback[: max(1, budget // 6)]
+    return out
+
+
+def _compact_proposal(
+    proposal: Mapping[str, Any],
+    *,
+    minimal: bool = False,
+    text_cap: int | None = None,
+    text_byte_cap: int | None = None,
+    repo_limit: int | None = None,
+    repo_name_cap: int = 60,
+) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, bcap in (("id", 96), ("ref", 128), ("metric_id", 96), ("rule_id", 32), ("category", 64), ("priority", 16), ("speedup_angle", 48)):
+        if key in proposal:
+            val = proposal.get(key)
+            compact[key] = _json_str_cap(val, bcap) if val is not None else None
+    if "affected_repos_count" in proposal:
+        compact["affected_repos_count"] = proposal.get("affected_repos_count")
+    compact["skill"] = _json_str_cap(proposal.get("skill") or "repo-kit", 48, "repo-kit")
+    compact["layer"] = _json_str_cap(proposal.get("layer") or "L2", 16, "L2")
+    eff_repo_limit = (4 if minimal else 8) if repo_limit is None else max(0, repo_limit)
+    compact["affected_repos"] = [
+        _json_str_cap(r, max(24, repo_name_cap)) for r in (proposal.get("affected_repos") or [])[:eff_repo_limit]
+    ]
+    cap = (120 if minimal else 140) if text_cap is None else max(24, text_cap)
+    b_limit = text_byte_cap if text_byte_cap is not None else (260 if minimal else 320)
     for field in ("title", "plain_reason", "action"):
-        compact[field] = str(proposal.get(field) or "")[:cap]
+        fallback = f"{compact.get('rule_id') or 'RG'} {field}"
+        trimmed = (str(proposal.get(field) or "") or fallback)[:cap]
+        compact[field] = _json_str_cap(trimmed, b_limit, fallback)
     return compact
 
 
 def _slim_repo_entry(repo: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "repo": str(repo.get("repo") or "")[:80],
+        "repo": _json_str_cap(repo.get("repo"), 80),
         "gate_health_score": repo.get("gate_health_score"),
         "status": repo.get("status"),
         "triggered_rules": repo.get("triggered_rules", []),
@@ -818,7 +843,7 @@ def _slim_repo_entry(repo: Mapping[str, Any]) -> dict[str, Any]:
 
 def _compact_scan_errors(errors: Sequence[Mapping[str, Any]], *, limit: int, err_cap: int = 120) -> list[dict[str, str]]:
     return [
-        {"repo": str(e.get("repo") or "")[:60], "error": str(e.get("error") or "")[:err_cap]}
+        {"repo": _json_str_cap(e.get("repo"), 60), "error": _json_str_cap(e.get("error"), err_cap)}
         for e in list(errors)[:limit]
         if isinstance(e, Mapping)
     ]
@@ -836,7 +861,7 @@ def _maybe_compact_report(
     raw_repos = list(payload.get("repos") or [])
     raw_errors = list(payload.get("scan_errors") or [])
     raw_healthy = [
-        str(repo.get("repo") or "")[:80]
+        _json_str_cap(repo.get("repo"), 80)
         for repo in raw_repos
         if repo.get("findings_count") == 0 and repo.get("status") != "scan_error"
     ]
@@ -883,18 +908,41 @@ def _maybe_compact_report(
             if _json_size(compacted) <= COMPACT_JSON_BYTES:
                 break
     if _json_size(compacted) > COMPACT_JSON_BYTES:
-        compacted["dev_root"] = str(compacted.get("dev_root") or "")[:120]
-        compacted["repos"] = []
-        compacted["repos_truncated"] = total_repos
-        compacted["scan_errors"] = []
-        compacted["scan_errors_truncated"] = total_errors
-        compacted["healthy_repo_names"] = []
-        compacted["healthy_repo_names_truncated"] = len(raw_healthy)
+        raw_props = list(payload.get("actionable_proposals") or [])
+        compacted["dev_root"] = _json_str_cap(compacted.get("dev_root"), 96)
+        compacted["repos"], compacted["repos_truncated"] = [], total_repos
+        compacted["scan_errors"], compacted["scan_errors_truncated"] = [], total_errors
+        compacted["healthy_repo_names"], compacted["healthy_repo_names_truncated"] = [], len(raw_healthy)
         if "bottleneck_repos" in compacted:
-            compacted["bottleneck_repos"] = []
-            compacted["bottleneck_repos_truncated"] = total_bottlenecks
+            compacted["bottleneck_repos"], compacted["bottleneck_repos_truncated"] = [], total_bottlenecks
         if _json_size(compacted) > COMPACT_JSON_BYTES:
             compacted.pop("flow_map", None)
+        if _json_size(compacted) > COMPACT_JSON_BYTES:
+            for t_cap, b_cap, r_lim, rn_cap in ((96, 180, 2, 48), (64, 120, 1, 32), (40, 80, 0, 24), (24, 48, 0, 24)):
+                compacted["actionable_proposals"] = [
+                    _compact_proposal(p, minimal=True, text_cap=t_cap, text_byte_cap=b_cap, repo_limit=r_lim, repo_name_cap=rn_cap)
+                    for p in raw_props[:6]
+                ]
+                if len(raw_props) > len(compacted["actionable_proposals"]):
+                    compacted["actionable_proposals_truncated"] = len(raw_props) - len(compacted["actionable_proposals"])
+                if _json_size(compacted) <= COMPACT_JSON_BYTES:
+                    break
+        core_keys = {
+            "ok", "schema", "skill", "subcommand", "repos_scanned", "healthy_repos_count", "drifted_repos_count",
+            "scan_errors_count", "average_gate_health_score", "total_findings", "rule_counts", "repos",
+            "repos_truncated", "scan_errors", "scan_errors_truncated", "healthy_repo_names",
+            "healthy_repo_names_truncated", "bottleneck_repos", "bottleneck_repos_count", "bottleneck_repos_truncated",
+            "actionable_proposals", "actionable_proposals_truncated", "summary_compacted", "reference",
+        }
+        while _json_size(compacted) > COMPACT_JSON_BYTES:
+            extra_keys = [k for k in compacted if k not in core_keys]
+            if extra_keys:
+                compacted.pop(extra_keys[-1], None)
+            elif len(compacted["actionable_proposals"]) > 1:
+                compacted["actionable_proposals"] = compacted["actionable_proposals"][:-1]
+                compacted["actionable_proposals_truncated"] = max(0, len(raw_props) - len(compacted["actionable_proposals"]))
+            else:
+                break
     return compacted
 
 
@@ -1002,20 +1050,10 @@ def scan_repositories(
 scan_repos = scan_repositories
 
 
-def build_bottlenecks_report(
-    *,
-    repo: Path | None = None,
-    dev_root: Path | None = None,
-    repos: str | Sequence[str] | None = None,
-    flow_map: bool = False,
-    summary: bool = False,
-    compact: bool = False,
-    full: bool = False,
-    no_cache: bool = False,
-) -> dict[str, Any]:
-    base = scan_repositories(
-        repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map, full=True, no_cache=no_cache
-    )
+def build_bottlenecks_report(**kwargs: Any) -> dict[str, Any]:
+    force = bool(kwargs.pop("summary", False) or kwargs.pop("compact", False))
+    full = bool(kwargs.pop("full", False))
+    base = scan_repositories(**kwargs, full=True)
     bottleneck_repos = [
         r for r in base["repos"] if any(rid in r["triggered_rules"] for rid in ("RG-002", "RG-003", "RG-004"))
     ]
@@ -1025,23 +1063,14 @@ def build_bottlenecks_report(
         "bottleneck_repos_count": len(bottleneck_repos),
         "bottleneck_repos": bottleneck_repos,
     }
-    return _maybe_compact_report(report, force=summary or compact, full=full)
+    return _maybe_compact_report(report, force=force, full=full)
 
 
-def build_loop_check_report(
-    *,
-    repo: Path | None = None,
-    dev_root: Path | None = None,
-    repos: str | Sequence[str] | None = None,
-    flow_map: bool = True,
-    summary: bool = False,
-    compact: bool = False,
-    full: bool = False,
-    no_cache: bool = False,
-) -> dict[str, Any]:
-    base = scan_repositories(
-        repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map, full=True, no_cache=no_cache
-    )
+def build_loop_check_report(**kwargs: Any) -> dict[str, Any]:
+    force = bool(kwargs.pop("summary", False) or kwargs.pop("compact", False))
+    full = bool(kwargs.pop("full", False))
+    kwargs.setdefault("flow_map", True)
+    base = scan_repositories(**kwargs, full=True)
     report = {
         **base,
         "subcommand": "loop-check",
@@ -1052,7 +1081,7 @@ def build_loop_check_report(
             "python3 skills/skill-retro/scripts/skill_retro.py diagnose --skill repo-kit --mode full --json",
         ],
     }
-    return _maybe_compact_report(report, force=summary or compact, full=full)
+    return _maybe_compact_report(report, force=force, full=full)
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:

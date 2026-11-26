@@ -26,6 +26,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 AUDITOR_PATH = ROOT / "skills" / "repo-kit" / "scripts" / "repo_gate_auditor.py"
 AUTOPILOT_PATH = ROOT / "skills" / "retro-loop" / "scripts" / "multica_skills_autopilot.py"
+AGENT_RETRO_SCRIPTS = ROOT / "skills" / "agent-retro" / "scripts"
+if str(AGENT_RETRO_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(AGENT_RETRO_SCRIPTS))
+from agent_retro_core import base as AGENT_BASE  # noqa: E402
+from agent_retro_core import metrics as AGENT_METRICS  # noqa: E402
 
 
 def _load_mod(name: str, path: Path):
@@ -222,6 +227,67 @@ class FixPseudoSkillSkillsTests(unittest.TestCase):
             self.assertTrue(prop["plain_reason"])
             self.assertTrue(prop["action"])
 
+    def test_escaped_control_char_repo_names_six_rules_stay_under_15kb(self) -> None:
+        escaped_repos = [("\x01" * 60) + str(i) for i in range(4)]
+        synth_findings = [
+            {
+                "rule_id": rid,
+                "repo": repo_name,
+                "evidence": "\x01" * 180,
+                "remediation": "\x02" * 180,
+            }
+            for repo_name in escaped_repos
+            for rid in AUDITOR.RULE_METADATA
+        ]
+        repo_reports = [{"repo": r, "findings": [f for f in synth_findings if f["repo"] == r]} for r in escaped_repos]
+        proposals = AUDITOR._synthesize_actionable_proposals(repo_reports)
+        self.assertEqual(len(proposals), 6)
+        payload = {
+            "ok": True,
+            "schema": "repo-gate-audit/v1",
+            "skill": "repo-kit",
+            "dev_root": "\x01" * 120,
+            "shared_ci_head": "1234567890ab",
+            "repos_scanned": 4,
+            "healthy_repos_count": 0,
+            "drifted_repos_count": 4,
+            "scan_errors_count": 0,
+            "scan_errors": [],
+            "average_gate_health_score": 0.0,
+            "total_findings": 24,
+            "rule_counts": {rid: 4 for rid in AUDITOR.RULE_METADATA},
+            "speedup_4_angles": dict.fromkeys(
+                ("angle_a_path_scoped", "angle_b_watermark_cache", "angle_c_parallel_dag", "angle_d_tiered_fast_fail"),
+                6,
+            ),
+            "repos": [
+                {
+                    "repo": r,
+                    "gate_health_score": 0,
+                    "status": "critical",
+                    "triggered_rules": list(AUDITOR.RULE_METADATA),
+                    "findings_count": 6,
+                    "findings": [f for f in synth_findings if f["repo"] == r],
+                }
+                for r in escaped_repos
+            ],
+            "actionable_proposals": proposals,
+            "reference": AUDITOR.REFERENCE_DOC,
+            "flow_map": {"stages": ["1", "2", "3"]},
+        }
+        compacted = AUDITOR._maybe_compact_report(payload, force=True)
+        serialized = json.dumps(compacted, ensure_ascii=False, indent=2).encode("utf-8")
+        self.assertLessEqual(len(serialized), 15_000)
+        self.assertGreaterEqual(len(compacted["actionable_proposals"]), 1)
+        for prop in compacted["actionable_proposals"]:
+            self.assertEqual(prop["skill"], "repo-kit")
+            self.assertEqual(prop["layer"], "L2")
+            self.assertTrue(prop["ref"])
+            self.assertTrue(prop["metric_id"])
+            self.assertTrue(prop["title"])
+            self.assertTrue(prop["plain_reason"])
+            self.assertTrue(prop["action"])
+
     def test_autopilot_maps_rg_proposals_to_repo_kit_and_drops_pseudo_skills(self) -> None:
         raw_retro = {
             "ok": True,
@@ -318,6 +384,32 @@ class FixPseudoSkillSkillsTests(unittest.TestCase):
         md = AUTOPILOT.build_issue_markdown(snapshot)
         self.assertIn("| — | — | `healthy` | `clean` |", md)
         self.assertNotIn("`skills`", md)
+
+    def test_agent_retro_is_valid_skill_slug_rejects_pseudo_tokens_and_nested_paths(self) -> None:
+        pseudo_tokens = (
+            "skills", "skill", "scripts", "references", "tests", "test",
+            "main", "unknown", "repo", "meta", "workflow", "design", "research",
+        )
+        for token in pseudo_tokens:
+            self.assertFalse(AGENT_BASE.is_valid_skill_slug(token), f"{token} must be rejected with require_repo_dir=False")
+            self.assertFalse(AGENT_BASE.is_valid_skill_slug(token, require_repo_dir=True))
+
+        for real_skill in ("repo-kit", "retro-loop", "agent-retro", "team-lead", "skill-contract"):
+            self.assertTrue(AGENT_BASE.is_valid_skill_slug(real_skill))
+            self.assertTrue(AGENT_BASE.is_valid_skill_slug(real_skill, require_repo_dir=True))
+
+        nested_pseudo_event = {
+            "type": "tool.execution_complete",
+            "data": {
+                "toolName": "view",
+                "arguments": {"path": "/tmp/Skills/skills/skills/references/guide.md"},
+                "result": {"content": "ok"},
+            },
+        }
+        self.assertIsNone(AGENT_METRICS._skill_from_tool_event(nested_pseudo_event, include_non_scripts=True))
+        obs = AGENT_BASE._observation("I1_cold_start_greedy_drawer_read", "invoke", 3, ["s1: greedy"], skill="skills", sessions=1)
+        self.assertEqual(obs["skill"], "agent-retro")
+        self.assertNotEqual(obs["skill"], "skills")
 
 
 if __name__ == "__main__":

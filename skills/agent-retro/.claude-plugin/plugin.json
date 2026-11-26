@@ -1,7 +1,7 @@
 {
   "name": "agent-retro",
   "description": "v2.1.0 6-layer agent trajectory retro (role, handoff, invoke, exec, friction, horizon): bounded zero-token probe, post-fix watermark triage, Jev fallback, and M2-to-M1 rollup. Not for product crash telemetry or blog extraction.",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "skills": [
     "SKILL.md"
   ],
