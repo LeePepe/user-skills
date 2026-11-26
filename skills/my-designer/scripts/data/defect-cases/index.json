@@ -1,7 +1,7 @@
 {
   "schema": "apple-design-defect-cases/v1",
   "version": 3,
-  "updated": "2026-11-10",
+  "updated": "2026-11-26",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
@@ -103,73 +103,6 @@
       "bad_snippet": "LazyVStack(spacing: 12) {\n    ForEach(items) { item in\n        if item.isVisible {\n            ItemRow(item: item)\n        }\n    }\n}",
       "good_snippet": "LazyVStack(spacing: 12) {\n    ForEach(visibleItems) { item in\n        ItemRow(item: item)\n    }\n}",
       "registered_at": "2026-11-09"
-    },
-    {
-      "id": "DC-005",
-      "title": "Table Header-to-Cell Column Geometry Drift (Flex Header vs. Fixed-Width Centered Row)",
-      "platforms": [
-        "desktop",
-        "mobile",
-        "web"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "component"
-      ],
-      "containers": [
-        "ScrollView",
-        "List",
-        "VStack",
-        "LazyVStack"
-      ],
-      "symptom": "Table header HStack uses maxWidth: .infinity + .leading on a column while the corresponding data row HStack uses only fixed width + .center columns, causing the row HStack to be narrower than the container, center-drift inside the card, and misalign every cell beneath its header.",
-      "fix_rule": "Enforce a shared column geometry contract between Header and Row (identical fixed column widths, identical maxWidth: .infinity flex columns, identical per-column alignment, and 100% matching outer HStack spacing/padding, or use SwiftUI Grid / GridRow); never pair a maxWidth: .infinity header column with fixed-width-only data rows.",
-      "forbidden_regex": "var\\s+\\w*[Hh]eader\\w*\\s*:\\s*some\\s+View\\s*\\{[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?maxWidth\\s*:\\s*\\.infinity[\\s\\S]{0,600}?var\\s+\\w*[Rr]ow\\w*\\s*:\\s*some\\s+View\\s*\\{(?![\\s\\S]{0,450}?maxWidth\\s*:\\s*\\.infinity)[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?\\.frame\\(\\s*width\\s*:",
-      "bad_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(width: 120)\n        Text(row.amount).frame(width: 80)\n    }\n}",
-      "good_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80, alignment: .trailing)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(maxWidth: .infinity, alignment: .leading)\n        Text(row.amount).frame(width: 80, alignment: .trailing)\n    }\n}",
-      "registered_at": "2026-11-09"
-    },
-    {
-      "id": "DC-007",
-      "title": "Web Prose Decorative Emoji Heading & Box-in-Box Callout Clutter",
-      "platforms": [
-        "web"
-      ],
-      "dimensions": [
-        "visual-style",
-        "typography-copy",
-        "layout-navigation"
-      ],
-      "containers": [
-        "WebViewport"
-      ],
-      "symptom": "Long-form Web prose prefixes section headings with decorative Emojis (📌/❓/✅/🎬/🏷️) and wraps every Q&A or checklist in its own bordered card, creating wireframe clutter.",
-      "fix_rule": "Use quiet editorial typography: native blockquote (4px left accent bar) for TL;DR, standard h2/h3 + 1px hairline dividers for Q&A/checklists, zero nested .card cages inside .prose, and zero decorative heading Emojis.",
-      "forbidden_regex": "<h[1-4][^>]*>\\s*[📌❓✅🎬🏷️💡🔥✨🎯🚀]",
-      "bad_snippet": "<article class=\"prose\">\n  <h2>📌 核心痛点问答</h2>\n</article>",
-      "good_snippet": "<article class=\"prose\">\n  <h2>核心痛点问答</h2>\n</article>",
-      "registered_at": "2026-11-10"
-    },
-    {
-      "id": "DC-008",
-      "title": "Web Prose Table Global white-space:nowrap Horizontal Overflow",
-      "platforms": [
-        "web"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "typography-copy",
-        "component"
-      ],
-      "containers": [
-        "WebViewport"
-      ],
-      "symptom": "Applying white-space: nowrap to all .prose th, .prose td forces multi-column CJK prose tables onto single lines, overflowing 680px desktop cards and clipping 390px mobile viewports.",
-      "fix_rule": "Allow natural text wrapping on .prose td (white-space: normal; min-width: 96px) inside an overflow-x: auto table container, and restrict white-space: nowrap to .num, time, or short code columns.",
-      "forbidden_regex": "\\.prose\\s+th\\s*,\\s*\\.prose\\s+td\\s*\\{[^}]*white-space\\s*:\\s*nowrap",
-      "bad_snippet": ".prose th, .prose td { padding: 8px 10px; white-space: nowrap; }",
-      "good_snippet": ".prose th { white-space: nowrap; }\n.prose td { padding: 8px 10px; white-space: normal; min-width: 96px; }",
-      "registered_at": "2026-11-10"
     },
     {
       "id": "DC-009",
@@ -357,6 +290,60 @@
       "bad_snippet": "VStack {\n    unifiedTitleHeaderRow\n    if isExpanded { editableDescriptionBlock }\n    unifiedMetadataStatusPriorityTimestampRow\n    compactStatusCapsule(showLabel: isExpanded)\n    inlineTagTrayPanel.transition(.opacity.combined(with: .move(edge: .top)))\n}",
       "good_snippet": "VStack {\n    unifiedTitleHeaderRow\n    unifiedMetadataStatusPriorityTimestampRow\n    TodoExpandRevealLayout(progress: isExpanded ? 1.0 : 0.0) {\n        VStack {\n            editableDescriptionBlock\n            inlineTagTrayPanel\n        }\n    }.clipped()\n    statusPill(showLabel: false)\n    priorityPill(showLabel: true)\n    inlineTagTrayPanel.transition(.opacity.combined(with: .move(edge: .top))).clipped()\n}",
       "registered_at": "2026-11-17"
+    },
+    {
+      "id": "DC-017",
+      "title": "Compact Pill Visual-vs-Hit-Area Inflation",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "component",
+        "layout-navigation"
+      ],
+      "containers": [],
+      "symptom": "A full 44x44pt mobile or 28x28pt desktop hit frame is painted as a solid badge or citation pill, inflating the visible control.",
+      "fix_rule": "Keep the tinted visual capsule compact at roughly 20-24pt inside a transparent outer hit target sized for accessibility.",
+      "forbidden_regex": null,
+      "registered_at": "2026-11-26"
+    },
+    {
+      "id": "DC-018",
+      "title": "Floating Chrome & Scroll Safe-Area Collision",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "containers": [],
+      "symptom": "Scrollable content intersects floating bottom bars or top status chrome because the final item and scrolled text have no safe-area clearance.",
+      "fix_rule": "Reserve bottom contentMargins so the final item clears the floating dock with zero intersection, and soften or protect top scrolled text from status-bar chrome.",
+      "forbidden_regex": null,
+      "registered_at": "2026-11-26"
+    },
+    {
+      "id": "DC-019",
+      "title": "Stacked Metadata Leading-Rail & Multi-Line Header Alignment",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "typography-copy"
+      ],
+      "containers": [],
+      "symptom": "Vertical icon-and-label metadata rows drift across text rails, while multi-line table headers lack a shared baseline or consistent column geometry.",
+      "fix_rule": "Use a fixed-width icon slot for one text rail and align multi-line headers to a shared baseline with stable column geometry.",
+      "forbidden_regex": null,
+      "registered_at": "2026-11-26"
     }
   ],
   "archived_templates": [
@@ -415,6 +402,75 @@
       "symptom": "High-precision metrics truncate with ellipsis when paired with long labels.",
       "fix_rule": "Apply .monospacedDigit() and .layoutPriority(1) on numeric readouts; use ViewThatFits for unbounded titles.",
       "forbidden_regex": null
+    }
+  ],
+  "archived_cases": [
+    {
+      "id": "DC-005",
+      "title": "Table Header-to-Cell Column Geometry Drift (Flex Header vs. Fixed-Width Centered Row)",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "ScrollView",
+        "List",
+        "VStack",
+        "LazyVStack"
+      ],
+      "symptom": "Table header HStack uses maxWidth: .infinity + .leading on a column while the corresponding data row HStack uses only fixed width + .center columns, causing the row HStack to be narrower than the container, center-drift inside the card, and misalign every cell beneath its header.",
+      "fix_rule": "Enforce a shared column geometry contract between Header and Row (identical fixed column widths, identical maxWidth: .infinity flex columns, identical per-column alignment, and 100% matching outer HStack spacing/padding, or use SwiftUI Grid / GridRow); never pair a maxWidth: .infinity header column with fixed-width-only data rows.",
+      "forbidden_regex": "var\\s+\\w*[Hh]eader\\w*\\s*:\\s*some\\s+View\\s*\\{[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?maxWidth\\s*:\\s*\\.infinity[\\s\\S]{0,600}?var\\s+\\w*[Rr]ow\\w*\\s*:\\s*some\\s+View\\s*\\{(?![\\s\\S]{0,450}?maxWidth\\s*:\\s*\\.infinity)[\\s\\S]{0,450}?HStack[\\s\\S]{0,350}?\\.frame\\(\\s*width\\s*:",
+      "bad_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(width: 120)\n        Text(row.amount).frame(width: 80)\n    }\n}",
+      "good_snippet": "var tableHeader: some View {\n    HStack {\n        Text(\"Title\").frame(maxWidth: .infinity, alignment: .leading)\n        Text(\"Amount\").frame(width: 80, alignment: .trailing)\n    }\n}\nvar tableRow: some View {\n    HStack {\n        Text(row.title).frame(maxWidth: .infinity, alignment: .leading)\n        Text(row.amount).frame(width: 80, alignment: .trailing)\n    }\n}",
+      "registered_at": "2026-11-09"
+    },
+    {
+      "id": "DC-007",
+      "title": "Web Prose Decorative Emoji Heading & Box-in-Box Callout Clutter",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "typography-copy",
+        "layout-navigation"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Long-form Web prose prefixes section headings with decorative Emojis (📌/❓/✅/🎬/🏷️) and wraps every Q&A or checklist in its own bordered card, creating wireframe clutter.",
+      "fix_rule": "Use quiet editorial typography: native blockquote (4px left accent bar) for TL;DR, standard h2/h3 + 1px hairline dividers for Q&A/checklists, zero nested .card cages inside .prose, and zero decorative heading Emojis.",
+      "forbidden_regex": "<h[1-4][^>]*>\\s*[📌❓✅🎬🏷️💡🔥✨🎯🚀]",
+      "bad_snippet": "<article class=\"prose\">\n  <h2>📌 核心痛点问答</h2>\n</article>",
+      "good_snippet": "<article class=\"prose\">\n  <h2>核心痛点问答</h2>\n</article>",
+      "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-008",
+      "title": "Web Prose Table Global white-space:nowrap Horizontal Overflow",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "typography-copy",
+        "component"
+      ],
+      "containers": [
+        "WebViewport"
+      ],
+      "symptom": "Applying white-space: nowrap to all .prose th, .prose td forces multi-column CJK prose tables onto single lines, overflowing 680px desktop cards and clipping 390px mobile viewports.",
+      "fix_rule": "Allow natural text wrapping on .prose td (white-space: normal; min-width: 96px) inside an overflow-x: auto table container, and restrict white-space: nowrap to .num, time, or short code columns.",
+      "forbidden_regex": "\\.prose\\s+th\\s*,\\s*\\.prose\\s+td\\s*\\{[^}]*white-space\\s*:\\s*nowrap",
+      "bad_snippet": ".prose th, .prose td { padding: 8px 10px; white-space: nowrap; }",
+      "good_snippet": ".prose th { white-space: nowrap; }\n.prose td { padding: 8px 10px; white-space: normal; min-width: 96px; }",
+      "registered_at": "2026-11-10"
     }
   ]
 }

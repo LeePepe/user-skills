@@ -9,11 +9,13 @@ from pathlib import Path
 from . import shared
 from . import audit
 from . import route
+from . import vision_audit
 from .shared import *
 from .audit import *
 from .route import *
+from .vision_audit import *
 
-for _module in (shared, audit, route):
+for _module in (shared, audit, route, vision_audit):
     for _name in dir(_module):
         if not _name.startswith("__"):
             globals().setdefault(_name, getattr(_module, _name))
@@ -208,6 +210,14 @@ def build_parser(*, flag_targets: bool = False) -> argparse.ArgumentParser:
     ws.add_argument("--max-dead-space", "--max-ratio", dest="max_dead_space", type=float, default=None)
     ws.add_argument("--persona", default=None, help="Context-scoped Tier 2 persona: compact (0.25), default (0.40), breathing (0.55 + >=0.12 advisory)")
 
+    vision = sub.add_parser("vision-audit", parents=[common], help="Fail-closed pixel defect audit for exported PNG screenshots")
+    vision.add_argument("--dir", dest="directories", action="append", default=None, metavar="PNG_DIR")
+    vision.add_argument("--image", dest="images", action="append", default=None, metavar="PNG")
+    vision.add_argument("--platform", "--surface", choices=["desktop", "macos", "mobile", "ios", "web"], default="mobile")
+    vision.add_argument("--out", default=None, metavar="REPORT_JSON")
+    vision.add_argument("--mock-response", default=None, metavar="JSON_FILE")
+    vision.add_argument("--provider", choices=["auto", "openai", "magpie"], default="auto")
+
     geom = sub.add_parser("audit-geometry", parents=[common], help="Audit subtree leaf AABB collisions (>2pt^2 -> GEOM_TEXT_COLLISION) and layout bounds")
     geom.add_argument("positional_paths", nargs="*", default=[], metavar="GEOMETRY_JSON")
     geom.add_argument("--path", "--file", "--audit-geometry", dest="path", action="append", default=None, metavar="GEOMETRY_JSON")
@@ -264,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     flag_index = next((i for i, arg in enumerate(raw_argv) if arg.split('=', 1)[0] in selectors), None)
     subcommands = {'flow-map', 'inspect-json', 'route', 'audit-code', 'audit-swift', 'check-code', 'audit',
                    'audit-spec', 'check-whitespace-ratio', 'audit-geometry', 'check-section-interactivity',
-                   'lookup-defect', 'jev-gate', 'register-case'}
+                   'lookup-defect', 'vision-audit', 'jev-gate', 'register-case'}
     flag_targets = flag_index is not None and not any(arg in subcommands for arg in raw_argv[:flag_index])
     parser = build_parser(flag_targets=flag_targets)
     if "--audit-spec" in raw_argv and "--strict-spec-gaps" in raw_argv:
@@ -333,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_check_section_interactivity(args)
     if args.command == "lookup-defect":
         return command_lookup_defect(args)
+    if args.command == "vision-audit":
+        return command_vision_audit(args)
     if args.command == "register-case":
         return command_register_case(args)
     if args.command == "jev-gate":
