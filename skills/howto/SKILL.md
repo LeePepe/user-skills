@@ -43,6 +43,12 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 `✅ workiq + jev_client` 已就绪；`🔴 TK-09 水位采集脚本` 与 `🔴 dsh/Cindy session 投递机制` 交 M1 调查。确认后按四步 SOP 回写图谱或独立下沉实现，不在 M2 直接翻代码。
 
+### 4.4.1 Cindy Buddy 隔离脚手架配方（TK5）
+
+- **Inbound**：Manual/Pulse 的新 Buddy 或 0-Token schedule 需求；**Internal**：每个 `<slug>` 独立 state、`.cindy` protocol bundle、Sticky TL wake/notify 与 `read_only_review` / `worktree_remediation` guard；**Calls**：E1/E6/E4/E9/I5。
+- **PointsTo**：`R10` receipt、scheduler registration 与验证结果；**Trigger & Notify**：`Manual / Pulse`，P0 阻塞、P1 回执，禁止共享 bridge script 或真实远端写入。
+- 先计划再生成：`python3 skills/howto/scripts/cindy_buddy_scaffold.py plan --slug <slug> --display-name <name> --tl-role read_only_review --json`；使用 `scaffold` 写入隔离 bundle，`register-db --db <fixture.sqlite>` 以事务、备份和 `next_fire_at` 登记，最后 `verify-isolation --config <a>/buddy.json --config <b>/buddy.json`。
+
 ### 4.5 P9/P2 → P1 → E7 → E4 AIDash AI 指标新增与扩展配方
 
 - **Inbound**：Owner 新增/重构指标或 P3 复盘提案；厚领域流程由独立 `aidash-metrics` Skill 接管。

@@ -114,6 +114,16 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
             "python3 skills/issue-brief/scripts/verify_issue_format.py verify - --json",
         ],
     },
+    {
+        "keywords": ("cindy", "buddy", "0-token schedule", "0 token schedule", "isolated sticky tl", "sticky tl", "cindy-script", "脚手架", "隔离"),
+        "nodes": ["E1", "E6", "E4", "E9", "I5"],
+        "skills": ["howto", "workflow-hub", "team-lead"],
+        "cli_commands": [
+            "python3 skills/howto/scripts/cindy_buddy_scaffold.py plan --slug <slug> --display-name <name> --tl-role read_only_review --json",
+            "python3 skills/howto/scripts/cindy_buddy_scaffold.py scaffold --slug <slug> --output-dir <dir> --dry-run --json",
+            "python3 skills/howto/scripts/cindy_buddy_scaffold.py verify-isolation --config <buddy-a.json> --config <buddy-b.json> --json",
+        ],
+    },
 )
 
 
