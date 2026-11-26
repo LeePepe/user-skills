@@ -183,6 +183,57 @@
         }
       ],
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-RK-007",
+      "title": "Positive replay: shared-ci self-provider exemption and consumer RG-002 counter-case are covered",
+      "tags": ["replay", "positive", "counter-case", "RG-002"],
+      "file": "scripts/test_repo_kit_gate_auditor.py",
+      "must_contain": [
+        "test_shared_provider_rg002_exemption_has_consumer_counter_case",
+        "self-provider",
+        "self.assertIn(\"RG-002\", consumer_report[\"triggered_rules\"])"
+      ],
+      "verify_lines": ["Positive and neighboring consumer replay cases cover the RG-002 scenario-conditioned branch."],
+      "assertions": [{"severity": "hard", "fatal": true, "passed": true, "check": "RG-002 provider exemption and consumer counter-case are present"}],
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-RK-008",
+      "title": "Positive replay: upstream/profile exemption still catches owned engineering RG-001",
+      "tags": ["replay", "positive", "counter-case", "RG-001"],
+      "file": "scripts/test_repo_kit_gate_auditor.py",
+      "must_contain": [
+        "test_scope_conditioned_rg001_exempts_upstream_but_catches_owned_engineering",
+        "exempt_third_party_upstream",
+        "self.assertIn(\"RG-001\", owned_report[\"triggered_rules\"])"
+      ],
+      "verify_lines": ["Positive upstream/profile and owned-engineering replay cases cover RG-001 scope triage."],
+      "assertions": [{"severity": "hard", "fatal": true, "passed": true, "check": "RG-001 upstream exemption and owned-engineering counter-case are present"}],
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-RK-009",
+      "title": "Positive replay: pr-facts and pr-status are visible read-only CLI entrypoints",
+      "tags": ["cli", "positive", "pr-facts", "facts-only"],
+      "cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": ["pr-facts", "pr-status"],
+      "verify_lines": ["Top-level help exposes the facts-only PR subcommand and alias."],
+      "assertions": [{"severity": "hard", "fatal": true, "passed": true, "check": "Help exposes pr-facts and pr-status"}],
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-RK-010",
+      "title": "Counter-case: invalid pr-facts number exits 2 with bounded guidance",
+      "tags": ["cli", "negative", "counter-case", "pr-facts", "self-disclosing"],
+      "negative_cmd": "python3 skills/repo-kit/scripts/repo_gate_auditor.py pr-facts --pr not-a-number --repo org/repo",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": ["skills/repo-kit/references/repo-bound-skills-and-gates.md"],
+      "negative_stderr_max_lines": 3,
+      "verify_lines": ["Invalid pr-facts arguments return exit 2 with a short reference pointer."],
+      "assertions": [{"severity": "hard", "fatal": true, "passed": true, "check": "Invalid pr-facts number returns bounded exit 2 guidance"}],
+      "registered_at": "2026-11-27"
     }
   ],
   "trigger_evals": [
