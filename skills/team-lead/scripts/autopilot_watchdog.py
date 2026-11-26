@@ -123,7 +123,7 @@ EMPTY_CANDIDATE_FALLBACK_RE = re.compile(
 GENERIC_NOOP_RETRO_RE = re.compile(r"保持现有技能四层契约门禁与零成本巡检|维持日常自动观测即可")
 AIDATA_DIGEST_ERROR_RE = re.compile(r"(?:❌|数据不全|采集失败|投递失败)")
 AIDATA_SOURCE_DEGRADED_RE = re.compile(
-    r"(?:权限不足|无权限|超时并回退|超时|数据缺失|采集链路有降级|coverage_status\s*=\s*`?missing`?|collect\s+(?:timed\s+out|failed))",
+    r"(?:权限不足|无权限|超时并回退|采集(?:链路|源)?超时|`[a-z][a-z0-9_]*`(?:\s*[/、,]\s*`[a-z][a-z0-9_]*`)*\s*超时|数据缺失|采集链路有降级|采集失败|coverage_status\s*=\s*`?missing`?|collect\s+(?:timed\s+out(?:/failed)?|failed))",
     re.IGNORECASE,
 )
 

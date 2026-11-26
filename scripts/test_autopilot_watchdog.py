@@ -737,6 +737,88 @@ class AutopilotWatchdogTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertTrue(child_gone, f"Expected child_pid {child_pid} to be terminated")
 
+    def test_aidata_remediation_prose_mentioning_gateway_or_route_timeout_passes_sources_healthy(self):
+        """TIA-55 regression: generic remediation prose ('路由超时回退', 'M3 网关超时/配额') in a healthy daily issue must NOT trigger false-positive sources_healthy failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            aidata_paths = self._create_aidata_fixtures(tmp)
+            eval_kwargs = {k: v for k, v in aidata_paths.items() if k != "aidata_digest_run_script_path"}
+            tia_55_issue = _healthy_aidata_issue("2026-11-22", degraded=False)
+            tia_55_issue["identifier"] = "TIA-55"
+            tia_55_issue["description"] = (
+                "<!-- multica-skills-autopilot:2026-11-22 -->\n"
+                "<!-- multica-cursor:skills-roi-autopilot-2026-11-22 -->\n\n"
+                "**一句话结论**：今日 AIDash 数仓采集、L2/L3 合并与 Skills ROI (S1–S12) 全绿。\n\n"
+                "- [ ] 1. 网关韧性处方 — 优先做路由超时回退、配额预检和网关 4xx readback\n"
+                "- [ ] 2. 确定性门禁 — 用 deterministic pre-check 锁定 M3 网关超时/配额\n\n"
+                "<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>\n\n"
+                "- **Dedup Marker**: `skills-roi-autopilot-2026-11-22` · `coverage_status=healthy`\n"
+                "</details>"
+            )
+            res = watchdog.evaluate_aidata_vitals(
+                target_date_str="2026-11-22",
+                autopilot=AIDATA_AP,
+                runs=[_healthy_run(AIDATA_AP["id"], run_id="run-tia55", session_id="sess-tia55")],
+                issues=[tia_55_issue],
+                **eval_kwargs,
+            )
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["failed_metrics"], [])
+            self.assertTrue(res["metrics"]["sources_healthy"]["ok"])
+            self.assertEqual(res["metrics"]["sources_healthy"]["degraded_sources"], [])
+
+    def test_aidata_scoped_source_timeouts_and_degraded_markers_still_fail_sources_healthy(self):
+        """Preserves 100% detection of real collector/source timeouts, permission errors, and coverage_status=missing."""
+        degraded_cases = (
+            ("backtick_sources_timeout", "`bot_tl`/`release_tf` 超时"),
+            ("timeout_fallback", "超时并回退旧数据"),
+            ("collector_timeout", "采集超时"),
+            ("collector_pipeline_timeout", "采集链路超时"),
+            ("collect_timed_out_failed", "bot_tl collect timed out/failed"),
+            ("collect_failed", "multica_issue collect failed"),
+            ("permission_denied", "`multica_issue` 权限不足"),
+            ("no_permission", "`multica_issue` 无权限"),
+            ("data_missing", "数据缺失"),
+            ("pipeline_degraded", "采集链路有降级"),
+            ("collector_failed", "采集失败"),
+            ("coverage_missing", "coverage_status=missing"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            aidata_paths = self._create_aidata_fixtures(tmp)
+            eval_kwargs = {k: v for k, v in aidata_paths.items() if k != "aidata_digest_run_script_path"}
+            for label, marker_text in degraded_cases:
+                with self.subTest(case=label, surface="issue_desc"):
+                    issue = _healthy_aidata_issue("2026-11-22", degraded=False)
+                    issue["description"] = issue["description"] + f"\n- 异常记录：{marker_text}\n"
+                    res = watchdog.evaluate_aidata_vitals(
+                        target_date_str="2026-11-22",
+                        autopilot=AIDATA_AP,
+                        runs=[_healthy_run(AIDATA_AP["id"], run_id=f"run-{label}", session_id=f"sess-{label}")],
+                        issues=[issue],
+                        **eval_kwargs,
+                    )
+                    self.assertFalse(res["ok"])
+                    self.assertIn("sources_healthy", res["failed_metrics"])
+                    self.assertFalse(res["metrics"]["sources_healthy"]["ok"])
+                    self.assertTrue(
+                        any(item.startswith("issue_desc:") for item in res["metrics"]["sources_healthy"]["degraded_sources"]),
+                        msg=f"Expected issue_desc match for {label}: {res['metrics']['sources_healthy']['degraded_sources']}",
+                    )
+                with self.subTest(case=label, surface="run_output"):
+                    res_run = watchdog.evaluate_aidata_vitals(
+                        target_date_str="2026-11-22",
+                        autopilot=AIDATA_AP,
+                        runs=[_healthy_run(AIDATA_AP["id"], run_id=f"run-out-{label}", session_id=f"sess-out-{label}", output=f"Completed with warning: {marker_text}")],
+                        issues=[_healthy_aidata_issue("2026-11-22", degraded=False)],
+                        **eval_kwargs,
+                    )
+                    self.assertFalse(res_run["ok"])
+                    self.assertIn("sources_healthy", res_run["failed_metrics"])
+                    self.assertFalse(res_run["metrics"]["sources_healthy"]["ok"])
+                    self.assertTrue(
+                        any(item.startswith("run_output:") for item in res_run["metrics"]["sources_healthy"]["degraded_sources"]),
+                        msg=f"Expected run_output match for {label}: {res_run['metrics']['sources_healthy']['degraded_sources']}",
+                    )
+
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")
         self.assertEqual(spec.loop_id, "autopilot-health-watchdog")
