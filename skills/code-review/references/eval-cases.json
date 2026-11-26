@@ -199,6 +199,61 @@
         }
       ],
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-008",
+      "title": "Summary and Full Flags are Advertised in CLI Help",
+      "layers": [
+        "standards"
+      ],
+      "cmd": "python3 skills/code-review/scripts/discover_review_context.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--summary",
+        "--compact",
+        "--full",
+        "--no-truncate",
+        "--verbose",
+        "--dir",
+        "--repo-root"
+      ],
+      "verify_lines": [
+        "CLI help advertises bounded summary mode, explicit full mode, and compatible repo aliases"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "help output includes summary/full mode and repo alias flags"
+        }
+      ],
+      "registered_at": "2026-11-26"
+    },
+    {
+      "id": "EV-009",
+      "title": "Counter-Case Replay Keeps Invalid Flag Guidance Self-Disclosing",
+      "layers": [
+        "standards"
+      ],
+      "negative_cmd": "python3 skills/code-review/scripts/discover_review_context.py --totally-invalid",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/code-review/references/review-rubric.md",
+        "skills/code-review/references/output-contract.md"
+      ],
+      "verify_lines": [
+        "Invalid flags still fail closed with self-disclosing references"
+      ],
+      "assertions": [
+        {
+          "severity": "hard",
+          "fatal": true,
+          "passed": true,
+          "check": "invalid argument usage preserves self-disclosing review references"
+        }
+      ],
+      "registered_at": "2026-11-26"
     }
   ]
 }

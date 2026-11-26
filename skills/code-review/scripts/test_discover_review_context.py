@@ -62,6 +62,8 @@ class DiscoveryTests(unittest.TestCase):
         result = self.discover(root, "--base", "main")
         self.assertEqual(result["spec_kit"]["active_feature_dir"], "specs/001-feature")
         self.assertEqual(len(result["commits"]), 1)
+        self.assertNotIn("output_truncated", result)
+        self.assertNotIn("layers_total", result)
         self.assertIn(result["fixed_point"], result["diff_command"])
         self.assertEqual(
             {item["path"] for item in result["changed_files"]},
@@ -70,6 +72,9 @@ class DiscoveryTests(unittest.TestCase):
         mapped = {layer["name"]: layer["changed_files"] for layer in result["layers"]}
         self.assertEqual(mapped["Core"], ["Packages/Core/new.swift", "Packages/Core/source.swift"])
         self.assertEqual(mapped["UI"], ["Packages/UI/view.swift"])
+        core_layer = next(layer for layer in result["layers"] if layer["name"] == "Core")
+        self.assertEqual(core_layer["red_lines"], ["no UI imports"])
+        self.assertEqual(core_layer["test"], "swift test --package-path Packages/Core")
         self.assertEqual(result["unmapped_files"], [])
 
     def test_unlayered_repository_declares_gaps(self) -> None:
@@ -181,6 +186,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(bad_flag.returncode, 2)
         self.assertIn("skills/code-review/references/review-rubric.md", bad_flag.stderr)
         self.assertIn("skills/code-review/references/output-contract.md", bad_flag.stderr)
+        self.assertLessEqual(len([line for line in bad_flag.stderr.splitlines() if line.strip()]), 3)
 
     def test_json_frontmatter_context_index_leaf_globs_dependencies_and_exclusions(self) -> None:
         root = self.make_repo()
@@ -446,6 +452,88 @@ class DiscoveryTests(unittest.TestCase):
         summary = json.loads(run("python3", str(SCRIPT), "--base", "main", "--summary", cwd=root).stdout)
         self.assertEqual(summary["changed_files_total"], 1)
         self.assertEqual([item["path"] for item in summary["changed_files"]], ["app.py"])
+
+    def test_large_layered_surface_auto_compacts_under_budget_and_full_mode_expands(self) -> None:
+        root = self.make_repo()
+        write(root, "AGENTS.md", "# Index\n")
+        write(root, ".specify/memory/constitution.md", "# Constitution\n")
+        write(root, "specs/retro/spec.md", "# Spec\n")
+        write(root, "specs/retro/plan.md", "# Plan\n")
+        write(root, "specs/retro/tasks.md", "# Tasks\n")
+        layer_count = 20
+        touched_layers = {2, 11}
+        long_gate = ["python3", "-m", "pytest", "-k", "retro_compaction_gate", "--maxfail=1", "--disable-warnings"]
+        for idx in range(layer_count):
+            context_json = {
+                "schema": 1,
+                "kind": "leaf",
+                "layer": f"Layer{idx:02d}",
+                "scope": [f"src/layer{idx:02d}/**"],
+                "dependencies": [f"Layer{max(idx - 1, 0):02d}"] if idx else [],
+                "dependents": [f"Layer{idx + 1:02d}"] if idx < layer_count - 1 else [],
+                "red_lines": [f"Rule {idx} :: " + ("no cross-layer bypass " * 8)],
+                "gates": [{"id": f"gate-{idx}-{gate_idx}", "kind": "test", "mode": "both", "command": long_gate} for gate_idx in range(8)],
+                "test_paths": [f"tests/layer{idx:02d}/test_*.py"],
+            }
+            write(root, f"layers/layer{idx:02d}/CONTEXT.md", f"---\n{json.dumps(context_json, ensure_ascii=False)}\n---\n")
+            write(root, f"src/layer{idx:02d}/module.py", f"value_{idx} = {idx}\n")
+        self.commit(root, "base")
+        run("git", "checkout", "-b", "retro-compaction", cwd=root)
+        for idx in touched_layers:
+            write(root, f"src/layer{idx:02d}/module.py", f"value_{idx} = {idx + 100}\n")
+        self.commit(root, "touch two layers")
+
+        default_proc = run(
+            "python3",
+            str(SCRIPT),
+            "--repo",
+            str(root),
+            "--range",
+            "main..HEAD",
+            "--json",
+            cwd=root,
+        )
+        self.assertLessEqual(len(default_proc.stdout.encode("utf-8")), 16_000)
+        default_payload = json.loads(default_proc.stdout)
+        self.assertTrue(default_payload["output_truncated"])
+        self.assertEqual(default_payload["layers_total"], layer_count)
+        self.assertEqual(default_payload["layers_touched_total"], len(touched_layers))
+        self.assertGreater(default_payload["layers_omitted_count"], 0)
+        self.assertIn("full_hint", default_payload)
+        self.assertTrue(any(layer.get("changed_files_count", 0) > 0 for layer in default_payload["layers"]))
+
+        summary_proc = run(
+            "python3",
+            str(SCRIPT),
+            "--dir",
+            str(root),
+            "--range",
+            "main..HEAD",
+            "--summary",
+            "--json",
+            cwd=root,
+        )
+        self.assertLessEqual(len(summary_proc.stdout.encode("utf-8")), 16_000)
+        summary_payload = json.loads(summary_proc.stdout)
+        self.assertTrue(summary_payload["output_truncated"])
+        self.assertEqual(summary_payload["layers_total"], layer_count)
+
+        full_proc = run(
+            "python3",
+            str(SCRIPT),
+            "--repo",
+            str(root),
+            "--range",
+            "main..HEAD",
+            "--full",
+            "--no-cache",
+            cwd=root,
+        )
+        self.assertGreater(len(full_proc.stdout.encode("utf-8")), 20_000)
+        full_payload = json.loads(full_proc.stdout)
+        self.assertEqual(len(full_payload["layers"]), layer_count)
+        self.assertNotIn("output_truncated", full_payload)
+        self.assertTrue(any(layer.get("gates") for layer in full_payload["layers"]))
 
     def test_pr_flag_resolves_pull_ref_and_fails_closed_when_unresolvable(self) -> None:
         root = self.make_repo()
