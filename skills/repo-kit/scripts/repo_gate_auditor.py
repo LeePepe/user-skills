@@ -39,8 +39,8 @@ DEFAULT_DEV_ROOT = Path.home() / "Development"
 REFERENCE_DOC = "skills/repo-kit/references/repo-bound-skills-and-gates.md"
 CACHE_DIR = Path(tempfile.gettempdir()) / "repo-kit-gate-audit-cache"
 CACHE_TTL_SECONDS = 60.0
-MAX_JSON_BYTES = 20_000
-COMPACT_JSON_BYTES = 18_000
+MAX_JSON_BYTES = 15_000
+COMPACT_JSON_BYTES = 15_000
 UF_DATALESS = 0x40000000
 
 RULE_METADATA: dict[str, dict[str, str]] = {
@@ -795,13 +795,25 @@ def _compact_repo_report(report: Mapping[str, Any], *, minimal: bool = False) ->
 
 
 def _compact_proposal(proposal: Mapping[str, Any], *, minimal: bool = False) -> dict[str, Any]:
-    keys = ("id", "rule_id", "category", "priority", "speedup_angle", "affected_repos_count")
+    keys = ("id", "ref", "metric_id", "rule_id", "category", "priority", "speedup_angle", "affected_repos_count")
     compact = {key: proposal.get(key) for key in keys if key in proposal}
-    compact["affected_repos"] = list(proposal.get("affected_repos") or [])[:8]
-    if not minimal:
-        compact["title"] = str(proposal.get("title") or "")[:180]
-        compact["action"] = str(proposal.get("action") or "")[:180]
+    compact["skill"] = str(proposal.get("skill") or "repo-kit")
+    compact["layer"] = str(proposal.get("layer") or "L2")
+    compact["affected_repos"] = list(proposal.get("affected_repos") or [])[: (4 if minimal else 8)]
+    cap = 120 if minimal else 140
+    for field in ("title", "plain_reason", "action"):
+        compact[field] = str(proposal.get(field) or "")[:cap]
     return compact
+
+
+def _slim_repo_entry(repo: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "repo": repo.get("repo"),
+        "gate_health_score": repo.get("gate_health_score"),
+        "status": repo.get("status"),
+        "triggered_rules": repo.get("triggered_rules", []),
+        "findings_count": repo.get("findings_count", 0),
+    }
 
 
 def _maybe_compact_report(
@@ -825,16 +837,7 @@ def _maybe_compact_report(
     ]
     compacted["summary_compacted"] = True
     if "bottleneck_repos" in payload:
-        compacted["bottleneck_repos"] = [
-            {
-                "repo": repo.get("repo"),
-                "gate_health_score": repo.get("gate_health_score"),
-                "status": repo.get("status"),
-                "triggered_rules": repo.get("triggered_rules", []),
-                "findings_count": repo.get("findings_count", 0),
-            }
-            for repo in payload.get("bottleneck_repos") or []
-        ]
+        compacted["bottleneck_repos"] = [_slim_repo_entry(r) for r in payload.get("bottleneck_repos") or []]
 
     if _json_size(compacted) > COMPACT_JSON_BYTES:
         compacted["repos"] = [_compact_repo_report(repo, minimal=True) for repo in payload.get("repos") or []]
@@ -843,16 +846,17 @@ def _maybe_compact_report(
             for proposal in payload.get("actionable_proposals") or []
         ]
     if _json_size(compacted) > COMPACT_JSON_BYTES:
-        compacted["repos"] = [
-            {
-                "repo": repo.get("repo"),
-                "gate_health_score": repo.get("gate_health_score"),
-                "status": repo.get("status"),
-                "triggered_rules": repo.get("triggered_rules", []),
-                "findings_count": repo.get("findings_count", 0),
-            }
-            for repo in payload.get("repos") or []
-        ]
+        compacted["repos"] = [_slim_repo_entry(r) for r in payload.get("repos") or []]
+    if _json_size(compacted) > COMPACT_JSON_BYTES:
+        drifted = [r for r in compacted["repos"] if r.get("findings_count", 0) > 0 or r.get("status") == "scan_error"]
+        compacted["healthy_repo_names"] = compacted["healthy_repo_names"][:20]
+        if "bottleneck_repos" in compacted:
+            compacted["bottleneck_repos"] = compacted["bottleneck_repos"][:12]
+        for limit in (25, 15, 8, 4):
+            compacted["repos"] = drifted[:limit]
+            compacted["repos_truncated"] = max(0, int(payload.get("repos_scanned") or 0) - len(compacted["repos"]))
+            if _json_size(compacted) <= COMPACT_JSON_BYTES:
+                break
     return compacted
 
 

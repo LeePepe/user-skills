@@ -6,7 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -351,7 +351,8 @@ class MulticaLoopRunnerPipelineTests(unittest.TestCase):
             sessions.mkdir(parents=True)
             handoff = root / "handoff"
             handoff.mkdir()
-            now = "2026-11-25T00:00:00+00:00"
+            today_cst = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).date()
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             (sessions / "events.jsonl").write_text(json.dumps({
                 "type": "session.start", "timestamp": now,
                 "data": {"sessionId": "session-1", "role": "m2-dispatcher"},
@@ -360,7 +361,7 @@ class MulticaLoopRunnerPipelineTests(unittest.TestCase):
             os.environ["AGENT_RETRO_SESSIONS"] = str(root / "sessions")
             os.environ["AGENT_RETRO_HANDOFF_ROOT"] = str(handoff)
             try:
-                collected = loop_runner._default_loop_collector(spec, target_date=date(2026, 11, 25), dry_run=True)
+                collected = loop_runner._default_loop_collector(spec, target_date=today_cst, dry_run=True)
             finally:
                 for key, value in previous.items():
                     if value is None:
@@ -369,7 +370,7 @@ class MulticaLoopRunnerPipelineTests(unittest.TestCase):
                         os.environ[key] = value
             self.assertEqual(collected["loop_id"], "agent-retro-diagnostic")
             self.assertEqual(collected["agent_retro"]["sessions"], 1)
-            self.assertIn("agent-retro-autopilot-2026-11-25", collected["cursor"])
+            self.assertIn(f"agent-retro-autopilot-{today_cst.isoformat()}", collected["cursor"])
 
     def _sample_collected(self, *, watermark: str = "wm-1", has_delta: bool = True, severity: str = "medium"):
         return {

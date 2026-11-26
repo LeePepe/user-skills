@@ -1,6 +1,6 @@
 {
   "name": "repo-kit",
   "description": "用 shared-ci 模板与检查器治理 repo 合同；当任务涉及 tech-context.md、.github/repo-contract.json、scripts/verify、.githooks/pre-push、core.hooksPath、RG-001..RG-006 或 repo_gate_auditor.py 时触发。支持 init、adopt、split。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "category": "repo"
 }
