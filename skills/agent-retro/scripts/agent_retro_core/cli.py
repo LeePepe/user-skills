@@ -29,7 +29,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="agent_retro.py", description="Bounded offline multi-agent trajectory retro")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("collect", help="collect a bounded telemetry snapshot"); _common(p); p.set_defaults(days=3); p.add_argument("--output", type=Path, default=DEFAULT_COLLECT_OUTPUT); p.add_argument("--watermark-file", type=Path, default=None)
+    p = sub.add_parser("collect", help="collect a bounded telemetry snapshot"); _common(p); p.set_defaults(days=3); p.add_argument("--date"); p.add_argument("--output", type=Path, default=DEFAULT_COLLECT_OUTPUT); p.add_argument("--watermark-file", type=Path, default=None)
     p = sub.add_parser("probe", help="fast bounded five-layer probe"); _common(p)
     p = sub.add_parser("horizon", help="profile successful long-horizon sessions"); _common(p); p.add_argument("--min-turns", type=int, default=40); p.add_argument("--min-duration-min", type=float, default=15)
     p = sub.add_parser("triage", help="cheap worker triage"); _common(p); p.add_argument("--pick-top", type=int, choices=(1, 2, 3), default=3); p.add_argument("--pick-one", action="store_true"); p.add_argument("--use-jev", action="store_true"); p.add_argument("--mock-jev-json"); p.add_argument("--emit-briefs"); p.add_argument("--include-pre-fix", action="store_true")

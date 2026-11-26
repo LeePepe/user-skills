@@ -58,6 +58,112 @@ def _parent_child_duplicate_reads(groups: dict[str, list[dict[str, Any]]]) -> li
     return duplicates
 
 
+def _event_path(event: dict[str, Any]) -> str:
+    args = _arguments(event)
+    return str(args.get("path") or args.get("file") or _field(event, "path", "file") or "")
+
+
+def _skill_from_tool_event(event: dict[str, Any], *, include_non_scripts: bool = True) -> str | None:
+    candidates = " ".join(
+        value for value in (
+            _command(event),
+            _event_path(event),
+            _text(_arguments(event)),
+        ) if value
+    )
+    match = re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/scripts/", candidates)
+    if match and is_valid_skill_slug(match.group(1)):
+        return match.group(1)
+    if include_non_scripts:
+        match = re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/", candidates)
+        if match and is_valid_skill_slug(match.group(1)):
+            return match.group(1)
+    return None
+
+
+def _first_invoked_skill(seq: list[dict[str, Any]]) -> str | None:
+    for event in seq:
+        skill = _event_skill(event)
+        if skill and is_valid_skill_slug(skill):
+            return skill
+    return None
+
+
+def _script_target(command: str) -> str | None:
+    match = re.search(r"([A-Za-z0-9_./-]*scripts/[A-Za-z0-9_.-]+\.py)", command)
+    return match.group(1) if match else None
+
+
+def _is_healthy_small_output(event: dict[str, Any]) -> bool:
+    out = _result_content(event)
+    code = _exit_code(event)
+    return (
+        len(out.encode("utf-8")) <= 20_000
+        and "Output too large to read at once" not in out
+        and code in (None, 0)
+    )
+
+
+def _i3_recovered_progressively(tools: list[dict[str, Any]], index: int, failing: dict[str, Any], reason: str) -> bool:
+    next_events = tools[index + 1:index + 9]
+    fail_cmd = _command(failing)
+    fail_path = _event_path(failing)
+    fail_skill = _skill_from_tool_event(failing, include_non_scripts=True)
+    fail_script = _script_target(fail_cmd)
+    if reason == "exit=2":
+        disclosed_at: int | None = None
+        for offset, event in enumerate(next_events):
+            cmd = _command(event)
+            path = _event_path(event)
+            tool = _tool_name(event)
+            ev_skill = _skill_from_tool_event(event, include_non_scripts=True)
+            same_target = (
+                (fail_script and fail_script in cmd)
+                or (fail_skill and ev_skill == fail_skill)
+                or (not fail_script and not fail_skill and bool(cmd))
+            )
+            drawer = tool in {"view", "read", "cat"} and ("references/" in path or path.endswith("SKILL.md")) and (not fail_skill or ev_skill == fail_skill)
+            help_or_summary = same_target and any(flag in cmd for flag in ("--help", "-h", "--summary"))
+            if drawer or help_or_summary:
+                disclosed_at = offset
+                if help_or_summary and _exit_code(event) == 0:
+                    return True
+                break
+        if disclosed_at is None:
+            return False
+        for event in next_events[disclosed_at + 1:]:
+            cmd = _command(event)
+            ev_skill = _skill_from_tool_event(event, include_non_scripts=True)
+            same_target = (
+                (fail_script and fail_script in cmd)
+                or (fail_skill and ev_skill == fail_skill)
+                or (not fail_script and not fail_skill and bool(cmd))
+            )
+            if same_target and _exit_code(event) == 0:
+                return True
+        return False
+    # reason == "tool output >20KB"
+    if fail_path and not fail_cmd:
+        for event in next_events:
+            args = _arguments(event)
+            ranged = any(args.get(key) for key in ("view_range", "viewRange", "range", "startLine", "lineRange"))
+            if ranged and _event_path(event) == fail_path and _is_healthy_small_output(event):
+                return True
+        return False
+    for event in next_events:
+        cmd = _command(event)
+        ev_skill = _skill_from_tool_event(event, include_non_scripts=True)
+        same_target = (
+            (fail_script and fail_script in cmd)
+            or (fail_skill and ev_skill == fail_skill)
+            or (not fail_script and not fail_skill and bool(cmd))
+        )
+        narrowed_cmd = any(flag in cmd for flag in ("--summary", "--limit", "--head", "head "))
+        if same_target and narrowed_cmd and _exit_code(event) == 0 and _is_healthy_small_output(event):
+            return True
+    return False
+
+
 def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], source: dict[str, Any],
                  profile_sessions: set[str] | None = None) -> list[dict[str, Any]]:
     observations: list[dict[str, Any]] = []
@@ -170,13 +276,45 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
             if _skill_requires_l2(skill) and f"skills/{skill}/scripts/" not in called_scripts and allowed("I2_mandatory_l2_cli_skip", sid):
                 observations.append(_observation("I2_mandatory_l2_cli_skip", "invoke", 1, [f"{sid}: {skill} invoked without its script"], skill=skill, sessions=1))
         # I3, I4 and F signals.
-        exit2 = [e for e in tools if _exit_code(e) == 2]
-        bloat = [e for e in tools if len(_result_content(e).encode("utf-8")) > 20_000
-                 or "Output too large to read at once" in _result_content(e)]
-        if (exit2 or bloat) and allowed("I3_l2_exit2_and_output_bloat", sid):
-            evidence = [f"{sid}: exit=2" for _ in exit2[:2]] + [f"{sid}: tool output >20KB" for _ in bloat[:2]]
-            target_skill = next((m.group(1) for e in exit2 + bloat if (m := re.search(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/scripts/", _command(e))) and is_valid_skill_slug(m.group(1))), None)
-            observations.append(_observation("I3_l2_exit2_and_output_bloat", "invoke", len(exit2) + len(bloat), evidence, skill=target_skill, sessions=1))
+        i3_hits: list[tuple[dict[str, Any], str, int]] = []
+        for index, event in enumerate(tools):
+            if _exit_code(event) == 2:
+                i3_hits.append((event, "exit=2", index))
+            if len(_result_content(event).encode("utf-8")) > 20_000 or "Output too large to read at once" in _result_content(event):
+                i3_hits.append((event, "tool output >20KB", index))
+        if i3_hits and allowed("I3_l2_exit2_and_output_bloat", sid):
+            first_invoked = _first_invoked_skill(seq)
+            actionable_hits: list[tuple[dict[str, Any], str]] = []
+            recovered_hits: list[tuple[dict[str, Any], str]] = []
+            for event, reason, index in i3_hits:
+                if _i3_recovered_progressively(tools, index, event, reason):
+                    recovered_hits.append((event, reason))
+                else:
+                    actionable_hits.append((event, reason))
+            if actionable_hits:
+                evidence = [f"{sid}: {reason}" for _, reason in actionable_hits[:4]]
+                target_skill = None
+                for event, _ in actionable_hits:
+                    target_skill = _skill_from_tool_event(event)
+                    if target_skill:
+                        break
+                observations.append(_observation(
+                    "I3_l2_exit2_and_output_bloat", "invoke", len(actionable_hits), evidence,
+                    skill=target_skill or first_invoked or "team-lead", sessions=1,
+                    session_ids=[sid],
+                ))
+            if recovered_hits:
+                evidence = [f"{sid}: {reason} -> narrowed/disclosed -> exit=0" for _, reason in recovered_hits[:3]]
+                target_skill = None
+                for event, _ in recovered_hits:
+                    target_skill = _skill_from_tool_event(event)
+                    if target_skill:
+                        break
+                observations.append(_observation(
+                    "I3_l2_exit2_and_output_bloat", "invoke", len(recovered_hits), evidence,
+                    skill=target_skill or first_invoked or "team-lead", sessions=1,
+                    healthy=True, session_ids=[sid],
+                ))
         polls = [e for e in tools if re.search(r"(?:herdr\s+pane\s+read|\bsleep\b|gh\s+pr\s+view)", _command(e))]
         if len(polls) >= 3 and allowed("I4_manual_poll_loop", sid):
             observations.append(_observation("I4_manual_poll_loop", "invoke", len(polls), [f"{sid}: {len(polls)} manual polls"], sessions=1))
