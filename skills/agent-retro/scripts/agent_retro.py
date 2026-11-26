@@ -11,4 +11,4 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from agent_retro_core import *  # noqa: F401,F403
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

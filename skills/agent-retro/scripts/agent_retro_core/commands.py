@@ -7,6 +7,10 @@ from . import horizon as _horizon
 from . import analysis as _analysis
 globals().update({k: v for module in (_base, _metrics, _contracts, _horizon, _analysis) for k, v in vars(module).items() if not k.startswith("__")})
 
+_JSON_FACTS_SCHEMA = "agent-retro-json-facts/v1"
+_JSON_PREVIEW_BYTES = 16_000
+
+
 def _compact_print(payload: Any, as_json: bool, summary: bool = False) -> None:
     payload = _redact_obj(payload)
     if as_json:
@@ -212,6 +216,162 @@ def _mock_jev(value: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else {"value": parsed}
 
 
+def _key_filters(raw: str) -> list[str]:
+    return [item for item in (part.strip() for part in str(raw or "").split(",")) if item]
+
+
+def _lookup_key(payload: Any, selector: str) -> tuple[bool, Any]:
+    current = payload
+    for token in selector.split("."):
+        if isinstance(current, dict) and token in current:
+            current = current[token]
+            continue
+        if isinstance(current, list) and token.isdigit():
+            idx = int(token)
+            if 0 <= idx < len(current):
+                current = current[idx]
+                continue
+        return False, None
+    return True, current
+
+
+def _preview_source(payload: Any, *, limit: int, selectors: list[str]) -> Any:
+    if selectors:
+        selected: dict[str, Any] = {}
+        for selector in selectors[:32]:
+            found, value = _lookup_key(payload, selector)
+            if found:
+                selected[selector] = value
+        return selected
+    if isinstance(payload, dict):
+        keys = sorted(payload.keys())[: max(1, limit)]
+        return {key: payload[key] for key in keys}
+    if isinstance(payload, list):
+        return payload[: max(1, limit)]
+    return payload
+
+
+def _preview_text(payload: Any) -> tuple[str, bool]:
+    rendered = json.dumps(_redact_obj(payload), ensure_ascii=False, default=str)
+    if len(rendered.encode("utf-8")) <= _JSON_PREVIEW_BYTES:
+        return rendered, False
+    truncated = rendered.encode("utf-8")[: _JSON_PREVIEW_BYTES - 3].decode("utf-8", errors="ignore") + "..."
+    return truncated, True
+
+
+def _inspect_json_file(path: Path, selectors: list[str], limit: int) -> tuple[dict[str, Any], str | None]:
+    row: dict[str, Any] = {"path": str(path), "kind": "file", "exists": path.exists()}
+    if not path.exists():
+        return row, f"path not found: {path}"
+    if not _external_path_safe(path):
+        return row, f"path blocked by dataless guard: {path}"
+    try:
+        size = int(path.stat().st_size)
+    except OSError:
+        size = 0
+    row["bytes"] = size
+    try:
+        text = path.read_text(encoding="utf-8")
+        payload = json.loads(text)
+    except OSError:
+        return row, f"unable to read JSON file: {path}"
+    except json.JSONDecodeError:
+        row["parse_ok"] = False
+        return row, f"invalid JSON: {path}"
+    row["parse_ok"] = True
+    row["json_type"] = type(payload).__name__
+    if isinstance(payload, dict):
+        row["top_level_keys"] = sorted(payload.keys())[:128]
+        row["key_count"] = len(payload)
+        row["item_count"] = len(payload)
+    elif isinstance(payload, list):
+        row["item_count"] = len(payload)
+    preview, was_truncated = _preview_text(_preview_source(payload, limit=limit, selectors=selectors))
+    row["preview"] = preview
+    row["preview_truncated"] = was_truncated
+    if selectors:
+        matches = {}
+        for selector in selectors:
+            found, value = _lookup_key(payload, selector)
+            if found:
+                matches[selector] = value
+        row["key_matches"] = _redact_obj(matches)
+    return row, None
+
+
+def command_inspect_json(args: argparse.Namespace) -> dict[str, Any]:
+    raw_paths: list[str] = []
+    for key in ("paths", "path", "file", "dir"):
+        value = getattr(args, key, None)
+        if isinstance(value, list):
+            raw_paths.extend(str(item) for item in value if str(item).strip())
+        elif value:
+            raw_paths.append(str(value))
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        path = Path(raw).expanduser()
+        marker = str(path)
+        if marker not in seen:
+            unique_paths.append(path)
+            seen.add(marker)
+    selectors = _key_filters(getattr(args, "keys", ""))
+    limit = max(1, min(200, int(getattr(args, "limit", 3) or 3)))
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    if not unique_paths:
+        warnings.append("inspect-json needs at least one path via positional paths or --path/--file/--dir")
+    for path in unique_paths:
+        if path.is_dir():
+            if not _external_path_safe(path):
+                warnings.append(f"path blocked by dataless guard: {path}")
+                rows.append({"path": str(path), "kind": "directory", "exists": True, "json_file_count": 0})
+                continue
+            files = sorted(
+                item for item in path.iterdir()
+                if item.is_file() and item.suffix.lower() in {".json", ".jsonl"}
+            )
+            rows.append({"path": str(path), "kind": "directory", "exists": True, "json_file_count": len(files), "entry_count": len(list(path.iterdir()))})
+            if not files:
+                warnings.append(f"directory has no JSON files: {path}")
+            for file_path in files[:limit]:
+                row, warning = _inspect_json_file(file_path, selectors, limit)
+                rows.append(row)
+                if warning:
+                    warnings.append(warning)
+            continue
+        row, warning = _inspect_json_file(path, selectors, limit)
+        rows.append(row)
+        if warning:
+            warnings.append(warning)
+    strict = bool(getattr(args, "strict", False))
+    hard_fail = strict and bool(warnings)
+    advisories: list[str] = []
+    if warnings and not strict:
+        advisories.append("soft_advisory_exit_0: warnings were captured; add --strict to fail fast.")
+    result = {
+        "schema": _JSON_FACTS_SCHEMA,
+        "ok": not hard_fail,
+        "gate": "hard_fail_exit_1" if strict else "soft_advisory_exit_0",
+        "strict": strict,
+        "inspected": rows,
+        "summary": {
+            "input_paths": len(unique_paths),
+            "inspected_nodes": len(rows),
+            "warnings": len(warnings),
+            "parsed_files": sum(1 for row in rows if row.get("kind") == "file" and row.get("parse_ok") is True),
+            "invalid_files": sum(1 for row in rows if row.get("kind") == "file" and row.get("parse_ok") is False),
+        },
+        "warnings": warnings,
+        "advisories": advisories,
+    }
+    if warnings:
+        result["_stderr_hint"] = warnings[0]
+    if hard_fail:
+        result["_exit_code"] = 1
+    return result
+
+
 def _load_jev_client() -> Any | None:
     path = ROOT / "skills" / "team-lead" / "scripts" / "jev_client.py"
     if not path.is_file():
@@ -278,15 +438,29 @@ def command_triage(args: argparse.Namespace) -> dict[str, Any]:
 def command_record_receipt(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.handoff_root or "~/Development/handoff").expanduser()
     target = root / f"agent-retro-{args.skill}" / "receipts" / "m1-r10.md"
+    summary = str(args.summary or "")
+    summary_file = getattr(args, "summary_file", None)
+    if not summary and summary_file:
+        candidate = Path(summary_file).expanduser()
+        if candidate.is_file() and _external_path_safe(candidate):
+            summary = _safe_text(candidate, 20_000).strip()
+    merge_sha = args.merge_sha or getattr(args, "head_sha", None)
+    pr_ref = args.pr or getattr(args, "pr_number", None)
     lines = [f"# R10 Receipt — agent-retro-{args.skill}", "", f"- Skill: `{args.skill}`", f"- Goal ID: `{args.goal_id}`", f"- Status: `{args.status}`"]
-    if args.merge_sha:
-        lines.append(f"- Merge SHA: `{args.merge_sha}`")
-    if args.pr:
-        lines.append(f"- PR: {args.pr}")
-    lines.extend(["", args.summary or "Recorded by agent-retro."])
+    if merge_sha:
+        lines.append(f"- Merge SHA: `{merge_sha}`")
+    if pr_ref:
+        lines.append(f"- PR: {pr_ref}")
+    if getattr(args, "m1_tl_agent_name", None):
+        lines.append(f"- M1 TL Agent: `{args.m1_tl_agent_name}`")
+    if getattr(args, "writers_spawned", None) is not None:
+        lines.append(f"- Writers Spawned: `{args.writers_spawned}`")
+    if getattr(args, "reviewers_spawned", None) is not None:
+        lines.append(f"- Reviewers Spawned: `{args.reviewers_spawned}`")
+    lines.extend(["", summary or "Recorded by agent-retro."])
     written = _safe_write(target, "\n".join(lines) + "\n")
     return {"schema": "agent-retro-m1-receipt/v1", "ok": True, "path": str(target), "written": written,
-            "skill": args.skill, "goal_id": args.goal_id, "status": args.status, "merge_sha": args.merge_sha, "pr": args.pr}
+            "skill": args.skill, "goal_id": args.goal_id, "status": args.status, "merge_sha": merge_sha, "pr": pr_ref}
 
 
 def command_emit_relay(args: argparse.Namespace) -> dict[str, Any]:
