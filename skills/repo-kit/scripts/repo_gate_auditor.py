@@ -799,7 +799,7 @@ def _compact_proposal(proposal: Mapping[str, Any], *, minimal: bool = False) -> 
     compact = {key: proposal.get(key) for key in keys if key in proposal}
     compact["skill"] = str(proposal.get("skill") or "repo-kit")
     compact["layer"] = str(proposal.get("layer") or "L2")
-    compact["affected_repos"] = list(proposal.get("affected_repos") or [])[: (4 if minimal else 8)]
+    compact["affected_repos"] = [str(r)[:60] for r in (proposal.get("affected_repos") or [])[: (4 if minimal else 8)]]
     cap = 120 if minimal else 140
     for field in ("title", "plain_reason", "action"):
         compact[field] = str(proposal.get(field) or "")[:cap]
@@ -808,12 +808,20 @@ def _compact_proposal(proposal: Mapping[str, Any], *, minimal: bool = False) -> 
 
 def _slim_repo_entry(repo: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "repo": repo.get("repo"),
+        "repo": str(repo.get("repo") or "")[:80],
         "gate_health_score": repo.get("gate_health_score"),
         "status": repo.get("status"),
         "triggered_rules": repo.get("triggered_rules", []),
         "findings_count": repo.get("findings_count", 0),
     }
+
+
+def _compact_scan_errors(errors: Sequence[Mapping[str, Any]], *, limit: int, err_cap: int = 120) -> list[dict[str, str]]:
+    return [
+        {"repo": str(e.get("repo") or "")[:60], "error": str(e.get("error") or "")[:err_cap]}
+        for e in list(errors)[:limit]
+        if isinstance(e, Mapping)
+    ]
 
 
 def _maybe_compact_report(
@@ -825,38 +833,68 @@ def _maybe_compact_report(
     if full or (not force and _json_size(payload) <= MAX_JSON_BYTES):
         return payload
 
+    raw_repos = list(payload.get("repos") or [])
+    raw_errors = list(payload.get("scan_errors") or [])
+    raw_healthy = [
+        str(repo.get("repo") or "")[:80]
+        for repo in raw_repos
+        if repo.get("findings_count") == 0 and repo.get("status") != "scan_error"
+    ]
+    total_repos = int(payload.get("repos_scanned") or len(raw_repos))
+    total_errors = int(payload.get("scan_errors_count") or len(raw_errors))
+    total_bottlenecks = int(payload.get("bottleneck_repos_count") or len(payload.get("bottleneck_repos") or []))
+
     compacted = dict(payload)
-    compacted["repos"] = [_compact_repo_report(repo) for repo in payload.get("repos") or []]
+    compacted["repos"] = [_compact_repo_report(repo) for repo in raw_repos]
     compacted["actionable_proposals"] = [
         _compact_proposal(proposal) for proposal in payload.get("actionable_proposals") or []
     ]
-    compacted["healthy_repo_names"] = [
-        str(repo.get("repo"))
-        for repo in payload.get("repos") or []
-        if repo.get("findings_count") == 0 and repo.get("status") != "scan_error"
-    ]
+    compacted["scan_errors"] = _compact_scan_errors(raw_errors, limit=20, err_cap=160)
+    if total_errors > len(compacted["scan_errors"]):
+        compacted["scan_errors_truncated"] = total_errors - len(compacted["scan_errors"])
+    compacted["healthy_repo_names"] = list(raw_healthy)
     compacted["summary_compacted"] = True
     if "bottleneck_repos" in payload:
         compacted["bottleneck_repos"] = [_slim_repo_entry(r) for r in payload.get("bottleneck_repos") or []]
 
     if _json_size(compacted) > COMPACT_JSON_BYTES:
-        compacted["repos"] = [_compact_repo_report(repo, minimal=True) for repo in payload.get("repos") or []]
+        compacted["repos"] = [_compact_repo_report(repo, minimal=True) for repo in raw_repos]
         compacted["actionable_proposals"] = [
             _compact_proposal(proposal, minimal=True)
             for proposal in payload.get("actionable_proposals") or []
         ]
+        compacted["scan_errors"] = _compact_scan_errors(raw_errors, limit=10, err_cap=120)
+        if total_errors > len(compacted["scan_errors"]):
+            compacted["scan_errors_truncated"] = total_errors - len(compacted["scan_errors"])
     if _json_size(compacted) > COMPACT_JSON_BYTES:
-        compacted["repos"] = [_slim_repo_entry(r) for r in payload.get("repos") or []]
+        compacted["repos"] = [_slim_repo_entry(r) for r in raw_repos]
     if _json_size(compacted) > COMPACT_JSON_BYTES:
         drifted = [r for r in compacted["repos"] if r.get("findings_count", 0) > 0 or r.get("status") == "scan_error"]
-        compacted["healthy_repo_names"] = compacted["healthy_repo_names"][:20]
-        if "bottleneck_repos" in compacted:
-            compacted["bottleneck_repos"] = compacted["bottleneck_repos"][:12]
-        for limit in (25, 15, 8, 4):
-            compacted["repos"] = drifted[:limit]
-            compacted["repos_truncated"] = max(0, int(payload.get("repos_scanned") or 0) - len(compacted["repos"]))
+        for r_lim, e_lim, h_lim, b_lim in ((25, 8, 20, 12), (15, 6, 12, 8), (8, 4, 8, 4), (4, 2, 4, 2), (0, 0, 0, 0)):
+            compacted["repos"] = drifted[:r_lim]
+            compacted["repos_truncated"] = max(0, total_repos - len(compacted["repos"]))
+            compacted["scan_errors"] = _compact_scan_errors(raw_errors, limit=e_lim, err_cap=90)
+            compacted["scan_errors_truncated"] = max(0, total_errors - len(compacted["scan_errors"]))
+            compacted["healthy_repo_names"] = raw_healthy[:h_lim]
+            compacted["healthy_repo_names_truncated"] = max(0, len(raw_healthy) - len(compacted["healthy_repo_names"]))
+            if "bottleneck_repos" in compacted:
+                compacted["bottleneck_repos"] = compacted["bottleneck_repos"][:b_lim]
+                compacted["bottleneck_repos_truncated"] = max(0, total_bottlenecks - len(compacted["bottleneck_repos"]))
             if _json_size(compacted) <= COMPACT_JSON_BYTES:
                 break
+    if _json_size(compacted) > COMPACT_JSON_BYTES:
+        compacted["dev_root"] = str(compacted.get("dev_root") or "")[:120]
+        compacted["repos"] = []
+        compacted["repos_truncated"] = total_repos
+        compacted["scan_errors"] = []
+        compacted["scan_errors_truncated"] = total_errors
+        compacted["healthy_repo_names"] = []
+        compacted["healthy_repo_names_truncated"] = len(raw_healthy)
+        if "bottleneck_repos" in compacted:
+            compacted["bottleneck_repos"] = []
+            compacted["bottleneck_repos_truncated"] = total_bottlenecks
+        if _json_size(compacted) > COMPACT_JSON_BYTES:
+            compacted.pop("flow_map", None)
     return compacted
 
 
@@ -889,19 +927,15 @@ def scan_repositories(
             if not no_cache:
                 _store_cached_report(r, report, shared_ci_head)
         except Exception as exc:
-            scan_errors.append(
-                {
-                    "repo": r.name,
-                    "error": f"{type(exc).__name__}: {_redact_path(str(exc), dev_root=eff_dev_root)}",
-                }
-            )
+            err_msg = f"{type(exc).__name__}: {_redact_path(str(exc), dev_root=eff_dev_root)}"
+            scan_errors.append({"repo": r.name, "error": err_msg})
             reports.append(
                 {
                     "repo": r.name,
                     "repo_path": _redact_path(r, dev_root=eff_dev_root),
                     "gate_health_score": 100,
                     "status": "scan_error",
-                    "scan_error": f"{type(exc).__name__}: {_redact_path(str(exc), dev_root=eff_dev_root)}",
+                    "scan_error": err_msg,
                     "has_verify_entrypoint": False,
                     "has_incremental_verify": False,
                     "has_parallel_runner": False,
@@ -911,12 +945,15 @@ def scan_repositories(
                     "triggered_rules": [],
                     "findings_count": 0,
                     "findings": [],
-                    "speedup_recommendations": {
-                        "angle_a_path_scoped": "configured",
-                        "angle_b_watermark_cache": "configured",
-                        "angle_c_parallel_dag": "configured",
-                        "angle_d_tiered_fast_fail": "configured",
-                    },
+                    "speedup_recommendations": dict.fromkeys(
+                        (
+                            "angle_a_path_scoped",
+                            "angle_b_watermark_cache",
+                            "angle_c_parallel_dag",
+                            "angle_d_tiered_fast_fail",
+                        ),
+                        "configured",
+                    ),
                 }
             )
     all_findings = [f for r in reports for f in r["findings"]]
@@ -977,14 +1014,7 @@ def build_bottlenecks_report(
     no_cache: bool = False,
 ) -> dict[str, Any]:
     base = scan_repositories(
-        repo=repo,
-        dev_root=dev_root,
-        repos=repos,
-        flow_map=flow_map,
-        summary=summary,
-        compact=compact,
-        full=full,
-        no_cache=no_cache,
+        repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map, full=True, no_cache=no_cache
     )
     bottleneck_repos = [
         r for r in base["repos"] if any(rid in r["triggered_rules"] for rid in ("RG-002", "RG-003", "RG-004"))
@@ -1010,14 +1040,7 @@ def build_loop_check_report(
     no_cache: bool = False,
 ) -> dict[str, Any]:
     base = scan_repositories(
-        repo=repo,
-        dev_root=dev_root,
-        repos=repos,
-        flow_map=flow_map,
-        summary=summary,
-        compact=compact,
-        full=full,
-        no_cache=no_cache,
+        repo=repo, dev_root=dev_root, repos=repos, flow_map=flow_map, full=True, no_cache=no_cache
     )
     report = {
         **base,
@@ -1034,66 +1057,20 @@ def build_loop_check_report(
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--repo",
-        "--repo-dir",
-        "--worktree",
-        "--target-dir",
-        dest="repo",
-        type=Path,
-        default=None,
-        help="Single target repository or worktree directory to audit.",
+        "--repo", "--repo-dir", "--worktree", "--target-dir",
+        dest="repo", type=Path, default=None, help="Single target repository or worktree directory to audit.",
     )
     parser.add_argument(
-        "--dev-root",
-        "--root",
-        "--dir",
-        dest="dev_root",
-        type=Path,
-        default=None,
-        help="Development root containing multiple repositories (default ~/Development).",
+        "--dev-root", "--root", "--dir",
+        dest="dev_root", type=Path, default=None, help="Development root containing multiple repositories (default ~/Development).",
     )
-    parser.add_argument(
-        "--repos",
-        dest="repos",
-        default=None,
-        help="Comma-separated repository names under --dev-root to scan.",
-    )
-    parser.add_argument(
-        "--flow-map",
-        dest="flow_map",
-        action="store_true",
-        default=False,
-        help="Include end-to-end repo-kit -> skill-retro self-driven loop flow map.",
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        default=False,
-        help="Exit 1 when any RG-001..RG-006 finding is detected.",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        default=True,
-        help="Output structured JSON report (default True).",
-    )
-    parser.add_argument(
-        "--summary",
-        "--compact",
-        dest="compact",
-        action="store_true",
-        help="Compact the report, including when it is below the automatic size threshold.",
-    )
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Always emit the full, uncompacted report.",
-    )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Bypass the 60-second file-stat/SHA watermark cache.",
-    )
+    parser.add_argument("--repos", dest="repos", default=None, help="Comma-separated repository names under --dev-root to scan.")
+    parser.add_argument("--flow-map", dest="flow_map", action="store_true", default=False, help="Include repo-kit -> skill-retro flow map.")
+    parser.add_argument("--strict", action="store_true", default=False, help="Exit 1 when any RG-001..RG-006 finding is detected.")
+    parser.add_argument("--json", action="store_true", default=True, help="Output structured JSON report (default True).")
+    parser.add_argument("--summary", "--compact", dest="compact", action="store_true", help="Force report compaction.")
+    parser.add_argument("--full", action="store_true", help="Always emit the full, uncompacted report.")
+    parser.add_argument("--no-cache", action="store_true", help="Bypass the 60-second file-stat/SHA watermark cache.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1135,37 +1112,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub_parser = _SelfDisclosingRepoKitParser(prog=f"repo_gate_auditor.py {subcmd}")
     _add_common_args(sub_parser)
     ns = sub_parser.parse_args(rest)
-
+    common_kw = {
+        "repo": ns.repo,
+        "dev_root": ns.dev_root,
+        "repos": ns.repos,
+        "compact": ns.compact,
+        "full": ns.full,
+        "no_cache": ns.no_cache,
+    }
     if subcmd == "bottlenecks":
-        report = build_bottlenecks_report(
-            repo=ns.repo,
-            dev_root=ns.dev_root,
-            repos=ns.repos,
-            flow_map=ns.flow_map,
-            compact=ns.compact,
-            full=ns.full,
-            no_cache=ns.no_cache,
-        )
+        report = build_bottlenecks_report(**common_kw, flow_map=ns.flow_map)
     elif subcmd == "loop-check":
-        report = build_loop_check_report(
-            repo=ns.repo,
-            dev_root=ns.dev_root,
-            repos=ns.repos,
-            flow_map=True if not ns.flow_map else ns.flow_map,
-            compact=ns.compact,
-            full=ns.full,
-            no_cache=ns.no_cache,
-        )
+        report = build_loop_check_report(**common_kw, flow_map=True if not ns.flow_map else ns.flow_map)
     else:
-        report = scan_repositories(
-            repo=ns.repo,
-            dev_root=ns.dev_root,
-            repos=ns.repos,
-            flow_map=ns.flow_map,
-            compact=ns.compact,
-            full=ns.full,
-            no_cache=ns.no_cache,
-        )
+        report = scan_repositories(**common_kw, flow_map=ns.flow_map)
 
     if report["total_findings"] > 0 and ns.strict:
         sys.stderr.write(

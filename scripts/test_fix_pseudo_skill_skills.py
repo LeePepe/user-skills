@@ -113,6 +113,115 @@ class FixPseudoSkillSkillsTests(unittest.TestCase):
                 self.assertTrue(prop.get("plain_reason"))
                 self.assertTrue(prop.get("action"))
 
+    def test_error_heavy_and_bottleneck_oversized_reports_stay_under_15kb(self) -> None:
+        raw_proposals = [
+            {
+                "id": f"skill-retro-repo-kit-{rid.lower()}",
+                "ref": f"retro://skill-retro/repo-kit/{rid.lower()}",
+                "metric_id": f"repo-gate-{rid.lower()}",
+                "rule_id": rid,
+                "layer": "L2",
+                "category": meta["category"],
+                "skill": "repo-kit",
+                "priority": meta["severity"],
+                "speedup_angle": meta["speedup_angle"],
+                "affected_repos": [f"drifted-repo-{i:03d}" for i in range(25)],
+                "affected_repos_count": 25,
+                "title": f"[Repo Gate {rid}] {meta['title']} " + ("t" * 160),
+                "plain_reason": f"跨 25 个仓库检测到 `{rid}` " + ("r" * 160),
+                "action": "Apply `repo-kit` verification contract remediation " + ("a" * 160),
+            }
+            for rid, meta in AUDITOR.RULE_METADATA.items()
+        ]
+        oversized_payload = {
+            "ok": True,
+            "schema": "repo-gate-audit/v1",
+            "skill": "repo-kit",
+            "subcommand": "bottlenecks",
+            "dev_root": "~/Development/" + ("nested-workspace/" * 20),
+            "shared_ci_head": "abcdef012345",
+            "repos_scanned": 160,
+            "healthy_repos_count": 40,
+            "drifted_repos_count": 20,
+            "scan_errors_count": 100,
+            "scan_errors": [
+                {"repo": f"broken-repo-{i:03d}", "error": "PermissionError: " + ("E" * 240)}
+                for i in range(100)
+            ],
+            "average_gate_health_score": 68.5,
+            "total_findings": 60,
+            "rule_counts": {rid: 10 for rid in AUDITOR.RULE_METADATA},
+            "speedup_4_angles": {
+                "angle_a_path_scoped": 20,
+                "angle_b_watermark_cache": 10,
+                "angle_c_parallel_dag": 15,
+                "angle_d_tiered_fast_fail": 15,
+            },
+            "repos": [
+                {
+                    "repo": f"healthy-repo-with-long-name-{i:03d}",
+                    "gate_health_score": 100,
+                    "status": "healthy",
+                    "triggered_rules": [],
+                    "findings_count": 0,
+                    "findings": [],
+                }
+                for i in range(40)
+            ]
+            + [
+                {
+                    "repo": f"drifted-repo-with-long-name-{i:03d}",
+                    "gate_health_score": 35,
+                    "status": "critical",
+                    "triggered_rules": ["RG-002", "RG-003", "RG-004"],
+                    "findings_count": 3,
+                    "findings": [{"rule_id": "RG-002", "severity": "P1", "evidence": "v" * 200}],
+                }
+                for i in range(20)
+            ]
+            + [
+                {
+                    "repo": f"broken-repo-{i:03d}",
+                    "gate_health_score": 100,
+                    "status": "scan_error",
+                    "triggered_rules": [],
+                    "findings_count": 0,
+                    "findings": [],
+                }
+                for i in range(100)
+            ],
+            "bottleneck_repos_count": 20,
+            "bottleneck_repos": [
+                {
+                    "repo": f"drifted-repo-with-long-name-{i:03d}",
+                    "gate_health_score": 35,
+                    "status": "critical",
+                    "triggered_rules": ["RG-002", "RG-003", "RG-004"],
+                    "findings_count": 3,
+                }
+                for i in range(20)
+            ],
+            "actionable_proposals": raw_proposals,
+            "reference": AUDITOR.REFERENCE_DOC,
+            "flow_map": {"stages": ["stage-1", "stage-2", "stage-3"]},
+        }
+
+        compacted = AUDITOR._maybe_compact_report(oversized_payload, force=True)
+        serialized = json.dumps(compacted, ensure_ascii=False, indent=2).encode("utf-8")
+        self.assertLessEqual(len(serialized), 15_000)
+        self.assertEqual(compacted["scan_errors_count"], 100)
+        self.assertGreater(compacted.get("scan_errors_truncated", 0), 0)
+        self.assertEqual(len(compacted["scan_errors"]) + compacted["scan_errors_truncated"], 100)
+        self.assertEqual(len(compacted["actionable_proposals"]), 6)
+        for prop in compacted["actionable_proposals"]:
+            self.assertEqual(prop["skill"], "repo-kit")
+            self.assertEqual(prop["layer"], "L2")
+            self.assertTrue(prop["ref"])
+            self.assertTrue(prop["metric_id"])
+            self.assertTrue(prop["title"])
+            self.assertTrue(prop["plain_reason"])
+            self.assertTrue(prop["action"])
+
     def test_autopilot_maps_rg_proposals_to_repo_kit_and_drops_pseudo_skills(self) -> None:
         raw_retro = {
             "ok": True,
