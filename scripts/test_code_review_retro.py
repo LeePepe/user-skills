@@ -28,7 +28,7 @@ class CodeReviewRetroTests(unittest.TestCase):
 
     def test_plugin_version_is_evolution_watermark(self) -> None:
         plugin = json.loads(PLUGIN.read_text(encoding="utf-8"))
-        self.assertEqual(plugin["version"], "1.1.0")
+        self.assertEqual(plugin["version"], "1.1.1")
 
 
 if __name__ == "__main__":

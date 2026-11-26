@@ -28,6 +28,7 @@ Read-only two-axis review of one exact change surface. Pin the diff, gather repo
 ## Review contract
 
 1. Run discovery (`--base <ref>`, `--range <base>..<head>`, or `--empty-ok`). Empty review surfaces exit with domain code `1` (or fall back to `HEAD~1` when `HEAD == base_ref` without `--strict-non-empty`).
+   - Use `--summary` / `--compact` for bounded preview output; use `--full` (`--no-truncate` / `--verbose`) only when full payload detail is required.
 2. Read AGENTS/CLAUDE, constitution, active Spec Kit artifacts, and only touched layer `CONTEXT.md` / `tech-context.md` leaves (both JSON and YAML frontmatter).
 3. Build one Spec packet, one Standards packet per changed layer, and an explicit unmapped packet when needed.
 4. Review intent and standards independently; validate findings JSON and compute verdict via `--validate-findings`.

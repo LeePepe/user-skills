@@ -14,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from discovery_output_budget import render_discovery_result
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SMELLS_FILE = SKILL_DIR / "references" / "review-smells.json"
@@ -21,8 +22,6 @@ TOP_K_SMELLS = 3
 MAX_ACTIVE_SMELLS = 15
 L1_REF_MAX_LINES = 160
 DISCOVERY_CACHE_DIR = Path(tempfile.gettempdir()) / "code-review-discovery-cache"
-DISCOVERY_CACHE_MAX_BYTES = 20 * 1024
-DISCOVERY_PREVIEW_LIMIT = 20
 EXCLUDED_DIRS = {
     ".git",
     ".build",
@@ -1049,28 +1048,13 @@ def _write_discovery_cache(path: Path, rendered: str) -> None:
         return
 
 
-def _compact_discovery_result(result: dict[str, object]) -> dict[str, object]:
-    compacted = dict(result)
-    for key in ("changed_files", "unmapped_files", "commits"):
-        values = compacted.get(key)
-        if isinstance(values, list):
-            compacted[f"{key}_total"] = len(values)
-            compacted[key] = values[:DISCOVERY_PREVIEW_LIMIT]
-    return compacted
-
-
-def _render_discovery_result(result: dict[str, object], summary: bool = False) -> str:
-    rendered = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
-    if summary or len(rendered.encode("utf-8")) > DISCOVERY_CACHE_MAX_BYTES:
-        rendered = json.dumps(_compact_discovery_result(result), indent=2, ensure_ascii=False) + "\n"
-    return rendered
 
 
 class _SelfDisclosingReviewParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"code-review discovery error: {message}\n"
-            "  Fix: run `python3 skills/code-review/scripts/discover_review_context.py [--repo <dir>] [--base <ref> | --range <base>..<head>] [--empty-ok] [--validate-findings <json|->] [--summary] [--flow-map]`.\n"
+            "  Fix: run `python3 skills/code-review/scripts/discover_review_context.py [--repo <dir>] [--base <ref> | --range <base>..<head>] [--empty-ok] [--validate-findings <json|->] [--summary|--compact] [--full] [--flow-map]`.\n"
             "  Reference: skills/code-review/references/review-rubric.md · skills/code-review/references/output-contract.md · skills/code-review/references/reviewer-prompts.md\n"
         )
         raise SystemExit(2)
@@ -1079,7 +1063,7 @@ class _SelfDisclosingReviewParser(argparse.ArgumentParser):
 def main(argv: list[str] | None = None) -> int:
     parser = _SelfDisclosingReviewParser()
     parser.add_argument("positional_repo", nargs="?", default=None, help="Optional positional repository/worktree directory")
-    parser.add_argument("--repo", "--repo-dir", "--worktree", "--cwd", dest="repo", default=".")
+    parser.add_argument("--repo", "--repo-dir", "--repo-root", "--worktree", "--cwd", "--dir", dest="repo", default=".")
     parser.add_argument("--base", "--base-ref", dest="base")
     parser.add_argument("--head", "--head-ref", dest="head", default="HEAD")
     parser.add_argument("--range", "--diff-range", dest="diff_range", help="Explicit git diff range (<base>..<head> or <base>...<head>)")
@@ -1096,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Validate review findings JSON file, inline JSON, or '-' for stdin against output-contract.md",
     )
     parser.add_argument("--summary", "--compact", dest="summary", action="store_true", help="Bound discovery preview arrays and include totals")
+    parser.add_argument("--full", "--no-truncate", "--verbose", dest="full", action="store_true", help="Emit uncompacted discovery JSON output")
     parser.add_argument("--no-cache", action="store_true", help="Disable deterministic discovery result caching")
     parser.add_argument("--inconclusive", action="store_true", help="Mark findings validation verdict INCONCLUSIVE due to unpinned revision or missing authority")
     parser.add_argument("--schema-template", action="store_true", help="Emit output-contract.md finding schema and verdict mapping JSON")
@@ -1211,6 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
         "strict_non_empty": args.strict_non_empty,
         "smells_file": str(smells_path),
         "summary": args.summary,
+        "full": args.full,
     }
     cache_path: Path | None = None
     if not args.no_cache:
@@ -1287,7 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     if fallback_base is not None:
         result["fallback_base"] = fallback_base
-    rendered = _render_discovery_result(result, summary=args.summary)
+    rendered = render_discovery_result(result, summary=args.summary, full=args.full)
     sys.stdout.write(rendered)
     if cache_path is not None:
         _write_discovery_cache(cache_path, rendered)
