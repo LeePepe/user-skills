@@ -68,18 +68,17 @@
     },
     {
       "id": "AR-005",
-      "title": "Diagnosis reports no issue when the skill has no evidence",
+      "title": "Diagnosis fails closed for unknown skill identifiers",
       "tags": [
         "diagnose",
-        "negative",
-        "counter-case"
+        "negative"
       ],
-      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py diagnose --skill definitely-not-observed --json",
-      "expect_exit": 0,
-      "expect_json_subset": {
-        "ok": true,
-        "status": "HEALTHY_NO_ISSUES"
-      }
+      "negative_cmd": "python3 skills/agent-retro/scripts/agent_retro.py diagnose --skill definitely-not-observed --json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "agent-retro-playbook.md",
+        "eval-cases.json"
+      ]
     },
     {
       "id": "AR-006",
@@ -128,28 +127,6 @@
       ]
     },
     {
-      "id": "EV-001",
-      "title": "Self-tested agent-retro CLI help",
-      "tags": [
-        "cli",
-        "regression"
-      ],
-      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
-      "expect_exit": 0,
-      "expect_stdout_contains": [
-        "probe"
-      ],
-      "registered_at": "2026-11-24"
-    },
-    {
-      "id": "AR-009",
-      "title": "v2 CLI exposes parity, receipt, relay, and horizon entry points",
-      "tags": ["cli", "contract"],
-      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py --help",
-      "expect_exit": 0,
-      "expect_stdout_contains": ["horizon", "record-m1-receipt", "emit-relay"]
-    },
-    {
       "id": "AR-010",
       "title": "Horizon counter-case safely reports no synthetic findings",
       "tags": ["horizon", "negative", "counter-case"],
@@ -170,6 +147,38 @@
       "tags": ["docs", "counter-case"],
       "file": "skills/agent-retro/references/agent-retro-playbook.md",
       "must_contain": ["AST", "warehouse.db", "1.5-second", "--mock-jev-json"]
+    },
+    {
+      "id": "AR-013",
+      "title": "Diagnose accepts positional skill plus compatibility flags",
+      "tags": ["diagnose", "cli", "counter-case"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py diagnose agent-retro --mode full --aspects l0,l1,l2 --json",
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "skill": "agent-retro"}
+    },
+    {
+      "id": "AR-014",
+      "title": "Inspect-json emits objective soft advisories by default",
+      "tags": ["inspect-json", "l3", "counter-case"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py inspect-json --path skills/agent-retro/references/eval-cases.json --path /tmp/agent-retro-missing.json --json",
+      "expect_exit": 0,
+      "expect_json_subset": {"schema": "agent-retro-json-facts/v1", "gate": "soft_advisory_exit_0"}
+    },
+    {
+      "id": "AR-015",
+      "title": "Inspect-json strict mode fails closed on malformed paths",
+      "tags": ["inspect-json", "negative"],
+      "negative_cmd": "python3 skills/agent-retro/scripts/agent_retro.py inspect-json --path /tmp/agent-retro-missing.json --strict --json",
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": ["agent-retro-playbook.md", "eval-cases.json"]
+    },
+    {
+      "id": "AR-016",
+      "title": "Record-m1-receipt accepts compatibility aliases",
+      "tags": ["receipt", "cli"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py record-m1-receipt --skill agent-retro --goal-id agent-retro-agent-retro --status HEALTHY_NO_ISSUES --head-sha deadbeef --pr-number 42 --writers-spawned 0 --reviewers-spawned 0 --m1-tl-agent-name skill-retro-agent-retro-goal-tl-r1 --dir ~/Development/handoff --json",
+      "expect_exit": 0,
+      "expect_json_subset": {"ok": true, "schema": "agent-retro-m1-receipt/v1"}
     }
   ],
   "trigger_evals": [

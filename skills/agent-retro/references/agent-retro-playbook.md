@@ -1,4 +1,4 @@
-# Agent Retro v2.1.0 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
+# Agent Retro v2.1.2 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
 
 > Core Philosophy: **Symptom in Agent, Cure in Skill.** Grade final outcomes first (**Outcome-First Gate**), treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy runtime progressive disclosure, and trace downstream rework back to the **first upstream role and skill** that introduced the defect.
 
@@ -6,17 +6,18 @@
 
 | Stage | Command / Engine | Role & Model Cost Tier (`runtime-profiles.yaml`) | Output & Routing Contract |
 |---|---|---|---|
-| **Stage 1 · Sub-Second Trajectory Probe** | `agent_retro.py probe [--role <role>] [--layer <layers>] [--days <N>] --fast --json` | `0` Token · `< 1.5s` deterministic script | Scans `events.jsonl`, `handoff/*/{ledger.md,spec.md,design.md,receipts/*}`, and optional `warehouse.db` (with `SF_DATALESS` / `/Volumes/` non-blocking guards); bounded `<16KB` summary output by default. |
-| **Stage 2 · Cheap Worker + Jev Triage (`1 M2`)** | `agent_retro.py triage [--role <role>] [--pick-top 3 \| --pick-one] [--use-jev] [--mock-jev-json <json>] [--emit-briefs <dir>] --json` | **1 Cheap Probe Worker (`--role explorer` / `--role mechanical`, `worker` tier `mai-code-2-flash` / `gpt-5.6-luna` + Jev `1.5s`, `0` steering tokens)** | Zero Owner gate before fixing; honest `0..3` upper cap (`K=0` -> `HEALTHY_NO_ISSUES`, `0` M1 TLs spawned). Emits `K` disjoint per-skill M1 Goal specs (`<dir>/agent-retro-<sk>/spec.md`) + `m2_dispatch_plan`. |
+| **Stage 1 · Sub-Second Trajectory Probe** | `agent_retro.py probe [--role <role>] [--layer <layers>] [--days <N>] --fast --json` | `0` Token · `< 1.5s` deterministic script | Scans `events.jsonl`, `handoff/*/{ledger.md,spec.md,design.md,receipts/*}`, and optional `warehouse.db` under `SF_DATALESS`/`/Volumes/` guards; bounded `<16KB` output. |
+| **Stage 2 · Cheap Worker + Jev Triage (`1 M2`)** | `agent_retro.py triage [--role <role>] [--pick-top 3 \| --pick-one] [--use-jev] [--mock-jev-json <json>] [--emit-briefs <dir>] --json` | **1 Cheap Probe Worker (`--role explorer` / `--role mechanical`, `worker` tier `mai-code-2-flash` / `gpt-5.6-luna` + Jev `1.5s`, `0` steering tokens)** | Honest `0..3` cap (`K=0` -> `HEALTHY_NO_ISSUES`, `0` M1 TLs). Emits per-skill M1 specs (`<dir>/agent-retro-<sk>/spec.md`) and `m2_dispatch_plan`. |
 | **Stage 3 · `1 M2 -> K Parallel M1 TLs -> M2 Rollup`** | `agent_retro.py diagnose --skill <sk> --json` + `emit-briefs` + `rollup --handoff-root <dir> --issue-brief --json` + `file-issue` / `setup-autopilot` | **`1 Independent M1-TL per Skill` (`agent-retro-<sk>-goal-tl-r1`) -> (`Writer -> Reviewer` if needed) -> M2 Rollup** | If benign after deep reasoning, M1 TL writes `HEALTHY_NO_ISSUES` (`writers_spawned=0`); if real fix needed, M1 TL enforces 1 of **3 Physical Locks** + **Positive & Counter-Case Dual Replay**, merges PR, and rolls up into **`[Agent Retro YYYY-MM-DD]`**. |
+| **Layer 3 Fact Collector** | `agent_retro.py inspect-json <path...> [--path <p>] [--keys a.b] [--head 3] [--strict] --json` | Read-only deterministic helper | Emits objective JSON facts (`agent-retro-json-facts/v1`): size, type, top-level keys, item counts, bounded preview, and soft/hard gate behavior. |
 
 ---
 
 ## 2. Outcome-First Filter & Runtime Progressive Disclosure Exemption
 
 1. **Outcome-First Gate (Anthropic Principle)**:
-   - A Goal/Task that completes cleanly in `R1` or `R2` (`DONE`/`PR_MERGED`), stays within P90 token/latency budgets, has faithful R10 receipts, and zero human interrupts is graded **`OUTCOME_HEALTHY`** — intermediate trajectory steps are not penalized.
-   - Trajectory profiling activates only when a Goal/Task is: (a) drifted/abandoned (`H1`), (b) falsely completed / ungrounded (`E4`), (c) over P90 token/turn budget (`R3`, `I3`), (d) in `R3+` review ping-pong (`E2`), or (e) interrupted by human stalls/aborts/corrections (`F1`–`F3`).
+   - Goals/Tasks that complete in `R1` or `R2` (`DONE`/`PR_MERGED`) within budget, with faithful receipts and no interrupts, are **`OUTCOME_HEALTHY`**.
+   - Profile trajectories only for drift/abandon (`H1`), ungrounded completion (`E4`), budget breach (`R3`,`I3`), `R3+` review loops (`E2`), or human interrupts (`F1`–`F3`).
 2. **Runtime Progressive Disclosure Exemption (`R1 -> R2` & `exit=1 -> disclose -> exit=0`)**:
    - When an agent hits `exit=1` on a deterministic L2 script/test, reads the pointed L1 `references/*.md` drawer, edits code, and passes (`exit=0`), it is recorded as **`progressive_catch_rate` (Healthy)** and **exempted** from `E1_blind_spin_loop` and `E2_r3_plus_divergence`.
    - Likewise, a 2-round review (`R1 FAIL -> R2 PASS`) is healthy convergence and never flagged as `E2`.
@@ -68,13 +69,13 @@
 
 ## 5. Independent M3 Rollup (`[Agent Retro YYYY-MM-DD]`) & Multica Autopilot
 
-- **`rollup --issue-brief` & `file-issue`**: Aggregates all `K` M1 receipts (`FIXED_AND_MERGED`, `HEALTHY_NO_ISSUES`, `CROSS_SKILL_RELAY`), 5-layer anomaly counts, and `observation_pool` into a Dual-Zone Markdown issue (`<=45` human lines, plain-Chinese `**一句话结论**：...`, concrete non-boilerplate `- [ ]` items, zero forbidden internal codes/UUIDs/SHAs/CLI commands in Human Zone, and full JSON/CLI evidence inside `<details><summary>🤖 AI 执行上下文与确定性证据（人无需展开）</summary>`) verified by `verify_issue_format.py`.
-- **`setup-autopilot`**: Configures or updates the Multica scheduled `run_only` autopilot (`Daily Agent Trajectory Retro Autopilot`, cron `40 4 * * *` `Asia/Shanghai`) without touching `skill-retro`'s `04:20` schedule.
+- **`rollup --issue-brief` & `file-issue`**: Aggregate `K` M1 receipts (`FIXED_AND_MERGED`, `HEALTHY_NO_ISSUES`, `CROSS_SKILL_RELAY`), anomaly counts, and `observation_pool` into a verified Dual-Zone issue (`<=45` human lines + `<details>` evidence via `verify_issue_format.py`).
+- **`setup-autopilot`**: Configures the Multica scheduled `run_only` autopilot (`40 4 * * *` `Asia/Shanghai`).
 
 ## 6. v2 Parity Discovery and L-Horizon
 
 - **Target watermarks**: Resolve each target skill as `v<path-commit-count>@<subtree-sha>` plus `last_modified_epoch`. Triage uses only recurring `post_fix` evidence unless `--include-pre-fix` is explicitly requested; a hermetic skill with no Git history is post-fix.
-- **H5 contract drift**: The probe scans literal `skills/<callee>/scripts/<script>.py` calls, AST-extracts argparse flags/subcommands, skips `parse_known_args`/canonical wrappers/placeholders, and reads available `warehouse.db` through a read-only guarded URI for drifted goals, review failures, blocked/unblocked events, and steering requests.
-- **I5 wild glue**: Five or more sessions repeating `herdr` pane/agent reads, receipt/ledger polling, or `gh pr view` loops become an upstream `m2-dispatcher`/`team-lead` crystallization candidate.
-- **Jev and M1**: `triage --use-jev` calls `team-lead/scripts/jev_client.py` with a 1.5-second bound; `--mock-jev-json` never contacts live Jev. Use `record-m1-receipt` and `emit-relay`; rollup checks merge SHA grounding.
-- **Horizon entry**: `agent_retro.py horizon --days 7 --min-turns 40 --min-duration-min 15 --json` profiles healthy or at-risk long sessions. HZN1 flags unreferenced carry-byte turns; HZN2 wakeup gaps and serial disjoint work; HZN3 edit churn/full-verify detours; HZN4 early/late failure or empty-turn inflection; HZN5 long low-output `group/steering` read-only spans. `probe`, `triage`, and `rollup` accept `--layer horizon`.
+- **H5 contract drift**: Probe scans literal `skills/<callee>/scripts/<script>.py` calls, AST-extracts argparse flags/subcommands, skips `parse_known_args`/canonical wrappers/placeholders, and reads guarded read-only `warehouse.db`.
+- **I5 wild glue**: `>=5` sessions repeating `herdr` reads, receipt/ledger polling, or `gh pr view` loops become upstream `m2-dispatcher`/`team-lead` crystallization candidates.
+- **Jev and M1**: `triage --use-jev` calls `team-lead/scripts/jev_client.py` with a 1.5-second bound; `--mock-jev-json` never contacts live Jev.
+- **Horizon entry**: `agent_retro.py horizon --days 7 --min-turns 40 --min-duration-min 15 --json` profiles HZN1..HZN5; `probe`/`triage`/`rollup` accept `--layer horizon`.
