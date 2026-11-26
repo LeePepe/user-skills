@@ -20,6 +20,8 @@ description: 用 shared-ci 模板与检查器治理 repo 合同；当任务涉�
 
 先取当前 `shared-ci` 发布 SHA（其 release notes / README 顶部），整个任务只用这一个 SHA。
 
+`pr-facts`（别名 `pr-status`）只读输出 PR 与检查事实摘要；失败检查默认是 `soft_advisory_exit_0`，`--strict` 才返回非零。
+
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |

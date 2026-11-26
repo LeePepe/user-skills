@@ -23,6 +23,7 @@ python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Dev
 
 `scan`/`check`/`audit`/`bottlenecks`/`loop-check` 会在缩进 JSON 超过 15,000 字节（`COMPACT_JSON_BYTES`）时自动保留契约顶层统计键与完整 `actionable_proposals` 归属字段（`skill`、`layer`、`ref`、`metric_id`、有界 `title`/`plain_reason`/`action`），按需裁剪 `repos`、`scan_errors`、`healthy_repo_names`、`bottleneck_repos` 并附 `*_truncated` 省略计数；`--summary` 或 `--compact` 强制摘要，`--full` 保留完整输出。默认审计使用临时目录中的 60 秒文件 stat/SHA watermark，`--no-cache` 可绕过。
 
+`pr-facts`（别名 `pr-status`）只读汇总 PR 与检查事实；默认软提示，`--strict` 才因失败检查返回非零。默认审计使用临时目录中的 60 秒文件 stat/SHA watermark，`--no-cache` 可绕过。
 ---
 
 ## 2. `tech-context.md` vs. Repo-Bound Skills 职责边界

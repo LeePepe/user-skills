@@ -397,6 +397,86 @@ class RepoKitGateAuditorTests(unittest.TestCase):
             self.assertEqual(scan_out["repos_scanned"], 1)
             self.assertEqual(scan_out["scan_errors_count"], 0)
 
+    def test_shared_provider_rg002_exemption_has_consumer_counter_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = _init_git_repo(root / "shared-ci")
+            _write_exec(
+                provider / "scripts" / "verify",
+                "#!/usr/bin/env bash\n"
+                "# Fast self-provider mode runs all suites in parallel.\n"
+                "VERIFY_JOBS=${VERIFY_JOBS:-4}\n"
+                "python3 -c 'from concurrent.futures import ThreadPoolExecutor'\n",
+            )
+            (provider / "README.md").write_text("Fast self-provider mode runs all suites.\n", encoding="utf-8")
+            provider_report = AUDITOR.inspect_single_repo(provider)
+            self.assertNotIn("RG-002", provider_report["triggered_rules"])
+
+            consumer = _init_git_repo(root / "consumer")
+            _write_exec(consumer / "scripts" / "verify", "#!/usr/bin/env bash\npytest\n")
+            consumer_report = AUDITOR.inspect_single_repo(consumer)
+            self.assertIn("RG-002", consumer_report["triggered_rules"])
+
+    def test_scope_conditioned_rg001_exempts_upstream_but_catches_owned_engineering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upstream = _init_git_repo(root / "falcon")
+            (upstream / ".github" / "workflows").mkdir(parents=True)
+            (upstream / ".github" / "workflows" / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+            (upstream / "src").mkdir()
+            (upstream / ".git" / "config").write_text(
+                "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/nocoo/falcon.git\n",
+                encoding="utf-8",
+            )
+            upstream_report = AUDITOR.inspect_single_repo(upstream)
+            self.assertNotIn("RG-001", upstream_report["triggered_rules"])
+            self.assertEqual(upstream_report["scope_classification"], "exempt_third_party_upstream")
+
+            owned = _init_git_repo(root / "owned-app")
+            (owned / ".github" / "workflows").mkdir(parents=True)
+            (owned / ".github" / "workflows" / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+            (owned / "AGENTS.md").write_text("# Engineering repo\n", encoding="utf-8")
+            owned_report = AUDITOR.inspect_single_repo(owned)
+            self.assertIn("RG-001", owned_report["triggered_rules"])
+
+    def test_pr_facts_positive_and_invalid_counter_case(self) -> None:
+        gh_payload = {
+            "number": 42,
+            "title": "Facts only",
+            "state": "OPEN",
+            "isDraft": False,
+            "mergeStateStatus": "CLEAN",
+            "mergedAt": None,
+            "mergeCommit": None,
+            "headRefName": "feature/facts",
+            "headRefOid": "a" * 40,
+            "url": "https://github.com/org/repo/pull/42",
+            "statusCheckRollup": [
+                {"name": "unit", "conclusion": "SUCCESS"},
+                {"name": "lint", "conclusion": "FAILURE"},
+                {"name": "build", "status": "IN_PROGRESS"},
+            ],
+        }
+        completed = subprocess.CompletedProcess(["gh"], 0, json.dumps(gh_payload), "")
+        with mock.patch.object(AUDITOR.subprocess, "run", return_value=completed):
+            report, exit_code, stderr = AUDITOR.build_pr_facts_report(pr="42", repo="org/repo")
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(stderr)
+        self.assertEqual(report["check_counts"], {"total": 3, "passed": 1, "failed": 1, "pending": 1})
+        self.assertEqual(report["failed_checks"], ["lint"])
+        self.assertLessEqual(len(json.dumps(report).encode("utf-8")), 20_000)
+
+        proc = subprocess.run(
+            [sys.executable, str(AUDITOR_PATH), "pr-facts", "--pr", "not-a-number", "--repo", "org/repo"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertLessEqual(len(proc.stderr.splitlines()), 3)
+        self.assertIn("skills/repo-kit/references/repo-bound-skills-and-gates.md", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

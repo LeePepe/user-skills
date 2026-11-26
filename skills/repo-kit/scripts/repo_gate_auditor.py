@@ -35,6 +35,13 @@ import tempfile
 import time
 from typing import Any, Mapping, Sequence
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from pr_facts import REFERENCE_DOC as PR_FACTS_REFERENCE, build_pr_facts_report
+from gate_scope import is_self_provider_verify as _is_self_provider_verify
+from gate_scope import repo_scope as _repo_scope
+
 DEFAULT_DEV_ROOT = Path.home() / "Development"
 REFERENCE_DOC = "skills/repo-kit/references/repo-bound-skills-and-gates.md"
 CACHE_DIR = Path(tempfile.gettempdir()) / "repo-kit-gate-audit-cache"
@@ -123,7 +130,6 @@ _PREPUSH_FORCE_ALL_RE = re.compile(
 _PREPUSH_CALLS_VERIFY_RE = re.compile(r"(?:^|[\s\"'/])scripts/verify\b", re.MULTILINE)
 _SHARED_CI_PIN_RE = re.compile(r"shared-ci(?:@|/blob/|/[^@\s]+@)([0-9a-f]{7,40})")
 
-
 def _prepush_forces_all(code: str) -> bool:
     lines = code.splitlines()
     for index, line in enumerate(lines):
@@ -133,18 +139,16 @@ def _prepush_forces_all(code: str) -> bool:
                 return True
     return False
 
-
 class _SelfDisclosingRepoKitParser(argparse.ArgumentParser):
     """ArgumentParser that prints a <=3 line fix + pointer to repo-bound-skills-and-gates.md on exit=2."""
 
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"[repo-kit] CLI error: {message}\n"
-            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
+            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check,pr-facts} [--repo <dir> | --dev-root <dir>] --json`\n"
             f"  Reference: {REFERENCE_DOC} | skills/repo-kit/references/eval-cases.json\n"
         )
         raise SystemExit(2)
-
 
 def _redact_path(raw: str | Path, *, dev_root: Path | None = None) -> str:
     text = str(raw or "")
@@ -158,7 +162,6 @@ def _redact_path(raw: str | Path, *, dev_root: Path | None = None) -> str:
     text = _USER_HOME_PATH_RE.sub("~", text)
     return text
 
-
 def _display_rel_path(path: Path | None, repo_dir: Path, *, dev_root: Path | None = None) -> str:
     """Safely format a path relative to repo_dir, falling back without raising ValueError when outside repo_dir."""
     if path is None:
@@ -171,7 +174,6 @@ def _display_rel_path(path: Path | None, repo_dir: Path, *, dev_root: Path | Non
     if path.parent.name:
         return f"{path.parent.name}/{path.name}"
     return _redact_path(path.name or str(path), dev_root=dev_root)
-
 
 def _is_git_repo(path: Path) -> bool:
     try:
@@ -528,13 +530,10 @@ def inspect_single_repo(
     prepush_code = _strip_shell_comments(prepush_raw)
     effective_prepush_code = _effective_prepush_code(repo_dir, active_prepush, prepush_code)
 
-    has_product_or_gate_surface = bool(
-        has_ci_yml
-        or tracked_prepush_candidates
-        or (repo_dir / "Packages").is_dir()
-        or (repo_dir / "Sources").is_dir()
-        or (repo_dir / "skills").is_dir()
-        or (repo_dir / "scripts").is_dir()
+    has_product_or_gate_surface, scope_classification = _repo_scope(
+        repo_dir,
+        has_ci_yml=has_ci_yml,
+        tracked_prepush_candidates=tracked_prepush_candidates,
     )
 
     findings: list[dict[str, Any]] = []
@@ -572,7 +571,7 @@ def inspect_single_repo(
     has_incremental_verify = False
     if has_verify_file:
         has_incremental_verify = bool(_INCREMENTAL_VERIFY_RE.search(verify_code_with_runner))
-        if not has_incremental_verify:
+        if not has_incremental_verify and not _is_self_provider_verify(repo_dir, verify_code_with_runner):
             add_finding(
                 "RG-002",
                 "`scripts/verify` does not reference `--changed`, `VERIFY_BASE`, `git diff --name-only`, or `detect_changed_files`",
@@ -699,6 +698,7 @@ def inspect_single_repo(
     return {
         "repo": repo_name,
         "repo_path": _redact_path(repo_dir, dev_root=dev_root),
+        "scope_classification": scope_classification,
         "gate_health_score": health_score,
         "status": "healthy" if not findings else ("degraded" if health_score >= 60 else "critical"),
         "has_verify_entrypoint": has_verify_exec,
@@ -1104,7 +1104,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
-    valid_subcommands = {"scan", "check", "audit", "bottlenecks", "loop-check"}
+    valid_subcommands = {"scan", "check", "audit", "bottlenecks", "loop-check", "pr-facts", "pr-status"}
 
     if not args_list or args_list[0] in {"-h", "--help"}:
         top = _SelfDisclosingRepoKitParser(
@@ -1115,7 +1115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "command",
             nargs="?",
             choices=sorted(valid_subcommands),
-            help="Subcommand: scan | check | audit | bottlenecks | loop-check (defaults to scan when flags are passed directly).",
+            help="Subcommand: scan | check | audit | bottlenecks | loop-check | pr-facts (alias pr-status).",
         )
         _add_common_args(top)
         top.parse_args(args_list)
@@ -1132,11 +1132,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         rest = args_list[1:]
     else:
         sys.stderr.write(
-            f"[repo-kit] Unknown subcommand: {first!r} (choose from: scan, check, audit, bottlenecks, loop-check)\n"
-            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check} [--repo <dir> | --dev-root <dir>] --json`\n"
+            f"[repo-kit] Unknown subcommand: {first!r} (choose from: scan, check, audit, bottlenecks, loop-check, pr-facts)\n"
+            "  Fix: run `python3 skills/repo-kit/scripts/repo_gate_auditor.py {scan,check,audit,bottlenecks,loop-check,pr-facts} [--repo <dir> | --dev-root <dir>] --json`\n"
             f"  Reference: {REFERENCE_DOC}\n"
         )
         raise SystemExit(2)
+
+    if subcmd in {"pr-facts", "pr-status"}:
+        pr_parser = _SelfDisclosingRepoKitParser(prog=f"repo_gate_auditor.py {subcmd}")
+        pr_parser.add_argument("pr_number", nargs="?", help="Positive PR number (alternative to --pr or --url).")
+        pr_parser.add_argument("--pr", dest="pr", help="Positive PR number.")
+        pr_parser.add_argument("--url", help="GitHub pull request URL.")
+        pr_parser.add_argument("--repo", help="owner/repo or a local git directory; inferred when omitted.")
+        pr_parser.add_argument("--strict", action="store_true", help="Exit 1 when the PR has failing checks.")
+        ns = pr_parser.parse_args(rest)
+        if ns.pr is not None and ns.pr_number is not None:
+            pr_parser.error("provide PR number once, via --pr or positional argument")
+        selector = ns.pr if ns.pr is not None else ns.pr_number
+        report, exit_code, stderr_message = build_pr_facts_report(
+            pr=selector,
+            url=ns.url,
+            repo=ns.repo,
+            strict=ns.strict,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if stderr_message:
+            sys.stderr.write(f"[repo-kit] {stderr_message}\n  Reference: {PR_FACTS_REFERENCE}\n")
+        return exit_code
 
     sub_parser = _SelfDisclosingRepoKitParser(prog=f"repo_gate_auditor.py {subcmd}")
     _add_common_args(sub_parser)
