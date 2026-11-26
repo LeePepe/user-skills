@@ -90,12 +90,16 @@ UPSTREAM = {
 ROLE_WORDS = {"m2": ("m2", "dispatcher", "personal-m2"), "m1": ("m1", "steering", "team-lead"),
               "writer": ("writer", "coding"), "reviewer": ("reviewer", "code-review"), "m3": ("m3", "personal-m2-assistant")}
 _SKILL_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_PSEUDO_SKILL_TOKENS = frozenset({
+    "skills", "skill", "scripts", "references", "tests", "test",
+    "main", "unknown", "repo", "meta", "workflow", "design", "research",
+})
 
 
 def is_valid_skill_slug(value: Any, *, require_repo_dir: bool = False) -> bool:
-    """Reject glob/placeholder tokens before a skill name reaches probe or triage."""
+    """Reject glob/placeholder and directory pseudo-skill tokens before probe or triage."""
     candidate = str(value or "").strip()
-    if not _SKILL_SLUG.fullmatch(candidate):
+    if not _SKILL_SLUG.fullmatch(candidate) or candidate in _PSEUDO_SKILL_TOKENS:
         return False
     return not require_repo_dir or (ROOT / "skills" / candidate).is_dir()
 

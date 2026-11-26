@@ -74,7 +74,7 @@ class RetroLoopContractTests(unittest.TestCase):
         counter_cases = [case for case in cases if case.get("expect_exit", 0) != 0 or case.get("should_trigger") is False or case.get("forbidden_regex") or case.get("negative_cmd")]
         self.assertGreaterEqual(len(counter_cases) / len(cases), 0.33)
         plugin = json.loads((ROOT / "skills/retro-loop/.claude-plugin/plugin.json").read_text())
-        self.assertEqual(plugin["version"], "2.0.0")
+        self.assertEqual(plugin["version"], "2.0.1")
 
 
 if __name__ == "__main__":

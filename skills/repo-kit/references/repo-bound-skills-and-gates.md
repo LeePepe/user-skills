@@ -21,7 +21,7 @@ python3 skills/repo-kit/scripts/repo_gate_auditor.py loop-check --dev-root ~/Dev
 | `RG-005` | `hook_path_or_ci_drift` | `core.hooksPath` 未配置/指向缺失或不可执行的 `pre-push`，或 `ci.yml` 未调 `scripts/verify` / `shared-ci/quality.yml` | 执行 `git config core.hooksPath .githooks`（或 `scripts/hooks`）并确保 `ci.yml` 同入口调用（`angle_d_tiered_fast_fail`） |
 | `RG-006` | `shared_ci_pin_drift` | 仓库固定 `shared-ci` SHA 落后于本机 `shared-ci` HEAD，或仍用旧版 `AGENTS.md` 行内 pin 而缺 `.github/repo-contract.json` | 升级 `.github/repo-contract.json` 与 workflow caller 至最新 `shared-ci` SHA（`angle_b_watermark_cache`） |
 
-`scan`/`check`/`audit` 会在缩进 JSON 超过 20 KB 时自动保留契约顶层键并压缩仓库明细；`--summary` 或 `--compact` 强制摘要，`--full` 保留完整输出。默认审计使用临时目录中的 60 秒文件 stat/SHA watermark，`--no-cache` 可绕过。
+`scan`/`check`/`audit`/`bottlenecks`/`loop-check` 会在缩进 JSON 超过 15,000 字节（`COMPACT_JSON_BYTES`）时自动保留契约顶层统计键与完整 `actionable_proposals` 归属字段（`skill`、`layer`、`ref`、`metric_id`、有界 `title`/`plain_reason`/`action`），按需裁剪 `repos`、`scan_errors`、`healthy_repo_names`、`bottleneck_repos` 并附 `*_truncated` 省略计数；`--summary` 或 `--compact` 强制摘要，`--full` 保留完整输出。默认审计使用临时目录中的 60 秒文件 stat/SHA watermark，`--no-cache` 可绕过。
 
 ---
 

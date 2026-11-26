@@ -154,10 +154,38 @@ def _sanitize_human_zone_label(text: str) -> str:
     return cleaned
 
 
+_PSEUDO_SKILLS = frozenset({"skills", "skill", "scripts", "references", "tests", "main", "*"})
+
+
+def _resolve_proposal_skill(prop: Mapping[str, Any]) -> str:
+    raw = str(prop.get("skill") or "").strip()
+    if raw == "repo-gate":
+        return "repo-kit"
+    if raw and raw.lower() not in _PSEUDO_SKILLS:
+        return raw
+    rule_id = str(prop.get("rule_id") or "").strip().upper()
+    hints = " ".join(str(prop.get(k) or "") for k in ("id", "ref", "metric_id")).lower()
+    if rule_id.startswith("RG-") or "repo-kit" in hints or "repo-gate" in hints:
+        return "repo-kit"
+    return ""
+
+
+def _proposal_action_cell(prop: Mapping[str, Any], sk: str) -> str:
+    rule_id = str(prop.get("rule_id") or "").strip()
+    cat = str(prop.get("category") or prop.get("diagnostic_status") or "contract").strip()
+    title = str(prop.get("title") or prop.get("diagnosis") or "").strip().replace("|", "\\|")
+    action = str(prop.get("action") or prop.get("plain_reason") or "").strip().replace("|", "\\|")
+    if not title:
+        title = f"[{rule_id}] `{sk}` (`{cat}`)" if rule_id else f"Audit `{sk}` (`{cat}`)"
+    if not action or action == title:
+        action = f"Run `{sk}` remediation & contract verification"
+    return f"{title} — {action}"
+
+
 def _remediation_commands_for_proposal(prop: Mapping[str, Any]) -> list[str]:
-    sk = str(prop.get("skill") or "").strip()
+    sk = _resolve_proposal_skill(prop)
     cmds: list[str] = []
-    if sk and sk != "repo-gate":
+    if sk:
         cmds.append(
             f"python3 skills/skill-retro/scripts/skill_retro.py emit-briefs --skill {sk} "
             f"--emit-briefs ~/Development/handoff/skill-retro-{sk} --json"
@@ -193,12 +221,21 @@ def _summarize_skill_retro_report(raw_retro: Mapping[str, Any] | None) -> dict[s
     retro_summary = dict(raw_retro.get("summary") or {})
     raw_proposals = [p for p in (raw_retro.get("proposals") or []) if isinstance(p, Mapping)]
     proposals: list[dict[str, Any]] = []
-    for prop in raw_proposals[:6]:
-        sk = str(prop.get("skill") or "skills").strip()
+    for prop in raw_proposals:
+        sk = _resolve_proposal_skill(prop)
+        if not sk or sk.lower() in _PSEUDO_SKILLS:
+            continue
+        rule_id = str(prop.get("rule_id") or "").strip().upper()
         cat = str(prop.get("category") or "").strip()
-        raw_title = str(prop.get("title") or "").strip()
-        raw_reason = str(prop.get("plain_reason") or prop.get("action") or "").strip()
-        human_what = _sanitize_human_zone_label(raw_title) or f"演进 `{sk}` 渐进式防呆契约"
+        layer = str(prop.get("layer") or ("L2" if (rule_id.startswith("RG-") or sk == "repo-kit") else "L0"))
+        raw_title = str(prop.get("title") or "").strip() or (
+            f"[Repo Gate {rule_id}] `{sk}` ({cat or 'gate_drift'})" if rule_id else f"[{layer}] `{sk}` ({cat or 'retro'})"
+        )
+        raw_act = str(prop.get("action") or "").strip() or (
+            f"Apply `{sk}` remediation for `{rule_id or cat or layer}` and run `./scripts/verify`."
+        )
+        raw_reason = str(prop.get("plain_reason") or raw_act).strip()
+        human_what = _sanitize_human_zone_label(raw_title) or f"治理 `{sk}` ({rule_id or cat or layer})"
         if "该高频探针模式" in human_what and cat == "wild_pattern_crystallization":
             human_what = f"为 `{sk}` 柔性沉淀高频手工探针脚本"
         human_why = _sanitize_human_zone_label(raw_reason).rstrip("。") or f"`{sk}` 观测到高信号摩擦或漏检样本"
@@ -207,31 +244,34 @@ def _summarize_skill_retro_report(raw_retro: Mapping[str, Any] | None) -> dict[s
                 "id": prop.get("id"),
                 "ref": prop.get("ref"),
                 "metric_id": prop.get("metric_id"),
+                "rule_id": rule_id or prop.get("rule_id"),
                 "skill": sk,
-                "layer": prop.get("layer") or "L0",
+                "layer": layer,
                 "category": cat,
                 "priority": prop.get("priority") or "P2",
                 "title": raw_title,
                 "plain_reason": raw_reason,
-                "action": prop.get("action"),
+                "action": raw_act,
                 "detail": prop.get("detail"),
                 "scope_triage": dict(prop.get("scope_triage")) if isinstance(prop.get("scope_triage"), Mapping) else {},
                 "human_what": human_what[:46],
                 "human_why": human_why[:64],
-                "remediation_commands": _remediation_commands_for_proposal(prop),
+                "remediation_commands": _remediation_commands_for_proposal({**prop, "skill": sk}),
             }
         )
+        if len(proposals) >= 6:
+            break
     obs_pool = [
         {
             "id": item.get("id"),
-            "skill": item.get("skill"),
+            "skill": sk_obs,
             "layer": item.get("layer"),
             "category": item.get("category"),
             "title": item.get("title"),
         }
-        for item in (raw_retro.get("observation_pool") or [])[:6]
-        if isinstance(item, Mapping)
-    ]
+        for item in (raw_retro.get("observation_pool") or [])
+        if isinstance(item, Mapping) and (sk_obs := _resolve_proposal_skill(item))
+    ][:6]
     cohort_sig = _compute_cohort_watermark(
         {
             "proposals": [
@@ -497,35 +537,22 @@ def collect_skill_retro_snapshot(
         val is not None
         for val in (warehouse_db, copilot_db, copilot_sessions_dir, usage_jsonl, proposals_path)
     )
+    source_kwargs = {
+        "warehouse_db": warehouse_db,
+        "copilot_db": copilot_db,
+        "copilot_sessions_dir": copilot_sessions_dir,
+        "usage_jsonl": usage_jsonl,
+        "handoff_root": handoff_root,
+        "skills_root": skills_root,
+        "dev_root": dev_root,
+        "proposals_path": proposals_path,
+        "skill": skill,
+        "days": days,
+    }
     if skill_retro_fn is not None:
-        raw_skill_retro = skill_retro_fn(
-            warehouse_db=warehouse_db,
-            copilot_db=copilot_db,
-            copilot_sessions_dir=copilot_sessions_dir,
-            usage_jsonl=usage_jsonl,
-            handoff_root=handoff_root,
-            skills_root=skills_root,
-            dev_root=dev_root,
-            proposals_path=proposals_path,
-            skill=skill,
-            days=days,
-            auto_propose=False,
-        )
+        raw_skill_retro = skill_retro_fn(**source_kwargs, auto_propose=False)
     else:
-        raw_skill_retro = _invoke_pure_skill_retro_cli(
-            warehouse_db=warehouse_db,
-            copilot_db=copilot_db,
-            copilot_sessions_dir=copilot_sessions_dir,
-            usage_jsonl=usage_jsonl,
-            handoff_root=handoff_root,
-            skills_root=skills_root,
-            dev_root=dev_root,
-            proposals_path=proposals_path,
-            skill=skill,
-            days=days,
-            auto_propose=False,
-            no_roi_mirror=no_roi_mirror,
-        )
+        raw_skill_retro = _invoke_pure_skill_retro_cli(**source_kwargs, auto_propose=False, no_roi_mirror=no_roi_mirror)
 
     skill_retro = _summarize_skill_retro_report(raw_skill_retro)
     retro_proposals = list(skill_retro.get("proposals") or [])
@@ -545,34 +572,9 @@ def collect_skill_retro_snapshot(
 
     if skill_retro_auto_propose and has_propose_delta:
         if skill_retro_fn is not None:
-            proposed_res = skill_retro_fn(
-                warehouse_db=warehouse_db,
-                copilot_db=copilot_db,
-                copilot_sessions_dir=copilot_sessions_dir,
-                usage_jsonl=usage_jsonl,
-                handoff_root=handoff_root,
-                skills_root=skills_root,
-                dev_root=dev_root,
-                proposals_path=proposals_path,
-                skill=skill,
-                days=days,
-                auto_propose=True,
-            )
+            proposed_res = skill_retro_fn(**source_kwargs, auto_propose=True)
         else:
-            proposed_res = _invoke_pure_skill_retro_cli(
-                warehouse_db=warehouse_db,
-                copilot_db=copilot_db,
-                copilot_sessions_dir=copilot_sessions_dir,
-                usage_jsonl=usage_jsonl,
-                handoff_root=handoff_root,
-                skills_root=skills_root,
-                dev_root=dev_root,
-                proposals_path=proposals_path,
-                skill=skill,
-                days=days,
-                auto_propose=True,
-                no_roi_mirror=no_roi_mirror,
-            )
+            proposed_res = _invoke_pure_skill_retro_cli(**source_kwargs, auto_propose=True, no_roi_mirror=no_roi_mirror)
         if isinstance(proposed_res, Mapping):
             skill_retro["proposals_written"] = int(proposed_res.get("proposals_written") or 0)
             skill_retro["auto_proposed_ids"] = list(proposed_res.get("auto_proposed") or [])
@@ -665,7 +667,7 @@ def build_issue_title(snapshot: Mapping[str, Any]) -> str:
     for item in proposals:
         if not isinstance(item, Mapping):
             continue
-        sk = str(item.get("skill") or "").strip()
+        sk = _resolve_proposal_skill(item)
         if sk and sk not in focus_skills:
             focus_skills.append(sk)
         if len(focus_skills) >= 3:
@@ -723,13 +725,17 @@ def _build_ai_evidence_markdown(snapshot: Mapping[str, Any], *, agent_analysis: 
         ]
     )
 
-    if retro_proposals:
-        for prop in retro_proposals[:6]:
-            p_title = str(prop.get("title") or prop.get("diagnosis") or "").replace("|", "\\|")
-            p_act = str(prop.get("action") or "").replace("|", "\\|")
+    valid_proposals = [
+        (p, sk)
+        for p in retro_proposals
+        if isinstance(p, Mapping) and (sk := _resolve_proposal_skill(p))
+    ][:6]
+    if valid_proposals:
+        for prop, sk in valid_proposals:
+            layer = prop.get("layer") or ("L2" if sk == "repo-kit" else "L0")
             lines.append(
-                f"| `{prop.get('priority', 'P2')}` | `{prop.get('layer', 'L0')}` | `{prop.get('skill')}` | "
-                f"`{prop.get('category') or prop.get('diagnostic_status')}` | {p_title} — {p_act} |"
+                f"| `{prop.get('priority', 'P2')}` | `{layer}` | `{sk}` | "
+                f"`{prop.get('category') or prop.get('diagnostic_status')}` | {_proposal_action_cell(prop, sk)} |"
             )
     else:
         lines.append("| — | — | `healthy` | `clean` | No high-signal L0–L3 friction or drift anomalies detected |")
@@ -762,14 +768,16 @@ def build_issue_markdown(snapshot: Mapping[str, Any], *, agent_analysis: str | N
     """Build Dual-Zone compliant Multica issue body via `issue-brief` contract from pure `skill-retro` output."""
     issue_brief = _load_issue_brief()
     skill_retro = snapshot.get("skill_retro") if isinstance(snapshot.get("skill_retro"), Mapping) else {}
-    retro_proposals = list(skill_retro.get("proposals") or snapshot.get("top_findings") or [])
+    retro_proposals = [
+        {**p, "skill": sk}
+        for p in (skill_retro.get("proposals") or snapshot.get("top_findings") or [])
+        if isinstance(p, Mapping) and (sk := _resolve_proposal_skill(p))
+    ]
     dedup_key = str(snapshot.get("dedup_key") or f"skill-retro-autopilot-{snapshot.get('collected_date') or 'today'}")
     retro_count = len(retro_proposals)
 
     focus_skills: list[str] = []
     for prop in retro_proposals:
-        if not isinstance(prop, Mapping):
-            continue
         sk_clean = str(prop.get("skill") or "").strip()
         if sk_clean and f"`{sk_clean}`" not in focus_skills:
             focus_skills.append(f"`{sk_clean}`")
@@ -1263,7 +1271,11 @@ def setup_multica_autopilot(
 def synthesize_deterministic_analysis(snapshot: Mapping[str, Any]) -> str:
     """Synthesize structured 4-Layer `skill-retro` root-cause analysis when no external Agent markdown is supplied."""
     skill_retro = snapshot.get("skill_retro") if isinstance(snapshot.get("skill_retro"), Mapping) else {}
-    proposals = list(skill_retro.get("proposals") or snapshot.get("top_findings") or [])
+    proposals = [
+        (p, sk)
+        for p in (skill_retro.get("proposals") or snapshot.get("top_findings") or [])
+        if isinstance(p, Mapping) and (sk := _resolve_proposal_skill(p))
+    ]
     summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), Mapping) else {}
     bullets: list[str] = [
         f"基于 4-Layer Progressive Skill Retro（`sessions={summary.get('sample_size', 0)}`, "
@@ -1272,15 +1284,12 @@ def synthesize_deterministic_analysis(snapshot: Mapping[str, Any]) -> str:
         f"（观测池 `{summary.get('observation_pool_count', 0)}` 项）：",
         "",
     ]
-    for idx, prop in enumerate(proposals[:5], 1):
-        if not isinstance(prop, Mapping):
-            continue
-        sk = prop.get("skill")
-        layer = prop.get("layer") or "L0"
+    for idx, (prop, sk) in enumerate(proposals[:5], 1):
+        layer = prop.get("layer") or ("L2" if sk == "repo-kit" else "L0")
         cat = prop.get("category") or prop.get("diagnostic_status")
         prio = prop.get("priority") or "P2"
-        reason = prop.get("plain_reason") or prop.get("diagnosis") or prop.get("title")
-        action = prop.get("action") or ""
+        reason = prop.get("plain_reason") or prop.get("diagnosis") or prop.get("title") or f"`{sk}` (`{cat}`)"
+        action = prop.get("action") or f"Run `{sk}` remediation & `./scripts/verify`"
         bullets.append(
             f"{idx}. **`[{prio}][{layer}] {sk}` (`{cat}`)**：{reason}。建议动作：{action}"
         )
@@ -1408,6 +1417,38 @@ def run_once_pipeline(
     }
 
 
+def _add_retro_source_args(subparser: argparse.ArgumentParser) -> None:
+    for flag in (
+        "--warehouse-db",
+        "--copilot-db",
+        "--copilot-sessions-dir",
+        "--usage-jsonl",
+        "--handoff-root",
+        "--skills-root",
+        "--dev-root",
+        "--proposals-path",
+    ):
+        subparser.add_argument(flag, type=Path, default=None)
+    subparser.add_argument("--skill", default=None, help="Optional single skill filter.")
+    subparser.add_argument("--days", type=int, default=30, help="Observation window in days (default: 30).")
+    subparser.add_argument("--skill-retro-auto-propose", action="store_true", help="Queue gated high-signal skill-retro proposals to proposals.jsonl.")
+    subparser.add_argument("--watermark-file", type=Path, default=None, help="Optional cohort watermark file for zero-token no-delta gating.")
+
+
+def _add_issue_publish_args(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("--priority", default=DEFAULT_ISSUE_PRIORITY, choices=("urgent", "high", "medium", "low", "none"))
+    subparser.add_argument("--status", default=DEFAULT_ISSUE_STATUS, help="Initial Multica issue status (default: backlog).")
+    subparser.add_argument("--assignee-id", default=DEFAULT_OWNER_ID, help="Owner user UUID on Multica.")
+    subparser.add_argument("--server-url", default=DEFAULT_SERVER_URL)
+    subparser.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
+    subparser.add_argument("--multica-bin", default=None)
+    subparser.add_argument("--allow-duplicate", action="store_true")
+    subparser.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
+    subparser.add_argument("--update-existing", action="store_true", help="Update matching same-day issue in place via multica issue update.")
+    subparser.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
+    subparser.add_argument("--dry-run", action="store_true")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="multica_skills_autopilot.py",
@@ -1416,18 +1457,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     p_collect = sub.add_parser("collect", help="Deterministically collect pure 4-layer skill-retro snapshot.")
-    p_collect.add_argument("--warehouse-db", type=Path, default=None)
-    p_collect.add_argument("--copilot-db", type=Path, default=None)
-    p_collect.add_argument("--copilot-sessions-dir", type=Path, default=None)
-    p_collect.add_argument("--usage-jsonl", type=Path, default=None)
-    p_collect.add_argument("--handoff-root", type=Path, default=None)
-    p_collect.add_argument("--skills-root", type=Path, default=None)
-    p_collect.add_argument("--dev-root", type=Path, default=None)
-    p_collect.add_argument("--proposals-path", type=Path, default=None)
-    p_collect.add_argument("--skill", default=None, help="Optional single skill filter.")
-    p_collect.add_argument("--days", type=int, default=30, help="Observation window in days (default: 30).")
-    p_collect.add_argument("--skill-retro-auto-propose", action="store_true", help="Queue gated high-signal skill-retro proposals to proposals.jsonl.")
-    p_collect.add_argument("--watermark-file", type=Path, default=None, help="Optional cohort watermark file for zero-token no-delta gating.")
+    _add_retro_source_args(p_collect)
     p_collect.add_argument("--top-n", type=int, default=5)
     p_collect.add_argument("--output", type=Path, default=None, help="Optional JSON output file path.")
     p_collect.add_argument("--markdown-output", type=Path, default=None, help="Optional rendered Markdown output path.")
@@ -1437,17 +1467,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_issue.add_argument("--analysis-file", type=Path, default=None, help="Optional Agent-refined Markdown analysis path.")
     p_issue.add_argument("--analysis-text", default="", help="Optional inline Agent analysis Markdown.")
     p_issue.add_argument("--title", default=None, help="Override issue title.")
-    p_issue.add_argument("--priority", default=DEFAULT_ISSUE_PRIORITY, choices=("urgent", "high", "medium", "low", "none"))
-    p_issue.add_argument("--status", default=DEFAULT_ISSUE_STATUS, help="Initial Multica issue status (default: backlog).")
-    p_issue.add_argument("--assignee-id", default=DEFAULT_OWNER_ID, help="Owner user UUID on Multica.")
-    p_issue.add_argument("--server-url", default=DEFAULT_SERVER_URL)
-    p_issue.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
-    p_issue.add_argument("--multica-bin", default=None)
-    p_issue.add_argument("--allow-duplicate", action="store_true")
-    p_issue.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
-    p_issue.add_argument("--update-existing", action="store_true", help="Update matching same-day issue in place via multica issue update.")
-    p_issue.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
-    p_issue.add_argument("--dry-run", action="store_true")
+    _add_issue_publish_args(p_issue)
 
     p_setup = sub.add_parser("setup-autopilot", help="Idempotently configure NAS Multica Autopilot & daily schedule trigger.")
     p_setup.add_argument("--title", default=DEFAULT_AUTOPILOT_TITLE)
@@ -1469,30 +1489,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--output", type=Path, default=DEFAULT_COLLECT_OUTPUT)
     p_run.add_argument("--analysis-file", type=Path, default=None)
     p_run.add_argument("--analysis-cmd", default=None, help="Optional shell command to generate Agent analysis before filing.")
-    p_run.add_argument("--priority", default=DEFAULT_ISSUE_PRIORITY, choices=("urgent", "high", "medium", "low", "none"))
-    p_run.add_argument("--status", default=DEFAULT_ISSUE_STATUS)
-    p_run.add_argument("--assignee-id", default=DEFAULT_OWNER_ID)
-    p_run.add_argument("--server-url", default=DEFAULT_SERVER_URL)
-    p_run.add_argument("--workspace-id", default=DEFAULT_WORKSPACE_ID)
-    p_run.add_argument("--multica-bin", default=None)
-    p_run.add_argument("--warehouse-db", type=Path, default=None)
-    p_run.add_argument("--copilot-db", type=Path, default=None)
-    p_run.add_argument("--copilot-sessions-dir", type=Path, default=None)
-    p_run.add_argument("--usage-jsonl", type=Path, default=None)
-    p_run.add_argument("--handoff-root", type=Path, default=None)
-    p_run.add_argument("--skills-root", type=Path, default=None)
-    p_run.add_argument("--dev-root", type=Path, default=None)
-    p_run.add_argument("--proposals-path", type=Path, default=None)
-    p_run.add_argument("--skill", default=None, help="Optional single skill filter.")
-    p_run.add_argument("--days", type=int, default=30, help="Observation window in days (default: 30).")
-    p_run.add_argument("--skill-retro-auto-propose", action="store_true", help="Queue gated high-signal skill-retro proposals to proposals.jsonl.")
-    p_run.add_argument("--watermark-file", type=Path, default=None, help="Optional cohort watermark file for zero-token no-delta gating.")
+    _add_retro_source_args(p_run)
     p_run.add_argument("--skip-if-no-delta", action="store_true", help="Skip filing issue at 0 token cost when cohort watermark is unchanged.")
-    p_run.add_argument("--allow-duplicate", action="store_true")
-    p_run.add_argument("--refresh-existing", action="store_true", help="Update matching open issue body in place.")
-    p_run.add_argument("--update-existing", action="store_true", help="Update matching same-day issue in place via multica issue update.")
-    p_run.add_argument("--update-issue-id", default=None, help="Explicit Multica issue ID/key (e.g. TIA-1) to update in place.")
-    p_run.add_argument("--dry-run", action="store_true")
+    _add_issue_publish_args(p_run)
 
     return parser
 
