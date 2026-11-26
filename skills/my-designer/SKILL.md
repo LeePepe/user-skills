@@ -41,10 +41,11 @@ This is a handoff-only design capability. Author the implementation-ready `desig
 2. After each round run `reset-preview-selection`; verify with `check-preview-selection`. Archives are `preview-selection-r<N>.json`; reset fields are `selectedVariantID`, `starredVariantIDs`, and `notesByVariant`. Clean ephemeral demos with `cleanup-demo --goal <goal>`.
 3. Capture Negative DOM/View Assertions and an Obsolete Test Manifest (`audit-spec`).
 4. In Phase 1 **Visual Traceback**, compare declared constraints with real ImageRenderer (Apple) or Playwright (Web) screenshots, label every finding `[IMPL_BUG]` or `[SPEC_GAP]`, update `spec_sha` before amending omitted rules, and promote symbol-free recurring defects via `sink-rule`. Runtime check failures emit self-disclosing `guidance` pointers to the exact `references/*.md` drawer—read that drawer on demand to converge R2.
+5. Before accepting rendered evidence, run `verify_design_cases.py vision-audit --dir <screenshots> --platform <platform> --out <receipt>` and directly inspect the before/after PNG pixels. PNG existence (`ls *.png`) and regex-only code scans are never sufficient visual verification; the gate is fail-closed for missing or malformed vision responses.
 
 ## L2 commands
 
-`route`/`--route`, `flow-map`/`--flow-map`, `lookup-defect`/`--lookup-defect`, `audit-code`, `audit-spec`, `check-section-interactivity`, and `check-whitespace-ratio` accept subcommand or `--flag` forms; path inputs (including `inspect-json`) accept positional, repeatable/multi-arg `--path`, or `--dir`. Use `--strict-spec-gaps` before or after `audit-spec` to fail pre-implementation `[SPEC_GAP]` advisories.
+`route`/`--route`, `flow-map`/`--flow-map`, `lookup-defect`/`--lookup-defect`, `audit-code`, `audit-spec`, `check-section-interactivity`, and `check-whitespace-ratio` accept subcommand or `--flag` forms; path inputs (including `inspect-json`) accept positional, repeatable/multi-arg `--path`, or `--dir`. `vision-audit` accepts recursive `--dir` discovery and repeatable `--image`; use `--mock-response` for deterministic offline replay. Use `--strict-spec-gaps` before or after `audit-spec` to fail pre-implementation `[SPEC_GAP]` advisories.
 
 ```bash
 python3 skills/my-designer/scripts/verify_design_cases.py flow-map
