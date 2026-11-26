@@ -532,12 +532,33 @@ def _skill_requires_l2(skill: str) -> bool:
     return bool(re.search(r"mandatory l2 cli|mandatory.*scripts/|必跑 l2", text))
 
 
+def _looks_like_session_id(token: str) -> bool:
+    if not token or "/" in token or "\\" in token or any(ch.isspace() for ch in token):
+        return False
+    low = token.lower()
+    if low.endswith((".md", ".py", ".json", ".yaml", ".yml", ".sh", ".ts", ".js", ".txt")):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", token))
+
+
 def _observation(metric: str, layer: str, count: int, evidence: list[str], *, skill: str | None = None,
-                 sessions: int = 1, healthy: bool = False, status: str = "actionable") -> dict[str, Any]:
+                 sessions: int = 1, healthy: bool = False, status: str = "actionable",
+                 session_ids: Iterable[str] | None = None) -> dict[str, Any]:
     resolved_skill = skill if (skill and is_valid_skill_slug(skill)) else UPSTREAM.get(metric, "unknown")
+    if session_ids is None:
+        parsed = [str(item).split(":", 1)[0].strip() for item in evidence if ":" in str(item)]
+        session_ids = [sid for sid in parsed if _looks_like_session_id(sid)]
+    unique_session_ids: list[str] = []
+    seen: set[str] = set()
+    for sid in session_ids:
+        text = str(sid).strip()
+        if text and text not in seen:
+            seen.add(text)
+            unique_session_ids.append(text)
     return {"metric": metric, "layer": layer, "count": count, "skill": resolved_skill,
             "upstream_skill": resolved_skill, "scenario_sessions": sessions,
             "status": "healthy_progressive_disclosure" if healthy else status,
+            "session_ids": unique_session_ids[:200],
             "evidence": [_redact(item) for item in evidence[:5]]}
 
 

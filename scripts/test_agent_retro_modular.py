@@ -128,8 +128,8 @@ class AgentRetroModularTests(unittest.TestCase):
                 self.assertNotIn("*", probe_skills)
                 i3 = [row for row in probe["observations"] if row["metric"] == "I3_l2_exit2_and_output_bloat"]
                 self.assertTrue(i3)
-                self.assertEqual(i3[0]["skill"], "agent-retro")
-                self.assertEqual(i3[0]["upstream_skill"], "agent-retro")
+                self.assertEqual(i3[0]["skill"], "team-lead")
+                self.assertEqual(i3[0]["upstream_skill"], "team-lead")
 
                 triage_args = AR.cli.build_parser().parse_args(["triage", "--days", "3", "--fast", "--json"])
                 triage = AR.command_triage(triage_args)

@@ -1,7 +1,7 @@
 """Hermetic positive/counter-case coverage for the standalone agent-retro probe."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
@@ -388,6 +388,136 @@ class AgentRetroTests(unittest.TestCase):
         self.assertNotIn("lin_api" + "_secret", redacted)
         self.assertNotIn("sk-secret", redacted)
         self.assertIn("[REDACTED_TOKEN]", redacted)
+
+    def test_i3_attribution_uses_target_or_first_invoked_not_agent_retro_fallback(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [
+            {"type": "session.start", "timestamp": now, "data": {"sessionId": "s1"}},
+            {"type": "skill.invoked", "timestamp": now, "data": {"sessionId": "s1", "skillName": "skill-contract"}},
+            {"type": "skill.invoked", "timestamp": now, "data": {"sessionId": "s1", "skillName": "my-designer"}},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "s1", "toolName": "bash",
+                "arguments": {"command": "python3 skills/my-designer/scripts/check.py --bad"},
+                "shellExecution": {"exitCode": 2}, "result": {"content": "usage"},
+            }},
+            {"type": "session.start", "timestamp": now, "data": {"sessionId": "s2"}},
+            {"type": "skill.invoked", "timestamp": now, "data": {"sessionId": "s2", "skillName": "team-lead"}},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "s2", "toolName": "view",
+                "arguments": {"path": "handoff/goal/brief.md"}, "result": {"content": "x" * 21050},
+            }},
+        ]
+        rows = [row for row in AR._metric_scan(events, [], {}) if row["metric"] == "I3_l2_exit2_and_output_bloat"]
+        by_sid = {row["session_ids"][0]: row for row in rows}
+        self.assertEqual(by_sid["s1"]["upstream_skill"], "my-designer")
+        self.assertEqual(by_sid["s2"]["upstream_skill"], "team-lead")
+        self.assertTrue(all(row["upstream_skill"] != "agent-retro" for row in rows))
+
+    def test_i3_progressive_disclosure_recovery_is_healthy_counter_case(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [
+            {"type": "session.start", "timestamp": now, "data": {"sessionId": "recover"}},
+            {"type": "skill.invoked", "timestamp": now, "data": {"sessionId": "recover", "skillName": "skill-contract"}},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "recover", "toolName": "view",
+                "arguments": {"path": "handoff/goal/T1.md"}, "result": {"content": "Output too large to read at once"},
+            }},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "recover", "toolName": "view",
+                "arguments": {"path": "handoff/goal/T1.md", "view_range": [1, 120]}, "result": {"content": "ok"},
+            }},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "recover", "toolName": "bash",
+                "arguments": {"command": "python3 skills/skill-contract/scripts/skill_contract.py audit --summary"},
+                "shellExecution": {"exitCode": 0}, "result": {"content": "pass"},
+            }},
+        ]
+        rows = [row for row in AR._metric_scan(events, [], {}) if row["metric"] == "I3_l2_exit2_and_output_bloat"]
+        self.assertTrue(rows)
+        self.assertTrue(all(row["status"] == "healthy_progressive_disclosure" for row in rows))
+        self.assertTrue(all(row["upstream_skill"] == "skill-contract" for row in rows))
+
+    def test_i3_unrecovered_exit2_not_exempted_by_unrelated_commands(self):
+        now = datetime.now(timezone.utc).isoformat()
+        events = [
+            {"type": "session.start", "timestamp": now, "data": {"sessionId": "unrecovered"}},
+            {"type": "skill.invoked", "timestamp": now, "data": {"sessionId": "unrecovered", "skillName": "my-designer"}},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "unrecovered", "toolName": "bash",
+                "arguments": {"command": "python3 skills/my-designer/scripts/check.py --bad"},
+                "shellExecution": {"exitCode": 2}, "result": {"content": "usage"},
+            }},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "unrecovered", "toolName": "bash",
+                "arguments": {"command": "git status"},
+                "shellExecution": {"exitCode": 0}, "result": {"content": "clean"},
+            }},
+            {"type": "tool.execution_complete", "timestamp": now, "data": {
+                "sessionId": "unrecovered", "toolName": "view",
+                "arguments": {"path": "README.md", "view_range": [1, 20]}, "result": {"content": "hi"},
+            }},
+        ]
+        rows = [row for row in AR._metric_scan(events, [], {}) if row["metric"] == "I3_l2_exit2_and_output_bloat"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "actionable")
+        self.assertEqual(rows[0]["upstream_skill"], "my-designer")
+
+    def test_classify_and_aggregate_observations_preserves_mixed_post_fix_counts(self):
+        now = datetime.now(timezone.utc)
+        rows = [
+            AR._observation(
+                "I3_l2_exit2_and_output_bloat", "invoke", 1, ["s-pre: tool output >20KB"],
+                skill="team-lead", sessions=1, session_ids=["s-pre"],
+            ),
+            AR._observation(
+                "I3_l2_exit2_and_output_bloat", "invoke", 2, ["s-post: tool output >20KB"],
+                skill="team-lead", sessions=1, session_ids=["s-post"],
+            ),
+            AR._observation(
+                "H5_cross_skill_contract_drift", "handoff", 3,
+                ["agent-retro/SKILL.md: unknown flag --skill"], skill="agent-retro", sessions=1,
+            ),
+        ]
+        events = [
+            {"type": "session.start", "timestamp": (now - timedelta(days=2)).isoformat(), "data": {"sessionId": "s-pre"}},
+            {"type": "session.start", "timestamp": (now + timedelta(days=1)).isoformat(), "data": {"sessionId": "s-post"}},
+        ]
+        watermark = {"target_skill_watermarks": {"team-lead": {"last_modified_epoch": int(now.timestamp())}}}
+        AR._classify_observations(rows, events, watermark)
+        aggregated = {row["metric"]: row for row in AR._aggregate_observations(rows)}
+        i3 = aggregated["I3_l2_exit2_and_output_bloat"]
+        self.assertEqual(i3["count"], 3)
+        self.assertEqual(i3["scenario_sessions"], 2)
+        self.assertEqual(i3["pre_fix_count"], 1)
+        self.assertEqual(i3["post_fix_count"], 2)
+        self.assertEqual(i3["fix_bucket"], "mixed")
+        self.assertEqual(aggregated["H5_cross_skill_contract_drift"]["session_ids"], [])
+        self.assertEqual(aggregated["H5_cross_skill_contract_drift"]["count"], 3)
+
+    def test_classify_observations_uses_session_ids_not_truncated_evidence(self):
+        now = datetime.now(timezone.utc)
+        observations = [AR._observation(
+            "I3_l2_exit2_and_output_bloat", "invoke", 6,
+            [f"pre-{index}: tool output >20KB" for index in range(5)] + ["post-1: tool output >20KB"],
+            skill="team-lead", session_ids=[*(f"pre-{index}" for index in range(5)), "post-1"],
+        )]
+        events = []
+        watermark = {"target_skill_watermarks": {"team-lead": {"last_modified_epoch": int(now.timestamp())}}}
+        for index in range(5):
+            events.append({"type": "session.start", "timestamp": (now - timedelta(days=2)).isoformat(),
+                           "data": {"sessionId": f"pre-{index}"}})
+        events.append({"type": "session.start", "timestamp": (now + timedelta(days=1)).isoformat(),
+                       "data": {"sessionId": "post-1"}})
+        AR._classify_observations(observations, events, watermark)
+        self.assertEqual(observations[0]["pre_fix_count"], 5)
+        self.assertEqual(observations[0]["post_fix_count"], 1)
+
+    def test_collect_snapshot_honors_explicit_target_date(self):
+        snap = AR.collect_agent_retro_snapshot(
+            days=1, handoff_root=FIXTURE / "handoff", persist=False, target_date="2026-11-25",
+        )
+        self.assertEqual(snap["date"], "2026-11-25")
+        self.assertEqual(snap["cursor"], "agent-retro-autopilot-2026-11-25")
 
 
 if __name__ == "__main__":

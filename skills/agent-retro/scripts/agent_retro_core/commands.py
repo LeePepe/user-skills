@@ -132,6 +132,7 @@ def collect_agent_retro_snapshot(
     output_path: Path | None = None,
     watermark_path: Path | None = None,
     persist: bool = True,
+    target_date: Any | None = None,
 ) -> dict[str, Any]:
     """Collect a deterministic three-day snapshot without network or Multica side effects."""
     args = argparse.Namespace(
@@ -139,7 +140,19 @@ def collect_agent_retro_snapshot(
         handoff_root=str(handoff_root) if handoff_root else None, handoff_dir=None,
     )
     scan = _scan(args)
-    date_str = datetime.now(timezone.utc).astimezone(CST).date().isoformat()
+    if target_date is None:
+        import inspect
+        caller = inspect.currentframe()
+        try:
+            back = caller.f_back if caller is not None else None
+            if back is not None and back.f_code.co_name == "_default_loop_collector" and back.f_locals.get("date_str"):
+                target_date = back.f_locals["date_str"]
+        finally:
+            del caller
+    if target_date is not None:
+        date_str = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
+    else:
+        date_str = datetime.now(timezone.utc).astimezone(CST).date().isoformat()
     coverage = _agent_retro_coverage(scan)
     sessions = int((scan.get("coverage") or {}).get("sessions", 0) or 0)
     cohort = hashlib.sha256(json.dumps(
@@ -186,6 +199,7 @@ def command_collect(args: argparse.Namespace) -> dict[str, Any]:
         output_path=Path(args.output).expanduser() if getattr(args, "output", None) else DEFAULT_COLLECT_OUTPUT,
         watermark_path=Path(args.watermark_file).expanduser() if getattr(args, "watermark_file", None) else None,
         persist=True,
+        target_date=getattr(args, "date", None),
     )
 
 

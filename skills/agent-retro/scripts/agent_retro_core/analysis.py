@@ -51,7 +51,7 @@ def _classify_observations(observations: list[dict[str, Any]], events: list[dict
         skill = str(item.get("upstream_skill") or item.get("skill") or "")
         cutoff = int(target.get(skill, {}).get("last_modified_epoch", 0) or 0)
         evidence = item.get("evidence", [])
-        session_ids = {str(e).split(":", 1)[0] for e in evidence if ":" in str(e)}
+        session_ids = set(item.get("session_ids", [])) or {str(e).split(":", 1)[0] for e in evidence if ":" in str(e)}
         buckets: dict[str, str] = {}
         for sid in session_ids:
             timestamps = [_parse_time(e.get("timestamp") or _field(e, "timestamp", "createdAt")) for e in groups.get(sid, [])]
@@ -80,10 +80,28 @@ def _aggregate_observations(rows: list[dict[str, Any]], limit: int = 40) -> list
         current = grouped.get(key)
         if current is None:
             current = dict(row)
+            current["count"] = 0
+            current["scenario_sessions"] = 0
             current["evidence"] = []
+            current["session_ids"] = []
+            if "post_fix_count" in row or "pre_fix_count" in row:
+                current["post_fix_count"] = 0
+                current["pre_fix_count"] = 0
             grouped[key] = current
         current["count"] = int(current.get("count", 0)) + int(row.get("count", 0) or 0)
         current["scenario_sessions"] = int(current.get("scenario_sessions", 0)) + int(row.get("scenario_sessions", 0) or 0)
+        if "post_fix_count" in row or "pre_fix_count" in row:
+            post_count = int(current.get("post_fix_count", 0) or 0) + int(row.get("post_fix_count", 0) or 0)
+            pre_count = int(current.get("pre_fix_count", 0) or 0) + int(row.get("pre_fix_count", 0) or 0)
+            current["post_fix_count"] = post_count
+            current["pre_fix_count"] = pre_count
+            current["fix_bucket"] = "mixed" if post_count and pre_count else ("pre_fix" if pre_count else "post_fix")
+        seen_sessions = set(current["session_ids"])
+        for sid in row.get("session_ids", []):
+            text = str(sid).strip()
+            if text and text not in seen_sessions and len(current["session_ids"]) < 200:
+                seen_sessions.add(text)
+                current["session_ids"].append(text)
         for evidence in row.get("evidence", []):
             if evidence not in current["evidence"] and len(current["evidence"]) < 3:
                 current["evidence"].append(evidence)
