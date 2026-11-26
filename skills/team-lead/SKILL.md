@@ -1,6 +1,6 @@
 ---
 name: team-lead
-description: Goal/Task work must load this skill: coordinate Steering -> Writer -> Reviewer with handoff/<goal>/ledger.md, receipts/ R10, worktrees/, goal-supervisor.py, goal-queue.py, herdr-dispatch.sh, feedback_guard.py, and ci-monitor.py.
+description: "Goal/Task work must load this skill: coordinate Steering -> Writer -> Reviewer with handoff/<goal>/ledger.md, receipts/ R10, worktrees/, goal-supervisor.py, goal-queue.py, herdr-dispatch.sh, feedback_guard.py, and ci-monitor.py."
 ---
 # Goal -> Task 执行合同（`team-lead`）
 

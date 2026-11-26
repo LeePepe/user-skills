@@ -206,6 +206,60 @@ def _frontmatter_description(md: Path) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _frontmatter_errors(md: Path) -> list[str]:
+    """Validate strict YAML 1.2 frontmatter scalar syntax without external dependencies."""
+    try:
+        lines = md.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return [f"unreadable SKILL.md: {exc}"]
+    if not lines or lines[0].strip() != "---":
+        return ["missing opening '---' YAML frontmatter delimiter"]
+    closing = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if closing is None:
+        return ["missing closing '---' YAML frontmatter delimiter"]
+    errors: list[str] = []
+    index = 1
+    while index < closing:
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        match = re.match(r"^[ \t]*([A-Za-z0-9_-]+):(?:[ \t]*(.*))?$", line)
+        if not match:
+            if line[0].isspace() and stripped.startswith("-"):
+                index += 1
+                continue
+            errors.append(f"line {index + 1}: invalid YAML frontmatter entry")
+            index += 1
+            continue
+        key, raw = match.group(1), (match.group(2) or "").strip()
+        if re.fullmatch(r"[|>][+-]?\d*", raw):
+            index += 1
+            while index < closing and (not lines[index].strip() or lines[index][0].isspace()):
+                index += 1
+            continue
+        if raw.startswith('"'):
+            try:
+                parsed = json.loads(raw)
+                if not isinstance(parsed, str):
+                    errors.append(f"line {index + 1} ({key}): malformed double-quoted YAML scalar")
+            except json.JSONDecodeError:
+                errors.append(f"line {index + 1} ({key}): invalid double-quoted YAML scalar")
+        elif raw.startswith("'"):
+            if len(raw) < 2 or not raw.endswith("'") or "'" in raw[1:-1].replace("''", ""):
+                errors.append(f"line {index + 1} ({key}): invalid single-quoted YAML scalar")
+        elif raw and not raw.startswith(("[", "{")):
+            if ": " in raw or ":\t" in raw or raw.endswith(":"):
+                errors.append(f"line {index + 1} ({key}): unquoted ':' in YAML scalar; wrap value in double quotes")
+            elif " #" in raw or "\t#" in raw:
+                errors.append(f"line {index + 1} ({key}): unquoted ' #' starts a YAML comment; wrap value in double quotes")
+            elif raw[0] in "*&!%@`?,:":
+                errors.append(f"line {index + 1} ({key}): unquoted leading YAML indicator '{raw[0]}'; wrap value in double quotes")
+        index += 1
+    return errors
+
+
 def _thin_wrapper(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8")
@@ -626,6 +680,8 @@ def audit_package(path: Path, design: bool = False, repo_bound: bool = False, si
     if not md.exists():
         return [_enrich_finding({"skill": skill, "code": "missing-skill"})]
     text = md.read_text(encoding="utf-8")
+    for err in _frontmatter_errors(md):
+        findings.append({"skill": skill, "code": "invalid-frontmatter", "file": str(md), "detail": err})
     desc = _frontmatter_description(md)
     if not desc or len(desc) > 320:
         findings.append({"skill": skill, "code": "description-length", "value": len(desc), "cap": 320})
