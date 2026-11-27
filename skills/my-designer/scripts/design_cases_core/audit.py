@@ -223,6 +223,7 @@ def command_audit_code(args: argparse.Namespace) -> int:
             continue
         text = args.snippet if args.snippet else path.read_text(encoding='utf-8', errors='ignore')
         masked = _mask_swift(text) if (args.snippet or path.suffix.lower() == '.swift') else text
+        lines = text.splitlines()
         for case in cases:
             if args.platform not in case.get('platforms', []) or not case.get('forbidden_regex'):
                 continue
@@ -257,6 +258,9 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 return 2
             for start, end in spans:
                 line = target_text.count('\n', 0, start) + 1
+                end_line = target_text.count('\n', 0, max(start, end - 1)) + 1
+                if case.get('id') == 'DC-020' and 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
+                    continue
                 c_drawers = _drawer_keys_for_case(case['id'], case.get('dimensions'))
                 drawer_keys.extend(c_drawers)
                 ref_path = DRAWER_GUIDANCE[c_drawers[0]][0]
@@ -271,7 +275,6 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 if case.get('fix_rule'):
                     entry_finding['fix_rule'] = case['fix_rule']
                 findings.append(entry_finding)
-        lines = text.splitlines()
         for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
             line = text.count('\n', 0, match.start()) + 1
             line_text = lines[line - 1] if line <= len(lines) else ""
@@ -309,6 +312,21 @@ def command_audit_code(args: argparse.Namespace) -> int:
                     'match': text[match.start():match.end()].replace('\n', ' ')[:240],
                     'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
                 })
+        for match in UI_CUSTOM_THEME_PLUMBING_RE.finditer(masked):
+            line = masked.count('\n', 0, match.start()) + 1
+            end_line = masked.count('\n', 0, max(match.start(), match.end() - 1)) + 1
+            if 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
+                continue
+            drawer_keys.append('appearance')
+            findings.append({
+                'case_id': 'UI_CUSTOM_THEME_PLUMBING',
+                'title': 'Custom Theme Engine or Manual .designTheme / Theme(isDark:) View-Tree Plumbing',
+                'file': str(path),
+                'line': line,
+                'match': text[match.start():match.end()].replace('\n', ' ')[:240],
+                'reference_drawer': DRAWER_GUIDANCE['appearance'][0],
+                'fix_rule': 'Track native OS light/dark appearance automatically via dynamic semantic tokens; remove .designTheme(...) and .environment(\\.theme, Theme(isDark: ...)) plumbing.',
+            })
     spec_errors: list[dict[str, Any]] = []
     raw_spec_files = getattr(args, 'spec_files_list', None) or ([args.spec_file] if getattr(args, 'spec_file', None) else [])
     for sf in raw_spec_files:
@@ -514,14 +532,20 @@ SPEC_GAP_GUIDANCE = [
 ]
 
 
-def _spec_gap_warning(code: str, category: str, source: str, message: str) -> dict[str, Any]:
+def _spec_gap_warning(
+    code: str,
+    category: str,
+    source: str,
+    message: str,
+    guidance: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "code": code,
         "category": category,
         "tag": "[SPEC_GAP]",
         "file": source,
         "message": message,
-        "guidance": list(SPEC_GAP_GUIDANCE),
+        "guidance": list(guidance if guidance is not None else SPEC_GAP_GUIDANCE),
     }
 
 
@@ -599,6 +623,21 @@ def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[
             "SPEC_GAP_DEPRECATED_TEST_CLAUSES", "deprecated_tests", source,
             "handoff must include Deprecated Test Clauses, an Obsolete Test Manifest, or a scoped N/A clause",
         ))
+
+    for raw_line in content.splitlines():
+        if "design-contract-allow" in raw_line:
+            continue
+        match = SPEC_CUSTOM_THEME_TOGGLE_PROPOSAL_RE.search(raw_line)
+        if match and not SPEC_CUSTOM_THEME_NEGATION_RE.search(raw_line[: match.start() + 16]):
+            _, app_guidance = _build_self_disclosing_guidance(["appearance"])
+            warnings.append(_spec_gap_warning(
+                "SPEC_GAP_CUSTOM_THEME_TOGGLE",
+                "system_appearance",
+                source,
+                "handoff proposes a custom in-app light/dark theme switcher or custom theme engine; appearance must track native OS appearance automatically",
+                guidance=app_guidance + list(SPEC_GAP_GUIDANCE[:1]),
+            ))
+            break
     return warnings
 
 
@@ -647,11 +686,18 @@ def command_audit_spec(args: argparse.Namespace) -> int:
     if errors:
         payload["errors"] = errors
     if findings or spec_gap_warnings or errors:
-        payload["reference_drawers"] = [
+        has_theme_gap = any(w.get("code") == "SPEC_GAP_CUSTOM_THEME_TOGGLE" for w in spec_gap_warnings)
+        ref_drawers = [
             "skills/my-designer/references/modernization-dimensions.md",
             "skills/my-designer/references/navigation-evidence-contract.md",
         ]
-        payload["guidance"] = list(SPEC_GAP_GUIDANCE)
+        guidance_lines = list(SPEC_GAP_GUIDANCE)
+        if has_theme_gap:
+            ref_drawers.insert(0, DRAWER_GUIDANCE["appearance"][0])
+            _, app_guidance = _build_self_disclosing_guidance(["appearance"])
+            guidance_lines = app_guidance + guidance_lines
+        payload["reference_drawers"] = ref_drawers
+        payload["guidance"] = guidance_lines
     if strict_gaps:
         payload["strict_spec_gaps"] = True
     print(json.dumps(payload, ensure_ascii=False, indent=2))

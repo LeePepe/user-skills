@@ -1,36 +1,10 @@
 {
   "schema": "apple-design-defect-cases/v1",
   "version": 3,
-  "updated": "2026-11-26",
+  "updated": "2026-11-27",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
-    {
-      "id": "DC-001",
-      "title": "Single-Plane Flat Tiling & ShipSwift Spatial Signature Loss (SWWallet Flattened to VStack/ForEach)",
-      "platforms": [
-        "desktop",
-        "mobile",
-        "web"
-      ],
-      "dimensions": [
-        "component",
-        "layout-navigation",
-        "visual-style",
-        "motion-interaction"
-      ],
-      "containers": [
-        "NavigationSplitView",
-        "NavigationStack",
-        "ScrollView"
-      ],
-      "symptom": "Agent treats the appearance-ledger component palette as a mandatory flat checklist, stacking 4+ sections (Hero + Donut + Duplicate Category Bars + Flattened Wallet List + Transactions) in one >1000pt ScrollView, and rewrites ShipSwift SWWallet from a ZStack 3D pocket stack into a flat VStack/ForEach list.",
-      "fix_rule": "Apply the 3-Axis × P0..P3 Priority Matrix (Display / Action / Display+Action): cap any single viewport or split-view pane at 2-3 visual groups, collapse non-active groups (Accordion / Segmented Lens / Sheet), merge reference hints into placeholders/subtitles, and preserve ShipSwift SWWallet ZStack + zIndex + offset(y:) pocket geometry.",
-      "forbidden_regex": "struct\\s+SWWallet\\b[\\s\\S]{0,600}?VStack[^{]*\\{\\s*ForEach",
-      "bad_snippet": "struct SWWallet: View {\n    var body: some View {\n        VStack {\n            ForEach(cards) { card in CardRow(card: card) }\n        }\n    }\n}",
-      "good_snippet": "struct SWWallet: View {\n    var body: some View {\n        ZStack {\n            ForEach(cards) { card in CardView(card: card).zIndex(card.z).offset(y: card.y) }\n        }\n    }\n}",
-      "registered_at": "2026-11-08"
-    },
     {
       "id": "DC-002",
       "title": "Duplicate Same-Source Data Representation (Donut Legend + Redundant Category Progress Bars)",
@@ -344,6 +318,31 @@
       "fix_rule": "Use a fixed-width icon slot for one text rail and align multi-line headers to a shared baseline with stable column geometry.",
       "forbidden_regex": null,
       "registered_at": "2026-11-26"
+    },
+    {
+      "id": "DC-020",
+      "title": "Custom Theme Engine & Manual .designTheme / Theme(isDark:) View-Tree Plumbing",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "color-palette",
+        "visual-style",
+        "component"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "TabView",
+        "Sheet"
+      ],
+      "symptom": "App views wire a custom theme state machine or manual per-root/per-sheet appearance injection (.designTheme(...) or .environment(\\.theme, Theme(isDark: ...))) or ship an app-private light/dark toggle instead of tracking native OS appearance automatically.",
+      "fix_rule": "Track native OS light/dark appearance automatically via dynamic semantic tokens (VS-*/CL-*); remove custom in-app theme switchers, .designTheme(...) modifiers, and .environment(\\.theme, Theme(isDark: ...)) plumbing (UI_CUSTOM_THEME_PLUMBING).",
+      "forbidden_regex": "\\.\\s*designTheme\\s*\\(|\\.\\s*environment\\s*\\(\\s*\\\\\\.\\s*theme\\s*,\\s*Theme\\s*\\([^)]*\\bisDark\\s*:",
+      "bad_snippet": "struct RootShellView: View {\n    var body: some View {\n        WorkspaceView()\n            .designTheme(customTheme)\n            .environment(\\.theme, Theme(isDark: true))\n    }\n}",
+      "good_snippet": "struct RootShellView: View {\n    var body: some View {\n        WorkspaceView()\n    }\n}",
+      "registered_at": "2026-11-27"
     }
   ],
   "archived_templates": [
@@ -405,6 +404,32 @@
     }
   ],
   "archived_cases": [
+    {
+      "id": "DC-001",
+      "title": "Single-Plane Flat Tiling & ShipSwift Spatial Signature Loss (SWWallet Flattened to VStack/ForEach)",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "component",
+        "layout-navigation",
+        "visual-style",
+        "motion-interaction"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "ScrollView"
+      ],
+      "symptom": "Agent treats the appearance-ledger component palette as a mandatory flat checklist, stacking 4+ sections (Hero + Donut + Duplicate Category Bars + Flattened Wallet List + Transactions) in one >1000pt ScrollView, and rewrites ShipSwift SWWallet from a ZStack 3D pocket stack into a flat VStack/ForEach list.",
+      "fix_rule": "Apply the 3-Axis × P0..P3 Priority Matrix (Display / Action / Display+Action): cap any single viewport or split-view pane at 2-3 visual groups, collapse non-active groups (Accordion / Segmented Lens / Sheet), merge reference hints into placeholders/subtitles, and preserve ShipSwift SWWallet ZStack + zIndex + offset(y:) pocket geometry.",
+      "forbidden_regex": "struct\\s+SWWallet\\b[\\s\\S]{0,600}?VStack[^{]*\\{\\s*ForEach",
+      "bad_snippet": "struct SWWallet: View {\n    var body: some View {\n        VStack {\n            ForEach(cards) { card in CardRow(card: card) }\n        }\n    }\n}",
+      "good_snippet": "struct SWWallet: View {\n    var body: some View {\n        ZStack {\n            ForEach(cards) { card in CardView(card: card).zIndex(card.z).offset(y: card.y) }\n        }\n    }\n}",
+      "registered_at": "2026-11-08"
+    },
     {
       "id": "DC-005",
       "title": "Table Header-to-Cell Column Geometry Drift (Flex Header vs. Fixed-Width Centered Row)",

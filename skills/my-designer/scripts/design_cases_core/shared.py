@@ -149,7 +149,7 @@ DRAWER_GUIDANCE: dict[str, tuple[str, str]] = {
     ),
     "appearance": (
         "skills/my-designer/references/appearance-ledger.md",
-        "Lock one semantic VS-*/CL-* appearance route, contrast floor, light/dark parity, and context-scoped Tier 2 Product Persona tokens rather than ad-hoc hex overrides.",
+        "Track native OS light/dark appearance automatically via semantic VS-*/CL-* and Tier 2 Product Persona tokens; forbid custom in-app theme switchers and manual .designTheme / Theme(isDark:) plumbing.",
     ),
     "architecture": (
         "skills/my-designer/references/design-flow-architecture.md",
@@ -162,6 +162,8 @@ def _drawer_keys_for_case(case_id: str, dimensions: list[str] | None = None) -> 
     cid = (case_id or "").upper()
     dims = set(dimensions or [])
     keys: list[str] = []
+    if cid in {"DC-020", "UI_CUSTOM_THEME_PLUMBING", "SPEC_GAP_CUSTOM_THEME_TOGGLE"}:
+        keys.append("appearance")
     if cid in {"DC-004", "DC-010", "DC-011", "DC-012", "DC-016", "UI_EXPAND_STATE_MUTATION", "UI_HEADER_INTERLEAVED_INSERTION", "UI_UNCLIPPED_PANEL_OVERLAP"}:
         keys.append("interaction")
     if cid in {"DC-001", "DC-002", "DC-007", "DC-009", "DC-014", "UI_INSTRUCTIONAL_CLUTTER"}:
@@ -281,8 +283,8 @@ def _csv(value: str | None) -> list[str]:
 
 def _mask_swift(text: str) -> str:
     """Hide comments and string literals while preserving line/column offsets."""
-    pattern = re.compile(r'("(?:\\\\.|[^"\\\\])*"|//[^\\n]*|/\\*[\\s\\S]*?\\*/)')
-    return pattern.sub(lambda m: ''.join('\\n' if c == '\\n' else ' ' for c in m.group()), text)
+    pattern = re.compile(r'("(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/)')
+    return pattern.sub(lambda m: ''.join('\n' if c == '\n' else ' ' for c in m.group()), text)
 
 
 def _swiftui_view_candidates(text: str) -> list[dict[str, Any]]:
@@ -331,7 +333,7 @@ def _interactivity_result(text: str, path: str) -> tuple[bool, list[dict[str, An
 def _load_defect_entries(path: Path) -> list[dict[str, Any]]:
     doc = _load_json(path)
     entries: list[dict[str, Any]] = []
-    for key in ('active_cases', 'archived_templates'):
+    for key in ('active_cases', 'archived_templates', 'archived_cases'):
         values = doc.get(key, [])
         if isinstance(values, list):
             entries.extend(item for item in values if isinstance(item, dict))
@@ -352,6 +354,23 @@ UI_HEADER_INTERLEAVED_INSERTION_RE = re.compile(
 )
 UI_UNCLIPPED_PANEL_OVERLAP_RE = re.compile(
     r"\.transition\s*\([^\n;{}]*\.move\s*\(\s*edge\s*:\s*\.top\s*\)"
+)
+UI_CUSTOM_THEME_PLUMBING_RE = re.compile(
+    r"(?:\.\s*designTheme\s*\("
+    r"|\.\s*environment\s*\(\s*\\\.\s*theme\s*,\s*Theme\s*\([^)]*\bisDark\s*:)"
+)
+SPEC_CUSTOM_THEME_TOGGLE_PROPOSAL_RE = re.compile(
+    r"(?:"
+    r"\b(?:add|include|provide|expose|build|implement|offer|render|place|support|wire|ship)\b[^\n.;]{0,70}?\b(?:custom\s+|in-app\s+|app-private\s+|manual\s+)?(?:light\s*/\s*dark|dark\s*/\s*light|dark-mode|light-mode|theme|appearance)\s+(?:toggle|switcher|selector|picker|mode\s+switch)\b"
+    r"|\b(?:custom|in-app|app-private)\s+(?:light\s*/\s*dark\s+|dark\s*/\s*light\s+)?theme\s+(?:engine|state\s+machine|toggle|switcher|selector|picker)\b"
+    r"|(?:新增|提供|内置|放置|增加|支持|实现)[^\n。；]{0,24}?(?:应用内|自定义|手动)?(?:深浅色|明暗|暗黑模式|主题)(?:切换(?:器|按钮|开关)?|开关|选择器)"
+    r")",
+    re.IGNORECASE,
+)
+SPEC_CUSTOM_THEME_NEGATION_RE = re.compile(
+    r"(?:\b(?:no|zero|without|never|forbid(?:den|s)?|prohibit(?:ed|s)?|ban(?:ned|s)?|avoid|remove|strip|drop|delete|eliminate|do\s+not|don't|must\s+not)\b"
+    r"|严禁|禁止|不提供|不设|移除|去掉|砍掉|删除|零自定义|无需)",
+    re.IGNORECASE,
 )
 
 
