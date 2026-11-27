@@ -131,14 +131,15 @@
     },
     {
       "id": "EV-008",
-      "title": "Apple OS-Native System Appearance lookup and graph/neighbors navigation",
+      "title": "Apple OS-Native System Appearance lookup, L4-L1 cybernetic pyramid, and neighbors navigation",
       "tags": [
         "cli",
         "flow",
         "system-appearance",
-        "graph"
+        "graph",
+        "cybernetic-pyramid"
       ],
-      "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','dark mode system theme','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and [n['id'] for n in d1['matched_nodes'][:4]]==['E7','P7','E4','E9'] and 'my-designer' in d1['target_skills'] and 'skill-contract' in d1['target_skills'] and 'NSAppearance' in d1['guidance'] and 'prefers-color-scheme' not in d1['guidance']; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--graph','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and len(d2['stages'])==5 and d2['total_edge_count']>50; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','E2'],check=True,capture_output=True,text=True); assert 'Local Neighborhood Card: E2 Bug List' in r3.stdout and 'TK-02' in r3.stdout\"",
+      "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','dark mode system theme','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and [n['id'] for n in d1['matched_nodes'][:4]]==['E7','P7','E4','E9'] and 'my-designer' in d1['target_skills'] and 'skill-contract' in d1['target_skills'] and 'NSAppearance' in d1['guidance'] and 'prefers-color-scheme' not in d1['guidance']; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--graph','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and list(d2['cybernetic_pyramid'].keys())==['L4','L3','L2','L1'] and len(d2['stages'])==5 and d2['total_edge_count']>50; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','P3','--json'],check=True,capture_output=True,text=True); d3=json.loads(r3.stdout); assert d3['cybernetic_layer']=='L3'; r4=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','E2','--json'],check=True,capture_output=True,text=True); d4=json.loads(r4.stdout); assert d4['cybernetic_layer']=='L1' and 'Local Neighborhood Card: E2 Bug List' in d4['text'] and 'TK-02' in d4['text']\"",
       "expect_exit": 0,
       "registered_at": "2026-11-27"
     },
