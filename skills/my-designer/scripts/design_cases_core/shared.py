@@ -164,6 +164,8 @@ def _drawer_keys_for_case(case_id: str, dimensions: list[str] | None = None) -> 
     keys: list[str] = []
     if cid in {"DC-020", "UI_CUSTOM_THEME_PLUMBING", "SPEC_GAP_CUSTOM_THEME_TOGGLE"}:
         keys.append("appearance")
+    if cid == "DC-017":
+        keys.extend(["architecture", "navigation"])
     if cid in {"DC-004", "DC-010", "DC-011", "DC-012", "DC-016", "UI_EXPAND_STATE_MUTATION", "UI_HEADER_INTERLEAVED_INSERTION", "UI_UNCLIPPED_PANEL_OVERLAP"}:
         keys.append("interaction")
     if cid in {"DC-001", "DC-002", "DC-007", "DC-009", "DC-014", "UI_INSTRUCTIONAL_CLUTTER"}:

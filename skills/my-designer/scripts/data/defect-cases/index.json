@@ -267,7 +267,8 @@
     },
     {
       "id": "DC-017",
-      "title": "Compact Pill Visual-vs-Hit-Area Inflation",
+      "slug": "preview-host-enable-debug-dylib",
+      "title": "Xcode Preview Host ENABLE_DEBUG_DYLIB=YES Missing (preview-host-enable-debug-dylib) & Compact Pill Visual-vs-Hit-Area Inflation",
       "platforms": [
         "desktop",
         "mobile",
@@ -275,13 +276,20 @@
       ],
       "dimensions": [
         "component",
-        "layout-navigation"
+        "layout-navigation",
+        "motion-interaction"
       ],
-      "containers": [],
-      "symptom": "A full 44x44pt mobile or 28x28pt desktop hit frame is painted as a solid badge or citation pill, inflating the visible control.",
-      "fix_rule": "Keep the tinted visual capsule compact at roughly 20-24pt inside a transparent outer hit target sized for accessibility.",
-      "forbidden_regex": null,
-      "registered_at": "2026-11-26"
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "PreviewHost"
+      ],
+      "symptom": "A SwiftPM package defines an executable *PreviewHost alongside #Preview in Package.swift without ENABLE_DEBUG_DYLIB = YES across project.yml / *.xcodeproj targets (causing Xcode #Preview to fail with ENABLE_DEBUG_DYLIB), or paints a full 44x44pt mobile or 28x28pt desktop hit frame as a solid badge or citation pill, inflating the visible control.",
+      "fix_rule": "When a SwiftPM package defines an executable *PreviewHost alongside #Preview, generate a native .xcodeproj (project.yml + xcodegen) with ENABLE_DEBUG_DYLIB = YES on both the executable host and library target (plus shared schemes) and open .xcodeproj in Xcode so #Preview never fails with ENABLE_DEBUG_DYLIB; keep the tinted visual capsule compact at roughly 20-24pt inside a transparent outer hit target sized for accessibility.",
+      "forbidden_regex": "ENABLE_DEBUG_DYLIB\\s*[:=]\\s*[\"']?(?:NO|false)\\b",
+      "bad_snippet": "settings:\n  base:\n    ENABLE_DEBUG_DYLIB: NO",
+      "good_snippet": "settings:\n  base:\n    ENABLE_DEBUG_DYLIB: YES",
+      "registered_at": "2026-11-27"
     },
     {
       "id": "DC-018",
