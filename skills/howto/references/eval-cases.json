@@ -128,7 +128,66 @@
       "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--list-nodes','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and d1['node_count']>=30 and d1['broken_edge_count']==16; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','AI metrics','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and 'aidash-metrics' in d2['target_skills']; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--scaffold-tuple','fix bug list','--json'],check=True,capture_output=True,text=True); d3=json.loads(r3.stdout); assert d3['ok'] and d3['guard_validation']['ok']\"",
       "expect_exit": 0,
       "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-008",
+      "title": "Apple OS-Native System Appearance lookup and graph/neighbors navigation",
+      "tags": [
+        "cli",
+        "flow",
+        "system-appearance",
+        "graph"
+      ],
+      "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','dark mode system theme','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and [n['id'] for n in d1['matched_nodes'][:4]]==['E7','P7','E4','E9'] and 'my-designer' in d1['target_skills'] and 'skill-contract' in d1['target_skills'] and 'NSAppearance' in d1['guidance'] and 'prefers-color-scheme' not in d1['guidance']; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--graph','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and len(d2['stages'])==5 and d2['total_edge_count']>50; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','E2'],check=True,capture_output=True,text=True); assert 'Local Neighborhood Card: E2 Bug List' in r3.stdout and 'TK-02' in r3.stdout\"",
+      "expect_exit": 0,
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-009",
+      "title": "Counter-case: howto_guard rejects custom .designTheme and parallel theme state machines",
+      "tags": [
+        "negative",
+        "counter-case",
+        "guardrail",
+        "system-appearance"
+      ],
+      "cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Apple UI request | Internal: follow Apple OS system appearance via NSAppearance / UITraitCollection / @Environment(\\\\.colorScheme), never build custom .designTheme | Calls: E7, P7, E4, E9 | PointsTo: G1, I5 | Trigger & Notify: Manual P0/P1\"",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Apple UI request | Internal: wire .designTheme modifier and Web-CSS-style parallel theme state machine | Calls: E7, E4 | PointsTo: G1 | Trigger & Notify: Manual\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "custom_theme_engine_violation"
+      ],
+      "negative_stderr_contains": [
+        "Reference: skills/workflow-hub/references/how-to-nodes.md"
+      ],
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-010",
+      "title": "Counter-case: howto_guard rejects @AppStorage/UserDefaults in-app theme toggle plumbing",
+      "tags": [
+        "negative",
+        "counter-case",
+        "guardrail",
+        "system-appearance"
+      ],
+      "forbidden_regex": "(?i)(?:\\.designTheme\\b|@AppStorage[^\\n]{0,40}(?:designTheme|themeMode|isDarkMode))",
+      "bad_snippet": "@AppStorage(\"themeMode\") private var themeMode = \"dark\"; view.designTheme(themeMode)",
+      "good_snippet": "@Environment(\\.colorScheme) private var colorScheme",
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Settings | Internal: persist @AppStorage(\\\"themeMode\\\") with in-app theme toggle | Calls: E7, E4 | PointsTo: I5 | Trigger & Notify: Manual\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "custom_theme_engine_violation"
+      ],
+      "negative_stderr_contains": [
+        "howto_guard: custom_theme_engine_violation"
+      ],
+      "registered_at": "2026-11-27"
     }
   ],
-  "updated": "2026-11-20"
+  "updated": "2026-11-27"
 }
