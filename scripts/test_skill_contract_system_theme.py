@@ -192,14 +192,22 @@ class SkillContractSystemThemeTests(unittest.TestCase):
     def test_string_interpolation_retains_executable_code_while_masking_literals(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sc-theme-interp-") as raw:
             repo = Path(raw)
-            self._write_swift(
-                repo,
-                "Sources/Feature/Interpolated.swift",
-                'let debug = "probe: \\(view.designTheme(.dark))"\n',
+            source = (
+                'let cleanNestedRaw = "\\(f(#"a"b"#)) .designTheme(.dark)"\n'
+                'let cleanNestedMulti = "\\(f(\"\"\"\nquote " inside .designTheme(.dark)\n\"\"\")) .designTheme(.dark)"\n'
+                'let dirtyPlain = "probe: \\(view.designTheme(.dark))"\n'
+                'let dirtyNestedRaw = "\\(f(#"x"))"z"#, view.designTheme(.dark)))"\n'
+                'let allowedNestedRaw = "\\(f(#"x"))"z"#, view.designTheme(.dark)))" // design-contract-allow\n'
             )
+            self._write_swift(repo, "Sources/Feature/Interpolated.swift", source)
+            masked = core_facts._mask_swift_non_code(source)
+            self.assertEqual(len(masked), len(source))
+            self.assertEqual(masked.count("\n"), source.count("\n"))
+
             findings = core_facts.check_repo_appearance_hygiene(repo)
-            self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0]["code"], "custom-theme-plumbing")
+            self.assertEqual(len(findings), 2)
+            self.assertEqual([f["line"] for f in findings], [5, 6])
+            self.assertTrue(all(f["code"] == "custom-theme-plumbing" for f in findings))
 
     def test_watermark_cache_invalidates_when_swift_source_changes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sc-theme-cache-") as raw:

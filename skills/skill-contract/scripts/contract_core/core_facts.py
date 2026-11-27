@@ -325,11 +325,10 @@ APP_SWIFT_IGNORE_PARTS = {
 }
 
 
-def _mask_swift_non_code(text: str) -> str:
-    """Mask Swift line comments, nested block comments, and single/multiline/raw string literals."""
-    out: list[str] = []
+def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: bool = False) -> int:
+    """Scan Swift code from index `i`, masking comments and strings while preserving exact offsets."""
     n = len(text)
-    i = 0
+    paren_depth = 1 if stop_at_close_paren else 0
     while i < n:
         ch = text[i]
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
@@ -378,46 +377,7 @@ def _mask_swift_non_code(text: str) -> str:
                     break
                 if text.startswith(interp_seq, i):
                     out.extend(" " for _ in range(len(interp_seq)))
-                    i += len(interp_seq)
-                    interp_depth = 1
-                    expr_start = i
-                    while i < n and interp_depth > 0:
-                        if text[i] == "/" and i + 1 < n and text[i + 1] == "/":
-                            while i < n and text[i] != "\n":
-                                i += 1
-                            continue
-                        if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
-                            cdepth = 1
-                            i += 2
-                            while i < n and cdepth > 0:
-                                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
-                                    cdepth += 1
-                                    i += 2
-                                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
-                                    cdepth -= 1
-                                    i += 2
-                                else:
-                                    i += 1
-                            continue
-                        if text[i] == '"':
-                            i += 1
-                            while i < n and text[i] != '"':
-                                if text[i] == "\\" and i + 1 < n:
-                                    i += 2
-                                else:
-                                    i += 1
-                            if i < n:
-                                i += 1
-                            continue
-                        if text[i] == "(":
-                            interp_depth += 1
-                        elif text[i] == ")":
-                            interp_depth -= 1
-                        i += 1
-                    expr = text[expr_start : (i - 1 if interp_depth == 0 else i)]
-                    out.append(_mask_swift_non_code(expr))
-                    if interp_depth == 0:
-                        out.append(" ")
+                    i = _scan_swift_code(text, i + len(interp_seq), out, stop_at_close_paren=True)
                     continue
                 if text.startswith(escape_seq, i) and i + len(escape_seq) < n:
                     step = len(escape_seq) + 1
@@ -432,8 +392,23 @@ def _mask_swift_non_code(text: str) -> str:
                 out.append("\n" if text[i] == "\n" else " ")
                 i += 1
             continue
+        if stop_at_close_paren:
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth == 0:
+                    out.append(" ")
+                    return i + 1
         out.append(ch)
         i += 1
+    return i
+
+
+def _mask_swift_non_code(text: str) -> str:
+    """Mask Swift line comments, nested block comments, and single/multiline/raw string literals."""
+    out: list[str] = []
+    _scan_swift_code(text, 0, out, stop_at_close_paren=False)
     return "".join(out)
 
 
