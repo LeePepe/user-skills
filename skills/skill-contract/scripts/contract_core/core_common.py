@@ -80,6 +80,10 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Create SKILL.md with valid YAML frontmatter (init --skill <name> --category <cat>).",
     ),
+    "invalid-frontmatter": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Ensure SKILL.md starts with valid YAML frontmatter (--- ... ---) and double-quote scalar values containing ': ', trailing ':', ' #', or leading YAML indicators.",
+    ),
     "description-length": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep SKILL.md and plugin.json description non-empty and <= 320 characters.",

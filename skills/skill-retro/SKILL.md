@@ -1,6 +1,6 @@
 ---
 name: skill-retro
-description: 3-stage Skill Progressive Self-Evolution: sub-second wide-probe script + Jev fast-thinking triage under 1 M2 into K (0..3) parallel per-skill M1 TL deep-reasoning investigations (each M1 TL runs Writer -> Reviewer only if needed) and rolls up receipts to 1 M2. Not for product crash telemetry or blog extraction.
+description: "3-stage Skill Progressive Self-Evolution: sub-second wide-probe script + Jev fast-thinking triage under 1 M2 into K (0..3) parallel per-skill M1 TL deep-reasoning investigations (each M1 TL runs Writer -> Reviewer only if needed) and rolls up receipts to 1 M2. Not for product crash telemetry or blog extraction."
 ---
 # Skill Retro（三段式渐进式自演进：Fast Probe -> Jev Triage -> `1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
 

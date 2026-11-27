@@ -119,6 +119,34 @@ class SkillContractRetroLocksTests(unittest.TestCase):
         drift = skill.get("internal_doc_cli_drift_count", (skill.get("signals") or {}).get("internal_doc_cli_drift_count"))
         self.assertEqual(drift, 0)
 
+    def test_invalid_frontmatter_unquoted_colon_fails_strict_audit(self) -> None:
+        holder, workspace = self.make_workspace()
+        try:
+            bad = workspace / "skills/bad-yaml"
+            (bad / ".claude-plugin").mkdir(parents=True)
+            (bad / ".claude-plugin/plugin.json").write_text(
+                json.dumps({"name": "bad-yaml", "description": "Valid JSON description.", "version": "1.0.0"}),
+                encoding="utf-8",
+            )
+            (bad / "SKILL.md").write_text(
+                "---\nname: bad-yaml\ndescription: 3-stage Skill: unquoted colon breaks YAML parsers.\n---\n# Bad\n",
+                encoding="utf-8",
+            )
+            failed = run_cli("audit", "--root", str(workspace / "skills"), "--skills", "bad-yaml", "--strict", "--no-cache")
+            self.assertNotEqual(failed.returncode, 0)
+            findings = json.loads(failed.stdout)["findings"]
+            self.assertTrue(any(f["code"] == "invalid-frontmatter" for f in findings), findings)
+
+            (bad / "SKILL.md").write_text(
+                '---\nname: bad-yaml\ndescription: "3-stage Skill: quoted colon parses cleanly."\n---\n# Good\n',
+                encoding="utf-8",
+            )
+            passed = run_cli("audit", "--root", str(workspace / "skills"), "--skills", "bad-yaml", "--strict", "--no-cache")
+            self.assertEqual(passed.returncode, 0, passed.stderr)
+            self.assertTrue(json.loads(passed.stdout)["ok"])
+        finally:
+            holder.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
