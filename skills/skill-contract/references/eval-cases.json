@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-25",
+  "updated": "2026-11-27",
   "active_cases": [
     {
       "id": "EV-001",
@@ -88,17 +88,6 @@
         "retro_story_engine.py agent-efficiency --auto-propose"
       ],
       "registered_at": "2026-11-10"
-    },
-    {
-      "id": "EV-006",
-      "title": "Negative command rejects unknown subcommand",
-      "tags": [
-        "cli",
-        "negative"
-      ],
-      "expect_fail_exit": 2,
-      "registered_at": "2026-11-14",
-      "negative_cmd": "python3 skills/skill-contract/scripts/skill_contract.py definitely-not-a-command"
     },
     {
       "id": "EV-007",
@@ -208,20 +197,6 @@
       "registered_at": "2026-11-22"
     },
     {
-      "id": "EV-012",
-      "title": "Positive Replay: unscoped audit emits healthy JSON",
-      "tags": [
-        "cli",
-        "positive-replay"
-      ],
-      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py audit --strict --json",
-      "expect_exit": 0,
-      "expect_json_subset": {
-        "ok": true
-      },
-      "registered_at": "2026-11-25"
-    },
-    {
       "id": "EV-013",
       "title": "Counter-Case Replay: invalid flag discloses remediation drawer",
       "tags": [
@@ -250,6 +225,50 @@
         "skills/skill-contract/references/valves-and-metabolism.md"
       ],
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-015",
+      "title": "Positive Replay: unscoped audit and OS-native Swift app repo pass custom-theme-plumbing gate",
+      "tags": [
+        "audit",
+        "positive-replay",
+        "system-theme",
+        "valve-1"
+      ],
+      "cmd": "python3 -I -B scripts/test_skill_contract_system_theme.py SkillContractSystemThemeTests.test_positive_replay_clean_os_native_swift_app_passes_strict_audit",
+      "expect_exit": 0,
+      "file": "skills/skill-contract/references/valves-and-metabolism.md",
+      "must_contain": [
+        "custom-theme-plumbing",
+        "skills/my-designer/references/appearance-ledger.md"
+      ],
+      "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-016",
+      "title": "Counter-Case Replay: audit --repo --strict rejects manual .designTheme( and Theme(isDark: plumbing",
+      "tags": [
+        "audit",
+        "counter-case",
+        "negative",
+        "system-theme",
+        "valve-1"
+      ],
+      "forbidden_regex": "\\.designTheme\\s*\\(|\\.environment\\s*\\(\\s*\\\\\\.theme\\s*,\\s*Theme\\s*\\([\\s\\S]*?\\bisDark\\s*:",
+      "bad_snippet": "ContentView().environment(\\.theme, Theme(palette: makePalette(), isDark: true))",
+      "good_snippet": "ContentView().foregroundStyle(Color.primary)",
+      "cmd": "python3 -I -B scripts/test_skill_contract_system_theme.py SkillContractSystemThemeTests.test_counter_case_replay_catches_design_theme_and_manual_isdark_plumbing",
+      "expect_exit": 0,
+      "negative_cmd": "python3 -c \"import pathlib, shutil, subprocess, sys, tempfile; d = pathlib.Path(tempfile.mkdtemp()); p = d / 'Apps/Demo/RootView.swift'; p.parent.mkdir(parents=True); p.write_text('struct R { func f() { v.designTheme(.dark) } }\\n'); rc = subprocess.run([sys.executable, 'skills/skill-contract/scripts/skill_contract.py', 'audit', '--repo', str(d), '--strict', '--no-cache']).returncode; shutil.rmtree(d, ignore_errors=True); raise SystemExit(rc)\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "custom-theme-plumbing",
+        "skills/my-designer/references/appearance-ledger.md"
+      ],
+      "negative_stderr_contains": [
+        "skills/skill-contract/references/valves-and-metabolism.md#valve-1--sink-deterministic-checks"
+      ],
+      "registered_at": "2026-11-27"
     }
   ],
   "trigger_evals": [

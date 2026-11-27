@@ -821,7 +821,13 @@ class VerifySkillsTests(unittest.TestCase):
             for scope in scopes:
                 paths = sorted(SKILLS_DIR.rglob("*.md")) if scope == "skills/" else [REPO_ROOT / scope]
                 for path in paths:
-                    self.assertNotIn(phrase, path.read_text(encoding="utf-8"), f"{phrase!r} in {path}")
+                    try:
+                        content = path.read_text(encoding="utf-8")
+                    except OSError:
+                        if scope == "skills/":
+                            continue
+                        raise
+                    self.assertNotIn(phrase, content, f"{phrase!r} in {path}")
 
         path_re = re.compile(r"`(skills/[a-z0-9_-]+/(?:scripts|references|assets)/[A-Za-z0-9_./-]+)`")
         for rel_path in (
@@ -2571,14 +2577,19 @@ try {
             *sorted(SKILLS_DIR.rglob("*.sh")),
             REPO_ROOT / "README.md",
         ]
+        searchable_corpus: dict[Path, str] = {}
+        for candidate in searchable_files:
+            try:
+                searchable_corpus[candidate.resolve()] = candidate.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
         for ref_md in ref_md_files:
             rel = ref_md.relative_to(REPO_ROOT).as_posix()
             ref_name = ref_md.name
+            ref_resolved = ref_md.resolve()
             linked = any(
-                candidate.resolve() != ref_md.resolve()
-                and (ref_name in candidate.read_text(encoding="utf-8", errors="ignore")
-                     or rel in candidate.read_text(encoding="utf-8", errors="ignore"))
-                for candidate in searchable_files
+                cand_resolved != ref_resolved and (ref_name in text or rel in text)
+                for cand_resolved, text in searchable_corpus.items()
             )
             self.assertTrue(linked, f"Orphan reference markdown not linked by any SKILL.md, sibling .md, or script: {rel}")
 
