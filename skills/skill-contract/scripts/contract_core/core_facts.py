@@ -309,11 +309,9 @@ def audit_package_advisories(path: Path, design: bool = False, repo_bound: bool 
     return _package_advisories(path)
 
 
-CUSTOM_THEME_PLUMBING_RE = re.compile(
-    r"\.designTheme\s*\("
-    r"|\.environment\s*\(\s*\\\.theme\s*,\s*Theme\s*\([^)]*isDark\s*:"
-)
-SWIFT_MASK_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/')
+DESIGN_THEME_CALL_RE = re.compile(r"\.designTheme\s*\(")
+ENV_THEME_INIT_RE = re.compile(r"\.environment\s*\(\s*\\\.theme\s*,\s*Theme\s*\(")
+ISDARK_LABEL_RE = re.compile(r"\bisDark\s*:")
 APP_SWIFT_ROOTS = ("Apps", "Sources", "Packages")
 APP_SWIFT_IGNORE_PARTS = {
     "Tests",
@@ -325,6 +323,141 @@ APP_SWIFT_IGNORE_PARTS = {
     "Pods",
     "node_modules",
 }
+
+
+def _mask_swift_non_code(text: str) -> str:
+    """Mask Swift line comments, nested block comments, and single/multiline/raw string literals."""
+    out: list[str] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            out.extend((" ", " "))
+            i += 2
+            while i < n and depth > 0:
+                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    depth += 1
+                    out.extend((" ", " "))
+                    i += 2
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    depth -= 1
+                    out.extend((" ", " "))
+                    i += 2
+                else:
+                    out.append("\n" if text[i] == "\n" else " ")
+                    i += 1
+            continue
+        hashes = 0
+        if ch == "#":
+            j = i
+            while j < n and text[j] == "#":
+                j += 1
+            if j < n and text[j] == '"':
+                hashes = j - i
+        if ch == '"' or hashes > 0:
+            q_start = i + hashes
+            is_multiline = text.startswith('"""', q_start)
+            delim_quotes = '"""' if is_multiline else '"'
+            closing = delim_quotes + ("#" * hashes)
+            escape_seq = "\\" + ("#" * hashes)
+            interp_seq = escape_seq + "("
+            prefix_len = hashes + len(delim_quotes)
+            out.extend(" " for _ in range(prefix_len))
+            i = q_start + len(delim_quotes)
+            while i < n:
+                if text.startswith(closing, i):
+                    out.extend(" " for _ in range(len(closing)))
+                    i += len(closing)
+                    break
+                if text.startswith(interp_seq, i):
+                    out.extend(" " for _ in range(len(interp_seq)))
+                    i += len(interp_seq)
+                    interp_depth = 1
+                    expr_start = i
+                    while i < n and interp_depth > 0:
+                        if text[i] == "/" and i + 1 < n and text[i + 1] == "/":
+                            while i < n and text[i] != "\n":
+                                i += 1
+                            continue
+                        if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                            cdepth = 1
+                            i += 2
+                            while i < n and cdepth > 0:
+                                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                                    cdepth += 1
+                                    i += 2
+                                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                                    cdepth -= 1
+                                    i += 2
+                                else:
+                                    i += 1
+                            continue
+                        if text[i] == '"':
+                            i += 1
+                            while i < n and text[i] != '"':
+                                if text[i] == "\\" and i + 1 < n:
+                                    i += 2
+                                else:
+                                    i += 1
+                            if i < n:
+                                i += 1
+                            continue
+                        if text[i] == "(":
+                            interp_depth += 1
+                        elif text[i] == ")":
+                            interp_depth -= 1
+                        i += 1
+                    expr = text[expr_start : (i - 1 if interp_depth == 0 else i)]
+                    out.append(_mask_swift_non_code(expr))
+                    if interp_depth == 0:
+                        out.append(" ")
+                    continue
+                if text.startswith(escape_seq, i) and i + len(escape_seq) < n:
+                    step = len(escape_seq) + 1
+                    for k in range(step):
+                        out.append("\n" if text[i + k] == "\n" else " ")
+                    i += step
+                    continue
+                if not is_multiline and hashes == 0 and text[i] == "\n":
+                    out.append("\n")
+                    i += 1
+                    break
+                out.append("\n" if text[i] == "\n" else " ")
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _custom_theme_plumbing_spans(masked: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = [(m.start(), m.end()) for m in DESIGN_THEME_CALL_RE.finditer(masked)]
+    n = len(masked)
+    for match in ENV_THEME_INIT_RE.finditer(masked):
+        depth = 1
+        cursor = match.end()
+        while cursor < n and depth > 0:
+            if masked[cursor] == "(":
+                depth += 1
+            elif masked[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        theme_args = masked[match.end() : max(match.end(), cursor - 1)]
+        if ISDARK_LABEL_RE.search(theme_args):
+            env_end = cursor
+            while env_end < n and masked[env_end].isspace():
+                env_end += 1
+            if env_end < n and masked[env_end] == ")":
+                env_end += 1
+            spans.append((match.start(), env_end))
+    return sorted(spans, key=lambda item: (item[0], item[1]))
 
 
 def check_repo_appearance_hygiene(repo_root: str | Path) -> list[dict[str, Any]]:
@@ -356,14 +489,11 @@ def check_repo_appearance_hygiene(repo_root: str | Path) -> list[dict[str, Any]]
             except OSError:
                 continue
             lines = raw_text.splitlines()
-            masked = SWIFT_MASK_RE.sub(
-                lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)),
-                raw_text,
-            )
+            masked = _mask_swift_non_code(raw_text)
             rel_file = swift_path.relative_to(base).as_posix() if swift_path.is_relative_to(base) else str(swift_path)
-            for match in CUSTOM_THEME_PLUMBING_RE.finditer(masked):
-                start_line = masked.count("\n", 0, match.start()) + 1
-                end_line = masked.count("\n", 0, max(match.start(), match.end() - 1)) + 1
+            for start, end in _custom_theme_plumbing_spans(masked):
+                start_line = masked.count("\n", 0, start) + 1
+                end_line = masked.count("\n", 0, max(start, end - 1)) + 1
                 spanned_raw = "\n".join(lines[start_line - 1 : end_line])
                 if "design-contract-allow" in spanned_raw:
                     continue
@@ -373,7 +503,7 @@ def check_repo_appearance_hygiene(repo_root: str | Path) -> list[dict[str, Any]]
                             "code": "custom-theme-plumbing",
                             "file": rel_file,
                             "line": start_line,
-                            "match": raw_text[match.start() : match.end()].replace("\n", " ").strip()[:200],
+                            "match": raw_text[start:end].replace("\n", " ").strip()[:200],
                             "guidance_drawer": "skills/my-designer/references/appearance-ledger.md",
                         }
                     )

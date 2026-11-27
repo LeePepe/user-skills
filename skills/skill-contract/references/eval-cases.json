@@ -254,8 +254,8 @@
         "system-theme",
         "valve-1"
       ],
-      "forbidden_regex": "\\.designTheme\\s*\\(|\\.environment\\s*\\(\\s*\\\\\\.theme\\s*,\\s*Theme\\s*\\([^)]*isDark\\s*:",
-      "bad_snippet": "ContentView().environment(\\.theme, Theme(palette: .neutral, isDark: true))",
+      "forbidden_regex": "\\.designTheme\\s*\\(|\\.environment\\s*\\(\\s*\\\\\\.theme\\s*,\\s*Theme\\s*\\([\\s\\S]*?\\bisDark\\s*:",
+      "bad_snippet": "ContentView().environment(\\.theme, Theme(palette: makePalette(), isDark: true))",
       "good_snippet": "ContentView().foregroundStyle(Color.primary)",
       "cmd": "python3 -I -B scripts/test_skill_contract_system_theme.py SkillContractSystemThemeTests.test_counter_case_replay_catches_design_theme_and_manual_isdark_plumbing",
       "expect_exit": 0,

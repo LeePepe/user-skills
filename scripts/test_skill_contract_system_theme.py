@@ -66,18 +66,28 @@ class SkillContractSystemThemeTests(unittest.TestCase):
                     "        Text(\"OS Native\")\n"
                     "            .foregroundStyle(Color.primary)\n"
                     "            .background(Color(.windowBackgroundColor))\n"
+                    "            .environment(\\.theme, Theme(palette: .systemSemantic))\n"
                     "    }\n"
                     "}\n"
                 ),
             )
-            # Comments, string literals, Tests/, and explicit // design-contract-allow lines must not false-positive.
+            # Comments (including nested /* /* */ */), multiline/raw string literals, Tests/, and explicit // design-contract-allow lines must not false-positive.
             self._write_swift(
                 repo,
                 "Sources/DesignKit/LegacyMigrationNote.swift",
                 (
                     "import SwiftUI\n"
                     "// Removed legacy .designTheme(.dark) and .environment(\\.theme, Theme(isDark: true))\n"
+                    "/* outer comment\n"
+                    "   /* nested inner comment */\n"
+                    "   view.designTheme(.dark)\n"
+                    "   view.environment(\\.theme, Theme(palette: makePalette(), isDark: true))\n"
+                    "*/\n"
                     "let docNote = \".designTheme(custom) or .environment(\\\\.theme, Theme(isDark: false))\"\n"
+                    "let multiNote = \"\"\"\n"
+                    "Example: \".designTheme(.dark)\" and .environment(\\.theme, Theme(isDark: true))\n"
+                    "\"\"\"\n"
+                    "let rawNote = #\"Example: \".designTheme(.dark)\" and Theme(isDark: true)\"#\n"
                     "func migratedBridge<V: View>(_ view: V) -> some View {\n"
                     "    view.designTheme(.system) // design-contract-allow: transitional shim\n"
                     "}\n"
@@ -133,7 +143,7 @@ class SkillContractSystemThemeTests(unittest.TestCase):
                     "        ContentView()\n"
                     "            .environment(\n"
                     "                \\.theme,\n"
-                    "                Theme(palette: .neutral, isDark: isDarkMode)\n"
+                    "                Theme(palette: makePalette(accent: Color(.sRGB, red: 0.2, green: 0.4, blue: 0.8)), isDark: isDarkMode)\n"
                     "            )\n"
                     "    }\n"
                     "}\n"
@@ -178,6 +188,18 @@ class SkillContractSystemThemeTests(unittest.TestCase):
                     "skills/my-designer/references/appearance-ledger.md",
                 )
                 self.assertIn("skills/my-designer/references/appearance-ledger.md", item["hint"])
+
+    def test_string_interpolation_retains_executable_code_while_masking_literals(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sc-theme-interp-") as raw:
+            repo = Path(raw)
+            self._write_swift(
+                repo,
+                "Sources/Feature/Interpolated.swift",
+                'let debug = "probe: \\(view.designTheme(.dark))"\n',
+            )
+            findings = core_facts.check_repo_appearance_hygiene(repo)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["code"], "custom-theme-plumbing")
 
     def test_watermark_cache_invalidates_when_swift_source_changes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sc-theme-cache-") as raw:
