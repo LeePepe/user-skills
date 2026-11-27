@@ -325,6 +325,31 @@ APP_SWIFT_IGNORE_PARTS = {
 }
 
 
+SWIFT_OP_HEAD_CHARS = frozenset("+-*%<>&|^~!=?.")
+SWIFT_REGEX_KEYWORDS = frozenset(
+    {
+        "return",
+        "case",
+        "in",
+        "where",
+        "throw",
+        "try",
+        "await",
+        "if",
+        "guard",
+        "while",
+        "switch",
+        "for",
+        "as",
+        "is",
+        "else",
+        "repeat",
+        "consume",
+        "copy",
+    }
+)
+
+
 def _scan_swift_regex_end(text: str, start: int, hashes: int) -> int | None:
     """Return index after closing `/#...` if `start` opens a valid Swift regex literal, else None."""
     n = len(text)
@@ -334,27 +359,33 @@ def _scan_swift_regex_end(text: str, start: int, hashes: int) -> int | None:
     closing = "/" + ("#" * hashes)
     multiline = hashes > 0 and slash_idx + 1 < n and text[slash_idx + 1] in {" ", "\t", "\n", "\r"}
     if hashes == 0:
+        # SE-0354: bare `/.../` cannot start or end with space/tab, cannot span lines, and cannot be `//` or `/*`.
         if slash_idx + 1 >= n or text[slash_idx + 1] in {"/", "*", " ", "\t", "\n", "\r"}:
             return None
     i = slash_idx + 1
-    in_class = False
+    class_depth = 0
     while i < n:
         ch = text[i]
-        if ch == "\n" and not multiline:
+        if ch in {"\n", "\r"} and not multiline:
             return None
         if ch == "\\" and i + 1 < n:
             i += 2
             continue
         if ch == "[":
-            in_class = True
+            class_depth += 1
             i += 1
             continue
-        if ch == "]" and in_class:
-            in_class = False
+        if ch == "]" and class_depth > 0:
+            class_depth -= 1
             i += 1
             continue
-        if not in_class and text.startswith(closing, i):
-            return i + len(closing)
+        if class_depth == 0 and text.startswith(closing, i):
+            if hashes == 0 and i > slash_idx + 1 and text[i - 1] in {" ", "\t"}:
+                return None
+            after_idx = i + len(closing)
+            if hashes == 0 and after_idx < n and (text[after_idx].isalnum() or text[after_idx] == "_"):
+                return None
+            return after_idx
         i += 1
     return None
 
@@ -365,8 +396,14 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
     paren_depth = 1 if stop_at_close_paren else 0
     prev_sig = ""
     prev_word = ""
+    prev_was_space = True
     while i < n:
         ch = text[i]
+        if ch in {" ", "\t", "\n", "\r"}:
+            out.append(ch)
+            prev_was_space = True
+            i += 1
+            continue
         if ch.isalpha() or ch == "_":
             j = i + 1
             while j < n and (text[j].isalnum() or text[j] == "_"):
@@ -375,12 +412,14 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
             out.append(word)
             prev_sig = word[-1]
             prev_word = word
+            prev_was_space = False
             i = j
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
             while i < n and text[i] != "\n":
                 out.append(" ")
                 i += 1
+            prev_was_space = True
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "*":
             depth = 1
@@ -398,6 +437,7 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                 else:
                     out.append("\n" if text[i] == "\n" else " ")
                     i += 1
+            prev_was_space = True
             continue
         hashes = 0
         if ch == "#":
@@ -411,21 +451,30 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                         out.append("\n" if text[k] == "\n" else " ")
                     i = regex_end
                     prev_sig = "/"
+                    prev_word = ""
+                    prev_was_space = False
                     continue
             if j < n and text[j] == '"':
                 hashes = j - i
-        elif ch == "/" and (
-            prev_sig in {"", "(", "[", "{", ",", ":", ";", "=", "?", "!"}
-            or prev_word in {"return", "case", "in", "where", "throw", "try", "await"}
-        ):
-            regex_end = _scan_swift_regex_end(text, i, 0)
-            if regex_end is not None:
-                for k in range(i, regex_end):
-                    out.append("\n" if text[k] == "\n" else " ")
-                i = regex_end
-                prev_sig = "/"
-                prev_word = ""
-                continue
+        elif ch == "/":
+            # SE-0354: bare `/.../` cannot have whitespace immediately after `/`, so `a / b` is never a bare regex.
+            # Unspaced `a/b/c` is division when preceded without whitespace by an expression-ending token.
+            can_start_bare_regex = (
+                prev_was_space
+                or prev_sig in {"", "(", "[", "{", ",", ":", ";"}
+                or prev_sig in SWIFT_OP_HEAD_CHARS
+                or prev_word in SWIFT_REGEX_KEYWORDS
+            )
+            if can_start_bare_regex:
+                regex_end = _scan_swift_regex_end(text, i, 0)
+                if regex_end is not None:
+                    for k in range(i, regex_end):
+                        out.append("\n" if text[k] == "\n" else " ")
+                    i = regex_end
+                    prev_sig = "/"
+                    prev_word = ""
+                    prev_was_space = False
+                    continue
         if ch == '"' or hashes > 0:
             q_start = i + hashes
             is_multiline = text.startswith('"""', q_start)
@@ -458,6 +507,8 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                 out.append("\n" if text[i] == "\n" else " ")
                 i += 1
             prev_sig = '"'
+            prev_word = ""
+            prev_was_space = False
             continue
         if stop_at_close_paren:
             if ch == "(":
@@ -468,9 +519,9 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                     out.append(" ")
                     return i + 1
         out.append(ch)
-        if not ch.isspace():
-            prev_sig = ch
-            prev_word = ""
+        prev_sig = ch
+        prev_word = ""
+        prev_was_space = False
         i += 1
     return i
 

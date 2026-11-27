@@ -215,15 +215,19 @@ class SkillContractSystemThemeTests(unittest.TestCase):
             source = (
                 "let punctuation = #/[/*]/#\n"
                 "let bareClass = /[/*]/\n"
-                "func helper() -> any RegexComponent { return /[/*]/ }\n"
+                "func helper() throws -> Bool {\n"
+                "    let matched = try enabled && /[/*]/.wholeMatch(in: text) != nil\n"
+                '    let interp = "\\(enabled && /[/*]/.wholeMatch(in: text) != nil)"\n'
+                "    return matched && !interp.isEmpty\n"
+                "}\n"
                 "let regexMention = #/\\.designTheme\\(/#\n"
-                "let ratio = width / 2 + height / 4\n"
+                "let ratio = width / 2 + height / 4 + a/b/c\n"
                 "view.designTheme(.dark)\n"
             )
             self._write_swift(repo, "Sources/Feature/RegexScreen.swift", source)
             findings = core_facts.check_repo_appearance_hygiene(repo)
             self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0]["line"], 6)
+            self.assertEqual(findings[0]["line"], 10)
             self.assertEqual(findings[0]["code"], "custom-theme-plumbing")
 
     def test_watermark_cache_invalidates_when_swift_source_changes(self) -> None:
