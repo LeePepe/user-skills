@@ -29,7 +29,7 @@
       "title": "Xcode project metadata selects integration routing",
       "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py project.yml",
       "expect_exit": 0,
-      "expect_json_subset": {"route": "xcode", "xcodeInputs.0.path": "project.yml"},
+      "expect_json_subset": {"route": "xcode", "xcodeInputs.0.path": "project.yml", "matchedBuildCases.0.id": "XC-005"},
       "verify_lines": ["Explicit project metadata classification selects Xcode"],
       "assertions": [{"check": "Project input is classified as xcode", "severity": "hard"}]
     },

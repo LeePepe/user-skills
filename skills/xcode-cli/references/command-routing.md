@@ -73,6 +73,15 @@ Host-based test targets may launch the production app or touch real user data. H
 
 Run the SwiftPM route for every changed package first. Continue to Xcode only for the app target, project metadata, resources, or integration seam also changed. Do not use one broad `xcodebuild` as a substitute for package-local tests.
 
+## SwiftPM executable preview hosts (`XC-005`)
+
+Opening a bare `Package.swift` in Xcode to preview an executable target (`*PreviewHost`) fails with:
+`The executable target “<Target>” needs the build setting “ENABLE_DEBUG_DYLIB” set to “YES” in order to preview.`
+
+- Keep `#Preview` macros in library/framework targets (`*DemoKit`), not executable targets.
+- Generate a native `.xcodeproj` via `project.yml` (`xcodegen`) with `ENABLE_DEBUG_DYLIB: YES` on both the `application` (`*PreviewHost`) and `framework` (`*DemoKit`) targets plus shared schemes, then open `.xcodeproj` in Xcode.
+- `classify_changes.py` prioritizes `XC-005` in `matchedBuildCases` when `project.yml`, `*PreviewHost`, or `ENABLE_DEBUG_DYLIB` is present.
+
 ## Simulator lifecycle
 
 Discover devices as structured data:

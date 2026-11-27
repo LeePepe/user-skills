@@ -298,7 +298,31 @@ def load_build_cases(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, object]
     return json.loads(cases_file.read_text(encoding="utf-8"))
 
 
-def match_build_cases(route: str, cases_file: Path = DEFAULT_CASES_FILE, top_k: int = TOP_K_CASES) -> list[dict[str, object]]:
+def _signals_preview_dylib(paths: list[str] | None = None, repo: Path | None = None) -> bool:
+    for raw_path in paths or []:
+        lowered = raw_path.lower()
+        name = PurePosixPath(raw_path).name.lower()
+        if name in {"project.yml", "project.yaml"} or "previewhost" in lowered or "enable_debug_dylib" in lowered:
+            return True
+        if repo is not None:
+            candidate = repo / Path(*PurePosixPath(raw_path).parts)
+            if candidate.is_file():
+                try:
+                    snippet = candidate.read_text(encoding="utf-8", errors="replace")[:65536]
+                except OSError:
+                    continue
+                if "ENABLE_DEBUG_DYLIB" in snippet or "PreviewHost" in snippet:
+                    return True
+    return False
+
+
+def match_build_cases(
+    route: str,
+    cases_file: Path = DEFAULT_CASES_FILE,
+    top_k: int = TOP_K_CASES,
+    paths: list[str] | None = None,
+    repo: Path | None = None,
+) -> list[dict[str, object]]:
     doc = load_build_cases(cases_file)
     active = doc.get("active_cases", [])
     if not isinstance(active, list):
@@ -308,6 +332,8 @@ def match_build_cases(route: str, cases_file: Path = DEFAULT_CASES_FILE, top_k: 
         for case in active
         if isinstance(case, dict) and (route in case.get("routes", []) or route == "none")
     ]
+    if _signals_preview_dylib(paths=paths, repo=repo):
+        matched.sort(key=lambda case: 0 if case.get("id") == "XC-005" else 1)
     return matched[:top_k]
 
 
@@ -433,7 +459,7 @@ def classify(repo: Path, paths: list[str], cases_file: Path = DEFAULT_CASES_FILE
         "packageRoots": sorted(package_roots),
         "neutralFiles": neutral_files,
         "xcodeInputs": xcode_inputs,
-        "matchedBuildCases": match_build_cases(route, cases_file=cases_file),
+        "matchedBuildCases": match_build_cases(route, cases_file=cases_file, paths=paths, repo=repo),
         "verifyGateHealth": verify_gate_health(repo),
         "note": "Confirm custom Package.swift target paths before executing commands.",
     }
