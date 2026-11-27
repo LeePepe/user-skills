@@ -2,7 +2,7 @@
 
 ## Valve 1 — sink deterministic checks
 
-Regex, AST, geometry, pixel, localization, and schema checks are executable artifacts. Put cross-repository gates in shared CI or local gates in `scripts/*.py`; Markdown explains but does not gate.
+Regex, AST, geometry, pixel, localization, and schema checks are executable artifacts. Put cross-repository gates in shared CI or local gates in `scripts/*.py`; Markdown explains but does not gate. Canonical repo-audit checks include OS-native appearance hygiene (`custom-theme-plumbing`: forbidding manual `.designTheme(` or `.environment(\.theme, Theme(... isDark: ...))` view-tree plumbing in audited Apple app `Apps/`, `Sources/`, and `Packages/` Swift sources while honoring `// design-contract-allow` and ignoring `Tests/`, pointing to `skills/my-designer/references/appearance-ledger.md`).
 
 ## Valve 2 — coordinate and eval drawers
 

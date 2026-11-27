@@ -52,6 +52,10 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-1--sink-deterministic-checks",
         "Sink deterministic regex gates into executable scripts or JSON drawers instead of Markdown.",
     ),
+    "custom-theme-plumbing": (
+        f"{VALVE_REFERENCE_BASE}#valve-1--sink-deterministic-checks",
+        "Remove manual .designTheme( / Theme(isDark: view-tree plumbing; rely on OS-native appearance and dynamic Color tokens (see skills/my-designer/references/appearance-ledger.md).",
+    ),
     "invalid-drawer": (
         f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
         "Ensure drawer JSON is valid UTF-8 JSON matching schema v1.",
@@ -259,6 +263,19 @@ def _watermark_fingerprint(repo: str | Path | None, mode: str, args_key: Mapping
                 records.append((rel, stat.st_mtime_ns, stat.st_size, target))
             except OSError:
                 records.append((str(path), -1, -1, "unreadable"))
+    if repo:
+        for sub in ("Apps", "Sources", "Packages"):
+            sub_root = base / sub
+            if not sub_root.is_dir():
+                continue
+            for swift in sorted(sub_root.rglob("*.swift")):
+                if not swift.is_file():
+                    continue
+                try:
+                    stat = swift.stat()
+                    records.append((swift.relative_to(base).as_posix(), stat.st_mtime_ns, stat.st_size, ""))
+                except OSError:
+                    records.append((str(swift), -1, -1, "unreadable"))
     script_sha = hashlib.sha256(
         b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.glob("*.py")) if p.is_file())
     ).hexdigest()

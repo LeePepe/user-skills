@@ -309,6 +309,78 @@ def audit_package_advisories(path: Path, design: bool = False, repo_bound: bool 
     return _package_advisories(path)
 
 
+CUSTOM_THEME_PLUMBING_RE = re.compile(
+    r"\.designTheme\s*\("
+    r"|\.environment\s*\(\s*\\\.theme\s*,\s*Theme\s*\([^)]*isDark\s*:"
+)
+SWIFT_MASK_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/')
+APP_SWIFT_ROOTS = ("Apps", "Sources", "Packages")
+APP_SWIFT_IGNORE_PARTS = {
+    "Tests",
+    "UITests",
+    "TestSupport",
+    ".build",
+    "DerivedData",
+    "Carthage",
+    "Pods",
+    "node_modules",
+}
+
+
+def check_repo_appearance_hygiene(repo_root: str | Path) -> list[dict[str, Any]]:
+    """Scan non-test Apple Swift sources under Apps/, Sources/, and Packages/ for custom theme plumbing."""
+    base = Path(repo_root).expanduser().resolve()
+    if not base.is_dir():
+        return []
+    findings: list[dict[str, Any]] = []
+    seen_files: set[Path] = set()
+    for folder in APP_SWIFT_ROOTS:
+        scan_root = base / folder
+        if not scan_root.is_dir():
+            continue
+        for swift_path in sorted(scan_root.rglob("*.swift")):
+            if not swift_path.is_file():
+                continue
+            resolved = swift_path.resolve()
+            if resolved in seen_files:
+                continue
+            try:
+                rel_parts = swift_path.relative_to(base).parts
+            except ValueError:
+                rel_parts = swift_path.parts
+            if any(part in APP_SWIFT_IGNORE_PARTS or part.endswith("Tests") for part in rel_parts[:-1]):
+                continue
+            seen_files.add(resolved)
+            try:
+                raw_text = swift_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines = raw_text.splitlines()
+            masked = SWIFT_MASK_RE.sub(
+                lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)),
+                raw_text,
+            )
+            rel_file = swift_path.relative_to(base).as_posix() if swift_path.is_relative_to(base) else str(swift_path)
+            for match in CUSTOM_THEME_PLUMBING_RE.finditer(masked):
+                start_line = masked.count("\n", 0, match.start()) + 1
+                end_line = masked.count("\n", 0, max(match.start(), match.end() - 1)) + 1
+                spanned_raw = "\n".join(lines[start_line - 1 : end_line])
+                if "design-contract-allow" in spanned_raw:
+                    continue
+                findings.append(
+                    _enrich_finding(
+                        {
+                            "code": "custom-theme-plumbing",
+                            "file": rel_file,
+                            "line": start_line,
+                            "match": raw_text[match.start() : match.end()].replace("\n", " ").strip()[:200],
+                            "guidance_drawer": "skills/my-designer/references/appearance-ledger.md",
+                        }
+                    )
+                )
+    return findings
+
+
 def _repo_advisories(repo_root: Path) -> list[dict[str, Any]]:
     advisories: list[dict[str, Any]] = []
     for package in _discover_packages(repo=repo_root):
@@ -456,6 +528,8 @@ def audit(args: argparse.Namespace, discover_packages=None) -> int:
             real = [path for path in paths if not _thin_wrapper(path)]
             if len(real) >= 2:
                 findings.append({"code": "duplicate-script-fork", "script": name, "paths": [str(path) for path in real]})
+    if repo_arg and not skill_names:
+        findings.extend(check_repo_appearance_hygiene(repo_arg))
     findings = [_enrich_finding(item) for item in findings]
     result: dict[str, Any] = {"ok": not findings, "skills": len(selected), "findings": findings, "advisories": advisories}
     if findings:
