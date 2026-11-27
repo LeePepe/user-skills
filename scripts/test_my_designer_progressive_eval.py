@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.3', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.4', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
@@ -662,6 +662,32 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
                 self.assertIn(token, content, f'{target.name} missing required boundary token {token!r}')
             for token in forbidden_tokens:
                 self.assertNotIn(token, content, f'{target.name} contains forbidden build-config token {token!r}')
+
+    def test_dc018_single_viewport_preview_choreography_gate(self):
+        gate = _load_script('verify_design_cases')
+        bad_code, bad_payload, _ = _invoke(
+            gate,
+            'audit-code',
+            '--platform',
+            'mobile',
+            '--snippet',
+            '#Preview("4-Up Screen Variants") {\n    FourUpPreviewHostView()\n}',
+        )
+        self.assertEqual(bad_code, 1)
+        self.assertFalse(bad_payload['ok'])
+        self.assertIn('DC-018', [f['case_id'] for f in bad_payload['findings']])
+
+        good_code, good_payload, _ = _invoke(
+            gate,
+            'audit-code',
+            '--platform',
+            'mobile',
+            '--snippet',
+            '#Preview("Screen v01 — Focus Stack") {\n    ScreenVariantPreviewHost(initialVariant: .v01)\n}',
+        )
+        self.assertEqual(good_code, 0)
+        self.assertTrue(good_payload['ok'])
+        self.assertEqual(good_payload['findings'], [])
 
 
 if __name__ == "__main__":

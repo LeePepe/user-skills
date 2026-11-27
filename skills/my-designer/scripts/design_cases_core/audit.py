@@ -155,6 +155,33 @@ def _dc012_spans(masked: str, regex_pattern: str) -> list[tuple[int, int]]:
     return deduped
 
 
+def _audit_xcode_preview_single_viewport(masked: str, regex_pattern: str | None = None) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    host_re = re.compile(r'\bFourUpPreviewHostView\b|\bScrollView\s*\(\s*\.horizontal\b')
+    for preview in re.finditer(r'#Preview\b', masked):
+        cursor = preview.end()
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor < len(masked) and masked[cursor] == '(':
+            depth = 1
+            cursor += 1
+            while cursor < len(masked) and depth > 0:
+                depth += masked[cursor] == '('
+                depth -= masked[cursor] == ')'
+                cursor += 1
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked) or masked[cursor] != '{':
+            continue
+        block_end = _balanced_brace_end(masked, cursor)
+        body = masked[cursor + 1:max(cursor + 1, block_end - 1)]
+        if host_re.search(body):
+            spans.append((preview.start(), block_end))
+    if not spans and regex_pattern:
+        spans.extend((m.start(), m.end()) for m in re.finditer(regex_pattern, masked))
+    return spans
+
+
 def _collect_audit_paths(args: argparse.Namespace) -> list[Path]:
     raw_items: list[str] = []
     for attr in ('path', 'root_dir', 'ui_path'):
@@ -251,6 +278,8 @@ def command_audit_code(args: argparse.Namespace) -> int:
                         for m in re.finditer(case['forbidden_regex'], target_text)
                         if not ('.move' in m.group(0) and _has_enclosing_clipped_reveal_container(target_text, m.start(), m.end()))
                     ]
+                elif case.get('id') == 'DC-018':
+                    spans = _audit_xcode_preview_single_viewport(masked, case.get('forbidden_regex'))
                 else:
                     spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], target_text)]
             except re.error as error:

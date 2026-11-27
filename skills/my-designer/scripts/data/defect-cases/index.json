@@ -285,21 +285,27 @@
     },
     {
       "id": "DC-018",
-      "title": "Floating Chrome & Scroll Safe-Area Collision",
+      "slug": "xcode-preview-single-viewport-no-horizontal-host",
+      "title": "Xcode #Preview Wide Horizontal-Scroll Multi-Device Host Board (xcode-preview-single-viewport-no-horizontal-host)",
       "platforms": [
         "desktop",
-        "mobile",
-        "web"
+        "mobile"
       ],
       "dimensions": [
         "layout-navigation",
-        "glass-material"
+        "component"
       ],
-      "containers": [],
-      "symptom": "Scrollable content intersects floating bottom bars or top status chrome because the final item and scrolled text have no safe-area clearance.",
-      "fix_rule": "Reserve bottom contentMargins so the final item clears the floating dock with zero intersection, and soften or protect top scrolled text from status-bar chrome.",
-      "forbidden_regex": null,
-      "registered_at": "2026-11-26"
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView"
+      ],
+      "symptom": "Packing a wide multi-column horizontal-scroll host board (FourUpPreviewHostView or ScrollView(.horizontal) wrapping multiple device/variant columns) inside a single Xcode #Preview viewport prevents horizontal panning in Xcode Canvas and clips variants.",
+      "fix_rule": "Never embed FourUpPreviewHostView or a wide horizontal-scrolling multi-device board inside a single #Preview block; decompose variants into individual single-viewport #Preview(\"... \") entries (one variant per preview tab) or a vertical single-column stack with a top segmented variant switcher.",
+      "forbidden_regex": "#Preview\\b[\\s\\S]{0,600}?(?:\\bFourUpPreviewHostView\\b|ScrollView\\s*\\(\\s*\\.horizontal\\b)",
+      "bad_snippet": "#Preview(\"4-Up Screen Variants\") {\n    FourUpPreviewHostView()\n}",
+      "good_snippet": "#Preview(\"Screen v01 — Focus Stack\") {\n    ScreenVariantPreviewHost(initialVariant: .v01)\n}",
+      "registered_at": "2026-11-27"
     },
     {
       "id": "DC-019",
@@ -346,6 +352,24 @@
     }
   ],
   "archived_templates": [
+    {
+      "id": "DC-TEMPLATE-003",
+      "title": "Floating Chrome & Scroll Safe-Area Collision",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "containers": [],
+      "symptom": "Scrollable content intersects floating bottom bars or top status chrome because the final item and scrolled text have no safe-area clearance.",
+      "fix_rule": "Reserve bottom contentMargins so the final item clears the floating dock with zero intersection, and soften or protect top scrolled text from status-bar chrome.",
+      "forbidden_regex": null,
+      "registered_at": "2026-11-26"
+    },
     {
       "id": "DC-006",
       "title": "Static HTML Raw YAML Frontmatter Leak Above Doctype",

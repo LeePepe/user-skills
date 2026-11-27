@@ -168,7 +168,7 @@ def _drawer_keys_for_case(case_id: str, dimensions: list[str] | None = None) -> 
         keys.append("interaction")
     if cid in {"DC-001", "DC-002", "DC-007", "DC-009", "DC-014", "UI_INSTRUCTIONAL_CLUTTER"}:
         keys.append("breathing")
-    if cid in {"DC-003", "DC-005", "DC-008", "DC-013"}:
+    if cid in {"DC-003", "DC-005", "DC-008", "DC-013", "DC-018"}:
         keys.append("navigation")
     if cid == "DC-015" or cid.startswith("SUBTRACTIVE_"):
         keys.append("modernization")

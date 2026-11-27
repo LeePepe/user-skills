@@ -62,7 +62,7 @@ Distilled reference drawer for [`SKILL.md`](../SKILL.md). Every rule maps 1-to-1
 - **Layout & Component Checklist**:
   1. Write the state ownership table before picking wrappers.
   2. Prefer `ViewThatFits`, `containerRelativeFrame`, or `.onGeometryChange` over raw `GeometryReader` to avoid layout thrash.
-  3. Cover narrow width, wide/split width, Accessibility XXXL Dynamic Type, and Dark Mode in `#Preview`, keeping side effects in action/model seams.
+  3. Cover narrow width, wide/split width, Accessibility XXXL Dynamic Type, and Dark Mode in `#Preview`, keeping side effects in action/model seams; split multi-variant or multi-device previews into individual single-viewport `#Preview("...")` tabs (or a top segmented variant switcher in one vertical viewport) rather than wrapping horizontal-scrolling multi-device boards (`FourUpPreviewHostView`) inside `#Preview`.
 
 ---
 
