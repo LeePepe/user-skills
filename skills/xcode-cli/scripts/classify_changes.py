@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 
 
@@ -197,6 +198,71 @@ def _command_name(tokens: list[str]) -> str:
     return ""
 
 
+def preview_host_health(repo: Path) -> dict[str, object]:
+    """Check whether SwiftPM *PreviewHost executable targets have ENABLE_DEBUG_DYLIB = YES in project.yml / .xcodeproj."""
+    manifests = sorted(
+        path for path in repo.rglob("Package.swift")
+        if path.is_file() and not (IGNORED_PARTS & set(path.relative_to(repo).parts))
+    )
+    all_targets: list[str] = []
+    config_files: list[str] = []
+    missing_packages: list[str] = []
+
+    for manifest in manifests:
+        try:
+            pkg_text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        targets = list(dict.fromkeys(re.findall(r"\b\w*PreviewHost\b", pkg_text)))
+        if not targets:
+            continue
+        for target in targets:
+            if target not in all_targets:
+                all_targets.append(target)
+        pkg_dir = manifest.parent
+        rel_pkg = "." if pkg_dir == repo else pkg_dir.relative_to(repo).as_posix()
+        search_dirs = [pkg_dir] if pkg_dir == repo else [pkg_dir, repo]
+        candidates: list[Path] = []
+        for base_dir in search_dirs:
+            for candidate in (
+                base_dir / "project.yml",
+                base_dir / "project.yaml",
+                *sorted(base_dir.glob("*.xcodeproj/project.pbxproj")),
+            ):
+                if candidate.is_file() and candidate not in candidates:
+                    candidates.append(candidate)
+        for candidate in candidates:
+            rel_cfg = candidate.relative_to(repo).as_posix()
+            if rel_cfg not in config_files:
+                config_files.append(rel_cfg)
+        has_yes = False
+        has_no = False
+        for candidate in candidates:
+            try:
+                cfg_text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if re.search(r"ENABLE_DEBUG_DYLIB\s*[:=]\s*[\"']?(?:NO|false)\b", cfg_text, re.IGNORECASE):
+                has_no = True
+            if re.search(r"ENABLE_DEBUG_DYLIB\s*[:=]\s*[\"']?(?:YES|true)\b", cfg_text, re.IGNORECASE):
+                has_yes = True
+        if not candidates or not has_yes or has_no:
+            missing_packages.append(rel_pkg)
+
+    has_preview_host = bool(all_targets)
+    dylib_ok = has_preview_host and not missing_packages
+    status = "not_applicable" if not has_preview_host else ("ok" if dylib_ok else "missing_enable_debug_dylib")
+    return {
+        "has_preview_host_target": has_preview_host,
+        "preview_host_targets": all_targets,
+        "config_files": config_files,
+        "missing_packages": missing_packages,
+        "enable_debug_dylib_yes": dylib_ok,
+        "status": status,
+        "triggered_case": "XC-005" if missing_packages else None,
+    }
+
+
 def verify_gate_health(repo: Path) -> dict[str, object]:
     verify_path = repo / "scripts" / "verify"
     files = [verify_path, repo / ".githooks" / "pre-push", repo / "scripts" / "hooks" / "pre-push"]
@@ -248,6 +314,7 @@ def verify_gate_health(repo: Path) -> dict[str, object]:
         "uses_incremental_layer_selection": incremental,
         "has_derived_data_or_build_lock": isolation,
         "tier": "blocking_prepush_xcodebuild" if blocking else "local_fast_spm" if fast_spm else "not_detected",
+        "previewHostHealth": preview_host_health(repo),
         "note": "Static literal-shell indicators only; external scripts and dynamic commands require manual review.",
     }
 
@@ -299,6 +366,8 @@ def load_build_cases(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, object]
 
 
 def _signals_preview_dylib(paths: list[str] | None = None, repo: Path | None = None) -> bool:
+    if repo is not None and preview_host_health(repo).get("triggered_case") == "XC-005":
+        return True
     for raw_path in paths or []:
         lowered = raw_path.lower()
         name = PurePosixPath(raw_path).name.lower()
@@ -460,9 +529,60 @@ def classify(repo: Path, paths: list[str], cases_file: Path = DEFAULT_CASES_FILE
         "neutralFiles": neutral_files,
         "xcodeInputs": xcode_inputs,
         "matchedBuildCases": match_build_cases(route, cases_file=cases_file, paths=paths, repo=repo),
+        "previewHostHealth": preview_host_health(repo),
         "verifyGateHealth": verify_gate_health(repo),
         "note": "Confirm custom Package.swift target paths before executing commands.",
     }
+
+
+def self_test_preview_host(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, object]:
+    """Deterministic self-test for *PreviewHost ENABLE_DEBUG_DYLIB = YES (XC-005) enforcement."""
+    with tempfile.TemporaryDirectory(prefix="xcode-cli-xc005-") as tmp_dir:
+        repo = Path(tmp_dir)
+        (repo / "Sources").mkdir(parents=True, exist_ok=True)
+        (repo / "Sources" / "Core.swift").write_text("let x = 1\n", encoding="utf-8")
+        (repo / "Package.swift").write_text("// swift-tools-version: 6.0\n", encoding="utf-8")
+
+        baseline = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
+        assert baseline["previewHostHealth"]["status"] == "not_applicable"
+        assert baseline["matchedBuildCases"][0]["id"] == "XC-001"
+
+        (repo / "Package.swift").write_text(
+            '// swift-tools-version: 6.0\nlet package = Package(targets: [.executableTarget(name: "AppPreviewHost")])\n',
+            encoding="utf-8",
+        )
+        missing = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
+        assert missing["previewHostHealth"]["status"] == "missing_enable_debug_dylib"
+        assert missing["previewHostHealth"]["triggered_case"] == "XC-005"
+        assert missing["matchedBuildCases"][0]["id"] == "XC-005"
+
+        (repo / "project.yml").write_text(
+            "targets:\n  AppPreviewHost:\n    settings:\n      ENABLE_DEBUG_DYLIB: NO\n",
+            encoding="utf-8",
+        )
+        disabled = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
+        assert disabled["previewHostHealth"]["triggered_case"] == "XC-005"
+        assert disabled["matchedBuildCases"][0]["id"] == "XC-005"
+
+        (repo / "project.yml").write_text(
+            "targets:\n  AppPreviewHost:\n    settings:\n      ENABLE_DEBUG_DYLIB: YES\n",
+            encoding="utf-8",
+        )
+        configured = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
+        assert configured["previewHostHealth"]["status"] == "ok"
+        assert configured["previewHostHealth"]["triggered_case"] is None
+        assert configured["matchedBuildCases"][0]["id"] == "XC-001"
+
+        touched = classify(repo, ["Sources/AppPreviewHost/main.swift"], cases_file=cases_file)
+        assert touched["matchedBuildCases"][0]["id"] == "XC-005"
+
+        return {
+            "ok": True,
+            "missing_dylib_case": missing["matchedBuildCases"][0]["id"],
+            "missing_dylib_status": missing["previewHostHealth"]["status"],
+            "configured_dylib_status": configured["previewHostHealth"]["status"],
+            "touched_preview_host_case": touched["matchedBuildCases"][0]["id"],
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -477,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-verify-gate", action="store_true", help="Inspect local/pre-push Apple gate health without running builds")
     parser.add_argument("--cases-file", default=str(DEFAULT_CASES_FILE), help="Path to build-cases.json drawer")
     parser.add_argument("--flow-map", action="store_true", help="Print Dual-Entry flow-map JSON and budget health")
+    parser.add_argument("--self-test-preview-host", action="store_true", help="Run deterministic XC-005 previewHostHealth self-test")
     parser.add_argument("--register-case", action="store_true", help="Register or update a build case in build-cases.json")
     parser.add_argument("--id", help="Build case ID (e.g. XC-005) when using --register-case")
     parser.add_argument("--title", help="Build case title when using --register-case")
@@ -497,6 +618,11 @@ def main(argv: list[str] | None = None) -> int:
     cases_path = Path(args.cases_file).resolve()
     if args.flow_map or args.paths == ["flow-map"]:
         payload = build_flow_map(cases_path)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload.get("ok") else 1
+
+    if args.self_test_preview_host:
+        payload = self_test_preview_host(cases_path)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if payload.get("ok") else 1
 
