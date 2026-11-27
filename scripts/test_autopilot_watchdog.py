@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from datetime import date
@@ -721,8 +722,20 @@ class AutopilotWatchdogTests(unittest.TestCase):
             self.assertNotIn("aidata_digest_run_sh_executed", esc["actions_taken"])
             self.assertTrue(child_pid_file.is_file())
             child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
-            with self.assertRaises(ProcessLookupError):
-                os.kill(child_pid, 0)
+            deadline = time.monotonic() + 2.0
+            child_gone = False
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    child_gone = True
+                    break
+                proc_stat = Path(f"/proc/{child_pid}/stat")
+                if proc_stat.is_file() and ") Z " in proc_stat.read_text(encoding="utf-8", errors="ignore"):
+                    child_gone = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(child_gone, f"Expected child_pid {child_pid} to be terminated")
 
     def test_multica_loop_runner_wires_autopilot_health_watchdog_spec_and_sync(self):
         spec = loop_runner.resolve_loop_spec("autopilot-health-watchdog")
