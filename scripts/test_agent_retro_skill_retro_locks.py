@@ -35,7 +35,10 @@ class AgentRetroSkillRetroLocksTests(unittest.TestCase):
         self.assertEqual(by_goal.returncode, 0, by_goal.stderr)
         self.assertEqual(json.loads(by_goal.stdout)["skill"], "my-designer")
 
-        by_cwd = self.run_cli(["diagnose", "--json"], cwd=ROOT, env=env)
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree_dir = Path(tmp) / "agent-retro-agent-retro"
+            worktree_dir.mkdir()
+            by_cwd = self.run_cli(["diagnose", "--json"], cwd=worktree_dir, env=env)
         self.assertEqual(by_cwd.returncode, 0, by_cwd.stderr)
         self.assertEqual(json.loads(by_cwd.stdout)["skill"], "agent-retro")
 

@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-19",
+  "updated": "2026-11-27",
   "trigger_evals": [
     {
       "query": "progressive-disclosure product design UI modernization and post-implementation Visual Traceback for desktop mobile and web",
@@ -430,6 +430,50 @@
         "2+1+1"
       ],
       "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-020",
+      "title": "OS-Native Dynamic Appearance Gate (DC-020 / UI_CUSTOM_THEME_PLUMBING / SPEC_GAP_CUSTOM_THEME_TOGGLE)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "color-palette",
+        "visual-style",
+        "component"
+      ],
+      "containers": [
+        "NavigationSplitView",
+        "NavigationStack",
+        "TabView",
+        "Sheet"
+      ],
+      "tags": [
+        "system-theme",
+        "counter-case",
+        "valve-1"
+      ],
+      "forbidden_regex": "\\.\\s*designTheme\\s*\\(|\\.\\s*environment\\s*\\(\\s*\\\\\\.\\s*theme\\s*,\\s*Theme\\s*\\([^)]*\\bisDark\\s*:",
+      "bad_snippet": "ContentView().designTheme(theme).environment(\\.theme, Theme(isDark: true))",
+      "good_snippet": "ContentView()",
+      "cmd": "python3 -c \"import json, subprocess, sys, tempfile; from pathlib import Path; d=Path(tempfile.mkdtemp()); v=d/'Good.swift'; v.write_text('struct GoodView: View { var body: some View { Text(\\\"OK\\\") } }\\nstruct TokenTest { func check() { _ = Text(\\\"x\\\").designTheme(t) /* design-contract-allow */ } }\\n'); s=d/'design.md'; s.write_text('Desktop NavigationSplitView; mobile NavigationStack.\\nStates: empty, loading, error.\\nDeprecated Test Clauses: N/A.\\nAppearance tracks native OS appearance automatically; forbid custom in-app light/dark theme switchers.\\n'); r1=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-code','--platform','mobile',str(v)],capture_output=True,text=True); r2=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-spec','--strict-spec-gaps',str(s)],capture_output=True,text=True); assert r1.returncode==0 and json.loads(r1.stdout)['ok'], r1.stdout; assert r2.returncode==0 and json.loads(r2.stdout)['ok'], r2.stdout; print(r1.stdout)\"",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "file": "references/appearance-ledger.md",
+      "must_contain": [
+        "OS-Native Dynamic Appearance Rule"
+      ],
+      "negative_cmd": "python3 -c \"import json, subprocess, sys, tempfile; from pathlib import Path; d=Path(tempfile.mkdtemp()); bad_spec=d/'bad-design.md'; bad_spec.write_text('Desktop NavigationSplitView; mobile NavigationStack.\\nStates: empty, loading, error.\\nDeprecated Test Clauses: N/A.\\nAdd an in-app light/dark theme toggle in the toolbar.\\n'); r1=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-code','--platform','mobile','--snippet','struct BadShell: View { var body: some View { ContentView().designTheme(theme).environment(\\\\.theme, Theme(isDark: true)) } }'],capture_output=True,text=True); r2=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-spec','--strict-spec-gaps',str(bad_spec)],capture_output=True,text=True); assert r1.returncode==1 and 'UI_CUSTOM_THEME_PLUMBING' in r1.stdout and 'appearance-ledger.md' in r1.stdout, r1.stdout; assert r2.returncode==1 and 'SPEC_GAP_CUSTOM_THEME_TOGGLE' in r2.stdout and 'appearance-ledger.md' in r2.stdout, r2.stdout; print(r1.stdout); print(r2.stdout); raise SystemExit(1)\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "UI_CUSTOM_THEME_PLUMBING",
+        "SPEC_GAP_CUSTOM_THEME_TOGGLE",
+        "appearance-ledger.md"
+      ],
+      "registered_at": "2026-11-27"
     }
   ]
 }
