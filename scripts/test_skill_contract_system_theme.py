@@ -209,6 +209,23 @@ class SkillContractSystemThemeTests(unittest.TestCase):
             self.assertEqual([f["line"] for f in findings], [5, 6])
             self.assertTrue(all(f["code"] == "custom-theme-plumbing" for f in findings))
 
+    def test_swift_regex_literals_do_not_swallow_subsequent_code_or_false_positive(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sc-theme-regex-") as raw:
+            repo = Path(raw)
+            source = (
+                "let punctuation = #/[/*]/#\n"
+                "let bareClass = /[/*]/\n"
+                "func helper() -> any RegexComponent { return /[/*]/ }\n"
+                "let regexMention = #/\\.designTheme\\(/#\n"
+                "let ratio = width / 2 + height / 4\n"
+                "view.designTheme(.dark)\n"
+            )
+            self._write_swift(repo, "Sources/Feature/RegexScreen.swift", source)
+            findings = core_facts.check_repo_appearance_hygiene(repo)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["line"], 6)
+            self.assertEqual(findings[0]["code"], "custom-theme-plumbing")
+
     def test_watermark_cache_invalidates_when_swift_source_changes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sc-theme-cache-") as raw:
             repo = Path(raw)

@@ -325,12 +325,58 @@ APP_SWIFT_IGNORE_PARTS = {
 }
 
 
-def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: bool = False) -> int:
-    """Scan Swift code from index `i`, masking comments and strings while preserving exact offsets."""
+def _scan_swift_regex_end(text: str, start: int, hashes: int) -> int | None:
+    """Return index after closing `/#...` if `start` opens a valid Swift regex literal, else None."""
     n = len(text)
-    paren_depth = 1 if stop_at_close_paren else 0
+    slash_idx = start + hashes
+    if slash_idx >= n or text[slash_idx] != "/":
+        return None
+    closing = "/" + ("#" * hashes)
+    multiline = hashes > 0 and slash_idx + 1 < n and text[slash_idx + 1] in {" ", "\t", "\n", "\r"}
+    if hashes == 0:
+        if slash_idx + 1 >= n or text[slash_idx + 1] in {"/", "*", " ", "\t", "\n", "\r"}:
+            return None
+    i = slash_idx + 1
+    in_class = False
     while i < n:
         ch = text[i]
+        if ch == "\n" and not multiline:
+            return None
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            i += 1
+            continue
+        if not in_class and text.startswith(closing, i):
+            return i + len(closing)
+        i += 1
+    return None
+
+
+def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: bool = False) -> int:
+    """Scan Swift code from index `i`, masking comments, strings, and regex literals while preserving offsets."""
+    n = len(text)
+    paren_depth = 1 if stop_at_close_paren else 0
+    prev_sig = ""
+    prev_word = ""
+    while i < n:
+        ch = text[i]
+        if ch.isalpha() or ch == "_":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            word = text[i:j]
+            out.append(word)
+            prev_sig = word[-1]
+            prev_word = word
+            i = j
+            continue
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
             while i < n and text[i] != "\n":
                 out.append(" ")
@@ -358,8 +404,28 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
             j = i
             while j < n and text[j] == "#":
                 j += 1
+            if j < n and text[j] == "/":
+                regex_end = _scan_swift_regex_end(text, i, j - i)
+                if regex_end is not None:
+                    for k in range(i, regex_end):
+                        out.append("\n" if text[k] == "\n" else " ")
+                    i = regex_end
+                    prev_sig = "/"
+                    continue
             if j < n and text[j] == '"':
                 hashes = j - i
+        elif ch == "/" and (
+            prev_sig in {"", "(", "[", "{", ",", ":", ";", "=", "?", "!"}
+            or prev_word in {"return", "case", "in", "where", "throw", "try", "await"}
+        ):
+            regex_end = _scan_swift_regex_end(text, i, 0)
+            if regex_end is not None:
+                for k in range(i, regex_end):
+                    out.append("\n" if text[k] == "\n" else " ")
+                i = regex_end
+                prev_sig = "/"
+                prev_word = ""
+                continue
         if ch == '"' or hashes > 0:
             q_start = i + hashes
             is_multiline = text.startswith('"""', q_start)
@@ -391,6 +457,7 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                     break
                 out.append("\n" if text[i] == "\n" else " ")
                 i += 1
+            prev_sig = '"'
             continue
         if stop_at_close_paren:
             if ch == "(":
@@ -401,6 +468,9 @@ def _scan_swift_code(text: str, i: int, out: list[str], *, stop_at_close_paren: 
                     out.append(" ")
                     return i + 1
         out.append(ch)
+        if not ch.isspace():
+            prev_sig = ch
+            prev_word = ""
         i += 1
     return i
 
