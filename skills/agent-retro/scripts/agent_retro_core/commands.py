@@ -618,7 +618,9 @@ def _sync_linear_agent_retro(*, title: str, description: str, day: str) -> dict[
     marker = f"<!-- multica-cursor:agent-retro-autopilot-{day} -->"
     issues = client.list_issues("TIA", limit=None)
     existing = next((item for item in issues if marker in str(item.get("description") or "") or item.get("title") == title), None)
-    kwargs = {"title": title, "description": description, "assignee_id": DEFAULT_OWNER_ID}
+    # The Linear bridge has its own user namespace; Multica UUIDs are not valid here.
+    linear_owner_id = str(getattr(module, "OWNER_ID", "") or "")
+    kwargs = {"title": title, "description": description, "assignee_id": linear_owner_id or DEFAULT_OWNER_ID}
     if existing:
         return client.update_issue(existing["id"], **kwargs)
     states = team.get("states", {}).get("nodes", [])
