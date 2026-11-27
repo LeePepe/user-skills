@@ -8,6 +8,8 @@ allowed-tools: Read, Write, Edit, Bash, Skill
 
 This is a handoff-only design capability. Author the implementation-ready `design.md`/`spec.md` handoff and receipts; the downstream `Writer` implements **directly in the product or `shared-design-system` code**, never a throwaway **No Code Demo**. Entry A (`design-studio`) owns external inspiration ingestion.
 
+**Design-vs-Worker Skill Boundary (Designer-vs-Worker)**: `my-designer` (Designer role) owns pure UX/design specifications, categorized atomic dual-variants (`Variant A/B`), and composite screen reuse topology in `design.md`/`spec.md`. `my-designer` MUST NEVER contain compiler flags, build settings, Swift package/Xcode project manifests, or source-code implementation knowledge — all code/build execution belongs strictly to the downstream Worker skills (`xcode-cli`, `ios-concurrency-swiftui`, `ios-architecture-testing`, `team-lead`).
+
 ## Role-Based Routing（按角色唯一必读抽屉 + 唯一必跑 CLI）
 
 | Role | Single mandatory L1 drawer | Single mandatory L2 CLI |

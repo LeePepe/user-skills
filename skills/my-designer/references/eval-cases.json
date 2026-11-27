@@ -411,7 +411,7 @@
         "NavigationStack",
         "WebViewport"
       ],
-      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.SelfDisclosingGuidanceAndDualCasePersonaTests.test_failures_emit_exact_l1_reference_drawer_pointers_while_clean_runs_stay_quiet",
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.SelfDisclosingGuidanceAndDualCasePersonaTests.test_failures_emit_exact_l1_reference_drawer_pointers_while_clean_runs_stay_quiet scripts.test_my_designer_progressive_eval.ManifestAndTriggerBoundaryReplayTests.test_design_vs_worker_skill_boundary_and_forbidden_build_tokens",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "OK"
@@ -424,10 +424,17 @@
       ],
       "file": "skills/my-designer/SKILL.md",
       "must_contain": [
+        "Design-vs-Worker Skill Boundary",
         "Tier 1 · Universal Invariants",
         "Tier 2 · Product Persona & Intent Weighting",
         "Tier 3 · Controlled Exploration",
         "2+1+1"
+      ],
+      "must_not_contain": [
+        "ENABLE_DEBUG_DYLIB",
+        "xcodegen",
+        "project.yml",
+        ".xcodeproj"
       ],
       "registered_at": "2026-11-20"
     },

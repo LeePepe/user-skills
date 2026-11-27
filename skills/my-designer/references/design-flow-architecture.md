@@ -2,6 +2,11 @@
 
 This entry is handoff-only: `design-studio` Entry A ingests; `my-designer` Entry B authors `design.md`/`spec.md`; the downstream Writer implements product code. The Reviewer performs Visual Traceback and labels `[IMPL_BUG]` versus `[SPEC_GAP]`.
 
+## Design-vs-Worker Skill Boundary (Designer-vs-Worker)
+
+- **Designer Role (`my-designer`)**: Owns pure UX/design specifications, categorized atomic dual-variants (`Variant A/B`), and composite screen reuse topology (`v01..v04`) in `design.md`/`spec.md`.
+- **Worker Implementation Boundary**: `my-designer` MUST NEVER contain compiler flags, build settings, Swift package/Xcode project manifests, or source-code implementation knowledge — all code/build execution belongs strictly to the downstream Worker skills (`xcode-cli`, `ios-concurrency-swiftui`, `ios-architecture-testing`, `team-lead`).
+
 | Tier / Eval | Contract |
 |---|---|
 | Tier 1 Invariants | alignment, grid rhythm, 1 focal P0, zero truncation/overlap, macOS `NavigationSplitView`/TopBar vs iOS `NavigationStack`/BottomDock |

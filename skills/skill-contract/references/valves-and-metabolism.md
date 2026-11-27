@@ -18,6 +18,13 @@ Executable `.py`, `.sh`, and `.ts` files under `skills/*/scripts/**` above 800 l
 
 S1 reports absolute or missing `broken-symlink` targets. S2 includes sibling documents for `orphan-reference`. S3 reports divergent same-named non-wrapper scripts; ignore `__init__.py` and relative directory symlinks. Replace the least useful L1 row One-In-One-Out.
 
+### Role & Domain Purity Rule (`sink-rule` / 落实到skill)
+
+When sinking a lesson (`sink-rule` / "落实到skill"), enforce strict role and domain purity:
+- Route pure UX, visual, taxonomy, and specification rules (`design.md`/`spec.md`, atomic `Variant A/B`, composite screen reuse) strictly to Designer skills (`my-designer`, `design-studio`).
+- Route compiler flags, Xcode build settings, project manifests, and concrete source-code implementation rules strictly to Worker skills (`xcode-cli`, `ios-*`, `team-lead`).
+- Never pollute a design skill with code or build mechanics, and never store skill-boundary rules in ephemeral chat memory instead of the skill/doc files themselves.
+
 ## Self-disclosing audit findings
 
 Audit/eval JSON includes `guidance_drawer`, `reference`, and `hint`; stderr points to this drawer. Parser failures use at most three lines and end with `Reference:`. `hygiene-facts` is `soft_advisory_exit_0` unless `--strict`; repeated audit/version reads use a 60-second watermark cache.

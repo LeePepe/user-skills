@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.2', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.3', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
@@ -633,6 +633,35 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         drawers = {path.name for path in (skill / 'references').iterdir() if path.suffix in {'.md', '.json'}}
         self.assertEqual(linked, drawers)
         self.assertEqual(len(linked), 8)
+
+    def test_design_vs_worker_skill_boundary_and_forbidden_build_tokens(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        targets = [
+            skill / 'SKILL.md',
+            skill / 'references' / 'design-flow-architecture.md',
+        ]
+        required_tokens = (
+            'Design-vs-Worker Skill Boundary',
+            'Designer-vs-Worker',
+            'pure UX/design specifications',
+            'Variant A/B',
+            'composite screen reuse',
+            'xcode-cli',
+            'ios-concurrency-swiftui',
+            'ios-architecture-testing',
+        )
+        forbidden_tokens = (
+            'ENABLE_DEBUG_DYLIB',
+            'xcodegen',
+            'project.yml',
+            '.xcodeproj',
+        )
+        for target in targets:
+            content = target.read_text(encoding='utf-8')
+            for token in required_tokens:
+                self.assertIn(token, content, f'{target.name} missing required boundary token {token!r}')
+            for token in forbidden_tokens:
+                self.assertNotIn(token, content, f'{target.name} contains forbidden build-config token {token!r}')
 
 
 if __name__ == "__main__":
