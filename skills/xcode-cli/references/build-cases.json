@@ -55,15 +55,15 @@
     },
     {
       "id": "XC-005",
-      "title": "ENABLE_DEBUG_DYLIB = YES on SwiftPM Executable Preview Hosts (*PreviewHost)",
+      "title": "ENABLE_DEBUG_DYLIB = YES & Valid Local Signing on SwiftPM Executable Preview Hosts (*PreviewHost)",
       "routes": [
         "swiftpm",
         "xcode",
         "mixed"
       ],
-      "symptom": "The executable target “<Target>” needs the build setting “ENABLE_DEBUG_DYLIB” set to “YES” in order to preview. when opening bare Package.swift in Xcode.",
+      "symptom": "The executable target “<Target>” needs the build setting “ENABLE_DEBUG_DYLIB” set to “YES” in order to preview. OR Signing for “<Target>” requires a development team. Select a development team in the Signing & Capabilities editor.",
       "fix_command": "xcodegen generate --spec project.yml && xcodebuild build -project <App.xcodeproj> -scheme <PreviewHost> -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO",
-      "fix_rule": "Keep #Preview macros in library/framework targets (*DemoKit) AND generate a native .xcodeproj via project.yml (xcodegen) with ENABLE_DEBUG_DYLIB: YES on both the application (*PreviewHost) and framework (*DemoKit) targets plus shared schemes, then open .xcodeproj in Xcode.",
+      "fix_rule": "Keep #Preview macros in library/framework targets (*DemoKit) AND generate a native .xcodeproj via project.yml (xcodegen) with (1) ENABLE_DEBUG_DYLIB: YES on both the application (*PreviewHost) and framework (*DemoKit) targets plus shared schemes, AND (2) valid local signing (either CODE_SIGN_STYLE: Manual + CODE_SIGN_IDENTITY: \"-\" + CODE_SIGNING_REQUIRED: NO + CODE_SIGNING_ALLOWED: NO, or a non-empty DEVELOPMENT_TEAM; never leave CODE_SIGN_STYLE: Automatic with DEVELOPMENT_TEAM: \"\"), then open .xcodeproj in Xcode.",
       "registered_at": "2026-11-27"
     }
   ],

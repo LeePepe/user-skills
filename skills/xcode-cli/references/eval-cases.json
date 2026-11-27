@@ -254,22 +254,24 @@
         "xcode",
         "mixed"
       ],
-      "title": "SwiftPM *PreviewHost executable target enforces ENABLE_DEBUG_DYLIB = YES (XC-005)",
+      "title": "SwiftPM *PreviewHost executable target enforces ENABLE_DEBUG_DYLIB = YES and valid local signing (XC-005)",
       "cmd": "python3 skills/xcode-cli/scripts/classify_changes.py --self-test-preview-host",
       "expect_exit": 0,
       "expect_json_subset": {
         "ok": true,
         "missing_dylib_case": "XC-005",
         "missing_dylib_status": "missing_enable_debug_dylib",
+        "invalid_signing_case": "XC-005",
+        "invalid_signing_status": "invalid_local_signing",
         "configured_dylib_status": "ok",
         "touched_preview_host_case": "XC-005"
       },
       "verify_lines": [
-        "Verify previewHostHealth and XC-005 surfacing when Package.swift defines *PreviewHost"
+        "Verify previewHostHealth and XC-005 surfacing when Package.swift defines *PreviewHost or local signing is invalid"
       ],
       "assertions": [
         {
-          "check": "Missing or disabled ENABLE_DEBUG_DYLIB in project.yml/.xcodeproj surfaces XC-005 automatically",
+          "check": "Missing/disabled ENABLE_DEBUG_DYLIB or Automatic signing with empty DEVELOPMENT_TEAM in project.yml/.xcodeproj surfaces XC-005 automatically",
           "severity": "hard"
         }
       ]

@@ -75,12 +75,11 @@ Run the SwiftPM route for every changed package first. Continue to Xcode only fo
 
 ## SwiftPM executable preview hosts (`XC-005`)
 
-Opening a bare `Package.swift` in Xcode to preview an executable target (`*PreviewHost`) fails with:
-`The executable target “<Target>” needs the build setting “ENABLE_DEBUG_DYLIB” set to “YES” in order to preview.`
+Opening a bare `Package.swift` in Xcode to preview `*PreviewHost` fails with `ENABLE_DEBUG_DYLIB` missing, and leaving `CODE_SIGN_STYLE: Automatic` with `DEVELOPMENT_TEAM: ""` fails with `Signing for "<Target>" requires a development team`:
 
 - Keep `#Preview` macros in library/framework targets (`*DemoKit`), not executable targets.
-- Generate a native `.xcodeproj` via `project.yml` (`xcodegen`) with `ENABLE_DEBUG_DYLIB: YES` on both the `application` (`*PreviewHost`) and `framework` (`*DemoKit`) targets plus shared schemes, then open `.xcodeproj` in Xcode.
-- `classify_changes.py` reports `previewHostHealth` and prioritizes `XC-005` in `matchedBuildCases` when a `Package.swift` `*PreviewHost` executable target lacks `ENABLE_DEBUG_DYLIB = YES` in `project.yml` / `*.xcodeproj/project.pbxproj` or when touching `*PreviewHost`.
+- Generate a native `.xcodeproj` via `project.yml` (`xcodegen`) with `ENABLE_DEBUG_DYLIB: YES` on both `*PreviewHost` and `*DemoKit` targets plus shared schemes, AND configure valid local signing (`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"` or a non-empty `DEVELOPMENT_TEAM`; never leave `CODE_SIGN_STYLE: Automatic` with empty `DEVELOPMENT_TEAM`).
+- `classify_changes.py` reports `previewHostHealth` (`enable_debug_dylib_yes`, `local_signing_valid`) and prioritizes `XC-005` in `matchedBuildCases` when either check fails or when touching `*PreviewHost`.
 
 ## Simulator lifecycle
 

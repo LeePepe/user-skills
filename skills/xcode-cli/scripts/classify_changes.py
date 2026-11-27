@@ -198,8 +198,28 @@ def _command_name(tokens: list[str]) -> str:
     return ""
 
 
+def _has_valid_local_signing(cfg_text: str) -> bool:
+    """Return False when CODE_SIGN_STYLE=Automatic has an empty/missing DEVELOPMENT_TEAM without Sign-to-Run-Locally."""
+    has_manual_adhoc = bool(
+        re.search(r"CODE_SIGN_STYLE\s*[:=]\s*[\"']?Manual\b", cfg_text, re.IGNORECASE)
+        and re.search(r"CODE_SIGN_IDENTITY\s*[:=]\s*[\"']-\"?", cfg_text)
+    )
+    non_empty_teams = [
+        m.group(1).strip()
+        for m in re.finditer(r"DEVELOPMENT_TEAM\s*[:=]\s*[\"']?([A-Za-z0-9_]+)[\"']?", cfg_text)
+        if m.group(1).strip() and m.group(1).strip().lower() not in {"null", "none"}
+    ]
+    has_automatic = bool(re.search(r"CODE_SIGN_STYLE\s*[:=]\s*[\"']?Automatic\b", cfg_text, re.IGNORECASE))
+    has_empty_team = bool(re.search(r"DEVELOPMENT_TEAM\s*[:=]\s*(?:[\"']\s*[\"']|(?:\r?\n|$))", cfg_text))
+    if has_automatic and (has_empty_team or not non_empty_teams) and not has_manual_adhoc:
+        return False
+    if has_empty_team and not non_empty_teams and not has_manual_adhoc:
+        return False
+    return True
+
+
 def preview_host_health(repo: Path) -> dict[str, object]:
-    """Check whether SwiftPM *PreviewHost executable targets have ENABLE_DEBUG_DYLIB = YES in project.yml / .xcodeproj."""
+    """Check whether SwiftPM *PreviewHost targets have ENABLE_DEBUG_DYLIB = YES and valid local signing in project.yml / .xcodeproj."""
     manifests = sorted(
         path for path in repo.rglob("Package.swift")
         if path.is_file() and not (IGNORED_PARTS & set(path.relative_to(repo).parts))
@@ -207,6 +227,7 @@ def preview_host_health(repo: Path) -> dict[str, object]:
     all_targets: list[str] = []
     config_files: list[str] = []
     missing_packages: list[str] = []
+    invalid_signing_packages: list[str] = []
 
     for manifest in manifests:
         try:
@@ -237,6 +258,7 @@ def preview_host_health(repo: Path) -> dict[str, object]:
                 config_files.append(rel_cfg)
         has_yes = False
         has_no = False
+        signing_bad = False
         for candidate in candidates:
             try:
                 cfg_text = candidate.read_text(encoding="utf-8", errors="replace")
@@ -246,20 +268,34 @@ def preview_host_health(repo: Path) -> dict[str, object]:
                 has_no = True
             if re.search(r"ENABLE_DEBUG_DYLIB\s*[:=]\s*[\"']?(?:YES|true)\b", cfg_text, re.IGNORECASE):
                 has_yes = True
+            if not _has_valid_local_signing(cfg_text):
+                signing_bad = True
         if not candidates or not has_yes or has_no:
             missing_packages.append(rel_pkg)
+        if not candidates or signing_bad:
+            invalid_signing_packages.append(rel_pkg)
 
     has_preview_host = bool(all_targets)
     dylib_ok = has_preview_host and not missing_packages
-    status = "not_applicable" if not has_preview_host else ("ok" if dylib_ok else "missing_enable_debug_dylib")
+    signing_ok = has_preview_host and not invalid_signing_packages
+    if not has_preview_host:
+        status = "not_applicable"
+    elif not dylib_ok:
+        status = "missing_enable_debug_dylib"
+    elif not signing_ok:
+        status = "invalid_local_signing"
+    else:
+        status = "ok"
     return {
         "has_preview_host_target": has_preview_host,
         "preview_host_targets": all_targets,
         "config_files": config_files,
         "missing_packages": missing_packages,
+        "invalid_signing_packages": invalid_signing_packages,
         "enable_debug_dylib_yes": dylib_ok,
+        "local_signing_valid": signing_ok,
         "status": status,
-        "triggered_case": "XC-005" if missing_packages else None,
+        "triggered_case": "XC-005" if (missing_packages or invalid_signing_packages) else None,
     }
 
 
@@ -536,7 +572,7 @@ def classify(repo: Path, paths: list[str], cases_file: Path = DEFAULT_CASES_FILE
 
 
 def self_test_preview_host(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, object]:
-    """Deterministic self-test for *PreviewHost ENABLE_DEBUG_DYLIB = YES (XC-005) enforcement."""
+    """Deterministic self-test for *PreviewHost ENABLE_DEBUG_DYLIB = YES & local signing (XC-005) enforcement."""
     with tempfile.TemporaryDirectory(prefix="xcode-cli-xc005-") as tmp_dir:
         repo = Path(tmp_dir)
         (repo / "Sources").mkdir(parents=True, exist_ok=True)
@@ -565,11 +601,22 @@ def self_test_preview_host(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, o
         assert disabled["matchedBuildCases"][0]["id"] == "XC-005"
 
         (repo / "project.yml").write_text(
-            "targets:\n  AppPreviewHost:\n    settings:\n      ENABLE_DEBUG_DYLIB: YES\n",
+            'targets:\n  AppPreviewHost:\n    settings:\n      ENABLE_DEBUG_DYLIB: YES\n      CODE_SIGN_STYLE: Automatic\n      DEVELOPMENT_TEAM: ""\n',
+            encoding="utf-8",
+        )
+        invalid_signing = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
+        assert invalid_signing["previewHostHealth"]["status"] == "invalid_local_signing"
+        assert invalid_signing["previewHostHealth"]["local_signing_valid"] is False
+        assert invalid_signing["previewHostHealth"]["triggered_case"] == "XC-005"
+        assert invalid_signing["matchedBuildCases"][0]["id"] == "XC-005"
+
+        (repo / "project.yml").write_text(
+            'targets:\n  AppPreviewHost:\n    settings:\n      ENABLE_DEBUG_DYLIB: YES\n      CODE_SIGN_STYLE: Manual\n      CODE_SIGN_IDENTITY: "-"\n',
             encoding="utf-8",
         )
         configured = classify(repo, ["Sources/Core.swift"], cases_file=cases_file)
         assert configured["previewHostHealth"]["status"] == "ok"
+        assert configured["previewHostHealth"]["local_signing_valid"] is True
         assert configured["previewHostHealth"]["triggered_case"] is None
         assert configured["matchedBuildCases"][0]["id"] == "XC-001"
 
@@ -580,6 +627,8 @@ def self_test_preview_host(cases_file: Path = DEFAULT_CASES_FILE) -> dict[str, o
             "ok": True,
             "missing_dylib_case": missing["matchedBuildCases"][0]["id"],
             "missing_dylib_status": missing["previewHostHealth"]["status"],
+            "invalid_signing_case": invalid_signing["matchedBuildCases"][0]["id"],
+            "invalid_signing_status": invalid_signing["previewHostHealth"]["status"],
             "configured_dylib_status": configured["previewHostHealth"]["status"],
             "touched_preview_host_case": touched["matchedBuildCases"][0]["id"],
         }

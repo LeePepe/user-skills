@@ -1,6 +1,6 @@
 {
   "name": "xcode-cli",
   "description": "Use when editing .swift, .entitlements, .xcodeproj or Package.swift; running swift build, swift test or xcodebuild; triaging Apple pre-push verify gates; or inspecting simulator/xcresult output. Classify scope first: SwiftPM for packages, Xcode for app integration. Not for Xcode GUI automation.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "category": "repo"
 }
