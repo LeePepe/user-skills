@@ -225,6 +225,25 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
             result = module.watch(args)
         self.assertEqual(result["reason"], "TL_IDLE_OR_DONE")
 
+    def test_goal_supervisor_accepts_only_grounded_r10_receipts(self) -> None:
+        module = load_module(GOAL_SUPERVISOR, "goal_supervisor_receipt_replay")
+        goal, _ = self.goal_fixture("completed output")
+        receipts = goal / "receipts"
+        receipts.mkdir()
+        receipt = receipts / "team_lead-r10.md"
+        receipt.write_text(
+            "# R10\n- Commit SHA: n/a\n- Role: team_lead\n- Model: replay-model\n- V5 Verdict: PASS\n",
+            encoding="utf-8",
+        )
+        self.assertFalse(module.receipt_exists(goal, "retro-goal-goal-tl-r1"))
+
+        receipt.write_text(
+            "# R10\n- Commit SHA: abcdef1234567890abcdef1234567890abcdef12\n"
+            "- Role / Model: team_lead / replay-model\n- V5 Verdict: PASS (replay)\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(module.receipt_exists(goal, "retro-goal-goal-tl-r1"))
+
     def fake_herdr(self, root: Path, capture: Path) -> Path:
         fake = root / "herdr"
         fake.write_text("""#!/usr/bin/env python3

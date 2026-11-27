@@ -19,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 import sys
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+from feedback_guard import _receipt_summary  # noqa: E402
 from jev_client import jev_decide  # noqa: E402
 from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
 
@@ -114,14 +115,20 @@ def goal_events(ledger: Path) -> list[tuple[dt.datetime, str]]:
 
 
 def receipt_exists(goal: Path, name: str) -> bool:
+    """Accept only a matching receipt with the required R10 evidence fields."""
     receipts = goal / "receipts"
     if not receipts.is_dir():
         return False
     role = role_for(name)
-    return any(
-        path.is_file() and (name in path.name or role in path.name)
-        for path in receipts.glob("*")
-    )
+    for path in receipts.glob("*"):
+        if not path.is_file() or not (name in path.name or role in path.name):
+            continue
+        try:
+            if _receipt_summary(path).get("valid") is True:
+                return True
+        except (OSError, UnicodeError, ValueError):
+            continue
+    return False
 
 
 def load_agents(path: Path | None) -> list[dict[str, Any]]:
