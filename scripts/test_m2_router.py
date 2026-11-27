@@ -270,7 +270,7 @@ class M2RouterTests(unittest.TestCase):
     def test_domain_map_has_four_groups_and_26_topics(self):
         domain_map = self.router.load_domain_map()
         self.assertEqual(len(domain_map["groups"]), 4)
-        self.assertEqual(len(domain_map["topics"]), 27)
+        self.assertEqual(len(domain_map["topics"]), 28)
         self.assertEqual({topic["topic_id"] for topic in domain_map["topics"]} & {"financial", "shared-design-system", "work-recruitment"}, {"financial", "shared-design-system", "work-recruitment"})
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "financial")["space"], "Financial")
         self.assertEqual(next(topic for topic in domain_map["topics"] if topic["topic_id"] == "shared-design-system")["space"], "shared-design-system")
@@ -365,7 +365,7 @@ class M2RouterTests(unittest.TestCase):
             self.assertEqual(result["registered_new_domains"], [plan["targets"][0]["topic_id"]])
             registered = self.router.load_domain_map(map_path)
             new_domain_map = json.loads(map_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(registered["topics"]), 28)
+            self.assertEqual(len(registered["topics"]), 29)
             new_topic = next(topic for topic in registered["topics"] if topic["topic_id"] == plan["targets"][0]["topic_id"])
             self.assertTrue(len(new_topic["keywords"]) > 0)
             self.assertEqual(len(new_domain_map["groups"]), 5)
@@ -3794,6 +3794,23 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(neg_apply.returncode, 2)
         self.assertIn("skills/m2-dispatcher/references/bots-and-agents.md", neg_apply.stderr)
         self.assertIn("skills/m2-dispatcher/references/pr-dag-auto-heal.md", neg_apply.stderr)
+
+    def test_howto_prompts_route_to_isolated_skills_howto_space(self):
+        domain_map = self.router.load_domain_map()
+        topics = {item["topic_id"]: item for item in domain_map["topics"]}
+        self.assertIn("skills-howto", topics)
+        self.assertEqual(topics["skills-howto"]["space"], "skills-howto")
+        self.assertEqual(topics["skills-howto"]["target_repo"], "user-skills")
+        self.assertNotIn("howto", [kw.lower() for kw in topics["skills-workflow"]["keywords"]])
+
+        with patch.object(self.router, "_request_magpie", side_effect=OSError("offline")), patch.object(
+            self.router, "_jev_decision", return_value=None
+        ):
+            plan = self.router.build_plan("/howto 细化：暗黑模式系统外观跟随与五元组校验", [])
+        self.assertEqual(len(plan["targets"]), 1)
+        self.assertEqual(plan["targets"][0]["topic_id"], "skills-howto")
+        self.assertEqual(plan["targets"][0]["space"], "skills-howto")
+        self.assertEqual(plan["targets"][0]["target_repo"], "user-skills")
 
 
 if __name__ == "__main__":

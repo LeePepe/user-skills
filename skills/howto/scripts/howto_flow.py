@@ -6,9 +6,11 @@ Supports:
    and outputs the canonical How-To nodes (`E1..E12`, `Q1..Q3`, `I1..I7`, `G1..G2`,
    `P1..P9`, `O1..O6`) plus `TK-01..TK-16` broken-edge registry.
 2. `--lookup <query> [--json]`: Deterministic keyword/node/skill matcher returning
-   matching How-To nodes, target skills, and exact CLI entry commands.
+   matching How-To nodes, target skills, guidance, and exact CLI entry commands.
 3. `--scaffold-tuple <task> [--json]`: Generates a validated 5-tuple (`Inbound`,
    `Internal`, `Calls`, `PointsTo`, `Trigger & Notify`) scaffold verified by `howto_guard.py`.
+4. `--graph [--json]`: Renders the 5-Stage Macro Lifecycle Pipeline and extracted adjacency summary.
+5. `--neighbors <NODE_ID> [--json]`: Renders a 1-page Local Neighborhood Card for `<NODE_ID>`.
 """
 
 from __future__ import annotations
@@ -27,7 +29,80 @@ SKILLS_ROOT = SKILL_DIR.parent
 DEFAULT_NODES_DOC = SKILLS_ROOT / "workflow-hub" / "references" / "how-to-nodes.md"
 GUARD_PATH = SCRIPT_DIR / "howto_guard.py"
 
+_MACRO_PIPELINE_STAGES: tuple[dict[str, Any], ...] = (
+    {
+        "stage": 1,
+        "title": "1. 信号与入口",
+        "flow": "I1/I2/I7 -> I3/I4 -> I5/G1",
+        "node_ids": ["I1", "I2", "I7", "I3", "I4", "I5", "I6", "G1"],
+        "summary": "Teams/Email/统一 M2 入口采集 -> Jev 快思考分桶与脱敏摘要 -> Owner 拍板或落 Linear Goal",
+    },
+    {
+        "stage": 2,
+        "title": "2. 共创与拆解",
+        "flow": "G1 -> E5/E6/E7",
+        "node_ids": ["G1", "E5", "E6", "E7"],
+        "summary": "Pre-Flight 边界探查、四层深模块拆解与 Apple OS 原生动态外观 UI 契约冻结",
+    },
+    {
+        "stage": 3,
+        "title": "3. 编码与修Bug",
+        "flow": "E1/E2/E3 -> E4a -> E4 -> E9",
+        "node_ids": ["E1", "E2", "E3", "E4a", "E4", "E9"],
+        "summary": "Feature/Bug List 先经 E4a 预筛 -> 独立 Worktree 编码切片 -> 6DQ 渐进验证",
+    },
+    {
+        "stage": 4,
+        "title": "4. 审查与发布",
+        "flow": "E10 <-> E11 -> E12 -> G2/Q1",
+        "node_ids": ["E10", "E11", "E12", "G2", "Q1", "Q2", "Q3", "E8"],
+        "summary": "PR 盯梢与双轴异构审查闭环 -> 签名公证发布与线上真实读回 -> FlightBook/质量监控",
+    },
+    {
+        "stage": 5,
+        "title": "5. 个人数据飞轮",
+        "flow": "P9 -> P2 -> P1/P3 -> P7/P8/P6",
+        "node_ids": ["P9", "P2", "P1", "P3", "P7", "P8", "P6", "P4", "P5", "O1", "O2", "O3", "O4", "O5", "O6"],
+        "summary": "分层数仓与 aidata 汇聚 AIDash/retro-loop -> 沉淀 Skill/Repo 门禁、知识库与公开叙事",
+    },
+)
+
 _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
+    {
+        "keywords": (
+            "system theme",
+            "dark mode",
+            "light mode",
+            "designtheme",
+            ".designtheme",
+            "colorscheme",
+            "nsappearance",
+            "uitraitcollection",
+            "system appearance",
+            "theme switcher",
+            "theme toggle",
+            "暗黑模式",
+            "深色模式",
+            "浅色模式",
+            "系统外观",
+            "系统主题",
+            "主题切换",
+            "平行主题",
+        ),
+        "nodes": ["E7", "P7", "E4", "E9"],
+        "skills": ["my-designer", "skill-contract", "howto"],
+        "guidance": (
+            "Apple OS-Native Dynamic System Appearance (Zero Custom Theme Engine): E7 -> P7 -> E4 -> E9 — "
+            "UI light/dark appearance MUST bind strictly to Apple OS system appearance "
+            "(NSAppearance / UITraitCollection / @Environment(\\.colorScheme) + semantic dynamic tokens); "
+            "forbid custom .designTheme, in-app theme switchers, and Web-CSS-style parallel theme engines."
+        ),
+        "cli_commands": [
+            "python3 skills/howto/scripts/howto_guard.py validate-recipe --file <recipe.md>",
+            "python3 skills/my-designer/scripts/verify_design_cases.py route --platform desktop --persona default",
+            "python3 skills/skill-contract/scripts/skill_contract.py audit --skill howto --strict",
+        ],
+    },
     {
         "keywords": ("ai metric", "aidash", "aidata", "l1", "l2", "l3", "l4", "l5", "指标", "看板", "roi", "telemetry"),
         "nodes": ["P9", "P2", "P1", "E7", "E4"],
@@ -242,8 +317,132 @@ def list_nodes(
         "broken_edge_count": catalog["broken_edge_count"],
         "broken_edges": catalog["broken_edges"] if not norm_group else [
             tk for tk in catalog["broken_edges"]
-            if any(nid in tk["edge"] for nid in {n["id"] for n in selected})
+            if any(nid in _expand_node_ids(tk["edge"]) for nid in {n["id"] for n in selected})
         ],
+    }
+
+
+def _extract_edge_targets(cell: str, valid_ids: set[str]) -> list[str]:
+    return [nid for nid in _expand_node_ids(cell) if nid in valid_ids]
+
+
+def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+    catalog = parse_howto_catalog(nodes_doc)
+    by_id = {n["id"]: n for n in catalog["nodes"]}
+    valid_ids = set(by_id)
+    calls_edges: list[dict[str, str]] = []
+    points_to_edges: list[dict[str, str]] = []
+
+    for node in catalog["nodes"]:
+        src = node["id"]
+        for dst in _extract_edge_targets(node["calls"], valid_ids):
+            calls_edges.append({"from": src, "to": dst, "kind": "Calls"})
+        for dst in _extract_edge_targets(node["points_to"], valid_ids):
+            points_to_edges.append({"from": src, "to": dst, "kind": "PointsTo"})
+
+    stages_payload: list[dict[str, Any]] = []
+    lines = [
+        "# How-To 5-Stage Macro Lifecycle Pipeline",
+        f"Nodes: {catalog['node_count']} | Calls edges: {len(calls_edges)} | PointsTo edges: {len(points_to_edges)} | Broken edges: {catalog['broken_edge_count']}",
+        "",
+    ]
+    for st in _MACRO_PIPELINE_STAGES:
+        stage_nodes = [
+            f"{nid} {by_id[nid]['title']}" if by_id[nid]["title"] != nid else nid
+            for nid in st["node_ids"]
+            if nid in by_id
+        ]
+        stages_payload.append(
+            {
+                "stage": st["stage"],
+                "title": st["title"],
+                "flow": st["flow"],
+                "summary": st["summary"],
+                "nodes": stage_nodes,
+            }
+        )
+        lines.append(f"## {st['title']}  [{st['flow']}]")
+        lines.append(f"  - 核心职责：{st['summary']}")
+        lines.append(f"  - 覆盖节点：{', '.join(stage_nodes)}")
+        lines.append("")
+
+    return {
+        "ok": True,
+        "node_count": catalog["node_count"],
+        "calls_edge_count": len(calls_edges),
+        "points_to_edge_count": len(points_to_edges),
+        "total_edge_count": len(calls_edges) + len(points_to_edges),
+        "broken_edge_count": catalog["broken_edge_count"],
+        "stages": stages_payload,
+        "adjacency": {
+            "calls": calls_edges,
+            "points_to": points_to_edges,
+        },
+        "text": "\n".join(lines).rstrip() + "\n",
+    }
+
+
+def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+    clean_id = str(node_id or "").strip()
+    catalog = parse_howto_catalog(nodes_doc)
+    by_id = {n["id"]: n for n in catalog["nodes"]}
+    canonical_map = {nid.upper(): nid for nid in by_id}
+    resolved_id = by_id.get(clean_id, {}).get("id") or canonical_map.get(clean_id.upper(), "")
+    if not resolved_id or resolved_id not in by_id:
+        raise ValueError(f"Unknown How-To node '{node_id}'; run --list-nodes to inspect valid IDs")
+
+    target = by_id[resolved_id]
+    valid_ids = set(by_id)
+    downstream_calls_ids = _extract_edge_targets(target["calls"], valid_ids)
+    downstream_points_ids = _extract_edge_targets(target["points_to"], valid_ids)
+
+    upstream_callers: list[dict[str, str]] = []
+    upstream_pointers: list[dict[str, str]] = []
+    for other in catalog["nodes"]:
+        oid = other["id"]
+        if oid == resolved_id:
+            continue
+        if resolved_id in _extract_edge_targets(other["calls"], valid_ids):
+            upstream_callers.append({"id": oid, "title": other["title"], "via": "Calls"})
+        if resolved_id in _extract_edge_targets(other["points_to"], valid_ids):
+            upstream_pointers.append({"id": oid, "title": other["title"], "via": "PointsTo"})
+
+    node_tk_refs = set(re.findall(r"\bTK-\d{2}\b", target["broken_edge"]))
+    related_tks = [
+        tk for tk in catalog["broken_edges"]
+        if tk["id"] in node_tk_refs or resolved_id in _expand_node_ids(tk["edge"])
+    ]
+
+    def _fmt_nodes(items: Sequence[dict[str, str]]) -> str:
+        if not items:
+            return "—（顶层入口或按需触发）"
+        return ", ".join(f"{it['id']} {it['title']} ({it['via']})" if "via" in it else f"{it['id']} {it['title']}" for it in items)
+
+    calls_entries = [{"id": nid, "title": by_id[nid]["title"]} for nid in downstream_calls_ids]
+    points_entries = [{"id": nid, "title": by_id[nid]["title"]} for nid in downstream_points_ids]
+    tk_summary = (
+        "; ".join(f"{tk['id']} [{tk['edge']}] -> {tk['acceptance_gate']}" for tk in related_tks)
+        if related_tks
+        else (target["broken_edge"] or "—")
+    )
+
+    card_lines = [
+        f"# Local Neighborhood Card: {target['id']} {target['title']}",
+        f"- **Node & Role**: `{target['id']}` ({target['title']}) · Group {target['group']} · Trigger: `{target['trigger']}`",
+        f"- **Upstream (被谁调用/流转自)**: {_fmt_nodes([*upstream_callers, *upstream_pointers])}",
+        f"- **Internal (本节点只干什么)**: {target['inbound_internal']}",
+        f"- **Downstream Calls (调用哪些子步骤，跑完返回)**: {_fmt_nodes(calls_entries) if calls_entries else '—（叶节点，无子步骤调用）'}",
+        f"- **Downstream PointsTo (做完交接给谁)**: {_fmt_nodes(points_entries) if points_entries else target['points_to']}",
+        f"- **Broken Edges (关联 TK-xx)**: {tk_summary}",
+    ]
+    return {
+        "ok": True,
+        "node": target,
+        "upstream": [*upstream_callers, *upstream_pointers],
+        "downstream_calls": calls_entries,
+        "downstream_points_to": points_entries,
+        "broken_edges": related_tks,
+        "text": "\n".join(card_lines) + "\n",
     }
 
 
@@ -264,6 +463,7 @@ def lookup_howto(
     matched_routes: list[dict[str, Any]] = []
     matched_node_ids: list[str] = []
     target_skills: list[str] = []
+    guidance_notes: list[str] = []
     cli_commands: list[str] = [
         "python3 skills/howto/scripts/howto_guard.py validate-recipe --file <recipe.md>",
     ]
@@ -278,6 +478,9 @@ def lookup_howto(
             for sk in route["skills"]:
                 if sk not in target_skills:
                     target_skills.append(sk)
+            route_guidance = str(route.get("guidance") or "").strip()
+            if route_guidance and route_guidance not in guidance_notes:
+                guidance_notes.append(route_guidance)
             for cmd in route["cli_commands"]:
                 if cmd not in cli_commands:
                     cli_commands.append(cmd)
@@ -299,7 +502,7 @@ def lookup_howto(
     matched_tks = [
         tk for tk in catalog["broken_edges"]
         if q_lower in " ".join(tk.values()).lower()
-        or any(nid in tk["edge"] for nid in matched_node_ids[:6])
+        or any(nid in _expand_node_ids(tk["edge"]) for nid in matched_node_ids[:6])
     ]
 
     if not matched_node_ids:
@@ -307,7 +510,7 @@ def lookup_howto(
     if not target_skills:
         target_skills = ["howto", "workflow-hub", "team-lead"]
 
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "query": clean_query,
         "matched_nodes": [by_id[nid] for nid in matched_node_ids[:10] if nid in by_id],
@@ -315,6 +518,9 @@ def lookup_howto(
         "target_skills": target_skills,
         "cli_entry_commands": cli_commands,
     }
+    if guidance_notes:
+        result["guidance"] = guidance_notes[0] if len(guidance_notes) == 1 else " | ".join(guidance_notes)
+    return result
 
 
 def scaffold_tuple(
@@ -334,15 +540,24 @@ def scaffold_tuple(
     tk_ids = [tk["id"] for tk in lookup["matched_broken_edges"][:2]]
     tk_note = f"（关联断链：{', '.join(tk_ids)}）" if tk_ids else ""
 
+    sanitized_task = re.sub(
+        r"(?i)(?:\.designTheme\b|\bdesignTheme\b|(?:custom|in-app|app-private|manual|web[-_\s]?css(?:[-_\s]?style)?)\s+(?:light/dark\s+|dark[- ]mode\s+|parallel[-_\s]+)?theme\s+(?:toggle|toggles|switcher|switchers|state\s+machine|state\s+machines|engine|engines|manager))",
+        "Apple OS-native dynamic system appearance",
+        clean_task,
+    )
     tuple_dict = {
-        "Inbound": f"Owner / Pulse 触发「{clean_task}」需求输入；复用技能 {skills_str}。",
-        "Internal": f"M2 仅拆解全局节点链路（{primary_nodes}）与边界，不翻业务代码；技术细节交右侧 M1 独立工作树调查{tk_note}。",
+        "Inbound": f"Owner / Pulse 触发「{sanitized_task}」需求输入；复用技能 {skills_str}。",
+        "Internal": (
+            f"M2 仅拆解全局节点链路（{primary_nodes}）与边界，不翻业务代码；"
+            f"凡含亮/暗外观必须 100% 绑定 Apple OS 原生动态系统外观（NSAppearance / UITraitCollection / @Environment(\\.colorScheme) + 语义动态 Token，严禁自建 .designTheme 或平行主题状态机）；"
+            f"技术细节交右侧 M1 独立工作树调查{tk_note}。"
+        ),
         "Calls": f"{calls_str}（按 Layer 0 脚本预检 → Layer 1 Jev 判断 → Layer 2 M1 实现漏斗编排）。",
         "PointsTo": "G1 Task / Linear TIA 状态读回与 I5 Notify Owner 验收结果（禁止跨素材库自动同步，save-tool 保持零执行）。",
         "Trigger & Notify": "Manual / Scheduled Pulse 触发；范围或口径未决走 P0 拍板，PR 合入与读回走 P1 回执。",
     }
     markdown = (
-        f"### `/howto` 五元组拆解：{clean_task}\n\n"
+        f"### `/howto` 五元组拆解：{sanitized_task}\n\n"
         f"- **Inbound**：{tuple_dict['Inbound']}\n"
         f"- **Internal**：{tuple_dict['Internal']}\n"
         f"- **Calls**：{tuple_dict['Calls']}\n"
@@ -365,15 +580,17 @@ def scaffold_tuple(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="howto_flow.py",
-        description="Deterministic /howto default entry CLI (--list-nodes, --lookup, --scaffold-tuple).",
+        description="Deterministic /howto default entry CLI (--list-nodes, --graph, --neighbors, --lookup, --scaffold-tuple).",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--list-nodes", action="store_true", help="List canonical 30+ How-To nodes and TK-01..TK-16 registry.")
+    mode.add_argument("--graph", action="store_true", help="Render the 5-Stage Macro Lifecycle Pipeline and adjacency summary.")
+    mode.add_argument("--neighbors", metavar="NODE_ID", help="Render a 1-page Local Neighborhood Card for a canonical node ID (e.g. E2).")
     mode.add_argument("--lookup", metavar="QUERY", help="Match a task/scenario query to How-To nodes, skills, and CLI commands.")
     mode.add_argument("--scaffold-tuple", metavar="TASK", help="Generate a howto_guard-validated 5-tuple scaffold.")
     parser.add_argument("--group", choices=("A", "B", "C", "a", "b", "c"), default=None, help="Optional group filter for --list-nodes.")
     parser.add_argument("--nodes-doc", type=Path, default=DEFAULT_NODES_DOC, help="Path to workflow-hub/references/how-to-nodes.md.")
-    parser.add_argument("--json", action="store_true", help="Emit JSON output (default when --json is passed; human-readable otherwise).")
+    parser.add_argument("--json", action="store_true", help="Emit JSON output (human-readable text is default for --graph, --neighbors, and --scaffold-tuple).")
     return parser
 
 
@@ -384,6 +601,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if ns.list_nodes:
             payload = list_nodes(group=ns.group, nodes_doc=ns.nodes_doc)
+        elif ns.graph:
+            payload = render_macro_graph(nodes_doc=ns.nodes_doc)
+        elif ns.neighbors is not None:
+            payload = inspect_neighbors(ns.neighbors, nodes_doc=ns.nodes_doc)
         elif ns.lookup is not None:
             payload = lookup_howto(ns.lookup, nodes_doc=ns.nodes_doc)
         else:
@@ -393,10 +614,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(err, ensure_ascii=False, indent=2))
         return 1
 
-    if ns.json or not ns.scaffold_tuple:
+    if ns.json or (not ns.scaffold_tuple and not ns.graph and ns.neighbors is None):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
+    elif ns.scaffold_tuple:
         sys.stdout.write(payload["markdown"])
+    else:
+        sys.stdout.write(payload["text"])
     return 0 if payload.get("ok") else 1
 
 

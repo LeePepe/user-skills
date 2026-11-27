@@ -7,7 +7,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ## 1. 定位与底层事实源复用
 
-`/howto` 是新 Session 启动任何“怎么做某事 / 细化流程 / 复盘任务”的唯一交互入口。**加载 `/howto` 后必须首先运行确定性 CLI 入口 [`scripts/howto_flow.py`](scripts/howto_flow.py)**（`--lookup "<场景>" --json`、`--list-nodes --json` 或 `--scaffold-tuple "<任务>" --json`），严禁只读文档不跑脚本。
+`/howto` 是新 Session 启动任何“怎么做某事 / 细化流程 / 复盘任务”的唯一交互入口。**加载 `/howto` 后必须首先运行确定性 CLI 入口 [`scripts/howto_flow.py`](scripts/howto_flow.py)**（`--lookup "<场景>" --json`、`--graph`、`--neighbors <NodeID>`、`--list-nodes --json` 或 `--scaffold-tuple "<任务>" --json`），严禁只读文档不跑脚本。
 
 底层 30 个标准节点（`E1–E12, Q1–Q3, I1–I7, G1–G2, P1–P9, O1–O6`）、四层 Skills/Repos 归位表与 `TK-01..TK-16` 断链清册，直接复用 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)。Jev / Falcon (`POST /v1/systemone`) 写题范式、Source Key 角色映射与排障抽屉见 [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md)。不在本文件复制节点表；长文案例底稿按需读取 `~/Development/handoff/howto-atlas/spec.md`。
 
@@ -15,8 +15,9 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 | 触发 | L1 精确抽屉 | L2 CLI / 动作 |
 |---|---|---|
-| **默认首步（必跑）**：匹配节点/技能与五元组脚手架 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/howto/scripts/howto_flow.py --lookup "<query>" --json` / `--list-nodes --json` / `--scaffold-tuple "<task>" --json` |
+| **默认首步（必跑）**：匹配节点/技能与五元组脚手架 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/howto/scripts/howto_flow.py --lookup "<query>" --json` / `--graph` / `--neighbors <NodeID>` / `--scaffold-tuple "<task>" --json` |
 | 校验五元组与 TK-01..16 断链 | [`workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) | `python3 skills/howto/scripts/howto_guard.py validate-recipe --file <md>` |
+| Apple 原生动态系统外观（禁自建 `.designTheme` / 平行主题） | [`../my-designer/references/appearance-ledger.md`](../my-designer/references/appearance-ledger.md) | `python3 skills/howto/scripts/howto_flow.py --lookup "system theme" --json` + `howto_guard.py validate-recipe --file <md>` |
 | AIDash 新增/扩展 AI 指标（aidata L1–L5） | [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) | 加载独立 `aidash-metrics` Skill；按其 inspector → Owner → designer → data-before-UI gates 路由；实现另派 M1 |
 | 接入 Layer-1 Jev 快思考 / 排障 | [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md) | `python3 skills/team-lead/scripts/jev_client.py --state '<json>' --questions '<json>'` |
 | 新建/审计/评测 Skill 或回流 Falcon Star | [`skill-contract/SKILL.md`](../skill-contract/SKILL.md) | `.../skill_contract.py audit|eval|description-eval|sync-jev-stars --skill <name>` |
@@ -49,6 +50,13 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 - **Internal**：aidata L1–L5 血缘、确定性 inspector 与四道门禁由独立 [`../aidash-metrics/SKILL.md`](../aidash-metrics/SKILL.md) 承载；本节点只保留编排与交接。
 - **Calls**：加载 `aidash-metrics` → I5 Owner 拍板 → E7 UI/Visual → E4 Code Task + E9 Verify 6DQ；实际实现另派 M1。
 - **PointsTo / Trigger & Notify**：P1 AIDash Hub 真实快照卡片、G1 Task/Linear TIA 读回；Manual/P3 提案，口径/设计 P0，快照/PR 合入 P1。
+
+### 4.6 E7 → P7 → E4 → E9 Apple OS-Native Dynamic System Appearance（Zero Custom Theme Engine）配方
+
+- **Inbound**：Apple 端 UI 亮/暗外观适配、设计重构或主题规范收敛；统一交由 `my-designer` + `skill-contract` 约束。
+- **Internal**：亮/暗表现必须 100% 绑定 Apple OS 原生动态系统外观（`NSAppearance` / `UITraitCollection` / `@Environment(\.colorScheme)` + 语义化动态 Token），严禁自建 `.designTheme`、应用内主题切换器或 Web-CSS 式平行主题状态机；由 `howto_guard.py validate-recipe` 确定性拦截。
+- **Calls**：`E7` UI/Visual（对齐动态语义色板）→ `P7` Skill/Gate Contract（沉淀反模式门禁）→ `E4` Code Task（清理私有主题管道）→ `E9` Verify 6DQ（亮/暗双外观真实渲染核验）。
+- **PointsTo / Trigger & Notify**：`G1` Task/Linear TIA 读回与 `I5` Owner 视觉回溯验收；Manual 触发，架构/路由边界 P0，双外观门禁与 PR 合入 P1。
 
 ## 5. 三层省 Token 漏斗准入准则（Layer 0 → Layer 1 → Layer 2）
 

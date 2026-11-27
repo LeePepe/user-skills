@@ -357,6 +357,7 @@ _NON_WORK_EXACT_TOKENS = {
     "pew-telemetry",
     "user-skills",
     "skills-workflow",
+    "skills-howto",
     "skills-design",
     "skills-research-knowledge",
     "skills-retro-story",
