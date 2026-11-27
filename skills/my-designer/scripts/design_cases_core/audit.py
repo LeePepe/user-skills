@@ -32,7 +32,7 @@ def command_lookup_defect(args: argparse.Namespace) -> int:
     terms = [term.casefold() for term in re.findall(r'[\w-]+', keyword, re.UNICODE)] or [keyword.casefold()]
     matches: list[dict[str, Any]] = []
     for entry in _load_defect_entries(path):
-        haystack = ' '.join(str(entry.get(field, '')) for field in ('id', 'slug', 'title', 'symptom', 'fix_rule', 'platforms', 'dimensions', 'containers')).casefold()
+        haystack = ' '.join(str(entry.get(field, '')) for field in ('id', 'title', 'symptom', 'fix_rule', 'platforms', 'dimensions', 'containers')).casefold()
         if keyword.casefold() in haystack or any(term in haystack for term in terms):
             matches.append(entry)
     print(json.dumps({'ok': True, 'query': keyword, 'count': len(matches), 'matches': matches}, ensure_ascii=False, indent=2))
@@ -184,68 +184,6 @@ def _collect_audit_paths(args: argparse.Namespace) -> list[Path]:
     return resolved
 
 
-def _audit_preview_host_debug_dylib(
-    target_roots: list[Path],
-    cases: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[str]]:
-    dc017 = next((c for c in cases if c.get('id') == 'DC-017'), None) or {
-        'id': 'DC-017',
-        'slug': 'preview-host-enable-debug-dylib',
-        'title': 'Xcode Preview Host ENABLE_DEBUG_DYLIB=YES Missing (preview-host-enable-debug-dylib)',
-        'fix_rule': 'Set ENABLE_DEBUG_DYLIB = YES on *PreviewHost and library targets in project.yml / .xcodeproj.',
-    }
-    pkg_dirs: list[Path] = []
-    seen_pkgs: set[Path] = set()
-    for root in target_roots:
-        if not root.exists():
-            continue
-        cands = [root, *(m.parent for m in sorted(root.rglob('Package.swift')) if not ({'.build', '.git', 'DerivedData'} & set(m.parts)))] if root.is_dir() else []
-        cur = root if root.is_dir() else root.parent
-        for _ in range(4):
-            cands.append(cur)
-            if cur.parent == cur:
-                break
-            cur = cur.parent
-        for cand in cands:
-            resolved = cand.resolve()
-            if resolved not in seen_pkgs and (resolved / 'Package.swift').is_file():
-                seen_pkgs.add(resolved)
-                pkg_dirs.append(resolved)
-    findings: list[dict[str, Any]] = []
-    drawer_keys: list[str] = []
-    c_drawers = _drawer_keys_for_case('DC-017', dc017.get('dimensions'))
-    ref_path = DRAWER_GUIDANCE[c_drawers[0]][0]
-
-    def _add(fp: Path, line_no: int, match_text: str) -> None:
-        drawer_keys.extend(c_drawers)
-        entry: dict[str, Any] = {'case_id': 'DC-017', 'slug': dc017.get('slug', 'preview-host-enable-debug-dylib'),
-                                 'title': dc017['title'], 'file': str(fp), 'line': line_no,
-                                 'match': match_text[:240], 'reference_drawer': ref_path}
-        if dc017.get('fix_rule'):
-            entry['fix_rule'] = dc017['fix_rule']
-        findings.append(entry)
-
-    for pkg_dir in pkg_dirs:
-        pkg_manifest = pkg_dir / 'Package.swift'
-        pkg_text = pkg_manifest.read_text(encoding='utf-8', errors='ignore')
-        if not re.search(r'\b\w*PreviewHost\b', pkg_text):
-            continue
-        cfgs = [p for p in (pkg_dir / 'project.yml', pkg_dir / 'project.yaml', *sorted(pkg_dir.glob('*.xcodeproj/project.pbxproj')), *sorted(pkg_dir.glob('*.xcodeproj'))) if p.is_file()]
-        non_empty = [c for c in cfgs if c.stat().st_size > 0]
-        if non_empty:
-            for cfg in non_empty:
-                cfg_text = cfg.read_text(encoding='utf-8', errors='ignore')
-                bad = re.search(r'ENABLE_DEBUG_DYLIB\s*[:=]\s*["\']?(?:NO|false)\b', cfg_text, re.IGNORECASE)
-                has_yes = bool(re.search(r'ENABLE_DEBUG_DYLIB\s*[:=]\s*["\']?(?:YES|true)\b', cfg_text, re.IGNORECASE))
-                if bad or not has_yes:
-                    _add(cfg, cfg_text.count('\n', 0, bad.start()) + 1 if bad else 1, bad.group(0) if bad else 'ENABLE_DEBUG_DYLIB != YES')
-        elif cfgs or list(pkg_dir.glob('*.xcodeproj')):
-            _add((cfgs or sorted(pkg_dir.glob('*.xcodeproj')))[0], 1, 'ENABLE_DEBUG_DYLIB != YES')
-        elif any('#Preview' in sf.read_text(encoding='utf-8', errors='ignore') for sf in pkg_dir.rglob('*.swift') if sf.is_file() and sf.name != 'Package.swift'):
-            _add(pkg_manifest, 1, 'missing project.yml / .xcodeproj with ENABLE_DEBUG_DYLIB = YES for *PreviewHost')
-    return findings, drawer_keys
-
-
 def command_audit_code(args: argparse.Namespace) -> int:
     plat = getattr(args, 'platform', None) or getattr(args, 'top_platform', None) or 'desktop'
     args.platform = _normalize_platform(plat)
@@ -280,10 +218,6 @@ def command_audit_code(args: argparse.Namespace) -> int:
     cases = _load_json(Path(args.cases_file)).get('active_cases', [])
     findings = []
     drawer_keys: list[str] = []
-    if not getattr(args, 'snippet', None) and args.platform in {'desktop', 'mobile'}:
-        dylib_findings, dylib_drawers = _audit_preview_host_debug_dylib(target_roots, cases)
-        findings.extend(dylib_findings)
-        drawer_keys.extend(dylib_drawers)
     for path in files:
         if not args.snippet and path.suffix.lower() not in allowed_suffixes:
             continue
