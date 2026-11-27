@@ -364,28 +364,33 @@ def _scan_swift_regex_end(text: str, start: int, hashes: int) -> int | None:
             return None
     i = slash_idx + 1
     class_depth = 0
+    prev_escaped = False
     while i < n:
         ch = text[i]
         if ch in {"\n", "\r"} and not multiline:
             return None
         if ch == "\\" and i + 1 < n:
+            prev_escaped = True
             i += 2
             continue
         if ch == "[":
             class_depth += 1
+            prev_escaped = False
             i += 1
             continue
         if ch == "]" and class_depth > 0:
             class_depth -= 1
+            prev_escaped = False
             i += 1
             continue
         if class_depth == 0 and text.startswith(closing, i):
-            if hashes == 0 and i > slash_idx + 1 and text[i - 1] in {" ", "\t"}:
+            if hashes == 0 and i > slash_idx + 1 and text[i - 1] in {" ", "\t"} and not prev_escaped:
                 return None
             after_idx = i + len(closing)
             if hashes == 0 and after_idx < n and (text[after_idx].isalnum() or text[after_idx] == "_"):
                 return None
             return after_idx
+        prev_escaped = False
         i += 1
     return None
 

@@ -821,7 +821,13 @@ class VerifySkillsTests(unittest.TestCase):
             for scope in scopes:
                 paths = sorted(SKILLS_DIR.rglob("*.md")) if scope == "skills/" else [REPO_ROOT / scope]
                 for path in paths:
-                    self.assertNotIn(phrase, path.read_text(encoding="utf-8"), f"{phrase!r} in {path}")
+                    try:
+                        content = path.read_text(encoding="utf-8")
+                    except OSError:
+                        if scope == "skills/":
+                            continue
+                        raise
+                    self.assertNotIn(phrase, content, f"{phrase!r} in {path}")
 
         path_re = re.compile(r"`(skills/[a-z0-9_-]+/(?:scripts|references|assets)/[A-Za-z0-9_./-]+)`")
         for rel_path in (

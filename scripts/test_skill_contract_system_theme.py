@@ -215,6 +215,7 @@ class SkillContractSystemThemeTests(unittest.TestCase):
             source = (
                 "let punctuation = #/[/*]/#\n"
                 "let bareClass = /[/*]/\n"
+                "let escapedTrailingSpace = /\\/*\\ /\n"
                 "func helper() throws -> Bool {\n"
                 "    let matched = try enabled && /[/*]/.wholeMatch(in: text) != nil\n"
                 '    let interp = "\\(enabled && /[/*]/.wholeMatch(in: text) != nil)"\n'
@@ -223,12 +224,13 @@ class SkillContractSystemThemeTests(unittest.TestCase):
                 "let regexMention = #/\\.designTheme\\(/#\n"
                 "let ratio = width / 2 + height / 4 + a/b/c\n"
                 "view.designTheme(.dark)\n"
+                "host.environment(\\.theme, Theme(palette: makePalette(), isDark: true))\n"
             )
             self._write_swift(repo, "Sources/Feature/RegexScreen.swift", source)
             findings = core_facts.check_repo_appearance_hygiene(repo)
-            self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0]["line"], 10)
-            self.assertEqual(findings[0]["code"], "custom-theme-plumbing")
+            self.assertEqual(len(findings), 2)
+            self.assertEqual([f["line"] for f in findings], [11, 12])
+            self.assertTrue(all(f["code"] == "custom-theme-plumbing" for f in findings))
 
     def test_watermark_cache_invalidates_when_swift_source_changes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sc-theme-cache-") as raw:
