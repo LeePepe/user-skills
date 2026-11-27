@@ -162,11 +162,14 @@ def _is_hzn5_mechanical_turn(event: dict[str, Any], associated: list[dict[str, A
 
 
 def _horizon_profile(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], *, min_turns: int = 40,
-                     min_duration_min: float = 15.0) -> list[dict[str, Any]]:
-    """Profile successful and at-risk long sessions with deterministic heuristics."""
+                     min_duration_min: float = 15.0,
+                     eligible_sessions: set[str] | None = None) -> list[dict[str, Any]]:
+    """Profile bounded long sessions selected by the outcome-first gate."""
     rows: list[dict[str, Any]] = []
     handoff_tasks = [(record, _queue_tasks(record)) for record in handoffs]
     for sid, seq in _session_groups(events).items():
+        if eligible_sessions is not None and sid not in eligible_sessions:
+            continue
         turns = max([_turn_number(e, i + 1) for i, e in enumerate(seq)] or [0])
         duration = _duration_seconds(seq)
         if turns < min_turns and duration < min_duration_min * 60:

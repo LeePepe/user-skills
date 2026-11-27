@@ -147,6 +147,18 @@ class AgentRetroV2Tests(unittest.TestCase):
         rows = AR._horizon_profile(self._long([referenced, later]), [], min_turns=40)
         self.assertNotIn("HZN1_context_carry_tax", {row["metric"] for row in rows})
 
+    def test_horizon_respects_outcome_first_gate(self):
+        event = {"type": "tool.execution_complete", "data": {"sessionId": "long", "turn": 1,
+            "toolName": "view", "result": {"content": "x" * 12000}}}
+        self.assertIn("HZN1_context_carry_tax", {
+            row["metric"] for row in AR._horizon_profile(self._long([event]), [], min_turns=40,
+                                                         eligible_sessions={"long"})
+        })
+        self.assertNotIn("HZN1_context_carry_tax", {
+            row["metric"] for row in AR._horizon_profile(self._long([event]), [], min_turns=40,
+                                                         eligible_sessions=set())
+        })
+
     def test_hzn2_positive_and_counter(self):
         child = {"type": "subagent.completed", "timestamp": "2026-11-25T00:00:00+00:00", "data": {"sessionId": "long"}}
         parent = {"type": "assistant.message", "timestamp": "2026-11-25T00:04:00+00:00", "data": {"sessionId": "long", "turn": 42, "content": "wake"}}

@@ -183,10 +183,7 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         fast=bool(getattr(args, "fast", False) or getattr(args, "_probe_budget", False)),
     )
     handoffs, handoff_source = _handoffs(handoff_root)
-    if getattr(args, "_horizon_only", False):
-        outcome_gate, profile_sessions = {}, set()
-    else:
-        outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
+    outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
     for record in handoffs:
         if re.search(r"\b(?:done|completed|pr_merged)\b", record["ledger"], re.I):
             outcome_gate[f"handoff:{record['name']}"] = {"status": "OUTCOME_HEALTHY" if record["receipts"] else "OUTCOME_AT_RISK", "faithful_receipts": bool(record["receipts"]), "goal": record["name"]}
@@ -202,7 +199,8 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
     if include_horizon:
         observations.extend(_horizon_profile(analysis_events, handoffs,
                                              min_turns=int(getattr(args, "min_turns", 40) or 40),
-                                             min_duration_min=float(getattr(args, "min_duration_min", 15) or 15)))
+                                             min_duration_min=float(getattr(args, "min_duration_min", 15) or 15),
+                                             eligible_sessions=profile_sessions))
     active_leases = _active_leases(handoffs)
     layers = set(filter(None, str(getattr(args, "layer", "") or "").split(",")))
     role_filter = str(getattr(args, "role", "") or "").lower()
