@@ -2,14 +2,10 @@
 
 L1 只描述节点独有 Internal；复用通过 Calls，完成后通过 PointsTo 交接。每个节点遵循 `Inbound → Internal → Calls → PointsTo → Trigger/Notify` 五元组；Composite 只编排，不抄子节点实现。
 
-## §1 四层归位
+## §1 四层归位与 L4–L1 控制论金字塔
 
-| Layer | Scope |
-|---|---|
-| L1 | `~/Development/user-skills/skills`: workflow、研究、设计、审查、复盘、叙事 |
-| L2 | `~/Development/Skills/skills`: repo、数仓、家居、工具 |
-| L3 | `~/Development/job skills`: 工作专项 |
-| L4 | `<repo>/.claude/skills/`: 仓内构建、资源、多语言、发版 |
+- **L4–L1 四层控制论金字塔（Cybernetic Pyramid，`howto_flow.py --pyramid`）**：**L4 人类掌舵**（Human Helmsman：Direction & Kill-Switch / 120Hz Taste / Oracle 裁判保护 / Evidence 终验，经 `I5`/`G1` 桥接）↔ **L3 熵减自演进**（Agent Helping Agent Improve：`P2, P3, P7, P8` + `agent-retro`/`skill-retro`/`retro-loop`/`skill-contract`/`repo-kit`）↔ **L2 协同编排**（Agent Guiding Agent：`I7, E6, E10, E11` + `personal-m2-assistant`/`m2-dispatcher`/`team-lead`/`code-review`）↔ **L1 专项执行**（Agent Doing the Work：其余标准业务节点 `E1–E5, E7–E9, E12, Q1–Q3, I1–I6, G1–G2, P1, P4–P6, P9, O1–O6`）。
+- **四层仓库物理归位**：`L1` `~/Development/user-skills/skills`（workflow/研究/设计/审查/复盘/叙事）· `L2` `~/Development/Skills/skills`（repo/数仓/家居/工具）· `L3` `~/Development/job skills`（工作专项）· `L4` `<repo>/.claude/skills/`（仓内构建/资源/发版）。
 
 ## §2 标准节点目录
 

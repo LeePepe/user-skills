@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOWTO_FLOW = ROOT / "skills" / "howto" / "scripts" / "howto_flow.py"
 HOWTO_GUARD = ROOT / "skills" / "howto" / "scripts" / "howto_guard.py"
 HOWTO_SKILL_MD = ROOT / "skills" / "howto" / "SKILL.md"
+WORKFLOW_HUB_SKILL_MD = ROOT / "skills" / "workflow-hub" / "SKILL.md"
 HOWTO_NODES_MD = ROOT / "skills" / "workflow-hub" / "references" / "how-to-nodes.md"
 
 
@@ -50,12 +51,35 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(graph_proc.returncode, 0, graph_proc.stderr)
+        self.assertIn("L4–L1 四层控制论金字塔", graph_proc.stdout)
+        self.assertIn("L4 人类掌舵层", graph_proc.stdout)
+        self.assertIn("L3 熵减与自演进层", graph_proc.stdout)
+        self.assertIn("L2 协同编排层", graph_proc.stdout)
+        self.assertIn("L1 专项执行层", graph_proc.stdout)
         self.assertIn("How-To 5-Stage Macro Lifecycle Pipeline", graph_proc.stdout)
+        self.assertLess(
+            graph_proc.stdout.index("L4–L1 四层控制论金字塔"),
+            graph_proc.stdout.index("How-To 5-Stage Macro Lifecycle Pipeline"),
+        )
         self.assertIn("1. 信号与入口", graph_proc.stdout)
         self.assertIn("5. 个人数据飞轮", graph_proc.stdout)
 
-        graph_json = self.flow.render_macro_graph()
+        pyramid_proc = subprocess.run(
+            [sys.executable, str(HOWTO_FLOW), "--pyramid", "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(pyramid_proc.returncode, 0, pyramid_proc.stderr)
+        graph_json = json.loads(pyramid_proc.stdout)
         self.assertTrue(graph_json["ok"])
+        self.assertEqual(list(graph_json["cybernetic_pyramid"].keys()), ["L4", "L3", "L2", "L1"])
+        self.assertEqual(len(graph_json["cybernetic_pyramid"]["L4"]["responsibilities"]), 4)
+        self.assertEqual(graph_json["cybernetic_pyramid"]["L4"]["human_gate_node_ids"], ["I5", "G1"])
+        self.assertEqual(graph_json["cybernetic_pyramid"]["L3"]["node_ids"], ["P2", "P3", "P7", "P8"])
+        self.assertEqual(graph_json["cybernetic_pyramid"]["L2"]["node_ids"], ["I7", "E6", "E10", "E11"])
+        self.assertIn("E2", graph_json["cybernetic_pyramid"]["L1"]["node_ids"])
         self.assertEqual(len(graph_json["stages"]), 5)
         self.assertGreater(graph_json["calls_edge_count"], 25)
         self.assertGreater(graph_json["points_to_edge_count"], 40)
@@ -69,9 +93,33 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
         )
         self.assertEqual(nb_proc.returncode, 0, nb_proc.stderr)
         self.assertIn("Local Neighborhood Card: E2 Bug List", nb_proc.stdout)
+        self.assertIn("Cybernetic Layer (控制论层级)", nb_proc.stdout)
+        self.assertIn("`L1`", nb_proc.stdout)
         self.assertIn("Upstream (被谁调用/流转自)", nb_proc.stdout)
         self.assertIn("E4a Triage Bug", nb_proc.stdout)
         self.assertIn("TK-02", nb_proc.stdout)
+
+        nb_e2_json = self.flow.build_neighbors("E2")
+        self.assertEqual(nb_e2_json["cybernetic_layer"], "L1")
+        self.assertFalse(nb_e2_json["bridges_l4_human_gate"])
+
+        nb_p3_proc = subprocess.run(
+            [sys.executable, str(HOWTO_FLOW), "--neighbors", "P3", "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(nb_p3_proc.returncode, 0, nb_p3_proc.stderr)
+        nb_p3_json = json.loads(nb_p3_proc.stdout)
+        self.assertEqual(nb_p3_json["cybernetic_layer"], "L3")
+        self.assertIn("Agent Helping Agent Improve", nb_p3_json["cybernetic_label"])
+
+        nb_i7_json = self.flow.build_neighbors("I7")
+        self.assertEqual(nb_i7_json["cybernetic_layer"], "L2")
+        nb_i5_json = self.flow.build_neighbors("I5")
+        self.assertEqual(nb_i5_json["cybernetic_layer"], "L1")
+        self.assertTrue(nb_i5_json["bridges_l4_human_gate"])
 
         bad_nb = subprocess.run(
             [sys.executable, str(HOWTO_FLOW), "--neighbors", "E999"],
@@ -211,11 +259,19 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
 
     def test_doc_budgets_and_no_web_css_parallel_theme_assumption(self) -> None:
         skill_text = HOWTO_SKILL_MD.read_text(encoding="utf-8")
+        hub_text = WORKFLOW_HUB_SKILL_MD.read_text(encoding="utf-8")
         nodes_text = HOWTO_NODES_MD.read_text(encoding="utf-8")
         self.assertLessEqual(len(skill_text.splitlines()), 180)
         self.assertLessEqual(len(skill_text.encode("utf-8")), 12 * 1024)
+        self.assertLessEqual(len(hub_text.splitlines()), 180)
+        self.assertLessEqual(len(hub_text.encode("utf-8")), 12 * 1024)
         self.assertLessEqual(len(nodes_text.splitlines()), 160)
         self.assertLessEqual(len(nodes_text.encode("utf-8")), 12 * 1024)
+        for doc_text in (skill_text, hub_text, nodes_text):
+            self.assertIn("L4", doc_text)
+            self.assertIn("L3", doc_text)
+            self.assertIn("L2", doc_text)
+            self.assertIn("L1", doc_text)
         self.assertNotIn("prefers-color-scheme", skill_text)
         self.assertNotIn("prefers-color-scheme", nodes_text)
 

@@ -9,8 +9,9 @@ Supports:
    matching How-To nodes, target skills, guidance, and exact CLI entry commands.
 3. `--scaffold-tuple <task> [--json]`: Generates a validated 5-tuple (`Inbound`,
    `Internal`, `Calls`, `PointsTo`, `Trigger & Notify`) scaffold verified by `howto_guard.py`.
-4. `--graph [--json]`: Renders the 5-Stage Macro Lifecycle Pipeline and extracted adjacency summary.
-5. `--neighbors <NODE_ID> [--json]`: Renders a 1-page Local Neighborhood Card for `<NODE_ID>`.
+4. `--graph` / `--pyramid` `[--json]`: Renders the L4–L1 4-Layer Cybernetic Pyramid (Harness Engineering)
+   above the 5-Stage Macro Lifecycle Pipeline and extracted adjacency summary.
+5. `--neighbors <NODE_ID> [--json]`: Renders a 1-page Local Neighborhood Card (including `cybernetic_layer`) for `<NODE_ID>`.
 """
 
 from __future__ import annotations
@@ -28,6 +29,58 @@ SKILL_DIR = SCRIPT_DIR.parent
 SKILLS_ROOT = SKILL_DIR.parent
 DEFAULT_NODES_DOC = SKILLS_ROOT / "workflow-hub" / "references" / "how-to-nodes.md"
 GUARD_PATH = SCRIPT_DIR / "howto_guard.py"
+
+_CYBERNETIC_PYRAMID: tuple[dict[str, Any], ...] = (
+    {
+        "layer": "L4",
+        "title": "L4 人类掌舵层 (Human Helmsman — 4 Irreplaceable Decisions)",
+        "role": "Human Helmsman",
+        "responsibilities": [
+            "Product Direction & Kill-Switch（定做什么与砍伪需求）",
+            "Taste（原生 120Hz 预览审美选型与品味编码化）",
+            "Oracle & Boundaries（定确定性验收标准与 Owned Paths，保护裁判不被写码 Agent 篡改）",
+            "Evidence Acceptance（看截图/指标/R10 证据回执，而非逐行读代码 Diff）",
+        ],
+        "human_gate_nodes": ["I5", "G1"],
+        "node_ids": [],
+        "skills": [],
+        "summary": "人类独掌方向/品味/裁判保护/证据终验，经 I5 拍板与 G1 Goal 门禁向 L3–L1 下达不可篡改契约",
+    },
+    {
+        "layer": "L3",
+        "title": "L3 熵减与自演进层 (Meta-Evolution — Agent Helping Agent Improve)",
+        "role": "Agent Helping Agent Improve",
+        "node_ids": ["P2", "P3", "P7", "P8"],
+        "skills": ["agent-retro", "skill-retro", "retro-loop", "skill-contract", "repo-kit", "aidash-metrics"],
+        "summary": "P2 aidata -> P3 retro-loop / agent-retro（6 层首错归因）/ skill-retro -> P7 skill-contract（3 把物理锁下沉 CLI 门禁）/ P8 repo-kit，将人类拍过的 Taste 与踩过的坑永久固化为确定性护栏",
+    },
+    {
+        "layer": "L2",
+        "title": "L2 协同编排层 (Orchestration — Agent Guiding Agent)",
+        "role": "Agent Guiding Agent",
+        "node_ids": ["I7", "E6", "E10", "E11"],
+        "skills": ["personal-m2-assistant", "m2-dispatcher", "team-lead", "code-review"],
+        "summary": "I7 personal-m2-assistant（M3 认知分流）-> m2-dispatcher（M2 冻结 spec.md、盯 PR DAG）-> team-lead（M1 波次调度、独立 Worktree + 跨厂商 Reviewer 独立裁判 + V3 两轮熔断）",
+    },
+    {
+        "layer": "L1",
+        "title": "L1 专项执行层 (Execution — Agent Doing the Work)",
+        "role": "Agent Doing the Work",
+        "node_ids": [
+            "E1", "E2", "E3", "E4", "E4a", "E5", "E7", "E8", "E9", "E12",
+            "Q1", "Q2", "Q3",
+            "I1", "I2", "I3", "I4", "I5", "I6", "G1", "G2",
+            "P1", "P4", "P5", "P6", "P9",
+            "O1", "O2", "O3", "O4", "O5", "O6",
+        ],
+        "skills": [
+            "howto", "workflow-hub", "my-designer", "design-studio", "codebase-design",
+            "linear-board", "issue-brief", "knowledge-digest", "save-tool", "story-craft",
+            "layered-data-warehouse", "nas-smart-home", "xcode-cli",
+        ],
+        "summary": "标准业务节点执行（研发交付 E1–E5/E7–E9/E12/Q1–Q3、信息与看板 I1–I6/G1–G2、个人知识与云/家居底座 P1/P4–P6/P9/O1–O6），其中 I5/G1 桥接 L4 人类门禁",
+    },
+)
 
 _MACRO_PIPELINE_STAGES: tuple[dict[str, Any], ...] = (
     {
@@ -70,24 +123,28 @@ _MACRO_PIPELINE_STAGES: tuple[dict[str, Any], ...] = (
 _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
     {
         "keywords": (
-            "system theme",
-            "dark mode",
-            "light mode",
-            "designtheme",
-            ".designtheme",
-            "colorscheme",
-            "nsappearance",
-            "uitraitcollection",
-            "system appearance",
-            "theme switcher",
-            "theme toggle",
-            "暗黑模式",
-            "深色模式",
-            "浅色模式",
-            "系统外观",
-            "系统主题",
-            "主题切换",
-            "平行主题",
+            "cybernetic pyramid", "harness engineering", "human helmsman", "meta-evolution",
+            "四层控制论金字塔", "控制论金字塔", "人类掌舵", "熵减与自演进", "自演进层", "协同编排层", "专项执行层",
+        ),
+        "nodes": ["P7", "P3", "I7", "E6", "E4", "E9", "G1", "I5"],
+        "skills": ["howto", "workflow-hub", "skill-contract", "team-lead"],
+        "guidance": (
+            "L4–L1 4-Layer Cybernetic Pyramid (Harness Engineering): "
+            "L4 Human Helmsman (Direction/Taste/Oracle/Evidence via I5/G1) -> "
+            "L3 Meta-Evolution (P2/P3/P7/P8 Agent Helping Agent Improve) -> "
+            "L2 Orchestration (I7/E6/E10/E11 Agent Guiding Agent) -> "
+            "L1 Execution (Agent Doing the Work)."
+        ),
+        "cli_commands": [
+            "python3 skills/howto/scripts/howto_flow.py --pyramid --json",
+            "python3 skills/howto/scripts/howto_flow.py --neighbors P3 --json",
+        ],
+    },
+    {
+        "keywords": (
+            "system theme", "dark mode", "light mode", "designtheme", ".designtheme", "colorscheme",
+            "nsappearance", "uitraitcollection", "system appearance", "theme switcher", "theme toggle",
+            "暗黑模式", "深色模式", "浅色模式", "系统外观", "系统主题", "主题切换", "平行主题",
         ),
         "nodes": ["E7", "P7", "E4", "E9"],
         "skills": ["my-designer", "skill-contract", "howto"],
@@ -221,6 +278,20 @@ def _expand_node_ids(cell: str) -> list[str]:
     return found
 
 
+def _resolve_cybernetic_layer(node_id: str) -> dict[str, Any]:
+    human_gates = {nid for e in _CYBERNETIC_PYRAMID for nid in e.get("human_gate_nodes", ())}
+    matched = next((e for e in _CYBERNETIC_PYRAMID if e["layer"] != "L4" and node_id in e["node_ids"]), _CYBERNETIC_PYRAMID[-1])
+    bridges_l4 = node_id in human_gates
+    label = f"{matched['layer']} ({matched['role']})" + (" [bridges L4 Human Helmsman gate]" if bridges_l4 else "")
+    return {
+        "cybernetic_layer": matched["layer"],
+        "cybernetic_layer_title": matched["title"],
+        "cybernetic_role": matched["role"],
+        "cybernetic_label": label,
+        "bridges_l4_human_gate": bridges_l4,
+    }
+
+
 def parse_howto_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
     resolved = nodes_doc.expanduser().resolve()
     if not resolved.is_file():
@@ -261,12 +332,17 @@ def parse_howto_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
             label_parts = cols[0].split(None, 1)
             title = label_parts[1] if len(label_parts) > 1 else cols[0]
             for idx, nid in enumerate(node_ids):
+                layer_meta = _resolve_cybernetic_layer(nid)
                 nodes.append(
                     {
                         "id": nid,
                         "raw_cell": cols[0],
                         "title": title if len(node_ids) == 1 else f"{title} ({nid})",
                         "group": current_group,
+                        "cybernetic_layer": layer_meta["cybernetic_layer"],
+                        "cybernetic_layer_title": layer_meta["cybernetic_layer_title"],
+                        "cybernetic_label": layer_meta["cybernetic_label"],
+                        "bridges_l4_human_gate": layer_meta["bridges_l4_human_gate"],
                         "trigger": cols[1],
                         "inbound_internal": cols[2],
                         "calls": cols[3],
@@ -326,7 +402,45 @@ def _extract_edge_targets(cell: str, valid_ids: set[str]) -> list[str]:
     return [nid for nid in _expand_node_ids(cell) if nid in valid_ids]
 
 
-def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+def _format_graph_text(
+    *,
+    node_count: int,
+    calls_edge_count: int,
+    points_to_edge_count: int,
+    broken_edge_count: int,
+    cybernetic_pyramid: dict[str, dict[str, Any]],
+    stages: Sequence[dict[str, Any]],
+) -> str:
+    lines = [
+        "# L4–L1 四层控制论金字塔 (4-Layer Cybernetic Pyramid — Harness Engineering)",
+        f"Nodes: {node_count} | Calls edges: {calls_edge_count} | PointsTo edges: {points_to_edge_count} | Broken edges: {broken_edge_count}",
+        "",
+    ]
+    for layer_key in ("L4", "L3", "L2", "L1"):
+        layer_info = cybernetic_pyramid[layer_key]
+        lines.append(f"## {layer_info['title']}")
+        lines.append(f"  - 核心定位：{layer_info['summary']}")
+        if layer_info.get("responsibilities"):
+            lines.append(f"  - 四项不可替代职责：{'；'.join(layer_info['responsibilities'])}")
+        if layer_info.get("human_gate_nodes"):
+            lines.append(f"  - 人类门禁桥接节点：{', '.join(layer_info['human_gate_nodes'])}")
+        if layer_info.get("nodes"):
+            lines.append(f"  - 归属节点：{', '.join(layer_info['nodes'])}")
+        if layer_info.get("skills"):
+            lines.append(f"  - 代表技能：{', '.join(layer_info['skills'])}")
+        lines.append("")
+
+    lines.append("# How-To 5-Stage Macro Lifecycle Pipeline")
+    lines.append("")
+    for st in stages:
+        lines.append(f"## {st['title']}  [{st['flow']}]")
+        lines.append(f"  - 核心职责：{st['summary']}")
+        lines.append(f"  - 覆盖节点：{', '.join(st['nodes'])}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
     catalog = parse_howto_catalog(nodes_doc)
     by_id = {n["id"]: n for n in catalog["nodes"]}
     valid_ids = set(by_id)
@@ -340,12 +454,36 @@ def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]
         for dst in _extract_edge_targets(node["points_to"], valid_ids):
             points_to_edges.append({"from": src, "to": dst, "kind": "PointsTo"})
 
+    pyramid_payload: dict[str, dict[str, Any]] = {}
+    for entry in _CYBERNETIC_PYRAMID:
+        layer_key = entry["layer"]
+        formatted_nodes = [
+            f"{nid} {by_id[nid]['title']}" if by_id[nid]["title"] != nid else nid
+            for nid in entry.get("node_ids", [])
+            if nid in by_id
+        ]
+        formatted_gate_nodes = [
+            f"{nid} {by_id[nid]['title']}" if by_id[nid]["title"] != nid else nid
+            for nid in entry.get("human_gate_nodes", [])
+            if nid in by_id
+        ]
+        item: dict[str, Any] = {
+            "layer": layer_key,
+            "title": entry["title"],
+            "role": entry["role"],
+            "summary": entry["summary"],
+            "node_ids": [nid for nid in entry.get("node_ids", []) if nid in by_id],
+            "nodes": formatted_nodes,
+            "skills": list(entry.get("skills", [])),
+        }
+        if "responsibilities" in entry:
+            item["responsibilities"] = list(entry["responsibilities"])
+        if "human_gate_nodes" in entry:
+            item["human_gate_node_ids"] = [nid for nid in entry["human_gate_nodes"] if nid in by_id]
+            item["human_gate_nodes"] = formatted_gate_nodes
+        pyramid_payload[layer_key] = item
+
     stages_payload: list[dict[str, Any]] = []
-    lines = [
-        "# How-To 5-Stage Macro Lifecycle Pipeline",
-        f"Nodes: {catalog['node_count']} | Calls edges: {len(calls_edges)} | PointsTo edges: {len(points_to_edges)} | Broken edges: {catalog['broken_edge_count']}",
-        "",
-    ]
     for st in _MACRO_PIPELINE_STAGES:
         stage_nodes = [
             f"{nid} {by_id[nid]['title']}" if by_id[nid]["title"] != nid else nid
@@ -361,11 +499,15 @@ def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]
                 "nodes": stage_nodes,
             }
         )
-        lines.append(f"## {st['title']}  [{st['flow']}]")
-        lines.append(f"  - 核心职责：{st['summary']}")
-        lines.append(f"  - 覆盖节点：{', '.join(stage_nodes)}")
-        lines.append("")
 
+    text = _format_graph_text(
+        node_count=catalog["node_count"],
+        calls_edge_count=len(calls_edges),
+        points_to_edge_count=len(points_to_edges),
+        broken_edge_count=catalog["broken_edge_count"],
+        cybernetic_pyramid=pyramid_payload,
+        stages=stages_payload,
+    )
     return {
         "ok": True,
         "node_count": catalog["node_count"],
@@ -373,16 +515,21 @@ def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]
         "points_to_edge_count": len(points_to_edges),
         "total_edge_count": len(calls_edges) + len(points_to_edges),
         "broken_edge_count": catalog["broken_edge_count"],
+        "cybernetic_pyramid": pyramid_payload,
         "stages": stages_payload,
         "adjacency": {
             "calls": calls_edges,
             "points_to": points_to_edges,
         },
-        "text": "\n".join(lines).rstrip() + "\n",
+        "text": text,
     }
 
 
-def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+    return build_graph(nodes_doc=nodes_doc)
+
+
+def build_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
     clean_id = str(node_id or "").strip()
     catalog = parse_howto_catalog(nodes_doc)
     by_id = {n["id"]: n for n in catalog["nodes"]}
@@ -429,6 +576,8 @@ def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> d
     card_lines = [
         f"# Local Neighborhood Card: {target['id']} {target['title']}",
         f"- **Node & Role**: `{target['id']}` ({target['title']}) · Group {target['group']} · Trigger: `{target['trigger']}`",
+        f"- **Cybernetic Layer (控制论层级)**: `{target['cybernetic_layer']}` — {target['cybernetic_layer_title']}"
+        + (" · 桥接 `L4` 人类掌舵门禁" if target["bridges_l4_human_gate"] else ""),
         f"- **Upstream (被谁调用/流转自)**: {_fmt_nodes([*upstream_callers, *upstream_pointers])}",
         f"- **Internal (本节点只干什么)**: {target['inbound_internal']}",
         f"- **Downstream Calls (调用哪些子步骤，跑完返回)**: {_fmt_nodes(calls_entries) if calls_entries else '—（叶节点，无子步骤调用）'}",
@@ -437,6 +586,10 @@ def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> d
     ]
     return {
         "ok": True,
+        "cybernetic_layer": target["cybernetic_layer"],
+        "cybernetic_layer_title": target["cybernetic_layer_title"],
+        "cybernetic_label": target["cybernetic_label"],
+        "bridges_l4_human_gate": target["bridges_l4_human_gate"],
         "node": target,
         "upstream": [*upstream_callers, *upstream_pointers],
         "downstream_calls": calls_entries,
@@ -444,6 +597,10 @@ def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> d
         "broken_edges": related_tks,
         "text": "\n".join(card_lines) + "\n",
     }
+
+
+def inspect_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+    return build_neighbors(node_id, nodes_doc=nodes_doc)
 
 
 def lookup_howto(
@@ -580,11 +737,11 @@ def scaffold_tuple(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="howto_flow.py",
-        description="Deterministic /howto default entry CLI (--list-nodes, --graph, --neighbors, --lookup, --scaffold-tuple).",
+        description="Deterministic /howto default entry CLI (--list-nodes, --graph/--pyramid, --neighbors, --lookup, --scaffold-tuple).",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--list-nodes", action="store_true", help="List canonical 30+ How-To nodes and TK-01..TK-16 registry.")
-    mode.add_argument("--graph", action="store_true", help="Render the 5-Stage Macro Lifecycle Pipeline and adjacency summary.")
+    mode.add_argument("--graph", "--pyramid", dest="graph", action="store_true", help="Render the L4–L1 Cybernetic Pyramid above the 5-Stage Pipeline.")
     mode.add_argument("--neighbors", metavar="NODE_ID", help="Render a 1-page Local Neighborhood Card for a canonical node ID (e.g. E2).")
     mode.add_argument("--lookup", metavar="QUERY", help="Match a task/scenario query to How-To nodes, skills, and CLI commands.")
     mode.add_argument("--scaffold-tuple", metavar="TASK", help="Generate a howto_guard-validated 5-tuple scaffold.")
