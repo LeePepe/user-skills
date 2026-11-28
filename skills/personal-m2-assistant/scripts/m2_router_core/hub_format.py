@@ -242,7 +242,7 @@ def _build_local_device_shard(
         session_id = _text(slot.get("target") or slot.get("session_id") or slot_id)
         pane_id = _text(slot.get("pane_id"))
         issue = _text(slot.get("linear_issue"))
-        summary = strip_herdr_origin_comments(_text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"), "—")).replace("\n", " / ")[:280]
+        summary = _summarize_concise_stage(slot)
         scope = _classify_hub_scope(slot, domain_map=domain_map)
         if status in {"working", "running", "blocked", "needs_input", "ready", "unknown"} or retained:
             entry: dict[str, Any] = {
@@ -447,6 +447,15 @@ def render_cross_device_hub_markdown(
         if line not in bucket[key]:
             bucket[key].append(line)
 
+    def _sanitize_table_row(row: str, summary_index: int) -> str:
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if len(cells) <= summary_index:
+            return row
+        if len(cells) > 2:
+            cells[2] = re.sub(r"\s*\(`[^`]*:[^`]*`\)", "", cells[2])
+        cells[summary_index] = _clean_single_line(cells[summary_index], max_len=60).replace("|", "\\|") or "—"
+        return "| " + " | ".join(cells) + " |"
+
     def _scope_for_host_issue(shard: dict[str, Any], issue_or_text: str, rich_line: str = "") -> str:
         hinted = line_scopes.get(rich_line, "")
         if hinted:
@@ -503,25 +512,25 @@ def render_cross_device_hub_markdown(
         rich_rows = in_flight_by_host.get(host) or []
         if host != local_hostname and rich_rows and shard_in_flight:
             for r in rich_rows:
-                cells = [c.strip("` ").strip() for c in r.strip("|").split("|")]
+                clean_row = _sanitize_table_row(r, 4)
+                cells = [c.strip("` ").strip() for c in clean_row.strip("|").split("|")]
                 row_topic = cells[1] if len(cells) > 1 else ""
                 matched_entry = next(
                     (it for it in shard_in_flight if isinstance(it, dict) and _text(it.get("topic_id") or it.get("slot_id")) == row_topic),
                     None,
                 )
-                sc = _classify_hub_scope(matched_entry or row_topic, rich_line=r, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
-                _append_unique(in_flight_by_scope, sc, r)
+                sc = _classify_hub_scope(matched_entry or row_topic, rich_line=clean_row, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
+                _append_unique(in_flight_by_scope, sc, clean_row)
         else:
             hb = _format_cst_heartbeat(_text(shard.get("updated_at") or state.get("updated_at")))
             for item in shard_in_flight:
                 if not isinstance(item, dict):
                     continue
-                topic = _text(item.get("topic_id") or item.get("slot_id"), "—")
+                topic = _resolve_slot_space_label(item)
                 session_id = _text(item.get("session_id") or item.get("target"), "—")
-                pane_id = _text(item.get("pane_id"))
-                session_cell = f"`{session_id}` (`{pane_id}`)" if pane_id else f"`{session_id}`"
+                session_cell = f"`{session_id}`"
                 issue_cell = _format_linear_issue_link(_text(item.get("issue")))
-                summary_cell = _text(item.get("summary"), "—").replace("|", "\\|").replace("\n", "&#10;")
+                summary_cell = _summarize_concise_stage(item).replace("|", "\\|")
                 item_hb = _format_cst_heartbeat(_text(item.get("updated_at") or shard.get("updated_at") or state.get("updated_at"))) or hb
                 row_str = f"| `{host}` | `{topic}` | {session_cell} | {issue_cell} | {summary_cell} | `{item_hb}` |"
                 sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map)
@@ -559,16 +568,17 @@ def render_cross_device_hub_markdown(
         seen_comp_rows: list[str] = []
         if host != local_hostname and rich_rows:
             for r in rich_rows:
-                sc = _classify_hub_scope(None, rich_line=r, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
-                _append_unique(completed_by_scope, sc, r)
-                seen_comp_rows.append(r)
+                clean_row = _sanitize_table_row(r, 3)
+                sc = _classify_hub_scope(None, rich_line=clean_row, domain_map=domain_map, hint_scope=line_scopes.get(r, ""))
+                _append_unique(completed_by_scope, sc, clean_row)
+                seen_comp_rows.append(clean_row)
             for item in shard_completed:
                 item_key = _text(item.get("issue") if isinstance(item, dict) else item)
                 if item_key and not any(item_key in existing for existing in seen_comp_rows):
                     if isinstance(item, dict):
-                        topic = _text(item.get("topic_id") or item.get("target_repo"), "—")
+                        topic = _resolve_slot_space_label(item)
                         issue_cell = _format_linear_issue_link(item_key)
-                        summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
+                        summary_cell = _summarize_concise_stage(item).replace("|", "\\|")
                         row_str = f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |"
                         sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map)
                     else:
@@ -582,14 +592,14 @@ def render_cross_device_hub_markdown(
                     item_key = _text(item.get("issue") or item.get("slot_id"))
                     matched_rich = next((rr for rr in rich_rows if item_key and item_key in rr), "")
                     if matched_rich and item.get("summary") in {"", "—"}:
-                        row_str = matched_rich
+                        row_str = _sanitize_table_row(matched_rich, 3)
                     else:
-                        topic = _text(item.get("topic_id") or item.get("target_repo") or item.get("slot_id"), "—")
+                        topic = _resolve_slot_space_label(item)
                         issue_cell = _format_linear_issue_link(item_key) if re.match(r"^TIA-\d+$", item_key, re.I) else (f"`{item_key}`" if item_key else "—")
                         pr_ref = _text(item.get("pr"))
                         if pr_ref:
                             issue_cell = f"{issue_cell} / {pr_ref}"
-                        summary_cell = _text(item.get("summary"), "已完成").replace("|", "\\|")
+                        summary_cell = _summarize_concise_stage(item).replace("|", "\\|")
                         row_str = f"| `{host}` | `{topic}` | {issue_cell} | {summary_cell} |"
                     sc = _classify_hub_scope(item, rich_line=row_str, domain_map=domain_map, hint_scope=line_scopes.get(row_str, ""))
                 else:

@@ -92,18 +92,19 @@ def _render_cross_device_rollup_lines(
     lines = ["#### 🌐 4. 跨设备在途与待拍板（Cross-Device M2 Sync Hub · `TIA-463`）"]
     for group in remote_pending:
         host = _text(group.get("host"))
-        decisions = ", ".join(_text(d.get("issue") if isinstance(d, dict) else d) for d in (group.get("decisions") or []) if _text(d.get("issue") if isinstance(d, dict) else d))
+        decisions = ", ".join(
+            _format_linear_issue_link(_text(d.get("issue") if isinstance(d, dict) else d))
+            for d in (group.get("decisions") or [])
+            if _text(d.get("issue") if isinstance(d, dict) else d)
+        )
         if decisions:
             lines.append(f"- 🚨 `[Host: {host}]` 待拍板 / 待选型: {decisions}")
     for item in remote_in_flight:
         host = _text(item.get("host"))
-        topic = _text(item.get("topic_id") or item.get("slot_id"), "—")
-        session_id = _text(item.get("session_id") or item.get("target"), "—")
-        pane_id = _text(item.get("pane_id"))
-        pane_str = f" (`{pane_id}`)" if pane_id else ""
-        issue = _text(item.get("issue"), "Linear 未绑定")
-        summary = _text(item.get("summary"), "—")
-        lines.append(f"- ⏳ `[Host: {host}]` `{topic}` · `{session_id}`{pane_str} · {issue} · {summary}")
+        topic = _resolve_slot_space_label(item)
+        issue = _format_linear_issue_link(_text(item.get("issue")))
+        summary = _summarize_concise_stage(item)
+        lines.append(f"- ⏳ `[Host: {host}]` `{topic}` · {issue} · {summary}")
     return lines
 
 def _attach_cross_device_to_rollup(

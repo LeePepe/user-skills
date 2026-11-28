@@ -2171,8 +2171,19 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("Wave 1: TIA-426 (team-lead) + TIA-424 (my-designer)", chain)
         self.assertIn("-> Wave 2: TIA-420 (VoxPocket: Stage 1 Designer -> Stage 2 Coding)", chain)
         md = result["unified_rollup_markdown"]
-        for section in ("🔔 本次完成", "✅ 累计已完成", "⏳ 仍在运行中", "TIA-18", "依赖 Wave 1: TIA-426, TIA-424", "w9:p1"):
+        for section in (
+            "⏳ 进行中 & 🚨 待处理",
+            "✅ 空闲待命",
+            "🔗 Wave 依赖",
+            "[TIA-420](https://linear.app/tianpeili/issue/TIA-420)",
+            "[TIA-18](https://linear.app/tianpeili/issue/TIA-18)",
+            "依赖 Wave 1: [TIA-426](https://linear.app/tianpeili/issue/TIA-426), [TIA-424](https://linear.app/tianpeili/issue/TIA-424)",
+        ):
             self.assertIn(section, md)
+        self.assertNotIn("w9:p1", md)
+        self.assertEqual(vox["pane_id"], "w9:p1")
+        self.assertNotIn("completed_rollup_code", md)
+        self.assertNotIn("EVT=", md)
         self.assertEqual(json.loads(state_path.read_text())["slots"][2]["status"], "working")
         # A running handoff also keeps an idle M2 in-flight after its visible marker disappears.
         records[0]["visible"] = "Delivered"
@@ -2190,6 +2201,91 @@ class M2RouterTests(unittest.TestCase):
         self.assertIn("C", completed["completed_labels"])
         self.assertIn("m2-linear", completed["running_labels"])
         self.assertIn(completed["unified_rollup_markdown"], completed["summary_markdown"])
+
+    def test_table_plus_bullets_layout_positive_and_empty_counter_case(self):
+        board = self.router._compute_board_rollup({"slots": [
+            {"slot_id": "active", "topic_id": "skills-workflow", "linear_issue": "TIA-463", "status": "working", "m1_progress": "T1 (in_progress) · Implementing rollup"},
+            {"slot_id": "idle", "topic_id": "VoxPocket", "linear_issue": "TIA-420", "status": "idle", "m1_progress": "Delivered"},
+        ]})
+        md = board["unified_rollup_markdown"]
+        self.assertIn("| Space | 关联单据 | 当前阶段 |", md)
+        self.assertIn("[TIA-463](https://linear.app/tianpeili/issue/TIA-463)", md)
+        self.assertIn("- **VoxPocket**（[TIA-420](https://linear.app/tianpeili/issue/TIA-420)）：Delivered", md)
+        self.assertNotIn("pane", md)
+        empty = self.router._compute_board_rollup({"slots": []})["unified_rollup_markdown"]
+        self.assertIn("#### ⏳ 进行中 & 🚨 待处理\n无", empty)
+        self.assertIn("#### ✅ 空闲待命\n无", empty)
+        self.assertNotIn("| Space |", empty)
+
+    def test_rollup_human_noise_absence_and_machine_counter_case(self):
+        board = self.router._compute_board_rollup({"slots": [{
+            "slot_id": "slot-a", "run_label": "A", "topic_id": "skills-workflow", "pane_id": "w9:p1",
+            "linear_issue": "TIA-463", "status": "working", "m1_progress": "TL: tl-r1 | EVT=IN_PROGRESS | active stage",
+        }]})
+        md = board["unified_rollup_markdown"]
+        self.assertNotIn("w9:p1", md)
+        self.assertNotIn("completed_rollup_code", md)
+        self.assertNotIn("EVT=", md)
+        self.assertEqual(board["in_flight_details"][0]["pane_id"], "w9:p1")
+        self.assertEqual(board["completed_rollup_code"], "")
+
+    def test_stale_archived_ledger_counter_case_and_active_goal_positive(self):
+        root = self.test_root / "handoff"
+        old = root / "archived-rollup"
+        active = root / "active-rollup"
+        old.mkdir(parents=True)
+        active.mkdir(parents=True)
+        (old / "ledger.md").write_text(
+            "# Goal: archived-rollup\n- status: done\n- Linear: TIA-853\n"
+            "## Events\n- 2026-11-08T09:00:00+08:00 | EVT=GOAL_DONE\n", encoding="utf-8")
+        (active / "ledger.md").write_text(
+            "# Goal: active-rollup\n- status: in_progress\n- Linear: TIA-854\n"
+            "- TL: active-rollup-goal-tl-r1\n## Events\n- 2026-11-28T20:00:00+08:00 | EVT=IN_PROGRESS\n", encoding="utf-8")
+        state_path = self.test_root / "stale-ledger.json"
+        records = [
+            {"name": "m2-archived", "pane_id": "wold:p1", "agent_status": "working", "visible": "Working on unrelated task"},
+            {"name": "m2-active", "pane_id": "wnew:p1", "agent_status": "working", "visible": "Working on active-rollup"},
+        ]
+        result = self.router.supervision_status(state_file=state_path, agent_records=records, handoff_root=root)
+        archived = next(slot for slot in result["slots"] if slot["slot_id"] == "m2-archived")
+        current = next(slot for slot in result["slots"] if slot["slot_id"] == "m2-active")
+        self.assertNotEqual(archived.get("linear_issue"), "TIA-853")
+        self.assertEqual(current.get("linear_issue"), "TIA-854")
+
+    def test_closed_herdr_space_ghost_counter_case_and_live_space_positive(self):
+        state_path = self.test_root / "ghosts.json"
+        state_path.write_text(json.dumps({"slots": [
+            {"slot_id": "closed", "target": "m2-closed", "pane_id": "wclosed:p1", "transport": "herdr", "status": "working"},
+            {"slot_id": "live", "target": "m2-live", "pane_id": "wlive:p1", "transport": "herdr", "status": "working"},
+        ]}), encoding="utf-8")
+        records = [{"name": "m2-live", "pane_id": "wlive:p1", "agent_status": "working", "visible": "Working"}]
+        result = self.router.supervision_status(state_file=state_path, agent_records=records)
+        self.assertNotIn("closed", {slot["slot_id"] for slot in result["slots"]})
+        self.assertIn("live", {slot["slot_id"] for slot in result["slots"]})
+        self.assertNotIn("closed", {slot["slot_id"] for slot in result["in_flight_details"]})
+
+    def test_wave_dependency_conditional_positive_and_single_wave_counter_case(self):
+        single = self.router._compute_board_rollup({"slots": [{"slot_id": "one", "topic_id": "one", "status": "working", "wave_order": 1}]})
+        self.assertNotIn("🔗 Wave 依赖", single["unified_rollup_markdown"])
+        multi = self.router._compute_board_rollup({"slots": [
+            {"slot_id": "one", "topic_id": "one", "linear_issue": "TIA-1", "status": "done", "wave_order": 1},
+            {"slot_id": "two", "topic_id": "two", "linear_issue": "TIA-2", "status": "working", "wave_order": 2, "depends_on": ["TIA-1"]},
+        ]})
+        self.assertIn("🔗 Wave 依赖", multi["unified_rollup_markdown"])
+        self.assertIn("依赖 Wave 1: [TIA-1](https://linear.app/tianpeili/issue/TIA-1)", multi["unified_rollup_markdown"])
+
+    def test_cross_device_long_quote_truncation_positive_and_short_counter_case(self):
+        long_quote = "Teams/Email quote " + "很长的上下文 " * 20
+        summary = {"cross_device_in_flight": [{"host": "MacBook", "topic_id": "info-teams", "pane_id": "w1:p1", "issue": "TIA-700", "summary": long_quote}], "cross_device_pending_decisions": []}
+        lines = self.router._render_cross_device_rollup_lines(summary)
+        self.assertLessEqual(len(lines[-1].split(" · ")[-1]), 60)
+        hub = self.router.render_cross_device_hub_markdown({"updated_at": "2026-11-28T20:00:00+08:00", "devices": {"MacBook": {"updated_at": "2026-11-28T20:00:00+08:00", "in_flight": [{"topic_id": "info-email", "session_id": "m2-email-r1", "pane_id": "w1:p1", "issue": "TIA-701", "summary": long_quote}]}}}, local_hostname="Other")
+        human = hub.split("<details>", 1)[0]
+        self.assertNotIn("w1:p1", human)
+        stage = next(line for line in human.splitlines() if "TIA-701" in line)
+        self.assertLessEqual(len(stage.split("|")[4].strip()), 60)
+        short = self.router._render_cross_device_rollup_lines({"cross_device_in_flight": [{"host": "MacBook", "topic_id": "info-email", "issue": "TIA-702", "summary": "Short quote"}], "cross_device_pending_decisions": []})
+        self.assertIn("Short quote", short[-1])
 
     def test_visible_watchdog_goal_rebinds_stale_title_and_discovered_handoff(self):
         root = self.test_root / "handoff"
@@ -2411,13 +2507,14 @@ class M2RouterTests(unittest.TestCase):
         self.assertTrue(sync_res["updated"])
         self.assertEqual(len(linear_calls), 2)
         updated_desc = remote_issue["description"]
-        # Verify leedeMac-Mini rich rows and shard are preserved verbatim
+        # Verify rich rows remain parseable while human-facing cells are concise and pane-free.
         self.assertIn("[在线预览](<https://leepepe.github.io/demos/xhs-study-switch-ac/>) (`leedeMac-Mini`)", updated_desc)
         self.assertIn("[PR #312](<https://github.com/LeePepe/AIDash/pull/312>)", updated_desc)
         self.assertIn("<!-- GTT-LINEAR-SYNC:START -->", updated_desc)
-        # Verify MacBook shard was added
-        self.assertIn("| `MacBook` | `skills-workflow` | `m2-skill-personal-m2-r1` (`w1:p1`)", updated_desc)
-        self.assertIn("| `MacBook` | `financial` | [TIA-430](https://linear.app/tianpeili/issue/TIA-430) | Anchor balance verified |", updated_desc)
+        # Verify MacBook shard was added without exposing its pane ID.
+        self.assertIn("| `MacBook` | `skills-workflow` | `m2-skill-personal-m2-r1` |", updated_desc)
+        self.assertNotIn("m2-skill-personal-m2-r1` (`w1:p1`)", updated_desc)
+        self.assertIn("| `MacBook` | `Financial` | [TIA-430](https://linear.app/tianpeili/issue/TIA-430) | Anchor balance verified |", updated_desc)
         parsed = self.router.parse_cross_device_hub_description(updated_desc)
         devices = parsed["state"]["devices"]
         self.assertIn("leedeMac-Mini", devices)
@@ -2449,8 +2546,8 @@ class M2RouterTests(unittest.TestCase):
         )
         self.assertIn("leedeMac-Mini", status_out["remote_devices"])
         self.assertIn("[Host: leedeMac-Mini]", status_out["unified_rollup_markdown"])
-        self.assertIn("TIA-457, TIA-420", status_out["unified_rollup_markdown"])
-        self.assertIn("voxpocket", status_out["unified_rollup_markdown"])
+        self.assertIn("[TIA-457](https://linear.app/tianpeili/issue/TIA-457), [TIA-420](https://linear.app/tianpeili/issue/TIA-420)", status_out["unified_rollup_markdown"])
+        self.assertIn("VoxPocket", status_out["unified_rollup_markdown"])
 
         plan_out = self.router.build_plan(
             "检查 VoxPocket 最新状态",
@@ -2461,7 +2558,7 @@ class M2RouterTests(unittest.TestCase):
         )
         self.assertIn("leedeMac-Mini", plan_out["remote_devices"])
         self.assertIn("[Host: leedeMac-Mini]", plan_out["preview_markdown"])
-        self.assertIn("TIA-457, TIA-420", plan_out["preview_markdown"])
+        self.assertIn("[TIA-457](https://linear.app/tianpeili/issue/TIA-457), [TIA-420](https://linear.app/tianpeili/issue/TIA-420)", plan_out["preview_markdown"])
         self.assertIn("[Host: leedeMac-Mini]", self.router.preview_text(plan_out))
 
     def test_cross_device_hub_splits_work_and_non_work_with_backlog_and_retained(self):
@@ -2541,14 +2638,14 @@ class M2RouterTests(unittest.TestCase):
         desc = remote_issue["description"]
         work_part, non_work_part = desc.split("## 🛠️ Part 2 · Non-Work", 1)
         self.assertIn("## 💼 Part 1 · Work", work_part)
-        self.assertIn("`work-recruitment`", work_part)
-        self.assertIn("`sapphire-smartbanner`", work_part)
+        self.assertIn("`Intern 招聘`", work_part)
+        self.assertIn("`SmartBanner`", work_part)
         self.assertIn("⏸️ `info-teams`", work_part)
         self.assertIn("⏸️ `info-email`", work_part)
         self.assertNotIn("`pew-telemetry`", work_part)
         self.assertNotIn("`skills-workflow`", work_part)
 
-        self.assertIn("`pew-telemetry`", non_work_part.split("<details>", 1)[0])
+        self.assertIn("`pew`", non_work_part.split("<details>", 1)[0])
         self.assertIn("`skills-workflow`", non_work_part.split("<details>", 1)[0])
         self.assertNotIn("`sapphire-smartbanner`", non_work_part.split("<details>", 1)[0])
 
@@ -3713,8 +3810,9 @@ class M2RouterTests(unittest.TestCase):
         self.assertEqual(bg_sync_res["agents_count"], 1)
         self.assertTrue(bg_sync_res["linear_sync"]["ok"])
         self.assertTrue(bg_sync_res["linear_sync"]["updated"])
-        self.assertIn("`wVox:p1`", remote_issue["description"])
+        self.assertNotIn("`wVox:p1`", remote_issue["description"])
         parsed_after = self.router.parse_cross_device_hub_description(remote_issue["description"])["state"]
+        self.assertEqual(parsed_after["devices"]["MacBook-Pro"]["agents"][0]["pane_id"], "wVox:p1")
         self.assertEqual(parsed_after["devices"]["MacBook-Pro"]["spaces"][0]["workspace_id"], "wVox")
         self.assertEqual(parsed_after["devices"]["MacBook-Pro"]["agents"][0]["session_id"], "m2-voxpocket-r1")
 

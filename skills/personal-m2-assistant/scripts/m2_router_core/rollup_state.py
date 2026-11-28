@@ -37,6 +37,95 @@ def _extract_ledger_latest_timestamp(ledger_text: str, ledger_path: Path) -> tup
     except OSError:
         return "", None
 
+
+def _resolve_slot_space_label(
+    slot: dict[str, Any],
+    domain_map: dict[str, Any] | None = None,
+) -> str:
+    """Return a stable human-facing Space label without Herdr/run identifiers."""
+    for key in ("workspace_label", "space"):
+        candidate = _text(slot.get(key))
+        if candidate and candidate.casefold() != "m2":
+            return candidate
+    active_map = domain_map
+    if active_map is None:
+        try:
+            active_map = load_domain_map()
+        except RouterError:
+            active_map = {}
+    topics = _topic_by_id(active_map) if isinstance(active_map, dict) else {}
+    candidates = [_text(slot.get(key)) for key in ("topic_id", "target_repo", "target", "slot_id")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        topic = topics.get(candidate.casefold())
+        mapped = _text(topic.get("space")) if isinstance(topic, dict) else ""
+        if mapped and mapped.casefold() != "m2":
+            return mapped
+        if topic and candidate:
+            return candidate
+    for candidate in candidates:
+        if not candidate:
+            continue
+        clean = re.sub(r"^m2-", "", candidate, flags=re.I)
+        clean = re.sub(r"-[0-9a-f]{6}-r\d+$", "", clean, flags=re.I)
+        clean = re.sub(r"-r\d+$", "", clean, flags=re.I)
+        clean = re.sub(r"(?:[-_]?r\d+|[-_]\d+)$", "", clean, flags=re.I)
+        clean = clean.strip("-_ ")
+        if clean and clean.casefold() != "m2":
+            return clean
+    return "M2"
+
+
+def _summarize_concise_stage(value: dict[str, Any] | Any, *, max_len: int = 60) -> str:
+    """Extract one clean, short stage sentence for human-facing Markdown."""
+    slot = value if isinstance(value, dict) else {}
+    raw_values = [
+        slot.get("m1_progress"), slot.get("m1_stage_summary"), slot.get("summary"),
+        slot.get("visible_summary"), slot.get("sub_prompt"), value if not isinstance(value, dict) else "",
+    ]
+    def clean_line(raw: Any) -> str:
+        text = strip_herdr_origin_comments(raw)
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"(?:^|\n)\s*(?:EVT=[^\n]*|TL:\s*[^\n|]+|(?:\$\s*)?(?:Shell|PY Read|MD Edit)\b[^\n]*|\[\d+\]\s*User:.*?->\s*Assistant:.*?)(?=\n|$)", "", text, flags=re.I)
+        text = re.sub(r"\bEVT=[A-Z_]+\b", "", text)
+        text = re.sub(r"(?:^|\s)TL:\s*[^|\n]+(?:\s*\|\s*|$)", " ", text, flags=re.I)
+        text = _VOLATILE_TUI_CHROME_RE.sub(" ", text)
+        return re.sub(r"\s+", " ", text).strip(" -|·")
+
+    task = re.search(r"([A-Za-z][\w.-]*)\s+\((in_progress|working|blocked|needs_input|ready|done)[^)]*\)", _text(slot.get("m1_progress")), re.I)
+    if task and _text(slot.get("active_summary_source")) == "ledger":
+        stage = clean_line(slot.get("m1_stage_summary"))
+        candidate = f"{task.group(1)} ({task.group(2)})"
+        if stage:
+            candidate += f" · {stage}"
+    else:
+        candidate = ""
+        for raw in raw_values:
+            for line in clean_line(raw).splitlines() or [""]:
+                line = clean_line(line)
+                if line and not re.search(r"background\\s+/tasks|^(?:Working|Thinking|Running(?:\\s+tests)?|Waiting for)\\b", line, re.I):
+                    candidate = line
+                    break
+            if candidate:
+                break
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+    if not candidate:
+        candidate = "—"
+    return candidate if len(candidate) <= max_len else candidate[: max_len - 1].rstrip() + "…"
+
+
+def _ledger_is_completed(ledger_text: str) -> bool:
+    events = list(re.finditer(r"EVT=([A-Z_]+)", ledger_text))
+    if events:
+        last_event = events[-1].group(1)
+        if last_event in {"IN_PROGRESS", "ACTIVE", "READY", "BLOCKED", "CHANGES_REQUESTED"}:
+            return False
+        if last_event == "GOAL_DONE":
+            return True
+    status = re.search(r"^\s*[-*]?\s*status\s*:\s*(done|completed)\s*$", ledger_text, re.I | re.M)
+    return bool(status)
+
 def _enrich_slot_metadata(
     slot: dict[str, Any],
     *,
@@ -78,12 +167,20 @@ def _enrich_slot_metadata(
     if not explicit and slot.get("goal_id") and not slot.get("_handoff_discovered"):
         explicit = str(root / _text(slot["goal_id"]))
     candidates = [Path(explicit).expanduser() / "ledger.md"] if explicit else []
+    global_scan_candidates: set[Path] = set()
     if not explicit:
         candidates.extend(Path(match.group(0)).expanduser() / "ledger.md" for match in re.finditer(r"(?:~/|/)[^\s`\"'<>|()]*handoff/([^/\s`\"'<>|()]+)", text))
         if slot.get("handoff_dir"):
             candidates.append(Path(slot["handoff_dir"]) / "ledger.md")
         if (root_value or scan_default) and root.is_dir():
-            candidates.extend(sorted(root.glob("*/ledger.md")))
+            global_scan_candidates = set(root.glob("*/ledger.md"))
+            candidates.extend(sorted(global_scan_candidates))
+    recent_ctx = slot.get("recent_session_context") if isinstance(slot.get("recent_session_context"), dict) else {}
+    session_ts = _text(
+        slot.get("last_session_activity_at")
+        or recent_ctx.get("last_session_activity_at")
+    )
+    session_epoch = _parse_iso_epoch(session_ts)
     ranked = []
     for ledger_path in dict.fromkeys(candidates):
         try:
@@ -92,18 +189,35 @@ def _enrich_slot_metadata(
             continue
         linear = re.search(r"^\s*-?\s*Linear\s*[:：]\s*[^\n]*?\b(TIA-\d+)\b", ledger_text, re.M | re.I)
         tl = re.search(r"^\s*-?\s*TL\s*[:：]\s*([^\s/|]+)", ledger_text, re.M)
-        goal_names = [ledger_path.parent.name]
+        full_goal_name = ledger_path.parent.name
+        goal_names = [full_goal_name]
         if tl and "-goal-tl" in tl.group(1):
             goal_names.append(tl.group(1).split("-goal-tl", 1)[0])
         goal_pattern = r"(?<!\w)(?:" + "|".join(re.escape(name) for name in goal_names) + r")(?!\w)"
+        context_text = " ".join(_text(slot.get(key)) for key in ("visible_summary", "sub_prompt", "terminal_title", "rag_context_hint"))
+        exact_tl = bool(tl and re.search(r"(?<!\w)" + re.escape(tl.group(1)) + r"(?!\w)", text))
+        exact_issue = bool(linear and re.search(r"(?<!\w)" + re.escape(linear.group(1)) + r"(?!\w)", text, re.I))
+        strong_match = bool(re.search(goal_pattern, context_text) or exact_tl)
+        ledger_ts, ledger_epoch = _extract_ledger_latest_timestamp(ledger_text, ledger_path)
+        is_global_scan = ledger_path in global_scan_candidates
+        stale_completed = bool(
+            is_global_scan
+            and _ledger_is_completed(ledger_text)
+            and ledger_epoch is not None
+            and (time.time() - ledger_epoch > 86400 or (session_epoch is not None and ledger_epoch < session_epoch))
+        )
+        if stale_completed and not (exact_tl or exact_issue):
+            continue
+        # Global ledger discovery must match a whole goal slug or exact TL, never a repo substring.
+        if not explicit and not strong_match:
+            continue
         score = 0
         for key, weight in (("visible_summary", 100), ("sub_prompt", 80), ("terminal_title", 40), ("rag_context_hint", 20)):
             context = _text(slot.get(key))
             if re.search(goal_pattern, context) or (tl and tl.group(1) in context):
                 score += weight
-        if linear and linear.group(1).upper() == slot.get("linear_issue"):
+        if exact_issue:
             score += 10
-        # Never associate by Parent Issue or by a shared repository alone.
         if not explicit and not score:
             continue
         ranked.append((score, ledger_path, ledger_text, linear, tl))
@@ -229,6 +343,9 @@ def _discover_and_enrich_global_m2_slots(
             "pane_id": pane or slot.get("pane_id", ""),
             "target_repo": slot.get("target_repo") if (slot.get("retained") and slot.get("target_repo")) else (_repo_from(live) or slot.get("target_repo", "")),
             "topic_id": live.get("topic_id") or slot.get("topic_id", ""),
+            "workspace_id": _text(live.get("workspace_id") or live.get("workspaceId") or slot.get("workspace_id")),
+            "workspace_label": _text(live.get("workspace_label") or live.get("workspaceLabel") or live.get("space") or slot.get("workspace_label")),
+            "space": _text(live.get("space") or slot.get("space")),
         })
         slot.update(_slot_metadata(live))
         slot["terminal_title"] = strip_herdr_origin_comments(_text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or slot.get("terminal_title")))
@@ -276,6 +393,23 @@ def _discover_and_enrich_global_m2_slots(
                 continue
         if is_new:
             slots.append(slot)
+    if records and (scan_default or allow_quiescent_settle):
+        live_refs = {
+            _text(record.get(key))
+            for record in records
+            for key in ("name", "herdr_target", "id", "pane_id", "paneId", "target")
+            if _text(record.get(key))
+        }
+        state["slots"] = [
+            slot for slot in slots
+            if (
+                any(_text(slot.get(key)) in protected for key in ("slot_id", "pane_id", "target"))
+                or slot.get("retained")
+                or _text(slot.get("transport")).lower() in {"stdout", "dsh"}
+                or any(_text(slot.get(key)) in live_refs for key in ("pane_id", "target", "run_label"))
+            )
+        ]
+        slots = state["slots"]
     for slot in slots:
         _enrich_slot_metadata(slot, handoff_root=handoff_root, scan_default=scan_default)
     return state
@@ -286,6 +420,31 @@ def _compute_board_rollup(
     just_settled_slots: Iterable[str] = (),
 ) -> dict[str, Any]:
     slots = [dict(s) for s in (ledger.get("slots") or []) if isinstance(s, dict)]
+    settled_set = {s.casefold() for s in just_settled_slots if _text(s)}
+    live_spaces = ledger.get("spaces") if isinstance(ledger.get("spaces"), list) else ledger.get("workspaces")
+    if isinstance(live_spaces, list) and live_spaces:
+        live_workspace_ids = {
+            _text(space.get(key))
+            for space in live_spaces
+            if isinstance(space, dict)
+            for key in ("workspace_id", "workspaceId", "id", "label", "workspace_label")
+            if _text(space.get(key))
+        }
+        filtered_slots = []
+        for slot in slots:
+            transport = _text(slot.get("transport")).lower()
+            identity = {_text(slot.get(key)) for key in ("slot_id", "run_label", "pane_id") if _text(slot.get(key))}
+            if identity & settled_set or transport in {"stdout", "dsh"} or slot.get("retained"):
+                filtered_slots.append(slot)
+                continue
+            workspace_id = _text(slot.get("workspace_id"))
+            pane_workspace = _text(slot.get("pane_id")).split(":", 1)[0]
+            if not workspace_id and not pane_workspace:
+                filtered_slots.append(slot)
+                continue
+            if (workspace_id or pane_workspace) in live_workspace_ids:
+                filtered_slots.append(slot)
+        slots = filtered_slots
     for slot in slots:
         slot.setdefault("wave_order", 1)
         dependencies = slot.get("depends_on") or []
@@ -302,7 +461,6 @@ def _compute_board_rollup(
                 if identity and (same_plan or identity in hint):
                     slot["depends_on"].append(identity)
         slot["upstream_waves"] = sorted({int(s.get("wave_order") or 1) for s in slots if any(_text(s.get(key)) in slot["depends_on"] for key in ("slot_id", "run_label", "linear_issue"))})
-    settled_set = {s.casefold() for s in just_settled_slots if _text(s)}
     completed_slots = [s for s in slots if _text(s.get("status")).lower() in {"idle", "done"}]
     running_slots = [s for s in slots if _text(s.get("status")).lower() in {"running", "working"}]
     blocked_slots = [
@@ -324,27 +482,58 @@ def _compute_board_rollup(
     def node(slot: dict[str, Any]) -> str:
         name = _text(slot.get("topic_id") or slot.get("target_repo") or slot.get("target") or slot.get("run_label"))
         stages = _text(slot.get("m1_stage_summary"))
-        return f"{_text(slot.get('linear_issue') or slot.get('run_label') or slot.get('slot_id'))} ({name}{': ' + stages if stages else ''})"
+        deps = ", ".join(_text(dep) for dep in slot.get("depends_on", []) if _text(dep))
+        upstream = ", ".join(f"Wave {wave}" for wave in slot.get("upstream_waves", []))
+        dependency = f" · 依赖 {upstream}: {deps}" if upstream and deps else ""
+        return f"{_text(slot.get('linear_issue') or slot.get('run_label') or slot.get('slot_id'))} ({name}{': ' + stages if stages else ''}){dependency}"
 
     waves = sorted({int(s.get("wave_order") or 1) for s in slots})
+    has_dependencies = len(waves) > 1 and any(s.get("depends_on") for s in slots)
     chain = " -> ".join(f"Wave {wave}: " + " + ".join(node(s) for s in slots if int(s.get("wave_order") or 1) == wave) for wave in waves)
+    markdown_chain = re.sub(r"\bTIA-\d+\b", lambda match: _format_linear_issue_link(match.group(0)), chain)
 
-    def row(slot: dict[str, Any]) -> str:
-        deps = ", ".join(str(dep) for dep in slot.get("depends_on", [])) or "无"
-        upstream = ", ".join(f"Wave {w}" for w in slot.get("upstream_waves", []))
-        summary = _text(slot.get("m1_progress") or slot.get("visible_summary"), "—").replace("\n", " / ")
-        return (f"- `{slot.get('run_label', slot.get('slot_id', ''))}` · {slot.get('target', '')} · pane `{slot.get('pane_id', '')}` · "
-                f"Wave {slot.get('wave_order', 1)} · 依赖 {upstream + ': ' if upstream else ''}{deps} · "
-                f"{slot.get('linear_issue') or 'Linear 未绑定'} · status=`{slot.get('status', '')}` · {summary}")
+    domain_map = {}
+    try:
+        domain_map = load_domain_map()
+    except RouterError:
+        pass
 
-    markdown = ["### 📊 全局 M2 统一汇总看板 (Unified M2 Rollup)",
-                "#### 🔗 Wave 波次与上下游依赖链路（Wave & Dependency Topology）", chain or "无",
-                "#### 1. 🔔 本次完成（Just Completed）"]
-    markdown.extend([row(s) for s in completed_slots if _text(s.get("run_label")) in just_settled_labels] or ["无（状态巡检）"])
-    markdown.extend(["#### 2. ✅ 累计已完成（Completed Rollup）", f"`completed_rollup_code`: `{''.join(completed_labels) or 'none'}` · {' + '.join(completed_labels) or 'none'}"])
-    markdown.extend([row(s) for s in completed_slots] or ["无"])
-    markdown.append("#### 3. ⏳ 仍在运行中（In-Flight Active M2s）")
-    markdown.extend([row(s) for s in in_flight] or ["无"])
+    def issue_cell(slot: dict[str, Any]) -> str:
+        issue = _text(slot.get("linear_issue"))
+        return _format_linear_issue_link(issue) if issue else "—"
+
+    def stage_cell(slot: dict[str, Any]) -> str:
+        summary = _summarize_concise_stage(slot)
+        status = _text(slot.get("status"), "unknown").lower()
+        if bool(slot.get("needs_owner_attention")) or status in {"blocked", "needs_input", "missing"}:
+            reason = _text(slot.get("blocked_reason"), "owner_decision_required")
+            summary = f"🚨 NEEDS OWNER ({reason}) · {summary}"
+        return summary
+
+    markdown = ["### 📊 全局 M2 统一汇总看板 (Unified M2 Rollup)"]
+    if has_dependencies:
+        markdown.extend([f"🔗 Wave 依赖：{markdown_chain}"])
+    markdown.append("#### ⏳ 进行中 & 🚨 待处理")
+    if in_flight:
+        markdown.extend(["| Space | 关联单据 | 当前阶段 |", "|---|---|---|"])
+        markdown.extend(
+            f"| `{_resolve_slot_space_label(slot, domain_map)}` | {issue_cell(slot)} | {stage_cell(slot)} |"
+            for slot in in_flight
+        )
+    else:
+        markdown.append("无")
+    markdown.append("#### ✅ 空闲待命")
+    completed_lines: list[str] = []
+    seen_spaces: set[str] = set()
+    for slot in completed_slots:
+        space = _resolve_slot_space_label(slot, domain_map)
+        if space.casefold() in seen_spaces:
+            continue
+        seen_spaces.add(space.casefold())
+        label = _text(slot.get("run_label") or slot.get("slot_id"))
+        settled_marker = "🔔 " if label in just_settled_labels or _text(slot.get("slot_id")) in just_settled_labels else ""
+        completed_lines.append(f"- {settled_marker}**{space}**（{issue_cell(slot)}）：{_summarize_concise_stage(slot)}")
+    markdown.extend(completed_lines or ["无"])
     backlog_items = [dict(b) for b in (ledger.get("backlog") or []) if isinstance(b, dict)] if "backlog" in ledger else None
     result_rollup: dict[str, Any] = {
         "unified_rollup_markdown": "\n".join(markdown),
