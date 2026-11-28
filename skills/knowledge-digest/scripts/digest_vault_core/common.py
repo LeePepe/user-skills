@@ -21,13 +21,18 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from skill_runtime import (
+    ACI_MAX_BYTES,
+    RagDoc,
     SelfDisclosingArgumentParser,
     SkillVersionInfo,
+    VaultIsolationError,
     atomic_write_json as runtime_atomic_write_json,
     compact_json_dumps,
+    hybrid_search,
     is_safe_local_dir,
     is_safe_local_file,
     is_valid_skill_slug,
+    load_markdown_vault_corpus,
     redact_payload,
     redact_text,
     resolve_skill_version,
