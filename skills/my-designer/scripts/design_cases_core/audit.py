@@ -8,16 +8,25 @@ from pathlib import Path
 from typing import Any
 
 from . import shared
-from .shared import *
+from .shared import (
+    CONCRETE_TEST_REF_RE, DEFAULT_CASES, DRAWER_GUIDANCE, EVIDENCE,
+    NEGATIVE_ASSERTION_EVIDENCE_RE, NEGATIVE_ASSERTION_HEADING_RE, OBSOLETE_TEST_HEADING_RE,
+    SPEC_CUSTOM_THEME_NEGATION_RE, SPEC_CUSTOM_THEME_TOGGLE_PROPOSAL_RE, SPEC_GAP_GUIDANCE,
+    SUBTRACTIVE_MANDATE_RE, UI_CUSTOM_THEME_PLUMBING_RE, UI_EXPAND_STATE_MUTATION_RE,
+    UI_HEADER_INTERLEAVED_INSERTION_RE, UI_INSTRUCTIONAL_CLUTTER_RE,
+    UI_SCROLL_PROMPT_CLUTTER_FIX_RULE, UI_SCROLL_PROMPT_CLUTTER_RE,
+    UI_SPEC_ID_DEBUG_LEAK_RE, UI_UNCLIPPED_PANEL_OVERLAP_RE, VAGUE_OBSOLETE_TEST_RE,
+    _audit_visual_semiotics_swift_gates, _balanced_brace_end, _build_self_disclosing_guidance,
+    _detect_scroll_prompt_spec_gaps, _drawer_keys_for_case, _has_deprecated_test_evidence,
+    _has_enclosing_clipped_reveal_container, _interactivity_result, _load_defect_entries,
+    _load_json, _mask_swift, _normalize_platform, _resolve_persona_whitespace, _spec_gap_warning,
+)
 
-for _name in dir(shared):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(shared, _name))
 
 def command_lookup_defect(args: argparse.Namespace) -> int:
     path = Path(args.cases_file)
     if not path.is_file() and path == DEFAULT_CASES:
-        path = ROOT / 'references' / 'defect-cases' / 'index.json'
+        path = shared.ROOT / 'references' / 'defect-cases' / 'index.json'
     positional_q = ' '.join(getattr(args, 'positional_query', []) or []).strip()
     keyword = str(getattr(args, 'lookup_defect', None) or getattr(args, 'query', None) or positional_q or '').strip()
     if not keyword:
@@ -222,15 +231,25 @@ def command_audit_code(args: argparse.Namespace) -> int:
         files = []
         seen_files: set[Path] = set()
         for root in target_roots:
-            candidates = [root] if root.is_file() else (
-                sorted(p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in allowed_suffixes)
-                if root.is_dir() else []
-            )
+            if root.is_file():
+                candidates = [root]
+            elif root.is_dir():
+                candidates = sorted(p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in allowed_suffixes)
+                if not candidates:
+                    code_errors.append(f'no auditable source files found in target directory: {root}')
+            else:
+                candidates = []
             for cand in candidates:
                 if cand not in seen_files:
                     seen_files.add(cand)
                     files.append(cand)
     cases = _load_json(Path(args.cases_file)).get('active_cases', [])
+    canonical_case_regexes: dict[str, re.Pattern[str]] = {
+        'DC-014': UI_INSTRUCTIONAL_CLUTTER_RE,
+        'DC-016': UI_EXPAND_STATE_MUTATION_RE,
+        'DC-020': UI_CUSTOM_THEME_PLUMBING_RE,
+        'DC-021': UI_SPEC_ID_DEBUG_LEAK_RE,
+    }
     findings = []
     drawer_keys: list[str] = []
     for path in files:
@@ -240,11 +259,13 @@ def command_audit_code(args: argparse.Namespace) -> int:
         masked = _mask_swift(text) if (args.snippet or path.suffix.lower() == '.swift') else text
         lines = text.splitlines()
         for case in cases:
-            if args.platform not in case.get('platforms', []) or not case.get('forbidden_regex'):
+            cid = case.get('id')
+            if args.platform not in case.get('platforms', []) or (not case.get('forbidden_regex') and cid not in canonical_case_regexes):
                 continue
-            target_text = text if case.get('match_raw_strings') or case.get('id') in {'DC-006', 'DC-007', 'DC-008', 'DC-009', 'DC-010', 'DC-014'} else masked
+            target_text = text if case.get('match_raw_strings') or cid in {'DC-006', 'DC-007', 'DC-008', 'DC-009', 'DC-010', 'DC-014', 'DC-021'} else masked
+            pattern_or_re = canonical_case_regexes.get(str(cid), case.get('forbidden_regex'))
             try:
-                if case.get('id') == 'DC-011':
+                if cid == 'DC-011':
                     spans = []
                     for call in re.finditer(r'\.glassEffect\s*\(', masked):
                         depth, end = 1, call.end()
@@ -258,31 +279,37 @@ def command_audit_code(args: argparse.Namespace) -> int:
                             spans.append((call.start(), end))
                         elif re.match(r'\s*\.\s*(?:padding|frame)\s*\(', tail):
                             spans.append((call.start(), end))
-                elif case.get('id') == 'DC-012':
+                elif cid == 'DC-012':
                     spans = _dc012_spans(masked, case['forbidden_regex'])
-                elif case.get('id') == 'DC-016':
-                    spans = [
-                        (m.start(), m.end())
-                        for m in re.finditer(case['forbidden_regex'], target_text)
-                        if not ('.move' in m.group(0) and _has_enclosing_clipped_reveal_container(target_text, m.start(), m.end()))
-                    ]
-                elif case.get('id') == 'DC-018':
+                elif cid == 'DC-016':
+                    spans = []
+                    for sub_re, check_clip in (
+                        (UI_EXPAND_STATE_MUTATION_RE, False),
+                        (UI_HEADER_INTERLEAVED_INSERTION_RE, False),
+                        (UI_UNCLIPPED_PANEL_OVERLAP_RE, True),
+                    ):
+                        for m in sub_re.finditer(target_text):
+                            if check_clip and _has_enclosing_clipped_reveal_container(target_text, m.start(), m.end()):
+                                continue
+                            spans.append((m.start(), m.end()))
+                    spans.sort()
+                elif cid == 'DC-018':
                     spans = _audit_xcode_preview_single_viewport(masked, case.get('forbidden_regex'))
                 else:
-                    spans = [(m.start(), m.end()) for m in re.finditer(case['forbidden_regex'], target_text)]
+                    spans = [(m.start(), m.end()) for m in re.finditer(pattern_or_re, target_text)]
             except re.error as error:
-                print(json.dumps({'ok': False, 'error': f"{case.get('id')}: invalid forbidden_regex: {error}"}))
+                print(json.dumps({'ok': False, 'error': f"{cid}: invalid forbidden_regex: {error}"}))
                 return 2
             for start, end in spans:
                 line = target_text.count('\n', 0, start) + 1
                 end_line = target_text.count('\n', 0, max(start, end - 1)) + 1
-                if case.get('id') == 'DC-020' and 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
+                if cid in {'DC-014', 'DC-016', 'DC-020', 'DC-021'} and 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
                     continue
-                c_drawers = _drawer_keys_for_case(case['id'], case.get('dimensions'))
+                c_drawers = _drawer_keys_for_case(str(cid), case.get('dimensions'))
                 drawer_keys.extend(c_drawers)
                 ref_path = DRAWER_GUIDANCE[c_drawers[0]][0]
                 entry_finding: dict[str, Any] = {
-                    'case_id': case['id'],
+                    'case_id': cid,
                     'title': case['title'],
                     'file': str(path),
                     'line': line,
@@ -294,31 +321,28 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 findings.append(entry_finding)
         for match in UI_SCROLL_PROMPT_CLUTTER_RE.finditer(text):
             line = text.count('\n', 0, match.start()) + 1
-            line_text = lines[line - 1] if line <= len(lines) else ""
-            if "design-contract-allow" in line_text:
+            if "design-contract-allow" in (lines[line - 1] if line <= len(lines) else ""):
                 continue
             drawer_keys.extend(_drawer_keys_for_case('UI_SCROLL_PROMPT_CLUTTER'))
+            findings = [f for f in findings if not (f.get('file') == str(path) and f.get('line') == line and f.get('case_id') == 'UI_INSTRUCTIONAL_CLUTTER')]
             findings.append({
                 'case_id': 'UI_SCROLL_PROMPT_CLUTTER',
                 'title': 'Instructional Scroll or Expand Prompt Rendered Instead of Spatial Card-Peek Signifier',
-                'file': str(path),
-                'line': line,
+                'file': str(path), 'line': line,
                 'match': match.group(0).replace('\n', ' ')[:240],
                 'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
                 'fix_rule': UI_SCROLL_PROMPT_CLUTTER_FIX_RULE,
             })
         for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
             line = text.count('\n', 0, match.start()) + 1
-            line_text = lines[line - 1] if line <= len(lines) else ""
-            if "design-contract-allow" in line_text:
+            if "design-contract-allow" in (lines[line - 1] if line <= len(lines) else ""):
                 continue
-            if not any(f.get('line') == line and f.get('case_id') == 'DC-014' for f in findings):
+            if not any(f.get('file') == str(path) and f.get('line') == line and f.get('case_id') in {'DC-014', 'UI_SCROLL_PROMPT_CLUTTER'} for f in findings):
                 drawer_keys.append('breathing')
                 findings.append({
                     'case_id': 'UI_INSTRUCTIONAL_CLUTTER',
                     'title': 'Self-Proving Instructional Micro-Copy Printed on UI Surface',
-                    'file': str(path),
-                    'line': line,
+                    'file': str(path), 'line': line,
                     'match': match.group(0).replace('\n', ' ')[:240],
                     'reference_drawer': DRAWER_GUIDANCE['breathing'][0],
                 })
@@ -332,18 +356,21 @@ def command_audit_code(args: argparse.Namespace) -> int:
                     continue
                 line = masked.count('\n', 0, match.start()) + 1
                 end_line = masked.count('\n', 0, max(match.start(), match.end() - 1)) + 1
-                spanned = '\n'.join(lines[line - 1:end_line])
-                if 'design-contract-allow' in spanned:
+                if 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
+                    continue
+                if any(f.get('file') == str(path) and f.get('line') == line and f.get('case_id') == rule_id for f in findings):
                     continue
                 drawer_keys.append('interaction')
                 findings.append({
-                    'case_id': rule_id,
-                    'title': rule_title,
-                    'file': str(path),
-                    'line': line,
+                    'case_id': rule_id, 'title': rule_title, 'file': str(path), 'line': line,
                     'match': text[match.start():match.end()].replace('\n', ' ')[:240],
                     'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
                 })
+        seen_dc016 = False
+        findings = [
+            f for f in findings
+            if not (f.get('file') == str(path) and f.get('case_id') == 'DC-016' and (seen_dc016 or (seen_dc016 := True) is False))
+        ]
         for match in UI_CUSTOM_THEME_PLUMBING_RE.finditer(masked):
             line = masked.count('\n', 0, match.start()) + 1
             end_line = masked.count('\n', 0, max(match.start(), match.end() - 1)) + 1
@@ -362,6 +389,11 @@ def command_audit_code(args: argparse.Namespace) -> int:
         if args.snippet or path.suffix.lower() == '.swift':
             semiotic_findings = _audit_visual_semiotics_swift_gates(text, masked, lines, str(path))
             for sf in semiotic_findings:
+                if sf.get('case_id') == 'UI_SPEC_ID_DEBUG_LEAK':
+                    findings = [
+                        f for f in findings
+                        if not (f.get('file') == str(path) and f.get('line') == sf.get('line') and f.get('case_id') == 'DC-021')
+                    ]
                 drawer_keys.extend(_drawer_keys_for_case(sf['case_id']))
                 findings.append(sf)
     spec_errors: list[dict[str, Any]] = []

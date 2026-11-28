@@ -5,33 +5,40 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
-from . import shared
 from . import audit
 from . import route
+from . import shared
 from . import vision_audit
-from .shared import *
-from .audit import *
-from .route import *
-from .vision_audit import *
+from .audit import (
+    audit_subtractive_spec_text,
+    command_audit_code,
+    command_audit_geometry,
+    command_audit_spec,
+    command_check_section_interactivity,
+    command_check_whitespace_ratio,
+    command_lookup_defect,
+)
+from .route import command_flow_map, command_register_case, command_route
+from .shared import (
+    DEFAULT_CASES,
+    DEFAULT_TAXONOMY,
+    EVIDENCE,
+    JEV,
+    SelfDisclosingArgumentParser,
+    TAXONOMY,
+    _build_self_disclosing_guidance,
+    _load_json,
+    _load_taxonomy,
+    _normalize_platform,
+    _read_json,
+)
+from .vision_audit import command_vision_audit
 
-for _module in (shared, audit, route, vision_audit):
-    for _name in dir(_module):
-        if not _name.startswith("__"):
-            globals().setdefault(_name, getattr(_module, _name))
 
 def _jev_response(args, payload, platform):
     return JEV.response(args, payload, platform, TAXONOMY)
-
-
-def _read_json(path):
-    try:
-        text = safe_read_text(Path(path))
-        if text is None:
-            text = Path(path).read_text(encoding='utf-8')
-        return json.loads(text)
-    except (OSError, ValueError):
-        return None
 
 
 def _platform_errors(platform, text):
@@ -51,7 +58,7 @@ def command_jev_gate(args):
             errors.append('gallery stage requires --gallery-dir')
         else:
             root = Path(args.gallery_dir)
-            manifest = _read_json(root / 'manifest.json')
+            manifest = shared._read_json(root / 'manifest.json')
             if not isinstance(manifest, dict):
                 errors.append('missing or malformed manifest.json')
             else:
@@ -303,13 +310,13 @@ def main(argv: list[str] | None = None) -> int:
         args.inspect_path = targets[0]
         return command_inspect_json(args)
     if args.command == "flow-map" or args.top_flow_map:
-        return command_flow_map(args)
+        return route.command_flow_map(args)
     if args.command == "route" or args.top_route:
         if args.command != "route":
             args.dimensions = getattr(args, "top_dimensions", "")
             args.container = getattr(args, "top_container", None)
             args.persona = getattr(args, "top_persona", None)
-        return command_route(args)
+        return route.command_route(args)
 
     if args.command in {"audit-code", "audit-swift", "check-code", "audit"}:
         args.path = _merge_targets(getattr(args, "path", None), getattr(args, "top_path_alias", None), getattr(args, "top_extra_paths", None))

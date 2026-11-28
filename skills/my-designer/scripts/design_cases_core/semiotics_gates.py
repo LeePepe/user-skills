@@ -18,7 +18,8 @@ INSTRUCTIONAL_MICRO_COPY_TEXT_RE = re.compile(
     r"(?:"
     r"(?:点击|点按|长按|按住|双击)[^\n\"'<>]{0,20}?"
     r"(?:即可|直接|原地|可|继续)?[^\n\"'<>]{0,8}?"
-    r"(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)"
+    r"(?:修改|编辑|切换|收起|聚焦|置顶|追补|直补|录入|补充)"
+    r"|(?:点击|点按|长按|按住|双击)(?![^\n\"'<>]{0,12}?(?:卡片|磁贴|模块|任意卡片|展开详情|查看详情|查看分项|查看更多))[^\n\"'<>]{0,20}?(?:即可|直接|原地|可|继续)[^\n\"'<>]{0,8}?展开"
     r"|操作\s*/\s*展示一体"
     r"|执行步骤树"
     r"|点击任务置顶聚焦"
@@ -27,7 +28,6 @@ INSTRUCTIONAL_MICRO_COPY_TEXT_RE = re.compile(
     r"|右下麦克风语音直补"
     r"|按住右下麦克风继续追补"
     r"|点按任意条目切换至顶部聚焦"
-    rf"|{SCROLL_EXPAND_PROMPT_TEXT_RE.pattern}"
     r")",
     re.IGNORECASE,
 )
@@ -78,6 +78,24 @@ UI_MAP_COMPONENT_CALL_RE = re.compile(
 )
 UI_PRIMARY_NAV_CTA_RE = re.compile(
     r"\b(?:Button|Text|Label)\s*\([^\n{}]*\"[^\n\"]*(开始导航|立即出发|开始骑行|Start\s+Navigation)[^\n\"]*\""
+)
+UI_GENERIC_BUTTON_LABEL_RE = re.compile(
+    r"\bButton\b(?:\s*\(\s*\"([^\n\"]{2,40})\"|\s*\([^\n{}]*?\)\s*\{\s*(?:Label|Text)\s*\(\s*\"([^\n\"]{2,40})\")"
+)
+UI_PROMINENT_CTA_HINT_RE = re.compile(
+    r"(?:\.buttonStyle\s*\(\s*\.(?:borderedProminent|glassProminent)\b"
+    r"|\bmaxWidth\s*:\s*\.infinity\b"
+    r"|开始|立即|启动|保存|提交|创建|确认|导出|继续|\b(?:Start|Begin|Launch|Continue|Submit|Confirm|Create|Save|Checkout|Apply)\b)",
+    re.IGNORECASE,
+)
+UI_FOREGROUND_SERIES_BY_RE = re.compile(
+    r"\.foregroundStyle\s*\(\s*by\s*:\s*\.value\s*\([^)]+\)\s*\)"
+)
+UI_CHART_SERIES_LITERAL_RE = re.compile(
+    r"\.foregroundStyle\s*\(\s*by\s*:\s*\.value\s*\(\s*\"[^\"]+\"\s*,\s*\"([^\"]+)\"\s*\)\s*\)"
+)
+UI_CHART_Y_METRIC_LABEL_RE = re.compile(
+    r"\by\s*:\s*\.value\s*\(\s*\"([^\"]+)\""
 )
 UI_SATURATED_COLOR_RE = re.compile(
     r"\.\s*(green|blue|orange|red|cyan|purple|yellow|mint|pink|indigo|teal)\b"
@@ -152,72 +170,175 @@ def _strip_swift_comments_preserve_strings(text: str) -> str:
     )
 
 
+def _find_branch_arm_spans(masked_text: str) -> list[tuple[int, int, int]]:
+    """Return (chain_id, arm_start, arm_end) for mutually exclusive if/else and switch case arms."""
+    arms: list[tuple[int, int, int]] = []
+    chain_id = 0
+    cursor = 0
+    if_re = re.compile(r"\bif\b")
+    while True:
+        match = if_re.search(masked_text, cursor)
+        if match is None:
+            break
+        prefix = masked_text[max(0, match.start() - 12) : match.start()]
+        if re.search(r"\belse\s+$", prefix):
+            cursor = match.end()
+            continue
+        brace_open = masked_text.find("{", match.end())
+        if brace_open < 0:
+            break
+        brace_close = _balanced_brace_end_local(masked_text, brace_open)
+        chain_arms = [(brace_open, brace_close)]
+        tail_pos = brace_close
+        while True:
+            else_m = re.match(r"\s*else\b", masked_text[tail_pos:])
+            if not else_m:
+                break
+            next_search = tail_pos + else_m.end()
+            next_brace = masked_text.find("{", next_search)
+            if next_brace < 0:
+                break
+            next_close = _balanced_brace_end_local(masked_text, next_brace)
+            chain_arms.append((next_brace, next_close))
+            tail_pos = next_close
+        if len(chain_arms) >= 2:
+            chain_id += 1
+            for a_start, a_end in chain_arms:
+                arms.append((chain_id, a_start, a_end))
+        cursor = match.end()
+
+    for sw_m in re.finditer(r"\bswitch\b[^{]*\{", masked_text):
+        sw_open = masked_text.rfind("{", sw_m.start(), sw_m.end())
+        if sw_open < 0:
+            continue
+        sw_close = _balanced_brace_end_local(masked_text, sw_open)
+        sw_body = masked_text[sw_open:sw_close]
+        case_positions = [
+            sw_open + cm.start()
+            for cm in re.finditer(r"(?m)^\s*(?:case\b|default\s*:)", sw_body)
+        ]
+        if len(case_positions) >= 2:
+            chain_id += 1
+            for idx, c_start in enumerate(case_positions):
+                c_end = case_positions[idx + 1] if idx + 1 < len(case_positions) else sw_close
+                arms.append((chain_id, c_start, c_end))
+    return arms
+
+
+def _balanced_brace_end_local(text: str, open_brace_index: int) -> int:
+    depth = 1
+    idx = open_brace_index + 1
+    while idx < len(text) and depth > 0:
+        if text[idx] == "{":
+            depth += 1
+        elif text[idx] == "}":
+            depth -= 1
+        idx += 1
+    return idx
+
+
+def _are_mutually_exclusive_positions(
+    pos_a: int,
+    pos_b: int,
+    arms: list[tuple[int, int, int]],
+) -> bool:
+    for cid, a_start, a_end in arms:
+        if a_start <= pos_a < a_end and not (a_start <= pos_b < a_end):
+            for other_cid, b_start, b_end in arms:
+                if other_cid == cid and (b_start, b_end) != (a_start, a_end) and b_start <= pos_b < b_end:
+                    return True
+    return False
+
+
 def _audit_cross_layer_metric_echo(
     no_prev_text: str,
     full_text: str,
     is_waived,
     path: str,
     ref_interaction: str,
+    view_scopes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    comment_free = _strip_swift_comments_preserve_strings(no_prev_text)
+    comment_free_full = _strip_swift_comments_preserve_strings(no_prev_text)
     string_re = re.compile(r'"([^"\n\\]*(?:\\.[^"\n\\]*)*)"')
     non_ui_prefix_re = re.compile(
         r"(?:\b(?:accessibilityIdentifier|print|debugPrint|NSLog|Logger|fatalError|precondition|assert)\s*\(\s*"
         r"|\b(?:systemName|named|font|identifier|id)\s*:\s*)$"
     )
-    token_occurrences: dict[str, list[tuple[int, str]]] = {}
+    scopes = view_scopes or [{"name": "<screen>", "start": 0, "end": len(no_prev_text), "masked": comment_free_full}]
 
-    for sm in string_re.finditer(comment_free):
-        if is_waived(sm.start(), sm.end()):
-            continue
-        prefix = comment_free[max(0, sm.start() - 48) : sm.start()]
-        if non_ui_prefix_re.search(prefix):
-            continue
-        literal_val = sm.group(1)
-        seen_in_literal: set[str] = set()
-        for tm in PHYSICAL_TELEMETRY_TOKEN_RE.finditer(literal_val):
-            norm = _normalize_telemetry_token(tm.group(0))
-            if norm not in seen_in_literal:
-                seen_in_literal.add(norm)
-                token_occurrences.setdefault(norm, []).append((sm.start(), literal_val))
+    for scope in scopes:
+        s_start = int(scope.get("start", 0))
+        s_end = int(scope.get("end", len(no_prev_text)))
+        s_comment_free = comment_free_full[s_start:s_end]
+        s_masked = str(scope.get("masked", s_comment_free))
+        branch_arms = _find_branch_arm_spans(s_masked)
+        token_occurrences: dict[str, list[tuple[int, str]]] = {}
 
-    if token_occurrences:
-        for pm in SPLIT_METRIC_PAIR_RE.finditer(comment_free):
-            if is_waived(pm.start(), pm.end()):
+        for sm in string_re.finditer(s_comment_free):
+            abs_start = s_start + sm.start()
+            abs_end = s_start + sm.end()
+            if is_waived(abs_start, abs_end):
                 continue
-            if pm.group(1) and pm.group(2):
-                norm = _normalize_telemetry_token(f"{pm.group(1)}{pm.group(2)}")
-            else:
-                label_m = re.search(r"恢复|湿度|降水|血氧|电量", pm.group(0))
-                norm = _normalize_telemetry_token(f"{label_m.group(0) if label_m else '恢复'}{pm.group(3)}")
-            if norm in token_occurrences:
-                existing_positions = [pos for pos, _ in token_occurrences[norm]]
-                if all(abs(pm.start() - pos) > 8 for pos in existing_positions):
-                    token_occurrences[norm].append((pm.start(), pm.group(0).replace("\n", " ")[:80]))
+            prefix = s_comment_free[max(0, sm.start() - 48) : sm.start()]
+            if non_ui_prefix_re.search(prefix):
+                continue
+            literal_val = sm.group(1)
+            seen_in_literal: set[str] = set()
+            for tm in PHYSICAL_TELEMETRY_TOKEN_RE.finditer(literal_val):
+                norm = _normalize_telemetry_token(tm.group(0))
+                if norm not in seen_in_literal:
+                    seen_in_literal.add(norm)
+                    token_occurrences.setdefault(norm, []).append((sm.start(), literal_val))
 
-    echoed_tokens = [
-        (token, occs)
-        for token, occs in token_occurrences.items()
-        if len(occs) >= 2
-    ]
-    if not echoed_tokens:
-        return []
+        if token_occurrences:
+            for pm in SPLIT_METRIC_PAIR_RE.finditer(s_comment_free):
+                abs_start = s_start + pm.start()
+                abs_end = s_start + pm.end()
+                if is_waived(abs_start, abs_end):
+                    continue
+                if pm.group(1) and pm.group(2):
+                    norm = _normalize_telemetry_token(f"{pm.group(1)}{pm.group(2)}")
+                else:
+                    label_m = re.search(r"恢复|湿度|降水|血氧|电量", pm.group(0))
+                    norm = _normalize_telemetry_token(f"{label_m.group(0) if label_m else '恢复'}{pm.group(3)}")
+                if norm in token_occurrences:
+                    existing_positions = [pos for pos, _ in token_occurrences[norm]]
+                    if all(abs(pm.start() - pos) > 8 for pos in existing_positions):
+                        token_occurrences[norm].append((pm.start(), pm.group(0).replace("\n", " ")[:80]))
 
-    first_token, first_occs = echoed_tokens[0]
-    second_pos, second_lit = first_occs[1]
-    line = full_text.count("\n", 0, second_pos) + 1
-    summary_tokens = ", ".join(f"{tok} ({len(occs)}x)" for tok, occs in echoed_tokens[:4])
-    return [
-        {
-            "case_id": "UI_CROSS_LAYER_METRIC_ECHO",
-            "title": "Cross-Layer Telemetry Metric Duplication Across L1 Hero and L2 Tiles",
-            "file": path,
-            "line": line,
-            "match": f"repeated telemetry metrics [{summary_tokens}] in {second_lit!r}"[:240],
-            "reference_drawer": ref_interaction,
-            "fix_rule": UI_CROSS_LAYER_METRIC_ECHO_FIX_RULE,
-        }
-    ]
+        echoed_tokens: list[tuple[str, list[tuple[int, str]]]] = []
+        for token, occs in token_occurrences.items():
+            if len(occs) < 2:
+                continue
+            has_coexisting_pair = False
+            for idx_a in range(len(occs)):
+                for idx_b in range(idx_a + 1, len(occs)):
+                    if not _are_mutually_exclusive_positions(occs[idx_a][0], occs[idx_b][0], branch_arms):
+                        has_coexisting_pair = True
+                        break
+                if has_coexisting_pair:
+                    break
+            if has_coexisting_pair:
+                echoed_tokens.append((token, occs))
+
+        if echoed_tokens:
+            first_token, first_occs = echoed_tokens[0]
+            second_pos, second_lit = first_occs[1]
+            line = full_text.count("\n", 0, s_start + second_pos) + 1
+            summary_tokens = ", ".join(f"{tok} ({len(occs)}x)" for tok, occs in echoed_tokens[:4])
+            return [
+                {
+                    "case_id": "UI_CROSS_LAYER_METRIC_ECHO",
+                    "title": "Cross-Layer Telemetry Metric Duplication Across L1 Hero and L2 Tiles",
+                    "file": path,
+                    "line": line,
+                    "match": f"repeated telemetry metrics [{summary_tokens}] in {second_lit!r}"[:240],
+                    "reference_drawer": ref_interaction,
+                    "fix_rule": UI_CROSS_LAYER_METRIC_ECHO_FIX_RULE,
+                }
+            ]
+
+    return []
 
 
 def _detect_scroll_prompt_spec_gaps(
