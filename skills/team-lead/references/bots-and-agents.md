@@ -1,6 +1,6 @@
 # Bot 与 CLI agent：分工与生命周期
 
-本文件定义本环境（Owner tianpei）的分工表与 CLI agent 生命周期规则；合同角色、权限与审查以 [SKILL.md](../SKILL.md) 为准，个人规矩与系统底盘分离配置见 [operator-policy.json](../../team-lead/references/operator-policy.json)（`communication`、`ticket_scope`、`delivery_requirements` 三槽位，由 `goal-supervisor.py check-operator-policy` 做默认值升级 Diff 检测），模型与启动参数只看 [runtime-profiles.yaml](runtime-profiles.yaml)，台账与事件见 [ledger.md](ledger.md)，完整 CLI 命令配方见 [dispatch-recipes.json](../../team-lead/references/dispatch-recipes.json)。`M2-Dispatcher` 与 Goal-level TL 的生命周期合同另见 [`m2-dispatcher`](../../m2-dispatcher/SKILL.md)。
+角色权限以 [SKILL.md](../SKILL.md) 为准；个人规则见 [operator-policy.json](../../team-lead/references/operator-policy.json)，模型参数见 [runtime-profiles.yaml](runtime-profiles.yaml)，台账见 [ledger.md](ledger.md)，CLI 配方见 [dispatch-recipes.json](../../team-lead/references/dispatch-recipes.json)，M2↔TL 生命周期见 [m2-dispatcher](../../m2-dispatcher/SKILL.md)。
 
 ## 两层与 Linear 绑定
 
@@ -9,13 +9,13 @@
 | bot 层 | 有独立聊天的常驻 bot，各自固定一台机器 | Owner | 长期 |
 | CLI agent 层 | bot 或 TL 在 herdr 里启动的 CLI 会话（TL、Reviewer、写者、Explorer） | 协调者 bot / TL | 用完即关 |
 
-Linear `TIA` Idea 收集、Goal 绑定与状态同步由 `linear-sync.py` 实现，本地 `ledger.md` 保持唯一权威源（见 [`linear-board`](../../linear-board/SKILL.md) 与 [`ledger.md`](ledger.md)）。
+`linear-sync.py` 同步 Linear `TIA` Idea／Goal，`ledger.md` 为权威源；见 [linear-board](../../linear-board/SKILL.md)。
 
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
-Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务 Worktree 或派 Writer；Owner 明确 GO 后进入 Phase 1。Phase 1 中，常驻 `Grok Bot`、`Cindy` 或交互式 CLI 均作为 **`M2-Dispatcher`** 遵守**只写简单 Spec 边界（仅可改 `spec.md`/`design.md` 及 handoff 简报，严禁改任何代码或其他仓库文件）**，凡涉及代码或其他文件修改一律通过 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 在后台拉起绑定 `Magpie (:3425)` `group/steering` 的独立 Goal `Steering`（`<goal>-goal-tl-r1`），在独立 Worktree（`~/Development/worktrees/<task>`）中由 `Steering`（`≤3` 文件轻量改动）或 `Writer`（`--role writer` → `group/coding`）完成修改与提交。Cindy 等同步宿主须运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json`；Copilot CLI 通过 `bash(mode="async", detach=true, shellId="watch-<goal>")` 挂载 watchdog，使 Turn 进入 `session.idle`，用户可继续与 M2 对话，并由 `<system_notification>` 在 watch 退出时唤醒 M2。
+Phase 0 仅只读探查、Owner 对齐与冻结 `spec.md`，不得创建业务 Worktree 或派 Writer。Owner GO 后，`M2-Dispatcher` 仍只写 `spec.md`／`design.md` 与 handoff 简报；代码经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 派独立 Worktree 的 `Steering`（`≤3` 文件直改）或叶子 `Writer`。同步宿主运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json`；Copilot 用异步 watchdog 读回，M2 可继续对话。
 
-**Single-Steering per Goal rule:** once `<goal>-goal-tl-r1` is running (or when a local CLI session executes a `≤3`-file inline task directly), that active `Steering` (TL) session is the sole `Steering` (TL) for the Goal and never spawns a second `Steering` or standalone `Planner` subagent. `M2-Dispatcher` starts at most one `<goal>-goal-tl-r1` in Herdr (reusing/waking it idempotently if already alive); that `Steering` then dispatches leaf `Writer`／`Reviewer` agents as needed, with optional read-only `Explorer` support for noisy searches.
+**Single-Steering per Goal rule:** M2 只开一个 `<goal>-goal-tl-r1`，已存在则复用／唤醒。当前 TL 为唯一主控，never spawns a second `Steering` 或独立 `Planner`；仅派叶子 `Writer`／`Reviewer`，高噪声探查可派只读 `Explorer`。
 
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
@@ -28,9 +28,9 @@ Phase 0 只读探查、Owner 对齐与 `spec.md` 冻结候选不得创建业务 
 
 ### UI 设计与技术栈 Skill 挂载（Steering / Designer / Writer）
 
-UI/UX design ownership remains with `Steering` during Phase 0 co-design: it loads `my-designer` (`L0 -> L1 -> L2`) when authoring `design.md`/`spec.md`, checking `Package.resolved` and `shared-design-system` upstream primitives as needed. During the UI Demo exploration stage only, dispatch `--role designer` to `magpie/group/designer` (`gemini-4-argon` + `grok-4.7`) to independently author 10 prototype prompts (`prompts/v01-prompt.md` through `v10-prompt.md`, or the approved `v01..v10` / `app01..app04` variants). Then dispatch `--role writer` to `magpie/group/coding` to implement the selected prompt as self-contained HTML/CSS/JS prototypes and production code; Designer does not own spec/design files or production implementation. Writer runs `shared-ci/scripts/context/design_contract.py` and exports low-cost real screenshots into the R10 receipt (Apple snapshots via XCTest/ImageRenderer or Web Playwright headless screenshots). The CI Design Gate and Cross-Vendor `Reviewer` performs a **Visual Traceback**; `sips -g pixelWidth`, zero numeric truncation `…`, and the `followed the brief verbatim` V2 P1 rule remain enforced. `[IMPL_BUG]` routes to Writer, while `[SPEC_GAP]` requires Steering to amend `design.md` (`spec_sha`) first; generic recurring cases may use `skill_contract.py sink-rule` / `register-case --id auto` only when they have no private symbols.
+Phase 0 UI/UX 由 `Steering` 加载 `my-designer`（`L0 -> L1 -> L2`）写 `design.md`／`spec.md`，核对 `Package.resolved` 与 `shared-design-system` upstream primitives。仅 UI Demo 探索派 `--role designer` 到 `magpie/group/designer`，独立产 10 个 Prompt（`v01..v10`／`app01..app04`）；Designer 不接管 Spec 或生产实现。`Writer` 经 `group/coding` 实现 HTML/CSS/JS 原型与生产代码，跑 `shared-ci/scripts/context/design_contract.py`，将 ImageRenderer／Playwright 实图写 R10。跨厂商 `Reviewer` 做 **Visual Traceback**：保留 `sips -g pixelWidth`、zero numeric truncation `…` 与 `followed the brief verbatim` V2 P1 门禁。`[IMPL_BUG]` 退 Writer；`[SPEC_GAP]` 先由 Steering 修 `design.md` 重签 `spec_sha`。无私有符号的通用案例才可 `skill_contract.py sink-rule`／`register-case --id auto`。
 
-- **Spec-First Requirement Change Rule（规格先行）**：已有代码与测试的仓库一旦修改产品需求或细化 UI/UX，`spec.md`／`design.md`（及仓库 `specs/` 或 `docs/design-contract.md`）就是唯一上游权威；unit／snapshot tests 是派生物，不得锁定 obsolete UI 或行为。`Steering`（或按需 `Explorer`）映射当前实现和冲突 legacy test assertions，产出带精确 `file:line` 的 **Obsolete Test Manifest**，并记录 **Deprecated Test Clauses to Remove/Rewrite**；随后 `Code Writer` 先迁移获授权的 deprecated assertions，再改代码，`Code/UI Reviewer` 保留非 deprecated regression tests。
+- **Spec-First Requirement Change Rule（规格先行）**：需求／UI 变更以 `spec.md`／`design.md` 为上游，测试是派生物。`Steering`／`Explorer` 产带 `file:line` 的 **Obsolete Test Manifest** 与 **Deprecated Test Clauses to Remove/Rewrite**；`Code Writer` 先迁授权断言再实现，`Code/UI Reviewer` 护非废弃回归测试。
 
 ### 任务收集与批量／热追加队列（Batch Mode 姿势 1 & Hot-Append 姿势 3 — Bot 与 TL 协同）
 
@@ -47,8 +47,8 @@ UI/UX design ownership remains with `Steering` during Phase 0 co-design: it load
 
 ### 会话粘性、上下文污染度阈值与原生 Goal 引擎挂载
 
-- **Sticky TL & Context-Noise Threshold**：存在活动 ledger 时追问自动继承合同。已知模块或中小改动（`≤8` 个文件）由 Steering 直读诊断并写 `spec.md`／`briefs/<task>.md`；跨仓搜索、全量盘点 `Obsolete Test Manifest` 或长日志超过 8 个文件时，经 `herdr-dispatch.sh` 派只读 `Explorer`（返回 `<15` 行摘要与 R10 receipt）。`≤3` 文件轻量修正由 `Steering` 直改，大范围或耗时构建交 `Writer`。
-- **Native Goal Continuation Binding**：`ledger.md`、`briefs/<task>.md` 与 Git 是跨进程唯一事实源；Codex `create_goal`／`update_goal`、Copilot `sql` `todos`／`todo_deps`、Claude `TodoWrite` 仅作进程内投影。验收与 R10 完成后标 complete；遇阻塞或 V3 两轮失败立即标 `blocked`。
+- **Sticky TL & Context-Noise Threshold**：活动 ledger 下追问继承合同。`≤8` 文件由 Steering 直读；跨仓／全量盘点／长日志 `>8` 文件派只读 `Explorer`（`<15` 行摘要＋R10）。`≤3` 文件直改，大范围／耗时实现交 `Writer`。
+- **Native Goal Continuation Binding**：`ledger.md`、brief 与 Git 为唯一事实源，客户端 Goal／Todo 仅作投影。验收＋R10 后 complete；阻塞／V3 两轮失败标 `blocked`。
 
 ## 每个 Goal 的责任线、Skill 路由与网关角色
 
@@ -61,7 +61,7 @@ UI/UX design ownership remains with `Steering` during Phase 0 co-design: it load
 | UI 视觉现代化与客观评审 | `my-designer`（含 `modernization-dimensions.md` 与 Visual Traceback）+ `design-studio` |
 | macOS / iOS SwiftPM 打包、测试与构建 | `xcode-cli` |
 
-所有配额水位、缓存粘性与轻重意图路由由本机网关 **`Magpie (:3425)`** 逻辑组统一接管（全局 `effort: high` + `long_context`，离线按 [runtime-profiles.yaml](runtime-profiles.yaml) 回退）：
+配额、缓存粘性与意图路由由网关 **`Magpie (:3425)`** 逻辑组接管（全局 `effort: high` + `long_context`，离线按 [runtime-profiles.yaml](runtime-profiles.yaml) 回退）：
 
 | 角色 | 逻辑组 / 档位 | 谁开 | 生命周期 |
 |---|---|---|---|
@@ -84,7 +84,7 @@ herdr pane close "$NEW_PANE_ID"
 git -C "$MAIN_REPO" worktree remove "$TASK_WORKTREE" && git -C "$MAIN_REPO" worktree prune && git -C "$MAIN_REPO" branch -D "$TASK_BRANCH"
 ```
 
-1. **优先调用 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh)**：自动校验 `--name`（`^[a-z][a-z0-9_-]{0,31}$`）、分屏（必传 `--direction right|down`，禁用裸 `--current`）、校验 `NEW_PANE_ID` 非空、注入 `trustedFolders`/`config.toml` 与叠加去重 `--add-dir`（含 `$CWD`、`~/Development`、`/Volumes/SSD` 及 handoff 父目录 realpath、`HERDR_EXTRA_ADD_DIRS`，满足 Parent ≥ Child），并处理 `agent_pane_busy` 重试与 5s stall 自动补 Enter。`--` 后只传 `[AGENT_ARG]...`，严禁重复传 `codex`／`copilot` 二进制名。
-2. **文件指针派发与 PR 状态监控默认走 Layer 0（0 Token）、5s Foreground-to-Background Rule 及追问直通车（`steer`/`handback`）**：Prompt 只传 `briefs/<task>.md` 与 R10 回执路径。**5s Foreground-to-Background Rule**：耗时 `>5s` 的编译/全量测试命令（如 `xcodebuild`、`pytest` 全量套件、`swift test`）必须以异步/后台或短时间片方式运行，严禁长阻塞前台 shell 导致 Worker 耳朵失聪无法接收实时 `steer` 追问或停止信号（Writer 严禁 `gh run watch` 或 `sleep >= 30`）。同 PR / 同 `Owned Paths` 追问经 `goal-queue.py steer` 零评估直达当前活跃 Writer；超出当前 Task `Owned Paths` 时 Writer 一键调用 `goal-queue.py set-status --status handback --reason "..."` 退回 TL 重新路由拆单。PR 进入 CI／auto-merge／发布时，TL 后台异步启动 `python3 skills/team-lead/scripts/ci-monitor.py workflow|pr ...`，不为纯状态轮询启动 LLM；仅失败需诊断时回退 `worker.pr_monitor`。Job 级 Fail-Fast 盯 required job 的 `failure`／`timed_out`／`action_required`；Run 仍 `in_progress` 时用 `gh api repos/<owner>/<repo>/actions/jobs/<failed_job_id>/logs`（不用 `gh run view --log-failed`）。
-3. **输出读取、Tier A/A′ 解卡与 R10 对账**：`working` 仅读 `--source visible --lines 40`；`idle`／`done` 读 `--source recent-unwrapped --lines 80`。发现 `blocked` 严禁直接 break 退出：立即读 visible 界面——**Tier A（Allow path access）** 属于临时目录、`/Volumes/SSD` 基线或 `extra_add_dirs` 时发 `herdr agent send-keys <name> enter` 解卡；**Tier A′（`CMD_CONFIRM`）** 仅当命令属白名单（`gh`、非破坏性 `git`、`python3`、`jq`、`herdr` 不含 `server stop`、`shasum`、`date`、`sleep`、`env`）时发 Enter（或 Down+Enter 选 remember）并记 `EVT=UNBLOCK`；敏感或破坏性操作保持 hold 并记 `EVT=NEED_GO`／`NEED_OWNER_DECISION`（`--no-ask-user` 不抑制此类弹窗，不开启 `--yolo`）。完成以磁盘 R10 回执与 Git SHA 对账为准。
-4. **结束、Worktree 清理与 Shared UI 门禁**：收齐 R10 记 `DONE` 后 `herdr pane close "$NEW_PANE_ID"`；`PR_MERGED` 后执行 `git worktree remove "$TASK_WORKTREE"` 清理；`EVT=GOAL_DONE` 必关 Goal workspace/TL pane（保留未合并／暂停（HOLD）Worktree 不阻断关窗，禁跑 `herdr server stop`）。UI 内环验证统一走 `shared-ci/scripts/context/design_contract.py`（`--audit-code`、`--audit-l10n`、`--check-edge-clipping`、`--audit-geometry`），不走 `xcode-cli`。
+1. **优先调用 [`scripts/herdr-dispatch.sh`](../scripts/herdr-dispatch.sh)**：校验 `--name`、`NEW_PANE_ID`；分屏必传 `--direction right|down`，禁裸 `--current`。自动注入信任路径、去重 `--add-dir`（Parent ≥ Child），处理 `agent_pane_busy` 与 5s stall。`--` 后仅传 `[AGENT_ARG]...`，不重复传 CLI 二进制名。
+2. **5s Foreground-to-Background Rule**：Prompt 仅传 brief／R10 路径；`>5s` 编译／全量测试走异步或短时间片，Writer 禁 `gh run watch`／`sleep >= 30`。同 PR／Owned Paths 追问经 `goal-queue.py steer` 直达 Writer；超界用 `set-status --status handback` 退 TL。CI 默认走 Layer 0（0 Token），后台 `ci-monitor.py workflow|pr`，仅失败诊断回退 `pr_monitor`。required job 失败即 Fail-Fast，进行中 Run 读取 job logs 而非 `gh run view --log-failed`。
+3. **Tier A/A′ 解卡与 R10 对账**：`working` 读 visible 40 行，`idle`／`done` 读 recent-unwrapped 80 行。`blocked` 立即核对 visible：Tier A 仅临时目录／`/Volumes/SSD`／`extra_add_dirs`；Tier A′ 仅命令白名单允许 Enter 并记 `EVT=UNBLOCK`，详见配方。敏感／破坏性操作 hold，记 `EVT=NEED_GO`／`NEED_OWNER_DECISION`；禁 `--yolo`。完成以磁盘 R10 与 Git SHA 为准。
+4. **结束与 UI 门禁**：R10／`DONE` 后关 pane；Worktree 与 GOAL_DONE 关窗按上文独立验收，禁 `herdr server stop`。UI 内环跑 `shared-ci/scripts/context/design_contract.py`（`--audit-code`、`--audit-l10n`、`--check-edge-clipping`、`--audit-geometry`），不走 `xcode-cli`。

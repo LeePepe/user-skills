@@ -12,7 +12,7 @@ description: "Goal/Task work must load this skill: coordinate Steering -> Writer
 |---|---|---|
 | Role: M1-TL | `references/ledger.md` | `goal-supervisor.py status --check` |
 | Role: Designer | `references/bots-and-agents.md` | `herdr-dispatch.sh --role designer` |
-| Role: Writer | `references/playbook.md` | `ci-monitor.py workflow` |
+| Role: Writer | `references/bots-and-agents.md` | `feedback_guard.py pre-review-check` |
 | Role: Reviewer | `references/playbook.md` | `feedback_guard.py pre-review-check` |
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表

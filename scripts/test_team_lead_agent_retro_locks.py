@@ -32,7 +32,8 @@ def load_module(path: Path, name: str):
 
 class TeamLeadAgentRetroLockTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.scratch = REPO_ROOT / ".test_team_lead_agent_retro_locks"
+        # Git-ignored fixtures must not appear in concurrent repository leak scans.
+        self.scratch = REPO_ROOT / ".test_team_lead_agent_retro_locks.pyc"
         shutil.rmtree(self.scratch, ignore_errors=True)
         self.scratch.mkdir()
 
@@ -243,6 +244,236 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertTrue(module.receipt_exists(goal, "retro-goal-goal-tl-r1"))
+        for role in ("steering", "group/steering", "magpie/group/steering"):
+            receipt.write_text(f"Commit SHA: abcdef1234567890\nRole / Model: {role} / replay-model\nV5 Verdict: PASS\n", encoding="utf-8")
+            self.assertTrue(module.receipt_exists(goal, "retro-goal-goal-tl-r1"), role)
+
+    def test_failed_receipt_status_is_rejected_even_alongside_pass(self) -> None:
+        module = load_module(FEEDBACK_GUARD, "feedback_failed_receipt_replay")
+        root, brief, receipt, _ = self.fixture_repo(1, role="writer")
+        base = receipt.read_text(encoding="utf-8")
+        for field in (
+            "Verification: failed", "Verification: FAIL", "status: failed", "V5 Verdict: FAIL",
+            "Verdict: failure", "**Verification:** failed", "- **Status:** failed", "- `V5 Verdict:` **FAIL**",
+        ):
+            with self.subTest(field=field):
+                receipt.write_text(base + field + "\n", encoding="utf-8")
+                self.assertTrue(module.validate_r10_receipt(base + field))
+                self.assertFalse(module._receipt_summary(receipt)["valid"])
+                report, res = self.run_guard(root, brief, receipt)
+                self.assertEqual(res.returncode, 1)
+                self.assertFalse(report["ok"])
+        for status, valid in (("PASS", True), ("done", True), ("failed", False), ("FAIL", False)):
+            receipt = self.scratch / "receipt.json"
+            receipt.write_text(json.dumps({"commit_sha": "abcdef1234567890", "role": "writer", "model": "replay",
+                                           "status": status}), encoding="utf-8")
+            self.assertEqual(module._receipt_summary(receipt)["valid"], valid)
+        self.assertEqual(module.validate_r10_receipt(base), [])
+
+    def test_verification_claims_require_real_executables_and_exact_arguments(self) -> None:
+        module = load_module(FEEDBACK_GUARD, "feedback_command_token_replay")
+        claims = ("pytest -q tests/test_demo.py", "python3 -m unittest scripts.test_demo", "unittest demo",
+                  "swift test", "swift build", "xcodebuild -scheme Demo test", "swiftlint lint",
+                  "scripts/verify", "./scripts/verify", "npm test", "cargo test", "go test ./...")
+        receipt = "Verification: PASS\n" + "".join(f"- `{claim}` — PASS (exit=0)\n" for claim in claims)
+        self.assertEqual(module._receipt_verification_commands(receipt), list(claims))
+        self.assertEqual(module._receipt_verification_commands("Verification: `swift test` — PASS (exit=0)"), ["swift test"])
+        for claim in claims:
+            with self.subTest(claim=claim):
+                for executed in (claim, f"FLAG=1 env -u UNUSED time -p timeout 30 {claim}",
+                                 f"true && {claim}", f"echo prelude; {claim}", f"{claim} && true"):
+                    self.assertTrue(module._command_was_successful(claim, [executed]), executed)
+                for executed in (f'echo "{claim}"', f'printf "{claim}"', f"grep '{claim}' file",
+                                 f"rg '{claim}' file", f'cat "{claim}"', f'true && echo "{claim}"',
+                                 f'echo "&&" "{claim}"', f"true # && {claim}", f"{claim} || true",
+                                 f"true || {claim}", f"{claim}; true", f"{claim} | cat", f"echo {claim}"):
+                    self.assertFalse(module._command_was_successful(claim, [executed]), executed)
+        self.assertFalse(module._command_was_successful("pytest -q tests/demo", ["pytest -q tests/demo_extra"]))
+        self.assertFalse(module._command_was_successful("pytest -k 'x  y'", ["pytest -k 'x y'"]))
+        self.assertFalse(module._command_was_successful("pytest foo", ["pytest foo#bar"]))
+        self.assertFalse(module._command_was_successful("pytest", ["cat <<EOF\npytest\nEOF"]))
+        for bg_or_subshell in ("pytest &", "pytest & echo ok", "pytest & wait", "(pytest; false)", "$(pytest)", "`pytest`"):
+            self.assertFalse(module._command_was_successful("pytest", [bg_or_subshell]), bg_or_subshell)
+        self.assertTrue(module._command_was_successful("pytest", ["false & pytest"]))
+        self.assertTrue(module._command_was_successful("pytest", ['echo "pytest && swift test"; pytest']))
+        events = self.scratch / "executions.jsonl"
+        for code, expected in ((None, []), (1, []), (0, ["pytest"])):
+            result = {} if code is None else {"exitCode": code}
+            events.write_text(json.dumps({"command": "pytest", "success": True, "result": result}) + "\n", encoding="utf-8")
+            self.assertEqual(module._successful_event_commands(events), expected)
+
+    def test_receipt_identity_and_round_cannot_be_replaced_by_role_substrings(self) -> None:
+        module = load_module(GOAL_SUPERVISOR, "goal_receipt_identity_replay")
+        goal, _ = self.goal_fixture("completed output")
+        receipts = goal / "receipts"
+        receipts.mkdir()
+        cases = (
+            ("retro-goal-t2-writer-r1", "T1-writer-r1", False),
+            ("retro-goal-t2-writer-r1", "retro-goal-t1-writer-r1", False),
+            ("retro-goal-writer-r2", "writer-old", False),
+            ("retro-goal-writer-r2", "T1-writer-r1", False),
+            ("retro-goal-writer-r1", "other-writer-r1", False),
+            ("retro-goal-writer-r2", "retro-goal-writer-r1", False),
+            ("retro-goal-t2-writer-r2", "T2-writer-r1", False),
+            ("retro-goal-t2-writer-r2", "T2-writer-r10", False),
+            ("retro-goal-t2-writer-r2", "T2-reviewer-r2", False),
+            ("retro-goal-t2-writer-r1", "writer", False),
+            ("retro-goal-writer-r1", "T1-writer-r1", False),
+            ("retro-goal-t2-writer-r1", "T2", True),
+            ("retro-goal-t2-writer-r1", "T2-r10", True),
+            ("retro-goal-t2-writer-r2", "T2-writer-r2", True),
+            ("retro-goal-tk2a-writer-r2", "TK2A-writer-r2", True),
+            ("retro-goal-t2-writer", "T2-writer", True),
+            ("retro-goal-writer-r2", "writer_r2", True),
+            ("retro-goal-writer-r2", "writer", True),
+            ("retro-goal-writer-r2", "retro-goal-writer-r2-r10", True),
+            ("retro-goal-writer-r2", "r10-retro-goal-writer-r2", True),
+            ("retro-goal-t2-reviewer-r2", "T2-reviewer-r1", False),
+            ("retro-goal-t2-reviewer-r2", "T2-reviewer-r2", True),
+        )
+        for agent, stem, expected in cases:
+            with self.subTest(agent=agent, receipt=stem):
+                path = receipts / f"{stem}.md"
+                role = "reviewer" if "reviewer" in agent else "writer"
+                path.write_text(f"Commit SHA: abcdef1234567890\nRole / Model: {role} / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+                self.assertEqual(module.receipt_exists(goal, agent), expected)
+                path.unlink()
+        app_goal = goal.parent / "app-reviewer"
+        (app_goal / "receipts").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(module.role_for("app-reviewer-t2-writer-r2"), "writer")
+        self.assertEqual(module.role_for("app-writer-t1-rev-r1"), "reviewer")
+        self.assertEqual(module.role_for("app-reviewer-goal-tl-r1"), "team_lead")
+        for stem, role, expected in (
+            ("reviewer-r10", "reviewer", False),
+            ("reviewer-r10", "writer", False),
+            ("app-reviewer-t1-writer-r2", "writer", False),
+            ("T2-writer-r1", "writer", False),
+            ("app-reviewer-t2-writer-r2", "writer", True),
+            ("T2-writer-r2", "writer", True),
+        ):
+            with self.subTest(stem=stem, role=role):
+                path = app_goal / "receipts" / f"{stem}.md"
+                path.write_text(f"Commit SHA: abcdef1234567890\nRole / Model: {role} / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+                self.assertEqual(module.receipt_exists(app_goal, "app-reviewer-t2-writer-r2"), expected)
+                path.unlink()
+        goal_prefix_match = app_goal / "receipts" / "app-rev-T2.md"
+        goal_prefix_match.write_text("Commit SHA: abcdef1234567890\nRole / Model: writer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertTrue(module.receipt_exists(app_goal, "app-rev-t2-writer-r1"))
+        self.assertFalse(module.receipt_exists(app_goal, "other-goal-t2-writer-r1"))
+        goal_prefix_match.unlink()
+        other_prefix = app_goal / "receipts" / "other-goal-T2-writer-r2.md"
+        other_prefix.write_text("Commit SHA: abcdef1234567890\nRole / Model: writer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertFalse(module.receipt_exists(app_goal, "other-goal-t2-writer-r1"))
+        other_prefix.unlink()
+        unparsed = app_goal / "receipts" / "reviewer-r10.md"
+        unparsed.write_text("Commit SHA: abcdef1234567890\nRole / Model: reviewer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertFalse(module.receipt_exists(app_goal, "unparseable-agent-token"))
+        unparsed.unlink()
+
+    def test_stuck_loop_negations_are_not_positive_status(self) -> None:
+        module = load_module(GOAL_SUPERVISOR, "goal_stuck_negation_replay")
+        negative = ("not stuck", "0 stuck", "unstuck", "no stuck", "never stuck", "without stuck", "zero stuck",
+                    "not looping", "no looping", "0 looping", "not repeating identical failure",
+                    "non-blocking / not repeating identical failure", "leases: 0 blocked · 0 zombie · 0 stuck",
+                    "isn't stuck", "aren't looping", "neither stuck nor looping",
+                    "0 failed", "0 errors", "0 failures", "no error", "zero failures")
+        for text in negative:
+            with self.subTest(text=text):
+                self.assertIsNone(module.evaluate_stuck_loop("writer", "writer", text, jev_override={}))
+                self.assertIsNone(module.evaluate_stuck_loop("writer", "writer", "\n".join([text] * 3), jev_override={}))
+        for text in (
+            "stuck",
+            "looping",
+            "repeating identical failure",
+            "not stuck, but looping",
+            "error\nerror\nerror",
+            "\n".join(["zsh: command not found: pytest"] * 3),
+            "\n".join(["line 0: syntax error"] * 3),
+            "\n".join(["exit code 10"] * 3),
+            "\n".join(["Error: file not found"] * 3),
+        ):
+            self.assertEqual(module.evaluate_stuck_loop("writer", "writer", text, jev_override={})["type"], "STUCK_LOOP")
+
+    def test_hygiene_longest_goal_prefix_boundaries_and_ambiguous_panes(self) -> None:
+        module = load_module(SCRIPTS / "local_hygiene_patrol.py", "hygiene_prefix_replay")
+        ledgers = {"app": {"goal_done": True}, "app-ios": {"goal_done": False}}
+        for suffix in ("goal-tl-r1", "team-lead-r2", "writer-r1", "reviewer-r1", "rev-r1", "exp-r1", "explorer-r1",
+                       "prmon-r1", "pr-monitor-r1", "des-r1", "designer-r1", "tk2a-writer-r1", "t2-reviewer-r2"):
+            with self.subTest(suffix=suffix):
+                name = f"app-ios-{suffix}"
+                self.assertEqual(module._match_agent_to_goal({"name": name}, ledgers), "app-ios")
+                self.assertEqual(module._match_worktree_to_goal(self.scratch / name, ledgers), "app-ios")
+                self.assertFalse(module._is_worktree_held(self.scratch / name, {"app"}))
+                self.assertTrue(module._is_worktree_held(self.scratch / name, {"app-ios"}))
+        for valid_suffix in ("writer", "t1-writer-r1", "tk1a-rev-r2", "pr-monitor-r1", "goal-tl-r1", "team-lead-r2"):
+            self.assertTrue(module._valid_goal_suffix(valid_suffix), valid_suffix)
+        for bad_suffix in ("reviewer-writer-r1", "writer-goal-tl-r1", "designer-writer-r1", "des-goal-tl-r1", "exp-writer-r1", "ios-writer-r1"):
+            self.assertFalse(module._valid_goal_suffix(bad_suffix), bad_suffix)
+            self.assertEqual(module._match_agent_to_goal({"name": f"app-{bad_suffix}"}, {"app": {"goal_done": True}}), "__ambiguous__")
+        tl_stem_ledgers = {
+            "app": {"goal_done": True},
+            "app-designer": {"goal_done": False, "tl_stem": "app-des"},
+        }
+        self.assertEqual(module._match_agent_to_goal({"name": "app-des-writer-r1"}, tl_stem_ledgers), "app-designer")
+        self.assertEqual(module._match_agent_to_goal({"name": "app-des-goal-tl-r1"}, tl_stem_ledgers), "app-designer")
+        self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios", ledgers), "app-ios")
+        self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios-t1", ledgers), "app-ios")
+        self.assertTrue(module._is_worktree_held(self.scratch / "app-ios-t1", {"app-ios"}))
+        self.assertFalse(module._is_worktree_held(self.scratch / "app-ios", {"app"}))
+        for field in ("cwd", "terminal_title_stripped"):
+            for path in (self.scratch / "worktrees/app-ios", self.scratch / "worktrees/app-ios-t1", self.scratch / "handoff/app-ios/Sources"):
+                self.assertEqual(module._match_agent_to_goal({"name": "unrelated-writer-r1", field: str(path)}, ledgers), "app-ios")
+        ancestor_ledgers = {
+            "user-skills": {"goal_done": True},
+            "app": {"goal_done": True},
+            "goal-clean-merged": {"goal_done": True, "tl_name": "clean-mrg-goal-tl-r1", "tl_stem": "clean-mrg"},
+            "app-ios": {"goal_done": False},
+        }
+        self.assertEqual(
+            module._match_agent_to_goal({"name": "clean-mrg-goal-tl-r1", "cwd": "/tmp/dev/user-skills"}, ancestor_ledgers),
+            "goal-clean-merged",
+        )
+        self.assertIsNone(
+            module._match_agent_to_goal({"name": "active-writer-r1", "cwd": "/tmp/dev/user-skills"}, ancestor_ledgers),
+        )
+        self.assertEqual(
+            module._match_agent_to_goal({"name": "app-ios-writer-r1", "cwd": "/tmp/app/worktrees/app-ios"}, ancestor_ledgers),
+            "app-ios",
+        )
+        aliases = {"good-designer": {"tl_stem": "good-des"}, "good-designs": {"tl_stem": "good-des"}}
+        self.assertEqual(module._match_agent_to_goal({"name": "good-des-writer-r1"}, aliases), "__ambiguous__")
+        self.assertEqual(module._match_agent_to_goal({"name": "good-des-goal-tl-r1"}, aliases), "__ambiguous__")
+        self.assertEqual(module._match_worktree_to_goal(self.scratch / "good-des", aliases), "__ambiguous__")
+        handoff = self.scratch / "handoff"
+        for goal, done in (("app", True), ("app-ios", False)):
+            directory = handoff / goal
+            directory.mkdir(parents=True)
+            (directory / "ledger.md").write_text("EVT=GOAL_DONE\n" if done else "active\n", encoding="utf-8")
+        def scan(names):
+            return module.scan_herdr_panes(handoff_root=handoff, herdr_json={"agents": [
+                {"name": name, "pane_id": f"wx:p{index}", "status": "done"} for index, name in enumerate(names)]})
+        report = scan(["app-ios-writer-r1", "app-writer-r1", "orphan-writer-r1"])
+        self.assertEqual([item["name"] for item in report["reclaimable_panes"]], ["app-writer-r1", "orphan-writer-r1"])
+        self.assertEqual([item["name"] for item in report["active_m1_panes"]], ["app-ios-writer-r1"])
+        shutil.rmtree(handoff / "app-ios")
+        report = scan(["app-ios-writer-r1", "app-ios-writer-r1", "app-reviewer-writer-r1", "app-des-goal-tl-r1"])
+        self.assertEqual(report["reclaimable_panes"], [])
+        self.assertEqual(len(report["active_m1_panes"]), 4)
+        self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios", {"app": {}}), "__ambiguous__")
+        dev = self.scratch / "dev"
+        repo, worktree = dev / "project", dev / "worktrees/app-ios"
+        (repo / ".git").mkdir(parents=True)
+        worktree.mkdir(parents=True)
+        git_gc = mock.Mock(NOISE_NAMES=(), _worktrees=mock.Mock(return_value=[{"worktree": str(worktree), "branch": "feat/app-ios"}]))
+        with mock.patch.object(module, "_load_git_gc", return_value=git_gc):
+            report = module.scan_worktrees(dev_root=dev, handoff_root=handoff, repos=("project",), herdr_json={"agents": []},
+                                          runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""),
+                                          merge_checker=lambda repo, branch: True, use_cache=False)
+        self.assertEqual(report["clean_merged_worktrees"], [])
+        self.assertIn("ambiguous_goal_identity", report["preserved_worktrees"][0]["preserve_reasons"])
+        runner = mock.Mock(side_effect=AssertionError("ambiguous identity must not reach merge probes"))
+        self.assertFalse(module._is_positively_merged(repo, worktree, "feat/app-ios", ledgers={"app": {}}, git_gc=git_gc, runner=runner))
+        runner.assert_not_called()
 
     def fake_herdr(self, root: Path, capture: Path) -> Path:
         fake = root / "herdr"
