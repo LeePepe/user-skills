@@ -111,6 +111,25 @@ class TeamLeadModularTests(unittest.TestCase):
         self.assertEqual(payload["findings"], [])
         advisory_codes = {item["code"] for item in payload.get("advisories", [])}
         self.assertNotIn("l0-bytes-soft", advisory_codes)
+        self.assertNotIn("l1-bytes-soft", advisory_codes)
+        self.assertLessEqual((TEAM_LEAD_DIR / "references/bots-and-agents.md").stat().st_size, 12_288)
+
+    def test_writer_routing_agrees_on_leaf_drawer_and_pre_review_gate(self) -> None:
+        for path, drawer in ((SKILL_MD, "references/bots-and-agents.md"),
+                             (ROOT / "skills/m2-dispatcher/SKILL.md", "../team-lead/references/bots-and-agents.md")):
+            rows = [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("| Role: Writer |")]
+            self.assertEqual(rows, [f"| Role: Writer | `{drawer}` | `feedback_guard.py pre-review-check` |"])
+
+    def test_owned_paths_preserve_project_directories_not_repository_metadata(self) -> None:
+        paths = ("Resources/Assets", "Sources/Core", "App/Views", "Models/Domain", "Modules/Auth", "MyPkg/sub-module")
+        brief = "- **Repository**: `SomeOrg/another-repo`\n- **Owned Paths**: `LeePepe/user-skills`\n"
+        brief += "".join(f"  - `{path}`\n" for path in paths)
+        brief += "- **Interfaces**: `other/not-owned`\n"
+        self.assertEqual(self.feedback_guard.extract_owned_paths_from_brief(brief), list(paths))
+        self.assertEqual(self.feedback_guard._normalize_owned_token("octo/repo"), "")
+        for path in paths:
+            self.assertTrue(self.feedback_guard._matches_owned_path(f"{path}/file.swift", paths))
+        self.assertFalse(self.feedback_guard._matches_owned_path("Sources/CoreExtra/file.swift", paths))
 
     def test_cli_flag_aliases_and_self_disclosing_parsers(self) -> None:
         from skill_runtime.cli_contract import SelfDisclosingArgumentParser

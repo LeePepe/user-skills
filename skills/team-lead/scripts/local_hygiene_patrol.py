@@ -357,39 +357,45 @@ def _is_protected_or_m2_agent(agent: Mapping[str, Any], workspaces_by_id: Mappin
     return False, ""
 
 
-def _match_agent_to_goal(
-    agent: Mapping[str, Any],
-    ledgers: Mapping[str, Mapping[str, Any]],
-) -> str | None:
+_ROLE_SUFFIX = r"(?:goal-tl-r[a-z0-9]+|team-lead-r[a-z0-9]+|(?:writer|reviewer|rev|explorer|exp|pr-monitor|prmon|designer|des)[a-z0-9_]*(?:-[a-z0-9_]+)*)"
+
+
+def _valid_goal_suffix(suffix: str) -> bool:
+    return bool(re.fullmatch(rf"(?:(?:tk|t)\d+[a-z0-9]*-)?{_ROLE_SUFFIX}", suffix))
+
+
+def _match_goal_name(name: str, ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    ordered = sorted(ledgers.items(), key=lambda kv: len(kv[0]), reverse=True)
+    if name in ledgers:
+        return name
+    prefixes = [(g, g) for g, _ in ordered if name.startswith(g + "-")]
+    if not prefixes:
+        prefixes = [(g, str(m.get("tl_stem"))) for g, m in ordered
+                    if m.get("tl_stem") and name.startswith(str(m["tl_stem"]) + "-")]
+    if prefixes:
+        longest = max(len(prefix) for _, prefix in prefixes)
+        matches = {g for g, prefix in prefixes if len(prefix) == longest and _valid_goal_suffix(name[len(prefix) + 1:])}
+        return next(iter(matches)) if len(matches) == 1 else "__ambiguous__"
+    stem = _tl_stem(name) or name
+    matches = [g for g, _ in ordered if _stem_matches_goal(stem, g)]
+    if matches and stem != name and not _valid_goal_suffix(name[len(stem) + 1:]):
+        return "__ambiguous__"
+    return matches[0] if len(matches) == 1 else ("__ambiguous__" if matches else None)
+
+
+def _match_agent_to_goal(agent: Mapping[str, Any], ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
     name = str(agent.get("name") or agent.get("agent_name") or "").strip()
-    cwd = str(agent.get("cwd") or agent.get("foreground_cwd") or "").strip()
-    title = str(agent.get("terminal_title_stripped") or agent.get("terminal_title") or "")
-
-    for goal_name, meta in ledgers.items():
-        if name and (name == meta.get("tl_name") or name in (meta.get("agent_refs") or ())):
-            return goal_name
-
-    stem = _tl_stem(name)
-    if stem:
-        if stem in ledgers:
-            return stem
-        matches = [g for g in ledgers if _stem_matches_goal(stem, g)]
-        if len(matches) == 1:
-            return matches[0]
-
-    for goal_name, meta in ledgers.items():
-        tl_stem_val = str(meta.get("tl_stem") or "")
-        if tl_stem_val and name.startswith(tl_stem_val + "-"):
-            return goal_name
-        if goal_name and name.startswith(goal_name + "-"):
-            return goal_name
-
-    for goal_name in sorted(ledgers, key=len, reverse=True):
-        if cwd and (cwd.endswith(f"/{goal_name}") or f"/worktrees/{goal_name}" in cwd or f"/handoff/{goal_name}" in cwd):
-            return goal_name
-        if goal_name and f"/handoff/{goal_name}/" in title:
-            return goal_name
-    return None
+    matches = {_match_goal_name(name, ledgers)} - {None}
+    refs = {g for g, m in ledgers.items() if name and (name == m.get("tl_name") or name in (m.get("agent_refs") or ()))}
+    matches.update(refs)
+    for value in (agent.get("cwd") or agent.get("foreground_cwd"), agent.get("terminal_title_stripped") or agent.get("terminal_title")):
+        text = str(value or "")
+        matches.update(g for g in ledgers if re.search(rf"/{re.escape(g)}(?=/|$|[\s'\"])", text))
+        for slug in re.findall(r"/(?:worktrees|handoff)/([A-Za-z0-9_.-]+)", text):
+            match = _match_goal_name(slug, ledgers)
+            if match:
+                matches.add(match)
+    return next(iter(matches)) if len(matches) == 1 else ("__ambiguous__" if matches else None)
 
 
 def scan_herdr_panes(
@@ -431,6 +437,10 @@ def scan_herdr_panes(
 
         matched_goal = _match_agent_to_goal(agent, ledgers)
         goal_meta = ledgers.get(matched_goal) if matched_goal else None
+        if matched_goal == "__ambiguous__":
+            active_m1_panes.append({"pane_id": pane_id, "workspace_id": ws_id, "name": name,
+                                    "status": status, "goal": None, "reason": "ambiguous_goal_identity"})
+            continue
 
         # Duplicate M1 pane name check
         if name and name in seen_agent_names and status in {"done", "idle", "exited"}:
@@ -578,17 +588,11 @@ def _is_worktree_held(worktree: Path, held_goals: set[str]) -> bool:
     if (worktree / ".hold").exists() or (worktree / ".keep").exists():
         return True
     wt_name = worktree.name
-    return any(wt_name == g or wt_name.startswith(g + "-") for g in held_goals)
+    return wt_name in held_goals or any(wt_name.startswith(g + "-") and _valid_goal_suffix(wt_name[len(g) + 1:]) for g in held_goals)
 
 
 def _match_worktree_to_goal(worktree: Path, ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
-    wt_name = worktree.name
-    if wt_name in ledgers:
-        return wt_name
-    for goal_name in sorted(ledgers, key=len, reverse=True):
-        if wt_name == goal_name or wt_name.startswith(goal_name + "-") or _stem_matches_goal(wt_name, goal_name):
-            return goal_name
-    return None
+    return _match_goal_name(worktree.name, ledgers)
 
 
 def _is_positively_merged(
@@ -602,6 +606,8 @@ def _is_positively_merged(
 ) -> bool:
     """Require positive merge evidence; never classify a fresh 0-commit branch as merged."""
     matched_goal = _match_worktree_to_goal(wt_path, ledgers)
+    if matched_goal == "__ambiguous__":
+        return False
     goal_meta = ledgers.get(matched_goal) if matched_goal else None
 
     if not branch:
@@ -739,6 +745,7 @@ def scan_worktrees(
                 )
             has_active_pane = int(active_detected)
             is_held = int(_is_worktree_held(wt_path, held_goals))
+            ambiguous_goal = _match_worktree_to_goal(wt_path, ledgers) == "__ambiguous__"
             if merge_checker is not None:
                 merged_bool = merge_checker(repo_dir, branch)
             else:
@@ -756,10 +763,10 @@ def scan_worktrees(
                 "has_active_pane": has_active_pane,
                 "is_held": is_held,
             }
-            if is_dirty == 0 and is_merged_to_default == 1 and has_active_pane == 0 and is_held == 0:
+            if is_dirty == 0 and is_merged_to_default == 1 and has_active_pane == 0 and is_held == 0 and not ambiguous_goal:
                 repo_clean.append(record)
             else:
-                reasons: list[str] = []
+                reasons: list[str] = ["ambiguous_goal_identity"] if ambiguous_goal else []
                 if is_dirty:
                     reasons.append("dirty")
                 if not is_merged_to_default:

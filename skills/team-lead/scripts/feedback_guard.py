@@ -8,6 +8,7 @@ import fnmatch
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any, Mapping, Sequence
@@ -599,12 +600,9 @@ def _normalize_owned_token(raw: str) -> str:
     token = raw.strip().strip("\"'").lstrip("./")
     if not token or " " in token or token.startswith(("-", "http://", "https://", "~/")):
         return ""
-    # Skip GitHub owner/repo slugs like `LeePepe/user-skills` in Owned Paths headers.
-    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", token) and "." not in token.split("/", 1)[0]:
-        first_seg = token.split("/", 1)[0]
-        if first_seg[0].isupper() or "-" in token.split("/", 1)[1] and "." not in token.split("/", 1)[1]:
-            if first_seg not in {"skills", "scripts", "references", "tests", "docs", "src", "apps", "packages"}:
-                return ""
+    # Only known metadata owners are excluded; casing/hyphens also occur in project paths.
+    if re.fullmatch(r"(?:LeePepe|octo)/[A-Za-z0-9_.-]+", token, re.I):
+        return ""
     if "/" not in token and "." not in token and "*" not in token:
         return ""
     return token.rstrip("/") if not token.endswith("/**") else token
@@ -643,9 +641,13 @@ def _is_populated_token(val: str) -> bool:
     return bool(cleaned) and cleaned.lower() not in _PLACEHOLDER_VALS
 
 
+def _receipt_failed(text: str) -> bool:
+    return bool(re.search(r"(?im)^[\s>*-]*(?:\*\*)?(?:verification(?:\s+commands?)?|v5(?:\s+verdict)?|verdict|status)(?:\*\*)?[\s*`]*[:|=-][ \t]*[*`\"']*(?:fail(?:ed|ure)?|error|blocked|cancelled)\b", text))
+
+
 def validate_r10_receipt(receipt_text: str) -> list[str]:
     """Check required R10 receipt sections/fields (real Commit SHA, actual Role + Model, non-empty Verification/V5)."""
-    violations: list[str] = []
+    violations: list[str] = ["failed_receipt_verification: R10 records failed verification/status"] if _receipt_failed(receipt_text) else []
     sha_match = re.search(
         r"(?im)^[\s>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
@@ -654,8 +656,7 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
     if not re.search(r"\b[0-9a-f]{7,40}\b", sha_val, re.IGNORECASE):
         violations.append("missing_receipt_commit_sha: R10 receipt must record a real 7-40 hex Commit SHA")
 
-    has_role = False
-    has_model = False
+    has_role = has_model = False
     combined_rm = re.search(
         r"(?im)^[\s>*-]*(?:\*\*)?role\s*/\s*model(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
@@ -701,22 +702,11 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
         if v5_val and v5_val.lower() not in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
             has_verif_value = True
     if not has_verif_value:
-        sec_match = re.search(
-            r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)",
-            receipt_text,
-        )
-        if sec_match:
-            sec_lines = [
-                ln.strip()
-                for ln in sec_match.group(1).splitlines()
-                if ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
-            ]
-            if sec_lines:
-                has_verif_value = True
+        sec_match = re.search(r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)", receipt_text)
+        has_verif_value = bool(sec_match and any(ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
+                                                for ln in sec_match.group(1).splitlines()))
     if not has_verif_value:
-        violations.append(
-            "missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result"
-        )
+        violations.append("missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result")
     return violations
 
 
@@ -791,7 +781,7 @@ def _receipt_role(receipt_text: str) -> str | None:
 
 
 def _normalize_shell_command(command: str) -> str:
-    normalized = re.sub(r"\s+", " ", command.strip())
+    normalized = command.strip()
     while True:
         previous = normalized
         normalized = re.sub(r"\s*(?:\(\s*)?exit\s*=\s*0\s*\)?\s*$", "", normalized, flags=re.IGNORECASE)
@@ -804,7 +794,7 @@ def _normalize_shell_command(command: str) -> str:
 def _receipt_verification_commands(receipt_text: str) -> list[str]:
     commands: list[str] = []
     pattern = re.compile(
-        r"(?im)^\s*(?:(?:[-*]|\d+[.)])\s*)?`?((?:python3|pytest|unittest|swiftlint)\b[^\n]*|(?:\./)?scripts/verify\b[^\n]*)"
+        r"(?im)^\s*(?:(?:[-*]|\d+[.)])\s*)?(?:Verification(?:\s+commands?)?\s*:\s*)?`?((?:python3|pytest|unittest|swiftlint|xcodebuild)\b[^\n]*|(?:swift\s+(?:test|build)|(?:npm|cargo|go)\s+test)\b[^\n]*|(?:\./)?scripts/verify\b[^\n]*)"
     )
     for match in pattern.finditer(receipt_text):
         command = _normalize_shell_command(match.group(1))
@@ -815,15 +805,9 @@ def _receipt_verification_commands(receipt_text: str) -> list[str]:
 
 def _event_values(value: Any) -> list[Any]:
     if isinstance(value, dict):
-        values = [value]
-        for nested in value.values():
-            values.extend(_event_values(nested))
-        return values
+        return [value] + [nested for item in value.values() for nested in _event_values(item)]
     if isinstance(value, list):
-        values: list[Any] = []
-        for item in value:
-            values.extend(_event_values(item))
-        return values
+        return [nested for item in value for nested in _event_values(item)]
     return [value]
 
 
@@ -856,14 +840,6 @@ def _event_exit_code(event: Any) -> int | None:
             if match:
                 return int(match.group(1))
 
-    for item in nested_values:
-        if not isinstance(item, dict):
-            continue
-        for key, value in item.items():
-            if key.lower() == "success" and value is True:
-                return 0
-            if key.lower() == "success" and value is False:
-                return 1
     return None
 
 
@@ -897,15 +873,58 @@ def _successful_event_commands(events_path: Path) -> list[str]:
     return successful
 
 
+def _command_argv(command: str) -> list[str]:
+    argv = shlex.split(command, comments=False)
+    while argv:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+            argv.pop(0)
+        elif argv[0] in {"env", "time", "nohup", "nice", "timeout"}:
+            wrapper = argv.pop(0)
+            while argv and argv[0].startswith("-"):
+                option = argv.pop(0)
+                if option in {"-u", "--unset", "-n", "--adjustment", "-k", "--kill-after", "-s", "--signal"} and argv:
+                    argv.pop(0)
+                elif option not in {"--", "-i", "--ignore-environment", "-p", "--preserve-status", "--foreground", "-v", "--verbose"} and "=" not in option:
+                    return []
+            if wrapper == "timeout":
+                if not argv or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", argv.pop(0)):
+                    return []
+        else:
+            break
+    return argv
+
+
 def _command_was_successful(claim: str, executed: list[str]) -> bool:
-    normalized_claim = _normalize_shell_command(claim)
-    for command in executed:
-        normalized_command = _normalize_shell_command(command)
-        if normalized_command == normalized_claim or normalized_claim in normalized_command:
-            return True
-        for part in re.split(r"&&|;", normalized_command):
-            if normalized_claim == part.strip() or normalized_claim in part.strip():
-                return True
+    try:
+        claimed = _command_argv(_normalize_shell_command(claim))
+        if not claimed:
+            return False
+        for command in executed:
+            shlex.split(command, comments=True)
+            # Keep quoted operators/data intact. Only a final command and its && predecessors
+            # have inferable exit=0 status; OR branches, pipelines and earlier ; commands do not.
+            parts, operators, current = [], [], ""
+            for match in re.finditer(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\\[\s\S]|(?P<comment>(?<![^\s;&|])#[^\n]*)|&&|\|\||[;|\n]|[^'\"\\#;&|\n]+|#", command):
+                token = match.group()
+                if match.lastgroup == "comment":
+                    continue
+                if token in {"&&", "||", ";", "|", "\n"}:
+                    parts.append(current); operators.append(token); current = ""
+                else:
+                    current += token
+            parts.append(current)
+            if "||" in operators or "<<" in command:
+                continue
+            while parts and not parts[-1].strip():
+                parts.pop()
+                if operators: operators.pop()
+            for index in range(len(parts) - 1, -1, -1):
+                if _command_argv(parts[index]) == claimed:
+                    return True
+                if index == 0 or operators[index - 1] != "&&":
+                    break
+    except ValueError:
+        return False
     return False
 
 
@@ -1150,6 +1169,8 @@ def run_pre_review_check(
         require_ui_traceback=require_ui_traceback, design_spec=design_spec,
     )
     violations.extend(ui_violations)
+    if any(item["code"] == "ui_unresolved_impl_bug" for item in ui_violations):  # Prefer the specific UI failure diagnosis.
+        violations = [item for item in violations if item["code"] != "failed_receipt_verification"]
     report: dict[str, Any] = {
         "ok": len(violations) == 0,
         "worktree": str(wt),
@@ -1235,6 +1256,8 @@ def _receipt_summary(path: Path) -> dict[str, Any]:
             violations.append("missing_receipt_role_or_model")
         if not _is_populated_token(status or ""):
             violations.append("missing_receipt_status")
+        if any(_receipt_failed(f"{key.replace('_', ' ')}: {value}") for key, value in data.items()):
+            violations.append("failed_receipt_verification")
     return {
         "name": path.name,
         "path": str(path),

@@ -13,7 +13,7 @@ Canonical skill: `m2-dispatcher`; role **M2-Dispatcher**. Task-level 1-Hop execu
 |---|---|---|
 | Role: M2-Dispatcher | `references/pr-dag-auto-heal.md` | `goal-supervisor.py status --check` |
 | Role: M1-TL | `../team-lead/references/ledger.md` | `goal-queue.py next-wave --mark-in-progress` |
-| Role: Writer | `../team-lead/references/bots-and-agents.md` | `herdr-dispatch.sh --role writer` |
+| Role: Writer | `../team-lead/references/bots-and-agents.md` | `feedback_guard.py pre-review-check` |
 | Role: Reviewer | `../team-lead/references/ledger.md` | `feedback_guard.py pre-review-check` |
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
