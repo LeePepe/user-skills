@@ -213,16 +213,16 @@ case "$ROLE" in
   research_co) [[ -n "$KIND" ]] || KIND="cursor" ;;
 esac
 
-INFERRED_GOAL_CONTEXT=0
+USER_SKILLS_DIR="$HOME/Development/user-skills"; WORKTREES_ROOT="${HERDR_WORKTREES_ROOT:-$HOME/Development/worktrees}"; REQUESTED_CWD="$CWD"; INFERRED_GOAL_CONTEXT=0
 if [[ "$ROLE" == "team_lead" && "$ORIGINAL_NAME" =~ ^([a-z0-9][a-z0-9_-]*)-goal-tl-r[0-9]+$ ]]; then
   GOAL_NAME="${BASH_REMATCH[1]}"
   HANDOFF_ROOT="${HERDR_HANDOFF_ROOT:-$HOME/Development/handoff}"
-  WORKTREES_ROOT="${HERDR_WORKTREES_ROOT:-$HOME/Development/worktrees}"
   GOAL_HANDOFF_DIR="$HANDOFF_ROOT/$GOAL_NAME"
   if [[ -f "$GOAL_HANDOFF_DIR/spec.md" ]]; then
     if [[ -z "$CWD" ]]; then
       if [[ -d "$WORKTREES_ROOT/$GOAL_NAME" ]]; then
         CWD="$WORKTREES_ROOT/$GOAL_NAME"
+      elif [[ -d "$USER_SKILLS_DIR" ]] && { [[ "$GOAL_NAME" =~ ^(skill-retro|agent-retro|us|user-skills)- ]] || grep -qi 'user-skills' "$GOAL_HANDOFF_DIR/spec.md" "$GOAL_HANDOFF_DIR/ledger.md" 2>/dev/null; }; then CWD="$USER_SKILLS_DIR"
       else
         CWD="$GOAL_HANDOFF_DIR"
       fi
@@ -237,6 +237,7 @@ if [[ "$INFERRED_GOAL_CONTEXT" -eq 1 ]]; then
   printf '[herdr-dispatch] Advisory: inferred --cwd/--prompt from %s/spec.md. See skills/team-lead/references/bots-and-agents.md\n' "$GOAL_HANDOFF_DIR" >&2
 fi
 
+if [[ -n "$CWD" && ! -d "$CWD" ]]; then REQUESTED_CWD="${REQUESTED_CWD:-$CWD}"; FALLBACK_CWD="$USER_SKILLS_DIR"; if [[ ! -d "$FALLBACK_CWD" ]]; then FALLBACK_CWD="$CWD"; while [[ ! -d "$FALLBACK_CWD" && "$FALLBACK_CWD" != "/" ]]; do FALLBACK_CWD="$(dirname "$FALLBACK_CWD")"; done; [[ "$FALLBACK_CWD" == "/" || "$FALLBACK_CWD" == "$HOME" || ! -d "$FALLBACK_CWD" ]] && FALLBACK_CWD="$HOME/Development"; fi; printf '[herdr-dispatch] Advisory: requested --cwd %s does not exist; using existing fallback %s. See skills/team-lead/references/bots-and-agents.md\n' "$CWD" "$FALLBACK_CWD" >&2; CWD="$FALLBACK_CWD"; fi; REQUESTED_CWD_PARENT="${REQUESTED_CWD:+$(dirname "$REQUESTED_CWD")}"
 # Entry coordinators (normal CLI, Grok Bot local-exec-daemon, Cindy) launching a Goal Steering TL
 # outside a Herdr pane automatically bootstrap a background Herdr workspace.
 if [[ "$ROLE" == "team_lead" && -z "$TARGET_WORKSPACE_ID" && ( "${HERDR_ENV:-}" != "1" || -z "$SRC_PANE" ) ]]; then
@@ -716,10 +717,9 @@ if [[ -d "$CWD" && "${HERDR_SKIP_GIT_AUTHOR:-0}" != "1" ]]; then
 fi
 
 if [[ -z "${MOCK_HERDR_LOG:-}" && "${HERDR_DISPATCH_SKIP_TRUST:-0}" != "1" ]]; then
-  python3 - "$KIND" "$CWD" "$MAIN_REPO_DIR" "$HOME/Development/user-skills" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AIDashSync" <<'PY' || true
+  python3 - "$KIND" "$CWD" "$MAIN_REPO_DIR" "$USER_SKILLS_DIR" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AIDashSync" "$WORKTREES_ROOT" "$REQUESTED_CWD_PARENT" <<'PY' || true
 import json, os, pathlib, re, sys
-
-kind, cwd_arg, main_repo_arg, user_skills_arg, aidash_sync_arg = sys.argv[1:]
+kind, cwd_arg, main_repo_arg, user_skills_arg, aidash_sync_arg, worktrees_arg, requested_parent_arg = sys.argv[1:]
 home = pathlib.Path.home()
 candidates = []
 extra_env = [p for p in os.environ.get("HERDR_EXTRA_ADD_DIRS", "").split(":") if p.strip()]
@@ -745,7 +745,7 @@ for raw in (
     aidash_sync_arg,
     str(home / "Development"),
     str(home / "Development" / "handoff"),
-    str(home / "Development" / "worktrees"),
+    str(home / "Development" / "worktrees"), worktrees_arg, requested_parent_arg,
     str(home / "orca"),
     str(home / "orca" / "workspaces"),
     "/tmp",
@@ -891,7 +891,7 @@ if [[ "$KIND" == "copilot" ]]; then
   BASELINE_ADD_DIRS=(
     "$CWD"
     "$MAIN_REPO_DIR"
-    "$HOME/Development/user-skills"
+    "$WORKTREES_ROOT" "$REQUESTED_CWD_PARENT" "$USER_SKILLS_DIR"
     "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AIDashSync"
     "$HOME/Development"
     "$HOME/.copilot"
@@ -1051,7 +1051,7 @@ PY
     else
       WS_CWD="$HOME/Development"
     fi
-  fi
+  fi; if [[ ! -d "$WS_CWD" || "$WS_CWD" == "$HOME" ]]; then [[ -d "$USER_SKILLS_DIR" ]] && WS_CWD="$USER_SKILLS_DIR" || WS_CWD="$HOME/Development"; fi
   WS_LABEL="${WORKSPACE_LABEL:-${TAB_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}}"
   WS_JSON="$(
     herdr workspace create \
