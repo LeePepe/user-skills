@@ -886,6 +886,31 @@ class SkillRetroDiagnosticTests(unittest.TestCase):
                 )
                 self.assertIn("WITHOUT spawning a Writer or Reviewer", Path(b_item["goal_spec_path"]).read_text(encoding="utf-8"))
 
+    def test_m1_dispatch_cwd_prefers_existing_worktree_then_existing_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dev_root = root / "dev"
+            (dev_root / "worktrees").mkdir(parents=True)
+            user_skills = dev_root / "user-skills"
+            user_skills.mkdir()
+            existing_worktree = dev_root / "worktrees" / "skill-retro-existing"
+            existing_worktree.mkdir()
+            selected = [{"skill": "my-designer", "goal_id": "skill-retro-existing", "worktree_dir": str(existing_worktree)}]
+            existing_plan = SKILL_RETRO.build_m2_dispatch_plan(selected, handoff_root=root / "handoff", dev_root=dev_root)
+            existing_dispatch = existing_plan["parallel_m1_dispatches"][0]
+            self.assertEqual(existing_dispatch["dispatch_cwd"], str(existing_worktree))
+            self.assertIn(f"--cwd {existing_worktree}", existing_dispatch["herdr_dispatch_cmd"])
+
+            missing = dev_root / "worktrees" / "skill-retro-missing"
+            missing_plan = SKILL_RETRO.build_m2_dispatch_plan(
+                [{"skill": "team-lead", "goal_id": "skill-retro-missing", "worktree_dir": str(missing)}],
+                handoff_root=root / "handoff",
+                dev_root=dev_root,
+            )
+            missing_dispatch = missing_plan["parallel_m1_dispatches"][0]
+            self.assertEqual(missing_dispatch["dispatch_cwd"], str(user_skills))
+            self.assertIn(f"--cwd {user_skills}", missing_dispatch["herdr_dispatch_cmd"])
+
     def test_one_m2_to_parallel_m1_tls_and_rollup_to_single_m2(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
