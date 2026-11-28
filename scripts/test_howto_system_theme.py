@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -177,13 +179,23 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
                 self.assertLess(len(proc.stdout.encode("utf-8")), 12288)
 
     def test_skill_retro_probes_report_post_fix_contracts(self) -> None:
-        howto_probe = subprocess.run(
-            [sys.executable, str(SKILL_RETRO), "probe", "--skill", "howto", "--fast", "--json"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        def run_isolated_probe(skill: str) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory(prefix="howto-probe-") as home_dir:
+                home = Path(home_dir)
+                (home / "Development").mkdir()
+                (home / "Development" / "user-skills").symlink_to(ROOT)
+                env = os.environ.copy()
+                env["HOME"] = home_dir
+                return subprocess.run(
+                    [sys.executable, str(SKILL_RETRO), "probe", "--skill", skill, "--fast", "--json"],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+        howto_probe = run_isolated_probe("howto")
         self.assertEqual(howto_probe.returncode, 0, howto_probe.stderr)
         howto_signals = json.loads(howto_probe.stdout)["skills"][0]["signals"]
         self.assertEqual(howto_signals["l1_unwired_drawers"], 0)
@@ -191,13 +203,7 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
         self.assertEqual(howto_signals["aci_output_bloat_count"], 0)
         self.assertEqual(howto_signals["internal_doc_cli_drift_count"], 0)
 
-        workflow_probe = subprocess.run(
-            [sys.executable, str(SKILL_RETRO), "probe", "--skill", "workflow-hub", "--fast", "--json"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        workflow_probe = run_isolated_probe("workflow-hub")
         self.assertEqual(workflow_probe.returncode, 0, workflow_probe.stderr)
         workflow_signals = json.loads(workflow_probe.stdout)["skills"][0]["signals"]
         self.assertFalse(workflow_signals["eval_escape_gap"])
