@@ -32,7 +32,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ## 3. M2 全局拆解 → M1 细节落实四步铁律
 
-1. **首步必跑 `howto_flow.py` 查图谱搭积木**：先运行 `python3 skills/howto/scripts/howto_flow.py --lookup "<场景>" --json`（或 `--list-nodes --json` / `--scaffold-tuple "<任务>" --json`）解析 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)，定位复用节点、目标技能与对应 `TK-xx` 断链。
+1. **首步必跑 `howto_flow.py` 查图谱搭积木**：先运行 `python3 skills/howto/scripts/howto_flow.py --lookup "<场景>" --json`（或 `--list-nodes --json` / `--scaffold-tuple "<任务>" --json`）解析 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)，定位复用节点、目标技能与对应 `TK-xx` 断链。英文按词边界、节点按完整 ID 匹配；零命中返回 `unresolved: true`、`matched_scenario: null` 与空 `matched_nodes`，`fallback_nodes` 仅为脚手架候选，不代表命中。空目录 fail closed；`--group` 的断链计数仅统计所列边。
 2. **M2 只列全局五元组，不翻代码**：向 Owner 输出 `Inbound（来源） → Internal（本节点独有逻辑） → Calls（子节点） → PointsTo（去向） → Trigger & Notify（Manual / Hook / Pulse + P0/P1/P2）`，标出 `✅ 已具备` 与 `🔴 待 M1 调查/补齐`，并用 [`scripts/howto_guard.py`](scripts/howto_guard.py)（`validate-recipe` / `check-nodes` / `audit-5tuple`）零 Token 校验五元组完整性、合法节点（含 `I1–I7`）与四库隔离红线。
 3. **细节调查与实现派给右侧 M1**：Owner 拍板后，加载 [`m2-dispatcher`](../m2-dispatcher/SKILL.md) 与 [`team-lead`](../team-lead/SKILL.md)，通过 `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` 拉起 M1；M1 在独立 Worktree 查清技术细节、写 `~/Development/handoff/<goal>/spec.md` 并实现。
 4. **闭环回写图谱或独立建 Skill**：组合串联且 `Internal` 薄时，更新 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md) 消除断链或追加配方；含厚领域知识、专用 CLI/API 或确定性门禁时，调用 [`skill-contract`](../skill-contract/SKILL.md) 按四层归位创建独立 Skill，并下沉脚本。

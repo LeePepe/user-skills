@@ -268,6 +268,135 @@ class Tia2HowtoGuardrailTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.hg = _load_module("tia2_howto_guard", HOWTO_GUARD)
+        cls.flow = _load_module("tia2_howto_flow_regressions", HOWTO_FLOW)
+
+    def test_design_route_uses_supported_taste_evolution_subcommand(self):
+        commands = [cmd for route in self.flow._SKILL_CLI_ROUTES for cmd in route["cli_commands"]]
+        taste_commands = [cmd for cmd in commands if "taste_evolution_loop.py" in cmd]
+        self.assertTrue(taste_commands)
+        for cmd in taste_commands:
+            self.assertNotIn("taste_evolution_loop.py scan", cmd)
+            proc = subprocess.run(cmd.split() + ["--help"], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_lookup_node_ids_do_not_collide_or_expand_reference_mentions(self):
+        for query, expected in (("E1", "E1"), ("e1", "E1"), ("E4a", "E4a")):
+            with self.subTest(query=query):
+                result = self.flow.lookup_howto(query)
+                self.assertEqual([node["id"] for node in result["matched_nodes"]], [expected])
+                self.assertFalse(result["unresolved"])
+                self.assertEqual(result["matched_scenario"], "direct_node_match")
+                self.assertTrue(result["matched_broken_edges"])
+                for edge in result["matched_broken_edges"]:
+                    self.assertTrue(self.flow._node_id_matches(expected, edge["edge"]), edge)
+                if expected == "E1":
+                    self.assertTrue({"TK-10", "TK-11"}.isdisjoint(
+                        edge["id"] for edge in result["matched_broken_edges"]
+                    ))
+
+    def test_feature_lookup_uses_english_boundaries_and_preserves_cjk(self):
+        result = self.flow.lookup_howto("build feature")
+        self.assertFalse(result["unresolved"])
+        self.assertEqual(result["matched_scenario"], "feature")
+        self.assertIn("E1", [node["id"] for node in result["matched_nodes"]])
+        self.assertNotIn("E7", [node["id"] for node in result["matched_nodes"]])
+        self.assertTrue({"my-designer", "design-studio"}.isdisjoint(result["target_skills"]))
+        for query in ("AI metric", "AI metrics", "新增指标"):
+            with self.subTest(query=query):
+                metrics = self.flow.lookup_howto(query)
+                self.assertFalse(metrics["unresolved"])
+                self.assertIn("aidash-metrics", metrics["target_skills"])
+        self.assertFalse(self.flow.lookup_howto("分类邮件")["unresolved"])
+
+    def test_lookup_catalog_node_and_edge_keywords_require_whole_ascii_words(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "skills" / "howto") as tmp:
+            doc = Path(tmp) / "nodes.md"
+            doc.write_text(
+                "### Group A: test\n"
+                "| O1 Builder | Manual | builder | none | none | none |\n"
+                "| O2 Build Feature | Manual | build feature | none | none | none |\n"
+                "| O3 UI | Manual | UI | none | none | none |\n"
+                "## §4 Edges\n"
+                "| TK-01 | Builder only | Manual | test | built |\n"
+                "| TK-02 | Build Feature | Manual | test | build |\n",
+                encoding="utf-8",
+            )
+            for query in ("build", "build feature"):
+                with self.subTest(query=query):
+                    result = self.flow.lookup_howto(query, nodes_doc=doc)
+                    self.assertEqual([n["id"] for n in result["matched_nodes"]], ["O2"])
+                    self.assertEqual([e["id"] for e in result["matched_broken_edges"]], ["TK-02"])
+
+    def test_unresolved_lookup_is_explicit_and_scaffold_remains_valid(self):
+        query = "zzzz_nonexistent_xyz_999"
+        result = self.flow.lookup_howto(query)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["unresolved"])
+        self.assertIsNone(result["matched_scenario"])
+        self.assertEqual(result["matched_nodes"], [])
+        self.assertEqual(result["matched_broken_edges"], [])
+        self.assertEqual([n["id"] for n in result["fallback_nodes"]], ["E1", "E6", "E4", "E9"])
+        scaffold = self.flow.scaffold_tuple(query)
+        self.assertTrue(scaffold["guard_validation"]["ok"], scaffold)
+        self.assertIn("E1 → E6 → E4 → E9", scaffold["five_tuple"]["Internal"])
+
+    def test_zero_node_catalog_fails_closed_in_parser_and_cli(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "skills" / "howto") as tmp:
+            doc = Path(tmp) / "nodes.md"
+            for content in ("", "### Group A: empty\n| 节点 | 触发 | Inbound & Internal | Calls | PointsTo | 断链 |\n"):
+                with self.subTest(content=content):
+                    doc.write_text(content, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "zero node"):
+                        self.flow.parse_howto_catalog(doc)
+                    proc = subprocess.run(
+                        [sys.executable, str(HOWTO_FLOW), "--list-nodes", "--nodes-doc", str(doc), "--json"],
+                        cwd=ROOT, capture_output=True, text=True,
+                    )
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertFalse(json.loads(proc.stdout)["ok"])
+
+    def test_filtered_edge_count_and_node_id_boundaries(self):
+        unfiltered = self.flow.list_nodes()
+        group_a = self.flow.list_nodes(group="A")
+        self.assertEqual(group_a["broken_edge_count"], len(group_a["broken_edges"]))
+        self.assertGreater(group_a["broken_edge_count"], 0)
+        self.assertLess(group_a["broken_edge_count"], unfiltered["broken_edge_count"])
+        with tempfile.TemporaryDirectory(dir=ROOT / "skills" / "howto") as tmp:
+            doc = Path(tmp) / "nodes.md"
+            doc.write_text(
+                "### Group A: first\n| E1 Feature | Manual | feature | none | none | none |\n"
+                "### Group B: second\n| E10 PR | Pulse | PR | none | none | none |\n"
+                "## §4 Edges\n| TK-01 | E10→G2 | Pulse | test | PR |\n"
+                "| TK-02 | E1→G2 | Manual | test | feature |\n",
+                encoding="utf-8",
+            )
+            result = self.flow.list_nodes(group="A", nodes_doc=doc)
+            self.assertEqual(result["broken_edge_count"], 1)
+            self.assertEqual([e["id"] for e in result["broken_edges"]], ["TK-02"])
+
+    def test_catalog_has_distinct_node_and_edge_contracts_within_budget(self):
+        doc = self.flow.DEFAULT_NODES_DOC
+        text = doc.read_text(encoding="utf-8")
+        catalog = self.flow.parse_howto_catalog(doc)
+        self.assertNotIn("node-owned contract", text)
+        self.assertNotIn("restore declared edge", text)
+        self.assertLessEqual(len(text.splitlines()), 140)
+        self.assertLessEqual(len(text.encode("utf-8")), 11500)
+        expected_ids = {
+            *(f"E{i}" for i in range(1, 13)), "E4a", *(f"Q{i}" for i in range(1, 4)),
+            *(f"I{i}" for i in range(1, 8)), *(f"G{i}" for i in range(1, 3)),
+            *(f"P{i}" for i in range(1, 10)), *(f"O{i}" for i in range(1, 7)),
+        }
+        nodes = catalog["nodes"]
+        self.assertEqual({n["id"] for n in nodes}, expected_ids)
+        self.assertEqual(len(nodes), len(expected_ids))
+        self.assertEqual(len({n["inbound_internal"] for n in nodes}), len(nodes))
+        self.assertTrue(all(n["inbound_internal"] and n["points_to"] for n in nodes))
+        edges = catalog["broken_edges"]
+        self.assertEqual({e["id"] for e in edges}, {f"TK-{i:02d}" for i in range(1, 17)})
+        self.assertEqual(len({e["edge"] for e in edges}), len(edges))
+        self.assertEqual(len({e["acceptance_gate"] for e in edges}), len(edges))
+        self.assertTrue(self.hg.validate_recipe(text)["ok"])
 
     def test_valid_recipe_passes_5tuple_nodes_and_redlines(self):
         text = (
