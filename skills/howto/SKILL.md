@@ -36,10 +36,10 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ## 3. M2 全局拆解 → M1 细节落实四步铁律
 
-1. **首步跑 `howto_flow.py`**：先跑 `--lookup`/`--pyramid`/`--scaffold-tuple` 解析 [`how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)，定位复用节点、技能与 `TK-xx` 断链。
-2. **M2 只列五元组，不翻代码**：输出 `Inbound → Internal → Calls → PointsTo → Trigger & Notify`（标 `✅ 已具备` / `🔴 待 M1 调查`），用 [`scripts/howto_guard.py`](scripts/howto_guard.py)（`validate-recipe` / `check-nodes` / `audit-5tuple`）零 Token 校验合法节点与红线。
-3. **细节交右侧 M1**：拍板后加载 [`m2-dispatcher`](../m2-dispatcher/SKILL.md) 与 [`team-lead`](../team-lead/SKILL.md)，经 `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` 在独立 Worktree 写 `~/Development/handoff/<goal>/spec.md` 并实现。
-4. **闭环回写或建 Skill**：`Internal` 薄则更新 [`how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)；含厚领域知识、专用 CLI/API 或确定性门禁则调 [`skill-contract`](../skill-contract/SKILL.md) 建独立 Skill 并下沉脚本。
+1. **首步必跑 `howto_flow.py` 查图谱搭积木**：先运行 `python3 skills/howto/scripts/howto_flow.py --lookup "<场景>" --json`（或 `--pyramid`/`--list-nodes --json`/`--scaffold-tuple`）解析 [`how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)，定位复用节点、技能与 `TK-xx` 断链。英文按词边界、节点按完整 ID 匹配；零命中返回 `unresolved: true`、`matched_scenario: null` 与空 `matched_nodes`；空目录 fail closed。
+2. **M2 只列全局五元组，不翻代码**：输出 `Inbound → Internal → Calls → PointsTo → Trigger & Notify`（标 `✅ 已具备` / `🔴 待 M1 调查`），用 [`scripts/howto_guard.py`](scripts/howto_guard.py)（`validate-recipe` / `check-nodes` / `audit-5tuple`）零 Token 校验合法节点与红线。
+3. **细节调查与实现派给右侧 M1**：拍板后加载 [`m2-dispatcher`](../m2-dispatcher/SKILL.md) 与 [`team-lead`](../team-lead/SKILL.md)，经 `herdr-dispatch.sh --pane "$HERDR_PANE_ID" --direction right` 在独立 Worktree 写 `~/Development/handoff/<goal>/spec.md` 并实现。
+4. **闭环回写图谱或独立建 Skill**：`Internal` 薄则更新 [`how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)；含厚领域知识、专用 CLI/API 或确定性门禁则调 [`skill-contract`](../skill-contract/SKILL.md) 建独立 Skill 并下沉脚本。
 
 ## 4. 典型拆解示范
 

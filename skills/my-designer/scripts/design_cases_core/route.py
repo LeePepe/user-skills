@@ -3,20 +3,27 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 from pathlib import Path
+from typing import Any
 
 from . import shared
-from .shared import *
+from .shared import (
+    ALWAYS_LOAD_HIG,
+    DRAWER_GUIDANCE,
+    EXTERNAL_SKILL_SOURCES,
+    PLAN_A_LENSES,
+    ROOT,
+    WEB_DIMENSION_SLICES,
+    _csv,
+    _load_json,
+    _load_taxonomy,
+    _normalize_platform,
+    _read_json,
+    _resolve_persona_whitespace,
+    _save_json,
+)
 
-for _name in dir(shared):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(shared, _name))
-
-def _read_json(path):
-    try:
-        return json.loads(Path(path).read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return None
 
 def match_active_cases(cases_doc: dict[str, Any], platform: str, dimensions: list[str], container: str | None = None) -> list[dict[str, Any]]:
     matched = []
@@ -63,8 +70,12 @@ def command_route(args: argparse.Namespace) -> int:
     active_plan_c = match_active_cases(cases_doc, args.platform, dims, args.container)
     layering_dims = {"layout-navigation", "component", "chart-dataviz", "motion-interaction"}
     breathing_dims = {"visual-style", "color-palette", "layout-navigation", "typography-copy"}
+    navigation_dims = {"layout-navigation", "component"}
+    modernization_dims = {"subtractive", "modernization", "layout-navigation", "component", "typography-copy"}
     disclose_layering = (not dims) or bool(set(dims) & layering_dims) or bool(active_plan_c)
     disclose_breathing = (not dims) or bool(set(dims) & breathing_dims)
+    disclose_navigation = (not dims) or bool(set(dims) & navigation_dims)
+    disclose_modernization = (not dims) or bool(set(dims) & modernization_dims) or any(c.get("id") == "DC-015" for c in active_plan_c)
     dim_set = set(dims)
     ext_root = "~/Development/Personal/collected-tools/repos"
     if args.platform in ("desktop", "mobile"):
@@ -461,6 +472,14 @@ def command_route(args: argparse.Namespace) -> int:
             "tier_1_universal_invariants": {
                 "alignment_grid_hierarchy_no_truncation": True,
                 "platform_navigation": "macOS NavigationSplitView/TopBar vs iOS NavigationStack/BottomDock vs Web semantic viewport",
+                "visual_semiotics_methodology": {
+                    "reference": "skills/my-designer/references/breathing-and-clarity.md",
+                    "bertin_retinal_variables": "Position, Value/Luminance, Hue, Size/Length, Shape/Glyph, Orientation, Texture/Dash decoded preattentively (100-200ms)",
+                    "tufte_data_ink_and_sparklines": "Maximize data-ink ratio (strip meta-labels); pair ~50% height .monospacedDigit() reading with ambient sparkline/zone strip",
+                    "few_bullet_graph": "3-layer ~16-20pt bar: qualitative range bands + live primary measure (•) + comparative marker ticks (|) for baseline/warning/limit",
+                    "norman_signifiers": "Flat muted surface + source glyph = read-only synced; recessed track + thumb/stepper = mutable; baseline dot (•) + offset-only ↺ reset",
+                    "shneiderman_mantra": "Overview first (Bento summary tiles + badge cluster + ↗ signifier), zoom and filter, then details-on-demand (spatial drill-down sheet)",
+                },
             },
             "tier_2_product_persona": {
                 "persona": persona_name,
@@ -501,6 +520,13 @@ def command_route(args: argparse.Namespace) -> int:
                 f"git -C {ext_root}/$r pull --ff-only; done"
             ),
             "appearance_ledger": "skills/my-designer/references/appearance-ledger.md",
+            "design_flow_architecture_ref": "skills/my-designer/references/design-flow-architecture.md",
+            "navigation_evidence_ref": (
+                "skills/my-designer/references/navigation-evidence-contract.md" if disclose_navigation else None
+            ),
+            "modernization_dimensions_ref": (
+                "skills/my-designer/references/modernization-dimensions.md" if disclose_modernization else None
+            ),
             "interaction_layering_ref": (
                 "skills/my-designer/references/interaction-layering.md" if disclose_layering else None
             ),
@@ -560,13 +586,14 @@ def command_register_case(args: argparse.Namespace) -> int:
 def command_flow_map(args: argparse.Namespace) -> int:
     cases_doc = _load_json(Path(args.cases_file))
     taxonomy = _load_taxonomy(args.taxonomy)
-    ds_refs = ROOT.parent / "design-studio" / "scripts" / "data"
-    desktop_vault = _read_json(ds_refs / "vault" / "desktop-macos.json") or {}
-    mobile_vault = _read_json(ds_refs / "vault" / "mobile-ios.json") or {}
-    web_vault = _read_json(ds_refs / "vault" / "web.json") or {}
-    catalog = _read_json(ds_refs / "catalog.json") or {}
+    active_root = ROOT if ROOT != shared._BASE_ROOT else shared.ROOT
+    ds_refs = active_root.parent / "design-studio" / "scripts" / "data"
+    desktop_vault = shared._read_json(ds_refs / "vault" / "desktop-macos.json") or {}
+    mobile_vault = shared._read_json(ds_refs / "vault" / "mobile-ios.json") or {}
+    web_vault = shared._read_json(ds_refs / "vault" / "web.json") or {}
+    catalog = shared._read_json(ds_refs / "catalog.json") or {}
 
-    l1_md_files = sorted(p for p in (ROOT / "references").glob("*.md") if not p.is_symlink())
+    l1_md_files = sorted(p for p in (active_root / "references").glob("*.md") if not p.is_symlink())
     l1_line_counts = {
         f"skills/my-designer/references/{p.name}": len(p.read_text(encoding="utf-8").splitlines())
         for p in l1_md_files

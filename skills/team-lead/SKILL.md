@@ -12,7 +12,7 @@ description: "Goal/Task work must load this skill: coordinate Steering -> Writer
 |---|---|---|
 | Role: M1-TL | `references/ledger.md` | `goal-supervisor.py status --check` |
 | Role: Designer | `references/bots-and-agents.md` | `herdr-dispatch.sh --role designer` |
-| Role: Writer | `references/playbook.md` | `ci-monitor.py workflow` |
+| Role: Writer | `references/bots-and-agents.md` | `feedback_guard.py pre-review-check` |
 | Role: Reviewer | `references/playbook.md` | `feedback_guard.py pre-review-check` |
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
@@ -83,6 +83,10 @@ description: "Goal/Task work must load this skill: coordinate Steering -> Writer
 - **Spec-First Requirement Change Rule**：需求或 UI 变更以 `spec.md`／`design.md` 为上游；`Steering`／`Explorer` 产 **Obsolete Test Manifest** 并记 **Deprecated Test Clauses to Remove/Rewrite**；`Code Writer` 先迁断言再实现，`Code/UI Reviewer` 护非废弃回归测试。
 - **V1 双轴 & V2 来源阻塞**：Axis 1 核范围规格，Axis 2 核测试真实性、质量与安全红线；本 diff 问题、验收失败、安全红线阻塞。UI 须过 `design_contract.py` 与 `my-designer` 门禁（含 `sips -g pixelWidth`、zero numeric truncation `…`、无 raw keys，禁以 “followed the brief verbatim” 降级 V2 P1 `FAIL`）。`Reviewer` 做 **Visual Traceback** 判 `[IMPL_BUG]`（退 Writer）或 `[SPEC_GAP]`（`Steering` 修订 `design.md` 重签 `spec_sha`；通用规则经 `skill_contract.py sink-rule` 入库）。
 - **V3–V5 复审、CI 与结论**：第 1 轮 FAIL 原写者修，第 2 轮用 `writer_escalated`，仍败转 `blocked`；改 CI 门禁须 Owner 批准；结论 `PASS`、`CONCERNS`、`WAIVED`、`FAIL`。
+
+## Herdr origin contract
+
+`herdr-dispatch.sh` appends the trailing `<!-- herdr-origin:v1 ... -->` watermark to agent-dispatch prompts and exports `HERDR_SPAWN_ORIGIN`, `HERDR_AGENT_ROLE`, and `HERDR_PARENT_PANE` to child sessions. Existing routed-human watermarks are preserved; titles and summaries strip the comment before display.
 
 ## CLI 用法与 UI Inner Loop
 

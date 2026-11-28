@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command
+from .constants_and_paths import _run_command, strip_herdr_origin_comments
 
 def _extract_command_block_from_frame(frame_text: str) -> str | None:
     """Extract the full command block from an active command confirmation frame, or None if multiline/ambiguous."""
@@ -616,7 +616,7 @@ def _classify_and_unblock_dialog(
     )
 
 def _summarize_visible_lines(text: str, *, max_lines: int = 8) -> str:
-    raw_lines = [re.sub(r"\s+", " ", line).strip(" ┃│╻╹▄▀") for line in _text(text).splitlines()]
+    raw_lines = [re.sub(r"\s+", " ", line).strip(" ┃│╻╹▄▀") for line in strip_herdr_origin_comments(text).splitlines()]
     word_lines = [line for line in raw_lines if re.search(r"\w", line)]
     filtered = [line for line in word_lines if not _VOLATILE_TUI_CHROME_RE.search(line)]
     chosen = filtered if filtered else word_lines

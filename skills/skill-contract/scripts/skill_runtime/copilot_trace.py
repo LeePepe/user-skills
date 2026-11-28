@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .cli_contract import parse_herdr_origin_tag
+
 _NOISE = {"hook.start", "hook.end", "session.usage_checkpoint", "skill.context_delivered_ref"}
 _EXIT = re.compile(r"<shellId: [^\n>]*completed with exit code (\d+)", re.I)
 
@@ -28,7 +30,7 @@ def _content(value: Any) -> str:
 
 
 def _pair_events(path: Path, lines: list[dict[str, Any]]) -> dict[str, Any]:
-    session: dict[str, Any] = {"path": str(path), "events": [], "tool_calls": [], "assistant_turns": [], "skills": [], "subagents": [], "reasoning_chars": 0, "output_tokens": 0}
+    session: dict[str, Any] = {"path": str(path), "events": [], "tool_calls": [], "assistant_turns": [], "user_turns": [], "skills": [], "subagents": [], "reasoning_chars": 0, "output_tokens": 0}
     starts: dict[str, dict[str, Any]] = {}
     for raw in lines:
         kind, data = _event(raw)
@@ -37,6 +39,13 @@ def _pair_events(path: Path, lines: list[dict[str, Any]]) -> dict[str, Any]:
         session["events"].append(raw)
         if kind == "session.start":
             session.update({key: data[key] for key in ("cwd", "selectedModel", "sessionId") if key in data})
+        if kind == "user.message":
+            content = _content(data.get("content") or data.get("transformedContent") or data.get("text"))
+            origin = parse_herdr_origin_tag(content)
+            session["user_turns"].append({
+                "content": content,
+                "turn_origin": (origin or {}).get("kind", "human_typed"),
+            })
         if kind in {"assistant.message", "assistant.turn", "assistant.response"} or "reasoningText" in data:
             content = _content(data.get("content") or data.get("text"))
             reasoning = str(data.get("reasoningText") or "")

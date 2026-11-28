@@ -40,7 +40,7 @@ class SharedHybridRagRuntimeTests(unittest.TestCase):
         self.assertLessEqual(len(lines), 320)
 
         plugin = json.loads((ROOT / "skills/skill-contract/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
-        self.assertEqual(plugin["version"], "1.2.3")
+        self.assertGreaterEqual(tuple(int(x) for x in plugin["version"].split(".")), (1, 2, 3))
 
         expected_rel = Path("../../skill-contract/scripts/skill_runtime")
         for skill in ("personal-m2-assistant", "knowledge-digest", "design-studio", "story-craft"):

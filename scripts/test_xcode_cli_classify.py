@@ -246,6 +246,291 @@ xcodebuild build
         self.assertTrue(health["uses_incremental_layer_selection"])
         self.assertTrue(health["has_derived_data_or_build_lock"])
 
+    def test_hybrid_root_package_swift_and_app_target_routing_counter_cases(self) -> None:
+        self.write(
+            "Package.swift",
+            """// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(
+    name: "HybridWorkspace",
+    targets: [
+        .target(name: "CoreKit", dependencies: [.target(name: "Shared")]),
+        .target(name: "CustomFeature", path: "Modules/FeatureSources"),
+        .testTarget(name: "CoreKitTests", dependencies: ["CoreKit"]),
+    ]
+)
+""",
+        )
+        self.write("App.xcodeproj/project.pbxproj", "// !$*UTF8*$!\n")
+        self.write("Sources/CoreKit/Service.swift", "public struct Service {}\n")
+        self.write("Modules/FeatureSources/Feature.swift", "public struct Feature {}\n")
+        self.write("App/Sources/AppMain.swift", "@main struct AppMain {}\n")
+        self.write("Apps/macOS/MacRootApp.swift", "@main struct MacRootApp {}\n")
+        self.write("Sources/App/LegacyAppView.swift", "struct LegacyAppView {}\n")
+        self.write("UITests/LaunchUITests.swift", "final class LaunchUITests {}\n")
+
+        pkg_only = CLASSIFIER.classify(
+            self.repo,
+            ["Sources/CoreKit/Service.swift", "Modules/FeatureSources/Feature.swift"],
+        )
+        self.assertEqual(pkg_only["route"], "swiftpm")
+        self.assertEqual(pkg_only["packageRoots"], ["."])
+        self.assertEqual(pkg_only["xcodeInputs"], [])
+
+        for app_path in (
+            "App/Sources/AppMain.swift",
+            "Apps/macOS/MacRootApp.swift",
+            "Sources/App/LegacyAppView.swift",
+            "UITests/LaunchUITests.swift",
+        ):
+            with self.subTest(app_path=app_path):
+                app_only = CLASSIFIER.classify(self.repo, [app_path])
+                self.assertEqual(app_only["route"], "xcode")
+                self.assertEqual(app_only["packageRoots"], [])
+                self.assertEqual(app_only["xcodeInputs"][0]["path"], app_path)
+
+        mixed = CLASSIFIER.classify(
+            self.repo,
+            ["Sources/CoreKit/Service.swift", "App/Sources/AppMain.swift"],
+        )
+        self.assertEqual(mixed["route"], "mixed")
+        self.assertEqual(mixed["packageRoots"], ["."])
+        self.assertEqual(mixed["packageFiles"], ["Sources/CoreKit/Service.swift"])
+        self.assertEqual(mixed["xcodeInputs"][0]["path"], "App/Sources/AppMain.swift")
+
+        sub_pkg_manifest = "Packages/SubPkg/Package.swift"
+        self.write(sub_pkg_manifest, '// swift-tools-version: 6.0\nlet package = Package(name: "SubPkg")\n')
+        self.write("Packages/SubPkg/Sources/SubPkg/Item.swift", "public struct Item {}\n")
+        sub_pkg = CLASSIFIER.classify(self.repo, ["Packages/SubPkg/Sources/SubPkg/Item.swift"])
+        self.assertEqual((sub_pkg["route"], sub_pkg["packageRoots"]), ("swiftpm", ["Packages/SubPkg"]))
+
+    def test_case_selection_preserves_xc004_and_xc005_and_uses_single_source_drawer(self) -> None:
+        self.write(
+            "Package.swift",
+            '// swift-tools-version: 6.0\nlet package = Package(targets: [.executableTarget(name: "AppPreviewHost")])\n',
+        )
+        self.write(
+            "Sources/ConcurrencyActor.swift",
+            "@MainActor public final class ConcurrencyActor: Sendable {}\n",
+        )
+        self.write("App/AppView.swift", "@MainActor struct AppView {}\n")
+
+        mixed = CLASSIFIER.classify(
+            self.repo,
+            ["Sources/ConcurrencyActor.swift", "App/AppView.swift"],
+        )
+        self.assertEqual(mixed["route"], "mixed")
+        matched_ids = [c["id"] for c in mixed["matchedBuildCases"]]
+        self.assertIn("XC-005", matched_ids)
+        self.assertIn("XC-004", matched_ids)
+        self.assertEqual(matched_ids[:2], ["XC-005", "XC-004"])
+
+        xcode_concurrency = CLASSIFIER.classify(self.repo, ["App/AppView.swift"])
+        xcode_ids = [c["id"] for c in xcode_concurrency["matchedBuildCases"]]
+        self.assertIn("XC-004", xcode_ids)
+        self.assertIn("XC-005", xcode_ids)
+
+        custom_cases = self.repo / "custom-build-cases.json"
+        drawer = json.loads((SKILL_DIR / "references" / "build-cases.json").read_text(encoding="utf-8"))
+        for item in drawer["active_cases"]:
+            if item["id"] == "XC-005":
+                item["title"] = "Custom Single-Source XC-005 Title"
+            elif item["id"] == "XC-004":
+                item["title"] = "Custom Single-Source XC-004 Title"
+        custom_cases.write_text(json.dumps(drawer, indent=2), encoding="utf-8")
+
+        looked_up_005 = CLASSIFIER.get_build_case("XC-005", cases_file=custom_cases)
+        looked_up_004 = CLASSIFIER.get_build_case("XC-004", cases_file=custom_cases)
+        self.assertIsNotNone(looked_up_005)
+        self.assertIsNotNone(looked_up_004)
+        self.assertEqual(looked_up_005["title"], "Custom Single-Source XC-005 Title")
+        self.assertEqual(looked_up_004["title"], "Custom Single-Source XC-004 Title")
+
+        custom_classified = CLASSIFIER.classify(
+            self.repo,
+            ["Sources/ConcurrencyActor.swift", "App/AppView.swift"],
+            cases_file=custom_cases,
+        )
+        by_id = {c["id"]: c["title"] for c in custom_classified["matchedBuildCases"]}
+        self.assertEqual(by_id["XC-005"], "Custom Single-Source XC-005 Title")
+        self.assertEqual(by_id["XC-004"], "Custom Single-Source XC-004 Title")
+
+    def test_preview_host_health_scopes_signing_and_dylib_to_target_blocks(self) -> None:
+        self.write(
+            "Package.swift",
+            '// swift-tools-version: 6.0\nlet package = Package(targets: [.executableTarget(name: "AppPreviewHost")])\n',
+        )
+        self.write(
+            "project.yml",
+            """targets:
+  AppPreviewHost:
+    settings:
+      ENABLE_DEBUG_DYLIB: YES
+      DEVELOPMENT_TEAM: "ABCDE12345"
+  HelperTool:
+    settings:
+      ENABLE_DEBUG_DYLIB: NO
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: ""
+""",
+        )
+        health_yml_ok = CLASSIFIER._inspect_preview_host_health(self.repo)
+        self.assertEqual(health_yml_ok["status"], "ok")
+        self.assertTrue(health_yml_ok["enable_debug_dylib_yes"])
+        self.assertTrue(health_yml_ok["local_signing_valid"])
+        self.assertIsNone(health_yml_ok["triggered_case"])
+
+        self.write(
+            "project.yml",
+            """targets:
+  AppPreviewHost:
+    settings:
+      ENABLE_DEBUG_DYLIB: YES
+      CODE_SIGNING_ALLOWED: NO
+  HelperTool:
+    settings:
+      ENABLE_DEBUG_DYLIB: YES
+      DEVELOPMENT_TEAM: "ABCDE12345"
+""",
+        )
+        health_yml_bad = CLASSIFIER._inspect_preview_host_health(self.repo)
+        self.assertEqual(health_yml_bad["status"], "invalid_local_signing")
+        self.assertFalse(health_yml_bad["local_signing_valid"])
+        self.assertEqual(health_yml_bad["triggered_case"], "XC-005")
+        (self.repo / "project.yml").unlink()
+
+        self.write(
+            "App.xcodeproj/project.pbxproj",
+            """// !$*UTF8*$!
+{
+  objects = {
+    AA01 /* AppPreviewHost */ = {
+      isa = PBXNativeTarget;
+      name = AppPreviewHost;
+      buildConfigurationList = AA02 /* Build configuration list for PBXNativeTarget "AppPreviewHost" */;
+    };
+    AA02 /* Build configuration list for PBXNativeTarget "AppPreviewHost" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        AA03 /* Debug */,
+      );
+    };
+    AA03 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = AppPreviewHost;
+        ENABLE_DEBUG_DYLIB = YES;
+        DEVELOPMENT_TEAM = ABCDE12345;
+      };
+      name = Debug;
+    };
+    BB01 /* UnrelatedHelper */ = {
+      isa = PBXNativeTarget;
+      name = UnrelatedHelper;
+      buildConfigurationList = BB02 /* Build configuration list for PBXNativeTarget "UnrelatedHelper" */;
+    };
+    BB02 /* Build configuration list for PBXNativeTarget "UnrelatedHelper" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        BB03 /* Debug */,
+      );
+    };
+    BB03 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = UnrelatedHelper;
+        ENABLE_DEBUG_DYLIB = NO;
+        CODE_SIGNING_ALLOWED = NO;
+        CODE_SIGN_STYLE = Automatic;
+        DEVELOPMENT_TEAM = "";
+      };
+      name = Debug;
+    };
+  };
+}
+""",
+        )
+        health_pbx_ok = CLASSIFIER._inspect_preview_host_health(self.repo)
+        self.assertEqual(health_pbx_ok["status"], "ok")
+        self.assertTrue(health_pbx_ok["enable_debug_dylib_yes"])
+        self.assertTrue(health_pbx_ok["local_signing_valid"])
+        self.assertIsNone(health_pbx_ok["triggered_case"])
+
+        self.write(
+            "App.xcodeproj/project.pbxproj",
+            """// !$*UTF8*$!
+{
+  objects = {
+    AA01 /* AppPreviewHost */ = {
+      isa = PBXNativeTarget;
+      name = AppPreviewHost;
+      buildConfigurationList = AA02 /* Build configuration list for PBXNativeTarget "AppPreviewHost" */;
+    };
+    AA02 /* Build configuration list for PBXNativeTarget "AppPreviewHost" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        AA03 /* Debug */,
+      );
+    };
+    AA03 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = AppPreviewHost;
+        ENABLE_DEBUG_DYLIB = YES;
+        CODE_SIGNING_ALLOWED = NO;
+      };
+      name = Debug;
+    };
+    BB03 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = UnrelatedHelper;
+        ENABLE_DEBUG_DYLIB = YES;
+        DEVELOPMENT_TEAM = ABCDE12345;
+      };
+      name = Debug;
+    };
+  };
+}
+""",
+        )
+        health_pbx_bad = CLASSIFIER._inspect_preview_host_health(self.repo)
+        self.assertEqual(health_pbx_bad["status"], "invalid_local_signing")
+        self.assertFalse(health_pbx_bad["local_signing_valid"])
+        self.assertEqual(health_pbx_bad["triggered_case"], "XC-005")
+
+    def test_markdown_code_fences_and_eval_counter_case_ratio_contract(self) -> None:
+        import re as _re
+
+        single_line_fence_re = _re.compile(r"(?m)^\s*```[^\n`]+```")
+        for md_path in sorted(SKILL_DIR.rglob("*.md")):
+            text = md_path.read_text(encoding="utf-8")
+            self.assertIsNone(
+                single_line_fence_re.search(text),
+                f"Single-line fenced block found in {md_path.relative_to(ROOT)}",
+            )
+            fence_lines = [ln for ln in text.splitlines() if ln.lstrip().startswith("```")]
+            self.assertEqual(
+                len(fence_lines) % 2,
+                0,
+                f"Unbalanced triple-backtick fences in {md_path.relative_to(ROOT)}",
+            )
+
+        eval_doc = json.loads((SKILL_DIR / "references" / "eval-cases.json").read_text(encoding="utf-8"))
+        active = eval_doc.get("active_cases", [])
+        self.assertLessEqual(len(active), 15)
+        counter_count = sum(
+            1
+            for item in active
+            if any(str(item.get(k) or "").strip() for k in ("bad_snippet", "forbidden_regex", "negative_cmd"))
+            or item.get("expect_fail_exit") is not None
+            or item.get("expect_exit") not in (None, 0)
+            or item.get("should_trigger") is False
+            or any(str(t).strip().lower() in {"negative", "counter", "counter-case"} for t in (item.get("tags") or []))
+        )
+        self.assertGreaterEqual(counter_count / max(1, len(active)), 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()

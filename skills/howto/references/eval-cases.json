@@ -131,6 +131,61 @@
     },
     {
       "id": "EV-008",
+      "title": "Empty/header-only node catalogs fail closed",
+      "tags": [
+        "negative",
+        "catalog"
+      ],
+      "negative_cmd": "python3 skills/howto/scripts/howto_flow.py --list-nodes --nodes-doc skills/howto/tests/fixtures/header-only-catalog.md --json",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "\"ok\": false",
+        "zero node definitions"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-009",
+      "title": "Cross-vault automatic synchronization is rejected",
+      "tags": [
+        "negative",
+        "vault-isolation"
+      ],
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text 'Inbound Internal Calls E1 PointsTo I5 Trigger & Notify: knowledge-vault 自动同步到 design-studio'",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "vault_isolation_violation"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-010",
+      "title": "Collected tools remain archive-only and zero-execution",
+      "tags": [
+        "negative",
+        "zero-execution"
+      ],
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text 'Inbound Internal Calls E1 PointsTo I5 Trigger & Notify: save-tool 直接运行脚本'",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "save_tool_zero_exec_violation"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-011",
+      "title": "Whole-node and English boundary lookup with explicit unresolved scaffold fallback",
+      "tags": [
+        "cli",
+        "lookup",
+        "regression"
+      ],
+      "cmd": "python3 -m unittest scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_lookup_node_ids_do_not_collide_or_expand_reference_mentions scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_feature_lookup_uses_english_boundaries_and_preserves_cjk scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_lookup_catalog_node_and_edge_keywords_require_whole_ascii_words scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_unresolved_lookup_is_explicit_and_scaffold_remains_valid",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-012",
       "title": "Apple OS-Native System Appearance lookup, L4-L1 cybernetic pyramid, and neighbors navigation",
       "tags": [
         "cli",
@@ -141,10 +196,10 @@
       ],
       "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','dark mode system theme','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and [n['id'] for n in d1['matched_nodes'][:4]]==['E7','P7','E4','E9'] and 'my-designer' in d1['target_skills'] and 'skill-contract' in d1['target_skills'] and 'NSAppearance' in d1['guidance'] and 'prefers-color-scheme' not in d1['guidance']; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--graph','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and list(d2['cybernetic_pyramid'].keys())==['L4','L3','L2','L1'] and len(d2['stages'])==5 and d2['total_edge_count']>50; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','P3','--json'],check=True,capture_output=True,text=True); d3=json.loads(r3.stdout); assert d3['cybernetic_layer']=='L3'; r4=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','E2','--json'],check=True,capture_output=True,text=True); d4=json.loads(r4.stdout); assert d4['cybernetic_layer']=='L1' and 'Local Neighborhood Card: E2 Bug List' in d4['text'] and 'TK-02' in d4['text']\"",
       "expect_exit": 0,
-      "registered_at": "2026-11-27"
+      "registered_at": "2026-11-28"
     },
     {
-      "id": "EV-009",
+      "id": "EV-013",
       "title": "Counter-case: howto_guard rejects custom .designTheme and parallel theme state machines",
       "tags": [
         "negative",
@@ -165,10 +220,10 @@
       "negative_stderr_contains": [
         "Reference: skills/workflow-hub/references/how-to-nodes.md"
       ],
-      "registered_at": "2026-11-27"
+      "registered_at": "2026-11-28"
     },
     {
-      "id": "EV-010",
+      "id": "EV-014",
       "title": "Counter-case: howto_guard rejects @AppStorage/UserDefaults in-app theme toggle plumbing",
       "tags": [
         "negative",
@@ -187,8 +242,8 @@
       "negative_stderr_contains": [
         "howto_guard: custom_theme_engine_violation"
       ],
-      "registered_at": "2026-11-27"
+      "registered_at": "2026-11-28"
     }
   ],
-  "updated": "2026-11-27"
+  "updated": "2026-11-28"
 }

@@ -35,6 +35,9 @@ class HerdrDispatchTests(unittest.TestCase):
 import json, os, sys
 with open(os.environ['HERDR_TEST_LOG'], 'a') as f:
     f.write(json.dumps(sys.argv[1:]) + '\\n')
+if os.environ.get('HERDR_ENV_SNAPSHOT'):
+    with open(os.environ['HERDR_ENV_SNAPSHOT'], 'w') as f:
+        json.dump({key: os.environ.get(key, '') for key in ('HERDR_SPAWN_ORIGIN', 'HERDR_AGENT_ROLE', 'HERDR_PARENT_PANE')}, f)
 a = sys.argv[1:]
 if a[:2] == ['workspace', 'create']:
     print(json.dumps({'result': {'workspace': {'workspace_id': 'w'}, 'root_pane': {'pane_id': 'w:p'}}}))
@@ -44,16 +47,30 @@ else:
     print('{}')
 """)
             fake.chmod(0o755)
-            env = dict(os.environ, HOME=str(home), PATH=f"{root}:{os.environ['PATH']}", MOCK_HERDR_LOG=str(log), HERDR_TEST_LOG=str(log), HERDR_WORKTREES_ROOT=str(worktrees), HERDR_HANDOFF_ROOT=str(home / "Development" / "handoff"), HERDR_PROMPT_IDLE_GRACE="0")
+            env_snapshot = root / "env.json"
+            env = dict(os.environ, HOME=str(home), PATH=f"{root}:{os.environ['PATH']}", MOCK_HERDR_LOG=str(log), HERDR_TEST_LOG=str(log), HERDR_ENV_SNAPSHOT=str(env_snapshot), HERDR_WORKTREES_ROOT=str(worktrees), HERDR_HANDOFF_ROOT=str(home / "Development" / "handoff"), HERDR_PROMPT_IDLE_GRACE="0", HERDR_PANE_ID="w-parent:p1")
             missing_worktree = worktrees / "skill-retro-foo"
+            preserved_tag = "<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=alpha -->"
             explicit = subprocess.run(
-                [str(DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "skill-retro-foo-goal-tl-r1", "--kind", "claude", "--cwd", str(missing_worktree), "--prompt", "run"],
+                [str(DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "skill-retro-foo-goal-tl-r1", "--kind", "claude", "--cwd", str(missing_worktree), "--prompt", f"run\n\n{preserved_tag}"],
                 capture_output=True, text=True, env=env, check=False,
             )
             self.assertEqual(explicit.returncode, 0, explicit.stderr)
             self.assertIn(f"using existing fallback {user_skills}", explicit.stderr)
             explicit_calls = [__import__("json").loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(next(call for call in explicit_calls if call[:2] == ["workspace", "create"])[3], str(user_skills))
+            self.assertEqual(__import__("json").loads(env_snapshot.read_text()), {
+                "HERDR_SPAWN_ORIGIN": "agent_dispatch",
+                "HERDR_AGENT_ROLE": "m1",
+                "HERDR_PARENT_PANE": "w-parent:p1",
+            })
+            explicit_receipt = __import__("json").loads(explicit.stdout)
+            self.assertEqual(explicit_receipt["spawn_origin"], "agent_dispatch")
+            self.assertEqual(explicit_receipt["agent_role"], "m1")
+            self.assertEqual(explicit_receipt["parent_pane"], "w-parent:p1")
+            explicit_prompt = next(call for call in explicit_calls if call[:2] == ["agent", "prompt"])
+            self.assertEqual(explicit_prompt[-1].count("herdr-origin:v1"), 1)
+            self.assertIn(preserved_tag, explicit_prompt[-1])
 
             log.unlink()
             inferred = subprocess.run(
@@ -63,6 +80,9 @@ else:
             self.assertEqual(inferred.returncode, 0, inferred.stderr)
             inferred_calls = [__import__("json").loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(next(call for call in inferred_calls if call[:2] == ["workspace", "create"])[3], str(user_skills))
+            inferred_prompt = next(call for call in inferred_calls if call[:2] == ["agent", "prompt"])
+            self.assertEqual(inferred_prompt[-1].count("herdr-origin:v1"), 1)
+            self.assertIn("<!-- herdr-origin:v1 kind=agent_dispatch role=m1", inferred_prompt[-1])
 
     def test_new_workspace_and_legacy_workspace_flags_always_create_new_space_never_tab(self):
         with tempfile.TemporaryDirectory() as temp:

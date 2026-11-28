@@ -45,7 +45,11 @@ edit hooks or bypass repository gates without owner approval.
 
 Prefer `--package-path` so commands remain reproducible from any working directory:
 
-```bash swift build --package-path Packages/Feature swift test --package-path Packages/Feature swift test --package-path Packages/Feature --filter SuiteName/testName ```
+```bash
+swift build --package-path Packages/Feature
+swift test --package-path Packages/Feature
+swift test --package-path Packages/Feature --filter SuiteName/testName
+```
 
 For several affected packages, run each package's build/test independently and attribute failures to its root. Read `Package.swift` first for platform floors, products, plugins, custom target paths, and repository-specific test commands.
 
@@ -55,15 +59,30 @@ Stay on this route when every changed file belongs to package manifests, `Source
 
 Select exactly one project/workspace source and discover its schemes when the repository does not specify one:
 
-```bash xcodebuild -list -json -project App.xcodeproj xcodebuild -list -json -workspace App.xcworkspace ```
+```bash
+xcodebuild -list -json -project App.xcodeproj
+xcodebuild -list -json -workspace App.xcworkspace
+```
 
 Build without tying the command to an installed simulator:
 
-```bash xcodebuild build \ -project App.xcodeproj \ -scheme App \ -destination 'generic/platform=iOS Simulator' \ CODE_SIGNING_ALLOWED=NO ```
+```bash
+xcodebuild build \
+  -project App.xcodeproj \
+  -scheme App \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO
+```
 
 Run tests on an explicit available destination:
 
-```bash xcodebuild test \ -project App.xcodeproj \ -scheme App \ -destination 'platform=iOS Simulator,id=<UDID>' \ -resultBundlePath <task-path>/Results.xcresult ```
+```bash
+xcodebuild test \
+  -project App.xcodeproj \
+  -scheme App \
+  -destination 'platform=iOS Simulator,id=<UDID>' \
+  -resultBundlePath <task-path>/Results.xcresult
+```
 
 Use `-workspace` instead of `-project` when the workspace is canonical. Add flags such as `-skipPackagePluginValidation`, signing options, or a repository DerivedData path only when project instructions require them. Never guess a team identifier or provisioning option.
 
@@ -73,25 +92,47 @@ Host-based test targets may launch the production app or touch real user data. H
 
 Run the SwiftPM route for every changed package first. Continue to Xcode only for the app target, project metadata, resources, or integration seam also changed. Do not use one broad `xcodebuild` as a substitute for package-local tests.
 
+## SwiftPM executable preview hosts (`XC-005`)
+
+Opening a bare `Package.swift` in Xcode to preview `*PreviewHost` fails with `ENABLE_DEBUG_DYLIB` missing, and leaving `CODE_SIGN_STYLE: Automatic` with `DEVELOPMENT_TEAM: ""` fails with `Signing for "<Target>" requires a development team`:
+
+- Keep `#Preview` macros in library/framework targets (`*DemoKit`), not executable targets.
+- Generate a native `.xcodeproj` via `project.yml` (`xcodegen`) with `ENABLE_DEBUG_DYLIB: YES` on both `*PreviewHost` and `*DemoKit` targets plus shared schemes, AND configure valid local signing (`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"` or a non-empty `DEVELOPMENT_TEAM`; never leave `CODE_SIGN_STYLE: Automatic` with empty `DEVELOPMENT_TEAM`).
+- `classify_changes.py` reports `previewHostHealth` (`enable_debug_dylib_yes`, `local_signing_valid`) and prioritizes `XC-005` in `matchedBuildCases` when either check fails or when touching `*PreviewHost`.
+
 ## Simulator lifecycle
 
 Discover devices as structured data:
 
-```bash xcrun simctl list devices available --json ```
+```bash
+xcrun simctl list devices available --json
+```
 
 Then use one explicit UDID:
 
-```bash xcrun simctl boot <UDID> xcrun simctl bootstatus <UDID> -b xcrun simctl install <UDID> <path-to.app> xcrun simctl launch <UDID> <bundle-id> ```
+```bash
+xcrun simctl boot <UDID>
+xcrun simctl bootstatus <UDID> -b
+xcrun simctl install <UDID> <path-to.app>
+xcrun simctl launch <UDID> <bundle-id>
+```
 
 Derive the `.app` path from the build settings or task-specific DerivedData; do not select the newest arbitrary build product. Terminate or shut down only the app/device started by the task:
 
-```bash xcrun simctl terminate <UDID> <bundle-id> xcrun simctl shutdown <UDID> ```
+```bash
+xcrun simctl terminate <UDID> <bundle-id>
+xcrun simctl shutdown <UDID>
+```
 
 ## Result bundles
 
 Prefer current `xcresulttool` structured commands supported by the installed Xcode. Inspect its help rather than assuming an older schema:
 
-```bash xcrun xcresulttool --help xcrun xcresulttool get test-results summary --path Results.xcresult xcrun xcresulttool get test-results tests --path Results.xcresult ```
+```bash
+xcrun xcresulttool --help
+xcrun xcresulttool get test-results summary --path Results.xcresult
+xcrun xcresulttool get test-results tests --path Results.xcresult
+```
 
 Report the result-bundle path, failed test identifiers, and concise failure messages. Avoid dumping large attachments or full logs unless needed for the next diagnosis step.
 

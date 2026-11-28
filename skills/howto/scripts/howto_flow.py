@@ -123,6 +123,7 @@ _MACRO_PIPELINE_STAGES: tuple[dict[str, Any], ...] = (
 
 _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
     {
+        "id": "cybernetic-pyramid",
         "keywords": (
             "cybernetic pyramid", "harness engineering", "human helmsman", "meta-evolution",
             "四层控制论金字塔", "控制论金字塔", "人类掌舵", "熵减与自演进", "自演进层", "协同编排层", "专项执行层",
@@ -142,6 +143,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "system-appearance",
         "keywords": (
             "system theme", "dark mode", "light mode", "designtheme", ".designtheme", "colorscheme",
             "nsappearance", "uitraitcollection", "system appearance", "theme switcher", "theme toggle",
@@ -162,7 +164,8 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
-        "keywords": ("ai metric", "aidash", "aidata", "l1", "l2", "l3", "l4", "l5", "指标", "看板", "roi", "telemetry"),
+        "id": "ai-metrics",
+        "keywords": ("ai metric", "ai metrics", "aidash", "aidata", "l1", "l2", "l3", "l4", "l5", "指标", "看板", "roi", "telemetry"),
         "nodes": ["P9", "P2", "P1", "E7", "E4"],
         "skills": ["aidash-metrics", "layered-data-warehouse", "retro-loop"],
         "cli_commands": [
@@ -171,6 +174,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "bug-fix",
         "keywords": ("bug list", "fix bug", "bug", "triage", "devsync", "缺陷", "排障"),
         "nodes": ["E2", "E4a", "E3", "E4", "E9", "E10"],
         "skills": ["team-lead", "m2-dispatcher", "code-review"],
@@ -180,6 +184,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "feature",
         "keywords": ("feature", "build", "spec", "architecture", "需求", "开发", "模块"),
         "nodes": ["E1", "E5", "E6", "E4", "E9", "E10"],
         "skills": ["codebase-design", "team-lead", "m2-dispatcher"],
@@ -189,6 +194,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "jev",
         "keywords": ("jev", "falcon", "system one", "systemone", "noul", "choice", "快思考"),
         "nodes": ["I3"],
         "skills": ["howto", "team-lead", "skill-contract"],
@@ -198,6 +204,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "skill-contract",
         "keywords": ("skill", "make a skill", "contract", "audit", "eval", "技能"),
         "nodes": ["P7", "E9"],
         "skills": ["skill-contract", "howto"],
@@ -207,6 +214,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "teams",
         "keywords": ("teams", "reply", "inbox", "群聊", "消息"),
         "nodes": ["I1", "I3", "I4", "I5", "I6"],
         "skills": ["howto", "personal-m2-assistant"],
@@ -215,6 +223,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "email",
         "keywords": ("email", "workiq", "邮件", "分类"),
         "nodes": ["I2", "I3", "I4", "I5"],
         "skills": ["howto", "linear-board"],
@@ -223,14 +232,16 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "ui-design",
         "keywords": ("ui", "design", "visual", "prototype", "设计", "界面", "色板"),
         "nodes": ["E7", "E9"],
         "skills": ["my-designer", "design-studio"],
         "cli_commands": [
-            "python3 skills/design-studio/scripts/taste_evolution_loop.py scan",
+            "python3 skills/design-studio/scripts/taste_evolution_loop.py loop-check",
         ],
     },
     {
+        "id": "knowledge",
         "keywords": ("learn", "knowledge", "digest", "vault", "知识", "拆解", "收藏", "tool"),
         "nodes": ["P4", "P5", "P6"],
         "skills": ["knowledge-digest", "save-tool", "story-craft"],
@@ -239,6 +250,7 @@ _SKILL_CLI_ROUTES: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "daily-brief",
         "keywords": ("daily brief", "linear", "multica", "patrol", "hygiene", "巡检", "日报"),
         "nodes": ["G1", "I5", "P1", "P3"],
         "skills": ["linear-board", "issue-brief", "team-lead"],
@@ -363,6 +375,9 @@ def parse_howto_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
                 }
             )
 
+    if not nodes:
+        raise ValueError(f"How-To catalog contains zero node definitions: {resolved}")
+
     return {
         "ok": True,
         "catalog_path": str(resolved),
@@ -371,6 +386,18 @@ def parse_howto_catalog(nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
         "nodes": nodes,
         "broken_edges": broken_edges,
     }
+
+
+def _node_id_matches(nid: str, text: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(nid)}(?![A-Za-z0-9_-])", text, re.IGNORECASE) is not None
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    if keyword.isascii():
+        if re.fullmatch(r"[eqigpo]\d+[a-z]?", keyword, re.IGNORECASE):
+            return _node_id_matches(keyword, text)
+        return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text, re.IGNORECASE) is not None
+    return keyword.lower() in text.lower()
 
 
 def list_nodes(
@@ -386,11 +413,13 @@ def list_nodes(
         if norm_group not in {"A", "B", "C"}:
             raise ValueError(f"Unsupported group '{group}'; expected A, B, or C")
         selected = [n for n in selected if n["group"] == norm_group]
-    nodes_payload = selected
-    broken_edges_payload = catalog["broken_edges"] if not norm_group else [
+    node_ids = [n["id"] for n in selected]
+    filtered_edges = [
         tk for tk in catalog["broken_edges"]
-        if any(nid in _expand_node_ids(tk["edge"]) for nid in {n["id"] for n in selected})
+        if not norm_group or any(_node_id_matches(nid, tk["edge"]) for nid in node_ids)
     ]
+    nodes_payload = selected
+    broken_edges_payload = filtered_edges
     if summary:
         nodes_payload = [
             {"id": node["id"], "title": node["title"], "group": node["group"]}
@@ -398,16 +427,16 @@ def list_nodes(
         ]
         broken_edges_payload = [
             {"id": tk["id"], "edge": tk["edge"]}
-            for tk in broken_edges_payload
+            for tk in filtered_edges
         ]
     return {
         "ok": True,
         "group_filter": norm_group or None,
         "summary": summary,
         "node_count": len(selected),
-        "node_ids": [n["id"] for n in selected],
+        "node_ids": node_ids,
         "nodes": nodes_payload,
-        "broken_edge_count": catalog["broken_edge_count"],
+        "broken_edge_count": len(filtered_edges),
         "broken_edges": broken_edges_payload,
     }
 
@@ -642,7 +671,7 @@ def lookup_howto(
     ]
 
     for route in _SKILL_CLI_ROUTES:
-        hits = [kw for kw in route["keywords"] if kw in q_lower or any(tok == kw for tok in tokens)]
+        hits = [kw for kw in route["keywords"] if _keyword_matches(kw, q_lower)]
         if hits:
             matched_routes.append({"matched_keywords": hits, **route})
             for nid in route["nodes"]:
@@ -658,37 +687,51 @@ def lookup_howto(
                 if cmd not in cli_commands:
                     cli_commands.append(cmd)
 
-    # Also match direct node IDs (e.g. E4a, P9, I3) or substring hits in node table
-    for m_tok in re.finditer(r"\b([EQIGPO]\d+[a-z]?)\b", clean_query):
-        nid = m_tok.group(1)
-        if nid in by_id and nid not in matched_node_ids:
+    # Explicit IDs select definitions, not every node whose contract references them.
+    for nid in by_id:
+        if _node_id_matches(nid, clean_query) and nid not in matched_node_ids:
             matched_node_ids.append(nid)
 
+    text_queries = [
+        term for term in [q_lower, *tokens]
+        if not re.fullmatch(r"[eqigpo]\d+[a-z]?", term, re.IGNORECASE)
+    ]
     for node in catalog["nodes"]:
         haystack = " ".join(
             str(node.get(k) or "") for k in ("id", "raw_cell", "title", "inbound_internal", "calls", "points_to", "broken_edge")
-        ).lower()
-        if q_lower in haystack or any(tok in haystack for tok in tokens):
+        )
+        if any(_keyword_matches(term, haystack) for term in text_queries):
             if node["id"] not in matched_node_ids:
                 matched_node_ids.append(node["id"])
 
     matched_tks = [
         tk for tk in catalog["broken_edges"]
-        if q_lower in " ".join(tk.values()).lower()
-        or any(nid in _expand_node_ids(tk["edge"]) for nid in matched_node_ids[:6])
+        if any(_keyword_matches(term, " ".join(tk.values())) for term in text_queries)
+        or any(_node_id_matches(nid, tk["edge"]) for nid in matched_node_ids[:6])
     ]
 
-    if not matched_node_ids:
-        matched_node_ids = ["E1", "E6", "E4", "E9"]
+    unresolved = not matched_routes and not matched_node_ids
     if not target_skills:
         target_skills = ["howto", "workflow-hub", "team-lead"]
+
+    matched_nodes_list = [by_id[nid] for nid in matched_node_ids[:10] if nid in by_id]
+    matched_edges_list = matched_tks[:8]
+    if summary:
+        matched_nodes_list = [
+            {"id": n["id"], "title": n["title"], "group": n["group"], "cybernetic_layer": n.get("cybernetic_layer")}
+            for n in matched_nodes_list[:6]
+        ]
+        matched_edges_list = [{"id": tk["id"], "edge": tk["edge"]} for tk in matched_edges_list[:4]]
 
     result: dict[str, Any] = {
         "ok": True,
         "query": clean_query,
         "summary": summary,
-        "matched_nodes": [by_id[nid] for nid in matched_node_ids[:6] if nid in by_id],
-        "matched_broken_edges": matched_tks[:4],
+        "unresolved": unresolved,
+        "matched_scenario": matched_routes[0].get("id") if matched_routes else ("direct_node_match" if matched_node_ids else None),
+        "matched_nodes": matched_nodes_list,
+        "fallback_nodes": [by_id[nid] for nid in ("E1", "E6", "E4", "E9") if nid in by_id] if unresolved else [],
+        "matched_broken_edges": matched_edges_list,
         "target_skills": target_skills,
         "cli_entry_commands": cli_commands,
     }

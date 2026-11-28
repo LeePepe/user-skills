@@ -82,7 +82,7 @@ class HistoricalExit2ReplayTests(unittest.TestCase):
     """Replay exact historical exit_code=2 CLI invocation patterns from the 55-session telemetry audit."""
 
     def test_replays_audit_spec_flag_and_positional_multi_file_patterns(self) -> None:
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             design_md = root / "design.md"
             spec_md = root / "spec.md"
@@ -115,7 +115,7 @@ class HistoricalExit2ReplayTests(unittest.TestCase):
             self.assertTrue(json.loads(res_top.stdout)["ok"])
 
     def test_replays_whitespace_dir_positional_max_ratio_and_16bit_png_patterns(self) -> None:
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             shots = Path(tmp) / "snapshots"
             shots.mkdir()
             # 75% content -> 25% bottom whitespace; 16-bit RGBA + 8-bit grayscale (historical exit=1 PNG format bug)
@@ -148,7 +148,7 @@ class HistoricalExit2ReplayTests(unittest.TestCase):
             self.assertTrue(json.loads(res_alias.stdout)["ok"])
 
     def test_replays_audit_code_positional_multifile_subcommand_aliases_and_snippet_flag(self) -> None:
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             s1 = root / "ViewA.swift"
             s2 = root / "ViewB.swift"
@@ -231,7 +231,7 @@ class SelfDisclosingGuidanceAndDualCasePersonaTests(unittest.TestCase):
         self.assertIn("skills/my-designer/references/breathing-and-clarity.md", p_dc014["reference_drawers"])
 
         # 3. Subtractive spec failure -> points to modernization-dimensions.md
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bad_spec = Path(tmp) / "design.md"
             bad_spec.write_text("# Design\n只保留主列表，去掉冗余抽屉。\n", encoding="utf-8")
             res_spec = _run_cli("audit-spec", str(bad_spec))
@@ -253,7 +253,7 @@ class SelfDisclosingGuidanceAndDualCasePersonaTests(unittest.TestCase):
 
     def test_dual_case_replay_positive_compact_cockpit_vs_counter_breathing_companion(self) -> None:
         """Dual-Case Replay: compact scene tightens locally without breaking breathing companion or global 0.40 default."""
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # Case A: Dense cockpit screen (18% bottom whitespace -> 82% content)
             dense_cockpit = root / "aidash-cockpit.png"
@@ -330,7 +330,7 @@ def _invoke(module, *args):
 
 class PlatformAndSpecReplayTests(unittest.TestCase):
     def test_surface_alias_across_platform_aware_commands_and_top_level(self):
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source, spec, geometry, png = [root / name for name in ('View.swift', 'design.md', 'geometry.json', 'screen.png')]
             source.write_text('Text("Clean").padding(8)')
@@ -378,7 +378,7 @@ class PlatformAndSpecReplayTests(unittest.TestCase):
             self.assertIn('eval-cases.json', result.stderr)
 
     def test_audit_code_validates_both_code_and_spec_file(self):
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             source, spec = Path(tmp) / 'View.swift', Path(tmp) / 'design.md'
             source.write_text('Text("Clean")')
             spec.write_text('# Design\nKeep standard navigation.')
@@ -443,7 +443,7 @@ class StandaloneGateReplayTests(unittest.TestCase):
 
     def test_standalone_evidence_checks_and_jev_stage_reject_countercases(self):
         evidence, jev = _load_script('design_evidence'), _load_script('design_jev')
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             geometry, image, trace, spec = [root / n for n in ('geometry.json', 'viewport.png', 'trace.json', 'design.md')]
             geometry.write_text(json.dumps({'nodes': [{'role': 'button', 'frame': {'width': 44, 'height': 44}}]}))
@@ -484,7 +484,7 @@ class StandaloneGateReplayTests(unittest.TestCase):
 class RuntimeCacheAndFallbackReplayTests(unittest.TestCase):
     def test_catalog_cache_reuses_module_and_invalidates_on_mtime(self):
         evidence = _load_script('design_evidence')
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog, prompts = root / 'design_catalog.py', root / 'gallery_prompts.py'
             catalog.write_text('value = 1\n')
@@ -516,7 +516,7 @@ class RuntimeCacheAndFallbackReplayTests(unittest.TestCase):
 
     def test_portal_runtime_cache_reuses_success_and_failure_and_invalidates(self):
         evidence = _load_script('design_evidence')
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             verifier = root / 'gallery_chooser_test.cjs'
             verifier.write_text('// runtime verifier\n')
@@ -540,7 +540,7 @@ class RuntimeCacheAndFallbackReplayTests(unittest.TestCase):
 
     def test_missing_taxonomy_routes_and_jev_fallback_but_invalid_json_rejected(self):
         gate = _load_script('verify_design_cases')
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             missing = root / 'missing.json'
             with mock.patch.object(gate, 'DEFAULT_TAXONOMY', missing):
@@ -579,7 +579,7 @@ class InspectJsonReplayTests(unittest.TestCase):
             ('generic.json', {'items': [1, 2], 'version': 1}, 'generic-json'),
             ('list.json', [1, 2], 'generic-json'),
         ]
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             for name, data, kind in artifacts:
                 path = Path(tmp) / name
                 path.write_text(json.dumps(data))
@@ -599,7 +599,7 @@ class InspectJsonReplayTests(unittest.TestCase):
 
     def test_invalid_json_or_path_emits_guidance(self):
         gate = _load_script('verify_design_cases')
-        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'bad.json'
             for content in (None, '{broken', b'\xff'):
                 if content is not None:
@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.1', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.7', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
@@ -633,6 +633,614 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         drawers = {path.name for path in (skill / 'references').iterdir() if path.suffix in {'.md', '.json'}}
         self.assertEqual(linked, drawers)
         self.assertEqual(len(linked), 8)
+
+    def test_design_vs_worker_skill_boundary_and_forbidden_build_tokens(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        targets = [
+            skill / 'SKILL.md',
+            skill / 'references' / 'design-flow-architecture.md',
+        ]
+        required_tokens = (
+            'Design-vs-Worker Skill Boundary',
+            'Designer-vs-Worker',
+            'pure UX/design specifications',
+            'Variant A/B',
+            'composite screen reuse',
+            'xcode-cli',
+            'ios-concurrency-swiftui',
+            'ios-architecture-testing',
+        )
+        forbidden_tokens = (
+            'ENABLE_DEBUG_DYLIB',
+            'xcodegen',
+            'project.yml',
+            '.xcodeproj',
+        )
+        for target in targets:
+            content = target.read_text(encoding='utf-8')
+            for token in required_tokens:
+                self.assertIn(token, content, f'{target.name} missing required boundary token {token!r}')
+            for token in forbidden_tokens:
+                self.assertNotIn(token, content, f'{target.name} contains forbidden build-config token {token!r}')
+
+    def test_dc018_single_viewport_preview_choreography_gate(self):
+        gate = _load_script('verify_design_cases')
+        bad_code, bad_payload, _ = _invoke(
+            gate,
+            'audit-code',
+            '--platform',
+            'mobile',
+            '--snippet',
+            '#Preview("4-Up Screen Variants") {\n    FourUpPreviewHostView()\n}',
+        )
+        self.assertEqual(bad_code, 1)
+        self.assertFalse(bad_payload['ok'])
+        self.assertIn('DC-018', [f['case_id'] for f in bad_payload['findings']])
+
+        good_code, good_payload, _ = _invoke(
+            gate,
+            'audit-code',
+            '--platform',
+            'mobile',
+            '--snippet',
+            '#Preview("Screen v01 — Focus Stack") {\n    ScreenVariantPreviewHost(initialVariant: .v01)\n}',
+        )
+        self.assertEqual(good_code, 0)
+        self.assertTrue(good_payload['ok'])
+        self.assertEqual(good_payload['findings'], [])
+
+    def test_visual_semiotics_methodology_and_five_native_fidelity_gates(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        skill_text = (skill / 'SKILL.md').read_text(encoding='utf-8')
+        breathing_text = (skill / 'references' / 'breathing-and-clarity.md').read_text(encoding='utf-8')
+        modernization_text = (skill / 'references' / 'modernization-dimensions.md').read_text(encoding='utf-8')
+
+        self.assertLessEqual(len(breathing_text.splitlines()), 130)
+        self.assertLessEqual(len(breathing_text.encode('utf-8')), 12 * 1024)
+        self.assertLessEqual(len(modernization_text.splitlines()), 130)
+        self.assertLessEqual(len(modernization_text.encode('utf-8')), 12 * 1024)
+
+        for scholar in ('Bertin', 'Tufte', 'Few', 'Norman', 'Shneiderman'):
+            self.assertIn(scholar, skill_text)
+            self.assertIn(scholar, breathing_text)
+            self.assertIn(scholar, modernization_text)
+        self.assertIn('Synchronized Small Multiples', breathing_text)
+
+        # Route programmatically exposes visual_semiotics_methodology
+        res_route = _run_cli('route', '--platform', 'mobile', '--persona', 'compact')
+        self.assertEqual(res_route.returncode, 0, res_route.stderr)
+        route_payload = json.loads(res_route.stdout)
+        semiotics = route_payload['three_tier_spectrum']['tier_1_universal_invariants']['visual_semiotics_methodology']
+        for key in (
+            'bertin_retinal_variables',
+            'tufte_data_ink_and_sparklines',
+            'few_bullet_graph',
+            'norman_signifiers',
+            'shneiderman_mantra',
+        ):
+            self.assertIn(key, semiotics)
+
+        # Gate 1: Blank Viewport Center Collapse (ZStack + ScrollView sandwich collapse)
+        with tempfile.TemporaryDirectory() as tmp:
+            collapsed_png = Path(tmp) / 'collapsed-center.png'
+            width, height = 120, 200
+            rows = []
+            for y in range(height):
+                row = bytearray(b'\x00')
+                for x in range(width):
+                    if y < 32:  # Top header band 0..1 with checkerboard content
+                        val = 40 if ((x // 8) + (y // 6)) % 2 == 0 else 220
+                    elif y >= 168:  # Bottom TabBar band 8..9 with checkerboard content
+                        val = 50 if ((x // 10) + (y // 6)) % 2 == 0 else 210
+                    else:  # Middle bands 2..7 collapsed to uniform black
+                        val = 0
+                    row.extend((val, val, val, 255))
+                rows.append(bytes(row))
+            raw = b''.join(rows)
+
+            def chunk(kind: bytes, payload: bytes) -> bytes:
+                crc = binascii.crc32(kind + payload) & 0xFFFFFFFF
+                return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', crc)
+
+            ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+            collapsed_png.write_bytes(
+                b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+            )
+            res_collapse = _run_cli('check-whitespace-ratio', str(collapsed_png))
+            self.assertEqual(res_collapse.returncode, 1)
+            collapse_payload = json.loads(res_collapse.stdout)
+            self.assertFalse(collapse_payload['ok'])
+            self.assertTrue(any('blank_viewport_center_collapse' in e and '[IMPL_BUG]' in e for e in collapse_payload['errors']))
+            self.assertTrue(collapse_payload['metrics'][0].get('blank_viewport_center_collapse'))
+
+        # Gate 2: UI_SPEC_ID_DEBUG_LEAK (spec IDs + >=3 查看详情 pills)
+        bad_spec_leak = (
+            'struct BadSpecLeakView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Text("A5 · 今日黄金骑行时间窗")\n'
+            '            Text("已选原子: A1 A4 [24/24格]")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_leak = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_spec_leak)
+        self.assertEqual(res_leak.returncode, 1)
+        leak_payload = json.loads(res_leak.stdout)
+        leak_ids = {f['case_id'] for f in leak_payload['findings']}
+        self.assertIn('UI_SPEC_ID_DEBUG_LEAK', leak_ids)
+        self.assertTrue(any('Bertin' in g for g in leak_payload.get('guidance', [])))
+
+        # Gate 3: UI_DUPLICATE_MAP_OR_PRIMARY_CTA
+        bad_dup_map_cta = (
+            'struct BadRouteScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            RouteMapCanvas()\n'
+            '            MiniMapPreview()\n'
+            '            Button("开始导航") {}\n'
+            '            Button("开始导航") {}\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_dup = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_dup_map_cta)
+        self.assertEqual(res_dup.returncode, 1)
+        dup_ids = {f['case_id'] for f in json.loads(res_dup.stdout)['findings']}
+        self.assertIn('UI_DUPLICATE_MAP_OR_PRIMARY_CTA', dup_ids)
+
+        # Gate 4: UI_COCKPIT_RAINBOW_NUMERAL_NOISE
+        bad_rainbow = (
+            'struct TelemetryCockpitGrid: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Text("34.8").font(.system(size: 36, weight: .bold)).foregroundStyle(.green)\n'
+            '            Text("248").font(.system(size: 32, weight: .bold)).foregroundStyle(.blue)\n'
+            '            Text("152").font(.system(size: 32, weight: .bold)).foregroundStyle(.orange)\n'
+            '            Text("92").font(.system(size: 28, weight: .bold)).foregroundStyle(.red)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_rainbow = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_rainbow)
+        self.assertEqual(res_rainbow.returncode, 1)
+        rainbow_ids = {f['case_id'] for f in json.loads(res_rainbow.stdout)['findings']}
+        self.assertIn('UI_COCKPIT_RAINBOW_NUMERAL_NOISE', rainbow_ids)
+
+        # Gate 5: UI_MINI_SPAGHETTI_CHART_COLLAPSE
+        bad_spaghetti = (
+            'struct MiniRouteChartCard: View {\n'
+            '    var body: some View {\n'
+            '        Chart {\n'
+            '            LineMark(x: .value("km", 1), y: .value("海拔", 120))\n'
+            '            LineMark(x: .value("km", 1), y: .value("速度", 32))\n'
+            '            LineMark(x: .value("km", 1), y: .value("心率", 155))\n'
+            '        }\n'
+            '        .frame(height: 64)\n'
+            '    }\n'
+            '}'
+        )
+        res_spaghetti = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_spaghetti)
+        self.assertEqual(res_spaghetti.returncode, 1)
+        spaghetti_ids = {f['case_id'] for f in json.loads(res_spaghetti.stdout)['findings']}
+        self.assertIn('UI_MINI_SPAGHETTI_CHART_COLLAPSE', spaghetti_ids)
+
+        # Clean visual-semiotic implementation passes all 4 static gates
+        clean_semiotic_swift = (
+            'struct CleanCockpitView: View {\n'
+            '    @State private var isStarted = false\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            RouteMapCanvas()\n'
+            '            Text("34.8").font(.system(size: 36, weight: .bold)).foregroundStyle(.primary)\n'
+            '            Chart { LineMark(x: .value("km", 1), y: .value("海拔", 120)) }.frame(height: 44)\n'
+            '            Chart { LineMark(x: .value("km", 1), y: .value("心率", 155)) }.frame(height: 44)\n'
+            '            Button("开始导航") { isStarted = true }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_clean = _run_cli('audit-code', '--platform', 'mobile', '--snippet', clean_semiotic_swift)
+        self.assertEqual(res_clean.returncode, 0, res_clean.stdout + res_clean.stderr)
+        self.assertEqual(json.loads(res_clean.stdout)['findings'], [])
+
+    def test_three_layer_orthogonal_allocation_and_card_peek_gates(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        interaction_text = (skill / 'references' / 'interaction-layering.md').read_text(encoding='utf-8')
+        breathing_text = (skill / 'references' / 'breathing-and-clarity.md').read_text(encoding='utf-8')
+
+        self.assertLessEqual(len(interaction_text.splitlines()), 160)
+        self.assertLessEqual(len(interaction_text.encode('utf-8')), 12 * 1024)
+        self.assertLessEqual(len(breathing_text.splitlines()), 130)
+        self.assertLessEqual(len(breathing_text.encode('utf-8')), 12 * 1024)
+
+        for token in (
+            '## Three-Layer Orthogonal Information Allocation Case (L1 Hero Verdict ➔ L2 Metric Tiles ➔ L3 Expanded Detail)',
+            'UI_CROSS_LAYER_METRIC_ECHO',
+            'UI_SCROLL_PROMPT_CLUTTER',
+            '55%–60%',
+            'Card Peek',
+        ):
+            self.assertIn(token, interaction_text)
+        self.assertIn('Three-Layer Orthogonal Information Allocation', breathing_text)
+        self.assertIn('Card Peek', breathing_text)
+
+        # 1. Negative Case A: Cross-layer telemetry metric echoing (L1 Hero echoes L2 Bento tile readings)
+        bad_echo_swift = (
+            'struct BadCrossLayerEchoView: View {\n'
+            '    var body: some View {\n'
+            '        ScrollView {\n'
+            '            VStack {\n'
+            '                // L1 Hero repeats concrete readings\n'
+            '                Text("86")\n'
+            '                Text("19°C · 东北风 14km/h · 昨骑 35.2km")\n'
+            '                Text("当前气温 19°C，睡眠 7.6h，恢复 88%")\n'
+            '                // L2 Bento Tiles repeat the exact same readings\n'
+            '                Text("环境 · 19°C · 14km/h")\n'
+            '                Text("负荷 · 35.2km · 7.6h · 恢复 88%")\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_echo = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_echo_swift)
+        self.assertEqual(res_echo.returncode, 1, res_echo.stdout + res_echo.stderr)
+        echo_payload = json.loads(res_echo.stdout)
+        echo_findings = [f for f in echo_payload['findings'] if f['case_id'] == 'UI_CROSS_LAYER_METRIC_ECHO']
+        self.assertEqual(len(echo_findings), 1)
+        self.assertEqual(echo_findings[0]['reference_drawer'], 'skills/my-designer/references/interaction-layering.md')
+        self.assertIn('Three-Layer Orthogonal Information Allocation', echo_findings[0]['fix_rule'])
+        self.assertIn('skills/my-designer/references/interaction-layering.md', echo_payload['reference_drawers'])
+        self.assertIn('skills/my-designer/references/breathing-and-clarity.md', echo_payload['reference_drawers'])
+
+        # 2. Negative Case B: Instructional scroll/expand prompts in Swift code (deduplicated single-emission UI_SCROLL_PROMPT_CLUTTER)
+        for prompt_copy in (
+            '⌄ 下拉查看分项指标与详情',
+            '向上滑动查看更多',
+            '点击卡片展开详情',
+            '轻触卡片查看分项',
+        ):
+            with self.subTest(prompt_copy=prompt_copy):
+                bad_prompt_swift = f'struct BadPromptView: View {{ var body: some View {{ Text("{prompt_copy}") }} }}'
+                res_prompt = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_prompt_swift)
+                self.assertEqual(res_prompt.returncode, 1, res_prompt.stdout)
+                prompt_payload = json.loads(res_prompt.stdout)
+                prompt_ids = {f['case_id'] for f in prompt_payload['findings']}
+                self.assertIn('UI_SCROLL_PROMPT_CLUTTER', prompt_ids)
+                self.assertNotIn('DC-014', prompt_ids)
+                self.assertEqual(len(prompt_payload['findings']), 1)
+                self.assertIn('skills/my-designer/references/interaction-layering.md', prompt_payload['reference_drawers'])
+                self.assertIn('skills/my-designer/references/breathing-and-clarity.md', prompt_payload['reference_drawers'])
+
+        # 3. Positive Case: Clean 3-layer orthogonal view (#Preview repetition & design-contract-allow ignored)
+        clean_orthogonal_swift = (
+            'struct CleanOrthogonalReadinessView: View {\n'
+            '    @State private var expandedDomain: String? = nil\n'
+            '    var body: some View {\n'
+            '        ScrollView {\n'
+            '            VStack(spacing: 16) {\n'
+            '                // Layer 1: Composite score + qualitative verdict + dimension weights only (55-60% viewport)\n'
+            '                Text("86").font(.system(size: 56, weight: .bold)).foregroundStyle(.primary)\n'
+            '                Text("极佳适宜 · 适合耐力拉练")\n'
+            '                Text("环境 88 · 身体 84 · 负荷 86")\n'
+            '                // Layer 2: Below-the-fold Bento tiles (each metric owned once; Card Peek replaces scroll copy)\n'
+            '                Text("19°C · 东北风 14km/h")\n'
+            '                Text("睡眠 7.6h · 恢复 88%")\n'
+            '                Text("昨骑 35.2km")\n'
+            '                Text("19°C") // design-contract-allow: unit test fixture\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+            '#Preview("Readiness v01") {\n'
+            '    VStack {\n'
+            '        Text("19°C · 东北风 14km/h")\n'
+            '        Text("睡眠 7.6h · 恢复 88%")\n'
+            '    }\n'
+            '}'
+        )
+        res_orth_clean = _run_cli('audit-code', '--platform', 'mobile', '--snippet', clean_orthogonal_swift)
+        self.assertEqual(res_orth_clean.returncode, 0, res_orth_clean.stdout + res_orth_clean.stderr)
+        self.assertEqual(json.loads(res_orth_clean.stdout)['findings'], [])
+
+        # 4. Spec Gate: SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT in audit-spec (bad vs negated/clean)
+        base_spec = (
+            'Desktop NavigationSplitView; mobile NavigationStack.\n'
+            'States: empty, loading, error.\n'
+            'Deprecated Test Clauses: N/A.\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_path = Path(tmp) / 'design.md'
+            for bad_line in (
+                '在首屏与分项卡片之间显示 "⌄ 下拉查看分项指标与详情" 引导提示。',
+                '底部放置文字提示：向上滑动查看更多指标。',
+                '卡片底部显示「点击卡片展开详情」文案。',
+            ):
+                with self.subTest(bad_spec_line=bad_line):
+                    spec_path.write_text(base_spec + bad_line + '\n', encoding='utf-8')
+                    res_spec_bad = _run_cli('audit-spec', '--strict-spec-gaps', str(spec_path))
+                    self.assertEqual(res_spec_bad.returncode, 1, res_spec_bad.stdout)
+                    spec_bad_payload = json.loads(res_spec_bad.stdout)
+                    codes = {w['code'] for w in spec_bad_payload['spec_gap_warnings']}
+                    self.assertIn('SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT', codes)
+                    self.assertIn('skills/my-designer/references/interaction-layering.md', spec_bad_payload['reference_drawers'])
+                    self.assertIn('skills/my-designer/references/breathing-and-clarity.md', spec_bad_payload['reference_drawers'])
+
+            for good_line in (
+                '禁止写 "⌄ 下拉查看分项指标与详情" 或 "点击卡片展开详情" 等教学提示，首屏 Hero 占 55%–60% 视口高度并通过底部 Card Peek 自然暗示可滚动。',
+                'Do not render "scroll down to view metrics" or "tap card to expand"; rely on 55%–60% L1 Hero + L2 Card Peek.',
+            ):
+                with self.subTest(good_spec_line=good_line):
+                    spec_path.write_text(base_spec + good_line + '\n', encoding='utf-8')
+                    res_spec_good = _run_cli('audit-spec', '--strict-spec-gaps', str(spec_path))
+                    self.assertEqual(res_spec_good.returncode, 0, res_spec_good.stdout)
+                    self.assertEqual(json.loads(res_spec_good.stdout)['spec_gap_warnings'], [])
+
+
+    def test_structural_convergence_v207_empty_dir_echo_scoping_dedup_and_routing(self) -> None:
+        # 1. Empty directory target fails audit-code with ok: false and code_errors
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_dir = Path(tmp) / 'empty_target'
+            empty_dir.mkdir()
+            (empty_dir / 'README.txt').write_text('not a swift or web source file', encoding='utf-8')
+            for platform in ('mobile', 'desktop', 'web'):
+                with self.subTest(empty_dir_platform=platform):
+                    res_empty = _run_cli('audit-code', '--platform', platform, str(empty_dir))
+                    self.assertEqual(res_empty.returncode, 1, res_empty.stdout)
+                    empty_payload = json.loads(res_empty.stdout)
+                    self.assertFalse(empty_payload['ok'])
+                    self.assertEqual(empty_payload['files'], 0)
+                    self.assertIn(
+                        f'no auditable source files found in target directory: {empty_dir}',
+                        empty_payload.get('code_errors', []),
+                    )
+
+        # 2. UI_CROSS_LAYER_METRIC_ECHO counter-cases: mutually exclusive if/else branches and separate View structs do NOT false-positive
+        branch_safe_swift = (
+            'struct UnitBranchSafeView: View {\n'
+            '    @State private var isMetric = true\n'
+            '    var body: some View {\n'
+            '        if isMetric {\n'
+            '            Text("19°C · 14km/h")\n'
+            '        } else {\n'
+            '            Text("19°C · 14km/h")\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+            'struct SiblingIndependentCardView: View {\n'
+            '    @State private var active = false\n'
+            '    var body: some View {\n'
+            '        Text("19°C · 14km/h")\n'
+            '    }\n'
+            '}'
+        )
+        res_branch_safe = _run_cli('audit-code', '--platform', 'mobile', '--snippet', branch_safe_swift)
+        self.assertEqual(res_branch_safe.returncode, 0, res_branch_safe.stdout)
+        self.assertEqual(json.loads(res_branch_safe.stdout)['findings'], [])
+
+        # True Hero + Bento echoing in the same View still triggers UI_CROSS_LAYER_METRIC_ECHO
+        hero_bento_echo_swift = (
+            'struct HeroAndBentoEchoView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            VStack { Text("86 · 19°C · 14km/h") }\n'
+            '            LazyVGrid(columns: [GridItem(.flexible())]) {\n'
+            '                Text("环境磁贴 · 19°C · 14km/h")\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_echo_hit = _run_cli('audit-code', '--platform', 'mobile', '--snippet', hero_bento_echo_swift)
+        self.assertEqual(res_echo_hit.returncode, 1)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_echo_hit.stdout)['findings']})
+
+        # 3. Complete progressive_disclosure drawer routing in route
+        res_route_ln = _run_cli('route', '--platform', 'desktop', '--dimensions', 'layout-navigation,component')
+        self.assertEqual(res_route_ln.returncode, 0)
+        pd_ln = json.loads(res_route_ln.stdout)['progressive_disclosure']
+        self.assertEqual(pd_ln['navigation_evidence_ref'], 'skills/my-designer/references/navigation-evidence-contract.md')
+        self.assertEqual(pd_ln['modernization_dimensions_ref'], 'skills/my-designer/references/modernization-dimensions.md')
+        self.assertEqual(pd_ln['design_flow_architecture_ref'], 'skills/my-designer/references/design-flow-architecture.md')
+        self.assertEqual(pd_ln['appearance_ledger'], 'skills/my-designer/references/appearance-ledger.md')
+
+        res_route_gm = _run_cli('route', '--platform', 'desktop', '--dimensions', 'glass-material')
+        self.assertEqual(res_route_gm.returncode, 0)
+        pd_gm = json.loads(res_route_gm.stdout)['progressive_disclosure']
+        self.assertIsNone(pd_gm['navigation_evidence_ref'])
+        self.assertIsNone(pd_gm['modernization_dimensions_ref'])
+        self.assertEqual(pd_gm['design_flow_architecture_ref'], 'skills/my-designer/references/design-flow-architecture.md')
+
+        # 4. Symbol-free DC-015, generalized CTA & Spaghetti Chart, and deduplicated dual-track findings
+        generic_dc015_swift = (
+            'struct TaskListScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            TopFocusItemCard(item: focused)\n'
+            '            Text("其余条目")\n'
+            '            ForEach(viewModel.remainingItems) { item in Row(item: item) }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_dc015 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', generic_dc015_swift)
+        self.assertEqual(res_dc015.returncode, 1)
+        self.assertIn('DC-015', {f['case_id'] for f in json.loads(res_dc015.stdout)['findings']})
+
+        generic_dup_cta_swift = (
+            'struct CheckoutScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Button("立即提交订单") {}.buttonStyle(.borderedProminent)\n'
+            '            Button("立即提交订单") {}.buttonStyle(.borderedProminent)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_dup_cta = _run_cli('audit-code', '--platform', 'mobile', '--snippet', generic_dup_cta_swift)
+        self.assertEqual(res_dup_cta.returncode, 1)
+        self.assertIn('UI_DUPLICATE_MAP_OR_PRIMARY_CTA', {f['case_id'] for f in json.loads(res_dup_cta.stdout)['findings']})
+
+        generic_spaghetti_swift = (
+            'struct FinanceMiniChart: View {\n'
+            '    var body: some View {\n'
+            '        Chart {\n'
+            '            LineMark(x: .value("Day", 1), y: .value("Revenue ($)", 100))\n'
+            '            LineMark(x: .value("Day", 1), y: .value("Margin (%)", 42))\n'
+            '            LineMark(x: .value("Day", 1), y: .value("Orders (cnt)", 18))\n'
+            '        }.frame(height: 60)\n'
+            '    }\n'
+            '}'
+        )
+        res_spag = _run_cli('audit-code', '--platform', 'mobile', '--snippet', generic_spaghetti_swift)
+        self.assertEqual(res_spag.returncode, 1)
+        self.assertIn('UI_MINI_SPAGHETTI_CHART_COLLAPSE', {f['case_id'] for f in json.loads(res_spag.stdout)['findings']})
+
+        # Verify single-line deduplication for DC-021 / UI_SPEC_ID_DEBUG_LEAK, DC-016 / UI_EXPAND_STATE_MUTATION, and DC-014 / UI_SCROLL_PROMPT_CLUTTER
+        res_leak_single = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Text("A1 · 今日概览")')
+        self.assertEqual(res_leak_single.returncode, 1)
+        leak_findings = json.loads(res_leak_single.stdout)['findings']
+        self.assertEqual([f['case_id'] for f in leak_findings], ['UI_SPEC_ID_DEBUG_LEAK'])
+
+    def test_r2_reviewer_regressions_f1_to_f7(self) -> None:
+        # F1: Structural DC-015 detection with arbitrary card name + remainder divider + filtered ForEach
+        f1_bad_swift = (
+            'struct TaskUnfoldScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            SelectedTaskCard(item: focused)\n'
+            '            Text("其余条目")\n'
+            '            ForEach(items.filter { $0.id != focused.id }) { item in Row(item: item) }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f1_bad = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f1_bad_swift)
+        self.assertEqual(res_f1_bad.returncode, 1, res_f1_bad.stdout)
+        self.assertIn('DC-015', {f['case_id'] for f in json.loads(res_f1_bad.stdout)['findings']})
+
+        f1_good_swift = (
+            'struct TaskInPlaceUnfoldScreen: View {\n'
+            '    var body: some View {\n'
+            '        LazyVStack(spacing: 12) {\n'
+            '            ForEach(items) { item in\n'
+            '                ExpandableItemRow(item: item, isExpanded: expandedID == item.id)\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f1_good = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f1_good_swift)
+        self.assertEqual(res_f1_good.returncode, 0, res_f1_good.stdout)
+        self.assertEqual(json.loads(res_f1_good.stdout)['findings'], [])
+
+        # F2: Same-span dual-track deduplication on line 1 for DC-016/UI_EXPAND_STATE_MUTATION and DC-014/UI_SCROLL_PROMPT_CLUTTER
+        res_f2_expand = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Capsule(showLabel: isExpanded)')
+        self.assertEqual(res_f2_expand.returncode, 1, res_f2_expand.stdout)
+        f2_expand_findings = json.loads(res_f2_expand.stdout)['findings']
+        self.assertEqual(len(f2_expand_findings), 1, f2_expand_findings)
+        self.assertEqual(f2_expand_findings[0]['line'], 1)
+        self.assertEqual(f2_expand_findings[0]['case_id'], 'UI_EXPAND_STATE_MUTATION')
+
+        res_f2_prompt = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Text("点击修改 · 点击卡片展开详情")')
+        self.assertEqual(res_f2_prompt.returncode, 1, res_f2_prompt.stdout)
+        f2_prompt_findings = json.loads(res_f2_prompt.stdout)['findings']
+        self.assertEqual(len(f2_prompt_findings), 1, f2_prompt_findings)
+        self.assertEqual(f2_prompt_findings[0]['line'], 1)
+        self.assertEqual(f2_prompt_findings[0]['case_id'], 'UI_SCROLL_PROMPT_CLUTTER')
+
+        # F3: Same-layer 2x comparison passes, while Hero + LazyVGrid Bento or >=3 coexisting occurrences fail
+        f3_same_layer = 'struct WeatherCompareRow: View { var body: some View { HStack { Text("Yesterday: 19°C"); Text("Today: 19°C") } } }'
+        res_f3_pass = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_same_layer)
+        self.assertEqual(res_f3_pass.returncode, 0, res_f3_pass.stdout)
+        self.assertTrue(json.loads(res_f3_pass.stdout)['ok'])
+
+        f3_hero_bento = (
+            'struct WeatherHeroBento: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            VStack { Text("86 · 19°C") }\n'
+            '            LazyVGrid(columns: [GridItem(.flexible())]) { Text("19°C") }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f3_bento = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_hero_bento)
+        self.assertEqual(res_f3_bento.returncode, 1, res_f3_bento.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f3_bento.stdout)['findings']})
+
+        f3_triple = 'struct TripleMetricView: View { var body: some View { HStack { Text("Morning: 19°C"); Text("Noon: 19°C"); Text("Night: 19°C") } } }'
+        res_f3_triple = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_triple)
+        self.assertEqual(res_f3_triple.returncode, 1, res_f3_triple.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f3_triple.stdout)['findings']})
+
+        # F4: Nested switch inside LazyVGrid under outer switch case does not partition outer case arm
+        f4_nested_switch = (
+            'struct NestedSwitchDashboardView: View {\n'
+            '    var body: some View {\n'
+            '        switch screenState {\n'
+            '        case .loaded:\n'
+            '            VStack { Text("86 · 19°C") }\n'
+            '            LazyVGrid(columns: [GridItem(.flexible())]) {\n'
+            '                switch tileMode {\n'
+            '                case .on: Text("19°C")\n'
+            '                case .off: Text("--")\n'
+            '                }\n'
+            '            }\n'
+            '        case .empty:\n'
+            '            EmptyView()\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f4 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f4_nested_switch)
+        self.assertEqual(res_f4.returncode, 1, res_f4.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f4.stdout)['findings']})
+
+        # F5: Ternary expression and single-line inline switch with 3 arms both pass (mutually exclusive)
+        for f5_snippet in (
+            'struct TernaryTempView: View { var body: some View { Text(flag ? "19°C" : "19°C") } }',
+            'struct InlineSwitchTempView: View { var body: some View { switch mode { case .a: Text("19°C") case .b: Text("19°C") default: Text("19°C") } } }',
+        ):
+            with self.subTest(f5_snippet=f5_snippet):
+                res_f5 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f5_snippet)
+                self.assertEqual(res_f5.returncode, 0, res_f5.stdout)
+                self.assertTrue(json.loads(res_f5.stdout)['ok'])
+                self.assertEqual(json.loads(res_f5.stdout)['findings'], [])
+
+        # F6 & F7: Closure-label prominent Buttons trigger duplicate CTA, while plain sibling Buttons before a prominent CTA pass
+        f6_closure_dup = (
+            'struct ClosureDupCTAView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Button {} label: { Text("Purchase") }.buttonStyle(.borderedProminent)\n'
+            '            Button {} label: { Text("Purchase") }.buttonStyle(.borderedProminent)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f6 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f6_closure_dup)
+        self.assertEqual(res_f6.returncode, 1, res_f6.stdout)
+        self.assertIn('UI_DUPLICATE_MAP_OR_PRIMARY_CTA', {f['case_id'] for f in json.loads(res_f6.stdout)['findings']})
+
+        f7_bounded_mods = (
+            'struct BoundedSiblingButtonsView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Button("More") {}\n'
+            '            Button("More") {}\n'
+            '            Button("Purchase") {}.buttonStyle(.borderedProminent)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f7 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f7_bounded_mods)
+        self.assertEqual(res_f7.returncode, 0, res_f7.stdout)
+        self.assertTrue(json.loads(res_f7.stdout)['ok'])
+        self.assertEqual(json.loads(res_f7.stdout)['findings'], [])
 
 
 if __name__ == "__main__":

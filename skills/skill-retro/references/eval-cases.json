@@ -75,6 +75,12 @@
         "six-dimensions",
         "m2-3m1-rollup"
       ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py verify-findings --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--findings-json",
+        "--timeout"
+      ],
       "file": "skills/skill-retro/SKILL.md",
       "must_contain": [
         "probe",
@@ -159,12 +165,44 @@
         "s2-reality"
       ],
       "forbidden_regex": "\\bgemini:4-\\s+argon\\b",
-      "bad_snippet": "model: gemini:4- argon",
-      "good_snippet": "model: gemini-4-argon",
+      "bad_snippet": "model: gemini:4- argon (invalid syntax in runtime-profiles)",
+      "good_snippet": "model: gemini-4-argon (valid syntax in runtime-profiles)",
       "registered_at": "2026-11-24"
     },
     {
       "id": "EV-010",
+      "title": "Layer A/B cross-skill .py CLI AST scan and soft_quality_advisories surface in probe/diagnose",
+      "tags": [
+        "s2-reality",
+        "cross-skill",
+        "ast",
+        "soft-advisories"
+      ],
+      "cmd": "python3 -I -B scripts/test_skill_retro_methodology.py SkillRetroMethodologyV2Tests.test_cross_skill_py_cli_scan_catches_dead_loop_subcommand_and_fstrings SkillRetroMethodologyV2Tests.test_soft_quality_advisories_surface_in_probe_and_diagnose_with_exit_0",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-011",
+      "title": "Layer C verify-findings 3-Gate Repro-Filter drops unreproduced/Class-B findings and fails closed on invalid category",
+      "tags": [
+        "verify-findings",
+        "counter-case",
+        "negative",
+        "layer-c"
+      ],
+      "cmd": "python3 -I -B scripts/test_skill_retro_methodology.py SkillRetroMethodologyV2Tests.test_verify_findings_3_gate_repro_filter_and_cli_fail_closed",
+      "expect_exit": 0,
+      "negative_cmd": "python3 skills/skill-retro/scripts/skill_retro.py verify-findings --findings-json '[{\"id\":\"F-1\",\"title\":\"Bad\",\"category\":\"bogus\"}]'",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "verify-findings error",
+        "skills/skill-retro/references/progressive-evolution-playbook.md"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-012",
       "title": "L2 diagnostics surface silent handoff drops and router parameter traps",
       "tags": ["handoff", "l2", "counter-case"],
       "cmd": "python3 -m unittest scripts/test_retro_handoff_drop_probe.py",

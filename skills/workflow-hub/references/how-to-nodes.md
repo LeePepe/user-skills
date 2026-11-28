@@ -13,7 +13,7 @@ L1 只描述节点独有 Internal；复用通过 Calls，完成后通过 PointsT
 
 | 节点 | 触发 | Inbound & Internal | Calls | PointsTo | 🔴断链 |
 |---|---|---|---|---|---|
-| E1 Feature | Manual/G1 | 人/任务输入；定义边界、不做项与端到端集成验收 | E5, E6, E7, E4, E3, E2, E10, E12 | G2, I5 | TK-04/TK-05/TK-06 |
+| E1 Build Feature | Manual/G1 | 需求→边界、不做项与端到端集成验收 | E5, E6, E7, E4, E3, E2, E10, E12 | G2, I5 | TK-04/TK-05/TK-06 |
 | E2 Bug List | Manual/QA | 批量缺陷清单、波次编排、devsync 与幂等可逆撤回 | E4a, I5, E3, E12 | G1, I5 | TK-02/TK-03 |
 | E3 Single Bug | Manual/E1/E2/Q1 | 单点缺陷根因定位、fail-first 复现与最小闭环修复 | E4a, E4, E9, E10 | I5, E12 | TK-01/TK-06 |
 | E4 Code Task | E1/E3/E10/P7/P8 | 独立 Worktree、Owned Paths、租约管理与 keep/drop | E9, I5 | E10, G1 | TK-16 |

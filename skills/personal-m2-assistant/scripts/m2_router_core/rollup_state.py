@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command
+from .constants_and_paths import _run_command, strip_herdr_origin_comments
 
 def _has_active_visible_tail(visible_text: str, *, max_lines: int = 8) -> bool:
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", visible_text)
@@ -58,7 +58,7 @@ def _enrich_slot_metadata(
                 or events_ctx.get("latest_user_message")
             )
             if session_turn_summary and not _text(slot.get("visible_summary")):
-                slot["visible_summary"] = session_turn_summary
+                slot["visible_summary"] = strip_herdr_origin_comments(session_turn_summary)
 
     if slot.get("retained") and slot.get("m1_progress") and not slot.get("handoff_dir"):
         return slot
@@ -158,7 +158,7 @@ def _enrich_slot_metadata(
             )
             slot["active_summary_source"] = "session"
             if newer_summary:
-                slot["visible_summary"] = newer_summary
+                slot["visible_summary"] = strip_herdr_origin_comments(newer_summary)
                 slot["m1_progress"] = newer_summary
             else:
                 slot["m1_progress"] = ledger_progress
@@ -181,7 +181,7 @@ def _enrich_slot_metadata(
                 or slot.get("visible_summary")
             )
             if newer_summary:
-                slot["visible_summary"] = newer_summary
+                slot["visible_summary"] = strip_herdr_origin_comments(newer_summary)
                 slot["m1_progress"] = newer_summary
                 slot["active_summary_source"] = "session"
     return slot
@@ -231,13 +231,13 @@ def _discover_and_enrich_global_m2_slots(
             "topic_id": live.get("topic_id") or slot.get("topic_id", ""),
         })
         slot.update(_slot_metadata(live))
-        slot["terminal_title"] = _text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or slot.get("terminal_title"))
+        slot["terminal_title"] = strip_herdr_origin_comments(_text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or slot.get("terminal_title")))
         ref = name or pane
         if ref not in visible_cache:
             visible_cache[ref] = _text(live.get("visible") or live.get("visible_text")) or _read_herdr_visible(herdr_bin, ref, runner=runner)
         visible = visible_cache[ref]
         if visible:
-            slot["visible_summary"] = _summarize_visible_lines(visible)
+            slot["visible_summary"] = strip_herdr_origin_comments(_summarize_visible_lines(visible))
         _enrich_slot_metadata(slot, handoff_root=handoff_root, scan_default=scan_default)
         if slot.get("slot_id") not in protected:
             handoff_active = bool(slot.get("handoff_in_progress", False))

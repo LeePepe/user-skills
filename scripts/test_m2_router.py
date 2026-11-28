@@ -242,7 +242,61 @@ class M2RouterTests(unittest.TestCase):
         result = self.router.apply_plan(plan, approve=True, runner=runner)
         self.assertEqual(result["receipts"][0]["method"], "herdr.agent.prompt")
         self.assertEqual(calls[0][1:3], ["agent", "prompt"])
-        self.assertEqual(calls[0][3:], ["alpha-m2-r1", "continue alpha"])
+        self.assertEqual(calls[0][3:], [
+            "alpha-m2-r1",
+            "continue alpha\n\n<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=alpha -->",
+        ])
+
+    def test_routed_prompt_sections_and_origin_watermark_are_explicit_and_idempotent(self):
+        tag = "<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=alpha -->"
+        plan = {
+            "schema_version": 1,
+            "plan_id": "m2p-routed",
+            "message": "fallback message",
+            "approval": {"approved": False},
+            "targets": [{
+                "target_repo": "alpha", "topic_id": "alpha", "m2_status": "NEW_M2", "transport": "stdout",
+                "sub_prompt": f"先讨论方案\n\n{tag}", "rag_context_hint": "prior alpha decision", "wave_order": 1,
+            }],
+        }
+        result = self.router.apply_plan(plan, approve=True, transport="stdout")
+        prompt = result["receipts"][0]["prompt"]
+        self.assertIn("[RAG/context hint]\nprior alpha decision\n\n[Dispatched instruction]\n先讨论方案", prompt)
+        self.assertEqual(prompt.count("herdr-origin:v1"), 1)
+        self.assertTrue(prompt.endswith(tag))
+        self.assertNotIn("fallback message", prompt)
+
+    def test_origin_comments_are_stripped_from_titles_summaries_and_hub_shards(self):
+        tag = "<!-- herdr-origin:v1 kind=agent_dispatch role=writer sender=tl goal=alpha -->"
+        session = self.router.normalize_session({
+            "name": "alpha-m2-r1", "agent_status": "working", "title": f"Alpha title {tag}",
+            "summary": f"Alpha summary {tag}", "cwd": "/repo/alpha", "pane_id": "w1:p1",
+        }, "herdr")
+        self.assertEqual(session["title"], "Alpha title")
+        self.assertEqual(session["summary"], "Alpha summary")
+        self.assertEqual(self.router._clean_single_line(f"visible text {tag}"), "visible text")
+        self.assertNotIn("herdr-origin", self.router._summarize_visible_lines(f"visible text\n{tag}"))
+        shard = self.router._build_local_device_shard({"slots": [{
+            "status": "working", "slot_id": "alpha", "topic_id": "alpha", "visible_summary": f"running {tag}",
+        }]}, now_iso="2026-11-28T20:00:00+08:00")
+        self.assertEqual(shard["in_flight"][0]["summary"], "running")
+        self.assertNotIn("herdr-origin", json.dumps(shard, ensure_ascii=False))
+
+    def test_safety_allowlist_accepts_only_herdr_env_assignments(self):
+        for command in (
+            "HERDR_SPAWN_ORIGIN=agent_dispatch git status",
+            "HERDR_AGENT_ROLE=writer HERDR_PARENT_PANE=w1:p1 herdr agent list",
+            "HERDR_PANE_ID=w1:p1 env",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(self.router._is_whitelisted_command(command))
+        for command in (
+            "FOO=1 git status",
+            "HERDR_AGENT_ROLE=writer FOO=1 git status",
+            "env FOO=1 bash -c id",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(self.router._is_whitelisted_command(command))
 
     def test_dsh_existing_delivery_falls_back_to_omni_dispatch(self):
         plan = {

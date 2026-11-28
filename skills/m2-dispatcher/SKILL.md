@@ -13,7 +13,7 @@ Canonical skill: `m2-dispatcher`; role **M2-Dispatcher**. Task-level 1-Hop execu
 |---|---|---|
 | Role: M2-Dispatcher | `references/pr-dag-auto-heal.md` | `goal-supervisor.py status --check` |
 | Role: M1-TL | `../team-lead/references/ledger.md` | `goal-queue.py next-wave --mark-in-progress` |
-| Role: Writer | `../team-lead/references/bots-and-agents.md` | `herdr-dispatch.sh --role writer` |
+| Role: Writer | `../team-lead/references/bots-and-agents.md` | `feedback_guard.py pre-review-check` |
 | Role: Reviewer | `../team-lead/references/ledger.md` | `feedback_guard.py pre-review-check` |
 
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
@@ -35,6 +35,7 @@ M2 owns Owner Gate, simple `spec.md`/`design.md`, hot append, monitoring, blocke
 - Before any M2 write, run `python3 skills/m2-dispatcher/scripts/m2_preflight.py check-write-path --path <target> --json`; only `handoff/**`, `/tmp/**`, and `.copilot/session-state/**` are allowed (`R2`).
 - Use `python3 skills/m2-dispatcher/scripts/m2_preflight.py ledger-delta --handoff-dir <dir> --tail 20 --json` for bounded watermark-tracked ledger deltas instead of full-file reads (`H4`).
 - On a Goal pivot, run `python3 skills/m2-dispatcher/scripts/m2_preflight.py supersede-goal --old-handoff <dir> --new-goal <slug> --reason <reason> --apply --json`; it cancels old tasks and records `EVT=GOAL_SUPERSEDED` plus `EVT=GOAL_DONE` (`H1`).
+- Before UI Goal closeout, run `python3 skills/m2-dispatcher/scripts/m2_preflight.py check-ui-closeout --handoff-dir <dir> --json` (`check-ui-dispatch`) to enforce M1 `herdr-dispatch.sh` evidence plus R10 rendered PNG, whitespace check, and `magpie/group/designer` Visual Traceback (`EV-M2-015`).
 
 Shared references: [`runtime-profiles.yaml`](../team-lead/references/runtime-profiles.yaml) (Script-Only Data Drawer — query via L2 CLI, never full-file view), [`bots-and-agents.md`](../team-lead/references/bots-and-agents.md), [`ledger.md`](../team-lead/references/ledger.md), and [`m2-domain-map.json`](references/m2-domain-map.json) (Script-Only Data Drawer — query via L2 CLI, never full-file view). Shared scripts: [`goal-queue.py`](../team-lead/scripts/goal-queue.py), [`herdr-dispatch.sh`](../team-lead/scripts/herdr-dispatch.sh), plus `goal-supervisor.py`, `state_store.py`, and `jev_client.py`.
 

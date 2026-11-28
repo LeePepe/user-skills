@@ -31,7 +31,7 @@ class M2DispatcherRetroTests(unittest.TestCase):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
         self.assertLessEqual(len(SCRIPT.read_text(encoding="utf-8").splitlines()), 350)
         plugin = json.loads((ROOT / "skills/m2-dispatcher/.claude-plugin/plugin.json").read_text())
-        self.assertEqual(plugin["version"], "1.1.0")
+        self.assertGreaterEqual(tuple(int(x) for x in plugin["version"].split(".")), (1, 1, 1))
 
     def test_ledger_delta_incremental_watermark_and_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

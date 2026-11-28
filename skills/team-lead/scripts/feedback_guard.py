@@ -8,6 +8,7 @@ import fnmatch
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any, Mapping, Sequence
@@ -16,6 +17,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+from ui_closeout_guard import PLAYBOOK_GUIDANCE, evaluate_pre_review_ui_gate  # noqa: E402
 
 
 FEEDBACK_SCHEMA_VERSION = 1
@@ -598,12 +600,9 @@ def _normalize_owned_token(raw: str) -> str:
     token = raw.strip().strip("\"'").lstrip("./")
     if not token or " " in token or token.startswith(("-", "http://", "https://", "~/")):
         return ""
-    # Skip GitHub owner/repo slugs like `LeePepe/user-skills` in Owned Paths headers.
-    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", token) and "." not in token.split("/", 1)[0]:
-        first_seg = token.split("/", 1)[0]
-        if first_seg[0].isupper() or "-" in token.split("/", 1)[1] and "." not in token.split("/", 1)[1]:
-            if first_seg not in {"skills", "scripts", "references", "tests", "docs", "src", "apps", "packages"}:
-                return ""
+    # Only known metadata owners are excluded; casing/hyphens also occur in project paths.
+    if re.fullmatch(r"(?:LeePepe|octo)/[A-Za-z0-9_.-]+", token, re.I):
+        return ""
     if "/" not in token and "." not in token and "*" not in token:
         return ""
     return token.rstrip("/") if not token.endswith("/**") else token
@@ -642,9 +641,13 @@ def _is_populated_token(val: str) -> bool:
     return bool(cleaned) and cleaned.lower() not in _PLACEHOLDER_VALS
 
 
+def _receipt_failed(text: str) -> bool:
+    return bool(re.search(r"(?im)^[\s>*-]*[*`]*\s*(?:verification(?:\s+commands?)?|v5(?:\s+verdict)?|verdict|status)[\s*`]*[:|=-][\s*`\"']*(?:fail(?:ed|ure)?|error|blocked|cancelled)\b", text))
+
+
 def validate_r10_receipt(receipt_text: str) -> list[str]:
     """Check required R10 receipt sections/fields (real Commit SHA, actual Role + Model, non-empty Verification/V5)."""
-    violations: list[str] = []
+    violations: list[str] = ["failed_receipt_verification: R10 records failed verification/status"] if _receipt_failed(receipt_text) else []
     sha_match = re.search(
         r"(?im)^[\s>*-]*(?:\*\*)?(?:commit(?:\s+sha)?|head(?:\s+sha)?)(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
@@ -653,8 +656,7 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
     if not re.search(r"\b[0-9a-f]{7,40}\b", sha_val, re.IGNORECASE):
         violations.append("missing_receipt_commit_sha: R10 receipt must record a real 7-40 hex Commit SHA")
 
-    has_role = False
-    has_model = False
+    has_role = has_model = False
     combined_rm = re.search(
         r"(?im)^[\s>*-]*(?:\*\*)?role\s*/\s*model(?:\*\*)?[\s*`]*[:|=-][ \t]*(.+)$",
         receipt_text,
@@ -700,22 +702,11 @@ def validate_r10_receipt(receipt_text: str) -> list[str]:
         if v5_val and v5_val.lower() not in {"n/a", "na", "none", "tbd", "todo", "-", "—"}:
             has_verif_value = True
     if not has_verif_value:
-        sec_match = re.search(
-            r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)",
-            receipt_text,
-        )
-        if sec_match:
-            sec_lines = [
-                ln.strip()
-                for ln in sec_match.group(1).splitlines()
-                if ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
-            ]
-            if sec_lines:
-                has_verif_value = True
+        sec_match = re.search(r"(?ims)^#{1,4}\s+[^\n]*(?:verification|verify|v5)[^\n]*\n(.+?)(?=^#{1,4}\s+|\Z)", receipt_text)
+        has_verif_value = bool(sec_match and any(ln.strip() and _clean_receipt_value(ln.lstrip("-*0123456789. "))
+                                                for ln in sec_match.group(1).splitlines()))
     if not has_verif_value:
-        violations.append(
-            "missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result"
-        )
+        violations.append("missing_receipt_verification: R10 receipt must record a non-empty V5 verdict or verification command result")
     return violations
 
 
@@ -768,17 +759,7 @@ def check_swiftui_and_error_retry_guards(
     return violations
 
 
-M1_STEERING_ROLES = {
-    "m1",
-    "m1_tl",
-    "m1-tl",
-    "tl",
-    "team-lead",
-    "team_lead",
-    "steering",
-    "group/steering",
-    "magpie/group/steering",
-}
+M1_STEERING_ROLES = {"m1", "m1_tl", "m1-tl", "tl", "team-lead", "team_lead", "steering", "group/steering", "magpie/group/steering"}
 
 
 def _receipt_role(receipt_text: str) -> str | None:
@@ -800,7 +781,7 @@ def _receipt_role(receipt_text: str) -> str | None:
 
 
 def _normalize_shell_command(command: str) -> str:
-    normalized = re.sub(r"\s+", " ", command.strip())
+    normalized = command.strip()
     while True:
         previous = normalized
         normalized = re.sub(r"\s*(?:\(\s*)?exit\s*=\s*0\s*\)?\s*$", "", normalized, flags=re.IGNORECASE)
@@ -813,7 +794,7 @@ def _normalize_shell_command(command: str) -> str:
 def _receipt_verification_commands(receipt_text: str) -> list[str]:
     commands: list[str] = []
     pattern = re.compile(
-        r"(?im)^\s*(?:(?:[-*]|\d+[.)])\s*)?`?((?:python3|pytest|unittest|swiftlint)\b[^\n]*|(?:\./)?scripts/verify\b[^\n]*)"
+        r"(?im)^\s*(?:(?:[-*]|\d+[.)])\s*)?(?:Verification(?:\s+commands?)?\s*:\s*)?`?((?:python3|pytest|unittest|swiftlint|xcodebuild)\b[^\n]*|(?:swift\s+(?:test|build)|(?:npm|cargo|go)\s+test)\b[^\n]*|(?:\./)?scripts/verify\b[^\n]*)"
     )
     for match in pattern.finditer(receipt_text):
         command = _normalize_shell_command(match.group(1))
@@ -824,15 +805,9 @@ def _receipt_verification_commands(receipt_text: str) -> list[str]:
 
 def _event_values(value: Any) -> list[Any]:
     if isinstance(value, dict):
-        values = [value]
-        for nested in value.values():
-            values.extend(_event_values(nested))
-        return values
+        return [value] + [nested for item in value.values() for nested in _event_values(item)]
     if isinstance(value, list):
-        values: list[Any] = []
-        for item in value:
-            values.extend(_event_values(item))
-        return values
+        return [nested for item in value for nested in _event_values(item)]
     return [value]
 
 
@@ -865,14 +840,6 @@ def _event_exit_code(event: Any) -> int | None:
             if match:
                 return int(match.group(1))
 
-    for item in nested_values:
-        if not isinstance(item, dict):
-            continue
-        for key, value in item.items():
-            if key.lower() == "success" and value is True:
-                return 0
-            if key.lower() == "success" and value is False:
-                return 1
     return None
 
 
@@ -906,15 +873,59 @@ def _successful_event_commands(events_path: Path) -> list[str]:
     return successful
 
 
+def _command_argv(command: str) -> list[str]:
+    argv = shlex.split(command, comments=False)
+    while argv:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+            argv.pop(0)
+        elif argv[0] in {"env", "time", "nohup", "nice", "timeout"}:
+            wrapper = argv.pop(0)
+            while argv and argv[0].startswith("-"):
+                option = argv.pop(0)
+                if option in {"-u", "--unset", "-n", "--adjustment", "-k", "--kill-after", "-s", "--signal"} and argv:
+                    argv.pop(0)
+                elif option not in {"--", "-i", "--ignore-environment", "-p", "--preserve-status", "--foreground", "-v", "--verbose"} and "=" not in option:
+                    return []
+            if wrapper == "timeout":
+                if not argv or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", argv.pop(0)):
+                    return []
+        else:
+            break
+    return argv
+
+
 def _command_was_successful(claim: str, executed: list[str]) -> bool:
-    normalized_claim = _normalize_shell_command(claim)
-    for command in executed:
-        normalized_command = _normalize_shell_command(command)
-        if normalized_command == normalized_claim or normalized_claim in normalized_command:
-            return True
-        for part in re.split(r"&&|;", normalized_command):
-            if normalized_claim == part.strip() or normalized_claim in part.strip():
-                return True
+    try:
+        claimed = _command_argv(_normalize_shell_command(claim))
+        if not claimed:
+            return False
+        for command in executed:
+            shlex.split(command, comments=True)
+            # Keep quoted operators/data intact. Only a final command and its && predecessors
+            # have inferable exit=0 status; OR branches, pipelines and earlier ; commands do not.
+            parts, operators, current = [], [], ""
+            for match in re.finditer(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\\[\s\S]|(?P<comment>(?<![^\s;&|()])#[^\n]*)|\d*>&\d+|&>>?|&&|\|\||[;&|\n]|(?P<bad>[()`])|[^'\"\\#;&|()`\n]+|#", command):
+                token = match.group()
+                if match.lastgroup == "comment":
+                    continue
+                if match.lastgroup == "bad":
+                    operators.append("||"); break
+                if token in {"&&", "||", ";", "|", "&", "\n"}:
+                    parts.append(current); operators.append(token); current = ""
+                else:
+                    current += token
+            parts.append(current)
+            if "||" in operators or "<<" in command:
+                continue
+            while len(parts) > 1 and not parts[-1].strip() and operators[-1] in {";", "\n"}:
+                parts.pop(); operators.pop()
+            for index in range(len(parts) - 1, -1, -1):
+                if _command_argv(parts[index]) == claimed:
+                    return True
+                if index == 0 or operators[index - 1] != "&&":
+                    break
+    except ValueError:
+        return False
     return False
 
 
@@ -929,47 +940,29 @@ def run_pre_review_check(
     actor_role: str | None = None,
     max_inline_files: int = 3,
     events_jsonl: Path | None = None,
+    require_ui_traceback: bool = False,
+    design_spec: Path | None = None,
 ) -> dict[str, Any]:
     """Deterministic pre-review gate catching recurring R1 Writer failures before Reviewer dispatch."""
     wt = worktree.expanduser().resolve()
     brief = brief_path.expanduser().resolve()
     target_head = (head_ref or "HEAD").strip() or "HEAD"
     violations: list[dict[str, Any]] = []
-
     if not wt.is_dir():
         return {"ok": False, "violations": [{"code": "missing_worktree", "detail": str(wt)}]}
     if not brief.is_file():
         return {"ok": False, "violations": [{"code": "missing_brief", "detail": str(brief)}]}
-
-    owned_paths = extract_owned_paths_from_brief(brief.read_text(encoding="utf-8"))
+    brief_text = brief.read_text(encoding="utf-8")
+    owned_paths = extract_owned_paths_from_brief(brief_text)
     if not owned_paths:
-        violations.append({
-            "code": "empty_owned_paths",
-            "detail": f"No Owned Paths parsed from {brief}",
-        })
+        violations.append({"code": "empty_owned_paths", "detail": f"No Owned Paths parsed from {brief}"})
 
-    status_proc = subprocess.run(
-        ["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    status_proc = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False)
     if status_proc.returncode != 0:
-        return {
-            "ok": False,
-            "violations": [{"code": "invalid_git_worktree", "detail": status_proc.stderr.strip() or str(wt)}],
-        }
-    dirty_tracked = [
-        line[3:].strip()
-        for line in status_proc.stdout.splitlines()
-        if line.strip()
-    ]
+        return {"ok": False, "violations": [{"code": "invalid_git_worktree", "detail": status_proc.stderr.strip() or str(wt)}]}
+    dirty_tracked = [line[3:].strip() for line in status_proc.stdout.splitlines() if line.strip()]
     if dirty_tracked and not allow_dirty:
-        violations.append({
-            "code": "dirty_tracked_worktree",
-            "files": dirty_tracked,
-            "detail": "Tracked modifications must be committed before Reviewer dispatch",
-        })
+        violations.append({"code": "dirty_tracked_worktree", "files": dirty_tracked, "detail": "Tracked modifications must be committed before Reviewer dispatch"})
 
     head_probe = subprocess.run(
         ["git", "-C", str(wt), "rev-parse", "--verify", f"{target_head}^{{commit}}"],
@@ -1169,13 +1162,17 @@ def run_pre_review_check(
             executed = _successful_event_commands(events_file)
             missing = [claim for claim in claims if not _command_was_successful(claim, executed)]
             if missing:
-                violations.append({
-                    "code": "ungrounded_receipt_verification",
-                    "missing_commands": missing,
-                    "detail": "R10 receipt claims verification commands with zero matching exit=0 executions in events.jsonl",
-                })
+                violations.append({"code": "ungrounded_receipt_verification", "missing_commands": missing, "detail": "R10 receipt claims verification commands with zero matching exit=0 executions in events.jsonl"})
 
-    return {
+    ui_enforced, ui_violations = evaluate_pre_review_ui_gate(
+        brief_path=brief, brief_text=brief_text, owned_paths=owned_paths, changed_files=changed_files,
+        receipt_path=receipt_path, receipt_text=receipt_text,
+        require_ui_traceback=require_ui_traceback, design_spec=design_spec,
+    )
+    violations.extend(ui_violations)
+    if any(item["code"] == "ui_unresolved_impl_bug" for item in ui_violations):  # Prefer the specific UI failure diagnosis.
+        violations = [item for item in violations if item["code"] != "failed_receipt_verification"]
+    report: dict[str, Any] = {
         "ok": len(violations) == 0,
         "worktree": str(wt),
         "brief": str(brief),
@@ -1186,6 +1183,10 @@ def run_pre_review_check(
         "changed_files": changed_files,
         "violations": violations,
     }
+    if ui_enforced or ui_violations:
+        report["ui_closeout_enforced"] = ui_enforced
+        report["guidance"] = PLAYBOOK_GUIDANCE
+    return report
 
 
 def _feedback_cli_error(message: str, reference: str) -> int:
@@ -1256,6 +1257,8 @@ def _receipt_summary(path: Path) -> dict[str, Any]:
             violations.append("missing_receipt_role_or_model")
         if not _is_populated_token(status or ""):
             violations.append("missing_receipt_status")
+        if any(_receipt_failed(f"{key.replace('_', ' ')}: {value}") for key, value in data.items()):
+            violations.append("failed_receipt_verification")
     return {
         "name": path.name,
         "path": str(path),
@@ -1329,6 +1332,8 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--actor-role", default=None, help="Effective actor role for inline edit budget checks")
     p_pre.add_argument("--max-inline-files", type=int, default=3, help="Maximum files an M1/Steering actor may edit inline")
     p_pre.add_argument("--events-jsonl", "--trace-jsonl", dest="events_jsonl", type=Path, default=None, help="Optional events.jsonl trace for R10 verification grounding")
+    p_pre.add_argument("--require-ui-traceback", action="store_true", help="Require UI PNG snapshot, whitespace check, and Designer Visual Traceback in R10 receipt")
+    p_pre.add_argument("--design-spec", type=Path, default=None, help="Explicit design.md path triggering UI closeout verification")
     p_pre.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True)")
 
     p_diff = sub.add_parser("diff-check", aliases=["whitespace-check"], help="Report git whitespace/conflict issues as a soft advisory")
@@ -1351,17 +1356,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     if args.command == "pre-review-check":
         report = run_pre_review_check(
-            worktree=args.worktree,
-            brief_path=args.brief,
-            receipt_path=args.receipt,
-            base_ref=args.base_ref,
-            head_ref=args.head_ref,
-            allow_dirty=args.allow_dirty,
-            actor_role=args.actor_role,
-            max_inline_files=args.max_inline_files,
-            events_jsonl=args.events_jsonl,
+            worktree=args.worktree, brief_path=args.brief, receipt_path=args.receipt,
+            base_ref=args.base_ref, head_ref=args.head_ref, allow_dirty=args.allow_dirty,
+            actor_role=args.actor_role, max_inline_files=args.max_inline_files,
+            events_jsonl=args.events_jsonl, require_ui_traceback=args.require_ui_traceback,
+            design_spec=args.design_spec,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        if not report["ok"] and report.get("guidance"):
+            sys.stderr.write(f"[feedback_guard] UI closeout gate failed; see Reference: {report['guidance']}\n")
         return 0 if report["ok"] else 1
     if args.command in {"diff-check", "whitespace-check"}:
         payload, code = _run_diff_check(args.worktree, args.base_ref, args.head_ref)

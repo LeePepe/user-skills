@@ -19,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 import sys
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+from feedback_guard import _receipt_summary  # noqa: E402
 from jev_client import jev_decide  # noqa: E402
 from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
 
@@ -90,15 +91,13 @@ def agent_status(agent: dict[str, Any]) -> str:
 
 
 def role_for(name: str) -> str:
-    patterns = (
-        ("team_lead", ("-goal-tl-", "-team-lead-")),
-        ("pr_monitor", ("-prmon-", "-pr-monitor-")),
-        ("reviewer", ("-rev-", "-reviewer-")),
-        ("designer", ("-des-", "-designer-")),
-        ("explorer", ("-exp-", "-explorer-")),
-        ("writer", ("-writer-",)),
-    )
-    for role, markers in patterns:
+    m = re.search(r"(?:^|-)(?:t(?:k)?\d+[a-z0-9]*-)?(goal-tl|team-lead|team_lead|pr-monitor|pr_monitor|prmon|reviewer|rev|designer|des|explorer|exp|writer)(?:-r\d+)?$", name.lower())
+    if m:
+        return {"goal-tl": "team_lead", "team-lead": "team_lead", "pr-monitor": "pr_monitor", "prmon": "pr_monitor",
+                "rev": "reviewer", "des": "designer", "exp": "explorer"}.get(m.group(1), m.group(1))
+    for role, markers in (("team_lead", ("-goal-tl-", "-team-lead-")), ("pr_monitor", ("-prmon-", "-pr-monitor-")),
+                          ("reviewer", ("-rev-", "-reviewer-")), ("designer", ("-des-", "-designer-")),
+                          ("explorer", ("-exp-", "-explorer-")), ("writer", ("-writer-",))):
         if any(marker in name for marker in markers):
             return role
     return "reviewer"
@@ -114,14 +113,33 @@ def goal_events(ledger: Path) -> list[tuple[dt.datetime, str]]:
 
 
 def receipt_exists(goal: Path, name: str) -> bool:
-    receipts = goal / "receipts"
-    if not receipts.is_dir():
-        return False
-    role = role_for(name)
-    return any(
-        path.is_file() and (name in path.name or role in path.name)
-        for path in receipts.glob("*")
-    )
+    """Bind grounded R10 evidence to an agent/task, never just a role substring."""
+    receipts, name, g_name = goal / "receipts", name.lower(), goal.name.lower()
+    identity = re.search(r"(?:^|-)(?:(?P<task>t(?:k)?\d+[a-z0-9]*)-)?(?P<role>goal-tl|team-lead|team_lead|pr-monitor|pr_monitor|prmon|reviewer|rev|designer|des|explorer|exp|writer)(?:-(?P<round>r\d+))?$", name)
+    task, raw_role, round_id = identity.group("task", "role", "round") if identity else (None, None, None)
+    role = role_for(raw_role) if raw_role else role_for(name)
+    role_pattern = {"team_lead": "(?:team_lead|team-lead|goal-tl)", "pr_monitor": "(?:pr_monitor|pr-monitor|prmon)",
+                    "reviewer": "(?:reviewer|rev)", "explorer": "(?:explorer|exp)", "designer": "(?:designer|des)"}.get(role, role)
+    goal_prefix = name[:identity.start()].rstrip("-") if identity else ""
+    for path in receipts.glob("*"):
+        stem = path.stem.lower(); relative = stem.removeprefix(g_name + "-")
+        if relative == stem and goal_prefix and stem_matches_goal(goal_prefix, g_name):
+            relative = stem.removeprefix(goal_prefix + "-")
+        exact = stem == name or stem.startswith(name + "-") or stem.endswith("-" + name)
+        bound = identity and re.fullmatch(rf"{re.escape(task) if task else role_pattern}(?:-({role_pattern}))?(?:[-_](r\d+))?", relative)
+        matched = exact or bool(bound and (bound.group(2) in {None, round_id} or
+                                          bound.group(2) == "r10" and (not task or not bound.group(1))))
+        if not path.is_file() or not matched:
+            continue
+        try:
+            summary = _receipt_summary(path)
+            recorded = str(summary.get("role") or "").removeprefix("magpie/").removeprefix("group/")
+            recorded = {"coding": "writer", "writer_escalated": "writer", "reviewing": "reviewer", "code_reviewer": "reviewer", "steering": "team_lead", "team-lead": "team_lead", "m1_tl": "team_lead"}.get(recorded, recorded)
+            if summary.get("valid") is True and recorded == role:
+                return True
+        except (OSError, UnicodeError, ValueError):
+            continue
+    return False
 
 
 def load_agents(path: Path | None) -> list[dict[str, Any]]:
@@ -523,31 +541,25 @@ def evaluate_stuck_loop(
     *,
     jev_override: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    negation = r"\b(?:not|no|never|without|0|zero|neither|nor|none|isn't|aren't|wasn't|weren't|doesn't|don't|didn't)\b"
+    status_pattern = r"\b(?:stuck|looping|repeating identical failure)\b"
+    clauses = re.split(r"[.;:\n]|\b(?:but|however|yet)\b", visible, flags=re.I)
+    explicit = any(not re.search(negation, clause[:match.start()], re.I)
+                   for clause in clauses for match in re.finditer(status_pattern, clause, re.I))
     lines = [line.strip() for line in visible.splitlines() if line.strip()]
-    explicit = bool(re.search(r"\b(?:stuck|looping|repeating identical failure)\b", visible, re.I))
     repeated = any(lines[index] == lines[index - 1] == lines[index - 2] for index in range(2, len(lines)))
-    failure_re = re.compile(r"(?:error|failed|failure|traceback|command not found|exit code [1-9])", re.I)
+    failure_re = re.compile(r"(?<!\b0\s)(?<!\bno\s)(?<!\bnot\s)(?<!\bzero\s)(?<!\bwithout\s)(?<!\bidentical\s)(?:error|failed|failure|traceback|command not found|exit code [1-9])", re.I)
     repeated_failure = repeated and sum(bool(failure_re.search(line)) for line in lines[-5:]) >= 3
     if explicit or repeated_failure:
-        return {
-            "type": "STUCK_LOOP",
-            "goal_id": "",
-            "agent": agent_name_value,
-            "role": role,
-            "repeating_prob": 1.0,
-            "progress_prob": 0.0,
-        }
+        return {"type": "STUCK_LOOP", "goal_id": "", "agent": agent_name_value,
+                "role": role, "repeating_prob": 1.0, "progress_prob": 0.0}
     answers = jev_override
     if answers is None:
-        answers = jev_decide(
-            visible,
-            {
-                "repeating_identical_failure": {"type": "noul"},
-                "making_forward_progress": {"type": "noul"},
-                "violating_role_boundary": {"type": "noul"},
-            },
-            agent_role=role,
-        ) or {}
+        answers = jev_decide(visible, {
+            "repeating_identical_failure": {"type": "noul"},
+            "making_forward_progress": {"type": "noul"},
+            "violating_role_boundary": {"type": "noul"},
+        }, agent_role=role) or {}
     repeat_prob = _number_from_answer(answers.get("repeating_identical_failure"))
     progress_prob = _number_from_answer(answers.get("making_forward_progress"))
     boundary_prob = _number_from_answer(answers.get("violating_role_boundary"))

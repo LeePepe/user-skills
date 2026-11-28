@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command, merge_target_prompt
+from .constants_and_paths import _run_command, append_herdr_origin_tag, merge_target_prompt, strip_herdr_origin_comments
 
 from .apply_engine import _post_json
 
@@ -60,10 +60,14 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
                         "source": "herdr",
                         "transport": "stdout" if target_is_stdout else "herdr",
                     })
-            prompt = merge_target_prompt(dispatch_target, _text(plan.get("message")))
-            hint = dispatch_target.get("rag_context_hint")
+            raw_sub_prompt = strip_herdr_origin_comments(merge_target_prompt(dispatch_target, _text(plan.get("message"))))
+            hint = _text(dispatch_target.get("rag_context_hint"))
             if hint:
-                prompt = f"[RAG/context hint]\n{hint}\n\n[Dispatched instruction]\n{prompt}"
+                prompt_body = f"[RAG/context hint]\n{hint}\n\n[Dispatched instruction]\n{raw_sub_prompt}"
+            else:
+                prompt_body = raw_sub_prompt
+            topic_tag = _text(dispatch_target.get("topic_id") or dispatch_target.get("target_repo"), "general")
+            prompt = append_herdr_origin_tag(prompt_body, kind="human_routed", sender="m3", topic=topic_tag)
             selected = "stdout" if target_is_stdout else _resolve_target_transport(dispatch_target, plan, transport)
             if selected == "stdout":
                 receipt = {"ok": True, "method": "stdout", "target": dispatch_target.get("target_repo", "unspecified"), "created": False, "would_create": dispatch_target.get("m2_status") == "NEW_M2", "prompt": prompt}

@@ -1,6 +1,6 @@
-# Agent Retro v2.1.2 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
+# Agent Retro v2.1.3 Playbook (`6-Layer Multi-Agent Trajectory Retro & Role-to-Skill Upstream Attribution`)
 
-> Core Philosophy: **Symptom in Agent, Cure in Skill.** Grade final outcomes first (**Outcome-First Gate**), treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy runtime progressive disclosure, and trace downstream rework back to the **first upstream role and skill** that introduced the defect.
+> Core: **Symptom in Agent, Cure in Skill.** Grade outcomes first; treat `R1 -> R2` (`exit=1 -> disclose -> exit=0`) as healthy progressive disclosure; trace rework to the **first Upstream skill**.
 
 ## 1. Three-Stage Execution Architecture (`1 M2 -> 1 Cheap Probe Worker -> K (0..3) Parallel M1 TLs -> M2 Rollup`)
 
@@ -13,7 +13,7 @@
 
 ---
 
-## 2. Outcome-First Filter & Runtime Progressive Disclosure Exemption
+## 2. Outcome-First Filter & Progressive Disclosure
 
 1. **Outcome-First Gate (Anthropic Principle)**:
    - Goals/Tasks that complete in `R1` or `R2` (`DONE`/`PR_MERGED`) within budget, with faithful receipts and no interrupts, are **`OUTCOME_HEALTHY`**.
@@ -44,7 +44,7 @@
 | **`exec` (`L-Exec`)** | `E1_blind_spin_loop_vs_progressive_catch` | `>=3x` consecutive identical-error retries without reading a reference drawer (`blind_spin_loop`), vs healthy `exit=1 -> disclose -> exit=0` (`progressive_catch_rate`) | Target Skill / `team-lead` | Wire `<=3`-line self-disclosing `references/*.md` pointer on `exit=1` |
 | **`exec` (`L-Exec`)** | `E2_r3_plus_divergence` | Task reaching `R3+` review rounds or `CHANGE_REQUEST` directional reset (`R1->R2` exempted) | Upstream skill via First-Fault Credit Assignment (`my-designer` / `team-lead` / `m2-dispatcher`) | Sink missing upstream constraint into `spec_gate.py` / `design_contract.py` |
 | **`exec` (`L-Exec`)** | `E3_gate_escape_and_uncrystallized_spec_gap` | Local verify `exit=0` followed by remote CI failure, or `[SPEC_GAP]` recurring across `>=3` goals | `repo-kit` (CI escape) / `my-designer` (`[SPEC_GAP]`) | Sink `[SPEC_GAP]` into `design_contract.py` / `verify_design_cases.py` |
-| **`exec` (`L-Exec`)** | `E4_unfaithful_receipt_and_cancelled_noise` | R10 receipt claiming `pytest`/`swiftlint`/`verify`/`PR_MERGED` with `0` matching `exit=0` calls in `events.jsonl`, or superseded `CANCELLED` CI runs logged as `PR_CHECK_FAILED` | `team-lead` | `feedback_guard.py` trace-grounding & `ci-monitor.py` `CANCELLED` filter |
+| **`exec` (`L-Exec`)** | `E4_unfaithful_receipt_and_cancelled_noise` | R10 receipt claiming `pytest`/`swiftlint`/`verify`/`PR_MERGED` with `0` matching `exit=0` calls in `events.jsonl`, or superseded `CANCELLED` CI runs logged as `PR_CHECK_FAILED` | `team-lead` | `feedback_guard` trace ground + cancellation filter. `soft_session_quality_advisories` adds tier: `soft_advisory_exit_0`; `session_false_positive_churn` and `session_fake_or_unprobed_test` smells. |
 | **`friction` (`L-Friction`)** | `F1_permission_stall_count` | `permission.requested` stalls on safe paths or unanswered shutdowns | `team-lead` / `m2-dispatcher` | `operator-policy.json` / `runtime-profiles.yaml` allowlist |
 | **`friction` (`L-Friction`)** | `F2_owner_abort_rate` | Sessions ending in `abort` or `session.error` | Active role skill (`m2-dispatcher` / `team-lead`) | Watchdog timeout & fail-fast recovery |
 | **`friction` (`L-Friction`)** | `F3_mid_flight_owner_correction` | Mid-flight Owner user messages correcting an active autonomous execution | `personal-m2-assistant` / `m2-dispatcher` / `team-lead` | Phase 0 spec alignment checklist |

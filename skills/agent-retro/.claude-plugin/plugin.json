@@ -1,6 +1,6 @@
 {
   "name": "agent-retro",
-  "description": "v2.1.2 6-layer agent trajectory retro (role, handoff, invoke, exec, friction, horizon): bounded zero-token probe, post-fix watermark triage, Jev fallback, inspect-json soft/hard replay locks, and M2-to-M1 rollup. Not for product crash telemetry or blog extraction.",
+  "description": "v2.1.3 6-layer agent trajectory retro (role, handoff, invoke, exec, friction, horizon): bounded zero-token probe, post-fix watermark triage, Jev fallback, inspect-json soft/hard replay locks, and M2-to-M1 rollup. Not for product crash telemetry or blog extraction.",
   "version": "2.1.3",
   "skills": [
     "SKILL.md"

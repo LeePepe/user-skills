@@ -1,8 +1,8 @@
 ---
 name: agent-retro
-description: v2.1.2 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke, exec, friction, horizon) with zero-token probe, Cheap Worker/Jev triage, post-fix watermarks, bounded M2-to-M1 rollup, and inspect-json soft/hard replay locks. Not for product crash telemetry or blog extraction.
+description: v2.1.3 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke, exec, friction, horizon) with zero-token probe, Cheap Worker/Jev triage, post-fix watermarks, bounded M2-to-M1 rollup, and inspect-json soft/hard replay locks. Not for product crash telemetry or blog extraction.
 ---
-# Agent Retro v2.1.2（六层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
+# Agent Retro v2.1.3（六层多智能体轨迹复盘与首错向上归因：`Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup`）
 
 `agent-retro` collects bounded multi-agent execution telemetry and inspects multi-agent execution trajectories (`M3 personal-m2-assistant` -> `M2 m2-dispatcher` -> `M1 team-lead` -> `Designer my-designer` / `Writer` / `Reviewer` / `CI-Monitor`), computes the **6-Layer Progressive-Disclosure-Aligned Agent Metrics (`role`, `handoff`, `invoke`, `exec`, `friction`, `horizon`)**, attributes anomalies upstream to the exact responsible Skill (`Symptom in Agent, Cure in Skill`), and drives the **3-Stage Progressive Self-Evolution Flow** into an independent **`[Agent Retro YYYY-MM-DD]`** Dual-Zone M3 issue.
 
@@ -54,7 +54,7 @@ description: v2.1.2 6-layer Multi-Agent Trajectory Retro (role, handoff, invoke,
 - **`invoke` (`L-Invoke` · Skill Invocation & ACI Hygiene)**:
   - `I1_cold_start_greedy_drawer_read` (`>=3` L1 drawers read in turns 0–2 before error trigger) | `I2_mandatory_l2_cli_skip` (`0` script calls after loading skill with mandatory L2 CLI) | `I3_l2_exit2_and_output_bloat` (`exit=2` roadblocks & `>20KB` `tool_output_bloat`, attributed to script/path owner or first invoked upstream skill) | `I4_manual_poll_loop` (`>=3x` manual `herdr pane read`/`sleep`/`gh pr view` polling) -> `team-lead`.
 - **`exec` (`L-Exec` · Progressive Convergence & Verification Faithfulness)**:
-  - `E1_blind_spin_loop_vs_progressive_catch` (preserve `exit=1 -> disclose -> exit=0` as `progressive_catch_rate`; flag `>=3x` consecutive identical-error `blind_spin_loop`) | `E2_r3_plus_divergence` (exempt `R1->R2`; flag `R3+`) | `E3_gate_escape_and_uncrystallized_spec_gap` (`[SPEC_GAP]` -> `my-designer`, CI gate escape -> `repo-kit`) | `E4_unfaithful_receipt_and_cancelled_noise` (ungrounded R10 receipt or `CANCELLED` false `PR_CHECK_FAILED` -> `team-lead`).
+  - `E1_blind_spin_loop_vs_progressive_catch` (preserve `exit=1 -> disclose -> exit=0` as `progressive_catch_rate`; flag `>=3x` consecutive identical-error `blind_spin_loop`) | `E2_r3_plus_divergence` (exempt `R1->R2`; flag `R3+`) | `E3_gate_escape_and_uncrystallized_spec_gap` (`[SPEC_GAP]` -> `my-designer`, CI gate escape -> `repo-kit`) | `E4_unfaithful_receipt_and_cancelled_noise` (ungrounded R10 receipt or `CANCELLED` false `PR_CHECK_FAILED` -> `team-lead`). Session-quality `soft_session_quality_advisories` are soft-only `session_false_positive_churn` / `session_fake_or_unprobed_test` signals.
 - **`friction` (`L-Friction` · Human-Agent Interrupt & Friction)**:
   - `F1_permission_stall_count` (`permission.requested` stalls on safe paths / unanswered shutdowns) | `F2_owner_abort_rate` (`abort` / `session.error`) | `F3_mid_flight_owner_correction` (mid-flight Owner steering corrections).
 - **`horizon` (`L-Horizon` · Long-Horizon Optimization)**: `HZN1` context carry, `HZN2` wakeup/parallelism, `HZN3` rework/verify tax, `HZN4` fatigue inflection, and `HZN5` steering overkill; profile successful long runs without LLM tokens.

@@ -75,6 +75,18 @@ class PersonalM2RetroTests(unittest.TestCase):
             self.assertEqual(target["m2_action"], "PHASE0_DISCUSSION_ONLY")
             self.assertNotIn("Hot-Append", json.dumps(target, ensure_ascii=False))
 
+    def test_routed_watermark_and_rag_hint_do_not_pollute_phase0_detection(self):
+        tag = "<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=notifications -->"
+        message = "[RAG/context hint]\nold context\n\n[Dispatched instruction]\n先讨论一下通知开关，不改代码\n\n" + tag
+        self.assertTrue(self.router.is_exploratory_discussion_message(message))
+        plan = self.router.build_plan(message, [], mock_jev={}, transport="stdout")
+        self.assertTrue(plan["phase0_discussion_only"])
+        self.assertNotIn("herdr-origin", plan["targets"][0]["sub_prompt"])
+        self.assertIn("[RAG/context hint]", plan["targets"][0]["sub_prompt"])
+
+        counter = "[RAG/context hint]\n先讨论过的背景\n\n[Dispatched instruction]\n请直接修改代码\n\n" + tag
+        self.assertFalse(self.router.is_exploratory_discussion_message(counter))
+
     def test_non_discussion_counter_case_does_not_trigger_phase0(self):
         message = "请直接修改代码并运行测试"
         self.assertFalse(self.router.is_exploratory_discussion_message(message))

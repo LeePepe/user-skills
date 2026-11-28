@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-27",
+  "updated": "2026-11-28",
   "trigger_evals": [
     {
       "query": "progressive-disclosure product design UI modernization and post-implementation Visual Traceback for desktop mobile and web",
@@ -110,46 +110,6 @@
       "registered_at": "2026-11-10"
     },
     {
-      "id": "EV-004",
-      "title": "Platform-Split Jev Gate & Mobile Native Firewall",
-      "platforms": [
-        "mobile",
-        "desktop",
-        "web"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "glass-material"
-      ],
-      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.StandaloneGateReplayTests.test_jev_truth_table_and_guard",
-      "expect_exit": 0,
-      "expect_stdout_contains": [
-        "Ran",
-        "OK"
-      ],
-      "registered_at": "2026-11-14"
-    },
-    {
-      "id": "EV-005",
-      "title": "Standalone PNG, Geometry and Clause-Polarity Deterministic Evidence Gate",
-      "platforms": [
-        "mobile"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "motion-interaction"
-      ],
-      "cmd": "python3 skills/my-designer/scripts/design_evidence.py --self-check --json",
-      "expect_exit": 0,
-      "expect_stdout_contains": [
-        "\"ok\": true",
-        "png_decoder",
-        "geometry_auditor",
-        "clause_polarity"
-      ],
-      "registered_at": "2026-11-14"
-    },
-    {
       "id": "EV-006",
       "title": "SwiftUI Native Audit, Scan Manifest, Genjutsu Tiers and UNVALIDATED Honesty",
       "platforms": [
@@ -229,7 +189,7 @@
     },
     {
       "id": "EV-014",
-      "title": "Anti-Instructional Micro-Copy Clutter Gate (DC-014 / UI_INSTRUCTIONAL_CLUTTER)",
+      "title": "Anti-Instructional Micro-Copy & Scroll/Expand Prompt Clutter Gate (DC-014 / UI_INSTRUCTIONAL_CLUTTER / UI_SCROLL_PROMPT_CLUTTER)",
       "platforms": [
         "desktop",
         "mobile",
@@ -245,10 +205,11 @@
         "ScrollView",
         "WebViewport"
       ],
-      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\")'",
+      "cmd": "python3 skills/my-designer/scripts/verify_design_cases.py audit-code --platform mobile --path skills/my-designer/scripts --snippet 'VStack { Text(\"⌄ 下拉查看分项指标与详情\"); Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\") }'",
       "expect_exit": 1,
       "expect_stdout_contains": [
         "DC-014",
+        "UI_SCROLL_PROMPT_CLUTTER",
         "findings"
       ],
       "target_phase": "code",
@@ -411,7 +372,7 @@
         "NavigationStack",
         "WebViewport"
       ],
-      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.SelfDisclosingGuidanceAndDualCasePersonaTests.test_failures_emit_exact_l1_reference_drawer_pointers_while_clean_runs_stay_quiet",
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.SelfDisclosingGuidanceAndDualCasePersonaTests.test_failures_emit_exact_l1_reference_drawer_pointers_while_clean_runs_stay_quiet scripts.test_my_designer_progressive_eval.ManifestAndTriggerBoundaryReplayTests.test_design_vs_worker_skill_boundary_and_forbidden_build_tokens",
       "expect_exit": 0,
       "expect_stdout_contains": [
         "OK"
@@ -424,10 +385,17 @@
       ],
       "file": "skills/my-designer/SKILL.md",
       "must_contain": [
+        "Design-vs-Worker Skill Boundary",
         "Tier 1 · Universal Invariants",
         "Tier 2 · Product Persona & Intent Weighting",
         "Tier 3 · Controlled Exploration",
         "2+1+1"
+      ],
+      "must_not_contain": [
+        "ENABLE_DEBUG_DYLIB",
+        "xcodegen",
+        "project.yml",
+        ".xcodeproj"
       ],
       "registered_at": "2026-11-20"
     },
@@ -474,6 +442,137 @@
         "appearance-ledger.md"
       ],
       "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-021",
+      "title": "Visual Semiotics (Bertin/Tufte/Few/Norman/Shneiderman) & 5 Native Fidelity Gates (Center Collapse, Spec ID Leak, Duplicate Map/CTA, Rainbow Numerals, Mini Spaghetti Chart)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style",
+        "chart-dataviz",
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView"
+      ],
+      "tags": [
+        "visual-semiotics",
+        "data-ink",
+        "bullet-graph",
+        "small-multiples"
+      ],
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:\\b[A-D]\\d{1,2}(?:\\s*[左中右上下底顶]?卡)?\\s*[·:：]|已选原子\\s*[:：]?|模式\\s*[A-D]\\s*[·:：]|\\[\\s*\\d+\\s*/\\s*\\d+\\s*格\\s*\\]|\\bPreset\\s*\\d+\\b)[^\\n\"]*\"",
+      "bad_snippet": "VStack {\n    Text(\"A5 · 今日黄金骑行时间窗\")\n    Text(\"已选原子: A1 A4 [24/24格]\")\n}",
+      "good_snippet": "VStack {\n    Text(\"今日黄金骑行时间窗\")\n    Text(\"14:00 - 16:30\")\n}",
+      "file": "skills/my-designer/references/breathing-and-clarity.md",
+      "must_contain": [
+        "Jacques Bertin",
+        "Edward Tufte",
+        "Stephen Few",
+        "Don Norman",
+        "Ben Shneiderman",
+        "Synchronized Small Multiples"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-022",
+      "title": "Three-Layer Orthogonal Information Allocation & Card-Peek Spatial Signifier Gate (UI_CROSS_LAYER_METRIC_ECHO / UI_SCROLL_PROMPT_CLUTTER / SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "motion-interaction",
+        "chart-dataviz",
+        "typography-copy"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView"
+      ],
+      "tags": [
+        "orthogonal-layers",
+        "card-peek",
+        "counter-case",
+        "valve-1"
+      ],
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:(?:[⌄∨↓↑]\\s*)?(?:下拉|上滑|向上滑动|向下滑动|滑动)[^\\n\"'<>]{0,16}?(?:查看|展开|浏览|更多|详情|分项|指标)|(?:点击|点按|轻触)[^\\n\"'<>]{0,8}?(?:卡片|磁贴|模块|任意卡片)[^\\n\"'<>]{0,6}?(?:展开|查看)(?:详情|分项|指标|更多|全部)?)[^\\n\"]*\"",
+      "bad_snippet": "VStack {\n    Text(\"⌄ 下拉查看分项指标与详情\")\n    Text(\"点击卡片展开详情\")\n}",
+      "good_snippet": "VStack {\n    Text(\"86\")\n    Text(\"极佳适宜 · 适合耐力拉练\")\n}",
+      "cmd": "python3 -c \"import json, subprocess, sys, tempfile; from pathlib import Path; d=Path(tempfile.mkdtemp(dir='skills/my-designer/scripts')); v=d/'OrthogonalView.swift'; v.write_text('struct OrthogonalView: View { @State private var expanded = false; var body: some View { VStack { Text(\\\"86\\\"); Text(\\\"极佳适宜 · 适合耐力拉练\\\"); Text(\\\"环境 88 · 身体 84\\\"); Text(\\\"19°C · 东北风 14km/h\\\"); Text(\\\"睡眠 7.6h · 恢复 88%\\\"); Text(\\\"昨骑 35.2km\\\") } } }\\n'); s=d/'design.md'; s.write_text('Desktop NavigationSplitView; mobile NavigationStack.\\nStates: empty, loading, error.\\nDeprecated Test Clauses: N/A.\\nSize L1 Hero to 55%–60% of the viewport so L2 Bento tiles peek at the bottom (Card Peek); 禁止写下拉查看分项指标提示。\\n'); r1=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-code','--platform','mobile',str(v)],capture_output=True,text=True); r2=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-spec','--strict-spec-gaps',str(s)],capture_output=True,text=True); import shutil; shutil.rmtree(d, ignore_errors=True); assert r1.returncode==0 and json.loads(r1.stdout)['ok'], r1.stdout; assert r2.returncode==0 and json.loads(r2.stdout)['ok'], r2.stdout; print(r1.stdout)\"",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "file": "skills/my-designer/references/interaction-layering.md",
+      "must_contain": [
+        "Three-Layer Orthogonal Information Allocation Case (L1 Hero Verdict ➔ L2 Metric Tiles ➔ L3 Expanded Detail)",
+        "UI_CROSS_LAYER_METRIC_ECHO",
+        "UI_SCROLL_PROMPT_CLUTTER",
+        "Card Peek",
+        "55%–60%"
+      ],
+      "negative_cmd": "python3 -c \"import json, shutil, subprocess, sys, tempfile; from pathlib import Path; d=Path(tempfile.mkdtemp(dir='skills/my-designer/scripts')); bad_spec=d/'bad-design.md'; bad_spec.write_text('Desktop NavigationSplitView; mobile NavigationStack.\\nStates: empty, loading, error.\\nDeprecated Test Clauses: N/A.\\nBetween L1 Hero and L2 Bento grid, render ⌄ 下拉查看分项指标与详情 and 点击卡片展开详情.\\n'); bad_swift='struct BadEchoScreen: View { var body: some View { VStack { Text(\\\"86 · 19°C · 东北风 14km/h · 昨骑 35.2km · 恢复 88%\\\"); Text(\\\"⌄ 下拉查看分项指标与详情\\\"); Text(\\\"点击卡片展开详情\\\"); Text(\\\"环境: 19°C · 东北风 14km/h\\\"); Text(\\\"负荷: 昨骑 35.2km · 恢复 88%\\\") } } }'; r1=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-code','--platform','mobile','--snippet',bad_swift],capture_output=True,text=True); r2=subprocess.run([sys.executable,'skills/my-designer/scripts/verify_design_cases.py','audit-spec','--strict-spec-gaps',str(bad_spec)],capture_output=True,text=True); shutil.rmtree(d, ignore_errors=True); assert r1.returncode==1 and 'UI_CROSS_LAYER_METRIC_ECHO' in r1.stdout and 'UI_SCROLL_PROMPT_CLUTTER' in r1.stdout and 'interaction-layering.md' in r1.stdout and 'breathing-and-clarity.md' in r1.stdout, r1.stdout; assert r2.returncode==1 and 'SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT' in r2.stdout and 'interaction-layering.md' in r2.stdout, r2.stdout; print(r1.stdout); print(r2.stdout); raise SystemExit(1)\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "UI_CROSS_LAYER_METRIC_ECHO",
+        "UI_SCROLL_PROMPT_CLUTTER",
+        "SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT",
+        "interaction-layering.md",
+        "breathing-and-clarity.md"
+      ],
+      "registered_at": "2026-11-28"
+    }
+  ],
+  "archived_cases": [
+    {
+      "id": "EV-004",
+      "title": "Platform-Split Jev Gate & Mobile Native Firewall",
+      "platforms": [
+        "mobile",
+        "desktop",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.StandaloneGateReplayTests.test_jev_truth_table_and_guard",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "Ran",
+        "OK"
+      ],
+      "registered_at": "2026-11-14"
+    },
+    {
+      "id": "EV-005",
+      "title": "Standalone PNG, Geometry and Clause-Polarity Deterministic Evidence Gate",
+      "platforms": [
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "motion-interaction"
+      ],
+      "cmd": "python3 skills/my-designer/scripts/design_evidence.py --self-check --json",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "png_decoder",
+        "geometry_auditor",
+        "clause_polarity"
+      ],
+      "registered_at": "2026-11-14"
     }
   ]
 }

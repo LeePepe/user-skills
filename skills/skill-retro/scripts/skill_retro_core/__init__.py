@@ -13,7 +13,8 @@ from . import roi_support as _roi_support
 from . import trace_ingest as _trace_ingest
 from . import triage_jev as _triage_jev
 from . import uptake_eval as _uptake_eval
-_MODULES = [_brief_emitter, _cli, _diagnose_engine, _fs_guard, _inventory_scan, _reality_check, _receipts, _retro_engine, _roi_diagnostics, _roi_support, _trace_ingest, _triage_jev, _uptake_eval]
+from . import verify_findings as _verify_findings
+_MODULES = [_brief_emitter, _cli, _diagnose_engine, _fs_guard, _inventory_scan, _reality_check, _receipts, _retro_engine, _roi_diagnostics, _roi_support, _trace_ingest, _triage_jev, _uptake_eval, _verify_findings]
 _SYMBOLS = {}
 for _module in _MODULES:
     for _name, _value in vars(_module).items():

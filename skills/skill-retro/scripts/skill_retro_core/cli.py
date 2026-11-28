@@ -6,7 +6,7 @@ from .common import *
 class _SelfDisclosingArgumentParser(SelfDisclosingArgumentParser):
 
     def error(self, message: str) -> None:
-        sys.stderr.write(f'[skill-retro] CLI error: {message}\n  Fix: run `python3 skills/skill-retro/scripts/skill_retro.py {{probe,triage,diagnose,emit-briefs,emit-relay,record-m1-receipt,rollup,roi}} --help`\n  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n')
+        sys.stderr.write(f'[skill-retro] CLI error: {message}\n  Fix: run `python3 skills/skill-retro/scripts/skill_retro.py {{probe,triage,diagnose,verify-findings,emit-briefs,emit-relay,record-m1-receipt,rollup,roi}} --help`\n  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n')
         raise SystemExit(2)
 
 def _add_common_source_args(p: argparse.ArgumentParser) -> None:
@@ -30,10 +30,10 @@ def _add_common_source_args(p: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None=None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
-    known_subcommands = {'probe', 'triage', 'diagnose', 'uptake-check', 'emit-briefs', 'emit-relay', 'record-m1-receipt', 'rollup', 'skill-retro', 'roi', 'skill-roi'}
+    known_subcommands = {'probe', 'triage', 'diagnose', 'verify-findings', 'uptake-check', 'emit-briefs', 'emit-relay', 'record-m1-receipt', 'rollup', 'skill-retro', 'roi', 'skill-roi'}
     if not args_list or args_list[0] in {'-h', '--help'}:
         top = _SelfDisclosingArgumentParser(prog='skill_retro.py', description='3-Stage Skill Progressive Self-Evolution: Fast Probe -> Cheap Worker + Jev Triage -> 1 M2 -> K (0..3) Parallel M1 TLs -> M2 Rollup.')
-        top.add_argument('command', nargs='?', choices=sorted(known_subcommands), help='Subcommand: probe | triage | diagnose | uptake-check | emit-briefs | emit-relay | record-m1-receipt | rollup | roi')
+        top.add_argument('command', nargs='?', choices=sorted(known_subcommands), help='Subcommand: probe | triage | diagnose | verify-findings | uptake-check | emit-briefs | emit-relay | record-m1-receipt | rollup | roi')
         _add_common_source_args(top)
         top.parse_args(args_list)
         return 0
@@ -43,8 +43,24 @@ def main(argv: list[str] | None=None) -> int:
         cmd = 'diagnose'
         rest = args_list
     elif cmd not in known_subcommands:
-        sys.stderr.write(f'[skill-retro] Unknown subcommand: {cmd!r}\n  Valid subcommands: probe, triage, diagnose, uptake-check, emit-briefs, emit-relay, record-m1-receipt, rollup, roi\n  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n')
+        sys.stderr.write(f'[skill-retro] Unknown subcommand: {cmd!r}\n  Valid subcommands: probe, triage, diagnose, verify-findings, uptake-check, emit-briefs, emit-relay, record-m1-receipt, rollup, roi\n  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n')
         raise SystemExit(2)
+    if cmd == 'verify-findings':
+        p = _SelfDisclosingArgumentParser(prog='skill_retro.py verify-findings')
+        p.add_argument('--findings-json', '--input', '--file', dest='findings_json', required=True, help='Inline JSON string, "-" for stdin, or path to JSON file of blind-review findings.')
+        p.add_argument('--cwd', '--worktree', '--repo', dest='cwd', type=Path, default=None, help='Working directory for executing repro_cmd (default: cwd).')
+        p.add_argument('--timeout', dest='timeout_sec', type=float, default=VERIFY_FINDINGS_MAX_TIMEOUT_SEC, help='Per-finding repro timeout in seconds (clamped <= 10s).')
+        p.add_argument('--strict', action='store_true', default=False, help='Exit 1 if any Class A auto-fix or Class C owner-tradeoff finding is confirmed.')
+        p.add_argument('--summary', action='store_true', default=False, help='Bound output arrays for compact ACI consumption.')
+        p.add_argument('--json', action='store_true', default=True)
+        ns = p.parse_args(rest)
+        try:
+            out = verify_blind_review_findings(ns.findings_json, cwd=ns.cwd, timeout_sec=ns.timeout_sec, summary=ns.summary)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f'[skill-retro] verify-findings error: {exc}\n  Fix: pass valid JSON array or {{"findings": [...]}} with id, title, category (contract_breach|architecture_smell|tradeoff), and repro_cmd.\n  Reference: skills/skill-retro/references/progressive-evolution-playbook.md\n')
+            raise SystemExit(2) from exc
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 1 if ns.strict and (out['confirmed_auto_fix'] or out['owner_tradeoffs']) else 0
     if cmd == 'uptake-check':
         p = _SelfDisclosingArgumentParser(prog='skill_retro.py uptake-check')
         p.add_argument('--skill', '--skills', '--target-skill', dest='skill', default=None, help='Comma-separated expected skill(s) to evaluate.')

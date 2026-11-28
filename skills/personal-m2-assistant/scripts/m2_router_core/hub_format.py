@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from ._imports import *
 
+from .constants_and_paths import strip_herdr_origin_comments
+
 def _normalize_hub_scope(value: Any) -> str:
     raw = _text(value).strip().casefold().replace("_", "-")
     if raw == "work":
@@ -240,7 +242,7 @@ def _build_local_device_shard(
         session_id = _text(slot.get("target") or slot.get("session_id") or slot_id)
         pane_id = _text(slot.get("pane_id"))
         issue = _text(slot.get("linear_issue"))
-        summary = _text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"), "—").replace("\n", " / ")[:280]
+        summary = strip_herdr_origin_comments(_text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"), "—")).replace("\n", " / ")[:280]
         scope = _classify_hub_scope(slot, domain_map=domain_map)
         if status in {"working", "running", "blocked", "needs_input", "ready", "unknown"} or retained:
             entry: dict[str, Any] = {
@@ -356,8 +358,8 @@ def _build_local_device_shard(
         status = _text(slot.get("status"), "idle").lower()
         target_repo = _text(slot.get("target_repo") or topic_meta.get("target_repo"))
         cwd = _expand_cwd(slot.get("cwd") or topic_meta.get("cwd"))
-        title = _text(slot.get("terminal_title") or slot.get("title") or topic_meta.get("title") or session_id)
-        summary = _text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt"))[:280]
+        title = strip_herdr_origin_comments(_text(slot.get("terminal_title") or slot.get("title") or topic_meta.get("title") or session_id))
+        summary = strip_herdr_origin_comments(_text(slot.get("m1_progress") or slot.get("visible_summary") or slot.get("sub_prompt")))[:280]
         existing_ag = dict(agent_by_key.get(key) or {})
         existing_ag.update({
             "session_id": session_id,

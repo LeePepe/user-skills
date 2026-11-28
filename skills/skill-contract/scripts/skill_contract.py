@@ -28,6 +28,8 @@ from contract_core import core_common as _common  # noqa: E402
 from contract_core import core_facts as _facts  # noqa: E402
 from contract_core.core_common import *  # noqa: F401,F403,E402
 from contract_core.core_eval import *  # noqa: F401,F403,E402
+from contract_core.core_hygiene import *  # noqa: F401,F403,E402
+from contract_core.core_swift_theme import *  # noqa: F401,F403,E402
 from contract_core.core_facts import *  # noqa: F401,F403,E402
 from contract_core.core_routing import *  # noqa: F401,F403,E402
 from contract_core.core_cli import *  # noqa: F401,F403,E402

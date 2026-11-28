@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from ._imports import *
 
+from skill_runtime.cli_contract import (
+    HERDR_ORIGIN_COMMENT_RE,
+    append_herdr_origin_tag,
+    extract_dispatched_instruction,
+    format_herdr_origin_tag,
+    parse_herdr_origin_tag,
+    split_routed_prompt_sections,
+    strip_herdr_origin_comments,
+)
+
 ROUTER_FILE = Path(__file__).resolve().parents[1] / "m2-router.py"
 
 try:
@@ -161,6 +171,11 @@ WHITELISTED_ADO_READONLY_MCP_TOOLS = {
     "search_workitem",
 }
 
+WHITELISTED_HERDR_ENV_VARS = (
+    "HERDR_SPAWN_ORIGIN", "HERDR_AGENT_ROLE", "HERDR_PARENT_PANE",
+    "HERDR_ORIGIN_SENDER", "HERDR_ORIGIN_GOAL", "HERDR_ENV", "HERDR_PANE_ID",
+)
+
 WHITELISTED_CMD_BINARIES = {
     "gh",
     "git",
@@ -249,13 +264,13 @@ _EXPLORATORY_DISCUSSION_RE = re.compile(
 
 def is_exploratory_discussion_message(message: Any) -> bool:
     """Return whether an Owner explicitly requests Phase-0 discussion only."""
-    return bool(_EXPLORATORY_DISCUSSION_RE.search(_text(message)))
+    return bool(_EXPLORATORY_DISCUSSION_RE.search(extract_dispatched_instruction(message)))
 
 def _apply_phase0_discussion_lock(target: dict[str, Any], message: str) -> None:
     """Keep exploratory requests raw and prevent M3 from choosing a delivery posture."""
     target["phase0_discussion_only"] = True
     target["m2_action"] = "PHASE0_DISCUSSION_ONLY"
-    target["sub_prompt"] = message
+    target["sub_prompt"] = strip_herdr_origin_comments(message)
     target.pop("hot_append", None)
     target.pop("hot_append_assumption", None)
 
@@ -362,7 +377,7 @@ def _epoch_to_iso(epoch_val: Any) -> str:
     return datetime.fromtimestamp(parsed, tz=cst).replace(microsecond=0).isoformat()
 
 def _clean_single_line(text: Any, *, max_len: int = 320) -> str:
-    raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", _text(text))
+    raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", strip_herdr_origin_comments(text))
     compact = re.sub(r"\s+", " ", raw).strip()
     if len(compact) > max_len:
         return compact[: max_len - 1].rstrip() + "…"

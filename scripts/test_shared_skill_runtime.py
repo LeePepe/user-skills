@@ -16,7 +16,24 @@ SCRIPTS = ROOT / "skills/skill-contract/scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from skill_runtime.cli_contract import SelfDisclosingArgumentParser, compact_json_dumps, is_valid_skill_slug, redact_payload, redact_text
+from skill_runtime.cli_contract import (
+    HERDR_ORIGIN_KINDS,
+    HERDR_ORIGIN_ROLES,
+    HERDR_ORIGIN_SCHEMA,
+    HERDR_SESSION_ENV_VARS,
+    SelfDisclosingArgumentParser,
+    append_herdr_origin_tag,
+    compact_json_dumps,
+    extract_dispatched_instruction,
+    format_herdr_origin_tag,
+    is_valid_skill_slug,
+    normalize_herdr_agent_role,
+    parse_herdr_origin_tag,
+    redact_payload,
+    redact_text,
+    split_routed_prompt_sections,
+    strip_herdr_origin_comments,
+)
 from skill_runtime.copilot_trace import read_copilot_sessions
 from skill_runtime.fs_guard import atomic_write_json, get_cached, is_safe_local_dir, is_safe_local_file, put_cached, safe_read_text
 from skill_runtime.git_version import resolve_skill_version, verify_commit_exists
@@ -24,6 +41,29 @@ import skill_contract
 
 
 class SharedSkillRuntimeTests(unittest.TestCase):
+    def test_herdr_origin_contract_helpers_positive_and_counter_cases(self) -> None:
+        self.assertEqual(HERDR_ORIGIN_SCHEMA, "herdr-origin:v1")
+        self.assertEqual(HERDR_ORIGIN_KINDS, ("agent_dispatch", "human_routed"))
+        self.assertIn("writer", HERDR_ORIGIN_ROLES)
+        self.assertEqual(HERDR_SESSION_ENV_VARS, ("HERDR_SPAWN_ORIGIN", "HERDR_AGENT_ROLE", "HERDR_PARENT_PANE"))
+        self.assertEqual(normalize_herdr_agent_role("code-reviewer"), "reviewer")
+        self.assertEqual(normalize_herdr_agent_role("", "goal-name-goal-tl-r1"), "m1")
+        self.assertEqual(normalize_herdr_agent_role("unknown"), "writer")
+
+        tag = format_herdr_origin_tag(kind="agent_dispatch", role="writer", sender="pane 1", goal="goal>one")
+        self.assertEqual(tag, "<!-- herdr-origin:v1 kind=agent_dispatch role=writer sender=pane-1 goal=goal-one -->")
+        prompt = append_herdr_origin_tag("[Dispatched instruction]\nship it", kind="human_routed", topic="topic one")
+        self.assertEqual(append_herdr_origin_tag(prompt, kind="agent_dispatch", role="m1"), prompt)
+        self.assertEqual(parse_herdr_origin_tag(prompt)["kind"], "human_routed")
+        self.assertIsNone(parse_herdr_origin_tag("ordinary human text"))
+
+        routed = "[RAG/context hint]\nprior decision\n\n[Dispatched instruction]\n先讨论方案\n\n" + prompt.rsplit("\n\n", 1)[1]
+        sections = split_routed_prompt_sections(routed)
+        self.assertEqual(sections["rag_context_hint"], "prior decision")
+        self.assertEqual(sections["dispatched_instruction"], "先讨论方案")
+        self.assertEqual(extract_dispatched_instruction(routed), "先讨论方案")
+        self.assertNotIn("herdr-origin", strip_herdr_origin_comments(routed))
+
     def test_fs_guard_atomic_write_read_and_cache_invalidation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -81,6 +121,9 @@ class SharedSkillRuntimeTests(unittest.TestCase):
             rows = [
                 {"type": "hook.start", "data": {}},
                 {"type": "session.start", "data": {"cwd": "/tmp/work", "selectedModel": "test-model"}},
+                {"type": "user.message", "content": "typed request"},
+                {"type": "user.message", "content": "route request\n\n<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=alpha -->"},
+                {"type": "user.message", "content": "agent request\n\n<!-- herdr-origin:v1 kind=agent_dispatch role=writer sender=tl goal=alpha -->"},
                 {"type": "tool.execution_start", "data": {"toolCallId": "call-1", "toolName": "bash", "arguments": {"command": "echo"}}},
                 {"type": "tool.execution_complete", "data": {"toolCallId": "call-1", "content": "<shellId: x completed with exit code 7>"}},
                 {"type": "tool.execution_start", "data": {"toolCallId": "call-2", "toolName": "read", "arguments": {}}},
@@ -98,6 +141,7 @@ class SharedSkillRuntimeTests(unittest.TestCase):
             self.assertEqual(len(sessions), 1)
             session = sessions[0]
             self.assertEqual(session["selectedModel"], "test-model")
+            self.assertEqual([turn["turn_origin"] for turn in session["user_turns"]], ["human_typed", "human_routed", "agent_dispatch"])
             self.assertEqual(session["tool_calls"][0]["exitCode"], 7)
             self.assertEqual(session["tool_calls"][0]["arguments"], {"command": "echo"})
             self.assertTrue(session["tool_calls"][1]["aci_output_bloat"])

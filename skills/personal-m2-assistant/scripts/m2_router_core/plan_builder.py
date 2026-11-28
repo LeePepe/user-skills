@@ -8,7 +8,7 @@ from skill_runtime.hybrid_rag import (
     hybrid_search,
     load_handoff_corpus,
 )
-from .constants_and_paths import merge_target_prompt
+from .constants_and_paths import merge_target_prompt, strip_herdr_origin_comments
 
 from .constants_and_paths import _run_command
 
@@ -290,7 +290,7 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
                     elif a_m:
                         lines.append(f"- **Turn {t_idx}**{ts_part}: Assistant `{a_m}`")
             if not recent_ctx.get("turns") and _text(recent_ctx.get("summary")):
-                lines.append(f"- **Summary**: {_text(recent_ctx.get('summary'))}")
+                lines.append(f"- **Summary**: {strip_herdr_origin_comments(_text(recent_ctx.get('summary')))}")
     for target in plan.get("targets", []):
         eviction = target.get("context_eviction") or {}
         if target.get("m2_action") == "REPLACE_STALE_M2":
@@ -301,7 +301,7 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
         for candidate in stale:
             lines.append(
                 f"- `{_text(candidate.get('topic_id'))}`: `{_text(candidate.get('session_id'))}` "
-                f"`{_text(candidate.get('pane_id'))}` [{_text(candidate.get('reason'))}] {_text(candidate.get('title'))}"
+                f"`{_text(candidate.get('pane_id'))}` [{_text(candidate.get('reason'))}] {strip_herdr_origin_comments(_text(candidate.get('title')))}"
             )
     candidates = plan.get("new_domain_candidates", [])
     if candidates:
@@ -625,7 +625,7 @@ def preview_text(plan: dict[str, Any]) -> str:
     if stale:
         lines.extend(["", "Stale / Duplicate M2 Cleanup Candidates:"])
         for candidate in stale:
-            lines.append(f"- {candidate.get('topic_id')}: {candidate.get('session_id')} {candidate.get('pane_id')} [{candidate.get('reason')}] {candidate.get('title')}")
+            lines.append(f"- {candidate.get('topic_id')}: {candidate.get('session_id')} {candidate.get('pane_id')} [{candidate.get('reason')}] {strip_herdr_origin_comments(_text(candidate.get('title')))}")
         lines.append("Use --cleanup-duplicates or --replace-stale-m2 only after Owner approval.")
     candidates = plan.get("new_domain_candidates", [])
     if candidates:
