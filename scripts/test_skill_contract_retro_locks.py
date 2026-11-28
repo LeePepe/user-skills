@@ -76,6 +76,11 @@ class SkillContractRetroLocksTests(unittest.TestCase):
             facts = json.loads(payload.stdout)
             self.assertFalse(facts["diff_clean"])
             self.assertEqual(facts["gate_tier"], "soft_advisory_exit_0")
+            self.assertEqual(facts["herdr_origin_contract"], {
+                "schema": "herdr-origin:v1",
+                "kinds": ["agent_dispatch", "human_routed"],
+                "session_env_vars": ["HERDR_SPAWN_ORIGIN", "HERDR_AGENT_ROLE", "HERDR_PARENT_PANE"],
+            })
 
             json_file = repo / "facts.json"
             json_file.write_text(json.dumps({"items": [1, {"ok": True}]}), encoding="utf-8")

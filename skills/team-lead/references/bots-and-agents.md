@@ -13,10 +13,9 @@
 
 ## 双阶段与双入口衔接（Phase 0 共创设计 → Phase 1 自治执行）
 
-Phase 0 仅只读探查、Owner 对齐与冻结 `spec.md`，不得创建业务 Worktree 或派 Writer。Owner GO 后，`M2-Dispatcher` 仍只写 `spec.md`／`design.md` 与 handoff 简报；代码经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 派独立 Worktree 的 `Steering`（`≤3` 文件直改）或叶子 `Writer`。同步宿主运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json`；Copilot 用异步 watchdog 读回，M2 可继续对话。
+Phase 0 仅探查、对齐并冻结 `spec.md`，不创建业务 Worktree/派 Writer。Owner GO 后，`M2-Dispatcher` 只写 `spec.md`／`design.md` 与 handoff；代码经 `herdr-dispatch.sh --new-workspace --role team_lead --name <goal>-goal-tl-r1 --kind claude` 派独立 Worktree 的 `Steering` 或叶子 `Writer`。同步宿主运行 `goal-supervisor.py watch --interval 15 --max-wait 600 --json`。子会话导出 `HERDR_SPAWN_ORIGIN`、`HERDR_AGENT_ROLE`、`HERDR_PARENT_PANE`；提示词含 herdr-origin:v1。
 
 **Single-Steering per Goal rule:** M2 只开一个 `<goal>-goal-tl-r1`，已存在则复用／唤醒。当前 TL 为唯一主控，never spawns a second `Steering` 或独立 `Planner`；仅派叶子 `Writer`／`Reviewer`，高噪声探查可派只读 `Explorer`。
-
 <a id="design-routing-machine-split"></a>
 <a id="bot-与-cli-的设计路由-owner-2026-10-24"></a>
 
