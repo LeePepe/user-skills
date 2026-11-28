@@ -24,7 +24,7 @@ def compute_skill_retro(warehouse_db: Path | None=None, copilot_db: Path | None=
     shards_dir = telemetry_shards_dir if telemetry_shards_dir is not None else resolved_sync / 'telemetry-shards' if resolved_sync is not None else None
     inventory = _discover_skill_inventory(s_root, d_root, skill_filter=skill)
     report = compute_skill_retro_diagnostics(inventory=inventory, skill_filter=skill, emit_briefs_dir=emit_briefs_dir, mode=mode, aspects=aspects, coupled_with=coupled_with, relays=relays, warehouse_db=wh, copilot_db=cp, copilot_sessions_dir=sess_dir, usage_jsonl=u_jsonl, telemetry_shards_dir=shards_dir, trace_export_path=trace_export_path, handoff_root=h_root, skills_root=s_root, dev_root=d_root, days=days, shard_reader=_read_telemetry_shards, queue_fn=_queue_recommendations, auto_propose=auto_propose, proposals_path=prop_path, limit_sessions=limit_sessions)
-    should_mirror = mirror_roi_snapshot if mirror_roi_snapshot is not None else icloud_roi_path is not None or local_roi_path is not None or (not explicit_source_override)
+    should_mirror = mirror_roi_snapshot if mirror_roi_snapshot is not None else icloud_roi_path is not None or local_roi_path is not None or (not explicit_source_override and not skill)
     if should_mirror:
         eff_icloud_roi = icloud_roi_path or (resolved_sync / 'jobs' / 'aidata-digest' / 'skills-roi.json' if resolved_sync is not None else None)
         eff_local_roi = local_roi_path or (DEFAULT_LOCAL_AIDASH_SKILLS_ROI_PATH if not explicit_source_override else None)

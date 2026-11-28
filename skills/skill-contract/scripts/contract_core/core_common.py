@@ -132,6 +132,26 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Advisory: legacy script is now <= 800 lines; graduate it out of LEGACY_SCRIPT_LINE_CAPS so script-lines (<=1,000) protects it permanently.",
     ),
+    "malformed-code-fence": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: split single-line triple-backtick code fences onto separate lines (opening ```lang, command lines, closing ```).",
+    ),
+    "ast-namespace-pollution": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: avoid globals().setdefault / __dict__.setdefault circular namespace injection and duplicate helper functions across sibling scripts/*_core/*.py modules.",
+    ),
+    "boilerplate-table-decay": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Advisory: avoid Markdown tables (>=8 rows) where >=50% of rows repeat identical >=20-char boilerplate cells; sink invariants into scripts or write distinct row contracts.",
+    ),
+    "vacuous-good-snippet": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Advisory: replace trivial placeholder good_snippet with a Shared-Token Adversarial Twin (sharing the same domain/syntax tokens as bad_snippet in a valid structural scope).",
+    ),
+    "fake-prose-echo-test": (
+        f"{VALVE_REFERENCE_BASE}#valve-2--coordinate-and-eval-drawers",
+        "Advisory: upgrade static Markdown prose-echo eval cases (file + must_contain only) to execute a CLI cmd, negative_cmd, or shared-token regex/snippet gate during periodic skill-retro + eval.",
+    ),
     "fenced-code-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep fenced code blocks in Markdown <= 25 lines; move longer code to scripts/.",
@@ -201,6 +221,12 @@ def _emit_json(payload: Mapping[str, Any], args: argparse.Namespace | None = Non
             "ok": payload.get("ok"),
             "summary": True,
             "schema": payload.get("schema"),
+            "gate_tier": payload.get("gate_tier"),
+            "diff_clean": payload.get("diff_clean"),
+            "diff_issues": payload.get("diff_issues"),
+            "json_summary": payload.get("json_summary"),
+            "legacy_monoliths": payload.get("legacy_monoliths"),
+            "reference": payload.get("reference"),
             "count": payload.get("count"),
             "skills": payload.get("skills"),
             "drawers_evaluated": payload.get("drawers_evaluated"),
@@ -210,6 +236,14 @@ def _emit_json(payload: Mapping[str, Any], args: argparse.Namespace | None = Non
             "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else payload.get("failures"),
             "findings": len(payload.get("findings", [])) if isinstance(payload.get("findings"), list) else payload.get("findings"),
             "advisories": len(payload.get("advisories", [])) if isinstance(payload.get("advisories"), list) else payload.get("advisories"),
+            "advisory_counts": (
+                {
+                    code: sum(1 for item in payload["advisories"] if isinstance(item, Mapping) and item.get("code") == code)
+                    for code in sorted({str(item.get("code")) for item in payload["advisories"] if isinstance(item, Mapping) and item.get("code")})
+                }
+                if isinstance(payload.get("advisories"), list)
+                else None
+            ),
         }
         text = json.dumps({key: value for key, value in summary.items() if value is not None}, ensure_ascii=False, separators=(",", ":"))
     print(text)

@@ -347,6 +347,9 @@ def _discover_skill_inventory(skills_root: Path | None=None, dev_root: Path | No
             script_realpaths: dict[str, str] = {}
             script_watermarks: dict[str, int] = {}
             total_scripts_bytes = 0
+            ver_info = _compute_pkg_version_fingerprint(pkg)
+            pkg_last_epoch = ver_info['last_modified_epoch']
+            sc_candidates: list[tuple[Path, str]] = []
             if scripts_dir.is_dir():
                 for sp in sorted(scripts_dir.rglob('*')):
                     if not (sp.is_file() or sp.is_symlink()):
@@ -364,17 +367,19 @@ def _discover_skill_inventory(skills_root: Path | None=None, dev_root: Path | No
                     script_entries.append(rel_sc)
                     with contextlib.suppress(OSError):
                         script_realpaths[rel_sc] = str(sp.resolve())
-                    sc_epoch = _git_last_modified_epoch(sp, fallback_mtime=False)
+                    sc_candidates.append((sp, rel_sc))
+                use_pkg_epoch = len(sc_candidates) > 1 and pkg_last_epoch is not None
+                for sp, rel_sc in sc_candidates:
+                    sc_epoch = pkg_last_epoch if use_pkg_epoch else _git_last_modified_epoch(sp, fallback_mtime=False)
                     if sc_epoch is not None:
                         script_watermarks[rel_sc] = sc_epoch
-            ver_info = _compute_pkg_version_fingerprint(pkg)
-            reality_info = internal_reality_check(pkg)
+            reality_info = internal_reality_check(pkg, skills_root=root)
             eval_counter_ratio = round(eval_counter_cases / eval_cases, 4) if eval_cases > 0 else 0.0
             refs_tokens_est = sum((int(r.get('tokens_est') or 0) for r in ref_entries))
             bundle_kb = round((skill_md_bytes_len + total_refs_bytes + total_scripts_bytes) / 1024.0, 1)
             refs_kb = round(total_refs_bytes / 1024.0, 1)
             budget_ok = l0_lines <= l0_cap and max_l1_lines <= 160
-            inventory[skill_name] = {'skill': skill_name, 'path': str(pkg), 'skill_dir': _format_skill_dir(pkg, repo_bound=repo_bound, repo_name=repo_name, skills_root=root, dev_root=d_root), 'scope': 'repo_bound' if repo_bound else 'global', 'repo': repo_name if repo_bound else 'user-skills', 'repo_bound': repo_bound, 'skill_version': ver_info['skill_version'], 'commit_count': ver_info['commit_count'], 'subtree_sha': ver_info['subtree_sha'], 'plugin_version': ver_info['plugin_version'], 'last_modified_epoch': ver_info['last_modified_epoch'], 'l0_lines': l0_lines, 'frontmatter_tokens_est': frontmatter_tokens_est, 'body_tokens_est': body_tokens_est, 'bundle_kb': bundle_kb, 'refs_kb': refs_kb, 'refs_tokens_est': refs_tokens_est, 'l0_cap': l0_cap, 'max_l1_lines': max_l1_lines, 'l1_cap': 160, 'budget_ok': budget_ok, 'doc_preview': skill_doc_preview, 'reference_files': ref_files, 'reference_entries': ref_entries, 'scripts': scripts, 'script_entries': script_entries, 'script_realpaths': script_realpaths, 'script_watermarks': script_watermarks, 'eval_cases': parsed_eval_cases, 'eval_case_count': eval_cases, 'eval_counter_case_count': eval_counter_cases, 'eval_counter_case_ratio': eval_counter_ratio, 'eval_case_weekly_delta': recent_eval_cases, 'internal_reality': reality_info, 'internal_doc_cli_drift_count': reality_info['internal_doc_cli_drift_count'], 'internal_broken_refs_count': reality_info['internal_broken_refs_count'], 'internal_doc_cli_drift': reality_info['internal_doc_cli_drift'], 'internal_broken_refs': reality_info['internal_broken_refs']}
+            inventory[skill_name] = {'skill': skill_name, 'path': str(pkg), 'skill_dir': _format_skill_dir(pkg, repo_bound=repo_bound, repo_name=repo_name, skills_root=root, dev_root=d_root), 'scope': 'repo_bound' if repo_bound else 'global', 'repo': repo_name if repo_bound else 'user-skills', 'repo_bound': repo_bound, 'skill_version': ver_info['skill_version'], 'commit_count': ver_info['commit_count'], 'subtree_sha': ver_info['subtree_sha'], 'plugin_version': ver_info['plugin_version'], 'last_modified_epoch': ver_info['last_modified_epoch'], 'l0_lines': l0_lines, 'frontmatter_tokens_est': frontmatter_tokens_est, 'body_tokens_est': body_tokens_est, 'bundle_kb': bundle_kb, 'refs_kb': refs_kb, 'refs_tokens_est': refs_tokens_est, 'l0_cap': l0_cap, 'max_l1_lines': max_l1_lines, 'l1_cap': 160, 'budget_ok': budget_ok, 'doc_preview': skill_doc_preview, 'reference_files': ref_files, 'reference_entries': ref_entries, 'scripts': scripts, 'script_entries': script_entries, 'script_realpaths': script_realpaths, 'script_watermarks': script_watermarks, 'eval_cases': parsed_eval_cases, 'eval_case_count': eval_cases, 'eval_counter_case_count': eval_counter_cases, 'eval_counter_case_ratio': eval_counter_ratio, 'eval_case_weekly_delta': recent_eval_cases, 'internal_reality': reality_info, 'internal_doc_cli_drift_count': reality_info['internal_doc_cli_drift_count'], 'internal_broken_refs_count': reality_info['internal_broken_refs_count'], 'internal_doc_cli_drift': reality_info['internal_doc_cli_drift'], 'internal_broken_refs': reality_info['internal_broken_refs'], 'soft_quality_advisories': reality_info.get('soft_quality_advisories', []), 'soft_quality_advisories_count': reality_info.get('soft_quality_advisories_count', 0), 'malformed_code_fence_count': reality_info.get('malformed_code_fence_count', 0), 'ast_namespace_pollution_count': reality_info.get('ast_namespace_pollution_count', 0), 'boilerplate_table_decay_count': reality_info.get('boilerplate_table_decay_count', 0), 'vacuous_good_snippet_count': reality_info.get('vacuous_good_snippet_count', 0), 'prose_only_test_advisories': reality_info.get('prose_only_test_advisories', []), 'prose_only_test_advisory_count': reality_info.get('prose_only_test_advisory_count', 0)}
     return inventory
 
 def _git_commits_behind(repo_path: Path, old_sha: str, new_sha: str) -> tuple[int, int]:
