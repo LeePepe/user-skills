@@ -1859,15 +1859,23 @@ try {
             payload = json.loads(ok_res.stdout.strip())
             self.assertEqual(
                 payload,
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-writer-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-writer-r1",
+                    "spawn_origin": "agent_dispatch",
+                    "agent_role": "writer",
+                    "parent_pane": "p1",
+                },
             )
             recorded_calls = [
                 json.loads(line)
                 for line in log_file.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+            self.assertEqual(len(recorded_calls), 4)
             self.assertEqual(
-                recorded_calls,
+                recorded_calls[:3],
                 [
                     [
                         "pane",
@@ -1897,17 +1905,12 @@ try {
                         "never",
                     ],
                     ["agent", "get", "goal-tk4-writer-r1"],
-                    [
-                        "agent",
-                        "prompt",
-                        "goal-tk4-writer-r1",
-                        "Read brief and write R10 receipt",
-                        "--wait",
-                        "--timeout",
-                        "600000",
-                    ],
                 ],
             )
+            prompt_call = recorded_calls[3]
+            self.assertEqual(prompt_call[:3], ["agent", "prompt", "goal-tk4-writer-r1"])
+            self.assertTrue(prompt_call[3].startswith("Read brief and write R10 receipt\n\n<!-- herdr-origin:v1 kind=agent_dispatch role=writer "))
+            self.assertEqual(prompt_call[4:], ["--wait", "--timeout", "600000"])
 
             log_file.write_text("", encoding="utf-8")
             fail_env = {**base_env, "MOCK_SPLIT_FAIL": "1"}
@@ -2000,7 +2003,14 @@ try {
             )
             self.assertEqual(
                 json.loads(copilot_res.stdout.strip()),
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-pr-monitor-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-pr-monitor-r1",
+                    "spawn_origin": "agent_dispatch",
+                    "agent_role": "pr_monitor",
+                    "parent_pane": "p1",
+                },
             )
             copilot_calls = [
                 json.loads(line)
@@ -2046,7 +2056,14 @@ try {
             )
             self.assertEqual(
                 json.loads(stall_res.stdout.strip()),
-                {"ok": True, "pane_id": "p99", "agent": "goal-tk4-writer-r1"},
+                {
+                    "ok": True,
+                    "pane_id": "p99",
+                    "agent": "goal-tk4-writer-r1",
+                    "spawn_origin": "agent_dispatch",
+                    "agent_role": "writer",
+                    "parent_pane": "p1",
+                },
             )
             stall_calls = [
                 json.loads(line)

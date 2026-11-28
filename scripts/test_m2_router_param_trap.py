@@ -35,7 +35,10 @@ class M2RouterParamTrapTests(unittest.TestCase):
         )
         self.assertEqual(plan["targets"][0]["sub_prompt"], instruction)
         result = self.router.apply_plan(plan, approve=True, transport="stdout")
-        self.assertEqual(result["receipts"][0]["prompt"], instruction)
+        self.assertEqual(
+            result["receipts"][0]["prompt"],
+            f"{instruction}\n\n<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=skills-design -->",
+        )
 
     def test_short_sub_prompt_and_rich_instruction_are_merged(self):
         instruction = "Inspect skills/personal-m2-assistant/scripts/m2_router_core/plan_builder.py and update acceptance item 1."
