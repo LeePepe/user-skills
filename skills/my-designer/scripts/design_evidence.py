@@ -929,20 +929,14 @@ def _decode_png(data):
         else:
             norm = bytearray(width * out_channels)
             for x in range(width):
-                base = x * bpp
+                base, dst = x * bpp, x * out_channels
                 if color_type in (0, 4):
                     g = row[base]
-                    dst = x * out_channels
-                    norm[dst] = g
-                    norm[dst + 1] = g
-                    norm[dst + 2] = g
+                    norm[dst:dst + 3] = bytes((g, g, g))
                     if out_channels == 4:
                         norm[dst + 3] = row[base + bytes_per_sample]
                 else:
-                    dst = x * out_channels
-                    norm[dst] = row[base]
-                    norm[dst + 1] = row[base + bytes_per_sample]
-                    norm[dst + 2] = row[base + 2 * bytes_per_sample]
+                    norm[dst:dst + 3] = bytes((row[base], row[base + bytes_per_sample], row[base + 2 * bytes_per_sample]))
                     if out_channels == 4:
                         norm[dst + 3] = row[base + 3 * bytes_per_sample]
             rows.append(bytes(norm))
@@ -950,48 +944,66 @@ def _decode_png(data):
 
 
 def _region_bottom_dead_space_ratio(width, height, rows, channels, x_start_ratio, x_end_ratio):
-    x0 = max(0, min(width - 1, int(width * x_start_ratio)))
-    x1 = max(x0 + 1, min(width, int(width * x_end_ratio)))
-    step = max(1, (x1 - x0) // 160)
-    xs = list(range(x0, x1, step))
+    x0, x1 = max(0, min(width - 1, int(width * x_start_ratio))), max(1, min(width, int(width * x_end_ratio)))
+    xs = list(range(x0, max(x0 + 1, x1), max(1, (x1 - x0) // 160)))
     if not xs:
         return 0.0
 
     def row_is_uniform(y, ref_rgb=None):
-        row = rows[y]
-        mid_x = xs[len(xs) // 2]
+        row, mid_x = rows[y], xs[len(xs) // 2]
         base_r, base_g, base_b = row[mid_x * channels], row[mid_x * channels + 1], row[mid_x * channels + 2]
         target_r, target_g, target_b = ref_rgb if ref_rgb is not None else (base_r, base_g, base_b)
-        matching = 0
-        for x in xs:
-            idx = x * channels
-            r, g, b = row[idx], row[idx + 1], row[idx + 2]
-            if max(abs(r - target_r), abs(g - target_g), abs(b - target_b)) <= 8 and max(abs(r - base_r), abs(g - base_g), abs(b - base_b)) <= 8:
-                matching += 1
+        matching = sum(
+            1 for x in xs
+            if max(abs(row[x * channels] - target_r), abs(row[x * channels + 1] - target_g), abs(row[x * channels + 2] - target_b)) <= 8
+            and max(abs(row[x * channels] - base_r), abs(row[x * channels + 1] - base_g), abs(row[x * channels + 2] - base_b)) <= 8
+        )
         return (matching / len(xs)) >= 0.98, (base_r, base_g, base_b)
 
-    bezel_limit = max(1, int(height * 0.02))
-    y = height - 1
-    skipped_bezel = 0
+    bezel_limit, y, skipped_bezel = max(1, int(height * 0.02)), height - 1, 0
     while y >= 0 and skipped_bezel < bezel_limit:
-        uniform, _ = row_is_uniform(y)
-        if uniform:
+        if row_is_uniform(y)[0]:
             break
-        skipped_bezel += 1
-        y -= 1
+        skipped_bezel, y = skipped_bezel + 1, y - 1
     if y < 0:
         return 0.0
     first_uniform, ref_rgb = row_is_uniform(y)
     if not first_uniform:
         return 0.0
     blank_rows = 0
-    while y >= 0:
-        uniform, _ = row_is_uniform(y, ref_rgb)
-        if not uniform:
-            break
-        blank_rows += 1
-        y -= 1
+    while y >= 0 and row_is_uniform(y, ref_rgb)[0]:
+        blank_rows, y = blank_rows + 1, y - 1
     return round(blank_rows / max(1, height), 4)
+
+
+def _detect_blank_viewport_center_collapse(width, height, rows, channels):
+    if width < 50 or height < 50:
+        return False, []
+    x0, x1 = max(0, min(width - 1, int(width * 0.04))), max(1, min(width, int(width * 0.96)))
+    xs = list(range(x0, max(x0 + 1, x1), max(1, (x1 - x0) // 64)))
+    band_stats, best_run, cur_run = [], [], []
+    for b in range(10):
+        y0, y1 = (b * height) // 10, max(((b * height) // 10) + 1, ((b + 1) * height) // 10)
+        ys = list(range(y0, y1, max(1, (y1 - y0) // 12)))
+        samples = [(rows[y][x * channels], rows[y][x * channels + 1], rows[y][x * channels + 2]) for y in ys for x in xs]
+        n = max(1, len(samples))
+        mr, mg, mb = sum(p[0] for p in samples) / n, sum(p[1] for p in samples) / n, sum(p[2] for p in samples) / n
+        lums = [0.299 * r + 0.587 * g + 0.114 * bl for r, g, bl in samples]
+        ml = sum(lums) / n
+        std_lum = (sum((v - ml) ** 2 for v in lums) / n) ** 0.5
+        max_dev = max((max(abs(r - mr), abs(g - mg), abs(bl - mb)) for r, g, bl in samples), default=0.0)
+        band_stats.append((mr, mg, mb, std_lum, std_lum < 1.0 and max_dev <= 4.0))
+        if 2 <= b <= 7:
+            cur_run = (cur_run + [b]) if band_stats[b][4] else []
+            if len(cur_run) > len(best_run):
+                best_run = list(cur_run)
+    if len(best_run) < 3:
+        return False, []
+    ref_r, ref_g, ref_b = band_stats[best_run[0]][:3]
+    if any(max(abs(band_stats[b][0] - ref_r), abs(band_stats[b][1] - ref_g), abs(band_stats[b][2] - ref_b)) > 6.0 for b in best_run[1:]):
+        return False, []
+    active = lambda b: band_stats[b][3] >= 1.5 or max(abs(band_stats[b][0] - ref_r), abs(band_stats[b][1] - ref_g), abs(band_stats[b][2] - ref_b)) > 12.0
+    return (True, best_run) if (any(active(b) for b in (0, 1)) and any(active(b) for b in (8, 9))) else (False, [])
 
 
 def check_whitespace_ratio(path, max_dead_space_ratio=0.40):
@@ -1008,19 +1020,18 @@ def check_whitespace_ratio(path, max_dead_space_ratio=0.40):
             full_ratio = _region_bottom_dead_space_ratio(width, height, rows, channels, 0.02, 0.98)
             detail_ratio = _region_bottom_dead_space_ratio(width, height, rows, channels, 0.20, 0.96) if width >= 600 else full_ratio
             ratio = max(full_ratio, detail_ratio)
-            ok = ratio <= max_dead_space_ratio
-            metrics.append({
-                'file': str(image),
-                'width': width,
-                'height': height,
-                'dead_space_ratio': ratio,
-                'full_canvas_ratio': full_ratio,
-                'detail_canvas_ratio': detail_ratio,
-                'max_dead_space_ratio': max_dead_space_ratio,
-                'ok': ok,
-            })
-            if not ok:
+            center_collapsed, collapse_bands = _detect_blank_viewport_center_collapse(width, height, rows, channels)
+            ok = (ratio <= max_dead_space_ratio) and not center_collapsed
+            metric_entry = {'file': str(image), 'width': width, 'height': height, 'dead_space_ratio': ratio,
+                            'full_canvas_ratio': full_ratio, 'detail_canvas_ratio': detail_ratio,
+                            'max_dead_space_ratio': max_dead_space_ratio, 'ok': ok}
+            if center_collapsed:
+                metric_entry.update({'blank_viewport_center_collapse': True, 'center_collapse_bands': collapse_bands})
+            metrics.append(metric_entry)
+            if ratio > max_dead_space_ratio:
                 errors.append(f'{image.name}: VISUAL_EXCESSIVE_DEAD_SPACE (bottom contiguous dead space {ratio:.1%} > {max_dead_space_ratio:.0%})')
+            if center_collapsed:
+                errors.append(f'{image.name}: blank_viewport_center_collapse [IMPL_BUG] (middle y:20%..80% bands {collapse_bands} are blank/flat between active top header and bottom bar; fix ZStack/ScrollView frame collapse)')
         except (OSError, ValueError, struct.error, zlib.error) as error:
             errors.append(f'{image.name}: invalid PNG for whitespace check: {error}')
     return errors, metrics

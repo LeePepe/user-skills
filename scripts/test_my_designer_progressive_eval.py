@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.4', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.5', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
@@ -688,6 +688,164 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         self.assertEqual(good_code, 0)
         self.assertTrue(good_payload['ok'])
         self.assertEqual(good_payload['findings'], [])
+
+    def test_visual_semiotics_methodology_and_five_native_fidelity_gates(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        skill_text = (skill / 'SKILL.md').read_text(encoding='utf-8')
+        breathing_text = (skill / 'references' / 'breathing-and-clarity.md').read_text(encoding='utf-8')
+        modernization_text = (skill / 'references' / 'modernization-dimensions.md').read_text(encoding='utf-8')
+
+        self.assertLessEqual(len(breathing_text.splitlines()), 130)
+        self.assertLessEqual(len(breathing_text.encode('utf-8')), 12 * 1024)
+        self.assertLessEqual(len(modernization_text.splitlines()), 130)
+        self.assertLessEqual(len(modernization_text.encode('utf-8')), 12 * 1024)
+
+        for scholar in ('Bertin', 'Tufte', 'Few', 'Norman', 'Shneiderman'):
+            self.assertIn(scholar, skill_text)
+            self.assertIn(scholar, breathing_text)
+            self.assertIn(scholar, modernization_text)
+        self.assertIn('Synchronized Small Multiples', breathing_text)
+
+        # Route programmatically exposes visual_semiotics_methodology
+        res_route = _run_cli('route', '--platform', 'mobile', '--persona', 'compact')
+        self.assertEqual(res_route.returncode, 0, res_route.stderr)
+        route_payload = json.loads(res_route.stdout)
+        semiotics = route_payload['three_tier_spectrum']['tier_1_universal_invariants']['visual_semiotics_methodology']
+        for key in (
+            'bertin_retinal_variables',
+            'tufte_data_ink_and_sparklines',
+            'few_bullet_graph',
+            'norman_signifiers',
+            'shneiderman_mantra',
+        ):
+            self.assertIn(key, semiotics)
+
+        # Gate 1: Blank Viewport Center Collapse (ZStack + ScrollView sandwich collapse)
+        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+            collapsed_png = Path(tmp) / 'collapsed-center.png'
+            width, height = 120, 200
+            rows = []
+            for y in range(height):
+                row = bytearray(b'\x00')
+                for x in range(width):
+                    if y < 32:  # Top header band 0..1 with checkerboard content
+                        val = 40 if ((x // 8) + (y // 6)) % 2 == 0 else 220
+                    elif y >= 168:  # Bottom TabBar band 8..9 with checkerboard content
+                        val = 50 if ((x // 10) + (y // 6)) % 2 == 0 else 210
+                    else:  # Middle bands 2..7 collapsed to uniform black
+                        val = 0
+                    row.extend((val, val, val, 255))
+                rows.append(bytes(row))
+            raw = b''.join(rows)
+
+            def chunk(kind: bytes, payload: bytes) -> bytes:
+                crc = binascii.crc32(kind + payload) & 0xFFFFFFFF
+                return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', crc)
+
+            ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+            collapsed_png.write_bytes(
+                b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+            )
+            res_collapse = _run_cli('check-whitespace-ratio', str(collapsed_png))
+            self.assertEqual(res_collapse.returncode, 1)
+            collapse_payload = json.loads(res_collapse.stdout)
+            self.assertFalse(collapse_payload['ok'])
+            self.assertTrue(any('blank_viewport_center_collapse' in e and '[IMPL_BUG]' in e for e in collapse_payload['errors']))
+            self.assertTrue(collapse_payload['metrics'][0].get('blank_viewport_center_collapse'))
+
+        # Gate 2: UI_SPEC_ID_DEBUG_LEAK (spec IDs + >=3 查看详情 pills)
+        bad_spec_leak = (
+            'struct BadSpecLeakView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Text("A5 · 今日黄金骑行时间窗")\n'
+            '            Text("已选原子: A1 A4 [24/24格]")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '            Text("🔍 查看详情 ↗")\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_leak = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_spec_leak)
+        self.assertEqual(res_leak.returncode, 1)
+        leak_payload = json.loads(res_leak.stdout)
+        leak_ids = {f['case_id'] for f in leak_payload['findings']}
+        self.assertIn('UI_SPEC_ID_DEBUG_LEAK', leak_ids)
+        self.assertTrue(any('Bertin' in g for g in leak_payload.get('guidance', [])))
+
+        # Gate 3: UI_DUPLICATE_MAP_OR_PRIMARY_CTA
+        bad_dup_map_cta = (
+            'struct BadRouteScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            RouteMapCanvas()\n'
+            '            MiniMapPreview()\n'
+            '            Button("开始导航") {}\n'
+            '            Button("开始导航") {}\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_dup = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_dup_map_cta)
+        self.assertEqual(res_dup.returncode, 1)
+        dup_ids = {f['case_id'] for f in json.loads(res_dup.stdout)['findings']}
+        self.assertIn('UI_DUPLICATE_MAP_OR_PRIMARY_CTA', dup_ids)
+
+        # Gate 4: UI_COCKPIT_RAINBOW_NUMERAL_NOISE
+        bad_rainbow = (
+            'struct TelemetryCockpitGrid: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Text("34.8").font(.system(size: 36, weight: .bold)).foregroundStyle(.green)\n'
+            '            Text("248").font(.system(size: 32, weight: .bold)).foregroundStyle(.blue)\n'
+            '            Text("152").font(.system(size: 32, weight: .bold)).foregroundStyle(.orange)\n'
+            '            Text("92").font(.system(size: 28, weight: .bold)).foregroundStyle(.red)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_rainbow = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_rainbow)
+        self.assertEqual(res_rainbow.returncode, 1)
+        rainbow_ids = {f['case_id'] for f in json.loads(res_rainbow.stdout)['findings']}
+        self.assertIn('UI_COCKPIT_RAINBOW_NUMERAL_NOISE', rainbow_ids)
+
+        # Gate 5: UI_MINI_SPAGHETTI_CHART_COLLAPSE
+        bad_spaghetti = (
+            'struct MiniRouteChartCard: View {\n'
+            '    var body: some View {\n'
+            '        Chart {\n'
+            '            LineMark(x: .value("km", 1), y: .value("海拔", 120))\n'
+            '            LineMark(x: .value("km", 1), y: .value("速度", 32))\n'
+            '            LineMark(x: .value("km", 1), y: .value("心率", 155))\n'
+            '        }\n'
+            '        .frame(height: 64)\n'
+            '    }\n'
+            '}'
+        )
+        res_spaghetti = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_spaghetti)
+        self.assertEqual(res_spaghetti.returncode, 1)
+        spaghetti_ids = {f['case_id'] for f in json.loads(res_spaghetti.stdout)['findings']}
+        self.assertIn('UI_MINI_SPAGHETTI_CHART_COLLAPSE', spaghetti_ids)
+
+        # Clean visual-semiotic implementation passes all 4 static gates
+        clean_semiotic_swift = (
+            'struct CleanCockpitView: View {\n'
+            '    @State private var isStarted = false\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            RouteMapCanvas()\n'
+            '            Text("34.8").font(.system(size: 36, weight: .bold)).foregroundStyle(.primary)\n'
+            '            Chart { LineMark(x: .value("km", 1), y: .value("海拔", 120)) }.frame(height: 44)\n'
+            '            Chart { LineMark(x: .value("km", 1), y: .value("心率", 155)) }.frame(height: 44)\n'
+            '            Button("开始导航") { isStarted = true }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_clean = _run_cli('audit-code', '--platform', 'mobile', '--snippet', clean_semiotic_swift)
+        self.assertEqual(res_clean.returncode, 0, res_clean.stdout + res_clean.stderr)
+        self.assertEqual(json.loads(res_clean.stdout)['findings'], [])
 
 
 if __name__ == "__main__":

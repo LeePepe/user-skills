@@ -461,6 +461,14 @@ def command_route(args: argparse.Namespace) -> int:
             "tier_1_universal_invariants": {
                 "alignment_grid_hierarchy_no_truncation": True,
                 "platform_navigation": "macOS NavigationSplitView/TopBar vs iOS NavigationStack/BottomDock vs Web semantic viewport",
+                "visual_semiotics_methodology": {
+                    "reference": "skills/my-designer/references/breathing-and-clarity.md",
+                    "bertin_retinal_variables": "Position, Value/Luminance, Hue, Size/Length, Shape/Glyph, Orientation, Texture/Dash decoded preattentively (100-200ms)",
+                    "tufte_data_ink_and_sparklines": "Maximize data-ink ratio (strip meta-labels); pair ~50% height .monospacedDigit() reading with ambient sparkline/zone strip",
+                    "few_bullet_graph": "3-layer ~16-20pt bar: qualitative range bands + live primary measure (•) + comparative marker ticks (|) for baseline/warning/limit",
+                    "norman_signifiers": "Flat muted surface + source glyph = read-only synced; recessed track + thumb/stepper = mutable; baseline dot (•) + offset-only ↺ reset",
+                    "shneiderman_mantra": "Overview first (Bento summary tiles + badge cluster + ↗ signifier), zoom and filter, then details-on-demand (spatial drill-down sheet)",
+                },
             },
             "tier_2_product_persona": {
                 "persona": persona_name,

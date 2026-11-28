@@ -356,6 +356,11 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 'reference_drawer': DRAWER_GUIDANCE['appearance'][0],
                 'fix_rule': 'Track native OS light/dark appearance automatically via dynamic semantic tokens; remove .designTheme(...) and .environment(\\.theme, Theme(isDark: ...)) plumbing.',
             })
+        if args.snippet or path.suffix.lower() == '.swift':
+            semiotic_findings = _audit_visual_semiotics_swift_gates(text, masked, lines, str(path))
+            for sf in semiotic_findings:
+                drawer_keys.extend(_drawer_keys_for_case(sf['case_id']))
+                findings.append(sf)
     spec_errors: list[dict[str, Any]] = []
     raw_spec_files = getattr(args, 'spec_files_list', None) or ([args.spec_file] if getattr(args, 'spec_file', None) else [])
     for sf in raw_spec_files:

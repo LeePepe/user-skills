@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-27",
+  "updated": "2026-11-28",
   "trigger_evals": [
     {
       "query": "progressive-disclosure product design UI modernization and post-implementation Visual Traceback for desktop mobile and web",
@@ -108,26 +108,6 @@
         "r5-todo-swiftui-preview"
       ],
       "registered_at": "2026-11-10"
-    },
-    {
-      "id": "EV-004",
-      "title": "Platform-Split Jev Gate & Mobile Native Firewall",
-      "platforms": [
-        "mobile",
-        "desktop",
-        "web"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "glass-material"
-      ],
-      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.StandaloneGateReplayTests.test_jev_truth_table_and_guard",
-      "expect_exit": 0,
-      "expect_stdout_contains": [
-        "Ran",
-        "OK"
-      ],
-      "registered_at": "2026-11-14"
     },
     {
       "id": "EV-005",
@@ -481,6 +461,66 @@
         "appearance-ledger.md"
       ],
       "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-021",
+      "title": "Visual Semiotics (Bertin/Tufte/Few/Norman/Shneiderman) & 5 Native Fidelity Gates (Center Collapse, Spec ID Leak, Duplicate Map/CTA, Rainbow Numerals, Mini Spaghetti Chart)",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style",
+        "chart-dataviz",
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView"
+      ],
+      "tags": [
+        "visual-semiotics",
+        "data-ink",
+        "bullet-graph",
+        "small-multiples"
+      ],
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:\\b[A-D]\\d{1,2}(?:\\s*[左中右上下底顶]?卡)?\\s*[·:：]|已选原子\\s*[:：]?|模式\\s*[A-D]\\s*[·:：]|\\[\\s*\\d+\\s*/\\s*\\d+\\s*格\\s*\\]|\\bPreset\\s*\\d+\\b)[^\\n\"]*\"",
+      "bad_snippet": "VStack {\n    Text(\"A5 · 今日黄金骑行时间窗\")\n    Text(\"已选原子: A1 A4 [24/24格]\")\n}",
+      "good_snippet": "VStack {\n    Text(\"今日黄金骑行时间窗\")\n    Text(\"14:00 - 16:30\")\n}",
+      "file": "skills/my-designer/references/breathing-and-clarity.md",
+      "must_contain": [
+        "Jacques Bertin",
+        "Edward Tufte",
+        "Stephen Few",
+        "Don Norman",
+        "Ben Shneiderman",
+        "Synchronized Small Multiples"
+      ],
+      "registered_at": "2026-11-28"
+    }
+  ],
+  "archived_cases": [
+    {
+      "id": "EV-004",
+      "title": "Platform-Split Jev Gate & Mobile Native Firewall",
+      "platforms": [
+        "mobile",
+        "desktop",
+        "web"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "glass-material"
+      ],
+      "cmd": "python3 -m unittest scripts.test_my_designer_progressive_eval.StandaloneGateReplayTests.test_jev_truth_table_and_guard",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "Ran",
+        "OK"
+      ],
+      "registered_at": "2026-11-14"
     }
   ]
 }

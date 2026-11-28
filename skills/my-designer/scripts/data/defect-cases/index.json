@@ -1,7 +1,7 @@
 {
   "schema": "apple-design-defect-cases/v1",
   "version": 3,
-  "updated": "2026-11-27",
+  "updated": "2026-11-28",
   "baseline_mode": "plan-a-apple-hig",
   "description": "Plan A (Apple HIG 5 Lenses + Native Code Audit) is the default baseline. Plan C defect cases are registered here when real visual, spatial, or interaction-layering defects are encountered in practice.",
   "active_cases": [
@@ -161,30 +161,6 @@
       "bad_snippet": "Button { select(entry) } label: {\n    VStack(alignment: .leading, spacing: 6) {\n        Text(entry.title)\n        if expanded {\n            Button(\"Run\") { run(entry) }\n        }\n    }.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)\n}.buttonStyle(.plain)",
       "good_snippet": "VStack(alignment: .leading, spacing: 6) {\n    Button { select(entry) } label: {\n        Text(entry.title).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)\n    }.buttonStyle(.plain)\n    if expanded {\n        Button(\"Run\") { run(entry) }.buttonStyle(.bordered)\n    }\n}",
       "registered_at": "2026-11-16"
-    },
-    {
-      "id": "DC-013",
-      "title": "Multi-Boolean .sheet(isPresented:) State Collision & Custom Material Bottom Bar",
-      "platforms": [
-        "desktop",
-        "mobile"
-      ],
-      "dimensions": [
-        "layout-navigation",
-        "component"
-      ],
-      "containers": [
-        "NavigationStack",
-        "NavigationSplitView",
-        "TabView",
-        "Sheet"
-      ],
-      "symptom": "Stacking multiple boolean .sheet(isPresented:) modifiers or hand-rolling an ultraThinMaterial bottom tab bar instead of native TabView/sidebarAdaptable.",
-      "fix_rule": "Consolidate modal presentations into one Identifiable enum bound to one .sheet(item:) modifier and use native TabView with .tabViewStyle(.sidebarAdaptable).",
-      "forbidden_regex": "\\.sheet\\(\\s*isPresented\\s*:[^)]+\\)[\\s\\S]{0,240}?\\.sheet\\(\\s*isPresented\\s*:",
-      "bad_snippet": "ContentView()\n    .sheet(isPresented: $showA) { SheetA() }\n    .sheet(isPresented: $showB) { SheetB() }",
-      "good_snippet": "ContentView()\n    .sheet(item: $activeSheet) { sheet in SheetView(sheet: sheet) }",
-      "registered_at": "2026-11-15"
     },
     {
       "id": "DC-014",
@@ -349,6 +325,33 @@
       "bad_snippet": "struct RootShellView: View {\n    var body: some View {\n        WorkspaceView()\n            .designTheme(customTheme)\n            .environment(\\.theme, Theme(isDark: true))\n    }\n}",
       "good_snippet": "struct RootShellView: View {\n    var body: some View {\n        WorkspaceView()\n    }\n}",
       "registered_at": "2026-11-27"
+    },
+    {
+      "id": "DC-021",
+      "title": "Spec Identifier/Debug Chrome Leak, Duplicate Map/Primary CTA, Rainbow Cockpit Numerals & Mini Spaghetti Chart Collapse",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "typography-copy",
+        "visual-style",
+        "chart-dataviz",
+        "layout-navigation"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "ScrollView",
+        "LazyVGrid"
+      ],
+      "match_raw_strings": true,
+      "symptom": "Rendering internal spec IDs or debug chrome directly in UI (Text(\"A1 · 今日骑行\"), Text(\"已选原子: A1 A4\"), Text(\"模式A · 紧凑Bento\"), Text(\"[24/24格]\"), Text(\"Preset 1\"), or >=3 \"查看详情\" pills), stacking multiple Map canvases or duplicate \"开始导航\" primary CTAs in one screen, painting >=4 saturated rainbow primary numerals in a cockpit grid, or overlaying >=3 multi-unit curves inside a <80pt mini chart.",
+      "fix_rule": "Encode state and hierarchy via Visual Semiotics (Bertin retinal variables, Tufte data-ink & Synchronized Small Multiples, Few Bullet Graph ticks, Norman signifiers, Shneiderman overview-first): strip internal spec IDs/debug tags (UI_SPEC_ID_DEBUG_LEAK), keep <=1 Map canvas and 1 primary CTA per viewport (UI_DUPLICATE_MAP_OR_PRIMARY_CTA), keep >=24pt cockpit numerals monochrome .primary (UI_COCKPIT_RAINBOW_NUMERAL_NOISE), and split multi-unit <80pt charts into single-series sparkline rows (UI_MINI_SPAGHETTI_CHART_COLLAPSE).",
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:\\b[A-D]\\d{1,2}(?:\\s*[左中右上下底顶]?卡)?\\s*[·:：]|已选原子\\s*[:：]?|模式\\s*[A-D]\\s*[·:：]|\\[\\s*\\d+\\s*/\\s*\\d+\\s*格\\s*\\]|\\bPreset\\s*\\d+\\b)[^\\n\"]*\"",
+      "bad_snippet": "VStack {\n    Text(\"A1 · 今日黄金骑行时间窗\")\n    Text(\"已选原子: A1 A4 [24/24格]\")\n}",
+      "good_snippet": "VStack {\n    Text(\"今日黄金骑行时间窗\")\n    Text(\"14:00 - 16:30 · 适宜出发\")\n}",
+      "registered_at": "2026-11-28"
     }
   ],
   "archived_templates": [
@@ -520,6 +523,30 @@
       "bad_snippet": ".prose th, .prose td { padding: 8px 10px; white-space: nowrap; }",
       "good_snippet": ".prose th { white-space: nowrap; }\n.prose td { padding: 8px 10px; white-space: normal; min-width: 96px; }",
       "registered_at": "2026-11-10"
+    },
+    {
+      "id": "DC-013",
+      "title": "Multi-Boolean .sheet(isPresented:) State Collision & Custom Material Bottom Bar",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "layout-navigation",
+        "component"
+      ],
+      "containers": [
+        "NavigationStack",
+        "NavigationSplitView",
+        "TabView",
+        "Sheet"
+      ],
+      "symptom": "Stacking multiple boolean .sheet(isPresented:) modifiers or hand-rolling an ultraThinMaterial bottom tab bar instead of native TabView/sidebarAdaptable.",
+      "fix_rule": "Consolidate modal presentations into one Identifiable enum bound to one .sheet(item:) modifier and use native TabView with .tabViewStyle(.sidebarAdaptable).",
+      "forbidden_regex": "\\.sheet\\(\\s*isPresented\\s*:[^)]+\\)[\\s\\S]{0,240}?\\.sheet\\(\\s*isPresented\\s*:",
+      "bad_snippet": "ContentView()\n    .sheet(isPresented: $showA) { SheetA() }\n    .sheet(isPresented: $showB) { SheetB() }",
+      "good_snippet": "ContentView()\n    .sheet(item: $activeSheet) { sheet in SheetView(sheet: sheet) }",
+      "registered_at": "2026-11-15"
     }
   ]
 }
