@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 die_usage() {
   local msg="$1"
   printf 'Error: %s\n  Fix: run `skills/team-lead/scripts/herdr-dispatch.sh --help` for required flags and role mappings.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' "$msg" >&2
   exit 2
 }
-
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -16,7 +14,6 @@ Usage:
     [--wait] [--timeout <ms>] [-- <agent-args>...]
 EOF
 }
-
 NAME=""
 KIND=""
 CWD=""
@@ -35,7 +32,6 @@ ROLE=""
 EXCLUDE_VENDOR=""
 GATEWAY_MODE="${HERDR_GATEWAY_MODE:-auto}"
 AGENT_ARGS=()
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name|--agent-name|--agent)
@@ -189,22 +185,19 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
 if [[ "$NEW_WORKSPACE" -eq 1 && -n "$TARGET_WORKSPACE_ID" ]]; then
   die_usage "--workspace cannot be combined with --new-workspace"
 fi
-
 if [[ "$GATEWAY_MODE" != "auto" && "$GATEWAY_MODE" != "magpie" && "$GATEWAY_MODE" != "direct" ]]; then
   die_usage "--gateway-mode must be 'auto', 'magpie', or 'direct' (got '$GATEWAY_MODE')"
 fi
-
+RAW_ROLE="$ROLE"
 case "$ROLE" in
   reviewer|code-reviewer|rev) ROLE="code_reviewer" ;;
   tl|team-lead|steering|m1_tl|m1-tl|m2|m2-dispatcher|m2_dispatcher) ROLE="team_lead" ;;
   pr-monitor|prmon) ROLE="pr_monitor" ;;
   writer-escalated|coding-escalated) ROLE="writer_escalated" ;;
 esac
-
 ORIGINAL_NAME="$NAME"
 case "$ROLE" in
   team_lead|arbitration) [[ -n "$KIND" ]] || KIND="claude" ;;
@@ -212,7 +205,20 @@ case "$ROLE" in
   writer|explorer|pr_monitor|mechanical|code_reviewer|planner_reviewer|designer|research_primary) [[ -n "$KIND" ]] || KIND="copilot" ;;
   research_co) [[ -n "$KIND" ]] || KIND="cursor" ;;
 esac
-
+ORIGIN_ROLE="writer"
+if [[ "$RAW_ROLE" == "m2" || "$RAW_ROLE" == "m2-dispatcher" || "$RAW_ROLE" == "m2_dispatcher" || ( -z "$RAW_ROLE" && "$ORIGINAL_NAME" =~ ^m2- ) ]]; then ORIGIN_ROLE="m2"
+elif [[ "$ROLE" == "team_lead" || "$ORIGINAL_NAME" =~ -goal-tl- ]]; then ORIGIN_ROLE="m1"
+elif [[ "$ROLE" == "code_reviewer" || "$ROLE" == "planner_reviewer" || "$ORIGINAL_NAME" =~ -reviewer- ]]; then ORIGIN_ROLE="reviewer"
+elif [[ "$ROLE" == "explorer" || "$ORIGINAL_NAME" =~ -explorer- ]]; then ORIGIN_ROLE="explorer"
+elif [[ "$ROLE" == "pr_monitor" || "$ORIGINAL_NAME" =~ -pr-monitor- ]]; then ORIGIN_ROLE="pr_monitor"
+elif [[ "$ROLE" == "designer" ]]; then ORIGIN_ROLE="designer"
+fi
+PARENT_PANE="${SRC_PANE:-${HERDR_PANE_ID:-}}"
+ORIGIN_SENDER="${HERDR_ORIGIN_SENDER:-${HERDR_AGENT_NAME:-${PARENT_PANE:-${HERDR_AGENT_ROLE:-cli}}}}"
+ORIGIN_GOAL="${HERDR_ORIGIN_GOAL:-${GOAL_NAME:-${WORKSPACE_LABEL:-${TAB_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}}}}"
+ORIGIN_SENDER="$(printf '%s' "$ORIGIN_SENDER" | tr '[:space:]>' '-')"
+ORIGIN_GOAL="$(printf '%s' "$ORIGIN_GOAL" | tr '[:space:]>' '-')"
+export HERDR_SPAWN_ORIGIN="agent_dispatch" HERDR_AGENT_ROLE="$ORIGIN_ROLE" HERDR_PARENT_PANE="$PARENT_PANE"
 USER_SKILLS_DIR="$HOME/Development/user-skills"; WORKTREES_ROOT="${HERDR_WORKTREES_ROOT:-$HOME/Development/worktrees}"; REQUESTED_CWD="$CWD"; INFERRED_GOAL_CONTEXT=0
 if [[ "$ROLE" == "team_lead" && "$ORIGINAL_NAME" =~ ^([a-z0-9][a-z0-9_-]*)-goal-tl-r[0-9]+$ ]]; then
   GOAL_NAME="${BASH_REMATCH[1]}"
@@ -236,26 +242,22 @@ fi
 if [[ "$INFERRED_GOAL_CONTEXT" -eq 1 ]]; then
   printf '[herdr-dispatch] Advisory: inferred --cwd/--prompt from %s/spec.md. See skills/team-lead/references/bots-and-agents.md\n' "$GOAL_HANDOFF_DIR" >&2
 fi
-
 if [[ -n "$CWD" && ! -d "$CWD" ]]; then REQUESTED_CWD="${REQUESTED_CWD:-$CWD}"; FALLBACK_CWD="$USER_SKILLS_DIR"; if [[ ! -d "$FALLBACK_CWD" ]]; then FALLBACK_CWD="$CWD"; while [[ ! -d "$FALLBACK_CWD" && "$FALLBACK_CWD" != "/" ]]; do FALLBACK_CWD="$(dirname "$FALLBACK_CWD")"; done; [[ "$FALLBACK_CWD" == "/" || "$FALLBACK_CWD" == "$HOME" || ! -d "$FALLBACK_CWD" ]] && FALLBACK_CWD="$HOME/Development"; fi; printf '[herdr-dispatch] Advisory: requested --cwd %s does not exist; using existing fallback %s. See skills/team-lead/references/bots-and-agents.md\n' "$CWD" "$FALLBACK_CWD" >&2; CWD="$FALLBACK_CWD"; fi; REQUESTED_CWD_PARENT="${REQUESTED_CWD:+$(dirname "$REQUESTED_CWD")}"
 # Entry coordinators (normal CLI, Grok Bot local-exec-daemon, Cindy) launching a Goal Steering TL
 # outside a Herdr pane automatically bootstrap a background Herdr workspace.
 if [[ "$ROLE" == "team_lead" && -z "$TARGET_WORKSPACE_ID" && ( "${HERDR_ENV:-}" != "1" || -z "$SRC_PANE" ) ]]; then
   NEW_WORKSPACE=1
 fi
-
 if [[ "$NEW_WORKSPACE" -eq 0 && -z "$TARGET_WORKSPACE_ID" ]]; then
   if [[ "${HERDR_ENV:-}" != "1" ]]; then
     printf 'Error: HERDR_ENV=1 is required to run herdr-dispatch.sh (or pass --new-workspace / --role team_lead)\n  Fix: pass --new-workspace or --role team_lead when dispatching outside a Herdr pane.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' >&2
     exit 1
   fi
-
   if [[ -z "$SRC_PANE" ]]; then
     printf 'Error: source pane ID is required (--pane, HERDR_PANE_ID, or --new-workspace)\n  Fix: pass --pane <pane-id> or --new-workspace.\n  Reference: skills/team-lead/references/bots-and-agents.md\n' >&2
     exit 1
   fi
 fi
-
 missing_flags=()
 [[ -z "$NAME" ]] && missing_flags+=("--name")
 [[ -z "$KIND" ]] && missing_flags+=("--kind (or a known --role)")
@@ -264,27 +266,27 @@ missing_flags=()
 if [[ ${#missing_flags[@]} -gt 0 ]]; then
   die_usage "missing required flag(s): ${missing_flags[*]}"
 fi
-
+ORIGIN_GOAL="${HERDR_ORIGIN_GOAL:-${GOAL_NAME:-${WORKSPACE_LABEL:-${TAB_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}}}}"
+ORIGIN_GOAL="$(printf '%s' "$ORIGIN_GOAL" | tr '[:space:]>' '-')"
+if [[ "$PROMPT" != *"<!-- herdr-origin:v1 "* ]]; then
+  PROMPT="${PROMPT}"$'\n\n'"<!-- herdr-origin:v1 kind=agent_dispatch role=${ORIGIN_ROLE} sender=${ORIGIN_SENDER} goal=${ORIGIN_GOAL} -->"
+fi
 if [[ "${#NAME}" -gt 32 && "$NAME" =~ ^[a-z][a-z0-9_-]*$ ]]; then
   NAME_HASH="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()[:6])' "$ORIGINAL_NAME")"
   NAME_PREFIX="${ORIGINAL_NAME:0:25}"
   NAME="${NAME_PREFIX}-${NAME_HASH}"
   printf "[herdr-dispatch] Advisory: --name '%s' (%d chars > 32) auto-truncated to '%s'. See skills/team-lead/references/bots-and-agents.md\n" "$ORIGINAL_NAME" "${#ORIGINAL_NAME}" "$NAME" >&2
 fi
-
 # Reject invalid names before pane split so a failed start cannot leave an orphan pane.
 if [[ ! "$NAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
   die_usage "--name '$NAME' must match ^[a-z][a-z0-9_-]{0,31}$ (<=32 chars) before splitting pane"
 fi
-
 if [[ "$DIRECTION" != "right" && "$DIRECTION" != "down" ]]; then
   die_usage "--direction must be 'right' or 'down' (got '$DIRECTION')"
 fi
-
 if [[ "$KIND" == "cursor-agent" ]]; then
   KIND="cursor"
 fi
-
 if [[ ${#AGENT_ARGS[@]} -gt 0 ]]; then
   case "${AGENT_ARGS[0]}" in
     codex|copilot|claude|cursor|cursor-agent)
@@ -292,7 +294,6 @@ if [[ ${#AGENT_ARGS[@]} -gt 0 ]]; then
       ;;
   esac
 fi
-
 ROLE_ROUTE=0
 LOGICAL_GROUP=""
 REQUESTED_MODEL=""
@@ -314,7 +315,6 @@ for ((i = 0; i < ${#AGENT_ARGS[@]}; i++)); do
       ;;
   esac
 done
-
 case "$ROLE" in
   "") ;;
   team_lead|arbitration|planner|research_arbiter) LOGICAL_GROUP="group/steering" ;;
@@ -327,17 +327,14 @@ case "$ROLE" in
   designer) LOGICAL_GROUP="group/designer" ;;
   *) die_usage "unsupported --role '$ROLE'" ;;
 esac
-
 if [[ "$ROLE" == "writer_escalated" || "$REQUESTED_MODEL" == "group/coding-escalated" || "$REQUESTED_MODEL" == "magpie/group/coding-escalated" ]]; then
   if [[ "$NAME" =~ -r1$ || "$ORIGINAL_NAME" =~ -r1$ ]]; then
     die_usage "writer_escalated is strictly reserved for V3 Round 2+ fix escalation and cannot be dispatched on Round 1 ($ORIGINAL_NAME)"
   fi
 fi
-
 if [[ "$REQUESTED_MODEL" == group/* || "$REQUESTED_MODEL" == magpie/group/* ]]; then
   LOGICAL_GROUP="${REQUESTED_MODEL#magpie/}"
 fi
-
 SKIPPED_CLAUDE=0
 SKIPPED_CLAUDE_REASON=""
 if [[ "$KIND" == "claude" ]]; then
@@ -1009,7 +1006,7 @@ else:
     WATCHDOG_GOAL="${WORKSPACE_LABEL:-${ORIGINAL_NAME%-goal-tl-r*}}"
     [[ -n "$WATCHDOG_GOAL" ]] || WATCHDOG_GOAL="<goal>"
     WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
-    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$KIND" "$ORIGINAL_NAME" <<'PY'
+    python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "$NEW_WORKSPACE_ID" "$EXISTING_STATUS" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$KIND" "$ORIGINAL_NAME" "$ORIGIN_ROLE" "$ORIGIN_SENDER" "$PARENT_PANE" <<'PY'
 import json, sys
 payload = {
     "ok": True,
@@ -1018,6 +1015,9 @@ payload = {
     "agent": sys.argv[2],
     "reused_existing": True,
     "agent_status": sys.argv[8],
+    "spawn_origin": "agent_dispatch",
+    "agent_role": sys.argv[13],
+    "parent_pane": sys.argv[15],
     "watchdog_cmd": sys.argv[9],
     "watchdog_copilot_cli": {
         "tool": "bash",
@@ -1234,9 +1234,9 @@ if [[ "$ROLE" == "team_lead" || "$NEW_WORKSPACE" -eq 1 ]]; then
   WATCHDOG_CMD="python3 ~/Development/user-skills/skills/team-lead/scripts/goal-supervisor.py watch --handoff-dir ~/Development/handoff/${WATCHDOG_GOAL} --interval 15 --max-wait 600 --json"
 fi
 
-python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$NEW_TAB_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$ORIGINAL_NAME" <<'PY'
+python3 - "$NEW_PANE_ID" "$NAME" "$ROLE_ROUTE" "$LOGICAL_GROUP" "$RESOLVED_MODEL" "$GATEWAY_ONLINE" "${HERDR_INCLUDE_ROUTE_META:-0}" "$NEW_WORKSPACE_ID" "$NEW_TAB_ID" "$KIND" "$SKIPPED_CLAUDE" "$SKIPPED_CLAUDE_REASON" "$WATCHDOG_CMD" "$WATCHDOG_GOAL" "$ORIGINAL_NAME" "$ORIGIN_ROLE" "$ORIGIN_SENDER" "$PARENT_PANE" <<'PY'
 import json, sys
-payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2]}
+payload = {"ok": True, "pane_id": sys.argv[1], "agent": sys.argv[2], "spawn_origin": "agent_dispatch", "agent_role": sys.argv[16], "parent_pane": sys.argv[18]}
 if sys.argv[15] != sys.argv[2]:
     payload["original_name"] = sys.argv[15]
     payload["name_truncated"] = True

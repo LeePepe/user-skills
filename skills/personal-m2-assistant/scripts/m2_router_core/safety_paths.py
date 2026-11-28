@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from ._imports import *
 
+from .constants_and_paths import WHITELISTED_HERDR_ENV_VARS
+
 def _safe_roots_for_target(target_cwd: str = "", *, include_target_cwd: bool = True) -> list[str]:
     baseline_roots = [_expand_cwd(root).rstrip("/") for root in SAFE_BASELINE_ROOTS if _expand_cwd(root)]
     if not include_target_cwd:
@@ -351,7 +353,12 @@ def _is_whitelisted_command_segment(segment: str) -> bool:
     tokens = shlex.split(segment.strip()) if segment.strip() else []
     if not tokens:
         return False
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        name, value = tokens[0].split("=", 1)
+        if name not in WHITELISTED_HERDR_ENV_VARS or not re.fullmatch(r"[A-Za-z0-9_.:/-]*", value):
+            return False
+        tokens.pop(0)
+    if not tokens:
         return False
     if "/" in tokens[0] and Path(tokens[0]).parent not in {Path("/bin"), Path("/usr/bin"), Path("/usr/local/bin"), Path("/opt/homebrew/bin")}:
         return False

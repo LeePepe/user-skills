@@ -87,6 +87,11 @@ def hygiene_facts(args: argparse.Namespace) -> int:
         "json_summary": json_summary,
         "legacy_monoliths": _legacy_monolith_facts(repo_root),
         "advisories": _repo_advisories(repo_root),
+        "herdr_origin_contract": {
+            "schema": "herdr-origin:v1",
+            "kinds": ["agent_dispatch", "human_routed"],
+            "session_env_vars": ["HERDR_SPAWN_ORIGIN", "HERDR_AGENT_ROLE", "HERDR_PARENT_PANE"],
+        },
         "reference": VALVE_REFERENCE_BASE,
     }
     _emit_json(payload, args)

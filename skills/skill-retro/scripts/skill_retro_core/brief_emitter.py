@@ -1,5 +1,6 @@
 from __future__ import annotations
 from .common import *
+from skill_runtime.cli_contract import append_herdr_origin_tag
 
 """Brief Emitter implementation for the skill-retro engine."""
 
@@ -179,7 +180,7 @@ def build_m2_dispatch_plan(selected_briefs: Sequence[Mapping[str, Any]], *, hand
         owned_paths = list(item.get('owned_paths') or [f'skills/{sk}/**', f"scripts/test_{sk.replace('-', '_')}_*.py"])
         dispatch_cwd = _resolve_m1_dispatch_cwd(worktree_dir, dev_root=resolved_dev_root)
         dispatch_cmd = f'skills/team-lead/scripts/herdr-dispatch.sh --new-workspace --role team_lead --name {tl_agent_name} --kind claude --cwd {dispatch_cwd}'
-        m1_boot_prompt = f'Load /team-lead and /skill-retro. You are the independent M1 TL ({tl_agent_name}) for single-skill Goal {goal_id} (1 Skill = 1 Independent M1 TL). Read {spec_md} and {ledger_md}. Create/use isolated worktree {worktree_dir}. Perform deep reasoning (`--mode {mode_val} --aspects {aspects_csv}`) for `{sk}`: if the signal is benign/healthy after deep investigation, write `status=HEALTHY_NO_ISSUES` to {receipt_json} and return to M2 with ZERO Writers/Reviewers spawned; if a real issue is confirmed, run Writer -> Reviewer strictly within {owned_paths}, pass Positive + Counter-Case Replay + `./scripts/verify`, merge PR, and write `status=FIXED_AND_MERGED` (or `CROSS_SKILL_RELAY`) to {receipt_json}.'
+        m1_boot_prompt = append_herdr_origin_tag(f'Load /team-lead and /skill-retro. You are the independent M1 TL ({tl_agent_name}) for single-skill Goal {goal_id} (1 Skill = 1 Independent M1 TL). Read {spec_md} and {ledger_md}. Create/use isolated worktree {worktree_dir}. Perform deep reasoning (`--mode {mode_val} --aspects {aspects_csv}`) for `{sk}`: if the signal is benign/healthy after deep investigation, write `status=HEALTHY_NO_ISSUES` to {receipt_json} and return to M2 with ZERO Writers/Reviewers spawned; if a real issue is confirmed, run Writer -> Reviewer strictly within {owned_paths}, pass Positive + Counter-Case Replay + `./scripts/verify`, merge PR, and write `status=FIXED_AND_MERGED` (or `CROSS_SKILL_RELAY`) to {receipt_json}.', kind='agent_dispatch', role='m1', sender='m2', goal=goal_id)
         parallel_m1_tls.append({'skill': sk, 'goal_id': goal_id, 'm1_tl_agent_name': tl_agent_name, 'role': 'team_lead', 'kind': 'claude', 'mode': mode_val, 'aspects': aspects_list, 'goal_handoff_dir': str(goal_handoff_dir), 'spec_md': str(spec_md), 'ledger_md': str(ledger_md), 'm1_receipt_json': str(receipt_json), 'worktree_dir': str(worktree_dir), 'dispatch_cwd': str(dispatch_cwd), 'owned_paths': owned_paths, 'herdr_dispatch_cmd': dispatch_cmd, 'm1_boot_prompt': m1_boot_prompt})
     k_count = len(parallel_m1_tls)
     skills_flag = f" --skills {','.join((x['skill'] for x in parallel_m1_tls))}" if parallel_m1_tls else ''

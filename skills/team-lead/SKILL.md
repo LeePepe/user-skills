@@ -84,6 +84,10 @@ description: "Goal/Task work must load this skill: coordinate Steering -> Writer
 - **V1 双轴 & V2 来源阻塞**：Axis 1 核范围规格，Axis 2 核测试真实性、质量与安全红线；本 diff 问题、验收失败、安全红线阻塞。UI 须过 `design_contract.py` 与 `my-designer` 门禁（含 `sips -g pixelWidth`、zero numeric truncation `…`、无 raw keys，禁以 “followed the brief verbatim” 降级 V2 P1 `FAIL`）。`Reviewer` 做 **Visual Traceback** 判 `[IMPL_BUG]`（退 Writer）或 `[SPEC_GAP]`（`Steering` 修订 `design.md` 重签 `spec_sha`；通用规则经 `skill_contract.py sink-rule` 入库）。
 - **V3–V5 复审、CI 与结论**：第 1 轮 FAIL 原写者修，第 2 轮用 `writer_escalated`，仍败转 `blocked`；改 CI 门禁须 Owner 批准；结论 `PASS`、`CONCERNS`、`WAIVED`、`FAIL`。
 
+## Herdr origin contract
+
+`herdr-dispatch.sh` appends the trailing `<!-- herdr-origin:v1 ... -->` watermark to agent-dispatch prompts and exports `HERDR_SPAWN_ORIGIN`, `HERDR_AGENT_ROLE`, and `HERDR_PARENT_PANE` to child sessions. Existing routed-human watermarks are preserved; titles and summaries strip the comment before display.
+
 ## CLI 用法与 UI Inner Loop
 
 - **并发监督与网关路由**：用 `skills/team-lead/scripts/goal-supervisor.py`（`scan`、`status --check`、`check-pins`、`telemetry`）以 `30–60s` slices 监控 `ZOMBIE_LEASE`、`BLOCKED_AGENT` 与 R10（关联 `good-des-*`，基线 `/Volumes/SSD`；回收 `herdr pane close "$HERDR_PANE_ID"`）。`skills/team-lead/scripts/herdr-dispatch.sh` 协同 `Magpie`，分屏必传 `--direction right|down`（`herdr pane split --pane "$HERDR_PANE_ID" --direction down --cwd "$TASK_WORKTREE" --no-focus`）。

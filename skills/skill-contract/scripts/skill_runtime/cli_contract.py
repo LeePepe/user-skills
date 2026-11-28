@@ -13,6 +13,82 @@ _HOME_PATH = re.compile(r"/" + "Users/" + r"[^/\\s]+")
 _SECRET = re.compile(r"(?i)\b(?:ghp_[A-Za-z0-9_\-]+|lin_api_[A-Za-z0-9_\-]+|sk-[A-Za-z0-9_\-]+)\b")
 _BEARER = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+\-/]+=*")
 
+HERDR_ORIGIN_SCHEMA = "herdr-origin:v1"
+HERDR_ORIGIN_KINDS = ("agent_dispatch", "human_routed")
+HERDR_ORIGIN_ROLES = ("m2", "m1", "writer", "reviewer", "explorer", "pr_monitor", "designer")
+HERDR_SESSION_ENV_VARS = ("HERDR_SPAWN_ORIGIN", "HERDR_AGENT_ROLE", "HERDR_PARENT_PANE")
+HERDR_ORIGIN_COMMENT_RE = re.compile(r"<!--\s*herdr-origin:v1\s+([^>]*?)\s*-->", re.IGNORECASE | re.DOTALL)
+
+
+def normalize_herdr_agent_role(role: str, name: str = "") -> str:
+    raw_role = str(role or "").strip().casefold().replace(" ", "_")
+    raw_name = str(name or "").strip().casefold()
+    if raw_role in {"m2", "m2-dispatcher", "m2_dispatcher"} or (not raw_role and raw_name.startswith("m2-")):
+        return "m2"
+    if raw_role in {"tl", "team-lead", "team_lead", "steering", "m1", "m1_tl", "m1-tl", "arbitration", "planner"} or "-goal-tl-" in raw_name:
+        return "m1"
+    if raw_role in {"reviewer", "code-reviewer", "code_reviewer", "rev", "planner_reviewer"} or "-reviewer-" in raw_name:
+        return "reviewer"
+    if raw_role in {"writer", "writer_escalated", "writer-escalated", "coding-escalated", "mechanical"} or "-writer-" in raw_name:
+        return "writer"
+    if raw_role in {"explorer", "research_primary", "research_co", "research_arbiter"} or "-explorer-" in raw_name:
+        return "explorer"
+    if raw_role in {"pr_monitor", "pr-monitor", "prmon"} or "-pr-monitor-" in raw_name:
+        return "pr_monitor"
+    if raw_role == "designer":
+        return "designer"
+    return "writer"
+
+
+def _herdr_origin_token(value: Any, default: str) -> str:
+    token = re.sub(r"[\s>]+", "-", str(value or "").strip())
+    return token or default
+
+
+def format_herdr_origin_tag(*, kind: str, role: str = "", sender: str = "", goal: str = "", topic: str = "") -> str:
+    normalized_kind = str(kind or "").strip().casefold()
+    if normalized_kind == "human_routed":
+        return f"<!-- {HERDR_ORIGIN_SCHEMA} kind=human_routed sender={_herdr_origin_token(sender, 'm3')} topic={_herdr_origin_token(topic, 'general')} -->"
+    if normalized_kind == "agent_dispatch":
+        return f"<!-- {HERDR_ORIGIN_SCHEMA} kind=agent_dispatch role={_herdr_origin_token(role, 'writer')} sender={_herdr_origin_token(sender, 'cli')} goal={_herdr_origin_token(goal, 'default')} -->"
+    raise ValueError(f"unsupported herdr origin kind: {kind}")
+
+
+def append_herdr_origin_tag(prompt: str, **kwargs: Any) -> str:
+    text = str(prompt or "")
+    if HERDR_ORIGIN_COMMENT_RE.search(text):
+        return text
+    return f"{text.rstrip()}\n\n{format_herdr_origin_tag(**kwargs)}"
+
+
+def parse_herdr_origin_tag(text: Any) -> dict[str, str] | None:
+    matches = list(HERDR_ORIGIN_COMMENT_RE.finditer(str(text or "")))
+    if not matches:
+        return None
+    attrs = {key: value for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_-]*)=([^\s>]+)", matches[-1].group(1))}
+    attrs["schema"] = HERDR_ORIGIN_SCHEMA
+    return attrs
+
+
+def strip_herdr_origin_comments(text: Any) -> str:
+    return HERDR_ORIGIN_COMMENT_RE.sub("", str(text or "")).strip()
+
+
+def split_routed_prompt_sections(text: Any) -> dict[str, Any]:
+    raw = str(text or "")
+    origin = parse_herdr_origin_tag(raw)
+    clean = strip_herdr_origin_comments(raw)
+    match = re.match(r"^\s*\[RAG/context hint\]\s*\n(.*?)\n\s*\[Dispatched instruction\]\s*\n(.*)$", clean, re.IGNORECASE | re.DOTALL)
+    if match:
+        hint, instruction = match.groups()
+    else:
+        hint, instruction = "", clean
+    return {"rag_context_hint": hint.strip(), "dispatched_instruction": instruction.strip(), "origin": origin}
+
+
+def extract_dispatched_instruction(text: Any) -> str:
+    return str(split_routed_prompt_sections(text)["dispatched_instruction"])
+
 
 class SelfDisclosingArgumentParser(argparse.ArgumentParser):
     """Bound parser errors to three actionable lines."""

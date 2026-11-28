@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command
+from .constants_and_paths import _run_command, strip_herdr_origin_comments
 
 def _herdr_agent_name(value: dict[str, Any]) -> str:
     agent = value.get("agent") or value.get("agent_name") or value.get("agentName") or value.get("provider")
@@ -68,7 +68,7 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
         "session_id": sid,
         "topic_id": _text(value.get("topic_id") or value.get("topicId")),
         "target_repo": repo,
-        "title": _text(value.get("title") or value.get("terminal_title_stripped") or value.get("name"), sid),
+        "title": strip_herdr_origin_comments(_text(value.get("title") or value.get("terminal_title_stripped") or value.get("name"), sid)),
         "status": status,
         "cwd": _expand_cwd(value.get("foreground_cwd") or value.get("cwd") or value.get("worktree")),
         "workspace_id": _text(value.get("workspace_id") or value.get("workspaceId")),
@@ -76,7 +76,7 @@ def normalize_session(value: dict[str, Any], source: str, *, allow_interactive_h
         "pane_id": pane_id,
         "herdr_target": _text(value.get("herdr_target") or value.get("herdrTarget") or value.get("name"), sid),
         "source": source,
-        "summary": _text(value.get("summary") or value.get("contextSummary") or value.get("lastAssistantText"))[:800],
+        "summary": strip_herdr_origin_comments(_text(value.get("summary") or value.get("contextSummary") or value.get("lastAssistantText")))[:800],
         "base_url": _text(value.get("base_url") or value.get("dsh_base_url")),
     }
     if raw_agent_session:
@@ -442,8 +442,8 @@ def discover_from_issue_cache(
         status = _text(rec.get("agent_status") or rec.get("status"), "working" if key in in_flight_ids else "idle").lower()
         target_repo = _text(rec.get("target_repo") or rec.get("repo") or topic_meta.get("target_repo"))
         cwd = _expand_cwd(rec.get("cwd") or rec.get("foreground_cwd") or topic_meta.get("cwd"))
-        title = _text(rec.get("title") or rec.get("terminal_title") or topic_meta.get("title") or sid)
-        summary = _text(rec.get("summary") or rec.get("m1_progress") or rec.get("visible_summary"))
+        title = strip_herdr_origin_comments(_text(rec.get("title") or rec.get("terminal_title") or topic_meta.get("title") or sid))
+        summary = strip_herdr_origin_comments(_text(rec.get("summary") or rec.get("m1_progress") or rec.get("visible_summary")))
         enriched = {
             **rec,
             "session_id": sid,

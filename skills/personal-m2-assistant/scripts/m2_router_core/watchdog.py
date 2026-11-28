@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command
+from .constants_and_paths import _run_command, strip_herdr_origin_comments
 
 from .herdr_discovery import _fetch_json
 
@@ -140,7 +140,7 @@ def watch_dispatched_m2(
                 "needs_owner_attention": False,
                 "blocked_reason": "",
                 "auto_unblocked": [],
-                "visible_summary": _text(rec.get("prompt"))[:240] if transport == "stdout" else "",
+                "visible_summary": strip_herdr_origin_comments(_text(rec.get("prompt")))[:240] if transport == "stdout" else "",
                 "seen_working": False,
                 "initial_seq": None,
                 "completion_seq": None,
@@ -256,7 +256,7 @@ def watch_dispatched_m2(
                     continue
                 status = _text(match.get("status"), "idle").lower()
                 item["status"] = status
-                item["visible_summary"] = _text(match.get("summary")) or item["visible_summary"]
+                item["visible_summary"] = strip_herdr_origin_comments(_text(match.get("summary"))) or item["visible_summary"]
                 if status in {"working", "running"}:
                     item["seen_working"] = True
                     item["needs_owner_attention"] = False
@@ -308,8 +308,8 @@ def watch_dispatched_m2(
                 visible = _text(live.get("visible") or live.get("visible_text") or live.get("summary"))
             visible_by_ref[item["target"] or item["pane_id"]] = visible
             if visible:
-                item["visible_summary"] = _summarize_visible_lines(visible)
-            item["terminal_title"] = _text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or item.get("terminal_title"))
+                item["visible_summary"] = strip_herdr_origin_comments(_summarize_visible_lines(visible))
+            item["terminal_title"] = strip_herdr_origin_comments(_text(live.get("terminal_title") or live.get("terminal_title_stripped") or live.get("title") or item.get("terminal_title")))
             _enrich_slot_metadata(item, handoff_root=handoff_root, scan_default=runner is _run_command)
             tl_running = any(_text(rec.get("name")) == item.get("goal_tl") and _text(rec.get("agent_status") or rec.get("status")) in {"working", "running"} for rec in herdr_merged)
             if status not in {"blocked", "needs_input"} and (_has_active_visible_tail(visible) or (item.get("handoff_in_progress") and tl_running)):

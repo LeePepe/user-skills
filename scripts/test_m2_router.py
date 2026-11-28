@@ -242,7 +242,10 @@ class M2RouterTests(unittest.TestCase):
         result = self.router.apply_plan(plan, approve=True, runner=runner)
         self.assertEqual(result["receipts"][0]["method"], "herdr.agent.prompt")
         self.assertEqual(calls[0][1:3], ["agent", "prompt"])
-        self.assertEqual(calls[0][3:], ["alpha-m2-r1", "continue alpha"])
+        self.assertEqual(calls[0][3:], [
+            "alpha-m2-r1",
+            "continue alpha\n\n<!-- herdr-origin:v1 kind=human_routed sender=m3 topic=alpha -->",
+        ])
 
     def test_dsh_existing_delivery_falls_back_to_omni_dispatch(self):
         plan = {
