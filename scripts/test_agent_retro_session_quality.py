@@ -97,10 +97,23 @@ class AgentRetroSessionQualityTests(unittest.TestCase):
 
     def test_reviewer_pass_requires_adversarial_probe(self):
         base = [self.event("review", role="reviewer", content="EVT=REVIEW_PASS"),
-                self.event("review", "edit", {"path": "skills/my-designer/scripts/verify_design.py", "new_str": "return True"})]
+                self.event("review", "view", {"path": "skills/my-designer/scripts/verify_design.py"})]
         self.assertTrue(any(row["subkind"] == "reviewer_pass_without_adversarial_probe" for row in self.quality(base)))
         counter = base + [self.event("review", "bash", {"command": "python3 verify.py --snippet bad"}, exit_code=1)]
         self.assertFalse(any(row["subkind"] == "reviewer_pass_without_adversarial_probe" for row in self.quality(counter)))
+
+    def test_old_str_regex_churn_and_post_failure_relaxation(self):
+        events = [self.event("old-regex", role="writer", goal="us-howto-boundary"),
+                  self.event("old-regex", "edit", {"path": "skills/howto/scripts/howto_flow.py", "old_str": "re.compile(r'^a$')", "new_str": "PAT_A"}),
+                  self.event("old-regex", "bash", {"command": "python3 skills/howto/scripts/howto_flow.py --check"}, exit_code=1),
+                  self.event("old-regex", "bash", {"command": "python3 skills/howto/scripts/howto_flow.py --check"}, exit_code=1),
+                  self.event("old-regex", "edit", {"path": "skills/howto/scripts/howto_flow.py", "old_str": "re.compile(r'^b$')", "new_str": "PAT_B"}),
+                  self.event("old-regex", "edit", {"path": "skills/howto/scripts/howto_flow.py", "old_str": "re.compile(r'^c$')", "new_str": "PAT_C"})]
+        rows = self.quality(events)
+        subkinds = {row["subkind"] for row in rows}
+        self.assertIn("multi_round_regex_boundary_rework", subkinds)
+        self.assertIn("in_session_waiver_bypass_churn", subkinds)
+        self.assertTrue(all(row["upstream_skill"] == "howto" for row in rows))
 
     def test_probe_diagnose_triage_surface_soft_block_and_preserve_27_metrics(self):
         session = FIXTURE / "sessions" / "quality"

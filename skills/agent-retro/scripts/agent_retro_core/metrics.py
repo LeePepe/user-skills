@@ -469,6 +469,12 @@ def _quality_added_text(event: dict[str, Any]) -> str:
     return _text(values).lower()
 
 
+def _quality_mutation_text(event: dict[str, Any]) -> str:
+    args = _arguments(event)
+    values: list[Any] = [args.get(key) for key in ("old_str", "oldStr") if key in args]
+    return (_quality_added_text(event) + " " + _text(values) + " " + _text(args)).lower()
+
+
 def _quality_target(event: dict[str, Any]) -> str:
     args = _arguments(event)
     return str(args.get("path") or args.get("file") or _field(event, "path", "file") or "").strip()
@@ -529,7 +535,7 @@ def _session_quality_rows(events: list[dict[str, Any]], handoffs: list[dict[str,
         regex_mutations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for event in mutations:
             target = _quality_target(event)
-            if _QUALITY_SCRIPT.search(target) and re.search(r"re\.compile|regex", _quality_added_text(event), re.I):
+            if _QUALITY_SCRIPT.search(target) and re.search(r"re\.compile|regex", _quality_mutation_text(event), re.I):
                 regex_mutations[target].append(event)
         regex_churn = False
         for target, changed in sorted(regex_mutations.items()):
@@ -560,10 +566,10 @@ def _session_quality_rows(events: list[dict[str, Any]], handoffs: list[dict[str,
         )]
         relaxations = [event for event in mutations if re.search(
             r"skills/[^/]+/(?:scripts|references)/|(?:_guard|verify_|classify_|design_contract)\.py", _quality_target(event), re.I
-        ) and re.search(r"re\.compile|regex", _quality_added_text(event), re.I)]
+        ) and re.search(r"re\.compile|regex", _quality_mutation_text(event), re.I)]
         failure_positions = [tools.index(event) for event in validator_failures]
         relaxation_positions = [tools.index(event) for event in relaxations]
-        if len(validator_failures) >= 2 and relaxation_positions and min(relaxation_positions) > max(failure_positions):
+        if len(failure_positions) >= 2 and relaxation_positions and max(relaxation_positions) > failure_positions[1]:
             rows.append(_quality_item(
                 "session_false_positive_churn", "in_session_waiver_bypass_churn", skill=skill,
                 count=len(validator_failures), session_ids=[sid], goal_ids=goals,
@@ -599,9 +605,12 @@ def _session_quality_rows(events: list[dict[str, Any]], handoffs: list[dict[str,
             ))
 
         reviewer_pass = role == "reviewer" or bool(re.search(r"EVT=REVIEW_PASS|V5\s+Verdict:\s*PASS|review(?:er)? pass", text, re.I))
-        code_change = any(_is_code_path(_quality_target(event)) and (
-            _QUALITY_SCRIPT.search(_quality_target(event)) or re.search(r"\.(?:py|sh|ts|swift)$|gates?", _quality_target(event), re.I)
-        ) for event in mutations)
+        code_change = any(
+            _is_code_path(candidate) and (_QUALITY_SCRIPT.search(candidate) or re.search(r"\.(?:py|sh|ts|swift)\b|gates?|scripts/", candidate, re.I))
+            for event in tools
+            for candidate in (_quality_target(event), _command(event))
+            if candidate
+        )
         if reviewer_pass and code_change and not negative_probe:
             rows.append(_quality_item(
                 "session_fake_or_unprobed_test", "reviewer_pass_without_adversarial_probe", skill=skill,
