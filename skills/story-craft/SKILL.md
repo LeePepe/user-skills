@@ -1,11 +1,20 @@
 ---
 name: story-craft
-description: 从已验收的项目与工程证据抽取四元素叙事素材，完成脱敏、Story Series/Tech Deep-Dive Blog/Deck 和发布读回。
+description: 从已验收的项目与工程证据抽取四元素叙事素材（含跨 Handoff Hybrid RAG 叙事链检索），完成脱敏、Story Series/Tech Deep-Dive Blog/Deck 和发布读回。Not for unverified raw telemetry, secret-bearing dumps, or direct code implementation.
 ---
 # Story Craft
 
-`story-craft` 是 workflow-hub 的环 7b。它只消费已确认的 §1/§2 证据，
+`story-craft` 是 workflow-hub 的叙事产出节点（Learning & Narrative）。它只消费已确认的 §1/§2 证据，
 不把内部事实、秘密或未经验证的假设直接发布。
+
+## Cross-Handoff Hybrid RAG (`story_rag.py`)
+
+通过 S2 相对软链 `scripts/skill_runtime` 复用共享 `skill_runtime.hybrid_rag`（`load_handoff_corpus` + `hybrid_search`，`corpus_scope="retro-story"`），检索历史 `~/Development/handoff/*/{spec,ledger}.md` 与 `receipts/*.md`，自动组装脱敏后的四元素叙事链（`Provenance -> Pivot -> Delta -> Takeaway`，输出严格 `<=12KB`）：
+
+```bash
+python3 skills/story-craft/scripts/story_rag.py --topic "<query>" --top-k 5 --json
+python3 skills/story-craft/scripts/story_rag.py search --query "<query>" --use-jev --handoff-root ~/Development/handoff --json
+```
 
 ## 4-Element Extraction Sheet
 
@@ -47,10 +56,12 @@ API key、token、cookie、客户数据和未批准的内部标识永不进入�
 每篇只保留一个核心母题，公开稿删除内部身份但保留可验证机制。发布完成还要
 读回构建产物、摘要、版本和页面/平台状态，并将读者反馈回流 `linear-board`。
 
-提示槽配置：[prompt-slots.json](references/prompt-slots.json)。
+提示槽配置：[prompt-slots.json](references/prompt-slots.json)；回归抽屉：[eval-cases.json](references/eval-cases.json)（Script-Only Regression Drawer，仅经 `skill_contract.py eval` 运行）。
+
 ## When-to-Read L1 抽屉 + 必跑 L2 CLI 路由表
 
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
+| cross-handoff narrative retrieval | `references/prompt-slots.json` | `skills/story-craft/scripts/story_rag.py --topic "<query>" --json` |
 | primary task | `references/prompt-slots.json` | `skill_contract.py eval --skill story-craft --strict` |
 | verification | `references/prompt-slots.json` | `skill_contract.py eval --skill story-craft --strict` |
