@@ -44,7 +44,7 @@ description: "3-stage Skill Progressive Self-Evolution: sub-second wide-probe sc
 
 ## 3-Layer Architecture Audit & Zero-Owner-Referee Flow (`verify-findings`)
 
-- **Layer A (Static AST & Package Hygiene)** + **Layer B (Adversarial Near-Miss & Counter-Cases)**: Pair `skill-contract` soft advisories (`malformed-code-fence`, `ast-namespace-pollution`, `boilerplate-table-decay`) and cross-skill `.py`/`.md` AST `internal_reality_check` with `>=25%` counter-case replay.
+- **Layer A/B (Soft AST, Package & Eval Hygiene -> Periodic `skill-retro` + `eval`)**: Surface `soft_quality_advisories` (`malformed-code-fence`, `ast-namespace-pollution`, `boilerplate-table-decay`, `vacuous-good-snippet`, `fake-prose-echo-test` / `prose_only_test_advisories` — all `soft_advisory_exit_0`) alongside `.py`/`.md` AST `internal_reality_check` and `>=25%` counter-case replay without blocking commits.
 - **Layer C (`verify-findings` 3-Gate Repro-Filter)**: Gate 1 (`No Repro, No Fix`, `<=10s` `repro_cmd`) drops unreproduced claims (`FALSE_POSITIVE_UNREPRODUCED` -> `AUTO_DROP`); Gate 2 routes reproduced `contract_breach` -> **Class A `AUTO_FIX`**, `architecture_smell` -> **Class B `AUTO_DROP`**, and reproduced `tradeoff` -> **Class C `OWNER_DECISION_BRIEF`**.
 
 ## Canonical 3-Stage Prompt Templates & Cross-Skill Anti-Collision Rules

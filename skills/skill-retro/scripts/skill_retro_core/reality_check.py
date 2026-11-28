@@ -159,16 +159,41 @@ def _extract_tree_cli_symbols(src: str, filename: str) -> tuple[bool, bool, set[
     return (uses_argparse, uses_parse_known, flags, subcommands, has_subparsers)
 
 
+_AST_CLI_CONTRACT_CACHE: dict[tuple[str, int, int], dict[str, Any] | None] = {}
+_HYGIENE_CORE_MOD: Any = None
+
+
+def _get_hygiene_core_mod() -> Any:
+    global _HYGIENE_CORE_MOD
+    if _HYGIENE_CORE_MOD is not None:
+        return _HYGIENE_CORE_MOD
+    contract_scripts = Path(__file__).resolve().parents[3] / 'skill-contract' / 'scripts'
+    with contextlib.suppress(Exception):
+        if contract_scripts.is_dir() and str(contract_scripts) not in sys.path:
+            sys.path.insert(0, str(contract_scripts))
+        from contract_core import core_hygiene  # type: ignore[import-not-found]
+        _HYGIENE_CORE_MOD = core_hygiene
+    return _HYGIENE_CORE_MOD
+
+
 def _extract_script_ast_cli_contract(script_path: Path) -> dict[str, Any] | None:
     """Parse Python script AST (and delegated `*_core/*.py` modules) to extract `argparse` flags & subcommands."""
     if not _safe_is_file(script_path) or script_path.suffix.lower() != '.py':
         return None
+    cache_key: tuple[str, int, int] | None = None
+    with contextlib.suppress(OSError):
+        st = script_path.stat()
+        cache_key = (str(script_path.resolve()), st.st_mtime_ns, st.st_size)
+        cached_item = _AST_CLI_CONTRACT_CACHE.get(cache_key)
+        if cached_item is not None and not cached_item.get('_core_mtimes'):
+            return cached_item
     try:
         src = script_path.read_text(encoding='utf-8', errors='ignore')
         uses_argparse, uses_parse_known, flags, subcommands, has_subparsers = _extract_tree_cli_symbols(src, str(script_path))
     except (OSError, SyntaxError):
         return None
     flags.update(_GENERIC_FLAG_PLACEHOLDERS)
+    core_mtimes: tuple[tuple[str, int, int], ...] = ()
     if not uses_argparse:
         with contextlib.suppress(SyntaxError):
             facade_tree = ast.parse(src, filename=str(script_path))
@@ -183,11 +208,14 @@ def _extract_script_ast_cli_contract(script_path: Path) -> dict[str, Any] | None
                     top = node.module.split('.')[0]
                     if top.endswith('_core') and _safe_is_dir(script_path.parent / top):
                         core_dirs.add(script_path.parent / top)
+            core_sig_list: list[tuple[str, int, int]] = []
             for core_dir in sorted(core_dirs):
                 for core_py in _safe_glob(core_dir, '*.py'):
                     if not _safe_is_file(core_py):
                         continue
                     with contextlib.suppress(OSError, SyntaxError):
+                        cst = core_py.stat()
+                        core_sig_list.append((core_py.name, cst.st_mtime_ns, cst.st_size))
                         c_src = core_py.read_text(encoding='utf-8', errors='ignore')
                         c_arg, c_pk, c_flags, c_subs, c_has_sub = _extract_tree_cli_symbols(c_src, str(core_py))
                         if c_arg or c_flags or c_subs:
@@ -197,7 +225,11 @@ def _extract_script_ast_cli_contract(script_path: Path) -> dict[str, Any] | None
                             flags.update(c_flags)
                             subcommands.update(c_subs)
                             has_subparsers = has_subparsers or c_has_sub
-    return {'uses_argparse': uses_argparse, 'uses_parse_known': uses_parse_known, 'flags': flags, 'subcommands': subcommands, 'has_subparsers': has_subparsers}
+            core_mtimes = tuple(core_sig_list)
+    result = {'uses_argparse': uses_argparse, 'uses_parse_known': uses_parse_known, 'flags': flags, 'subcommands': subcommands, 'has_subparsers': has_subparsers, '_core_mtimes': core_mtimes}
+    if cache_key is not None:
+        _AST_CLI_CONTRACT_CACHE[cache_key] = result
+    return result
 
 
 def _extract_python_string_literals(py_path: Path) -> list[str]:
@@ -225,6 +257,50 @@ def _extract_python_string_literals(py_path: Path) -> list[str]:
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and (id(node) not in joined_part_ids):
             literals.append(node.value)
     return literals
+
+
+def _collect_soft_quality_advisories(pkg: Path) -> dict[str, Any]:
+    """Collect zero-token soft quality advisories (`soft_advisory_exit_0`) for periodic retro + eval visibility."""
+    advisories: list[dict[str, Any]] = []
+    prose_only_items: list[dict[str, Any]] = []
+    core_hygiene = _get_hygiene_core_mod()
+    if core_hygiene is not None:
+        with contextlib.suppress(Exception):
+            skill = pkg.name
+            skill_md = pkg / 'SKILL.md'
+            if _safe_is_file(skill_md):
+                md_txt = _safe_read_text(skill_md)
+                if md_txt:
+                    advisories.extend(core_hygiene.detect_malformed_code_fences(md_txt, f'{skill}/SKILL.md', skill=skill))
+            refs_dir = pkg / 'references'
+            if _probe_readable_dir(refs_dir):
+                for rp in _safe_glob(refs_dir, '*.md'):
+                    if not _safe_is_file(rp) or rp.is_symlink():
+                        continue
+                    r_txt = _safe_read_text(rp)
+                    if r_txt:
+                        r_rel = f'{skill}/references/{rp.name}'
+                        advisories.extend(core_hygiene.detect_malformed_code_fences(r_txt, r_rel, skill=skill))
+                        advisories.extend(core_hygiene.scan_boilerplate_table_decay(r_txt, r_rel, skill=skill))
+            advisories.extend(core_hygiene.scan_ast_namespace_pollution(pkg))
+            eval_advs = core_hygiene.scan_eval_drawer_advisories(pkg, include_prose_only=True)
+            advisories.extend(eval_advs)
+            prose_only_items = [a for a in eval_advs if a.get('code') == 'fake-prose-echo-test']
+    by_code: dict[str, int] = {}
+    for adv in advisories:
+        code = str(adv.get('code') or '')
+        if code:
+            by_code[code] = by_code.get(code, 0) + 1
+    return {
+        'soft_quality_advisories': advisories,
+        'soft_quality_advisories_count': len(advisories),
+        'malformed_code_fence_count': by_code.get('malformed-code-fence', 0),
+        'ast_namespace_pollution_count': by_code.get('ast-namespace-pollution', 0),
+        'boilerplate_table_decay_count': by_code.get('boilerplate-table-decay', 0),
+        'vacuous_good_snippet_count': by_code.get('vacuous-good-snippet', 0),
+        'prose_only_test_advisories': prose_only_items,
+        'prose_only_test_advisory_count': len(prose_only_items),
+    }
 
 
 def internal_reality_check(skill_dir: Path | str, *, skills_root: Path | str | None=None) -> dict[str, Any]:
@@ -294,10 +370,14 @@ def internal_reality_check(skill_dir: Path | str, *, skills_root: Path | str | N
                 continue
             if py_p.name.startswith('test_') or py_p.name.endswith('_test.py'):
                 continue
+            raw_py_txt = _safe_read_text(py_p)
+            if 'scripts/' not in raw_py_txt or '.py' not in raw_py_txt:
+                continue
             rel_py = py_p.relative_to(pkg).as_posix()
             py_lines: list[str] = []
             for lit in _extract_python_string_literals(py_p):
-                py_lines.extend(lit.splitlines())
+                if 'scripts/' in lit and '.py' in lit:
+                    py_lines.extend(lit.splitlines())
             if py_lines:
                 scan_sources.append((rel_py, True, py_lines))
 
@@ -358,7 +438,16 @@ def internal_reality_check(skill_dir: Path | str, *, skills_root: Path | str | N
                         if d_key not in seen_drift:
                             seen_drift.add(d_key)
                             cli_drift.append({'doc': rel_src, 'script': display_script, 'target_skill': target_sk, 'kind': 'unknown_flag', 'token': flag_tok, 'detail': f'{rel_src} invokes flag `{flag_tok}` not found in `{display_script}` argparse AST'})
-    return {'skill': sk_name, 'ok': len(cli_drift) == 0 and len(broken_refs) == 0, 'internal_doc_cli_drift_count': len(cli_drift), 'internal_broken_refs_count': len(broken_refs), 'internal_doc_cli_drift': cli_drift, 'internal_broken_refs': broken_refs}
+    soft_adv = _collect_soft_quality_advisories(pkg)
+    return {
+        'skill': sk_name,
+        'ok': len(cli_drift) == 0 and len(broken_refs) == 0,
+        'internal_doc_cli_drift_count': len(cli_drift),
+        'internal_broken_refs_count': len(broken_refs),
+        'internal_doc_cli_drift': cli_drift,
+        'internal_broken_refs': broken_refs,
+        **soft_adv,
+    }
 
 def _is_eval_counter_case(item: Mapping[str, Any]) -> bool:
     """Return True if an eval case is a negative/counter case (`bad_snippet`, `forbidden_regex`, `negative_cmd`, `expect_exit != 0`, `should_trigger == False`)."""

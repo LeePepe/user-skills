@@ -68,15 +68,15 @@ def _compute_pkg_version_fingerprint(pkg_dir: Path) -> dict[str, Any]:
     if git_root is not None and pkg_dir.is_dir():
         clean_env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
         with contextlib.suppress(OSError, subprocess.SubprocessError):
-            cnt_p = subprocess.run(['git', '--no-optional-locks', 'rev-list', '--count', 'HEAD', '--', rel_path], cwd=git_root, env=clean_env, capture_output=True, text=True, timeout=2.5, check=False)
-            if cnt_p.returncode == 0 and cnt_p.stdout.strip().isdigit():
-                commit_count = int(cnt_p.stdout.strip())
+            log_p = subprocess.run(['git', '--no-optional-locks', 'log', '--format=%ct', '--', rel_path], cwd=git_root, env=clean_env, capture_output=True, text=True, timeout=2.5, check=False)
+            if log_p.returncode == 0:
+                epochs = [ln.strip() for ln in log_p.stdout.splitlines() if ln.strip().isdigit()]
+                commit_count = len(epochs)
+                if epochs:
+                    last_modified_epoch = int(epochs[0])
             tree_p = subprocess.run(['git', '--no-optional-locks', 'rev-parse', '--short', f'HEAD:{rel_path}'], cwd=git_root, env=clean_env, capture_output=True, text=True, timeout=2.5, check=False)
             if tree_p.returncode == 0 and tree_p.stdout.strip():
                 subtree_sha = tree_p.stdout.strip()
-            ts_p = subprocess.run(['git', '--no-optional-locks', 'log', '-1', '--format=%ct', '--', rel_path], cwd=git_root, env=clean_env, capture_output=True, text=True, timeout=2.5, check=False)
-            if ts_p.returncode == 0 and ts_p.stdout.strip().isdigit():
-                last_modified_epoch = int(ts_p.stdout.strip())
     if not subtree_sha:
         h = hashlib.sha256()
         if pkg_dir.is_dir():

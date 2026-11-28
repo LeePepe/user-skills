@@ -373,6 +373,7 @@ def _package_advisories(path: Path) -> list[dict[str, Any]]:
         elif 800 < lines <= 1000:
             advisories.append(_advisory(skill, "script-lines-soft", relative, lines=lines, threshold=800, cap=1000))
     advisories.extend(scan_ast_namespace_pollution(path))
+    advisories.extend(scan_eval_drawer_advisories(path, include_prose_only=True))
     return advisories
 
 

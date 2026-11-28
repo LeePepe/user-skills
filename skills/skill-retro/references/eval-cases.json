@@ -75,6 +75,12 @@
         "six-dimensions",
         "m2-3m1-rollup"
       ],
+      "cmd": "python3 skills/skill-retro/scripts/skill_retro.py verify-findings --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--findings-json",
+        "--timeout"
+      ],
       "file": "skills/skill-retro/SKILL.md",
       "must_contain": [
         "probe",
@@ -159,19 +165,20 @@
         "s2-reality"
       ],
       "forbidden_regex": "\\bgemini:4-\\s+argon\\b",
-      "bad_snippet": "model: gemini:4- argon",
-      "good_snippet": "model: gemini-4-argon",
+      "bad_snippet": "model: gemini:4- argon (invalid syntax in runtime-profiles)",
+      "good_snippet": "model: gemini-4-argon (valid syntax in runtime-profiles)",
       "registered_at": "2026-11-24"
     },
     {
       "id": "EV-010",
-      "title": "Layer A/B cross-skill .py CLI AST scan catches dead loop-registered subcommands",
+      "title": "Layer A/B cross-skill .py CLI AST scan and soft_quality_advisories surface in probe/diagnose",
       "tags": [
         "s2-reality",
         "cross-skill",
-        "ast"
+        "ast",
+        "soft-advisories"
       ],
-      "cmd": "python3 -I -B scripts/test_skill_retro_methodology.py SkillRetroMethodologyV2Tests.test_cross_skill_py_cli_scan_catches_dead_loop_subcommand_and_fstrings",
+      "cmd": "python3 -I -B scripts/test_skill_retro_methodology.py SkillRetroMethodologyV2Tests.test_cross_skill_py_cli_scan_catches_dead_loop_subcommand_and_fstrings SkillRetroMethodologyV2Tests.test_soft_quality_advisories_surface_in_probe_and_diagnose_with_exit_0",
       "expect_exit": 0,
       "registered_at": "2026-11-28"
     },

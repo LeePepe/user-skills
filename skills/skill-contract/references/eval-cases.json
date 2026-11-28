@@ -30,17 +30,24 @@
       ],
       "forbidden_regex": "\\b(?:var|let)\\s+samplePrivateFlag\\b",
       "bad_snippet": "let samplePrivateFlag = true",
-      "good_snippet": "let isCompactLayout = true",
+      "good_snippet": "let isCompactLayout = true // replaces samplePrivateFlag in repo-bound scope",
       "registered_at": "2026-11-10"
     },
     {
       "id": "EV-003",
-      "title": "Valves 1-4 & Auto-ID Eval Engine Contract Clauses Present in L0/L1",
+      "title": "Valves 1-4 & Auto-ID Eval Engine Contract Clauses Present in L0/L1 and CLI",
       "tags": [
         "valve-1",
         "valve-2",
         "valve-3",
         "valve-4"
+      ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py add-case --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--bad-snippet",
+        "--good-snippet",
+        "--negative-cmd"
       ],
       "file": "skills/skill-contract/SKILL.md",
       "must_contain": [
@@ -59,6 +66,13 @@
         "cli",
         "repo-bound"
       ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py audit --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--repo",
+        "--root",
+        "--strict"
+      ],
       "file": "skills/skill-contract/references/valves-and-metabolism.md",
       "must_contain": [
         "--repo",
@@ -76,6 +90,11 @@
         "shortcuts",
         "m2-dispatcher"
       ],
+      "cmd": "python3 skills/skill-contract/scripts/skill_contract.py audit --skill m2-dispatcher --strict --no-cache",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
       "file": "skills/m2-dispatcher/SKILL.md",
       "must_contain": [
         "/status",
@@ -256,7 +275,7 @@
       ],
       "forbidden_regex": "\\.designTheme\\s*\\(|\\.environment\\s*\\(\\s*\\\\\\.theme\\s*,\\s*Theme\\s*\\([\\s\\S]*?\\bisDark\\s*:",
       "bad_snippet": "ContentView().environment(\\.theme, Theme(palette: makePalette(), isDark: true))",
-      "good_snippet": "ContentView().foregroundStyle(Color.primary)",
+      "good_snippet": "ContentView().environment(\\.colorScheme, .dark).foregroundStyle(Color.primary)",
       "cmd": "python3 -I -B scripts/test_skill_contract_system_theme.py SkillContractSystemThemeTests.test_counter_case_replay_catches_design_theme_and_manual_isdark_plumbing",
       "expect_exit": 0,
       "negative_cmd": "python3 -c \"import pathlib, shutil, subprocess, sys, tempfile; d = pathlib.Path(tempfile.mkdtemp()); p = d / 'Apps/Demo/RootView.swift'; p.parent.mkdir(parents=True); p.write_text('struct R { func f() { v.designTheme(.dark) } }\\n'); rc = subprocess.run([sys.executable, 'skills/skill-contract/scripts/skill_contract.py', 'audit', '--repo', str(d), '--strict', '--no-cache']).returncode; shutil.rmtree(d, ignore_errors=True); raise SystemExit(rc)\"",
@@ -272,7 +291,7 @@
     },
     {
       "id": "EV-017",
-      "title": "Layer A soft advisories: malformed-code-fence, ast-namespace-pollution, and boilerplate-table-decay stay soft_advisory_exit_0",
+      "title": "Layer A soft advisories: malformed-code-fence, ast-namespace-pollution, boilerplate-table-decay, vacuous-good-snippet, and fake-prose-echo-test stay soft_advisory_exit_0",
       "tags": [
         "audit",
         "counter-case",
@@ -283,7 +302,7 @@
       "forbidden_regex": "^\\s*```(?![`])[A-Za-z0-9_-]+[ \\t]+\\S.*?```(?![`])\\s*$",
       "bad_snippet": "```bash swift build --package-path Packages/Feature swift test --package-path Packages/Feature ```",
       "good_snippet": "```bash\nswift build --package-path Packages/Feature\nswift test --package-path Packages/Feature\n```",
-      "cmd": "python3 -I -B scripts/test_skill_contract_retro_locks.py SkillContractRetroLocksTests.test_layer_a_soft_advisories_malformed_fence_namespace_and_table_decay",
+      "cmd": "python3 -I -B scripts/test_skill_contract_retro_locks.py SkillContractRetroLocksTests.test_layer_a_soft_advisories_malformed_fence_namespace_and_table_decay SkillContractRetroLocksTests.test_vacuous_good_snippet_and_fake_prose_echo_test_soft_advisories",
       "expect_exit": 0,
       "registered_at": "2026-11-28"
     }

@@ -2,17 +2,40 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from .core_common import _enrich_finding
+from .core_common import EVAL_DRAWERS, _enrich_finding
 
 SINGLE_LINE_FENCE_RE = re.compile(
     r"^\s*```(?![`])(?P<lang>[A-Za-z0-9_-]+)[ \t]+(?P<body>\S.*?)\s*```(?![`])\s*$"
 )
 FENCE_DELIM_RE = re.compile(r"^\s*(?P<delim>`{3,}|~{3,})(?P<rest>.*)$")
 TABLE_SEP_CELL_RE = re.compile(r"^:?-{2,}:?$")
+SNIPPET_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}|\d+\s*°[CF]|\d+%", re.UNICODE)
+SNIPPET_STOPWORDS = frozenset(
+    {
+        "let",
+        "var",
+        "func",
+        "struct",
+        "class",
+        "import",
+        "return",
+        "true",
+        "false",
+        "text",
+        "view",
+        "body",
+        "some",
+        "div",
+        "span",
+        "def",
+        "pass",
+    }
+)
 
 
 def detect_malformed_code_fences(text: str, rel_file: str, *, skill: str) -> list[dict[str, Any]]:
@@ -229,9 +252,108 @@ def scan_boilerplate_table_decay(text: str, rel_file: str, *, skill: str) -> lis
     return advisories
 
 
+def _meaningful_snippet_tokens(snippet: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in SNIPPET_TOKEN_RE.finditer(snippet or ""):
+        tok = match.group(0).lower().replace(" ", "")
+        if tok not in SNIPPET_STOPWORDS:
+            tokens.add(tok)
+    return tokens
+
+
+def is_prose_only_eval_case(entry: Mapping[str, Any]) -> bool:
+    """Return True if an active eval case only checks static Markdown prose substrings without any executable gate."""
+    has_exec = any(
+        str(entry.get(key) or "").strip()
+        for key in ("cmd", "negative_cmd", "bad_snippet", "forbidden_regex", "regex", "target_cmd")
+    ) or bool(entry.get("target_assertions") or entry.get("assertions") or entry.get("verify_lines") or entry.get("jev_starred_id"))
+    if has_exec:
+        return False
+    file_ref = str(entry.get("file") or "").strip().lower()
+    if not file_ref.endswith(".md"):
+        return False
+    return bool(entry.get("must_contain") or entry.get("must_not_contain"))
+
+
+def scan_eval_drawer_advisories(
+    pkg_path: Path,
+    *,
+    include_prose_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Scan active eval/defect drawers for `vacuous-good-snippet` and `fake-prose-echo-test` soft advisories."""
+    skill = pkg_path.name
+    advisories: list[dict[str, Any]] = []
+    for drawer_sub in EVAL_DRAWERS:
+        drawer_path = pkg_path / drawer_sub
+        if not drawer_path.is_file() or drawer_path.is_symlink():
+            continue
+        try:
+            doc = json.loads(drawer_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(doc, Mapping):
+            continue
+        entries = doc.get("active_cases")
+        if not isinstance(entries, list):
+            continue
+        drawer_rel = f"{skill}/{drawer_sub}"
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            entry_id = str(entry.get("id") or "<unidentified>")
+            raw_bad = entry.get("bad_snippet")
+            raw_good = entry.get("good_snippet")
+            if isinstance(raw_bad, str) and isinstance(raw_good, str):
+                bad_s = raw_bad.strip()
+                good_s = raw_good.strip()
+                if bad_s and good_s:
+                    bad_tokens = _meaningful_snippet_tokens(bad_s)
+                    good_tokens = _meaningful_snippet_tokens(good_s)
+                    shared_tokens = sorted(bad_tokens & good_tokens)
+                    short_placeholder = len(good_s) <= 25 and len(bad_s) > 25
+                    zero_shared_tokens = len(bad_s) >= 20 and bool(bad_tokens) and not shared_tokens
+                    if short_placeholder or zero_shared_tokens:
+                        reason = "trivial_short_placeholder" if short_placeholder and shared_tokens else (
+                            "trivial_short_and_zero_shared_tokens" if short_placeholder else "zero_shared_domain_tokens"
+                        )
+                        advisories.append(
+                            _enrich_finding(
+                                {
+                                    "skill": skill,
+                                    "code": "vacuous-good-snippet",
+                                    "file": drawer_rel,
+                                    "tier": "soft_advisory_exit_0",
+                                    "id": entry_id,
+                                    "reason": reason,
+                                    "bad_length": len(bad_s),
+                                    "good_length": len(good_s),
+                                    "shared_tokens": shared_tokens,
+                                }
+                            )
+                        )
+            if include_prose_only and drawer_sub == "references/eval-cases.json" and is_prose_only_eval_case(entry):
+                advisories.append(
+                    _enrich_finding(
+                        {
+                            "skill": skill,
+                            "code": "fake-prose-echo-test",
+                            "file": drawer_rel,
+                            "tier": "soft_advisory_exit_0",
+                            "id": entry_id,
+                            "target_file": str(entry.get("file") or ""),
+                        }
+                    )
+                )
+    return advisories
+
+
 __all__ = [
     "SINGLE_LINE_FENCE_RE",
+    "SNIPPET_STOPWORDS",
+    "SNIPPET_TOKEN_RE",
     "detect_malformed_code_fences",
+    "is_prose_only_eval_case",
     "scan_ast_namespace_pollution",
     "scan_boilerplate_table_decay",
+    "scan_eval_drawer_advisories",
 ]

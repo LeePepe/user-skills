@@ -1698,6 +1698,166 @@ class SkillRetroMethodologyV2Tests(unittest.TestCase):
             self.assertLessEqual(len(err_lines), 3)
             self.assertIn("progressive-evolution-playbook.md", err_lines[-1])
 
+    def test_soft_quality_advisories_surface_in_probe_and_diagnose_with_exit_0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            dev_root = root / "dev"
+            handoff_root = dev_root / "handoff"
+            sessions_dir = root / "sessions"
+            handoff_root.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+
+            repeated_cell = "deterministic pass/fail contract invariant"
+            table_rows = "\n".join(
+                f"| R-{idx:02d} | {repeated_cell if idx < 5 else f'distinct row {idx} check'} |"
+                for idx in range(8)
+            )
+            soft_pkg = _write_skill_pkg(
+                skills_root,
+                "soft-hygiene-skill",
+                skill_md_extra=(
+                    "See `references/guide.md` and `references/eval-cases.json`.\n\n"
+                    "```bash swift test --package-path Packages/Demo ```\n"
+                ),
+                refs={
+                    "guide.md": f"# Guide\n\n| Row | Check |\n|---|---|\n{table_rows}\n",
+                    "eval-cases.json": json.dumps(
+                        {
+                            "schema": "skill-eval-cases/v1",
+                            "version": 1,
+                            "active_cases": [
+                                {
+                                    "id": "EV-001",
+                                    "title": "Vacuous placeholder good_snippet",
+                                    "tags": ["ui"],
+                                    "forbidden_regex": "VStack\\s*\\{[\\s\\S]*?Card",
+                                    "bad_snippet": 'VStack { Text("19°C"); Card { Text("19°C") } }',
+                                    "good_snippet": 'Text("Clean")',
+                                },
+                                {
+                                    "id": "EV-002",
+                                    "title": "Prose echo only case",
+                                    "tags": ["prose"],
+                                    "file": "SKILL.md",
+                                    "must_contain": ["soft-hygiene-skill"],
+                                },
+                            ],
+                        }
+                    ),
+                },
+                scripts={
+                    "demo_core/__init__.py": "",
+                    "demo_core/a.py": "def _dup():\n    globals().setdefault('X', 1)\n",
+                    "demo_core/b.py": "def _dup():\n    return 2\n",
+                },
+            )
+            clean_pkg = _write_skill_pkg(
+                skills_root,
+                "clean-twin-skill",
+                skill_md_extra="See `references/eval-cases.json`.\n\n```bash\nswift test\n```\n",
+                refs={
+                    "eval-cases.json": json.dumps(
+                        {
+                            "schema": "skill-eval-cases/v1",
+                            "version": 1,
+                            "active_cases": [
+                                {
+                                    "id": "EV-001",
+                                    "title": "Shared-token adversarial twin + executable cmd",
+                                    "tags": ["ui", "counter-case"],
+                                    "forbidden_regex": "VStack\\s*\\{[\\s\\S]*?Card",
+                                    "bad_snippet": 'VStack { Text("19°C"); Card { Text("19°C") } }',
+                                    "good_snippet": 'if isMetric { Text("19°C") } else { Text("66°F") }',
+                                    "cmd": "python3 -c 'print(1)'",
+                                    "expect_exit": 0,
+                                }
+                            ],
+                        }
+                    )
+                },
+                scripts={"check.py": "#!/usr/bin/env python3\nimport argparse\np = argparse.ArgumentParser()\n"},
+            )
+
+            # 1) internal_reality_check keeps ok=True (soft advisories NEVER flip ok to False)
+            ir_soft = SKILL_RETRO.internal_reality_check(soft_pkg, skills_root=skills_root)
+            self.assertTrue(ir_soft["ok"])
+            self.assertEqual(ir_soft["malformed_code_fence_count"], 1)
+            self.assertEqual(ir_soft["ast_namespace_pollution_count"], 2)
+            self.assertEqual(ir_soft["boilerplate_table_decay_count"], 1)
+            self.assertEqual(ir_soft["vacuous_good_snippet_count"], 1)
+            self.assertEqual(ir_soft["prose_only_test_advisory_count"], 1)
+            self.assertEqual(ir_soft["soft_quality_advisories_count"], 6)
+
+            ir_clean = SKILL_RETRO.internal_reality_check(clean_pkg, skills_root=skills_root)
+            self.assertTrue(ir_clean["ok"])
+            self.assertEqual(ir_clean["soft_quality_advisories_count"], 0)
+            self.assertEqual(ir_clean["vacuous_good_snippet_count"], 0)
+            self.assertEqual(ir_clean["prose_only_test_advisory_count"], 0)
+
+            # 2) probe_skills surfaces soft_quality_advisories while keeping priority_score == 0.0 on clean/soft-only fixtures
+            probe_res = SKILL_RETRO.probe_skills(
+                copilot_sessions_dir=sessions_dir,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                fast=False,
+            )
+            self.assertTrue(probe_res["ok"])
+            by_sk = {s["skill"]: s for s in probe_res["skills"]}
+            s_sig = by_sk["soft-hygiene-skill"]["signals"]
+            self.assertEqual(s_sig["malformed_code_fence_count"], 1)
+            self.assertEqual(s_sig["ast_namespace_pollution_count"], 2)
+            self.assertEqual(s_sig["boilerplate_table_decay_count"], 1)
+            self.assertEqual(s_sig["vacuous_good_snippet_count"], 1)
+            self.assertEqual(s_sig["prose_only_test_advisory_count"], 1)
+            self.assertEqual(s_sig["soft_quality_advisories_count"], 6)
+            self.assertEqual(by_sk["soft-hygiene-skill"]["priority_score"], 0.0)
+            self.assertEqual(by_sk["clean-twin-skill"]["signals"]["soft_quality_advisories_count"], 0)
+            self.assertEqual(by_sk["clean-twin-skill"]["priority_score"], 0.0)
+
+            # 3) diagnose (compute_skill_retro) surfaces soft_quality_advisories summary and exits 0 via CLI
+            diag = SKILL_RETRO.compute_skill_retro(
+                copilot_sessions_dir=sessions_dir,
+                handoff_root=handoff_root,
+                skills_root=skills_root,
+                dev_root=dev_root,
+                skill="soft-hygiene-skill",
+                mirror_roi_snapshot=False,
+            )
+            self.assertTrue(diag["ok"])
+            sq = diag["soft_quality_advisories"]
+            self.assertEqual(sq["tier"], "soft_advisory_exit_0")
+            self.assertEqual(sq["soft_quality_advisories_count"], 6)
+            self.assertEqual(sq["vacuous_good_snippet_count"], 1)
+            self.assertEqual(sq["prose_only_test_advisory_count"], 1)
+
+            cli_path = ROOT / "skills/skill-retro/scripts/skill_retro.py"
+            cli_probe = subprocess.run(
+                [
+                    sys.executable,
+                    str(cli_path),
+                    "probe",
+                    "--skill",
+                    "soft-hygiene-skill",
+                    "--skills-root",
+                    str(skills_root),
+                    "--dev-root",
+                    str(dev_root),
+                    "--handoff-root",
+                    str(handoff_root),
+                    "--fast",
+                    "--json",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(cli_probe.returncode, 0, cli_probe.stderr)
+            cli_probe_json = json.loads(cli_probe.stdout)
+            self.assertEqual(cli_probe_json["skills"][0]["signals"]["soft_quality_advisories_count"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

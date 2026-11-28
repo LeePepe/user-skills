@@ -6,7 +6,7 @@ Regex, AST, geometry, pixel, localization, and schema checks are executable arti
 
 ## Valve 2 — coordinate and eval drawers
 
-`references/eval-cases.json` is a Script-Only Regression Drawer: run it with `skill_contract.py eval` and do not view the full JSON into LLM context. Defect drawers use auto IDs and zero-token assertions. Keep `active_cases <= 15`; use `trigger_evals` for routing and `negative_cmd` for failure boundaries. `score_case_assertions` enforces 1-Verify-1-Assertion and requires evidence plus `why_soft` for soft assertions.
+`references/eval-cases.json` is a Script-Only Regression Drawer: run it with `skill_contract.py eval` and do not view the full JSON into LLM context. Defect drawers use auto IDs and zero-token assertions. Keep `active_cases <= 15`; use `trigger_evals` for routing and `negative_cmd` for failure boundaries. `score_case_assertions` enforces 1-Verify-1-Assertion and requires evidence plus `why_soft` for soft assertions. Anti-false-positive and anti-fake-test hygiene stays strictly soft (`tier: "soft_advisory_exit_0"`, never failing `audit --strict`): `vacuous-good-snippet` flags `bad_snippet` + `good_snippet` pairs where `good_snippet` is a trivial placeholder (`<=25` chars vs `>25` chars or zero shared domain/syntax tokens) so periodic `skill-retro` + `eval` upgrades it to a Shared-Token Adversarial Twin; `fake-prose-echo-test` flags static Markdown-only (`file` + `must_contain`) eval cases lacking CLI `cmd`/`negative_cmd` or snippet gates.
 
 ## Valve 3 — budgets
 

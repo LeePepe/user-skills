@@ -74,8 +74,8 @@ Each deep reasoning task focuses on **1 Host Skill** (`skills/<host>/**` + `scri
 
 ## 6. Three-Layer Architecture Audit & Zero-Owner-Referee Flow (`verify-findings`)
 
-1. **Layer A · Zero-Token Static AST & Package Hygiene**: Combine `skill-contract` soft advisories (`malformed-code-fence`, `ast-namespace-pollution`, `boilerplate-table-decay` — all `soft_advisory_exit_0`) with `skill-retro` `internal_reality_check` scanning both `.md` docs and `scripts/**/*.py` string literals for local/cross-skill CLI subcommand and flag drift.
-2. **Layer B · Adversarial Near-Miss & Fail-Closed CLI Gates**: Maintain `eval_counter_case_ratio >= 0.25` in `eval-cases.json` and fail closed (`exit=2` with `<=3` self-disclosing stderr lines) on malformed CLI inputs.
+1. **Layer A · Zero-Token Static AST & Package Hygiene (`soft_advisory_exit_0`)**: Surface `soft_quality_advisories` (`malformed-code-fence`, `ast-namespace-pollution`, `boilerplate-table-decay`) in `probe` / `diagnose` alongside `internal_reality_check` scanning `.md` docs and `scripts/**/*.py` string literals for CLI drift.
+2. **Layer B · Adversarial Twin & Anti-Fake-Test Soft Loop**: Maintain `eval_counter_case_ratio >= 0.25`, fail closed (`exit=2`, `<=3` stderr lines) on bad CLI inputs, and surface `vacuous-good-snippet` + `fake-prose-echo-test` (`prose_only_test_advisories`) as `soft_advisory_exit_0` for periodic `skill-retro` + `eval` upgrades to Shared-Token Adversarial Twins.
 3. **Layer C · Automated Repro-Filter (`skill_retro.py verify-findings --findings-json <file_or_inline> --json`)**:
    - **Gate 1 (`No Repro, No Fix`)**: Executes each finding's `repro_cmd` / `repro_check` under a bounded `<=10s` timeout (`--timeout`). If the failure does not reproduce (`exit_code == 0`, missing command, `exit=126/127`, or timeout), classify as `FALSE_POSITIVE_UNREPRODUCED` (`action: "AUTO_DROP"` in `dropped_findings`).
    - **Gate 2 (`Class A / B / C Triage`)**:
