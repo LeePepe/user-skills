@@ -25,14 +25,14 @@ _FACADE_WRAPPERS = {}
 
 
 def _sync_facade_state() -> None:
-    """Propagate facade patches to every core module and restore them after patch scopes."""
+    """Propagate facade patches to core modules that own those symbols and restore them after patch scopes."""
     for name in _FACADE_NAMES:
         if name not in globals():
             continue
         value = globals()[name]
         desired = _BASE_VALUES.get(name) if name in _FACADE_WRAPPERS and value is _FACADE_WRAPPERS[name] else value
         for module in _CORE_MODULES:
-            if module.__dict__.get(name) is not desired:
+            if name in module.__dict__ and module.__dict__.get(name) is not desired:
                 module.__dict__[name] = desired
         if _core.__dict__.get(name) is not desired:
             _core.__dict__[name] = desired

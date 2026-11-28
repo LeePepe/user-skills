@@ -17,6 +17,7 @@ SF_DATALESS = RUNTIME_SF_DATALESS
 
 _SCRIPT_DIR = Path(__file__).resolve().parents[1]
 ROOT = _SCRIPT_DIR.parent
+_BASE_ROOT = ROOT
 def _load_gate_module(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
@@ -236,6 +237,17 @@ class SelfDisclosingArgumentParser(argparse.ArgumentParser):
         self.exit(2)
 
 
+def _read_json(path: Path | str) -> Any:
+    try:
+        target = Path(path)
+        text = safe_read_text(target)
+        if text is None:
+            text = target.read_text(encoding="utf-8")
+        return json.loads(text)
+    except (OSError, ValueError):
+        return None
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     target = Path(path)
     text = safe_read_text(target)
@@ -444,11 +456,16 @@ from .semiotics_gates import (
     SPEC_GAP_GUIDANCE,
     SPEC_SCROLL_PROMPT_NEGATION_RE,
     SPEC_SCROLL_PROMPT_PROPOSAL_RE,
+    UI_CHART_SERIES_LITERAL_RE,
+    UI_CHART_Y_METRIC_LABEL_RE,
     UI_CROSS_LAYER_METRIC_ECHO_FIX_RULE,
+    UI_FOREGROUND_SERIES_BY_RE,
+    UI_GENERIC_BUTTON_LABEL_RE,
     UI_INSTRUCTIONAL_CLUTTER_RE,
     UI_LARGE_FONT_RE,
     UI_MAP_COMPONENT_CALL_RE,
     UI_PRIMARY_NAV_CTA_RE,
+    UI_PROMINENT_CTA_HINT_RE,
     UI_REPEATED_DETAIL_LABEL_RE,
     UI_SATURATED_COLOR_RE,
     UI_SCROLL_PROMPT_CLUTTER_FIX_RULE,
@@ -456,8 +473,10 @@ from .semiotics_gates import (
     UI_SPEC_ID_DEBUG_LEAK_RE,
     _audit_cross_layer_metric_echo,
     _detect_scroll_prompt_spec_gaps,
+    _extract_swift_button_calls,
     _has_deprecated_test_evidence,
     _spec_gap_warning,
+    _strip_swift_comments_preserve_strings,
 )
 
 
@@ -501,11 +520,13 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
         e_line = text.count("\n", 0, max(start_idx, end_idx - 1)) + 1
         return "design-contract-allow" in "\n".join(lines[max(0, s_line - 1):e_line])
 
+    comment_free = _strip_swift_comments_preserve_strings(text)
+
     # 1. Bug 2: Spec ID & Debug Chrome Leak (UI_SPEC_ID_DEBUG_LEAK)
-    for match in UI_SPEC_ID_DEBUG_LEAK_RE.finditer(text):
+    for match in UI_SPEC_ID_DEBUG_LEAK_RE.finditer(comment_free):
         if _is_waived(match.start(), match.end()):
             continue
-        line = text.count("\n", 0, match.start()) + 1
+        line = comment_free.count("\n", 0, match.start()) + 1
         findings.append({
             "case_id": "UI_SPEC_ID_DEBUG_LEAK",
             "title": "Internal Spec ID or Debug Chrome Rendered on User-Facing UI Surface",
@@ -515,7 +536,7 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
             "reference_drawer": ref_breathing,
             "fix_rule": "Apply Edward Tufte's Data-Ink Ratio & Don Norman's Signifiers: strip internal spec IDs ('A1 ·', '已选原子', '模式A ·', '[24/24格]', 'Preset 1') from user-facing Text/Label views.",
         })
-    detail_matches = [m for m in UI_REPEATED_DETAIL_LABEL_RE.finditer(text) if not _is_waived(m.start(), m.end())]
+    detail_matches = [m for m in UI_REPEATED_DETAIL_LABEL_RE.finditer(comment_free) if not _is_waived(m.start(), m.end())]
     if len(detail_matches) >= 3:
         m3 = detail_matches[2]
         line = text.count("\n", 0, m3.start()) + 1
@@ -530,7 +551,7 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
         })
 
     # 2. Bug 3: Duplicate Map & Primary CTA Clutter (UI_DUPLICATE_MAP_OR_PRIMARY_CTA)
-    no_prev_text, no_prev_masked = _strip_preview_blocks(text, masked)
+    no_prev_text, no_prev_masked = _strip_preview_blocks(comment_free, masked)
     view_candidates = [
         c for c in _swiftui_view_candidates(no_prev_text)
         if not re.search(r"(?:Preview|Switcher|Catalog|Showcase)", c["name"], re.I)
@@ -568,6 +589,28 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
                 "match": s_text[m2.start():m2.end()].replace("\n", " ")[:240],
                 "reference_drawer": ref_breathing,
                 "fix_rule": "Reserve exactly 1 primary P0 navigation CTA ('开始导航' / '立即出发') per viewport; demote secondary card actions.",
+            })
+            reported_dup_map_or_cta = True
+            break
+        generic_cta_by_label: dict[str, list[dict[str, Any]]] = {}
+        for btn_call in _extract_swift_button_calls(s_text, s_masked):
+            if _is_waived(s_offset + btn_call["start"], s_offset + btn_call["end"]):
+                continue
+            label_text = btn_call["label"]
+            if label_text and btn_call["is_prominent"]:
+                generic_cta_by_label.setdefault(label_text, []).append(btn_call)
+        dup_generic = next((matches for matches in generic_cta_by_label.values() if len(matches) >= 2), None)
+        if dup_generic is not None:
+            b2 = dup_generic[1]
+            line = text.count("\n", 0, s_offset + b2["start"]) + 1
+            findings.append({
+                "case_id": "UI_DUPLICATE_MAP_OR_PRIMARY_CTA",
+                "title": "Duplicate Full-Width or Prominent Primary CTA Buttons in Single View",
+                "file": path,
+                "line": line,
+                "match": b2["match_preview"],
+                "reference_drawer": ref_breathing,
+                "fix_rule": "Reserve at most 1 primary P0 CTA button per viewport; demote secondary card actions to quiet inline or secondary controls.",
             })
             reported_dup_map_or_cta = True
             break
@@ -630,11 +673,21 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
             continue
         line_marks = len(re.findall(r"\bLineMark\s*\(", window_masked))
         strokes = len(re.findall(r"\.stroke\s*\(", window_masked))
+        fg_by_calls = len(UI_FOREGROUND_SERIES_BY_RE.findall(window_masked))
+        distinct_series_literals = {m.group(1).strip() for m in UI_CHART_SERIES_LITERAL_RE.finditer(window_text)}
+        distinct_y_labels = {m.group(1).strip() for m in UI_CHART_Y_METRIC_LABEL_RE.finditer(window_text)}
         multi_series_tokens = sum(
             1 for tok in ("海拔", "速度", "心率", "功率", "踏频", "elevation", "speed", "heartRate", "power", "cadence")
             if re.search(rf"\b{tok}\b" if tok.isascii() else tok, window_text, re.I)
         )
-        if line_marks >= 3 or strokes >= 3 or (line_marks >= 1 and multi_series_tokens >= 3):
+        if (
+            line_marks >= 3
+            or strokes >= 3
+            or fg_by_calls >= 3
+            or len(distinct_series_literals) >= 3
+            or len(distinct_y_labels) >= 3
+            or (line_marks >= 1 and multi_series_tokens >= 3)
+        ):
             line = text.count("\n", 0, frame_match.start()) + 1
             findings.append({
                 "case_id": "UI_MINI_SPAGHETTI_CHART_COLLAPSE",
@@ -649,7 +702,7 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
 
     # 5. Bug 6: Cross-Layer Telemetry Metric Duplication Across L1 Hero and L2 Tiles (UI_CROSS_LAYER_METRIC_ECHO)
     findings.extend(
-        _audit_cross_layer_metric_echo(no_prev_text, text, _is_waived, path, ref_interaction)
+        _audit_cross_layer_metric_echo(no_prev_text, text, _is_waived, path, ref_interaction, view_scopes=scopes)
     )
 
     return findings
