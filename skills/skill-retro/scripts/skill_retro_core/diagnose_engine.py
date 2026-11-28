@@ -124,6 +124,10 @@ def compute_skill_retro_diagnostics(*, inventory: Mapping[str, Mapping[str, Any]
     ingested_trace_spans = _ingest_trace_export(observations, trace_export_path=trace_export_path, window_start=window_start, window_end=window_end, known_skills=known_skills)
     wh_meta = _ingest_warehouse_and_copilot_db(observations, warehouse_db=warehouse_db, copilot_db=copilot_db, window_start=window_start, window_end=window_end, known_skills=known_skills, basename_to_targets=basename_to_targets)
     all_sessions = list(observations.values())
+    handoff_signals = load_handoff_drop_signals(trace_export_path)
+    handoff_by_skill: dict[str, list[dict[str, Any]]] = {}
+    for signal in handoff_signals:
+        handoff_by_skill.setdefault(str(signal.get('upstream_skill') or 'personal-m2-assistant'), []).append(signal)
     for obs_item in all_sessions:
         _deduplicate_session_script_calls(obs_item)
     total_sessions = len(all_sessions)
@@ -330,7 +334,7 @@ def compute_skill_retro_diagnostics(*, inventory: Mapping[str, Mapping[str, Any]
         ev_weekly_delta = int(meta.get('eval_case_weekly_delta') or 0)
         ev_escape_gap = bool(sk_dom_fails + sk_escapes >= 3 and ev_weekly_delta == 0)
         eval_quality_by_skill[sk_name] = {'skill': sk_name, 'eval_case_count': ev_cnt, 'eval_counter_case_count': ev_counter_cnt, 'eval_counter_case_ratio': ev_counter_ratio, 'eval_case_weekly_delta': ev_weekly_delta, 'domain_failures': sk_dom_fails, 'skill_escapes': sk_escapes, 'eval_escape_gap': ev_escape_gap}
-    layer2 = {'true_catchers': sorted(true_catchers, key=lambda r: (-r['fail_to_pass_sessions'], -r['calls'], r['script'])), 'ceremonial_rubber_stamps': sorted(ceremonial_rubber_stamps, key=lambda r: (-r['co_occurring_skill_escapes'], -r['calls'], r['script'])), 'rigid_roadblocks': sorted(rigid_roadblocks, key=lambda r: (-r['exit_2_count'], -r['calls'], r['script'])), 'watermarked_resolved_roadblocks': sorted(watermarked_resolved_roadblocks, key=lambda r: (-r['pre_fix'], -r['calls'], r['script'])), 'latency_sinks': sorted(latency_sinks, key=lambda r: (-(r['max_ms'] or 0.0), -(r['p50_ms'] or 0.0), r['script'])), 'aci_output_bloat': sorted(aci_output_bloat, key=lambda r: (-r['bloat_call_count'], r['script'])), 'aci_output_bloat_count': sum(aci_output_bloat_by_skill.values()), 'aci_output_bloat_by_skill': aci_output_bloat_by_skill, 'internal_reality_by_skill': internal_reality_by_skill, 'cross_repo_gate_health': cross_repo_gate_health}
+    layer2 = {'true_catchers': sorted(true_catchers, key=lambda r: (-r['fail_to_pass_sessions'], -r['calls'], r['script'])), 'ceremonial_rubber_stamps': sorted(ceremonial_rubber_stamps, key=lambda r: (-r['co_occurring_skill_escapes'], -r['calls'], r['script'])), 'rigid_roadblocks': sorted(rigid_roadblocks, key=lambda r: (-r['exit_2_count'], -r['calls'], r['script'])), 'handoff_findings': handoff_signals, 'watermarked_resolved_roadblocks': sorted(watermarked_resolved_roadblocks, key=lambda r: (-r['pre_fix'], -r['calls'], r['script'])), 'latency_sinks': sorted(latency_sinks, key=lambda r: (-(r['max_ms'] or 0.0), -(r['p50_ms'] or 0.0), r['script'])), 'aci_output_bloat': sorted(aci_output_bloat, key=lambda r: (-r['bloat_call_count'], r['script'])), 'aci_output_bloat_count': sum(aci_output_bloat_by_skill.values()), 'aci_output_bloat_by_skill': aci_output_bloat_by_skill, 'internal_reality_by_skill': internal_reality_by_skill, 'cross_repo_gate_health': cross_repo_gate_health}
     wild_buckets: dict[str, dict[str, Any]] = {}
     for o in all_sessions:
         for cmd_str, _, _, _ in o.bash_commands:
@@ -372,6 +376,25 @@ def compute_skill_retro_diagnostics(*, inventory: Mapping[str, Mapping[str, Any]
         sample_cmd = rb['failing_command_samples'][0] if rb['failing_command_samples'] else rb['script']
         triage = _triage_proposal_scope(occurrence_sessions=rb['exit_2_sessions'], total_sessions=total_sessions, is_objective_bug_or_friction=True, domain_scoped=False)
         _register_candidate({'id': f"skill-retro-l2-roadblock-{sk}-{sc_name.replace('.', '-')}", 'ref': f'retro://skill-retro/l2-roadblock/{sk}/{sc_name}', 'metric_id': f'skill-retro-l2-roadblock-{sk}', 'layer': 'L2', 'category': 'rigid_roadblock', 'skill': sk, 'priority': 'P1' if rb['exit_2_count'] >= 2 else 'P2', 'title': f"[Skill Retro L2] 柔化 `{sk}/{sc_name}` 参数路障（`exit=2` 触发 {rb['exit_2_count']} 次）", 'detail': f"layer=L2 | category=rigid_roadblock | skill={sk} | script={rb['script']} | exit_2_count={rb['exit_2_count']} | sessions={rb['exit_2_sessions']} | sample_cmd=`{sample_cmd}` | action={rb['evolution_action']}", 'action': f"Add compatible CLI flag aliases / positional defaults to `skills/{sk}/{rb['script']}` and add Dual-Case Replay test.", 'plain_reason': f"`{sk}` 的脚本 `{sc_name}` 发生 {rb['exit_2_count']} 次参数报错（exit=2），需补充兼容参数别名与报错自引导以消除空转重试"}, triage)
+    for signal in handoff_signals:
+        sk = str(signal.get('upstream_skill') or 'personal-m2-assistant')
+        if norm_filter and sk != norm_filter:
+            continue
+        code = str(signal.get('code') or 'HANDOFF_INSTRUCTION_DROP')
+        triage = _triage_proposal_scope(occurrence_sessions=1, total_sessions=total_sessions, is_objective_bug_or_friction=True, domain_scoped=False)
+        _register_candidate({
+            'id': f'skill-retro-{code.lower()}',
+            'ref': f'retro://skill-retro/handoff/{code.lower()}',
+            'metric_id': code,
+            'layer': 'L2',
+            'category': 'handoff_parameter_trap',
+            'skill': sk,
+            'priority': 'P1',
+            'title': f'[Skill Retro L2] {code} handoff parameter trap',
+            'detail': f"root_cause={signal.get('root_cause', 'silent handoff loss')} | evidence={' ; '.join(str(item) for item in signal.get('evidence') or [])} | physical_lock=L2 CLI schema/completeness lock in m2-router.py",
+            'action': 'Preserve target instruction/sub_prompt and reject unmapped domain/unspecified space fallbacks before dispatch.',
+            'plain_reason': 'Silent exit=0 handoff loss bypassed ordinary CLI roadblock checks.',
+        }, triage)
     seen_unwired_skills: set[str] = set()
     for uw in layer1['unwired_disconnected_drawers']:
         sk = uw['skill']

@@ -3,6 +3,27 @@ from .common import *
 
 """Trace Ingest implementation for the skill-retro engine."""
 
+
+def load_handoff_drop_signals(trace_export_path: Path | None) -> list[dict[str, Any]]:
+    """Reuse the bounded agent-retro handoff probe for raw trace exports."""
+    if trace_export_path is None or not _is_safe_local_file(trace_export_path):
+        return []
+    try:
+        records = [
+            json.loads(line)
+            for line in _safe_read_text(trace_export_path).splitlines()[:100_000]
+            if line.strip()
+        ]
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    probe_path = Path(__file__).resolve().parents[3] / "agent-retro" / "scripts" / "agent_retro_core" / "handoff_probe.py"
+    spec = importlib.util.spec_from_file_location("skill_retro_handoff_probe", probe_path)
+    if spec is None or spec.loader is None:
+        return []
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.detect_handoff_signals(record for record in records if isinstance(record, dict))
+
 def _norm_skill(name: str) -> str:
     cleaned = str(name or '').strip().lstrip('/')
     if cleaned in {'goal-target-task', 'goal-task'}:

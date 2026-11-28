@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-24",
+  "updated": "2026-11-28",
   "active_cases": [
     {
       "id": "EV-001",
@@ -162,6 +162,14 @@
       "bad_snippet": "model: gemini:4- argon",
       "good_snippet": "model: gemini-4-argon",
       "registered_at": "2026-11-24"
+    },
+    {
+      "id": "EV-010",
+      "title": "L2 diagnostics surface silent handoff drops and router parameter traps",
+      "tags": ["handoff", "l2", "counter-case"],
+      "cmd": "python3 -m unittest scripts/test_retro_handoff_drop_probe.py",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
     }
   ]
 }
