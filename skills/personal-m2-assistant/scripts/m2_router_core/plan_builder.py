@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ._imports import *
+from skill_runtime.cli_contract import redact_payload, redact_text
 from skill_runtime.hybrid_rag import (
     ACI_MAX_BYTES,
     format_rag_context_hint,
@@ -12,6 +13,18 @@ from .constants_and_paths import merge_target_prompt
 from .constants_and_paths import _run_command
 
 DEFAULT_RAG_TOP_K = 3
+MAX_COMBINED_RAG_HINT_BYTES = 840
+
+
+def _cap_utf8_bytes(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    if max_bytes <= 3:
+        return raw[:max_bytes].decode("utf-8", errors="ignore")
+    return raw[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
 
 
 def resolve_handoff_root(handoff_root: str | Path | None = None) -> Path:
@@ -23,7 +36,9 @@ def _mock_jev_reranker(mock_jev: Any) -> Callable[..., Any] | None:
     if callable(mock_jev):
         return mock_jev
     if isinstance(mock_jev, dict) and mock_jev:
-        return lambda state, questions, **kwargs: mock_jev
+        answers = mock_jev.get("answers") if isinstance(mock_jev.get("answers"), dict) else mock_jev
+        if isinstance(answers, dict) and any(str(k).startswith("cand_") for k in answers):
+            return lambda state, questions, **kwargs: mock_jev
     return None
 
 
@@ -46,7 +61,7 @@ def _compact_rag_hit(hit: dict[str, Any]) -> dict[str, Any]:
         compact["owned_paths"] = [str(p) for p in meta["owned_paths"][:6]]
     if isinstance(meta.get("events"), list) and meta["events"]:
         compact["events"] = [str(e) for e in meta["events"][:4]]
-    return compact
+    return redact_payload(compact)
 
 
 def query_handoff_rag(
@@ -75,18 +90,26 @@ def query_handoff_rag(
     )
     compact_hits = [_compact_rag_hit(h) for h in (result.get("hits") or []) if isinstance(h, dict)]
     hint = format_rag_context_hint(compact_hits) if compact_hits else ""
-    payload: dict[str, Any] = {
+    safe_root = _cap_utf8_bytes(redact_text(str(resolved_root)), 512)
+    payload: dict[str, Any] = redact_payload({
         **result,
-        "handoff_root": str(resolved_root),
+        "handoff_root": safe_root,
         "hits": compact_hits,
         "hit_count": len(compact_hits),
         "rag_context_hint": hint,
-    }
-    while len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > ACI_MAX_BYTES and payload["hits"]:
-        payload["hits"].pop()
-        payload["hit_count"] = len(payload["hits"])
-        payload["rag_context_hint"] = format_rag_context_hint(payload["hits"])
-        payload["truncated"] = True
+    })
+    while len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > ACI_MAX_BYTES:
+        if payload["hits"]:
+            payload["hits"].pop()
+            payload["hit_count"] = len(payload["hits"])
+            payload["rag_context_hint"] = format_rag_context_hint(payload["hits"])
+            payload["truncated"] = True
+        else:
+            payload["rag_context_hint"] = ""
+            payload["handoff_root"] = _cap_utf8_bytes(str(payload.get("handoff_root") or ""), 128)
+            payload["query"] = _cap_utf8_bytes(str(payload.get("query") or ""), 128)
+            payload["truncated"] = True
+            break
     return payload
 
 
@@ -138,7 +161,10 @@ def enrich_targets_with_handoff_rag(
             if not existing:
                 target["rag_context_hint"] = rag_hint
             elif rag_hint not in existing:
-                target["rag_context_hint"] = f"{existing} | {rag_hint}"
+                target["rag_context_hint"] = _cap_utf8_bytes(
+                    redact_text(f"{existing} | {rag_hint}"),
+                    MAX_COMBINED_RAG_HINT_BYTES,
+                )
 
 
 def format_rag_query_text(payload: dict[str, Any]) -> str:
@@ -151,7 +177,7 @@ def format_rag_query_text(payload: dict[str, Any]) -> str:
         )
     if _text(payload.get("rag_context_hint")):
         lines.append(f"rag_context_hint: {_text(payload.get('rag_context_hint'))}")
-    return "\n".join(lines)
+    return _cap_utf8_bytes(redact_text("\n".join(lines)), ACI_MAX_BYTES)
 
 def _default_preview_path(plan_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"

@@ -320,6 +320,71 @@ class M2RouterHandoffRagTests(unittest.TestCase):
         with self.assertRaises(VaultIsolationError):
             self.router.query_handoff_rag("Glass Card", docs=[foreign_doc])
 
+    def test_rag_query_redacts_home_paths_and_caps_bytes_when_hits_empty(self) -> None:
+        home_prefix = "/" + "Users" + "/alice"
+        oversized_root = Path(f"{home_prefix}/Development/" + ("nested/" * 2200) + "handoff")
+        res = self.router.query_handoff_rag(
+            "查询测试 " * 800,
+            handoff_root=oversized_root,
+            docs=[],
+        )
+        encoded = json.dumps(res, ensure_ascii=False).encode("utf-8")
+        self.assertLessEqual(len(encoded), 12_000)
+        self.assertNotIn(home_prefix, json.dumps(res, ensure_ascii=False))
+        self.assertLessEqual(len(self.router.format_rag_query_text(res).encode("utf-8")), 12_000)
+
+    def test_plan_use_jev_with_routing_only_mock_vs_cand_rerank_mock(self) -> None:
+        seed_handoff_corpus(self.handoff_root)
+        bob_prefix = "/" + "Users" + "/bob"
+        # Routing-only mock_jev should not shadow or corrupt RAG hits when cand_* keys are absent.
+        with patch("skill_runtime.hybrid_rag._default_jev_fn", return_value=None) as default_jev:
+            routing_plan = self.router.build_plan(
+                "更新 Sapphire 通知开关 ToggleStore.swift 并检查测试",
+                [],
+                targets_json=[
+                    {
+                        "topic_id": "sapphire-notification",
+                        "target_repo": "bing-growth-sapphire-app",
+                        "sub_prompt": "更新通知开关 ToggleStore.swift 并检查测试",
+                        "rag_context_hint": f"{bob_prefix}/secret-upstream " + ("x" * 900),
+                        "wave_order": 1,
+                    }
+                ],
+                mock_jev={"answers": {"route_mode": {"choice": "ROUTE_SINGLE"}}},
+                use_jev_rag=True,
+                transport="stdout",
+            )
+            self.assertTrue(default_jev.called)
+        target = routing_plan["targets"][0]
+        self.assertGreaterEqual(len(target["rag_hits"]), 1)
+        self.assertNotIn(bob_prefix, target["rag_context_hint"])
+        self.assertLessEqual(len(target["rag_context_hint"].encode("utf-8")), 840)
+
+        # Candidate-bearing mock_jev reranks hits during --plan --use-jev.
+        reranked_plan = self.router.build_plan(
+            "更新 Sapphire 通知开关 ToggleStore.swift 并检查测试",
+            [],
+            targets_json=[
+                {
+                    "topic_id": "sapphire-notification",
+                    "target_repo": "bing-growth-sapphire-app",
+                    "sub_prompt": "更新通知开关 ToggleStore.swift 并检查测试",
+                    "wave_order": 1,
+                }
+            ],
+            mock_jev={
+                "answers": {
+                    "cand_0_direct": {"noul": 0.15},
+                    "cand_0_tier": {"score": 0.5},
+                    "cand_1_direct": {"noul": 0.98},
+                    "cand_1_tier": {"score": 3.0},
+                }
+            },
+            use_jev_rag=True,
+            transport="stdout",
+        )
+        self.assertIsNotNone(reranked_plan["targets"][0]["rag_hits"][0].get("jev_score"))
+
 
     def test_eval_drawer_cap_counter_case_ratio_and_internal_reality(self) -> None:
         sys.path.insert(0, str(ROOT / "skills" / "skill-retro" / "scripts"))
