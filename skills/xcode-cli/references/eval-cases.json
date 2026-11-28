@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-27",
+  "updated": "2026-11-28",
   "active_cases": [
     {
       "id": "EV-001",
@@ -118,9 +118,19 @@
       "routes": [
         "none"
       ],
+      "tags": [
+        "counter-case",
+        "negative"
+      ],
       "title": "Parser and git failures return actionable three-line guidance",
       "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_parser_and_git_failures_self_disclose_in_three_lines",
       "expect_exit": 0,
+      "negative_cmd": "python3 skills/xcode-cli/scripts/classify_changes.py --range main",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "Fix:",
+        "command-routing.md"
+      ],
       "verify_lines": [
         "Replay invalid options, repositories, refs, and conflicting ranges"
       ],
@@ -155,6 +165,9 @@
       "routes": [
         "xcode",
         "mixed"
+      ],
+      "tags": [
+        "counter-case"
       ],
       "title": "Guard scope and unused functions cannot conceal blocking hooks",
       "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_guards_scope_branches_and_short_circuit",
@@ -234,6 +247,9 @@
         "none",
         "xcode"
       ],
+      "tags": [
+        "counter-case"
+      ],
       "title": "Comments, build-only hooks, and absent hooks are not blockers",
       "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_verify_gate_comments_build_only_and_absent_hooks_are_counter_cases",
       "expect_exit": 0,
@@ -275,6 +291,58 @@
           "severity": "hard"
         }
       ]
+    },
+    {
+      "id": "EV-014",
+      "routes": [
+        "swiftpm",
+        "xcode",
+        "mixed"
+      ],
+      "tags": [
+        "counter-case",
+        "negative"
+      ],
+      "title": "Forbid collapsed single-line triple-backtick code fences in command-routing.md",
+      "file": "skills/xcode-cli/references/command-routing.md",
+      "forbidden_regex": "(?m)^\\s*```[^\\n`]+```",
+      "bad_snippet": "```bash swift build --package-path Packages/Feature ```",
+      "good_snippet": "```bash\nswift build --package-path Packages/Feature\n```",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_markdown_code_fences_and_eval_counter_case_ratio_contract",
+      "expect_exit": 0,
+      "verify_lines": [
+        "Verify command-routing.md contains only multiline fenced code blocks and zero single-line triple-backtick fences"
+      ],
+      "assertions": [
+        {
+          "check": "All Markdown code fences in xcode-cli open and close on separate lines",
+          "severity": "hard"
+        }
+      ]
+    },
+    {
+      "id": "EV-015",
+      "routes": [
+        "swiftpm",
+        "xcode",
+        "mixed"
+      ],
+      "tags": [
+        "counter-case"
+      ],
+      "title": "Hybrid root Package.swift counter-case, XC-004/XC-005 retention, and target-scoped preview signing",
+      "cmd": "python3 -m unittest discover -s scripts -p test_xcode_cli_classify.py -k test_hybrid_root_package_swift_and_app_target_routing_counter_cases -k test_case_selection_preserves_xc004_and_xc005_and_uses_single_source_drawer -k test_preview_host_health_scopes_signing_and_dylib_to_target_blocks",
+      "expect_exit": 0,
+      "verify_lines": [
+        "Replay hybrid root Package.swift app counter-case, XC-004/XC-005 prioritization, and target-scoped preview signing"
+      ],
+      "assertions": [
+        {
+          "check": "App files in hybrid root Package.swift repos classify as xcode/mixed, XC-004/XC-005 are never truncated, and unrelated target CODE_SIGNING_ALLOWED=NO does not override signed *PreviewHost",
+          "severity": "hard"
+        }
+      ]
     }
-  ]
+  ],
+  "archived_cases": []
 }
