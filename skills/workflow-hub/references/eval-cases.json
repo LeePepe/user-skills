@@ -1,0 +1,47 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "workflow-hub",
+  "updated": "2026-11-28",
+  "active_cases": [
+    {
+      "id": "WH-001",
+      "title": "Workflow drift checker exposes help",
+      "tags": ["cli", "positive"],
+      "cmd": "python3 skills/workflow-hub/scripts/skills-drift-check.py --help",
+      "expect_exit": 0
+    },
+    {
+      "id": "WH-002",
+      "title": "How-To graph exposes the cybernetic pyramid",
+      "tags": ["cli", "positive", "graph"],
+      "cmd": "python3 skills/howto/scripts/howto_flow.py --graph --json",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "cybernetic_pyramid",
+        "\"L4\"",
+        "\"L3\"",
+        "\"L2\"",
+        "\"L1\""
+      ]
+    },
+    {
+      "id": "WH-003",
+      "title": "Counter-case rejects unknown nodes",
+      "tags": ["negative", "counter-case", "guardrail"],
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py check-nodes --text \"Calls: E99, TK-99\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": ["unknown_nodes", "E99"]
+    },
+    {
+      "id": "WH-004",
+      "title": "Counter-case rejects an incomplete five-tuple recipe",
+      "tags": ["negative", "counter-case", "5tuple"],
+      "forbidden_regex": "(?i)\\b(?:bad|invalid)\\b",
+      "bad_snippet": "bad recipe",
+      "good_snippet": "valid recipe",
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: request | Calls: E1\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": ["missing_5tuple_dimensions"]
+    }
+  ]
+}

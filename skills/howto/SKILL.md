@@ -7,7 +7,7 @@ description: 梳理、细化、复盘、串联或新增个人与工作 How-To �
 
 ## 1. 定位与 L4–L1 四层控制论金字塔（Harness Engineering）
 
-`/howto` 是新 Session 启动任何“怎么做某事 / 细化流程 / 复盘任务”的唯一交互入口。**加载 `/howto` 后必须首先运行 [`scripts/howto_flow.py`](scripts/howto_flow.py)**（`--lookup "<场景>" --json`、`--graph`/`--pyramid`、`--neighbors <NodeID>`、`--list-nodes --json` 或 `--scaffold-tuple "<任务>" --json`），严禁只读文档不跑脚本。30+ 标准节点（`E1–E12, Q1–Q3, I1–I7, G1–G2, P1–P9, O1–O6`）与 `TK-01..TK-16` 复用 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)；Jev 写题见 [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md)。
+`/howto` 是新 Session 启动任何“怎么做某事 / 细化流程 / 复盘任务”的唯一交互入口。**加载 `/howto` 后必须首先运行 [`scripts/howto_flow.py`](scripts/howto_flow.py)**（无参数默认 `--graph --summary`；也可用 `--lookup "<场景>" --json`、`--graph`/`--pyramid`、`--list-nodes --json`、`--summary`、`--neighbors <NodeID>` 或 `--scaffold-tuple "<任务>" --json`），严禁只读文档不跑脚本。30+ 标准节点（`E1–E12, Q1–Q3, I1–I7, G1–G2, P1–P9, O1–O6`）与 `TK-01..TK-16` 复用 [`../workflow-hub/references/how-to-nodes.md`](../workflow-hub/references/how-to-nodes.md)；Jev 写题见 [`references/jev-systemone-guide.md`](references/jev-systemone-guide.md)。
 
 | 金字塔层 | 定位与职责边界 | 核心节点 / 技能 |
 |---|---|---|

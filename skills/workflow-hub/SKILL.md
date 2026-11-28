@@ -93,4 +93,4 @@ Canonical companions:
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | primary task | `references/his-fm-nocoo-study-and-roadmap.md` | `python3 skills/workflow-hub/scripts/skills-drift-check.py --help` |
-| verification | `references/his-fm-nocoo-study-and-roadmap.md` | `skill_contract.py eval --skill workflow-hub --strict` |
+| verification | [`eval-cases.json`](references/eval-cases.json)（Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view） | `skill_contract.py eval --skill workflow-hub --strict` |

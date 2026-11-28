@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 HOWTO_FLOW = ROOT / "skills" / "howto" / "scripts" / "howto_flow.py"
 HOWTO_GUARD = ROOT / "skills" / "howto" / "scripts" / "howto_guard.py"
+SKILL_RETRO = ROOT / "skills" / "skill-retro" / "scripts" / "skill_retro.py"
 HOWTO_SKILL_MD = ROOT / "skills" / "howto" / "SKILL.md"
 WORKFLOW_HUB_SKILL_MD = ROOT / "skills" / "workflow-hub" / "SKILL.md"
 HOWTO_NODES_MD = ROOT / "skills" / "workflow-hub" / "references" / "how-to-nodes.md"
@@ -63,6 +64,17 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
         )
         self.assertIn("1. 信号与入口", graph_proc.stdout)
         self.assertIn("5. 个人数据飞轮", graph_proc.stdout)
+
+        default_proc = subprocess.run(
+            [sys.executable, str(HOWTO_FLOW)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(default_proc.returncode, 0, default_proc.stderr)
+        for layer in ("L4 人类掌舵层", "L3 熵减与自演进层", "L2 协同编排层", "L1 专项执行层"):
+            self.assertIn(layer, default_proc.stdout)
 
         pyramid_proc = subprocess.run(
             [sys.executable, str(HOWTO_FLOW), "--pyramid", "--json"],
@@ -162,6 +174,34 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
                 self.assertIn("UITraitCollection", guidance)
                 self.assertIn("@Environment(\\.colorScheme)", guidance)
                 self.assertNotIn("prefers-color-scheme", guidance)
+                self.assertLess(len(proc.stdout.encode("utf-8")), 12288)
+
+    def test_skill_retro_probes_report_post_fix_contracts(self) -> None:
+        howto_probe = subprocess.run(
+            [sys.executable, str(SKILL_RETRO), "probe", "--skill", "howto", "--fast", "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(howto_probe.returncode, 0, howto_probe.stderr)
+        howto_signals = json.loads(howto_probe.stdout)["skills"][0]["signals"]
+        self.assertEqual(howto_signals["l1_unwired_drawers"], 0)
+        self.assertEqual(howto_signals["l2_exit2_post_fix"], 0)
+        self.assertEqual(howto_signals["aci_output_bloat_count"], 0)
+        self.assertEqual(howto_signals["internal_doc_cli_drift_count"], 0)
+
+        workflow_probe = subprocess.run(
+            [sys.executable, str(SKILL_RETRO), "probe", "--skill", "workflow-hub", "--fast", "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(workflow_probe.returncode, 0, workflow_probe.stderr)
+        workflow_signals = json.loads(workflow_probe.stdout)["skills"][0]["signals"]
+        self.assertFalse(workflow_signals["eval_escape_gap"])
+        self.assertGreaterEqual(workflow_signals["eval_counter_case_ratio"], 0.25)
 
     def test_validate_recipe_rejects_custom_and_parallel_theme_engines_with_3line_pointer(self) -> None:
         bad_recipes = (
