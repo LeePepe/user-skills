@@ -23,7 +23,7 @@ def _fail(message: str) -> int:
 def _emit(payload: dict, as_json: bool) -> None:
     text = _render_output(payload, as_json)
     if len(text.encode("utf-8")) > 3900:
-        safe = json.loads(compact_json_dumps(payload, max_bytes=3700, preserve_keys=("ok", "goal", "old_goal", "new_goal", "cancelled_tasks", "reference")))
+        safe = json.loads(compact_json_dumps(payload, max_bytes=3700, preserve_keys=("ok", "goal", "old_goal", "new_goal", "cancelled_tasks", "error_code", "missing", "guidance", "reference")))
         text = _render_output(safe, as_json)
     print(text)
 def _split_row(line: str) -> list[str] | None:
@@ -283,6 +283,19 @@ def _check_write_path(args: argparse.Namespace) -> int:
         _emit({"ok": False, "allowed": False, "error": message, "reference": REFERENCE}, True)
     sys.stderr.write(f"m2_preflight: {message}\nReference: {REFERENCE}\n")
     return 1
+def _check_ui_closeout(args: argparse.Namespace) -> int:
+    handoff = Path(args.handoff_dir).expanduser()
+    if not is_safe_local_dir(handoff):
+        if args.json:
+            _emit({"ok": False, "error_code": "UI_CLOSEOUT_GATE_FAILED", "missing": ["handoff_dir_missing"], "guidance": REFERENCE, "reference": REFERENCE}, True)
+        return _fail(f"handoff directory is missing/unreadable: {handoff}")
+    sys.path.insert(0, str(SCRIPT_REPO_ROOT / "skills/team-lead/scripts")); from ui_closeout_guard import check_m2_ui_closeout
+    payload = check_m2_ui_closeout(handoff_dir=handoff, receipt_path=Path(args.receipt).expanduser() if args.receipt else None, brief_path=Path(args.brief).expanduser() if args.brief else None)
+    _emit(payload, args.json)
+    if not payload["ok"]:
+        sys.stderr.write(f"m2_preflight: UI closeout gate failed ({', '.join(payload.get('missing') or [])})\nReference: {REFERENCE}\n")
+        return 1
+    return 0
 def _parser() -> argparse.ArgumentParser:
     parser = _M2PreflightArgumentParser(prog="m2_preflight.py")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_M2PreflightArgumentParser)
@@ -302,6 +315,11 @@ def _parser() -> argparse.ArgumentParser:
     write = sub.add_parser("check-write-path")
     write.add_argument("--path", required=True)
     write.add_argument("--json", action="store_true")
+    ui_closeout = sub.add_parser("check-ui-closeout", aliases=["check-ui-dispatch"])
+    ui_closeout.add_argument("--handoff-dir", required=True)
+    ui_closeout.add_argument("--receipt", "--receipt-file", dest="receipt", default=None)
+    ui_closeout.add_argument("--brief", "--brief-file", dest="brief", default=None)
+    ui_closeout.add_argument("--json", action="store_true")
     return parser
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
@@ -319,6 +337,8 @@ def main(argv: list[str] | None = None) -> int:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 return result
         return _supersede_goal(args)
+    if args.command in {"check-ui-closeout", "check-ui-dispatch"}:
+        return _check_ui_closeout(args)
     return _check_write_path(args)
 if __name__ == "__main__":
     raise SystemExit(main())

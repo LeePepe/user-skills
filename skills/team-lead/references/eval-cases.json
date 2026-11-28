@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v2",
   "skill": "team-lead",
-  "updated": "2026-11-20",
+  "updated": "2026-11-28",
   "trigger_evals": [
     {
       "query": "plan and execute a multi-task feature Goal with Steering Writer Reviewer and PR delivery",
@@ -174,7 +174,11 @@
     {
       "id": "EV-010",
       "title": "feedback_guard.py diff-check reports whitespace as a soft advisory",
-      "tags": ["feedback-guard", "diff-check", "soft-advisory"],
+      "tags": [
+        "feedback-guard",
+        "diff-check",
+        "soft-advisory"
+      ],
       "cmd": "python3 skills/team-lead/scripts/feedback_guard.py diff-check --worktree .",
       "expect_exit": 0,
       "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py diff-check --unknown-flag",
@@ -184,12 +188,42 @@
     {
       "id": "EV-011",
       "title": "feedback_guard.py list-receipts summarizes top-level R10 receipts",
-      "tags": ["feedback-guard", "list-receipts", "r10"],
+      "tags": [
+        "feedback-guard",
+        "list-receipts",
+        "r10"
+      ],
       "cmd": "python3 skills/team-lead/scripts/feedback_guard.py list-receipts --handoff-dir .",
       "expect_exit": 0,
       "negative_cmd": "python3 skills/team-lead/scripts/feedback_guard.py list-receipts /nonexistent-r10-receipts",
       "expect_fail_exit": 2,
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-M2-015",
+      "title": "feedback_guard.py pre-review-check blocks compile-only UI R10 receipts missing PNG, check-whitespace-ratio, or magpie/group/designer Visual Traceback",
+      "tags": [
+        "feedback-guard",
+        "pre-review-check",
+        "ui-closeout",
+        "counter-case"
+      ],
+      "cmd": "python3 -c 'import json,pathlib,subprocess,tempfile\nfg=pathlib.Path('\"'\"'skills/team-lead/scripts/feedback_guard.py'\"'\"')\nwith tempfile.TemporaryDirectory() as d:\n    root=pathlib.Path(d); wt=root/'\"'\"'wt'\"'\"'; wt.mkdir()\n    h=root/'\"'\"'handoff'\"'\"'/'\"'\"'g1'\"'\"'; (h/'\"'\"'briefs'\"'\"').mkdir(parents=True); (h/'\"'\"'receipts'\"'\"').mkdir(parents=True)\n    (h/'\"'\"'design.md'\"'\"').write_text('\"'\"'# Design\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'init'\"'\"','\"'\"'-q'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'config'\"'\"','\"'\"'user.email'\"'\"','\"'\"'t@e.invalid'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'config'\"'\"','\"'\"'user.name'\"'\"','\"'\"'T'\"'\"'],check=True)\n    (wt/'\"'\"'App'\"'\"').mkdir(); (wt/'\"'\"'App'\"'\"'/'\"'\"'HomeView.swift'\"'\"').write_text('\"'\"'struct HomeView {}\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'add'\"'\"','\"'\"'.'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'commit'\"'\"','\"'\"'-qm'\"'\"','\"'\"'base'\"'\"'],check=True)\n    (wt/'\"'\"'App'\"'\"'/'\"'\"'HomeView.swift'\"'\"').write_text('\"'\"'struct HomeView { let x = 1 }\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'commit'\"'\"','\"'\"'-qam'\"'\"','\"'\"'ui'\"'\"'],check=True)\n    sha=subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'rev-parse'\"'\"','\"'\"'--short'\"'\"','\"'\"'HEAD'\"'\"'],check=True,capture_output=True,text=True).stdout.strip()\n    b=h/'\"'\"'briefs'\"'\"'/'\"'\"'T1.md'\"'\"'; b.write_text('\"'\"'# Brief\\n## Owned Paths\\n- App/**\\n'\"'\"')\n    r10=h/'\"'\"'receipts'\"'\"'/'\"'\"'T1.md'\"'\"'\n    r10.write_text(f'\"'\"'Commit SHA: {sha}\\nRole / Model: writer / gpt-5.6-sol\\nV5 Verdict: PASS\\nSnapshots: snapshots/home.png\\nWhitespace: check-whitespace-ratio PASS\\nVisual Traceback: magpie/group/designer PASS (0 [IMPL_BUG])\\n'\"'\"')\n    r=subprocess.run(['\"'\"'python3'\"'\"',str(fg),'\"'\"'pre-review-check'\"'\"','\"'\"'--worktree'\"'\"',str(wt),'\"'\"'--brief'\"'\"',str(b),'\"'\"'--receipt'\"'\"',str(r10),'\"'\"'--base-ref'\"'\"','\"'\"'HEAD~1'\"'\"'],capture_output=True,text=True)\n    x=json.loads(r.stdout)\n    print(json.dumps({'\"'\"'ok'\"'\"':r.returncode==0 and x['\"'\"'ok'\"'\"'] and x.get('\"'\"'ui_closeout_enforced'\"'\"') is True}))\n'",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "negative_cmd": "python3 -c 'import pathlib,subprocess,sys,tempfile\nfg=pathlib.Path('\"'\"'skills/team-lead/scripts/feedback_guard.py'\"'\"')\nwith tempfile.TemporaryDirectory() as d:\n    root=pathlib.Path(d); wt=root/'\"'\"'wt'\"'\"'; wt.mkdir()\n    h=root/'\"'\"'handoff'\"'\"'/'\"'\"'g1'\"'\"'; (h/'\"'\"'briefs'\"'\"').mkdir(parents=True); (h/'\"'\"'receipts'\"'\"').mkdir(parents=True)\n    (h/'\"'\"'design.md'\"'\"').write_text('\"'\"'# Design\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'init'\"'\"','\"'\"'-q'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'config'\"'\"','\"'\"'user.email'\"'\"','\"'\"'t@e.invalid'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'config'\"'\"','\"'\"'user.name'\"'\"','\"'\"'T'\"'\"'],check=True)\n    (wt/'\"'\"'App'\"'\"').mkdir(); (wt/'\"'\"'App'\"'\"'/'\"'\"'HomeView.swift'\"'\"').write_text('\"'\"'struct HomeView {}\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'add'\"'\"','\"'\"'.'\"'\"'],check=True)\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'commit'\"'\"','\"'\"'-qm'\"'\"','\"'\"'base'\"'\"'],check=True)\n    (wt/'\"'\"'App'\"'\"'/'\"'\"'HomeView.swift'\"'\"').write_text('\"'\"'struct HomeView { let x = 1 }\\n'\"'\"')\n    subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'commit'\"'\"','\"'\"'-qam'\"'\"','\"'\"'ui'\"'\"'],check=True)\n    sha=subprocess.run(['\"'\"'git'\"'\"','\"'\"'-C'\"'\"',str(wt),'\"'\"'rev-parse'\"'\"','\"'\"'--short'\"'\"','\"'\"'HEAD'\"'\"'],check=True,capture_output=True,text=True).stdout.strip()\n    b=h/'\"'\"'briefs'\"'\"'/'\"'\"'T1.md'\"'\"'; b.write_text('\"'\"'# Brief\\n## Owned Paths\\n- App/**\\n'\"'\"')\n    r10=h/'\"'\"'receipts'\"'\"'/'\"'\"'T1.md'\"'\"'\n    r10.write_text(f'\"'\"'Commit SHA: {sha}\\nRole / Model: writer / gpt-5.6-sol\\nVerification: swift build && swift test PASS\\n'\"'\"')\n    r=subprocess.run(['\"'\"'python3'\"'\"',str(fg),'\"'\"'pre-review-check'\"'\"','\"'\"'--worktree'\"'\"',str(wt),'\"'\"'--brief'\"'\"',str(b),'\"'\"'--receipt'\"'\"',str(r10),'\"'\"'--base-ref'\"'\"','\"'\"'HEAD~1'\"'\"'],capture_output=True,text=True)\n    sys.stdout.write(r.stdout)\n    sys.stderr.write(r.stderr)\n    raise SystemExit(r.returncode)\n'",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "ui_snapshot_png_missing",
+        "ui_whitespace_check_missing",
+        "ui_designer_visual_traceback_missing"
+      ],
+      "negative_stderr_contains": [
+        "skills/team-lead/references/playbook.md"
+      ],
+      "registered_at": "2026-11-28"
     }
   ]
 }

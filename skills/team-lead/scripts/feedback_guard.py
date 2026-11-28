@@ -16,6 +16,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 from skill_runtime.cli_contract import SelfDisclosingArgumentParser  # noqa: E402
+from ui_closeout_guard import PLAYBOOK_GUIDANCE, evaluate_pre_review_ui_gate  # noqa: E402
 
 
 FEEDBACK_SCHEMA_VERSION = 1
@@ -768,17 +769,7 @@ def check_swiftui_and_error_retry_guards(
     return violations
 
 
-M1_STEERING_ROLES = {
-    "m1",
-    "m1_tl",
-    "m1-tl",
-    "tl",
-    "team-lead",
-    "team_lead",
-    "steering",
-    "group/steering",
-    "magpie/group/steering",
-}
+M1_STEERING_ROLES = {"m1", "m1_tl", "m1-tl", "tl", "team-lead", "team_lead", "steering", "group/steering", "magpie/group/steering"}
 
 
 def _receipt_role(receipt_text: str) -> str | None:
@@ -929,47 +920,29 @@ def run_pre_review_check(
     actor_role: str | None = None,
     max_inline_files: int = 3,
     events_jsonl: Path | None = None,
+    require_ui_traceback: bool = False,
+    design_spec: Path | None = None,
 ) -> dict[str, Any]:
     """Deterministic pre-review gate catching recurring R1 Writer failures before Reviewer dispatch."""
     wt = worktree.expanduser().resolve()
     brief = brief_path.expanduser().resolve()
     target_head = (head_ref or "HEAD").strip() or "HEAD"
     violations: list[dict[str, Any]] = []
-
     if not wt.is_dir():
         return {"ok": False, "violations": [{"code": "missing_worktree", "detail": str(wt)}]}
     if not brief.is_file():
         return {"ok": False, "violations": [{"code": "missing_brief", "detail": str(brief)}]}
-
-    owned_paths = extract_owned_paths_from_brief(brief.read_text(encoding="utf-8"))
+    brief_text = brief.read_text(encoding="utf-8")
+    owned_paths = extract_owned_paths_from_brief(brief_text)
     if not owned_paths:
-        violations.append({
-            "code": "empty_owned_paths",
-            "detail": f"No Owned Paths parsed from {brief}",
-        })
+        violations.append({"code": "empty_owned_paths", "detail": f"No Owned Paths parsed from {brief}"})
 
-    status_proc = subprocess.run(
-        ["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    status_proc = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False)
     if status_proc.returncode != 0:
-        return {
-            "ok": False,
-            "violations": [{"code": "invalid_git_worktree", "detail": status_proc.stderr.strip() or str(wt)}],
-        }
-    dirty_tracked = [
-        line[3:].strip()
-        for line in status_proc.stdout.splitlines()
-        if line.strip()
-    ]
+        return {"ok": False, "violations": [{"code": "invalid_git_worktree", "detail": status_proc.stderr.strip() or str(wt)}]}
+    dirty_tracked = [line[3:].strip() for line in status_proc.stdout.splitlines() if line.strip()]
     if dirty_tracked and not allow_dirty:
-        violations.append({
-            "code": "dirty_tracked_worktree",
-            "files": dirty_tracked,
-            "detail": "Tracked modifications must be committed before Reviewer dispatch",
-        })
+        violations.append({"code": "dirty_tracked_worktree", "files": dirty_tracked, "detail": "Tracked modifications must be committed before Reviewer dispatch"})
 
     head_probe = subprocess.run(
         ["git", "-C", str(wt), "rev-parse", "--verify", f"{target_head}^{{commit}}"],
@@ -1169,13 +1142,15 @@ def run_pre_review_check(
             executed = _successful_event_commands(events_file)
             missing = [claim for claim in claims if not _command_was_successful(claim, executed)]
             if missing:
-                violations.append({
-                    "code": "ungrounded_receipt_verification",
-                    "missing_commands": missing,
-                    "detail": "R10 receipt claims verification commands with zero matching exit=0 executions in events.jsonl",
-                })
+                violations.append({"code": "ungrounded_receipt_verification", "missing_commands": missing, "detail": "R10 receipt claims verification commands with zero matching exit=0 executions in events.jsonl"})
 
-    return {
+    ui_enforced, ui_violations = evaluate_pre_review_ui_gate(
+        brief_path=brief, brief_text=brief_text, owned_paths=owned_paths, changed_files=changed_files,
+        receipt_path=receipt_path, receipt_text=receipt_text,
+        require_ui_traceback=require_ui_traceback, design_spec=design_spec,
+    )
+    violations.extend(ui_violations)
+    report: dict[str, Any] = {
         "ok": len(violations) == 0,
         "worktree": str(wt),
         "brief": str(brief),
@@ -1186,6 +1161,10 @@ def run_pre_review_check(
         "changed_files": changed_files,
         "violations": violations,
     }
+    if ui_enforced or ui_violations:
+        report["ui_closeout_enforced"] = ui_enforced
+        report["guidance"] = PLAYBOOK_GUIDANCE
+    return report
 
 
 def _feedback_cli_error(message: str, reference: str) -> int:
@@ -1329,6 +1308,8 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--actor-role", default=None, help="Effective actor role for inline edit budget checks")
     p_pre.add_argument("--max-inline-files", type=int, default=3, help="Maximum files an M1/Steering actor may edit inline")
     p_pre.add_argument("--events-jsonl", "--trace-jsonl", dest="events_jsonl", type=Path, default=None, help="Optional events.jsonl trace for R10 verification grounding")
+    p_pre.add_argument("--require-ui-traceback", action="store_true", help="Require UI PNG snapshot, whitespace check, and Designer Visual Traceback in R10 receipt")
+    p_pre.add_argument("--design-spec", type=Path, default=None, help="Explicit design.md path triggering UI closeout verification")
     p_pre.add_argument("--json", action="store_true", default=True, help="Emit JSON output (default True)")
 
     p_diff = sub.add_parser("diff-check", aliases=["whitespace-check"], help="Report git whitespace/conflict issues as a soft advisory")
@@ -1351,17 +1332,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     if args.command == "pre-review-check":
         report = run_pre_review_check(
-            worktree=args.worktree,
-            brief_path=args.brief,
-            receipt_path=args.receipt,
-            base_ref=args.base_ref,
-            head_ref=args.head_ref,
-            allow_dirty=args.allow_dirty,
-            actor_role=args.actor_role,
-            max_inline_files=args.max_inline_files,
-            events_jsonl=args.events_jsonl,
+            worktree=args.worktree, brief_path=args.brief, receipt_path=args.receipt,
+            base_ref=args.base_ref, head_ref=args.head_ref, allow_dirty=args.allow_dirty,
+            actor_role=args.actor_role, max_inline_files=args.max_inline_files,
+            events_jsonl=args.events_jsonl, require_ui_traceback=args.require_ui_traceback,
+            design_spec=args.design_spec,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        if not report["ok"] and report.get("guidance"):
+            sys.stderr.write(f"[feedback_guard] UI closeout gate failed; see Reference: {report['guidance']}\n")
         return 0 if report["ok"] else 1
     if args.command in {"diff-check", "whitespace-check"}:
         payload, code = _run_diff_check(args.worktree, args.base_ref, args.head_ref)

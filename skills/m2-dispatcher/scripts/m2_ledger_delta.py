@@ -9,7 +9,8 @@ from skill_runtime import redact_payload, redact_text
 
 OUTPUT_BUDGET = 3850
 _TEXT_KEYS = (
-    "ok", "goal", "old_goal", "new_goal", "has_delta", "truncated",
+    "ok", "goal", "old_goal", "new_goal", "ui_scope", "error_code", "missing",
+    "receipts_checked", "snapshots", "guidance", "reference", "has_delta", "truncated",
     "tasks_truncated", "total_tasks", "omitted_tasks", "task_counts",
     "event_clipped", "remaining_events", "task_offset", "next_task_offset",
     "next_since_line", "event_char_offset", "current_event_id",
