@@ -29,6 +29,7 @@ SKILL_DIR = SCRIPT_DIR.parent
 SKILLS_ROOT = SKILL_DIR.parent
 DEFAULT_NODES_DOC = SKILLS_ROOT / "workflow-hub" / "references" / "how-to-nodes.md"
 GUARD_PATH = SCRIPT_DIR / "howto_guard.py"
+JEV_GUIDE_POINTER = "skills/howto/references/jev-systemone-guide.md"
 
 _CYBERNETIC_PYRAMID: tuple[dict[str, Any], ...] = (
     {
@@ -376,6 +377,7 @@ def list_nodes(
     *,
     group: str | None = None,
     nodes_doc: Path = DEFAULT_NODES_DOC,
+    summary: bool = False,
 ) -> dict[str, Any]:
     catalog = parse_howto_catalog(nodes_doc)
     selected = catalog["nodes"]
@@ -384,17 +386,29 @@ def list_nodes(
         if norm_group not in {"A", "B", "C"}:
             raise ValueError(f"Unsupported group '{group}'; expected A, B, or C")
         selected = [n for n in selected if n["group"] == norm_group]
+    nodes_payload = selected
+    broken_edges_payload = catalog["broken_edges"] if not norm_group else [
+        tk for tk in catalog["broken_edges"]
+        if any(nid in _expand_node_ids(tk["edge"]) for nid in {n["id"] for n in selected})
+    ]
+    if summary:
+        nodes_payload = [
+            {"id": node["id"], "title": node["title"], "group": node["group"]}
+            for node in selected
+        ]
+        broken_edges_payload = [
+            {"id": tk["id"], "edge": tk["edge"]}
+            for tk in broken_edges_payload
+        ]
     return {
         "ok": True,
         "group_filter": norm_group or None,
+        "summary": summary,
         "node_count": len(selected),
         "node_ids": [n["id"] for n in selected],
-        "nodes": selected,
+        "nodes": nodes_payload,
         "broken_edge_count": catalog["broken_edge_count"],
-        "broken_edges": catalog["broken_edges"] if not norm_group else [
-            tk for tk in catalog["broken_edges"]
-            if any(nid in _expand_node_ids(tk["edge"]) for nid in {n["id"] for n in selected})
-        ],
+        "broken_edges": broken_edges_payload,
     }
 
 
@@ -440,7 +454,7 @@ def _format_graph_text(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
+def build_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC, summary: bool = False) -> dict[str, Any]:
     catalog = parse_howto_catalog(nodes_doc)
     by_id = {n["id"]: n for n in catalog["nodes"]}
     valid_ids = set(by_id)
@@ -510,6 +524,7 @@ def build_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
     )
     return {
         "ok": True,
+        "summary": summary,
         "node_count": catalog["node_count"],
         "calls_edge_count": len(calls_edges),
         "points_to_edge_count": len(points_to_edges),
@@ -518,15 +533,15 @@ def build_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
         "cybernetic_pyramid": pyramid_payload,
         "stages": stages_payload,
         "adjacency": {
-            "calls": calls_edges,
-            "points_to": points_to_edges,
+            "calls": [] if summary else calls_edges,
+            "points_to": [] if summary else points_to_edges,
         },
         "text": text,
     }
 
 
-def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
-    return build_graph(nodes_doc=nodes_doc)
+def render_macro_graph(*, nodes_doc: Path = DEFAULT_NODES_DOC, summary: bool = False) -> dict[str, Any]:
+    return build_graph(nodes_doc=nodes_doc, summary=summary)
 
 
 def build_neighbors(node_id: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
@@ -607,6 +622,7 @@ def lookup_howto(
     query: str,
     *,
     nodes_doc: Path = DEFAULT_NODES_DOC,
+    summary: bool = False,
 ) -> dict[str, Any]:
     clean_query = str(query or "").strip()
     if not clean_query:
@@ -670,11 +686,18 @@ def lookup_howto(
     result: dict[str, Any] = {
         "ok": True,
         "query": clean_query,
-        "matched_nodes": [by_id[nid] for nid in matched_node_ids[:10] if nid in by_id],
-        "matched_broken_edges": matched_tks[:8],
+        "summary": summary,
+        "matched_nodes": [by_id[nid] for nid in matched_node_ids[:6] if nid in by_id],
+        "matched_broken_edges": matched_tks[:4],
         "target_skills": target_skills,
         "cli_entry_commands": cli_commands,
     }
+    if any(
+        keyword in {"jev", "falcon", "system one", "systemone", "noul", "choice", "快思考"}
+        for route in matched_routes
+        for keyword in route["matched_keywords"]
+    ):
+        result["reference_drawers"] = [JEV_GUIDE_POINTER]
     if guidance_notes:
         result["guidance"] = guidance_notes[0] if len(guidance_notes) == 1 else " | ".join(guidance_notes)
     return result
@@ -739,7 +762,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="howto_flow.py",
         description="Deterministic /howto default entry CLI (--list-nodes, --graph/--pyramid, --neighbors, --lookup, --scaffold-tuple).",
     )
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--list-nodes", action="store_true", help="List canonical 30+ How-To nodes and TK-01..TK-16 registry.")
     mode.add_argument("--graph", "--pyramid", dest="graph", action="store_true", help="Render the L4–L1 Cybernetic Pyramid above the 5-Stage Pipeline.")
     mode.add_argument("--neighbors", metavar="NODE_ID", help="Render a 1-page Local Neighborhood Card for a canonical node ID (e.g. E2).")
@@ -747,6 +770,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--scaffold-tuple", metavar="TASK", help="Generate a howto_guard-validated 5-tuple scaffold.")
     parser.add_argument("--group", choices=("A", "B", "C", "a", "b", "c"), default=None, help="Optional group filter for --list-nodes.")
     parser.add_argument("--nodes-doc", type=Path, default=DEFAULT_NODES_DOC, help="Path to workflow-hub/references/how-to-nodes.md.")
+    parser.add_argument("--summary", action="store_true", help="Emit bounded summary payloads for graph, lookup, and node listing.")
     parser.add_argument("--json", action="store_true", help="Emit JSON output (human-readable text is default for --graph, --neighbors, and --scaffold-tuple).")
     return parser
 
@@ -754,16 +778,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     ns = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if not any((ns.list_nodes, ns.graph, ns.neighbors is not None, ns.lookup is not None, ns.scaffold_tuple is not None)):
+        ns.graph = True
+        ns.summary = True
 
     try:
         if ns.list_nodes:
-            payload = list_nodes(group=ns.group, nodes_doc=ns.nodes_doc)
+            payload = list_nodes(group=ns.group, nodes_doc=ns.nodes_doc, summary=ns.summary)
         elif ns.graph:
-            payload = render_macro_graph(nodes_doc=ns.nodes_doc)
+            payload = render_macro_graph(
+                nodes_doc=ns.nodes_doc,
+                summary=ns.summary or ns.json,
+            )
         elif ns.neighbors is not None:
             payload = inspect_neighbors(ns.neighbors, nodes_doc=ns.nodes_doc)
         elif ns.lookup is not None:
-            payload = lookup_howto(ns.lookup, nodes_doc=ns.nodes_doc)
+            payload = lookup_howto(ns.lookup, nodes_doc=ns.nodes_doc, summary=ns.summary)
         else:
             payload = scaffold_tuple(ns.scaffold_tuple, nodes_doc=ns.nodes_doc)
     except (FileNotFoundError, ValueError) as exc:

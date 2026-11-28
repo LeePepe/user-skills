@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HOWTO_FLOW = ROOT / "skills" / "howto" / "scripts" / "howto_flow.py"
 HOWTO_GUARD = ROOT / "skills" / "howto" / "scripts" / "howto_guard.py"
+SKILL_RETRO = ROOT / "skills" / "skill-retro" / "scripts" / "skill_retro.py"
 HOWTO_SKILL_MD = ROOT / "skills" / "howto" / "SKILL.md"
 WORKFLOW_HUB_SKILL_MD = ROOT / "skills" / "workflow-hub" / "SKILL.md"
 HOWTO_NODES_MD = ROOT / "skills" / "workflow-hub" / "references" / "how-to-nodes.md"
@@ -63,6 +66,17 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
         )
         self.assertIn("1. 信号与入口", graph_proc.stdout)
         self.assertIn("5. 个人数据飞轮", graph_proc.stdout)
+
+        default_proc = subprocess.run(
+            [sys.executable, str(HOWTO_FLOW)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(default_proc.returncode, 0, default_proc.stderr)
+        for layer in ("L4 人类掌舵层", "L3 熵减与自演进层", "L2 协同编排层", "L1 专项执行层"):
+            self.assertIn(layer, default_proc.stdout)
 
         pyramid_proc = subprocess.run(
             [sys.executable, str(HOWTO_FLOW), "--pyramid", "--json"],
@@ -162,6 +176,84 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
                 self.assertIn("UITraitCollection", guidance)
                 self.assertIn("@Environment(\\.colorScheme)", guidance)
                 self.assertNotIn("prefers-color-scheme", guidance)
+                self.assertLess(len(proc.stdout.encode("utf-8")), 12288)
+
+    def test_skill_retro_probes_report_post_fix_contracts(self) -> None:
+        def run_isolated_probe(skill: str) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory(prefix="howto-probe-") as home_dir:
+                home = Path(home_dir)
+                (home / "Development").mkdir()
+                (home / "Development" / "user-skills").symlink_to(ROOT)
+                env = os.environ.copy()
+                env["HOME"] = home_dir
+                return subprocess.run(
+                    [sys.executable, str(SKILL_RETRO), "probe", "--skill", skill, "--fast", "--json"],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+        howto_probe = run_isolated_probe("howto")
+        self.assertEqual(howto_probe.returncode, 0, howto_probe.stderr)
+        howto_signals = json.loads(howto_probe.stdout)["skills"][0]["signals"]
+        self.assertEqual(howto_signals["l1_unwired_drawers"], 0)
+        self.assertEqual(howto_signals["l2_exit2_post_fix"], 0)
+        self.assertEqual(howto_signals["aci_output_bloat_count"], 0)
+        self.assertEqual(howto_signals["internal_doc_cli_drift_count"], 0)
+
+        workflow_probe = run_isolated_probe("workflow-hub")
+        self.assertEqual(workflow_probe.returncode, 0, workflow_probe.stderr)
+        workflow_signals = json.loads(workflow_probe.stdout)["skills"][0]["signals"]
+        self.assertFalse(workflow_signals["eval_escape_gap"])
+        self.assertGreaterEqual(workflow_signals["eval_counter_case_ratio"], 0.25)
+
+    def test_validate_recipe_enforces_jev_falcon_redline_without_blocking_normal_http(self) -> None:
+        bad_jev = (
+            "- **Inbound**: Daily email pulse\n"
+            "- **Internal**: POST directly to http://127.0.0.1:7024/v1/systemone for classification\n"
+            "- **Calls**: I3, I4\n"
+            "- **PointsTo**: I5\n"
+            "- **Trigger & Notify**: Pulse P1\n"
+        )
+        bad_proc = subprocess.run(
+            [sys.executable, str(HOWTO_GUARD), "validate-recipe", "--text", bad_jev],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(bad_proc.returncode, 1)
+        stderr_lines = [ln for ln in bad_proc.stderr.strip().splitlines() if ln.strip()]
+        self.assertLessEqual(len(stderr_lines), 3)
+        self.assertIn("skills/howto/references/jev-systemone-guide.md", bad_proc.stderr)
+
+        for valid_recipe in (
+            (
+                "- **Inbound**: Release hook\n"
+                "- **Internal**: Verify `/api/live` with `curl -fsSL https://example.com/api/live`\n"
+                "- **Calls**: E9, E12\n"
+                "- **PointsTo**: G2\n"
+                "- **Trigger & Notify**: Hook P1\n"
+            ),
+            (
+                "- **Inbound**: Daily email pulse\n"
+                "- **Internal**: Route through Falcon 127.0.0.1:19823/v1/systemone (`FALCON_SOURCE_KEY`); never call 127.0.0.1:7024/v1/systemone directly\n"
+                "- **Calls**: I3, I4\n"
+                "- **PointsTo**: I5\n"
+                "- **Trigger & Notify**: Pulse P1\n"
+            ),
+        ):
+            with self.subTest(recipe=valid_recipe):
+                ok_proc = subprocess.run(
+                    [sys.executable, str(HOWTO_GUARD), "validate-recipe", "--text", valid_recipe],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(ok_proc.returncode, 0, ok_proc.stderr)
 
     def test_validate_recipe_rejects_custom_and_parallel_theme_engines_with_3line_pointer(self) -> None:
         bad_recipes = (

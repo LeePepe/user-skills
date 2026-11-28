@@ -16,6 +16,7 @@ SKILLS_ROOT = SKILL_DIR.parent
 DEFAULT_NODES_DOC = SKILLS_ROOT / "workflow-hub" / "references" / "how-to-nodes.md"
 SYSTEM_APPEARANCE_POINTER = "skills/workflow-hub/references/how-to-nodes.md#6-high-value-recipes"
 APPEARANCE_LEDGER_POINTER = "skills/my-designer/references/appearance-ledger.md"
+JEV_GUIDE_POINTER = "skills/howto/references/jev-systemone-guide.md"
 
 _TUPLE_PATTERNS: dict[str, re.Pattern[str]] = {
     "Inbound": re.compile(r"\bInbound\b", re.IGNORECASE),
@@ -73,6 +74,16 @@ _SUBCLAUSE_SPLIT_RE = re.compile(
     r"(?:但是|但|然而|不过|却|转而|改用)|"
     r"(?<![A-Za-z0-9_])and\s+(?=(?:add|build|create|implement|wire|plumb|persist|store|expose|introduce|bind|use|adopt|follow)\b)"
     r")"
+)
+_JEV_DIRECT_BYPASS_RE = re.compile(
+    r"(?i)(?:"
+    r"https?://(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
+    r"(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
+    r":7024/v1/systemone\b"
+    r")"
+)
+_JEV_FALCON_CHAIN_RE = re.compile(
+    r"(?i)(?::19823/v1/systemone\b|\bFalcon\b|\bFALCON_SOURCE_KEY\b|\bBearer\b)"
 )
 
 
@@ -213,8 +224,40 @@ def check_vault_redlines(text: str) -> list[dict[str, str]]:
     return violations
 
 
+def check_jev_redlines(text: str) -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        for raw_clause in _CLAUSE_SPLIT_RE.split(line):
+            for subclause in _SUBCLAUSE_SPLIT_RE.split(raw_clause):
+                clause = subclause.strip()
+                if not clause:
+                    continue
+                for m_jev in _JEV_DIRECT_BYPASS_RE.finditer(clause):
+                    if _clause_is_negated(clause, m_jev, lookback=80):
+                        continue
+                    if _JEV_FALCON_CHAIN_RE.search(line):
+                        continue
+                    violations.append({
+                        "code": "jev_bypass_falcon_violation",
+                        "line": str(idx),
+                        "detail": (
+                            "Jev/System One calls must route through authenticated Falcon :19823 "
+                            "and must not call local Raven :7024 directly."
+                        ),
+                        "pointer": JEV_GUIDE_POINTER,
+                    })
+                    break
+    return violations
+
+
 def _build_self_disclosing_pointer(violations: Sequence[dict[str, Any]]) -> str:
     codes = {str(v.get("code") or "") for v in violations}
+    if "jev_bypass_falcon_violation" in codes:
+        return (
+            "howto_guard: jev_bypass_falcon_violation — direct unauthenticated Raven :7024 System One call rejected.\n"
+            "Fix: route through authenticated Falcon :19823 with the configured source key.\n"
+            f"Reference: {JEV_GUIDE_POINTER}"
+        )
     if "custom_theme_engine_violation" in codes:
         return (
             "howto_guard: custom_theme_engine_violation — custom .designTheme / in-app theme switcher / parallel theme engine rejected.\n"
@@ -234,6 +277,7 @@ def validate_recipe(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[s
     tuple_res = audit_5tuple(text)
     node_res = check_nodes(text, nodes_doc=nodes_doc)
     redline_violations = check_vault_redlines(text)
+    jev_violations = check_jev_redlines(text)
     appearance_violations = check_system_appearance_redlines(text)
 
     violations: list[dict[str, Any]] = []
@@ -261,6 +305,7 @@ def validate_recipe(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[s
             "detail": f"Unknown broken-edge ID(s): {', '.join(node_res['unknown_broken_edges'])}",
         })
     violations.extend(redline_violations)
+    violations.extend(jev_violations)
     violations.extend(appearance_violations)
 
     report: dict[str, Any] = {
