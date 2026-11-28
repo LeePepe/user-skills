@@ -1,0 +1,6 @@
+{
+  "name": "save-tool",
+  "description": "Use when users share skills, tools, repositories, or links to save for later, or query collected tools. Extract, deduplicate, file topic notes, and search collected-tools via Hybrid RAG. Does not install or run tools.",
+  "version": "1.0.1",
+  "category": "meta"
+}
