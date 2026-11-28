@@ -209,6 +209,52 @@ class HowtoSystemThemeAndGraphTests(unittest.TestCase):
         self.assertFalse(workflow_signals["eval_escape_gap"])
         self.assertGreaterEqual(workflow_signals["eval_counter_case_ratio"], 0.25)
 
+    def test_validate_recipe_enforces_jev_falcon_redline_without_blocking_normal_http(self) -> None:
+        bad_jev = (
+            "- **Inbound**: Daily email pulse\n"
+            "- **Internal**: POST directly to http://127.0.0.1:7024/v1/systemone for classification\n"
+            "- **Calls**: I3, I4\n"
+            "- **PointsTo**: I5\n"
+            "- **Trigger & Notify**: Pulse P1\n"
+        )
+        bad_proc = subprocess.run(
+            [sys.executable, str(HOWTO_GUARD), "validate-recipe", "--text", bad_jev],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(bad_proc.returncode, 1)
+        stderr_lines = [ln for ln in bad_proc.stderr.strip().splitlines() if ln.strip()]
+        self.assertLessEqual(len(stderr_lines), 3)
+        self.assertIn("skills/howto/references/jev-systemone-guide.md", bad_proc.stderr)
+
+        for valid_recipe in (
+            (
+                "- **Inbound**: Release hook\n"
+                "- **Internal**: Verify `/api/live` with `curl -fsSL https://example.com/api/live`\n"
+                "- **Calls**: E9, E12\n"
+                "- **PointsTo**: G2\n"
+                "- **Trigger & Notify**: Hook P1\n"
+            ),
+            (
+                "- **Inbound**: Daily email pulse\n"
+                "- **Internal**: Route through Falcon 127.0.0.1:19823/v1/systemone (`FALCON_SOURCE_KEY`); never call 127.0.0.1:7024/v1/systemone directly\n"
+                "- **Calls**: I3, I4\n"
+                "- **PointsTo**: I5\n"
+                "- **Trigger & Notify**: Pulse P1\n"
+            ),
+        ):
+            with self.subTest(recipe=valid_recipe):
+                ok_proc = subprocess.run(
+                    [sys.executable, str(HOWTO_GUARD), "validate-recipe", "--text", valid_recipe],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(ok_proc.returncode, 0, ok_proc.stderr)
+
     def test_validate_recipe_rejects_custom_and_parallel_theme_engines_with_3line_pointer(self) -> None:
         bad_recipes = (
             (

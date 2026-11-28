@@ -77,9 +77,9 @@ _SUBCLAUSE_SPLIT_RE = re.compile(
 )
 _JEV_DIRECT_BYPASS_RE = re.compile(
     r"(?i)(?:"
-    r"\bcurl\b|\bwget\b|\brequests?\.(?:get|post|request)\b|\burllib(?:\.request)?\b|\bfetch\s*\(|"
     r"https?://(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
-    r"(?:127\.0\.0\.1|localhost):7024/v1/systemone\b"
+    r"(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
+    r":7024/v1/systemone\b"
     r")"
 )
 _JEV_FALCON_CHAIN_RE = re.compile(
@@ -227,16 +227,26 @@ def check_vault_redlines(text: str) -> list[dict[str, str]]:
 def check_jev_redlines(text: str) -> list[dict[str, str]]:
     violations: list[dict[str, str]] = []
     for idx, line in enumerate(text.splitlines(), 1):
-        if _JEV_DIRECT_BYPASS_RE.search(line) and not _JEV_FALCON_CHAIN_RE.search(line):
-            violations.append({
-                "code": "jev_bypass_falcon_violation",
-                "line": str(idx),
-                "detail": (
-                    "Jev/System One calls must route through authenticated Falcon :19823 "
-                    "and must not call local Raven :7024 directly."
-                ),
-                "pointer": JEV_GUIDE_POINTER,
-            })
+        for raw_clause in _CLAUSE_SPLIT_RE.split(line):
+            for subclause in _SUBCLAUSE_SPLIT_RE.split(raw_clause):
+                clause = subclause.strip()
+                if not clause:
+                    continue
+                for m_jev in _JEV_DIRECT_BYPASS_RE.finditer(clause):
+                    if _clause_is_negated(clause, m_jev, lookback=80):
+                        continue
+                    if _JEV_FALCON_CHAIN_RE.search(line):
+                        continue
+                    violations.append({
+                        "code": "jev_bypass_falcon_violation",
+                        "line": str(idx),
+                        "detail": (
+                            "Jev/System One calls must route through authenticated Falcon :19823 "
+                            "and must not call local Raven :7024 directly."
+                        ),
+                        "pointer": JEV_GUIDE_POINTER,
+                    })
+                    break
     return violations
 
 
