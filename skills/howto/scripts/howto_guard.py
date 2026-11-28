@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-Token 5-tuple, node ID, broken-edge, and vault-isolation validator for howto."""
+"""Zero-Token 5-tuple, node ID, broken-edge, vault-isolation, and Apple appearance guard for howto."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from typing import Any, Sequence
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SKILLS_ROOT = SKILL_DIR.parent
 DEFAULT_NODES_DOC = SKILLS_ROOT / "workflow-hub" / "references" / "how-to-nodes.md"
+SYSTEM_APPEARANCE_POINTER = "skills/workflow-hub/references/how-to-nodes.md#6-high-value-recipes"
+APPEARANCE_LEDGER_POINTER = "skills/my-designer/references/appearance-ledger.md"
+JEV_GUIDE_POINTER = "skills/howto/references/jev-systemone-guide.md"
 
 _TUPLE_PATTERNS: dict[str, re.Pattern[str]] = {
     "Inbound": re.compile(r"\bInbound\b", re.IGNORECASE),
@@ -29,13 +32,58 @@ _TK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])(TK-\d{2})(?![A-Za-z0-9_-])")
 _AUTO_SYNC_VAULT_RE = re.compile(
     r"(?i)knowledge-vault[^\n。；;!?！？]{0,60}(?:自动同步|auto[-_\s]?sync)[^\n。；;!?！？]{0,60}design-studio"
 )
-_NEGATION_RE = re.compile(r"(?i)(?:永不|禁止|严禁|不自动|不得|不会|never|must\s+not|do\s+not|don't|cannot|not\s+auto)")
 _SAVE_TOOL_EXEC_RE = re.compile(
     r"(?i)save-tool[^\n。；;!?！？]{0,60}(?:自动安装|直接运行|执行代码|auto[-_\s]?install|execute\s+tool|run\s+tool)"
 )
+_CUSTOM_THEME_ENGINE_RE = re.compile(
+    r"(?i)(?:"
+    r"\.designTheme\b|"
+    r"\bdesignTheme\b\s*(?:state|store|engine|manager|modifier|key|binding|enum|environment|plumbing|管道|状态机)|"
+    r"(?:build|add|create|implement|wire|plumb|persist|store|expose)\b[^\n。；;!?！？]{0,40}\bdesignTheme\b|"
+    r"\b(?:in-app|app-private|custom|manual|user-selectable)\s+(?:light/dark\s+|dark[- ]mode\s+)?theme\s+"
+    r"(?:toggle|toggles|switcher|switchers|selector|picker|state\s+machine|state\s+machines|engine|engines|manager)\b|"
+    r"\b(?:custom|manual|in-app)\s+(?:dark[- ]mode|appearance|color[- ]scheme)\s+"
+    r"(?:toggle|toggles|switcher|switchers|selector|picker|state\s+machine|state\s+machines)\b|"
+    r"\b(?:web[-_\s]?css(?:[-_\s]?style)?\s+)?parallel[-_\s]+theme\s+"
+    r"(?:engine|engines|state\s+machine|state\s+machines|store|plumbing)\b|"
+    r"(?:(?<![A-Za-z0-9_])@AppStorage|\bUserDefaults\b)[^\n。；;!?！？]{0,56}\b(?:designTheme|themeMode|selectedTheme|appTheme|isDarkMode|colorSchemeOverride)\b|"
+    r"(?:自建|自定义|应用内|应用私有|手动|独立|平行)[^\n。；;!?！？]{0,20}(?:主题切换(?:器|开关)?|暗黑模式开关|深色模式开关|主题状态机|主题引擎|平行主题|designTheme)"
+    r")"
+)
+
+_NEGATION_RE = re.compile(
+    r"(?i)(?:永不|禁止|严禁|不自动|不得|不会|不要|禁自建|禁建|杜绝|切勿|拦截|零自定义|零私有|"
+    r"(?<![A-Za-z0-9_])(?:never|must\s+not|do\s+not|don't|cannot|not\s+auto|avoid|forbid|forbids|forbidden|"
+    r"reject|rejects|rejecting|without|zero(?=\s+(?:custom|private|in-app|manual|parallel|web|theme\b))|no\s+custom)(?![A-Za-z0-9_]))"
+)
+_REMOVAL_RE = re.compile(
+    r"(?i)(?:移除|弃用|废除|删除|清理|"
+    r"(?<![A-Za-z0-9_])(?:remove|removes|removing|drop|dropping|delete|deleting|retire|retiring)(?![A-Za-z0-9_]))"
+)
+_EXCLUSION_PREP_RE = re.compile(
+    r"(?i)(?:而非|而不是|取代|替代|(?<![A-Za-z0-9_])(?:instead\s+of|rather\s+than)(?![A-Za-z0-9_]))"
+)
 _CLAUSE_SPLIT_RE = re.compile(
-    r"[。；;！!？?\n]+|(?:\.(?=\s|$))|(?:\s*[|｜]\s*)|(?:[,，]\s*(?=(?:save-tool|knowledge-vault|design-studio|并且|而且|同时|and\b|but\b|then\b)))",
+    r"[。；;！!？?\n]+|(?:\.(?=\s|$))|(?:\s*[|｜]\s*)|"
+    r"(?:[,，]\s*(?=(?:save-tool|knowledge-vault|design-studio|并且|而且|同时|但是|但|然而|不过|and\b|but\b|however\b|yet\b|then\b)))",
     re.IGNORECASE,
+)
+_SUBCLAUSE_SPLIT_RE = re.compile(
+    r"(?i)(?:"
+    r"(?<![A-Za-z0-9_])(?:but|however|yet|though|although|while|whereas|then|instead(?!\s+of))(?![A-Za-z0-9_])|"
+    r"(?:但是|但|然而|不过|却|转而|改用)|"
+    r"(?<![A-Za-z0-9_])and\s+(?=(?:add|build|create|implement|wire|plumb|persist|store|expose|introduce|bind|use|adopt|follow)\b)"
+    r")"
+)
+_JEV_DIRECT_BYPASS_RE = re.compile(
+    r"(?i)(?:"
+    r"https?://(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
+    r"(?:127\.0\.0\.1|localhost):7024/v1/systemone\b|"
+    r":7024/v1/systemone\b"
+    r")"
+)
+_JEV_FALCON_CHAIN_RE = re.compile(
+    r"(?i)(?::19823/v1/systemone\b|\bFalcon\b|\bFALCON_SOURCE_KEY\b|\bBearer\b)"
 )
 
 
@@ -106,10 +154,50 @@ def check_nodes(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, 
     }
 
 
-def _clause_is_negated(clause: str, match: re.Match[str]) -> bool:
-    start = max(0, match.start() - 24)
-    window = clause[start:match.end()]
-    return bool(_NEGATION_RE.search(window))
+def _clause_is_negated(
+    clause: str,
+    match: re.Match[str],
+    *,
+    lookback: int = 24,
+    allow_removal: bool = False,
+) -> bool:
+    prefix = clause[max(0, match.start() - lookback):match.start()]
+    excl_hits = list(_EXCLUSION_PREP_RE.finditer(prefix))
+    if excl_hits:
+        before_excl = prefix[:excl_hits[-1].start()]
+        if _NEGATION_RE.search(before_excl) or (allow_removal and _REMOVAL_RE.search(before_excl)):
+            return False
+        return True
+    if re.match(r"(?i)^\s*(?:instead\s+of|rather\s+than|而非|而不是)\b", clause[match.end():match.end() + 20]):
+        return False
+    window = clause[max(0, match.start() - lookback):match.end()]
+    if _NEGATION_RE.search(window):
+        return True
+    return bool(allow_removal and _REMOVAL_RE.search(window))
+
+
+def check_system_appearance_redlines(text: str) -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        for raw_clause in _CLAUSE_SPLIT_RE.split(line):
+            for subclause in _SUBCLAUSE_SPLIT_RE.split(raw_clause):
+                clause = subclause.strip()
+                if not clause:
+                    continue
+                for m_theme in _CUSTOM_THEME_ENGINE_RE.finditer(clause):
+                    if not _clause_is_negated(clause, m_theme, lookback=80, allow_removal=True):
+                        violations.append({
+                            "code": "custom_theme_engine_violation",
+                            "line": str(idx),
+                            "detail": (
+                                "UI light/dark appearance must follow Apple OS-native dynamic system appearance "
+                                "(NSAppearance / UITraitCollection / @Environment(\\.colorScheme) + semantic dynamic tokens); "
+                                "never build custom .designTheme, in-app theme switchers, or Web-CSS-style parallel theme engines."
+                            ),
+                            "pointer": f"{SYSTEM_APPEARANCE_POINTER} | {APPEARANCE_LEDGER_POINTER}",
+                        })
+                        break
+    return violations
 
 
 def check_vault_redlines(text: str) -> list[dict[str, str]]:
@@ -136,10 +224,61 @@ def check_vault_redlines(text: str) -> list[dict[str, str]]:
     return violations
 
 
+def check_jev_redlines(text: str) -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        for raw_clause in _CLAUSE_SPLIT_RE.split(line):
+            for subclause in _SUBCLAUSE_SPLIT_RE.split(raw_clause):
+                clause = subclause.strip()
+                if not clause:
+                    continue
+                for m_jev in _JEV_DIRECT_BYPASS_RE.finditer(clause):
+                    if _clause_is_negated(clause, m_jev, lookback=80):
+                        continue
+                    if _JEV_FALCON_CHAIN_RE.search(line):
+                        continue
+                    violations.append({
+                        "code": "jev_bypass_falcon_violation",
+                        "line": str(idx),
+                        "detail": (
+                            "Jev/System One calls must route through authenticated Falcon :19823 "
+                            "and must not call local Raven :7024 directly."
+                        ),
+                        "pointer": JEV_GUIDE_POINTER,
+                    })
+                    break
+    return violations
+
+
+def _build_self_disclosing_pointer(violations: Sequence[dict[str, Any]]) -> str:
+    codes = {str(v.get("code") or "") for v in violations}
+    if "jev_bypass_falcon_violation" in codes:
+        return (
+            "howto_guard: jev_bypass_falcon_violation — direct unauthenticated Raven :7024 System One call rejected.\n"
+            "Fix: route through authenticated Falcon :19823 with the configured source key.\n"
+            f"Reference: {JEV_GUIDE_POINTER}"
+        )
+    if "custom_theme_engine_violation" in codes:
+        return (
+            "howto_guard: custom_theme_engine_violation — custom .designTheme / in-app theme switcher / parallel theme engine rejected.\n"
+            "Fix: follow Apple OS-native dynamic system appearance (NSAppearance / UITraitCollection / @Environment(\\.colorScheme)) via E7 -> P7 -> E4 -> E9.\n"
+            f"Reference: {SYSTEM_APPEARANCE_POINTER} ({APPEARANCE_LEDGER_POINTER})"
+        )
+    first_code = str(violations[0].get("code") or "recipe_violation") if violations else "recipe_violation"
+    first_detail = str(violations[0].get("detail") or "Recipe validation failed.") if violations else "Recipe validation failed."
+    return (
+        f"howto_guard: {first_code} — {first_detail}\n"
+        "Fix: ensure Inbound/Internal/Calls/PointsTo/Trigger&Notify 5-tuple uses canonical nodes and respects vault redlines.\n"
+        "Reference: skills/workflow-hub/references/how-to-nodes.md"
+    )
+
+
 def validate_recipe(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[str, Any]:
     tuple_res = audit_5tuple(text)
     node_res = check_nodes(text, nodes_doc=nodes_doc)
     redline_violations = check_vault_redlines(text)
+    jev_violations = check_jev_redlines(text)
+    appearance_violations = check_system_appearance_redlines(text)
 
     violations: list[dict[str, Any]] = []
     if not tuple_res["ok"]:
@@ -166,13 +305,18 @@ def validate_recipe(text: str, *, nodes_doc: Path = DEFAULT_NODES_DOC) -> dict[s
             "detail": f"Unknown broken-edge ID(s): {', '.join(node_res['unknown_broken_edges'])}",
         })
     violations.extend(redline_violations)
+    violations.extend(jev_violations)
+    violations.extend(appearance_violations)
 
-    return {
+    report: dict[str, Any] = {
         "ok": len(violations) == 0,
         "five_tuple": tuple_res,
         "nodes": node_res,
         "violations": violations,
     }
+    if violations:
+        report["pointer"] = _build_self_disclosing_pointer(violations)
+    return report
 
 
 def _read_input_text(file_path: Path | None, inline_text: str | None) -> str:
@@ -218,6 +362,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = validate_recipe(content, nodes_doc=args.nodes_doc)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["ok"] and report.get("pointer"):
+        sys.stderr.write(f"{report['pointer']}\n")
     return 0 if report["ok"] else 1
 
 

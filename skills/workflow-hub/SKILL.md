@@ -12,7 +12,18 @@ description: 总工作流开放能力图谱：把 Linear Idea、Phase 0 共创�
 
 ## 开放式能力节点与按需直连图谱（Open Capability Graph）
 
-图谱不规定固定数量或串行顺序；当前挂载的能力节点包括：
+### L4–L1 四层控制论金字塔（4-Layer Cybernetic Pyramid — Harness Engineering）
+
+纵向控制论分层（`howto_flow.py --pyramid`）定义人类与三类 Agent 的控制关系，横向则按需直连推进业务闭环：
+
+| 金字塔层 | 控制论定位 | 职责边界与核心节点 / 技能 |
+|---|---|---|
+| **L4 人类掌舵层**（Human Helmsman） | Human → System | 独掌 4 项不可替代决策：① Product Direction & Kill-Switch · ② Taste（原生 120Hz 审美）· ③ Oracle & Boundaries（保护裁判与 Owned Paths）· ④ Evidence Acceptance（看截图/指标/R10 回执，不逐行读 Diff）；经 `I5` 拍板与 `G1` 门禁下达契约 |
+| **L3 熵减与自演进层**（Meta-Evolution） | Agent Helping Agent Improve | `P2 aidata` → `P3 retro-loop` / `agent-retro`（6 层首错归因）/ `skill-retro` → `P7 skill-contract`（3 把物理锁下沉 CLI 门禁）/ `P8 repo-kit`，将一次拍板的 Taste 与踩坑沉淀为永久确定性护栏 |
+| **L2 协同编排层**（Orchestration） | Agent Guiding Agent | `I7 personal-m2-assistant`（M3 分流）→ `m2-dispatcher`（M2 冻结 `spec.md`、盯 PR DAG）→ `team-lead`（M1 波次调度、独立 Worktree + `code-review` 跨厂商独立裁判 + V3 两轮熔断；`E6`/`E10`/`E11`） |
+| **L1 专项执行层**（Execution） | Agent Doing the Work | 30+ 标准业务节点专项执行：研发交付 `E1–E5, E7–E9, E12, Q1–Q3`、信息看板 `I1–I6, G1–G2`、个人知识与云/家居底座 `P1, P4–P6, P9, O1–O6` |
+
+图谱不规定固定数量或串行顺序；当前挂载的横向能力域包括：
 
 - **Idea & Goal State** — `linear-board`：TIA `Triage`/`Backlog`、`1 Goal = 1 Issue`、Task checklist 与 `Promote Idea -> Goal`。
 - **Co-Design** — `deep-research`、`codebase-design`（含领域建模 `domain-modeling` / `CONTEXT.md` / ADR）、`my-designer`、`design-studio`：收敛事实、领域、架构与视觉决策，冻结 `spec.md`/`design.md`。
@@ -82,4 +93,4 @@ Canonical companions:
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | primary task | `references/his-fm-nocoo-study-and-roadmap.md` | `python3 skills/workflow-hub/scripts/skills-drift-check.py --help` |
-| verification | `references/his-fm-nocoo-study-and-roadmap.md` | `skill_contract.py eval --skill workflow-hub --strict` |
+| verification | [`eval-cases.json`](references/eval-cases.json)（Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view） | `skill_contract.py eval --skill workflow-hub --strict` |

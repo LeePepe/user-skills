@@ -92,8 +92,13 @@ class SkillRetroModularTests(unittest.TestCase):
             ],
         }
         with tempfile.TemporaryDirectory() as tmp:
-            result = self.mod.emit_skill_retro_briefs(report, Path(tmp), skill_filter="my-designer")
+            dev_root = Path(tmp) / "dev"
+            (dev_root / "user-skills").mkdir(parents=True)
+            result = self.mod.emit_skill_retro_briefs(report, Path(tmp), skill_filter="my-designer", dev_root=dev_root)
             self.assertEqual(result["count"], 1)
+            self.assertEqual(result["briefs"][0]["dispatch_cwd"], str(dev_root / "user-skills"))
+            self.assertIn(f"--cwd {dev_root / 'user-skills'}", result["briefs"][0]["herdr_dispatch_cmd"])
+            self.assertEqual(result["m2_dispatch_plan"]["parallel_m1_dispatches"][0]["dispatch_cwd"], str(dev_root / "user-skills"))
             spec = Path(result["m1_goal_specs"][0]["spec_md"]).read_text(encoding="utf-8")
             brief = Path(result["briefs"][0]["writer_brief"]).read_text(encoding="utf-8")
             combined = spec + brief

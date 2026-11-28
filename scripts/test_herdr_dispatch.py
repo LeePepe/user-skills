@@ -17,6 +17,53 @@ class HerdrDispatchTests(unittest.TestCase):
         self.assertIn("--workspace-label <label>", result.stderr)
         self.assertNotIn("--tab-label <label>", result.stderr)
 
+    def test_nonexistent_cwd_falls_back_to_existing_user_skills_for_new_and_inferred_dispatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            user_skills = home / "Development" / "user-skills"
+            user_skills.mkdir(parents=True)
+            worktrees = home / "Development" / "worktrees"
+            worktrees.mkdir(parents=True)
+            handoff = home / "Development" / "handoff" / "skill-retro-foo"
+            handoff.mkdir(parents=True)
+            (handoff / "spec.md").write_text("# Goal\n", encoding="utf-8")
+            (handoff / "ledger.md").write_text("Repo: LeePepe/user-skills\n", encoding="utf-8")
+            fake = root / "herdr"
+            log = root / "calls"
+            fake.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['HERDR_TEST_LOG'], 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\\n')
+a = sys.argv[1:]
+if a[:2] == ['workspace', 'create']:
+    print(json.dumps({'result': {'workspace': {'workspace_id': 'w'}, 'root_pane': {'pane_id': 'w:p'}}}))
+elif a[:2] == ['agent', 'get']:
+    print('{}')
+else:
+    print('{}')
+""")
+            fake.chmod(0o755)
+            env = dict(os.environ, HOME=str(home), PATH=f"{root}:{os.environ['PATH']}", MOCK_HERDR_LOG=str(log), HERDR_TEST_LOG=str(log), HERDR_WORKTREES_ROOT=str(worktrees), HERDR_HANDOFF_ROOT=str(home / "Development" / "handoff"), HERDR_PROMPT_IDLE_GRACE="0")
+            missing_worktree = worktrees / "skill-retro-foo"
+            explicit = subprocess.run(
+                [str(DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "skill-retro-foo-goal-tl-r1", "--kind", "claude", "--cwd", str(missing_worktree), "--prompt", "run"],
+                capture_output=True, text=True, env=env, check=False,
+            )
+            self.assertEqual(explicit.returncode, 0, explicit.stderr)
+            self.assertIn(f"using existing fallback {user_skills}", explicit.stderr)
+            explicit_calls = [__import__("json").loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(next(call for call in explicit_calls if call[:2] == ["workspace", "create"])[3], str(user_skills))
+
+            log.unlink()
+            inferred = subprocess.run(
+                [str(DISPATCH), "--new-workspace", "--role", "team_lead", "--name", "skill-retro-foo-goal-tl-r1", "--kind", "claude"],
+                capture_output=True, text=True, env=env, check=False,
+            )
+            self.assertEqual(inferred.returncode, 0, inferred.stderr)
+            inferred_calls = [__import__("json").loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(next(call for call in inferred_calls if call[:2] == ["workspace", "create"])[3], str(user_skills))
+
     def test_new_workspace_and_legacy_workspace_flags_always_create_new_space_never_tab(self):
         with tempfile.TemporaryDirectory() as temp:
             fake = Path(temp) / "herdr"

@@ -28,7 +28,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 ## 派发、监督与安全
 
 - 目标默认 `Gemini 4 Argon · 983K context`（`gemini-4-argon` / `long_context`）；NEW_M2 必须经安全 wrapper 使用 `--new-workspace --workspace-label <space> -- --model gemini-4-argon --context long_context`，不创建 Copilot Tab。
-- `wave_order` 只表示软顺序；真实上游结果通过 `rag_context_hint` / `context_pass` 传递。`stdout` transport 只输出 receipt，不产生副作用。
+- `wave_order` 只表示软顺序；非 Phase 0 探索请求时，`--plan` 通过 `skill_runtime.hybrid_rag`（`M2_HANDOFF_ROOT` / `--handoff-root`）自动检索 Top-3 历史 handoff（`rag_hits`）并注入 `rag_context_hint` / `context_pass`，新旧 M2 立即可见历史 `spec.md` 决策、`Owned Paths` 与踩坑回执（空目录优雅降级）。`stdout` transport 只输出 receipt，不产生副作用。
 - 真静默要求最后 8 行无 `background /tasks`、`Working`、`Thinking`、`Running`、`Waiting for` 等活动标记；Goal TL 仍 `in_progress` 时继续监督。`--status`、`--watch`、`--plan` 输出完整 `unified_rollup_markdown`，包含 Wave 依赖、完成、累计完成、运行中、跨设备 `[Host: <device>]`、`in_flight_details` 与 `remote_devices`。
 - `--cleanup-duplicates` 仅清理安全重复 idle M2；保护 `HERDR_PANE_ID`、`w1:p1`、`w2J:p1`、Cindy/大总管及 working/blocked 窗格。Context Eviction 仅在旧 Goal 完成、无 review/Owner decision 且 Jev 同时确认同 Goal 概率低于 0.35 与旧上下文为噪声时成立。
 - `m2-board-hook.sh` 的 `agentStop` / `sessionEnd` hook 以锁、指纹和 60s 节流避免空转；Linear 同步按设备分片保留 Work / Non-Work、Backlog 与最近完成。
@@ -38,6 +38,8 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 ```bash
 python3 skills/personal-m2-assistant/scripts/m2-router.py --plan \
   --message '先检查通知开关，再写篇学习博客' --json
+python3 skills/personal-m2-assistant/scripts/m2-router.py --rag-query 'notification toggle spec' \
+  --use-jev --json
 python3 skills/personal-m2-assistant/scripts/m2-router.py --apply \
   --plan-file /tmp/m2-plan.json --apply-receipt-file /tmp/m2-apply.json --approve --json
 python3 skills/personal-m2-assistant/scripts/m2-router.py --sync-herdr-to-issue \
@@ -46,7 +48,7 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
   --plan-file /tmp/m2-plan.json --watch-target sapphire-notification --interval 15 --max-wait 2400 --json
 ```
 
-常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--preview-md-file`、`--transport stdout`、`--no-herdr`、`--no-dsh`。完整参数以 `--help` 为准。
+常用离线参数：`--targets-json`、`--mock-jev-json`、`--mock-magpie-json`、`--domain-map-file`、`--handoff-root`、`--rag-top-k`、`--preview-md-file`、`--transport stdout`、`--no-herdr`、`--no-dsh`。完整参数以 `--help` 为准。
 
 ## 相关节点与验证
 
@@ -54,4 +56,4 @@ python3 skills/personal-m2-assistant/scripts/m2-router.py --watch \
 - 向后兼容入口：[`m2-dispatcher/scripts/m2-router.py`](../m2-dispatcher/scripts/m2-router.py)；权威 CLI 是本技能 `scripts/m2-router.py`，实现抽屉位于 `scripts/m2_router_core/`。
 - 验证抽屉：[`eval-cases.json`](references/eval-cases.json)（Script-Only Data Drawer，使用 L2 CLI，不全量阅读）。
 - 入口检查：`sh skills/personal-m2-assistant/scripts/install-m2-board-hook.sh --help`。
-- 回归：`python3 -m unittest scripts/test_m2_router.py scripts/test_personal_m2_retro.py scripts/test_verify_skills.py`；`skill_contract.py audit/eval --skill personal-m2-assistant --strict`；`./scripts/verify`。
+- 回归：`python3 -m unittest scripts/test_m2_router_rag.py scripts/test_m2_router.py scripts/test_personal_m2_retro.py scripts/test_verify_skills.py`；`skill_contract.py audit/eval --skill personal-m2-assistant --strict`；`./scripts/verify`。

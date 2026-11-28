@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 
+REFERENCE_DRAWERS = (
+    "skills/workflow-hub/references/his-fm-nocoo-study-and-roadmap.md",
+    "skills/workflow-hub/references/seven-rings-and-progressive-6dq.md",
+)
+
+
 def _digest(path: Path) -> str:
     digest = hashlib.sha256()
     for child in sorted(path.rglob("*")):
@@ -76,6 +82,7 @@ def inspect_skills_topology(
         "issues": clashes + issues,
         "configurationFingerprint": fingerprint,
         "targets": target_states,
+        "reference_drawers": list(REFERENCE_DRAWERS),
     }
     if otter_runner is not None:
         result["otter"] = otter_runner(result)

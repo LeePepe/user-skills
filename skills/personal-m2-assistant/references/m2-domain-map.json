@@ -254,7 +254,6 @@
           "cwd": "~/Development/user-skills",
           "keywords": [
             "workflow-hub",
-            "howto",
             "m2-dispatcher",
             "team-lead",
             "linear-board"
@@ -268,6 +267,31 @@
           "space_aliases": [
             "user-skills",
             "Skills Workflow"
+          ]
+        },
+        {
+          "topic_id": "skills-howto",
+          "group": "user-skills",
+          "title": "Skills How-To",
+          "target_repo": "user-skills",
+          "cwd": "~/Development/user-skills",
+          "keywords": [
+            "howto",
+            "/howto",
+            "howto_flow",
+            "howto_guard",
+            "五元组",
+            "how-to-nodes"
+          ],
+          "aliases": [
+            "how to",
+            "howto skill",
+            "skills-howto"
+          ],
+          "space": "skills-howto",
+          "space_aliases": [
+            "user-skills",
+            "Skills How-To"
           ]
         },
         {
@@ -324,6 +348,7 @@
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
           "keywords": [
+            "agent-retro",
             "retro-loop",
             "skill-retro",
             "story-craft",

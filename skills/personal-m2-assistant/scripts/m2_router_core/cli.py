@@ -206,8 +206,8 @@ class _SelfDisclosingRouterParser(SelfDisclosingArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(
             f"m2-router: {message}\n"
-            "  Fix: pass one mode flag (`--plan`, `--apply`, `--watch`, `--status`, `--gc`, `--sync-linear`, `--board-fingerprint`, or `--install-hook`).\n"
-            "  Reference: skills/m2-dispatcher/references/bots-and-agents.md · skills/m2-dispatcher/references/pr-dag-auto-heal.md · skills/m2-dispatcher/references/runtime-profiles.yaml\n"
+            "  Fix: pass one mode flag (`--plan`, `--rag-query`, `--apply`, `--watch`, `--status`, `--gc`, `--sync-linear`, `--board-fingerprint`, or `--install-hook`).\n"
+            "  Reference: skills/personal-m2-assistant/references/eval-cases.json · skills/m2-dispatcher/references/bots-and-agents.md · skills/m2-dispatcher/references/pr-dag-auto-heal.md · skills/m2-dispatcher/references/runtime-profiles.yaml\n"
         )
         raise SystemExit(2)
 
@@ -215,6 +215,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = _SelfDisclosingRouterParser(description="Plan and owner-gated dispatch for a unified M2 ingress")
     mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--plan", action="store_true", help="build and print a dispatch preview")
+    mode.add_argument("--rag-query", help="search historical handoff specs/ledgers/receipts via Hybrid RAG (<=12KB)")
     mode.add_argument("--apply", action="store_true", help="apply a previously saved plan")
     mode.add_argument("--watch", action="store_true", help="watch dispatched target M2 sessions until quiescent")
     mode.add_argument("--status", action="store_true", help="refresh the cross-round unified M2 rollup")
@@ -222,6 +223,8 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--gc", action="store_true", help="preview or owner-approved safe global cleanup")
     mode.add_argument("--board-fingerprint", action="store_true", help="print SHA-256 fingerprint of local supervision state")
     mode.add_argument("--install-hook", action="store_true", help="idempotently install m2-board.json and m2-board-hook.sh into ~/.copilot/hooks")
+    parser.add_argument("--use-jev", action="store_true", help="enable Jev/Falcon reranking for --rag-query or --plan handoff RAG")
+    parser.add_argument("--rag-top-k", "--top-k", dest="rag_top_k", type=int, default=5, help="max historical handoff hits to return for --rag-query (default: 5)")
     parser.add_argument("--hooks-dir", help="target hooks directory for --install-hook (default: ~/.copilot/hooks)")
     parser.add_argument("--sync-linear", action="store_true", help="bidirectional per-device shard sync with Linear cross-device M2 hub (TIA-463)")
     parser.add_argument("--no-sync-linear", action="store_true", help="explicitly disable automatic Linear cross-device hub sync")
@@ -262,6 +265,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup-duplicates", action="store_true", help="close safe duplicate idle Herdr panes during --apply")
     parser.add_argument("--replace-stale-m2", action="store_true", help="close safe idle stale panes and spawn a fresh M2 during --apply")
     parser.add_argument("--targets-json", help="target list/object supplied by an outer CLI model")
+    parser.add_argument("--strict-prompts", action="store_true", help="fail --plan when target instructions lack actionable context")
     parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
     parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
     parser.add_argument("--approve", "--yes", action="store_true", help="explicitly approve dispatch")
@@ -289,13 +293,26 @@ def _message(args: argparse.Namespace) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if not (args.plan or args.apply or args.watch or args.status or args.sync_herdr_to_issue or args.gc or args.board_fingerprint or args.install_hook):
+    if not (args.plan or args.rag_query is not None or args.apply or args.watch or args.status or args.sync_herdr_to_issue or args.gc or args.board_fingerprint or args.install_hook):
         if args.sync_linear:
             args.status = True
         else:
-            parser.error("one of the arguments --plan --apply --watch --status --sync-herdr-to-issue --gc --sync-linear --board-fingerprint --install-hook is required")
+            parser.error("one of the arguments --plan --rag-query --apply --watch --status --sync-herdr-to-issue --gc --sync-linear --board-fingerprint --install-hook is required")
     try:
         hub_issue_payload = _json_value(args.hub_issue_json) if getattr(args, "hub_issue_json", None) else None
+        if args.rag_query is not None:
+            rag_res = query_handoff_rag(
+                args.rag_query,
+                handoff_root=args.handoff_root,
+                top_k=args.rag_top_k,
+                use_jev=args.use_jev,
+                mock_jev=_json_value(args.mock_jev_json) if args.mock_jev_json else None,
+            )
+            if args.json:
+                print(json.dumps(rag_res, ensure_ascii=False, sort_keys=True))
+            else:
+                print(format_rag_query_text(rag_res))
+            return 0
         if args.board_fingerprint:
             fp = compute_board_fingerprint(args.state_file)
             output: Any = {"ok": True, "fingerprint": fp} if args.json else fp
@@ -380,8 +397,12 @@ def main(argv: list[str] | None = None) -> int:
                 caller_bot=args.caller_bot,
                 no_supervision=args.no_supervision,
                 no_routine=args.no_routine,
+                strict_prompts=args.strict_prompts,
                 agent_records=raw_gc_records if raw_gc_records else ([] if (args.no_herdr or use_issue_cache) else None),
                 prefer_issue_cache=use_issue_cache,
+                handoff_root=args.handoff_root,
+                scan_default_handoff=True,
+                use_jev_rag=args.use_jev,
             )
             if raw_gc_records:
                 plan["gc_candidates"] = discover_gc_candidates(raw_gc_records, handoff_root=args.handoff_root)
@@ -489,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (OSError, ValueError, RouterError, json.JSONDecodeError) as error:
         ref_hint = (
+            "skills/personal-m2-assistant/references/eval-cases.json · "
             "skills/m2-dispatcher/references/bots-and-agents.md · "
             "skills/m2-dispatcher/references/pr-dag-auto-heal.md · "
             "skills/m2-dispatcher/references/runtime-profiles.yaml"

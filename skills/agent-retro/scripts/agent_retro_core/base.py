@@ -547,7 +547,7 @@ def _looks_like_session_id(token: str) -> bool:
 
 def _observation(metric: str, layer: str, count: int, evidence: list[str], *, skill: str | None = None,
                  sessions: int = 1, healthy: bool = False, status: str = "actionable",
-                 session_ids: Iterable[str] | None = None) -> dict[str, Any]:
+                 session_ids: Iterable[str] | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     resolved_skill = skill if (skill and is_valid_skill_slug(skill)) else UPSTREAM.get(metric, "unknown")
     if session_ids is None:
         parsed = [str(item).split(":", 1)[0].strip() for item in evidence if ":" in str(item)]
@@ -559,11 +559,14 @@ def _observation(metric: str, layer: str, count: int, evidence: list[str], *, sk
         if text and text not in seen:
             seen.add(text)
             unique_session_ids.append(text)
-    return {"metric": metric, "layer": layer, "count": count, "skill": resolved_skill,
-            "upstream_skill": resolved_skill, "scenario_sessions": sessions,
-            "status": "healthy_progressive_disclosure" if healthy else status,
-            "session_ids": unique_session_ids[:200],
-            "evidence": [_redact(item) for item in evidence[:5]]}
+    result = {"metric": metric, "layer": layer, "count": count, "skill": resolved_skill,
+              "upstream_skill": resolved_skill, "scenario_sessions": sessions,
+              "status": "healthy_progressive_disclosure" if healthy else status,
+              "session_ids": unique_session_ids[:200],
+              "evidence": [_redact(item) for item in evidence[:5]]}
+    if metadata:
+        result["metadata"] = _redact_obj(metadata)
+    return result
 
 
 def _is_code_path(path: str) -> bool:

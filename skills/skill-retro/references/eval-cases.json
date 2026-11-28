@@ -200,6 +200,14 @@
         "skills/skill-retro/references/progressive-evolution-playbook.md"
       ],
       "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-012",
+      "title": "L2 diagnostics surface silent handoff drops and router parameter traps",
+      "tags": ["handoff", "l2", "counter-case"],
+      "cmd": "python3 -m unittest scripts/test_retro_handoff_drop_probe.py",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
     }
   ]
 }

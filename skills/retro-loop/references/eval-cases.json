@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-25",
+  "updated": "2026-11-28",
   "active_cases": [
     {
       "id": "EV-001",
@@ -136,6 +136,13 @@
       "forbidden_regex": "\\bUI\\s+inspiration\\b",
       "bad_snippet": "UI inspiration catalog",
       "good_snippet": "workflow anomaly discovery"
+    },
+    {
+      "id": "EV-011",
+      "title": "Retro loop emits proposals for silent handoff parameter traps",
+      "tags": ["handoff", "proposal", "counter-case"],
+      "cmd": "python3 -m unittest scripts/test_retro_handoff_drop_probe.py",
+      "expect_exit": 0
     }
   ]
 }

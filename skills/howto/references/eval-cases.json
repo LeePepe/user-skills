@@ -183,6 +183,66 @@
       "cmd": "python3 -m unittest scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_lookup_node_ids_do_not_collide_or_expand_reference_mentions scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_feature_lookup_uses_english_boundaries_and_preserves_cjk scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_lookup_catalog_node_and_edge_keywords_require_whole_ascii_words scripts.test_tia2_guardrails.Tia2HowtoGuardrailTests.test_unresolved_lookup_is_explicit_and_scaffold_remains_valid",
       "expect_exit": 0,
       "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-012",
+      "title": "Apple OS-Native System Appearance lookup, L4-L1 cybernetic pyramid, and neighbors navigation",
+      "tags": [
+        "cli",
+        "flow",
+        "system-appearance",
+        "graph",
+        "cybernetic-pyramid"
+      ],
+      "cmd": "python3 -c \"import json, subprocess, sys; r1=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--lookup','dark mode system theme','--json'],check=True,capture_output=True,text=True); d1=json.loads(r1.stdout); assert d1['ok'] and [n['id'] for n in d1['matched_nodes'][:4]]==['E7','P7','E4','E9'] and 'my-designer' in d1['target_skills'] and 'skill-contract' in d1['target_skills'] and 'NSAppearance' in d1['guidance'] and 'prefers-color-scheme' not in d1['guidance']; r2=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--graph','--json'],check=True,capture_output=True,text=True); d2=json.loads(r2.stdout); assert d2['ok'] and list(d2['cybernetic_pyramid'].keys())==['L4','L3','L2','L1'] and len(d2['stages'])==5 and d2['total_edge_count']>50; r3=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','P3','--json'],check=True,capture_output=True,text=True); d3=json.loads(r3.stdout); assert d3['cybernetic_layer']=='L3'; r4=subprocess.run([sys.executable,'skills/howto/scripts/howto_flow.py','--neighbors','E2','--json'],check=True,capture_output=True,text=True); d4=json.loads(r4.stdout); assert d4['cybernetic_layer']=='L1' and 'Local Neighborhood Card: E2 Bug List' in d4['text'] and 'TK-02' in d4['text']\"",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-013",
+      "title": "Counter-case: howto_guard rejects custom .designTheme and parallel theme state machines",
+      "tags": [
+        "negative",
+        "counter-case",
+        "guardrail",
+        "system-appearance"
+      ],
+      "cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Apple UI request | Internal: follow Apple OS system appearance via NSAppearance / UITraitCollection / @Environment(\\\\.colorScheme), never build custom .designTheme | Calls: E7, P7, E4, E9 | PointsTo: G1, I5 | Trigger & Notify: Manual P0/P1\"",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true
+      },
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Apple UI request | Internal: wire .designTheme modifier and Web-CSS-style parallel theme state machine | Calls: E7, E4 | PointsTo: G1 | Trigger & Notify: Manual\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "custom_theme_engine_violation"
+      ],
+      "negative_stderr_contains": [
+        "Reference: skills/workflow-hub/references/how-to-nodes.md"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-014",
+      "title": "Counter-case: howto_guard rejects @AppStorage/UserDefaults in-app theme toggle plumbing",
+      "tags": [
+        "negative",
+        "counter-case",
+        "guardrail",
+        "system-appearance"
+      ],
+      "forbidden_regex": "(?i)(?:\\.designTheme\\b|@AppStorage[^\\n]{0,40}(?:designTheme|themeMode|isDarkMode))",
+      "bad_snippet": "@AppStorage(\"themeMode\") private var themeMode = \"dark\"; view.designTheme(themeMode)",
+      "good_snippet": "@Environment(\\.colorScheme) private var colorScheme",
+      "negative_cmd": "python3 skills/howto/scripts/howto_guard.py validate-recipe --text \"Inbound: Settings | Internal: persist @AppStorage(\\\"themeMode\\\") with in-app theme toggle | Calls: E7, E4 | PointsTo: I5 | Trigger & Notify: Manual\"",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "custom_theme_engine_violation"
+      ],
+      "negative_stderr_contains": [
+        "howto_guard: custom_theme_engine_violation"
+      ],
+      "registered_at": "2026-11-28"
     }
   ],
   "updated": "2026-11-28"

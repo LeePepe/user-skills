@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import base as _base
 from . import contracts as _contracts
+from .handoff_probe import detect_handoff_signals
 globals().update({k: v for module in (_base, _contracts) for k, v in vars(module).items() if not k.startswith("__")})
 
 
@@ -205,6 +206,21 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
     # Session-level role and invocation signals.
     for sid, seq in groups.items():
         role = _role_for(seq)
+        for signal in detect_handoff_signals(seq):
+            observations.append(_observation(
+                "H4_compaction_and_handoff_loss",
+                "handoff",
+                1,
+                [f"[{signal['code']}] {item}" for item in signal["evidence"]],
+                skill=signal["upstream_skill"],
+                sessions=1,
+                session_ids=[signal["session_id"]],
+                metadata={
+                    "finding_code": signal["code"],
+                    "root_cause": signal["root_cause"],
+                    "responsible_skill": signal["upstream_skill"],
+                },
+            ))
         skills = _skill_names(seq)
         tools = _tool_events(seq)
         mutation_tools = {"edit", "create", "apply_patch", "write", "patch"}
