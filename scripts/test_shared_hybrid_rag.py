@@ -126,6 +126,9 @@ class SharedHybridRagRuntimeTests(unittest.TestCase):
 
         def fake_jev(state: dict, questions: dict, *, agent_role: str = "") -> dict:
             self.assertEqual(agent_role, "knowledge-digest")
+            serialized_state = json.dumps(state, ensure_ascii=False)
+            self.assertNotIn("ghp_leaksecret", serialized_state)
+            self.assertNotIn("Users/eve", serialized_state)
             cands = state["candidates"]
             answers = {}
             for key, cand in cands.items():
@@ -134,9 +137,21 @@ class SharedHybridRagRuntimeTests(unittest.TestCase):
                 answers[f"{key}_tier"] = {"score": 2.9 if is_deep else 0.3}
             return {"answers": answers}
 
+        docs_with_sensitive = [
+            docs[0],
+            RagDoc(
+                doc_id="knowledge-vault:deep-architecture",
+                corpus_scope="knowledge-vault",
+                title="Two-Stage BM25 + System One Reranker /" + "Users/eve/note",
+                summary="Combines Layer-0 SQLite FTS5 recall with Layer-1 Falcon score reranking.",
+                body="Detailed architecture for hybrid rag retrieval.",
+                tags=("ghp_leaksecret", "rag"),
+            ),
+        ]
+
         reranked = hybrid_search(
-            "hybrid rag",
-            docs,
+            "hybrid rag ghp_leaksecret",
+            docs_with_sensitive,
             corpus_scope="knowledge-digest",
             top_k=2,
             use_jev=True,
@@ -145,6 +160,7 @@ class SharedHybridRagRuntimeTests(unittest.TestCase):
         self.assertTrue(reranked["jev_reranked"])
         self.assertEqual(reranked["hits"][0]["doc_id"], "knowledge-vault:deep-architecture")
         self.assertIsNotNone(reranked["hits"][0]["jev_score"])
+        self.assertNotIn("ghp_leaksecret", json.dumps(reranked, ensure_ascii=False))
 
         def timeout_jev(_state: dict, _questions: dict) -> dict:
             raise TimeoutError("Falcon 1.5s timeout")
@@ -282,7 +298,46 @@ class SharedHybridRagRuntimeTests(unittest.TestCase):
             max_chars=180,
         )
         self.assertLessEqual(len(hint), 180)
+        self.assertLessEqual(len(hint.encode("utf-8")), 180)
         self.assertNotIn("Users/bob", hint)
+
+        cjk_hint = format_rag_context_hint(
+            [RagHit("handoff:2", "handoff", 1.0, 1.0, None, "标题", "中文摘要内容" * 120)],
+            max_chars=180,
+        )
+        self.assertLessEqual(len(cjk_hint.encode("utf-8")), 180)
+
+        oversized_query_payload = hybrid_search("中文超长查询词" * 3000, huge_docs[:1], corpus_scope="story-craft", top_k=2)
+        self.assertLessEqual(len(json.dumps(oversized_query_payload, ensure_ascii=False).encode("utf-8")), ACI_MAX_BYTES)
+
+    def test_fts_cache_invalidates_same_length_content_edits_and_loaders_reject_symlinks(self) -> None:
+        doc_v1 = [RagDoc(doc_id="handoff:1", corpus_scope="handoff", title="Same", summary="aaaa", body="alpha1", tags=("t1",), updated_at="1")]
+        doc_v2 = [RagDoc(doc_id="handoff:1", corpus_scope="handoff", title="Same", summary="bbbb", body="bravo2", tags=("t2",), updated_at="1")]
+        self.assertEqual(hybrid_search("alpha1", doc_v1, corpus_scope="handoff")["hit_count"], 1)
+        self.assertEqual(hybrid_search("alpha1", doc_v2, corpus_scope="handoff")["hit_count"], 0)
+        self.assertEqual(hybrid_search("bravo2", doc_v2, corpus_scope="handoff")["hit_count"], 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            outside = base / "outside.md"
+            outside.write_text("# Escaped Secret\nOutside root\n", encoding="utf-8")
+            outside_json = base / "outside.json"
+            outside_json.write_text(json.dumps({"platform": "desktop", "inspirations": [{"id": "ESC-1", "name": "Escape"}]}), encoding="utf-8")
+
+            handoff = base / "handoff"
+            (handoff / "goal-a").mkdir(parents=True)
+            (handoff / "goal-a" / "spec.md").symlink_to(outside)
+            self.assertEqual(load_handoff_corpus(handoff), [])
+
+            kv = base / "kv"
+            kv.mkdir()
+            (kv / "escape.md").symlink_to(outside)
+            self.assertEqual(load_markdown_vault_corpus(kv, corpus_scope="knowledge-vault"), [])
+
+            dv = base / "dv"
+            dv.mkdir()
+            (dv / "escape.json").symlink_to(outside_json)
+            self.assertEqual(load_design_vault_corpus(dv), [])
 
 
 if __name__ == "__main__":
