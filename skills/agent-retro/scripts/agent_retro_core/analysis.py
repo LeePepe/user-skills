@@ -6,6 +6,42 @@ from . import contracts as _contracts
 from . import horizon as _horizon
 globals().update({k: v for module in (_base, _metrics, _contracts, _horizon) for k, v in vars(module).items() if not k.startswith("__")})
 
+def _soft_session_quality_advisories(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], skill: str | None = None) -> dict[str, Any]:
+    rows = _session_quality_rows(events, handoffs)
+    if skill:
+        rows = [row for row in rows if row.get("upstream_skill") == skill or row.get("skill") == skill]
+    by_skill: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("upstream_skill") or row.get("skill") or "team-lead")
+        bucket = by_skill.setdefault(name, {
+            "skill": name, "false_positive_churn_count": 0, "fake_or_unprobed_test_count": 0,
+            "session_ids": set(), "goal_ids": set(),
+        })
+        if row.get("kind") == "session_false_positive_churn":
+            bucket["false_positive_churn_count"] += int(row.get("count", 0) or 0)
+        else:
+            bucket["fake_or_unprobed_test_count"] += int(row.get("count", 0) or 0)
+        bucket["session_ids"].update(row.get("session_ids", []))
+        bucket["goal_ids"].update(row.get("goal_ids", []))
+    compact_skills = []
+    for name in sorted(by_skill):
+        item = by_skill[name]
+        compact_skills.append({
+            "skill": name,
+            "false_positive_churn_count": item["false_positive_churn_count"],
+            "fake_or_unprobed_test_count": item["fake_or_unprobed_test_count"],
+            "session_ids": sorted(item["session_ids"]), "goal_ids": sorted(item["goal_ids"]),
+        })
+    return {
+        "tier": "soft_advisory_exit_0",
+        "false_positive_churn_count": sum(item["false_positive_churn_count"] for item in by_skill.values()),
+        "fake_or_unprobed_test_count": sum(item["fake_or_unprobed_test_count"] for item in by_skill.values()),
+        "total_count": sum(int(row.get("count", 0) or 0) for row in rows),
+        "by_skill": compact_skills,
+        "items": rows[:100],
+    }
+
+
 def _version_watermark(events: list[dict[str, Any]] | None = None, observations: list[dict[str, Any]] | None = None, *, include_targets: bool = True) -> dict[str, Any]:
     try:
         count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip())
@@ -183,6 +219,7 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
         fast=bool(getattr(args, "fast", False) or getattr(args, "_probe_budget", False)),
     )
     handoffs, handoff_source = _handoffs(handoff_root)
+    soft_session_quality_advisories = _soft_session_quality_advisories(events, handoffs)
     outcome_gate, profile_sessions = _outcome_gate(_session_groups(events))
     for record in handoffs:
         if re.search(r"\b(?:done|completed|pr_merged)\b", record["ledger"], re.I):
@@ -235,6 +272,7 @@ def _scan(args: argparse.Namespace) -> dict[str, Any]:
             "coverage": {"events": len(events), "sessions": len(_session_groups(events)), "observations": len(observations), "incomplete": bool(event_source["truncated"])},
             "outcome_gate": outcome, "active_leases": sorted(active_leases), "excluded_by_active_lease": [],
             "version_watermark": watermark, "skill_attribution": _skill_attribution(actionable, watermark),
+            "soft_session_quality_advisories": soft_session_quality_advisories,
             "metrics": metrics, "observations": compact_actionable,
             "healthy_exemptions": compact_healthy, "observation_pool": compact_pool,
             "k_cap": min(3, len({x['upstream_skill'] for x in actionable if x['upstream_skill'] not in active_leases}))}

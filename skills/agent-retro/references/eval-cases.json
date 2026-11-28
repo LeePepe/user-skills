@@ -173,9 +173,25 @@
       "negative_stderr_contains": ["agent-retro-playbook.md", "eval-cases.json"]
     },
     {
+      "id": "AR-017",
+      "title": "Probe exposes soft session-quality advisories without changing metric count",
+      "tags": ["probe", "session-quality", "counter-case", "docs"],
+      "cmd": "python3 skills/agent-retro/scripts/agent_retro.py probe --fast --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "schema": "agent-retro-probe/v1",
+        "soft_session_quality_advisories.tier": "soft_advisory_exit_0"
+      },
+      "file": "skills/agent-retro/references/agent-retro-playbook.md",
+      "must_contain": ["session_false_positive_churn", "session_fake_or_unprobed_test", "soft_advisory_exit_0"]
+    }
+  ],
+  "archived_cases": [
+    {
       "id": "AR-016",
       "title": "Record-m1-receipt accepts compatibility aliases",
-      "tags": ["receipt", "cli"],
+      "tags": ["receipt", "cli", "archived-one-in-one-out"],
       "cmd": "python3 skills/agent-retro/scripts/agent_retro.py record-m1-receipt --skill agent-retro --goal-id agent-retro-agent-retro --status HEALTHY_NO_ISSUES --head-sha deadbeef --pr-number 42 --writers-spawned 0 --reviewers-spawned 0 --m1-tl-agent-name skill-retro-agent-retro-goal-tl-r1 --dir ~/Development/handoff --json",
       "expect_exit": 0,
       "expect_json_subset": {"ok": true, "schema": "agent-retro-m1-receipt/v1"}
