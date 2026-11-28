@@ -1099,11 +1099,148 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         self.assertEqual(res_spag.returncode, 1)
         self.assertIn('UI_MINI_SPAGHETTI_CHART_COLLAPSE', {f['case_id'] for f in json.loads(res_spag.stdout)['findings']})
 
-        # Verify single-line deduplication for DC-021 / UI_SPEC_ID_DEBUG_LEAK and DC-016 / UI_EXPAND_STATE_MUTATION
+        # Verify single-line deduplication for DC-021 / UI_SPEC_ID_DEBUG_LEAK, DC-016 / UI_EXPAND_STATE_MUTATION, and DC-014 / UI_SCROLL_PROMPT_CLUTTER
         res_leak_single = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Text("A1 · 今日概览")')
         self.assertEqual(res_leak_single.returncode, 1)
         leak_findings = json.loads(res_leak_single.stdout)['findings']
         self.assertEqual([f['case_id'] for f in leak_findings], ['UI_SPEC_ID_DEBUG_LEAK'])
+
+    def test_r2_reviewer_regressions_f1_to_f7(self) -> None:
+        # F1: Structural DC-015 detection with arbitrary card name + remainder divider + filtered ForEach
+        f1_bad_swift = (
+            'struct TaskUnfoldScreen: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            SelectedTaskCard(item: focused)\n'
+            '            Text("其余条目")\n'
+            '            ForEach(items.filter { $0.id != focused.id }) { item in Row(item: item) }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f1_bad = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f1_bad_swift)
+        self.assertEqual(res_f1_bad.returncode, 1, res_f1_bad.stdout)
+        self.assertIn('DC-015', {f['case_id'] for f in json.loads(res_f1_bad.stdout)['findings']})
+
+        f1_good_swift = (
+            'struct TaskInPlaceUnfoldScreen: View {\n'
+            '    var body: some View {\n'
+            '        LazyVStack(spacing: 12) {\n'
+            '            ForEach(items) { item in\n'
+            '                ExpandableItemRow(item: item, isExpanded: expandedID == item.id)\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f1_good = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f1_good_swift)
+        self.assertEqual(res_f1_good.returncode, 0, res_f1_good.stdout)
+        self.assertEqual(json.loads(res_f1_good.stdout)['findings'], [])
+
+        # F2: Same-span dual-track deduplication on line 1 for DC-016/UI_EXPAND_STATE_MUTATION and DC-014/UI_SCROLL_PROMPT_CLUTTER
+        res_f2_expand = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Capsule(showLabel: isExpanded)')
+        self.assertEqual(res_f2_expand.returncode, 1, res_f2_expand.stdout)
+        f2_expand_findings = json.loads(res_f2_expand.stdout)['findings']
+        self.assertEqual(len(f2_expand_findings), 1, f2_expand_findings)
+        self.assertEqual(f2_expand_findings[0]['line'], 1)
+        self.assertEqual(f2_expand_findings[0]['case_id'], 'UI_EXPAND_STATE_MUTATION')
+
+        res_f2_prompt = _run_cli('audit-code', '--platform', 'mobile', '--snippet', 'Text("点击修改 · 点击卡片展开详情")')
+        self.assertEqual(res_f2_prompt.returncode, 1, res_f2_prompt.stdout)
+        f2_prompt_findings = json.loads(res_f2_prompt.stdout)['findings']
+        self.assertEqual(len(f2_prompt_findings), 1, f2_prompt_findings)
+        self.assertEqual(f2_prompt_findings[0]['line'], 1)
+        self.assertEqual(f2_prompt_findings[0]['case_id'], 'UI_SCROLL_PROMPT_CLUTTER')
+
+        # F3: Same-layer 2x comparison passes, while Hero + LazyVGrid Bento or >=3 coexisting occurrences fail
+        f3_same_layer = 'struct WeatherCompareRow: View { var body: some View { HStack { Text("Yesterday: 19°C"); Text("Today: 19°C") } } }'
+        res_f3_pass = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_same_layer)
+        self.assertEqual(res_f3_pass.returncode, 0, res_f3_pass.stdout)
+        self.assertTrue(json.loads(res_f3_pass.stdout)['ok'])
+
+        f3_hero_bento = (
+            'struct WeatherHeroBento: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            VStack { Text("86 · 19°C") }\n'
+            '            LazyVGrid(columns: [GridItem(.flexible())]) { Text("19°C") }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f3_bento = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_hero_bento)
+        self.assertEqual(res_f3_bento.returncode, 1, res_f3_bento.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f3_bento.stdout)['findings']})
+
+        f3_triple = 'struct TripleMetricView: View { var body: some View { HStack { Text("Morning: 19°C"); Text("Noon: 19°C"); Text("Night: 19°C") } } }'
+        res_f3_triple = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f3_triple)
+        self.assertEqual(res_f3_triple.returncode, 1, res_f3_triple.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f3_triple.stdout)['findings']})
+
+        # F4: Nested switch inside LazyVGrid under outer switch case does not partition outer case arm
+        f4_nested_switch = (
+            'struct NestedSwitchDashboardView: View {\n'
+            '    var body: some View {\n'
+            '        switch screenState {\n'
+            '        case .loaded:\n'
+            '            VStack { Text("86 · 19°C") }\n'
+            '            LazyVGrid(columns: [GridItem(.flexible())]) {\n'
+            '                switch tileMode {\n'
+            '                case .on: Text("19°C")\n'
+            '                case .off: Text("--")\n'
+            '                }\n'
+            '            }\n'
+            '        case .empty:\n'
+            '            EmptyView()\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f4 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f4_nested_switch)
+        self.assertEqual(res_f4.returncode, 1, res_f4.stdout)
+        self.assertIn('UI_CROSS_LAYER_METRIC_ECHO', {f['case_id'] for f in json.loads(res_f4.stdout)['findings']})
+
+        # F5: Ternary expression and single-line inline switch with 3 arms both pass (mutually exclusive)
+        for f5_snippet in (
+            'struct TernaryTempView: View { var body: some View { Text(flag ? "19°C" : "19°C") } }',
+            'struct InlineSwitchTempView: View { var body: some View { switch mode { case .a: Text("19°C") case .b: Text("19°C") default: Text("19°C") } } }',
+        ):
+            with self.subTest(f5_snippet=f5_snippet):
+                res_f5 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f5_snippet)
+                self.assertEqual(res_f5.returncode, 0, res_f5.stdout)
+                self.assertTrue(json.loads(res_f5.stdout)['ok'])
+                self.assertEqual(json.loads(res_f5.stdout)['findings'], [])
+
+        # F6 & F7: Closure-label prominent Buttons trigger duplicate CTA, while plain sibling Buttons before a prominent CTA pass
+        f6_closure_dup = (
+            'struct ClosureDupCTAView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Button {} label: { Text("Purchase") }.buttonStyle(.borderedProminent)\n'
+            '            Button {} label: { Text("Purchase") }.buttonStyle(.borderedProminent)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f6 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f6_closure_dup)
+        self.assertEqual(res_f6.returncode, 1, res_f6.stdout)
+        self.assertIn('UI_DUPLICATE_MAP_OR_PRIMARY_CTA', {f['case_id'] for f in json.loads(res_f6.stdout)['findings']})
+
+        f7_bounded_mods = (
+            'struct BoundedSiblingButtonsView: View {\n'
+            '    var body: some View {\n'
+            '        VStack {\n'
+            '            Button("More") {}\n'
+            '            Button("More") {}\n'
+            '            Button("Purchase") {}.buttonStyle(.borderedProminent)\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_f7 = _run_cli('audit-code', '--platform', 'mobile', '--snippet', f7_bounded_mods)
+        self.assertEqual(res_f7.returncode, 0, res_f7.stdout)
+        self.assertTrue(json.loads(res_f7.stdout)['ok'])
+        self.assertEqual(json.loads(res_f7.stdout)['findings'], [])
 
 
 if __name__ == "__main__":

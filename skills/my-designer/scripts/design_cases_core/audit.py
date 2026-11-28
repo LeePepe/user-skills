@@ -21,6 +21,7 @@ from .shared import (
     _has_enclosing_clipped_reveal_container, _interactivity_result, _load_defect_entries,
     _load_json, _mask_swift, _normalize_platform, _resolve_persona_whitespace, _spec_gap_warning,
 )
+from .semiotics_gates import _strip_swift_comments_preserve_strings
 
 
 def command_lookup_defect(args: argparse.Namespace) -> int:
@@ -246,7 +247,6 @@ def command_audit_code(args: argparse.Namespace) -> int:
     cases = _load_json(Path(args.cases_file)).get('active_cases', [])
     canonical_case_regexes: dict[str, re.Pattern[str]] = {
         'DC-014': UI_INSTRUCTIONAL_CLUTTER_RE,
-        'DC-016': UI_EXPAND_STATE_MUTATION_RE,
         'DC-020': UI_CUSTOM_THEME_PLUMBING_RE,
         'DC-021': UI_SPEC_ID_DEBUG_LEAK_RE,
     }
@@ -256,13 +256,15 @@ def command_audit_code(args: argparse.Namespace) -> int:
         if not args.snippet and path.suffix.lower() not in allowed_suffixes:
             continue
         text = args.snippet if args.snippet else path.read_text(encoding='utf-8', errors='ignore')
-        masked = _mask_swift(text) if (args.snippet or path.suffix.lower() == '.swift') else text
+        is_swift = bool(args.snippet or path.suffix.lower() == '.swift')
+        masked = _mask_swift(text) if is_swift else text
+        comment_free = _strip_swift_comments_preserve_strings(text) if is_swift else text
         lines = text.splitlines()
         for case in cases:
             cid = case.get('id')
             if args.platform not in case.get('platforms', []) or (not case.get('forbidden_regex') and cid not in canonical_case_regexes):
                 continue
-            target_text = text if case.get('match_raw_strings') or cid in {'DC-006', 'DC-007', 'DC-008', 'DC-009', 'DC-010', 'DC-014', 'DC-021'} else masked
+            target_text = comment_free if (case.get('match_raw_strings') or cid in {'DC-006', 'DC-007', 'DC-008', 'DC-009', 'DC-010', 'DC-014', 'DC-015', 'DC-021'}) else masked
             pattern_or_re = canonical_case_regexes.get(str(cid), case.get('forbidden_regex'))
             try:
                 if cid == 'DC-011':
@@ -281,18 +283,6 @@ def command_audit_code(args: argparse.Namespace) -> int:
                             spans.append((call.start(), end))
                 elif cid == 'DC-012':
                     spans = _dc012_spans(masked, case['forbidden_regex'])
-                elif cid == 'DC-016':
-                    spans = []
-                    for sub_re, check_clip in (
-                        (UI_EXPAND_STATE_MUTATION_RE, False),
-                        (UI_HEADER_INTERLEAVED_INSERTION_RE, False),
-                        (UI_UNCLIPPED_PANEL_OVERLAP_RE, True),
-                    ):
-                        for m in sub_re.finditer(target_text):
-                            if check_clip and _has_enclosing_clipped_reveal_container(target_text, m.start(), m.end()):
-                                continue
-                            spans.append((m.start(), m.end()))
-                    spans.sort()
                 elif cid == 'DC-018':
                     spans = _audit_xcode_preview_single_viewport(masked, case.get('forbidden_regex'))
                 else:
@@ -303,7 +293,7 @@ def command_audit_code(args: argparse.Namespace) -> int:
             for start, end in spans:
                 line = target_text.count('\n', 0, start) + 1
                 end_line = target_text.count('\n', 0, max(start, end - 1)) + 1
-                if cid in {'DC-014', 'DC-016', 'DC-020', 'DC-021'} and 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
+                if cid in {'DC-014', 'DC-015', 'DC-020', 'DC-021'} and 'design-contract-allow' in '\n'.join(lines[line - 1:end_line]):
                     continue
                 c_drawers = _drawer_keys_for_case(str(cid), case.get('dimensions'))
                 drawer_keys.extend(c_drawers)
@@ -319,37 +309,53 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 if case.get('fix_rule'):
                     entry_finding['fix_rule'] = case['fix_rule']
                 findings.append(entry_finding)
-        for match in UI_SCROLL_PROMPT_CLUTTER_RE.finditer(text):
-            line = text.count('\n', 0, match.start()) + 1
+        for start, end, match_str in [(m.start(), m.end(), m.group(0)) for m in UI_SCROLL_PROMPT_CLUTTER_RE.finditer(comment_free)]:
+            line = comment_free.count('\n', 0, start) + 1
             if "design-contract-allow" in (lines[line - 1] if line <= len(lines) else ""):
                 continue
             drawer_keys.extend(_drawer_keys_for_case('UI_SCROLL_PROMPT_CLUTTER'))
-            findings = [f for f in findings if not (f.get('file') == str(path) and f.get('line') == line and f.get('case_id') == 'UI_INSTRUCTIONAL_CLUTTER')]
+            findings = [
+                f for f in findings
+                if not (
+                    f.get('file') == str(path)
+                    and f.get('line') == line
+                    and f.get('case_id') in {'DC-014', 'UI_INSTRUCTIONAL_CLUTTER', 'UI_SCROLL_PROMPT_CLUTTER'}
+                    and (f.get('match') == match_str.replace('\n', ' ')[:240] or f.get('case_id') == 'UI_SCROLL_PROMPT_CLUTTER')
+                )
+            ]
             findings.append({
                 'case_id': 'UI_SCROLL_PROMPT_CLUTTER',
                 'title': 'Instructional Scroll or Expand Prompt Rendered Instead of Spatial Card-Peek Signifier',
                 'file': str(path), 'line': line,
-                'match': match.group(0).replace('\n', ' ')[:240],
+                'match': match_str.replace('\n', ' ')[:240],
                 'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
                 'fix_rule': UI_SCROLL_PROMPT_CLUTTER_FIX_RULE,
             })
-        for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
-            line = text.count('\n', 0, match.start()) + 1
+        for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(comment_free):
+            line = comment_free.count('\n', 0, match.start()) + 1
             if "design-contract-allow" in (lines[line - 1] if line <= len(lines) else ""):
                 continue
-            if not any(f.get('file') == str(path) and f.get('line') == line and f.get('case_id') in {'DC-014', 'UI_SCROLL_PROMPT_CLUTTER'} for f in findings):
+            m_norm = text[match.start():match.end()].replace('\n', ' ')[:240]
+            if not any(
+                f.get('file') == str(path)
+                and f.get('line') == line
+                and f.get('case_id') in {'DC-014', 'UI_SCROLL_PROMPT_CLUTTER', 'UI_INSTRUCTIONAL_CLUTTER'}
+                and f.get('match') == m_norm
+                for f in findings
+            ):
                 drawer_keys.append('breathing')
                 findings.append({
                     'case_id': 'UI_INSTRUCTIONAL_CLUTTER',
                     'title': 'Self-Proving Instructional Micro-Copy Printed on UI Surface',
                     'file': str(path), 'line': line,
-                    'match': match.group(0).replace('\n', ' ')[:240],
+                    'match': m_norm,
                     'reference_drawer': DRAWER_GUIDANCE['breathing'][0],
                 })
+        dc016_fix_rule = next((str(c.get('fix_rule')) for c in cases if c.get('id') == 'DC-016' and c.get('fix_rule')), '')
         for rule_id, rule_title, rule_re in (
-            ('UI_EXPAND_STATE_MUTATION', 'Persistent Pill Label or Size Mutation Between Collapsed and Expanded States', UI_EXPAND_STATE_MUTATION_RE),
-            ('UI_HEADER_INTERLEAVED_INSERTION', 'Interleaved Conditional Insertion Between Persistent Header Rows', UI_HEADER_INTERLEAVED_INSERTION_RE),
-            ('UI_UNCLIPPED_PANEL_OVERLAP', 'Unclipped Inline Panel .move(edge: .top) Overlap', UI_UNCLIPPED_PANEL_OVERLAP_RE),
+            ('UI_EXPAND_STATE_MUTATION', 'Persistent Pill Label or Size Mutation Between Collapsed and Expanded States (DC-016)', UI_EXPAND_STATE_MUTATION_RE),
+            ('UI_HEADER_INTERLEAVED_INSERTION', 'Interleaved Conditional Insertion Between Persistent Header Rows (DC-016)', UI_HEADER_INTERLEAVED_INSERTION_RE),
+            ('UI_UNCLIPPED_PANEL_OVERLAP', 'Unclipped Inline Panel .move(edge: .top) Overlap (DC-016)', UI_UNCLIPPED_PANEL_OVERLAP_RE),
         ):
             for match in rule_re.finditer(masked):
                 if rule_id == 'UI_UNCLIPPED_PANEL_OVERLAP' and _has_enclosing_clipped_reveal_container(masked, match.start(), match.end()):
@@ -361,16 +367,14 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 if any(f.get('file') == str(path) and f.get('line') == line and f.get('case_id') == rule_id for f in findings):
                     continue
                 drawer_keys.append('interaction')
-                findings.append({
+                sub_finding: dict[str, Any] = {
                     'case_id': rule_id, 'title': rule_title, 'file': str(path), 'line': line,
                     'match': text[match.start():match.end()].replace('\n', ' ')[:240],
                     'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
-                })
-        seen_dc016 = False
-        findings = [
-            f for f in findings
-            if not (f.get('file') == str(path) and f.get('case_id') == 'DC-016' and (seen_dc016 or (seen_dc016 := True) is False))
-        ]
+                }
+                if dc016_fix_rule:
+                    sub_finding['fix_rule'] = dc016_fix_rule
+                findings.append(sub_finding)
         for match in UI_CUSTOM_THEME_PLUMBING_RE.finditer(masked):
             line = masked.count('\n', 0, match.start()) + 1
             end_line = masked.count('\n', 0, max(match.start(), match.end() - 1)) + 1

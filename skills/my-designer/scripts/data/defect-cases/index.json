@@ -207,10 +207,11 @@
         "LazyVStack",
         "VStack"
       ],
+      "match_raw_strings": true,
       "symptom": "When the Owner mandates 'tap item to unfold detail in-place' and 'only keep 2 bottom buttons', Steering/Writer substitutes a top-stacked duplicate focus/hero card above a remainder ForEach list ('其余...' divider) instead of true in-place list row expansion, or retains a tall (>=140pt) multi-layer bottom slide dock because design.md lacked Negative DOM/View Assertions (count == 0) and a concrete Obsolete Test Manifest.",
       "fix_rule": "Never substitute a top-stacked duplicate/hero focus card + '其余...' split remainder list when the Owner asks for in-place card expansion: unfold the tapped card container directly at its position in the single ForEach list. Every subtractive mandate ('只保留/去掉/砍掉') in design.md/spec.md must declare explicit Negative DOM/View Assertions (count == 0 / !exists) and a concrete file:line Obsolete Test Manifest.",
-      "forbidden_regex": "\\b\\w*(?:TopFocus|PinnedFocus|FocusedHero)\\w*Card\\b[\\s\\S]{0,900}?(?:ForEach\\s*\\([^)]*\\b\\w*(?:companion|remaining|other|restOf|unfocused)\\w*|Text\\s*\\(\\s*\"(?:其余|剩余|Other\\s+))|\\bstruct\\s+\\w*(?:DualButton|TwoButton|Bottom)\\w*(?:SlideDock|ActionDock|Dock)\\b[\\s\\S]{0,900}?\\bminHeight\\s*:\\s*(?:1[4-9]\\d|[2-9]\\d{2})\\b",
-      "bad_snippet": "VStack {\n    if let focused = viewModel.expandedItem {\n        TopFocusItemCard(item: focused)\n    }\n    Text(\"其余条目\")\n    ForEach(viewModel.remainingItems) { item in Row(item: item) }\n}",
+      "forbidden_regex": "(?:(?:\\bif\\s+let\\s+\\w+\\s*=[^{]+\\{(?:[^{}]|\\{[^{}]*\\})*\\}|\\b\\w*(?:Focus|Hero|Selected|Pinned)\\w*Card\\s*\\()[\\s\\S]{0,900}?(?:\\b(?:Text|Section|Label)\\s*\\(\\s*\"(?:其余|剩余|其他|Other\\b|Remaining\\b)[^\\n\"]*\"[\\s\\S]{0,260}?\\bForEach\\s*\\(|\\bForEach\\s*\\((?:[^\\n{}]*\\.(?:filter\\s*\\{[^{}]*!=|dropFirst\\s*\\()|[^\\n{}]*\\b\\w*(?:companion|remaining|other|restOf|unfocused)\\w*)))|\\bstruct\\s+\\w*(?:SlideDock|ActionDock|Dock)\\b[\\s\\S]{0,900}?\\bminHeight\\s*:\\s*(?:1[4-9]\\d|[2-9]\\d{2})\\b",
+      "bad_snippet": "VStack {\n    if let focused = viewModel.expandedItem {\n        SelectedTaskCard(item: focused)\n    }\n    Text(\"其余条目\")\n    ForEach(items.filter { $0.id != focused?.id }) { item in Row(item: item) }\n}",
       "good_snippet": "LazyVStack(spacing: 12) {\n    ForEach(viewModel.filteredItems) { item in\n        ExpandableItemRow(item: item, isExpanded: viewModel.expandedItemID == item.id)\n    }\n}",
       "registered_at": "2026-11-16"
     },

@@ -79,15 +79,20 @@ UI_MAP_COMPONENT_CALL_RE = re.compile(
 UI_PRIMARY_NAV_CTA_RE = re.compile(
     r"\b(?:Button|Text|Label)\s*\([^\n{}]*\"[^\n\"]*(开始导航|立即出发|开始骑行|Start\s+Navigation)[^\n\"]*\""
 )
+UI_PRIMARY_NAV_CTA_VERB_RE = re.compile(
+    r"(?:开始导航|立即出发|开始骑行|\bStart\s+Navigation\b)",
+    re.IGNORECASE,
+)
+UI_PROMINENT_CTA_STYLE_RE = re.compile(
+    r"(?:\.buttonStyle\s*\(\s*\.(?:borderedProminent|glassProminent)\b"
+    r"|\bmaxWidth\s*:\s*\.infinity\b"
+    r"|\.(?:background|overlay)\s*\([^\n{}]*\b(?:Capsule|RoundedRectangle)\b[^\n{}]*\.fill\s*\()",
+    re.IGNORECASE,
+)
 UI_GENERIC_BUTTON_LABEL_RE = re.compile(
     r"\bButton\b(?:\s*\(\s*\"([^\n\"]{2,40})\"|\s*\([^\n{}]*?\)\s*\{\s*(?:Label|Text)\s*\(\s*\"([^\n\"]{2,40})\")"
 )
-UI_PROMINENT_CTA_HINT_RE = re.compile(
-    r"(?:\.buttonStyle\s*\(\s*\.(?:borderedProminent|glassProminent)\b"
-    r"|\bmaxWidth\s*:\s*\.infinity\b"
-    r"|开始|立即|启动|保存|提交|创建|确认|导出|继续|\b(?:Start|Begin|Launch|Continue|Submit|Confirm|Create|Save|Checkout|Apply)\b)",
-    re.IGNORECASE,
-)
+UI_PROMINENT_CTA_HINT_RE = UI_PROMINENT_CTA_STYLE_RE
 UI_FOREGROUND_SERIES_BY_RE = re.compile(
     r"\.foregroundStyle\s*\(\s*by\s*:\s*\.value\s*\([^)]+\)\s*\)"
 )
@@ -170,8 +175,68 @@ def _strip_swift_comments_preserve_strings(text: str) -> str:
     )
 
 
+_ECHO_L1_CONTAINER_RE = re.compile(
+    r"(?:Hero|Header|Banner|Summary|Verdict|Score|Overview|Headline|TopBar)",
+    re.IGNORECASE,
+)
+_ECHO_L2_CONTAINER_RE = re.compile(
+    r"(?:\b(?:LazyVGrid|LazyHGrid|Grid|GridRow|Section|List|ForEach|DisclosureGroup)\b"
+    r"|(?:Bento|Tile|Card|Cell|Metric|Detail|Row|Drawer|Panel|Module))",
+    re.IGNORECASE,
+)
+_ECHO_L1_FONT_RE = re.compile(
+    r"\.font\s*\(\s*(?:\.system\s*\(\s*size\s*:\s*(?:2[8-9]|[3-9]\d)\b|\.(?:largeTitle|title)\b)"
+)
+
+
+def _balanced_delim_end_local(text: str, open_index: int, open_ch: str, close_ch: str) -> int:
+    depth = 1
+    idx = open_index + 1
+    while idx < len(text) and depth > 0:
+        if text[idx] == open_ch:
+            depth += 1
+        elif text[idx] == close_ch:
+            depth -= 1
+        idx += 1
+    return idx
+
+
+def _balanced_brace_end_local(text: str, open_brace_index: int) -> int:
+    return _balanced_delim_end_local(text, open_brace_index, "{", "}")
+
+
+def _find_ternary_expr_end(masked_text: str, colon_pos: int) -> int:
+    b = p = k = 0
+    idx = colon_pos + 1
+    n = len(masked_text)
+    while idx < n:
+        ch = masked_text[idx]
+        if ch == "{":
+            b += 1
+        elif ch == "}":
+            if b == 0:
+                return idx
+            b -= 1
+        elif ch == "(":
+            p += 1
+        elif ch == ")":
+            if p == 0:
+                return idx
+            p -= 1
+        elif ch == "[":
+            k += 1
+        elif ch == "]":
+            if k == 0:
+                return idx
+            k -= 1
+        elif b == 0 and p == 0 and k == 0 and ch in ",;\n":
+            return idx
+        idx += 1
+    return n
+
+
 def _find_branch_arm_spans(masked_text: str) -> list[tuple[int, int, int]]:
-    """Return (chain_id, arm_start, arm_end) for mutually exclusive if/else and switch case arms."""
+    """Return (chain_id, arm_start, arm_end) for mutually exclusive if/else, switch, and ternary arms."""
     arms: list[tuple[int, int, int]] = []
     chain_id = 0
     cursor = 0
@@ -207,34 +272,73 @@ def _find_branch_arm_spans(masked_text: str) -> list[tuple[int, int, int]]:
                 arms.append((chain_id, a_start, a_end))
         cursor = match.end()
 
+    case_re = re.compile(r"(?:case\b|default\s*:)")
     for sw_m in re.finditer(r"\bswitch\b[^{]*\{", masked_text):
         sw_open = masked_text.rfind("{", sw_m.start(), sw_m.end())
         if sw_open < 0:
             continue
         sw_close = _balanced_brace_end_local(masked_text, sw_open)
-        sw_body = masked_text[sw_open:sw_close]
-        case_positions = [
-            sw_open + cm.start()
-            for cm in re.finditer(r"(?m)^\s*(?:case\b|default\s*:)", sw_body)
-        ]
+        case_positions: list[int] = []
+        depth = 0
+        idx = sw_open
+        while idx < sw_close:
+            ch = masked_text[idx]
+            if ch == "{":
+                depth += 1
+                idx += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                idx += 1
+                continue
+            if depth == 1 and (idx == 0 or not (masked_text[idx - 1].isalnum() or masked_text[idx - 1] == "_")):
+                cm = case_re.match(masked_text, idx)
+                if cm is not None:
+                    case_positions.append(idx)
+                    idx = cm.end()
+                    continue
+            idx += 1
         if len(case_positions) >= 2:
             chain_id += 1
-            for idx, c_start in enumerate(case_positions):
-                c_end = case_positions[idx + 1] if idx + 1 < len(case_positions) else sw_close
+            for idx_c, c_start in enumerate(case_positions):
+                c_end = case_positions[idx_c + 1] if idx_c + 1 < len(case_positions) else max(c_start, sw_close - 1)
                 arms.append((chain_id, c_start, c_end))
-    return arms
 
-
-def _balanced_brace_end_local(text: str, open_brace_index: int) -> int:
-    depth = 1
-    idx = open_brace_index + 1
-    while idx < len(text) and depth > 0:
-        if text[idx] == "{":
-            depth += 1
-        elif text[idx] == "}":
-            depth -= 1
+    q_stack: list[tuple[int, int, int, int]] = []
+    b = p = k = 0
+    idx = 0
+    n = len(masked_text)
+    while idx < n:
+        ch = masked_text[idx]
+        if ch == "{":
+            b += 1
+        elif ch == "}":
+            q_stack = [item for item in q_stack if item[:3] != (b, p, k)]
+            b = max(0, b - 1)
+        elif ch == "(":
+            p += 1
+        elif ch == ")":
+            q_stack = [item for item in q_stack if item[:3] != (b, p, k)]
+            p = max(0, p - 1)
+        elif ch == "[":
+            k += 1
+        elif ch == "]":
+            q_stack = [item for item in q_stack if item[:3] != (b, p, k)]
+            k = max(0, k - 1)
+        elif ch == "?":
+            prev_ch = masked_text[idx - 1] if idx > 0 else " "
+            next_ch = masked_text[idx + 1] if idx + 1 < n else " "
+            prev_ident = idx > 0 and (prev_ch.isalnum() or prev_ch in "_)]>")
+            if next_ch not in {"?", "."} and prev_ch != "?" and not (prev_ident and not next_ch.isspace()):
+                q_stack.append((b, p, k, idx))
+        elif ch == ":" and q_stack and q_stack[-1][:3] == (b, p, k):
+            _, _, _, q_pos = q_stack.pop()
+            expr_end = _find_ternary_expr_end(masked_text, idx)
+            chain_id += 1
+            arms.append((chain_id, q_pos + 1, idx))
+            arms.append((chain_id, idx + 1, expr_end))
         idx += 1
-    return idx
+    return arms
 
 
 def _are_mutually_exclusive_positions(
@@ -248,6 +352,171 @@ def _are_mutually_exclusive_positions(
                 if other_cid == cid and (b_start, b_end) != (a_start, a_end) and b_start <= pos_b < b_end:
                     return True
     return False
+
+
+def _build_brace_blocks(masked_text: str) -> list[tuple[int, int, str]]:
+    blocks: list[tuple[int, int, str]] = []
+    stack: list[tuple[int, str]] = []
+    for idx, ch in enumerate(masked_text):
+        if ch == "{":
+            h_start = max(0, idx - 160)
+            for back in range(idx - 1, h_start - 1, -1):
+                if masked_text[back] in "{};":
+                    h_start = back + 1
+                    break
+            stack.append((idx, masked_text[h_start:idx]))
+        elif ch == "}" and stack:
+            open_idx, head = stack.pop()
+            blocks.append((open_idx, idx + 1, head))
+    blocks.sort(key=lambda item: (item[0], -item[1]))
+    return blocks
+
+
+def _classify_echo_layer(
+    pos: int,
+    literal_val: str,
+    masked_text: str,
+    blocks: list[tuple[int, int, str]],
+) -> tuple[str, int, int | None]:
+    enclosing = [
+        (o, c, h)
+        for o, c, h in blocks
+        if o <= pos < c and not re.search(r"\bstruct\s+\w+\s*:", h)
+    ]
+    leaf_open = enclosing[-1][0] if enclosing else 0
+    local_mod = masked_text[pos : min(len(masked_text), pos + len(literal_val) + 120)]
+    role: str | None = None
+    role_block: int | None = None
+    for o, _, h in reversed(enclosing):
+        if _ECHO_L2_CONTAINER_RE.search(h):
+            role, role_block = "L2", o
+            break
+        if _ECHO_L1_CONTAINER_RE.search(h):
+            role, role_block = "L1", o
+            break
+    if role is None:
+        if _ECHO_L1_FONT_RE.search(local_mod) or re.match(r"^\s*\d{2,3}\s*[·•|]", literal_val):
+            role = "L1"
+        elif re.search(r"^(?:环境|身体|负荷|睡眠|风速|气温|心率|功率|恢复|详情|分项)\s*[:：·•]", literal_val):
+            role = "L2"
+        else:
+            role = "NEUTRAL"
+    return role, leaf_open, role_block
+
+
+def _are_distinct_structural_layers(
+    layer_a: tuple[str, int, int | None],
+    layer_b: tuple[str, int, int | None],
+) -> bool:
+    role_a, leaf_a, rblk_a = layer_a
+    role_b, leaf_b, rblk_b = layer_b
+    if {role_a, role_b} == {"L1", "L2"}:
+        return True
+    if leaf_a != leaf_b and ("L1" in {role_a, role_b} or "L2" in {role_a, role_b}):
+        if role_a == role_b and rblk_a is not None and rblk_a == rblk_b:
+            return False
+        return True
+    return False
+
+
+def _max_coexisting_indices(
+    positions: list[int],
+    arms: list[tuple[int, int, int]],
+) -> list[int]:
+    n = len(positions)
+    best: list[int] = []
+    for seed in range(n):
+        clique = [seed]
+        for cand in range(seed + 1, n):
+            if all(not _are_mutually_exclusive_positions(positions[m], positions[cand], arms) for m in clique):
+                clique.append(cand)
+        if len(clique) > len(best):
+            best = clique
+    return best
+
+
+def _extract_swift_button_calls(source_text: str, masked_text: str) -> list[dict[str, Any]]:
+    """Extract SwiftUI Button calls with balanced arguments/closures and strictly attached postfix modifiers."""
+    calls: list[dict[str, Any]] = []
+    n = len(masked_text)
+    for bm in re.finditer(r"(?<!\.)\bButton\b", masked_text):
+        start = bm.start()
+        cursor = bm.end()
+        while cursor < n and masked_text[cursor].isspace():
+            cursor += 1
+        arg_slice = ""
+        if cursor < n and masked_text[cursor] == "(":
+            arg_end = _balanced_delim_end_local(masked_text, cursor, "(", ")")
+            arg_slice = source_text[cursor + 1 : max(cursor + 1, arg_end - 1)]
+            cursor = arg_end
+        while cursor < n and masked_text[cursor].isspace():
+            cursor += 1
+        first_closure_slice = ""
+        if cursor < n and masked_text[cursor] == "{":
+            first_end = _balanced_delim_end_local(masked_text, cursor, "{", "}")
+            first_closure_slice = source_text[cursor + 1 : max(cursor + 1, first_end - 1)]
+            cursor = first_end
+        elif not arg_slice:
+            continue
+        label_closure_slice = ""
+        lm = re.match(r"\s*label\s*:\s*\{", masked_text[cursor:])
+        if lm:
+            l_open = cursor + lm.end() - 1
+            l_end = _balanced_delim_end_local(masked_text, l_open, "{", "}")
+            label_closure_slice = source_text[l_open + 1 : max(l_open + 1, l_end - 1)]
+            cursor = l_end
+        body_end = cursor
+        while cursor < n:
+            mm = re.match(r"\s*\.\s*([A-Za-z_]\w*)", masked_text[cursor:])
+            if not mm:
+                break
+            cursor += mm.end()
+            ws = cursor
+            while ws < n and masked_text[ws] in " \t":
+                ws += 1
+            if ws < n and masked_text[ws] == "(":
+                cursor = _balanced_delim_end_local(masked_text, ws, "(", ")")
+                ws2 = cursor
+                while ws2 < n and masked_text[ws2] in " \t":
+                    ws2 += 1
+                if ws2 < n and masked_text[ws2] == "{":
+                    cursor = _balanced_delim_end_local(masked_text, ws2, "{", "}")
+            elif ws < n and masked_text[ws] == "{":
+                cursor = _balanced_delim_end_local(masked_text, ws, "{", "}")
+        label_literal = ""
+        m_arg_str = re.match(
+            r"\s*(?:LocalizedStringKey\s*\(\s*)?\"([^\n\"]{1,60})\"",
+            arg_slice,
+        )
+        if m_arg_str:
+            label_literal = m_arg_str.group(1).strip()
+        else:
+            target_label_body = (
+                label_closure_slice
+                if label_closure_slice
+                else (first_closure_slice if re.search(r"\baction\s*:", arg_slice) else "")
+            )
+            if target_label_body:
+                m_lbl = re.search(r"\b(?:Text|Label)\s*\(\s*\"([^\n\"]{1,60})\"", target_label_body)
+                if m_lbl:
+                    label_literal = m_lbl.group(1).strip()
+        modifiers_source = source_text[body_end:cursor]
+        is_prominent = bool(
+            UI_PROMINENT_CTA_STYLE_RE.search(modifiers_source)
+            or (label_closure_slice and UI_PROMINENT_CTA_STYLE_RE.search(label_closure_slice))
+            or (first_closure_slice and re.search(r"\baction\s*:", arg_slice) and UI_PROMINENT_CTA_STYLE_RE.search(first_closure_slice))
+            or (label_literal and UI_PRIMARY_NAV_CTA_VERB_RE.search(label_literal))
+        )
+        calls.append(
+            {
+                "start": start,
+                "end": cursor,
+                "label": label_literal,
+                "is_prominent": is_prominent,
+                "match_preview": source_text[start:cursor].replace("\n", " ")[:240],
+            }
+        )
+    return calls
 
 
 def _audit_cross_layer_metric_echo(
@@ -272,6 +541,7 @@ def _audit_cross_layer_metric_echo(
         s_comment_free = comment_free_full[s_start:s_end]
         s_masked = str(scope.get("masked", s_comment_free))
         branch_arms = _find_branch_arm_spans(s_masked)
+        brace_blocks = _build_brace_blocks(s_masked)
         token_occurrences: dict[str, list[tuple[int, str]]] = {}
 
         for sm in string_re.finditer(s_comment_free):
@@ -310,16 +580,24 @@ def _audit_cross_layer_metric_echo(
         for token, occs in token_occurrences.items():
             if len(occs) < 2:
                 continue
-            has_coexisting_pair = False
+            positions = [pos for pos, _ in occs]
+            coexisting_idxs = _max_coexisting_indices(positions, branch_arms)
+            if len(coexisting_idxs) >= 3:
+                echoed_tokens.append((token, [occs[i] for i in coexisting_idxs]))
+                continue
+            layers = [_classify_echo_layer(pos, lit, s_masked, brace_blocks) for pos, lit in occs]
+            cross_layer_pair: list[tuple[int, str]] | None = None
             for idx_a in range(len(occs)):
                 for idx_b in range(idx_a + 1, len(occs)):
-                    if not _are_mutually_exclusive_positions(occs[idx_a][0], occs[idx_b][0], branch_arms):
-                        has_coexisting_pair = True
+                    if _are_mutually_exclusive_positions(positions[idx_a], positions[idx_b], branch_arms):
+                        continue
+                    if _are_distinct_structural_layers(layers[idx_a], layers[idx_b]):
+                        cross_layer_pair = [occs[idx_a], occs[idx_b]]
                         break
-                if has_coexisting_pair:
+                if cross_layer_pair is not None:
                     break
-            if has_coexisting_pair:
-                echoed_tokens.append((token, occs))
+            if cross_layer_pair is not None:
+                echoed_tokens.append((token, cross_layer_pair))
 
         if echoed_tokens:
             first_token, first_occs = echoed_tokens[0]

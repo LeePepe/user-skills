@@ -473,8 +473,10 @@ from .semiotics_gates import (
     UI_SPEC_ID_DEBUG_LEAK_RE,
     _audit_cross_layer_metric_echo,
     _detect_scroll_prompt_spec_gaps,
+    _extract_swift_button_calls,
     _has_deprecated_test_evidence,
     _spec_gap_warning,
+    _strip_swift_comments_preserve_strings,
 )
 
 
@@ -518,11 +520,13 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
         e_line = text.count("\n", 0, max(start_idx, end_idx - 1)) + 1
         return "design-contract-allow" in "\n".join(lines[max(0, s_line - 1):e_line])
 
+    comment_free = _strip_swift_comments_preserve_strings(text)
+
     # 1. Bug 2: Spec ID & Debug Chrome Leak (UI_SPEC_ID_DEBUG_LEAK)
-    for match in UI_SPEC_ID_DEBUG_LEAK_RE.finditer(text):
+    for match in UI_SPEC_ID_DEBUG_LEAK_RE.finditer(comment_free):
         if _is_waived(match.start(), match.end()):
             continue
-        line = text.count("\n", 0, match.start()) + 1
+        line = comment_free.count("\n", 0, match.start()) + 1
         findings.append({
             "case_id": "UI_SPEC_ID_DEBUG_LEAK",
             "title": "Internal Spec ID or Debug Chrome Rendered on User-Facing UI Surface",
@@ -532,7 +536,7 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
             "reference_drawer": ref_breathing,
             "fix_rule": "Apply Edward Tufte's Data-Ink Ratio & Don Norman's Signifiers: strip internal spec IDs ('A1 ·', '已选原子', '模式A ·', '[24/24格]', 'Preset 1') from user-facing Text/Label views.",
         })
-    detail_matches = [m for m in UI_REPEATED_DETAIL_LABEL_RE.finditer(text) if not _is_waived(m.start(), m.end())]
+    detail_matches = [m for m in UI_REPEATED_DETAIL_LABEL_RE.finditer(comment_free) if not _is_waived(m.start(), m.end())]
     if len(detail_matches) >= 3:
         m3 = detail_matches[2]
         line = text.count("\n", 0, m3.start()) + 1
@@ -547,7 +551,7 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
         })
 
     # 2. Bug 3: Duplicate Map & Primary CTA Clutter (UI_DUPLICATE_MAP_OR_PRIMARY_CTA)
-    no_prev_text, no_prev_masked = _strip_preview_blocks(text, masked)
+    no_prev_text, no_prev_masked = _strip_preview_blocks(comment_free, masked)
     view_candidates = [
         c for c in _swiftui_view_candidates(no_prev_text)
         if not re.search(r"(?:Preview|Switcher|Catalog|Showcase)", c["name"], re.I)
@@ -588,26 +592,23 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
             })
             reported_dup_map_or_cta = True
             break
-        generic_cta_by_label: dict[str, list[re.Match[str]]] = {}
-        for bm in UI_GENERIC_BUTTON_LABEL_RE.finditer(s_text):
-            if _is_waived(s_offset + bm.start(), s_offset + bm.end()):
+        generic_cta_by_label: dict[str, list[dict[str, Any]]] = {}
+        for btn_call in _extract_swift_button_calls(s_text, s_masked):
+            if _is_waived(s_offset + btn_call["start"], s_offset + btn_call["end"]):
                 continue
-            label_text = (bm.group(1) or bm.group(2) or "").strip()
-            if not label_text:
-                continue
-            ctx_window = s_text[bm.start() : min(len(s_text), bm.end() + 220)]
-            if UI_PROMINENT_CTA_HINT_RE.search(ctx_window) or UI_PROMINENT_CTA_HINT_RE.search(label_text):
-                generic_cta_by_label.setdefault(label_text, []).append(bm)
+            label_text = btn_call["label"]
+            if label_text and btn_call["is_prominent"]:
+                generic_cta_by_label.setdefault(label_text, []).append(btn_call)
         dup_generic = next((matches for matches in generic_cta_by_label.values() if len(matches) >= 2), None)
         if dup_generic is not None:
-            m2 = dup_generic[1]
-            line = text.count("\n", 0, s_offset + m2.start()) + 1
+            b2 = dup_generic[1]
+            line = text.count("\n", 0, s_offset + b2["start"]) + 1
             findings.append({
                 "case_id": "UI_DUPLICATE_MAP_OR_PRIMARY_CTA",
                 "title": "Duplicate Full-Width or Prominent Primary CTA Buttons in Single View",
                 "file": path,
                 "line": line,
-                "match": s_text[m2.start() : min(len(s_text), m2.end() + 80)].replace("\n", " ")[:240],
+                "match": b2["match_preview"],
                 "reference_drawer": ref_breathing,
                 "fix_rule": "Reserve at most 1 primary P0 CTA button per viewport; demote secondary card actions to quiet inline or secondary controls.",
             })
