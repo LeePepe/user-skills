@@ -24,6 +24,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 from skill_runtime import SelfDisclosingArgumentParser as _RuntimeArgumentParser, compact_json_dumps
+from handoff_probe import build_handoff_trace_proposals, collect_handoff_trace_proposals, detect_handoff_trace_signals
 class SelfDisclosingArgumentParser(_RuntimeArgumentParser):
     def error(self, message: str) -> None:
         sys.stderr.write(f"{self.prog}: {message}\n")
@@ -71,19 +72,17 @@ _PRIORITY_MAP = {
     "low": "low",
 }
 _CST_TZ = timezone(timedelta(hours=8))
+
 def _cst_today_str() -> str:
     return datetime.now(_CST_TZ).date().isoformat()
 def _normalize_priority(raw_priority: Any, default: str = "high") -> str:
     norm = str(raw_priority or default).strip().lower()
     return _PRIORITY_MAP.get(norm, default)
-
 class OptimisticLockError(RuntimeError):
 
     def __init__(self, code: int, message: str):
         super().__init__(message)
         self.code = code
-
-
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
@@ -95,8 +94,6 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def _read_state(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
 def init_state(state_path: Path, record_id: str, source_goal: str, evidence_sha: str) -> dict[str, Any]:
     state = {
         "version": 1,
@@ -373,8 +370,6 @@ def _build_app_telemetry_candidates(rows: list[dict[str, Any]]) -> list[dict[str
                 "verify_cmd": verify_cmd,
             })
     return candidates
-
-
 def _build_tool_context_burn_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in rows:
@@ -405,8 +400,6 @@ def _build_tool_context_burn_candidates(rows: list[dict[str, Any]]) -> list[dict
                                          "sample_size", "coverage_status", "estimated", "estimation_method") if key in row},
         })
     return candidates
-
-
 def discover_aidata_signals(
     warehouse_db: Path | None = None,
     queries_dir: Path | None = None,
@@ -414,6 +407,7 @@ def discover_aidata_signals(
     auto_propose: bool = True,
     *,
     days: int | None = None,
+    trace_export_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run aidata L4 retro queries against warehouse.db to discover anomalies."""
     db_path = warehouse_db or DEFAULT_WAREHOUSE_DB
@@ -421,12 +415,15 @@ def discover_aidata_signals(
     prop_path = proposals_path if proposals_path is not None else DEFAULT_PROPOSALS_PATH
     findings: list[dict[str, Any]] = []
     project_loop_a_proposals: list[dict[str, Any]] = []
+    trace_signals, trace_proposals = collect_handoff_trace_proposals(trace_export_path, auto_propose, prop_path, route_retro_candidate)
+    project_loop_a_proposals.extend(trace_proposals)
     if not db_path.is_file() or not q_dir.is_dir():
         return {
             "ok": True,
-            "degraded": True,
+            "degraded": not bool(trace_signals),
             "findings": findings,
             "project_loop_a_proposals": project_loop_a_proposals,
+            "handoff_findings": trace_signals,
             "window_days": days,
         }
 
@@ -470,19 +467,15 @@ def discover_aidata_signals(
         "degraded": False,
         "findings": findings,
         "project_loop_a_proposals": project_loop_a_proposals,
+        "handoff_findings": trace_signals,
         "window_days": days,
     }
-
-
-
 CST = timezone(timedelta(hours=8))
 
 
 def _window_bounds(days: int = 7) -> tuple[datetime, datetime]:
     today = datetime.now(CST).replace(hour=0, minute=0, second=0, microsecond=0)
     return today - timedelta(days=days - 1), today + timedelta(days=1)
-
-
 def _observed_at(value: Any) -> datetime | None:
     if value is None or value == "":
         return None
@@ -494,8 +487,6 @@ def _observed_at(value: Any) -> datetime | None:
         return stamp.astimezone(CST)
     except (ValueError, TypeError):
         return None
-
-
 def _timed_rows(conn: sqlite3.Connection, table: str, days: int = 7) -> list[dict[str, Any]]:
     columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
     time_column = next((name for name in ("observed_at", "completed_at", "ended_at", "started_at",
@@ -745,6 +736,7 @@ def compute_agent_efficiency(
     auto_propose: bool = False,
     proposals_path: Path | None = None,
     days: int | None = None,
+    trace_export_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute M1-M5 from timestamped observations in seven natural CST days."""
     wh = warehouse_db or DEFAULT_WAREHOUSE_DB
@@ -857,6 +849,8 @@ def compute_agent_efficiency(
         metric["metric_id"] = metric_id
         metric["status"] = "fail" if metric["breached"] else "pass" if metric["sample_size"] else "unknown"
     recommendations: list[dict[str, Any]] = []
+    handoff_signals = detect_handoff_trace_signals(trace_export_path)
+    recommendations.extend(build_handoff_trace_proposals(handoff_signals))
 
     if m1["breached"]:
         multi_str = ", ".join(f"{t['goal_id']}/{t['task_id']}(r{t['max_round']})" for t in m1["round_3_plus_tasks"][:4])
@@ -1122,6 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
         _add_window_args(p)
         _add_auto_propose_args(p, default=True)
         p.add_argument("--summary", action="store_true")
+        p.add_argument("--trace-export", type=Path, default=None)
         ns = p.parse_args(args_list[1:])
         report = discover_aidata_signals(
             ns.warehouse_db,
@@ -1129,6 +1124,7 @@ def main(argv: list[str] | None = None) -> int:
             proposals_path=ns.proposals_path,
             auto_propose=ns.auto_propose,
             days=ns.window_days,
+            trace_export_path=ns.trace_export,
         )
         _emit_cli_report(report, ns.summary, ("ok", "degraded", "window_days", "findings", "project_loop_a_proposals"))
         return 0
@@ -1141,6 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
         _add_window_args(p)
         _add_auto_propose_args(p, default=False)
         p.add_argument("--proposals-path", type=Path, default=DEFAULT_PROPOSALS_PATH)
+        p.add_argument("--trace-export", type=Path, default=None)
         p.add_argument("--summary", action="store_true")
         ns = p.parse_args(args_list[1:])
         report = compute_agent_efficiency(
@@ -1149,6 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
             ns.copilot_db,
             telemetry_shards_dir=ns.telemetry_shards_dir,
             days=ns.window_days,
+            trace_export_path=ns.trace_export,
         )
         if ns.auto_propose:
             queued = _queue_recommendations(report.get("recommendations", []), ns.proposals_path)
