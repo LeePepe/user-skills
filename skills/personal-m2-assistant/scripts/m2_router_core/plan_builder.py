@@ -1,9 +1,157 @@
 from __future__ import annotations
 
 from ._imports import *
+from skill_runtime.hybrid_rag import (
+    ACI_MAX_BYTES,
+    format_rag_context_hint,
+    hybrid_search,
+    load_handoff_corpus,
+)
 from .constants_and_paths import merge_target_prompt
 
 from .constants_and_paths import _run_command
+
+DEFAULT_RAG_TOP_K = 3
+
+
+def resolve_handoff_root(handoff_root: str | Path | None = None) -> Path:
+    raw = _text(handoff_root) or _text(os.environ.get("M2_HANDOFF_ROOT")) or "~/Development/handoff"
+    return Path(raw).expanduser()
+
+
+def _mock_jev_reranker(mock_jev: Any) -> Callable[..., Any] | None:
+    if callable(mock_jev):
+        return mock_jev
+    if isinstance(mock_jev, dict) and mock_jev:
+        return lambda state, questions, **kwargs: mock_jev
+    return None
+
+
+def _compact_rag_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+    compact: dict[str, Any] = {
+        "doc_id": _text(hit.get("doc_id")),
+        "title": _text(hit.get("title")),
+        "score": round(float(hit.get("score") or 0.0), 6),
+        "bm25_score": round(float(hit.get("bm25_score") or 0.0), 6),
+        "snippet": _text(hit.get("snippet")),
+        "path": _text(hit.get("path")),
+        "tags": [str(t) for t in (hit.get("tags") or [])[:8]],
+    }
+    if hit.get("jev_score") is not None:
+        compact["jev_score"] = round(float(hit["jev_score"]), 6)
+    if _text(meta.get("goal_id")):
+        compact["goal_id"] = _text(meta.get("goal_id"))
+    if isinstance(meta.get("owned_paths"), list) and meta["owned_paths"]:
+        compact["owned_paths"] = [str(p) for p in meta["owned_paths"][:6]]
+    if isinstance(meta.get("events"), list) and meta["events"]:
+        compact["events"] = [str(e) for e in meta["events"][:4]]
+    return compact
+
+
+def query_handoff_rag(
+    query: str,
+    *,
+    handoff_root: str | Path | None = None,
+    top_k: int = 5,
+    use_jev: bool = False,
+    mock_jev: Any = None,
+    docs: list[Any] | None = None,
+) -> dict[str, Any]:
+    clean_query = _text(query)
+    if not clean_query:
+        raise RouterError("--rag-query requires a non-empty query")
+    if int(top_k) <= 0:
+        raise RouterError("--rag-top-k must be >= 1")
+    resolved_root = resolve_handoff_root(handoff_root)
+    corpus = docs if docs is not None else load_handoff_corpus(resolved_root)
+    result = hybrid_search(
+        clean_query,
+        corpus,
+        corpus_scope="handoff",
+        top_k=int(top_k),
+        use_jev=bool(use_jev),
+        jev_fn=_mock_jev_reranker(mock_jev),
+    )
+    compact_hits = [_compact_rag_hit(h) for h in (result.get("hits") or []) if isinstance(h, dict)]
+    hint = format_rag_context_hint(compact_hits) if compact_hits else ""
+    payload: dict[str, Any] = {
+        **result,
+        "handoff_root": str(resolved_root),
+        "hits": compact_hits,
+        "hit_count": len(compact_hits),
+        "rag_context_hint": hint,
+    }
+    while len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > ACI_MAX_BYTES and payload["hits"]:
+        payload["hits"].pop()
+        payload["hit_count"] = len(payload["hits"])
+        payload["rag_context_hint"] = format_rag_context_hint(payload["hits"])
+        payload["truncated"] = True
+    return payload
+
+
+def enrich_targets_with_handoff_rag(
+    targets: list[dict[str, Any]],
+    *,
+    handoff_root: str | Path | None = None,
+    scan_default: bool = False,
+    top_k: int = DEFAULT_RAG_TOP_K,
+    use_jev: bool = False,
+    mock_jev: Any = None,
+) -> None:
+    if not targets:
+        return
+    explicit_root = _text(handoff_root) or _text(os.environ.get("M2_HANDOFF_ROOT"))
+    if not explicit_root and not scan_default:
+        for target in targets:
+            target.setdefault("rag_hits", [])
+        return
+    corpus = load_handoff_corpus(resolve_handoff_root(explicit_root or None))
+    if not corpus:
+        for target in targets:
+            target.setdefault("rag_hits", [])
+        return
+    jev_fn = _mock_jev_reranker(mock_jev)
+    for target in targets:
+        topic_part = _text(target.get("topic_id"))
+        repo_part = _text(target.get("target_repo"))
+        if repo_part == "unspecified":
+            repo_part = ""
+        prompt_part = _text(target.get("sub_prompt"))
+        query = " ".join(part for part in (topic_part, repo_part, prompt_part) if part).strip()
+        if not query:
+            target.setdefault("rag_hits", [])
+            continue
+        res = hybrid_search(
+            query,
+            corpus,
+            corpus_scope="handoff",
+            top_k=max(1, int(top_k)),
+            use_jev=bool(use_jev),
+            jev_fn=jev_fn,
+        )
+        hits = [_compact_rag_hit(h) for h in (res.get("hits") or []) if isinstance(h, dict)]
+        target["rag_hits"] = hits
+        rag_hint = format_rag_context_hint(hits)
+        if rag_hint:
+            existing = _text(target.get("rag_context_hint"))
+            if not existing:
+                target["rag_context_hint"] = rag_hint
+            elif rag_hint not in existing:
+                target["rag_context_hint"] = f"{existing} | {rag_hint}"
+
+
+def format_rag_query_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"Handoff Hybrid RAG · query={_text(payload.get('query'))!r} · backend={_text(payload.get('backend'), 'bm25')} · hits={payload.get('hit_count', 0)}/{payload.get('total_docs', 0)}",
+    ]
+    for idx, hit in enumerate(payload.get("hits") or [], start=1):
+        lines.append(
+            f"{idx}. [{_text(hit.get('doc_id'))}] {_text(hit.get('title'))} (score={hit.get('score', 0.0)}): {_text(hit.get('snippet'))}"
+        )
+    if _text(payload.get("rag_context_hint")):
+        lines.append(f"rag_context_hint: {_text(payload.get('rag_context_hint'))}")
+    return "\n".join(lines)
 
 def _default_preview_path(plan_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"
@@ -200,6 +348,9 @@ def build_plan(
     agent_records: Iterable[dict[str, Any]] | None = None,
     prefer_issue_cache: bool = False,
     strict_prompts: bool = False,
+    handoff_root: str | Path | None = None,
+    scan_default_handoff: bool = False,
+    use_jev_rag: bool = False,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
@@ -253,6 +404,19 @@ def build_plan(
         resolve_target_space(target, topic, workspace_inventory, loaded_domain_map)
         if isinstance(target.get("proposed_domain"), dict):
             resolve_target_space(target, None, workspace_inventory, loaded_domain_map)
+    effective_handoff_root = handoff_root if handoff_root is not None else os.environ.get("M2_HANDOFF_ROOT")
+    if phase0_discussion_only:
+        for target in targets:
+            target.setdefault("rag_hits", [])
+    else:
+        enrich_targets_with_handoff_rag(
+            targets,
+            handoff_root=effective_handoff_root,
+            scan_default=scan_default_handoff,
+            top_k=DEFAULT_RAG_TOP_K,
+            use_jev=use_jev_rag,
+            mock_jev=mock_jev if use_jev_rag else None,
+        )
     stale_candidates: list[dict[str, Any]] = []
     for target in targets:
         topic = _topic_by_id(loaded_domain_map).get(_text(target.get("topic_id")))
@@ -288,8 +452,13 @@ def build_plan(
         target.setdefault(
             "context_pass",
             {
-                "enabled": bool(target.get("rag_context_hint") or target.get("recent_session_context")),
+                "enabled": bool(target.get("rag_context_hint") or target.get("rag_hits") or target.get("recent_session_context")),
                 "hint": target.get("rag_context_hint"),
+                **(
+                    {"rag_hits": target["rag_hits"]}
+                    if target.get("rag_hits")
+                    else {}
+                ),
                 **(
                     {"recent_session_context": target["recent_session_context"]}
                     if isinstance(target.get("recent_session_context"), dict)
@@ -301,7 +470,7 @@ def build_plan(
         if matched and _text(matched.get("status"), "idle").casefold() in {"idle", "done"}:
             continuity = _evaluate_m2_context_continuity(
                 target, matched, message, domain_map=loaded_domain_map, mock_jev=mock_jev,
-                handoff_root=os.environ.get("M2_HANDOFF_ROOT"),
+                handoff_root=effective_handoff_root,
                 visible_text=_text(matched.get("visible") or matched.get("visible_text")),
             )
             target.update({"m2_action": continuity["m2_action"]})
@@ -335,7 +504,7 @@ def build_plan(
         "targets": targets,
         "new_domain_candidates": decision.get("new_domain_candidates", []),
         "stale_m2_candidates": list(unique_stale.values()),
-        "gc_candidates": discover_gc_candidates(list(sessions), handoff_root=os.environ.get("M2_HANDOFF_ROOT")),
+        "gc_candidates": discover_gc_candidates(list(sessions), handoff_root=effective_handoff_root),
         "approval": {"required": True, "approved": False},
         "phase0_discussion_only": phase0_discussion_only,
     }

@@ -373,7 +373,7 @@ def _run_command(args: list[str], *, timeout: float = 3.0) -> subprocess.Complet
 
 ROLLUP_METADATA_KEYS = (
     "linear_issue", "parent_linear_issue", "handoff_dir", "goal_id", "depends_on",
-    "upstream_waves", "rag_context_hint", "sub_prompt", "terminal_title", "cwd",
+    "upstream_waves", "rag_context_hint", "rag_hits", "sub_prompt", "terminal_title", "cwd",
     "m1_progress", "m1_stage_summary", "_handoff_discovered",
     "agent_session", "agent_session_id", "recent_session_context",
     "last_session_activity_at", "ledger_updated_at", "active_summary_source",
