@@ -262,6 +262,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup-duplicates", action="store_true", help="close safe duplicate idle Herdr panes during --apply")
     parser.add_argument("--replace-stale-m2", action="store_true", help="close safe idle stale panes and spawn a fresh M2 during --apply")
     parser.add_argument("--targets-json", help="target list/object supplied by an outer CLI model")
+    parser.add_argument("--strict-prompts", action="store_true", help="fail --plan when target instructions lack actionable context")
     parser.add_argument("--mock-magpie-json", help="offline Magpie response fixture")
     parser.add_argument("--mock-jev-json", help="legacy Jev fixture alias")
     parser.add_argument("--approve", "--yes", action="store_true", help="explicitly approve dispatch")
@@ -380,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
                 caller_bot=args.caller_bot,
                 no_supervision=args.no_supervision,
                 no_routine=args.no_routine,
+                strict_prompts=args.strict_prompts,
                 agent_records=raw_gc_records if raw_gc_records else ([] if (args.no_herdr or use_issue_cache) else None),
                 prefer_issue_cache=use_issue_cache,
             )

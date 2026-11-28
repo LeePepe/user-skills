@@ -348,6 +348,7 @@
           "target_repo": "user-skills",
           "cwd": "~/Development/user-skills",
           "keywords": [
+            "agent-retro",
             "retro-loop",
             "skill-retro",
             "story-craft",

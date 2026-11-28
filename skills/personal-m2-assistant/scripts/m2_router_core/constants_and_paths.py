@@ -43,6 +43,17 @@ MAPPED_DOMAIN = "MAPPED_DOMAIN"
 
 NEW_DOMAIN_CANDIDATE = "NEW_DOMAIN_CANDIDATE"
 
+RICH_PROMPT_KEYS = (
+    "instruction",
+    "instructions",
+    "prompt",
+    "detail",
+    "details",
+    "body",
+    "task_prompt",
+    "sub_prompt",
+)
+
 MAGPIE_BASE_URL = "http://127.0.0.1:3425"
 
 MAGPIE_DEFAULT_MODEL = "group/steering"
@@ -208,6 +219,28 @@ class DiscoverySessions(list[dict[str, Any]]):
 
 def _text(value: Any, default: str = "") -> str:
     return str(value).strip() if value is not None else default
+
+def merge_target_prompt(target: dict[str, Any], message: str = "") -> str:
+    """Preserve rich target instructions while retaining a distinct short title."""
+    current = _text(target.get("sub_prompt"))
+    extras: list[str] = []
+    for key in RICH_PROMPT_KEYS:
+        value = _text(target.get(key))
+        if not value or key == "sub_prompt":
+            continue
+        if value == current or value == _text(message) or value in extras:
+            continue
+        if any(value in existing or existing in value for existing in extras):
+            continue
+        extras.append(value)
+    if not extras:
+        return current or _text(message)
+    rich = "\n\n".join(extras)
+    if not current or current == _text(message):
+        return rich
+    if current in rich or rich in current:
+        return rich if len(rich) >= len(current) else current
+    return f"{current}\n\n{rich}"
 
 _EXPLORATORY_DISCUSSION_RE = re.compile(
     r"(?:先讨论|讨论一下|先聊聊|看看有哪些|先调研|不改代码|先探索|先分析|before\\s+(?:coding|implement)|discussion\\s+only)",

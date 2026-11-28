@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
-  "version": 2,
-  "updated": "2026-11-25",
+  "version": 3,
+  "updated": "2026-11-28",
   "active_cases": [
     {
       "id": "EV-001",
@@ -145,6 +145,51 @@
         "Reference:"
       ],
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-008",
+      "title": "targets-json preserves rich instruction over a short message",
+      "tags": [
+        "prompt-preservation",
+        "targets-json",
+        "regression"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message 'fix it' --targets-json '{\"targets\":[{\"topic\":\"my-designer\",\"instruction\":\"Update skills/my-designer/SKILL.md and validate the design routing contract with acceptance item 1.\"}]}' --transport stdout --no-herdr --no-dsh --json",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "Update skills/my-designer/SKILL.md and validate the design routing contract"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-009",
+      "title": "domain aliases resolve to mapped spaces",
+      "tags": [
+        "domain-map",
+        "aliases",
+        "regression"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message 'route work' --targets-json '{\"targets\":[{\"domain_key\":\"agent-retro\",\"instruction\":\"Inspect skills/agent-retro/SKILL.md and report acceptance item 1.\"}]}' --transport stdout --no-herdr --no-dsh --json",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"target_repo\": \"user-skills\""
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-010",
+      "title": "strict prompts rejects contextless short target prompts",
+      "tags": [
+        "prompt-completeness",
+        "strict-prompts",
+        "counter-case"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --plan --message 'fix it' --targets-json '{\"targets\":[{\"topic\":\"my-designer\",\"sub_prompt\":\"fix it\"}]}' --transport stdout --no-herdr --no-dsh --strict-prompts --json",
+      "expect_exit": 2,
+      "expect_stderr_contains": [
+        "strict prompt completeness guard"
+      ],
+      "registered_at": "2026-11-28"
     }
   ],
   "trigger_evals": [

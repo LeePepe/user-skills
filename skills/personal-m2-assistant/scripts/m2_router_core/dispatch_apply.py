@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ._imports import *
 
-from .constants_and_paths import _run_command
+from .constants_and_paths import _run_command, merge_target_prompt
 
 from .apply_engine import _post_json
 
@@ -60,7 +60,7 @@ def apply_plan(plan: dict[str, Any], *, approve: bool = False, register_new_doma
                         "source": "herdr",
                         "transport": "stdout" if target_is_stdout else "herdr",
                     })
-            prompt = _text(dispatch_target.get("sub_prompt"), plan.get("message", ""))
+            prompt = merge_target_prompt(dispatch_target, _text(plan.get("message")))
             hint = dispatch_target.get("rag_context_hint")
             if hint:
                 prompt = f"[RAG/context hint]\n{hint}\n\n[Dispatched instruction]\n{prompt}"
