@@ -1,6 +1,6 @@
 {
   "name": "design-studio",
   "description": "Entry A 设计与交互参考资料库：摄取与检索灵感卡片 (vault-ingest/vault-search)、实测色板 (--measure-palette)、交互联动 (IP-*)、微交互动效 (MP-*)、8 维分类 (taxonomy-v2.json)、Web 画廊脚手架与 Remotion 视频工具链 (T-*)。不负责编写 design.md/spec.md、代码门禁审计或 Visual Traceback（请用 my-designer），也不负责通用知识拆解（knowledge-digest）。",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "category": "design"
 }

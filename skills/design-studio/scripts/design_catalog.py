@@ -21,6 +21,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+from skill_runtime.hybrid_rag import VaultIsolationError, hybrid_search, load_design_vault_corpus  # noqa: E402
 
 
 def _load_sibling_module(cache_name: str, path: Path):
@@ -37,6 +40,7 @@ def _load_sibling_module(cache_name: str, path: Path):
 NAVIGATION = _load_sibling_module("design_studio_navigation_demo", ROOT / "scripts" / "navigation_demo.py")
 CHOOSER = _load_sibling_module("design_studio_gallery_chooser", ROOT / "scripts" / "gallery_chooser.py")
 PROMPTS = _load_sibling_module("design_studio_gallery_prompts", ROOT / "scripts" / "gallery_prompts.py")
+RAG = _load_sibling_module("design_studio_rag", ROOT / "scripts" / "design_rag.py")
 DEFAULT_CATALOG = ROOT / "scripts" / "data" / "catalog.json"
 DEFAULT_MARKDOWN = ROOT / "references" / "toolchain-20-matrix.md"
 DEFAULT_EVAL_CASES = ROOT / "references" / "eval-cases.json"
@@ -1859,79 +1863,15 @@ def command_stats(args):
     taxonomy_path = Path(getattr(args, "taxonomy", DEFAULT_TAXONOMY))
     vault_dir = Path(getattr(args, "vault_dir", DEFAULT_VAULT_DIR))
     eval_cases_path = Path(getattr(args, "eval_cases", DEFAULT_EVAL_CASES))
-    platform_filter = getattr(args, "platform", None)
-
-    catalog = validate(load(catalog_path)) if catalog_path.is_file() else {"tools": [], "patterns": []}
-    taxonomy = load(taxonomy_path) if taxonomy_path.is_file() else {"dimensions": []}
-    eval_doc = load(eval_cases_path) if eval_cases_path.is_file() else {"active_cases": []}
-
-    vault_files = {
-        "desktop": vault_dir / "desktop-macos.json",
-        "mobile": vault_dir / "mobile-ios.json",
-        "web": vault_dir / "web.json",
-    }
-    target_platforms = [platform_filter] if platform_filter in VAULT_PLATFORMS else ["desktop", "mobile", "web"]
-    per_platform = {}
-    unique_inspirations = {}
-    dim_counts = {prefix: 0 for prefix in ("CL", "VS", "CP", "DV", "GM", "MI", "LN", "TC")}
-
-    for plat in ("desktop", "mobile", "web"):
-        vpath = vault_files[plat]
-        items = load(vpath).get("inspirations", []) if vpath.is_file() else []
-        per_platform[plat] = len(items)
-        if plat in target_platforms:
-            for item in items:
-                iid = str(item.get("id", ""))
-                if iid and iid not in unique_inspirations:
-                    unique_inspirations[iid] = item
-
-    for iid, item in unique_inspirations.items():
-        pdim = str(item.get("primary_dimension", ""))
-        prefix = DIMENSION_PREFIXES.get(pdim) or (iid.split("-", 1)[0] if "-" in iid else "")
-        if prefix in dim_counts:
-            dim_counts[prefix] += 1
-
-    expected_archetypes = ("VS-005", "VS-006", "VS-007", "VS-008")
-    present_archetypes = sorted(aid for aid in expected_archetypes if aid in unique_inspirations)
-
-    tools = catalog.get("tools", [])
-    patterns = catalog.get("patterns", [])
-    payload = {
-        "schema": "design-studio-stats/v1",
-        "ok": True,
-        "advisory_mode": "soft_exit_0",
-        "platform_filter": platform_filter,
-        "catalog": {
-            "tools_count": len(tools),
-            "patterns_count": len(patterns),
-            "ip_count": sum(1 for item in patterns if str(item.get("id", "")).startswith("IP-")),
-            "mp_count": sum(1 for item in patterns if str(item.get("id", "")).startswith("MP-")),
-        },
-        "vault": {
-            "desktop": per_platform["desktop"],
-            "mobile": per_platform["mobile"],
-            "web": per_platform["web"],
-            "total_inspirations": len(unique_inspirations),
-            "taxonomy_dimensions": len(taxonomy.get("dimensions", [])),
-            "dimensions": dim_counts,
-        },
-        "creative_spectrum_2_1_1": {
-            "archetypes_present": present_archetypes,
-            "quota_formula": "2_persona_deepening + 1_cross_domain + 1_wildcard",
-            "vs_005_to_008_ready": len(present_archetypes) == 4,
-        },
-        "eval_cases_count": len(eval_doc.get("active_cases", [])),
-        "drawers": [
-            "toolchain-20-matrix.md",
-            "remotion-video.md",
-            "eval-cases.json",
-        ],
-        "references": [
-            "skills/design-studio/references/toolchain-20-matrix.md",
-            "skills/design-studio/references/remotion-video.md",
-            "skills/design-studio/references/eval-cases.json",
-        ],
-    }
+    payload = RAG.build_stats_payload(
+        catalog=validate(load(catalog_path)) if catalog_path.is_file() else {"tools": [], "patterns": []},
+        taxonomy=load(taxonomy_path) if taxonomy_path.is_file() else {"dimensions": []},
+        eval_doc=load(eval_cases_path) if eval_cases_path.is_file() else {"active_cases": []},
+        vault_dir=vault_dir,
+        platform_filter=getattr(args, "platform", None),
+        dim_prefixes=DIMENSION_PREFIXES,
+        load_fn=load,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -1947,20 +1887,44 @@ def _resolve_cli_aliases(args, root_parser=None):
     if getattr(args, "command", None) == "vault-search" and not getattr(args, "query", ""):
         if getattr(args, "query_pos", None):
             args.query = args.query_pos
-    if getattr(args, "command", None) == "search" and not getattr(args, "query", None):
-        if getattr(args, "query_pos", None):
-            args.query = args.query_pos
-        elif root_parser is not None:
-            root_parser.error("search requires --query/-q or a positional <query>")
-        else:
-            raise ValueError("search requires --query/-q or a positional <query>")
+    if getattr(args, "command", None) == "search":
+        if getattr(args, "rag_query", None) and not getattr(args, "query", None):
+            args.query = args.rag_query
+        if not getattr(args, "query", None):
+            if getattr(args, "query_pos", None):
+                args.query = args.query_pos
+            elif root_parser is not None:
+                root_parser.error("search requires --query/-q or a positional <query>")
+            else:
+                raise ValueError("search requires --query/-q or a positional <query>")
     return args
+
+
+def command_rag_query(args, query_override=None):
+    q = query_override if query_override is not None else getattr(args, "rag_query", None) or getattr(args, "query", None)
+    top_k = getattr(args, "top_k", None)
+    if top_k is None:
+        top_k = getattr(args, "top", 5) or 5
+    payload = RAG.run_design_vault_rag(
+        q,
+        vault_dir=Path(getattr(args, "vault_dir", DEFAULT_VAULT_DIR)),
+        dim_prefixes=DIMENSION_PREFIXES,
+        platform=getattr(args, "platform", None),
+        dimension=getattr(args, "dimension", None),
+        top_k=top_k,
+        use_jev=bool(getattr(args, "use_jev", False)),
+        corpus_scope=getattr(args, "corpus_scope", "design-vault"),
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def command(args):
     _resolve_cli_aliases(args)
     if getattr(args, "stats", False) or args.command in {"stats", "inspect-vault"}:
         return command_stats(args)
+    if args.command is None and getattr(args, "rag_query", None) is not None:
+        return command_rag_query(args, args.rag_query)
     if args.command is None and args.query:
         return command_query(args)
     if args.command == "classify":
@@ -1986,6 +1950,9 @@ def command(args):
     if args.command == "ingest":
         return ingest(args, catalog, catalog_path, markdown_path)
     elif args.command == "search":
+        if any((getattr(args, "json", False), getattr(args, "rag_query", None), getattr(args, "use_jev", False),
+                getattr(args, "top_k", None) is not None, getattr(args, "corpus_scope", "design-vault") != "design-vault")):
+            return command_rag_query(args, getattr(args, "rag_query", None) or args.query)
         print(json.dumps(matches(catalog, args.query, args.kind, args.platform,
                                  args.surface_mode, args.threshold), ensure_ascii=False, indent=2))
     elif args.command == "render":
@@ -2133,8 +2100,13 @@ def parser():
     common.add_argument("--markdown", default=str(DEFAULT_MARKDOWN))
     root = _SelfDisclosingDesignParser()
     root.add_argument("--query", "-q", dest="query", default=None, help="Top-level query across catalog and vault")
+    root.add_argument("--rag-query", dest="rag_query", default=None, help="Hybrid RAG query across design-vault cards")
     root.add_argument("--stats", action="store_true", help="Emit L3 soft JSON summary facts across catalog, vault, and 2+1+1 archetypes")
     root.add_argument("--top", "-k", dest="top", type=int, default=3)
+    root.add_argument("--top-k", dest="top_k", type=int, default=None, help="Top-K Hybrid RAG inspirations (default: 5)")
+    root.add_argument("--use-jev", dest="use_jev", action="store_true", help="Enable optional Jev System One reranking")
+    root.add_argument("--corpus-scope", dest="corpus_scope", default="design-vault")
+    root.add_argument("--json", action="store_true", help="Emit structured JSON output")
     root.add_argument("--platform", type=normalize_platform, default=None)
     root.add_argument("--dimension", choices=sorted(DIMENSIONS), default=None)
     root.add_argument("--surface-mode", dest="surface_mode", type=normalize_surface_mode, default=None)
@@ -2165,11 +2137,18 @@ def parser():
     search = sub.add_parser("search", parents=[common])
     search.add_argument("query_pos", nargs="?", default=None, help="Optional positional query")
     search.add_argument("--query", "-q", dest="query", default=None)
+    search.add_argument("--rag-query", dest="rag_query", default=None)
     search.add_argument("--kind", choices=["all", "tool", "pattern"], default="all")
     search.add_argument("--platform", type=normalize_platform)
+    search.add_argument("--dimension", choices=sorted(DIMENSIONS), default=None)
     search.add_argument("--surface-mode", dest="surface_mode", type=normalize_surface_mode)
     search.add_argument("--surface", dest="surface_arg", type=normalize_surface_or_platform, default=None)
     search.add_argument("--threshold", type=float, default=0.25)
+    search.add_argument("--top-k", dest="top_k", type=int, default=None)
+    search.add_argument("--use-jev", dest="use_jev", action="store_true")
+    search.add_argument("--vault-dir", default=str(DEFAULT_VAULT_DIR))
+    search.add_argument("--corpus-scope", dest="corpus_scope", default="design-vault")
+    search.add_argument("--json", action="store_true")
     render_parser = sub.add_parser("render", parents=[common])
     render_parser.add_argument("--check", action="store_true")
     for name in ("add-pattern", "add-tool"):
@@ -2295,9 +2274,9 @@ def main(argv=None) -> int:
     root_parser = parser()
     args = root_parser.parse_args(sys.argv[1:] if argv is None else argv)
     _resolve_cli_aliases(args, root_parser)
-    if args.command is None and not args.query and not getattr(args, "stats", False):
+    if args.command is None and not args.query and getattr(args, "rag_query", None) is None and not getattr(args, "stats", False):
         root_parser.error(
-            "the following arguments are required: --query/-q, --stats, or command "
+            "the following arguments are required: --query/-q, --rag-query, --stats, or command "
             "(search, vault-search, classify, vault-ingest, scaffold-gallery, recommend, render, stats)"
         )
     try:
