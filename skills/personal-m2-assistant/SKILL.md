@@ -29,7 +29,7 @@ description: 个人跨 M2 唯一入口：将自然语言拆解到业务话题 M2
 
 - 目标默认 `Gemini 4 Argon · 983K context`（`gemini-4-argon` / `long_context`）；NEW_M2 必须经安全 wrapper 使用 `--new-workspace --workspace-label <space> -- --model gemini-4-argon --context long_context`，不创建 Copilot Tab。人类路由提示以尾部 `<!-- herdr-origin:v1 kind=human_routed ... -->` 标记，并在 Herdr 标题、摘要和 Phase-0 检测前剥离。
 - `wave_order` 只表示软顺序；非 Phase 0 探索请求时，`--plan` 通过 `skill_runtime.hybrid_rag`（`M2_HANDOFF_ROOT` / `--handoff-root`）自动检索 Top-3 历史 handoff（`rag_hits`）并注入 `rag_context_hint` / `context_pass`，新旧 M2 立即可见历史 `spec.md` 决策、`Owned Paths` 与踩坑回执（空目录优雅降级）。`stdout` transport 只输出 receipt，不产生副作用。
-- 真静默要求最后 8 行无 `background /tasks`、`Working`、`Thinking`、`Running`、`Waiting for` 等活动标记；Goal TL 仍 `in_progress` 时继续监督。`--status`、`--watch`、`--plan` 输出完整 `unified_rollup_markdown`，包含 Wave 依赖、完成、累计完成、运行中、跨设备 `[Host: <device>]`、`in_flight_details` 与 `remote_devices`。
+- 真静默要求最后 8 行无 `background /tasks`、`Working`、`Thinking`、`Running`、`Waiting for` 等活动标记；Goal TL 仍 `in_progress` 时继续监督。`--status`、`--watch`、`--plan` 输出 `table_plus_bullets` 风格 `unified_rollup_markdown`：进行中表格、空闲待命项目符号、仅在多波次有依赖时显示 Wave 依赖；人类 Markdown 隐藏 pane ID，JSON 的 `in_flight_details` 与 `remote_devices` 保留机器字段。
 - `--cleanup-duplicates` 仅清理安全重复 idle M2；保护 `HERDR_PANE_ID`、`w1:p1`、`w2J:p1`、Cindy/大总管及 working/blocked 窗格。Context Eviction 仅在旧 Goal 完成、无 review/Owner decision 且 Jev 同时确认同 Goal 概率低于 0.35 与旧上下文为噪声时成立。
 - `m2-board-hook.sh` 的 `agentStop` / `sessionEnd` hook 以锁、指纹和 60s 节流避免空转；Linear 同步按设备分片保留 Work / Non-Work、Backlog 与最近完成。
 

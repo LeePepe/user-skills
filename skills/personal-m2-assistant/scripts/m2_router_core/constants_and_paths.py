@@ -392,6 +392,7 @@ ROLLUP_METADATA_KEYS = (
     "m1_progress", "m1_stage_summary", "_handoff_discovered",
     "agent_session", "agent_session_id", "recent_session_context",
     "last_session_activity_at", "ledger_updated_at", "active_summary_source",
+    "workspace_id", "workspace_label", "space", "transport",
 )
 
 _LEDGER_TS_RE = re.compile(
