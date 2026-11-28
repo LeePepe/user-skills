@@ -50,22 +50,112 @@ def _topic_match_score(text: str, topic: dict[str, Any]) -> int:
             score += 4 if candidate == _text(topic.get("target_repo")).casefold() else 2
     return score
 
+def _normalise_hint(value: Any) -> str:
+    return re.sub(r"[-_\s]+", " ", _text(value)).strip().casefold()
+
+def _target_hint_values(target: dict[str, Any]) -> list[str]:
+    keys = (
+        "topic_id",
+        "domain_key",
+        "domain",
+        "topic",
+        "space_name",
+        "space",
+        "skill",
+        "skill_name",
+        "name",
+        "target_repo",
+        "title",
+        "instruction",
+        "instructions",
+        "prompt",
+        "detail",
+        "details",
+        "body",
+        "sub_prompt",
+        "rag_context_hint",
+    )
+    return [_text(target.get(key)) for key in keys if _text(target.get(key))]
+
+def _topic_exact_match(topics: list[dict[str, Any]], values: list[str]) -> dict[str, Any] | None:
+    wanted = {_normalise_hint(value) for value in values if _normalise_hint(value)}
+    for topic in topics:
+        candidates = [
+            topic.get("space"),
+            *(topic.get("space_aliases") or []),
+        ]
+        if any(_normalise_hint(value) in wanted for value in candidates):
+            return topic
+    return None
+
+def _topic_keyword_match(topics: list[dict[str, Any]], values: list[str]) -> dict[str, Any] | None:
+    wanted = {_normalise_hint(value) for value in values if _normalise_hint(value)}
+    for topic in topics:
+        candidates = [
+            topic.get("title"),
+            *(topic.get("keywords") or []),
+            *(topic.get("aliases") or []),
+        ]
+        if any(_normalise_hint(value) in wanted for value in candidates):
+            return topic
+    return None
+
+def _topic_has_explicit_hint(target: dict[str, Any], topic: dict[str, Any] | None, domain_map: dict[str, Any]) -> bool:
+    if not topic:
+        return False
+    values = [
+        _text(target.get(key))
+        for key in ("topic_id", "domain_key", "domain", "topic", "space_name", "space", "skill", "skill_name", "name")
+        if _text(target.get(key))
+    ]
+    topic_values = [
+        topic.get("topic_id"),
+        topic.get("title"),
+        topic.get("space"),
+        *(topic.get("space_aliases") or []),
+        *(topic.get("keywords") or []),
+        *(topic.get("aliases") or []),
+    ]
+    wanted = {_normalise_hint(value) for value in values}
+    if any(_normalise_hint(value) in wanted for value in topic_values):
+        return True
+    repo = _normalise_hint(target.get("target_repo"))
+    if not repo or repo != _normalise_hint(topic.get("target_repo")):
+        return False
+    return sum(_normalise_hint(item.get("target_repo")) == repo for item in domain_map.get("topics", [])) == 1
+
 def _topic_for_target(target: dict[str, Any], message: str, domain_map: dict[str, Any], jev: dict[str, Any]) -> dict[str, Any] | None:
     by_id = _topic_by_id(domain_map)
-    explicit = _text(target.get("topic_id"))
-    if explicit in by_id:
-        return by_id[explicit]
+    topics = list(domain_map.get("topics", []))
+    explicit_hints = [
+        _text(target.get(key))
+        for key in ("topic_id", "domain_key", "domain", "topic", "space_name", "space", "skill", "skill_name", "name")
+        if _text(target.get(key))
+    ]
+    hints = _target_hint_values(target)
+    normalised_ids = {_normalise_hint(topic_id): topic_id for topic_id in by_id}
+    for hint in explicit_hints:
+        topic_id = normalised_ids.get(_normalise_hint(hint))
+        if topic_id:
+            return by_id[topic_id]
+    explicit_space = _topic_exact_match(topics, explicit_hints)
+    if explicit_space:
+        return explicit_space
+    explicit_keyword = _topic_keyword_match(topics, explicit_hints)
+    if explicit_keyword:
+        return explicit_keyword
     primary = jev.get("primary_topic")
     if isinstance(primary, dict):
         primary = primary.get("choice")
-    if len(jev.get("targets", [])) <= 1 and _text(primary) in by_id:
-        return by_id[_text(primary)]
+    primary_id = normalised_ids.get(_normalise_hint(primary))
+    if len(jev.get("targets", [])) <= 1 and primary_id:
+        return by_id[primary_id]
     repo = _clean_target_name(target.get("target_repo"))
-    repo_topics = [topic for topic in domain_map.get("topics", []) if repo and _clean_target_name(topic.get("target_repo")).casefold() == repo.casefold()]
+    repo_topics = [topic for topic in topics if repo and _clean_target_name(topic.get("target_repo")).casefold() == repo.casefold()]
     if len(repo_topics) == 1:
         return repo_topics[0]
-    pool = repo_topics if repo_topics else domain_map.get("topics", [])
-    target_text = " ".join(_text(target.get(key)) for key in ("target_repo", "title", "sub_prompt", "rag_context_hint"))
+    pool = repo_topics if repo_topics else topics
+    target_text = " ".join(hints)
     text = target_text if len(jev.get("targets", [])) > 1 else (target_text + " " + message)
     scored = sorted(((_topic_match_score(text, topic), topic) for topic in pool), key=lambda item: item[0], reverse=True)
     if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):

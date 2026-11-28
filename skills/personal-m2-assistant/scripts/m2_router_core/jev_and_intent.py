@@ -3,6 +3,8 @@ from __future__ import annotations
 from ._imports import *
 
 from .constants_and_paths import _run_command
+from .constants_and_paths import merge_target_prompt
+from .domain_map import _topic_has_explicit_hint
 
 def _target_session(
     target: dict[str, Any],
@@ -215,13 +217,16 @@ def _extract_jev_plan(
         if not isinstance(raw, dict):
             continue
         target = dict(raw)
-        target.setdefault("sub_prompt", message)
+        target["sub_prompt"] = merge_target_prompt(target, message)
         target.setdefault("wave_order", target.get("order", target.get("wave", index + 1)))
         target.setdefault("rag_context_hint", target.get("context_pass") or target.get("rag_hint"))
         topic = _topic_for_target(target, message, domain_map, {"primary_topic": jev_primary, "targets": raw_targets})
         explicit_topic = _text(target.get("topic_id"))
-        has_explicit_target_hint = bool(explicit_topic and explicit_topic != NEW_UNMAPPED_DOMAIN) or bool(_clean_target_name(target.get("target_repo")) and _clean_target_name(target.get("target_repo")) != "unspecified")
-        is_new = (_text(jev_primary) == NEW_UNMAPPED_DOMAIN or (jev_unmapped and not explicit_topic and len(raw_targets) == 1)) and not (used_deterministic_fallback and topic is not None and not has_explicit_target_hint)
+        is_explicitly_mapped = _topic_has_explicit_hint(target, topic, domain_map)
+        is_new = (
+            _text(jev_primary) == NEW_UNMAPPED_DOMAIN
+            or (jev_unmapped and not explicit_topic and len(raw_targets) == 1)
+        ) and not (is_explicitly_mapped or used_deterministic_fallback)
         if explicit_topic == NEW_UNMAPPED_DOMAIN:
             topic = None
             is_new = True
@@ -279,7 +284,7 @@ def _extract_jev_plan(
             target["wave_order"] = max(1, int(target["wave_order"]))
         except (TypeError, ValueError):
             target["wave_order"] = index + 1
-        target["sub_prompt"] = _text(target.get("sub_prompt"), message)
+        target["sub_prompt"] = merge_target_prompt(target, message)
         target["rag_context_hint"] = target.get("rag_context_hint")
         targets.append(target)
 

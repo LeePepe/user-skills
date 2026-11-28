@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from ._imports import *
+from .constants_and_paths import merge_target_prompt
 
 from .constants_and_paths import _run_command
 
 def _default_preview_path(plan_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", _text(plan_id, "m2p-plan")).strip("-") or "m2p-plan"
     return Path(f"/tmp/m2-plan-{safe_id}.md")
+
+def _prompt_has_context(prompt: str) -> bool:
+    return bool(re.search(r"(?:/|\.(?:py|swift|md|json|yaml|yml|sh|ts|tsx)\b|\bTIA-\d+\b|(?<!\w)#\d+\b|\b\d+[.)]\s+)", prompt, re.I))
+
+def validate_target_prompt_completeness(target: dict[str, Any], message: str, *, target_index: int) -> dict[str, Any] | None:
+    if target.get("phase0_discussion_only"):
+        return None
+    prompt = merge_target_prompt(target, message)
+    if len(prompt) >= 80 or _prompt_has_context(prompt):
+        return None
+    return {
+        "target_index": target_index,
+        "target_repo": _text(target.get("target_repo"), "unspecified"),
+        "reason": "under_specified_sub_prompt",
+        "message": "Target instruction is shorter than 80 characters and lacks a file, repository, issue, PR, or numbered acceptance marker.",
+        "sub_prompt": prompt,
+    }
 
 def render_preview_markdown(plan: dict[str, Any]) -> str:
     plan_id = _text(plan.get("plan_id"), "m2p-unknown")
@@ -119,6 +137,14 @@ def render_preview_markdown(plan: dict[str, Any]) -> str:
                 f"- `{_text(candidate.get('topic_id'))}`: {_text(candidate.get('title'))} → "
                 f"`{_text(candidate.get('target_repo'))}` (`{_text(candidate.get('group'))}`, cwd `{_expand_cwd(candidate.get('cwd'))}`)"
             )
+    prompt_warnings = plan.get("prompt_warnings") or []
+    if prompt_warnings:
+        lines.extend(["", "## ⚠️ Handoff Context Completeness Warnings", ""])
+        for warning in prompt_warnings:
+            lines.append(
+                f"- Target {warning.get('target_index')}: `{_text(warning.get('target_repo'), 'unspecified')}` — "
+                f"{_text(warning.get('message'))} Prompt: `{_text(warning.get('sub_prompt'))}`"
+            )
     cross_lines = _render_cross_device_rollup_lines({
         "cross_device_in_flight": plan.get("cross_device_in_flight") or [],
         "cross_device_pending_decisions": plan.get("cross_device_pending_decisions") or [],
@@ -173,6 +199,7 @@ def build_plan(
     no_routine: bool = False,
     agent_records: Iterable[dict[str, Any]] | None = None,
     prefer_issue_cache: bool = False,
+    strict_prompts: bool = False,
 ) -> dict[str, Any]:
     message = _text(message)
     if not message:
@@ -220,6 +247,8 @@ def build_plan(
         for target in targets:
             _apply_phase0_discussion_lock(target, message)
     for target in targets:
+        if not target.get("phase0_discussion_only"):
+            target["sub_prompt"] = merge_target_prompt(target, message)
         topic = _topic_by_id(loaded_domain_map).get(_text(target.get("topic_id")))
         resolve_target_space(target, topic, workspace_inventory, loaded_domain_map)
         if isinstance(target.get("proposed_domain"), dict):
@@ -282,6 +311,14 @@ def build_plan(
                 target["cleanup_candidates"] = [candidate]
         stale_candidates.extend(target["cleanup_candidates"])
     unique_stale = {item["session_id"]: item for item in stale_candidates}
+    prompt_warnings: list[dict[str, Any]] = []
+    for index, target in enumerate(targets, start=1):
+        warning = validate_target_prompt_completeness(target, message, target_index=index)
+        if warning:
+            target["prompt_completeness_warning"] = warning
+            prompt_warnings.append(warning)
+    if strict_prompts and prompt_warnings:
+        raise RouterError(f"strict prompt completeness guard rejected {len(prompt_warnings)} target(s)")
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "plan_id": plan_id,
@@ -292,6 +329,8 @@ def build_plan(
         "decision": {"route": route, **decision},
         "domain_map_file": loaded_domain_map.get("path", str(domain_map_file or DEFAULT_DOMAIN_MAP_PATH)),
         "discovery": {"source": discovery_source, "sessions": sessions, "workspaces": workspace_inventory, "warnings": warnings_list},
+        "warnings": [*warnings_list, *prompt_warnings],
+        "prompt_warnings": prompt_warnings,
         "waves": sorted({target["wave_order"] for target in targets}),
         "targets": targets,
         "new_domain_candidates": decision.get("new_domain_candidates", []),
