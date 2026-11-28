@@ -618,7 +618,7 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         manifest = json.loads((skill / '.claude-plugin/plugin.json').read_text())
         text = (skill / 'SKILL.md').read_text()
         description = text.split('description: "', 1)[1].split('"', 1)[0]
-        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.5', 'category': 'design'})
+        self.assertEqual(manifest, {'name': 'my-designer', 'description': description, 'version': '2.0.6', 'category': 'design'})
         self.assertLessEqual(len(description), 320)
         self.assertLess(len(text.splitlines()), 80)
         self.assertLess(len(text.encode()), 12 * 1024)
@@ -846,6 +846,137 @@ class ManifestAndTriggerBoundaryReplayTests(unittest.TestCase):
         res_clean = _run_cli('audit-code', '--platform', 'mobile', '--snippet', clean_semiotic_swift)
         self.assertEqual(res_clean.returncode, 0, res_clean.stdout + res_clean.stderr)
         self.assertEqual(json.loads(res_clean.stdout)['findings'], [])
+
+    def test_three_layer_orthogonal_allocation_and_card_peek_gates(self):
+        skill = VERIFY_DESIGN_CASES.parents[1]
+        interaction_text = (skill / 'references' / 'interaction-layering.md').read_text(encoding='utf-8')
+        breathing_text = (skill / 'references' / 'breathing-and-clarity.md').read_text(encoding='utf-8')
+
+        self.assertLessEqual(len(interaction_text.splitlines()), 160)
+        self.assertLessEqual(len(interaction_text.encode('utf-8')), 12 * 1024)
+        self.assertLessEqual(len(breathing_text.splitlines()), 130)
+        self.assertLessEqual(len(breathing_text.encode('utf-8')), 12 * 1024)
+
+        for token in (
+            '## Three-Layer Orthogonal Information Allocation Case (L1 Hero Verdict ➔ L2 Metric Tiles ➔ L3 Expanded Detail)',
+            'UI_CROSS_LAYER_METRIC_ECHO',
+            'UI_SCROLL_PROMPT_CLUTTER',
+            '55%–60%',
+            'Card Peek',
+        ):
+            self.assertIn(token, interaction_text)
+        self.assertIn('Three-Layer Orthogonal Information Allocation', breathing_text)
+        self.assertIn('Card Peek', breathing_text)
+
+        # 1. Negative Case A: Cross-layer telemetry metric echoing (L1 Hero echoes L2 Bento tile readings)
+        bad_echo_swift = (
+            'struct BadCrossLayerEchoView: View {\n'
+            '    var body: some View {\n'
+            '        ScrollView {\n'
+            '            VStack {\n'
+            '                // L1 Hero repeats concrete readings\n'
+            '                Text("86")\n'
+            '                Text("19°C · 东北风 14km/h · 昨骑 35.2km")\n'
+            '                Text("当前气温 19°C，睡眠 7.6h，恢复 88%")\n'
+            '                // L2 Bento Tiles repeat the exact same readings\n'
+            '                Text("环境 · 19°C · 14km/h")\n'
+            '                Text("负荷 · 35.2km · 7.6h · 恢复 88%")\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}'
+        )
+        res_echo = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_echo_swift)
+        self.assertEqual(res_echo.returncode, 1, res_echo.stdout + res_echo.stderr)
+        echo_payload = json.loads(res_echo.stdout)
+        echo_findings = [f for f in echo_payload['findings'] if f['case_id'] == 'UI_CROSS_LAYER_METRIC_ECHO']
+        self.assertEqual(len(echo_findings), 1)
+        self.assertEqual(echo_findings[0]['reference_drawer'], 'skills/my-designer/references/interaction-layering.md')
+        self.assertIn('Three-Layer Orthogonal Information Allocation', echo_findings[0]['fix_rule'])
+        self.assertIn('skills/my-designer/references/interaction-layering.md', echo_payload['reference_drawers'])
+        self.assertIn('skills/my-designer/references/breathing-and-clarity.md', echo_payload['reference_drawers'])
+
+        # 2. Negative Case B: Instructional scroll/expand prompts in Swift code
+        for prompt_copy in (
+            '⌄ 下拉查看分项指标与详情',
+            '向上滑动查看更多',
+            '点击卡片展开详情',
+            '轻触卡片查看分项',
+        ):
+            with self.subTest(prompt_copy=prompt_copy):
+                bad_prompt_swift = f'struct BadPromptView: View {{ var body: some View {{ Text("{prompt_copy}") }} }}'
+                res_prompt = _run_cli('audit-code', '--platform', 'mobile', '--snippet', bad_prompt_swift)
+                self.assertEqual(res_prompt.returncode, 1, res_prompt.stdout)
+                prompt_payload = json.loads(res_prompt.stdout)
+                prompt_ids = {f['case_id'] for f in prompt_payload['findings']}
+                self.assertIn('UI_SCROLL_PROMPT_CLUTTER', prompt_ids)
+                self.assertIn('DC-014', prompt_ids)
+                self.assertIn('skills/my-designer/references/interaction-layering.md', prompt_payload['reference_drawers'])
+                self.assertIn('skills/my-designer/references/breathing-and-clarity.md', prompt_payload['reference_drawers'])
+
+        # 3. Positive Case: Clean 3-layer orthogonal view (#Preview repetition & design-contract-allow ignored)
+        clean_orthogonal_swift = (
+            'struct CleanOrthogonalReadinessView: View {\n'
+            '    @State private var expandedDomain: String? = nil\n'
+            '    var body: some View {\n'
+            '        ScrollView {\n'
+            '            VStack(spacing: 16) {\n'
+            '                // Layer 1: Composite score + qualitative verdict + dimension weights only (55-60% viewport)\n'
+            '                Text("86").font(.system(size: 56, weight: .bold)).foregroundStyle(.primary)\n'
+            '                Text("极佳适宜 · 适合耐力拉练")\n'
+            '                Text("环境 88 · 身体 84 · 负荷 86")\n'
+            '                // Layer 2: Below-the-fold Bento tiles (each metric owned once; Card Peek replaces scroll copy)\n'
+            '                Text("19°C · 东北风 14km/h")\n'
+            '                Text("睡眠 7.6h · 恢复 88%")\n'
+            '                Text("昨骑 35.2km")\n'
+            '                Text("19°C") // design-contract-allow: unit test fixture\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+            '#Preview("Readiness v01") {\n'
+            '    VStack {\n'
+            '        Text("19°C · 东北风 14km/h")\n'
+            '        Text("睡眠 7.6h · 恢复 88%")\n'
+            '    }\n'
+            '}'
+        )
+        res_orth_clean = _run_cli('audit-code', '--platform', 'mobile', '--snippet', clean_orthogonal_swift)
+        self.assertEqual(res_orth_clean.returncode, 0, res_orth_clean.stdout + res_orth_clean.stderr)
+        self.assertEqual(json.loads(res_orth_clean.stdout)['findings'], [])
+
+        # 4. Spec Gate: SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT in audit-spec (bad vs negated/clean)
+        base_spec = (
+            'Desktop NavigationSplitView; mobile NavigationStack.\n'
+            'States: empty, loading, error.\n'
+            'Deprecated Test Clauses: N/A.\n'
+        )
+        with tempfile.TemporaryDirectory(dir=VERIFY_DESIGN_CASES.parent) as tmp:
+            spec_path = Path(tmp) / 'design.md'
+            for bad_line in (
+                '在首屏与分项卡片之间显示 "⌄ 下拉查看分项指标与详情" 引导提示。',
+                '底部放置文字提示：向上滑动查看更多指标。',
+                '卡片底部显示「点击卡片展开详情」文案。',
+            ):
+                with self.subTest(bad_spec_line=bad_line):
+                    spec_path.write_text(base_spec + bad_line + '\n', encoding='utf-8')
+                    res_spec_bad = _run_cli('audit-spec', '--strict-spec-gaps', str(spec_path))
+                    self.assertEqual(res_spec_bad.returncode, 1, res_spec_bad.stdout)
+                    spec_bad_payload = json.loads(res_spec_bad.stdout)
+                    codes = {w['code'] for w in spec_bad_payload['spec_gap_warnings']}
+                    self.assertIn('SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT', codes)
+                    self.assertIn('skills/my-designer/references/interaction-layering.md', spec_bad_payload['reference_drawers'])
+                    self.assertIn('skills/my-designer/references/breathing-and-clarity.md', spec_bad_payload['reference_drawers'])
+
+            for good_line in (
+                '禁止写 "⌄ 下拉查看分项指标与详情" 或 "点击卡片展开详情" 等教学提示，首屏 Hero 占 55%–60% 视口高度并通过底部 Card Peek 自然暗示可滚动。',
+                'Do not render "scroll down to view metrics" or "tap card to expand"; rely on 55%–60% L1 Hero + L2 Card Peek.',
+            ):
+                with self.subTest(good_spec_line=good_line):
+                    spec_path.write_text(base_spec + good_line + '\n', encoding='utf-8')
+                    res_spec_good = _run_cli('audit-spec', '--strict-spec-gaps', str(spec_path))
+                    self.assertEqual(res_spec_good.returncode, 0, res_spec_good.stdout)
+                    self.assertEqual(json.loads(res_spec_good.stdout)['spec_gap_warnings'], [])
 
 
 if __name__ == "__main__":

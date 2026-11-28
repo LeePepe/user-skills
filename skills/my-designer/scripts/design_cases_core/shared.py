@@ -133,7 +133,7 @@ DRAWER_GUIDANCE: dict[str, tuple[str, str]] = {
     ),
     "interaction": (
         "skills/my-designer/references/interaction-layering.md",
-        "Keep Content/Functional/Feedback layers separate: isolate outer Button triggers from expanded actions, keep persistent pills stable across expand states, and wrap reveals in clipped layouts.",
+        "Keep Content/Functional/Feedback layers separate, enforce Three-Layer Orthogonal Information Allocation (L1 Hero Verdict -> L2 Metric Tiles -> L3 Expanded Detail) with 55%–60% Hero + L2 Card Peek (zero instructional scroll prompts or cross-layer metric echoing), isolate outer Button triggers, keep persistent pills stable, and wrap reveals in clipped layouts.",
     ),
     "breathing": (
         "skills/my-designer/references/breathing-and-clarity.md",
@@ -164,9 +164,11 @@ def _drawer_keys_for_case(case_id: str, dimensions: list[str] | None = None) -> 
     keys: list[str] = []
     if cid in {"DC-020", "UI_CUSTOM_THEME_PLUMBING", "SPEC_GAP_CUSTOM_THEME_TOGGLE"}:
         keys.append("appearance")
-    if cid in {"DC-004", "DC-010", "DC-011", "DC-012", "DC-016", "UI_EXPAND_STATE_MUTATION", "UI_HEADER_INTERLEAVED_INSERTION", "UI_UNCLIPPED_PANEL_OVERLAP"}:
+    if cid in {"UI_CROSS_LAYER_METRIC_ECHO", "UI_SCROLL_PROMPT_CLUTTER", "SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT"}:
+        keys.extend(["interaction", "breathing"])
+    if cid in {"DC-004", "DC-010", "DC-011", "DC-012", "DC-016", "UI_EXPAND_STATE_MUTATION", "UI_HEADER_INTERLEAVED_INSERTION", "UI_UNCLIPPED_PANEL_OVERLAP"} and "interaction" not in keys:
         keys.append("interaction")
-    if cid in {"DC-001", "DC-002", "DC-007", "DC-009", "DC-014", "DC-021", "UI_INSTRUCTIONAL_CLUTTER", "UI_SPEC_ID_DEBUG_LEAK", "UI_DUPLICATE_MAP_OR_PRIMARY_CTA", "UI_COCKPIT_RAINBOW_NUMERAL_NOISE", "UI_MINI_SPAGHETTI_CHART_COLLAPSE"}:
+    if cid in {"DC-001", "DC-002", "DC-007", "DC-009", "DC-014", "DC-021", "UI_INSTRUCTIONAL_CLUTTER", "UI_SPEC_ID_DEBUG_LEAK", "UI_DUPLICATE_MAP_OR_PRIMARY_CTA", "UI_COCKPIT_RAINBOW_NUMERAL_NOISE", "UI_MINI_SPAGHETTI_CHART_COLLAPSE"} and "breathing" not in keys:
         keys.append("breathing")
     if cid in {"DC-003", "DC-005", "DC-008", "DC-013", "DC-018"}:
         keys.append("navigation")
@@ -435,49 +437,27 @@ CONCRETE_TEST_REF_RE = re.compile(
     r"|[A-Za-z0-9_./-]+\.(?:swift|py|ts|tsx|js|jsx|mjs):\d+)"
 )
 
-INSTRUCTIONAL_MICRO_COPY_TEXT_RE = re.compile(
-    r"(?:"
-    r"(?:点击|点按|长按|按住|双击)[^\n\"'<>]{0,20}?"
-    r"(?:即可|直接|原地|可|继续)?[^\n\"'<>]{0,8}?"
-    r"(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)"
-    r"|操作\s*/\s*展示一体"
-    r"|执行步骤树"
-    r"|点击任务置顶聚焦"
-    r"|标题与属性展示处直接点按修改"
-    r"|点按文字原地修改"
-    r"|右下麦克风语音直补"
-    r"|按住右下麦克风继续追补"
-    r"|点按任意条目切换至顶部聚焦"
-    r")"
-)
-UI_INSTRUCTIONAL_CLUTTER_RE = re.compile(
-    rf"(?:\b(?:Text|Label)\s*\(\s*\"[^\n\"]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^\n\"]*\""
-    rf"|>[^<>\n]*{INSTRUCTIONAL_MICRO_COPY_TEXT_RE.pattern}[^<>\n]*<)"
-)
-
-UI_SPEC_ID_DEBUG_LEAK_RE = re.compile(
-    r"\b(?:Text|Label)\s*\(\s*\"[^\n\"]*(?:"
-    r"\b[A-D]\d{1,2}(?:\s*[左中右上下底顶]?卡)?\s*[·:：]"
-    r"|已选原子\s*[:：]?"
-    r"|模式\s*[A-D]\s*[·:：]"
-    r"|\[\s*\d+\s*/\s*\d+\s*格\s*\]"
-    r"|\bPreset\s*\d+\b"
-    r")[^\n\"]*\""
-)
-UI_REPEATED_DETAIL_LABEL_RE = re.compile(
-    r"\b(?:Text|Label)\s*\(\s*\"[^\n\"]*查看详情[^\n\"]*\""
-)
-UI_MAP_COMPONENT_CALL_RE = re.compile(
-    r"(?<!func\s)(?<!struct\s)\b(?:Map|MKMapView|\w*(?:RouteMap|MiniMap|MapCanvas|MapPreview|MapCard)\w*)\s*\("
-)
-UI_PRIMARY_NAV_CTA_RE = re.compile(
-    r"\b(?:Button|Text|Label)\s*\([^\n{}]*\"[^\n\"]*(开始导航|立即出发|开始骑行|Start\s+Navigation)[^\n\"]*\""
-)
-UI_SATURATED_COLOR_RE = re.compile(
-    r"\.\s*(green|blue|orange|red|cyan|purple|yellow|mint|pink|indigo|teal)\b"
-)
-UI_LARGE_FONT_RE = re.compile(
-    r"\.font\s*\(\s*(?:\.system\s*\(\s*size\s*:\s*(?:2[4-9]|[3-9]\d)\b|\.(?:largeTitle|title|title2)\b)"
+from .semiotics_gates import (
+    INSTRUCTIONAL_MICRO_COPY_TEXT_RE,
+    PHYSICAL_TELEMETRY_TOKEN_RE,
+    SCROLL_EXPAND_PROMPT_TEXT_RE,
+    SPEC_GAP_GUIDANCE,
+    SPEC_SCROLL_PROMPT_NEGATION_RE,
+    SPEC_SCROLL_PROMPT_PROPOSAL_RE,
+    UI_CROSS_LAYER_METRIC_ECHO_FIX_RULE,
+    UI_INSTRUCTIONAL_CLUTTER_RE,
+    UI_LARGE_FONT_RE,
+    UI_MAP_COMPONENT_CALL_RE,
+    UI_PRIMARY_NAV_CTA_RE,
+    UI_REPEATED_DETAIL_LABEL_RE,
+    UI_SATURATED_COLOR_RE,
+    UI_SCROLL_PROMPT_CLUTTER_FIX_RULE,
+    UI_SCROLL_PROMPT_CLUTTER_RE,
+    UI_SPEC_ID_DEBUG_LEAK_RE,
+    _audit_cross_layer_metric_echo,
+    _detect_scroll_prompt_spec_gaps,
+    _has_deprecated_test_evidence,
+    _spec_gap_warning,
 )
 
 
@@ -514,6 +494,7 @@ def _strip_preview_blocks(text: str, masked: str) -> tuple[str, str]:
 def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str], path: str) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     ref_breathing = DRAWER_GUIDANCE["breathing"][0]
+    ref_interaction = DRAWER_GUIDANCE["interaction"][0]
 
     def _is_waived(start_idx: int, end_idx: int) -> bool:
         s_line = text.count("\n", 0, start_idx) + 1
@@ -665,5 +646,10 @@ def _audit_visual_semiotics_swift_gates(text: str, masked: str, lines: list[str]
                 "fix_rule": "Apply Edward Tufte's Synchronized Small Multiples: never overlay >=3 multi-unit curves (e.g. elevation + speed + heart rate) in a <80pt box; split into stacked single-series micro-sparkline rows.",
             })
             break
+
+    # 5. Bug 6: Cross-Layer Telemetry Metric Duplication Across L1 Hero and L2 Tiles (UI_CROSS_LAYER_METRIC_ECHO)
+    findings.extend(
+        _audit_cross_layer_metric_echo(no_prev_text, text, _is_waived, path, ref_interaction)
+    )
 
     return findings

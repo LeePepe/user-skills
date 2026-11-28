@@ -99,18 +99,6 @@ def command_check_section_interactivity(args: argparse.Namespace) -> int:
     return 0 if not errors else 1
 
 
-def _balanced_brace_end(text: str, open_brace_index: int) -> int:
-    depth = 1
-    idx = open_brace_index + 1
-    while idx < len(text) and depth > 0:
-        if text[idx] == '{':
-            depth += 1
-        elif text[idx] == '}':
-            depth -= 1
-        idx += 1
-    return idx
-
-
 def _dc012_spans(masked: str, regex_pattern: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = [(m.start(), m.end()) for m in re.finditer(regex_pattern, masked)]
     for btn in re.finditer(r'\bButton\b', masked):
@@ -304,6 +292,21 @@ def command_audit_code(args: argparse.Namespace) -> int:
                 if case.get('fix_rule'):
                     entry_finding['fix_rule'] = case['fix_rule']
                 findings.append(entry_finding)
+        for match in UI_SCROLL_PROMPT_CLUTTER_RE.finditer(text):
+            line = text.count('\n', 0, match.start()) + 1
+            line_text = lines[line - 1] if line <= len(lines) else ""
+            if "design-contract-allow" in line_text:
+                continue
+            drawer_keys.extend(_drawer_keys_for_case('UI_SCROLL_PROMPT_CLUTTER'))
+            findings.append({
+                'case_id': 'UI_SCROLL_PROMPT_CLUTTER',
+                'title': 'Instructional Scroll or Expand Prompt Rendered Instead of Spatial Card-Peek Signifier',
+                'file': str(path),
+                'line': line,
+                'match': match.group(0).replace('\n', ' ')[:240],
+                'reference_drawer': DRAWER_GUIDANCE['interaction'][0],
+                'fix_rule': UI_SCROLL_PROMPT_CLUTTER_FIX_RULE,
+            })
         for match in UI_INSTRUCTIONAL_CLUTTER_RE.finditer(text):
             line = text.count('\n', 0, match.start()) + 1
             line_text = lines[line - 1] if line <= len(lines) else ""
@@ -559,56 +562,6 @@ def audit_subtractive_spec_text(content: str, source: str = "<spec>") -> list[di
     return findings
 
 
-
-SPEC_GAP_GUIDANCE = [
-    "Read `skills/my-designer/references/navigation-evidence-contract.md` for platform-diverged navigation and state evidence.",
-    "Read `skills/my-designer/references/modernization-dimensions.md` for Deprecated Test Clauses and subtractive handoff evidence.",
-]
-
-
-def _spec_gap_warning(
-    code: str,
-    category: str,
-    source: str,
-    message: str,
-    guidance: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "code": code,
-        "category": category,
-        "tag": "[SPEC_GAP]",
-        "file": source,
-        "message": message,
-        "guidance": list(guidance if guidance is not None else SPEC_GAP_GUIDANCE),
-    }
-
-
-def _has_deprecated_test_evidence(content: str) -> bool:
-    clause_re = re.compile(
-        r"^[ \t]*(?P<heading>#{1,6}[ \t]+)?(?:[-*][ \t]+)?"
-        r"(?:Deprecated[ \t]+Test[ \t]+Clauses|Obsolete[ \t]+Test[ \t]+Manifest|Obsolete[ \t]+Tests?)\b"
-        r"[ \t]*(?:[:：-][ \t]*)?(?P<inline>[^\r\n]*)\r?$",
-        re.IGNORECASE | re.MULTILINE,
-    )
-    for clause in clause_re.finditer(content):
-        body = clause.group('inline')
-        if clause.group('heading'):
-            tail = content[clause.end():]
-            next_heading = re.search(r'(?m)^[ \t]*#{1,6}[ \t]+\S', tail)
-            body += '\n' + (tail[:next_heading.start()] if next_heading else tail)
-        if re.search(r'(?i)\b(?:N/?A|none|greenfield)\b|\bno (?:obsolete|deprecated) tests\b', body):
-            return True
-        if re.search(
-            r'[A-Za-z0-9_./-]+\.(?:swift|py|tsx?|jsx?|mjs)(?::\d+)?\b'
-            r'|[A-Za-z0-9_./-]+:\d+\b'
-            r'|\btest_[A-Za-z0-9_]+\b|\btest[A-Z][A-Za-z0-9_]*\b'
-            r'|`[A-Za-z_][A-Za-z0-9_.:()\[\]-]*`',
-            body,
-        ):
-            return True
-    return False
-
-
 def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[str, Any]]:
     """Return soft pre-implementation handoff warnings without changing legacy hard rules."""
     warnings: list[dict[str, Any]] = []
@@ -672,6 +625,9 @@ def detect_spec_gap_warnings(content: str, source: str = "<spec>") -> list[dict[
                 guidance=app_guidance + list(SPEC_GAP_GUIDANCE[:1]),
             ))
             break
+    warnings.extend(
+        _detect_scroll_prompt_spec_gaps(content, source, _build_self_disclosing_guidance, _spec_gap_warning)
+    )
     return warnings
 
 
@@ -721,11 +677,16 @@ def command_audit_spec(args: argparse.Namespace) -> int:
         payload["errors"] = errors
     if findings or spec_gap_warnings or errors:
         has_theme_gap = any(w.get("code") == "SPEC_GAP_CUSTOM_THEME_TOGGLE" for w in spec_gap_warnings)
+        has_scroll_gap = any(w.get("code") == "SPEC_GAP_INSTRUCTIONAL_SCROLL_PROMPT" for w in spec_gap_warnings)
         ref_drawers = [
             "skills/my-designer/references/modernization-dimensions.md",
             "skills/my-designer/references/navigation-evidence-contract.md",
         ]
         guidance_lines = list(SPEC_GAP_GUIDANCE)
+        if has_scroll_gap:
+            scroll_drawers, scroll_guidance = _build_self_disclosing_guidance(["interaction", "breathing"])
+            ref_drawers = scroll_drawers + [d for d in ref_drawers if d not in scroll_drawers]
+            guidance_lines = scroll_guidance + [g for g in guidance_lines if g not in scroll_guidance]
         if has_theme_gap:
             ref_drawers.insert(0, DRAWER_GUIDANCE["appearance"][0])
             _, app_guidance = _build_self_disclosing_guidance(["appearance"])

@@ -14,7 +14,7 @@ Treat whitespace as a task affordance: reserve a clear focal region, protect lab
 |---|---|
 | hierarchy | one focal task and one P0 |
 | density | context-scoped `--persona` budget; no accidental dead rail or crowded toolbar |
-| copy | concrete verbs; zero instructional micro-copy (`DC-014` / `UI_INSTRUCTIONAL_CLUTTER`) |
+| copy | concrete verbs; zero instructional micro-copy or scroll/expand prompts (`DC-014` / `UI_INSTRUCTIONAL_CLUTTER` / `UI_SCROLL_PROMPT_CLUTTER`) |
 | recovery | empty/error states retain a return path |
 
 ## Visual Semiotics & Data-Ink Methodology (Bertin · Tufte · Few · Norman · Shneiderman)
@@ -48,5 +48,6 @@ Encode state, mutability, baselines, thresholds, and trends through preattentive
    - **"Overview first, zoom and filter, then details-on-demand"**:
      - **Overview (Small Multiples / Bento Summary Tiles)**: primary screen tiles preserve high signal-to-noise (1 primary metric + 1 micro-spectrum/sparkline + subtle `↗` expansion signifier; collapse multi-alert items into a single summary badge cluster).
      - **Details-on-Demand (Spatial Drill-Down)**: tapping a summary tile expands spatially into a full-screen detail view or sheet to reveal multi-axis charts, sub-factor breakdowns, and threshold comparison tables.
+     - **Three-Layer Orthogonal Information Allocation (`L1 Hero Verdict ➔ L2 Metric Tiles ➔ L3 Expanded Detail`) & 55%–60% Hero + Bottom Card Peek**: keep L1 Hero restricted to composite score (`86`) + qualitative verdict + dimension weights (`环境 88 · 身体 84`), assign concrete physical metrics (`19°C`, `14km/h`, `35.2km`, `7.6h`, `恢复 88%`) exclusively to L2 Bento tiles with zero cross-layer repetition (`UI_CROSS_LAYER_METRIC_ECHO`), and size L1 Hero to ~`55%–60%` of the viewport so L2 tiles peek at the bottom (`Card Peek`) with zero instructional scroll/expand copy (`"⌄ 下拉查看分项指标与详情"`, `"点击卡片展开详情"`, `UI_SCROLL_PROMPT_CLUTTER`; see [interaction-layering.md](interaction-layering.md)).
 
 Capture the persona scope in `design.md`, then let the Writer implement it in product code.

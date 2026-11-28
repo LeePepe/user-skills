@@ -164,7 +164,7 @@
     },
     {
       "id": "DC-014",
-      "title": "Self-Proving Instructional Micro-Copy Clutter & OCR Spec-Prose Leak on UI Surface",
+      "title": "Self-Proving Instructional Micro-Copy, Scroll/Expand Prompt Clutter & OCR Spec-Prose Leak on UI Surface",
       "platforms": [
         "desktop",
         "mobile",
@@ -182,10 +182,10 @@
         "WebViewport"
       ],
       "match_raw_strings": true,
-      "symptom": "Printing interaction specifications or tutorial micro-copy directly onto the UI canvas (e.g., Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\"), Label(\"执行步骤树\", ...), Text(\"点按文字原地修改 · 右下麦克风语音直补\"), Text(\"按住右下麦克风继续追补\"), Text(\"点按任意条目切换至顶部聚焦\")) to self-certify that direct manipulation exists for static screenshot or Vision OCR checks.",
-      "fix_rule": "Never print interaction rules or tutorial micro-copy onto the UI surface to pass OCR or screenshot reviews; enforce Self-Evident Affordance over Instructional Micro-Copy (UI_INSTRUCTIONAL_CLUTTER gate) and verify interactive state transitions via Before/After state-diff screenshots or XCTest/Playwright interactive assertions.",
-      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:(?:点击|点按|长按|按住|双击)[^\\n\"'<>]{0,20}?(?:即可|直接|原地|可|继续)?[^\\n\"'<>]{0,8}?(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)|操作\\s*/\\s*展示一体|执行步骤树|点击任务置顶聚焦|标题与属性展示处直接点按修改|点按文字原地修改|右下麦克风语音直补|按住右下麦克风继续追补|点按任意条目切换至顶部聚焦)[^\\n\"]*\"",
-      "bad_snippet": "VStack(alignment: .leading) {\n    Text(\"待办清单\")\n    Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\")\n    Label(\"执行步骤树\", systemImage: \"list.bullet\")\n    Text(\"点按文字原地修改 · 右下麦克风语音直补\")\n}",
+      "symptom": "Printing interaction specifications, scroll/expand prompts, or tutorial micro-copy directly onto the UI canvas (e.g., Text(\"⌄ 下拉查看分项指标与详情\"), Text(\"向上滑动查看更多\"), Text(\"点击卡片展开详情\"), Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\"), Label(\"执行步骤树\", ...), Text(\"点按文字原地修改 · 右下麦克风语音直补\")) to self-certify that scrollability or direct manipulation exists.",
+      "fix_rule": "Never print interaction rules, scroll/expand prompts, or tutorial micro-copy onto the UI surface (UI_INSTRUCTIONAL_CLUTTER / UI_SCROLL_PROMPT_CLUTTER); size L1 Hero to ~55%–60% of the viewport so L2 Bento tiles naturally peek into the bottom of the initial viewport (Card Peek), and verify interactive state transitions via Before/After state-diff screenshots or interactive assertions.",
+      "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:(?:点击|点按|长按|按住|双击)[^\\n\"'<>]{0,20}?(?:即可|直接|原地|可|继续)?[^\\n\"'<>]{0,8}?(?:修改|编辑|切换|展开|收起|聚焦|置顶|追补|直补|录入|补充)|(?:[⌄∨↓↑]\\s*)?(?:下拉|上滑|向上滑动|向下滑动|滑动)[^\\n\"'<>]{0,16}?(?:查看|展开|浏览|更多|详情|分项|指标)|(?:点击|点按|轻触)[^\\n\"'<>]{0,8}?(?:卡片|磁贴|模块|任意卡片)[^\\n\"'<>]{0,6}?(?:展开|查看)(?:详情|分项|指标|更多|全部)?|(?:点击|点按|轻触)(?:展开|查看)(?:详情|分项指标|卡片详情|更多详情)|操作\\s*/\\s*展示一体|执行步骤树|点击任务置顶聚焦|标题与属性展示处直接点按修改|点按文字原地修改|右下麦克风语音直补|按住右下麦克风继续追补|点按任意条目切换至顶部聚焦)[^\\n\"]*\"",
+      "bad_snippet": "VStack(alignment: .leading) {\n    Text(\"待办清单\")\n    Text(\"⌄ 下拉查看分项指标与详情\")\n    Text(\"点击任务置顶聚焦 · 标题与属性展示处直接点按修改\")\n}",
       "good_snippet": "VStack(alignment: .leading) {\n    Text(\"待办清单\")\n    TextField(\"待办标题\", text: $draftTitle)\n}",
       "registered_at": "2026-11-16"
     },
@@ -328,7 +328,7 @@
     },
     {
       "id": "DC-021",
-      "title": "Spec Identifier/Debug Chrome Leak, Duplicate Map/Primary CTA, Rainbow Cockpit Numerals & Mini Spaghetti Chart Collapse",
+      "title": "Spec Identifier/Debug Chrome Leak, Cross-Layer Metric Echoing, Duplicate Map/Primary CTA, Rainbow Cockpit Numerals & Mini Spaghetti Chart Collapse",
       "platforms": [
         "desktop",
         "mobile"
@@ -346,8 +346,8 @@
         "LazyVGrid"
       ],
       "match_raw_strings": true,
-      "symptom": "Rendering internal spec IDs or debug chrome directly in UI (Text(\"A1 · 今日骑行\"), Text(\"已选原子: A1 A4\"), Text(\"模式A · 紧凑Bento\"), Text(\"[24/24格]\"), Text(\"Preset 1\"), or >=3 \"查看详情\" pills), stacking multiple Map canvases or duplicate \"开始导航\" primary CTAs in one screen, painting >=4 saturated rainbow primary numerals in a cockpit grid, or overlaying >=3 multi-unit curves inside a <80pt mini chart.",
-      "fix_rule": "Encode state and hierarchy via Visual Semiotics (Bertin retinal variables, Tufte data-ink & Synchronized Small Multiples, Few Bullet Graph ticks, Norman signifiers, Shneiderman overview-first): strip internal spec IDs/debug tags (UI_SPEC_ID_DEBUG_LEAK), keep <=1 Map canvas and 1 primary CTA per viewport (UI_DUPLICATE_MAP_OR_PRIMARY_CTA), keep >=24pt cockpit numerals monochrome .primary (UI_COCKPIT_RAINBOW_NUMERAL_NOISE), and split multi-unit <80pt charts into single-series sparkline rows (UI_MINI_SPAGHETTI_CHART_COLLAPSE).",
+      "symptom": "Rendering internal spec IDs or debug chrome directly in UI (Text(\"A1 · 今日骑行\"), Text(\"已选原子: A1 A4\"), Text(\"模式A · 紧凑Bento\"), Text(\"[24/24格]\"), Text(\"Preset 1\"), or >=3 \"查看详情\" pills), echoing concrete physical telemetry readings (19°C, 东北风 14km/h, 昨骑 35.2km, 睡眠 7.6h, 恢复 88%) in both L1 Hero and L2 Bento tiles (UI_CROSS_LAYER_METRIC_ECHO), stacking multiple Map canvases or duplicate \"开始导航\" primary CTAs in one screen, painting >=4 saturated rainbow primary numerals in a cockpit grid, or overlaying >=3 multi-unit curves inside a <80pt mini chart.",
+      "fix_rule": "Encode state and hierarchy via Visual Semiotics & Three-Layer Orthogonal Information Allocation (L1 Hero Verdict -> L2 Metric Tiles -> L3 Expanded Detail): strip internal spec IDs/debug tags (UI_SPEC_ID_DEBUG_LEAK), keep L1 Hero restricted to composite score + verdict + dimension weights while assigning concrete metrics exclusively to L2 Bento tiles (UI_CROSS_LAYER_METRIC_ECHO), keep <=1 Map canvas and 1 primary CTA per viewport (UI_DUPLICATE_MAP_OR_PRIMARY_CTA), keep >=24pt cockpit numerals monochrome .primary (UI_COCKPIT_RAINBOW_NUMERAL_NOISE), and split multi-unit <80pt charts into single-series sparkline rows (UI_MINI_SPAGHETTI_CHART_COLLAPSE).",
       "forbidden_regex": "\\b(?:Text|Label)\\s*\\(\\s*\"[^\\n\"]*(?:\\b[A-D]\\d{1,2}(?:\\s*[左中右上下底顶]?卡)?\\s*[·:：]|已选原子\\s*[:：]?|模式\\s*[A-D]\\s*[·:：]|\\[\\s*\\d+\\s*/\\s*\\d+\\s*格\\s*\\]|\\bPreset\\s*\\d+\\b)[^\\n\"]*\"",
       "bad_snippet": "VStack {\n    Text(\"A1 · 今日黄金骑行时间窗\")\n    Text(\"已选原子: A1 A4 [24/24格]\")\n}",
       "good_snippet": "VStack {\n    Text(\"今日黄金骑行时间窗\")\n    Text(\"14:00 - 16:30 · 适宜出发\")\n}",
