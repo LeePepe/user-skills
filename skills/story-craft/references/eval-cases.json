@@ -1,0 +1,142 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "story-craft",
+  "updated": "2026-11-28",
+  "trigger_evals": [
+    {
+      "query": "从已验收的项目与工程证据抽取四元素叙事素材，完成脱敏和 Tech Deep-Dive Blog 发布读回",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "跨 Handoff Hybrid RAG 叙事链检索 Story Series 与 Deck 四元素叙事素材",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "run xcodebuild simulator unit tests for SwiftPM package",
+      "should_trigger": false,
+      "near_miss_skill": "xcode-cli"
+    },
+    {
+      "query": "diagnose personal investment portfolio rebalancing and FIFO redemption windows",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    },
+    {
+      "query": "save this GitHub CLI tool repository to collected-tools for later",
+      "should_trigger": false,
+      "near_miss_skill": "save-tool"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "story_rag.py exposes --topic, --query, --top-k, --use-jev, --handoff-root, and --json flags",
+      "tags": [
+        "cli",
+        "rag"
+      ],
+      "cmd": "python3 skills/story-craft/scripts/story_rag.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--topic",
+        "--query",
+        "--top-k",
+        "--use-jev",
+        "--handoff-root",
+        "--json"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-002",
+      "title": "story-craft SKILL.md wires story_rag.py, 4-Element Extraction Sheet, Desensitization, and drawers",
+      "tags": [
+        "contract",
+        "routing"
+      ],
+      "file": "skills/story-craft/SKILL.md",
+      "must_contain": [
+        "4-Element Extraction Sheet",
+        "Desensitization",
+        "Story Series",
+        "Tech Deep-Dive Blog",
+        "Deck",
+        "skills/story-craft/scripts/story_rag.py",
+        "[prompt-slots.json](references/prompt-slots.json)",
+        "[eval-cases.json](references/eval-cases.json)"
+      ],
+      "must_not_contain": [
+        "../goal-target-task/",
+        "7-Ring lifecycle"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-003",
+      "title": "prompt-slots.json enforces provenance, quantitative_delta, pivot, takeaway_mechanism, and privacy_redlines",
+      "tags": [
+        "contract",
+        "desensitization"
+      ],
+      "file": "skills/story-craft/references/prompt-slots.json",
+      "must_contain": [
+        "privacy_redlines",
+        "provenance",
+        "quantitative_delta",
+        "pivot",
+        "takeaway_mechanism"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-004",
+      "title": "story_rag.py rejects missing --topic/--query with self-disclosing Reference pointer",
+      "tags": [
+        "negative",
+        "counter-case",
+        "cli"
+      ],
+      "negative_cmd": "python3 skills/story-craft/scripts/story_rag.py --json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "one of --topic or --query is required",
+        "Reference: skills/story-craft/SKILL.md"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-005",
+      "title": "story_rag.py rejects nonexistent --handoff-root with exit 2 and Reference pointer",
+      "tags": [
+        "negative",
+        "counter-case",
+        "fs-guard"
+      ],
+      "negative_cmd": "python3 skills/story-craft/scripts/story_rag.py search --query rag --handoff-root /nonexistent-story-craft-handoff-root --json",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "handoff root not found or unsafe",
+        "Reference: skills/story-craft/SKILL.md"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-006",
+      "title": "story_rag.py parser error scrubs secrets/emails/paths and enforces <=3-line Reference stderr",
+      "tags": [
+        "negative",
+        "counter-case",
+        "desensitization"
+      ],
+      "negative_cmd": "python3 skills/story-craft/scripts/story_rag.py --top-k password=secret123",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "<redacted>",
+        "Reference: skills/story-craft/SKILL.md"
+      ],
+      "registered_at": "2026-11-28"
+    }
+  ]
+}
