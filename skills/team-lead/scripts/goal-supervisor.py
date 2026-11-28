@@ -91,15 +91,13 @@ def agent_status(agent: dict[str, Any]) -> str:
 
 
 def role_for(name: str) -> str:
-    patterns = (
-        ("team_lead", ("-goal-tl-", "-team-lead-")),
-        ("pr_monitor", ("-prmon-", "-pr-monitor-")),
-        ("reviewer", ("-rev-", "-reviewer-")),
-        ("designer", ("-des-", "-designer-")),
-        ("explorer", ("-exp-", "-explorer-")),
-        ("writer", ("-writer-",)),
-    )
-    for role, markers in patterns:
+    m = re.search(r"(?:^|-)(?:t(?:k)?\d+[a-z0-9]*-)?(goal-tl|team-lead|team_lead|pr-monitor|pr_monitor|prmon|reviewer|rev|designer|des|explorer|exp|writer)(?:-r\d+)?$", name.lower())
+    if m:
+        return {"goal-tl": "team_lead", "team-lead": "team_lead", "pr-monitor": "pr_monitor", "prmon": "pr_monitor",
+                "rev": "reviewer", "des": "designer", "exp": "explorer"}.get(m.group(1), m.group(1))
+    for role, markers in (("team_lead", ("-goal-tl-", "-team-lead-")), ("pr_monitor", ("-prmon-", "-pr-monitor-")),
+                          ("reviewer", ("-rev-", "-reviewer-")), ("designer", ("-des-", "-designer-")),
+                          ("explorer", ("-exp-", "-explorer-")), ("writer", ("-writer-",))):
         if any(marker in name for marker in markers):
             return role
     return "reviewer"
@@ -116,17 +114,19 @@ def goal_events(ledger: Path) -> list[tuple[dt.datetime, str]]:
 
 def receipt_exists(goal: Path, name: str) -> bool:
     """Bind grounded R10 evidence to an agent/task, never just a role substring."""
-    receipts, name = goal / "receipts", name.lower()
-    role = role_for(name + "-")
-    aliases = {"team_lead": "(?:team_lead|team-lead|goal-tl)", "pr_monitor": "(?:pr_monitor|pr-monitor|prmon)",
-               "reviewer": "(?:reviewer|rev)", "explorer": "(?:explorer|exp)", "designer": "(?:designer|des)"}
-    role_pattern = aliases.get(role, role)
-    identity = re.search(rf"(?:^|-)(?:(t(?:k)?\d+[a-z0-9]*)-)?{role_pattern}(?:-(r\d+))?$", name)
-    task, round_id = identity.groups() if identity else (None, None)
+    receipts, name, g_name = goal / "receipts", name.lower(), goal.name.lower()
+    identity = re.search(r"(?:^|-)(?:(?P<task>t(?:k)?\d+[a-z0-9]*)-)?(?P<role>goal-tl|team-lead|team_lead|pr-monitor|pr_monitor|prmon|reviewer|rev|designer|des|explorer|exp|writer)(?:-(?P<round>r\d+))?$", name)
+    task, raw_role, round_id = identity.group("task", "role", "round") if identity else (None, None, None)
+    role = role_for(raw_role) if raw_role else role_for(name)
+    role_pattern = {"team_lead": "(?:team_lead|team-lead|goal-tl)", "pr_monitor": "(?:pr_monitor|pr-monitor|prmon)",
+                    "reviewer": "(?:reviewer|rev)", "explorer": "(?:explorer|exp)", "designer": "(?:designer|des)"}.get(role, role)
+    goal_prefix = name[:identity.start()].rstrip("-") if identity else ""
     for path in receipts.glob("*"):
-        stem = path.stem.lower(); relative = stem.removeprefix(goal.name.lower() + "-")
+        stem = path.stem.lower(); relative = stem.removeprefix(g_name + "-")
+        if relative == stem and goal_prefix and stem_matches_goal(goal_prefix, g_name):
+            relative = stem.removeprefix(goal_prefix + "-")
         exact = stem == name or stem.startswith(name + "-") or stem.endswith("-" + name)
-        bound = re.fullmatch(rf"{re.escape(task) if task else role_pattern}(?:-({role_pattern}))?(?:[-_](r\d+))?", relative)
+        bound = identity and re.fullmatch(rf"{re.escape(task) if task else role_pattern}(?:-({role_pattern}))?(?:[-_](r\d+))?", relative)
         matched = exact or bool(bound and (bound.group(2) in {None, round_id} or
                                           bound.group(2) == "r10" and (not task or not bound.group(1))))
         if not path.is_file() or not matched:
@@ -546,9 +546,9 @@ def evaluate_stuck_loop(
     clauses = re.split(r"[.;:\n]|\b(?:but|however|yet)\b", visible, flags=re.I)
     explicit = any(not re.search(negation, clause[:match.start()], re.I)
                    for clause in clauses for match in re.finditer(status_pattern, clause, re.I))
-    lines = [line.strip() for line in visible.splitlines() if line.strip() and not re.search(negation, line, re.I)]
+    lines = [line.strip() for line in visible.splitlines() if line.strip()]
     repeated = any(lines[index] == lines[index - 1] == lines[index - 2] for index in range(2, len(lines)))
-    failure_re = re.compile(r"(?:error|failed|failure|traceback|command not found|exit code [1-9])", re.I)
+    failure_re = re.compile(r"(?<!\b0\s)(?<!\bno\s)(?<!\bnot\s)(?<!\bzero\s)(?<!\bwithout\s)(?<!\bidentical\s)(?:error|failed|failure|traceback|command not found|exit code [1-9])", re.I)
     repeated_failure = repeated and sum(bool(failure_re.search(line)) for line in lines[-5:]) >= 3
     if explicit or repeated_failure:
         return {"type": "STUCK_LOOP", "goal_id": "", "agent": agent_name_value,

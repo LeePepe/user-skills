@@ -904,20 +904,21 @@ def _command_was_successful(claim: str, executed: list[str]) -> bool:
             # Keep quoted operators/data intact. Only a final command and its && predecessors
             # have inferable exit=0 status; OR branches, pipelines and earlier ; commands do not.
             parts, operators, current = [], [], ""
-            for match in re.finditer(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\\[\s\S]|(?P<comment>(?<![^\s;&|])#[^\n]*)|&&|\|\||[;|\n]|[^'\"\\#;&|\n]+|#", command):
+            for match in re.finditer(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\\[\s\S]|(?P<comment>(?<![^\s;&|()])#[^\n]*)|\d*>&\d+|&>>?|&&|\|\||[;&|\n]|(?P<bad>[()`])|[^'\"\\#;&|()`\n]+|#", command):
                 token = match.group()
                 if match.lastgroup == "comment":
                     continue
-                if token in {"&&", "||", ";", "|", "\n"}:
+                if match.lastgroup == "bad":
+                    operators.append("||"); break
+                if token in {"&&", "||", ";", "|", "&", "\n"}:
                     parts.append(current); operators.append(token); current = ""
                 else:
                     current += token
             parts.append(current)
             if "||" in operators or "<<" in command:
                 continue
-            while parts and not parts[-1].strip():
-                parts.pop()
-                if operators: operators.pop()
+            while len(parts) > 1 and not parts[-1].strip() and operators[-1] in {";", "\n"}:
+                parts.pop(); operators.pop()
             for index in range(len(parts) - 1, -1, -1):
                 if _command_argv(parts[index]) == claimed:
                     return True

@@ -286,6 +286,9 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
         self.assertFalse(module._command_was_successful("pytest -k 'x  y'", ["pytest -k 'x y'"]))
         self.assertFalse(module._command_was_successful("pytest foo", ["pytest foo#bar"]))
         self.assertFalse(module._command_was_successful("pytest", ["cat <<EOF\npytest\nEOF"]))
+        for bg_or_subshell in ("pytest &", "pytest & echo ok", "pytest & wait", "(pytest; false)", "$(pytest)", "`pytest`"):
+            self.assertFalse(module._command_was_successful("pytest", [bg_or_subshell]), bg_or_subshell)
+        self.assertTrue(module._command_was_successful("pytest", ["false & pytest"]))
         self.assertTrue(module._command_was_successful("pytest", ['echo "pytest && swift test"; pytest']))
         events = self.scratch / "executions.jsonl"
         for code, expected in ((None, []), (1, []), (0, ["pytest"])):
@@ -329,18 +332,60 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
                 path.write_text(f"Commit SHA: abcdef1234567890\nRole / Model: {role} / replay\nV5 Verdict: PASS\n", encoding="utf-8")
                 self.assertEqual(module.receipt_exists(goal, agent), expected)
                 path.unlink()
+        app_goal = goal.parent / "app-reviewer"
+        (app_goal / "receipts").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(module.role_for("app-reviewer-t2-writer-r2"), "writer")
+        self.assertEqual(module.role_for("app-writer-t1-rev-r1"), "reviewer")
+        self.assertEqual(module.role_for("app-reviewer-goal-tl-r1"), "team_lead")
+        for stem, role, expected in (
+            ("reviewer-r10", "reviewer", False),
+            ("reviewer-r10", "writer", False),
+            ("app-reviewer-t1-writer-r2", "writer", False),
+            ("T2-writer-r1", "writer", False),
+            ("app-reviewer-t2-writer-r2", "writer", True),
+            ("T2-writer-r2", "writer", True),
+        ):
+            with self.subTest(stem=stem, role=role):
+                path = app_goal / "receipts" / f"{stem}.md"
+                path.write_text(f"Commit SHA: abcdef1234567890\nRole / Model: {role} / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+                self.assertEqual(module.receipt_exists(app_goal, "app-reviewer-t2-writer-r2"), expected)
+                path.unlink()
+        goal_prefix_match = app_goal / "receipts" / "app-rev-T2.md"
+        goal_prefix_match.write_text("Commit SHA: abcdef1234567890\nRole / Model: writer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertTrue(module.receipt_exists(app_goal, "app-rev-t2-writer-r1"))
+        self.assertFalse(module.receipt_exists(app_goal, "other-goal-t2-writer-r1"))
+        goal_prefix_match.unlink()
+        other_prefix = app_goal / "receipts" / "other-goal-T2-writer-r2.md"
+        other_prefix.write_text("Commit SHA: abcdef1234567890\nRole / Model: writer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertFalse(module.receipt_exists(app_goal, "other-goal-t2-writer-r1"))
+        other_prefix.unlink()
+        unparsed = app_goal / "receipts" / "reviewer-r10.md"
+        unparsed.write_text("Commit SHA: abcdef1234567890\nRole / Model: reviewer / replay\nV5 Verdict: PASS\n", encoding="utf-8")
+        self.assertFalse(module.receipt_exists(app_goal, "unparseable-agent-token"))
+        unparsed.unlink()
 
     def test_stuck_loop_negations_are_not_positive_status(self) -> None:
         module = load_module(GOAL_SUPERVISOR, "goal_stuck_negation_replay")
         negative = ("not stuck", "0 stuck", "unstuck", "no stuck", "never stuck", "without stuck", "zero stuck",
                     "not looping", "no looping", "0 looping", "not repeating identical failure",
                     "non-blocking / not repeating identical failure", "leases: 0 blocked · 0 zombie · 0 stuck",
-                    "isn't stuck", "aren't looping", "neither stuck nor looping")
+                    "isn't stuck", "aren't looping", "neither stuck nor looping",
+                    "0 failed", "0 errors", "0 failures", "no error", "zero failures")
         for text in negative:
             with self.subTest(text=text):
                 self.assertIsNone(module.evaluate_stuck_loop("writer", "writer", text, jev_override={}))
                 self.assertIsNone(module.evaluate_stuck_loop("writer", "writer", "\n".join([text] * 3), jev_override={}))
-        for text in ("stuck", "looping", "repeating identical failure", "not stuck, but looping", "error\nerror\nerror"):
+        for text in (
+            "stuck",
+            "looping",
+            "repeating identical failure",
+            "not stuck, but looping",
+            "error\nerror\nerror",
+            "\n".join(["zsh: command not found: pytest"] * 3),
+            "\n".join(["line 0: syntax error"] * 3),
+            "\n".join(["exit code 10"] * 3),
+            "\n".join(["Error: file not found"] * 3),
+        ):
             self.assertEqual(module.evaluate_stuck_loop("writer", "writer", text, jev_override={})["type"], "STUCK_LOOP")
 
     def test_hygiene_longest_goal_prefix_boundaries_and_ambiguous_panes(self) -> None:
