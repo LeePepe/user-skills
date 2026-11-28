@@ -1,0 +1,128 @@
+{
+  "schema": "skill-eval-cases/v2",
+  "skill": "save-tool",
+  "updated": "2026-11-28",
+  "trigger_evals": [
+    {
+      "query": "save this GitHub repository and CLI tool link to collected-tools for later",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "search collected-tools notes via Hybrid RAG to deduplicate saved repositories",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "帮我讲懂零知识证明并沉淀这个知识点到 knowledge-vault",
+      "should_trigger": false,
+      "near_miss_skill": "knowledge-digest"
+    },
+    {
+      "query": "design a native SwiftUI screen with Liquid Glass navigation",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    }
+  ],
+  "active_cases": [
+    {
+      "id": "EV-001",
+      "title": "tool_vault_search.py exposes read-only search CLI subcommand",
+      "tags": [
+        "cli",
+        "rag"
+      ],
+      "cmd": "python3 skills/save-tool/scripts/tool_vault_search.py --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "search",
+        "zero execution"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-002",
+      "title": "save-tool SKILL.md wires tool_vault_search.py, eval-cases.json, and Zero Execution redline",
+      "tags": [
+        "contract",
+        "zero-execution"
+      ],
+      "file": "skills/save-tool/SKILL.md",
+      "must_contain": [
+        "tool_vault_search.py",
+        "[eval-cases.json](references/eval-cases.json)",
+        "Zero Execution",
+        "collected-tools"
+      ],
+      "must_not_contain": [
+        "../goal-target-task/"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-003",
+      "title": "tool_vault_search.py maintains zero execution without subprocess or os.system",
+      "tags": [
+        "security",
+        "zero-execution"
+      ],
+      "file": "skills/save-tool/scripts/tool_vault_search.py",
+      "must_contain": [
+        "load_markdown_vault_corpus",
+        "hybrid_search",
+        "collected-tools"
+      ],
+      "must_not_contain": [
+        "subprocess",
+        "os.system",
+        "os.popen"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-004",
+      "title": "tool_vault_search.py rejects cross-vault design-studio scope with VaultIsolationError",
+      "tags": [
+        "counter-case",
+        "negative",
+        "isolation"
+      ],
+      "negative_cmd": "python3 skills/save-tool/scripts/tool_vault_search.py search --query hallmark --scope design-studio --json",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "vault_isolation_error"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-005",
+      "title": "tool_vault_search.py rejects non-positive --top-k with invalid_top_k status",
+      "tags": [
+        "counter-case",
+        "negative",
+        "cli"
+      ],
+      "negative_cmd": "python3 skills/save-tool/scripts/tool_vault_search.py search --query hallmark --top-k 0 --json",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "invalid_top_k"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-006",
+      "title": "tool_vault_search.py self-disclosing parser rejects unknown flags with exit 2",
+      "tags": [
+        "counter-case",
+        "negative",
+        "cli"
+      ],
+      "negative_cmd": "python3 skills/save-tool/scripts/tool_vault_search.py --definitely-invalid-flag",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/save-tool/SKILL.md"
+      ],
+      "registered_at": "2026-11-28"
+    }
+  ]
+}

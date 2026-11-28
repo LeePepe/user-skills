@@ -9,6 +9,7 @@ from . import daily_digest as _daily_digest
 from . import discovery as _discovery
 from . import events_and_reconcile as _events_and_reconcile
 from . import ledger_and_scan as _ledger_and_scan
+from . import rag_search as _rag_search
 
 _MODULES = (
     _common,
@@ -17,6 +18,7 @@ _MODULES = (
     _daily_digest,
     _discovery,
     _events_and_reconcile,
+    _rag_search,
     _cli,
 )
 _SYMBOLS: dict[str, object] = {}
